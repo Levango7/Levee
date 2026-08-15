@@ -1,0 +1,30 @@
+workflow: batch-update
+target:
+  labels:
+    group: web
+    env: prod
+window: "02:00-04:00"
+batches: [1, 10, 50, 100]
+approval: high
+steps:
+  - name: pre-check
+    action: shell
+    args:
+      cmd: "uptime && df -h"
+  - name: update
+    action: shell
+    args:
+      cmd: "yum update -y {{.package}}"
+    verify:
+      - type: cmd
+        run: "systemctl is-active nginx"
+        expect_exit: 0
+    rollback:
+      action: shell
+      args:
+        cmd: "yum downgrade -y {{.package}}"
+    irreversible: false
+  - name: report
+    action: shell
+    args:
+      cmd: "echo 'update complete' >> /var/log/levee.log"

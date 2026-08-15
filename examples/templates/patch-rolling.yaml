@@ -1,0 +1,36 @@
+﻿name: patch-rolling
+description: 补丁灰度滚动更新模板
+params:
+  - name: package
+    type: string
+    required: true
+    description: 要更新的包名
+  - name: target_group
+    type: string
+    default: web
+    description: 目标主机组
+workflow:
+  target:
+    labels:
+      group: "{{.target_group}}"
+      env: prod
+  window: "02:00-04:00"
+  batches: [1, 10, 50, 100]
+  approval: high
+  steps:
+    - name: scan
+      action: shell
+      args:
+        cmd: "yum check-update {{.package}}"
+    - name: apply
+      action: shell
+      args:
+        cmd: "yum update -y {{.package}}"
+      verify:
+        - type: cmd
+          run: "systemctl is-active nginx"
+          expect_exit: 0
+      rollback:
+        action: shell
+        args:
+          cmd: "yum downgrade -y {{.package}}"

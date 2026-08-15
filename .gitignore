@@ -1,0 +1,36 @@
+# Binaries
+levee
+dist/
+*.exe
+*.exe~
+
+# Go
+vendor/
+go.sum
+
+# Test
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime
+*.db
+*.db-wal
+*.db-shm
+*.log
+levee-data/
+
+# Config (keep examples, ignore local)
+configs/config.local.yaml
+.env

@@ -1,0 +1,95 @@
+# docker-compose.yml — Docker environment for LEVEE E2E tests.
+#
+# Provides 3 SSH mock containers based on Alpine + OpenSSH for testing
+# real SSH channel connections. The mock targets accept the "levee-test"
+# user with the password "levee-test".
+#
+# Usage:
+#   docker compose up -d
+#   go test -tags=e2e ./tests/e2e/... -run TestSSH
+#   docker compose down
+
+version: "3.9"
+
+services:
+  ssh-mock-1:
+    image: alpine:3.19
+    container_name: levee-ssh-mock-1
+    hostname: mock-ssh-1
+    networks:
+      - levee-net
+    ports:
+      - "2201:22"
+    command: >
+      sh -c "
+        apk add --no-cache openssh-server &&
+        ssh-keygen -A &&
+        echo 'root:levee-test' | chpasswd &&
+        adduser -D levee-test &&
+        echo 'levee-test:levee-test' | chpasswd &&
+        echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config &&
+        echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config &&
+        /usr/sbin/sshd -D
+      "
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "22"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ssh-mock-2:
+    image: alpine:3.19
+    container_name: levee-ssh-mock-2
+    hostname: mock-ssh-2
+    networks:
+      - levee-net
+    ports:
+      - "2202:22"
+    command: >
+      sh -c "
+        apk add --no-cache openssh-server &&
+        ssh-keygen -A &&
+        echo 'root:levee-test' | chpasswd &&
+        adduser -D levee-test &&
+        echo 'levee-test:levee-test' | chpasswd &&
+        echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config &&
+        echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config &&
+        /usr/sbin/sshd -D
+      "
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "22"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ssh-mock-3:
+    image: alpine:3.19
+    container_name: levee-ssh-mock-3
+    hostname: mock-ssh-3
+    networks:
+      - levee-net
+    ports:
+      - "2203:22"
+    command: >
+      sh -c "
+        apk add --no-cache openssh-server &&
+        ssh-keygen -A &&
+        echo 'root:levee-test' | chpasswd &&
+        adduser -D levee-test &&
+        echo 'levee-test:levee-test' | chpasswd &&
+        echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config &&
+        echo 'PasswordAuthentication yes' >> /etc/ssh/sshd_config &&
+        /usr/sbin/sshd -D
+      "
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "22"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  levee-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

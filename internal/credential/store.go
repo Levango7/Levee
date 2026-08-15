@@ -1,0 +1,385 @@
+// Package credential implements encrypted at-rest storage for sensitive
+// credentials (SSH keys, passwords, API tokens) used by LEVEE's executor
+// subsystem.
+//
+// Security model:
+//   - AES-256-GCM provides authenticated encryption of credential plaintext.
+//   - argon2id derives a per-credential 32-byte key from a master password
+//     and a per-credential random salt, so compromising one ciphertext does
+//     not reveal the master password or other credentials.
+//   - The master password lives only in process memory; it is never written
+//     to disk, never logged, and never emitted to the audit trace.
+//   - Credential plaintext is zeroed immediately after encryption.
+//
+// This package does NOT call audit.TraceRecorder and does NOT log plaintext.
+// Logs include only the credential name and the operation result.
+package credential
+
+import (
+	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/state"
+	"golang.org/x/crypto/argon2"
+)
+
+// --- Constants --------------------------------------------------------------
+
+// Key length for AES-256 (32 bytes).
+const keyLen = 32
+
+// Salt length for argon2id (16 bytes).
+const saltLen = 16
+
+// Nonce length for AES-GCM (12 bytes, gcm.NonceSize()).
+const nonceLen = 12
+
+// Default argon2id parameters. These match the OWASP recommended minimums
+// (time=3, memory=64KiB, parallelism=4).
+const (
+	defaultTimeCost    uint32 = 3
+	defaultMemoryCost  uint32 = 64 * 1024
+	defaultParallelism uint8  = 4
+)
+
+// --- Sentinel errors --------------------------------------------------------
+
+var (
+	// ErrEmptyMasterPassword is returned when the master password is empty.
+	ErrEmptyMasterPassword = errors.New("credential: empty master password")
+
+	// ErrEmptyName is returned when the credential name is empty.
+	ErrEmptyName = errors.New("credential: empty credential name")
+
+	// ErrEmptyPlaintext is returned when the credential plaintext is empty.
+	ErrEmptyPlaintext = errors.New("credential: empty plaintext")
+
+	// ErrNotFound is returned when the credential does not exist.
+	ErrNotFound = errors.New("credential: not found")
+
+	// ErrDecryptFailed is returned when decryption fails (e.g. wrong master
+	// password or corrupted ciphertext).
+	ErrDecryptFailed = errors.New("credential: decryption failed")
+
+	// ErrInvalidCiphertext is returned when the stored ciphertext is too
+	// short or malformed.
+	ErrInvalidCiphertext = errors.New("credential: invalid ciphertext format")
+)
+
+// --- CredentialStore --------------------------------------------------------
+
+// CredentialStore manages encrypted storage and decrypted retrieval of
+// credentials. It uses AES-256-GCM for authenticated encryption and
+// argon2id to derive a per-credential key from the master password and a
+// per-credential random salt. The master password lives only in memory;
+// it is never persisted, logged, or emitted to the audit trace.
+type CredentialStore struct {
+	store          state.Store
+	masterPassword []byte // 仅内存；不序列化、不持久化、不进日志、不进 trace
+	timeCost       uint32
+	memoryCost     uint32
+	parallelism    uint8
+}
+
+// CredentialSpec is the input for creating or updating a credential.
+// The Plaintext field is zeroed immediately after encryption, so callers
+// should not retain references to it.
+type CredentialSpec struct {
+	Name      string            // 凭据名（唯一键）
+	Type      string            // 凭据类型：ssh_key, ssh_password, winrm_password, api_token, ...
+	Plaintext []byte            // 凭据明文（加密后清零）
+	Tags      map[string]string // 标签（如 target=host-a, env=prod）；当前未持久化，保留以供未来扩展
+}
+
+// NewCredentialStore creates a new CredentialStore backed by the given
+// state.Store. The masterPassword is used to derive per-credential
+// encryption keys via argon2id; it is kept only in process memory.
+//
+// masterPassword must be non-empty; otherwise ErrEmptyMasterPassword is
+// returned. store must be non-nil; otherwise an error is returned.
+//
+// Default argon2id parameters are used (time=3, memory=64KiB, parallelism=4).
+func NewCredentialStore(store state.Store, masterPassword string) (*CredentialStore, error) {
+	if store == nil {
+		return nil, fmt.Errorf("credential: nil store")
+	}
+	if masterPassword == "" {
+		return nil, ErrEmptyMasterPassword
+	}
+
+	// Copy the master password into a private byte slice so the caller's
+	// string cannot be aliased into our memory. The string itself is
+	// immutable in Go, but we want a stable in-memory copy we control.
+	mp := make([]byte, len(masterPassword))
+	copy(mp, masterPassword)
+
+	return &CredentialStore{
+		store:          store,
+		masterPassword: mp,
+		timeCost:       defaultTimeCost,
+		memoryCost:     defaultMemoryCost,
+		parallelism:    defaultParallelism,
+	}, nil
+}
+
+// --- Encryption helpers -----------------------------------------------------
+
+// deriveKey derives a 32-byte AES-256 key from the master password and
+// the given salt using argon2id. The returned key must be zeroed by the
+// caller when no longer needed.
+func (cs *CredentialStore) deriveKey(salt []byte) []byte {
+	return argon2.Key(cs.masterPassword, salt, cs.timeCost, cs.memoryCost, cs.parallelism, keyLen)
+}
+
+// encrypt encrypts plaintext using AES-256-GCM with a per-credential key
+// derived from the master password and a fresh random salt. The returned
+// blob has the format: salt(16) || nonce(12) || ciphertext.
+func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
+	salt := make([]byte, saltLen)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("credential: generate salt: %w", err)
+	}
+
+	key := cs.deriveKey(salt)
+	defer SecureZero(key)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("credential: new cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("credential: new gcm: %w", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("credential: generate nonce: %w", err)
+	}
+
+	// Seal appends ciphertext+tag to the dst (nil) and returns the whole
+	// thing. We assemble salt || nonce || ciphertext manually.
+	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+
+	blob := make([]byte, 0, saltLen+len(nonce)+len(ciphertext))
+	blob = append(blob, salt...)
+	blob = append(blob, nonce...)
+	blob = append(blob, ciphertext...)
+	return blob, nil
+}
+
+// decrypt decrypts a blob produced by encrypt back to the original plaintext.
+// The blob format is: salt(16) || nonce(12) || ciphertext.
+func (cs *CredentialStore) decrypt(blob []byte) ([]byte, error) {
+	if len(blob) < saltLen+nonceLen {
+		return nil, ErrInvalidCiphertext
+	}
+	salt := blob[:saltLen]
+	nonce := blob[saltLen : saltLen+nonceLen]
+	ciphertext := blob[saltLen+nonceLen:]
+
+	key := cs.deriveKey(salt)
+	defer SecureZero(key)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("credential: new cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("credential: new gcm: %w", err)
+	}
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDecryptFailed, err)
+	}
+	return plaintext, nil
+}
+
+// --- SecureZero -------------------------------------------------------------
+
+// SecureZero overwrites the given byte slice with zeros. Use it to clear
+// sensitive material (plaintext, derived keys) from memory as soon as it
+// is no longer needed.
+//
+// Note: Go's escape analysis and GC may copy slice data, so this is a
+// best-effort wipe. It is still strictly better than leaving plaintext
+// in memory indefinitely.
+func SecureZero(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// --- Store / Retrieve / Delete / List / Rotate ------------------------------
+
+// Store encrypts the credential plaintext and persists it. The plaintext
+// is zeroed immediately after encryption, regardless of success or failure.
+// The returned state.Credential does not contain the plaintext.
+//
+// name and plaintext must be non-empty; otherwise ErrEmptyName or
+// ErrEmptyPlaintext is returned.
+func (cs *CredentialStore) Store(ctx context.Context, spec CredentialSpec) (*state.Credential, error) {
+	// Always zero the plaintext on return, regardless of the outcome.
+	// spec is a value receiver, but spec.Plaintext shares its backing
+	// array with the caller's slice, so this zeroes the caller's bytes too.
+	defer SecureZero(spec.Plaintext)
+
+	if spec.Name == "" {
+		return nil, ErrEmptyName
+	}
+	if len(spec.Plaintext) == 0 {
+		return nil, ErrEmptyPlaintext
+	}
+
+	blob, err := cs.encrypt(spec.Plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("credential: encrypt: %w", err)
+	}
+
+	now := time.Now().UTC()
+	cred := &state.Credential{
+		ID:            newID(),
+		Name:          spec.Name,
+		Type:          spec.Type,
+		EncryptedData: blob,
+		CreatedAt:     now,
+	}
+	if err := cs.store.CreateCredential(ctx, cred); err != nil {
+		return nil, fmt.Errorf("credential: persist: %w", err)
+	}
+
+	// Log only the credential name and type; never the plaintext or ciphertext.
+	log.InfoCtx(ctx, "credential stored",
+		"name", spec.Name,
+		"type", spec.Type,
+	)
+	return cred, nil
+}
+
+// Retrieve reads and decrypts the credential with the given name. The
+// returned plaintext is the caller's responsibility; use SecureZero on
+// it as soon as it is no longer needed.
+//
+// Returns ErrNotFound when the credential does not exist and
+// ErrDecryptFailed when the master password does not match the one used
+// at encryption time.
+func (cs *CredentialStore) Retrieve(ctx context.Context, name string) ([]byte, error) {
+	if name == "" {
+		return nil, ErrEmptyName
+	}
+
+	cred, err := cs.store.GetCredentialByName(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("credential: load: %w", err)
+	}
+	if cred == nil {
+		return nil, ErrNotFound
+	}
+
+	plaintext, err := cs.decrypt(cred.EncryptedData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Debug-level only, and only the name — never the plaintext.
+	log.DebugCtx(ctx, "credential retrieved", "name", name)
+	return plaintext, nil
+}
+
+// Delete removes the credential with the given name. Returns ErrNotFound
+// when the credential does not exist.
+func (cs *CredentialStore) Delete(ctx context.Context, name string) error {
+	if name == "" {
+		return ErrEmptyName
+	}
+
+	cred, err := cs.store.GetCredentialByName(ctx, name)
+	if err != nil {
+		return fmt.Errorf("credential: load: %w", err)
+	}
+	if cred == nil {
+		return ErrNotFound
+	}
+
+	if err := cs.store.DeleteCredential(ctx, cred.ID); err != nil {
+		return fmt.Errorf("credential: delete: %w", err)
+	}
+
+	log.InfoCtx(ctx, "credential deleted", "name", name)
+	return nil
+}
+
+// List returns metadata for all stored credentials, ordered by name.
+// The returned state.Credential entries contain the ciphertext blob in
+// EncryptedData but never the plaintext.
+func (cs *CredentialStore) List(ctx context.Context) ([]*state.Credential, error) {
+	creds, err := cs.store.ListCredentials(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("credential: list: %w", err)
+	}
+	return creds, nil
+}
+
+// Rotate replaces the encrypted plaintext of an existing credential with
+// newPlaintext. The newPlaintext is zeroed immediately after encryption,
+// regardless of success or failure. The credential's RotatedAt timestamp
+// is updated to the current time.
+//
+// Returns ErrNotFound when the credential does not exist.
+func (cs *CredentialStore) Rotate(ctx context.Context, name string, newPlaintext []byte) (*state.Credential, error) {
+	// Always zero the new plaintext on return.
+	defer SecureZero(newPlaintext)
+
+	if name == "" {
+		return nil, ErrEmptyName
+	}
+	if len(newPlaintext) == 0 {
+		return nil, ErrEmptyPlaintext
+	}
+
+	cred, err := cs.store.GetCredentialByName(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("credential: load: %w", err)
+	}
+	if cred == nil {
+		return nil, ErrNotFound
+	}
+
+	blob, err := cs.encrypt(newPlaintext)
+	if err != nil {
+		return nil, fmt.Errorf("credential: encrypt: %w", err)
+	}
+
+	now := time.Now().UTC()
+	cred.EncryptedData = blob
+	cred.RotatedAt = &now
+	if err := cs.store.UpdateCredential(ctx, cred); err != nil {
+		return nil, fmt.Errorf("credential: persist: %w", err)
+	}
+
+	log.InfoCtx(ctx, "credential rotated", "name", name)
+	return cred, nil
+}
+
+// --- ID generation ----------------------------------------------------------
+
+// newID generates a unique credential identifier using crypto/rand. The
+// ID has the form "cred-<16-hex-chars>". On the extremely unlikely event
+// that rand.Read fails, it falls back to a timestamp-based ID so the
+// caller always gets a usable, unique-enough identifier.
+func newID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("cred-%d", time.Now().UnixNano())
+	}
+	return "cred-" + hex.EncodeToString(b)
+}
