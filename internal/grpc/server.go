@@ -1,4 +1,3 @@
-
 // Package grpc implements LEVEE's gRPC server infrastructure. It exposes
 // the five protobuf-defined services (ChangeService, TemplateService,
 // TargetService, AuditService, SystemService) over a single gRPC server
@@ -50,7 +49,7 @@ type Server struct {
 
 	// Service implementations. They are fields rather than local
 	// variables so tests can swap them via Option functions.
-	changeService  *ChangeService
+	changeService   *ChangeService
 	templateService pb.TemplateServiceServer
 	targetService   pb.TargetServiceServer
 	auditService    pb.AuditServiceServer

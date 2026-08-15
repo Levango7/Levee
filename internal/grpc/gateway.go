@@ -1,4 +1,3 @@
-
 // gateway.go provides a REST/HTTP gateway in front of the gRPC server
 // using grpc-gateway. The gateway translates HTTP/JSON requests into
 // gRPC calls, allowing non-gRPC clients (curl, web UIs, monitoring

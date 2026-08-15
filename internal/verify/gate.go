@@ -1,10 +1,12 @@
 // Package verify implements LEVEE's verification gate framework (design doc
-// section 4.4.5, MVP task T027). A gate is a check inserted at one of three
+// section 4.4.5, MVP task T027). A gate is a check inserted at one of four
 // critical moments in the change pipeline:
 //
-//   - PhasePreApply  — before apply starts (e.g. target reachability, SLO baseline)
-//   - PhasePostBatch — after each batch completes (e.g. service health, SLO probe)
-//   - PhasePostApply — after apply finishes (e.g. final regression, full SLO window)
+//   - PhasePreApply   — before apply starts (e.g. target reachability, SLO baseline)
+//   - PhasePostBatch  — after each batch completes (e.g. service health, SLO probe)
+//   - PhasePostApply  — after apply finishes (e.g. final regression, full SLO window)
+//   - PhaseGracePeriod — after a configurable cool-down following apply, re-query
+//     SLO metrics to detect delayed regressions (F14 SLO gate three-stage timing).
 //
 // The GateManager registers gates by name, groups them by phase, and runs all
 // gates of a phase concurrently. RunPhase returns as soon as any gate fails
@@ -30,9 +32,10 @@ import (
 
 // --- Phase ------------------------------------------------------------------
 
-// GatePhase identifies one of the three verification moments in the change
+// GatePhase identifies one of the four verification moments in the change
 // pipeline. The string values are stable identifiers used in logs, the audit
-// trail and LEVEELang source ("pre_apply", "post_batch", "post_apply").
+// trail and LEVEELang source ("pre_apply", "post_batch", "post_apply",
+// "grace_period").
 type GatePhase string
 
 const (
@@ -50,12 +53,23 @@ const (
 	// regression, full SLO window, end-to-end smoke. A failure here triggers
 	// rollback of the whole run.
 	PhasePostApply GatePhase = "post_apply"
+
+	// PhaseGracePeriod runs after a configurable cool-down following the
+	// post_apply phase. Typical gates: delayed SLO re-probe, late-blooming
+	// error-rate check. A failure here triggers rollback of the whole run.
+	// The phase is optional: workflows that do not configure a grace_period
+	// gate simply skip it. It was introduced in F14 (SLO gate three-stage
+	// timing) and is backward compatible — existing three-phase callers
+	// continue to work because AllPhases now returns four entries but
+	// RunPhase on an empty phase still returns nil.
+	PhaseGracePeriod GatePhase = "grace_period"
 )
 
-// AllPhases returns the three gate phases in canonical order. It is intended
-// for iteration in diagnostics and tests.
+// AllPhases returns the four gate phases in canonical order. It is intended
+// for iteration in diagnostics and tests. The order reflects the pipeline
+// timeline: pre_apply → post_batch → post_apply → grace_period.
 func AllPhases() []GatePhase {
-	return []GatePhase{PhasePreApply, PhasePostBatch, PhasePostApply}
+	return []GatePhase{PhasePreApply, PhasePostBatch, PhasePostApply, PhaseGracePeriod}
 }
 
 // --- Gate interface ---------------------------------------------------------

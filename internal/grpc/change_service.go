@@ -28,7 +28,6 @@ package grpc
 // errors use codes.Internal; not-found uses codes.NotFound; invalid
 // state transitions use codes.FailedPrecondition.
 
-
 import (
 	"context"
 	"crypto/rand"
@@ -64,8 +63,8 @@ type ChangeService struct {
 
 	// eventBus distributes change events to WatchChange subscribers.
 	// It is lazily initialised on first subscription.
-	eventMu   sync.Mutex
-	eventBus  *eventBus
+	eventMu  sync.Mutex
+	eventBus *eventBus
 }
 
 // NewChangeService constructs a ChangeService backed by the given

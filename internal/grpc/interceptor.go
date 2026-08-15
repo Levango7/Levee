@@ -1,4 +1,3 @@
-
 // interceptor.go implements the logging and recovery interceptors
 // chained into every gRPC RPC by NewServer. The logging interceptor
 // emits a structured log line per RPC with the method name, duration

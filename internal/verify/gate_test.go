@@ -582,11 +582,12 @@ func TestGateResultZeroValue(t *testing.T) {
 
 func TestAllPhasesOrder(t *testing.T) {
 	phases := AllPhases()
-	assert.Equal(t, []GatePhase{PhasePreApply, PhasePostBatch, PhasePostApply}, phases)
+	assert.Equal(t, []GatePhase{PhasePreApply, PhasePostBatch, PhasePostApply, PhaseGracePeriod}, phases)
 }
 
 func TestPhaseStringValues(t *testing.T) {
 	assert.Equal(t, GatePhase("pre_apply"), PhasePreApply)
 	assert.Equal(t, GatePhase("post_batch"), PhasePostBatch)
 	assert.Equal(t, GatePhase("post_apply"), PhasePostApply)
+	assert.Equal(t, GatePhase("grace_period"), PhaseGracePeriod)
 }

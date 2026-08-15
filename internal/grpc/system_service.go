@@ -1,4 +1,3 @@
-
 // SystemService implementation for the LEVEE gRPC API.
 //
 // SystemService exposes system-level introspection: version information,

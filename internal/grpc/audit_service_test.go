@@ -75,22 +75,22 @@ func seedBatchAndStep(t *testing.T, ctx context.Context, store state.Store, runI
 	t.Helper()
 	now := time.Now().UTC()
 	require.NoError(t, store.CreateBatch(ctx, &state.Batch{
-		ID:      batchID,
-		RunID:   runID,
-		BatchNo: 1,
-		Status:  "completed",
+		ID:          batchID,
+		RunID:       runID,
+		BatchNo:     1,
+		Status:      "completed",
 		StartedAt:   &now,
 		CompletedAt: &now,
 	}))
 	require.NoError(t, store.CreateStep(ctx, &state.Step{
-		ID:        stepID,
-		RunID:     runID,
-		BatchID:   batchID,
-		Host:      host,
-		StepName:  "deploy",
-		Action:    "exec",
-		Status:    stepStatus,
-		DurationMs: 100,
+		ID:          stepID,
+		RunID:       runID,
+		BatchID:     batchID,
+		Host:        host,
+		StepName:    "deploy",
+		Action:      "exec",
+		Status:      stepStatus,
+		DurationMs:  100,
 		StartedAt:   &now,
 		CompletedAt: &now,
 	}))
@@ -101,15 +101,15 @@ func seedStep(t *testing.T, ctx context.Context, store state.Store, runID, batch
 	t.Helper()
 	now := time.Now().UTC()
 	require.NoError(t, store.CreateStep(ctx, &state.Step{
-		ID:         stepID,
-		RunID:      runID,
-		BatchID:    batchID,
-		Host:       host,
-		StepName:   "deploy",
-		Action:     "exec",
-		Status:     stepStatus,
-		DurationMs: 100,
-		StartedAt:  &now,
+		ID:          stepID,
+		RunID:       runID,
+		BatchID:     batchID,
+		Host:        host,
+		StepName:    "deploy",
+		Action:      "exec",
+		Status:      stepStatus,
+		DurationMs:  100,
+		StartedAt:   &now,
 		CompletedAt: &now,
 	}))
 }

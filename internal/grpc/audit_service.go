@@ -1,4 +1,3 @@
-
 // AuditService implementation for the LEVEE gRPC API.
 //
 // AuditService exposes the tamper-evident audit subsystem: querying audit
@@ -206,8 +205,8 @@ func (s *AuditService) VerifyHashChain(ctx context.Context, req *pb.VerifyHashCh
 	}
 
 	resp := &pb.VerifyHashChainResponse{
-		Valid:          true,
-		Runs:           make([]*pb.RunVerification, 0, len(runIDs)),
+		Valid:           true,
+		Runs:            make([]*pb.RunVerification, 0, len(runIDs)),
 		EntriesVerified: 0,
 	}
 
@@ -270,10 +269,10 @@ func (s *AuditService) GetRunReport(ctx context.Context, req *pb.GetRunReportReq
 	}
 
 	report := &pb.RunReport{
-		ChangeId: req.ChangeId,
-		RunId:    run.ID,
-		Status:   run.Status,
-		StartedAt: run.CreatedAt.Unix(),
+		ChangeId:   req.ChangeId,
+		RunId:      run.ID,
+		Status:     run.Status,
+		StartedAt:  run.CreatedAt.Unix(),
 		FinishedAt: run.UpdatedAt.Unix(),
 	}
 	if !run.UpdatedAt.IsZero() {
@@ -367,11 +366,11 @@ func traceToPB(t *state.Trace) *pb.TraceEntry {
 		return nil
 	}
 	return &pb.TraceEntry{
-		Id:      t.ID,
-		RunId:   t.RunID,
-		Action:  t.Event,
-		PrevHash: t.PrevHash,
-		CurrHash: t.CurrHash,
+		Id:        t.ID,
+		RunId:     t.RunID,
+		Action:    t.Event,
+		PrevHash:  t.PrevHash,
+		CurrHash:  t.CurrHash,
 		Timestamp: t.Timestamp.Unix(),
 	}
 }

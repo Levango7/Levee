@@ -342,18 +342,18 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 	}
 
 	return &pb.Change{
-		Id:            run.ID,
-		Label:         req.Label,
-		Status:        run.Status,
-		Priority:      priority,
-		WorkflowFile:  "",
-		TemplateName:  req.TemplateName,
-		Params:        req.Params,
-		CreatedAt:     now.Unix(),
-		UpdatedAt:     now.Unix(),
-		CreatedBy:     "grpc",
-		Team:          req.Team,
-		Environment:   req.Environment,
+		Id:           run.ID,
+		Label:        req.Label,
+		Status:       run.Status,
+		Priority:     priority,
+		WorkflowFile: "",
+		TemplateName: req.TemplateName,
+		Params:       req.Params,
+		CreatedAt:    now.Unix(),
+		UpdatedAt:    now.Unix(),
+		CreatedBy:    "grpc",
+		Team:         req.Team,
+		Environment:  req.Environment,
 	}, nil
 }
 

@@ -124,9 +124,9 @@ func WithFactoryDeps(deps *localDeps) factoryOption {
 // newServiceFactory builds a serviceFactory for the requested mode.
 //
 //   - modeLocal:  requires a non-nil store (via deps); constructs the five
-//                 in-process service implementations.
+//     in-process service implementations.
 //   - modeRemote: dials remoteAddr and builds a grpcClient. token may be empty
-//                 to disable authentication.
+//     to disable authentication.
 //
 // The returned factory must be closed via Close when the caller is done to
 // release any underlying connection.

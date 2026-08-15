@@ -231,10 +231,10 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 	}
 
 	tgt := &grpcTarget{
-		host:      t.Hostname,
-		port:      int(t.Port),
+		host:        t.Hostname,
+		port:        int(t.Port),
 		channelType: t.ChannelType,
-		cred:      channel.CredentialRef{},
+		cred:        channel.CredentialRef{},
 	}
 
 	prechecker := channel.NewPrechecker(nil, nil,
@@ -320,7 +320,7 @@ type grpcTarget struct {
 	cred        channel.CredentialRef
 }
 
-func (t *grpcTarget) Host() string                  { return t.host }
-func (t *grpcTarget) Port() int                     { return t.port }
-func (t *grpcTarget) Type() string                  { return t.channelType }
+func (t *grpcTarget) Host() string                       { return t.host }
+func (t *grpcTarget) Port() int                          { return t.port }
+func (t *grpcTarget) Type() string                       { return t.channelType }
 func (t *grpcTarget) Credentials() channel.CredentialRef { return t.cred }
