@@ -139,15 +139,17 @@ func TestIntegration_TamperDetection_Detail(t *testing.T) {
 	_, _, err = builder.Build(ctx, "run-tamper-detail")
 	require.NoError(t, err)
 
-	// Tamper with the middle trace's Detail via the underlying store.
+	// Tamper with the middle trace's Detail via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-tamper-detail"})
 	require.NoError(t, err)
 	require.Len(t, traces, 5)
 	mid := len(traces) / 2
 	originalDetail := traces[mid].Detail
-	traces[mid].Detail = `{"tampered":true}`
-	require.NotEqual(t, originalDetail, traces[mid].Detail)
-	require.NoError(t, store.UpdateTrace(ctx, traces[mid]))
+	tamperTraceDetail(t, store, traces[mid].ID, `{"tampered":true}`)
+	// Reload to verify the tamper took effect.
+	tampered, err := store.GetTrace(ctx, traces[mid].ID)
+	require.NoError(t, err)
+	require.NotEqual(t, originalDetail, tampered.Detail)
 
 	verifier, err := NewChainVerifier(store)
 	require.NoError(t, err)
@@ -176,9 +178,11 @@ func TestIntegration_TamperDetection_CurrHash(t *testing.T) {
 	require.Len(t, traces, 5)
 	last := len(traces) - 1
 	original := traces[last].CurrHash
-	traces[last].CurrHash = "tampered-curr-hash-value"
-	require.NotEqual(t, original, traces[last].CurrHash)
-	require.NoError(t, store.UpdateTrace(ctx, traces[last]))
+	tamperTraceCurrHash(t, store, traces[last].ID, "tampered-curr-hash-value")
+	// Reload to verify the tamper took effect.
+	tampered, err := store.GetTrace(ctx, traces[last].ID)
+	require.NoError(t, err)
+	require.NotEqual(t, original, tampered.CurrHash)
 
 	verifier, err := NewChainVerifier(store)
 	require.NoError(t, err)
@@ -206,9 +210,11 @@ func TestIntegration_TamperDetection_PrevHash(t *testing.T) {
 	require.Len(t, traces, 5)
 	mid := len(traces) / 2
 	originalPrev := traces[mid].PrevHash
-	traces[mid].PrevHash = "tampered-prev-hash-value"
-	require.NotEqual(t, originalPrev, traces[mid].PrevHash)
-	require.NoError(t, store.UpdateTrace(ctx, traces[mid]))
+	tamperTracePrevHash(t, store, traces[mid].ID, "tampered-prev-hash-value")
+	// Reload to verify the tamper took effect.
+	tampered, err := store.GetTrace(ctx, traces[mid].ID)
+	require.NoError(t, err)
+	require.NotEqual(t, originalPrev, tampered.PrevHash)
 
 	verifier, err := NewChainVerifier(store)
 	require.NoError(t, err)
@@ -250,12 +256,10 @@ func TestIntegration_WORM_AppendOnly(t *testing.T) {
 	assert.Equal(t, "trace-worm-1", got.ID)
 	assert.Equal(t, "run-worm", got.RunID)
 
-	// Tamper with the Detail via the underlying store, bypassing WORM. Read
-	// must now return ErrTampered because the checksum no longer matches.
-	raw, err := store.GetTrace(ctx, "trace-worm-1")
-	require.NoError(t, err)
-	raw.Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, raw))
+	// Tamper with the Detail via raw SQL (bypassing WORM trigger), simulating
+	// an attacker with direct database access. Read must now return ErrTampered
+	// because the checksum no longer matches.
+	tamperTraceDetail(t, store, "trace-worm-1", `{"tampered":true}`)
 
 	_, err = w.Read(ctx, "trace-worm-1")
 	require.ErrorIs(t, err, ErrTampered)
@@ -291,12 +295,11 @@ func TestIntegration_MultiRun_Independent(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, resB.Valid, "run-b must verify before tamper")
 
-	// Tamper with a trace in run-a only.
+	// Tamper with a trace in run-a only (via raw SQL to bypass WORM trigger).
 	tracesA, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-a"})
 	require.NoError(t, err)
 	require.Len(t, tracesA, 5)
-	tracesA[0].Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, tracesA[0]))
+	tamperTraceDetail(t, store, tracesA[0].ID, `{"tampered":true}`)
 
 	// run-a must now fail verification.
 	resA2, err := verifier.Verify(ctx, "run-a")

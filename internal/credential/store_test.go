@@ -454,3 +454,157 @@ func TestCiphertextIndependence(t *testing.T) {
 	assert.NotEqual(t, c1.EncryptedData, c2.EncryptedData,
 		"two credentials with the same plaintext must have different ciphertexts")
 }
+
+// =========================================================================
+// RotateMasterPassword
+// =========================================================================
+
+func TestRotateMasterPassword_Success(t *testing.T) {
+	store := newTestStore(t)
+	cs, err := NewCredentialStore(store, "old-master-pass")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Store several credentials.
+	secrets := map[string]string{
+		"ssh-key":   "ssh-secret",
+		"api-token": "token-secret",
+		"winrm-pw":  "winrm-secret",
+	}
+	for name, secret := range secrets {
+		spec := CredentialSpec{
+			Name:      name,
+			Type:      "generic",
+			Plaintext: []byte(secret),
+		}
+		_, err := cs.Store(ctx, spec)
+		require.NoError(t, err)
+	}
+
+	// Rotate master password.
+	count, err := cs.RotateMasterPassword(ctx, "old-master-pass", "new-master-pass")
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+
+	// Verify all credentials can still be decrypted with the new master password.
+	for name, secret := range secrets {
+		got, err := cs.Retrieve(ctx, name)
+		require.NoError(t, err, "failed to retrieve %q after master password rotation", name)
+		assert.Equal(t, []byte(secret), got, "plaintext mismatch for %q after rotation", name)
+		SecureZero(got)
+	}
+}
+
+func TestRotateMasterPassword_WrongOldPassword(t *testing.T) {
+	store := newTestStore(t)
+	cs, err := NewCredentialStore(store, "correct-pass")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	spec := CredentialSpec{
+		Name:      "prod-ssh",
+		Type:      "ssh_password",
+		Plaintext: []byte("secret"),
+	}
+	_, err = cs.Store(ctx, spec)
+	require.NoError(t, err)
+
+	_, err = cs.RotateMasterPassword(ctx, "wrong-pass", "new-pass")
+	assert.ErrorIs(t, err, ErrMasterPasswordMismatch)
+}
+
+func TestRotateMasterPassword_EmptyPassword(t *testing.T) {
+	store := newTestStore(t)
+	cs, err := NewCredentialStore(store, "master-pass")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	t.Run("empty old password", func(t *testing.T) {
+		_, err := cs.RotateMasterPassword(ctx, "", "new-pass")
+		assert.ErrorIs(t, err, ErrEmptyMasterPassword)
+	})
+
+	t.Run("empty new password", func(t *testing.T) {
+		_, err := cs.RotateMasterPassword(ctx, "master-pass", "")
+		assert.ErrorIs(t, err, ErrEmptyMasterPassword)
+	})
+
+	t.Run("both empty", func(t *testing.T) {
+		_, err := cs.RotateMasterPassword(ctx, "", "")
+		assert.ErrorIs(t, err, ErrEmptyMasterPassword)
+	})
+}
+
+func TestRotateMasterPassword_NoCredentials(t *testing.T) {
+	store := newTestStore(t)
+	cs, err := NewCredentialStore(store, "old-pass")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// No credentials stored; rotation should still succeed and update the
+	// in-memory master password.
+	count, err := cs.RotateMasterPassword(ctx, "old-pass", "new-pass")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+
+	// Store a new credential after rotation; it should be encrypted with
+	// the new master password.
+	spec := CredentialSpec{
+		Name:      "after-rotation",
+		Type:      "api_token",
+		Plaintext: []byte("new-secret"),
+	}
+	_, err = cs.Store(ctx, spec)
+	require.NoError(t, err)
+
+	got, err := cs.Retrieve(ctx, "after-rotation")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("new-secret"), got)
+	SecureZero(got)
+}
+
+func TestRotateMasterPassword_DecryptWithNewPassword(t *testing.T) {
+	store := newTestStore(t)
+	cs, err := NewCredentialStore(store, "original-pass")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	plaintext := []byte("top-secret-data")
+	spec := CredentialSpec{
+		Name:      "prod-ssh",
+		Type:      "ssh_password",
+		Plaintext: plaintext,
+	}
+	_, err = cs.Store(ctx, spec)
+	require.NoError(t, err)
+
+	// Rotate master password.
+	count, err := cs.RotateMasterPassword(ctx, "original-pass", "rotated-pass")
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+
+	// Retrieve with the same CredentialStore instance (now using new password)
+	// should succeed.
+	got, err := cs.Retrieve(ctx, "prod-ssh")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("top-secret-data"), got)
+	SecureZero(got)
+
+	// A new CredentialStore with the OLD password should fail to decrypt.
+	csOld, err := NewCredentialStore(store, "original-pass")
+	require.NoError(t, err)
+	_, err = csOld.Retrieve(ctx, "prod-ssh")
+	assert.ErrorIs(t, err, ErrDecryptFailed,
+		"old master password should no longer decrypt after rotation")
+
+	// A new CredentialStore with the NEW password should succeed.
+	csNew, err := NewCredentialStore(store, "rotated-pass")
+	require.NoError(t, err)
+	got2, err := csNew.Retrieve(ctx, "prod-ssh")
+	require.NoError(t, err)
+	assert.Equal(t, []byte("top-secret-data"), got2)
+	SecureZero(got2)
+}

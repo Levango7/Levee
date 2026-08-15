@@ -117,12 +117,16 @@ func TestRead_TamperedDetail_ReturnsErrTampered(t *testing.T) {
 	require.NoError(t, w.Append(ctx, newWORMTrace("run-1", "trace-1", now)))
 
 	// Bypass WORM and tamper with the Detail column directly.
-	trace, err := store.GetTrace(ctx, "trace-1")
-	require.NoError(t, err)
-	trace.Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, trace))
+	// The WORM trigger blocks content-field updates via the Store API, so we
+	// must temporarily disable the trigger to simulate a bypass attack.
+	withWORMTriggerDisabled(t, store, func() {
+		trace, err := store.GetTrace(ctx, "trace-1")
+		require.NoError(t, err)
+		trace.Detail = `{"tampered":true}`
+		require.NoError(t, store.UpdateTrace(ctx, trace))
+	})
 
-	_, err = w.Read(ctx, "trace-1")
+	_, err := w.Read(ctx, "trace-1")
 	require.ErrorIs(t, err, ErrTampered)
 }
 
@@ -135,12 +139,16 @@ func TestRead_TamperedCurrHash_ReturnsErrTampered(t *testing.T) {
 	now := time.Now().UTC()
 	require.NoError(t, w.Append(ctx, newWORMTrace("run-1", "trace-1", now)))
 
-	trace, err := store.GetTrace(ctx, "trace-1")
-	require.NoError(t, err)
-	trace.CurrHash = "fake-hash-value"
-	require.NoError(t, store.UpdateTrace(ctx, trace))
+	// Temporarily disable the WORM update trigger to simulate a bypass attack
+	// that overwrites CurrHash.
+	withWORMTriggerDisabled(t, store, func() {
+		trace, err := store.GetTrace(ctx, "trace-1")
+		require.NoError(t, err)
+		trace.CurrHash = "fake-hash-value"
+		require.NoError(t, store.UpdateTrace(ctx, trace))
+	})
 
-	_, err = w.Read(ctx, "trace-1")
+	_, err := w.Read(ctx, "trace-1")
 	require.ErrorIs(t, err, ErrTampered)
 }
 
@@ -175,13 +183,16 @@ func TestReadByRun_TamperDetected(t *testing.T) {
 	require.NoError(t, w.Append(ctx, newWORMTrace("run-1", "t2", base.Add(time.Millisecond))))
 
 	// Tamper with one record's Detail via the underlying store.
-	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-1"})
-	require.NoError(t, err)
-	require.Len(t, traces, 2)
-	traces[0].Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, traces[0]))
+	// Temporarily disable the WORM update trigger to simulate a bypass attack.
+	withWORMTriggerDisabled(t, store, func() {
+		traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-1"})
+		require.NoError(t, err)
+		require.Len(t, traces, 2)
+		traces[0].Detail = `{"tampered":true}`
+		require.NoError(t, store.UpdateTrace(ctx, traces[0]))
+	})
 
-	_, err = w.ReadByRun(ctx, "run-1")
+	_, err := w.ReadByRun(ctx, "run-1")
 	require.ErrorIs(t, err, ErrTampered)
 }
 

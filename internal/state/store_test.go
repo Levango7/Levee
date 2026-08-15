@@ -360,8 +360,16 @@ func TestTrace_CRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 2)
 
-	// Delete.
+	// Delete: the WORM trigger prevents DELETE on the trace table, so we
+	// must disable it temporarily to verify the DeleteTrace method works.
+	require.NoError(t, store.ExecRaw(ctx, "DROP TRIGGER IF EXISTS worm_prevent_trace_delete"))
 	require.NoError(t, store.DeleteTrace(ctx, trace.ID))
+	require.NoError(t, store.ExecRaw(ctx, `
+CREATE TRIGGER IF NOT EXISTS worm_prevent_trace_delete
+BEFORE DELETE ON trace
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: trace records cannot be deleted');
+END`))
 	got, err = store.GetTrace(ctx, trace.ID)
 	require.NoError(t, err)
 	assert.Nil(t, got)

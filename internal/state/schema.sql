@@ -91,6 +91,31 @@ CREATE INDEX IF NOT EXISTS idx_trace_run_id    ON trace (run_id);
 CREATE INDEX IF NOT EXISTS idx_trace_event     ON trace (event);
 CREATE INDEX IF NOT EXISTS idx_trace_timestamp ON trace (timestamp);
 
+-- WORM protection: prevent UPDATE on trace content fields. The trigger only
+-- fires when one of the immutable content columns (id, run_id, event, actor,
+-- detail, timestamp) is changed. Updating prev_hash and curr_hash is allowed
+-- because the hash-chain builder (HashChainBuilder.Build) needs to write these
+-- values after the record has been inserted.
+CREATE TRIGGER IF NOT EXISTS worm_prevent_trace_update
+BEFORE UPDATE ON trace
+WHEN NEW.id != OLD.id 
+  OR NEW.run_id != OLD.run_id
+  OR NEW.event != OLD.event
+  OR NEW.actor != OLD.actor
+  OR NEW.detail != OLD.detail
+  OR NEW.timestamp != OLD.timestamp
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: trace content fields cannot be updated');
+END;
+
+-- WORM protection: prevent DELETE on trace table. Audit trace records are
+-- append-only and must never be removed.
+CREATE TRIGGER IF NOT EXISTS worm_prevent_trace_delete
+BEFORE DELETE ON trace
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: trace records cannot be deleted');
+END;
+
 -- approvals: approval records (multi-level approval chain).
 CREATE TABLE IF NOT EXISTS approvals (
     id         TEXT    PRIMARY KEY,

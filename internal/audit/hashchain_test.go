@@ -147,11 +147,15 @@ func TestBuild_VerifyDetectsTamper(t *testing.T) {
 	require.NoError(t, err)
 
 	// Tamper with the middle trace's Detail.
-	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-tamper"})
-	require.NoError(t, err)
-	require.Len(t, traces, 3)
-	traces[1].Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, traces[1]))
+	// The WORM trigger blocks content-field updates, so temporarily disable it
+	// to simulate a bypass attack.
+	withWORMTriggerDisabled(t, store, func() {
+		traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-tamper"})
+		require.NoError(t, err)
+		require.Len(t, traces, 3)
+		traces[1].Detail = `{"tampered":true}`
+		require.NoError(t, store.UpdateTrace(ctx, traces[1]))
+	})
 
 	// Verify should now fail with ErrHashMismatch.
 	_, err = b.Verify(ctx, "run-tamper")
@@ -320,9 +324,9 @@ func TestComputeHash_NilTrace(t *testing.T) {
 }
 
 func TestBuild_TamperDetectedViaRebuild(t *testing.T) {
-	// After building the chain, modify a trace's Detail and rebuild. The
-	// rebuilt CurrHash of the modified trace (and all subsequent traces)
-	// must differ from the originally built hashes.
+	// SA-002: After building the chain, tampering with a trace and then
+	// calling Build must NOT succeed — Build must refuse to rebuild an
+	// existing chain, preventing the attacker from legalizing tampered data.
 	b, store := newChainBuilder(t)
 	ctx := context.Background()
 	createRun(t, store, "run-rebuild")
@@ -331,29 +335,20 @@ func TestBuild_TamperDetectedViaRebuild(t *testing.T) {
 	_, _, err := b.Build(ctx, "run-rebuild")
 	require.NoError(t, err)
 
-	origTraces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-rebuild"})
-	require.NoError(t, err)
-	require.Len(t, origTraces, 3)
-	origHashes := []string{origTraces[0].CurrHash, origTraces[1].CurrHash, origTraces[2].CurrHash}
-
 	// Tamper with the first trace's Detail.
-	origTraces[0].Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, origTraces[0]))
+	// The WORM trigger blocks content-field updates, so temporarily disable it
+	// to simulate a bypass attack.
+	withWORMTriggerDisabled(t, store, func() {
+		origTraces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-rebuild"})
+		require.NoError(t, err)
+		require.Len(t, origTraces, 3)
+		origTraces[0].Detail = `{"tampered":true}`
+		require.NoError(t, store.UpdateTrace(ctx, origTraces[0]))
+	})
 
-	// Rebuild.
+	// Build must now refuse to rebuild because the chain exists but is broken.
 	_, _, err = b.Build(ctx, "run-rebuild")
-	require.NoError(t, err)
-
-	newTraces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-rebuild"})
-	require.NoError(t, err)
-	require.Len(t, newTraces, 3)
-
-	// All hashes should differ because the first trace changed and the chain
-	// propagates the change.
-	for i := range newTraces {
-		assert.NotEqual(t, origHashes[i], newTraces[i].CurrHash,
-			"trace %d CurrHash should change after upstream tamper and rebuild", i)
-	}
+	require.ErrorIs(t, err, ErrChainBroken)
 }
 
 func TestBuild_MultipleRunsIndependent(t *testing.T) {
@@ -415,13 +410,105 @@ func TestVerify_PrevHashMismatch(t *testing.T) {
 	_, _, err := b.Build(ctx, "run-prev")
 	require.NoError(t, err)
 
-	// Corrupt the second trace's PrevHash.
+	// Corrupt the second trace's PrevHash via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-prev"})
 	require.NoError(t, err)
 	require.Len(t, traces, 2)
-	traces[1].PrevHash = "tampered-prev"
-	require.NoError(t, store.UpdateTrace(ctx, traces[1]))
+	tamperTracePrevHash(t, store, traces[1].ID, "tampered-prev")
 
 	_, err = b.Verify(ctx, "run-prev")
 	require.ErrorIs(t, err, ErrHashMismatch)
+}
+
+func TestBuild_ChainAlreadyBuilt_ReturnsError(t *testing.T) {
+	// After a successful Build, calling Build again on the same run must
+	// return ErrChainAlreadyBuilt because the chain is intact.
+	b, store := newChainBuilder(t)
+	ctx := context.Background()
+	createRun(t, store, "run-already")
+	recordTraces(t, store, "run-already", 3)
+
+	_, _, err := b.Build(ctx, "run-already")
+	require.NoError(t, err)
+
+	// Second Build on the same run must be refused.
+	_, _, err = b.Build(ctx, "run-already")
+	require.ErrorIs(t, err, ErrChainAlreadyBuilt)
+}
+
+func TestBuild_ChainBroken_ReturnsError(t *testing.T) {
+	// After building the chain, tampering with a trace and then calling
+	// Build must return ErrChainBroken (not rebuild silently).
+	b, store := newChainBuilder(t)
+	ctx := context.Background()
+	createRun(t, store, "run-broken")
+	recordTraces(t, store, "run-broken", 3)
+
+	_, _, err := b.Build(ctx, "run-broken")
+	require.NoError(t, err)
+
+	// Tamper with a trace's Detail.
+	// The WORM trigger blocks content-field updates, so temporarily disable it
+	// to simulate a bypass attack.
+	withWORMTriggerDisabled(t, store, func() {
+		traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-broken"})
+		require.NoError(t, err)
+		require.Len(t, traces, 3)
+		traces[1].Detail = `{"tampered":true}`
+		require.NoError(t, store.UpdateTrace(ctx, traces[1]))
+	})
+
+	// Build must refuse because the chain is broken.
+	_, _, err = b.Build(ctx, "run-broken")
+	require.ErrorIs(t, err, ErrChainBroken)
+}
+
+func TestBuildForce_SucceedsAfterChainBuilt(t *testing.T) {
+	// BuildForce should succeed even when the chain already exists.
+	b, store := newChainBuilder(t)
+	ctx := context.Background()
+	createRun(t, store, "run-force")
+	recordTraces(t, store, "run-force", 3)
+
+	_, _, err := b.Build(ctx, "run-force")
+	require.NoError(t, err)
+
+	// BuildForce on the same run must succeed.
+	count, tail, err := b.BuildForce(ctx, "run-force")
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+	assert.NotEmpty(t, tail)
+
+	// The rebuilt chain must pass verification.
+	_, err = b.Verify(ctx, "run-force")
+	require.NoError(t, err)
+}
+
+func TestBuildForce_EmptyRunID(t *testing.T) {
+	b, _ := newChainBuilder(t)
+	_, _, err := b.BuildForce(context.Background(), "")
+	require.ErrorIs(t, err, ErrEmptyRunID)
+}
+
+func TestBuildForce_NoTraces(t *testing.T) {
+	b, store := newChainBuilder(t)
+	ctx := context.Background()
+	createRun(t, store, "run-force-empty")
+
+	_, _, err := b.BuildForce(ctx, "run-force-empty")
+	require.ErrorIs(t, err, ErrNoTraces)
+}
+
+func TestBuildBatch_ChainAlreadyBuilt_ReturnsError(t *testing.T) {
+	// BuildBatch must also refuse to rebuild an intact chain.
+	b, store := newChainBuilder(t)
+	ctx := context.Background()
+	createRun(t, store, "run-batch-already")
+	recordTraces(t, store, "run-batch-already", 3)
+
+	_, _, err := b.BuildBatch(ctx, "run-batch-already", 2)
+	require.NoError(t, err)
+
+	_, _, err = b.BuildBatch(ctx, "run-batch-already", 2)
+	require.ErrorIs(t, err, ErrChainAlreadyBuilt)
 }

@@ -58,12 +58,11 @@ func TestChainVerify_TamperDetail(t *testing.T) {
 	ctx := context.Background()
 	buildChain(t, store, "run-detail", 3)
 
-	// Tamper with the middle trace's Detail.
+	// Tamper with the middle trace's Detail via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-detail"})
 	require.NoError(t, err)
 	require.Len(t, traces, 3)
-	traces[1].Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, traces[1]))
+	tamperTraceDetail(t, store, traces[1].ID, `{"tampered":true}`)
 
 	result, err := v.Verify(ctx, "run-detail")
 	require.NoError(t, err)
@@ -85,16 +84,16 @@ func TestChainVerify_TamperCurrHash(t *testing.T) {
 	ctx := context.Background()
 	buildChain(t, store, "run-curr", 3)
 
-	// Directly overwrite the last trace's CurrHash. Tampering the last
-	// record avoids a cascading PrevHashMismatch on the next record (there
-	// is no next record), so exactly one failure is reported.
+	// Directly overwrite the last trace's CurrHash via raw SQL (bypassing
+	// WORM trigger). Tampering the last record avoids a cascading
+	// PrevHashMismatch on the next record (there is no next record), so
+	// exactly one failure is reported.
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-curr"})
 	require.NoError(t, err)
 	require.Len(t, traces, 3)
 	last := len(traces) - 1
 	originalHash := traces[last].CurrHash
-	traces[last].CurrHash = "deadbeef" + originalHash[:0] // different, non-empty
-	require.NoError(t, store.UpdateTrace(ctx, traces[last]))
+	tamperTraceCurrHash(t, store, traces[last].ID, "deadbeef"+originalHash[:0])
 
 	result, err := v.Verify(ctx, "run-curr")
 	require.NoError(t, err)
@@ -114,13 +113,12 @@ func TestChainVerify_PrevHashBreak(t *testing.T) {
 	ctx := context.Background()
 	buildChain(t, store, "run-prev", 3)
 
-	// Corrupt the middle trace's PrevHash.
+	// Corrupt the middle trace's PrevHash via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-prev"})
 	require.NoError(t, err)
 	require.Len(t, traces, 3)
 	expectedPrev := traces[1].PrevHash
-	traces[1].PrevHash = "tampered-prev-hash-value"
-	require.NoError(t, store.UpdateTrace(ctx, traces[1]))
+	tamperTracePrevHash(t, store, traces[1].ID, "tampered-prev-hash-value")
 
 	result, err := v.Verify(ctx, "run-prev")
 	require.NoError(t, err)
@@ -184,11 +182,10 @@ func TestChainVerifyStrict_Failure(t *testing.T) {
 	ctx := context.Background()
 	buildChain(t, store, "run-strict-fail", 2)
 
-	// Tamper with the first trace's Detail.
+	// Tamper with the first trace's Detail via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-strict-fail"})
 	require.NoError(t, err)
-	traces[0].Detail = `{"tampered":true}`
-	require.NoError(t, store.UpdateTrace(ctx, traces[0]))
+	tamperTraceDetail(t, store, traces[0].ID, `{"tampered":true}`)
 
 	err = v.VerifyStrict(ctx, "run-strict-fail")
 	require.Error(t, err)
@@ -216,13 +213,12 @@ func TestChainVerify_AllTampered(t *testing.T) {
 	ctx := context.Background()
 	buildChain(t, store, "run-all", 4)
 
-	// Tamper with every trace's Detail.
+	// Tamper with every trace's Detail via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-all"})
 	require.NoError(t, err)
 	require.Len(t, traces, 4)
 	for i, tr := range traces {
-		tr.Detail = `{"tampered":` + string(rune('0'+i)) + `}`
-		require.NoError(t, store.UpdateTrace(ctx, tr))
+		tamperTraceDetail(t, store, tr.ID, `{"tampered":`+string(rune('0'+i))+`}`)
 	}
 
 	result, err := v.Verify(ctx, "run-all")
@@ -242,14 +238,12 @@ func TestChainVerifyResult_Fields(t *testing.T) {
 	ctx := context.Background()
 	buildChain(t, store, "run-fields", 5)
 
-	// Tamper with traces at index 1 and 3.
+	// Tamper with traces at index 1 and 3 via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-fields"})
 	require.NoError(t, err)
 	require.Len(t, traces, 5)
-	traces[1].Detail = `{"t":1}`
-	require.NoError(t, store.UpdateTrace(ctx, traces[1]))
-	traces[3].Detail = `{"t":3}`
-	require.NoError(t, store.UpdateTrace(ctx, traces[3]))
+	tamperTraceDetail(t, store, traces[1].ID, `{"t":1}`)
+	tamperTraceDetail(t, store, traces[3].ID, `{"t":3}`)
 
 	result, err := v.Verify(ctx, "run-fields")
 	require.NoError(t, err)
@@ -304,9 +298,10 @@ func TestChainVerify_TamperCurrHashBreaksPrevContinuity(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, traces, 3)
 
-	// Overwrite the first trace's CurrHash with a different non-empty value.
+	// Overwrite the first trace's CurrHash with a different non-empty value
+	// via raw SQL (bypassing WORM trigger).
 	traces[0].CurrHash = "aaaa" + traces[0].CurrHash[4:]
-	require.NoError(t, store.UpdateTrace(ctx, traces[0]))
+	tamperTraceCurrHash(t, store, traces[0].ID, traces[0].CurrHash)
 
 	result, err := v.Verify(ctx, "run-cascade")
 	require.NoError(t, err)

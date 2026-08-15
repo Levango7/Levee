@@ -16,6 +16,7 @@
 package credential
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -71,6 +72,10 @@ var (
 	// ErrInvalidCiphertext is returned when the stored ciphertext is too
 	// short or malformed.
 	ErrInvalidCiphertext = errors.New("credential: invalid ciphertext format")
+
+	// ErrMasterPasswordMismatch is returned by RotateMasterPassword when
+	// the provided old password does not match the current master password.
+	ErrMasterPasswordMismatch = errors.New("credential: old master password does not match")
 )
 
 // --- CredentialStore --------------------------------------------------------
@@ -368,6 +373,103 @@ func (cs *CredentialStore) Rotate(ctx context.Context, name string, newPlaintext
 
 	log.InfoCtx(ctx, "credential rotated", "name", name)
 	return cred, nil
+}
+
+// RotateMasterPassword re-encrypts all stored credentials with a new master
+// password. The oldPW must match the current master password; otherwise
+// ErrMasterPasswordMismatch is returned.
+//
+// The operation is atomic in intent: if any credential fails to decrypt with
+// the old password, the entire rotation is aborted and no credentials are
+// modified. The in-memory masterPassword is only updated after all credentials
+// have been successfully re-encrypted and persisted.
+//
+// Returns the number of credentials re-encrypted.
+func (cs *CredentialStore) RotateMasterPassword(ctx context.Context, oldPW, newPW string) (count int, err error) {
+	if oldPW == "" || newPW == "" {
+		return 0, ErrEmptyMasterPassword
+	}
+
+	// Verify old password matches current master password.
+	if !bytes.Equal([]byte(oldPW), cs.masterPassword) {
+		return 0, ErrMasterPasswordMismatch
+	}
+
+	// List all credentials.
+	creds, err := cs.store.ListCredentials(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("credential: list for master password rotation: %w", err)
+	}
+
+	if len(creds) == 0 {
+		// No credentials to rotate; just update the master password.
+		newMP := make([]byte, len(newPW))
+		copy(newMP, newPW)
+		SecureZero(cs.masterPassword)
+		cs.masterPassword = newMP
+		return 0, nil
+	}
+
+	// Phase 1: Decrypt all credentials with old password to verify they work.
+	plaintexts := make(map[string][]byte, len(creds))
+	for _, cred := range creds {
+		pt, err := cs.decrypt(cred.EncryptedData)
+		if err != nil {
+			// Abort: cannot decrypt this credential with old password.
+			// Clean up any plaintexts we've already decrypted.
+			for _, p := range plaintexts {
+				SecureZero(p)
+			}
+			return 0, fmt.Errorf("credential: decrypt %q during master rotation: %w", cred.Name, err)
+		}
+		plaintexts[cred.ID] = pt
+	}
+
+	// Phase 2: Re-encrypt all credentials with new password.
+	newMP := make([]byte, len(newPW))
+	copy(newMP, newPW)
+
+	tempStore := &CredentialStore{
+		store:          cs.store,
+		masterPassword: newMP,
+		timeCost:       cs.timeCost,
+		memoryCost:     cs.memoryCost,
+		parallelism:    cs.parallelism,
+	}
+
+	reEncrypted := 0
+	for _, cred := range creds {
+		pt := plaintexts[cred.ID]
+
+		newBlob, err := tempStore.encrypt(pt)
+		if err != nil {
+			for _, p := range plaintexts {
+				SecureZero(p)
+			}
+			SecureZero(newMP)
+			return reEncrypted, fmt.Errorf("credential: re-encrypt %q during master rotation: %w", cred.Name, err)
+		}
+
+		cred.EncryptedData = newBlob
+		if err := cs.store.UpdateCredential(ctx, cred); err != nil {
+			for _, p := range plaintexts {
+				SecureZero(p)
+			}
+			SecureZero(newMP)
+			return reEncrypted, fmt.Errorf("credential: persist %q during master rotation: %w", cred.Name, err)
+		}
+
+		SecureZero(pt)
+		delete(plaintexts, cred.ID)
+		reEncrypted++
+	}
+
+	// Phase 3: Update in-memory master password.
+	SecureZero(cs.masterPassword)
+	cs.masterPassword = newMP
+
+	log.InfoCtx(ctx, "master password rotated", "credentials_affected", reEncrypted)
+	return reEncrypted, nil
 }
 
 // --- ID generation ----------------------------------------------------------

@@ -23,6 +23,14 @@ var (
 	// ErrInvalidBatchSize is returned when BuildBatch is called with a
 	// non-positive batch size.
 	ErrInvalidBatchSize = errors.New("audit: invalid batch size")
+	// ErrChainAlreadyBuilt is returned by Build when the hash chain for a run
+	// already exists and is intact. Rebuilding would destroy tampering evidence;
+	// use BuildForce for administrative recovery.
+	ErrChainAlreadyBuilt = errors.New("audit: hash chain already built for run; use BuildForce to override")
+	// ErrChainBroken is returned by Build when the hash chain for a run exists
+	// but is broken (tampered). Rebuilding would silently cover up the tampering;
+	// manual intervention is required.
+	ErrChainBroken = errors.New("audit: hash chain exists but is broken; manual intervention required")
 )
 
 // hashChainSeparator is the delimiter used when concatenating trace fields into
@@ -52,6 +60,28 @@ func NewHashChainBuilder(store state.Store) (*HashChainBuilder, error) {
 	return &HashChainBuilder{store: store}, nil
 }
 
+// chainExists checks whether a run's trace records already have a hash chain.
+// It returns three values:
+//   - exists: true when the run has at least one trace record.
+//   - hasHashes: true when at least one trace record has a non-empty CurrHash,
+//     meaning the chain was previously built.
+//   - err: non-nil when the store query fails.
+func (b *HashChainBuilder) chainExists(ctx context.Context, runID string) (exists bool, hasHashes bool, err error) {
+	traces, err := b.store.ListTraces(ctx, state.TraceFilter{RunID: runID})
+	if err != nil {
+		return false, false, err
+	}
+	if len(traces) == 0 {
+		return false, false, nil
+	}
+	for _, t := range traces {
+		if t.CurrHash != "" {
+			return true, true, nil
+		}
+	}
+	return true, false, nil
+}
+
 // Build constructs the hash chain for all trace records of the given run. The
 // records are sorted by timestamp ascending; for each record the PrevHash is
 // set to the previous record's CurrHash (empty for the first record) and the
@@ -62,6 +92,46 @@ func NewHashChainBuilder(store state.Store) (*HashChainBuilder, error) {
 // record (the chain tail). An empty run id yields ErrEmptyRunID; a run with no
 // trace records yields ErrNoTraces.
 func (b *HashChainBuilder) Build(ctx context.Context, runID string) (count int, tailHash string, err error) {
+	if runID == "" {
+		return 0, "", ErrEmptyRunID
+	}
+
+	// SA-002 fix: Check if chain already exists before building.
+	exists, hasHashes, err := b.chainExists(ctx, runID)
+	if err != nil {
+		return 0, "", fmt.Errorf("audit: check chain existence for run %q: %w", runID, err)
+	}
+	if !exists {
+		return 0, "", ErrNoTraces
+	}
+	if hasHashes {
+		// Chain already exists — verify it before deciding.
+		_, verifyErr := b.Verify(ctx, runID)
+		if verifyErr == nil {
+			// Chain is intact — refuse to rebuild.
+			return 0, "", fmt.Errorf("audit: build chain for run %q: %w", runID, ErrChainAlreadyBuilt)
+		}
+		// Chain is broken — refuse to rebuild silently.
+		return 0, "", fmt.Errorf("audit: build chain for run %q: %w", runID, ErrChainBroken)
+	}
+	// No hashes yet — safe to build.
+
+	traces, err := b.store.ListTraces(ctx, state.TraceFilter{RunID: runID})
+	if err != nil {
+		return 0, "", fmt.Errorf("audit: list traces for run %q: %w", runID, err)
+	}
+	if len(traces) == 0 {
+		return 0, "", ErrNoTraces
+	}
+
+	return b.buildChain(ctx, traces)
+}
+
+// BuildForce forcefully rebuilds the hash chain even if one already exists.
+// This should only be used for administrative recovery after a confirmed
+// tampering incident. The caller is responsible for logging and auditing
+// the force rebuild.
+func (b *HashChainBuilder) BuildForce(ctx context.Context, runID string) (count int, tailHash string, err error) {
 	if runID == "" {
 		return 0, "", ErrEmptyRunID
 	}
@@ -91,6 +161,22 @@ func (b *HashChainBuilder) BuildBatch(ctx context.Context, runID string, batchSi
 	}
 	if batchSize <= 0 {
 		return 0, "", ErrInvalidBatchSize
+	}
+
+	// SA-002 fix: Check if chain already exists before building.
+	exists, hasHashes, err := b.chainExists(ctx, runID)
+	if err != nil {
+		return 0, "", fmt.Errorf("audit: check chain existence for run %q: %w", runID, err)
+	}
+	if !exists {
+		return 0, "", ErrNoTraces
+	}
+	if hasHashes {
+		_, verifyErr := b.Verify(ctx, runID)
+		if verifyErr == nil {
+			return 0, "", fmt.Errorf("audit: build batch chain for run %q: %w", runID, ErrChainAlreadyBuilt)
+		}
+		return 0, "", fmt.Errorf("audit: build batch chain for run %q: %w", runID, ErrChainBroken)
 	}
 
 	traces, err := b.store.ListTraces(ctx, state.TraceFilter{RunID: runID})

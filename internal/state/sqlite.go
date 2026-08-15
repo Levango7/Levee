@@ -74,6 +74,18 @@ func NewSQLiteStore(ctx context.Context, dbPath string) (*SQLiteStore, error) {
 // Callers must not close it; use Close instead.
 func (s *SQLiteStore) DB() *sql.DB { return s.db }
 
+// ExecRaw executes a raw SQL statement outside the Store CRUD methods. It is
+// intended for testing scenarios that need to bypass WORM triggers (e.g.
+// simulating tampering) or perform administrative operations not covered by
+// the Store interface. Production code must not use this method.
+func (s *SQLiteStore) ExecRaw(ctx context.Context, query string, args ...any) error {
+	_, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("state: exec raw: %w", err)
+	}
+	return nil
+}
+
 // Close releases the underlying database connection pool.
 func (s *SQLiteStore) Close() error {
 	if s.db == nil {

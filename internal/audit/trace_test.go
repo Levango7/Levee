@@ -50,6 +50,38 @@ func createRun(t *testing.T, store state.Store, runID string) {
 	require.NoError(t, err)
 }
 
+// tamperTraceDetail bypasses the WORM trigger by temporarily disabling it,
+// then updating a trace's detail column. This simulates an attacker with
+// direct database access who modifies content after the hash chain is built.
+func tamperTraceDetail(t *testing.T, store *state.SQLiteStore, traceID, newDetail string) {
+	t.Helper()
+	withWORMTriggerDisabled(t, store, func() {
+		err := store.ExecRaw(context.Background(),
+			"UPDATE trace SET detail = ? WHERE id = ?", newDetail, traceID)
+		require.NoError(t, err)
+	})
+}
+
+// tamperTraceCurrHash updates a trace's curr_hash column directly. The WORM
+// trigger only protects content fields (id, run_id, event, actor, detail,
+// timestamp), so updating curr_hash is allowed without disabling the trigger.
+func tamperTraceCurrHash(t *testing.T, store *state.SQLiteStore, traceID, newHash string) {
+	t.Helper()
+	err := store.ExecRaw(context.Background(),
+		"UPDATE trace SET curr_hash = ? WHERE id = ?", newHash, traceID)
+	require.NoError(t, err)
+}
+
+// tamperTracePrevHash updates a trace's prev_hash column directly. The WORM
+// trigger only protects content fields, so updating prev_hash is allowed
+// without disabling the trigger.
+func tamperTracePrevHash(t *testing.T, store *state.SQLiteStore, traceID, newHash string) {
+	t.Helper()
+	err := store.ExecRaw(context.Background(),
+		"UPDATE trace SET prev_hash = ? WHERE id = ?", newHash, traceID)
+	require.NoError(t, err)
+}
+
 // parseDetail unmarshals the JSON Detail column of a state.Trace into a
 // traceDetail struct for assertion.
 func parseDetail(t *testing.T, raw string) traceDetail {
@@ -57,6 +89,32 @@ func parseDetail(t *testing.T, raw string) traceDetail {
 	var d traceDetail
 	require.NoError(t, json.Unmarshal([]byte(raw), &d))
 	return d
+}
+
+// wormUpdateTriggerSQL is the SQL to recreate the WORM update trigger after it
+// has been temporarily dropped for testing purposes.
+const wormUpdateTriggerSQL = `
+CREATE TRIGGER IF NOT EXISTS worm_prevent_trace_update
+BEFORE UPDATE ON trace
+WHEN NEW.id != OLD.id 
+  OR NEW.run_id != OLD.run_id
+  OR NEW.event != OLD.event
+  OR NEW.actor != OLD.actor
+  OR NEW.detail != OLD.detail
+  OR NEW.timestamp != OLD.timestamp
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: trace content fields cannot be updated');
+END`
+
+// withWORMTriggerDisabled temporarily disables the WORM update trigger, runs
+// fn, then re-enables the trigger. It is used in tests that need to simulate a
+// bypass attack on the WORM protection by tampering with trace content fields.
+func withWORMTriggerDisabled(t *testing.T, store *state.SQLiteStore, fn func()) {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, store.ExecRaw(ctx, "DROP TRIGGER IF EXISTS worm_prevent_trace_update"))
+	fn()
+	require.NoError(t, store.ExecRaw(ctx, wormUpdateTriggerSQL))
 }
 
 func TestNewTraceRecorder_NilStore(t *testing.T) {

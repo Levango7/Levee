@@ -32,30 +32,32 @@ var (
 const checksumSeparator = "|"
 
 // WORMStore simulates Write-Once-Read-Many semantics on top of a regular
-// state.Store. It enforces append-only writes for trace records and detects
+// state.WORMStore. It enforces append-only writes for trace records and detects
 // tampering by verifying a content checksum on every read.
 //
-// The store wraps a state.Store and exposes only the operations that are
+// The store wraps a state.WORMStore and exposes only the operations that are
 // consistent with WORM semantics:
 //   - Append: insert a new trace record (no update/delete).
 //   - Read / ReadByRun: read records and verify their checksums.
 //   - Count: count records for a run.
 //
 // Update and Delete operations are intentionally not exposed. The underlying
-// store may still allow them (e.g. for administrative recovery), but callers
-// using WORMStore cannot bypass the append-only contract through this API.
+// state.WORMStore interface omits UpdateTrace/DeleteTrace, so callers using
+// WORMStore cannot bypass the append-only contract through this API. The SQLite
+// triggers (worm_prevent_trace_update / worm_prevent_trace_delete) provide an
+// additional defence-in-depth layer at the database level.
 //
 // The checksum is stored in the Trace.CurrHash field and covers the record
 // content (id, run_id, event, actor, detail, timestamp). On read, the checksum
 // is recomputed from the stored content and compared against the stored value;
 // a mismatch indicates that the record was tampered with after it was appended.
 type WORMStore struct {
-	store state.Store
+	store state.WORMStore
 }
 
 // NewWORMStore creates a WORMStore backed by the given store. The store must be
 // non-nil; otherwise ErrNilStore is returned.
-func NewWORMStore(store state.Store) (*WORMStore, error) {
+func NewWORMStore(store state.WORMStore) (*WORMStore, error) {
 	if store == nil {
 		return nil, ErrNilStore
 	}

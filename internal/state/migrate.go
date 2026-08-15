@@ -85,6 +85,10 @@ func appliedSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 // conservatively: a line that begins with -- after trimming whitespace is
 // dropped entirely. This is sufficient for the bundled schema.sql which never
 // embeds -- inside string literals.
+//
+// CREATE TRIGGER blocks (BEGIN...END) are kept as single statements because
+// their bodies contain semicolons that must not be treated as statement
+// separators.
 func execMultiStatement(ctx context.Context, db *sql.DB, script string) error {
 	// Strip line comments first.
 	lines := strings.Split(script, "\n")
@@ -96,7 +100,8 @@ func execMultiStatement(ctx context.Context, db *sql.DB, script string) error {
 	}
 	cleaned := strings.Join(lines, "\n")
 
-	for _, stmt := range strings.Split(cleaned, ";") {
+	statements := splitSQLStatements(cleaned)
+	for _, stmt := range statements {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
@@ -106,6 +111,57 @@ func execMultiStatement(ctx context.Context, db *sql.DB, script string) error {
 		}
 	}
 	return nil
+}
+
+// splitSQLStatements splits a SQL script into individual statements, respecting
+// BEGIN...END blocks used in CREATE TRIGGER definitions. A naive split on ";"
+// would break trigger bodies that contain semicolons (e.g. SELECT RAISE(...));
+// this function keeps such blocks intact.
+func splitSQLStatements(script string) []string {
+	var statements []string
+	var current strings.Builder
+	inTrigger := false
+
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		upper := strings.ToUpper(trimmed)
+
+		// Detect the start of a trigger body.
+		if !inTrigger && strings.Contains(upper, "BEGIN") {
+			// Check if this is a CREATE TRIGGER ... BEGIN block.
+			// Look for "CREATE TRIGGER" in the accumulated current statement.
+			if strings.Contains(strings.ToUpper(current.String()), "CREATE TRIGGER") {
+				inTrigger = true
+			}
+		}
+
+		current.WriteString(line)
+		current.WriteString("\n")
+
+		if inTrigger {
+			// The trigger body ends with a line that is just "END" (possibly
+			// followed by a semicolon).
+			if upper == "END;" || upper == "END" {
+				inTrigger = false
+				statements = append(statements, current.String())
+				current.Reset()
+			}
+		} else {
+			// Outside a trigger, a trailing semicolon on this line ends the
+			// statement.
+			if strings.HasSuffix(trimmed, ";") {
+				statements = append(statements, current.String())
+				current.Reset()
+			}
+		}
+	}
+
+	// Handle any remaining text (unlikely in well-formed SQL).
+	if remaining := strings.TrimSpace(current.String()); remaining != "" {
+		statements = append(statements, remaining)
+	}
+
+	return statements
 }
 
 // firstLine returns the first non-empty line of a statement, used to make

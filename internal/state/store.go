@@ -166,6 +166,24 @@ type AuditFilter struct {
 	Limit  int
 }
 
+// WORMStore is a restricted subset of Store that only allows append-only
+// operations on trace records, consistent with Write-Once-Read-Many semantics.
+// Use this interface in audit/WORM contexts to prevent accidental or malicious
+// modification of trace data. SQLiteStore implements WORMStore implicitly.
+type WORMStore interface {
+	// Trace append-only operations.
+	CreateTrace(ctx context.Context, trace *Trace) error
+	GetTrace(ctx context.Context, id string) (*Trace, error)
+	ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace, error)
+
+	// Run operations needed for trace context (FK constraint).
+	GetRun(ctx context.Context, id string) (*Run, error)
+	CreateRun(ctx context.Context, run *Run) error
+
+	// Close releases resources.
+	Close() error
+}
+
 // Store is the persistence abstraction used by every LEVEE subsystem.
 // Implementations must be safe for concurrent use; the SQLite implementation
 // achieves this by relying on database/sql's connection pool and serialising
