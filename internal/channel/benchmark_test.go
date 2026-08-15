@@ -1,7 +1,10 @@
 package channel
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 )
 
@@ -142,9 +145,9 @@ type simpleTarget struct {
 	typ  string
 }
 
-func (t *simpleTarget) Host() string         { return t.host }
-func (t *simpleTarget) Port() int            { return t.port }
-func (t *simpleTarget) Type() string         { return t.typ }
+func (t *simpleTarget) Host() string { return t.host }
+func (t *simpleTarget) Port() int    { return t.port }
+func (t *simpleTarget) Type() string { return t.typ }
 func (t *simpleTarget) Credentials() CredentialRef {
 	return CredentialRef{Username: "user", Password: "pass"}
 }

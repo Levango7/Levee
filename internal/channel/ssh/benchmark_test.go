@@ -69,9 +69,9 @@ func BenchmarkSSHPool_PoolKey(b *testing.B) {
 
 type simpleSSHTarget struct{}
 
-func (t *simpleSSHTarget) Host() string         { return "localhost" }
-func (t *simpleSSHTarget) Port() int            { return 22 }
-func (t *simpleSSHTarget) Type() string         { return "ssh" }
+func (t *simpleSSHTarget) Host() string { return "localhost" }
+func (t *simpleSSHTarget) Port() int    { return 22 }
+func (t *simpleSSHTarget) Type() string { return "ssh" }
 func (t *simpleSSHTarget) Credentials() channel.CredentialRef {
 	return channel.CredentialRef{Username: "user", Password: "pass"}
 }
