@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -81,6 +82,13 @@ var (
 //     admin, return true (admin super-set).
 //  4. Otherwise return false.
 type PermissionMatrix struct {
+	// mu guards grants and revokes against concurrent reads and writes.
+	// Read operations (Allow, ActionsFor, Teams, Environments) acquire the
+	// read lock; write operations (Grant, Revoke, LoadFromConfig) acquire
+	// the write lock. The mutex is a named field (not embedded) to keep
+	// the locking surface explicit and avoid leaking Lock/Unlock methods
+	// on the public API.
+	mu sync.RWMutex
 	// grants tracks explicitly granted permissions:
 	// team → env → action → true.
 	grants map[string]map[string]map[string]bool
@@ -129,10 +137,9 @@ func (m *PermissionMatrix) LoadFromConfig(cfg PermissionConfig) error {
 		return fmt.Errorf("%w: no teams defined", ErrConfigInvalid)
 	}
 
-	// Reset matrix.
-	m.grants = make(map[string]map[string]map[string]bool)
-	m.revokes = make(map[string]map[string]map[string]bool)
-
+	// Build the new grants map outside the critical section to minimise
+	// the time the write lock is held. Revokes are always reset on load.
+	newGrants := make(map[string]map[string]map[string]bool)
 	for _, team := range cfg.Teams {
 		if team.Name == "" {
 			return fmt.Errorf("%w: team name is empty", ErrConfigInvalid)
@@ -145,10 +152,22 @@ func (m *PermissionMatrix) LoadFromConfig(cfg PermissionConfig) error {
 				if action == "" {
 					return fmt.Errorf("%w: action is empty for team %q env %q", ErrConfigInvalid, team.Name, env.Name)
 				}
-				m.grant(team.Name, env.Name, action)
+				if newGrants[team.Name] == nil {
+					newGrants[team.Name] = make(map[string]map[string]bool)
+				}
+				if newGrants[team.Name][env.Name] == nil {
+					newGrants[team.Name][env.Name] = make(map[string]bool)
+				}
+				newGrants[team.Name][env.Name][action] = true
 			}
 		}
 	}
+
+	// Swap in the rebuilt maps under the write lock.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.grants = newGrants
+	m.revokes = make(map[string]map[string]map[string]bool)
 	return nil
 }
 
@@ -185,6 +204,9 @@ func (m *PermissionMatrix) Allow(team, env, action string) bool {
 	if team == "" || env == "" || action == "" {
 		return false
 	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	// 1. Explicit revoke takes precedence over everything.
 	if m.lookup(m.revokes, team, env, action) {
@@ -266,6 +288,9 @@ func (m *PermissionMatrix) ActionsFor(team, env string) []string {
 		return nil
 	}
 
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	seen := make(map[string]bool)
 
 	// Collect directly granted actions (including via wildcards).
@@ -324,6 +349,9 @@ func (m *PermissionMatrix) collectGrants(team, env string) []string {
 // (excluding the wildcard "*"). Teams from both grants and revokes are
 // included.
 func (m *PermissionMatrix) Teams() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	seen := make(map[string]bool)
 	for _, rules := range []map[string]map[string]map[string]bool{m.grants, m.revokes} {
 		for t := range rules {
@@ -344,6 +372,9 @@ func (m *PermissionMatrix) Teams() []string {
 // in the matrix (excluding the wildcard "*"). Environments from both
 // grants and revokes are included.
 func (m *PermissionMatrix) Environments() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
 	seen := make(map[string]bool)
 	for _, rules := range []map[string]map[string]map[string]bool{m.grants, m.revokes} {
 		for _, envs := range rules {
@@ -369,6 +400,8 @@ func (m *PermissionMatrix) Grant(team, env, action string) {
 	if team == "" || env == "" || action == "" {
 		return
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.grant(team, env, action)
 }
 
@@ -392,6 +425,8 @@ func (m *PermissionMatrix) Revoke(team, env, action string) {
 	if team == "" || env == "" || action == "" {
 		return
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.revoke(team, env, action)
 }
 

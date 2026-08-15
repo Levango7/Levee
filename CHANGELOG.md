@@ -102,3 +102,16 @@
 - 三级审批模型，高危变更强制人工审批，审批人不能是发起人
 - 不可逆操作白名单 + 强制升高审批级别
 - 团队 x 环境二维权限矩阵，操作前权限校验
+- [SA-001] WORM 存储硬编码 SQLite 触发器，阻止 trace 表内容字段 UPDATE/DELETE，创建 WORMStore 接口限制审计层只读访问
+- [SA-002] 哈希链 Build 前先 Verify 链完整性，拒绝重建已存在链（ErrChainAlreadyBuilt/ErrChainBroken），新增 BuildForce 用于管理恢复
+- [SA-003] 实现 RotateMasterPassword 三阶段原子轮换（旧密码解密→新密码加密→更新内存），所有错误路径 SecureZero 清理
+
+## [Unreleased]
+
+### Security
+
+- [SA-004] SecureZero 添加 runtime.KeepAlive 防止编译器优化
+- [SA-005] argon2id memory cost 提升至 194MiB（OWASP 2024 推荐）
+- [SA-006] 权限矩阵添加 sync.RWMutex 保证线程安全
+- [SA-007] 权限校验拒绝时自动记录审计 trace
+- [SA-008] 哈希链排序添加二级排序键确保确定性

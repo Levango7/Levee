@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/nexus/levee/internal/log"
@@ -42,11 +43,15 @@ const saltLen = 16
 // Nonce length for AES-GCM (12 bytes, gcm.NonceSize()).
 const nonceLen = 12
 
-// Default argon2id parameters. These match the OWASP recommended minimums
-// (time=3, memory=64KiB, parallelism=4).
+// Default argon2id parameters. These match the OWASP 2024 recommended
+// minimums (time=3, memory=194MiB=197888KiB, parallelism=4). The memory
+// cost was raised from 64MiB to 194MiB to comply with OWASP Password
+// Storage Cheat Sheet (2024) which recommends m ≥ 194 MiB for t=3, p=4.
+// Callers may override these via NewCredentialStoreWithParams when weaker
+// parameters are acceptable for non-production or test scenarios.
 const (
 	defaultTimeCost    uint32 = 3
-	defaultMemoryCost  uint32 = 64 * 1024
+	defaultMemoryCost  uint32 = 194 * 1024
 	defaultParallelism uint8  = 4
 )
 
@@ -110,7 +115,9 @@ type CredentialSpec struct {
 // masterPassword must be non-empty; otherwise ErrEmptyMasterPassword is
 // returned. store must be non-nil; otherwise an error is returned.
 //
-// Default argon2id parameters are used (time=3, memory=64KiB, parallelism=4).
+// Default argon2id parameters are used (time=3, memory=194MiB, parallelism=4),
+// matching the OWASP 2024 recommended minimums. Use NewCredentialStoreWithParams
+// to override these for tests or constrained environments.
 func NewCredentialStore(store state.Store, masterPassword string) (*CredentialStore, error) {
 	if store == nil {
 		return nil, fmt.Errorf("credential: nil store")
@@ -131,6 +138,57 @@ func NewCredentialStore(store state.Store, masterPassword string) (*CredentialSt
 		timeCost:       defaultTimeCost,
 		memoryCost:     defaultMemoryCost,
 		parallelism:    defaultParallelism,
+	}, nil
+}
+
+// NewCredentialStoreWithParams is like NewCredentialStore but allows the
+// caller to override the argon2id cost parameters. This is intended for
+// test scenarios or constrained environments where the OWASP 2024 defaults
+// (time=3, memory=194MiB, parallelism=4) are too expensive.
+//
+// Validation:
+//   - timeCost must be >= 1.
+//   - memoryCost is in KiB and must be >= 8 * parallelism (argon2 requirement).
+//   - parallelism must be >= 1 and <= 255.
+//
+// Passing zero values for all three falls back to the package defaults.
+func NewCredentialStoreWithParams(store state.Store, masterPassword string, timeCost uint32, memoryCost uint32, parallelism uint8) (*CredentialStore, error) {
+	if store == nil {
+		return nil, fmt.Errorf("credential: nil store")
+	}
+	if masterPassword == "" {
+		return nil, ErrEmptyMasterPassword
+	}
+
+	// Fall back to defaults when caller passes all-zero values.
+	if timeCost == 0 && memoryCost == 0 && parallelism == 0 {
+		timeCost = defaultTimeCost
+		memoryCost = defaultMemoryCost
+		parallelism = defaultParallelism
+	}
+
+	// Validate overrides.
+	if timeCost == 0 {
+		return nil, fmt.Errorf("credential: invalid timeCost: must be >= 1")
+	}
+	if parallelism == 0 {
+		return nil, fmt.Errorf("credential: invalid parallelism: must be >= 1")
+	}
+	// argon2.Key panics when memoryCost < 8*parallelism; guard against that
+	// rather than letting a panic escape from this package.
+	if memoryCost < uint32(parallelism)*8 {
+		return nil, fmt.Errorf("credential: invalid memoryCost: must be >= 8*parallelism (%d)", uint32(parallelism)*8)
+	}
+
+	mp := make([]byte, len(masterPassword))
+	copy(mp, masterPassword)
+
+	return &CredentialStore{
+		store:          store,
+		masterPassword: mp,
+		timeCost:       timeCost,
+		memoryCost:     memoryCost,
+		parallelism:    parallelism,
 	}, nil
 }
 
@@ -218,10 +276,19 @@ func (cs *CredentialStore) decrypt(blob []byte) ([]byte, error) {
 // Note: Go's escape analysis and GC may copy slice data, so this is a
 // best-effort wipe. It is still strictly better than leaving plaintext
 // in memory indefinitely.
+//
+// The trailing runtime.KeepAlive(b) prevents the compiler from optimizing
+// the zeroing loop away when the slice is not read afterwards (a known
+// hazard for dead-store elimination on sensitive buffers). Callers do not
+// need to add their own KeepAlive after calling SecureZero.
 func SecureZero(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+	// KeepAlive pins the slice header so the compiler cannot prove the
+	// write is unobservable and elide it. This is the standard Go idiom
+	// for securing a wipe against dead-store optimization.
+	runtime.KeepAlive(b)
 }
 
 // --- Store / Retrieve / Delete / List / Rotate ------------------------------

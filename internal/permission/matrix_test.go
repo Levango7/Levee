@@ -1,8 +1,11 @@
 package permission
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -550,4 +553,275 @@ func TestRoundTrip_ConfigToMatrix(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency tests (run with `go test -race`).
+// ---------------------------------------------------------------------------
+
+// TestConcurrent_GrantRevokeAllow exercises the matrix with many goroutines
+// performing Grant, Revoke, and Allow concurrently. Under the race
+// detector this fails if the mutex protection is missing or incorrect.
+func TestConcurrent_GrantRevokeAllow(t *testing.T) {
+	m := NewPermissionMatrix()
+	require.NoError(t, m.LoadFromConfig(sampleConfig()))
+
+	teams := []string{"sre", "dba", "security", "network", "platform"}
+	envs := []string{"dev", "staging", "prod", "emergency"}
+	actions := []string{ActionPlan, ActionApply, ActionApprove, ActionRollback,
+		ActionPause, ActionResume, ActionView, ActionAdmin}
+
+	const goroutines = 16
+	const iterations = 500
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 3)
+
+	// Writer A: Grant.
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				team := teams[(seed+n)%len(teams)]
+				env := envs[(seed*n+1)%len(envs)]
+				act := actions[(seed+n*3)%len(actions)]
+				m.Grant(team, env, act)
+			}
+		}(i)
+	}
+
+	// Writer B: Revoke.
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				team := teams[(seed+n*2)%len(teams)]
+				env := envs[(seed+n+3)%len(envs)]
+				act := actions[(seed+n*5)%len(actions)]
+				m.Revoke(team, env, act)
+			}
+		}(i)
+	}
+
+	// Reader: Allow.
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				team := teams[(seed+n)%len(teams)]
+				env := envs[(seed+n*7)%len(envs)]
+				act := actions[(seed+n*11)%len(actions)]
+				// Result is non-deterministic under concurrent writers,
+				// but the call must not panic or race.
+				_ = m.Allow(team, env, act)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrent_LoadAndRead exercises LoadFromConfig racing against
+// readers. LoadFromConfig rebuilds the whole map, so a missing write lock
+// would cause the readers to observe a half-swapped map and panic.
+func TestConcurrent_LoadAndRead(t *testing.T) {
+	m := NewPermissionMatrix()
+	require.NoError(t, m.LoadFromConfig(sampleConfig()))
+
+	cfgs := []PermissionConfig{
+		sampleConfig(),
+		{
+			Teams: []TeamRule{
+				{Name: "alpha", Environments: []EnvPermission{
+					{Name: "dev", Actions: []string{ActionPlan, ActionView}},
+				}},
+			},
+		},
+		{
+			Teams: []TeamRule{
+				{Name: "beta", Environments: []EnvPermission{
+					{Name: Wildcard, Actions: []string{ActionAdmin}},
+				}},
+			},
+		},
+	}
+
+	const goroutines = 8
+	const iterations = 200
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	// Writer: LoadFromConfig.
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				_ = m.LoadFromConfig(cfgs[(seed+n)%len(cfgs)])
+			}
+		}(i)
+	}
+
+	// Reader: Teams/Environments/ActionsFor/Allow.
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				for _, team := range m.Teams() {
+					for _, env := range m.Environments() {
+						_ = m.ActionsFor(team, env)
+						_ = m.Allow(team, env, ActionView)
+					}
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrent_AllowAnyAllowAll races AllowAny/AllowAll (which iterate
+// over actions and call Allow internally) against writers.
+func TestConcurrent_AllowAnyAllowAll(t *testing.T) {
+	m := NewPermissionMatrix()
+	require.NoError(t, m.LoadFromConfig(sampleConfig()))
+
+	teams := []string{"sre", "dba", "security"}
+	envs := []string{"dev", "staging", "prod"}
+	allActions := AllActions
+
+	const goroutines = 8
+	const iterations = 300
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 3)
+
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				m.Grant(teams[(seed+n)%len(teams)], envs[(seed+n)%len(envs)],
+					allActions[(seed+n)%len(allActions)])
+			}
+		}(i)
+	}
+
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				m.Revoke(teams[(seed+n)%len(teams)], envs[(seed+n)%len(envs)],
+					allActions[(seed+n*2)%len(allActions)])
+			}
+		}(i)
+	}
+
+	for i := 0; i < goroutines; i++ {
+		go func(seed int) {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				team := teams[(seed+n)%len(teams)]
+				env := envs[(seed+n)%len(envs)]
+				_ = m.AllowAny(team, env, ActionPlan, ActionApply, ActionView)
+				_ = m.AllowAll(team, env, ActionView)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrent_NoPanicOnEmptyParameters ensures that concurrent calls
+// with empty parameters (which take the early-return path before the
+// lock) do not race with writers that hold the lock.
+func TestConcurrent_NoPanicOnEmptyParameters(t *testing.T) {
+	m := NewPermissionMatrix()
+	require.NoError(t, m.LoadFromConfig(sampleConfig()))
+
+	const goroutines = 8
+	const iterations = 1000
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				m.Grant("sre", "prod", ActionView)
+				m.Revoke("dba", "prod", ActionApply)
+			}
+		}()
+	}
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for n := 0; n < iterations; n++ {
+				// Empty parameters hit the early-return path.
+				_ = m.Allow("", "prod", ActionView)
+				_ = m.Allow("sre", "", ActionView)
+				_ = m.Allow("sre", "prod", "")
+				_ = m.ActionsFor("", "prod")
+				_ = m.ActionsFor("sre", "")
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrent_GrantThenReadConsistency is a sanity check that after a
+// Grant the change is observable by a concurrent reader. It uses an
+// atomic counter to confirm at least some grants are observed, proving
+// the write lock and read lock operate on the same map instance.
+func TestConcurrent_GrantThenReadConsistency(t *testing.T) {
+	m := NewPermissionMatrix()
+
+	const writers = 200
+	const readerPasses = 50
+	var observed int64
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Writer: grant a unique action marker on a fixed team/env.
+	go func() {
+		defer wg.Done()
+		for n := 0; n < writers; n++ {
+			m.Grant("sre", "prod", fmt.Sprintf("marker_%d", n))
+		}
+	}()
+
+	// Reader: repeatedly scan all markers and count how many are visible
+	// across multiple passes. Because the writer is concurrently adding
+	// markers, at least one pass should observe a non-empty set — unless
+	// the writer has not started yet, in which case the final consistency
+	// check below still proves correctness.
+	go func() {
+		defer wg.Done()
+		for pass := 0; pass < readerPasses; pass++ {
+			for n := 0; n < writers; n++ {
+				if m.Allow("sre", "prod", fmt.Sprintf("marker_%d", n)) {
+					atomic.AddInt64(&observed, 1)
+				}
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	// After the writer finishes, every marker must be visible. This proves
+	// that the write lock and read lock operate on the same underlying map
+	// (i.e. grants are not silently dropped or written to a stale copy).
+	visible := int64(0)
+	for n := 0; n < writers; n++ {
+		if m.Allow("sre", "prod", fmt.Sprintf("marker_%d", n)) {
+			visible++
+		}
+	}
+	assert.Equal(t, int64(writers), visible,
+		"all grants must be visible after writers complete")
+	assert.Greater(t, atomic.LoadInt64(&observed), int64(0),
+		"reader should have observed at least one grant concurrently")
 }

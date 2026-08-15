@@ -14,7 +14,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/nexus/levee/internal/audit"
 )
+
+// EventPermissionDenied is the audit event recorded when a permission
+// check is denied. It is recorded by PermissionChecker.Check when a
+// TraceRecorder has been injected via WithRecorder.
+const EventPermissionDenied = "permission.denied"
+
+// permissionCheckRunID is the placeholder run id used when recording an
+// audit trace for a denial that is not associated with a specific run
+// (i.e. OperationContext.RunID is empty). The trace is best-effort: if
+// the underlying store enforces a foreign-key constraint on trace.run_id
+// and no matching run row exists, the recording is silently skipped so
+// that the denial error is still returned to the caller.
+const permissionCheckRunID = "permission-check"
 
 // Sentinel errors returned by the permission checker. ErrEmptyTeam and
 // ErrEmptyEnv are reused from matrix.go; the ones below are specific to
@@ -40,11 +55,13 @@ var (
 //   - Structured denial errors carrying audit-friendly details
 //   - Batch validation (check many operations in one call)
 //   - Convenience methods for the common LEVEE actions
+//   - Optional audit trace recording on denial (via WithRecorder)
 //
 // A PermissionChecker is safe for concurrent use as long as the
 // underlying PermissionMatrix is not mutated after construction.
 type PermissionChecker struct {
-	matrix *PermissionMatrix
+	matrix   *PermissionMatrix
+	recorder *audit.TraceRecorder
 }
 
 // OperationContext describes a single operation to be authorised. It is
@@ -120,10 +137,38 @@ func NewPermissionCheckerOrPanic(matrix *PermissionMatrix) *PermissionChecker {
 	return c
 }
 
+// WithRecorder injects an audit.TraceRecorder into the checker. When a
+// recorder is present, Check records an audit trace (event
+// "permission.denied") every time a permission check is denied. The
+// recording is best-effort: failures are silently ignored so that the
+// denial error is always returned to the caller.
+//
+// Passing a nil recorder clears any previously injected recorder and
+// restores the default no-audit behaviour.
+//
+// The receiver is returned to support builder-style chaining:
+//
+//	c, _ := permission.NewPermissionChecker(m)
+//	c = c.WithRecorder(rec)
+func (c *PermissionChecker) WithRecorder(recorder *audit.TraceRecorder) *PermissionChecker {
+	if c == nil {
+		return nil
+	}
+	c.recorder = recorder
+	return c
+}
+
 // Check authorises a single operation. It returns nil if the operation
 // is allowed, or a PermissionDeniedError (wrapping ErrPermissionDenied)
 // if denied. Empty actor, team, env, or action yield the corresponding
 // sentinel error.
+//
+// When a TraceRecorder has been injected via WithRecorder, Check also
+// records an audit trace (event "permission.denied") on denial. The
+// recording is best-effort: if it fails (e.g. because the store rejects
+// the row), the failure is silently ignored and the denial error is
+// still returned. When no recorder is injected the behaviour is
+// unchanged (backward compatible).
 //
 // The context.Context is accepted for future tracing/cancellation hooks
 // but is not currently used.
@@ -151,13 +196,68 @@ func (c *PermissionChecker) Check(ctx context.Context, op OperationContext) erro
 		return nil
 	}
 
-	return &PermissionDeniedError{
+	denied := &PermissionDeniedError{
 		Team:   op.Team,
 		Env:    op.Env,
 		Action: op.Action,
 		Actor:  op.Actor,
 		Reason: "no matching grant in permission matrix",
 	}
+
+	c.recordDenial(ctx, op, denied)
+
+	return denied
+}
+
+// recordDenial records an audit trace for a denied permission check. It
+// is best-effort: any error from the recorder is silently ignored so
+// that the denial error is always returned to the caller. When no
+// recorder is injected this is a no-op.
+//
+// The trace carries the actor, team, env, action and target of the
+// denied operation in both Output (structured, for querying) and
+// Metadata (string map, for indexing). When OperationContext.RunID is
+// empty the placeholder "permission-check" is used so that the record
+// can satisfy the audit.TraceRecorder non-empty-run-id requirement;
+// stores with a foreign-key constraint on trace.run_id will reject the
+// row and the recording is silently skipped.
+func (c *PermissionChecker) recordDenial(ctx context.Context, op OperationContext, denied *PermissionDeniedError) {
+	if c == nil || c.recorder == nil {
+		return
+	}
+
+	runID := op.RunID
+	if runID == "" {
+		runID = permissionCheckRunID
+	}
+
+	target := op.Target
+	if target == "" {
+		target = "*"
+	}
+
+	// Best-effort: ignore the returned trace and error. The denial
+	// error has already been built and will be returned to the caller
+	// regardless of whether the audit recording succeeds.
+	_, _ = c.recorder.Record(ctx, audit.TraceRecord{
+		RunID:  runID,
+		Event:  EventPermissionDenied,
+		Actor:  op.Actor,
+		Target: target,
+		Output: map[string]any{
+			"team":     op.Team,
+			"env":      op.Env,
+			"action":   op.Action,
+			"resource": target,
+			"reason":   denied.Reason,
+		},
+		Error: denied,
+		Metadata: map[string]string{
+			"team":   op.Team,
+			"env":    op.Env,
+			"action": op.Action,
+		},
+	})
 }
 
 // CheckBatch authorises multiple operations in order. It returns nil if

@@ -2,7 +2,7 @@ package audit
 
 import (
 	"context"
-
+	"fmt"
 	"testing"
 	"time"
 
@@ -511,4 +511,73 @@ func TestBuildBatch_ChainAlreadyBuilt_ReturnsError(t *testing.T) {
 
 	_, _, err = b.BuildBatch(ctx, "run-batch-already", 2)
 	require.ErrorIs(t, err, ErrChainAlreadyBuilt)
+}
+
+func TestBuild_DeterministicOrder_SameTimestamp(t *testing.T) {
+	// SA-008: Records sharing the same timestamp must be ordered deterministically
+	// (by id ASC as a secondary sort key) so that the hash chain is reproducible.
+	// Without the tie-breaker, SQLite returns rows in an unspecified order for
+	// equal timestamps, producing a different chain on every build.
+	b, store := newChainBuilder(t)
+	ctx := context.Background()
+	createRun(t, store, "run-det")
+
+	// Insert 4 traces that all share the same timestamp. The ids are deliberately
+	// out of lexicographic order relative to insertion to prove that id ASC
+	// (not insertion order) drives the chain order.
+	sameTS := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	insertIDs := []string{"trace-d", "trace-a", "trace-c", "trace-b"}
+	for i, id := range insertIDs {
+		trace := &state.Trace{
+			ID:        id,
+			RunID:     "run-det",
+			Event:     EventStepExecute,
+			Actor:     "system",
+			Detail:    fmt.Sprintf(`{"index":%d}`, i),
+			Timestamp: sameTS,
+		}
+		require.NoError(t, store.CreateTrace(ctx, trace))
+	}
+
+	// First build.
+	_, _, err := b.BuildForce(ctx, "run-det")
+	require.NoError(t, err)
+
+	traces1, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-det"})
+	require.NoError(t, err)
+	require.Len(t, traces1, 4)
+
+	// Capture the id order and hash chain from the first build.
+	firstIDs := make([]string, len(traces1))
+	firstHashes := make([]string, len(traces1))
+	for i, tr := range traces1 {
+		firstIDs[i] = tr.ID
+		firstHashes[i] = tr.CurrHash
+	}
+
+	// The ids must be sorted ascending (the secondary sort key), regardless of
+	// the insertion order.
+	expectedIDs := []string{"trace-a", "trace-b", "trace-c", "trace-d"}
+	assert.Equal(t, expectedIDs, firstIDs,
+		"traces must be ordered by id ASC when timestamps are equal")
+
+	// Second build (force rebuild) must produce the exact same chain.
+	_, _, err = b.BuildForce(ctx, "run-det")
+	require.NoError(t, err)
+
+	traces2, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-det"})
+	require.NoError(t, err)
+	require.Len(t, traces2, 4)
+
+	for i, tr := range traces2 {
+		assert.Equal(t, firstIDs[i], tr.ID,
+			"id order must be stable across rebuilds")
+		assert.Equal(t, firstHashes[i], tr.CurrHash,
+			"CurrHash must be identical across rebuilds (deterministic chain)")
+	}
+
+	// The chain must verify cleanly.
+	count, err := b.Verify(ctx, "run-det")
+	require.NoError(t, err)
+	assert.Equal(t, 4, count)
 }

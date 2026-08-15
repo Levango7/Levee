@@ -538,7 +538,15 @@ func (s *SQLiteStore) UpdateTrace(ctx context.Context, trace *Trace) error {
 	return nil
 }
 
-// ListTraces returns trace records matching the filter, ordered by timestamp ascending.
+// ListTraces returns trace records matching the filter, ordered by timestamp
+// ascending. When multiple records share the same timestamp, the secondary sort
+// key id ASC guarantees a deterministic order. This is essential for the audit
+// hash-chain builder (HashChainBuilder.Build), which must produce an identical
+// chain for the same set of records on every invocation; without a tie-breaker
+// the row order would be unspecified and the resulting hash chain unpredictable.
+// The id column is the TEXT primary key set by the recorder and immutable after
+// insertion, so it is a stable tie-breaker even though it is not an autoincrement
+// integer.
 func (s *SQLiteStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace, error) {
 	var (
 		clauses []string
@@ -557,7 +565,7 @@ func (s *SQLiteStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Tr
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	q += " ORDER BY timestamp ASC"
+	q += " ORDER BY timestamp ASC, id ASC"
 	if filter.Limit > 0 {
 		q += " LIMIT ?"
 		args = append(args, filter.Limit)

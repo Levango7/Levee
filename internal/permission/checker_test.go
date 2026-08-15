@@ -2,9 +2,14 @@ package permission
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -353,4 +358,156 @@ func TestCheck_AdminSuperSet_CanBeRevoked(t *testing.T) {
 	assert.NoError(t, c.Check(context.Background(), OperationContext{
 		Actor: "sec", Team: "security", Env: "prod", Action: ActionPlan,
 	}))
+}
+
+// ---------------------------------------------------------------------------
+// SA-007: audit trace recording on denial
+// ---------------------------------------------------------------------------
+
+// newCheckerAuditStore opens a fresh SQLiteStore backed by a temp file.
+// Each test gets its own file so tests can run in parallel without
+// colliding on the shared run-id namespace.
+func newCheckerAuditStore(t *testing.T) *state.SQLiteStore {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "permission_audit_test.db")
+	store, err := state.NewSQLiteStore(context.Background(), dbPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+// newCheckerAuditRecorder builds a TraceRecorder on top of a fresh
+// temp-file store and returns both the store (for run setup) and the
+// recorder.
+func newCheckerAuditRecorder(t *testing.T) (*state.SQLiteStore, *audit.TraceRecorder) {
+	t.Helper()
+	store := newCheckerAuditStore(t)
+	rec, err := audit.NewTraceRecorder(store)
+	require.NoError(t, err)
+	return store, rec
+}
+
+// createCheckerAuditRun inserts a minimal run row so that trace records
+// can satisfy the trace.run_id → runs.id foreign-key constraint.
+func createCheckerAuditRun(t *testing.T, store state.Store, runID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	err := store.CreateRun(context.Background(), &state.Run{
+		ID:           runID,
+		WorkflowName: "wf-permission-test",
+		TemplateName: "tpl-permission-test",
+		Status:       "running",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+		Creator:      "tester",
+	})
+	require.NoError(t, err)
+}
+
+// parseTraceDetail unmarshals the JSON Detail column of a state.Trace
+// into a generic map for field assertion. The audit package serialises
+// the detail as {"target","input","output","duration_ms","error","metadata"}.
+func parseTraceDetail(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var d map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &d))
+	return d
+}
+
+// TestCheck_Denied_RecordsAudit verifies that when a recorder is
+// injected, a denied permission check records exactly one audit trace
+// with event "permission.denied" carrying the actor, team, env, action
+// and resource of the denied operation.
+func TestCheck_Denied_RecordsAudit(t *testing.T) {
+	store, rec := newCheckerAuditRecorder(t)
+	createCheckerAuditRun(t, store, "run-audit-deny")
+
+	c := NewPermissionCheckerOrPanic(checkerTestMatrix()).WithRecorder(rec)
+
+	op := OperationContext{
+		Actor:  "bob",
+		Team:   "dba",
+		Env:    "prod",
+		Action: ActionPlan,
+		RunID:  "run-audit-deny",
+		Target: "host:node-1",
+	}
+	err := c.Check(context.Background(), op)
+	require.Error(t, err)
+
+	// The denial error must still be a PermissionDeniedError.
+	var pde *PermissionDeniedError
+	require.ErrorAs(t, err, &pde)
+	assert.Equal(t, "bob", pde.Actor)
+
+	// Exactly one audit trace should have been recorded for this run.
+	traces, err := rec.ListByRun(context.Background(), "run-audit-deny")
+	require.NoError(t, err)
+	require.Len(t, traces, 1)
+
+	got := traces[0]
+	assert.Equal(t, EventPermissionDenied, got.Event)
+	assert.Equal(t, "bob", got.Actor)
+	assert.Equal(t, "run-audit-deny", got.RunID)
+
+	// The detail payload should carry the denial context.
+	detail := parseTraceDetail(t, got.Detail)
+	output, ok := detail["output"].(map[string]any)
+	require.True(t, ok, "detail.output should be a JSON object")
+	assert.Equal(t, "dba", output["team"])
+	assert.Equal(t, "prod", output["env"])
+	assert.Equal(t, ActionPlan, output["action"])
+	assert.Equal(t, "host:node-1", output["resource"])
+
+	// The target column of the detail should reflect the operation target.
+	assert.Equal(t, "host:node-1", detail["target"])
+}
+
+// TestCheck_Allowed_NoAudit verifies that when a recorder is injected
+// but the permission check succeeds, no audit trace is recorded. Audit
+// recording is reserved for denials only.
+func TestCheck_Allowed_NoAudit(t *testing.T) {
+	store, rec := newCheckerAuditRecorder(t)
+	createCheckerAuditRun(t, store, "run-audit-allow")
+
+	c := NewPermissionCheckerOrPanic(checkerTestMatrix()).WithRecorder(rec)
+
+	// sre is allowed to apply on dev.
+	err := c.Check(context.Background(), OperationContext{
+		Actor:  "alice",
+		Team:   "sre",
+		Env:    "dev",
+		Action: ActionApply,
+		RunID:  "run-audit-allow",
+	})
+	assert.NoError(t, err)
+
+	// No audit trace should have been recorded.
+	traces, err := rec.ListByRun(context.Background(), "run-audit-allow")
+	require.NoError(t, err)
+	assert.Empty(t, traces)
+}
+
+// TestCheck_Denied_NoRecorder verifies backward compatibility: when no
+// recorder is injected, a denied check still returns the correct
+// PermissionDeniedError and does not panic or record anything.
+func TestCheck_Denied_NoRecorder(t *testing.T) {
+	// No recorder injected — default behaviour.
+	c := NewPermissionCheckerOrPanic(checkerTestMatrix())
+
+	err := c.Check(context.Background(), OperationContext{
+		Actor:  "bob",
+		Team:   "dba",
+		Env:    "prod",
+		Action: ActionPlan,
+	})
+	require.Error(t, err)
+
+	var pde *PermissionDeniedError
+	require.ErrorAs(t, err, &pde)
+	assert.Equal(t, "bob", pde.Actor)
+	assert.Equal(t, "dba", pde.Team)
+	assert.Equal(t, "prod", pde.Env)
+	assert.Equal(t, ActionPlan, pde.Action)
+	assert.ErrorIs(t, err, ErrPermissionDenied)
 }

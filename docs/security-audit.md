@@ -21,7 +21,7 @@
 
 ### CRITICAL（严重）
 
-#### [SA-001] WORM 存储可被底层 SQLite 绕过——trace 表仍暴露 Update/Delete 接口
+#### [SA-001] WORM 存储可被底层 SQLite 绕过——trace 表仍暴露 Update/Delete 接口 [已修复 v1.0.0]
 
 **位置**：`internal/state/store.go:205-207`，`internal/state/sqlite.go:511-581`
 
@@ -41,7 +41,7 @@
 
 ---
 
-#### [SA-002] 哈希链可被 Build 重建——篡改后重建链将销毁证据
+#### [SA-002] 哈希链可被 Build 重建——篡改后重建链将销毁证据 [已修复 v1.0.0]
 
 **位置**：`internal/audit/hashchain.go:64-78`（`Build` 方法）
 
@@ -60,7 +60,7 @@
 
 ---
 
-#### [SA-003] 凭据主密钥无轮换机制——主密码泄露将导致所有凭据暴露
+#### [SA-003] 凭据主密钥无轮换机制——主密码泄露将导致所有凭据暴露 [已修复 v1.0.0]
 
 **位置**：`internal/credential/store.go:83-89`
 
@@ -443,4 +443,17 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 
 这三个 CRITICAL 问题应优先修复。此外，`SecureZero` 可能被优化掉（SA-004）和 argon2 参数偏低（SA-005）也应在下一个迭代中解决。权限矩阵的线程安全（SA-006）和审计记录缺失（SA-007）是生产化前的必要修复项。
 
-**风险评级**：当前 MVP 不适合直接用于生产环境处理真实凭据和合规审计数据。建议在修复所有 CRITICAL 和 HIGH 问题后再进入生产阶段。
+#### 修复摘要
+
+| 编号 | 级别 | 问题摘要 | 修复版本 | 修复方式 |
+|------|------|----------|----------|----------|
+| SA-001 | CRITICAL | WORM 存储可被底层 SQLite 绕过 | v1.0.0 | 硬编码 SQLite 触发器阻止 UPDATE/DELETE + WORMStore 接口 |
+| SA-002 | CRITICAL | 哈希链可被 Build 重建销毁证据 | v1.0.0 | Build 前先 Verify + 拒绝重建已存在链 + BuildForce 管理恢复 |
+| SA-003 | CRITICAL | 主密码无轮换机制 | v1.0.0 | RotateMasterPassword 三阶段原子轮换 + SecureZero 清理 |
+| SA-004 | HIGH | SecureZero 可能被编译器优化掉 | Unreleased | runtime.KeepAlive 防止优化 |
+| SA-005 | HIGH | argon2id 参数偏低 | Unreleased | memory cost 提升至 194MiB（OWASP 2024） |
+| SA-006 | HIGH | 权限矩阵非线程安全 | Unreleased | sync.RWMutex 保护并发读写 |
+| SA-007 | HIGH | 权限校验缺少操作级审计 | Unreleased | 拒绝时自动记录审计 trace |
+| SA-008 | HIGH | 哈希链排序依赖时间戳 | Unreleased | 添加二级排序键确保确定性 |
+
+**风险评级**：3 个 CRITICAL 已在 v1.0.0 修复，5 个 HIGH 正在修复中。建议在修复所有 HIGH 问题后再进入生产阶段。

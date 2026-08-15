@@ -24,6 +24,31 @@ func newTestStore(t *testing.T) state.Store {
 	return store
 }
 
+// fastTimeCost / fastMemoryCost / fastParallelism are reduced argon2id
+// parameters used by the test suite under -short to keep CI fast. The
+// OWASP 2024 production defaults (194 MiB) are still exercised by the
+// non-short test run.
+const (
+	fastTimeCost    uint32 = 1
+	fastMemoryCost  uint32 = 8 * 1024 // 8 MiB — well above 8*parallelism
+	fastParallelism uint8  = 1
+)
+
+// newTestCredentialStore builds a CredentialStore for tests. Under -short
+// it uses reduced argon2id parameters so the suite stays sub-second;
+// otherwise it uses the production OWASP 2024 defaults via NewCredentialStore.
+func newTestCredentialStore(t *testing.T, store state.Store, masterPassword string) *CredentialStore {
+	t.Helper()
+	if testing.Short() {
+		cs, err := NewCredentialStoreWithParams(store, masterPassword, fastTimeCost, fastMemoryCost, fastParallelism)
+		require.NoError(t, err)
+		return cs
+	}
+	cs, err := NewCredentialStore(store, masterPassword)
+	require.NoError(t, err)
+	return cs
+}
+
 // allZero reports whether every byte in b is zero.
 func allZero(b []byte) bool {
 	for _, v := range b {
@@ -56,6 +81,92 @@ func TestNewCredentialStore(t *testing.T) {
 		_, err := NewCredentialStore(nil, "master-pass")
 		assert.Error(t, err)
 	})
+
+	// Verify the OWASP 2024 default memory cost is wired in.
+	t.Run("default memory cost is 194 MiB", func(t *testing.T) {
+		store := newTestStore(t)
+		cs, err := NewCredentialStore(store, "master-pass")
+		require.NoError(t, err)
+		assert.Equal(t, uint32(194*1024), cs.memoryCost,
+			"default memoryCost must match OWASP 2024 (194 MiB = 198656 KiB)")
+		assert.Equal(t, defaultTimeCost, cs.timeCost)
+		assert.Equal(t, defaultParallelism, cs.parallelism)
+	})
+}
+
+// =========================================================================
+// NewCredentialStoreWithParams
+// =========================================================================
+
+func TestNewCredentialStoreWithParams(t *testing.T) {
+	t.Run("ok with custom params", func(t *testing.T) {
+		store := newTestStore(t)
+		cs, err := NewCredentialStoreWithParams(store, "master-pass", 2, 32*1024, 2)
+		require.NoError(t, err)
+		require.NotNil(t, cs)
+		assert.Equal(t, uint32(2), cs.timeCost)
+		assert.Equal(t, uint32(32*1024), cs.memoryCost)
+		assert.Equal(t, uint8(2), cs.parallelism)
+	})
+
+	t.Run("all zero falls back to defaults", func(t *testing.T) {
+		store := newTestStore(t)
+		cs, err := NewCredentialStoreWithParams(store, "master-pass", 0, 0, 0)
+		require.NoError(t, err)
+		assert.Equal(t, defaultTimeCost, cs.timeCost)
+		assert.Equal(t, defaultMemoryCost, cs.memoryCost)
+		assert.Equal(t, defaultParallelism, cs.parallelism)
+	})
+
+	t.Run("empty password returns ErrEmptyMasterPassword", func(t *testing.T) {
+		store := newTestStore(t)
+		_, err := NewCredentialStoreWithParams(store, "", 3, 64*1024, 4)
+		assert.ErrorIs(t, err, ErrEmptyMasterPassword)
+	})
+
+	t.Run("nil store returns error", func(t *testing.T) {
+		_, err := NewCredentialStoreWithParams(nil, "master-pass", 3, 64*1024, 4)
+		assert.Error(t, err)
+	})
+
+	t.Run("zero timeCost returns error", func(t *testing.T) {
+		store := newTestStore(t)
+		_, err := NewCredentialStoreWithParams(store, "master-pass", 0, 64*1024, 4)
+		assert.Error(t, err)
+	})
+
+	t.Run("zero parallelism returns error", func(t *testing.T) {
+		store := newTestStore(t)
+		_, err := NewCredentialStoreWithParams(store, "master-pass", 3, 64*1024, 0)
+		assert.Error(t, err)
+	})
+
+	t.Run("memoryCost below 8*parallelism returns error", func(t *testing.T) {
+		store := newTestStore(t)
+		// parallelism=4 requires memoryCost >= 32; 16 is too low.
+		_, err := NewCredentialStoreWithParams(store, "master-pass", 3, 16, 4)
+		assert.Error(t, err)
+	})
+
+	t.Run("round trip with custom params", func(t *testing.T) {
+		store := newTestStore(t)
+		cs, err := NewCredentialStoreWithParams(store, "master-pass", 1, 8*1024, 1)
+		require.NoError(t, err)
+
+		ctx := context.Background()
+		spec := CredentialSpec{
+			Name:      "custom-cred",
+			Type:      "api_token",
+			Plaintext: []byte("custom-secret"),
+		}
+		_, err = cs.Store(ctx, spec)
+		require.NoError(t, err)
+
+		got, err := cs.Retrieve(ctx, "custom-cred")
+		require.NoError(t, err)
+		assert.Equal(t, []byte("custom-secret"), got)
+		SecureZero(got)
+	})
 }
 
 // =========================================================================
@@ -64,8 +175,7 @@ func TestNewCredentialStore(t *testing.T) {
 
 func TestStoreRetrieve_RoundTrip(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	plaintext := []byte("super-secret-password")
@@ -100,8 +210,7 @@ func TestStoreRetrieve_RoundTrip(t *testing.T) {
 
 func TestStore_PlaintextZeroed(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	plaintext := []byte("super-secret-password")
@@ -111,7 +220,7 @@ func TestStore_PlaintextZeroed(t *testing.T) {
 		Plaintext: plaintext,
 	}
 
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	require.NoError(t, err)
 
 	// The plaintext slice backing array must be zeroed after Store.
@@ -124,21 +233,19 @@ func TestStore_PlaintextZeroed(t *testing.T) {
 
 func TestRetrieve_NotFound(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
-	_, err = cs.Retrieve(ctx, "nonexistent")
+	_, err := cs.Retrieve(ctx, "nonexistent")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestRetrieve_EmptyName(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
-	_, err = cs.Retrieve(ctx, "")
+	_, err := cs.Retrieve(ctx, "")
 	assert.ErrorIs(t, err, ErrEmptyName)
 }
 
@@ -148,8 +255,7 @@ func TestRetrieve_EmptyName(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	spec := CredentialSpec{
@@ -157,7 +263,7 @@ func TestDelete(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: []byte("secret"),
 	}
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	require.NoError(t, err)
 
 	// Verify it exists.
@@ -176,21 +282,19 @@ func TestDelete(t *testing.T) {
 
 func TestDelete_NotFound(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
-	err = cs.Delete(ctx, "nonexistent")
+	err := cs.Delete(ctx, "nonexistent")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestDelete_EmptyName(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
-	err = cs.Delete(ctx, "")
+	err := cs.Delete(ctx, "")
 	assert.ErrorIs(t, err, ErrEmptyName)
 }
 
@@ -200,8 +304,7 @@ func TestDelete_EmptyName(t *testing.T) {
 
 func TestList(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
@@ -229,8 +332,7 @@ func TestList(t *testing.T) {
 
 func TestList_Empty(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	list, err := cs.List(ctx)
@@ -244,8 +346,7 @@ func TestList_Empty(t *testing.T) {
 
 func TestRotate(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	spec := CredentialSpec{
@@ -253,7 +354,7 @@ func TestRotate(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: []byte("old-password"),
 	}
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	require.NoError(t, err)
 
 	// Rotate.
@@ -275,28 +376,25 @@ func TestRotate(t *testing.T) {
 
 func TestRotate_NotFound(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
-	_, err = cs.Rotate(ctx, "nonexistent", []byte("new"))
+	_, err := cs.Rotate(ctx, "nonexistent", []byte("new"))
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestRotate_EmptyName(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
-	_, err = cs.Rotate(ctx, "", []byte("new"))
+	_, err := cs.Rotate(ctx, "", []byte("new"))
 	assert.ErrorIs(t, err, ErrEmptyName)
 }
 
 func TestRotate_EmptyPlaintext(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	// Pre-create the credential so we reach the plaintext check.
@@ -305,7 +403,7 @@ func TestRotate_EmptyPlaintext(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: []byte("old"),
 	}
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	require.NoError(t, err)
 
 	_, err = cs.Rotate(ctx, "prod-ssh", []byte{})
@@ -318,8 +416,7 @@ func TestRotate_EmptyPlaintext(t *testing.T) {
 
 func TestWrongMasterPassword(t *testing.T) {
 	store := newTestStore(t)
-	cs1, err := NewCredentialStore(store, "correct-pass")
-	require.NoError(t, err)
+	cs1 := newTestCredentialStore(t, store, "correct-pass")
 
 	ctx := context.Background()
 	spec := CredentialSpec{
@@ -327,12 +424,11 @@ func TestWrongMasterPassword(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: []byte("secret"),
 	}
-	_, err = cs1.Store(ctx, spec)
+	_, err := cs1.Store(ctx, spec)
 	require.NoError(t, err)
 
 	// Use a different CredentialStore with the wrong password.
-	cs2, err := NewCredentialStore(store, "wrong-pass")
-	require.NoError(t, err)
+	cs2 := newTestCredentialStore(t, store, "wrong-pass")
 
 	_, err = cs2.Retrieve(ctx, "prod-ssh")
 	assert.ErrorIs(t, err, ErrDecryptFailed)
@@ -350,6 +446,27 @@ func TestSecureZero(t *testing.T) {
 	// Empty/nil slices should be a no-op (no panic).
 	SecureZero(nil)
 	SecureZero([]byte{})
+
+	// Large slice: verify every byte is wiped. This exercises the loop
+	// that the compiler might otherwise consider a dead store; the
+	// runtime.KeepAlive inside SecureZero prevents that optimization.
+	large := make([]byte, 4096)
+	for i := range large {
+		large[i] = byte(i % 256)
+	}
+	SecureZero(large)
+	assert.True(t, allZero(large), "large buffer not zeroed")
+
+	// Repeated zeroing must be idempotent.
+	SecureZero(large)
+	assert.True(t, allZero(large), "idempotent re-zero failed")
+
+	// Zeroing a sub-slice must not corrupt bytes outside the sub-slice.
+	full := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	sub := full[2:6] // {3, 4, 5, 6}
+	SecureZero(sub)
+	assert.Equal(t, []byte{1, 2, 0, 0, 0, 0, 7, 8}, full,
+		"SecureZero corrupted bytes outside the sub-slice")
 }
 
 // =========================================================================
@@ -358,8 +475,7 @@ func TestSecureZero(t *testing.T) {
 
 func TestMultipleCredentials(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	creds := []struct {
@@ -401,8 +517,7 @@ func TestMultipleCredentials(t *testing.T) {
 
 func TestStore_EmptyName(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	spec := CredentialSpec{
@@ -410,14 +525,13 @@ func TestStore_EmptyName(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: []byte("secret"),
 	}
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	assert.ErrorIs(t, err, ErrEmptyName)
 }
 
 func TestStore_EmptyPlaintext(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 	spec := CredentialSpec{
@@ -425,7 +539,7 @@ func TestStore_EmptyPlaintext(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: []byte{},
 	}
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	assert.ErrorIs(t, err, ErrEmptyPlaintext)
 }
 
@@ -435,8 +549,7 @@ func TestStore_EmptyPlaintext(t *testing.T) {
 
 func TestCiphertextIndependence(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 
@@ -461,8 +574,7 @@ func TestCiphertextIndependence(t *testing.T) {
 
 func TestRotateMasterPassword_Success(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "old-master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "old-master-pass")
 
 	ctx := context.Background()
 
@@ -498,8 +610,7 @@ func TestRotateMasterPassword_Success(t *testing.T) {
 
 func TestRotateMasterPassword_WrongOldPassword(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "correct-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "correct-pass")
 
 	ctx := context.Background()
 	spec := CredentialSpec{
@@ -507,7 +618,7 @@ func TestRotateMasterPassword_WrongOldPassword(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: []byte("secret"),
 	}
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	require.NoError(t, err)
 
 	_, err = cs.RotateMasterPassword(ctx, "wrong-pass", "new-pass")
@@ -516,8 +627,7 @@ func TestRotateMasterPassword_WrongOldPassword(t *testing.T) {
 
 func TestRotateMasterPassword_EmptyPassword(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "master-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "master-pass")
 
 	ctx := context.Background()
 
@@ -539,8 +649,7 @@ func TestRotateMasterPassword_EmptyPassword(t *testing.T) {
 
 func TestRotateMasterPassword_NoCredentials(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "old-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "old-pass")
 
 	ctx := context.Background()
 
@@ -568,8 +677,7 @@ func TestRotateMasterPassword_NoCredentials(t *testing.T) {
 
 func TestRotateMasterPassword_DecryptWithNewPassword(t *testing.T) {
 	store := newTestStore(t)
-	cs, err := NewCredentialStore(store, "original-pass")
-	require.NoError(t, err)
+	cs := newTestCredentialStore(t, store, "original-pass")
 
 	ctx := context.Background()
 	plaintext := []byte("top-secret-data")
@@ -578,7 +686,7 @@ func TestRotateMasterPassword_DecryptWithNewPassword(t *testing.T) {
 		Type:      "ssh_password",
 		Plaintext: plaintext,
 	}
-	_, err = cs.Store(ctx, spec)
+	_, err := cs.Store(ctx, spec)
 	require.NoError(t, err)
 
 	// Rotate master password.
@@ -594,15 +702,13 @@ func TestRotateMasterPassword_DecryptWithNewPassword(t *testing.T) {
 	SecureZero(got)
 
 	// A new CredentialStore with the OLD password should fail to decrypt.
-	csOld, err := NewCredentialStore(store, "original-pass")
-	require.NoError(t, err)
+	csOld := newTestCredentialStore(t, store, "original-pass")
 	_, err = csOld.Retrieve(ctx, "prod-ssh")
 	assert.ErrorIs(t, err, ErrDecryptFailed,
 		"old master password should no longer decrypt after rotation")
 
 	// A new CredentialStore with the NEW password should succeed.
-	csNew, err := NewCredentialStore(store, "rotated-pass")
-	require.NoError(t, err)
+	csNew := newTestCredentialStore(t, store, "rotated-pass")
 	got2, err := csNew.Retrieve(ctx, "prod-ssh")
 	require.NoError(t, err)
 	assert.Equal(t, []byte("top-secret-data"), got2)
