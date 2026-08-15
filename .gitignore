@@ -1,12 +1,12 @@
 # Binaries
-levee
+/levee
 dist/
 *.exe
 *.exe~
 
 # Go
 vendor/
-go.sum
+
 
 # Test
 *.test

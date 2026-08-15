@@ -1,0 +1,690 @@
+syntax = "proto3";
+
+package levee;
+
+option go_package = "github.com/nexus/levee/internal/grpc/pb;pb";
+
+import "google/protobuf/empty.proto";
+
+
+// ============================================================================
+// Core domain messages
+// ============================================================================
+
+// Change represents a change lifecycle entity (corresponds to `levee` CLI).
+message Change {
+  string id = 1;
+  string label = 2;
+  // planned/pending_approval/approved/running/paused/completed/failed/cancelled/rolled_back/archived
+  string status = 3;
+  // low/normal/high/urgent
+  string priority = 4;
+  string workflow_file = 5;
+  string template_name = 6;
+  map<string, string> params = 7;
+  // Unix timestamp (seconds since epoch)
+  int64 created_at = 8;
+  int64 updated_at = 9;
+  string created_by = 10;
+  string team = 11;
+  string environment = 12;
+}
+
+// Plan is the execution plan for a change.
+message Plan {
+  string change_id = 1;
+  repeated string target_hosts = 2;
+  repeated Batch batches = 3;
+  string impact_summary = 4;
+  // Estimated duration in seconds.
+  int64 estimated_duration = 5;
+  repeated string potential_conflicts = 6;
+}
+
+// Batch is a single execution batch within a plan.
+message Batch {
+  int32 index = 1;
+  repeated string hosts = 2;
+  int32 max_concurrency = 3;
+  // Wait duration in seconds after this batch completes.
+  int64 wait_after = 4;
+}
+
+// Target represents a remote host that can be acted upon.
+message Target {
+  string id = 1;
+  string hostname = 2;
+  // ssh/winrm
+  string channel_type = 3;
+  int32 port = 4;
+  string credential_ref = 5;
+  map<string, string> labels = 6;
+  bool reachable = 7;
+}
+
+// Template is a reusable workflow definition.
+message Template {
+  string name = 1;
+  string description = 2;
+  string workflow_content = 3;
+  repeated string required_params = 4;
+  int64 created_at = 5;
+  int64 updated_at = 6;
+}
+
+// TraceEntry is a single auditable action within a run, hash-chained for tamper evidence.
+message TraceEntry {
+  string id = 1;
+  string run_id = 2;
+  string action = 3;
+  string target_host = 4;
+  bytes input = 5;
+  bytes output = 6;
+  int64 duration_ms = 7;
+  int64 timestamp = 8;
+  string prev_hash = 9;
+  string curr_hash = 10;
+}
+
+// LogEntry is a single log line, used both in batched responses and streaming.
+message LogEntry {
+  string run_id = 1;
+  string timestamp = 2;
+  // DEBUG/INFO/WARN/ERROR
+  string level = 3;
+  string message = 4;
+  // Source component or host that emitted the log.
+  string source = 5;
+}
+
+// ChangeEvent is a single status/event notification streamed to watchers.
+message ChangeEvent {
+  string change_id = 1;
+  // status_changed/step_completed/batch_started/batch_completed/approval_required/failed
+  string event_type = 2;
+  string old_status = 3;
+  string new_status = 4;
+  string message = 5;
+  int64 timestamp = 6;
+}
+
+// VersionInfo describes the levee build.
+message VersionInfo {
+  string version = 1;
+  string git_commit = 2;
+  string build_date = 3;
+  string go_version = 4;
+}
+
+// SystemStatus is the daemon health snapshot.
+message SystemStatus {
+  // healthy/degraded/unhealthy
+  string status = 1;
+  int32 active_runs = 2;
+  int32 paused_runs = 3;
+  int64 uptime_seconds = 4;
+  string store_type = 5;
+  repeated string warnings = 6;
+}
+
+// ============================================================================
+// ChangeService - change lifecycle (maps to `levee` CLI resource domain)
+// ============================================================================
+
+service ChangeService {
+  // `levee new`
+  rpc CreateChange(CreateChangeRequest) returns (Change);
+  // `levee clone`
+  rpc CloneChange(CloneChangeRequest) returns (Change);
+  // `levee plan`
+  rpc PlanChange(PlanChangeRequest) returns (Plan);
+  // `levee apply`
+  rpc ApplyChange(ApplyChangeRequest) returns (ApplyResponse);
+  // `levee pause`
+  rpc PauseChange(PauseRequest) returns (Change);
+  // `levee resume`
+  rpc ResumeChange(PauseRequest) returns (Change);
+  // `levee pause-all`
+  rpc PauseAll(PauseAllRequest) returns (PauseAllResponse);
+  // `levee resume-all`
+  rpc ResumeAll(PauseAllRequest) returns (PauseAllResponse);
+  // `levee cancel`
+  rpc CancelChange(CancelRequest) returns (Change);
+  // `levee retry`
+  rpc RetryChange(RetryRequest) returns (Change);
+  // `levee retry-host`
+  rpc RetryHost(RetryHostRequest) returns (Change);
+  // `levee rollback`
+  rpc RollbackChange(RollbackRequest) returns (RollbackResponse);
+  // `levee approve`
+  rpc ApproveChange(ApproveRequest) returns (Change);
+  // `levee reject`
+  rpc RejectChange(RejectRequest) returns (Change);
+  // `levee show`
+  rpc GetChange(GetChangeRequest) returns (Change);
+  // `levee list`
+  rpc ListChanges(ListChangesRequest) returns (ListChangesResponse);
+  // `levee archive`
+  rpc ArchiveChange(ArchiveRequest) returns (Change);
+  // `levee logs`
+  rpc GetLogs(GetLogsRequest) returns (GetLogsResponse);
+  // `levee diff`
+  rpc GetDiff(GetDiffRequest) returns (GetDiffResponse);
+  // `levee trace`
+  rpc GetTrace(GetTraceRequest) returns (GetTraceResponse);
+  // Real-time status push.
+  rpc WatchChange(WatchChangeRequest) returns (stream ChangeEvent);
+  // Real-time log stream.
+  rpc StreamLogs(StreamLogsRequest) returns (stream LogEntry);
+}
+
+message CreateChangeRequest {
+  string label = 1;
+  string priority = 2;
+  string workflow_file = 3;
+  string template_name = 4;
+  map<string, string> params = 5;
+  string team = 6;
+  string environment = 7;
+  // If true, only plan and return without applying.
+  bool dry_run = 8;
+}
+
+message CloneChangeRequest {
+  string source_change_id = 1;
+  string label = 2;
+  map<string, string> params = 3;
+  // Override the source environment if non-empty.
+  string environment = 4;
+}
+
+message PlanChangeRequest {
+  string change_id = 1;
+  // Optional host filter; empty means use all targets in scope.
+  repeated string target_hosts = 2;
+  // If true, do not persist the plan, only return it.
+  bool dry_run = 3;
+}
+
+message ApplyChangeRequest {
+  string change_id = 1;
+  // If true, skip the approval gate.
+  bool auto_approve = 2;
+  // Override per-batch max concurrency.
+  int32 max_concurrency = 3;
+  // If true, only print the plan and exit.
+  bool dry_run = 4;
+}
+
+message ApplyResponse {
+  Change change = 1;
+  Plan plan = 2;
+  // Run identifier of this apply attempt.
+  string run_id = 3;
+  // Whether the apply completed successfully.
+  bool success = 4;
+  string message = 5;
+}
+
+message PauseRequest {
+  string change_id = 1;
+  // Optional reason recorded in the audit log.
+  string reason = 2;
+}
+
+message PauseAllRequest {
+  // Restrict pause to changes matching these labels; empty means all.
+  repeated string teams = 1;
+  repeated string environments = 2;
+  string reason = 3;
+}
+
+message PauseAllResponse {
+  repeated string paused_change_ids = 1;
+  int32 count = 2;
+  // IDs that could not be paused (e.g. already completed).
+  repeated string skipped_change_ids = 3;
+}
+
+message CancelRequest {
+  string change_id = 1;
+  string reason = 2;
+  // If true, attempt to cancel in-flight executions immediately.
+  bool force = 3;
+}
+
+message RetryRequest {
+  string change_id = 1;
+  // If true, re-plan from scratch; otherwise reuse the previous plan.
+  bool replan = 2;
+  // Optional subset of hosts to retry; empty means all failed hosts.
+  repeated string target_hosts = 3;
+}
+
+message RetryHostRequest {
+  string change_id = 1;
+  repeated string hosts = 2;
+  // If true, clear previous failure state for the hosts before retrying.
+  bool clear_state = 3;
+}
+
+message RollbackRequest {
+  string change_id = 1;
+  // Specific run to roll back to; empty means the most recent successful run.
+  string run_id = 2;
+  // If true, only simulate the rollback and report what would happen.
+  bool dry_run = 3;
+  // If true, skip the approval gate for the rollback.
+  bool auto_approve = 4;
+}
+
+message RollbackResponse {
+  Change change = 1;
+  string rollback_run_id = 2;
+  bool success = 3;
+  repeated string rolled_back_hosts = 4;
+  repeated string skipped_hosts = 5;
+  string message = 6;
+}
+
+message ApproveRequest {
+  string change_id = 1;
+  // Approver identity (e.g. user principal).
+  string approver = 2;
+  // Optional comment recorded in the audit log.
+  string comment = 3;
+}
+
+message RejectRequest {
+  string change_id = 1;
+  string rejecter = 2;
+  string reason = 3;
+}
+
+message GetChangeRequest {
+  string id = 1;
+  // If true, include the latest plan and run summary in the response.
+  bool include_plan = 2;
+}
+
+message ListChangesRequest {
+  // Filter by status (exact match). Empty means any status.
+  repeated string statuses = 1;
+  repeated string teams = 2;
+  repeated string environments = 3;
+  string label_contains = 4;
+  // Pagination.
+  int32 page_size = 5;
+  string page_token = 6;
+  // Sort field, e.g. "created_at" or "updated_at".
+  string sort_by = 7;
+  // "asc" or "desc".
+  string sort_order = 8;
+}
+
+message ListChangesResponse {
+  repeated Change changes = 1;
+  string next_page_token = 2;
+  int32 total_size = 3;
+}
+
+message ArchiveRequest {
+  string change_id = 1;
+  // If true, also delete runtime artifacts (logs, traces) after archiving.
+  bool purge_artifacts = 2;
+}
+
+message GetLogsRequest {
+  string change_id = 1;
+  // Optional specific run; empty means the latest run.
+  string run_id = 2;
+  // Filter by level (DEBUG/INFO/WARN/ERROR). Empty means all levels.
+  repeated string levels = 3;
+  // Return logs after this Unix timestamp.
+  int64 since = 4;
+  // Return logs before this Unix timestamp.
+  int64 until = 5;
+  // Limit number of log entries returned.
+  int32 limit = 6;
+  // If non-empty, only return logs from this source.
+  string source = 7;
+}
+
+message GetLogsResponse {
+  repeated LogEntry entries = 1;
+  // Whether the result was truncated due to limit.
+  bool truncated = 2;
+}
+
+message GetDiffRequest {
+  string change_id = 1;
+  // Optional run to diff; empty means the latest run.
+  string run_id = 2;
+  // "unified" (default), "json", or "none".
+  string format = 3;
+  // Optional host scope; empty means all hosts.
+  repeated string hosts = 4;
+}
+
+message GetDiffResponse {
+  string change_id = 1;
+  string run_id = 2;
+  // Unified diff text or JSON payload depending on format.
+  string diff = 3;
+  string format = 4;
+}
+
+message GetTraceRequest {
+  string change_id = 1;
+  // Optional run to trace; empty means the latest run.
+  string run_id = 2;
+  // If true, verify the hash chain and include verification results.
+  bool verify = 3;
+}
+
+message GetTraceResponse {
+  string run_id = 1;
+  repeated TraceEntry entries = 2;
+  // Populated only when verify=true.
+  bool hash_chain_valid = 3;
+  string verification_message = 4;
+}
+
+message WatchChangeRequest {
+  string change_id = 1;
+  // If non-empty, only emit events of these types.
+  repeated string event_types = 2;
+  // If true, replay the most recent state as the first event.
+  bool include_current_state = 3;
+}
+
+message StreamLogsRequest {
+  string change_id = 1;
+  // Optional run to stream; empty means the latest active run.
+  string run_id = 2;
+  // Filter by level. Empty means all levels.
+  repeated string levels = 3;
+  // If true, stream historical logs before going live.
+  bool follow = 4;
+  // Drop logs older than this Unix timestamp.
+  int64 since = 5;
+}
+
+// ============================================================================
+// TemplateService - template management
+// ============================================================================
+
+service TemplateService {
+  rpc CreateTemplate(CreateTemplateRequest) returns (Template);
+  rpc GetTemplate(GetTemplateRequest) returns (Template);
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc DeleteTemplate(DeleteTemplateRequest) returns (google.protobuf.Empty);
+  rpc InstantiateTemplate(InstantiateTemplateRequest) returns (Change);
+}
+
+message CreateTemplateRequest {
+  string name = 1;
+  string description = 2;
+  string workflow_content = 3;
+  repeated string required_params = 4;
+  // If true, overwrite an existing template with the same name.
+  bool overwrite = 5;
+}
+
+message GetTemplateRequest {
+  string name = 1;
+}
+
+message ListTemplatesRequest {
+  // Substring filter on name.
+  string name_contains = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListTemplatesResponse {
+  repeated Template templates = 1;
+  string next_page_token = 2;
+  int32 total_size = 3;
+}
+
+message DeleteTemplateRequest {
+  string name = 1;
+  // If true, fail if any existing changes reference the template.
+  bool force = 2;
+}
+
+message InstantiateTemplateRequest {
+  string template_name = 1;
+  string label = 2;
+  map<string, string> params = 3;
+  string team = 4;
+  string environment = 5;
+  string priority = 6;
+  // If true, create the change in planned state only.
+  bool dry_run = 7;
+}
+
+// ============================================================================
+// TargetService - target host management
+// ============================================================================
+
+service TargetService {
+  rpc AddTarget(AddTargetRequest) returns (Target);
+  rpc RemoveTarget(RemoveTargetRequest) returns (google.protobuf.Empty);
+  rpc ListTargets(ListTargetsRequest) returns (ListTargetsResponse);
+  rpc GetTarget(GetTargetRequest) returns (Target);
+  rpc CheckTarget(CheckTargetRequest) returns (CheckTargetResponse);
+}
+
+message AddTargetRequest {
+  string hostname = 1;
+  // ssh/winrm
+  string channel_type = 2;
+  int32 port = 3;
+  string credential_ref = 4;
+  map<string, string> labels = 5;
+  // Optional explicit ID; empty means server generates one.
+  string id = 6;
+}
+
+message RemoveTargetRequest {
+  string id = 1;
+  // If true, remove even if referenced by plans.
+  bool force = 2;
+}
+
+message ListTargetsRequest {
+  // Filter by label key=value pairs.
+  map<string, string> label_selector = 1;
+  // Filter by channel type.
+  string channel_type = 2;
+  // If true, only return reachable targets.
+  bool reachable_only = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message ListTargetsResponse {
+  repeated Target targets = 1;
+  string next_page_token = 2;
+  int32 total_size = 3;
+}
+
+message GetTargetRequest {
+  string id = 1;
+}
+
+message CheckTargetRequest {
+  string id = 1;
+  // If true, attempt a real connection; otherwise return cached state.
+  bool fresh = 2;
+  // Connection timeout in seconds.
+  int32 timeout_seconds = 3;
+}
+
+message CheckTargetResponse {
+  Target target = 1;
+  bool reachable = 2;
+  // Round-trip latency in milliseconds, if reachable.
+  int64 latency_ms = 3;
+  // Empty if reachable; otherwise a human-readable error.
+  string error = 4;
+  // Unix timestamp when the check was performed.
+  int64 checked_at = 5;
+}
+
+// ============================================================================
+// AuditService - audit log and trace verification
+// ============================================================================
+
+service AuditService {
+  rpc GetAuditLog(GetAuditLogRequest) returns (GetAuditLogResponse);
+  rpc ListAuditTraces(ListAuditTracesRequest) returns (ListAuditTracesResponse);
+  rpc VerifyHashChain(VerifyHashChainRequest) returns (VerifyHashChainResponse);
+  rpc GetRunReport(GetRunReportRequest) returns (RunReport);
+}
+
+message GetAuditLogRequest {
+  // Filter by change ID.
+  string change_id = 1;
+  // Filter by run ID.
+  string run_id = 2;
+  // Filter by actor (user principal).
+  string actor = 3;
+  // Filter by action name.
+  string action = 4;
+  int64 since = 5;
+  int64 until = 6;
+  int32 page_size = 7;
+  string page_token = 8;
+}
+
+message GetAuditLogResponse {
+  repeated TraceEntry entries = 1;
+  string next_page_token = 2;
+  int32 total_size = 3;
+}
+
+message ListAuditTracesRequest {
+  string change_id = 1;
+  // Limit to traces for these runs.
+  repeated string run_ids = 2;
+  int64 since = 3;
+  int64 until = 4;
+  int32 page_size = 5;
+  string page_token = 6;
+}
+
+message ListAuditTracesResponse {
+  repeated TraceEntry entries = 1;
+  string next_page_token = 2;
+  int32 total_size = 3;
+}
+
+message VerifyHashChainRequest {
+  // Verify a specific run; empty means verify all runs.
+  string run_id = 1;
+  // Verify only changes matching this filter.
+  string change_id = 2;
+}
+
+message VerifyHashChainResponse {
+  bool valid = 1;
+  // Total number of trace entries verified.
+  int64 entries_verified = 2;
+  // First broken entry, if any.
+  string broken_entry_id = 3;
+  string broken_reason = 4;
+  // Per-run verification summary.
+  repeated RunVerification runs = 5;
+}
+
+message RunVerification {
+  string run_id = 1;
+  bool valid = 2;
+  int64 entries_verified = 3;
+  string broken_entry_id = 4;
+  string broken_reason = 5;
+}
+
+message GetRunReportRequest {
+  string change_id = 1;
+  // Optional run; empty means the latest run.
+  string run_id = 2;
+  // If true, include per-host logs in the report.
+  bool include_logs = 3;
+}
+
+message RunReport {
+  string change_id = 1;
+  string run_id = 2;
+  // running/completed/failed/paused/cancelled/rolled_back
+  string status = 3;
+  int64 started_at = 4;
+  int64 finished_at = 5;
+  int64 duration_ms = 6;
+  repeated HostResult host_results = 7;
+  // Summary counts.
+  int32 total_hosts = 8;
+  int32 success_hosts = 9;
+  int32 failed_hosts = 10;
+  int32 skipped_hosts = 11;
+  // Optional embedded logs, populated when include_logs=true.
+  repeated LogEntry logs = 12;
+}
+
+message HostResult {
+  string host = 1;
+  // success/failed/skipped/running
+  string status = 2;
+  int64 duration_ms = 3;
+  string error = 4;
+  // Batch index this host belonged to.
+  int32 batch_index = 5;
+}
+
+// ============================================================================
+// SystemService - system introspection and diagnostics
+// ============================================================================
+
+service SystemService {
+  rpc GetVersion(google.protobuf.Empty) returns (VersionInfo);
+  rpc GetStatus(google.protobuf.Empty) returns (SystemStatus);
+  rpc GetConfig(GetConfigRequest) returns (Config);
+  rpc RunDoctor(google.protobuf.Empty) returns (DoctorReport);
+}
+
+message GetConfigRequest {
+  // If true, redact secret fields (credentials, tokens).
+  bool redact_secrets = 1;
+  // Optional section name to fetch (e.g. "store", "notify"); empty means all.
+  string section = 2;
+}
+
+message Config {
+  // Raw config payload, typically YAML or JSON.
+  string format = 1;
+  bytes content = 2;
+  // Path of the loaded config file.
+  string source_path = 3;
+  // Unix timestamp when the config was last loaded.
+  int64 loaded_at = 4;
+}
+
+message DoctorReport {
+  // overall/pass/fail
+  string status = 1;
+  repeated DoctorCheck checks = 2;
+  // Unix timestamp when the doctor run was performed.
+  int64 checked_at = 3;
+}
+
+message DoctorCheck {
+  string name = 1;
+  // pass/fail/warn
+  string status = 2;
+  string message = 3;
+  // Optional remediation hint.
+  string remediation = 4;
+}
