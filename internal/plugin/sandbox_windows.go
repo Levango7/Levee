@@ -40,10 +40,55 @@ func doTerminate(p *os.Process) error {
 	return nil
 }
 
-// doKill forcefully kills the process on Windows.
+// doKill forcefully kills the process on Windows. If the process has
+// already exited, p.Kill() returns "invalid argument" (or a similar
+// os.SyscallError wrapping ERROR_INVALID_PARAMETER); we treat that as
+// success so that Stop remains idempotent when the child exits on its
+// own before Stop escalates to the hard kill.
 func doKill(p *os.Process) error {
 	if p == nil {
 		return nil
 	}
-	return p.Kill()
+	err := p.Kill()
+	if err == nil {
+		return nil
+	}
+	// Windows returns "invalid argument" (ERROR_INVALID_PARAMETER) or
+	// "The operation could not be completed" when the process has
+	// already exited. Probe the process state and, if it is gone,
+	// swallow the error so that callers see Stop as idempotent.
+	if isProcessAlive(p.Pid) {
+		return err
+	}
+	return nil
+}
+
+// stillActive is the exit code Windows reports for a process that has
+// not yet exited. It is documented as STILL_ACTIVE (259) in the Win32
+// API.
+const stillActive = 259
+
+// processQueryLimitedInformation is the Win32 access mask for querying
+// a process's exit code without requiring full query access. It is
+// defined here because the syscall package does not expose it on all
+// supported Go versions. The value 0x1000 is
+// PROCESS_QUERY_LIMITED_INFORMATION (available on Windows Vista+).
+const processQueryLimitedInformation = 0x1000
+
+// isProcessAlive reports whether the process with the given pid is still
+// running. It opens the process for limited query access and reads its
+// exit code: when the code equals STILL_ACTIVE the process is running.
+// Any failure to open or query the process is treated as "not alive"
+// so that callers fall through to the idempotent success path.
+func isProcessAlive(pid int) bool {
+	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer syscall.CloseHandle(handle)
+	var exitCode uint32
+	if err := syscall.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return false
+	}
+	return exitCode == stillActive
 }

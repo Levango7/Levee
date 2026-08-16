@@ -1,4 +1,3 @@
-
 package scheduler
 
 import (
@@ -140,8 +139,8 @@ func CreateShards(tasks []agent.Task, agents []agent.AgentInfo, b *Balancer) []S
 	}
 	if len(unassigned) > 0 {
 		shards = append(shards, Shard{
-			ID:     len(shards),
-			Tasks:  unassigned,
+			ID:      len(shards),
+			Tasks:   unassigned,
 			Targets: nil,
 		})
 	}

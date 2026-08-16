@@ -1,4 +1,3 @@
-
 package push
 
 import (
@@ -81,10 +80,10 @@ type APNSAlert struct {
 // setting-up-a-remote-notification-server/generating-a-remote-notification.
 type apnsPayload struct {
 	APS struct {
-		Alert    APNSAlert              `json:"alert"`
-		Badge    int                   `json:"badge,omitempty"`
-		Sound    string                `json:"sound,omitempty"`
-		Category string                `json:"category,omitempty"`
+		Alert    APNSAlert `json:"alert"`
+		Badge    int       `json:"badge,omitempty"`
+		Sound    string    `json:"sound,omitempty"`
+		Category string    `json:"category,omitempty"`
 	} `json:"aps"`
 }
 

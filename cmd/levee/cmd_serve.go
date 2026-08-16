@@ -7,11 +7,17 @@
 // Usage:
 //
 //	levee serve [--addr :9090] [--tls-cert cert.pem --tls-key key.pem] [--token <bearer>]
+//	           [--cluster --pg-dsn <postgres-dsn> --node-id <id> --node-addr <addr>]
 //
 // The server reuses the in-process service implementations from internal/grpc,
 // backed by the same SQLite store the CLI uses in local mode. This keeps the
 // daemon and the CLI a single binary: `levee serve` is just `levee` with the
 // gRPC listener attached.
+//
+// In cluster mode (--cluster --pg-dsn ...) the store is backed by PostgreSQL
+// (state.PGStore) and a ClusterManager coordinates node membership, heartbeats
+// and distributed locks across the cluster. Without --cluster the server
+// stays in single-node SQLite mode (the original behaviour).
 //
 // Shutdown is graceful: on SIGINT / SIGTERM the server waits for in-flight
 // RPCs to complete (up to a 30s deadline) before stopping, so that long-running
@@ -29,6 +35,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -45,6 +52,16 @@ var (
 	serveOptTLSCert string
 	serveOptTLSKey  string
 	serveOptToken   string
+
+	// Cluster-mode flags. When serveOptCluster is false the server runs in
+	// single-node SQLite mode (the default). When true the server requires a
+	// PostgreSQL DSN and joins the cluster as the node identified by
+	// serveOptNodeID at serveOptNodeAddr.
+	serveOptCluster  bool
+	serveOptPGDSN    string
+	serveOptNodeID   string
+	serveOptNodeAddr string
+	serveOptNodeRole string
 )
 
 // serveGracefulShutdownTimeout is the deadline the server waits for in-flight
@@ -64,7 +81,11 @@ func newServeCmd() *cobra.Command {
 			"five services (Change, Template, Target, Audit, System) over a " +
 			"single gRPC listener. Use --tls-cert / --tls-key to enable TLS; " +
 			"omit them for plaintext (development or sidecar TLS). Use " +
-			"--token to require Bearer authentication.",
+			"--token to require Bearer authentication.\n\n" +
+			"Pass --cluster --pg-dsn <dsn> to enable cluster mode: the store " +
+			"moves to PostgreSQL and a ClusterManager coordinates node " +
+			"membership, heartbeats and distributed locks. Without --cluster " +
+			"the server stays in single-node SQLite mode.",
 		Args: cobra.NoArgs,
 		RunE: runServe,
 	}
@@ -72,6 +93,11 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptTLSCert, "tls-cert", "", "TLS certificate path (optional)")
 	cmd.Flags().StringVar(&serveOptTLSKey, "tls-key", "", "TLS key path (optional)")
 	cmd.Flags().StringVar(&serveOptToken, "token", "", "Bearer token required from clients (empty = no auth)")
+	cmd.Flags().BoolVar(&serveOptCluster, "cluster", false, "Enable cluster mode (PostgreSQL store + cluster coordination)")
+	cmd.Flags().StringVar(&serveOptPGDSN, "pg-dsn", "", "PostgreSQL DSN (required with --cluster)")
+	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
+	cmd.Flags().StringVar(&serveOptNodeAddr, "node-addr", "", "Cluster node address (required with --cluster)")
+	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
 	return cmd
 }
 
@@ -79,18 +105,69 @@ func newServeCmd() *cobra.Command {
 func runServe(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
-	// 1. Load configuration and open the store.
+	// 1. Load configuration.
 	cfg, err := config.Load(optConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+
+	// 2. Open the store. In cluster mode we use PostgreSQL; otherwise we
+	//    fall back to the single-node SQLite store.
+	var store state.Store
+	var clusterMgr *cluster.ClusterManager
+	if serveOptCluster {
+		if serveOptPGDSN == "" {
+			return errors.New("--cluster requires --pg-dsn")
+		}
+		if serveOptNodeID == "" || serveOptNodeAddr == "" {
+			return errors.New("--cluster requires --node-id and --node-addr")
+		}
+		pgStore, err := state.NewPGStore(ctx, serveOptPGDSN, state.PGPoolConfig{
+			MaxOpenConns:    cfg.Database.MaxOpenConns,
+			MaxIdleConns:    cfg.Database.MaxIdleConns,
+			ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+		})
+		if err != nil {
+			return fmt.Errorf("open postgres store: %w", err)
+		}
+		store = pgStore
+		clusterMgr = cluster.NewClusterManager(pgStore.DB(), cluster.ManagerConfig{
+			SelfID: serveOptNodeID,
+		})
+		if err := clusterMgr.Join(cluster.Node{
+			ID:       serveOptNodeID,
+			Address:  serveOptNodeAddr,
+			Status:   cluster.StatusActive,
+			Role:     cluster.NodeRole(serveOptNodeRole),
+		}); err != nil {
+			_ = store.Close()
+			return fmt.Errorf("join cluster: %w", err)
+		}
+		if err := clusterMgr.Start(ctx); err != nil {
+			_ = store.Close()
+			return fmt.Errorf("start cluster manager: %w", err)
+		}
+		log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
+	} else {
+		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
+		if err != nil {
+			return fmt.Errorf("open store: %w", err)
+		}
+		store = sqliteStore
+		log.Info("single-node mode (SQLite)")
 	}
 	defer store.Close()
+	if clusterMgr != nil {
+		defer func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := clusterMgr.Stop(stopCtx); err != nil {
+				log.Warn("cluster manager stop failed", "error", err)
+			}
+		}()
+	}
 
-	// 2. Build the service implementations. We reuse the in-process
+	// 3. Build the service implementations. We reuse the in-process
 	//    implementations so the daemon and CLI share one code path.
 	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
 	templateSvc := grpc.NewTemplateService(store, nil)

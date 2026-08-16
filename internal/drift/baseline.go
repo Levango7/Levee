@@ -1,4 +1,3 @@
-
 // Package drift implements configuration drift detection for LEVEE.
 //
 // It compares the declared state (captured from apply snapshots and stored as

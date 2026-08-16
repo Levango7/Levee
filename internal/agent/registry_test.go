@@ -108,12 +108,12 @@ func TestRegistryHeartbeat(t *testing.T) {
 	require.NoError(t, r.Register(AgentInfo{ID: "a1", MaxConcurrent: 2}))
 
 	hb := Heartbeat{
-		AgentID:       "a1",
-		Timestamp:     time.Now(),
-		ActiveTasks:   1,
+		AgentID:        "a1",
+		Timestamp:      time.Now(),
+		ActiveTasks:    1,
 		CompletedTasks: 5,
-		FailedTasks:   2,
-		MaxConcurrent: 2,
+		FailedTasks:    2,
+		MaxConcurrent:  2,
 	}
 	require.NoError(t, r.Heartbeat("a1", hb))
 
@@ -353,8 +353,8 @@ func TestRegistryConcurrentHeartbeats(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			_ = r.Heartbeat(fmt.Sprintf("a-%d", i), Heartbeat{
-				AgentID: fmt.Sprintf("a-%d", i),
-				ActiveTasks: 1,
+				AgentID:       fmt.Sprintf("a-%d", i),
+				ActiveTasks:   1,
 				MaxConcurrent: 2,
 			})
 		}(i)

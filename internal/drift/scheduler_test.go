@@ -246,7 +246,6 @@ func TestRunOnce(t *testing.T) {
 	assert.Equal(t, 0, report.TotalDrifts) // no drift
 }
 
-
 func TestRunOnce_WithDrift(t *testing.T) {
 	bm := NewBaselineManager()
 	items := []BaselineItem{

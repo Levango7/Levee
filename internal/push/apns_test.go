@@ -36,10 +36,10 @@ func TestNewAPNSClient_ProductionEndpoint(t *testing.T) {
 func TestNewAPNSClient_MissingFields(t *testing.T) {
 	pemBytes, _ := generateTestECDSAKey(t)
 	cases := []struct {
-		name    string
-		teamID  string
-		keyID   string
-		bundle  string
+		name   string
+		teamID string
+		keyID  string
+		bundle string
 	}{
 		{"empty team", "", "k", "b"},
 		{"empty key", "t", "", "b"},

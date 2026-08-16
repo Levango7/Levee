@@ -307,10 +307,10 @@ func TestTenantManagerLifecycle(t *testing.T) {
 
 	// Create.
 	tt, err := tm.Create(context.Background(), "acme", "ACME", Quota{
-		MaxTargets:          10,
+		MaxTargets:           10,
 		MaxConcurrentChanges: 5,
-		MaxStorageMB:        100,
-		MaxAPIRatePerMin:    60,
+		MaxStorageMB:         100,
+		MaxAPIRatePerMin:     60,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, TenantActive, tt.Status)

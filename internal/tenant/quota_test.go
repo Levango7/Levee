@@ -77,11 +77,11 @@ func TestQuotaValidate(t *testing.T) {
 
 func TestQuotaLimitFor(t *testing.T) {
 	q := &Quota{
-		TenantID:            "t1",
-		MaxTargets:          10,
+		TenantID:             "t1",
+		MaxTargets:           10,
 		MaxConcurrentChanges: 5,
-		MaxStorageMB:        100,
-		MaxAPIRatePerMin:    60,
+		MaxStorageMB:         100,
+		MaxAPIRatePerMin:     60,
 	}
 	cases := []struct {
 		r    ResourceType
@@ -325,10 +325,10 @@ func TestQuotaManagerGetUsageMissing(t *testing.T) {
 func TestQuotaManagerAllResourceTypes(t *testing.T) {
 	qm := NewQuotaManager()
 	require.NoError(t, qm.SetQuota("t1", Quota{
-		MaxTargets:          2,
+		MaxTargets:           2,
 		MaxConcurrentChanges: 3,
-		MaxStorageMB:        100,
-		MaxAPIRatePerMin:    50,
+		MaxStorageMB:         100,
+		MaxAPIRatePerMin:     50,
 	}))
 
 	resources := []ResourceType{ResourceTargets, ResourceConcurrentChanges, ResourceStorage, ResourceAPIRate}

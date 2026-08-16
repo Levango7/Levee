@@ -140,11 +140,11 @@ func TestTenantValidate(t *testing.T) {
 			errSub:  "does not match",
 		},
 		{
-			name: "valid with hyphen",
+			name:   "valid with hyphen",
 			tenant: NewTenant("acme-prod", "ACME Prod"),
 		},
 		{
-			name: "valid with digits",
+			name:   "valid with digits",
 			tenant: NewTenant("acme-123", "ACME 123"),
 		},
 	}
@@ -237,8 +237,8 @@ func TestNewTenantIDUniqueness(t *testing.T) {
 
 func TestEncodeDecodeTenantTag(t *testing.T) {
 	cases := []struct {
-		tenantID  string
-		incident  string
+		tenantID string
+		incident string
 	}{
 		{"t1", ""},
 		{"t1", "inc-123"},

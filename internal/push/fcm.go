@@ -47,8 +47,8 @@ type FCMClient struct {
 // Data is delivered to the app; Android and APNS optionally carry platform
 // specific overrides.
 type FCMMessage struct {
-	Token        string         `json:"token,omitempty"`
-	Notification *FCMNotification `json:"notification,omitempty"`
+	Token        string            `json:"token,omitempty"`
+	Notification *FCMNotification  `json:"notification,omitempty"`
 	Data         map[string]string `json:"data,omitempty"`
 	Android      *AndroidConfig    `json:"android,omitempty"`
 	APNS         *APNSConfig       `json:"apns,omitempty"`
@@ -63,9 +63,9 @@ type FCMNotification struct {
 // AndroidConfig carries Android-specific overrides such as priority and
 // notification channel. It is a thin subset of the FCM HTTP v1 schema.
 type AndroidConfig struct {
-	Priority     string `json:"priority,omitempty"` // "normal" or "high"
-	ClickAction  string `json:"click_action,omitempty"`
-	ChannelID    string `json:"channel_id,omitempty"`
+	Priority    string `json:"priority,omitempty"` // "normal" or "high"
+	ClickAction string `json:"click_action,omitempty"`
+	ChannelID   string `json:"channel_id,omitempty"`
 }
 
 // APNSConfig carries iOS-specific overrides via FCM. We only expose the

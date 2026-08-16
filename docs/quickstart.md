@@ -370,3 +370,139 @@ levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cr
 - 配置权限矩阵和团队管理
 - 使用 `levee secret` 管理加密凭据
 - 通过 `levee audit export` 导出合规审计数据
+
+## 分布式执行 (F04)
+
+启动 master 节点和 Agent，将变更任务分发到多台 Agent 执行：
+
+```命令示例：启动 master 节点
+levee serve --addr :9090
+```
+
+```命令示例：启动 Agent 并注册到 master
+levee agent start --addr :9091 --master localhost:9090 --caps shell,file,pkg
+```
+
+查看已注册 Agent：
+
+```命令示例：列出已注册 Agent
+levee agent list
+```
+
+查看 Agent 详情与状态：
+
+```命令示例：查看 Agent 状态
+levee agent status
+
+命令示例：查看 Agent 详情
+levee agent show <agent-id>
+```
+
+移除 Agent：
+
+```命令示例：移除 Agent
+levee agent remove <agent-id>
+```
+
+## 多租户 (F07)
+
+创建和管理租户，实现租户隔离与资源配额：
+
+```命令示例：创建租户
+levee tenant create --name acme --display "ACME Corp" --max-targets 100 --max-changes 10
+```
+
+查看租户列表与详情：
+
+```命令示例：列出租户
+levee tenant list
+
+命令示例：查看租户详情
+levee tenant show <tenant-id>
+```
+
+查看租户使用量与配额：
+
+```命令示例：查看使用量
+levee tenant usage <tenant-id>
+
+命令示例：调整配额
+levee tenant quota <tenant-id> --max-targets 200 --max-changes 20
+```
+
+暂停与恢复租户：
+
+```命令示例：暂停租户
+levee tenant suspend <tenant-id> --reason "合规审查"
+
+命令示例：恢复租户
+levee tenant resume <tenant-id>
+```
+
+## 配置漂移检测 (F10)
+
+检测和管理配置漂移，定期巡检目标机配置一致性：
+
+```命令示例：从最近 apply 自动生成基线
+levee drift baseline auto --host web-01
+```
+
+检测漂移：
+
+```命令示例：检测漂移
+levee drift detect --host web-01 --baseline auto
+```
+
+添加定期巡检调度：
+
+```命令示例：添加每日凌晨巡检
+levee drift schedule add --name daily-check --cron "0 2 * * *" --hosts web-01,web-02
+```
+
+立即触发一次巡检：
+
+```命令示例：立即触发巡检
+levee drift schedule run <schedule-id>
+```
+
+查看漂移报告与趋势：
+
+```命令示例：查看 30 天漂移报告
+levee drift report --host web-01 --days 30
+```
+
+## 移动端审批 (F12)
+
+配置推送通知和移动端审批，支持 iOS（APNs）与 Android（FCM）：
+
+```命令示例：配置 APNs
+levee push config --platform ios --key AuthKey.p8 --key-id ABC123 --team-id TEAM456
+```
+
+```命令示例：配置 FCM
+levee push config --platform android --project my-project --service-account sa.json
+```
+
+注册移动设备：
+
+```命令示例：注册 iOS 设备
+levee push register --user alice --token <device-token> --platform ios
+```
+
+发送审批推送通知：
+
+```命令示例：发送审批推送
+levee push send --user alice --title "审批请求" --body "变更 run-123 待审批" --deep-link "levee://approval/run-123"
+```
+
+测试推送配置：
+
+```命令示例：测试推送
+levee push test --user alice
+```
+
+列出用户已注册设备：
+
+```命令示例：列出用户设备
+levee push devices --user alice
+```

@@ -81,8 +81,8 @@ func ParseStrategy(name string) Strategy {
 // mutex that protects the candidate list during a Select call.
 type Balancer struct {
 	strategy Strategy
-	rrIndex atomic.Int64
-	mu      sync.Mutex
+	rrIndex  atomic.Int64
+	mu       sync.Mutex
 }
 
 // NewBalancer returns a Balancer with the given strategy.

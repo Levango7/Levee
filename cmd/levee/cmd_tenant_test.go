@@ -145,15 +145,15 @@ func TestTenantRegistryLoadSave(t *testing.T) {
 	reg := &tenantRegistry{
 		Tenants: []tenantRecord{
 			{
-				ID:                  "tenant-1",
-				Name:                "acme",
-				DisplayName:         "ACME Corp",
-				Namespace:           "tenant-acme",
-				Status:              "active",
-				MaxTargets:          100,
+				ID:                   "tenant-1",
+				Name:                 "acme",
+				DisplayName:          "ACME Corp",
+				Namespace:            "tenant-acme",
+				Status:               "active",
+				MaxTargets:           100,
 				MaxConcurrentChanges: 10,
-				MaxStorageMB:        500,
-				MaxAPIRatePerMin:    60,
+				MaxStorageMB:         500,
+				MaxAPIRatePerMin:     60,
 			},
 		},
 	}
@@ -201,10 +201,10 @@ func TestTenantsFilePath(t *testing.T) {
 func TestManagerToRegistry(t *testing.T) {
 	tm := tenant.NewTenantManager()
 	_, err := tm.Create(nil, "acme", "ACME", tenant.Quota{
-		MaxTargets:          10,
+		MaxTargets:           10,
 		MaxConcurrentChanges: 5,
-		MaxStorageMB:        100,
-		MaxAPIRatePerMin:    60,
+		MaxStorageMB:         100,
+		MaxAPIRatePerMin:     60,
 	})
 	require.NoError(t, err)
 
@@ -223,12 +223,12 @@ func TestRegistryToManager(t *testing.T) {
 	reg := &tenantRegistry{
 		Tenants: []tenantRecord{
 			{
-				ID:                  "tenant-1",
-				Name:                "acme",
-				DisplayName:         "ACME",
-				Namespace:           "tenant-acme",
-				Status:              "active",
-				MaxTargets:          10,
+				ID:                   "tenant-1",
+				Name:                 "acme",
+				DisplayName:          "ACME",
+				Namespace:            "tenant-acme",
+				Status:               "active",
+				MaxTargets:           10,
 				MaxConcurrentChanges: 5,
 			},
 		},
@@ -354,11 +354,11 @@ func TestPrintTenantDetailHuman(t *testing.T) {
 func TestPrintQuotaHuman(t *testing.T) {
 	defer resetRootFlags()
 	output := map[string]any{
-		"tenant_id":             "t1",
-		"max_targets":           10,
+		"tenant_id":              "t1",
+		"max_targets":            10,
 		"max_concurrent_changes": 5,
-		"max_storage_mb":        100,
-		"max_api_rate_per_min":  60,
+		"max_storage_mb":         100,
+		"max_api_rate_per_min":   60,
 	}
 	var buf bytes.Buffer
 	printQuotaHuman(&buf, output)
@@ -423,7 +423,6 @@ func setupTenantTestConfig(t *testing.T) (dataDir string, cleanup func()) {
 func TestTenantCreateListShowE2E(t *testing.T) {
 	_, cleanup := setupTenantTestConfig(t)
 	defer cleanup()
-
 
 	// --- create ---
 	tenantCreateOptName = "acme"

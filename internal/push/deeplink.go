@@ -27,10 +27,10 @@ const DefaultDeepLinkTTL = 30 * time.Minute
 
 // deepLinkEntry is the internal record stored for each generated token.
 type deepLinkEntry struct {
-	runID    string
-	userID   string
-	action   string
-	issuedAt time.Time
+	runID     string
+	userID    string
+	action    string
+	issuedAt  time.Time
 	expiresAt time.Time
 }
 
@@ -51,8 +51,8 @@ type DeepLinkGenerator struct {
 	baseURL string
 	ttl     time.Duration
 
-	mu      sync.Mutex
-	tokens  map[string]deepLinkEntry
+	mu     sync.Mutex
+	tokens map[string]deepLinkEntry
 }
 
 // NewDeepLinkGenerator builds a generator with the default TTL.

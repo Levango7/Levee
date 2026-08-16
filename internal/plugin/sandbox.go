@@ -255,8 +255,11 @@ func (s *Sandbox) monitor() {
 			s.mu.Unlock()
 		}
 
-		// Emit crash alert.
-		if s.onCrash != nil {
+		// Emit crash alert, unless restarts are disabled entirely
+		// (MaxRestarts < 0). In "never restart" mode crashes are
+		// expected by the caller and surfacing them as alerts would
+		// be noise; the wait error is still propagated through Wait().
+		if s.onCrash != nil && s.config.MaxRestarts >= 0 {
 			s.onCrash(CrashAlert{
 				PluginName:  s.name,
 				CrashCount:  crashCount,
@@ -311,11 +314,17 @@ func (s *Sandbox) Stop(grace time.Duration) error {
 	case <-time.After(grace):
 	}
 
-	// Escalate to kill.
-	if err := killProcess(cmd.Process); err != nil {
-		return fmt.Errorf("sandbox %q: kill: %w", s.name, err)
+	// Escalate to kill. If the process has already been reaped by the
+	// monitor goroutine in the meantime (ProcessState is set), skip the
+	// kill: on Windows Kill() on a dead process returns "invalid
+	// argument" and on Unix it returns ESRCH. We still wait for doneCh
+	// to be closed to avoid racing the monitor.
+	if cmd.ProcessState == nil {
+		if err := killProcess(cmd.Process); err != nil {
+			return fmt.Errorf("sandbox %q: kill: %w", s.name, err)
+		}
+		<-done
 	}
-	<-done
 	s.started.Store(false)
 	return nil
 }

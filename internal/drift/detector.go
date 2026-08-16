@@ -1,4 +1,3 @@
-
 // Detector implementation for the LEVEE drift package.
 //
 // This file defines the StateProber interface (the abstraction used to obtain
@@ -274,9 +273,9 @@ func baselineToChecks(b *Baseline) []Check {
 	checks := make([]Check, len(b.Items))
 	for i, item := range b.Items {
 		checks[i] = Check{
-			Name:         item.CheckName,
-			Type:         item.Type,
-			Path:         item.Path,
+			Name:          item.CheckName,
+			Type:          item.Type,
+			Path:          item.Path,
 			ExpectedValue: item.ExpectedValue,
 		}
 	}
@@ -338,8 +337,8 @@ func (d *DriftDetector) sendDriftAlert(ctx context.Context, host string, result 
 		buildAlertBody(result),
 	)
 	msg.Metadata = map[string]string{
-		"host":        host,
-		"drift_count": fmt.Sprintf("%d", result.DriftCount),
+		"host":         host,
+		"drift_count":  fmt.Sprintf("%d", result.DriftCount),
 		"total_checks": fmt.Sprintf("%d", result.TotalChecks),
 	}
 

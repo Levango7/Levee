@@ -1,4 +1,3 @@
-
 // Scheduler implementation for the LEVEE drift package.
 //
 // DriftScheduler runs DriftDetector on a cron schedule for a set of hosts. It
@@ -78,12 +77,12 @@ type DriftJob struct {
 // schedules. It is safe for concurrent use. The scheduler runs each job in its
 // own goroutine; jobs share the underlying DriftDetector and BaselineManager.
 type DriftScheduler struct {
-	detector   *DriftDetector
+	detector    *DriftDetector
 	baselineMgr *BaselineManager
-	mu         sync.RWMutex
-	jobs       map[string]*DriftJob
-	stopCh     chan struct{}
-	running    bool
+	mu          sync.RWMutex
+	jobs        map[string]*DriftJob
+	stopCh      chan struct{}
+	running     bool
 	// history stores the most recent DriftReports for trend analysis. The
 	// key is the job ID; the value is a slice capped at maxHistoryPerJob.
 	history map[string][]*DriftReport
@@ -340,9 +339,9 @@ func (s *DriftScheduler) executeJob(ctx context.Context, job *DriftJob, now time
 // collected results. Per-host errors are logged but do not abort the run.
 func (s *DriftScheduler) runDetection(ctx context.Context, job *DriftJob) ([]*DriftResult, error) {
 	var (
-		results []*DriftResult
-		mu      sync.Mutex
-		wg      sync.WaitGroup
+		results  []*DriftResult
+		mu       sync.Mutex
+		wg       sync.WaitGroup
 		firstErr error
 	)
 

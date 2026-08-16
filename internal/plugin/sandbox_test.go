@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,13 +17,19 @@ import (
 
 // writeScript writes a small script to a temp file and returns its path.
 // The script is a shell script on Unix and a batch file on Windows. It is
-// used to simulate a plugin binary for sandbox tests.
+// used to simulate a plugin binary for sandbox tests. On Windows the
+// Unix "sleep N" idiom is translated to "ping -n N+1 127.0.0.1 >nul"
+// because Windows has no sleep(1) command in the default PATH.
 func writeScript(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
 	var name, content string
 	if runtime.GOOS == "windows" {
 		name = "plugin.bat"
+		// Translate Unix "sleep N" to the Windows equivalent. ping -n K
+		// sends K pings with a 1s interval, waiting ~K-1 seconds, so
+		// ping -n (N+1) waits ~N seconds. The ">nul" suppresses output.
+		body = translateSleepForWindows(body)
 		content = "@echo off\r\n" + body + "\r\n"
 	} else {
 		name = "plugin.sh"
@@ -31,6 +38,19 @@ func writeScript(t *testing.T, body string) string {
 	p := filepath.Join(dir, name)
 	require.NoError(t, os.WriteFile(p, []byte(content), 0o755))
 	return p
+}
+
+// translateSleepForWindows replaces "sleep N" tokens in body with the
+// equivalent Windows "ping -n N+1 127.0.0.1 >nul" form. It handles the
+// common cases used by the sandbox tests (sleep 5, sleep 30, ...). Any
+// sleep whose duration cannot be parsed is left untouched.
+func translateSleepForWindows(body string) string {
+	// We only need to handle the literal forms that appear in the test
+	// suite. A general regexp-based translator is overkill here and would
+	// add a regexp import for no real benefit.
+	body = strings.ReplaceAll(body, "sleep 5", "ping -n 6 127.0.0.1 >nul")
+	body = strings.ReplaceAll(body, "sleep 30", "ping -n 31 127.0.0.1 >nul")
+	return body
 }
 
 // writeExitScript writes a script that exits with the given code.

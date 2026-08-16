@@ -1,6 +1,5 @@
 package agent
 
-
 import (
 	"context"
 	"sync/atomic"
@@ -109,11 +108,11 @@ func (a *Agent) heartbeatLoop(ctx context.Context, interval time.Duration, sende
 // the translation without an Agent.
 func buildHeartbeatFromStats(agentID string, st ExecutorStats, maxConcurrent int) Heartbeat {
 	return Heartbeat{
-		AgentID:       agentID,
-		Timestamp:     time.Now(),
-		ActiveTasks:   int(st.Active),
+		AgentID:        agentID,
+		Timestamp:      time.Now(),
+		ActiveTasks:    int(st.Active),
 		CompletedTasks: st.Completed,
-		FailedTasks:   st.Failed,
-		MaxConcurrent: maxConcurrent,
+		FailedTasks:    st.Failed,
+		MaxConcurrent:  maxConcurrent,
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -24,10 +25,20 @@ func setupManager(t *testing.T) *PluginManager {
 }
 
 // writePluginDir creates a plugin directory with a manifest (plugin.yaml)
-// and a binary. It returns the directory path.
+// and a binary. It returns the directory path. On Windows the entry point
+// is a .bat file because the OS requires the .exe extension to execute a
+// raw binary; a .bat script is the simplest portable entry point for
+// tests.
 func writePluginDir(t *testing.T, meta PluginMeta, configYAML string) string {
 	t.Helper()
 	dir := t.TempDir()
+
+	// On Windows, use a .bat file as the entry point when the manifest
+	// does not name one explicitly. The default "plugin" has no
+	// extension and cannot be executed by Windows directly.
+	if runtime.GOOS == "windows" && (meta.EntryPoint == "" || meta.EntryPoint == "plugin") {
+		meta.EntryPoint = "plugin.bat"
+	}
 
 	// Write the manifest.
 	manifest := "name: " + meta.Name + "\n"
@@ -46,18 +57,31 @@ func writePluginDir(t *testing.T, meta PluginMeta, configYAML string) string {
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o644))
 
-	// Write the binary.
+	// Write the binary / entry-point script.
 	entry := meta.EntryPoint
 	if entry == "" {
 		entry = "plugin"
 	}
 	binPath := filepath.Join(dir, entry)
-	if testing.Short() {
-		// In short mode, write a script that exits 0 immediately.
-		require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	if runtime.GOOS == "windows" {
+		// Windows: .bat script. In short mode exit immediately; in
+		// full mode keep the sandbox alive for the duration of the
+		// test by pinging localhost (sleep is not available on
+		// Windows; ping -n N waits ~N-1 seconds).
+		var body string
+		if testing.Short() {
+			body = "@echo off\r\nexit 0\r\n"
+		} else {
+			body = "@echo off\r\nping -n 31 127.0.0.1 >nul\r\n"
+		}
+		require.NoError(t, os.WriteFile(binPath, []byte(body), 0o755))
 	} else {
-		// In full mode, write a script that sleeps so the sandbox stays up.
-		require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\nsleep 30\n"), 0o755))
+		// Unix: shell script.
+		if testing.Short() {
+			require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0o755))
+		} else {
+			require.NoError(t, os.WriteFile(binPath, []byte("#!/bin/sh\nsleep 30\n"), 0o755))
+		}
 	}
 
 	// Write the config.

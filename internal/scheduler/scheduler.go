@@ -1,4 +1,3 @@
-
 package scheduler
 
 import (
@@ -52,10 +51,10 @@ type Dispatcher interface {
 //
 // The Scheduler is safe for concurrent use.
 type Scheduler struct {
-	registry  *agent.AgentRegistry
-	balancer  *Balancer
+	registry   *agent.AgentRegistry
+	balancer   *Balancer
 	dispatcher Dispatcher
-	mu        sync.RWMutex
+	mu         sync.RWMutex
 }
 
 // NewScheduler returns a Scheduler bound to the given registry and

@@ -1,4 +1,3 @@
-
 // Drift detection CLI for LEVEE.
 //
 // This file implements the `levee drift` command tree:
@@ -1023,9 +1022,9 @@ func baselineToMap(b *drift.Baseline) map[string]any {
 	items := make([]map[string]any, 0, len(b.Items))
 	for _, item := range b.Items {
 		items = append(items, map[string]any{
-			"check_name":    item.CheckName,
-			"type":          string(item.Type),
-			"path":          item.Path,
+			"check_name":     item.CheckName,
+			"type":           string(item.Type),
+			"path":           item.Path,
 			"expected_value": item.ExpectedValue,
 		})
 	}
@@ -1067,11 +1066,11 @@ func reportToMap(r *drift.DriftReport) map[string]any {
 		items := make([]map[string]any, 0, len(res.Items))
 		for _, item := range res.Items {
 			items = append(items, map[string]any{
-				"check_name":    item.CheckName,
-				"actual_value":  item.ActualValue,
+				"check_name":     item.CheckName,
+				"actual_value":   item.ActualValue,
 				"expected_value": item.ExpectedValue,
-				"drifted":       item.Drifted,
-				"diff":          item.Diff,
+				"drifted":        item.Drifted,
+				"diff":           item.Diff,
 			})
 		}
 		results = append(results, map[string]any{

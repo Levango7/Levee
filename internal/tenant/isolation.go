@@ -1,4 +1,3 @@
-
 package tenant
 
 import (
@@ -75,10 +74,10 @@ func DecodeTenantTag(incidentID string) (tenantID string, originalIncident strin
 // efficient; that would require extending the Store interface and is
 // intentionally left out per the package requirements.
 type IsolatedStore struct {
-	tenantID  string
-	base      state.Store
-	quota     *QuotaManager
-	mu        sync.RWMutex
+	tenantID string
+	base     state.Store
+	quota    *QuotaManager
+	mu       sync.RWMutex
 }
 
 // NewIsolatedStore returns an IsolatedStore bound to the given tenant.

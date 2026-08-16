@@ -22,14 +22,14 @@ var (
 	pushOptTitle    string
 	pushOptBody     string
 
-	pushOptAPNsKeyFile   string
-	pushOptAPNsTeamID    string
-	pushOptAPNsKeyID     string
-	pushOptAPNsBundleID  string
+	pushOptAPNsKeyFile    string
+	pushOptAPNsTeamID     string
+	pushOptAPNsKeyID      string
+	pushOptAPNsBundleID   string
 	pushOptAPNsProduction bool
 
-	pushOptFCMKeyFile    string
-	pushOptFCMProjectID  string
+	pushOptFCMKeyFile   string
+	pushOptFCMProjectID string
 )
 
 // pushManagerSingleton is the process-wide push manager used by the push
@@ -176,9 +176,9 @@ func runPushSend(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("send push: %w", err)
 	}
 	out := map[string]any{
-		"user":  pushOptUser,
-		"title": pushOptTitle,
-		"body":  pushOptBody,
+		"user":   pushOptUser,
+		"title":  pushOptTitle,
+		"body":   pushOptBody,
 		"status": "sent",
 	}
 	if optJSON {
@@ -225,8 +225,8 @@ func runPushDevices(cmd *cobra.Command, args []string) error {
 		items := make([]map[string]any, 0, len(devices))
 		for _, d := range devices {
 			items = append(items, map[string]any{
-				"token":        d.Token,
-				"platform":     d.Platform,
+				"token":         d.Token,
+				"platform":      d.Platform,
 				"registered_at": d.RegisteredAt,
 			})
 		}
@@ -317,11 +317,11 @@ func runPushConfig(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("read apns key file: %w", err)
 		}
 		cfg.APNs = pushConfigAPNs{
-			PrivateKey:    string(keyBytes),
-			TeamID:        pushOptAPNsTeamID,
-			KeyID:         pushOptAPNsKeyID,
-			BundleID:      pushOptAPNsBundleID,
-			Production:    pushOptAPNsProduction,
+			PrivateKey: string(keyBytes),
+			TeamID:     pushOptAPNsTeamID,
+			KeyID:      pushOptAPNsKeyID,
+			BundleID:   pushOptAPNsBundleID,
+			Production: pushOptAPNsProduction,
 		}
 		changed = true
 	}

@@ -1932,3 +1932,693 @@ levee serve
 命令示例：启用 TLS 与 token 鉴权
 levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cret
 ```
+
+## 第20章 agent — 分布式执行 Agent 管理
+
+管理分布式执行 Agent 常驻进程，支持注册到 master 节点、心跳保活、任务执行与结果回传。
+
+### 20.1 agent start
+
+启动 Agent 常驻进程，注册到 master 节点并开始心跳。
+
+```text
+levee agent start --addr <addr> --master <master-addr> --caps <caps> [--id <agent-id>] [--heartbeat <duration>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--addr` | | Agent 监听地址（必填，如 `:9091`） |
+| `--master` | | master 节点地址（必填，如 `localhost:9090`） |
+| `--caps` | | Agent 能力列表，逗号分隔（必填，如 `shell,file,pkg`） |
+| `--id` | 自动生成 | Agent ID，省略时自动生成 UUID |
+| `--heartbeat` | `15s` | 心跳间隔 |
+
+**说明**
+
+- Agent 启动后向 master 注册自身地址与能力，并按 `--heartbeat` 间隔周期发送心跳
+- master 节点根据 Agent 能力（`caps`）调度匹配的任务到该 Agent
+- Agent 进程退出时自动向 master 注销
+
+**示例**
+
+```命令示例：启动 Agent 并注册到 master
+levee agent start --addr :9091 --master localhost:9090 --caps shell,file
+
+命令示例：指定 Agent ID 与心跳间隔
+levee agent start --addr :9092 --master localhost:9090 --caps shell,file,pkg --id agent-web-01 --heartbeat 10s
+```
+
+### 20.2 agent status
+
+查看当前 Agent 进程状态。
+
+```text
+levee agent status
+```
+
+**输出**
+
+包含 Agent ID、注册状态、master 连接状态、能力列表、心跳计数与最近一次心跳时间。
+
+**示例**
+
+```命令示例：查看 Agent 状态
+levee agent status
+```
+
+### 20.3 agent list
+
+列出所有已注册 Agent（master 端）。
+
+```text
+levee agent list [--status STATUS]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--status` | | 按状态过滤：`active` / `inactive` / `lost` |
+
+**示例**
+
+```命令示例：列出所有已注册 Agent
+levee agent list
+
+命令示例：仅列出活跃 Agent
+levee agent list --status active
+```
+
+### 20.4 agent show
+
+查看特定 Agent 详情。
+
+```text
+levee agent show <agent-id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<agent-id>` | 是 | Agent ID |
+
+**输出**
+
+包含 Agent ID、地址、能力、注册时间、最近心跳、当前执行任务等。
+
+**示例**
+
+```命令示例：查看 Agent 详情
+levee agent show agent-web-01
+```
+
+### 20.5 agent remove
+
+从 master 移除 Agent 注册记录。
+
+```text
+levee agent remove <agent-id> [--force]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<agent-id>` | 是 | Agent ID |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--force` | `false` | 强制移除，即使 Agent 仍有正在执行的任务 |
+
+**示例**
+
+```命令示例：移除 Agent
+levee agent remove agent-web-01
+
+命令示例：强制移除
+levee agent remove agent-web-01 --force
+```
+
+## 第21章 tenant — 租户管理
+
+管理多租户隔离与资源配额，支持租户创建、暂停/恢复、配额管理与使用量查询。
+
+### 21.1 tenant create
+
+创建新租户。
+
+```text
+levee tenant create --name <name> --display <display> [--max-targets <n>] [--max-changes <n>] [--max-storage <bytes>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--name` | | 租户名称（必填，唯一标识） |
+| `--display` | | 显示名称（必填） |
+| `--max-targets` | `100` | 最大目标机数 |
+| `--max-changes` | `10` | 最大并发变更数 |
+| `--max-storage` | `1GB` | 最大存储空间（字节） |
+
+**示例**
+
+```命令示例：创建租户
+levee tenant create --name acme --display "ACME Corp" --max-targets 100 --max-changes 10
+```
+
+### 21.2 tenant list
+
+列出所有租户。
+
+```text
+levee tenant list [--status STATUS]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--status` | | 按状态过滤：`active` / `suspended` |
+
+**示例**
+
+```命令示例：列出所有租户
+levee tenant list
+```
+
+### 21.3 tenant show
+
+查看租户详情。
+
+```text
+levee tenant show <tenant-id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<tenant-id>` | 是 | 租户 ID |
+
+**示例**
+
+```命令示例：查看租户详情
+levee tenant show t-001
+```
+
+### 21.4 tenant suspend
+
+暂停租户，阻止该租户发起任何变更操作。
+
+```text
+levee tenant suspend <tenant-id> [--reason TEXT]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<tenant-id>` | 是 | 租户 ID |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--reason` | | 暂停原因（记录在审计中） |
+
+**示例**
+
+```命令示例：暂停租户
+levee tenant suspend t-001 --reason "合规审查"
+```
+
+### 21.5 tenant resume
+
+恢复暂停的租户。
+
+```text
+levee tenant resume <tenant-id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<tenant-id>` | 是 | 租户 ID |
+
+**示例**
+
+```命令示例：恢复租户
+levee tenant resume t-001
+```
+
+### 21.6 tenant delete
+
+删除租户。仅当租户处于 `suspended` 状态且无活跃变更时可删除。
+
+```text
+levee tenant delete <tenant-id> [--force]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<tenant-id>` | 是 | 租户 ID |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--force` | `false` | 强制删除，级联清理租户所有数据 |
+
+**示例**
+
+```命令示例：删除租户
+levee tenant delete t-001
+```
+
+### 21.7 tenant quota
+
+查看或设置租户资源配额。
+
+```text
+levee tenant quota <tenant-id> [--max-targets <n>] [--max-changes <n>] [--max-storage <bytes>]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<tenant-id>` | 是 | 租户 ID |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--max-targets` | | 最大目标机数（不设置则不修改） |
+| `--max-changes` | | 最大并发变更数 |
+| `--max-storage` | | 最大存储空间（字节） |
+
+**说明**
+
+- 不带任何选项时仅显示当前配额
+- 带选项时更新对应配额项，未设置的项保留原值
+
+**示例**
+
+```命令示例：查看租户配额
+levee tenant quota t-001
+
+命令示例：调整租户配额
+levee tenant quota t-001 --max-targets 200 --max-changes 20
+```
+
+### 21.8 tenant usage
+
+查看租户资源使用量。
+
+```text
+levee tenant usage <tenant-id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<tenant-id>` | 是 | 租户 ID |
+
+**输出**
+
+包含已用目标机数、当前并发变更数、已用存储空间与对应配额上限的对比。
+
+**示例**
+
+```命令示例：查看租户使用量
+levee tenant usage t-001
+```
+
+## 第22章 drift — 配置漂移检测
+
+检测目标机配置漂移、管理漂移基线、调度定期巡检与查看漂移报告。
+
+### 22.1 drift detect
+
+检测目标机配置漂移。
+
+```text
+levee drift detect --host <host> [--baseline <baseline-id>|auto]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | | 目标主机名（必填） |
+| `--baseline` | | 基线 ID 或 `auto`（必填，`auto` 表示从最近 apply 自动生成） |
+
+**说明**
+
+- 对比目标机当前实际状态与基线状态，输出漂移项列表
+- 漂移项包含文件路径、期望内容哈希、实际内容哈希、差异类型
+- 无漂移时退出码 0，存在漂移时退出码 0 并打印漂移列表
+
+**示例**
+
+```命令示例：使用自动基线检测漂移
+levee drift detect --host web-01 --baseline auto
+
+命令示例：使用指定基线检测漂移
+levee drift detect --host web-01 --baseline base-001
+```
+
+### 22.2 drift baseline set
+
+手动设置漂移基线。
+
+```text
+levee drift baseline set --host <host> --file <path> [--name <name>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | | 目标主机名（必填） |
+| `--file` | | 基线文件路径（必填，JSON 格式） |
+| `--name` | 自动生成 | 基线名称 |
+
+**示例**
+
+```命令示例：手动设置基线
+levee drift baseline set --host web-01 --file baseline.json --name "v1.0 基线"
+```
+
+### 22.3 drift baseline auto
+
+从目标机最近一次 apply 的预期状态自动生成基线。
+
+```text
+levee drift baseline auto --host <host> [--name <name>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | | 目标主机名（必填） |
+| `--name` | 自动生成 | 基线名称 |
+
+**示例**
+
+```命令示例：自动生成基线
+levee drift baseline auto --host web-01
+```
+
+### 22.4 drift baseline list
+
+列出目标机的所有基线。
+
+```text
+levee drift baseline list --host <host>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | | 目标主机名（必填） |
+
+**示例**
+
+```命令示例：列出基线
+levee drift baseline list --host web-01
+```
+
+### 22.5 drift schedule add
+
+添加定期巡检调度任务。
+
+```text
+levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--baseline <baseline-id>|auto]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--name` | | 调度任务名称（必填） |
+| `--cron` | | 5 字段 cron 表达式（必填，如 `0 2 * * *`） |
+| `--hosts` | | 目标主机列表，逗号分隔（必填） |
+| `--baseline` | `auto` | 基线 ID 或 `auto` |
+
+**示例**
+
+```命令示例：添加每日凌晨巡检
+levee drift schedule add --name daily-check --cron "0 2 * * *" --hosts web-01,web-02
+```
+
+### 22.6 drift schedule list
+
+列出所有定期巡检调度任务。
+
+```text
+levee drift schedule list
+```
+
+**示例**
+
+```命令示例：列出巡检调度
+levee drift schedule list
+```
+
+### 22.7 drift schedule remove
+
+移除定期巡检调度任务。
+
+```text
+levee drift schedule remove <schedule-id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<schedule-id>` | 是 | 调度任务 ID |
+
+**示例**
+
+```命令示例：移除巡检调度
+levee drift schedule remove sched-001
+```
+
+### 22.8 drift schedule run
+
+立即触发一次巡检（不等 cron 时刻）。
+
+```text
+levee drift schedule run <schedule-id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<schedule-id>` | 是 | 调度任务 ID |
+
+**示例**
+
+```命令示例：立即触发巡检
+levee drift schedule run sched-001
+```
+
+### 22.9 drift report
+
+查看漂移报告与趋势分析。
+
+```text
+levee drift report --host <host> [--days <n>] [--format FORMAT]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | | 目标主机名（必填） |
+| `--days` | `30` | 报告时间范围（天） |
+| `--format` | `text` | 输出格式：`text` 或 `json` |
+
+**输出**
+
+包含漂移次数趋势、漂移项分布、最近一次漂移详情与建议。
+
+**示例**
+
+```命令示例：查看 30 天漂移报告
+levee drift report --host web-01 --days 30
+
+命令示例：JSON 格式报告
+levee drift report --host web-01 --days 7 --format json
+```
+
+## 第23章 push — 推送通知管理
+
+管理移动设备推送通知（APNs / FCM），支持设备注册、推送发送与配置管理。
+
+### 23.1 push register
+
+注册移动设备用于接收推送通知。
+
+```text
+levee push register --user <user> --token <device-token> --platform <platform>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--user` | | 用户名（必填） |
+| `--token` | | 设备推送 token（必填） |
+| `--platform` | | 平台：`ios` 或 `android`（必填） |
+
+**示例**
+
+```命令示例：注册 iOS 设备
+levee push register --user alice --token <device-token> --platform ios
+
+命令示例：注册 Android 设备
+levee push register --user bob --token <device-token> --platform android
+```
+
+### 23.2 push unregister
+
+注销移动设备。
+
+```text
+levee push unregister --user <user> --token <device-token>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--user` | | 用户名（必填） |
+| `--token` | | 设备推送 token（必填） |
+
+**示例**
+
+```命令示例：注销设备
+levee push unregister --user alice --token <device-token>
+```
+
+### 23.3 push send
+
+向用户的所有已注册设备发送推送通知。
+
+```text
+levee push send --user <user> --title <title> --body <body> [--deep-link <url>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--user` | | 目标用户名（必填） |
+| `--title` | | 通知标题（必填） |
+| `--body` | | 通知正文（必填） |
+| `--deep-link` | | 深度链接 URL，点击通知后跳转（如 `levee://approval/run-123`） |
+
+**说明**
+
+- iOS 设备通过 APNs（HTTP/2 + ES256 JWT）推送
+- Android 设备通过 FCM（HTTP v1 + OAuth2）推送
+- 失败的设备会标记并返回部分成功结果
+
+**示例**
+
+```命令示例：发送审批推送
+levee push send --user alice --title "审批请求" --body "变更 run-123 待审批" --deep-link "levee://approval/run-123"
+```
+
+### 23.4 push devices
+
+列出用户已注册的设备。
+
+```text
+levee push devices --user <user>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--user` | | 用户名（必填） |
+
+**示例**
+
+```命令示例：列出用户设备
+levee push devices --user alice
+```
+
+### 23.5 push test
+
+向用户发送测试推送通知，验证推送配置是否正常。
+
+```text
+levee push test --user <user>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--user` | | 用户名（必填） |
+
+**示例**
+
+```命令示例：测试推送
+levee push test --user alice
+```
+
+### 23.6 push config
+
+查看或配置 APNs / FCM 推送凭证。
+
+```text
+levee push config [--platform <platform>] [--key <path>] [--key-id <id>] [--team-id <id>] [--project <id>] [--service-account <path>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--platform` | | 平台：`ios` 或 `android`（不设置则显示当前配置） |
+| `--key` | | APNs 私钥文件路径（p8 格式） |
+| `--key-id` | | APNs Key ID |
+| `--team-id` | | APNs Team ID |
+| `--project` | | FCM 项目 ID |
+| `--service-account` | | FCM 服务账号 JSON 文件路径 |
+
+**说明**
+
+- 不带任何选项时显示当前 APNs / FCM 配置状态
+- 设置 `--platform ios` 并提供 `--key` / `--key-id` / `--team-id` 配置 APNs
+- 设置 `--platform android` 并提供 `--project` / `--service-account` 配置 FCM
+
+**示例**
+
+```命令示例：查看推送配置
+levee push config
+
+命令示例：配置 APNs
+levee push config --platform ios --key AuthKey.p8 --key-id ABC123 --team-id TEAM456
+
+命令示例：配置 FCM
+levee push config --platform android --project my-project --service-account sa.json
+```

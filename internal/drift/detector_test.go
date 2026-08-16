@@ -16,10 +16,10 @@ import (
 // mockStateProber implements StateProber for testing. It returns pre-configured
 // state items or an error.
 type mockStateProber struct {
-	mu     sync.Mutex
-	items  []StateItem
-	err    error
-	calls  int
+	mu    sync.Mutex
+	items []StateItem
+	err   error
+	calls int
 }
 
 func (m *mockStateProber) Probe(ctx context.Context, host string, checks []Check) ([]StateItem, error) {

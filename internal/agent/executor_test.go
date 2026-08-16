@@ -236,16 +236,16 @@ func TestAgentInfoHasCapability(t *testing.T) {
 // --- mock MasterClient for Agent tests -------------------------------------
 
 type mockMasterClient struct {
-	mu           sync.Mutex
-	registered   []AgentInfo
-	deregistered []string
-	heartbeats   []Heartbeat
-	streamErr    error
-	registerErr  error
-	deregErr     error
-	hbErr        error
+	mu            sync.Mutex
+	registered    []AgentInfo
+	deregistered  []string
+	heartbeats    []Heartbeat
+	streamErr     error
+	registerErr   error
+	deregErr      error
+	hbErr         error
 	streamHandler TaskHandler
-	streamCalled atomic.Bool
+	streamCalled  atomic.Bool
 }
 
 func (m *mockMasterClient) Register(ctx context.Context, info AgentInfo) error {

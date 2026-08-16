@@ -19,9 +19,9 @@ const (
 // DeviceToken is a single registered mobile device. A user may have multiple
 // devices (e.g. a phone and a tablet); each is tracked independently.
 type DeviceToken struct {
-	Token       string    `json:"token"`
-	Platform    string    `json:"platform"`
-	UserID      string    `json:"user_id"`
+	Token        string    `json:"token"`
+	Platform     string    `json:"platform"`
+	UserID       string    `json:"user_id"`
 	RegisteredAt time.Time `json:"registered_at"`
 }
 
@@ -83,9 +83,9 @@ func (pm *PushManager) RegisterDevice(userID, token, platform string) error {
 		}
 	}
 	pm.devices[userID] = append(existing, DeviceToken{
-		Token:       token,
-		Platform:    plat,
-		UserID:      userID,
+		Token:        token,
+		Platform:     plat,
+		UserID:       userID,
 		RegisteredAt: time.Now().UTC(),
 	})
 	log.Info("push: device registered",

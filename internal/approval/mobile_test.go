@@ -1,7 +1,6 @@
 package approval
 
 import (
-
 	"testing"
 	"time"
 
@@ -107,7 +106,6 @@ func TestMobileRequestApproval_PushFailureDoesNotBlockApproval(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pending, 1)
 }
-
 
 // --- ApproveViaDeepLink ----------------------------------------------------
 

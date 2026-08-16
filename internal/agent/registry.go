@@ -1,6 +1,5 @@
 package agent
 
-
 import (
 	"errors"
 	"fmt"

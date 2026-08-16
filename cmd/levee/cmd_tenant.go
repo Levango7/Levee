@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"encoding/json"
@@ -18,12 +17,12 @@ import (
 // Tenant command option variables. Prefixed with "tenant" to avoid
 // collisions with other command packages in the same main package.
 var (
-	tenantCreateOptName        string
-	tenantCreateOptDisplay     string
-	tenantCreateOptMaxTargets  int
-	tenantCreateOptMaxChanges  int
-	tenantCreateOptMaxStorage  int
-	tenantCreateOptMaxAPIRate  int
+	tenantCreateOptName       string
+	tenantCreateOptDisplay    string
+	tenantCreateOptMaxTargets int
+	tenantCreateOptMaxChanges int
+	tenantCreateOptMaxStorage int
+	tenantCreateOptMaxAPIRate int
 
 	tenantQuotaOptMaxTargets int
 	tenantQuotaOptMaxChanges int
@@ -175,18 +174,18 @@ type tenantRegistry struct {
 // tenantRecord is the persisted form of a tenant plus its quota. It
 // captures the fields needed to reconstruct a Tenant and Quota on load.
 type tenantRecord struct {
-	ID                 string            `yaml:"id" json:"id"`
-	Name               string            `yaml:"name" json:"name"`
-	DisplayName        string            `yaml:"display_name" json:"display_name"`
-	Namespace          string            `yaml:"namespace" json:"namespace"`
-	Status             string            `yaml:"status" json:"status"`
-	CreatedAt          time.Time         `yaml:"created_at" json:"created_at"`
-	UpdatedAt          time.Time         `yaml:"updated_at" json:"updated_at"`
-	Labels             map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
-	MaxTargets         int               `yaml:"max_targets" json:"max_targets"`
-	MaxConcurrentChanges int             `yaml:"max_concurrent_changes" json:"max_concurrent_changes"`
-	MaxStorageMB       int               `yaml:"max_storage_mb" json:"max_storage_mb"`
-	MaxAPIRatePerMin   int               `yaml:"max_api_rate_per_min" json:"max_api_rate_per_min"`
+	ID                   string            `yaml:"id" json:"id"`
+	Name                 string            `yaml:"name" json:"name"`
+	DisplayName          string            `yaml:"display_name" json:"display_name"`
+	Namespace            string            `yaml:"namespace" json:"namespace"`
+	Status               string            `yaml:"status" json:"status"`
+	CreatedAt            time.Time         `yaml:"created_at" json:"created_at"`
+	UpdatedAt            time.Time         `yaml:"updated_at" json:"updated_at"`
+	Labels               map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
+	MaxTargets           int               `yaml:"max_targets" json:"max_targets"`
+	MaxConcurrentChanges int               `yaml:"max_concurrent_changes" json:"max_concurrent_changes"`
+	MaxStorageMB         int               `yaml:"max_storage_mb" json:"max_storage_mb"`
+	MaxAPIRatePerMin     int               `yaml:"max_api_rate_per_min" json:"max_api_rate_per_min"`
 }
 
 // tenantsFilePath returns the path to the tenant registry YAML file.
@@ -245,10 +244,10 @@ func registryToManager(reg *tenantRegistry) (*tenant.TenantManager, error) {
 		// with the original name then patch the id, timestamps and
 		// status to match the persisted record.
 		t, err := tm.Create(ctx, rec.Name, rec.DisplayName, tenant.Quota{
-			MaxTargets:          rec.MaxTargets,
+			MaxTargets:           rec.MaxTargets,
 			MaxConcurrentChanges: rec.MaxConcurrentChanges,
-			MaxStorageMB:        rec.MaxStorageMB,
-			MaxAPIRatePerMin:    rec.MaxAPIRatePerMin,
+			MaxStorageMB:         rec.MaxStorageMB,
+			MaxAPIRatePerMin:     rec.MaxAPIRatePerMin,
 		})
 		if err != nil {
 			// A duplicate name (e.g. from a stale deleted record) is
@@ -281,18 +280,18 @@ func managerToRegistry(tm *tenant.TenantManager) *tenantRegistry {
 			q = &tenant.Quota{}
 		}
 		recs = append(recs, tenantRecord{
-			ID:                  tt.ID,
-			Name:                tt.Name,
-			DisplayName:         tt.DisplayName,
-			Namespace:           tt.Namespace,
-			Status:              tt.Status.String(),
-			CreatedAt:           tt.CreatedAt,
-			UpdatedAt:           tt.UpdatedAt,
-			Labels:              tt.Labels,
-			MaxTargets:          q.MaxTargets,
+			ID:                   tt.ID,
+			Name:                 tt.Name,
+			DisplayName:          tt.DisplayName,
+			Namespace:            tt.Namespace,
+			Status:               tt.Status.String(),
+			CreatedAt:            tt.CreatedAt,
+			UpdatedAt:            tt.UpdatedAt,
+			Labels:               tt.Labels,
+			MaxTargets:           q.MaxTargets,
 			MaxConcurrentChanges: q.MaxConcurrentChanges,
-			MaxStorageMB:        q.MaxStorageMB,
-			MaxAPIRatePerMin:    q.MaxAPIRatePerMin,
+			MaxStorageMB:         q.MaxStorageMB,
+			MaxAPIRatePerMin:     q.MaxAPIRatePerMin,
 		})
 	}
 	return &tenantRegistry{Tenants: recs}
@@ -361,10 +360,10 @@ func runTenantCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	quota := tenant.Quota{
-		MaxTargets:          tenantCreateOptMaxTargets,
+		MaxTargets:           tenantCreateOptMaxTargets,
 		MaxConcurrentChanges: tenantCreateOptMaxChanges,
-		MaxStorageMB:        tenantCreateOptMaxStorage,
-		MaxAPIRatePerMin:    tenantCreateOptMaxAPIRate,
+		MaxStorageMB:         tenantCreateOptMaxStorage,
+		MaxAPIRatePerMin:     tenantCreateOptMaxAPIRate,
 	}
 	tt, err := tm.Create(ctx, tenantCreateOptName, tenantCreateOptDisplay, quota)
 	if err != nil {
@@ -505,10 +504,10 @@ func runTenantQuota(cmd *cobra.Command, args []string) error {
 	// Apply only the flags that were explicitly set. We detect "set"
 	// by checking cmd.Flags().Changed.
 	newQuota := tenant.Quota{
-		MaxTargets:          current.MaxTargets,
+		MaxTargets:           current.MaxTargets,
 		MaxConcurrentChanges: current.MaxConcurrentChanges,
-		MaxStorageMB:        current.MaxStorageMB,
-		MaxAPIRatePerMin:    current.MaxAPIRatePerMin,
+		MaxStorageMB:         current.MaxStorageMB,
+		MaxAPIRatePerMin:     current.MaxAPIRatePerMin,
 	}
 	if cmd.Flags().Changed("max-targets") {
 		newQuota.MaxTargets = tenantQuotaOptMaxTargets
@@ -627,15 +626,15 @@ func printTenantDetail(tt *tenant.Tenant, q *tenant.Quota, u *tenant.Usage) erro
 	detail := map[string]any{
 		"tenant": tenantToMap(tt),
 		"quota": map[string]any{
-			"max_targets":           q.MaxTargets,
+			"max_targets":            q.MaxTargets,
 			"max_concurrent_changes": q.MaxConcurrentChanges,
-			"max_storage_mb":        q.MaxStorageMB,
-			"max_api_rate_per_min":  q.MaxAPIRatePerMin,
+			"max_storage_mb":         q.MaxStorageMB,
+			"max_api_rate_per_min":   q.MaxAPIRatePerMin,
 		},
 		"usage": map[string]any{
-			"target_count":         u.TargetCount,
-			"active_changes":       u.ActiveChanges,
-			"storage_used_mb":      u.StorageUsedMB,
+			"target_count":          u.TargetCount,
+			"active_changes":        u.ActiveChanges,
+			"storage_used_mb":       u.StorageUsedMB,
 			"api_requests_this_min": u.APIRequestsThisMin,
 		},
 	}
@@ -655,11 +654,11 @@ func printTenantDetail(tt *tenant.Tenant, q *tenant.Quota, u *tenant.Usage) erro
 // printQuotaResult prints the result of a quota update.
 func printQuotaResult(tenantID string, q *tenant.Quota) error {
 	output := map[string]any{
-		"tenant_id":             tenantID,
-		"max_targets":           q.MaxTargets,
+		"tenant_id":              tenantID,
+		"max_targets":            q.MaxTargets,
 		"max_concurrent_changes": q.MaxConcurrentChanges,
-		"max_storage_mb":        q.MaxStorageMB,
-		"max_api_rate_per_min":  q.MaxAPIRatePerMin,
+		"max_storage_mb":         q.MaxStorageMB,
+		"max_api_rate_per_min":   q.MaxAPIRatePerMin,
 	}
 
 	if optJSON {
@@ -680,16 +679,16 @@ func printUsageResult(tenantID string, q *tenant.Quota, u *tenant.Usage) error {
 	output := map[string]any{
 		"tenant_id": tenantID,
 		"usage": map[string]any{
-			"target_count":         u.TargetCount,
-			"active_changes":       u.ActiveChanges,
-			"storage_used_mb":      u.StorageUsedMB,
+			"target_count":          u.TargetCount,
+			"active_changes":        u.ActiveChanges,
+			"storage_used_mb":       u.StorageUsedMB,
 			"api_requests_this_min": u.APIRequestsThisMin,
 		},
 		"quota": map[string]any{
-			"max_targets":           q.MaxTargets,
+			"max_targets":            q.MaxTargets,
 			"max_concurrent_changes": q.MaxConcurrentChanges,
-			"max_storage_mb":        q.MaxStorageMB,
-			"max_api_rate_per_min":  q.MaxAPIRatePerMin,
+			"max_storage_mb":         q.MaxStorageMB,
+			"max_api_rate_per_min":   q.MaxAPIRatePerMin,
 		},
 	}
 

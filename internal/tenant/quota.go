@@ -1,4 +1,3 @@
-
 package tenant
 
 import (
@@ -182,7 +181,7 @@ func (u *Usage) ValueFor(r ResourceType) (int, error) {
 // CheckAndReserve, and after the operation completes (or fails) they
 // should call Release to return the reserved capacity.
 type QuotaManager struct {
-	mu    sync.RWMutex
+	mu     sync.RWMutex
 	quotas map[string]*Quota
 	usage  map[string]*Usage
 }
