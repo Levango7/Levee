@@ -2,6 +2,32 @@
 
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [v1.7.0] - 2026-08-16
+
+### Phase B — AI 建议 + 对话引擎
+
+#### 新增特性
+- **B1 知识库框架**：历史故障/Runbook/FixPattern 匹配引擎，Jaccard + 症状 + 根因三维评分
+- **B2 LLM 集成**：OpenAI/Ollama adapter + Mock client，8 条内置脱敏规则（IP/密码/API key/DB连接/JWT/AWS key/邮箱/手机号）
+- **B3 修复方案生成**：RecommendEngine 集成知识库+LLM+脱敏+优雅降级，WorkflowGenerator 生成 LEVEELang YAML 草稿
+- **B4 对话引擎**：ConversationEngine 多轮对话状态机（Idle→Diagnosing→Recommending→Reviewing→Executing→Done/Failed）
+- **B5 IM 对话扩展**：IMAdapter 桥接飞书/钉钉/Slack → ConversationEngine，审批卡片交互
+- **B6 Web UI 对话框**：WebSocket Hub 实时对话通道，WSRequest/WSResponse JSON 协议
+- **B7 CLI 对话命令**：`levee converse` 单次+交互模式，支持 /help /state /history /sessions /new
+
+#### 新增文件
+- `internal/recommend/` — AI 建议引擎（11 files: types, knowledge_base, defaults, llm, sanitizer, engine, workflow_gen + tests）
+- `internal/conversation/` — 对话引擎（7 files: session, engine, im_adapter, web_hub + tests）
+- `cmd/levee/cmd_converse.go` — CLI 对话命令
+
+#### 测试覆盖率
+- `internal/recommend/`: 91.8%
+- `internal/conversation/`: 94.9%
+- `cmd/levee/cmd_converse.go`: 98.88%
+
+#### 依赖
+- 无新增外部依赖
+
 ## v1.6.0 - 2026-08-16
 
 ### Phase A: 智能运维闭环引擎 - 告警接入 + 基础诊断
