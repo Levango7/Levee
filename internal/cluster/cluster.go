@@ -1,4 +1,3 @@
-
 // cluster.go implements ClusterManager, the top-level facade that wires
 // together NodeRegistry, DistributedLockManager and a background health-check
 // loop. The manager owns the cluster lifecycle: Start spawns the health-check
@@ -43,10 +42,10 @@ type ManagerConfig struct {
 // ClusterManager is the top-level cluster coordinator. It owns a NodeRegistry
 // and a DistributedLockManager and runs a background health-check loop.
 type ClusterManager struct {
-	cfg    ManagerConfig
-	db     *sql.DB
+	cfg      ManagerConfig
+	db       *sql.DB
 	registry *NodeRegistry
-	locks   *DistributedLockManager
+	locks    *DistributedLockManager
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc

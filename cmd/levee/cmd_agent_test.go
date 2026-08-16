@@ -156,12 +156,12 @@ func TestPrintAgentListHumanWithRows(t *testing.T) {
 func TestPrintAgentShowHuman(t *testing.T) {
 	defer resetRootFlags()
 	m := map[string]any{
-		"id":             "a1",
-		"address":        ":9091",
-		"status":         "idle",
-		"capabilities":   []string{"shell"},
-		"last_heartbeat": "2026-08-16T12:00:00Z",
-		"active_tasks":   0,
+		"id":              "a1",
+		"address":         ":9091",
+		"status":          "idle",
+		"capabilities":    []string{"shell"},
+		"last_heartbeat":  "2026-08-16T12:00:00Z",
+		"active_tasks":    0,
 		"completed_tasks": int64(5),
 		"failed_tasks":    int64(1),
 		"max_concurrent":  2,

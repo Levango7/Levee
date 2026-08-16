@@ -1,4 +1,3 @@
-
 // pgstore_support.go contains private helpers used by pgstore.go. They are
 // kept in a separate file so pgstore.go stays a 1:1 mirror of sqlite.go and
 // reviewers can diff the two implementations column-by-column.

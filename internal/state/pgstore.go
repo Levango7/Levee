@@ -1,4 +1,3 @@
-
 // pgstore.go implements the PostgreSQL-backed Store for LEVEE cluster mode.
 // It mirrors SQLiteStore (sqlite.go) but talks to PostgreSQL via the pgx
 // driver (github.com/jackc/pgx/v5/stdlib) and uses PostgreSQL-native DDL

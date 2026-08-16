@@ -1,4 +1,3 @@
-
 // KMS integration: external Key Management System providers and graceful
 // fallback to the local CredentialStore (AES-256-GCM + argon2id).
 //

@@ -1,4 +1,3 @@
-
 // Package cluster implements multi-node coordination for LEVEE cluster mode.
 //
 // It provides three coordinated primitives:
@@ -46,13 +45,13 @@ const (
 // Node describes a single cluster member. The Capabilities field is a
 // JSON-encoded string so the registry can stay schema-agnostic.
 type Node struct {
-	ID            string    `json:"id"`
-	Address       string    `json:"address"`
+	ID            string     `json:"id"`
+	Address       string     `json:"address"`
 	Status        NodeStatus `json:"status"`
 	Role          NodeRole   `json:"role"`
-	LastHeartbeat time.Time `json:"last_heartbeat"`
-	Capabilities  string    `json:"capabilities"` // JSON encoded
-	JoinedAt      time.Time `json:"joined_at"`
+	LastHeartbeat time.Time  `json:"last_heartbeat"`
+	Capabilities  string     `json:"capabilities"` // JSON encoded
+	JoinedAt      time.Time  `json:"joined_at"`
 }
 
 // NodeRegistry maintains the set of cluster nodes in memory. It is safe for

@@ -2,6 +2,24 @@
 
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## v1.6.0 - 2026-08-16
+
+### Phase A: 智能运维闭环引擎 - 告警接入 + 基础诊断
+
+#### 新增功能
+- **告警网关** (internal/alert/): 统一告警模型 + HTTP 网关 + Prometheus Alertmanager 适配器 + 自研平台适配器 + 去重/聚合/抑制
+- **日志采集器** (internal/diagnosis/log_collector.go): SSH/Agent 远程日志拉取 + 多源并发采集 + syslog/journald/eventlog/app 四类源
+- **日志分析器** (internal/diagnosis/log_analyzer.go): 8 种内置错误模式匹配 + 错误聚类 + 根因定位 + 置信度评分
+- **健康探针** (internal/diagnosis/health_probe.go): 网络(ping/DNS/TCP) + 节点(CPU/内存/磁盘/负载) + 服务(进程/端口/HTTP) + 数据(DB/复制延迟) 四类探针
+- **诊断引擎** (internal/diagnosis/engine.go): 并发执行日志分析+健康探针 + 综合诊断报告 + 告警触发诊断 + 多目标诊断
+- **CLI 命令**: `levee alert serve/list/show/silence` + `levee diagnose <target>`
+
+#### 技术指标
+- 新增代码: ~5,500 行 Go 代码 + ~2,000 行测试代码
+- 测试覆盖率: alert 90.8%, diagnosis 95.4%
+- 新增包: internal/alert, internal/diagnosis (扩展)
+- 新增 CLI 命令组: alert, diagnose
+
 ## [1.4.0] - 2026-08-16 — Phase 3: 生态扩展
 
 ### Added

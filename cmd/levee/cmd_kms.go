@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"fmt"
@@ -128,8 +127,8 @@ func runKMSStatus(cmd *cobra.Command, args []string) error {
 	defaultProvider := mgr.DefaultProvider()
 
 	output := map[string]any{
-		"providers":       statuses,
-		"fallback":        hasFallback,
+		"providers":        statuses,
+		"fallback":         hasFallback,
 		"default_provider": defaultProvider,
 	}
 

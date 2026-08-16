@@ -1,4 +1,3 @@
-
 // distributed_lock.go implements a distributed mutex backed by PostgreSQL
 // advisory locks (pg_advisory_lock / pg_advisory_unlock).
 //
@@ -43,11 +42,11 @@ var ErrLockBusy = errors.New("cluster: lock busy")
 // DistributedLock represents a held advisory lock. The fields are informational;
 // the actual lock state lives in the PostgreSQL backend.
 type DistributedLock struct {
-	Key       string    // caller-supplied lock key
-	Owner     string    // owner identifier (e.g. node ID)
-	TTL       time.Duration
+	Key        string // caller-supplied lock key
+	Owner      string // owner identifier (e.g. node ID)
+	TTL        time.Duration
 	AcquiredAt time.Time
-	conn      *sql.Conn // dedicated connection holding the advisory lock
+	conn       *sql.Conn // dedicated connection holding the advisory lock
 }
 
 // DistributedLockManager coordinates PostgreSQL advisory locks. It is safe
@@ -56,8 +55,8 @@ type DistributedLock struct {
 type DistributedLockManager struct {
 	db *sql.DB
 
-	mu    sync.RWMutex
-	held  map[string]*DistributedLock // key -> lock
+	mu   sync.RWMutex
+	held map[string]*DistributedLock // key -> lock
 }
 
 // NewDistributedLockManager returns a manager backed by the given *sql.DB.

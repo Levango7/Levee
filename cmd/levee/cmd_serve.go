@@ -135,10 +135,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 			SelfID: serveOptNodeID,
 		})
 		if err := clusterMgr.Join(cluster.Node{
-			ID:       serveOptNodeID,
-			Address:  serveOptNodeAddr,
-			Status:   cluster.StatusActive,
-			Role:     cluster.NodeRole(serveOptNodeRole),
+			ID:      serveOptNodeID,
+			Address: serveOptNodeAddr,
+			Status:  cluster.StatusActive,
+			Role:    cluster.NodeRole(serveOptNodeRole),
 		}); err != nil {
 			_ = store.Close()
 			return fmt.Errorf("join cluster: %w", err)

@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"fmt"
@@ -19,12 +18,12 @@ import (
 // Agent command option variables. They are populated by cobra from the
 // flags defined on the agent sub-commands.
 var (
-	agentStartOptAddr     string
-	agentStartOptMaster   string
-	agentStartOptCaps     string
-	agentStartOptMaxConc  int
+	agentStartOptAddr      string
+	agentStartOptMaster    string
+	agentStartOptCaps      string
+	agentStartOptMaxConc   int
 	agentStartOptHeartbeat time.Duration
-	agentStartOptID       string
+	agentStartOptID        string
 )
 
 func init() {
@@ -176,11 +175,11 @@ func runAgentStatus(cmd *cobra.Command, args []string) error {
 	st := exec.Stats()
 
 	output := map[string]any{
-		"status":           string(agent.StatusOffline),
-		"active_tasks":     st.Active,
-		"completed_tasks":  st.Completed,
-		"failed_tasks":     st.Failed,
-		"max_concurrent":   exec.MaxConcurrent(),
+		"status":          string(agent.StatusOffline),
+		"active_tasks":    st.Active,
+		"completed_tasks": st.Completed,
+		"failed_tasks":    st.Failed,
+		"max_concurrent":  exec.MaxConcurrent(),
 	}
 
 	if optJSON {
