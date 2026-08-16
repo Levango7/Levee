@@ -82,7 +82,6 @@ func TestPreApplySLOGateSingleQueryPass(t *testing.T) {
 	assert.Equal(t, "error-rate", queries[0]["label"])
 }
 
-
 func TestPreApplySLOGateSingleQueryExceedsThresholdBlock(t *testing.T) {
 	srv, _ := promServer(promVectorResponse(0.02), http.StatusOK)
 	defer srv.Close()

@@ -1,6 +1,5 @@
 package dsl
 
-
 // typechecker.go — LEVEELang compile-time type checker.
 //
 // The TypeChecker runs after parsing and basic validation. It performs:

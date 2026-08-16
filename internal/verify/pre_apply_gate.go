@@ -1,4 +1,3 @@
-
 // Package verify implements LEVEE's verification gate framework.
 //
 // This file implements PreApplySLOGate (design doc section 4.4.5, F14 SLO gate

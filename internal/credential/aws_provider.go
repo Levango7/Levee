@@ -1,4 +1,3 @@
-
 // AWS KMS provider for the credential package.
 //
 // Implements KMSProvider using AWS Key Management Service with envelope
@@ -107,12 +106,13 @@ type EnvelopeStore interface {
 // Envelope is the on-disk format for an AWS KMS-encrypted credential.
 //
 // Layout:
-//   version     — format version (currently 1)
-//   keyID       — KMS key ID/ARN that generated the data key
-//   edk         — encrypted data key (KMS ciphertext blob, base64)
-//   iv          — AES-GCM nonce (base64)
-//   ciphertext  — AES-GCM ciphertext (base64)
-//   createdAt   — envelope creation time (RFC3339)
+//
+//	version     — format version (currently 1)
+//	keyID       — KMS key ID/ARN that generated the data key
+//	edk         — encrypted data key (KMS ciphertext blob, base64)
+//	iv          — AES-GCM nonce (base64)
+//	ciphertext  — AES-GCM ciphertext (base64)
+//	createdAt   — envelope creation time (RFC3339)
 type Envelope struct {
 	Version    int    `json:"version"`
 	KeyID      string `json:"key_id"`
@@ -466,8 +466,8 @@ func (p *AWSProvider) FlushDataKeyCache() {
 
 // memoryEnvelopeStore is the default EnvelopeStore when none is provided.
 type memoryEnvelopeStore struct {
-	mu    sync.RWMutex
-	data  map[string]*Envelope
+	mu   sync.RWMutex
+	data map[string]*Envelope
 }
 
 func newMemoryEnvelopeStore() *memoryEnvelopeStore {

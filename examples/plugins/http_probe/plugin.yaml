@@ -1,0 +1,8 @@
+name: http-probe
+version: 1.0.0
+type: gate
+author: levee-team
+description: HTTP probe gate that checks a URL's status code and response body
+min_host_version: "0.1.0"
+max_host_version: "2.0.0"
+entry_point: plugin

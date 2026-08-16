@@ -1,4 +1,3 @@
-
 // HashiCorp Vault provider for the credential package.
 //
 // Implements KMSProvider using the Vault KV v2 secrets engine. Authentication

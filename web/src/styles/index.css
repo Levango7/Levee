@@ -1,0 +1,60 @@
+/* Global stylesheet imported once in main.ts. Keeps Element Plus theme
+   overrides and LEVEE-specific tokens in one place. */
+
+:root {
+  --levee-sidebar-width: 220px;
+  --levee-header-height: 56px;
+  --levee-bg: #f5f7fa;
+  --levee-border: #e4e7ed;
+  --levee-text-regular: #303133;
+  --levee-primary: #0e7c7b;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', Arial, sans-serif;
+  background: var(--levee-bg);
+  color: var(--levee-text-regular);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--levee-primary);
+  text-decoration: none;
+}
+
+/* Subtle scrollbars to match the light theme. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #c0c4cc;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.levee-page {
+  padding: 16px 24px;
+}
+
+.levee-page__title {
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--levee-text-regular);
+}
+
+.levee-card + .levee-card {
+  margin-top: 16px;
+}

@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"crypto/rand"
@@ -108,7 +107,7 @@ func newCalendarUpdateCmd() *cobra.Command {
 		Long: "Update an existing change window. Only flags that are set are " +
 			"applied; unset flags preserve the existing value.",
 		Args: cobra.ExactArgs(1),
-		RunE:  runCalendarUpdate,
+		RunE: runCalendarUpdate,
 	}
 	cmd.Flags().StringVar(&calOptName, "name", "", "New window name")
 	cmd.Flags().StringVar(&calOptStart, "start", "", "New start time, RFC3339")
@@ -140,7 +139,7 @@ func newCalendarCheckCmd() *cobra.Command {
 		Long: "Check whether the given target set is currently frozen, and " +
 			"list any active change windows that cover it.",
 		Args: cobra.NoArgs,
-		RunE:  runCalendarCheck,
+		RunE: runCalendarCheck,
 	}
 	cmd.Flags().StringVar(&calOptTargets, "targets", "", "Comma-separated target labels (required)")
 	cmd.MarkFlagRequired("targets")
@@ -447,11 +446,11 @@ func runCalendarCheck(cmd *cobra.Command, args []string) error {
 		rows = append(rows, windowToMap(w))
 	}
 	output := map[string]any{
-		"targets":         targets,
-		"now":             now.Format(time.RFC3339),
-		"frozen":          frozen,
-		"active_windows":  rows,
-		"active_count":    len(rows),
+		"targets":        targets,
+		"now":            now.Format(time.RFC3339),
+		"frozen":         frozen,
+		"active_windows": rows,
+		"active_count":   len(rows),
 	}
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{

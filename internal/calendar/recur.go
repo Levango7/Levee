@@ -36,14 +36,14 @@ import (
 // dowRestricted record whether the original field was something other than
 // "*", which affects the day-of-month / day-of-week OR-combination rule.
 type CronSchedule struct {
-	minute         []int
-	hour           []int
-	dom            []int // day of month, 1..31
-	month          []int // 1..12
-	dow            []int // day of week, 0..6 (0 = Sunday)
-	domRestricted  bool
-	dowRestricted  bool
-	original       string
+	minute        []int
+	hour          []int
+	dom           []int // day of month, 1..31
+	month         []int // 1..12
+	dow           []int // day of week, 0..6 (0 = Sunday)
+	domRestricted bool
+	dowRestricted bool
+	original      string
 }
 
 // String returns the original cron expression.

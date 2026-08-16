@@ -1,0 +1,4 @@
+timeout: 10s
+retry: 3
+expect_code: 200
+expect_body: ""

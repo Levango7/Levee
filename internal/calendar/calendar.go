@@ -1,4 +1,3 @@
-
 // Package calendar implements the LEVEE change calendar subsystem.
 //
 // It provides CRUD over change windows (recurring or one-shot), freeze-period
@@ -48,11 +47,11 @@ type Window struct {
 // fields combine with AND semantics. OnlyActive limits results to windows that
 // contain `now` (StartTime <= now < EndTime).
 type WindowFilter struct {
-	Name      string
-	IsFrozen  *bool
+	Name       string
+	IsFrozen   *bool
 	OnlyActive bool
-	Now       time.Time // reference time for OnlyActive; zero means time.Now().UTC()
-	Limit     int
+	Now        time.Time // reference time for OnlyActive; zero means time.Now().UTC()
+	Limit      int
 }
 
 // CalendarStore is the persistence abstraction for change windows.

@@ -1,4 +1,3 @@
-
 // Package verify implements LEVEE's verification gate framework.
 //
 // This file implements GracePeriodGate (design doc section 4.4.5, F14 SLO gate
@@ -186,13 +185,13 @@ func (g *GracePeriodGate) Check(ctx context.Context, input GateInput) (GateResul
 	}
 
 	details := map[string]any{
-		"gate":         "grace_period",
-		"name":         g.name,
-		"source":       g.source,
-		"on_failure":   string(g.onFailure),
-		"duration_ms":  g.config.Duration.Milliseconds(),
-		"query_count":  len(g.config.SLOQueries),
-		"run_id":       input.RunID,
+		"gate":        "grace_period",
+		"name":        g.name,
+		"source":      g.source,
+		"on_failure":  string(g.onFailure),
+		"duration_ms": g.config.Duration.Milliseconds(),
+		"query_count": len(g.config.SLOQueries),
+		"run_id":      input.RunID,
 	}
 
 	// Short-circuit on Duration == 0: no cool-down, no query, no failure.

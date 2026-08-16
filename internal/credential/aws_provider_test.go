@@ -79,7 +79,7 @@ func (m *mockKMSAPI) GenerateDataKey(ctx context.Context, params *kms.GenerateDa
 	ptCopy := make([]byte, len(plaintext))
 	copy(ptCopy, plaintext)
 	return &kms.GenerateDataKeyOutput{
-		Plaintext:     ptCopy,
+		Plaintext:      ptCopy,
 		CiphertextBlob: ciphertextBlob,
 	}, nil
 }
