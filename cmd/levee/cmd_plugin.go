@@ -1,6 +1,5 @@
 package main
 
-
 import (
 	"context"
 	"fmt"
@@ -367,16 +366,16 @@ func runPluginInfo(cmd *cobra.Command, args []string) error {
 // pluginRecordToMap converts a RegistryRecord to a map for JSON output.
 func pluginRecordToMap(rec *plugin.RegistryRecord) map[string]any {
 	m := map[string]any{
-		"name":        rec.Name,
-		"version":     rec.Version,
-		"type":        string(rec.Type),
-		"author":      rec.Author,
-		"description": rec.Description,
-		"entry_point": rec.EntryPoint,
-		"state":       string(rec.State),
-		"binary_path": rec.BinaryPath,
+		"name":         rec.Name,
+		"version":      rec.Version,
+		"type":         string(rec.Type),
+		"author":       rec.Author,
+		"description":  rec.Description,
+		"entry_point":  rec.EntryPoint,
+		"state":        string(rec.State),
+		"binary_path":  rec.BinaryPath,
 		"installed_at": rec.InstalledAt,
-		"updated_at":  rec.UpdatedAt,
+		"updated_at":   rec.UpdatedAt,
 	}
 	if rec.MinHostVersion != "" {
 		m["min_host_version"] = rec.MinHostVersion

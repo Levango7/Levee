@@ -1,4 +1,3 @@
-
 // Package chatops implements the ChatOps layer for LEVEE. It provides a
 // platform-agnostic Bot abstraction together with a BotManager that owns the
 // set of registered platform bots (Feishu / DingTalk / Slack / ...), fans out
@@ -96,18 +95,18 @@ const (
 // the event into a platform-native card and delivers it.
 type Event struct {
 	Type      EventType         `json:"type"`
-	RunID     string           `json:"run_id"`
-	Title     string           `json:"title"`
-	Summary   string           `json:"summary"`
-	Level     string           `json:"level,omitempty"`
-	Status    string           `json:"status,omitempty"`
-	Approver  string           `json:"approver,omitempty"`
-	ChangeID  string           `json:"change_id,omitempty"`
-	DetailURL string           `json:"detail_url,omitempty"`
-	GateName  string           `json:"gate_name,omitempty"`
-	GatePass  bool             `json:"gate_pass,omitempty"`
+	RunID     string            `json:"run_id"`
+	Title     string            `json:"title"`
+	Summary   string            `json:"summary"`
+	Level     string            `json:"level,omitempty"`
+	Status    string            `json:"status,omitempty"`
+	Approver  string            `json:"approver,omitempty"`
+	ChangeID  string            `json:"change_id,omitempty"`
+	DetailURL string            `json:"detail_url,omitempty"`
+	GateName  string            `json:"gate_name,omitempty"`
+	GatePass  bool              `json:"gate_pass,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
-	Timestamp time.Time        `json:"timestamp"`
+	Timestamp time.Time         `json:"timestamp"`
 }
 
 // --- IncomingMessage --------------------------------------------------------
@@ -117,10 +116,10 @@ type Event struct {
 // this canonical shape before handing it to the command router.
 type IncomingMessage struct {
 	Platform Platform `json:"platform"`
-	Channel  string   `json:"channel"`  // group / channel id
-	User     string   `json:"user"`     // user id (platform-native)
+	Channel  string   `json:"channel"` // group / channel id
+	User     string   `json:"user"`    // user id (platform-native)
 	UserName string   `json:"user_name"`
-	Text     string   `json:"text"`     // raw message text
+	Text     string   `json:"text"` // raw message text
 	ThreadTS string   `json:"thread_ts,omitempty"`
 	Raw      any      `json:"raw,omitempty"` // original payload, for adapters
 }

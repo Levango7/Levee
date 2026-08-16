@@ -208,9 +208,9 @@ func runRBACRoleList(cmd *cobra.Command, args []string) error {
 		direct, _ := tree.DirectPermissions(r)
 		effective, _ := tree.EffectivePermissions(r)
 		rows = append(rows, map[string]any{
-			"role":     r,
-			"parent":   parent,
-			"direct":   direct,
+			"role":      r,
+			"parent":    parent,
+			"direct":    direct,
 			"effective": effective,
 		})
 	}
@@ -298,11 +298,11 @@ func runRBACPolicyList(cmd *cobra.Command, args []string) error {
 	rows := make([]map[string]any, 0, len(policies))
 	for _, p := range policies {
 		rows = append(rows, map[string]any{
-			"id":        p.ID,
-			"effect":    string(p.Effect),
-			"resource":  p.Resource,
-			"action":    p.Action,
-			"condition": p.Condition,
+			"id":          p.ID,
+			"effect":      string(p.Effect),
+			"resource":    p.Resource,
+			"action":      p.Action,
+			"condition":   p.Condition,
 			"description": p.Description,
 		})
 	}
@@ -342,10 +342,10 @@ func runRBACPolicyAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	out := map[string]any{
-		"id":      p.ID,
-		"effect":  string(p.Effect),
+		"id":       p.ID,
+		"effect":   string(p.Effect),
 		"resource": p.Resource,
-		"action":  p.Action,
+		"action":   p.Action,
 	}
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{"data": out, "meta": nil, "error": nil})

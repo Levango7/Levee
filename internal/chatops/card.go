@@ -1,4 +1,3 @@
-
 // card.go implements the unified Card model and a CardBuilder that produces
 // the three card kinds used by the ChatOps layer — approval, status and
 // notification. Each card carries a platform-neutral description plus three
@@ -64,17 +63,17 @@ type CardField struct {
 // Card is the platform-neutral card model. Adapters call ToFeishu /
 // ToDingtalk / ToSlack to obtain the wire payload.
 type Card struct {
-	Kind       CardKind     `json:"kind"`
-	Title      string       `json:"title"`
-	Summary    string       `json:"summary,omitempty"`
-	Fields     []CardField  `json:"fields,omitempty"`
-	Actions    []CardAction `json:"actions,omitempty"`
-	DetailURL  string       `json:"detail_url,omitempty"`
-	Footer     string       `json:"footer,omitempty"`
-	Timestamp  time.Time    `json:"timestamp,omitempty"`
-	ChangeID   string       `json:"change_id,omitempty"`
-	RunID      string       `json:"run_id,omitempty"`
-	Level      string       `json:"level,omitempty"`
+	Kind      CardKind     `json:"kind"`
+	Title     string       `json:"title"`
+	Summary   string       `json:"summary,omitempty"`
+	Fields    []CardField  `json:"fields,omitempty"`
+	Actions   []CardAction `json:"actions,omitempty"`
+	DetailURL string       `json:"detail_url,omitempty"`
+	Footer    string       `json:"footer,omitempty"`
+	Timestamp time.Time    `json:"timestamp,omitempty"`
+	ChangeID  string       `json:"change_id,omitempty"`
+	RunID     string       `json:"run_id,omitempty"`
+	Level     string       `json:"level,omitempty"`
 }
 
 // --- CardBuilder -----------------------------------------------------------
@@ -255,8 +254,8 @@ func (c *Card) ToFeishu() map[string]any {
 	// Summary as a markdown element.
 	if c.Summary != "" {
 		elements = append(elements, map[string]any{
-			"tag":     "div",
-			"text":    map[string]any{"tag": "lark_md", "content": c.Summary},
+			"tag":  "div",
+			"text": map[string]any{"tag": "lark_md", "content": c.Summary},
 		})
 	}
 
@@ -275,9 +274,9 @@ func (c *Card) ToFeishu() map[string]any {
 			})
 		}
 		elements = append(elements, map[string]any{
-			"tag":      "column_set",
+			"tag":       "column_set",
 			"flex_mode": "none",
-			"columns":  columns,
+			"columns":   columns,
 		})
 	}
 
@@ -286,23 +285,23 @@ func (c *Card) ToFeishu() map[string]any {
 		buttons := make([]any, 0, len(c.Actions))
 		for _, a := range c.Actions {
 			btn := map[string]any{
-				"tag":  "button",
-				"text": map[string]any{"tag": "plain_text", "content": a.Text},
+				"tag":   "button",
+				"text":  map[string]any{"tag": "plain_text", "content": a.Text},
 				"value": map[string]any{"command": a.Value},
 				"type":  feishuButtonType(a.Style),
 			}
 			buttons = append(buttons, btn)
 		}
 		elements = append(elements, map[string]any{
-			"tag":      "action",
-			"actions":  buttons,
+			"tag":     "action",
+			"actions": buttons,
 		})
 	}
 
 	// Footer / note.
 	if c.Footer != "" {
 		elements = append(elements, map[string]any{
-			"tag":  "note",
+			"tag": "note",
 			"elements": []any{
 				map[string]any{"tag": "plain_text", "content": c.Footer},
 			},
@@ -314,8 +313,8 @@ func (c *Card) ToFeishu() map[string]any {
 		"template": feishuHeaderColor(c.Kind),
 	}
 	return map[string]any{
-		"config": map[string]any{"wide_screen_mode": true},
-		"header": header,
+		"config":   map[string]any{"wide_screen_mode": true},
+		"header":   header,
 		"elements": elements,
 	}
 }

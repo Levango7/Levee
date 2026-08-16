@@ -242,9 +242,9 @@ func TestSaveRBACPolicySetCreatesDir(t *testing.T) {
 func TestPrintRBACRoleListHuman(t *testing.T) {
 	rows := []map[string]any{
 		{
-			"role":     "sre",
-			"parent":   "admin",
-			"direct":   []string{"apply"},
+			"role":      "sre",
+			"parent":    "admin",
+			"direct":    []string{"apply"},
 			"effective": []string{"apply", "view"},
 		},
 	}

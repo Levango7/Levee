@@ -90,8 +90,8 @@ type checkResponse struct {
 
 // gateResult is the outcome of an HTTP probe.
 type gateResult struct {
-	Passed  bool   `json:"passed"`
-	Message string `json:"message"`
+	Passed  bool           `json:"passed"`
+	Message string         `json:"message"`
 	Details map[string]any `json:"details,omitempty"`
 }
 
@@ -251,7 +251,7 @@ func handleCheck(req *checkRequest, cfg *config) checkResponse {
 	}
 	if lastErr != nil {
 		return checkResponse{
-			OK:    true,
+			OK: true,
 			Result: &gateResult{
 				Passed:  false,
 				Message: fmt.Sprintf("HTTP request failed: %v", lastErr),
@@ -286,11 +286,11 @@ func handleCheck(req *checkRequest, cfg *config) checkResponse {
 			Passed:  passed,
 			Message: message,
 			Details: map[string]any{
-				"url":          url,
-				"status_code":  resp.StatusCode,
-				"expect_code":  expectCode,
-				"body_length":  len(body),
-				"attempt":      retries + 1,
+				"url":         url,
+				"status_code": resp.StatusCode,
+				"expect_code": expectCode,
+				"body_length": len(body),
+				"attempt":     retries + 1,
 			},
 		},
 	}

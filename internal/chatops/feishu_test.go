@@ -150,7 +150,7 @@ func TestParseFeishuCallback_MessageEvent(t *testing.T) {
 				"chat_id":    "c-1",
 			},
 			"sender": map[string]any{
-				"sender_id":  map[string]any{"open_id": "ou-1"},
+				"sender_id":   map[string]any{"open_id": "ou-1"},
 				"sender_nick": "alice",
 			},
 		},

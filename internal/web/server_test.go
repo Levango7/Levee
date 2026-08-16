@@ -77,9 +77,9 @@ func TestServer_DevMode(t *testing.T) {
 	defer dev.Close()
 
 	srv, err := NewServer(ServerConfig{
-		Addr:          "127.0.0.1:0",
-		DevMode:       true,
-		DevServerURL:  dev.URL,
+		Addr:         "127.0.0.1:0",
+		DevMode:      true,
+		DevServerURL: dev.URL,
 	})
 	if err != nil {
 		t.Fatalf("new server: %v", err)

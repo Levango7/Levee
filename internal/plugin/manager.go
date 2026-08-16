@@ -71,11 +71,11 @@ type ManagerConfig struct {
 // DefaultManagerConfig returns a ManagerConfig with sensible defaults.
 func DefaultManagerConfig() ManagerConfig {
 	return ManagerConfig{
-		PluginsDir:      "plugins",
-		HostVersion:     "0.1.0",
-		Sandbox:         DefaultSandboxConfig(),
+		PluginsDir:       "plugins",
+		HostVersion:      "0.1.0",
+		Sandbox:          DefaultSandboxConfig(),
 		VerifySignatures: false,
-		StopGrace:       5 * time.Second,
+		StopGrace:        5 * time.Second,
 	}
 }
 
@@ -94,10 +94,10 @@ type handle struct {
 // PluginManager owns the plugin lifecycle. It is created once at host
 // start-up and is safe for concurrent use.
 type PluginManager struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	registry *Registry
-	cfg     ManagerConfig
-	handles map[string]*handle
+	cfg      ManagerConfig
+	handles  map[string]*handle
 }
 
 // NewPluginManager creates a PluginManager backed by the given registry.

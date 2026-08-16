@@ -232,10 +232,10 @@ type GatePlugin interface {
 
 // GateResult is the plugin-side counterpart of verify.GateResult.
 type GateResult struct {
-	Passed  bool              `json:"passed"`
-	Message string            `json:"message"`
-	Details map[string]any    `json:"details,omitempty"`
-	Latency int64             `json:"latency_ms"`
+	Passed  bool           `json:"passed"`
+	Message string         `json:"message"`
+	Details map[string]any `json:"details,omitempty"`
+	Latency int64          `json:"latency_ms"`
 }
 
 // ModulePlugin extends the module executor with a new action module.
@@ -262,12 +262,12 @@ type ModulePlugin interface {
 
 // ModuleResult is the plugin-side counterpart of executor.ModuleOutput.
 type ModuleResult struct {
-	ExitCode int               `json:"exit_code"`
-	Stdout   string            `json:"stdout"`
-	Stderr   string            `json:"stderr"`
-	Changed  bool              `json:"changed"`
-	Duration int64             `json:"duration_ms"`
-	Details  map[string]any    `json:"details,omitempty"`
+	ExitCode int            `json:"exit_code"`
+	Stdout   string         `json:"stdout"`
+	Stderr   string         `json:"stderr"`
+	Changed  bool           `json:"changed"`
+	Duration int64          `json:"duration_ms"`
+	Details  map[string]any `json:"details,omitempty"`
 }
 
 // NotifierPlugin extends the notification framework with a new delivery
@@ -290,13 +290,13 @@ type NotifierPlugin interface {
 // NotifyMessage is the plugin-side counterpart of notify.Message. It
 // carries everything a notifier needs to render and deliver a message.
 type NotifyMessage struct {
-	Event     string         `json:"event"`      // e.g. "gate_failed", "run_completed"
-	RunID     string         `json:"run_id"`
-	Level     string         `json:"level"`      // info|warning|error|critical
-	Title     string         `json:"title"`
-	Body      string         `json:"body"`
-	Recipients []string      `json:"recipients"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Event      string         `json:"event"` // e.g. "gate_failed", "run_completed"
+	RunID      string         `json:"run_id"`
+	Level      string         `json:"level"` // info|warning|error|critical
+	Title      string         `json:"title"`
+	Body       string         `json:"body"`
+	Recipients []string       `json:"recipients"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
 // --- Sentinel errors --------------------------------------------------------

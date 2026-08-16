@@ -67,7 +67,7 @@ func newChatopsSendCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "send",
 		Short: "通过 ChatOps 机器人发送消息",
-		Long: "通过 --platform 指定的机器人向 --channel 发送一条文本消息。",
+		Long:  "通过 --platform 指定的机器人向 --channel 发送一条文本消息。",
 		Args:  cobra.NoArgs,
 		RunE:  runChatopsSend,
 	}
@@ -83,7 +83,7 @@ func newChatopsApproveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "approve",
 		Short: "通过 ChatOps 触发审批通过",
-		Long: "通过 --id 指定的变更 ID 触发审批通过，复用 approval 服务。",
+		Long:  "通过 --id 指定的变更 ID 触发审批通过，复用 approval 服务。",
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runChatopsApprove,
 	}
@@ -98,7 +98,7 @@ func newChatopsRejectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reject",
 		Short: "通过 ChatOps 触发审批驳回",
-		Long: "通过 --id 指定的变更 ID 触发审批驳回，需要 --reason。",
+		Long:  "通过 --id 指定的变更 ID 触发审批驳回，需要 --reason。",
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runChatopsReject,
 	}

@@ -135,13 +135,13 @@ func TestSlackBot_DeliversEventOnStart(t *testing.T) {
 
 func TestParseSlackCallback_SlashCommand(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
-		"token":       "x",
-		"team_id":     "T1",
-		"channel_id":  "C123",
-		"user_id":     "U1",
-		"user_name":   "alice",
-		"command":     "/levee",
-		"text":        "approve ch-1",
+		"token":        "x",
+		"team_id":      "T1",
+		"channel_id":   "C123",
+		"user_id":      "U1",
+		"user_name":    "alice",
+		"command":      "/levee",
+		"text":         "approve ch-1",
 		"response_url": "http://x",
 	})
 

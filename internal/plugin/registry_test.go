@@ -226,7 +226,6 @@ func TestRegistrySignatureSkippedWhenEmpty(t *testing.T) {
 func TestRegistryIsCompatible(t *testing.T) {
 	r := newTestRegistry(t)
 
-
 	cases := []struct {
 		name   string
 		min    string

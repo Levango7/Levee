@@ -1,4 +1,3 @@
-
 // Package permission abac.go implements the Attribute-Based Access Control
 // engine. ABAC policies are expressed as
 //
@@ -487,7 +486,6 @@ func (e *ABACEngine) SetPolicies(ps *PolicySet) {
 func (e *ABACEngine) Evaluate(subject, action, resource string, labels map[string]string) (bool, string) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-
 
 	var (
 		allowID  string

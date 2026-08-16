@@ -144,15 +144,15 @@ func newFakeBot(name string, p Platform) *fakeBot {
 	return &fakeBot{name: name, platform: p, eventCh: make(chan Event, 8)}
 }
 
-func (b *fakeBot) Name() string                                                  { return b.name }
-func (b *fakeBot) Platform() Platform                                            { return b.platform }
-func (b *fakeBot) Start(ctx context.Context) error                               { b.started.Add(1); return nil }
-func (b *fakeBot) Stop() error                                                   { b.stopped.Add(1); return nil }
-func (b *fakeBot) SubscribeEvents() <-chan Event                                 { return b.eventCh }
-func (b *fakeBot) PublishEvent(evt Event) error                                  { b.eventCh <- evt; return nil }
-func (b *fakeBot) SendMessage(ctx context.Context, ch, text string) error        { return nil }
-func (b *fakeBot) SendCard(ctx context.Context, ch string, card *Card) error     { return nil }
-func (b *fakeBot) HandleMessage(ctx context.Context, msg IncomingMessage) error  { return nil }
+func (b *fakeBot) Name() string                                                 { return b.name }
+func (b *fakeBot) Platform() Platform                                           { return b.platform }
+func (b *fakeBot) Start(ctx context.Context) error                              { b.started.Add(1); return nil }
+func (b *fakeBot) Stop() error                                                  { b.stopped.Add(1); return nil }
+func (b *fakeBot) SubscribeEvents() <-chan Event                                { return b.eventCh }
+func (b *fakeBot) PublishEvent(evt Event) error                                 { b.eventCh <- evt; return nil }
+func (b *fakeBot) SendMessage(ctx context.Context, ch, text string) error       { return nil }
+func (b *fakeBot) SendCard(ctx context.Context, ch string, card *Card) error    { return nil }
+func (b *fakeBot) HandleMessage(ctx context.Context, msg IncomingMessage) error { return nil }
 
 func TestBotManager_RegisterAndGet(t *testing.T) {
 	m := NewBotManager()

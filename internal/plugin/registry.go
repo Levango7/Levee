@@ -74,21 +74,21 @@ CREATE INDEX IF NOT EXISTS idx_plugin_registry_type ON plugin_registry (type);
 // RegistryRecord is the persisted representation of a plugin. It mirrors
 // the plugin_registry table row by row.
 type RegistryRecord struct {
-	Name           string     `json:"name"`
-	Version        string     `json:"version"`
-	Type           PluginType `json:"type"`
-	Author         string     `json:"author"`
-	Description    string     `json:"description"`
-	EntryPoint     string     `json:"entry_point"`
-	MinHostVersion string     `json:"min_host_version,omitempty"`
-	MaxHostVersion string     `json:"max_host_version,omitempty"`
+	Name           string      `json:"name"`
+	Version        string      `json:"version"`
+	Type           PluginType  `json:"type"`
+	Author         string      `json:"author"`
+	Description    string      `json:"description"`
+	EntryPoint     string      `json:"entry_point"`
+	MinHostVersion string      `json:"min_host_version,omitempty"`
+	MaxHostVersion string      `json:"max_host_version,omitempty"`
 	State          PluginState `json:"state"`
-	BinaryPath     string     `json:"binary_path"`
-	ConfigYAML     string     `json:"config_yaml,omitempty"`
-	Signature      string     `json:"signature,omitempty"`
-	InstalledAt    time.Time  `json:"installed_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	ErrorMsg       string     `json:"error_msg,omitempty"`
+	BinaryPath     string      `json:"binary_path"`
+	ConfigYAML     string      `json:"config_yaml,omitempty"`
+	Signature      string      `json:"signature,omitempty"`
+	InstalledAt    time.Time   `json:"installed_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
+	ErrorMsg       string      `json:"error_msg,omitempty"`
 }
 
 // --- Registry ---------------------------------------------------------------

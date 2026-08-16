@@ -1,4 +1,3 @@
-
 // httpclient.go provides a minimal, retry-aware HTTP POST helper shared by
 // the platform adapters. It deliberately uses only net/http so the ChatOps
 // layer stays free of third-party HTTP client dependencies (per the project

@@ -1,4 +1,3 @@
-
 // slack.go implements the Slack ChatOps adapter. It delivers LEVEE events as
 // Slack Block Kit messages over the incoming webhook URL and accepts user-
 // originated callbacks through ParseSlackCallback, which converts the
@@ -152,13 +151,13 @@ func (b *SlackBot) httpOpts() httpOptions {
 // (Actions[].Value).
 type SlackCallback struct {
 	// Slash command fields.
-	Token    string `json:"token"`
-	TeamID   string `json:"team_id"`
-	ChannelID string `json:"channel_id"`
-	UserID   string `json:"user_id"`
-	UserName string `json:"user_name"`
-	Command  string `json:"command"`
-	Text     string `json:"text"`
+	Token       string `json:"token"`
+	TeamID      string `json:"team_id"`
+	ChannelID   string `json:"channel_id"`
+	UserID      string `json:"user_id"`
+	UserName    string `json:"user_name"`
+	Command     string `json:"command"`
+	Text        string `json:"text"`
 	ResponseURL string `json:"response_url"`
 	TriggerID   string `json:"trigger_id"`
 

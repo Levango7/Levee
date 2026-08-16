@@ -59,10 +59,10 @@ func TestPolicyValidate(t *testing.T) {
 
 func TestPolicyMatchesResource(t *testing.T) {
 	cases := []struct {
-		name     string
-		pattern  string
-		request  string
-		want     bool
+		name    string
+		pattern string
+		request string
+		want    bool
 	}{
 		{"exact", "change:abc", "change:abc", true},
 		{"exact mismatch", "change:abc", "change:def", false},

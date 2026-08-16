@@ -131,12 +131,12 @@ type Sandbox struct {
 	config  SandboxConfig
 	onCrash OnCrashFunc
 
-	cmd      *exec.Cmd
-	crashes  atomic.Int32 // total crashes observed
-	stopped  atomic.Bool  // set by Stop to suppress restarts
-	started  atomic.Bool  // set by Start, cleared by Stop
-	waitErr  error        // last wait error, set by monitor
-	doneCh   chan struct{} // closed when monitor exits
+	cmd     *exec.Cmd
+	crashes atomic.Int32  // total crashes observed
+	stopped atomic.Bool   // set by Stop to suppress restarts
+	started atomic.Bool   // set by Start, cleared by Stop
+	waitErr error         // last wait error, set by monitor
+	doneCh  chan struct{} // closed when monitor exits
 }
 
 // NewSandbox creates a Sandbox for the given plugin binary. The binary

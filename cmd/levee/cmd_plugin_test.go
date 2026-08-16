@@ -168,16 +168,16 @@ func TestPluginInfoHuman(t *testing.T) {
 	defer resetRootFlags()
 
 	output := map[string]any{
-		"name":        "http-probe",
-		"version":     "1.0.0",
-		"type":        "gate",
-		"author":      "levee-team",
-		"description": "HTTP probe gate",
-		"state":       "enabled",
-		"entry_point": "plugin",
-		"binary_path": "/opt/levee/plugins/http-probe/plugin",
+		"name":         "http-probe",
+		"version":      "1.0.0",
+		"type":         "gate",
+		"author":       "levee-team",
+		"description":  "HTTP probe gate",
+		"state":        "enabled",
+		"entry_point":  "plugin",
+		"binary_path":  "/opt/levee/plugins/http-probe/plugin",
 		"installed_at": "2026-08-16T10:00:00Z",
-		"updated_at":  "2026-08-16T10:00:00Z",
+		"updated_at":   "2026-08-16T10:00:00Z",
 	}
 
 	var buf bytes.Buffer

@@ -1,4 +1,3 @@
-
 // Package permission role_tree.go implements the role inheritance tree that
 // backs hierarchical RBAC for LEVEE. A role may optionally declare a parent
 // role; permissions granted to a parent are transitively effective for every

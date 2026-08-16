@@ -1,4 +1,3 @@
-
 // dingtalk.go implements the DingTalk ChatOps adapter. It delivers LEVEE
 // events as DingTalk ActionCard messages over the bot webhook URL and
 // accepts user-originated callbacks through ParseDingtalkCallback, which
@@ -149,15 +148,15 @@ func (b *DingtalkBot) httpOpts() httpOptions {
 // DingtalkCallback is the minimal subset of the DingTalk outgoing robot
 // callback payload we need to reconstruct an IncomingMessage.
 type DingtalkCallback struct {
-	MsgType     string `json:"msgtype"`
-	Text        struct {
+	MsgType string `json:"msgtype"`
+	Text    struct {
 		Content string `json:"content"`
 	} `json:"text"`
-	SenderStaffID string `json:"senderStaffId"`
-	SenderNick    string `json:"senderNick"`
+	SenderStaffID  string `json:"senderStaffId"`
+	SenderNick     string `json:"senderNick"`
 	ConversationID string `json:"conversationId"`
-	IsAdmin       bool   `json:"isAdmin"`
-	ChatbotUserID string `json:"chatbotUserId"`
+	IsAdmin        bool   `json:"isAdmin"`
+	ChatbotUserID  string `json:"chatbotUserId"`
 
 	// Card action callback (when using the actionCard with btns).
 	ActionCard struct {

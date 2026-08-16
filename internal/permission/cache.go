@@ -1,4 +1,3 @@
-
 // Package permission cache.go implements an in-memory TTL cache for
 // permission decisions. The cache is keyed by the (subject, action,
 // resource) triple and stores a boolean decision plus the reason string
@@ -30,8 +29,8 @@ const DefaultCacheSweepInterval = 1 * time.Minute
 
 // cacheEntry is a single cached decision.
 type cacheEntry struct {
-	allowed  bool
-	reason   string
+	allowed   bool
+	reason    string
 	expiresAt time.Time
 }
 
