@@ -182,6 +182,188 @@ levee trace <run-id> --verify
 
 哈希链验证通过时退出码为 0，验证失败时退出码为 6。
 
+## 编译 Workflow
+
+在执行前对 LEVEELang workflow 文件进行编译期类型检查，提前发现类型错误：
+
+```命令示例：类型检查
+levee compile deploy.yml
+```
+
+宽松模式下类型错误降级为警告，并输出中间表示（IR）：
+
+```命令示例：宽松模式并输出 IR
+levee compile deploy.yml --lenient --ir
+```
+
+仅做类型检查、不生成 IR：
+
+```命令示例：仅类型检查
+levee compile deploy.yml --check-only
+```
+
+## 变更日历
+
+管理变更窗口与冻结期，避免在冻结期触发变更。
+
+创建一个发版窗口：
+
+```命令示例：创建变更窗口
+levee calendar create --name "发版窗口" --start 2026-08-16T10:00:00Z --end 2026-08-16T12:00:00Z --targets web,batch
+```
+
+创建月末冻结期并设置 cron 重复规则：
+
+```命令示例：创建冻结期
+levee calendar create --name "月末冻结" --start 2026-08-31T00:00:00Z --end 2026-08-31T23:59:59Z --targets prod --frozen --cron "0 0 1 * *"
+```
+
+检查目标集当前是否处于冻结期：
+
+```命令示例：检查冻结状态
+levee calendar check --targets web,batch
+```
+
+列出所有窗口：
+
+```命令示例：列出变更窗口
+levee calendar list
+```
+
+## KMS 配置
+
+查看外部密钥管理系统（HashiCorp Vault、AWS KMS）集成状态：
+
+```命令示例：查看 KMS 状态
+levee kms status
+```
+
+查看 KMS 配置（启用的 Provider、默认 Provider、降级开关）：
+
+```命令示例：查看 KMS 配置
+levee kms config
+```
+
+测试 KMS 连通性，并可选执行指定凭据的完整 GetSecret 往返：
+
+```命令示例：测试 KMS 连通性
+levee kms test
+
+命令示例：测试凭据往返
+levee kms test --name prod-ssh
+```
+
+## RBAC 配置
+
+管理角色继承树与细粒度权限策略。
+
+添加角色并建立继承关系：
+
+```命令示例：添加角色
+levee rbac role add --name operator --parent viewer
+```
+
+添加 `Resource × Action × Condition` 权限策略：
+
+```命令示例：添加策略
+levee rbac policy add --id p001 --resource "change:*" --action apply --effect allow --description "允许应用变更"
+```
+
+权限检查（支持基于标签的 ABAC）：
+
+```命令示例：权限检查
+levee rbac check --user zhangsan --action apply --resource change:run-001 --label env=production --verbose
+```
+
+查看角色继承树：
+
+```命令示例：查看继承树
+levee rbac tree
+```
+
+## 插件安装
+
+安装插件（Channel/Gate/Module/Notifier 四类接口）：
+
+```命令示例：安装插件
+levee plugin install ./plugins/http-probe
+```
+
+安装并校验二进制签名：
+
+```命令示例：安装并校验签名
+levee plugin install ./plugins/http-probe --verify-signature
+```
+
+启用 / 禁用 / 查看插件：
+
+```命令示例：启用插件
+levee plugin enable http-probe
+
+命令示例：查看插件详情
+levee plugin info http-probe
+
+命令示例：列出插件
+levee plugin list
+```
+
+## ChatOps 启动
+
+启动飞书 / 钉钉 / Slack 机器人，监听 LEVEE 事件并推送卡片消息：
+
+```命令示例：启动飞书机器人
+levee chatops start --platform feishu --config bot.json
+```
+
+通过机器人发送消息：
+
+```命令示例：发送消息
+levee chatops send --platform feishu --config bot.json --channel oc_123 --message "变更 run-001 已完成"
+```
+
+通过 ChatOps 一键审批 / 驳回：
+
+```命令示例：一键审批
+levee chatops approve --id run-abc123
+
+命令示例：一键驳回
+levee chatops reject --id run-abc123 --reason "变更窗口已关闭"
+```
+
+## Web UI 启动
+
+启动 LEVEE Web UI（Vue 3 SPA），默认监听 8080 端口：
+
+```命令示例：启动 Web UI
+levee web
+```
+
+指定端口并代理 `/api/*` 到 gRPC-gateway 后端：
+
+```命令示例：指定端口并代理后端
+levee web --port 8080 --api http://localhost:9090
+```
+
+开发模式（代理到 Vite dev server 支持热更新）：
+
+```命令示例：开发模式
+levee web --dev
+```
+
+## gRPC 服务启动
+
+在当前进程运行 LEVEE gRPC 服务器，暴露全部五个服务：
+
+```命令示例：启动 gRPC 服务
+levee serve
+```
+
+启用 TLS 与 Bearer token 鉴权：
+
+```命令示例：启用 TLS 与鉴权
+levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cret
+```
+
 ## 下一步
 
 - 阅读 [CLI 参考文档](cli-reference.md) 了解全部命令

@@ -1238,3 +1238,697 @@ levee version
 命令示例：JSON 格式输出
 levee version --json
 ```
+
+## 第12章 compile — 编译 workflow
+
+对 LEVEELang workflow 文件执行编译期类型检查与 IR 生成。
+
+### 12.1 compile
+
+```text
+levee compile <file> [--strict|--lenient] [--ir] [--check-only]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<file>` | 是 | LEVEELang YAML workflow 文件路径 |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--strict` | `true` | 严格模式：类型错误致命（默认） |
+| `--lenient` | `false` | 宽松模式：类型错误降级为警告，仍生成 IR |
+| `--ir` | `false` | 将 IR 以 JSON 文档输出到 stdout |
+| `--check-only` | `false` | 仅类型检查，不生成 IR |
+
+**说明**
+
+- 执行流程：解析 YAML → 结构校验 → 类型检查 →（可选）IR 生成
+- `--lenient` 优先于 `--strict`：两者同时设置时按宽松模式处理
+- 所有错误附带源文件 + 行 + 列信息，多错误合并为单次报告
+
+**示例**
+
+```命令示例：编译并类型检查
+levee compile deploy.yml
+
+命令示例：宽松模式并输出 IR
+levee compile deploy.yml --lenient --ir
+
+命令示例：仅类型检查
+levee compile deploy.yml --check-only
+```
+
+## 第13章 calendar — 变更日历管理
+
+管理变更窗口与冻结期，支持 cron 重复规则与冲突检测。
+
+### 13.1 calendar list
+
+列出所有变更窗口与冻结期。
+
+```text
+levee calendar list [--limit N]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--limit` | `0` | 最大返回数量（0 表示全部） |
+
+**示例**
+
+```命令示例：列出所有变更窗口
+levee calendar list
+```
+
+### 13.2 calendar show
+
+查看单个变更窗口详情。
+
+```text
+levee calendar show <id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<id>` | 是 | 变更窗口 ID |
+
+**示例**
+
+```命令示例：查看变更窗口详情
+levee calendar show win-001
+```
+
+### 13.3 calendar create
+
+创建变更窗口或冻结期。
+
+```text
+levee calendar create --name <n> --start <t> --end <t> --targets <labels> [--frozen] [--cron <expr>] [--repeat <hint>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--name` | | 窗口名称（必填） |
+| `--start` | | 起始时间，RFC3339 格式（必填，如 `2026-08-16T10:00:00Z`） |
+| `--end` | | 结束时间，RFC3339 格式（必填） |
+| `--targets` | | 逗号分隔的目标标签列表（必填） |
+| `--frozen` | `false` | 标记为冻结期 |
+| `--cron` | | 5 字段 cron 重复规则（如 `0 2 * * *`） |
+| `--repeat` | | 人类可读的重复提示（如 `weekly`） |
+
+**示例**
+
+```命令示例：创建变更窗口
+levee calendar create --name "发版窗口" --start 2026-08-16T10:00:00Z --end 2026-08-16T12:00:00Z --targets web,batch
+
+命令示例：创建冻结期并设置 cron 重复
+levee calendar create --name "月末冻结" --start 2026-08-31T00:00:00Z --end 2026-08-31T23:59:59Z --targets prod --frozen --cron "0 0 1 * *"
+```
+
+### 13.4 calendar update
+
+更新变更窗口。仅设置的标志生效，未设置标志保留原值。
+
+```text
+levee calendar update <id> [--name <n>] [--start <t>] [--end <t>] [--targets <labels>] [--frozen] [--cron <expr>] [--repeat <hint>]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<id>` | 是 | 变更窗口 ID |
+
+**示例**
+
+```命令示例：更新窗口名称
+levee calendar update win-001 --name "扩展发版窗口"
+```
+
+### 13.5 calendar delete
+
+删除变更窗口或冻结期。
+
+```text
+levee calendar delete <id>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<id>` | 是 | 变更窗口 ID |
+
+**示例**
+
+```命令示例：删除变更窗口
+levee calendar delete win-001
+```
+
+### 13.6 calendar check
+
+检查目标集当前是否处于冻结期，并列出覆盖该目标集的活动变更窗口。
+
+```text
+levee calendar check --targets <labels>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--targets` | | 逗号分隔的目标标签列表（必填） |
+
+**示例**
+
+```命令示例：检查目标集冻结状态
+levee calendar check --targets web,batch
+```
+
+## 第14章 kms — KMS 管理
+
+查看与测试外部密钥管理系统（HashiCorp Vault、AWS KMS）集成状态。
+
+### 14.1 kms status
+
+显示所有已注册 KMS Provider 的健康与可达性。
+
+```text
+levee kms status
+```
+
+**说明**
+
+- 未配置任何 Provider 时，报告本地 CredentialStore（AES-256-GCM）正在使用
+- 输出包含每个 Provider 的健康状态、默认 Provider 与本地降级开关
+
+**示例**
+
+```命令示例：查看 KMS Provider 状态
+levee kms status
+```
+
+### 14.2 kms config
+
+显示 KMS 配置：启用的 Provider 列表、默认 Provider、路由表与本地降级开关。
+
+```text
+levee kms config
+```
+
+**示例**
+
+```命令示例：查看 KMS 配置
+levee kms config
+```
+
+### 14.3 kms test
+
+对每个已注册 Provider 执行连通性测试（HealthCheck），可选执行完整 GetSecret 往返。
+
+```text
+levee kms test [--name <credential-name>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--name` | | 凭据名称，提供时对每个健康 Provider 执行完整 GetSecret 往返测试 |
+
+**说明**
+
+- GetSecret 往返成功后立即清零明文，永不打印明文值
+
+**示例**
+
+```命令示例：测试 KMS 连通性
+levee kms test
+
+命令示例：测试指定凭据的完整往返
+levee kms test --name prod-ssh
+```
+
+## 第15章 rbac — RBAC 管理
+
+管理角色继承树、细粒度权限策略与权限检查。
+
+### 15.1 rbac role list
+
+列出所有角色及其父级继承关系。
+
+```text
+levee rbac role list
+```
+
+**示例**
+
+```命令示例：列出角色
+levee rbac role list
+```
+
+### 15.2 rbac role add
+
+添加角色，可选指定父级以建立继承。
+
+```text
+levee rbac role add --name <role> [--parent <parent-role>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--name` | | 角色名称（必填） |
+| `--parent` | | 父级角色名（可选，用于继承） |
+
+**示例**
+
+```命令示例：添加角色并继承
+levee rbac role add --name operator --parent viewer
+```
+
+### 15.3 rbac role remove
+
+从继承树中移除角色。
+
+```text
+levee rbac role remove --name <role>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--name` | | 要移除的角色名称（必填） |
+
+**示例**
+
+```命令示例：移除角色
+levee rbac role remove --name operator
+```
+
+### 15.4 rbac policy list
+
+列出所有权限策略。
+
+```text
+levee rbac policy list
+```
+
+**示例**
+
+```命令示例：列出策略
+levee rbac policy list
+```
+
+### 15.5 rbac policy add
+
+添加 `Resource × Action × Condition` 权限策略。
+
+```text
+levee rbac policy add --id <id> --resource <pattern> --action <action> [--effect allow|deny] [--condition <label-expr>] [--description <text>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--id` | | 策略 ID（必填） |
+| `--effect` | `allow` | 效果：`allow` 或 `deny` |
+| `--resource` | | 资源模式（必填） |
+| `--action` | | 动作（必填） |
+| `--condition` | | 标签条件表达式（可选） |
+| `--description` | | 人类可读描述 |
+
+**示例**
+
+```命令示例：添加允许策略
+levee rbac policy add --id p001 --resource "change:*" --action apply --effect allow --description "允许应用变更"
+```
+
+### 15.6 rbac policy remove
+
+按 ID 移除策略。
+
+```text
+levee rbac policy remove --id <id>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--id` | | 要移除的策略 ID（必填） |
+
+**示例**
+
+```命令示例：移除策略
+levee rbac policy remove --id p001
+```
+
+### 15.7 rbac check
+
+检查用户是否可对资源执行指定动作（支持 ABAC 标签）。
+
+```text
+levee rbac check --user <u> --action <a> --resource <r> [--label key=value]... [--verbose]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--user` | | 主体 / 用户（必填） |
+| `--action` | | 动作（必填） |
+| `--resource` | | 资源（必填） |
+| `--label` | | 资源标签，`key=value` 格式，可重复 |
+| `--verbose` | `false` | 显示详细判定解释 |
+
+**示例**
+
+```命令示例：权限检查
+levee rbac check --user zhangsan --action apply --resource change:run-001
+
+命令示例：带标签的 ABAC 检查
+levee rbac check --user zhangsan --action apply --resource change:run-001 --label env=production --verbose
+```
+
+### 15.8 rbac tree
+
+显示角色继承树。
+
+```text
+levee rbac tree
+```
+
+**示例**
+
+```命令示例：显示角色继承树
+levee rbac tree
+```
+
+## 第16章 plugin — 插件管理
+
+管理 LEVEE 插件（Channel/Gate/Module/Notifier 四类接口）。
+
+### 16.1 plugin list
+
+列出已注册的所有插件，按名称排序。
+
+```text
+levee plugin list
+```
+
+**示例**
+
+```命令示例：列出插件
+levee plugin list
+```
+
+### 16.2 plugin install
+
+从目录或二进制路径安装插件。
+
+```text
+levee plugin install <path> [--verify-signature]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<path>` | 是 | 插件目录或二进制路径（读取同目录 `plugin.yaml` 清单） |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--verify-signature` | `false` | 安装与启用时校验二进制 SHA-256 签名 |
+
+**示例**
+
+```命令示例：安装插件
+levee plugin install ./plugins/http-probe
+
+命令示例：安装并校验签名
+levee plugin install ./plugins/http-probe --verify-signature
+```
+
+### 16.3 plugin enable
+
+启用插件：启动子进程并标记为 enabled。
+
+```text
+levee plugin enable <name>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<name>` | 是 | 插件名称 |
+
+**示例**
+
+```命令示例：启用插件
+levee plugin enable http-probe
+```
+
+### 16.4 plugin disable
+
+禁用插件：停止子进程并标记为 disabled。
+
+```text
+levee plugin disable <name>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<name>` | 是 | 插件名称 |
+
+**示例**
+
+```命令示例：禁用插件
+levee plugin disable http-probe
+```
+
+### 16.5 plugin remove
+
+从注册表移除插件。若插件处于启用状态则先禁用。
+
+```text
+levee plugin remove <name>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<name>` | 是 | 插件名称 |
+
+**示例**
+
+```命令示例：移除插件
+levee plugin remove http-probe
+```
+
+### 16.6 plugin info
+
+显示插件在注册表中的完整记录。
+
+```text
+levee plugin info <name>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<name>` | 是 | 插件名称 |
+
+**示例**
+
+```命令示例：查看插件详情
+levee plugin info http-probe
+```
+
+## 第17章 chatops — ChatOps 机器人
+
+飞书 / 钉钉 / Slack 机器人管理，支持交互卡片消息与一键审批。
+
+### 17.1 chatops start
+
+启动指定平台的机器人，开始监听 LEVEE 事件并向 IM 群推送卡片消息。
+
+```text
+levee chatops start --platform <p> [--config <c>] [--timeout <d>]
+```
+
+**选项**
+
+| 选项 | 短选项 | 默认值 | 说明 |
+|------|--------|--------|------|
+| `--platform` | | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--config` | `-c` | | 机器人配置文件路径（JSON） |
+| `--timeout` | | `0` | 运行时长；`0` 表示持续运行直到收到信号 |
+
+**示例**
+
+```命令示例：启动飞书机器人
+levee chatops start --platform feishu --config bot.json
+
+命令示例：运行 60 秒后退出
+levee chatops start --platform slack --config bot.json --timeout 60s
+```
+
+### 17.2 chatops send
+
+通过指定平台的机器人向目标 channel 发送一条文本消息。
+
+```text
+levee chatops send --platform <p> [--config <c>] --channel <c> --message <m>
+```
+
+**选项**
+
+| 选项 | 短选项 | 默认值 | 说明 |
+|------|--------|--------|------|
+| `--platform` | | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--config` | `-c` | | 机器人配置文件路径（JSON） |
+| `--channel` | `-C` | | 目标 channel / 群 ID |
+| `--message` | `-m` | | 消息内容 |
+
+**示例**
+
+```命令示例：发送消息
+levee chatops send --platform feishu --config bot.json --channel oc_123 --message "变更 run-001 已完成"
+```
+
+### 17.3 chatops approve
+
+通过 ChatOps 触发审批通过，复用 approval 服务。
+
+```text
+levee chatops approve [--platform <p>] [--config <c>] --id <change-id>
+```
+
+**选项**
+
+| 选项 | 短选项 | 默认值 | 说明 |
+|------|--------|--------|------|
+| `--platform` | `-p` | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--config` | `-c` | | 机器人配置文件路径（JSON，可选） |
+| `--id` | | | 变更 ID（等价于位置参数） |
+
+**示例**
+
+```命令示例：通过 ChatOps 审批通过
+levee chatops approve --id run-abc123
+```
+
+### 17.4 chatops reject
+
+通过 ChatOps 触发审批驳回，需提供驳回原因。
+
+```text
+levee chatops reject [--platform <p>] [--config <c>] --id <change-id> --reason <r>
+```
+
+**选项**
+
+| 选项 | 短选项 | 默认值 | 说明 |
+|------|--------|--------|------|
+| `--platform` | `-p` | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--config` | `-c` | | 机器人配置文件路径（JSON，可选） |
+| `--id` | | | 变更 ID（等价于位置参数） |
+| `--reason` | `-r` | | 驳回原因（必填） |
+
+**示例**
+
+```命令示例：通过 ChatOps 驳回
+levee chatops reject --id run-abc123 --reason "变更窗口已关闭"
+```
+
+## 第18章 web — Web UI 服务
+
+提供 LEVEE Web UI（Vue 3 SPA）HTTP 服务。
+
+### 18.1 web
+
+```text
+levee web [--port <p>] [--addr <a>] [--api <url>] [--dev] [--dev-server <url>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--port` | `8080` | HTTP 监听端口 |
+| `--addr` | | HTTP 监听地址（覆盖 `--port`，如 `0.0.0.0:8080`） |
+| `--api` | | gRPC-gateway 后端 URL，用于 `/api/*` 代理（空 = 不代理） |
+| `--dev` | `false` | 开发模式：代理到 Vite dev server |
+| `--dev-server` | `http://localhost:5173` | Vite dev server URL（仅 dev 模式） |
+
+**说明**
+
+- 生产模式直接服务 go:embed 嵌入的静态资源
+- 开发模式（`--dev`）将非 API 请求代理到 Vite dev server 以支持热更新
+- 使用 `--api` 将 `/api/*` 代理到独立运行的 gRPC-gateway 后端
+
+**示例**
+
+```命令示例：启动 Web UI（默认 8080 端口）
+levee web
+
+命令示例：指定端口并代理到后端
+levee web --port 8080 --api http://localhost:9090
+
+命令示例：开发模式
+levee web --dev
+```
+
+## 第19章 serve — gRPC 服务
+
+在当前进程运行 LEVEE gRPC 服务器，暴露全部五个服务（Change / Template / Target / Audit / System）。
+
+### 19.1 serve
+
+```text
+levee serve [--addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--addr` | `:9090` | 监听地址 |
+| `--tls-cert` | | TLS 证书路径（可选，省略则明文） |
+| `--tls-key` | | TLS 私钥路径（可选） |
+| `--token` | | 要求客户端提供的 Bearer token（空 = 不鉴权） |
+
+**说明**
+
+- 省略 TLS 证书时使用明文 gRPC（适用于开发或 sidecar TLS 场景）
+- 设置 `--token` 后客户端必须携带匹配的 Bearer token
+
+**示例**
+
+```命令示例：启动 gRPC 服务（默认 :9090）
+levee serve
+
+命令示例：启用 TLS 与 token 鉴权
+levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cret
+```
