@@ -2,6 +2,53 @@
 
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [1.8.0] - 2026-08-18
+
+### Added — Phase C: 自动执行 + OpsMesh 集成
+
+- **C1 AutoPlanner** (`internal/autoplanner/`): 自动任务拆分引擎，将 AI 推荐（Recommendation）转换为可执行的 LEVEELang workflow，包含风险评估和批次划分
+  - `AutoPlanner.Plan()` — Recommendation → Workflow 转换
+  - `RiskAssessor.Assess()` — 风险→审批级别映射（低危→标准/中高危→高危/紧急→紧急）
+  
+- **C2 AutoExecutor** (`internal/autoplanner/auto_executor.go`): 全自动执行模式
+  - 低危（RiskLow）→ 自动执行（LevelStandard）
+  - 中高危（RiskMedium/High）→ 需人工确认（LevelHigh）
+  - 紧急（RiskCritical）→ 紧急审批（LevelEmergency）
+  - 失败自动回滚，回滚也失败则升级告警
+  - 三种执行模式：ModeDryRun / ModeAuto / ModeForce
+  
+- **C3 PostReport** (`internal/autoplanner/post_report.go`): 事后审计报告生成
+  - 修复摘要 + 指标对比（MetricsBefore/After/Delta）+ 审计链验证
+  - `ToText()` 纯文本格式 + `ToJSON()` JSON 格式
+  
+- **C4 OpsMesh Client** (`internal/opsmesh/`): OpsMesh 平台集成客户端
+  - `ReportResult()` — 回传修复结果给 OpsMesh
+  - `GetTopology()` — 获取服务拓扑
+  - `GetMetrics()` — 获取监控指标
+  - `Ping()` — 健康检查
+  - HTTP Bearer 认证 + 重试 + 限速
+  
+- **C5 gRPC Services** (`internal/grpc/`): 3 个新 gRPC 服务
+  - `AlertService`: ReceiveAlert / GetAlertStatus / SubscribeAlerts（流式）
+  - `DiagnosisService`: Diagnose / GetDiagnosis
+  - `ConversationService`: SendMessage / SubscribeConversation（流式）
+  - 手动编写 pb 代码（protoc 不可用）
+
+### Changed
+
+- `proto/levee.proto`: 追加 AlertService / DiagnosisService / ConversationService 定义
+- `internal/grpc/pb/`: 新增 levee_extra.pb.go + levee_extra_grpc.pb.go（手动编写）
+
+### Test Coverage
+
+| 包 | 覆盖率 |
+|----|--------|
+| internal/autoplanner (C1) | 93.2% |
+| internal/autoplanner (C2) | 96.77% |
+| internal/autoplanner (C3) | 100% |
+| internal/opsmesh (C4) | 90.3% |
+| internal/grpc (C5) | 28 tests pass |
+
 ## [v1.7.0] - 2026-08-16
 
 ### Phase B — AI 建议 + 对话引擎
