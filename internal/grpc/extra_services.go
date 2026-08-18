@@ -1,4 +1,3 @@
-
 // extra_services.go provides RegisterExtraServices, a single entry point
 // that registers the AlertService, DiagnosisService and
 // ConversationService added in C5 (task 132) on an existing *grpc.Server.

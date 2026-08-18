@@ -1,6 +1,5 @@
 package autoplanner
 
-
 // auto_executor.go implements the AutoExecutor that drives the full
 // auto-apply lifecycle: plan -> assess -> execute -> (rollback on failure).
 //

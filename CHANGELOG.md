@@ -2,6 +2,45 @@
 
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## v1.9.0 - 2026-08-18
+
+### Phase D: 高级诊断
+
+#### D1: SkyWalking/Pinpoint 拓扑分析
+- 新增 `internal/diagnosis/topology/` 包
+- 统一 `Collector` 接口 + `Topology`/`Node`/`Edge` 类型
+- SkyWalking GraphQL API 客户端
+- Pinpoint REST API 客户端
+- 覆盖率 93.0%
+
+#### D2: Zabbix/Nagios 告警适配器
+- 新增 `internal/alert/adapter_zabbix.go` + `adapter_nagios.go`
+- Zabbix webhook JSON payload 解析（支持单对象和数组）
+- Nagios HTTP webhook JSON payload 解析（支持单对象和数组）
+- 哨兵错误 `ErrInvalidPayload` / `ErrMissingField`
+- 覆盖率 93.2%
+
+#### D3: LLM 对话式诊断
+- 新增 `internal/diagnosis/llm_diag/` 包
+- 多轮推理引擎 `ReasoningEngine`
+- 推理上下文 `ReasoningContext` + `Turn` + `ReasoningStatus`
+- 收敛检测 + 最大轮次控制
+- 覆盖率 95.0%
+
+#### D4: RAG 知识库增强
+- 新增 `internal/recommend/rag/` 包
+- `EmbeddingProvider` 接口 + `MockEmbeddingProvider`（FNV-1a 哈希确定性嵌入）
+- `VectorStore` 接口 + `InMemoryVectorStore`（余弦相似度，线程安全）
+- `Retriever` + `AugmentPrompt` RAG pipeline
+- 覆盖率 94.4%
+
+#### D5: 修复效果学习
+- 新增 `internal/recommend/feedback/` 包
+- `FeedbackLearner`：Record / Learn / RecordAndLearn / GetStats
+- 反馈循环：成功→创建新 FixPattern + HistoricalIncident 添加到 KB
+- 线程安全（sync.RWMutex）
+- 覆盖率 93.5%
+
 ## [1.8.0] - 2026-08-18
 
 ### Added — Phase C: 自动执行 + OpsMesh 集成

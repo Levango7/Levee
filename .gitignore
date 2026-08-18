@@ -14,6 +14,8 @@ vendor/
 coverage.html
 coverage.txt
 coverage_*
+coverage
+zn_cov
 
 # IDE
 .idea/

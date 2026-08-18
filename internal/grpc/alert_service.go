@@ -1,4 +1,3 @@
-
 // alert_service.go implements pb.AlertServiceServer, the gRPC service that
 // ingests alerts, exposes alert status and streams alerts to subscribers.
 //

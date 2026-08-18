@@ -191,10 +191,10 @@ func TestRiskAssessor_Assess_NilRecommendation(t *testing.T) {
 // Table-driven test covering all four risk levels plus the unknown case.
 func TestRiskAssessor_Assess_TableDriven(t *testing.T) {
 	cases := []struct {
-		name       string
-		risk       recommend.RiskLevel
-		wantLevel  string
-		wantAuto   bool
+		name      string
+		risk      recommend.RiskLevel
+		wantLevel string
+		wantAuto  bool
 	}{
 		{"low", recommend.RiskLow, approval.LevelStandard, true},
 		{"medium", recommend.RiskMedium, approval.LevelHigh, false},
@@ -660,9 +660,9 @@ func TestIsValidRiskLevel(t *testing.T) {
 
 func TestWorkflowName(t *testing.T) {
 	cases := []struct {
-		name   string
-		rec    *recommend.Recommendation
-		want   string
+		name string
+		rec  *recommend.Recommendation
+		want string
 	}{
 		{
 			name: "with summary",

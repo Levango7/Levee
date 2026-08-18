@@ -1,4 +1,3 @@
-
 // types.go defines the request and response payloads exchanged between levee
 // and the OpsMesh platform. All structs use standard encoding/json tags so
 // they can be marshalled without custom adapters. Time values are RFC 3339
@@ -13,18 +12,18 @@ import "time"
 // high-level success/failure flag and the detailed step-level metrics that
 // OpsMesh uses to train its recommendation engine.
 type FixResult struct {
-	AlertID      string             `json:"alert_id"`
-	Success      bool               `json:"success"`
-	Summary      string             `json:"summary"`
-	WorkflowID   string             `json:"workflow_id"`
-	Duration     time.Duration      `json:"duration"`
-	StepsTotal   int                `json:"steps_total"`
-	StepsFailed  int                `json:"steps_failed"`
-	RollbackUsed bool               `json:"rollback_used"`
+	AlertID       string             `json:"alert_id"`
+	Success       bool               `json:"success"`
+	Summary       string             `json:"summary"`
+	WorkflowID    string             `json:"workflow_id"`
+	Duration      time.Duration      `json:"duration"`
+	StepsTotal    int                `json:"steps_total"`
+	StepsFailed   int                `json:"steps_failed"`
+	RollbackUsed  bool               `json:"rollback_used"`
 	MetricsBefore map[string]float64 `json:"metrics_before"`
 	MetricsAfter  map[string]float64 `json:"metrics_after"`
-	Timestamp    time.Time          `json:"timestamp"`
-	Error        string             `json:"error,omitempty"`
+	Timestamp     time.Time          `json:"timestamp"`
+	Error         string             `json:"error,omitempty"`
 }
 
 // Topology is the service topology returned by OpsMesh. It describes the

@@ -86,37 +86,92 @@ func (m *AlertMessage) String() string { return messageString(m) }
 func (*AlertMessage) ProtoMessage() {}
 
 // GetId returns the alert id.
-func (m *AlertMessage) GetId() string { if m != nil { return m.Id }; return "" }
+func (m *AlertMessage) GetId() string {
+	if m != nil {
+		return m.Id
+	}
+	return ""
+}
 
 // GetSource returns the alert source.
-func (m *AlertMessage) GetSource() string { if m != nil { return m.Source }; return "" }
+func (m *AlertMessage) GetSource() string {
+	if m != nil {
+		return m.Source
+	}
+	return ""
+}
 
 // GetSeverity returns the alert severity.
-func (m *AlertMessage) GetSeverity() string { if m != nil { return m.Severity }; return "" }
+func (m *AlertMessage) GetSeverity() string {
+	if m != nil {
+		return m.Severity
+	}
+	return ""
+}
 
 // GetTarget returns the alert target.
-func (m *AlertMessage) GetTarget() string { if m != nil { return m.Target }; return "" }
+func (m *AlertMessage) GetTarget() string {
+	if m != nil {
+		return m.Target
+	}
+	return ""
+}
 
 // GetTitle returns the alert title.
-func (m *AlertMessage) GetTitle() string { if m != nil { return m.Title }; return "" }
+func (m *AlertMessage) GetTitle() string {
+	if m != nil {
+		return m.Title
+	}
+	return ""
+}
 
 // GetDescription returns the alert description.
-func (m *AlertMessage) GetDescription() string { if m != nil { return m.Description }; return "" }
+func (m *AlertMessage) GetDescription() string {
+	if m != nil {
+		return m.Description
+	}
+	return ""
+}
 
 // GetStatus returns the alert status.
-func (m *AlertMessage) GetStatus() string { if m != nil { return m.Status }; return "" }
+func (m *AlertMessage) GetStatus() string {
+	if m != nil {
+		return m.Status
+	}
+	return ""
+}
 
 // GetFingerprint returns the alert fingerprint.
-func (m *AlertMessage) GetFingerprint() string { if m != nil { return m.Fingerprint }; return "" }
+func (m *AlertMessage) GetFingerprint() string {
+	if m != nil {
+		return m.Fingerprint
+	}
+	return ""
+}
 
 // GetStartsAt returns the alert start timestamp (unix seconds).
-func (m *AlertMessage) GetStartsAt() int64 { if m != nil { return m.StartsAt }; return 0 }
+func (m *AlertMessage) GetStartsAt() int64 {
+	if m != nil {
+		return m.StartsAt
+	}
+	return 0
+}
 
 // GetEndsAt returns the alert end timestamp (unix seconds).
-func (m *AlertMessage) GetEndsAt() int64 { if m != nil { return m.EndsAt }; return 0 }
+func (m *AlertMessage) GetEndsAt() int64 {
+	if m != nil {
+		return m.EndsAt
+	}
+	return 0
+}
 
 // GetLabels returns the alert labels.
-func (m *AlertMessage) GetLabels() map[string]string { if m != nil { return m.Labels }; return nil }
+func (m *AlertMessage) GetLabels() map[string]string {
+	if m != nil {
+		return m.Labels
+	}
+	return nil
+}
 
 // AlertResponse is the response from ReceiveAlert.
 type AlertResponse struct {
@@ -135,13 +190,28 @@ func (m *AlertResponse) String() string { return messageString(m) }
 func (*AlertResponse) ProtoMessage() {}
 
 // GetStatus returns the response status.
-func (m *AlertResponse) GetStatus() string { if m != nil { return m.Status }; return "" }
+func (m *AlertResponse) GetStatus() string {
+	if m != nil {
+		return m.Status
+	}
+	return ""
+}
 
 // GetId returns the alert id.
-func (m *AlertResponse) GetId() string { if m != nil { return m.Id }; return "" }
+func (m *AlertResponse) GetId() string {
+	if m != nil {
+		return m.Id
+	}
+	return ""
+}
 
 // GetReason returns the optional reason.
-func (m *AlertResponse) GetReason() string { if m != nil { return m.Reason }; return "" }
+func (m *AlertResponse) GetReason() string {
+	if m != nil {
+		return m.Reason
+	}
+	return ""
+}
 
 // GetAlertStatusRequest is the request for GetAlertStatus.
 type GetAlertStatusRequest struct {
@@ -158,7 +228,12 @@ func (m *GetAlertStatusRequest) String() string { return messageString(m) }
 func (*GetAlertStatusRequest) ProtoMessage() {}
 
 // GetId returns the alert id.
-func (m *GetAlertStatusRequest) GetId() string { if m != nil { return m.Id }; return "" }
+func (m *GetAlertStatusRequest) GetId() string {
+	if m != nil {
+		return m.Id
+	}
+	return ""
+}
 
 // AlertStatus is the response from GetAlertStatus.
 type AlertStatus struct {
@@ -179,13 +254,28 @@ func (m *AlertStatus) String() string { return messageString(m) }
 func (*AlertStatus) ProtoMessage() {}
 
 // GetId returns the alert id.
-func (m *AlertStatus) GetId() string { if m != nil { return m.Id }; return "" }
+func (m *AlertStatus) GetId() string {
+	if m != nil {
+		return m.Id
+	}
+	return ""
+}
 
 // GetStatus returns the alert status.
-func (m *AlertStatus) GetStatus() string { if m != nil { return m.Status }; return "" }
+func (m *AlertStatus) GetStatus() string {
+	if m != nil {
+		return m.Status
+	}
+	return ""
+}
 
 // GetSeverity returns the alert severity.
-func (m *AlertStatus) GetSeverity() string { if m != nil { return m.Severity }; return "" }
+func (m *AlertStatus) GetSeverity() string {
+	if m != nil {
+		return m.Severity
+	}
+	return ""
+}
 
 // SubscribeRequest is the request for the streaming SubscribeAlerts and
 // SubscribeConversation RPCs.
@@ -204,10 +294,20 @@ func (m *SubscribeRequest) String() string { return messageString(m) }
 func (*SubscribeRequest) ProtoMessage() {}
 
 // GetSeverity returns the severity filter.
-func (m *SubscribeRequest) GetSeverity() string { if m != nil { return m.Severity }; return "" }
+func (m *SubscribeRequest) GetSeverity() string {
+	if m != nil {
+		return m.Severity
+	}
+	return ""
+}
 
 // GetSource returns the source filter.
-func (m *SubscribeRequest) GetSource() string { if m != nil { return m.Source }; return "" }
+func (m *SubscribeRequest) GetSource() string {
+	if m != nil {
+		return m.Source
+	}
+	return ""
+}
 
 // ---------------------------------------------------------------------------
 // DiagnosisService messages
@@ -215,9 +315,9 @@ func (m *SubscribeRequest) GetSource() string { if m != nil { return m.Source };
 
 // DiagnoseRequest is the request for Diagnose.
 type DiagnoseRequest struct {
-	Target          string `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	AlertId         string `protobuf:"bytes,2,opt,name=alert_id,json=alertId,proto3" json:"alert_id,omitempty"`
-	TimeoutSeconds  int64  `protobuf:"varint,3,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	Target         string `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	AlertId        string `protobuf:"bytes,2,opt,name=alert_id,json=alertId,proto3" json:"alert_id,omitempty"`
+	TimeoutSeconds int64  `protobuf:"varint,3,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
 }
 
 // Reset implements proto.Message.
@@ -230,13 +330,28 @@ func (m *DiagnoseRequest) String() string { return messageString(m) }
 func (*DiagnoseRequest) ProtoMessage() {}
 
 // GetTarget returns the diagnosis target.
-func (m *DiagnoseRequest) GetTarget() string { if m != nil { return m.Target }; return "" }
+func (m *DiagnoseRequest) GetTarget() string {
+	if m != nil {
+		return m.Target
+	}
+	return ""
+}
 
 // GetAlertId returns the optional alert id.
-func (m *DiagnoseRequest) GetAlertId() string { if m != nil { return m.AlertId }; return "" }
+func (m *DiagnoseRequest) GetAlertId() string {
+	if m != nil {
+		return m.AlertId
+	}
+	return ""
+}
 
 // GetTimeoutSeconds returns the optional timeout.
-func (m *DiagnoseRequest) GetTimeoutSeconds() int64 { if m != nil { return m.TimeoutSeconds }; return 0 }
+func (m *DiagnoseRequest) GetTimeoutSeconds() int64 {
+	if m != nil {
+		return m.TimeoutSeconds
+	}
+	return 0
+}
 
 // GetDiagnosisRequest is the request for GetDiagnosis.
 type GetDiagnosisRequest struct {
@@ -253,24 +368,29 @@ func (m *GetDiagnosisRequest) String() string { return messageString(m) }
 func (*GetDiagnosisRequest) ProtoMessage() {}
 
 // GetId returns the report id.
-func (m *GetDiagnosisRequest) GetId() string { if m != nil { return m.Id }; return "" }
+func (m *GetDiagnosisRequest) GetId() string {
+	if m != nil {
+		return m.Id
+	}
+	return ""
+}
 
 // DiagnosticReportMessage is the wire representation of a diagnosis report.
 // Named to avoid clashing with diagnosis.DiagnosticReport.
 type DiagnosticReportMessage struct {
-	Id              string             `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Target          string             `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
-	Trigger         string             `protobuf:"bytes,3,opt,name=trigger,proto3" json:"trigger,omitempty"`
-	AlertId         string             `protobuf:"bytes,4,opt,name=alert_id,json=alertId,proto3" json:"alert_id,omitempty"`
-	Status          string             `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
-	RootCause       string             `protobuf:"bytes,6,opt,name=root_cause,json=rootCause,proto3" json:"root_cause,omitempty"`
-	Confidence      float64            `protobuf:"fixed64,7,opt,name=confidence,proto3" json:"confidence,omitempty"`
-	Summary         string             `protobuf:"bytes,8,opt,name=summary,proto3" json:"summary,omitempty"`
-	Recommendations []string           `protobuf:"bytes,9,rep,name=recommendations,proto3" json:"recommendations,omitempty"`
-	Errors          []string           `protobuf:"bytes,10,rep,name=errors,proto3" json:"errors,omitempty"`
-	StartedAt       int64              `protobuf:"varint,11,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	DurationMs      int64              `protobuf:"varint,12,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	Findings        []*FindingMessage  `protobuf:"bytes,13,rep,name=findings,proto3" json:"findings,omitempty"`
+	Id              string            `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Target          string            `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
+	Trigger         string            `protobuf:"bytes,3,opt,name=trigger,proto3" json:"trigger,omitempty"`
+	AlertId         string            `protobuf:"bytes,4,opt,name=alert_id,json=alertId,proto3" json:"alert_id,omitempty"`
+	Status          string            `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	RootCause       string            `protobuf:"bytes,6,opt,name=root_cause,json=rootCause,proto3" json:"root_cause,omitempty"`
+	Confidence      float64           `protobuf:"fixed64,7,opt,name=confidence,proto3" json:"confidence,omitempty"`
+	Summary         string            `protobuf:"bytes,8,opt,name=summary,proto3" json:"summary,omitempty"`
+	Recommendations []string          `protobuf:"bytes,9,rep,name=recommendations,proto3" json:"recommendations,omitempty"`
+	Errors          []string          `protobuf:"bytes,10,rep,name=errors,proto3" json:"errors,omitempty"`
+	StartedAt       int64             `protobuf:"varint,11,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	DurationMs      int64             `protobuf:"varint,12,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	Findings        []*FindingMessage `protobuf:"bytes,13,rep,name=findings,proto3" json:"findings,omitempty"`
 }
 
 // Reset implements proto.Message.
@@ -283,22 +403,52 @@ func (m *DiagnosticReportMessage) String() string { return messageString(m) }
 func (*DiagnosticReportMessage) ProtoMessage() {}
 
 // GetId returns the report id.
-func (m *DiagnosticReportMessage) GetId() string { if m != nil { return m.Id }; return "" }
+func (m *DiagnosticReportMessage) GetId() string {
+	if m != nil {
+		return m.Id
+	}
+	return ""
+}
 
 // GetTarget returns the report target.
-func (m *DiagnosticReportMessage) GetTarget() string { if m != nil { return m.Target }; return "" }
+func (m *DiagnosticReportMessage) GetTarget() string {
+	if m != nil {
+		return m.Target
+	}
+	return ""
+}
 
 // GetStatus returns the report status.
-func (m *DiagnosticReportMessage) GetStatus() string { if m != nil { return m.Status }; return "" }
+func (m *DiagnosticReportMessage) GetStatus() string {
+	if m != nil {
+		return m.Status
+	}
+	return ""
+}
 
 // GetRootCause returns the root cause hypothesis.
-func (m *DiagnosticReportMessage) GetRootCause() string { if m != nil { return m.RootCause }; return "" }
+func (m *DiagnosticReportMessage) GetRootCause() string {
+	if m != nil {
+		return m.RootCause
+	}
+	return ""
+}
 
 // GetSummary returns the summary.
-func (m *DiagnosticReportMessage) GetSummary() string { if m != nil { return m.Summary }; return "" }
+func (m *DiagnosticReportMessage) GetSummary() string {
+	if m != nil {
+		return m.Summary
+	}
+	return ""
+}
 
 // GetFindings returns the findings slice.
-func (m *DiagnosticReportMessage) GetFindings() []*FindingMessage { if m != nil { return m.Findings }; return nil }
+func (m *DiagnosticReportMessage) GetFindings() []*FindingMessage {
+	if m != nil {
+		return m.Findings
+	}
+	return nil
+}
 
 // FindingMessage is the wire representation of a diagnosis Finding.
 type FindingMessage struct {
@@ -321,13 +471,28 @@ func (m *FindingMessage) String() string { return messageString(m) }
 func (*FindingMessage) ProtoMessage() {}
 
 // GetId returns the finding id.
-func (m *FindingMessage) GetId() string { if m != nil { return m.Id }; return "" }
+func (m *FindingMessage) GetId() string {
+	if m != nil {
+		return m.Id
+	}
+	return ""
+}
 
 // GetSeverity returns the finding severity.
-func (m *FindingMessage) GetSeverity() string { if m != nil { return m.Severity }; return "" }
+func (m *FindingMessage) GetSeverity() string {
+	if m != nil {
+		return m.Severity
+	}
+	return ""
+}
 
 // GetTitle returns the finding title.
-func (m *FindingMessage) GetTitle() string { if m != nil { return m.Title }; return "" }
+func (m *FindingMessage) GetTitle() string {
+	if m != nil {
+		return m.Title
+	}
+	return ""
+}
 
 // ---------------------------------------------------------------------------
 // ConversationService messages
@@ -350,13 +515,28 @@ func (m *SendMessageRequest) String() string { return messageString(m) }
 func (*SendMessageRequest) ProtoMessage() {}
 
 // GetSessionId returns the session id.
-func (m *SendMessageRequest) GetSessionId() string { if m != nil { return m.SessionId }; return "" }
+func (m *SendMessageRequest) GetSessionId() string {
+	if m != nil {
+		return m.SessionId
+	}
+	return ""
+}
 
 // GetUserId returns the user id.
-func (m *SendMessageRequest) GetUserId() string { if m != nil { return m.UserId }; return "" }
+func (m *SendMessageRequest) GetUserId() string {
+	if m != nil {
+		return m.UserId
+	}
+	return ""
+}
 
 // GetText returns the message text.
-func (m *SendMessageRequest) GetText() string { if m != nil { return m.Text }; return "" }
+func (m *SendMessageRequest) GetText() string {
+	if m != nil {
+		return m.Text
+	}
+	return ""
+}
 
 // ReplyMessage is the wire representation of conversation.Reply.
 type ReplyMessage struct {
@@ -376,10 +556,25 @@ func (m *ReplyMessage) String() string { return messageString(m) }
 func (*ReplyMessage) ProtoMessage() {}
 
 // GetText returns the reply text.
-func (m *ReplyMessage) GetText() string { if m != nil { return m.Text }; return "" }
+func (m *ReplyMessage) GetText() string {
+	if m != nil {
+		return m.Text
+	}
+	return ""
+}
 
 // GetActionType returns the action type.
-func (m *ReplyMessage) GetActionType() string { if m != nil { return m.ActionType }; return "" }
+func (m *ReplyMessage) GetActionType() string {
+	if m != nil {
+		return m.ActionType
+	}
+	return ""
+}
 
 // GetSessionId returns the session id.
-func (m *ReplyMessage) GetSessionId() string { if m != nil { return m.SessionId }; return "" }
+func (m *ReplyMessage) GetSessionId() string {
+	if m != nil {
+		return m.SessionId
+	}
+	return ""
+}

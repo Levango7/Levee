@@ -42,7 +42,6 @@ func readAndClose(r *http.Request) []byte {
 	return b
 }
 
-
 // --- Construction ----------------------------------------------------------
 
 // TestNewOpsMeshClient_Defaults verifies that a nil HTTPClient and Logger fall

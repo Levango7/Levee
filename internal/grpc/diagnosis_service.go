@@ -1,4 +1,3 @@
-
 // diagnosis_service.go implements pb.DiagnosisServiceServer, the gRPC
 // service that runs on-demand diagnoses and retrieves stored diagnosis
 // reports.

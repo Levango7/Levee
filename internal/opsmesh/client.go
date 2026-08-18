@@ -1,4 +1,3 @@
-
 // client.go implements the OpsMesh integration client. OpsMesh is the
 // observability and topology platform that levee integrates with bidirectionally:
 // levee reports remediation outcomes back to OpsMesh through ReportResult and

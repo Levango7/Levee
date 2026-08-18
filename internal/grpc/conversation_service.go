@@ -1,4 +1,3 @@
-
 // conversation_service.go implements pb.ConversationServiceServer, the
 // gRPC service that drives multi-turn remediation dialogues with the
 // operator.
