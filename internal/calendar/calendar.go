@@ -229,7 +229,7 @@ func (s *SQLiteStore) ListWindows(ctx context.Context, filter WindowFilter) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("calendar: list windows: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Window
 	for rows.Next() {

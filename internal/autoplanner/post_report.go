@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
 )

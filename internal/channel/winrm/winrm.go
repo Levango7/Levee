@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/masterzen/winrm"
+
 	"github.com/nexus/levee/internal/channel"
 )
 
@@ -223,7 +224,7 @@ func formatISO8601(d time.Duration) string {
 //
 // WinRM has no handshake step separate from the first request, so Connect
 // only builds the client. Actual network I/O happens on the first Exec /
-// Upload / Download. We nonetheless honor ctx.Err() so callers can bail early.
+// Upload / Download. We nonetheless honour ctx.Err() so callers can bail early.
 func (c *WinRMChannel) Connect(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

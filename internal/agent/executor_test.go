@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/executor"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/executor"
 )
 
 // --- AgentExecutor ---------------------------------------------------------

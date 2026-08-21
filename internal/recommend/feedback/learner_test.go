@@ -479,8 +479,8 @@ func TestGetStats_Empty(t *testing.T) {
 	if st.SuccessRate != 0 {
 		t.Errorf("expected 0 success rate, got %f", st.SuccessRate)
 	}
-	if st.TopPatterns != nil && len(st.TopPatterns) != 0 {
-		t.Errorf("expected nil/empty top patterns, got %v", st.TopPatterns)
+	if len(st.TopPatterns) != 0 {
+		t.Errorf("expected empty top patterns, got %v", st.TopPatterns)
 	}
 }
 

@@ -8,9 +8,10 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/plugin"
-	"github.com/spf13/cobra"
 )
 
 // Plugin command option variables. Prefixed to avoid collisions with other
@@ -411,7 +412,7 @@ func printPluginListHuman(w io.Writer, rows []map[string]any) {
 		desc, _ := row["description"].(string)
 		fmt.Fprintf(tw, "%-20s\t%-10s\t%-10s\t%-10s\t%s\n", name, ver, typ, state, desc)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // printPluginInstallHuman renders the install confirmation.
@@ -448,5 +449,5 @@ func printPluginInfoHuman(w io.Writer, output map[string]any) {
 	if v, ok := output["error_msg"]; ok && v != "" {
 		fmt.Fprintf(tw, "Error:\t%v\n", v)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }

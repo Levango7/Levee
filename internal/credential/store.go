@@ -27,9 +27,10 @@ import (
 	"runtime"
 	"time"
 
+	"golang.org/x/crypto/argon2"
+
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
-	"golang.org/x/crypto/argon2"
 )
 
 // --- Constants --------------------------------------------------------------

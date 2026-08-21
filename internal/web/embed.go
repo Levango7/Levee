@@ -81,7 +81,7 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Try the requested file first.
 	if f, err := h.fsys.Open(clean); err == nil {
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		stat, err := f.Stat()
 		if err == nil && !stat.IsDir() {
 			http.ServeContent(w, r, stat.Name(), stat.ModTime(), readSeeker{f})
@@ -92,7 +92,7 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// SPA fallback: serve index.html for any unknown non-asset path.
 	if !looksLikeAsset(r.URL.Path) {
 		if f, err := h.fsys.Open("index.html"); err == nil {
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			stat, err := f.Stat()
 			if err == nil {
 				http.ServeContent(w, r, "index.html", stat.ModTime(), readSeeker{f})

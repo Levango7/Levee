@@ -31,10 +31,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nexus/levee/internal/config"
-	"github.com/nexus/levee/internal/drift"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/drift"
 )
 
 // drift command option variables.
@@ -94,7 +95,7 @@ func newDriftDetectCmd() *cobra.Command {
 
 // runDriftDetect executes `levee drift detect`.
 func runDriftDetect(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	_ctx := context.Background()
 
 	hosts := parseTargetsFlag(driftOptHosts)
 	if driftOptHost != "" {
@@ -117,11 +118,11 @@ func runDriftDetect(cmd *cobra.Command, args []string) error {
 	// Resolve baseline for each host and run detection.
 	var results []*drift.DriftResult
 	for _, host := range hosts {
-		baseline, err := resolveBaseline(ctx, bm, host, driftOptBaseline)
+		baseline, err := resolveBaseline(_ctx, bm, host, driftOptBaseline)
 		if err != nil {
 			return fmt.Errorf("drift detect: resolve baseline for %q: %w", host, err)
 		}
-		r, err := detector.Detect(ctx, host, baseline)
+		r, err := detector.Detect(_ctx, host, baseline)
 		if r != nil {
 			results = append(results, r)
 		}
@@ -177,8 +178,8 @@ func newDriftBaselineSetCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
 	cmd.Flags().StringVar(&driftOptFile, "file", "", "Baseline YAML file (required)")
-	cmd.MarkFlagRequired("host")
-	cmd.MarkFlagRequired("file")
+	_ = cmd.MarkFlagRequired("host")
+	_ = cmd.MarkFlagRequired("file")
 	return cmd
 }
 
@@ -194,8 +195,8 @@ func newDriftBaselineAutoCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
 	cmd.Flags().StringVar(&driftOptRunID, "run", "", "Source run ID (required)")
-	cmd.MarkFlagRequired("host")
-	cmd.MarkFlagRequired("run")
+	_ = cmd.MarkFlagRequired("host")
+	_ = cmd.MarkFlagRequired("run")
 	return cmd
 }
 
@@ -219,7 +220,7 @@ func newDriftBaselineShowCmd() *cobra.Command {
 		RunE:  runDriftBaselineShow,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
-	cmd.MarkFlagRequired("host")
+	_ = cmd.MarkFlagRequired("host")
 	return cmd
 }
 
@@ -232,7 +233,7 @@ func newDriftBaselineDeleteCmd() *cobra.Command {
 		RunE:  runDriftBaselineDelete,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
-	cmd.MarkFlagRequired("host")
+	_ = cmd.MarkFlagRequired("host")
 	return cmd
 }
 
@@ -437,9 +438,9 @@ func newDriftScheduleAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&driftOptHosts, "hosts", "", "Comma-separated target hosts (required)")
 	cmd.Flags().BoolVar(&driftOptAlert, "alert", true, "Alert on drift")
 	cmd.Flags().BoolVar(&driftOptEnabled, "enabled", true, "Enable the job")
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("cron")
-	cmd.MarkFlagRequired("hosts")
+	_ = cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("cron")
+	_ = cmd.MarkFlagRequired("hosts")
 	return cmd
 }
 
@@ -610,7 +611,7 @@ func runDriftScheduleRemove(cmd *cobra.Command, args []string) error {
 
 // runDriftScheduleRun executes `levee drift schedule run <job-id>`.
 func runDriftScheduleRun(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	_ctx := context.Background()
 	jobID := args[0]
 
 	bm, err := loadBaselinesFromDisk()
@@ -625,7 +626,7 @@ func runDriftScheduleRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("drift schedule run: load jobs: %w", err)
 	}
 
-	report, err := scheduler.RunOnce(ctx, jobID)
+	report, err := scheduler.RunOnce(_ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("drift schedule run: %w", err)
 	}
@@ -663,7 +664,7 @@ func newDriftReportCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
 	cmd.Flags().IntVar(&driftOptDays, "days", 30, "Trend window in days")
-	cmd.MarkFlagRequired("host")
+	_ = cmd.MarkFlagRequired("host")
 	return cmd
 }
 
@@ -929,7 +930,7 @@ func loadBaselineYAML(path string) ([]drift.BaselineItem, error) {
 
 // resolveBaseline returns the baseline for the given host. When source is
 // "auto" it loads the stored baseline; otherwise it loads from a YAML file.
-func resolveBaseline(ctx context.Context, bm *drift.BaselineManager, host string, source string) (*drift.Baseline, error) {
+func resolveBaseline(_ctx context.Context, bm *drift.BaselineManager, host string, source string) (*drift.Baseline, error) {
 	if source == "auto" || source == "" {
 		return bm.Get(host)
 	}
@@ -960,7 +961,7 @@ func newLocalFileProber() *localFileProber {
 
 // Probe reads the actual state for each check. For file checks it reads the
 // file content; for other types it returns an error in the StateItem.
-func (p *localFileProber) Probe(ctx context.Context, host string, checks []drift.Check) ([]drift.StateItem, error) {
+func (p *localFileProber) Probe(_ctx context.Context, host string, checks []drift.Check) ([]drift.StateItem, error) {
 	items := make([]drift.StateItem, len(checks))
 	for i, c := range checks {
 		item := drift.StateItem{

@@ -1,4 +1,3 @@
-
 package recommend
 
 // defaults.go provides the built-in catalogue of historical incidents,
@@ -29,10 +28,10 @@ var defaultIncidents = []HistoricalIncident{
 		RootCause: "Java heap exhaustion due to memory leak or insufficient -Xmx",
 		Resolution: "Restart the Java service with a larger -Xmx and capture a heap dump " +
 			"on the next OOM for offline analysis.",
-		Workflow:  "workflow java-restart { service = \"java-app\" }",
-		Tags:      []string{"java", "oom", "memory", "jvm"},
-		Severity:  "critical",
-		CreatedAt: time.Date(2024, 1, 15, 9, 30, 0, 0, time.UTC),
+		Workflow:    "workflow java-restart { service = \"java-app\" }",
+		Tags:        []string{"java", "oom", "memory", "jvm"},
+		Severity:    "critical",
+		CreatedAt:   time.Date(2024, 1, 15, 9, 30, 0, 0, time.UTC),
 		Occurrences: 12,
 	},
 	{
@@ -42,10 +41,10 @@ var defaultIncidents = []HistoricalIncident{
 		RootCause: "Log volume filled by unbounded application logs or rotated logs not being purged",
 		Resolution: "Clean old rotated logs, raise log retention threshold, and provision additional " +
 			"capacity on the log volume.",
-		Workflow:  "workflow disk-cleanup { path = \"/var/log/app\" }",
-		Tags:      []string{"disk", "storage", "logs", "capacity"},
-		Severity:  "critical",
-		CreatedAt: time.Date(2024, 2, 3, 14, 12, 0, 0, time.UTC),
+		Workflow:    "workflow disk-cleanup { path = \"/var/log/app\" }",
+		Tags:        []string{"disk", "storage", "logs", "capacity"},
+		Severity:    "critical",
+		CreatedAt:   time.Date(2024, 2, 3, 14, 12, 0, 0, time.UTC),
 		Occurrences: 8,
 	},
 	{
@@ -55,10 +54,10 @@ var defaultIncidents = []HistoricalIncident{
 		RootCause: "Connection pool size too small for peak load or connections leaked by long-running transactions",
 		Resolution: "Increase the pool size, verify connection release in all code paths, and review " +
 			"long-running transactions.",
-		Workflow:  "workflow db-pool-tune { pool = \"primary\" }",
-		Tags:      []string{"database", "pool", "connection", "postgresql"},
-		Severity:  "warning",
-		CreatedAt: time.Date(2024, 3, 21, 8, 5, 0, 0, time.UTC),
+		Workflow:    "workflow db-pool-tune { pool = \"primary\" }",
+		Tags:        []string{"database", "pool", "connection", "postgresql"},
+		Severity:    "warning",
+		CreatedAt:   time.Date(2024, 3, 21, 8, 5, 0, 0, time.UTC),
 		Occurrences: 5,
 	},
 	{
@@ -68,22 +67,22 @@ var defaultIncidents = []HistoricalIncident{
 		RootCause: "Network partition or misconfigured firewall blocking traffic between service tiers",
 		Resolution: "Verify network configuration and firewall rules, then restart the affected network " +
 			"interfaces or services.",
-		Workflow:  "workflow network-restart { tier = \"edge\" }",
-		Tags:      []string{"network", "partition", "firewall", "connectivity"},
-		Severity:  "critical",
-		CreatedAt: time.Date(2024, 4, 10, 22, 45, 0, 0, time.UTC),
+		Workflow:    "workflow network-restart { tier = \"edge\" }",
+		Tags:        []string{"network", "partition", "firewall", "connectivity"},
+		Severity:    "critical",
+		CreatedAt:   time.Date(2024, 4, 10, 22, 45, 0, 0, time.UTC),
 		Occurrences: 3,
 	},
 	{
-		ID:        "INC-CONFIG-DRIFT-001",
-		Title:     "Configuration drift detected",
-		Symptoms:  []string{"config mismatch", "unexpected behaviour after deploy", "diff non-empty"},
-		RootCause: "Manual config change on the host diverged from the declared baseline",
-		Resolution: "Roll back the host configuration to the last known good baseline and redeploy.",
-		Workflow:  "workflow config-rollback { baseline = \"last-good\" }",
-		Tags:      []string{"config", "drift", "baseline", "deploy"},
-		Severity:  "warning",
-		CreatedAt: time.Date(2024, 5, 2, 11, 20, 0, 0, time.UTC),
+		ID:          "INC-CONFIG-DRIFT-001",
+		Title:       "Configuration drift detected",
+		Symptoms:    []string{"config mismatch", "unexpected behaviour after deploy", "diff non-empty"},
+		RootCause:   "Manual config change on the host diverged from the declared baseline",
+		Resolution:  "Roll back the host configuration to the last known good baseline and redeploy.",
+		Workflow:    "workflow config-rollback { baseline = \"last-good\" }",
+		Tags:        []string{"config", "drift", "baseline", "deploy"},
+		Severity:    "warning",
+		CreatedAt:   time.Date(2024, 5, 2, 11, 20, 0, 0, time.UTC),
 		Occurrences: 4,
 	},
 }

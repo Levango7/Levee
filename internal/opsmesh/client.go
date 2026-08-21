@@ -231,7 +231,7 @@ func (c *OpsMeshClient) send(req *http.Request, path string, out ...any) error {
 			slog.String("err", err.Error()))
 		return fmt.Errorf("opsmesh: %s %s: %w", method, path, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {

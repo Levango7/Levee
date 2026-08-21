@@ -8,9 +8,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/state"
-	"github.com/spf13/cobra"
 )
 
 // Target command option variables.
@@ -63,7 +64,7 @@ func newTargetImportCmd() *cobra.Command {
 		RunE:  runTargetImport,
 	}
 	cmd.Flags().StringVar(&targetImportOptFile, "file", "", "Input file path (required)")
-	cmd.MarkFlagRequired("file")
+	_ = cmd.MarkFlagRequired("file")
 	return cmd
 }
 
@@ -87,7 +88,7 @@ func runTargetList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Collect unique hosts from steps across all runs.
 	steps, err := store.ListSteps(ctx, state.StepFilter{})

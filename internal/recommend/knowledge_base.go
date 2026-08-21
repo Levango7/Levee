@@ -1,4 +1,3 @@
-
 package recommend
 
 // knowledge_base.go implements Phase B1 of LEVEE's recommendation engine: the
@@ -40,8 +39,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nexus/levee/internal/log"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/log"
 )
 
 // --- Sentinel errors ---------------------------------------------------------

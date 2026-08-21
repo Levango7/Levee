@@ -66,35 +66,18 @@ type grpcClientConfig struct {
 	connectTimeout time.Duration
 }
 
-// withTLS enables TLS on the client connection using the supplied *tls.Config.
-// Pass nil to keep the default insecure mode.
-func withTLS(cfg *tls.Config) grpcClientOption {
-	return func(c *grpcClientConfig) {
-		c.tlsConfig = cfg
-	}
-}
-
-// withConnectTimeout sets the deadline used by waitForReady when waiting for
-// the underlying connection to enter Ready state. A non-positive value keeps
-// the default (defaultConnectTimeout).
-func withConnectTimeout(d time.Duration) grpcClientOption {
-	return func(c *grpcClientConfig) {
-		c.connectTimeout = d
-	}
-}
-
 // newGRPCClient dials addr and returns a grpcClient holding all five service
 // clients. The connection is established lazily; pass a context with a
 // deadline to waitForReady to block until the server is reachable.
 //
 // token may be empty to disable authentication (development mode).
-func newGRPCClient(addr string, token string, opts ...grpcClientOption) (*grpcClient, error) {
+func newGRPCClient(addr string, token string, _opts ...grpcClientOption) (*grpcClient, error) {
 	if addr == "" {
 		return nil, errors.New("grpc client: empty server address")
 	}
 
 	cfg := &grpcClientConfig{connectTimeout: defaultConnectTimeout}
-	for _, opt := range opts {
+	for _, opt := range _opts {
 		opt(cfg)
 	}
 

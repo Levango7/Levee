@@ -119,7 +119,7 @@ func (c *FCMClient) Send(ctx context.Context, msg FCMMessage) error {
 	if err != nil {
 		return fmt.Errorf("push: fcm: send: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return c.handleResponse(resp)
 }
 

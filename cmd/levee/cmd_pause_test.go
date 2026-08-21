@@ -6,9 +6,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/nexus/levee/internal/pause"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/pause"
 )
 
 func TestPauseCmdRegistered(t *testing.T) {

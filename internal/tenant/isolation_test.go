@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // newTestStore returns a fresh SQLite store backed by a temp file. It is

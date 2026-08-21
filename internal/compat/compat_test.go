@@ -6,9 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/nexus/levee/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // samplePlaybook is a representative Ansible playbook exercising the shell,
@@ -486,5 +487,5 @@ func TestWorkflowIsDSLType(t *testing.T) {
 	a := newImporter()
 	wf, err := a.ImportBytes([]byte(samplePlaybook))
 	require.NoError(t, err)
-	var _ *dsl.Workflow = wf // compile-time type check
+	require.IsType(t, &dsl.Workflow{}, wf)
 }

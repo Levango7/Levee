@@ -76,7 +76,7 @@ func (c *FCMClient) getAccessToken() (string, time.Time, error) {
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("push: fcm: token request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

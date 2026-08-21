@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/nexus/levee/internal/alert"
 	"github.com/nexus/levee/internal/log"
 )
@@ -228,7 +229,6 @@ func (e *DiagEngine) diagnose(ctx context.Context, target string, trigger Trigge
 	}
 	type healthResult struct {
 		health HealthReport
-		err    error
 	}
 
 	var lr logResult
@@ -244,7 +244,7 @@ func (e *DiagEngine) diagnose(ctx context.Context, target string, trigger Trigge
 
 	go func() {
 		defer wg.Done()
-		hr.health, hr.err = e.runHealthProbe(ctx, target)
+		hr.health = e.runHealthProbe(ctx, target)
 	}()
 
 	wg.Wait()
@@ -257,10 +257,7 @@ func (e *DiagEngine) diagnose(ctx context.Context, target string, trigger Trigge
 		report.LogAnalysis = *lr.analysis
 	}
 
-	// Merge health.
-	if hr.err != nil {
-		report.Errors = append(report.Errors, fmt.Sprintf("health probe: %v", hr.err))
-	}
+	// Merge health (the probe degrades gracefully and never errors).
 	report.Health = hr.health
 
 	// Synthesise findings, root cause, confidence, recommendations, status
@@ -318,15 +315,13 @@ func (e *DiagEngine) runLogPipeline(ctx context.Context, target string) (*Analys
 	return analysis, nil
 }
 
-// runHealthProbe runs the health probe against target. It returns the report
-// and any error. When the engine has no prober the probe is skipped and a
-// zero-value report with no error is returned.
-func (e *DiagEngine) runHealthProbe(ctx context.Context, target string) (HealthReport, error) {
+// runHealthProbe runs the health probe against target. When the engine has
+// no prober the probe is skipped and a zero-value report is returned.
+func (e *DiagEngine) runHealthProbe(ctx context.Context, target string) HealthReport {
 	if e.prober == nil {
-		return HealthReport{}, nil
+		return HealthReport{}
 	}
-	health := e.prober.ProbeAll(ctx, target)
-	return health, nil
+	return e.prober.ProbeAll(ctx, target)
 }
 
 // --- Findings synthesis -----------------------------------------------------

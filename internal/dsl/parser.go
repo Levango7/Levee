@@ -284,8 +284,6 @@ type yamlRollbackRaw struct {
 // Conversion from raw YAML to AST
 // ---------------------------------------------------------------------------
 
-// convertWorkflow transforms the intermediate raw structure into a Workflow
-// AST. The root node is used to look up line numbers for validation errors.
 func convertWorkflow(raw *yamlWorkflowRaw, root *yaml.Node) (*Workflow, error) {
 	wf := &Workflow{
 		Meta: WorkflowMeta{

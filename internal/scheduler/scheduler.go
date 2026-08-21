@@ -268,16 +268,12 @@ func (d *LocalDispatcher) Dispatch(ctx context.Context, agentID string, task age
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	taskCtx := ctx
-	if task.Timeout > 0 {
-		var cancel context.CancelFunc
-		taskCtx, cancel = context.WithTimeout(ctx, task.Timeout)
-		defer cancel()
-	} else {
-		var cancel context.CancelFunc
-		taskCtx, cancel = context.WithTimeout(ctx, DefaultDispatchTimeout)
-		defer cancel()
+	timeout := task.Timeout
+	if timeout <= 0 {
+		timeout = DefaultDispatchTimeout
 	}
+	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	res := d.exec.Execute(taskCtx, task)
 	return res, nil
 }

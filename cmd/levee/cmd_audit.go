@@ -9,9 +9,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/state"
-	"github.com/spf13/cobra"
 )
 
 // Audit command option variables.
@@ -103,7 +104,7 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	verifier, err := audit.NewChainVerifier(store)
 	if err != nil {
@@ -163,7 +164,7 @@ func runAuditExport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: auditExportOptRunID})
 	if err != nil {
@@ -187,7 +188,7 @@ func runAuditList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: auditListOptRunID})
 	if err != nil {
@@ -232,7 +233,7 @@ func runAuditShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	trace, err := store.GetTrace(ctx, auditShowOptTraceID)
 	if err != nil {

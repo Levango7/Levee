@@ -6,9 +6,10 @@ import (
 	"io"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/state"
-	"github.com/spf13/cobra"
 )
 
 // Secret command option variables.
@@ -69,8 +70,8 @@ func newSecretAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&secretAddOptName, "name", "", "Credential name (required)")
 	cmd.Flags().StringVar(&secretAddOptType, "type", "ssh_password", "Credential type (ssh_key, ssh_password, winrm_password, api_token)")
 	cmd.Flags().StringVar(&secretAddOptValue, "value", "", "Credential plaintext value (required)")
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("value")
+	_ = cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("value")
 	return cmd
 }
 
@@ -84,7 +85,7 @@ func newSecretRotateCmd() *cobra.Command {
 		RunE:  runSecretRotate,
 	}
 	cmd.Flags().StringVar(&secretRotateOptName, "name", "", "Credential name to rotate (required)")
-	cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 
@@ -98,7 +99,7 @@ func newSecretRevokeCmd() *cobra.Command {
 		RunE:  runSecretRevoke,
 	}
 	cmd.Flags().StringVar(&secretRevokeOptName, "name", "", "Credential name to revoke (required)")
-	cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 
@@ -112,7 +113,7 @@ func newSecretShowCmd() *cobra.Command {
 		RunE:  runSecretShow,
 	}
 	cmd.Flags().StringVar(&secretShowOptName, "name", "", "Credential name to show (required)")
-	cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 
@@ -136,13 +137,13 @@ func openCredentialStore(ctx context.Context) (*credential.CredentialStore, erro
 
 	mp, err := masterPassword()
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("get master password: %w", err)
 	}
 
 	cs, err := credential.NewCredentialStore(store, mp)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("create credential store: %w", err)
 	}
 
@@ -159,13 +160,13 @@ func credStoreWithCleanup(ctx context.Context) (*credential.CredentialStore, *st
 
 	mp, err := masterPassword()
 	if err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, nil, fmt.Errorf("get master password: %w", err)
 	}
 
 	cs, err := credential.NewCredentialStore(s, mp)
 	if err != nil {
-		s.Close()
+		_ = s.Close()
 		return nil, nil, fmt.Errorf("create credential store: %w", err)
 	}
 
@@ -180,7 +181,7 @@ func runSecretList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open credential store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	creds, err := cs.List(ctx)
 	if err != nil {
@@ -225,7 +226,7 @@ func runSecretAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open credential store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	spec := credential.CredentialSpec{
 		Name:      secretAddOptName,
@@ -270,7 +271,7 @@ func runSecretRotate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open credential store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Prompt for new value from stdin.
 	fmt.Fprint(os.Stderr, "Enter new value: ")
@@ -316,7 +317,7 @@ func runSecretRevoke(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open credential store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	if err := cs.Delete(ctx, secretRevokeOptName); err != nil {
 		return fmt.Errorf("revoke credential: %w", err)
@@ -352,7 +353,7 @@ func runSecretShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open credential store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	cred, err := cs.GetMetadata(ctx, secretShowOptName)
 	if err != nil {

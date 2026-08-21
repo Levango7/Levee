@@ -223,7 +223,7 @@ func (e *ConversationEngine) SessionCount() int {
 // HandleMessage is the core entry point. It looks up the session, validates
 // the message and dispatches to the state-specific handler. The returned
 // Reply is always non-nil on success.
-func (e *ConversationEngine) HandleMessage(ctx context.Context, sessionID, userID, text string) (*Reply, error) {
+func (e *ConversationEngine) HandleMessage(_ctx context.Context, sessionID, userID, text string) (*Reply, error) {
 	if normalizeText(text) == "" {
 		return nil, fmt.Errorf("conversation: handle message: %w", ErrEmptyMessage)
 	}
@@ -231,13 +231,13 @@ func (e *ConversationEngine) HandleMessage(ctx context.Context, sessionID, userI
 	if err != nil {
 		return nil, err
 	}
-	if ctx == nil {
-		ctx = context.Background()
+	if _ctx == nil {
+		_ctx = context.Background()
 	}
 	// Apply the engine timeout when the caller has not set a deadline.
-	if _, ok := ctx.Deadline(); !ok {
+	if _, ok := _ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, e.timeout)
+		_ctx, cancel = context.WithTimeout(_ctx, e.timeout)
 		defer cancel()
 	}
 
@@ -249,17 +249,17 @@ func (e *ConversationEngine) HandleMessage(ctx context.Context, sessionID, userI
 	state := sess.GetState()
 	switch state {
 	case StateIdle:
-		return e.handleIdle(ctx, sess, text)
+		return e.handleIdle(_ctx, sess, text)
 	case StateDiagnosing:
-		return e.handleDiagnosing(ctx, sess, text)
+		return e.handleDiagnosing(_ctx, sess, text)
 	case StateRecommending:
-		return e.handleRecommending(ctx, sess, text)
+		return e.handleRecommending(_ctx, sess, text)
 	case StateReviewing:
-		return e.handleReviewing(ctx, sess, text)
+		return e.handleReviewing(_ctx, sess, text)
 	case StateExecuting:
-		return e.handleExecuting(ctx, sess, text)
+		return e.handleExecuting(_ctx, sess, text)
 	case StateDone, StateFailed:
-		return e.handleTerminal(ctx, sess, text)
+		return e.handleTerminal(_ctx, sess, text)
 	default:
 		return nil, fmt.Errorf("conversation: state %s: %w", state, ErrInvalidState)
 	}
@@ -268,7 +268,7 @@ func (e *ConversationEngine) HandleMessage(ctx context.Context, sessionID, userI
 // --- state handlers ---------------------------------------------------------
 
 // handleIdle dispatches commands in the idle state.
-func (e *ConversationEngine) handleIdle(ctx context.Context, sess *Session, text string) (*Reply, error) {
+func (e *ConversationEngine) handleIdle(_ctx context.Context, sess *Session, text string) (*Reply, error) {
 	msg := normalizeText(text)
 	sess.AddMessage(RoleUser, msg)
 
@@ -278,9 +278,9 @@ func (e *ConversationEngine) handleIdle(ctx context.Context, sess *Session, text
 		if target == "" {
 			return &Reply{Text: "用法: /diagnose <target>"}, nil
 		}
-		return e.runDiagnose(ctx, sess, target)
+		return e.runDiagnose(_ctx, sess, target)
 	case hasPrefix(msg, "/recommend"):
-		return e.runRecommendFromHistory(ctx, sess)
+		return e.runRecommendFromHistory(_ctx, sess)
 	case hasPrefix(msg, "/help"):
 		return &Reply{Text: helpText()}, nil
 	default:
@@ -291,7 +291,7 @@ func (e *ConversationEngine) handleIdle(ctx context.Context, sess *Session, text
 // handleDiagnosing handles messages while a diagnosis is in progress. The
 // operator may cancel with /cancel; any other input is acknowledged but
 // does not change state.
-func (e *ConversationEngine) handleDiagnosing(ctx context.Context, sess *Session, text string) (*Reply, error) {
+func (e *ConversationEngine) handleDiagnosing(_ctx context.Context, sess *Session, text string) (*Reply, error) {
 	msg := normalizeText(text)
 	sess.AddMessage(RoleUser, msg)
 	if msg == "/cancel" || msg == "cancel" || msg == "取消" {
@@ -303,7 +303,7 @@ func (e *ConversationEngine) handleDiagnosing(ctx context.Context, sess *Session
 
 // handleRecommending handles messages while a recommendation is being
 // generated. Behaviour mirrors handleDiagnosing.
-func (e *ConversationEngine) handleRecommending(ctx context.Context, sess *Session, text string) (*Reply, error) {
+func (e *ConversationEngine) handleRecommending(_ctx context.Context, sess *Session, text string) (*Reply, error) {
 	msg := normalizeText(text)
 	sess.AddMessage(RoleUser, msg)
 	if msg == "/cancel" || msg == "cancel" || msg == "取消" {
@@ -315,13 +315,13 @@ func (e *ConversationEngine) handleRecommending(ctx context.Context, sess *Sessi
 
 // handleReviewing dispatches user decisions about the proposed
 // recommendation.
-func (e *ConversationEngine) handleReviewing(ctx context.Context, sess *Session, text string) (*Reply, error) {
+func (e *ConversationEngine) handleReviewing(_ctx context.Context, sess *Session, text string) (*Reply, error) {
 	msg := normalizeText(text)
 	sess.AddMessage(RoleUser, msg)
 
 	lower := strings.ToLower(msg)
-	switch {
-	case lower == "执行" || lower == "approve" || lower == "yes" || lower == "y":
+	switch lower {
+	case "执行", "approve", "yes", "y":
 		sess.SetState(StateExecuting)
 		action := &Action{Type: ActionApprove, Payload: map[string]string{}}
 		if rec := sess.GetRecommendation(); rec != nil {
@@ -329,12 +329,12 @@ func (e *ConversationEngine) handleReviewing(ctx context.Context, sess *Session,
 		}
 		sess.AddMessageWithAction(RoleSystem, "user approved", action)
 		return &Reply{Text: "已批准，开始执行", Action: action}, nil
-	case lower == "拒绝" || lower == "reject" || lower == "no" || lower == "n":
+	case "拒绝", "reject", "no", "n":
 		sess.SetState(StateFailed)
 		action := &Action{Type: ActionReject}
 		sess.AddMessageWithAction(RoleSystem, "user rejected", action)
 		return &Reply{Text: "已拒绝建议", Action: action}, nil
-	case lower == "修改" || lower == "modify":
+	case "修改", "modify":
 		action := &Action{Type: ActionModify}
 		return &Reply{Text: "请描述您希望修改的部分", Action: action}, nil
 	default:
@@ -348,7 +348,7 @@ func (e *ConversationEngine) handleReviewing(ctx context.Context, sess *Session,
 }
 
 // handleExecuting handles messages while the fix workflow is running.
-func (e *ConversationEngine) handleExecuting(ctx context.Context, sess *Session, text string) (*Reply, error) {
+func (e *ConversationEngine) handleExecuting(_ctx context.Context, sess *Session, text string) (*Reply, error) {
 	msg := normalizeText(text)
 	sess.AddMessage(RoleUser, msg)
 
@@ -363,7 +363,7 @@ func (e *ConversationEngine) handleExecuting(ctx context.Context, sess *Session,
 }
 
 // handleTerminal handles messages in terminal states (Done / Failed).
-func (e *ConversationEngine) handleTerminal(ctx context.Context, sess *Session, text string) (*Reply, error) {
+func (e *ConversationEngine) handleTerminal(_ctx context.Context, sess *Session, text string) (*Reply, error) {
 	msg := normalizeText(text)
 	sess.AddMessage(RoleUser, msg)
 
@@ -380,17 +380,17 @@ func (e *ConversationEngine) handleTerminal(ctx context.Context, sess *Session, 
 // resulting report id on the session and then drives the recommend engine
 // to produce a recommendation. When the diagnose engine is nil the session
 // is left in StateDiagnosing and an explanatory reply is returned.
-func (e *ConversationEngine) runDiagnose(ctx context.Context, sess *Session, target string) (*Reply, error) {
+func (e *ConversationEngine) runDiagnose(_ctx context.Context, sess *Session, target string) (*Reply, error) {
 	if e.diagnose == nil {
 		sess.SetState(StateDiagnosing)
 		return &Reply{Text: "诊断引擎未配置，无法执行 /diagnose"}, nil
 	}
 	sess.SetState(StateDiagnosing)
-	report := e.diagnose.Diagnose(ctx, target)
+	report := e.diagnose.Diagnose(_ctx, target)
 	sess.DiagnosisID = report.ID
 
 	// Drive the recommend engine to produce a recommendation.
-	rec, err := e.produceRecommendation(ctx, sess, &report)
+	rec, err := e.produceRecommendation(_ctx, sess, &report)
 	if err != nil {
 		sess.SetState(StateFailed)
 		return nil, fmt.Errorf("conversation: diagnose: %w", err)
@@ -403,7 +403,7 @@ func (e *ConversationEngine) runDiagnose(ctx context.Context, sess *Session, tar
 // engine synthesises a minimal report with a placeholder target so the
 // knowledge base can still be queried and the operator gets a usable
 // recommendation rather than an error.
-func (e *ConversationEngine) runRecommendFromHistory(ctx context.Context, sess *Session) (*Reply, error) {
+func (e *ConversationEngine) runRecommendFromHistory(_ctx context.Context, sess *Session) (*Reply, error) {
 	if e.recommend == nil {
 		return nil, fmt.Errorf("conversation: recommend: %w", ErrNilRecommend)
 	}
@@ -419,7 +419,7 @@ func (e *ConversationEngine) runRecommendFromHistory(ctx context.Context, sess *
 	if sess.AlertID != "" {
 		report.AlertID = sess.AlertID
 	}
-	rec, err := e.produceRecommendation(ctx, sess, &report)
+	rec, err := e.produceRecommendation(_ctx, sess, &report)
 	if err != nil {
 		sess.SetState(StateFailed)
 		return nil, fmt.Errorf("conversation: recommend: %w", err)
@@ -430,11 +430,11 @@ func (e *ConversationEngine) runRecommendFromHistory(ctx context.Context, sess *
 // produceRecommendation calls the recommend engine and stores the result on
 // the session. It accepts a nil report when no diagnosis is available; in
 // that case it returns an error so the caller can transition to Failed.
-func (e *ConversationEngine) produceRecommendation(ctx context.Context, sess *Session, report *diagnosis.DiagnosticReport) (*recommend.Recommendation, error) {
+func (e *ConversationEngine) produceRecommendation(_ctx context.Context, sess *Session, report *diagnosis.DiagnosticReport) (*recommend.Recommendation, error) {
 	if e.recommend == nil {
 		return nil, ErrNilRecommend
 	}
-	rec, err := e.recommend.Recommend(ctx, report)
+	rec, err := e.recommend.Recommend(_ctx, report)
 	if err != nil {
 		return nil, err
 	}

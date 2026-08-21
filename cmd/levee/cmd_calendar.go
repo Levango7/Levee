@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nexus/levee/internal/calendar"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/calendar"
 )
 
 // Calendar command option variables. Kept as package-level vars to mirror
@@ -92,10 +93,10 @@ func newCalendarCreateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&calOptFrozen, "frozen", false, "Mark as freeze period")
 	cmd.Flags().StringVar(&calOptCron, "cron", "", "5-field cron recurrence (e.g. '0 2 * * *')")
 	cmd.Flags().StringVar(&calOptRepeat, "repeat", "", "Human-readable repeat hint (e.g. weekly)")
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("start")
-	cmd.MarkFlagRequired("end")
-	cmd.MarkFlagRequired("targets")
+	_ = cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("start")
+	_ = cmd.MarkFlagRequired("end")
+	_ = cmd.MarkFlagRequired("targets")
 	return cmd
 }
 
@@ -142,7 +143,7 @@ func newCalendarCheckCmd() *cobra.Command {
 		RunE: runCalendarCheck,
 	}
 	cmd.Flags().StringVar(&calOptTargets, "targets", "", "Comma-separated target labels (required)")
-	cmd.MarkFlagRequired("targets")
+	_ = cmd.MarkFlagRequired("targets")
 	return cmd
 }
 

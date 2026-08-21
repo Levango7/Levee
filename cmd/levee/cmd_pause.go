@@ -7,8 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nexus/levee/internal/pause"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/pause"
 )
 
 // pauseAllOptReason holds the value of the --reason flag for pause-all.
@@ -94,7 +95,7 @@ func runPause(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Create the PauseManager and pause the run.
 	mgr := pause.NewPauseManager(store)
@@ -138,7 +139,7 @@ func runResume(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Create the PauseManager and resume the run.
 	mgr := pause.NewPauseManager(store)
@@ -181,7 +182,7 @@ func runPauseAll(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Build the permission checker from environment.
 	perm := newCLIPermissionChecker()
@@ -235,7 +236,7 @@ func runResumeAll(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Build the permission checker from environment.
 	perm := newCLIPermissionChecker()

@@ -1,4 +1,3 @@
-
 // llm.go defines the LLM client abstraction used by the recommend package to
 // talk to large language model backends. Two production adapters are provided:
 //
@@ -316,9 +315,9 @@ func (c *ollamaClient) doJSON(ctx context.Context, url string, body any) (map[st
 
 // ollamaRequest is the request body for the Ollama /api/chat endpoint.
 type ollamaRequest struct {
-	Model    string       `json:"model"`
-	Messages []LLMMessage `json:"messages"`
-	Stream   bool         `json:"stream"`
+	Model    string        `json:"model"`
+	Messages []LLMMessage  `json:"messages"`
+	Stream   bool          `json:"stream"`
 	Options  ollamaOptions `json:"options"`
 }
 
@@ -370,7 +369,7 @@ func doLLMRequest(ctx context.Context, client *http.Client, url string, payload 
 	if err != nil {
 		return nil, fmt.Errorf("recommend: llm do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {

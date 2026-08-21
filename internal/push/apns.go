@@ -147,7 +147,7 @@ func (c *APNSClient) Send(ctx context.Context, notif APNSNotification) error {
 	if err != nil {
 		return fmt.Errorf("push: apns: send: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return c.handleResponse(resp)
 }
 

@@ -512,20 +512,6 @@ func tryRFC3339Prefix(s string) (time.Time, string, bool) {
 // severity level from the message payload when present. The level is
 // normalised to upper-case and stored in line.Level.
 func stripLevelAndTag(rest string, line *LogLine) string {
-	// Skip "host " prefix up to the first space-delimited token that
-	// contains a colon or bracket — that is the proc[pid]: tag.
-	for {
-		idx := strings.IndexByte(rest, ':')
-		if idx < 0 {
-			break
-		}
-		// Heuristic: the tag is the token immediately before the
-		// colon that contains either '[' or is a bare word. We treat
-		// the first colon as the tag end.
-		_ = idx
-		break
-	}
-
 	// Find the first ": " which typically separates the tag from the
 	// message body.
 	if idx := strings.Index(rest, ": "); idx >= 0 {

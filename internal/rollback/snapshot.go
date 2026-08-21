@@ -667,7 +667,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", src, err)
 	}
-	defer srcF.Close()
+	defer func() { _ = srcF.Close() }()
 
 	info, err := srcF.Stat()
 	if err != nil {
@@ -678,7 +678,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", dst, err)
 	}
-	defer dstF.Close()
+	defer func() { _ = dstF.Close() }()
 
 	if _, err := io.Copy(dstF, srcF); err != nil {
 		return fmt.Errorf("copy %s → %s: %w", src, dst, err)

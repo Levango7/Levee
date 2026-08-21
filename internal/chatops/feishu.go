@@ -207,29 +207,26 @@ func ParseFeishuCallback(body []byte) (IncomingMessage, error) {
 	msg.UserName = cb.Event.Sender.SenderNick
 	msg.Channel = cb.Event.Message.ChatID
 
-	text, err := decodeFeishuText(cb.Event.Message.Content)
-	if err != nil {
-		return IncomingMessage{}, err
-	}
-	msg.Text = text
+	msg.Text = decodeFeishuText(cb.Event.Message.Content)
 	return msg, nil
 }
 
 // decodeFeishuText extracts the plain text from a Feishu message content
 // blob. The content is a JSON object with a "text" field that may contain
-// @-mentions; we strip the mentions to recover the command tail.
-func decodeFeishuText(content string) (string, error) {
+// @-mentions; we strip the mentions to recover the command tail. Malformed
+// JSON falls back to the raw string, so this helper never fails.
+func decodeFeishuText(content string) string {
 	if content == "" {
-		return "", nil
+		return ""
 	}
 	var wrapper struct {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal([]byte(content), &wrapper); err != nil {
 		// Some clients send raw text; fall back to the raw string.
-		return strings.TrimSpace(content), nil
+		return strings.TrimSpace(content)
 	}
-	return stripFeishuMentions(wrapper.Text), nil
+	return stripFeishuMentions(wrapper.Text)
 }
 
 // stripFeishuMentions removes @-mention tokens (e.g. "@_user_1") from a

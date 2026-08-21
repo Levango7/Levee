@@ -7,9 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nexus/levee/internal/permission"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/permission"
 )
 
 // RBAC command option variables. Prefixed with "rbac" to avoid collisions
@@ -94,7 +95,7 @@ func newRBACRoleAddCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&rbacRoleAddOptName, "name", "", "Role name (required)")
 	cmd.Flags().StringVar(&rbacRoleAddOptParent, "parent", "", "Parent role for inheritance (optional)")
-	cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 
@@ -106,7 +107,7 @@ func newRBACRoleRemoveCmd() *cobra.Command {
 		RunE:  runRBACRoleRemove,
 	}
 	cmd.Flags().StringVar(&rbacRoleRemoveOptID, "name", "", "Role name to remove (required)")
-	cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 
@@ -145,9 +146,9 @@ func newRBACPolicyAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&rbacPolicyAddOptAction, "action", "", "Action (required)")
 	cmd.Flags().StringVar(&rbacPolicyAddOptCondition, "condition", "", "Label condition (optional)")
 	cmd.Flags().StringVar(&rbacPolicyAddOptDesc, "description", "", "Human-readable description")
-	cmd.MarkFlagRequired("id")
-	cmd.MarkFlagRequired("resource")
-	cmd.MarkFlagRequired("action")
+	_ = cmd.MarkFlagRequired("id")
+	_ = cmd.MarkFlagRequired("resource")
+	_ = cmd.MarkFlagRequired("action")
 	return cmd
 }
 
@@ -159,7 +160,7 @@ func newRBACPolicyRemoveCmd() *cobra.Command {
 		RunE:  runRBACPolicyRemove,
 	}
 	cmd.Flags().StringVar(&rbacPolicyRemoveOptID, "id", "", "Policy id to remove (required)")
-	cmd.MarkFlagRequired("id")
+	_ = cmd.MarkFlagRequired("id")
 	return cmd
 }
 
@@ -177,9 +178,9 @@ func newRBACCheckCmd() *cobra.Command {
 	cmd.Flags().StringVar(&rbacCheckOptResource, "resource", "", "Resource to check (required)")
 	cmd.Flags().StringSliceVar(&rbacCheckOptLabels, "label", nil, "Resource labels (key=value, repeatable)")
 	cmd.Flags().BoolVar(&rbacCheckOptVerbose, "verbose", false, "Show detailed explanation")
-	cmd.MarkFlagRequired("user")
-	cmd.MarkFlagRequired("action")
-	cmd.MarkFlagRequired("resource")
+	_ = cmd.MarkFlagRequired("user")
+	_ = cmd.MarkFlagRequired("action")
+	_ = cmd.MarkFlagRequired("resource")
 	return cmd
 }
 

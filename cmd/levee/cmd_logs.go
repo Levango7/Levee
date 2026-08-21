@@ -8,8 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // logsOptTarget holds the value of the --target flag for the logs command.
@@ -49,7 +50,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Verify the run exists.
 	run, err := store.GetRun(ctx, logsOptRunID)

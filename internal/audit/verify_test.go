@@ -5,9 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // newVerifier builds a ChainVerifier on top of a fresh temp-file store and

@@ -142,7 +142,7 @@ func computeSignature(secret string, payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// Send delivers msg to the configured webhook URL. The message is serialized to
+// Send delivers msg to the configured webhook URL. The message is serialised to
 // JSON and POSTed with the appropriate headers. When a signing secret is
 // configured the HMAC-SHA256 of the payload is sent in the X-Levee-Signature
 // header. On failure the request is retried up to MaxRetries times with a fixed
@@ -212,7 +212,7 @@ func (w *WebhookNotifier) doRequest(ctx context.Context, payload []byte, event s
 	if err != nil {
 		return fmt.Errorf("notify: webhook do: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	// Drain the body so the connection can be reused by the keep-alive pool.
 	_, _ = io.Copy(io.Discard, resp.Body)
 

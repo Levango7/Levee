@@ -32,8 +32,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nexus/levee/internal/log"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/log"
 )
 
 // --- Manager configuration --------------------------------------------------

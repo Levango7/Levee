@@ -45,7 +45,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Load the run record.
 	run, err := store.GetRun(ctx, applyOptRunID)

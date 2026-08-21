@@ -31,12 +31,12 @@ func newTestEngine(t *testing.T, llm LLMClient) *RecommendEngine {
 // order-service. The knowledge base has a strong match for this scenario.
 func newOOMReport() *diagnosis.DiagnosticReport {
 	return &diagnosis.DiagnosticReport{
-		ID:        "diag-oom-001",
-		Target:    "order-service.prod",
-		Trigger:   diagnosis.TriggerAlert,
-		AlertID:   "alert-001",
-		Status:    diagnosis.DiagUnhealthy,
-		RootCause: "Java heap exhaustion due to memory leak",
+		ID:         "diag-oom-001",
+		Target:     "order-service.prod",
+		Trigger:    diagnosis.TriggerAlert,
+		AlertID:    "alert-001",
+		Status:     diagnosis.DiagUnhealthy,
+		RootCause:  "Java heap exhaustion due to memory leak",
 		Confidence: 0.85,
 		Summary:    "order-service is unhealthy; OOM errors in logs",
 		Findings: []diagnosis.Finding{
@@ -563,11 +563,11 @@ func TestRiskFromSeverity(t *testing.T) {
 
 func TestNormaliseRiskLevel(t *testing.T) {
 	cases := map[RiskLevel]RiskLevel{
-		RiskLow:      RiskLow,
-		RiskMedium:   RiskMedium,
-		RiskHigh:     RiskHigh,
-		RiskCritical: RiskCritical,
-		RiskLevel("HIGH"): RiskHigh,
+		RiskLow:              RiskLow,
+		RiskMedium:           RiskMedium,
+		RiskHigh:             RiskHigh,
+		RiskCritical:         RiskCritical,
+		RiskLevel("HIGH"):    RiskHigh,
 		RiskLevel("garbage"): RiskMedium,
 	}
 	for in, want := range cases {

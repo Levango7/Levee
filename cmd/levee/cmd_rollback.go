@@ -8,8 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // rollbackOptForce holds the value of the --force flag for the rollback command.
@@ -50,7 +51,7 @@ func runRollback(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Load the run record.
 	run, err := store.GetRun(ctx, rollbackOptRunID)

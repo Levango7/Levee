@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/nexus/levee/internal/chatops"
 	"github.com/nexus/levee/internal/recommend"
 )
@@ -132,9 +133,9 @@ type Message struct {
 // the textual reply, an optional interactive Card (e.g. approval buttons) and
 // an optional Action that the front-end can dispatch on.
 type Reply struct {
-	Text   string         `json:"text"`
-	Card   *chatops.Card  `json:"card,omitempty"`
-	Action *Action        `json:"action,omitempty"`
+	Text   string        `json:"text"`
+	Card   *chatops.Card `json:"card,omitempty"`
+	Action *Action       `json:"action,omitempty"`
 }
 
 // --- Session ----------------------------------------------------------------
@@ -144,16 +145,16 @@ type Reply struct {
 // review. All mutators are guarded by an internal RWMutex so a Session is
 // safe for concurrent use.
 type Session struct {
-	ID             string                     `json:"id"`
-	UserID         string                     `json:"user_id"`
-	AlertID        string                     `json:"alert_id,omitempty"`
-	DiagnosisID    string                     `json:"diagnosis_id,omitempty"`
-	Recommendation *recommend.Recommendation  `json:"recommendation,omitempty"`
-	Messages       []Message                  `json:"messages"`
-	State          SessionState               `json:"state"`
-	WorkflowID     string                     `json:"workflow_id,omitempty"`
-	CreatedAt      time.Time                  `json:"created_at"`
-	UpdatedAt      time.Time                  `json:"updated_at"`
+	ID             string                    `json:"id"`
+	UserID         string                    `json:"user_id"`
+	AlertID        string                    `json:"alert_id,omitempty"`
+	DiagnosisID    string                    `json:"diagnosis_id,omitempty"`
+	Recommendation *recommend.Recommendation `json:"recommendation,omitempty"`
+	Messages       []Message                 `json:"messages"`
+	State          SessionState              `json:"state"`
+	WorkflowID     string                    `json:"workflow_id,omitempty"`
+	CreatedAt      time.Time                 `json:"created_at"`
+	UpdatedAt      time.Time                 `json:"updated_at"`
 
 	mu sync.RWMutex
 }

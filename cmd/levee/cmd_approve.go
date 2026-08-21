@@ -7,9 +7,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/state"
-	"github.com/spf13/cobra"
 )
 
 // approveOptComment holds the value of the --comment flag for the approve command.
@@ -69,7 +70,7 @@ func runApprove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Find the pending approval for the given run.
 	approvalID, err := findPendingApprovalID(ctx, store, approveOptRunID, approveOptLevel)
@@ -125,7 +126,7 @@ func runReject(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Find the pending approval for the given run.
 	approvalID, err := findPendingApprovalID(ctx, store, rejectOptRunID, approveOptLevel)

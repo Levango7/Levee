@@ -19,8 +19,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/nexus/levee/internal/dsl"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // --- sentinel errors -------------------------------------------------------
@@ -408,10 +409,10 @@ func isValidKey(k string) bool {
 		return false
 	}
 	for _, r := range k {
-		if !(r == '_' ||
-			(r >= 'a' && r <= 'z') ||
-			(r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9')) {
+		if r != '_' &&
+			!(r >= 'a' && r <= 'z') &&
+			!(r >= 'A' && r <= 'Z') &&
+			!(r >= '0' && r <= '9') {
 			return false
 		}
 	}

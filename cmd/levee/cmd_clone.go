@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nexus/levee/internal/template"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/template"
 )
 
 func init() {
@@ -40,7 +41,7 @@ func runClone(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Clone the run.
 	cloner := template.NewRunCloner(store)

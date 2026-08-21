@@ -379,7 +379,7 @@ func (g *PreApplySLOGate) queryPromOnce(ctx context.Context, query string) (floa
 	if err != nil {
 		return 0, fmt.Errorf("pre_apply slo gate %q: http get: %w", g.name, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -51,8 +51,7 @@ func (m *mockKMSAPI) Decrypt(ctx context.Context, params *kms.DecryptInput, optF
 	}
 	// The mock GenerateDataKey uses the base64-encoded plaintext as the
 	// ciphertext blob, so we look up by the raw blob bytes.
-	key := string(params.CiphertextBlob)
-	pt, ok := m.dataKeys[key]
+	pt, ok := m.dataKeys[string(params.CiphertextBlob)]
 	if !ok {
 		return nil, errors.New("mock: unknown ciphertext blob")
 	}

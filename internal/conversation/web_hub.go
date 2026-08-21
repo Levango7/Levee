@@ -63,14 +63,14 @@ type WSRequest struct {
 
 // WSResponse is a server->client JSON frame.
 type WSResponse struct {
-	Type      string        `json:"type"`                  // "reply" | "session_created" | "session_list" | "error" | "state_change"
-	SessionID string        `json:"session_id"`            //
-	Text      string        `json:"text,omitempty"`        // reply / error
-	Card      *chatops.Card `json:"card,omitempty"`        // reply
-	Action    *Action       `json:"action,omitempty"`      // reply
-	Sessions  []SessionInfo `json:"sessions,omitempty"`    // session_list
-	Error     string        `json:"error,omitempty"`       // error
-	State     string        `json:"state,omitempty"`       // state_change
+	Type      string        `json:"type"`               // "reply" | "session_created" | "session_list" | "error" | "state_change"
+	SessionID string        `json:"session_id"`         //
+	Text      string        `json:"text,omitempty"`     // reply / error
+	Card      *chatops.Card `json:"card,omitempty"`     // reply
+	Action    *Action       `json:"action,omitempty"`   // reply
+	Sessions  []SessionInfo `json:"sessions,omitempty"` // session_list
+	Error     string        `json:"error,omitempty"`    // error
+	State     string        `json:"state,omitempty"`    // state_change
 }
 
 // SessionInfo is a compact, JSON-friendly projection of a Session used in
@@ -259,14 +259,14 @@ func NewWebHub(cfg WebHubConfig) (*WebHub, error) {
 		lg = log.With("component", "conversation_web_hub")
 	}
 	return &WebHub{
-		engine:    cfg.Engine,
-		clients:   make(map[*WSClient]bool),
-		register:  make(chan *WSClient, 16),
+		engine:     cfg.Engine,
+		clients:    make(map[*WSClient]bool),
+		register:   make(chan *WSClient, 16),
 		unregister: make(chan *WSClient, 16),
-		broadcast: make(chan WSBroadcast, 64),
-		countReq:  make(chan chan int, 4),
-		log:       lg,
-		done:      make(chan struct{}),
+		broadcast:  make(chan WSBroadcast, 64),
+		countReq:   make(chan chan int, 4),
+		log:        lg,
+		done:       make(chan struct{}),
 	}, nil
 }
 

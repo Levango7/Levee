@@ -250,9 +250,10 @@ func indexDollarQuoteEnd(script string, start int) int {
 		}
 		// Tag characters must be letters/digits/underscore.
 		c := script[j]
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
-			return -1
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			continue
 		}
+		return -1
 	}
 	return -1
 }

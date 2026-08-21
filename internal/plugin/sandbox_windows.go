@@ -37,7 +37,7 @@ func doTerminate(p *os.Process) error {
 	if err != nil {
 		return err
 	}
-	defer syscall.CloseHandle(handle)
+	defer func() { _ = syscall.CloseHandle(handle) }()
 	r1, _, e := proc.Call(uintptr(handle), 0)
 	if r1 == 0 {
 		return e
@@ -90,7 +90,7 @@ func isProcessAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	defer syscall.CloseHandle(handle)
+	defer func() { _ = syscall.CloseHandle(handle) }()
 	var exitCode uint32
 	if err := syscall.GetExitCodeProcess(handle, &exitCode); err != nil {
 		return false

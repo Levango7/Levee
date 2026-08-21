@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // listOptStatus holds the value of the --status flag for the list command.
@@ -51,7 +52,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Build the filter from flags.
 	filter := state.RunFilter{

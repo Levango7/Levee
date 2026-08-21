@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // makeWorkflow builds a minimal workflow for testing with the given

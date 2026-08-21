@@ -731,13 +731,13 @@ func containsString(ss []string, s string) bool {
 // analysis outcome.
 func buildSummary(result *AnalysisResult) string {
 	if result.ErrorLines == 0 {
-		return fmt.Sprintf("analyzed %d lines, no errors matched", result.TotalLines)
+		return fmt.Sprintf("analysed %d lines, no errors matched", result.TotalLines)
 	}
 	if result.Confidence == 0 {
-		return fmt.Sprintf("analyzed %d lines, %d matched but no root cause determined",
+		return fmt.Sprintf("analysed %d lines, %d matched but no root cause determined",
 			result.TotalLines, result.ErrorLines)
 	}
-	return fmt.Sprintf("analyzed %d lines, %d errors across %d patterns; likely root cause: %s (%s, confidence %.2f)",
+	return fmt.Sprintf("analysed %d lines, %d errors across %d patterns; likely root cause: %s (%s, confidence %.2f)",
 		result.TotalLines, result.ErrorLines, len(result.ErrorPatterns),
 		result.RootCause.ID, result.RootCause.Name, result.Confidence)
 }

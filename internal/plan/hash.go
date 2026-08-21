@@ -9,7 +9,7 @@
 // Canonicalization guarantees that target order within a batch does not
 // affect the hash (sets are sorted), while batch order and step order
 // are preserved (they carry execution semantics). Map keys (step args)
-// are serialized in lexicographic order by encoding/json.
+// are serialised in lexicographic order by encoding/json.
 package plan
 
 import (

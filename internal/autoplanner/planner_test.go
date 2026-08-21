@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/recommend"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // --- Test fixtures ---------------------------------------------------------

@@ -215,7 +215,7 @@ type PotentialConflict struct {
 //   - the Generator rejects the workflow.
 func (p *DryRunPreview) Preview(ctx context.Context, wf *dsl.Workflow) (*DryRunReport, error) {
 	if p == nil || p.generator == nil || p.impact == nil {
-		return nil, fmt.Errorf("%w: previewer not initialized", ErrDryRunFailed)
+		return nil, fmt.Errorf("%w: previewer not initialised", ErrDryRunFailed)
 	}
 	if wf == nil {
 		return nil, fmt.Errorf("%w: workflow is nil", ErrDryRunFailed)

@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // recordApplyTraces records a realistic sequence of audit traces that simulate

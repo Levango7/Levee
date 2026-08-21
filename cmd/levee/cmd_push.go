@@ -8,9 +8,10 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/push"
-	"github.com/spf13/cobra"
 )
 
 // Push command option variables. Prefixed with "push" to avoid collisions
@@ -79,8 +80,8 @@ func newPushRegisterCmd() *cobra.Command {
 	cmd.Flags().StringVar(&pushOptUser, "user", "", "User ID (required)")
 	cmd.Flags().StringVar(&pushOptToken, "token", "", "Device token (required)")
 	cmd.Flags().StringVar(&pushOptPlatform, "platform", "ios", "Platform: ios | android")
-	cmd.MarkFlagRequired("user")
-	cmd.MarkFlagRequired("token")
+	_ = cmd.MarkFlagRequired("user")
+	_ = cmd.MarkFlagRequired("token")
 	return cmd
 }
 
@@ -121,8 +122,8 @@ func newPushUnregisterCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&pushOptUser, "user", "", "User ID (required)")
 	cmd.Flags().StringVar(&pushOptToken, "token", "", "Device token (required)")
-	cmd.MarkFlagRequired("user")
-	cmd.MarkFlagRequired("token")
+	_ = cmd.MarkFlagRequired("user")
+	_ = cmd.MarkFlagRequired("token")
 	return cmd
 }
 
@@ -160,8 +161,8 @@ func newPushSendCmd() *cobra.Command {
 	cmd.Flags().StringVar(&pushOptUser, "user", "", "User ID (required)")
 	cmd.Flags().StringVar(&pushOptTitle, "title", "", "Notification title (required)")
 	cmd.Flags().StringVar(&pushOptBody, "body", "", "Notification body")
-	cmd.MarkFlagRequired("user")
-	cmd.MarkFlagRequired("title")
+	_ = cmd.MarkFlagRequired("user")
+	_ = cmd.MarkFlagRequired("title")
 	return cmd
 }
 
@@ -203,7 +204,7 @@ func newPushDevicesCmd() *cobra.Command {
 		RunE:  runPushDevices,
 	}
 	cmd.Flags().StringVar(&pushOptUser, "user", "", "User ID (required)")
-	cmd.MarkFlagRequired("user")
+	_ = cmd.MarkFlagRequired("user")
 	return cmd
 }
 
@@ -256,7 +257,7 @@ func newPushTestCmd() *cobra.Command {
 		RunE:  runPushTest,
 	}
 	cmd.Flags().StringVar(&pushOptUser, "user", "", "User ID (required)")
-	cmd.MarkFlagRequired("user")
+	_ = cmd.MarkFlagRequired("user")
 	return cmd
 }
 

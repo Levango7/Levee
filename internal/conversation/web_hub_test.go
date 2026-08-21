@@ -34,9 +34,9 @@ type mockConn struct {
 
 func newMockConn() *mockConn {
 	return &mockConn{
-		readCh:   make(chan []byte, 8),
-		writeCh:  make(chan []byte, 8),
-		closeCh:  make(chan struct{}),
+		readCh:  make(chan []byte, 8),
+		writeCh: make(chan []byte, 8),
+		closeCh: make(chan struct{}),
 	}
 }
 

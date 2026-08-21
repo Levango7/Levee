@@ -17,12 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nexus/levee/internal/grpc/pb"
-	"github.com/nexus/levee/internal/state"
-	"github.com/nexus/levee/internal/template"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/template"
 )
 
 // TemplateService implements pb.TemplateServiceServer. It manages workflow
@@ -268,13 +269,8 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 			}
 			return nil, status.Errorf(codes.Internal, "get template: %v", err)
 		}
-		tmplContent = tmpl.Content
-		for _, p := range tmpl.Parameters {
-			if p.Required {
-				requiredParams = append(requiredParams, p.Name)
-			}
-		}
-		// Use the instantiator for proper parameter resolution.
+		// Use the instantiator for proper parameter resolution; it enforces
+		// required parameters and reports ErrRequiredParamMissing.
 		inst := template.NewInstantiator()
 		result, err := inst.Instantiate(tmpl, req.Params)
 		if err != nil {

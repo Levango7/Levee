@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/engine"
@@ -21,8 +24,6 @@ import (
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/verify"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // --- Test infrastructure ----------------------------------------------------

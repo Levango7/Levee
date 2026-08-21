@@ -13,13 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nexus/levee/internal/config"
-	"github.com/nexus/levee/internal/grpc/pb"
-	"github.com/nexus/levee/internal/state"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/state"
 )
 
 // SystemService implements pb.SystemServiceServer. It provides version,
@@ -272,7 +273,7 @@ func (s *SystemService) doctorCheckDataDir() *pb.DoctorCheck {
 		c.Remediation = "check directory permissions"
 		return c
 	}
-	os.Remove(tmpFile)
+	_ = os.Remove(tmpFile)
 	c.Status = "pass"
 	c.Message = fmt.Sprintf("data_dir %q writable", s.cfg.Server.DataDir)
 	return c

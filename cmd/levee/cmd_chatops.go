@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/chatops"
 	"github.com/nexus/levee/internal/state"
-	"github.com/spf13/cobra"
 )
 
 // chatops 子命令选项。
@@ -31,7 +32,7 @@ func init() {
 
 // newChatopsCmd 构建 `levee chatops` 父命令及其四个子命令。
 func newChatopsCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	_cmd := &cobra.Command{
 		Use:   "chatops",
 		Short: "ChatOps 集成：飞书 / 钉钉 / Slack 机器人管理",
 		Long: "ChatOps 子命令用于管理 LEVEE 的 IM 平台机器人，支持\n" +
@@ -39,16 +40,16 @@ func newChatopsCmd() *cobra.Command {
 			"通过 CLI 触发审批通过 / 驳回。",
 		Args: cobra.NoArgs,
 	}
-	cmd.AddCommand(newChatopsStartCmd())
-	cmd.AddCommand(newChatopsSendCmd())
-	cmd.AddCommand(newChatopsApproveCmd())
-	cmd.AddCommand(newChatopsRejectCmd())
-	return cmd
+	_cmd.AddCommand(newChatopsStartCmd())
+	_cmd.AddCommand(newChatopsSendCmd())
+	_cmd.AddCommand(newChatopsApproveCmd())
+	_cmd.AddCommand(newChatopsRejectCmd())
+	return _cmd
 }
 
 // newChatopsStartCmd 构建 `levee chatops start` 子命令。
 func newChatopsStartCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	_cmd := &cobra.Command{
 		Use:   "start",
 		Short: "启动 ChatOps 机器人",
 		Long: "根据 --platform 与 --config 启动对应平台的机器人，\n" +
@@ -56,64 +57,64 @@ func newChatopsStartCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: runChatopsStart,
 	}
-	cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu / dingtalk / slack")
-	cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON）")
-	cmd.Flags().DurationVar(&chatopsOptTimeout, "timeout", 0, "运行时长；0 表示持续运行直到收到信号")
-	return cmd
+	_cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON）")
+	_cmd.Flags().DurationVar(&chatopsOptTimeout, "timeout", 0, "运行时长；0 表示持续运行直到收到信号")
+	return _cmd
 }
 
 // newChatopsSendCmd 构建 `levee chatops send` 子命令。
 func newChatopsSendCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	_cmd := &cobra.Command{
 		Use:   "send",
 		Short: "通过 ChatOps 机器人发送消息",
 		Long:  "通过 --platform 指定的机器人向 --channel 发送一条文本消息。",
 		Args:  cobra.NoArgs,
 		RunE:  runChatopsSend,
 	}
-	cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu / dingtalk / slack")
-	cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON）")
-	cmd.Flags().StringVarP(&chatopsOptChannel, "channel", "C", "", "目标 channel / 群 ID")
-	cmd.Flags().StringVarP(&chatopsOptMessage, "message", "m", "", "消息内容")
-	return cmd
+	_cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON）")
+	_cmd.Flags().StringVarP(&chatopsOptChannel, "channel", "C", "", "目标 channel / 群 ID")
+	_cmd.Flags().StringVarP(&chatopsOptMessage, "message", "m", "", "消息内容")
+	return _cmd
 }
 
 // newChatopsApproveCmd 构建 `levee chatops approve` 子命令。
 func newChatopsApproveCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	_cmd := &cobra.Command{
 		Use:   "approve",
 		Short: "通过 ChatOps 触发审批通过",
 		Long:  "通过 --id 指定的变更 ID 触发审批通过，复用 approval 服务。",
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runChatopsApprove,
 	}
-	cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu / dingtalk / slack")
-	cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON，可选）")
-	cmd.Flags().StringVar(&chatopsOptChangeID, "id", "", "变更 ID（等价于位置参数）")
-	return cmd
+	_cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON，可选）")
+	_cmd.Flags().StringVar(&chatopsOptChangeID, "id", "", "变更 ID（等价于位置参数）")
+	return _cmd
 }
 
 // newChatopsRejectCmd 构建 `levee chatops reject` 子命令。
 func newChatopsRejectCmd() *cobra.Command {
-	cmd := &cobra.Command{
+	_cmd := &cobra.Command{
 		Use:   "reject",
 		Short: "通过 ChatOps 触发审批驳回",
 		Long:  "通过 --id 指定的变更 ID 触发审批驳回，需要 --reason。",
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runChatopsReject,
 	}
-	cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu / dingtalk / slack")
-	cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON，可选）")
-	cmd.Flags().StringVar(&chatopsOptChangeID, "id", "", "变更 ID（等价于位置参数）")
-	cmd.Flags().StringVarP(&chatopsOptReason, "reason", "r", "", "驳回原因（必填）")
-	return cmd
+	_cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON，可选）")
+	_cmd.Flags().StringVar(&chatopsOptChangeID, "id", "", "变更 ID（等价于位置参数）")
+	_cmd.Flags().StringVarP(&chatopsOptReason, "reason", "r", "", "驳回原因（必填）")
+	return _cmd
 }
 
 // --- run handlers ----------------------------------------------------------
 
 // runChatopsStart 启动指定平台的机器人。在 CLI 形态下，启动后阻塞直到
 // 超时或收到中断信号；在测试中可通过 --timeout 短时间运行。
-func runChatopsStart(cmd *cobra.Command, args []string) error {
+func runChatopsStart(_cmd *cobra.Command, args []string) error {
 	platform, err := chatops.ParsePlatform(chatopsOptPlatform)
 	if err != nil {
 		return err
@@ -160,7 +161,7 @@ func runChatopsStart(cmd *cobra.Command, args []string) error {
 }
 
 // runChatopsSend 通过指定平台的机器人发送一条文本消息。
-func runChatopsSend(cmd *cobra.Command, args []string) error {
+func runChatopsSend(_cmd *cobra.Command, args []string) error {
 	if chatopsOptChannel == "" {
 		return fmt.Errorf("--channel is required [exit=2]")
 	}
@@ -204,8 +205,8 @@ func runChatopsSend(cmd *cobra.Command, args []string) error {
 
 // runChatopsApprove 通过 ChatOps 触发审批通过。它复用 approval 服务，
 // 与 `levee approve` 命令等价，但记录执行来源为 chatops。
-func runChatopsApprove(cmd *cobra.Command, args []string) error {
-	changeID, err := readChangeIDArg(cmd, args)
+func runChatopsApprove(_cmd *cobra.Command, args []string) error {
+	changeID, err := readChangeIDArg(_cmd, args)
 	if err != nil {
 		return err
 	}
@@ -220,7 +221,7 @@ func runChatopsApprove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	approvalID, err := findPendingApprovalID(ctx, store, changeID, "")
 	if err != nil {
@@ -254,8 +255,8 @@ func runChatopsApprove(cmd *cobra.Command, args []string) error {
 }
 
 // runChatopsReject 通过 ChatOps 触发审批驳回。
-func runChatopsReject(cmd *cobra.Command, args []string) error {
-	changeID, err := readChangeIDArg(cmd, args)
+func runChatopsReject(_cmd *cobra.Command, args []string) error {
+	changeID, err := readChangeIDArg(_cmd, args)
 	if err != nil {
 		return err
 	}
@@ -273,7 +274,7 @@ func runChatopsReject(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	approvalID, err := findPendingApprovalID(ctx, store, changeID, "")
 	if err != nil {
@@ -311,7 +312,7 @@ func runChatopsReject(cmd *cobra.Command, args []string) error {
 
 // readChangeIDArg 从位置参数或 --id 读取变更 ID。两者都支持以保持 CLI
 // 兼容性：`levee chatops approve --id run-1` 与 `levee chatops approve run-1`。
-func readChangeIDArg(cmd *cobra.Command, args []string) (string, error) {
+func readChangeIDArg(_cmd *cobra.Command, args []string) (string, error) {
 	if len(args) >= 1 {
 		return args[0], nil
 	}

@@ -228,7 +228,7 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 	if err != nil {
 		return nil, fmt.Errorf("state: list runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Run
 	for rows.Next() {
@@ -347,7 +347,7 @@ func (s *PGStore) ListBatches(ctx context.Context, filter BatchFilter) ([]*Batch
 	if err != nil {
 		return nil, fmt.Errorf("state: list batches: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Batch
 	for rows.Next() {
@@ -477,7 +477,7 @@ func (s *PGStore) ListSteps(ctx context.Context, filter StepFilter) ([]*Step, er
 	if err != nil {
 		return nil, fmt.Errorf("state: list steps: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Step
 	for rows.Next() {
@@ -595,7 +595,7 @@ func (s *PGStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace,
 	if err != nil {
 		return nil, fmt.Errorf("state: list traces: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Trace
 	for rows.Next() {
@@ -712,7 +712,7 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 	if err != nil {
 		return nil, fmt.Errorf("state: list approvals: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Approval
 	for rows.Next() {
@@ -818,7 +818,7 @@ func (s *PGStore) ListLocks(ctx context.Context) ([]*Lock, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state: list locks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Lock
 	for rows.Next() {
@@ -933,7 +933,7 @@ func (s *PGStore) ListCredentials(ctx context.Context) ([]*Credential, error) {
 	if err != nil {
 		return nil, fmt.Errorf("state: list credentials: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Credential
 	for rows.Next() {
@@ -1027,7 +1027,7 @@ func (s *PGStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit,
 	if err != nil {
 		return nil, fmt.Errorf("state: list audits: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*Audit
 	for rows.Next() {

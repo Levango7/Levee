@@ -9,8 +9,9 @@ import (
 
 	"github.com/nexus/levee/internal/config"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // System command option variables. Prefixed to avoid collisions with other
@@ -155,7 +156,7 @@ func runSystemStatus(cmd *cobra.Command, args []string) error {
 		dbStatus = "unreachable"
 		dbErr = err.Error()
 	} else {
-		store.Close()
+		_ = store.Close()
 	}
 
 	// Determine config path.
@@ -305,7 +306,7 @@ func runSystemDoctor(cmd *cobra.Command, args []string) error {
 				"error":  dbErr.Error(),
 			})
 		} else {
-			store.Close()
+			_ = store.Close()
 			checks = append(checks, map[string]any{
 				"check":  "database",
 				"status": "OK",

@@ -156,7 +156,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		store = sqliteStore
 		log.Info("single-node mode (SQLite)")
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 	if clusterMgr != nil {
 		defer func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

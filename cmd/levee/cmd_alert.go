@@ -178,7 +178,7 @@ func runAlertShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("alert show: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("alert show: read body: %w", err)
@@ -250,7 +250,7 @@ func runAlertSilenceAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("alert silence add: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("alert silence add: http %d: %s [exit=1]", resp.StatusCode, string(respBody))
@@ -303,7 +303,7 @@ func runAlertSilenceRemove(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("alert silence remove: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("alert silence remove: %w: %q [exit=6]", alert.ErrAlertNotFound, id)
 	}
@@ -337,7 +337,7 @@ func runAlertHistory(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("alert history: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("alert history: read body: %w", err)
@@ -362,7 +362,7 @@ func alertGetAndPrint(url string) error {
 	if err != nil {
 		return fmt.Errorf("alert http: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("alert http: read body: %w", err)

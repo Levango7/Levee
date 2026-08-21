@@ -13,11 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nexus/levee/internal/channel"
-	"github.com/nexus/levee/internal/grpc/pb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+
+	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/grpc/pb"
 )
 
 // TargetService implements pb.TargetServiceServer. It maintains an in-memory

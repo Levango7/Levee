@@ -76,13 +76,11 @@ func AuthStreamInterceptor(expected string) grpc.StreamServerInterceptor {
 }
 
 // skipAuthMethods lists gRPC methods that are exempt from authentication.
-// This should be kept as small as possible and only include health checks
-// or similar public endpoints.
+// This whitelist must stay minimal. Every business RPC requires a valid
+// Bearer token; only the standard gRPC health probe is public.
 var skipAuthMethods = map[string]bool{
-	// Health check endpoint (if implemented via gRPC health service).
+	// gRPC health check service, used by load balancers and orchestrators.
 	"/grpc.health.v1.Health/Check": true,
-	// System version endpoint is safe to expose publicly.
-	"/levee.SystemService/GetVersion": true,
 }
 
 // checkAuth performs the actual token validation. It returns nil when

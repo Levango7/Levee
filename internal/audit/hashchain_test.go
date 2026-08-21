@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // newChainBuilder builds a HashChainBuilder on top of a fresh temp-file store

@@ -10,7 +10,7 @@ import (
 
 // buildPlan constructs a Plan directly (bypassing the Generator) with the
 // given workflow name, a single batch holding the given targets, and the
-// given steps. Used by impact tests to isolate analyzer behavior from
+// given steps. Used by impact tests to isolate analyzer behaviour from
 // generator concerns.
 func buildPlan(name string, targets []string, steps ...PlanStep) *Plan {
 	return &Plan{

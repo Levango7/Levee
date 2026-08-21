@@ -13,10 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/diagnosis"
-	"github.com/nexus/levee/internal/recommend"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/diagnosis"
+	"github.com/nexus/levee/internal/recommend"
 )
 
 // --- test helpers -----------------------------------------------------------
@@ -994,17 +995,17 @@ func TestHandleMessage_FullFlow(t *testing.T) {
 	require.Equal(t, StateReviewing, sess.GetState())
 
 	// 2. approve -> executing
-	reply, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
+	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
 	require.NoError(t, err)
 	require.Equal(t, StateExecuting, sess.GetState())
 
 	// 3. cancel -> failed
-	reply, err = e.HandleMessage(context.Background(), sess.ID, "u1", "取消")
+	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "取消")
 	require.NoError(t, err)
 	require.Equal(t, StateFailed, sess.GetState())
 
 	// 4. restart -> idle
-	reply, err = e.HandleMessage(context.Background(), sess.ID, "u1", "/restart")
+	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "/restart")
 	require.NoError(t, err)
 	require.Equal(t, StateIdle, sess.GetState())
 

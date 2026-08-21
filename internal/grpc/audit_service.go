@@ -12,11 +12,12 @@ import (
 
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // AuditService implements pb.AuditServiceServer. It reads audit data from

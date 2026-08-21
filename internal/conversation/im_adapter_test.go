@@ -16,9 +16,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/nexus/levee/internal/chatops"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/chatops"
 )
 
 // --- mockBot ---------------------------------------------------------------
@@ -51,10 +52,10 @@ func newMockBot(name string, platform chatops.Platform) *mockBot {
 	}
 }
 
-func (b *mockBot) Name() string                 { return b.name }
-func (b *mockBot) Platform() chatops.Platform   { return b.platform }
-func (b *mockBot) Start(_ context.Context) error { return b.startErr }
-func (b *mockBot) Stop() error                   { return b.stopErr }
+func (b *mockBot) Name() string                          { return b.name }
+func (b *mockBot) Platform() chatops.Platform            { return b.platform }
+func (b *mockBot) Start(_ context.Context) error         { return b.startErr }
+func (b *mockBot) Stop() error                           { return b.stopErr }
 func (b *mockBot) SubscribeEvents() <-chan chatops.Event { return b.eventCh }
 
 func (b *mockBot) PublishEvent(evt chatops.Event) error {

@@ -28,7 +28,7 @@ func newLinkCmd() *cobra.Command {
 		RunE: runLink,
 	}
 	cmd.Flags().StringVar(&linkOptIncident, "incident", "", "Incident ID to associate with the run (required)")
-	cmd.MarkFlagRequired("incident")
+	_ = cmd.MarkFlagRequired("incident")
 	return cmd
 }
 
@@ -43,7 +43,7 @@ func runLink(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// 2. Get the run.
 	run, err := store.GetRun(ctx, linkOptRunID)

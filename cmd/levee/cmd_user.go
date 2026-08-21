@@ -6,10 +6,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nexus/levee/internal/config"
-	"github.com/nexus/levee/internal/permission"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/permission"
 )
 
 // User command option variables. Prefixed with "user" to avoid collisions
@@ -68,9 +69,9 @@ func newUserAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&userAddOptName, "name", "", "User name (required)")
 	cmd.Flags().StringVar(&userAddOptTeam, "team", "", "Team name (required)")
 	cmd.Flags().StringVar(&userAddOptRole, "role", "", "User role: admin|operator|viewer (required)")
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("team")
-	cmd.MarkFlagRequired("role")
+	_ = cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("team")
+	_ = cmd.MarkFlagRequired("role")
 	return cmd
 }
 

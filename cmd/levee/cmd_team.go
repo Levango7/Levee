@@ -6,9 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nexus/levee/internal/permission"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/permission"
 )
 
 // Team command option variables. Prefixed with "team" to avoid collisions
@@ -65,8 +66,8 @@ func newTeamAddCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&teamAddOptName, "name", "", "Team name (required)")
 	cmd.Flags().StringVar(&teamAddOptEnv, "env", "", "Environment name (required)")
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("env")
+	_ = cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("env")
 	return cmd
 }
 

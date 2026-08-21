@@ -323,7 +323,7 @@ func TestLimiterConcurrentStress(t *testing.T) {
 	assert.Equal(t, 0, stats.GlobalInUse, "all permits should be returned after stress test")
 }
 
-// --- Close behavior ---------------------------------------------------------
+// --- Close behaviour ---------------------------------------------------------
 
 func TestLimiterCloseRejectsAcquire(t *testing.T) {
 	l := NewLimiter(10, 10, 10, 0)

@@ -1,4 +1,3 @@
-
 package recommend
 
 // engine.go implements Phase B3 of LEVEE's recommendation engine: the
@@ -29,6 +28,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/nexus/levee/internal/diagnosis"
 	"github.com/nexus/levee/internal/log"
 )
@@ -91,20 +91,20 @@ type Alternative struct {
 // RecommendEngine.Recommend. It is a value object: once constructed it is
 // not mutated.
 type Recommendation struct {
-	ID            string                `json:"id"`
-	DiagnosisID   string                `json:"diagnosis_id"`
-	Target        string                `json:"target"`
-	Summary       string                `json:"summary"`
-	Approach      string                `json:"approach"`
-	WorkflowDraft string                `json:"workflow_draft"`
-	RiskLevel     RiskLevel             `json:"risk_level"`
-	Confidence    float64               `json:"confidence"`
-	Alternatives  []Alternative         `json:"alternatives"`
-	PreConditions []string              `json:"pre_conditions"`
-	RollbackPlan  string                `json:"rollback_plan"`
-	Source        RecommendationSource  `json:"source"`
-	Matches       []*Match              `json:"matches"`
-	CreatedAt     time.Time             `json:"created_at"`
+	ID            string               `json:"id"`
+	DiagnosisID   string               `json:"diagnosis_id"`
+	Target        string               `json:"target"`
+	Summary       string               `json:"summary"`
+	Approach      string               `json:"approach"`
+	WorkflowDraft string               `json:"workflow_draft"`
+	RiskLevel     RiskLevel            `json:"risk_level"`
+	Confidence    float64              `json:"confidence"`
+	Alternatives  []Alternative        `json:"alternatives"`
+	PreConditions []string             `json:"pre_conditions"`
+	RollbackPlan  string               `json:"rollback_plan"`
+	Source        RecommendationSource `json:"source"`
+	Matches       []*Match             `json:"matches"`
+	CreatedAt     time.Time            `json:"created_at"`
 }
 
 // --- fixProposal (LLM response shape) ---------------------------------------

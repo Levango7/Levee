@@ -45,9 +45,9 @@ func TestSetLogger(t *testing.T) {
 func TestAddIncident(t *testing.T) {
 	kb := NewKnowledgeBase()
 	inc := HistoricalIncident{
-		ID:     "inc-1",
-		Title:  "test",
-		Tags:   []string{"Java", "OOM", "oom"},
+		ID:       "inc-1",
+		Title:    "test",
+		Tags:     []string{"Java", "OOM", "oom"},
 		Severity: "critical",
 	}
 	require.NoError(t, kb.AddIncident(inc))
@@ -704,9 +704,9 @@ func TestConcurrentAddAndMatch(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			_ = kb.AddIncident(HistoricalIncident{
-				ID:     "inc-" + string(rune('a'+n)),
-				Title:  "concurrent",
-				Tags:   []string{"java"},
+				ID:       "inc-" + string(rune('a'+n)),
+				Title:    "concurrent",
+				Tags:     []string{"java"},
 				Severity: "warning",
 			})
 			_, _ = kb.Match("java", []string{"oom"}, []string{"java"})

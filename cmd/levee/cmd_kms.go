@@ -6,8 +6,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/nexus/levee/internal/credential"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/credential"
 )
 
 // KMS command option variables. Prefixed to avoid collisions with other
@@ -105,7 +106,7 @@ func kmsManagerFromConfig(ctx context.Context) (*credential.KMSManager, error) {
 	// registered at runtime via the gRPC service or future config keys.
 	mgr, err := credential.NewKMSManager(cs, nil)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("create kms manager: %w", err)
 	}
 	return mgr, nil

@@ -19,9 +19,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/alert"
 	"github.com/nexus/levee/internal/diagnosis"
-	"github.com/spf13/cobra"
 )
 
 // Diagnose command option variables.

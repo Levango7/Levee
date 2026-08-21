@@ -279,7 +279,6 @@ func (gm *GateManager) RunPhase(ctx context.Context, phase GatePhase, input Gate
 
 	completed := make([]bool, n)
 	completedCount := 0
-	failed := false
 
 	for completedCount < n {
 		select {
@@ -319,8 +318,7 @@ func (gm *GateManager) RunPhase(ctx context.Context, phase GatePhase, input Gate
 			// On the first failure, mark every still-pending gate as skipped
 			// and return. The pending goroutines keep running to completion
 			// (their results land in the buffered channel and are dropped).
-			if !results[r.idx].Passed && !failed {
-				failed = true
+			if !results[r.idx].Passed {
 				for i := 0; i < n; i++ {
 					if !completed[i] {
 						results[i] = skippedResult(fmt.Errorf("gate %q failed", gates[r.idx].Name()))

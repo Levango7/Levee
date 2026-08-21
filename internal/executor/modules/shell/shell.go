@@ -116,14 +116,14 @@ func (m *Module) execScript(ctx context.Context, input executor.ModuleInput) (*e
 		return nil, fmt.Errorf("shell.script: upload script: %w", err)
 	}
 
-		// chmod +x then execute. We chain with && so that a chmod failure aborts
-		// execution rather than running a non-executable file.
-		// remotePath is generated internally and shell-quoted; it is safe.
-		runCmd := fmt.Sprintf("chmod +x %s && sh %s", remotePath, remotePath)
-		res, err := input.Channel.Exec(ctx, runCmd)
-		if err != nil {
-			return nil, fmt.Errorf("shell.script: channel exec: %w", err)
-		}
+	// chmod +x then execute. We chain with && so that a chmod failure aborts
+	// execution rather than running a non-executable file.
+	// remotePath is generated internally and shell-quoted; it is safe.
+	runCmd := fmt.Sprintf("chmod +x %s && sh %s", remotePath, remotePath)
+	res, err := input.Channel.Exec(ctx, runCmd)
+	if err != nil {
+		return nil, fmt.Errorf("shell.script: channel exec: %w", err)
+	}
 
 	// Best-effort cleanup. We swallow the error because the step has already
 	// produced its evidence (exit code / stdout / stderr) and a leftover temp
@@ -166,11 +166,11 @@ func validateShellCommand(cmd string) error {
 	// safe command names and arguments composed of alphanumeric characters,
 	// paths, and simple flags.
 	for _, ch := range cmd {
-		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
-			ch == '.' || ch == '/' || ch == ' ' || ch == '=') {
-			return fmt.Errorf("disallowed character %q in command", ch)
+		if ch == '-' || ch == '_' || ch == '.' || ch == '/' || ch == ' ' || ch == '=' ||
+			(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') {
+			continue
 		}
+		return fmt.Errorf("disallowed character %q in command", ch)
 	}
 	return nil
 }

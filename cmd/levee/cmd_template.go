@@ -8,9 +8,10 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/template"
-	"github.com/spf13/cobra"
 )
 
 // Template command option variables.
@@ -83,8 +84,8 @@ func newTemplateCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tplCreateOptDesc, "description", "", "Template description")
 	cmd.Flags().StringVar(&tplCreateOptContent, "content", "", "Template YAML content (required)")
 	cmd.Flags().StringVar(&tplCreateOptParams, "params", "", "Template parameters as JSON array")
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("content")
+	_ = cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("content")
 	return cmd
 }
 
@@ -101,7 +102,7 @@ func newTemplateDeleteCmd() *cobra.Command {
 }
 
 // openTemplateLibrary creates a TemplateLibrary from the configuration.
-func openTemplateLibrary(ctx context.Context) (*template.TemplateLibrary, error) {
+func openTemplateLibrary(_ctx context.Context) (*template.TemplateLibrary, error) {
 	cfg, err := config.Load(optConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
@@ -116,14 +117,14 @@ func openTemplateLibrary(ctx context.Context) (*template.TemplateLibrary, error)
 
 // runTemplateList executes the `levee template list` command.
 func runTemplateList(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	_ctx := context.Background()
 
-	lib, err := openTemplateLibrary(ctx)
+	lib, err := openTemplateLibrary(_ctx)
 	if err != nil {
 		return fmt.Errorf("open template library: %w", err)
 	}
 
-	templates, err := lib.List(ctx)
+	templates, err := lib.List(_ctx)
 	if err != nil {
 		return fmt.Errorf("list templates: %w", err)
 	}
@@ -166,14 +167,14 @@ func runTemplateList(cmd *cobra.Command, args []string) error {
 // runTemplateShow executes the `levee template show <name>` command.
 func runTemplateShow(cmd *cobra.Command, args []string) error {
 	tplShowOptName = args[0]
-	ctx := context.Background()
+	_ctx := context.Background()
 
-	lib, err := openTemplateLibrary(ctx)
+	lib, err := openTemplateLibrary(_ctx)
 	if err != nil {
 		return fmt.Errorf("open template library: %w", err)
 	}
 
-	tmpl, err := lib.Get(ctx, tplShowOptName)
+	tmpl, err := lib.Get(_ctx, tplShowOptName)
 	if err != nil {
 		return fmt.Errorf("get template: %w", err)
 	}
@@ -191,7 +192,7 @@ func runTemplateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	humanStr, err := lib.Show(ctx, tplShowOptName)
+	humanStr, err := lib.Show(_ctx, tplShowOptName)
 	if err != nil {
 		return fmt.Errorf("show template: %w", err)
 	}
@@ -201,9 +202,9 @@ func runTemplateShow(cmd *cobra.Command, args []string) error {
 
 // runTemplateCreate executes the `levee template create` command.
 func runTemplateCreate(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	_ctx := context.Background()
 
-	lib, err := openTemplateLibrary(ctx)
+	lib, err := openTemplateLibrary(_ctx)
 	if err != nil {
 		return fmt.Errorf("open template library: %w", err)
 	}
@@ -223,7 +224,7 @@ func runTemplateCreate(cmd *cobra.Command, args []string) error {
 		Parameters:  params,
 	}
 
-	if err := lib.Save(ctx, tmpl); err != nil {
+	if err := lib.Save(_ctx, tmpl); err != nil {
 		return fmt.Errorf("create template: %w", err)
 	}
 
@@ -253,14 +254,14 @@ func runTemplateCreate(cmd *cobra.Command, args []string) error {
 // runTemplateDelete executes the `levee template delete <name>` command.
 func runTemplateDelete(cmd *cobra.Command, args []string) error {
 	tplDeleteOptName = args[0]
-	ctx := context.Background()
+	_ctx := context.Background()
 
-	lib, err := openTemplateLibrary(ctx)
+	lib, err := openTemplateLibrary(_ctx)
 	if err != nil {
 		return fmt.Errorf("open template library: %w", err)
 	}
 
-	if err := lib.Delete(ctx, tplDeleteOptName); err != nil {
+	if err := lib.Delete(_ctx, tplDeleteOptName); err != nil {
 		return fmt.Errorf("delete template: %w", err)
 	}
 

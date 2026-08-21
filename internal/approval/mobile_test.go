@@ -4,9 +4,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/push"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/push"
 )
 
 // --- helpers ---------------------------------------------------------------

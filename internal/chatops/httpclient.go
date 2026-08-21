@@ -106,7 +106,7 @@ func doOnePost(ctx context.Context, client *http.Client, url string, payload []b
 	if err != nil {
 		return fmt.Errorf("chatops: do request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {

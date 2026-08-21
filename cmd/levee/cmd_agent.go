@@ -10,9 +10,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/agent"
 	"github.com/nexus/levee/internal/log"
-	"github.com/spf13/cobra"
 )
 
 // Agent command option variables. They are populated by cobra from the

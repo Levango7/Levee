@@ -20,8 +20,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/nexus/levee/internal/dsl"
 	"github.com/spf13/cobra"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // compileOpt* are the flag values for the compile command. They are reset

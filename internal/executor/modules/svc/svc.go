@@ -1,6 +1,6 @@
 // Package svc implements the LEVEE service module (design doc section 5.2,
 // MVP task T017.3). It abstracts the init system behind a small interface so
-// that the same workflow runs unchanged on systemd and sysvinit hosts.
+// that the same workflow runs unChanged on systemd and sysvinit hosts.
 //
 // Actions:
 //
@@ -285,7 +285,7 @@ func detectInitSystem(ctx context.Context, ch channel.Channel) (initSystem, erro
 // --- helpers --------------------------------------------------------------
 
 // runRemote executes cmd on the target and wraps the result in a ModuleOutput.
-func runRemote(ctx context.Context, ch channel.Channel, cmd string, changed bool) (*executor.ModuleOutput, error) {
+func runRemote(ctx context.Context, ch channel.Channel, cmd string, Changed bool) (*executor.ModuleOutput, error) {
 	res, err := ch.Exec(ctx, cmd)
 	if err != nil {
 		return nil, fmt.Errorf("svc: channel exec %q: %w", cmd, err)
@@ -295,7 +295,7 @@ func runRemote(ctx context.Context, ch channel.Channel, cmd string, changed bool
 		Stdout:   res.Stdout,
 		Stderr:   res.Stderr,
 		Duration: res.Duration,
-		Changed:  changed && res.ExitCode == 0,
+		Changed:  Changed && res.ExitCode == 0,
 	}, nil
 }
 

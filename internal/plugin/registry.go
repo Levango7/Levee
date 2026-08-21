@@ -17,7 +17,7 @@
 //     running host version using semver semantics (major.minor.patch).
 //   - Signature verification: when a signature is recorded, VerifySignature
 //     re-computes the SHA-256 of the binary and compares it to the stored
-//     digest. This is an optional, defense-in-depth measure; the host
+//     digest. This is an optional, defence-in-depth measure; the host
 //     trusts the registry itself to be tamper-evident (the audit trail
 //     records every install / enable / disable).
 //
@@ -241,7 +241,7 @@ SELECT name, version, type, author, description, entry_point,
 	if err != nil {
 		return nil, fmt.Errorf("plugin: list registry: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []*RegistryRecord
 	for rows.Next() {

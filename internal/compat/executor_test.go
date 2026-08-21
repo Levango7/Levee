@@ -15,11 +15,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/state"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // --- test helpers ----------------------------------------------------------

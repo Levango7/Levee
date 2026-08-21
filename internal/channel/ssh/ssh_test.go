@@ -20,10 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/channel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/nexus/levee/internal/channel"
 )
 
 // --- mock SSH server -------------------------------------------------------

@@ -9,9 +9,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/nexus/levee/internal/tenant"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/tenant"
 )
 
 // Tenant command option variables. Prefixed with "tenant" to avoid
@@ -73,7 +74,7 @@ func newTenantCreateCmd() *cobra.Command {
 	cmd.Flags().IntVar(&tenantCreateOptMaxChanges, "max-changes", 0, "Max concurrent changes (0 = unlimited)")
 	cmd.Flags().IntVar(&tenantCreateOptMaxStorage, "max-storage", 0, "Max storage MB (0 = unlimited)")
 	cmd.Flags().IntVar(&tenantCreateOptMaxAPIRate, "max-api-rate", 0, "Max API requests per minute (0 = unlimited)")
-	cmd.MarkFlagRequired("name")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 

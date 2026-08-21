@@ -7,10 +7,11 @@ import (
 	"os"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/template"
-	"github.com/spf13/cobra"
 )
 
 // newOptParams holds the value of the --params flag for the new command.
@@ -74,7 +75,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	runID, err := generateRunID()
 	if err != nil {

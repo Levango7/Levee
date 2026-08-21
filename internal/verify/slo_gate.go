@@ -292,7 +292,7 @@ func (g *SLOGate) queryProm(ctx context.Context) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("slo gate %q: http get: %w", g.name, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

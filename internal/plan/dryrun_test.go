@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // makeDryRunWorkflow builds a workflow with static targets and the given

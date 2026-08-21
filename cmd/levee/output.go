@@ -90,7 +90,7 @@ func isEnvelopeShaped(v any) bool {
 		return hasData && hasMeta && hasErr
 	}
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return false
 		}
@@ -127,7 +127,7 @@ func getField(v any, name string) any {
 		return (*t)[name]
 	}
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Ptr {
+	if rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return nil
 		}
@@ -171,7 +171,7 @@ func PrintHuman(w io.Writer, v any) {
 	case string:
 		fmt.Fprintln(w, t)
 	case []byte:
-		w.Write(t)
+		_, _ = w.Write(t)
 		fmt.Fprintln(w)
 	case map[string]any:
 		printHumanMap(w, t)
@@ -179,7 +179,7 @@ func PrintHuman(w io.Writer, v any) {
 		printHumanTable(w, t)
 	default:
 		rv := reflect.ValueOf(v)
-		if rv.Kind() == reflect.Ptr {
+		if rv.Kind() == reflect.Pointer {
 			if rv.IsNil() {
 				return
 			}
@@ -191,7 +191,7 @@ func PrintHuman(w io.Writer, v any) {
 		case reflect.Slice, reflect.Array:
 			printHumanSlice(w, rv)
 		default:
-			fmt.Fprintln(w, fmt.Sprintf("%v", v))
+			fmt.Fprintf(w, "%v\n", v)
 		}
 	}
 }
@@ -202,7 +202,7 @@ func printHumanMap(w io.Writer, m map[string]any) {
 	for k, val := range m {
 		fmt.Fprintf(tw, "%s:\t%v\n", k, val)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // printHumanTable renders a slice of maps as a table with a header row derived
@@ -233,7 +233,7 @@ func printHumanTable(w io.Writer, rows []map[string]any) {
 		}
 		fmt.Fprintln(tw)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // printHumanStruct renders a struct as a two-column "field: value" table.
@@ -260,7 +260,7 @@ func printHumanStruct(w io.Writer, rv reflect.Value) {
 		}
 		fmt.Fprintf(tw, "%s:\t%v\n", name, fv.Interface())
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // printHumanSlice renders a slice/array one element per line.

@@ -27,9 +27,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nexus/levee/internal/channel"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
+
+	"github.com/nexus/levee/internal/channel"
 )
 
 // Compile-time assertion that SSHChannel implements channel.Channel.
@@ -354,7 +355,7 @@ func (c *SSHChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult,
 	if err != nil {
 		return nil, fmt.Errorf("ssh: new session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	// Capture stdout and stderr separately so we can populate ExecResult
 	// faithfully. We use pipes rather than CombinedOutput to keep the two
@@ -437,7 +438,7 @@ func (c *SSHChannel) Upload(ctx context.Context, remotePath string, content io.R
 	if err != nil {
 		return fmt.Errorf("ssh: new session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	// StdinPipe must be obtained before Start. We pipe the payload via
 	// stdin rather than embedding it in the command line to avoid quoting

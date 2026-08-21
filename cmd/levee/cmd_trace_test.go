@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/nexus/levee/internal/audit"
-	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/state"
 )
 
 func TestTraceCmdRegistered(t *testing.T) {

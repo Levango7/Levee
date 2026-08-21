@@ -27,10 +27,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/chatops"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/recommend"
-	"github.com/spf13/cobra"
 )
 
 // --- Sentinel errors --------------------------------------------------------
@@ -106,7 +107,7 @@ func runConverse(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("converse: init engine: %w", err)
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 
 	// --list: list sessions and exit.
 	if converseList {
@@ -409,10 +410,10 @@ func runConverseList(engine *conversation.ConversationEngine, userID string, w i
 		data := make([]map[string]any, 0, len(sessions))
 		for _, s := range sessions {
 			data = append(data, map[string]any{
-				"id":     s.ID,
-				"state":  s.GetState().String(),
-				"msgs":   len(s.History()),
-				"alert":  s.AlertID,
+				"id":    s.ID,
+				"state": s.GetState().String(),
+				"msgs":  len(s.History()),
+				"alert": s.AlertID,
 			})
 		}
 		return PrintJSON(w, map[string]any{

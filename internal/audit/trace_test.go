@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // newTestStore opens a fresh SQLiteStore backed by a temp file. Each test gets

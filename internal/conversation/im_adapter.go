@@ -1,4 +1,3 @@
-
 // im_adapter.go implements IMAdapter, the bridge between ChatOps Bot
 // adapters (Feishu / DingTalk / Slack) and the ConversationEngine. It maps
 // each IM channel to a conversation Session, forwards user messages to the
