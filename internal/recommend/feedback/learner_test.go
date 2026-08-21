@@ -26,17 +26,17 @@ func newTestLearner(t *testing.T) *FeedbackLearner {
 // representative values.
 func sampleOutcome(success bool) FixOutcome {
 	return FixOutcome{
-		IncidentID:    "inc-001",
-		AlertID:       "alert-001",
-		Target:        "order-service",
-		Symptoms:      "high RSS, GC pause > 1s",
-		RootCause:     "heap exhaustion",
-		FixAction:     "restarted JVM with -Xmx4g",
-		Success:       success,
-		Duration:      5 * time.Minute,
-		RollbackUsed:  !success,
-		Timestamp:     time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC),
-		Metrics:       map[string]float64{"cpu_before": 0.95, "cpu_after": 0.31},
+		IncidentID:     "inc-001",
+		AlertID:        "alert-001",
+		Target:         "order-service",
+		Symptoms:       "high RSS, GC pause > 1s",
+		RootCause:      "heap exhaustion",
+		FixAction:      "restarted JVM with -Xmx4g",
+		Success:        success,
+		Duration:       5 * time.Minute,
+		RollbackUsed:   !success,
+		Timestamp:      time.Date(2026, 8, 18, 10, 0, 0, 0, time.UTC),
+		Metrics:        map[string]float64{"cpu_before": 0.95, "cpu_after": 0.31},
 		LessonsLearned: []string{"increase heap size proactively"},
 	}
 }

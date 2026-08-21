@@ -1,4 +1,3 @@
-
 // learner.go implements the FeedbackLearner that consumes FixOutcome records,
 // persists them as FeedbackRecords, and distils them into KnowledgeBase
 // entries.
@@ -485,15 +484,15 @@ func newIncidentFromOutcome(pid string, o FixOutcome) recommend.HistoricalIncide
 	}
 
 	return recommend.HistoricalIncident{
-		ID:         pid,
-		Title:      title,
-		Symptoms:   symptoms,
-		RootCause:  o.RootCause,
-		Resolution: o.FixAction,
-		Workflow:   "",
-		Tags:       []string{strings.ToLower(o.Target)},
-		Severity:   severity,
-		CreatedAt:  time.Now().UTC(),
+		ID:          pid,
+		Title:       title,
+		Symptoms:    symptoms,
+		RootCause:   o.RootCause,
+		Resolution:  o.FixAction,
+		Workflow:    "",
+		Tags:        []string{strings.ToLower(o.Target)},
+		Severity:    severity,
+		CreatedAt:   time.Now().UTC(),
 		Occurrences: 1,
 	}
 }

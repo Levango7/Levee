@@ -635,12 +635,12 @@ func TestStreamLogs(t *testing.T) {
 // without any authorization metadata is rejected with Unauthenticated.
 func TestAuthMissingToken(t *testing.T) {
 	const token = "secret-token-missing"
-	srv := startTestServer(t, WithAuthToken(token))
+	srv, _ := startTestServerWithAllServices(t, WithAuthToken(token))
 	conn := newInsecureClient(t, srv.Addr())
 	client := pb.NewSystemServiceClient(conn)
 
 	// No metadata attached.
-	_, err := client.GetVersion(context.Background(), &emptypb.Empty{})
+	_, err := client.GetStatus(context.Background(), &emptypb.Empty{})
 	require.Error(t, err)
 	st, ok := status.FromError(err)
 	require.True(t, ok)
@@ -651,12 +651,12 @@ func TestAuthMissingToken(t *testing.T) {
 // rejected with Unauthenticated.
 func TestAuthWrongToken(t *testing.T) {
 	const token = "secret-token-right"
-	srv := startTestServer(t, WithAuthToken(token))
+	srv, _ := startTestServerWithAllServices(t, WithAuthToken(token))
 	conn := newInsecureClient(t, srv.Addr())
 	client := pb.NewSystemServiceClient(conn)
 
 	ctx := withAuthCtx(context.Background(), "wrong-token")
-	_, err := client.GetVersion(ctx, &emptypb.Empty{})
+	_, err := client.GetStatus(ctx, &emptypb.Empty{})
 	require.Error(t, err)
 	st, ok := status.FromError(err)
 	require.True(t, ok)

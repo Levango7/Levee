@@ -1,4 +1,3 @@
-
 // embedding.go defines the embedding abstraction used by the RAG pipeline to
 // convert text into dense float32 vectors. The interface is intentionally
 // minimal so that production adapters (OpenAI, Ollama, local models) can be
@@ -74,9 +73,15 @@ func NewMockEmbeddingProvider(dimension int) (*MockEmbeddingProvider, error) {
 // Embed returns a deterministic embedding for the given text. Empty text is
 // rejected with ErrEmptyText. The context is accepted for interface
 // symmetry but is not currently consulted.
-func (m *MockEmbeddingProvider) Embed(_ context.Context, text string) ([]float32, error) {
+func (m *MockEmbeddingProvider) Embed(ctx context.Context, text string) ([]float32, error) {
 	if text == "" {
 		return nil, ErrEmptyText
+	}
+	// Check for context cancellation before doing work.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
 	return m.embed(text), nil
 }
@@ -85,8 +90,17 @@ func (m *MockEmbeddingProvider) Embed(_ context.Context, text string) ([]float32
 // slice without error. If any individual text is empty, the call fails with
 // ErrEmptyText and no partial results are returned.
 func (m *MockEmbeddingProvider) EmbedBatch(ctx context.Context, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return [][]float32{}, nil
+	}
 	out := make([][]float32, len(texts))
 	for i, t := range texts {
+		// Check context cancellation per item to support large batches.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
 		v, err := m.Embed(ctx, t)
 		if err != nil {
 			return nil, err

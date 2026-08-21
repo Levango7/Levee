@@ -85,14 +85,14 @@ func TestZabbixAdapterSeverityMapping(t *testing.T) {
 		zabbixSev string
 		want      Severity
 	}{
-		{"0", SeverityInfo},      // Not classified
-		{"1", SeverityInfo},      // Information
-		{"2", SeverityWarning},   // Warning
-		{"3", SeverityWarning},   // Average
-		{"4", SeverityCritical},  // High
-		{"5", SeverityCritical},  // Disaster
-		{"", SeverityWarning},    // empty -> default
-		{"99", SeverityWarning},  // out of range -> default
+		{"0", SeverityInfo},     // Not classified
+		{"1", SeverityInfo},     // Information
+		{"2", SeverityWarning},  // Warning
+		{"3", SeverityWarning},  // Average
+		{"4", SeverityCritical}, // High
+		{"5", SeverityCritical}, // Disaster
+		{"", SeverityWarning},   // empty -> default
+		{"99", SeverityWarning}, // out of range -> default
 		{"High", SeverityCritical},
 		{"Disaster", SeverityCritical},
 		{"Warning", SeverityWarning},

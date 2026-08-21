@@ -1,4 +1,3 @@
-
 // adapter_nagios.go adapts the Nagios webhook payload into the unified Alert
 // model.
 //

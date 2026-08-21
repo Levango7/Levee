@@ -1,4 +1,3 @@
-
 package topology
 
 // collector.go implements the unified topology model for LEVEE's distributed

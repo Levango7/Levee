@@ -1,4 +1,3 @@
-
 // Package feedback implements D5 fix-outcome learning for LEVEE's
 // recommendation engine.
 //

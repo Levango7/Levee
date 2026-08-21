@@ -36,6 +36,9 @@ const authorizationHeader = "authorization"
 //
 // Tokens are compared in constant time to avoid timing side-channels.
 // Missing, malformed or mismatched tokens yield codes.Unauthenticated.
+//
+// SECURITY: All methods are authenticated by default. To skip authentication
+// for a specific method, add it to the skipAuthMethods map below.
 func AuthInterceptor(expected string) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -43,6 +46,10 @@ func AuthInterceptor(expected string) grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (interface{}, error) {
+		// Skip auth for methods that are explicitly exempted.
+		if info != nil && skipAuthMethods[info.FullMethod] {
+			return handler(ctx, req)
+		}
 		if err := checkAuth(ctx, expected); err != nil {
 			return nil, err
 		}
@@ -66,6 +73,16 @@ func AuthStreamInterceptor(expected string) grpc.StreamServerInterceptor {
 		}
 		return handler(srv, ss)
 	}
+}
+
+// skipAuthMethods lists gRPC methods that are exempt from authentication.
+// This should be kept as small as possible and only include health checks
+// or similar public endpoints.
+var skipAuthMethods = map[string]bool{
+	// Health check endpoint (if implemented via gRPC health service).
+	"/grpc.health.v1.Health/Check": true,
+	// System version endpoint is safe to expose publicly.
+	"/levee.SystemService/GetVersion": true,
 }
 
 // checkAuth performs the actual token validation. It returns nil when

@@ -1,4 +1,3 @@
-
 // adapter_zabbix.go adapts the Zabbix webhook payload into the unified Alert
 // model.
 //
@@ -123,20 +122,20 @@ func parseZabbixSeverity(s string) Severity {
 // Field names follow the Zabbix webhook macro convention. Unknown fields
 // are ignored during unmarshalling.
 type ZabbixAlert struct {
-	EventID           string `json:"event_id"`
-	EventSource       string `json:"event_source"`
-	EventValue        string `json:"event_value"`
-	Host              string `json:"host"`
-	HostIP            string `json:"host_ip"`
-	TriggerID         string `json:"trigger_id"`
-	TriggerName       string `json:"trigger_name"`
+	EventID            string `json:"event_id"`
+	EventSource        string `json:"event_source"`
+	EventValue         string `json:"event_value"`
+	Host               string `json:"host"`
+	HostIP             string `json:"host_ip"`
+	TriggerID          string `json:"trigger_id"`
+	TriggerName        string `json:"trigger_name"`
 	TriggerDescription string `json:"trigger_description"`
-	TriggerSeverity   string `json:"trigger_severity"`
-	TriggerStatus     string `json:"trigger_status"`
-	TriggerURL        string `json:"trigger_url"`
-	ItemLastValue     string `json:"item_lastvalue"`
-	Datetime          string `json:"datetime"`
-	Action            string `json:"action"`
+	TriggerSeverity    string `json:"trigger_severity"`
+	TriggerStatus      string `json:"trigger_status"`
+	TriggerURL         string `json:"trigger_url"`
+	ItemLastValue      string `json:"item_lastvalue"`
+	Datetime           string `json:"datetime"`
+	Action             string `json:"action"`
 }
 
 // ZabbixAdapter parses Zabbix webhook payloads.
@@ -320,9 +319,9 @@ func (a *ZabbixAdapter) EncodeReverse(alert *Alert) (ZabbixAlert, error) {
 		return ZabbixAlert{}, fmt.Errorf("zabbix adapter: nil alert")
 	}
 	za := ZabbixAlert{
-		TriggerName: alert.Title,
+		TriggerName:        alert.Title,
 		TriggerDescription: alert.Description,
-		Datetime:    alert.StartsAt.Format(time.RFC3339),
+		Datetime:           alert.StartsAt.Format(time.RFC3339),
 	}
 	if alert.Labels != nil {
 		za.Host = alert.Labels["host"]

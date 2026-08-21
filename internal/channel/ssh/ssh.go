@@ -204,6 +204,12 @@ func (c *SSHChannel) Connect(ctx context.Context) error {
 		}
 		return fmt.Errorf("ssh: dial %s: %w", addr, err)
 	}
+	// Ensure conn is closed if anything fails before the client is assigned.
+	defer func() {
+		if c.client == nil && conn != nil {
+			_ = conn.Close()
+		}
+	}()
 
 	// Wrap the conn so that the SSH handshake also respects ctx. ssh.NewClientConn
 	// does not take a context; we race it against ctx.Done() and close the

@@ -14,6 +14,11 @@ import (
 // here and rely on the wall-clock timeout enforced via context
 // cancellation. Callers who need hard limits on Windows can wrap the
 // plugin binary in a Job Object externally.
+//
+// SECURITY NOTE: On Windows this function does not enforce any resource
+// limits, which means plugins can consume arbitrary CPU and memory.
+// Production deployments on Windows should use external mechanisms
+// (Job Objects, container isolation, or run plugins on Linux workers).
 func applyResourceLimits(p *os.Process, cfg SandboxConfig) {
 	// No-op on Windows in this build.
 }

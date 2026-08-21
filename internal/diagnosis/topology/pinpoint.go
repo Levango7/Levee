@@ -1,4 +1,3 @@
-
 package topology
 
 // pinpoint.go implements the PinpointCollector, the topology backend that

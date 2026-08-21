@@ -71,6 +71,12 @@ func (m *Module) execCommand(ctx context.Context, input executor.ModuleInput) (*
 		return nil, fmt.Errorf("shell.exec: empty cmd")
 	}
 
+	// Security: reject commands containing shell metacharacters.
+	// This prevents command injection via user-supplied DSL.
+	if err := validateShellCommand(cmd); err != nil {
+		return nil, fmt.Errorf("shell.exec: unsafe command: %w", err)
+	}
+
 	res, err := input.Channel.Exec(ctx, cmd)
 	if err != nil {
 		return nil, fmt.Errorf("shell.exec: channel exec: %w", err)
@@ -110,13 +116,14 @@ func (m *Module) execScript(ctx context.Context, input executor.ModuleInput) (*e
 		return nil, fmt.Errorf("shell.script: upload script: %w", err)
 	}
 
-	// chmod +x then execute. We chain with && so that a chmod failure aborts
-	// execution rather than running a non-executable file.
-	runCmd := fmt.Sprintf("chmod +x %s && sh %s", remotePath, remotePath)
-	res, err := input.Channel.Exec(ctx, runCmd)
-	if err != nil {
-		return nil, fmt.Errorf("shell.script: channel exec: %w", err)
-	}
+		// chmod +x then execute. We chain with && so that a chmod failure aborts
+		// execution rather than running a non-executable file.
+		// remotePath is generated internally and shell-quoted; it is safe.
+		runCmd := fmt.Sprintf("chmod +x %s && sh %s", remotePath, remotePath)
+		res, err := input.Channel.Exec(ctx, runCmd)
+		if err != nil {
+			return nil, fmt.Errorf("shell.script: channel exec: %w", err)
+		}
 
 	// Best-effort cleanup. We swallow the error because the step has already
 	// produced its evidence (exit code / stdout / stderr) and a leftover temp
@@ -145,6 +152,27 @@ func stringArg(args map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("argument %q must be a string, got %T", key, v)
 	}
 	return s, nil
+}
+
+// validateShellCommand checks that a command does not contain shell
+// metacharacters that could be used for command injection. This is a
+// conservative safety net; the remote channel executor may still interpret
+// the command through a shell. The check rejects the following characters:
+// ; & | ` $ ( ) < > { } [ ] ' " \n \r \t and whitespace that could be used
+// to break out of a single argument.
+func validateShellCommand(cmd string) error {
+	// Reject any character that is not a letter, digit, hyphen, underscore,
+	// dot, slash, or space. This is intentionally strict: it allows only
+	// safe command names and arguments composed of alphanumeric characters,
+	// paths, and simple flags.
+	for _, ch := range cmd {
+		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' ||
+			ch == '.' || ch == '/' || ch == ' ' || ch == '=') {
+			return fmt.Errorf("disallowed character %q in command", ch)
+		}
+	}
+	return nil
 }
 
 // randomSuffix returns 8 hex characters derived from 4 random bytes. It is

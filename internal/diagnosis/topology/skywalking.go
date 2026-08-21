@@ -1,4 +1,3 @@
-
 package topology
 
 // skywalking.go implements the SkyWalkingCollector, the topology backend that
@@ -196,7 +195,7 @@ const skywalkingTopologyQuery = `query ($duration: Duration!) {
 // skywalkingGraphQLResponse is the top-level envelope returned by SkyWalking.
 // Data carries the topology; Errors is non-empty on GraphQL failures.
 type skywalkingGraphQLResponse struct {
-	Data   skywalkingTopology  `json:"data"`
+	Data   skywalkingTopology   `json:"data"`
 	Errors []skywalkingGQLError `json:"errors"`
 }
 

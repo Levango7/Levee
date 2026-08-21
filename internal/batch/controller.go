@@ -301,7 +301,21 @@ func (c *Controller) executeBatch(ctx context.Context, b plan.Batch, execFn Exec
 	for i, target := range b.Targets {
 		wg.Add(1)
 		go func(idx int, tgt string) {
-			defer wg.Done()
+			// Panic recovery: ensure wg.Done is always called and the
+			// batch is marked as failed on panic.
+			defer func() {
+				if r := recover(); r != nil {
+					atomic.StoreInt32(&failed, 1)
+					targetResults[idx] = TargetResult{
+						Target: tgt,
+						Error:  fmt.Errorf("target %s panicked: %v", tgt, r),
+					}
+					if c.targetErrorPolicy == PolicyAbort {
+						batchCancel()
+					}
+				}
+				wg.Done()
+			}()
 
 			// Acquire the in-batch semaphore, respecting cancellation.
 			select {

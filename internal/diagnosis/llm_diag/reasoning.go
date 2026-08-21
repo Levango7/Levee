@@ -1,4 +1,3 @@
-
 package llm_diag
 
 // reasoning.go implements Phase D3 of LEVEE's diagnostic subsystem: a
@@ -98,11 +97,11 @@ type ReasoningEngineConfig struct {
 // ReasoningEngine drives the multi-turn LLM reasoning loop. It is safe for
 // concurrent use: each Diagnose call works on its own ReasoningContext.
 type ReasoningEngine struct {
-	llm                 recommend.LLMClient
-	sanitizer           *recommend.Sanitizer
-	maxTurns            int
+	llm                  recommend.LLMClient
+	sanitizer            *recommend.Sanitizer
+	maxTurns             int
 	convergenceThreshold float64
-	log                 *slog.Logger
+	log                  *slog.Logger
 }
 
 // NewReasoningEngine builds a ReasoningEngine from the config. It returns
@@ -133,11 +132,11 @@ func NewReasoningEngine(cfg ReasoningEngineConfig) (*ReasoningEngine, error) {
 	}
 
 	return &ReasoningEngine{
-		llm:                 cfg.LLM,
-		sanitizer:           sanitizer,
-		maxTurns:            maxTurns,
+		llm:                  cfg.LLM,
+		sanitizer:            sanitizer,
+		maxTurns:             maxTurns,
 		convergenceThreshold: threshold,
-		log:                 lg,
+		log:                  lg,
 	}, nil
 }
 

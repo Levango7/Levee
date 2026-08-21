@@ -72,6 +72,10 @@ func NewWORMStore(store state.WORMStore) (*WORMStore, error) {
 // an error wrapping ErrAlreadyExists. The input trace must be non-nil with a
 // non-empty id. The CurrHash field of the input trace is overwritten with the
 // computed checksum; callers may inspect it after a successful call.
+//
+// SECURITY: The checksum is computed before the write. If CreateTrace fails,
+// the error is returned to the caller. This ensures that WORM integrity is
+// not silently bypassed — callers must handle the error and retry or abort.
 func (w *WORMStore) Append(ctx context.Context, trace *state.Trace) error {
 	if trace == nil {
 		return fmt.Errorf("audit: append trace: nil trace")

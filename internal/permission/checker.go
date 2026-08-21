@@ -172,6 +172,9 @@ func (c *PermissionChecker) WithRecorder(recorder *audit.TraceRecorder) *Permiss
 //
 // The context.Context is accepted for future tracing/cancellation hooks
 // but is not currently used.
+//
+// SECURITY: Empty Team or Env are rejected early. Callers must ensure
+// that all operations have a valid team and environment context.
 func (c *PermissionChecker) Check(ctx context.Context, op OperationContext) error {
 	_ = ctx
 

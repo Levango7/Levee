@@ -1,4 +1,3 @@
-
 // vectorstore.go defines the vector store abstraction used by the RAG
 // pipeline to persist and retrieve knowledge-base documents together with
 // their embedding vectors.

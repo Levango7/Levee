@@ -206,7 +206,7 @@ func (cs *CredentialStore) deriveKey(salt []byte) []byte {
 // blob has the format: salt(16) || nonce(12) || ciphertext.
 func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
 	salt := make([]byte, saltLen)
-	if _, err := rand.Read(salt); err != nil {
+	if n, err := rand.Read(salt); err != nil || n != saltLen {
 		return nil, fmt.Errorf("credential: generate salt: %w", err)
 	}
 
@@ -223,7 +223,7 @@ func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
 	}
 
 	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	if n, err := rand.Read(nonce); err != nil || n != gcm.NonceSize() {
 		return nil, fmt.Errorf("credential: generate nonce: %w", err)
 	}
 

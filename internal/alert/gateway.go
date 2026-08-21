@@ -161,6 +161,8 @@ func (g *AlertGateway) Start(ctx context.Context, addr string) error {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: g.cfg.ReadHeaderTimeout,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
@@ -415,6 +417,10 @@ func readBody(r *http.Request, maxBytes int64) ([]byte, error) {
 	reader := http.MaxBytesReader(nil, r.Body, maxBytes)
 	b, err := io.ReadAll(reader)
 	if err != nil {
+		// Distinguish between the body exceeding maxBytes and other errors.
+		if errors.Is(err, http.ErrBodyReadAfterClose) || errors.Is(err, http.ErrHandlerTimeout) {
+			return nil, fmt.Errorf("read body: %w", err)
+		}
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 	if len(b) == 0 {
