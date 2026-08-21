@@ -10,6 +10,8 @@
 |------|------|--------|
 | Linux | amd64 | `levee_x.y.z_linux_amd64.tar.gz` |
 | Linux | arm64 | `levee_x.y.z_linux_arm64.tar.gz` |
+| macOS | amd64 | `levee_x.y.z_darwin_amd64.tar.gz` |
+| macOS | arm64 | `levee_x.y.z_darwin_arm64.tar.gz` |
 | Windows | amd64 | `levee_x.y.z_windows_amd64.zip` |
 | Windows | arm64 | `levee_x.y.z_windows_arm64.zip` |
 
@@ -30,7 +32,7 @@ levee version
 
 ### 源码编译
 
-需要 Go 1.21+。
+需要 Go 1.25+。
 
 ```命令示例：从源码编译安装
 git clone https://github.com/nexus/levee.git
