@@ -201,8 +201,15 @@ func (s *Sandbox) startLocked() error {
 	// Apply resource limits best-effort. We do not fail Start when the
 	// limits cannot be applied: the wall-clock timeout still provides a
 	// safety net and we want plugins to load on platforms that lack the
-	// relevant syscalls.
+	// relevant syscalls. On Unix, rlimit-based limits only apply to the
+	// calling process (the host) and cannot constrain child processes
+	// once cmd.Start() has returned; the platform-specific
+	// applyResourceLimits logs a warning when MemoryLimit is configured.
 	applyResourceLimits(cmd.Process, s.config)
+	if s.config.MemoryLimit > 0 {
+		log.Warn("sandbox: memory limit is informational on this platform; use cgroups/job objects for hard enforcement",
+			"plugin", s.name, "memory_limit", s.config.MemoryLimit)
+	}
 
 	go s.monitor()
 	return nil

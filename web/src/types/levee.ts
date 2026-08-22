@@ -27,6 +27,7 @@ export interface Change {
   createdAt: number
   updatedAt: number
   createdBy: string
+  requester?: string
   team: string
   environment: string
 }
@@ -77,6 +78,10 @@ export interface TraceEntry {
   timestamp: number
   prevHash: string
   currHash: string
+  // actor is populated by the audit log for approval/reject events; not present in raw TraceEntry proto.
+  actor?: string
+  // detail provides additional context for audit events (e.g. approval comment).
+  detail?: string
 }
 
 export interface LogEntry {
@@ -114,6 +119,14 @@ export interface SystemStatus {
 
 export interface PageResult<T> {
   items: T[]
+  nextPageToken: string
+  totalSize: number
+}
+
+// AuditPageResult mirrors the audit API response shape where the proto field
+// is "entries" not "items". Used for /audit/log and /audit/traces responses.
+export interface AuditPageResult<T> {
+  entries: T[]
   nextPageToken: string
   totalSize: number
 }

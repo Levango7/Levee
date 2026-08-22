@@ -53,7 +53,7 @@ async function loadChange(runID: string): Promise<void> {
 
 async function loadHistory(runID: string): Promise<void> {
   try {
-    const res = await auditApi.log({ run_id: runID, pageSize: 50 })
+    const res = await auditApi.log({ runId: runID, pageSize: 50 })
     history.value = res.items || []
   } catch {
     // History is best-effort; do not block the page on it.
@@ -210,7 +210,7 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
       </div>
       <div class="mobile-approval__field">
         <span class="mobile-approval__label">申请人</span>
-        <span class="mobile-approval__value">{{ change.requester || '—' }}</span>
+        <span class="mobile-approval__value">{{ change.createdBy || '—' }}</span>
       </div>
     </section>
 
@@ -250,7 +250,7 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
           :type="entry.action === 'approve' ? 'success' : 'danger'"
         >
           <div class="mobile-approval__history-entry">
-            <span class="mobile-approval__history-actor">{{ entry.actor }}</span>
+            <span class="mobile-approval__history-actor">{{ entry.actor || '—' }}</span>
             <span class="mobile-approval__history-action">{{ entry.action }}</span>
             <span v-if="entry.detail" class="mobile-approval__history-detail">{{ entry.detail }}</span>
           </div>

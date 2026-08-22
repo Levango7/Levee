@@ -28,6 +28,7 @@ package user
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/nexus/levee/internal/channel"
@@ -74,6 +75,9 @@ func (m *Module) add(ctx context.Context, input executor.ModuleInput) (*executor
 	if err != nil {
 		return nil, fmt.Errorf("user.add: %w", err)
 	}
+	if err := validateUserName(name); err != nil {
+		return nil, fmt.Errorf("user.add: %w", err)
+	}
 
 	changed := false
 	var last *remoteStep
@@ -94,7 +98,7 @@ func (m *Module) add(ctx context.Context, input executor.ModuleInput) (*executor
 
 	// Optional password.
 	if pw, ok := stringOk(input.Args, "password"); ok {
-		cmd := fmt.Sprintf("echo '%s:%s' | chpasswd", name, escapeSingleQuote(pw))
+		cmd := fmt.Sprintf("echo '%s:%s' | chpasswd", shellQuote(name), escapeSingleQuote(pw))
 		r, err := runRemoteStep(ctx, input.Channel, cmd)
 		if err != nil {
 			return nil, fmt.Errorf("user.add: chpasswd: %w", err)
@@ -118,7 +122,7 @@ func (m *Module) add(ctx context.Context, input executor.ModuleInput) (*executor
 	}
 
 	if last == nil {
-		last = &remoteStep{exit: 0, stdout: fmt.Sprintf("user %s already exists", name)}
+		last = &remoteStep{exit: 0, stdout: fmt.Sprintf("user %s already exists", shellQuote(name))}
 	}
 	return &executor.ModuleOutput{
 		ExitCode: last.exit,
@@ -135,6 +139,9 @@ func (m *Module) remove(ctx context.Context, input executor.ModuleInput) (*execu
 	if err != nil {
 		return nil, fmt.Errorf("user.remove: %w", err)
 	}
+	if err := validateUserName(name); err != nil {
+		return nil, fmt.Errorf("user.remove: %w", err)
+	}
 
 	exists, err := userExists(ctx, input.Channel, name)
 	if err != nil {
@@ -143,11 +150,11 @@ func (m *Module) remove(ctx context.Context, input executor.ModuleInput) (*execu
 	if !exists {
 		return &executor.ModuleOutput{
 			ExitCode: 0,
-			Stdout:   fmt.Sprintf("user %s already absent", name),
+			Stdout:   fmt.Sprintf("user %s already absent", shellQuote(name)),
 			Changed:  false,
 		}, nil
 	}
-	return runRemote(ctx, input.Channel, fmt.Sprintf("userdel -r %s", name), true)
+	return runRemote(ctx, input.Channel, fmt.Sprintf("userdel -r %s", shellQuote(name)), true)
 }
 
 // modify changes an existing user's attributes. Always runs usermod because
@@ -156,6 +163,9 @@ func (m *Module) remove(ctx context.Context, input executor.ModuleInput) (*execu
 func (m *Module) modify(ctx context.Context, input executor.ModuleInput) (*executor.ModuleOutput, error) {
 	name, err := stringArg(input.Args, "name")
 	if err != nil {
+		return nil, fmt.Errorf("user.modify: %w", err)
+	}
+	if err := validateUserName(name); err != nil {
 		return nil, fmt.Errorf("user.modify: %w", err)
 	}
 
@@ -249,7 +259,7 @@ func runRemote(ctx context.Context, ch channel.Channel, cmd string, changed bool
 // userExists reports whether the named user exists on the target. Uses `id -u
 // <name>` which is universally available on Linux.
 func userExists(ctx context.Context, ch channel.Channel, name string) (bool, error) {
-	res, err := ch.Exec(ctx, fmt.Sprintf("id -u %s", name))
+	res, err := ch.Exec(ctx, fmt.Sprintf("id -u %s", shellQuote(name)))
 	if err != nil {
 		return false, err
 	}
@@ -364,6 +374,21 @@ func shellQuote(s string) string {
 // quotes, so the caller can compose e.g. echo 'user:password' | chpasswd.
 func escapeSingleQuote(s string) string {
 	return strings.ReplaceAll(s, "'", `'\''`)
+}
+
+// validateUserName checks that s is a valid POSIX username. User names must
+// not contain whitespace or shell metacharacters; we restrict to the set
+// allowed by Linux useradd (letters, digits, underscore, hyphen, dot).
+var userNameRe = regexp.MustCompile(`^[a-zA-Z0-9._\-]+$`)
+
+func validateUserName(s string) error {
+	if s == "" {
+		return fmt.Errorf("user name must not be empty")
+	}
+	if !userNameRe.MatchString(s) {
+		return fmt.Errorf("invalid user name %q: only letters, digits, _ . - are allowed", s)
+	}
+	return nil
 }
 
 // init registers the module with the default executor.

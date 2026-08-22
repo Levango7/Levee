@@ -155,6 +155,14 @@ func NewFileSnapshotStore(rootDir string) (*FileSnapshotStore, error) {
 // RootDir returns the store's root directory. It is intended for diagnostics.
 func (s *FileSnapshotStore) RootDir() string { return s.rootDir }
 
+// BuildPath returns the absolute path that Create will use for a snapshot
+// with the given runID, target and ID.  It exists so callers can compute
+// the path before invoking Create, which is needed because Create writes
+// the Snapshot struct (including Path) to meta.json at the returned dir.
+func (s *FileSnapshotStore) BuildPath(runID, target, id string) string {
+	return filepath.Join(s.rootDir, runID, target, id)
+}
+
 // Create persists the snapshot metadata to <rootDir>/<runID>/<target>/<id>/
 // meta.json and returns the absolute path to that directory. The directory is
 // created with files/ and configs/ sub-directories ready to receive contents.
@@ -402,6 +410,15 @@ func (m *SnapshotManager) CreateSnapshot(ctx context.Context, runID, target stri
 		Metadata:  metadata,
 	}
 
+	// Set Path before store.Create so that the persisted meta.json on disk
+	// records the snapshot directory.  FileSnapshotStore.BuildPath uses the
+	// same rootDir and ID/RunID/Target fields already populated on snap,
+	// so the computed value is stable.  The returned dir from Create may
+	// differ for non-FileSnapshotStore implementations; in that case the
+	// caller overwrites snap.Path below.
+	if fss, ok := m.store.(*FileSnapshotStore); ok {
+		snap.Path = fss.BuildPath(runID, target, snap.ID)
+	}
 	dir, err := m.store.Create(ctx, snap)
 	if err != nil {
 		return nil, fmt.Errorf("create snapshot: store create: %w", err)

@@ -788,6 +788,24 @@ func (s *SQLiteStore) UpdateLock(ctx context.Context, lock *Lock) error {
 	return nil
 }
 
+// UpdateLockOwnedBy atomically updates the owner (and ttl/acquired/expires)
+// of the lock with the given id, but only when the lock has expired
+// (expires_at <= now). It returns the number of rows affected so callers
+// can detect concurrent races: 0 means another actor already performed the
+// update and the caller should retry.
+func (s *SQLiteStore) UpdateLockOwnedBy(ctx context.Context, id string, owner string, ttlSeconds int, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE locks SET
+		owner=?, ttl_seconds=?, acquired_at=?, expires_at=?
+		WHERE id=? AND expires_at <= ?`,
+		owner, ttlSeconds, now, now.Add(time.Duration(ttlSeconds)*time.Second), id, now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("state: update lock owned by %q: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // ListLocks returns all locks, ordered by expires_at ascending.
 func (s *SQLiteStore) ListLocks(ctx context.Context) ([]*Lock, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT

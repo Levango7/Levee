@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"text/template"
 
@@ -130,7 +131,7 @@ func (m *Module) uploadIfChanged(ctx context.Context, input executor.ModuleInput
 		// Already in sync: nothing to do.
 		return &executor.ModuleOutput{
 			ExitCode: 0,
-			Stdout:   fmt.Sprintf("file %s already in sync (sha256=%s)", dest, localSum[:12]),
+			Stdout:   fmt.Sprintf("file %s already in sync (sha256=%s)", shellQuote(dest), localSum[:12]),
 			Changed:  false,
 		}, nil
 	}
@@ -140,27 +141,30 @@ func (m *Module) uploadIfChanged(ctx context.Context, input executor.ModuleInput
 		return nil, fmt.Errorf("file: upload %s: %w", dest, err)
 	}
 	changed = true
-	last = &remoteStep{exit: 0, stdout: fmt.Sprintf("uploaded %d bytes to %s", len(content), dest)}
+	last = &remoteStep{exit: 0, stdout: fmt.Sprintf("uploaded %d bytes to %s", len(content), shellQuote(dest))}
 
 	// Apply optional mode / owner / group. Each is a separate ch* call so
 	// that one failing attribute does not skip the others; we collect the
 	// last non-zero exit for the result.
 	if mode, ok := stringOk(input.Args, "mode"); ok {
-		r, err := m.applyAttr(ctx, input.Channel, fmt.Sprintf("chmod %s %s", mode, dest))
+		if err := validateOctalMode(mode); err != nil {
+			return nil, fmt.Errorf("file: invalid mode %q: %w", mode, err)
+		}
+		r, err := m.applyAttr(ctx, input.Channel, fmt.Sprintf("chmod %s %s", shellQuote(mode), shellQuote(dest)))
 		if err != nil {
 			return nil, err
 		}
 		last = r
 	}
 	if owner, ok := stringOk(input.Args, "owner"); ok {
-		r, err := m.applyAttr(ctx, input.Channel, fmt.Sprintf("chown %s %s", owner, dest))
+		r, err := m.applyAttr(ctx, input.Channel, fmt.Sprintf("chown %s %s", shellQuote(owner), shellQuote(dest)))
 		if err != nil {
 			return nil, err
 		}
 		last = r
 	}
 	if group, ok := stringOk(input.Args, "group"); ok {
-		r, err := m.applyAttr(ctx, input.Channel, fmt.Sprintf("chgrp %s %s", group, dest))
+		r, err := m.applyAttr(ctx, input.Channel, fmt.Sprintf("chgrp %s %s", shellQuote(group), shellQuote(dest)))
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +202,7 @@ func (m *Module) applyAttr(ctx context.Context, ch channel.Channel, cmd string) 
 // file or a non-zero exit is reported as an error so the caller can treat it
 // as "must upload".
 func (m *Module) remoteSha256(ctx context.Context, ch channel.Channel, path string) (string, error) {
-	cmd := fmt.Sprintf("sha256sum %s", path)
+	cmd := fmt.Sprintf("sha256sum %s", shellQuote(path))
 	res, err := ch.Exec(ctx, cmd)
 	if err != nil {
 		return "", err
@@ -246,6 +250,24 @@ func stringOk(args map[string]any, key string) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+// shellQuote wraps s in single quotes and escapes any embedded single quotes
+// so that the result is a single POSIX-sh word. This is the standard
+// '...'\”...' idiom.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// validateOctalMode checks that s is a valid POSIX octal mode (3 or 4 digits
+// in [0-7]). Malicious mode strings such as "0644; rm -rf /" are rejected.
+var octalModeRe = regexp.MustCompile(`^[0-7]{3,4}$`)
+
+func validateOctalMode(s string) error {
+	if !octalModeRe.MatchString(s) {
+		return fmt.Errorf("mode must be 3-4 octal digits (0-7), got %q", s)
+	}
+	return nil
 }
 
 // Compile-time guard: ensure the bytes we upload come from io.Reader-compatible

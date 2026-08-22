@@ -270,17 +270,18 @@ func TestLockStore_ForceAcquire_Existing(t *testing.T) {
 	_, err := store.Acquire(ctx, "host-01", "run-1", time.Hour)
 	require.NoError(t, err)
 
-	// ForceAcquire by a different owner takes over.
+	// ForceAcquire by a different owner on a still-valid lock is rejected.
+	_, err = store.ForceAcquire(ctx, "host-01", "run-2", 30*time.Minute)
+	assert.ErrorIs(t, err, ErrLockHeld)
+
+	// The original owner can still release.
+	require.NoError(t, store.Release(ctx, "host-01", "run-1"))
+
+	// After releasing, ForceAcquire creates a new lock.
 	l, err := store.ForceAcquire(ctx, "host-01", "run-2", 30*time.Minute)
 	require.NoError(t, err)
 	assert.Equal(t, "run-2", l.Owner)
 	assert.Equal(t, 30*time.Minute, l.TTL)
-
-	// The original owner can no longer release.
-	err = store.Release(ctx, "host-01", "run-1")
-	assert.ErrorIs(t, err, ErrNotOwner)
-
-	// The new owner can.
 	require.NoError(t, store.Release(ctx, "host-01", "run-2"))
 }
 

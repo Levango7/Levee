@@ -220,6 +220,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 
+	// 6. Start the in-process REST-to-gRPC gateway (async, non-blocking).
+	// The gateway serves /api/v1/* for HTTP clients and the embedded SPA.
+	go func() {
+		if err := grpc.ServeGateway(context.Background(), grpc.ServeGatewayConfig{
+			Addr:        ":8080",
+			CORSOrigins: nil,
+		}); err != nil {
+			log.Error("gateway serve failed", "err", err)
+		}
+	}()
+
 	// 6. Use the configured address (fall back to listen addr option).
 	addr := serveOptAddr
 	if addr == "" {

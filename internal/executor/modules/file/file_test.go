@@ -165,7 +165,7 @@ func TestCopyUploadsWhenRemoteMissing(t *testing.T) {
 	assert.Equal(t, "/etc/nginx/nginx.conf", ch.uploads[0].path)
 	assert.Equal(t, "hello world", ch.uploads[0].content)
 	// sha256sum was the only Exec.
-	assert.Contains(t, ch.execAt(0), "sha256sum /etc/nginx/nginx.conf")
+	assert.Contains(t, ch.execAt(0), "sha256sum '/etc/nginx/nginx.conf'")
 }
 
 func TestCopySkipsWhenContentMatches(t *testing.T) {
@@ -221,7 +221,7 @@ func TestCopyAppliesMode(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 0, out.ExitCode)
-	assert.Contains(t, ch.execAt(1), "chmod 0640 /etc/foo")
+	assert.Contains(t, ch.execAt(1), "chmod '0640' '/etc/foo'")
 	_ = out
 }
 
@@ -240,9 +240,9 @@ func TestCopyAppliesOwnerAndGroup(t *testing.T) {
 		Channel: ch,
 	})
 	require.NoError(t, err)
-	assert.Contains(t, ch.execAt(1), "chmod 0644 /etc/foo")
-	assert.Contains(t, ch.execAt(2), "chown nginx /etc/foo")
-	assert.Contains(t, ch.execAt(3), "chgrp nginx /etc/foo")
+	assert.Contains(t, ch.execAt(1), "chmod '0644' '/etc/foo'")
+	assert.Contains(t, ch.execAt(2), "chown 'nginx' '/etc/foo'")
+	assert.Contains(t, ch.execAt(3), "chgrp 'nginx' '/etc/foo'")
 }
 
 func TestCopyMissingSrc(t *testing.T) {

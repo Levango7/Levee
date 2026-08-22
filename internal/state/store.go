@@ -236,6 +236,12 @@ type Store interface {
 	GetLock(ctx context.Context, id string) (*Lock, error)
 	GetLockByScope(ctx context.Context, scope string) (*Lock, error)
 	UpdateLock(ctx context.Context, lock *Lock) error
+	// UpdateLockOwnedBy atomically updates the owner (and TTL/acquired/
+	// expires) of a lock identified by id, but only when the lock has
+	// expired (expires_at <= now). It returns the number of rows
+	// affected so callers can detect concurrent races: 0 means another
+	// actor won the update and the caller should retry.
+	UpdateLockOwnedBy(ctx context.Context, id string, owner string, ttlSeconds int, now time.Time) (int64, error)
 	ListLocks(ctx context.Context) ([]*Lock, error)
 	DeleteLock(ctx context.Context, id string) error
 	DeleteExpiredLocks(ctx context.Context, now time.Time) (int64, error)

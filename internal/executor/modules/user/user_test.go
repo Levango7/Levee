@@ -172,7 +172,9 @@ func TestAddWithPassword(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, ch.execAt(2), "chpasswd")
-	assert.Contains(t, ch.execAt(2), "bob:s3cret")
+	// shellQuote wraps 'bob' in single quotes; escapeSingleQuote is used for the password.
+	assert.Contains(t, ch.execAt(2), "bob")
+	assert.Contains(t, ch.execAt(2), "s3cret")
 }
 
 func TestAddWithSSHKey(t *testing.T) {
@@ -221,7 +223,7 @@ func TestRemoveWhenPresent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.lastExec(), "userdel -r bob")
+	assert.Contains(t, ch.lastExec(), "userdel -r 'bob'")
 }
 
 func TestRemoveWhenAbsent(t *testing.T) {

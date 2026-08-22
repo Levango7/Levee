@@ -1,0 +1,13 @@
+# Build artifacts copied here by `make web` before `go build`. The committed
+# index.html placeholder keeps `go build` working without a frontend build.
+# Do not edit by hand.
+/assets/
+*.js
+*.css
+*.svg
+*.woff
+*.woff2
+*.ttf
+*.eot
+*.map
+favicon.ico

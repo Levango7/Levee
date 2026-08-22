@@ -28,6 +28,7 @@ package svc
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/nexus/levee/internal/channel"
@@ -59,6 +60,9 @@ func (Module) Idempotent() bool { return true }
 func (m *Module) Execute(ctx context.Context, action string, input executor.ModuleInput) (*executor.ModuleOutput, error) {
 	name, err := stringArg(input.Args, "name")
 	if err != nil {
+		return nil, fmt.Errorf("svc: %w", err)
+	}
+	if err := validateSvcName(name); err != nil {
 		return nil, fmt.Errorf("svc: %w", err)
 	}
 
@@ -214,7 +218,7 @@ type systemdInit struct{}
 func (systemdInit) name() string { return "systemd" }
 
 func (systemdInit) isActive(ctx context.Context, ch channel.Channel, svc string) (bool, error) {
-	res, err := ch.Exec(ctx, fmt.Sprintf("systemctl is-active --quiet %s", svc))
+	res, err := ch.Exec(ctx, fmt.Sprintf("systemctl is-active --quiet %s", shellQuote(svc)))
 	if err != nil {
 		return false, err
 	}
@@ -222,19 +226,31 @@ func (systemdInit) isActive(ctx context.Context, ch channel.Channel, svc string)
 }
 
 func (systemdInit) isEnabled(ctx context.Context, ch channel.Channel, svc string) (bool, error) {
-	res, err := ch.Exec(ctx, fmt.Sprintf("systemctl is-enabled --quiet %s", svc))
+	res, err := ch.Exec(ctx, fmt.Sprintf("systemctl is-enabled --quiet %s", shellQuote(svc)))
 	if err != nil {
 		return false, err
 	}
 	return res.ExitCode == 0, nil
 }
 
-func (systemdInit) startCmd(svc string) string   { return fmt.Sprintf("systemctl start %s", svc) }
-func (systemdInit) stopCmd(svc string) string    { return fmt.Sprintf("systemctl stop %s", svc) }
-func (systemdInit) restartCmd(svc string) string { return fmt.Sprintf("systemctl restart %s", svc) }
-func (systemdInit) reloadCmd(svc string) string  { return fmt.Sprintf("systemctl reload %s", svc) }
-func (systemdInit) enableCmd(svc string) string  { return fmt.Sprintf("systemctl enable %s", svc) }
-func (systemdInit) disableCmd(svc string) string { return fmt.Sprintf("systemctl disable %s", svc) }
+func (systemdInit) startCmd(svc string) string {
+	return fmt.Sprintf("systemctl start %s", shellQuote(svc))
+}
+func (systemdInit) stopCmd(svc string) string {
+	return fmt.Sprintf("systemctl stop %s", shellQuote(svc))
+}
+func (systemdInit) restartCmd(svc string) string {
+	return fmt.Sprintf("systemctl restart %s", shellQuote(svc))
+}
+func (systemdInit) reloadCmd(svc string) string {
+	return fmt.Sprintf("systemctl reload %s", shellQuote(svc))
+}
+func (systemdInit) enableCmd(svc string) string {
+	return fmt.Sprintf("systemctl enable %s", shellQuote(svc))
+}
+func (systemdInit) disableCmd(svc string) string {
+	return fmt.Sprintf("systemctl disable %s", shellQuote(svc))
+}
 
 // sysvinitInit implements initSystem for legacy sysvinit hosts.
 type sysvinitInit struct{}
@@ -243,7 +259,7 @@ func (sysvinitInit) name() string { return "sysvinit" }
 
 func (sysvinitInit) isActive(ctx context.Context, ch channel.Channel, svc string) (bool, error) {
 	// `service <name> status` exit code is 0 when running, non-zero otherwise.
-	res, err := ch.Exec(ctx, fmt.Sprintf("service %s status", svc))
+	res, err := ch.Exec(ctx, fmt.Sprintf("service %s status", shellQuote(svc)))
 	if err != nil {
 		return false, err
 	}
@@ -253,20 +269,30 @@ func (sysvinitInit) isActive(ctx context.Context, ch channel.Channel, svc string
 func (sysvinitInit) isEnabled(ctx context.Context, ch channel.Channel, svc string) (bool, error) {
 	// sysvinit does not have a uniform "is-enabled" query; we check for the
 	// presence of an S-symlink in /etc/rc2.d/ as a best-effort heuristic.
-	res, err := ch.Exec(ctx, fmt.Sprintf("ls /etc/rc2.d/S*%s >/dev/null 2>&1", svc))
+	res, err := ch.Exec(ctx, fmt.Sprintf("ls /etc/rc2.d/S*%s >/dev/null 2>&1", shellQuote(svc)))
 	if err != nil {
 		return false, err
 	}
 	return res.ExitCode == 0, nil
 }
 
-func (sysvinitInit) startCmd(svc string) string   { return fmt.Sprintf("service %s start", svc) }
-func (sysvinitInit) stopCmd(svc string) string    { return fmt.Sprintf("service %s stop", svc) }
-func (sysvinitInit) restartCmd(svc string) string { return fmt.Sprintf("service %s restart", svc) }
-func (sysvinitInit) reloadCmd(svc string) string  { return fmt.Sprintf("service %s reload", svc) }
-func (sysvinitInit) enableCmd(svc string) string  { return fmt.Sprintf("update-rc.d %s defaults", svc) }
+func (sysvinitInit) startCmd(svc string) string {
+	return fmt.Sprintf("service %s start", shellQuote(svc))
+}
+func (sysvinitInit) stopCmd(svc string) string {
+	return fmt.Sprintf("service %s stop", shellQuote(svc))
+}
+func (sysvinitInit) restartCmd(svc string) string {
+	return fmt.Sprintf("service %s restart", shellQuote(svc))
+}
+func (sysvinitInit) reloadCmd(svc string) string {
+	return fmt.Sprintf("service %s reload", shellQuote(svc))
+}
+func (sysvinitInit) enableCmd(svc string) string {
+	return fmt.Sprintf("update-rc.d %s defaults", shellQuote(svc))
+}
 func (sysvinitInit) disableCmd(svc string) string {
-	return fmt.Sprintf("update-rc.d -f %s remove", svc)
+	return fmt.Sprintf("update-rc.d -f %s remove", shellQuote(svc))
 }
 
 // detectInitSystem probes the target for systemctl and returns systemdInit
@@ -314,6 +340,28 @@ func stringArg(args map[string]any, key string) (string, error) {
 
 // keep strings import honest for future refactors that may drop direct uses.
 var _ = strings.TrimSpace
+
+// shellQuote wraps s in single quotes and escapes any embedded single quotes
+// so that the result is a single POSIX-sh word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// validateSvcName checks that s is a valid service name. Systemd and sysvinit
+// service names must not contain whitespace or shell metacharacters; we allow
+// letters, digits, hyphens, underscores and dots (the typical set used by
+// systemd unit basenames).
+var svcNameRe = regexp.MustCompile(`^[a-zA-Z0-9._\-]+$`)
+
+func validateSvcName(s string) error {
+	if s == "" {
+		return fmt.Errorf("service name must not be empty")
+	}
+	if !svcNameRe.MatchString(s) {
+		return fmt.Errorf("invalid service name %q: only letters, digits, . _ - are allowed", s)
+	}
+	return nil
+}
 
 // init registers the module with the default executor.
 func init() {

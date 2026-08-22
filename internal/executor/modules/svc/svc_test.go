@@ -142,7 +142,7 @@ func TestStartSystemdWhenInactive(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.lastExec(), "systemctl start nginx")
+	assert.Contains(t, ch.lastExec(), "systemctl start 'nginx'")
 }
 
 func TestStartSystemdWhenActive(t *testing.T) {
@@ -173,7 +173,7 @@ func TestStartSysvinitWhenInactive(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.lastExec(), "service nginx start")
+	assert.Contains(t, ch.lastExec(), "service 'nginx' start")
 }
 
 // --- stop -----------------------------------------------------------------
@@ -191,7 +191,7 @@ func TestStopSystemdWhenActive(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.lastExec(), "systemctl stop nginx")
+	assert.Contains(t, ch.lastExec(), "systemctl stop 'nginx'")
 }
 
 func TestStopSystemdWhenInactive(t *testing.T) {
@@ -221,7 +221,7 @@ func TestRestartSystemd(t *testing.T) {
 		Channel: ch,
 	})
 	require.NoError(t, err)
-	assert.Contains(t, ch.lastExec(), "systemctl restart nginx")
+	assert.Contains(t, ch.lastExec(), "systemctl restart 'nginx'")
 }
 
 func TestRestartSysvinit(t *testing.T) {
@@ -235,7 +235,7 @@ func TestRestartSysvinit(t *testing.T) {
 		Channel: ch,
 	})
 	require.NoError(t, err)
-	assert.Contains(t, ch.lastExec(), "service nginx restart")
+	assert.Contains(t, ch.lastExec(), "service 'nginx' restart")
 }
 
 // --- reload ---------------------------------------------------------------
@@ -251,7 +251,7 @@ func TestReloadSystemd(t *testing.T) {
 		Channel: ch,
 	})
 	require.NoError(t, err)
-	assert.Contains(t, ch.lastExec(), "systemctl reload nginx")
+	assert.Contains(t, ch.lastExec(), "systemctl reload 'nginx'")
 }
 
 func TestReloadSysvinitSuccess(t *testing.T) {
@@ -267,7 +267,7 @@ func TestReloadSysvinitSuccess(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, out.ExitCode)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.execAt(1), "service nginx reload")
+	assert.Contains(t, ch.execAt(1), "service 'nginx' reload")
 }
 
 func TestReloadSysvinitFallsBackToRestart(t *testing.T) {
@@ -284,7 +284,7 @@ func TestReloadSysvinitFallsBackToRestart(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, out.ExitCode)
 	assert.Contains(t, out.Stderr, "fell back to restart")
-	assert.Contains(t, ch.lastExec(), "service nginx restart")
+	assert.Contains(t, ch.lastExec(), "service 'nginx' restart")
 }
 
 // --- enable / disable -----------------------------------------------------
@@ -302,7 +302,7 @@ func TestEnableSystemdWhenDisabled(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.lastExec(), "systemctl enable nginx")
+	assert.Contains(t, ch.lastExec(), "systemctl enable 'nginx'")
 }
 
 func TestEnableSystemdWhenEnabled(t *testing.T) {
@@ -332,7 +332,7 @@ func TestDisableSystemdWhenEnabled(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.lastExec(), "systemctl disable nginx")
+	assert.Contains(t, ch.lastExec(), "systemctl disable 'nginx'")
 }
 
 func TestDisableSystemdWhenDisabled(t *testing.T) {
@@ -361,7 +361,7 @@ func TestEnableSysvinit(t *testing.T) {
 		Channel: ch,
 	})
 	require.NoError(t, err)
-	assert.Contains(t, ch.lastExec(), "update-rc.d nginx defaults")
+	assert.Contains(t, ch.lastExec(), "update-rc.d 'nginx' defaults")
 }
 
 // --- error paths ----------------------------------------------------------
@@ -409,20 +409,20 @@ func TestModuleRegistered(t *testing.T) {
 
 func TestSystemdCmds(t *testing.T) {
 	init := systemdInit{}
-	assert.Equal(t, "systemctl start nginx", init.startCmd("nginx"))
-	assert.Equal(t, "systemctl stop nginx", init.stopCmd("nginx"))
-	assert.Equal(t, "systemctl restart nginx", init.restartCmd("nginx"))
-	assert.Equal(t, "systemctl reload nginx", init.reloadCmd("nginx"))
-	assert.Equal(t, "systemctl enable nginx", init.enableCmd("nginx"))
-	assert.Equal(t, "systemctl disable nginx", init.disableCmd("nginx"))
+	assert.Equal(t, "systemctl start 'nginx'", init.startCmd("nginx"))
+	assert.Equal(t, "systemctl stop 'nginx'", init.stopCmd("nginx"))
+	assert.Equal(t, "systemctl restart 'nginx'", init.restartCmd("nginx"))
+	assert.Equal(t, "systemctl reload 'nginx'", init.reloadCmd("nginx"))
+	assert.Equal(t, "systemctl enable 'nginx'", init.enableCmd("nginx"))
+	assert.Equal(t, "systemctl disable 'nginx'", init.disableCmd("nginx"))
 }
 
 func TestSysvinitCmds(t *testing.T) {
 	init := sysvinitInit{}
-	assert.Equal(t, "service nginx start", init.startCmd("nginx"))
-	assert.Equal(t, "service nginx stop", init.stopCmd("nginx"))
-	assert.Equal(t, "service nginx restart", init.restartCmd("nginx"))
-	assert.Equal(t, "service nginx reload", init.reloadCmd("nginx"))
-	assert.Equal(t, "update-rc.d nginx defaults", init.enableCmd("nginx"))
-	assert.Equal(t, "update-rc.d -f nginx remove", init.disableCmd("nginx"))
+	assert.Equal(t, "service 'nginx' start", init.startCmd("nginx"))
+	assert.Equal(t, "service 'nginx' stop", init.stopCmd("nginx"))
+	assert.Equal(t, "service 'nginx' restart", init.restartCmd("nginx"))
+	assert.Equal(t, "service 'nginx' reload", init.reloadCmd("nginx"))
+	assert.Equal(t, "update-rc.d 'nginx' defaults", init.enableCmd("nginx"))
+	assert.Equal(t, "update-rc.d -f 'nginx' remove", init.disableCmd("nginx"))
 }

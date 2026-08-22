@@ -329,7 +329,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			TotalTargets: countTargets(executedBatches),
 			CreatedAt:    p.CreatedAt,
 		}
-		rbResult := cr.rollback.Rollback(ctx, executedPlan, execFn)
+		rbResult := cr.rollback.Rollback(context.Background(), executedPlan, execFn)
 		result.RollbackResult = rbResult
 
 		// Post-rollback verification (T037), when configured.

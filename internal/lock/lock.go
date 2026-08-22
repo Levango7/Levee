@@ -278,14 +278,32 @@ func (s *stateLockStore) ForceAcquire(ctx context.Context, target, owner string,
 	}
 
 	if existing != nil {
-		existing.Owner = owner
-		existing.TTLSeconds = int(ttl / time.Second)
-		existing.AcquiredAt = now
-		existing.ExpiresAt = now.Add(ttl)
-		if err := s.store.UpdateLock(ctx, existing); err != nil {
+		// Guard against non-expired locks: do not let ForceAcquire
+		// preempt a still-valid lock held by another owner. This
+		// matches the LockManager policy (only preempt expired locks)
+		// and avoids silent data corruption when two actors race.
+		if !now.After(existing.ExpiresAt) && !now.Equal(existing.ExpiresAt) {
+			return nil, ErrLockHeld
+		}
+		// Use a conditional UPDATE (WHERE id=? AND expires_at<=now)
+		// so that a concurrent race on an expired lock is detected:
+		// RowsAffected()==0 means another actor already won the
+		// update and we retry.
+		rows, err := s.store.UpdateLockOwnedBy(ctx, existing.ID, owner, int(ttl/time.Second), now)
+		if err != nil {
 			return nil, fmt.Errorf("lock: force acquire update: %w", err)
 		}
-		return fromStateLock(existing), nil
+		if rows == 0 {
+			// Another actor raced us; retry from scratch.
+			return s.ForceAcquire(ctx, target, owner, ttl)
+		}
+		// Re-read to get the canonical state after the conditional
+		// update (the update touches acquired_at/expires_at).
+		l, err := s.store.GetLockByScope(ctx, scope(target))
+		if err != nil {
+			return nil, fmt.Errorf("lock: force acquire re-read: %w", err)
+		}
+		return fromStateLock(l), nil
 	}
 
 	l := &Lock{

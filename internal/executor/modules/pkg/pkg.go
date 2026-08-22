@@ -27,6 +27,7 @@ package pkg
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/nexus/levee/internal/channel"
@@ -78,7 +79,15 @@ func (m *Module) install(ctx context.Context, input executor.ModuleInput, pm pac
 	if err != nil {
 		return nil, fmt.Errorf("pkg.install: %w", err)
 	}
+	if err := validatePkgName(name); err != nil {
+		return nil, fmt.Errorf("pkg.install: %w", err)
+	}
 	wantVersion, _ := stringOk(input.Args, "version")
+	if wantVersion != "" {
+		if err := validatePkgVersion(wantVersion); err != nil {
+			return nil, fmt.Errorf("pkg.install: %w", err)
+		}
+	}
 
 	// Idempotency check: is the package already installed?
 	installed, currentVersion, err := pm.query(ctx, input.Channel, name)
@@ -89,7 +98,7 @@ func (m *Module) install(ctx context.Context, input executor.ModuleInput, pm pac
 		if wantVersion == "" || currentVersion == wantVersion {
 			return &executor.ModuleOutput{
 				ExitCode: 0,
-				Stdout:   fmt.Sprintf("pkg %s already installed (%s)", name, currentVersion),
+				Stdout:   fmt.Sprintf("pkg %s already installed (%s)", shellQuote(name), currentVersion),
 				Changed:  false,
 			}, nil
 		}
@@ -107,6 +116,9 @@ func (m *Module) remove(ctx context.Context, input executor.ModuleInput, pm pack
 	if err != nil {
 		return nil, fmt.Errorf("pkg.remove: %w", err)
 	}
+	if err := validatePkgName(name); err != nil {
+		return nil, fmt.Errorf("pkg.remove: %w", err)
+	}
 
 	installed, _, err := pm.query(ctx, input.Channel, name)
 	if err != nil {
@@ -115,7 +127,7 @@ func (m *Module) remove(ctx context.Context, input executor.ModuleInput, pm pack
 	if !installed {
 		return &executor.ModuleOutput{
 			ExitCode: 0,
-			Stdout:   fmt.Sprintf("pkg %s already absent", name),
+			Stdout:   fmt.Sprintf("pkg %s already absent", shellQuote(name)),
 			Changed:  false,
 		}, nil
 	}
@@ -130,7 +142,17 @@ func (m *Module) remove(ctx context.Context, input executor.ModuleInput, pm pack
 // managers.
 func (m *Module) upgrade(ctx context.Context, input executor.ModuleInput, pm packageManager) (*executor.ModuleOutput, error) {
 	name, _ := stringOk(input.Args, "name")
+	if name != "" {
+		if err := validatePkgName(name); err != nil {
+			return nil, fmt.Errorf("pkg.upgrade: %w", err)
+		}
+	}
 	wantVersion, _ := stringOk(input.Args, "version")
+	if wantVersion != "" {
+		if err := validatePkgVersion(wantVersion); err != nil {
+			return nil, fmt.Errorf("pkg.upgrade: %w", err)
+		}
+	}
 
 	cmd := pm.upgradeCmd(name, wantVersion)
 	return runRemote(ctx, input.Channel, cmd, true)
@@ -346,6 +368,43 @@ func stringOk(args map[string]any, key string) (string, bool) {
 		return "", false
 	}
 	return s, true
+}
+
+// shellQuote wraps s in single quotes and escapes any embedded single quotes
+// so that the result is a single POSIX-sh word.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// validatePkgName checks that s is a valid package name for apt/dnf/yum:
+// letters, digits, dot, hyphen, underscore, and plus (no whitespace or shell
+// metacharacters). Rejecting invalid names here prevents command injection via
+// the positional argument slot.
+var pkgNameRe = regexp.MustCompile(`^[a-zA-Z0-9._+\-]+$`)
+
+func validatePkgName(s string) error {
+	if s == "" {
+		return fmt.Errorf("package name must not be empty")
+	}
+	if !pkgNameRe.MatchString(s) {
+		return fmt.Errorf("invalid package name %q: only letters, digits, . _ + - are allowed", s)
+	}
+	return nil
+}
+
+// validatePkgVersion checks that s is a valid package version string. Versions
+// may contain letters, digits, colons (epoch separators), tildes, dots, hyphens
+// and plus signs. We reject anything containing whitespace or shell metacharacters.
+var pkgVersionRe = regexp.MustCompile(`^[a-zA-Z0-9:_.~+\-]+$`)
+
+func validatePkgVersion(s string) error {
+	if s == "" {
+		return fmt.Errorf("version must not be empty")
+	}
+	if !pkgVersionRe.MatchString(s) {
+		return fmt.Errorf("invalid version %q: only letters, digits, : _ . ~ + - are allowed", s)
+	}
+	return nil
 }
 
 // init registers the module with the default executor.

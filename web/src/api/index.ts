@@ -65,6 +65,9 @@ export const changesApi = {
   reject: (id: string, body: { rejecter: string; reason: string }): Promise<Change> =>
     post<Change>(`/changes/${id}/reject`, body),
 
+  approveViaDeepLink: (token: string): Promise<{ status: string }> =>
+    post<{ status: string }>('/changes/deeplink/approve', { token }),
+
   pause: (id: string, reason?: string): Promise<Change> =>
     post<Change>(`/changes/${id}/pause`, { reason }),
 
