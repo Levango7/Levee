@@ -791,7 +791,7 @@ func tokenize(s string) []string {
 	}
 	set := newTokenSet()
 	fields := strings.FieldsFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9')
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') //nolint:staticcheck // QF1001: single negation is more readable than De Morgan split
 	})
 	for _, f := range fields {
 		if len(f) < 2 {

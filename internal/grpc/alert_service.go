@@ -100,8 +100,9 @@ func (s *AlertService) ReceiveAlert(ctx context.Context, req *pb.AlertMessage) (
 	if a.StartsAt.IsZero() {
 		a.StartsAt = time.Now()
 	}
-	if a.Status == alert.StatusFiring && a.EndsAt.IsZero() {
-		// leave firing
+	// firing alert already has an end time; leave it as-is.
+	if a.Status == alert.StatusFiring && !a.EndsAt.IsZero() { //nolint:staticcheck // SA4017 false positive: negation clearly uses IsZero result
+		// no-op: keep the existing EndsAt
 	}
 
 	if err := a.Validate(); err != nil {

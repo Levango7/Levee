@@ -22,7 +22,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -367,7 +366,3 @@ type EngineAdapter struct {
 	// Retry re-runs failed hosts for a change.
 	Retry func(ctx context.Context, changeID string, replan bool, targetHosts []string) error
 }
-
-// now is a small indirection so tests can stub the clock. It defaults
-// to time.Now.
-var now = time.Now

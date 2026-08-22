@@ -17,10 +17,7 @@ import (
 // System command option variables. Prefixed to avoid collisions with other
 // command packages in the same main package.
 var (
-	statusOptFormat   string
-	configGetOptKey   string
-	configSetOptKey   string
-	configSetOptValue string
+	statusOptFormat string
 )
 
 func init() {

@@ -349,7 +349,7 @@ func (e *RecommendEngine) buildRecommendation(report *diagnosis.DiagnosticReport
 		}
 	} else {
 		rec.Source = SourceKnowledgeBase
-		e.populateFromMatches(rec, report, rootCause, matches)
+		e.populateFromMatches(rec, nil, rootCause, matches)
 	}
 
 	// Fill in any blanks with sensible defaults.
@@ -376,7 +376,7 @@ func (e *RecommendEngine) buildRecommendation(report *diagnosis.DiagnosticReport
 
 // populateFromMatches fills the recommendation from the best knowledge-base
 // match and builds alternatives from the remaining matches.
-func (e *RecommendEngine) populateFromMatches(rec *Recommendation, report *diagnosis.DiagnosticReport, rootCause string, matches []*Match) {
+func (e *RecommendEngine) populateFromMatches(rec *Recommendation, _ *diagnosis.DiagnosticReport, _ string, matches []*Match) {
 	if len(matches) == 0 {
 		return
 	}
@@ -447,19 +447,22 @@ func (e *RecommendEngine) generateWorkflow(target string, matches []*Match, prop
 	if target == "" {
 		target = "unknown"
 	}
+	var err error
 	if proposal != nil && len(proposal.Steps) > 0 {
-		if yaml, err := e.wfGen.Generate(target, proposal.Steps); err == nil {
+		var yaml string
+		yaml, err = e.wfGen.Generate(target, proposal.Steps)
+		if err == nil {
 			return yaml
-		} else {
-			e.log.Warn("recommend: workflow gen from proposal failed", "err", err)
 		}
+		e.log.Warn("recommend: workflow gen from proposal failed", "err", err)
 	}
 	if len(matches) > 0 {
-		if yaml, err := e.wfGen.GenerateFromMatch(target, matches[0]); err == nil {
+		var yaml string
+		yaml, err = e.wfGen.GenerateFromMatch(target, matches[0])
+		if err == nil {
 			return yaml
-		} else {
-			e.log.Warn("recommend: workflow gen from match failed", "err", err)
 		}
+		e.log.Warn("recommend: workflow gen from match failed", "err", err)
 	}
 	return placeholderWorkflow(target)
 }

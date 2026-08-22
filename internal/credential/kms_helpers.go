@@ -14,6 +14,8 @@ import (
 // newInsecureTransport returns an *http.Transport that skips certificate
 // verification. It is intended for development and tests only; production
 // callers must supply a real CA bundle.
+//
+//nolint:unused // test-only helper, referenced in _test.go files
 func newInsecureTransport() *http.Transport {
 	return &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},

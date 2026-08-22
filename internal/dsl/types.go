@@ -571,9 +571,9 @@ func basicTypeByName(name string) Type {
 // Sentinel errors for the registry. They are defined as package-level vars so
 // callers can compare with errors.Is.
 var (
-	errRegistryNil     = newTypeError("", 0, 0, "type registry is nil")
-	errAliasNameEmpty  = newTypeError("", 0, 0, "alias name is empty")
-	errAliasTargetNil  = newTypeError("", 0, 0, "alias target is nil")
-	errEnumNameEmpty   = newTypeError("", 0, 0, "enum name is empty")
-	errEnumValuesEmpty = newTypeError("", 0, 0, "enum values are empty")
+	errRegistryNil     = newTypeError("", 0, "type registry is nil")
+	errAliasNameEmpty  = newTypeError("", 0, "alias name is empty")
+	errAliasTargetNil  = newTypeError("", 0, "alias target is nil")
+	errEnumNameEmpty   = newTypeError("", 0, "enum name is empty")
+	errEnumValuesEmpty = newTypeError("", 0, "enum values are empty")
 )

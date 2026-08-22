@@ -82,7 +82,9 @@ func ParseStrategy(name string) Strategy {
 type Balancer struct {
 	strategy Strategy
 	rrIndex  atomic.Int64
-	mu       sync.Mutex
+	// mu is reserved for future weighted balancing.
+	//nolint:unused // reserved for future use
+	mu sync.Mutex
 }
 
 // NewBalancer returns a Balancer with the given strategy.

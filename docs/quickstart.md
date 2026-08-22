@@ -334,16 +334,29 @@ levee chatops reject --id run-abc123 --reason "变更窗口已关闭"
 
 ## Web UI 启动
 
-启动 LEVEE Web UI（Vue 3 SPA），默认监听 8080 端口：
+LEVEE 有两种方式运行 Web UI：
 
-```命令示例：启动 Web UI
+### 方式一：内嵌网关（推荐）
+
+`levee serve` 同时启动 gRPC 服务（:9090）和 REST-to-gRPC 网关（:8080），
+Web UI 内嵌在二进制中。直接访问 http://localhost:8080 即可。
+
+```命令示例：启动服务（gRPC + REST 网关 + Web UI）
+levee serve
+```
+
+### 方式二：独立 Web 服务器
+
+`levee web` 单独启动 Web UI，可代理到已有的 gRPC-gateway 后端。
+
+```命令示例：启动独立 Web UI
 levee web
 ```
 
-指定端口并代理 `/api/*` 到 gRPC-gateway 后端：
+指定端口并代理 `/api/*` 到另一个 gRPC-gateway 实例：
 
 ```命令示例：指定端口并代理后端
-levee web --port 8080 --api http://localhost:9090
+levee web --port 8080 --api http://localhost:9091
 ```
 
 开发模式（代理到 Vite dev server 支持热更新）：
@@ -354,7 +367,7 @@ levee web --dev
 
 ## gRPC 服务启动
 
-在当前进程运行 LEVEE gRPC 服务器，暴露全部五个服务：
+在当前进程运行 LEVEE gRPC 服务器（同时附带 REST 网关 :8080 和内嵌 Web UI）：
 
 ```命令示例：启动 gRPC 服务
 levee serve
@@ -365,6 +378,9 @@ levee serve
 ```命令示例：启用 TLS 与鉴权
 levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cret
 ```
+
+> **安全警告**：默认情况下（不传 `--token`）鉴权处于关闭状态，所有 API 请求无需认证即可访问。
+> 生产环境必须通过 `--token <secret>` 设置 Bearer token。
 
 ## 下一步
 

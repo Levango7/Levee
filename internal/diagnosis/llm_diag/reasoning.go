@@ -64,6 +64,7 @@ const (
 	DefaultReasoningTimeout = 2 * time.Minute
 	// reasoningTemperature is the sampling temperature used for the LLM call.
 	// Low temperature keeps the reasoning deterministic.
+	//nolint:unused // reserved for future temperature tuning
 	reasoningTemperature = 0.2
 )
 

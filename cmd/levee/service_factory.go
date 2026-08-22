@@ -85,33 +85,19 @@ type localDeps struct {
 	store          state.Store
 	engine         *grpc.EngineAdapter
 	approval       *approval.Service
-	pause          *pauseManagerShim
 	templateLib    *template.TemplateLibrary
 	channelFactory channel.ChannelFactory
 	config         *config.Config
 	configPath     string
 }
 
-// pauseManagerShim is a thin alias to avoid importing internal/pause here when
-// callers do not need it. The field is typed as the concrete *pause.PauseManager
-// at the call site via a small wrapper; we keep the indirection so this file
-// does not import internal/pause directly (which would add a build-time
-// dependency cycle in some test configurations).
-type pauseManagerShim = struct{}
-
 // factoryOption configures newServiceFactory.
 type factoryOption func(*factoryConfig)
 
 // factoryConfig is the internal configuration bag.
 type factoryConfig struct {
-	deps           *localDeps
-	tlsConfig      *tlsConfigShim
-	connectTimeout time.Duration
+	deps *localDeps
 }
-
-// tlsConfigShim is an alias to keep the import surface small; the real type is
-// *tls.Config, supplied via WithFactoryTLS.
-type tlsConfigShim = struct{}
 
 // WithFactoryDeps supplies the local-mode dependencies. Ignored in remote mode
 // except for store, which is unused remotely.

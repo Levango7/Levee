@@ -397,7 +397,7 @@ func (h *FailureHandler) handleRetryable(f Failure) FailureAction {
 
 // handleManualRetry builds the action for a non-transient recoverable
 // failure: pause the run, notify for human confirmation, no auto-retry.
-func (h *FailureHandler) handleManualRetry(f Failure) FailureAction {
+func (h *FailureHandler) handleManualRetry(_ Failure) FailureAction {
 	return FailureAction{
 		Category:     CategoryManualRetry,
 		ShouldNotify: true,
@@ -407,7 +407,7 @@ func (h *FailureHandler) handleManualRetry(f Failure) FailureAction {
 
 // handleRollback builds the action for a failure requiring rollback:
 // trigger rollback flow, notify operations. No pause (rollback is automatic).
-func (h *FailureHandler) handleRollback(f Failure) FailureAction {
+func (h *FailureHandler) handleRollback(_ Failure) FailureAction {
 	return FailureAction{
 		Category:       CategoryRollback,
 		ShouldRollback: true,
@@ -417,7 +417,7 @@ func (h *FailureHandler) handleRollback(f Failure) FailureAction {
 
 // handleEscalate builds the action for a failure requiring escalation:
 // pause the run, escalate to a higher authority, notify ops + dev.
-func (h *FailureHandler) handleEscalate(f Failure) FailureAction {
+func (h *FailureHandler) handleEscalate(_ Failure) FailureAction {
 	return FailureAction{
 		Category:       CategoryEscalate,
 		ShouldNotify:   true,
@@ -428,7 +428,7 @@ func (h *FailureHandler) handleEscalate(f Failure) FailureAction {
 
 // handleFatal builds the action for an unrecoverable failure: abort the
 // run permanently, escalate, notify ops + dev + management.
-func (h *FailureHandler) handleFatal(f Failure) FailureAction {
+func (h *FailureHandler) handleFatal(_ Failure) FailureAction {
 	return FailureAction{
 		Category:       CategoryFatal,
 		ShouldNotify:   true,

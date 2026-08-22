@@ -147,7 +147,8 @@ type AWSProvider struct {
 	// store is the envelope store; defaults to an in-memory map.
 	store EnvelopeStore
 
-	// mu guards the in-memory store when used.
+	// mu is reserved for future concurrent credential rotation.
+	//nolint:unused // reserved for future use
 	mu sync.RWMutex
 }
 

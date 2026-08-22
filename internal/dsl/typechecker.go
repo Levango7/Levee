@@ -21,7 +21,6 @@ package dsl
 
 import (
 	"fmt"
-	"strings"
 )
 
 // TypeError describes a single type-checking failure. File/Line/Column locate
@@ -63,8 +62,8 @@ func (e TypeError) Error() string {
 }
 
 // newTypeError constructs a TypeError with the given location and message.
-func newTypeError(file string, line, column int, message string) TypeError {
-	return TypeError{File: file, Line: line, Column: column, Message: message}
+func newTypeError(file string, line int, message string) TypeError {
+	return TypeError{File: file, Line: line, Message: message}
 }
 
 // CheckMode selects between strict and lenient checking.
@@ -119,7 +118,7 @@ func (c *TypeChecker) Registry() *TypeRegistry {
 // The returned slice is non-nil but may be empty when wf passes.
 func (c *TypeChecker) Check(wf *Workflow) []TypeError {
 	if wf == nil {
-		return []TypeError{newTypeError(c.file, 0, 0, "workflow is nil")}
+		return []TypeError{newTypeError(c.file, 0, "workflow is nil")}
 	}
 	var errs []TypeError
 	errs = append(errs, c.checkInputs(wf.Inputs)...)
@@ -163,7 +162,7 @@ func (c *TypeChecker) checkInputs(inputs []InputParam) []TypeError {
 		field := fmt.Sprintf("input[%d]", i)
 		declared := c.registry.Resolve(p.Type)
 		if declared == nil && p.Type != "" {
-			errs = append(errs, newTypeError(c.file, 0, 0,
+			errs = append(errs, newTypeError(c.file, 0,
 				fmt.Sprintf("%s: unknown type %q", field, p.Type)))
 			continue
 		}
@@ -412,17 +411,3 @@ var (
 	_ Type = TypeMap{}
 	_ Type = TypeList{}
 )
-
-// joinTypeNames joins the String() of the given types with ", " — a small
-// helper used by error message builders.
-func joinTypeNames(ts []Type) string {
-	parts := make([]string, 0, len(ts))
-	for _, t := range ts {
-		if t == nil {
-			parts = append(parts, "<?>")
-		} else {
-			parts = append(parts, t.String())
-		}
-	}
-	return strings.Join(parts, ", ")
-}

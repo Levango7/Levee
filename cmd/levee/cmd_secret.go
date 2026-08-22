@@ -14,7 +14,6 @@ import (
 
 // Secret command option variables.
 var (
-	secretListOptTag    string
 	secretAddOptName    string
 	secretAddOptType    string
 	secretAddOptValue   string
@@ -129,6 +128,8 @@ func masterPassword() (string, error) {
 
 // openCredentialStore creates a CredentialStore from the state store and
 // master password.
+//
+//nolint:unused // internal API reserved for future CLI subcommand
 func openCredentialStore(ctx context.Context) (*credential.CredentialStore, error) {
 	store, err := openStore(ctx)
 	if err != nil {

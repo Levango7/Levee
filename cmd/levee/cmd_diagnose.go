@@ -31,7 +31,6 @@ var (
 	diagOptLogs   bool
 	diagOptHealth bool
 	diagOptWindow string
-	diagOptJSON   bool // local alias for the global --json flag
 )
 
 func init() {

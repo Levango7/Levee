@@ -17,8 +17,7 @@ import (
 // Plugin command option variables. Prefixed to avoid collisions with other
 // command packages in the same main package.
 var (
-	pluginOptVerifySig   bool
-	pluginOptNoVerifySig bool
+	pluginOptVerifySig bool
 )
 
 func init() {

@@ -2,7 +2,7 @@
 // ChangesView is the change pipeline dashboard: a filterable, paginated table
 // of changes plus status summary cards and batch actions. Selecting rows
 // enables bulk pause / cancel / archive operations.
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi } from '@/api'
@@ -59,8 +59,6 @@ const summary = computed(() => {
   }
   return statusOptions.map((opt) => ({ ...opt, count: counts[opt.value] || 0 }))
 })
-
-import { computed } from 'vue'
 
 async function load(): Promise<void> {
   loading.value = true

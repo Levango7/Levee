@@ -60,11 +60,6 @@ func newError(code, field, message string) *ParseError {
 	return &ParseError{Code: code, Field: field, Message: message}
 }
 
-// newErrorLine constructs a ParseError with a line number.
-func newErrorLine(code, field string, line int, message string) *ParseError {
-	return &ParseError{Code: code, Field: field, Line: line, Message: message}
-}
-
 // Parser parses LEVEELang YAML subset documents into Workflow AST nodes.
 // It is safe for concurrent use after construction; the zero value is not
 // ready — use NewParser.
@@ -133,7 +128,7 @@ func (p *Parser) ParseBytes(data []byte) (*Workflow, error) {
 		}
 	}
 
-	wf, err := convertWorkflow(raw, &root)
+	wf, err := convertWorkflow(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +279,7 @@ type yamlRollbackRaw struct {
 // Conversion from raw YAML to AST
 // ---------------------------------------------------------------------------
 
-func convertWorkflow(raw *yamlWorkflowRaw, root *yaml.Node) (*Workflow, error) {
+func convertWorkflow(raw *yamlWorkflowRaw) (*Workflow, error) {
 	wf := &Workflow{
 		Meta: WorkflowMeta{
 			Name:        raw.Name,

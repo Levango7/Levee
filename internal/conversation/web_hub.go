@@ -518,7 +518,7 @@ func (h *WebHub) handleListSessions(client *WSClient, req WSRequest) WSResponse 
 // handleCloseSession closes the session with the given id. It is
 // idempotent from the client's perspective: a missing session yields an
 // error response but does not disconnect the client.
-func (h *WebHub) handleCloseSession(client *WSClient, req WSRequest) WSResponse {
+func (h *WebHub) handleCloseSession(_ *WSClient, req WSRequest) WSResponse {
 	if req.SessionID == "" {
 		return WSResponse{Type: RespError, Error: "session_id is required"}
 	}

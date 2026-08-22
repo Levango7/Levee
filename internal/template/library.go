@@ -199,7 +199,7 @@ func (l *TemplateLibrary) Save(ctx context.Context, tmpl *Template) error {
 
 	now := time.Now().UTC()
 
-	existing, err := l.loadLocked(ctx, tmpl.Name)
+	existing, err := l.loadLocked(tmpl.Name)
 	if err != nil && !errors.Is(err, ErrTemplateNotFound) {
 		return fmt.Errorf("template: stat existing: %w", err)
 	}
@@ -227,7 +227,7 @@ func (l *TemplateLibrary) Save(ctx context.Context, tmpl *Template) error {
 		tmpl.UpdatedAt = &now
 	}
 
-	if err := l.writeLocked(ctx, tmpl); err != nil {
+	if err := l.writeLocked(tmpl); err != nil {
 		return fmt.Errorf("template: write %s: %w", tmpl.Name, err)
 	}
 	return nil
@@ -243,7 +243,7 @@ func (l *TemplateLibrary) Get(ctx context.Context, name string) (*Template, erro
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	return l.loadLocked(ctx, name)
+	return l.loadLocked(name)
 }
 
 // List returns all templates in the library, sorted by name ascending.
@@ -266,7 +266,7 @@ func (l *TemplateLibrary) List(ctx context.Context) ([]*Template, error) {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".json")
-		tmpl, err := l.loadLocked(ctx, name)
+		tmpl, err := l.loadLocked(name)
 		if err != nil {
 			// Skip entries that cannot be decoded rather than failing the
 			// whole listing; this keeps List resilient to stray files.
@@ -331,7 +331,7 @@ func (l *TemplateLibrary) Update(ctx context.Context, name string, updates Templ
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	tmpl, err := l.loadLocked(ctx, name)
+	tmpl, err := l.loadLocked(name)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +355,7 @@ func (l *TemplateLibrary) Update(ctx context.Context, name string, updates Templ
 	now := time.Now().UTC()
 	tmpl.UpdatedAt = &now
 
-	if err := l.writeLocked(ctx, tmpl); err != nil {
+	if err := l.writeLocked(tmpl); err != nil {
 		return nil, fmt.Errorf("template: write %s: %w", name, err)
 	}
 	return tmpl, nil
@@ -370,7 +370,7 @@ func (l *TemplateLibrary) templatePath(name string) string {
 
 // loadLocked reads and decodes a template by name. Caller must hold at least
 // l.mu.RLock.
-func (l *TemplateLibrary) loadLocked(ctx context.Context, name string) (*Template, error) {
+func (l *TemplateLibrary) loadLocked(name string) (*Template, error) {
 	path := l.templatePath(name)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -388,7 +388,7 @@ func (l *TemplateLibrary) loadLocked(ctx context.Context, name string) (*Templat
 
 // writeLocked encodes and writes a template to disk. Caller must hold
 // l.mu.Lock.
-func (l *TemplateLibrary) writeLocked(ctx context.Context, tmpl *Template) error {
+func (l *TemplateLibrary) writeLocked(tmpl *Template) error {
 	data, err := json.MarshalIndent(tmpl, "", "  ")
 	if err != nil {
 		return fmt.Errorf("template: encode %s: %w", tmpl.Name, err)

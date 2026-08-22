@@ -56,6 +56,8 @@ func AppendHostEnv(env []string) []string {
 // runtimeOS is a tiny indirection so that tests can stub runtime.GOOS
 // when exercising the platform dispatch logic. It is read once at
 // package init time.
+//
+//nolint:unused // stubbed in tests via package init
 var runtimeOS = runtime.GOOS
 
 // _ ensures exec is referenced even when the platform files do not use

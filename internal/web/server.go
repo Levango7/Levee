@@ -141,6 +141,8 @@ func (s *WebUIServer) DevProxyEnabled() bool {
 // isAPIPath is a small helper kept for symmetry with the SPA handler's path
 // classification. It returns true for paths that should never be served by
 // the embedded SPA.
+//
+//nolint:unused // symmetry helper, kept for future API path gating
 func isAPIPath(path string) bool {
 	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/events/")
 }

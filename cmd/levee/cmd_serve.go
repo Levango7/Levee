@@ -30,6 +30,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -177,6 +178,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		store, cfg, optConfigPath,
 		version, commitHash, buildTime, goVersion, time.Now(),
 	)
+	alertSvc := grpc.NewAlertService(nil, slog.Default())
+	diagSvc := grpc.NewDiagnosisService(nil, slog.Default())
+	convSvc := grpc.NewConversationService(nil, slog.Default())
 
 	// 3. Build server options.
 	serverOpts := []grpc.Option{
@@ -201,26 +205,44 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// 4. Construct and start the server.
 	srv := grpc.NewServer(store, serverOpts...)
 
-	// Use the configured address (fall back to listen addr option).
+	// 5. Register extra services (Alert, Diagnosis, Conversation) on the
+	//    gRPC server and construct the REST gateway that shares the same
+	//    in-process service instances.
+	grpc.RegisterExtraServices(srv.GrpcServer(), grpc.ExtraServicesConfig{
+		Alert:        alertSvc,
+		Diagnosis:    diagSvc,
+		Conversation: convSvc,
+	})
+
+	gw := grpc.NewGateway(grpc.ServeGatewayConfig{
+		Addr:        ":8080",
+		CORSOrigins: nil,
+	})
+	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
+
+	// 6. Use the configured address (fall back to listen addr option).
 	addr := serveOptAddr
 	if addr == "" {
 		addr = grpc.DefaultListenAddr
 	}
 
-	// 5. Wire signal handling for graceful shutdown.
+	// 7. Wire signal handling for graceful shutdown.
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		sig := <-sigCh
 		log.Info("received signal, shutting down", "signal", sig.String())
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), serveGracefulShutdownTimeout)
-		defer cancel()
-		if err := srv.GracefulStop(shutdownCtx); err != nil {
-			log.Warn("graceful stop failed", "error", err)
-		}
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), serveGracefulShutdownTimeout)
+		defer shutdownCancel()
+		_ = srv.GracefulStop(shutdownCtx)
+		_ = gw.Stop(shutdownCtx)
 	}()
 
-	// 6. Block until the server stops.
+	// 8. Block until the server stops.
 	log.Info("starting levee gRPC server", "addr", addr, "tls", tlsCfg != nil, "auth", serveOptToken != "")
 	if err := srv.Start(addr); err != nil {
 		return fmt.Errorf("serve: %w", err)

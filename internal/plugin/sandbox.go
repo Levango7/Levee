@@ -173,7 +173,7 @@ func (s *Sandbox) Start(ctx context.Context) error {
 		return fmt.Errorf("sandbox %q: empty binary path", s.name)
 	}
 
-	if err := s.startLocked(ctx); err != nil {
+	if err := s.startLocked(); err != nil {
 		return err
 	}
 	s.started.Store(true)
@@ -183,7 +183,7 @@ func (s *Sandbox) Start(ctx context.Context) error {
 
 // startLocked spawns the process and the monitor goroutine. The caller
 // must hold s.mu.
-func (s *Sandbox) startLocked(ctx context.Context) error {
+func (s *Sandbox) startLocked() error {
 	cmd := exec.Command(s.binary, s.args...)
 	if len(s.env) > 0 {
 		cmd.Env = s.env
@@ -243,7 +243,7 @@ func (s *Sandbox) monitor() {
 			}
 			s.mu.Lock()
 			if !s.stopped.Load() {
-				if rerr := s.startLocked(context.Background()); rerr != nil {
+				if rerr := s.startLocked(); rerr != nil {
 					log.Error("sandbox restart failed",
 						"plugin", s.name,
 						"crash", crashCount,

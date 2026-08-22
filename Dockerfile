@@ -2,11 +2,12 @@
 #
 # Multi-stage Dockerfile for levee.
 #
-# Stage 1 (builder):    Go 1.25 image compiles the CLI binary with version
+# Stage 1 (node):       installs npm dependencies and builds the Vue frontend.
+# Stage 2 (builder):    Go 1.25 image compiles the CLI binary with version
 #                       injection and static linking (CGO_ENABLED=0).
-# Stage 2 (dist):       copies the binary plus the embedded frontend assets
+# Stage 3 (dist):       copies the binary plus the embedded frontend assets
 #                       from internal/web/dist so the runtime image is minimal.
-# Stage 3 (runtime):    Alpine-based image with only the binary and CA certs.
+# Stage 4 (runtime):    Alpine-based image with only the binary and CA certs.
 #
 # Build:
 #   docker build -t levee:dev .
@@ -16,9 +17,23 @@
 
 ARG GO_VERSION=1.25
 ARG ALPINE_VERSION=3.20
+ARG NODE_VERSION=20-alpine
 
 # ---------------------------------------------------------------------------
-# Stage 1: builder
+# Stage 1: node — build frontend assets
+# ---------------------------------------------------------------------------
+FROM node:${NODE_VERSION} AS node
+
+WORKDIR /src/web
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --prefer-offline
+
+COPY web/ .
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 2: builder
 # ---------------------------------------------------------------------------
 FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
 
@@ -30,8 +45,11 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source and build.
+# Copy source.
 COPY . .
+
+# Copy built frontend assets from node stage.
+COPY --from=node /src/web/dist ./internal/web/dist
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -46,7 +64,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
         -o /out/levee ./cmd/levee
 
 # ---------------------------------------------------------------------------
-# Stage 2: dist (asset packaging)
+# Stage 3: dist (asset packaging)
 # ---------------------------------------------------------------------------
 FROM scratch AS dist
 
@@ -55,7 +73,7 @@ COPY --from=builder /src/internal/web/dist /dist
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /ca-certificates.crt
 
 # ---------------------------------------------------------------------------
-# Stage 3: runtime
+# Stage 4: runtime
 # ---------------------------------------------------------------------------
 FROM alpine:${ALPINE_VERSION}
 

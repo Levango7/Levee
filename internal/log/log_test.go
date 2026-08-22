@@ -141,10 +141,11 @@ func TestWith_ContextFields(t *testing.T) {
 func TestContextAwareVariants(t *testing.T) {
 	t.Cleanup(resetLogger)
 
+	type traceKey struct{}
 	var buf captureBuffer
 	InitLoggerWithWriter("debug", "json", &buf)
 
-	ctx := context.WithValue(context.Background(), "trace", "abc")
+	ctx := context.WithValue(context.Background(), traceKey{}, "abc")
 	DebugCtx(ctx, "ctx-debug")
 	InfoCtx(ctx, "ctx-info")
 	WarnCtx(ctx, "ctx-warn")

@@ -214,7 +214,7 @@ func Load(path string) (*Config, error) {
 // struct tags: required fields, value ranges, enum membership, etc.
 // It returns nil when the configuration is valid, or an error whose
 // message lists every violation found (joined by '; ').
-func Validate(cfg *Config) error {
+func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: validates 30+ fields with distinct rules per type
 	var problems []string
 
 	// Server
