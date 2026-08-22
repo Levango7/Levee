@@ -16,6 +16,7 @@ import (
 	"fmt"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/log"
 )
 
 // EventPermissionDenied is the audit event recorded when a permission
@@ -239,10 +240,11 @@ func (c *PermissionChecker) recordDenial(ctx context.Context, op OperationContex
 		target = "*"
 	}
 
-	// Best-effort: ignore the returned trace and error. The denial
-	// error has already been built and will be returned to the caller
-	// regardless of whether the audit recording succeeds.
-	_, _ = c.recorder.Record(ctx, audit.TraceRecord{
+	// Best-effort: the denial error has already been built and will be
+	// returned to the caller regardless of whether the audit recording
+	// succeeds. A failed write is logged so silent gaps in the security
+	// audit trail are at least observable.
+	if _, err := c.recorder.Record(ctx, audit.TraceRecord{
 		RunID:  runID,
 		Event:  EventPermissionDenied,
 		Actor:  op.Actor,
@@ -260,7 +262,9 @@ func (c *PermissionChecker) recordDenial(ctx context.Context, op OperationContex
 			"env":    op.Env,
 			"action": op.Action,
 		},
-	})
+	}); err != nil {
+		log.ErrorCtx(ctx, "permission: audit record for denial failed", "error", err, "actor", op.Actor, "action", op.Action)
+	}
 }
 
 // CheckBatch authorises multiple operations in order. It returns nil if

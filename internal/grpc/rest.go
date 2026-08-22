@@ -10,6 +10,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1869,7 +1870,7 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
-		if !constantTimeEqual(bearer, token) {
+		if subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) != 1 {
 			writeJSONError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}

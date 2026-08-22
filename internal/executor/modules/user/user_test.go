@@ -24,11 +24,18 @@ type mockChannel struct {
 	execResult    *channel.ExecResult
 	execErr       error
 	connected     bool
+	uploads       []uploadRecord
 }
 
 type execResponse struct {
 	result *channel.ExecResult
 	err    error
+}
+
+// uploadRecord captures one Upload invocation for assertions.
+type uploadRecord struct {
+	path    string
+	content string
 }
 
 func (m *mockChannel) Connect(context.Context) error { m.connected = true; return nil }
@@ -55,7 +62,16 @@ func (m *mockChannel) Exec(_ context.Context, cmd string) (*channel.ExecResult, 
 	return &channel.ExecResult{ExitCode: 0, Stdout: "", Stderr: ""}, nil
 }
 
-func (m *mockChannel) Upload(context.Context, string, io.Reader) error { return nil }
+func (m *mockChannel) Upload(_ context.Context, path string, content io.Reader) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	m.uploads = append(m.uploads, uploadRecord{path: path, content: string(b)})
+	return nil
+}
 func (m *mockChannel) Download(context.Context, string) (io.Reader, error) {
 	return nil, errors.New("not implemented")
 }
@@ -172,9 +188,18 @@ func TestAddWithPassword(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, ch.execAt(2), "chpasswd")
-	// shellQuote wraps 'bob' in single quotes; escapeSingleQuote is used for the password.
-	assert.Contains(t, ch.execAt(2), "bob")
-	assert.Contains(t, ch.execAt(2), "s3cret")
+	// The credential travels via the uploaded temp file, never in argv:
+	// the command references the file and cleans it up, but must not
+	// contain the plaintext password.
+	assert.Contains(t, ch.execAt(2), "rm -f")
+	assert.NotContains(t, ch.execAt(2), "s3cret",
+		"plaintext password must not appear in any Exec command string")
+
+	// Upload received name:password content and chpasswd reads that file.
+	require.Len(t, ch.uploads, 1, "exactly one credential upload expected")
+	assert.Equal(t, "bob:s3cret\n", ch.uploads[0].content)
+	assert.Contains(t, ch.execAt(2), ch.uploads[0].path,
+		"chpasswd must read from the uploaded temp file")
 }
 
 func TestAddWithSSHKey(t *testing.T) {
@@ -356,11 +381,6 @@ func TestShellQuote(t *testing.T) {
 	assert.Equal(t, `'simple'`, shellQuote("simple"))
 	// Single quote inside is escaped with the '\'' idiom.
 	assert.Equal(t, `'it'\''s'`, shellQuote("it's"))
-}
-
-func TestEscapeSingleQuote(t *testing.T) {
-	assert.Equal(t, `it'\''s`, escapeSingleQuote("it's"))
-	assert.Equal(t, "plain", escapeSingleQuote("plain"))
 }
 
 func TestStringOk(t *testing.T) {

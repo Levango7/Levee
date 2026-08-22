@@ -207,14 +207,30 @@ func TestPGStoreLockCRUD(t *testing.T) {
 		t.Fatalf("GetLockByScope = %+v", got)
 	}
 
-	// Expired lock deletion.
-	expired := now.Add(-time.Second)
+	// Expired lock deletion: insert a lock that is already expired, then
+	// verify DeleteExpiredLocks removes exactly that one (the lock created
+	// above is still valid and must survive).
+	expiredLock := &Lock{
+		ID: "lock-003", Scope: "host:node2", Owner: "run-2",
+		TTLSeconds: 60, AcquiredAt: now.Add(-time.Minute), ExpiresAt: now.Add(-time.Second),
+	}
+	if err := store.CreateLock(ctx, expiredLock); err != nil {
+		t.Fatalf("CreateLock expired: %v", err)
+	}
+	expired := now
 	n, err := store.DeleteExpiredLocks(ctx, expired)
 	if err != nil {
 		t.Fatalf("DeleteExpiredLocks: %v", err)
 	}
 	if n != 1 {
 		t.Errorf("DeleteExpiredLocks n = %d, want 1", n)
+	}
+	survivor, err := store.GetLock(ctx, lock.ID)
+	if err != nil {
+		t.Fatalf("GetLock after expiry sweep: %v", err)
+	}
+	if survivor == nil {
+		t.Error("valid lock was removed by DeleteExpiredLocks")
 	}
 }
 

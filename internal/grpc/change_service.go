@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
@@ -1560,6 +1561,9 @@ func sendStepLogs(stream grpcpkg.ServerStreamingServer[pb.LogEntry], runID strin
 type eventBus struct {
 	mu   sync.Mutex
 	subs map[string]map[chan *pb.ChangeEvent]struct{}
+	// dropped counts events discarded because a subscriber channel was
+	// full. Atomic: incremented on the publisher's goroutine.
+	dropped int64
 }
 
 // newEventBus creates a ready-to-use eventBus.
@@ -1620,7 +1624,12 @@ func (s *ChangeService) publishEvent(ev *pb.ChangeEvent) {
 		select {
 		case ch <- ev:
 		default:
-			// Channel full; drop the event for this subscriber.
+			// Channel full; drop the event for this subscriber. The
+			// counter keeps the loss observable (exposed via the event
+			// bus stats) instead of failing completely silently.
+			atomic.AddInt64(&bus.dropped, 1)
+			log.WarnCtx(context.Background(), "change event dropped for slow subscriber",
+				"change_id", ev.GetChangeId(), "event_type", ev.GetEventType(), "total_dropped", atomic.LoadInt64(&bus.dropped))
 		}
 	}
 }

@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/subtle"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -109,7 +110,11 @@ func checkAuth(ctx context.Context, expected string) error {
 		return err
 	}
 
-	if !constantTimeEqual(token, expected) {
+	// Constant-time comparison via the standard library. subtle returns 0
+	// only on an exact match; note it reports length mismatches immediately
+	// (returning 0), which leaks token length but not content — the same
+	// trade-off the previous hand-rolled comparison made.
+	if subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 		return status.Error(codes.Unauthenticated, "invalid token")
 	}
 	return nil
@@ -138,20 +143,4 @@ func extractBearerToken(header string) (string, error) {
 		return "", status.Error(codes.Unauthenticated, "empty bearer token")
 	}
 	return token, nil
-}
-
-// constantTimeEqual compares two strings in constant time. We use a
-// hand-rolled version rather than crypto/subtle.ConstantTimeCompare
-// to keep the dependency surface small; the comparison is short (tokens
-// are typically 32-64 bytes) and the constant-time property is
-// preserved.
-func constantTimeEqual(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	var v byte
-	for i := 0; i < len(a); i++ {
-		v |= a[i] ^ b[i]
-	}
-	return v == 0
 }

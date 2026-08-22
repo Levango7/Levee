@@ -27,6 +27,8 @@ package user
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -96,10 +98,14 @@ func (m *Module) add(ctx context.Context, input executor.ModuleInput) (*executor
 		changed = true
 	}
 
-	// Optional password.
+	// Optional password. The credential is delivered via a temporary file
+	// uploaded over the channel (SFTP/SCP) rather than embedded in the
+	// command string, so the plaintext never appears in process argv,
+	// sshd forced-command logs or the executor's audit trail. The file is
+	// removed in the same Exec invocation regardless of chpasswd's exit
+	// status.
 	if pw, ok := stringOk(input.Args, "password"); ok {
-		cmd := fmt.Sprintf("echo '%s:%s' | chpasswd", shellQuote(name), escapeSingleQuote(pw))
-		r, err := runRemoteStep(ctx, input.Channel, cmd)
+		r, err := setPassword(ctx, input.Channel, name, pw)
 		if err != nil {
 			return nil, fmt.Errorf("user.add: chpasswd: %w", err)
 		}
@@ -241,6 +247,27 @@ func runRemoteStep(ctx context.Context, ch channel.Channel, cmd string) (*remote
 	return &remoteStep{exit: res.ExitCode, stdout: res.Stdout, stderr: res.Stderr}, nil
 }
 
+// setPassword sets name's password by uploading "name:password\n" to a
+// randomly-named temp file over the channel's file-transfer path and running
+// `chpasswd < file`. The plaintext credential therefore never travels inside
+// a command string. The same Exec removes the file before exiting so no
+// credential material is left on disk, even when chpasswd fails.
+func setPassword(ctx context.Context, ch channel.Channel, name, password string) (*remoteStep, error) {
+	var suffix [4]byte
+	if _, err := crand.Read(suffix[:]); err != nil {
+		return nil, fmt.Errorf("generate temp suffix: %w", err)
+	}
+	tmpPath := fmt.Sprintf("/tmp/.levee-chpasswd-%s", hex.EncodeToString(suffix[:]))
+
+	content := fmt.Sprintf("%s:%s\n", name, password)
+	if err := ch.Upload(ctx, tmpPath, strings.NewReader(content)); err != nil {
+		return nil, fmt.Errorf("upload credentials: %w", err)
+	}
+
+	cmd := fmt.Sprintf("chpasswd < %s; rc=$?; rm -f %s; exit $rc", shellQuote(tmpPath), shellQuote(tmpPath))
+	return runRemoteStep(ctx, ch, cmd)
+}
+
 // runRemote runs cmd and returns a ModuleOutput.
 func runRemote(ctx context.Context, ch channel.Channel, cmd string, changed bool) (*executor.ModuleOutput, error) {
 	res, err := ch.Exec(ctx, cmd)
@@ -367,13 +394,6 @@ func stringOk(args map[string]any, key string) (string, bool) {
 // '...'\”...' idiom.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-// escapeSingleQuote escapes a single quote for use inside a single-quoted
-// shell context. It is the same idiom as shellQuote but without the wrapping
-// quotes, so the caller can compose e.g. echo 'user:password' | chpasswd.
-func escapeSingleQuote(s string) string {
-	return strings.ReplaceAll(s, "'", `'\''`)
 }
 
 // validateUserName checks that s is a valid POSIX username. User names must

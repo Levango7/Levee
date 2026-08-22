@@ -456,4 +456,25 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 | SA-007 | HIGH | 权限校验缺少操作级审计 | Unreleased | 拒绝时自动记录审计 trace |
 | SA-008 | HIGH | 哈希链排序依赖时间戳 | Unreleased | 添加二级排序键确保确定性 |
 
+## 部署安全声明（2026-08-22）
+
+### 已加固项
+
+| 项目 | 说明 |
+|------|------|
+| 认证启动门禁 | `levee serve` 无 token（`--token` 或 `LEVEE_TOKEN`）拒绝启动；`--insecure` 为显式开发逃生口 |
+| CORS 默认拒绝 | 空 origins 列表拒绝所有跨域；白名单经 `--cors-origin` 显式配置，通配需显式 `*` |
+| gRPC 健康探针 | 标准 `grpc.health.v1.Health` 已注册，免鉴权供编排系统探活 |
+| 密码传递 | user 模块密码经通道文件传输（SFTP/SCP 临时文件 + 即时删除），明文不进命令行/sshd 日志/审计 |
+| token 比较 | gRPC 与 REST 网关统一使用 `crypto/subtle.ConstantTimeCompare` |
+| TLS 明文告警 | 无证书启动时输出 WARN（不强制，兼容 sidecar TLS 终结部署） |
+| 权限拒绝审计 | 审计写入失败时输出 ERROR 日志，不再完全静默 |
+
+### 已知限制
+
+- **多租户隔离未接线**：`internal/tenant.IsolatedStore` 已实现且测试完备，但 daemon 服务路径（`levee serve`）当前为单租户运行，未按请求接入租户上下文。多租户部署前必须完成 per-request 租户传播的架构改造；在此之前请勿将 `--tenant` 相关能力视为生产可用。
+- **沙箱内存限制**：Unix 平台子进程内存不受限（`setrlimit` 仅作用于宿主进程，见 sandbox_unix.go）；依赖墙钟超时兜底。需要强隔离时请在容器/cgroup 层面限制。
+- **速率限制**：gRPC 与 REST 网关暂无内置限流，请在 LB/网关侧实施。
+
+
 **风险评级**：3 个 CRITICAL 已在 v1.0.0 修复，5 个 HIGH 正在修复中。建议在修复所有 HIGH 问题后再进入生产阶段。

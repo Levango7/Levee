@@ -287,6 +287,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}()
 
 	// 8. Block until the server stops.
+	if tlsCfg == nil && !serveOptInsecure {
+		log.Warn("serving without TLS: traffic (including bearer tokens) is plaintext. " +
+			"Pass --tls-cert/--tls-key for direct TLS, or terminate TLS at a sidecar/load balancer, " +
+			"or pass --insecure to silence this warning for local development")
+	}
 	log.Info("starting levee gRPC server", "addr", addr, "tls", tlsCfg != nil, "auth", token != "")
 	if err := srv.Start(addr); err != nil {
 		return fmt.Errorf("serve: %w", err)
