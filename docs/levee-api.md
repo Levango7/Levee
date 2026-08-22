@@ -811,58 +811,63 @@ $ levee list --status running --json
 
 ### 13.1 API 风格
 
-RESTful 风格，版本前缀 `/api/v1/`。资源命名用复数名词（`/changes`、`/templates`、`/targets`、`/audit`），子资源用路径嵌套（`/changes/:id/approve`）。HTTP 方法语义：GET 查询、POST 创建 / 动作、PATCH 局部更新、DELETE 删除。
+RESTful 风格，支持两套路径：
+
+- **RESTful 路径**（前端/Web UI 默认使用）：无前缀，如 `/changes`、`/templates/:name`、`/targets/:id`、`/audit/log`、`/system/version`。
+- **gRPC 兼容路径**（向后兼容）：带版本前缀 `/api/v1/`，如 `/api/v1/ChangeService/ListChanges`。
+
+资源命名用复数名词，子资源用路径嵌套（`/changes/:id/approve`）。HTTP 方法语义：GET 查询、POST 创建 / 动作、DELETE 删除。
 
 所有端点返回统一 JSON 结构（同 12.2），HTTP 状态码与退出码对齐：200 成功、400 验证失败、401 认证失败、403 权限不足、404 不存在、409 冲突（如目标机互斥锁占用）、422 审批被拒、500 一般错误、503 连接失败、504 超时。
 
 ### 13.2 端点清单
 
-表：REST API V1 端点对照表
+表：REST API 端点对照表（RESTful 路径 / gRPC 兼容路径）
 
-| 方法 | 端点 | 语义 | 对应 CLI |
-| --- | --- | --- | --- |
-| POST | `/api/v1/changes` | 创建变更 | `levee new` |
-| GET | `/api/v1/changes` | 列出变更 | `levee list` |
-| GET | `/api/v1/changes/:id` | 查看变更详情 | `levee show` |
-| POST | `/api/v1/changes/:id/clone` | 克隆变更 | `levee clone` |
-| POST | `/api/v1/changes/:id/plan` | 生成执行计划 | `levee plan` |
-| POST | `/api/v1/changes/:id/approve` | 通过审批 | `levee approve` |
-| POST | `/api/v1/changes/:id/reject` | 驳回审批 | `levee reject` |
-| POST | `/api/v1/changes/:id/delegate` | 转授权 | `levee delegate` |
-| POST | `/api/v1/changes/:id/apply` | 执行变更 | `levee apply` |
-| POST | `/api/v1/changes/:id/pause` | 暂停 | `levee pause` |
-| POST | `/api/v1/changes/:id/resume` | 恢复 | `levee resume` |
-| POST | `/api/v1/changes/:id/cancel` | 取消 | `levee cancel` |
-| POST | `/api/v1/changes/:id/retry` | 重试 | `levee retry` |
-| POST | `/api/v1/changes/:id/rollback` | 回滚 | `levee rollback` |
-| GET | `/api/v1/changes/:id/logs` | 查看日志（支持 SSE 流式） | `levee logs -f` |
-| GET | `/api/v1/changes/:id/trace` | 查看 trace | `levee trace` |
-| GET | `/api/v1/changes/:id/diff` | 查看 diff | `levee diff` |
-| POST | `/api/v1/changes/:id/archive` | 归档 | `levee archive` |
-| POST | `/api/v1/changes/:id/link` | 关联工单 | `levee link` |
-| POST | `/api/v1/pause-all` | 全局暂停 | `levee pause-all` |
-| POST | `/api/v1/resume-all` | 全局恢复 | `levee resume-all` |
-| GET | `/api/v1/templates` | 列出模板 | `levee template list` |
-| POST | `/api/v1/templates` | 创建模板 | `levee template create` |
-| GET | `/api/v1/templates/:name` | 查看模板 | `levee template show` |
-| GET | `/api/v1/targets` | 列出目标机 | `levee target list` |
-| POST | `/api/v1/targets/check` | 连通性检查 | `levee target check` |
-| GET | `/api/v1/audit` | 列出审计记录 | `levee audit list` |
-| GET | `/api/v1/audit/:id` | 查看审计详情 | `levee audit show` |
-| GET | `/api/v1/audit/export` | 导出审计 | `levee audit export` |
-| POST | `/api/v1/audit/:id/verify` | 哈希链校验 | `levee audit verify` |
-| POST | `/api/v1/drift/scan` | 漂移扫描 | `levee drift scan` |
-| GET | `/api/v1/drift/:id` | 查看漂移报告 | `levee drift show` |
-| GET | `/api/v1/status` | 系统状态 | `levee status` |
+| 方法 | RESTful 路径 | gRPC 兼容路径 | 语义 | 对应 CLI |
+| --- | --- | --- | --- | --- |
+| POST | `/changes` | `/api/v1/ChangeService/CreateChange` | 创建变更 | `levee new` |
+| GET | `/changes` | `/api/v1/ChangeService/ListChanges` | 列出变更 | `levee list` |
+| GET | `/changes/:id` | `/api/v1/ChangeService/GetChange` | 查看变更详情 | `levee show` |
+| POST | `/changes/:id/plan` | `/api/v1/ChangeService/PlanChange` | 生成执行计划 | `levee plan` |
+| POST | `/changes/:id/apply` | `/api/v1/ChangeService/ApplyChange` | 执行变更 | `levee apply` |
+| POST | `/changes/:id/approve` | `/api/v1/ChangeService/ApproveChange` | 通过审批 | `levee approve` |
+| POST | `/changes/:id/reject` | `/api/v1/ChangeService/RejectChange` | 驳回审批 | `levee reject` |
+| POST | `/changes/:id/pause` | `/api/v1/ChangeService/PauseChange` | 暂停 | `levee pause` |
+| POST | `/changes/:id/resume` | `/api/v1/ChangeService/ResumeChange` | 恢复 | `levee resume` |
+| POST | `/changes/:id/cancel` | `/api/v1/ChangeService/CancelChange` | 取消 | `levee cancel` |
+| POST | `/changes/:id/retry` | `/api/v1/ChangeService/RetryChange` | 重试 | `levee retry` |
+| POST | `/changes/:id/rollback` | `/api/v1/ChangeService/RollbackChange` | 回滚 | `levee rollback` |
+| POST | `/changes/:id/archive` | `/api/v1/ChangeService/ArchiveChange` | 归档 | `levee archive` |
+| GET | `/changes/:id/logs` | `/api/v1/ChangeService/GetLogs` | 查看日志 | `levee logs` |
+| GET | `/changes/:id/trace` | `/api/v1/ChangeService/GetTrace` | 查看 trace | `levee trace` |
+| POST | `/changes/deeplink/approve` | — | 一键审批（移动端） | — |
+| POST | `/templates` | `/api/v1/TemplateService/CreateTemplate` | 创建模板 | `levee template create` |
+| GET | `/templates` | `/api/v1/TemplateService/ListTemplates` | 列出模板 | `levee template list` |
+| GET | `/templates/:name` | `/api/v1/TemplateService/GetTemplate` | 查看模板 | `levee template show` |
+| DELETE | `/templates/:name` | `/api/v1/TemplateService/DeleteTemplate` | 删除模板 | — |
+| POST | `/templates/instantiate` | `/api/v1/TemplateService/InstantiateTemplate` | 实例化模板 | — |
+| POST | `/targets` | `/api/v1/TargetService/AddTarget` | 添加目标机 | `levee target add` |
+| GET | `/targets` | `/api/v1/TargetService/ListTargets` | 列出目标机 | `levee target list` |
+| GET | `/targets/:id` | `/api/v1/TargetService/GetTarget` | 查看目标机 | — |
+| DELETE | `/targets/:id` | `/api/v1/TargetService/RemoveTarget` | 移除目标机 | `levee target remove` |
+| POST | `/targets/:id/check` | `/api/v1/TargetService/CheckTarget` | 连通性检查 | `levee target check` |
+| GET | `/audit/log` | `/api/v1/AuditService/GetAuditLog` | 列出审计记录 | `levee audit list` |
+| GET | `/audit/traces` | `/api/v1/AuditService/ListAuditTraces` | 审计 trace | — |
+| GET | `/audit/verify` | `/api/v1/AuditService/VerifyHashChain` | 哈希链校验 | `levee audit verify` |
+| GET | `/system/version` | `/api/v1/SystemService/GetVersion` | 系统版本 | — |
+| GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee status` |
+| GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | — |
+| POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | — |
 
 ### 13.3 认证
 
 Token-based 认证，两种模式：
 
-- CLI：API token，通过 `--token` 或配置文件 `auth.token` 传入，请求头 `Authorization: Bearer <token>`。
-- 门户：session cookie，登录后下发 session id，请求头 `Cookie: levee_session=<id>`。
+- CLI / API 客户端：Bearer token，通过 `--token` 或配置文件 `auth.token` 传入，请求头 `Authorization: Bearer <token>`。
+- 门户（Web UI）：同源嵌入在二进制中，无需额外认证；外部调用需携带 Bearer token。
 
-token 通过 `levee user token` 生成，绑定用户与过期时间，可吊销。所有 API 请求强制认证，无匿名访问。
+> **安全提示**：默认情况下（不传 `--token`）鉴权处于关闭状态，所有 API 请求无需认证即可访问。生产环境必须通过 `--token <secret>` 设置 Bearer token。gRPC 和 REST 网关共享同一 token 校验逻辑。
 
 ### 13.4 分页与过滤
 

@@ -217,6 +217,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	gw := grpc.NewGateway(grpc.ServeGatewayConfig{
 		Addr:        ":8080",
 		CORSOrigins: nil,
+		AuthToken:   serveOptToken,
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 
@@ -226,6 +227,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		if err := grpc.ServeGateway(context.Background(), grpc.ServeGatewayConfig{
 			Addr:        ":8080",
 			CORSOrigins: nil,
+			AuthToken:   serveOptToken,
 		}); err != nil {
 			log.Error("gateway serve failed", "err", err)
 		}

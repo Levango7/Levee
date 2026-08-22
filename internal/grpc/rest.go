@@ -35,6 +35,9 @@ type ServeGatewayConfig struct {
 	Addr string
 	// CORSOrigins lists allowed origins. "*" or an empty slice allows all.
 	CORSOrigins []string
+	// AuthToken is the expected Bearer token for client authentication.
+	// When empty, authentication is disabled (development mode).
+	AuthToken string
 }
 
 // ServeGateway starts an HTTP server on cfg.Addr that proxies /api/v1/*
@@ -123,8 +126,8 @@ func (gw *Gateway) serve(ctx context.Context) error {
 	mux := http.NewServeMux()
 	// RESTful routes take priority over /api/v1/ so the frontend can call
 	// /changes, /templates, etc. without the gRPC-style prefix.
-	mux.Handle("/", corsMiddleware(gw.cfg.CORSOrigins, gw.restRoute()))
-	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.route()))
+	mux.Handle("/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.restRoute())))
+	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.route())))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -1835,6 +1838,35 @@ func corsMiddleware(origins []string, h http.Handler) http.Handler {
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// authMiddleware validates the Bearer token from the Authorization header
+// against cfg.expectedToken. When expectedToken is empty, auth is disabled
+// (development mode). Matches the same semantics as grpc.AuthInterceptor.
+func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := gw.cfg.AuthToken
+		if token == "" {
+			// Auth disabled: let the request through.
+			h.ServeHTTP(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		if auth == "" {
+			writeJSONError(w, http.StatusUnauthorized, "missing authorization header")
+			return
+		}
+		bearer, err := extractBearerToken(auth)
+		if err != nil {
+			writeJSONError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		if !constantTimeEqual(bearer, token) {
+			writeJSONError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
 		h.ServeHTTP(w, r)
