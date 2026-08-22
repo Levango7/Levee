@@ -77,9 +77,10 @@ func AuthStreamInterceptor(expected string) grpc.StreamServerInterceptor {
 
 // skipAuthMethods lists gRPC methods that are exempt from authentication.
 // This whitelist must stay minimal. Every business RPC requires a valid
-// Bearer token; only the standard gRPC health probe is public.
+// Bearer token; only the standard gRPC health probe is public, so that
+// load balancers and orchestrators can probe without credentials.
 var skipAuthMethods = map[string]bool{
-	// gRPC health check service, used by load balancers and orchestrators.
+	// gRPC health check service, registered in server.go.
 	"/grpc.health.v1.Health/Check": true,
 }
 

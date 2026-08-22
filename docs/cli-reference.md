@@ -1908,6 +1908,7 @@ levee web --dev
 
 ```text
 levee serve [--addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
+           [--cors-origin <o>]... [--insecure]
 ```
 
 **选项**
@@ -1917,20 +1918,24 @@ levee serve [--addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
 | `--addr` | `:9090` | 监听地址 |
 | `--tls-cert` | | TLS 证书路径（可选，省略则明文） |
 | `--tls-key` | | TLS 私钥路径（可选） |
-| `--token` | | 要求客户端提供的 Bearer token（空 = 不鉴权） |
+| `--token` | | 要求客户端提供的 Bearer token（必填，见下方安全门禁） |
+| `--cors-origin` | 空（拒绝跨域） | REST 网关允许的 CORS 来源，可重复传入多个；传 `*` 表示允许所有来源 |
+| `--insecure` | false | 显式接受无鉴权风险，仅供本地开发 |
 
 **说明**
 
-- 省略 TLS 证书时使用明文 gRPC（适用于开发或 sidecar TLS 场景）
-- 设置 `--token` 后客户端必须携带匹配的 Bearer token
+- 安全门禁：不传 `--token` 且未显式指定 `--insecure` 时，服务拒绝启动，避免生产环境意外暴露无鉴权 API
+- 设置 `--token` 后 gRPC 与 REST 网关均要求匹配的 Bearer token
+- CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
 
 **示例**
 
-```命令示例：启动 gRPC 服务（默认 :9090）
-levee serve
-
-命令示例：启用 TLS 与 token 鉴权
+```命令示例：启用 token 鉴权（生产推荐）
 levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cret
+
+命令示例：本地开发（无鉴权，需显式确认）
+levee serve --token dev-token
+levee serve --insecure
 ```
 
 ## 第20章 agent — 分布式执行 Agent 管理

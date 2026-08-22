@@ -367,10 +367,11 @@ levee web --dev
 
 ## gRPC 服务启动
 
-在当前进程运行 LEVEE gRPC 服务器（同时附带 REST 网关 :8080 和内嵌 Web UI）：
+在当前进程运行 LEVEE gRPC 服务器（同时附带 REST 网关 :8080 和内嵌 Web UI）。
+必须通过 `--token` 设置 Bearer token，否则服务拒绝启动：
 
-```命令示例：启动 gRPC 服务
-levee serve
+```命令示例：启动 gRPC 服务（带鉴权）
+levee serve --token s3cret
 ```
 
 启用 TLS 与 Bearer token 鉴权：
@@ -379,8 +380,9 @@ levee serve
 levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cret
 ```
 
-> **安全警告**：默认情况下（不传 `--token`）鉴权处于关闭状态，所有 API 请求无需认证即可访问。
-> 生产环境必须通过 `--token <secret>` 设置 Bearer token。
+> **安全门禁**：不传 `--token` 时服务拒绝启动；如需本地开发跳过，显式传 `--insecure`。
+> CORS 默认拒绝所有跨域请求，需要时用 `--cors-origin <origin>` 配置白名单（传 `*` 放开所有来源）。
+> 标准健康探针位于 gRPC `grpc.health.v1.Health/Check`（无需鉴权）与 HTTP `/healthz`。
 
 ## 下一步
 

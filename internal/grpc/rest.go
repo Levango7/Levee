@@ -245,7 +245,7 @@ func (gw *Gateway) dispatchChange(w http.ResponseWriter, r *http.Request, method
 	case path == "/changes" && method == "POST":
 		gw.handleChangeCreate(w, r)
 	default:
-		parts := strings.SplitN(strings.TrimPrefix(path, "/changes"), "/", 2)
+		parts := strings.SplitN(strings.TrimPrefix(strings.TrimPrefix(path, "/changes"), "/"), "/", 2)
 		if len(parts) == 0 || parts[0] == "" {
 			writeJSONError(w, http.StatusBadRequest, "invalid change path")
 			return
@@ -301,7 +301,7 @@ func (gw *Gateway) dispatchTemplate(w http.ResponseWriter, r *http.Request, meth
 	case path == "/templates/instantiate" && method == "POST":
 		gw.handleTemplateInstantiate(w, r)
 	default:
-		parts := strings.SplitN(strings.TrimPrefix(path, "/templates"), "/", 2)
+		parts := strings.SplitN(strings.TrimPrefix(strings.TrimPrefix(path, "/templates"), "/"), "/", 2)
 		if len(parts) == 0 || parts[0] == "" {
 			writeJSONError(w, http.StatusBadRequest, "invalid template path")
 			return
@@ -333,7 +333,7 @@ func (gw *Gateway) dispatchTarget(w http.ResponseWriter, r *http.Request, method
 	case path == "/targets" && method == "POST":
 		gw.handleTargetAdd(w, r)
 	default:
-		parts := strings.SplitN(strings.TrimPrefix(path, "/targets"), "/", 2)
+		parts := strings.SplitN(strings.TrimPrefix(strings.TrimPrefix(path, "/targets"), "/"), "/", 2)
 		if len(parts) == 0 || parts[0] == "" {
 			writeJSONError(w, http.StatusBadRequest, "invalid target path")
 			return
@@ -1818,8 +1818,12 @@ func writeJSONError(w http.ResponseWriter, statusCode int, msg string) {
 }
 
 // corsMiddleware wraps h with CORS headers.
+//
+// SECURITY: an empty origins list denies all cross-origin requests —
+// wildcard access requires an explicit "*" entry. Same-origin requests
+// (no Origin header) always pass through; CORS does not apply to them.
 func corsMiddleware(origins []string, h http.Handler) http.Handler {
-	allowAll := len(origins) == 0
+	var allowAll bool
 	originSet := make(map[string]bool, len(origins))
 	for _, o := range origins {
 		if o == "*" {
@@ -1831,7 +1835,7 @@ func corsMiddleware(origins []string, h http.Handler) http.Handler {
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "" || allowAll || originSet[origin] {
+		if origin != "" && (allowAll || originSet[origin]) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")

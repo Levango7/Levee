@@ -31,6 +31,8 @@ import (
 
 	ggrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // DefaultListenAddr is the default address the gRPC server binds to when
@@ -53,6 +55,10 @@ type Server struct {
 	targetService   pb.TargetServiceServer
 	auditService    pb.AuditServiceServer
 	systemService   pb.SystemServiceServer
+
+	// healthServer implements the standard grpc.health.v1 service so
+	// load balancers and orchestrators can probe the server.
+	healthServer *health.Server
 
 	// Configuration captured at NewServer time.
 	tlsConfig  *tls.Config
@@ -198,6 +204,14 @@ func NewServer(store state.Store, opts ...Option) *Server {
 	pb.RegisterAuditServiceServer(s.grpcServer, s.auditService)
 	pb.RegisterSystemServiceServer(s.grpcServer, s.systemService)
 
+	// Register the standard health check service. The overall server
+	// status is flipped to SERVING in Start and NOT_SERVING in Stop.
+	// This entry is exempt from auth (see skipAuthMethods in auth.go)
+	// because load balancers and orchestrators probe it without
+	// credentials.
+	s.healthServer = health.NewServer()
+	healthpb.RegisterHealthServer(s.grpcServer, s.healthServer)
+
 	return s
 }
 
@@ -242,6 +256,10 @@ func (s *Server) Start(addr string) error {
 	s.started = true
 	s.mu.Unlock()
 
+	if s.healthServer != nil {
+		s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	}
+
 	log.Info("grpc server listening", "addr", ln.Addr().String(), "tls", s.tlsConfig != nil)
 	if err := s.grpcServer.Serve(ln); err != nil {
 		// Serve returns the listener error when the listener is closed
@@ -269,6 +287,12 @@ func (s *Server) Stop() error {
 	}
 	s.started = false
 	s.mu.Unlock()
+
+	// Flip the health status first so probes stop routing traffic
+	// before the listener goes away.
+	if s.healthServer != nil {
+		s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	}
 
 	if s.grpcServer != nil {
 		s.grpcServer.Stop()

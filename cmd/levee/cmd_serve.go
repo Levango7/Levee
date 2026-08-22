@@ -53,6 +53,13 @@ var (
 	serveOptTLSCert string
 	serveOptTLSKey  string
 	serveOptToken   string
+	// serveOptInsecure is the explicit opt-out for the startup safety
+	// checks: empty --token and wildcard CORS. Development convenience
+	// only; production deployments must not set it.
+	serveOptInsecure bool
+	// serveOptCORSOrigins lists allowed CORS origins for the REST gateway.
+	// Empty means no cross-origin access unless --insecure is set.
+	serveOptCORSOrigins []string
 
 	// Cluster-mode flags. When serveOptCluster is false the server runs in
 	// single-node SQLite mode (the default). When true the server requires a
@@ -94,6 +101,8 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptTLSCert, "tls-cert", "", "TLS certificate path (optional)")
 	cmd.Flags().StringVar(&serveOptTLSKey, "tls-key", "", "TLS key path (optional)")
 	cmd.Flags().StringVar(&serveOptToken, "token", "", "Bearer token required from clients (empty = no auth)")
+	cmd.Flags().BoolVar(&serveOptInsecure, "insecure", false, "Allow running without --token and with wildcard CORS (development only)")
+	cmd.Flags().StringSliceVar(&serveOptCORSOrigins, "cors-origin", nil, "Allowed CORS origins for the REST gateway (repeatable)")
 	cmd.Flags().BoolVar(&serveOptCluster, "cluster", false, "Enable cluster mode (PostgreSQL store + cluster coordination)")
 	cmd.Flags().StringVar(&serveOptPGDSN, "pg-dsn", "", "PostgreSQL DSN (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
@@ -102,9 +111,31 @@ func newServeCmd() *cobra.Command {
 	return cmd
 }
 
+// resolveServeToken returns the bearer token from --token or the
+// LEVEE_TOKEN environment variable (flag wins).
+func resolveServeToken() string {
+	if serveOptToken != "" {
+		return serveOptToken
+	}
+	return os.Getenv("LEVEE_TOKEN")
+}
+
 // runServe executes the `levee serve` command.
 func runServe(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
+
+	// The bearer token comes from --token or the LEVEE_TOKEN environment
+	// variable (12-factor style; keeps container images startable without
+	// baking secrets into CMD).
+	token := resolveServeToken()
+
+	// 0. Safety gate: refuse to start with authentication disabled unless
+	//    the caller explicitly opted in via --insecure. This prevents an
+	//    unauthenticated daemon from reaching production by accident.
+	if token == "" && !serveOptInsecure {
+		return errors.New("refusing to start without --token (or LEVEE_TOKEN): all API requests would be unauthenticated. " +
+			"Pass --token <secret> for production, or --insecure to accept the risk for local development")
+	}
 
 	// 1. Load configuration.
 	cfg, err := config.Load(optConfigPath)
@@ -191,8 +222,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		grpc.WithAuditService(auditSvc),
 		grpc.WithSystemService(systemSvc),
 	}
-	if serveOptToken != "" {
-		serverOpts = append(serverOpts, grpc.WithAuthToken(serveOptToken))
+	if token != "" {
+		serverOpts = append(serverOpts, grpc.WithAuthToken(token))
 	}
 	tlsCfg, err := loadTLSConfig(serveOptTLSCert, serveOptTLSKey)
 	if err != nil {
@@ -216,8 +247,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	gw := grpc.NewGateway(grpc.ServeGatewayConfig{
 		Addr:        ":8080",
-		CORSOrigins: nil,
-		AuthToken:   serveOptToken,
+		CORSOrigins: serveOptCORSOrigins,
+		AuthToken:   token,
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 
@@ -226,8 +257,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	go func() {
 		if err := grpc.ServeGateway(context.Background(), grpc.ServeGatewayConfig{
 			Addr:        ":8080",
-			CORSOrigins: nil,
-			AuthToken:   serveOptToken,
+			CORSOrigins: serveOptCORSOrigins,
+			AuthToken:   token,
 		}); err != nil {
 			log.Error("gateway serve failed", "err", err)
 		}
@@ -256,7 +287,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}()
 
 	// 8. Block until the server stops.
-	log.Info("starting levee gRPC server", "addr", addr, "tls", tlsCfg != nil, "auth", serveOptToken != "")
+	log.Info("starting levee gRPC server", "addr", addr, "tls", tlsCfg != nil, "auth", token != "")
 	if err := srv.Start(addr); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
