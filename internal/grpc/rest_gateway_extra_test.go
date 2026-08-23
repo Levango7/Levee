@@ -251,12 +251,9 @@ func TestRESTChangeLogsAndTraceEndpoints(t *testing.T) {
 		} `json:"entries"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&logs))
-	// KNOWN ISSUE: the REST handler parses the `levels` query param into
-	// GetLogsRequest.Levels, but GetLogs never applies it — both entries
-	// come back. Assert the observed behaviour.
-	require.Len(t, logs.Entries, 2)
-	assert.Equal(t, "INFO", logs.Entries[0].Level)
-	assert.Equal(t, "ERROR", logs.Entries[1].Level)
+	// levels=ERROR filters: only the stderr-derived ERROR entry comes back.
+	require.Len(t, logs.Entries, 1)
+	assert.Equal(t, "ERROR", logs.Entries[0].Level)
 	assert.Equal(t, "h1", logs.Entries[0].Source)
 
 	traceResp := doReq(t, http.MethodGet, srv.URL+"/changes/"+id+"/trace?verify=true&runId=alt-run", "")
@@ -266,9 +263,8 @@ func TestRESTChangeLogsAndTraceEndpoints(t *testing.T) {
 		RunID string `json:"runId"`
 	}
 	require.NoError(t, json.NewDecoder(traceResp.Body).Decode(&trace))
-	// KNOWN ISSUE: GetTrace echoes the change id as RunId; the parsed
-	// runId query parameter is ignored.
-	assert.Equal(t, id, trace.RunID)
+	// The explicit runId query parameter is honoured over the change id.
+	assert.Equal(t, "alt-run", trace.RunID)
 }
 
 func TestRESTChangeListQueryFilters(t *testing.T) {

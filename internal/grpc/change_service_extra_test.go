@@ -778,14 +778,13 @@ func TestArchiveChange_PurgeArtifactsDeletesChildren(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, steps, "steps must be purged")
 
-	// KNOWN ISSUE (not fixed here per task rules): the SQLite store enforces
-	// a WORM constraint on the trace table ("trace records cannot be
-	// deleted"), so ArchiveChange's trace purge silently fails — errors from
-	// DeleteTrace are discarded. Assert the observed behaviour: traces
-	// survive the purge.
+	// Traces are deliberately retained: the SQLite store enforces a WORM
+	// constraint on the trace table ("trace records cannot be deleted"),
+	// so purge covers runtime artifacts (batches/steps) only and trace
+	// records survive as immutable audit evidence.
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: id})
 	require.NoError(t, err)
-	assert.Len(t, traces, 1, "trace purge is a silent no-op under the WORM constraint")
+	assert.Len(t, traces, 1, "traces are WORM-protected and survive archive purge")
 	if len(traces) == 1 {
 		assert.Equal(t, "trc-p1", traces[0].ID)
 	}

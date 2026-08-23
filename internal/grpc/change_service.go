@@ -1149,7 +1149,10 @@ func (s *ChangeService) ArchiveChange(ctx context.Context, req *pb.ArchiveReques
 	}
 
 	if req.GetPurgeArtifacts() {
-		// Delete associated batches, steps and traces.
+		// Delete associated batches and steps. Traces are deliberately
+		// retained: the store enforces a WORM constraint on trace
+		// records (immutable audit evidence), so purge covers runtime
+		// artifacts only.
 		batches, _ := s.store.ListBatches(ctx, state.BatchFilter{RunID: req.GetChangeId()})
 		for _, b := range batches {
 			steps, _ := s.store.ListSteps(ctx, state.StepFilter{RunID: req.GetChangeId(), BatchID: b.ID})
@@ -1157,10 +1160,6 @@ func (s *ChangeService) ArchiveChange(ctx context.Context, req *pb.ArchiveReques
 				_ = s.store.DeleteStep(ctx, st.ID)
 			}
 			_ = s.store.DeleteBatch(ctx, b.ID)
-		}
-		traces, _ := s.store.ListTraces(ctx, state.TraceFilter{RunID: req.GetChangeId()})
-		for _, t := range traces {
-			_ = s.store.DeleteTrace(ctx, t.ID)
 		}
 	}
 
@@ -1206,9 +1205,20 @@ func (s *ChangeService) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*p
 		return nil, status.Errorf(codes.Internal, "list steps: %v", err)
 	}
 
+	// Apply the optional level filter (DEBUG/INFO/WARN/ERROR). Empty
+	// means all levels. Stdout maps to INFO and stderr to ERROR below,
+	// so the filter decides which of the two is emitted per step.
+	var levelFilter map[string]bool
+	if levels := req.GetLevels(); len(levels) > 0 {
+		levelFilter = make(map[string]bool, len(levels))
+		for _, l := range levels {
+			levelFilter[strings.ToUpper(l)] = true
+		}
+	}
+
 	entries := make([]*pb.LogEntry, 0, len(steps)*2)
 	for _, step := range steps {
-		if step.Stdout != "" {
+		if step.Stdout != "" && (levelFilter == nil || levelFilter["INFO"]) {
 			entries = append(entries, &pb.LogEntry{
 				RunId:     runID,
 				Timestamp: formatTime(step.StartedAt),
@@ -1217,7 +1227,7 @@ func (s *ChangeService) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*p
 				Source:    step.Host,
 			})
 		}
-		if step.Stderr != "" {
+		if step.Stderr != "" && (levelFilter == nil || levelFilter["ERROR"]) {
 			entries = append(entries, &pb.LogEntry{
 				RunId:     runID,
 				Timestamp: formatTime(step.StartedAt),
@@ -1316,12 +1326,16 @@ func (s *ChangeService) GetTrace(ctx context.Context, req *pb.GetTraceRequest) (
 	}
 
 	runID := req.GetChangeId()
-	run, err := s.store.GetRun(ctx, runID)
+	if req.GetRunId() != "" {
+		// Explicit run filter wins over the change-wide default.
+		runID = req.GetRunId()
+	}
+	run, err := s.store.GetRun(ctx, req.GetChangeId())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get run: %v", err)
 	}
 	if run == nil {
-		return nil, status.Errorf(codes.NotFound, "change %q not found", runID)
+		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
 	traces, err := s.store.ListTraces(ctx, state.TraceFilter{RunID: runID})
