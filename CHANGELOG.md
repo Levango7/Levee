@@ -2,6 +2,62 @@
 
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## v1.10.0 - 2026-08-23
+
+### 安全加固（审计修复）
+
+#### 认证与访问控制
+- **auth 启动门禁**：`levee serve` 无 token 时拒绝启动，除非显式传 `--insecure`；token 可经 `--token` 或 `LEVEE_TOKEN` 环境变量提供
+- **CORS 默认拒绝**：origin 列表为空不再隐含通配，需显式配置 `"*"`
+- Bearer token 校验改用 `crypto/subtle.ConstantTimeCompare`
+- 无 TLS 启动时输出明文传输警告日志
+
+#### 凭据处理
+- user 模块密码不再出现在命令行参数中：凭据以临时文件上传后 `chpasswd < file` 消费，避免泄露到 argv / SSH 日志
+
+#### Linux 插件沙箱
+- 基于 cgroup v2 的硬性资源限制：`memory.max` + `cpu.max`
+- 插件进程挂入独立 `levee-plugin-{pid}` cgroup
+- cgroup 不可用时优雅降级（保留墙钟超时兜底）
+- 新增 `sandbox_linux_test.go` 验证测试（无 cgroup 写权限时跳过）
+
+### REST 网关
+
+- RESTful 路由完善：`/api/v1/changes/{id}` 等 `/:id` 路径正确解析（修复前导斜杠导致的 400）
+- HTTP 端点 token 认证中间件
+- 全局令牌桶限流：`--rate-limit` / `--rate-burst`，429 + Retry-After
+- 请求 ID 追踪：`X-Request-Id` 响应头 + gRPC metadata 透传
+- 移动审批 deeplink 端点
+- 注册标准 `grpc.health.v1` 健康服务（Start/Stop 联动 SERVING/NOT_SERVING）
+
+### Bug 修复
+
+- GetLogs 现在生效 `levels` 过滤（stdout→INFO，stderr→ERROR）
+- GetTrace 显式 `run_id` 优先于 change 级默认值
+- ArchiveChange purge 对 WORM trace 的保留行为改为显式设计并文档化
+- REST 网关限流与请求 ID 中间件
+
+### CI/CD
+
+- 新增 gosec 静态安全扫描 job（SARIF 报告）
+- 新增 trivy 容器镜像扫描（CRITICAL/HIGH → GitHub Code Scanning）
+- `check` 聚合门禁 job 覆盖 vet/lint/test/build/gosec/trivy
+
+### 测试覆盖率
+
+| 包 | 之前 | 之后 |
+|---|---|---|
+| internal/grpc/ | ~39% | 80.5% |
+| internal/state/ | 34.9% | 55.5% |
+| internal/tenant/ | — | 90.5% |
+
+### 已知限制
+
+- 多租户隔离在 store 层有契约测试，但 daemon 主路径未接线（MVP 范围决策，V2 再评估）
+- cgroup 沙箱要求 `/sys/fs/cgroup` 可写（root 或授权容器）
+
+详细说明见 [docs/release-notes/v1.10.0.md](docs/release-notes/v1.10.0.md)。
+
 ## v1.9.0 - 2026-08-18
 
 ### Phase D: 高级诊断
