@@ -60,6 +60,10 @@ var (
 	// serveOptCORSOrigins lists allowed CORS origins for the REST gateway.
 	// Empty means no cross-origin access unless --insecure is set.
 	serveOptCORSOrigins []string
+	// serveOptRateLimit / serveOptRateBurst configure the REST gateway's
+	// global token bucket. A negative --rate-limit disables limiting.
+	serveOptRateLimit float64
+	serveOptRateBurst int
 
 	// Cluster-mode flags. When serveOptCluster is false the server runs in
 	// single-node SQLite mode (the default). When true the server requires a
@@ -103,6 +107,8 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptToken, "token", "", "Bearer token required from clients (empty = no auth)")
 	cmd.Flags().BoolVar(&serveOptInsecure, "insecure", false, "Allow running without --token and with wildcard CORS (development only)")
 	cmd.Flags().StringSliceVar(&serveOptCORSOrigins, "cors-origin", nil, "Allowed CORS origins for the REST gateway (repeatable)")
+	cmd.Flags().Float64Var(&serveOptRateLimit, "rate-limit", grpc.DefaultRatePerSec, "REST gateway rate limit (req/s); negative disables")
+	cmd.Flags().IntVar(&serveOptRateBurst, "rate-burst", grpc.DefaultRateBurst, "REST gateway rate burst size")
 	cmd.Flags().BoolVar(&serveOptCluster, "cluster", false, "Enable cluster mode (PostgreSQL store + cluster coordination)")
 	cmd.Flags().StringVar(&serveOptPGDSN, "pg-dsn", "", "PostgreSQL DSN (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
@@ -249,6 +255,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Addr:        ":8080",
 		CORSOrigins: serveOptCORSOrigins,
 		AuthToken:   token,
+		RatePerSec:  serveOptRateLimit,
+		RateBurst:   serveOptRateBurst,
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 
@@ -259,6 +267,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			Addr:        ":8080",
 			CORSOrigins: serveOptCORSOrigins,
 			AuthToken:   token,
+			RatePerSec:  serveOptRateLimit,
+			RateBurst:   serveOptRateBurst,
 		}); err != nil {
 			log.Error("gateway serve failed", "err", err)
 		}

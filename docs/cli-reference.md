@@ -1920,6 +1920,8 @@ levee serve [--addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
 | `--tls-key` | | TLS 私钥路径（可选） |
 | `--token` | | 要求客户端提供的 Bearer token（必填，见下方安全门禁） |
 | `--cors-origin` | 空（拒绝跨域） | REST 网关允许的 CORS 来源，可重复传入多个；传 `*` 表示允许所有来源 |
+| `--rate-limit` | `200` | REST 网关全局限流（req/s，令牌桶）；传负数关闭限流 |
+| `--rate-burst` | `400` | 令牌桶突发容量 |
 | `--insecure` | false | 显式接受无鉴权风险，仅供本地开发 |
 
 **说明**
@@ -1927,6 +1929,9 @@ levee serve [--addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
 - 安全门禁：不传 `--token` 且未显式指定 `--insecure` 时，服务拒绝启动，避免生产环境意外暴露无鉴权 API
 - 设置 `--token` 后 gRPC 与 REST 网关均要求匹配的 Bearer token
 - CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
+- 限流触发时返回 HTTP 429 并附带 `Retry-After`
+- 每个 REST 响应携带 `X-Request-Id`（可由客户端传入复用）；gRPC 日志含 `request_id` 字段，支持链路关联
+- Linux 上插件沙箱经 cgroup v2 强制内存/CPU 限额（需 /sys/fs/cgroup 可写）；不可用时降级为仅墙钟超时并输出 WARN
 
 **示例**
 

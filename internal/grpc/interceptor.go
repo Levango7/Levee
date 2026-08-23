@@ -13,6 +13,8 @@ package grpc
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -21,8 +23,42 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
+
+// requestIDKey is the context key under which the per-RPC request id is
+// stored. Handlers can retrieve it via RequestIDFromContext to include
+// it in their own log lines.
+type requestIDKey struct{}
+
+// requestIDHeader is the metadata key clients may set to propagate
+// their own correlation id. Absent or empty values yield a fresh id.
+const requestIDHeader = "x-request-id"
+
+// ensureRequestID returns the client-supplied request id from the
+// incoming metadata, generating a random 16-hex-char id when absent.
+func ensureRequestID(ctx context.Context) string {
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get(requestIDHeader); len(vals) > 0 && vals[0] != "" {
+			return vals[0]
+		}
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "req-unknown"
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// RequestIDFromContext returns the per-RPC request id injected by the
+// logging interceptors, or "" outside of a server call.
+func RequestIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(requestIDKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 // loggingUnaryInterceptor emits a structured log line for every unary
 // RPC and records its duration. It does not inspect the request or
@@ -35,11 +71,14 @@ func loggingUnaryInterceptor(
 	handler grpc.UnaryHandler,
 ) (interface{}, error) {
 	start := time.Now()
+	rid := ensureRequestID(ctx)
+	ctx = context.WithValue(ctx, requestIDKey{}, rid)
 	resp, err := handler(ctx, req)
 	duration := time.Since(start)
 
 	if err != nil {
 		log.Warn("grpc unary rpc failed",
+			"request_id", rid,
 			"method", info.FullMethod,
 			"duration", duration.String(),
 			"code", status.Code(err).String(),
@@ -47,6 +86,7 @@ func loggingUnaryInterceptor(
 		)
 	} else {
 		log.Debug("grpc unary rpc completed",
+			"request_id", rid,
 			"method", info.FullMethod,
 			"duration", duration.String(),
 		)
@@ -64,11 +104,13 @@ func loggingStreamInterceptor(
 	handler grpc.StreamHandler,
 ) error {
 	start := time.Now()
-	err := handler(srv, ss)
+	rid := ensureRequestID(ss.Context())
+	err := handler(srv, &requestIDStream{ServerStream: ss, requestID: rid})
 	duration := time.Since(start)
 
 	if err != nil {
 		log.Warn("grpc stream rpc failed",
+			"request_id", rid,
 			"method", info.FullMethod,
 			"duration", duration.String(),
 			"code", status.Code(err).String(),
@@ -76,11 +118,23 @@ func loggingStreamInterceptor(
 		)
 	} else {
 		log.Debug("grpc stream rpc completed",
+			"request_id", rid,
 			"method", info.FullMethod,
 			"duration", duration.String(),
 		)
 	}
 	return err
+}
+
+// requestIDStream wraps a ServerStream so handlers observe the request
+// id via the stream context.
+type requestIDStream struct {
+	grpc.ServerStream
+	requestID string
+}
+
+func (s *requestIDStream) Context() context.Context {
+	return context.WithValue(s.ServerStream.Context(), requestIDKey{}, s.requestID)
 }
 
 // recoveryUnaryInterceptor recovers from panics in unary handlers,

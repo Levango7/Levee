@@ -10,7 +10,9 @@ package grpc
 
 import (
 	"context"
+	crand "crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	grpccodes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -30,6 +34,13 @@ import (
 	"github.com/nexus/levee/internal/grpc/pb"
 )
 
+// Default gateway rate-limit values. The limiter is a global token
+// bucket shared by all clients of one gateway process.
+const (
+	DefaultRatePerSec = 200.0
+	DefaultRateBurst  = 400
+)
+
 // ServeGatewayConfig configures the REST-to-gRPC gateway.
 type ServeGatewayConfig struct {
 	// Addr is the HTTP listen address, e.g. ":8080".
@@ -39,6 +50,13 @@ type ServeGatewayConfig struct {
 	// AuthToken is the expected Bearer token for client authentication.
 	// When empty, authentication is disabled (development mode).
 	AuthToken string
+	// RatePerSec is the global token-bucket refill rate for the gateway.
+	// Zero selects DefaultRatePerSec; a negative value disables rate
+	// limiting entirely.
+	RatePerSec float64
+	// RateBurst is the token-bucket burst size. Zero selects
+	// DefaultRateBurst. Ignored when rate limiting is disabled.
+	RateBurst int
 }
 
 // ServeGateway starts an HTTP server on cfg.Addr that proxies /api/v1/*
@@ -127,8 +145,8 @@ func (gw *Gateway) serve(ctx context.Context) error {
 	mux := http.NewServeMux()
 	// RESTful routes take priority over /api/v1/ so the frontend can call
 	// /changes, /templates, etc. without the gRPC-style prefix.
-	mux.Handle("/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.restRoute())))
-	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.route())))
+	mux.Handle("/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(gw.rateLimitMiddleware(gw.restRoute())))))
+	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(gw.rateLimitMiddleware(gw.route())))))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -1847,6 +1865,60 @@ func corsMiddleware(origins []string, h http.Handler) http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// rateLimitMiddleware enforces the gateway's global token bucket. When
+// the bucket is exhausted it responds 429 with a Retry-After hint.
+// Rate limiting is disabled when cfg.RatePerSec is negative.
+func (gw *Gateway) rateLimitMiddleware(h http.Handler) http.Handler {
+	rps := gw.cfg.RatePerSec
+	burst := gw.cfg.RateBurst
+	if rps == 0 {
+		rps = DefaultRatePerSec
+	}
+	if burst == 0 {
+		burst = DefaultRateBurst
+	}
+	if rps < 0 {
+		// Explicitly disabled.
+		return h
+	}
+	limiter := rate.NewLimiter(rate.Limit(rps), burst)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !limiter.Allow() {
+			w.Header().Set("Retry-After", "1")
+			writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}
+
+// requestIDHeaderName is the HTTP header used to propagate the request
+// id to REST clients (mirrors the gRPC metadata key).
+const requestIDHeaderName = "X-Request-Id"
+
+// requestIDMiddleware assigns a per-request id (honouring a client
+// supplied X-Request-Id), echoes it on the response and exposes it to
+// handlers through the request context.
+func (gw *Gateway) requestIDMiddleware(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rid := r.Header.Get(requestIDHeaderName)
+		if rid == "" {
+			rid = newRESTRequestID()
+		}
+		w.Header().Set(requestIDHeaderName, rid)
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, rid)))
+	})
+}
+
+// newRESTRequestID returns a random 16-hex-char request id.
+func newRESTRequestID() string {
+	var b [8]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return "req-unknown"
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // authMiddleware validates the Bearer token from the Authorization header
