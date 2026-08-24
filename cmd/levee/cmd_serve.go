@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -42,6 +43,7 @@ import (
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/credential"
+	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
@@ -290,6 +292,25 @@ func runServe(cmd *cobra.Command, args []string) error {
 		Conversation: convSvc,
 	})
 
+	// 5b. Inventory service: persistent target groups/import/status/history.
+	pb.RegisterInventoryServiceServer(srv.GrpcServer(), grpc.NewInventoryService(store))
+
+	// 5c. Apply the loaded SSH channel configuration (host-key policy +
+	// privilege escalation) to the channel factory defaults. Without this
+	// the config-file settings would never reach connections.
+	sshchannel.SetDefaultConfig(
+		cfg.Channel.SSH.StrictHostCheck,
+		cfg.Channel.SSH.KnownHosts,
+		cfg.Channel.SSH.BecomeMethod,
+		cfg.Channel.SSH.BecomeUser,
+	)	// 5d. Reachability patrol: periodically probe every active inventory
+	// target so `reachable` reflects current reality. Disabled by default;
+	// enable with inventory.patrol_interval_seconds > 0.
+	if interval := cfg.Inventory.PatrolIntervalSeconds; interval > 0 {
+		go runReachabilityPatrol(ctx, store, time.Duration(interval)*time.Second)
+		log.Info("reachability patrol enabled", "interval_seconds", interval)
+	}
+
 	gw := grpc.NewGateway(grpc.ServeGatewayConfig{
 		Addr:        serveOptHTTPAddr,
 		CORSOrigins: serveOptCORSOrigins,
@@ -393,3 +414,43 @@ func loadTLSConfig(certPath, keyPath string) (*tls.Config, error) {
 // service additions surface as a build error here rather than silently
 // producing a server that only serves a subset of the API.
 var _ pb.ChangeServiceServer = (*grpc.ChangeService)(nil)
+
+// runReachabilityPatrol probes every active inventory target on the given
+// interval until ctx is cancelled, stamping reachability back into the
+// store. Probing is a plain TCP dial to hostname:port — sufficient to
+// detect host/SSH-stack liveness without holding channel credentials.
+func runReachabilityPatrol(ctx context.Context, store state.Store, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	probeAll := func() {
+		targets, err := store.ListTargets(ctx, state.TargetFilter{Status: state.StatusActive})
+		if err != nil {
+			log.Warn("patrol: list targets failed", "err", err)
+			return
+		}
+		now := time.Now().UTC()
+		for _, t := range targets {
+			if ctx.Err() != nil {
+				return
+			}
+			addr := fmt.Sprintf("%s:%d", t.Hostname, t.Port)
+			conn, dialErr := net.DialTimeout("tcp", addr, 5*time.Second)
+			if dialErr == nil {
+				_ = conn.Close()
+			}
+			if err := store.SetTargetReachability(ctx, t.ID, dialErr == nil, now); err != nil {
+				log.Warn("patrol: set reachability failed", "target", t.ID, "err", err)
+			}
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probeAll()
+		}
+	}
+}
