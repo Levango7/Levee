@@ -45,43 +45,28 @@ levee <command> [subcommand] [positional] [options]
 
 ## 第2章 变更生命周期命令
 
-变更生命周期对应设计文档 D4 闭环：`plan → 审批 → apply → verify → (回滚 | 归档)`。本章命令覆盖该闭环的全部操作，包括创建、克隆、查看、审批、执行、暂停 / 恢复、取消 / 重试、回滚、日志诊断、归档关联。
+变更生命周期对应设计文档 D4 闭环：`创建（new）→ 审批 → apply → verify → (回滚 | 归档)`，其中验证门禁与失败回滚在 `apply` 阶段内部完成。CLI 没有独立的 `plan` 子命令——计划生成是 API 层能力（gRPC `ChangeService/PlanChange` 及对应 REST 端点），由 apply 流程内部调用。本章命令覆盖该闭环的全部操作，包括创建、克隆、查看、审批、执行、暂停 / 恢复、取消 / 重试、回滚、日志诊断、归档关联。
 
 ### 2.1 创建变更
 
-从 LEVEELang 文件或模板创建新变更（对应 D2 模板实例化）。
-
-命令示例：从 LEVEELang 文件创建变更
-
-```bash
-levee new --file ./workflows/db-migrate-orders.leveelang \
-  --label "orders-ddl-20260815" \
-  --priority normal \
-  --params table=orders,batch_pct=10%
-```
+从已注册模板实例化创建新变更（对应 D2 模板实例化）。
 
 命令示例：从模板实例化创建变更
 
 ```bash
-levee new --template db-migrate \
-  --params table=orders,batch_pct=10%,grace_period=5m \
-  --label "orders-ddl-20260815"
+levee new db-migrate \
+  --params table=orders,batch_pct=10%,grace_period=5m
 ```
 
-表：new 命令选项参数说明表
+表：new 命令参数说明表
 
-| 选项 | 类型 | 必填 | 说明 |
+| 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `--file <path>` | path | 与 `--template` 二选一 | LEVEELang workflow 文件路径 |
-| `--template <name>` | string | 与 `--file` 二选一 | 已注册模板名，实例化时填参数 |
-| `--params key=val,...` | map | 否 | 输入参数，编译期校验类型与完整性 |
-| `--dry-run` | bool | 否 | 仅产出执行计划，不进审批不执行 |
-| `--label <text>` | string | 否 | 人类可读标签，便于检索 |
-| `--priority low|normal|high|urgent` | enum | 否 | 优先级，影响调度顺序，默认 normal |
-| `--target-group <expr>` | string | 否 | 覆盖 workflow 内 target 查询，限定目标集 |
-| `--window <start>-<end>` | range | 否 | 覆盖 workflow 内变更窗口 |
+| `<template>` | string | 是 | 已注册模板名（位置参数），实例化时填参数 |
+| `--params key=val,...` | map | 否 | 输入参数，逗号分隔的键值对 |
 
-`--dry-run` 等价于直接调用 `levee plan`，产出目标集、批次划分、影响面、预估耗时、潜在冲突报告，不创建 run。
+可用模板通过 `levee template list` 查看，详情用 `levee template show <name>`。
+创建成功后产出新的 run-id，状态为 `draft`、审批状态 `pending`，进入审批闭环。
 
 ### 2.2 克隆变更
 
@@ -167,19 +152,16 @@ levee delegate run-20260815-001 --to user-b --reason "出差，转 user-b 审批
 
 ### 2.5 执行变更
 
-命令示例：生成执行计划（不执行）
-
-```bash
-levee plan run-20260815-001
-```
-
-`plan` 产出目标预检、影响面分析、冲突检测、动态目标集物化、plan_hash 锁定结果，不进入 apply。
-
 命令示例：执行已审批变更
 
 ```bash
+levee approve run-20260815-001   # 先通过审批（或用 --force 跳过审批检查）
 levee apply run-20260815-001
 ```
+
+计划生成（目标预检、影响面分析、冲突检测、plan_hash 锁定）由服务端在
+apply 流程内通过 `ChangeService/PlanChange` 完成；紧急情况可用
+`levee apply <run-id> --force` 跳过审批检查强制执行。
 
 `apply` 前强制校验 plan_hash 与审批时一致，不一致阻断（防止审批后偷改参数）。apply 阶段依次：快照创建 → 分批执行 → 批次间门禁 → 全量门禁 → 归档。
 
@@ -829,7 +811,7 @@ RESTful 风格，支持两套路径：
 | POST | `/changes` | `/api/v1/ChangeService/CreateChange` | 创建变更 | `levee new` |
 | GET | `/changes` | `/api/v1/ChangeService/ListChanges` | 列出变更 | `levee list` |
 | GET | `/changes/:id` | `/api/v1/ChangeService/GetChange` | 查看变更详情 | `levee show` |
-| POST | `/changes/:id/plan` | `/api/v1/ChangeService/PlanChange` | 生成执行计划 | `levee plan` |
+| POST | `/changes/:id/plan` | `/api/v1/ChangeService/PlanChange` | 生成执行计划 | —（apply 内部调用） |
 | POST | `/changes/:id/apply` | `/api/v1/ChangeService/ApplyChange` | 执行变更 | `levee apply` |
 | POST | `/changes/:id/approve` | `/api/v1/ChangeService/ApproveChange` | 通过审批 | `levee approve` |
 | POST | `/changes/:id/reject` | `/api/v1/ChangeService/RejectChange` | 驳回审批 | `levee reject` |
@@ -1003,7 +985,6 @@ airgap:
 | `levee approve` | 通过审批 | 2.4 |
 | `levee reject` | 驳回审批 | 2.4 |
 | `levee delegate` | 转授权 | 2.4 |
-| `levee plan` | 生成执行计划 | 2.5 |
 | `levee apply` | 执行变更 | 2.5 |
 | `levee pause` | 暂停单条 | 2.6 |
 | `levee resume` | 恢复单条 | 2.6 |
@@ -1047,9 +1028,9 @@ airgap:
 | 命令 / 章节 | 设计文档章节 |
 | --- | --- |
 | 第2章 变更生命周期命令 | 4.4 D4 变更闭环（4.4.1-4.4.9） |
-| `levee new --template` | 4.2.3 模板实例化 |
+| `levee new <template>` | 4.2.3 模板实例化 |
 | `levee clone` | 4.2.3 变更克隆 |
-| `levee plan` / `--dry-run` | 4.4.2 plan 阶段、4.2.4 dry-run |
+| `ChangeService/PlanChange`（无独立 CLI 子命令，apply 内部调用） | 4.4.2 plan 阶段、4.2.4 dry-run |
 | `levee approve` / `reject` / `delegate` | 4.4.3 审批阶段（分级 / 超时 / 驳回 / 转授权） |
 | `levee apply` | 4.4.4 apply 阶段（哈希校验 / 快照 / 分批 / 重启处理） |
 | `levee pause` / `resume` | 4.4.4.4 主动暂停与恢复 |

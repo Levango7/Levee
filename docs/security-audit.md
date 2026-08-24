@@ -475,6 +475,9 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 - **多租户隔离未接线**：`internal/tenant.IsolatedStore` 已实现且测试完备，但 daemon 服务路径（`levee serve`）当前为单租户运行，未按请求接入租户上下文。多租户部署前必须完成 per-request 租户传播的架构改造；在此之前请勿将 `--tenant` 相关能力视为生产可用。
 - **沙箱内存限制**：Unix 平台子进程内存不受限（`setrlimit` 仅作用于宿主进程，见 sandbox_unix.go）；依赖墙钟超时兜底。需要强隔离时请在容器/cgroup 层面限制。
 - **速率限制**：gRPC 与 REST 网关暂无内置限流，请在 LB/网关侧实施。
+- **审计 Actor 为声明式身份**：审计记录中的 Actor 来自客户端自报的身份（CLI 端取 `LEVEE_ACTOR` 环境变量，缺省 `cli-user`；服务端从请求上下文/元数据读取，缺省 `grpc-user`）。在共享 token 鉴权模式下，Actor 是**断言（asserted）而非可证明（proven）**——任何持有 token 的调用方都可自称任意身份。需要不可抵赖性时必须引入每用户独立凭证或 mTLS/签名身份。
+- **KMS/Vault 出站 TLS 校验可配置关闭**：Vault Provider 提供 `Insecure` 配置项、KMS 集成提供跳过证书校验的传输构造（`kms_helpers.go`），用于自签名证书的内网环境。**生产环境必须保持证书校验开启**（`Insecure=false`）；开启即放弃对中间人攻击的防护。
+- **file 模块本地读取路径围栏**：`internal/executor/modules/file` 的 copy/template 动作已限制 `src` 只能取进程工作目录内的相对路径；绝对路径或越出工作目录的路径会被拒绝，除非目标目录列入 `LEVEE_FILE_MODULE_EXTRA_DIRS` 允许列表（`os.PathListSeparator` 分隔）。请保持该列表最小化，并通过 RBAC 限制 file 模块的使用面。
 
 
 **风险评级**：3 个 CRITICAL 已在 v1.0.0 修复，5 个 HIGH 正在修复中。建议在修复所有 HIGH 问题后再进入生产阶段。

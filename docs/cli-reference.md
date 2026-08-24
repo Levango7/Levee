@@ -1907,7 +1907,7 @@ levee web --dev
 ### 19.1 serve
 
 ```text
-levee serve [--addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
+levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
            [--cors-origin <o>]... [--insecure]
 ```
 
@@ -1916,6 +1916,7 @@ levee serve [--addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--addr` | `:9090` | 监听地址 |
+| `--http-addr` | `:8080` | REST 网关 / Web UI 监听地址 |
 | `--tls-cert` | | TLS 证书路径（可选，省略则明文） |
 | `--tls-key` | | TLS 私钥路径（可选） |
 | `--token` | | 要求客户端提供的 Bearer token（必填，见下方安全门禁） |
@@ -1952,18 +1953,19 @@ levee serve --insecure
 启动 Agent 常驻进程，注册到 master 节点并开始心跳。
 
 ```text
-levee agent start --addr <addr> --master <master-addr> --caps <caps> [--id <agent-id>] [--heartbeat <duration>]
+levee agent start [--addr <addr>] [--master <master-addr>] [--caps <caps>] [--id <agent-id>] [--heartbeat <duration>] [--max-concurrent <n>]
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--addr` | | Agent 监听地址（必填，如 `:9091`） |
-| `--master` | | master 节点地址（必填，如 `localhost:9090`） |
-| `--caps` | | Agent 能力列表，逗号分隔（必填，如 `shell,file,pkg`） |
+| `--addr` | `:9091` | Agent 监听地址（如 `:9091`） |
+| `--master` | `localhost:9090` | master 节点地址（如 `localhost:9090`） |
+| `--caps` | `shell,file,pkg,svc,user` | Agent 能力列表，逗号分隔 |
+| `--max-concurrent` | `4` | 最大并发任务执行数 |
 | `--id` | 自动生成 | Agent ID，省略时自动生成 UUID |
-| `--heartbeat` | `15s` | 心跳间隔 |
+| `--heartbeat` | `10s` | 心跳间隔 |
 
 **说明**
 
@@ -2083,18 +2085,19 @@ levee agent remove agent-web-01 --force
 创建新租户。
 
 ```text
-levee tenant create --name <name> --display <display> [--max-targets <n>] [--max-changes <n>] [--max-storage <bytes>]
+levee tenant create --name <name> [--display <display>] [--max-targets <n>] [--max-changes <n>] [--max-storage <mb>] [--max-api-rate <n>]
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--name` | | 租户名称（必填，唯一标识） |
-| `--display` | | 显示名称（必填） |
-| `--max-targets` | `100` | 最大目标机数 |
-| `--max-changes` | `10` | 最大并发变更数 |
-| `--max-storage` | `1GB` | 最大存储空间（字节） |
+| `--name` | | 租户名称（必填，唯一标识，DNS-1123 label：小写字母数字与连字符） |
+| `--display` | | 显示名称 |
+| `--max-targets` | `0`（不限） | 最大目标机数 |
+| `--max-changes` | `0`（不限） | 最大并发变更数 |
+| `--max-storage` | `0`（不限） | 最大存储空间（MB） |
+| `--max-api-rate` | `0`（不限） | 每分钟最大 API 请求数 |
 
 **示例**
 
@@ -2376,7 +2379,7 @@ levee drift baseline list --host web-01
 添加定期巡检调度任务。
 
 ```text
-levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--baseline <baseline-id>|auto]
+levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--alert] [--enabled]
 ```
 
 **选项**
@@ -2386,7 +2389,8 @@ levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--baseline
 | `--name` | | 调度任务名称（必填） |
 | `--cron` | | 5 字段 cron 表达式（必填，如 `0 2 * * *`） |
 | `--hosts` | | 目标主机列表，逗号分隔（必填） |
-| `--baseline` | `auto` | 基线 ID 或 `auto` |
+| `--alert` | `true` | 检测到漂移时是否告警 |
+| `--enabled` | `true` | 创建后是否立即启用该任务 |
 
 **示例**
 
@@ -2453,7 +2457,7 @@ levee drift schedule run sched-001
 查看漂移报告与趋势分析。
 
 ```text
-levee drift report --host <host> [--days <n>] [--format FORMAT]
+levee drift report --host <host> [--days <n>]
 ```
 
 **选项**
@@ -2462,7 +2466,6 @@ levee drift report --host <host> [--days <n>] [--format FORMAT]
 |------|--------|------|
 | `--host` | | 目标主机名（必填） |
 | `--days` | `30` | 报告时间范围（天） |
-| `--format` | `text` | 输出格式：`text` 或 `json` |
 
 **输出**
 
@@ -2472,9 +2475,6 @@ levee drift report --host <host> [--days <n>] [--format FORMAT]
 
 ```命令示例：查看 30 天漂移报告
 levee drift report --host web-01 --days 30
-
-命令示例：JSON 格式报告
-levee drift report --host web-01 --days 7 --format json
 ```
 
 ## 第23章 push — 推送通知管理
@@ -2601,25 +2601,27 @@ levee push test --user alice
 查看或配置 APNs / FCM 推送凭证。
 
 ```text
-levee push config [--platform <platform>] [--key <path>] [--key-id <id>] [--team-id <id>] [--project <id>] [--service-account <path>]
+levee push config [--apns-key-file <path>] [--apns-team-id <id>] [--apns-key-id <id>] [--apns-bundle-id <id>] [--apns-production] [--fcm-key-file <path>] [--fcm-project-id <id>]
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--platform` | | 平台：`ios` 或 `android`（不设置则显示当前配置） |
-| `--key` | | APNs 私钥文件路径（p8 格式） |
-| `--key-id` | | APNs Key ID |
-| `--team-id` | | APNs Team ID |
-| `--project` | | FCM 项目 ID |
-| `--service-account` | | FCM 服务账号 JSON 文件路径 |
+| `--apns-key-file` | | APNs 私钥文件路径（p8 格式） |
+| `--apns-team-id` | | Apple Developer Team ID |
+| `--apns-key-id` | | APNs Key ID |
+| `--apns-bundle-id` | | iOS 应用 Bundle ID |
+| `--apns-production` | `false` | 使用 APNs 生产环境端点 |
+| `--fcm-key-file` | | FCM 服务账号 JSON 文件路径 |
+| `--fcm-project-id` | | FCM / GCP 项目 ID |
 
 **说明**
 
 - 不带任何选项时显示当前 APNs / FCM 配置状态
-- 设置 `--platform ios` 并提供 `--key` / `--key-id` / `--team-id` 配置 APNs
-- 设置 `--platform android` 并提供 `--project` / `--service-account` 配置 FCM
+- 提供 `--apns-*` 选项（key-file/team-id/key-id/bundle-id 至少一项）配置 APNs
+- 提供 `--fcm-key-file` 或 `--fcm-project-id` 配置 FCM
+- 凭证持久化到 LEVEE 数据目录，后续 `levee push` 命令自动加载
 
 **示例**
 
@@ -2627,8 +2629,8 @@ levee push config [--platform <platform>] [--key <path>] [--key-id <id>] [--team
 levee push config
 
 命令示例：配置 APNs
-levee push config --platform ios --key AuthKey.p8 --key-id ABC123 --team-id TEAM456
+levee push config --apns-key-file AuthKey.p8 --apns-team-id TEAM456 --apns-key-id ABC123 --apns-bundle-id com.example.app
 
 命令示例：配置 FCM
-levee push config --platform android --project my-project --service-account sa.json
+levee push config --fcm-key-file sa.json --fcm-project-id my-project
 ```

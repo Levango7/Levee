@@ -85,7 +85,7 @@ COPY --from=dist /levee /usr/local/bin/levee
 COPY --from=dist /dist /var/lib/levee/dist
 COPY --from=dist /ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
-RUN addgroup -Slevee && adduser -Slevee -Glevee && \
+RUN addgroup -S levee && adduser -S levee -G levee && \
     chown -R levee:levee /var/lib/levee
 
 USER levee
@@ -93,5 +93,14 @@ WORKDIR /home/levee
 
 EXPOSE 8080 9090
 
+# Probe the REST gateway health endpoint (serve binds it on --http-addr,
+# default :8080). The gateway reports 503 until its services are wired, so
+# a healthy response means the daemon is genuinely serving.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+
 ENTRYPOINT ["dumb-init", "--"]
+# Authentication is mandatory in production: pass -e LEVEE_TOKEN=<secret>
+# (or override the command with --insecure for throwaway local testing —
+# without either, serve refuses to start by design).
 CMD ["levee", "serve", "--addr", ":9090"]

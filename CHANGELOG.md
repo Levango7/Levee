@@ -2,6 +2,35 @@
 
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [Unreleased]
+
+### 安全加固
+
+- **P0 网关接线修复**：`levee serve` 此前会启动未挂载任何服务的 REST 网关；现改为启动配置的服务实例。`/healthz` 在服务注册完成前返回 503 `{"status":"unavailable"}`（服务随 serve 自动注册，正常运行时为 200）
+- user 模块命令行参数统一引号转义，防止参数注入
+- WinRM 通道 PowerShell 路径转义修复
+- SSH 主机密钥校验默认开启（strict-by-default，known_hosts 路径与豁免开关可配）
+- 审批 / 归档状态机守卫：拒绝非法状态迁移并留痕
+- WORM 级联删除防护：SQLite 开启 `PRAGMA recursive_triggers=ON`，外键 `ON DELETE CASCADE` 触发的删除同样命中审计保护触发器
+- [SA-004] SecureZero 添加 runtime.KeepAlive 防止编译器优化
+- [SA-005] argon2id memory cost 提升至 194MiB（OWASP 2024 推荐）
+- [SA-006] 权限矩阵添加 sync.RWMutex 保证线程安全
+- [SA-007] 权限校验拒绝时自动记录审计 trace
+- [SA-008] 哈希链排序添加二级排序键确保确定性
+
+### Bug 修复
+
+- macOS/BSD 插件沙箱构建修复（sandbox unix 构建约束整理）
+- 列表分页 `offset` 参数生效（SQLite / PostgreSQL 存储层）
+
+### Web UI
+
+- 前后端 API 契约对齐；新增登录页
+
+### 文档
+
+- CLI 文档与实现对齐：`new <template> --params k=v`（移除虚构的 `--file/--template/--dry-run/--label/--priority`）、删除不存在的 `levee plan --dry-run` 步骤、push config / tenant create（配额默认 0 = 不限，存储单位 MB，补 `--max-api-rate`）/ drift schedule add（去 `--baseline`，补 `--alert/--enabled`）/ drift report（无 `--format`）/ agent start（默认值修正，补 `--max-concurrent`）/ serve 补 `--http-addr`
+
 ## v1.10.0 - 2026-08-23
 
 ### 安全加固（审计修复）
@@ -39,8 +68,8 @@
 
 ### CI/CD
 
-- 新增 gosec 静态安全扫描 job（SARIF 报告）
-- 新增 trivy 容器镜像扫描（CRITICAL/HIGH → GitHub Code Scanning）
+- 新增 gosec 静态安全扫描 job（JSON 报告上传为 workflow artifact `gosec-report`）
+- 新增 trivy 容器镜像扫描（SARIF 上传 GitHub Code Scanning；CRITICAL/HIGH 阻断）
 - `check` 聚合门禁 job 覆盖 vet/lint/test/build/gosec/trivy
 
 ### 测试覆盖率
@@ -318,13 +347,3 @@
 - [SA-001] WORM 存储硬编码 SQLite 触发器，阻止 trace 表内容字段 UPDATE/DELETE，创建 WORMStore 接口限制审计层只读访问
 - [SA-002] 哈希链 Build 前先 Verify 链完整性，拒绝重建已存在链（ErrChainAlreadyBuilt/ErrChainBroken），新增 BuildForce 用于管理恢复
 - [SA-003] 实现 RotateMasterPassword 三阶段原子轮换（旧密码解密→新密码加密→更新内存），所有错误路径 SecureZero 清理
-
-## [Unreleased]
-
-### Security
-
-- [SA-004] SecureZero 添加 runtime.KeepAlive 防止编译器优化
-- [SA-005] argon2id memory cost 提升至 194MiB（OWASP 2024 推荐）
-- [SA-006] 权限矩阵添加 sync.RWMutex 保证线程安全
-- [SA-007] 权限校验拒绝时自动记录审计 trace
-- [SA-008] 哈希链排序添加二级排序键确保确定性

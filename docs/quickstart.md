@@ -16,11 +16,11 @@
 | Windows | arm64 | `levee_x.y.z_windows_arm64.zip` |
 
 ```命令示例：下载并解压 Linux amd64 二进制
-curl -sL https://github.com/nexus/levee/releases/latest/download/levee_0.1.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin levee
+curl -sL https://github.com/nexus/levee/releases/download/v1.10.0/levee_1.10.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin levee
 ```
 
 ```命令示例：Windows 下解压并加入 PATH
-Expand-Archive levee_0.1.0_windows_amd64.zip -DestinationPath C:\Tools\levee
+Expand-Archive levee_1.10.0_windows_amd64.zip -DestinationPath C:\Tools\levee
 $env:PATH += ";C:\Tools\levee"
 ```
 
@@ -99,20 +99,19 @@ levee new nginx-reload --params target=web01.prod
 levee show <run-id>
 ```
 
-## Dry-Run 预览
+## 变更生命周期
 
-在正式执行前，使用 dry-run 模式预览变更计划：
+LEVEE 没有 `plan` 子命令，也没有独立的 dry-run 步骤。变更生命周期为：
 
-```命令示例：dry-run 预览
-levee plan --dry-run
+```text
+new（创建 draft run） -> approve（审批通过） -> apply（执行）
 ```
 
-dry-run 会展示以下信息而不实际执行：
+`apply` 内部依次完成：哈希校验、执行前快照、按批次顺序执行、验证门禁，
+失败时自动触发回滚——验证与回滚都发生在 apply 阶段内，无需单独命令。
 
-- 涉及的目标主机列表
-- 每个步骤的 action 和 rollback 命令
-- 分批执行计划（batch 划分）
-- 预计影响范围
+如需在执行前静态检查 workflow 内容，可使用 `levee compile <file.yml>`
+做类型检查；用 `levee show <run-id>` 查看实例化后的完整内容。
 
 ## 审批与执行
 
@@ -121,6 +120,9 @@ dry-run 会展示以下信息而不实际执行：
 ```命令示例：审批通过
 levee approve <run-id>
 ```
+
+审批人身份取自 `LEVEE_ACTOR` 环境变量（未设置时为 `cli-user`），CLI 不提供
+`--approver` 旗标。
 
 可指定审批级别：
 
@@ -496,11 +498,11 @@ levee drift report --host web-01 --days 30
 配置推送通知和移动端审批，支持 iOS（APNs）与 Android（FCM）：
 
 ```命令示例：配置 APNs
-levee push config --platform ios --key AuthKey.p8 --key-id ABC123 --team-id TEAM456
+levee push config --apns-key-file AuthKey.p8 --apns-team-id TEAM456 --apns-key-id ABC123 --apns-bundle-id com.example.app
 ```
 
 ```命令示例：配置 FCM
-levee push config --platform android --project my-project --service-account sa.json
+levee push config --fcm-key-file sa.json --fcm-project-id my-project
 ```
 
 注册移动设备：

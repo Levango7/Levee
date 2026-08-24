@@ -31,12 +31,12 @@ make build
 # 运行
 ./levee --help
 
-# 创建变更
-./levee new --file examples/workflows/batch-update.yaml
+# 创建变更（从模板实例化；可用模板用 ./levee template list 查看）
+./levee new nginx-reload --params target=web01.prod
 
 # 查看变更
 ./levee list
-./levee show <change-id>
+./levee show <run-id>
 ```
 
 ### 启动 API 服务
@@ -48,12 +48,14 @@ make build
 # 开发模式：跳过认证门禁（仅本地调试）
 ./levee serve --insecure
 
-# 可选：CORS 白名单、限流
-./levee serve --token <secret> --cors-origin https://ops.example.com --rate-limit 200 --rate-burst 400
+# 可选：CORS 白名单、限流、网关监听地址
+./levee serve --token <secret> --cors-origin https://ops.example.com --rate-limit 200 --rate-burst 400 --http-addr :8080
 ```
 
 无 token 且未传 `--insecure` 时服务拒绝启动；无 TLS 时输出明文传输警告。
-健康探针：标准 gRPC health service（`grpc.health.v1`）。
+健康探针：标准 gRPC health service（`grpc.health.v1`）；REST 网关（默认监听
+`:8080`，可用 `--http-addr` 调整）提供 `/healthz`——在服务注册完成前返回
+503 `{"status":"unavailable"}`，`serve` 启动流程会自动注册服务，正常运行时为 200。
 
 ## 项目结构
 

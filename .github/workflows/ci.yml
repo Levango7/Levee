@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -62,14 +62,64 @@ jobs:
         with:
           go-version: '1.25'
           cache: true
-      - name: go test
+      # -race needs cgo/gcc; it is flaky-slow on the Windows runner, so the
+      # Windows leg runs without the detector (Linux/macOS keep full -race).
+      - name: go test (race)
+        if: matrix.os != 'windows-latest'
         run: go test -race -cover -coverprofile=coverage.out ./...
+      - name: go test (no race)
+        if: matrix.os == 'windows-latest'
+        run: go test -cover -coverprofile=coverage.out ./...
+      - name: coverage gate
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "total statement coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { exit !(t+0 >= 60.0) }' || {
+            echo "::error::coverage ${total}% is below the 60% floor"; exit 1; }
       - name: upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage.out
           fail_ci_if_error: false
+
+  # ---------------------------------------------------------------------------
+  # integration: tagged integration suite + e2e rollback drills + PostgreSQL-
+  # backed store/cluster tests. The stock unit-test matrix skips PG paths
+  # (no DSN); this job is where cluster-mode storage actually gets executed.
+  # ---------------------------------------------------------------------------
+  integration:
+    name: integration & e2e & postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: levee
+          POSTGRES_PASSWORD: levee-ci
+          POSTGRES_DB: levee_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U levee"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEVEE_PG_TEST_DSN: postgres://levee:levee-ci@localhost:5432/levee_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+      - name: go test (integration tag)
+        run: go test -tags integration ./tests/integration/ -count=1 -timeout 300s
+      - name: go test (e2e rollback drills)
+        run: go test -tags e2e ./tests/e2e/ -count=1 -timeout 600s
+      - name: go test (postgres store + distributed locks)
+        run: go test ./internal/state/... ./internal/cluster/... -count=1 -timeout 600s
 
   # ---------------------------------------------------------------------------
   # build: cross-platform binary build matrix. Produces artifacts for
@@ -189,7 +239,7 @@ jobs:
   check:
     name: check (all jobs passed)
     runs-on: ubuntu-latest
-    needs: [vet, lint, test, build, gosec, trivy]
+    needs: [vet, lint, test, integration, build, gosec, trivy]
     if: always()
     steps:
       - name: aggregate
@@ -197,16 +247,14 @@ jobs:
           echo "vet=${{ needs.vet.result }}"
           echo "lint=${{ needs.lint.result }}"
           echo "test=${{ needs.test.result }}"
+          echo "integration=${{ needs.integration.result }}"
           echo "build=${{ needs.build.result }}"
           echo "gosec=${{ needs.gosec.result }}"
           echo "trivy=${{ needs.trivy.result }}"
-          if [[ "${{ needs.vet.result }}" != "success" || \
-                "${{ needs.lint.result }}" != "success" || \
-                "${{ needs.test.result }}" != "success" || \
-                "${{ needs.build.result }}" != "success" || \
-                "${{ needs.gosec.result }}" != "success" || \
-                "${{ needs.trivy.result }}" != "success" ]]; then
-              echo "One or more required jobs failed"
+          for job in vet lint test integration build gosec trivy; do
+            if [[ "${{ needs[job].result }}" != "success" ]]; then
+              echo "::error::required job '$job' did not pass"
               exit 1
             fi
-            echo "All required jobs passed"
+          done
+          echo "All required jobs passed"
