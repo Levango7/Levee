@@ -191,7 +191,11 @@ func applyVaultTLS(vcfg *api.Config, t *VaultTLSConfig) error {
 		tlsCfg = &tls.Config{}
 	}
 	if t.Insecure {
-		tlsCfg.InsecureSkipVerify = true
+		// Explicit operator opt-in via the insecure_vault config flag for
+		// self-signed-CA intranets. Certificate verification remains on by
+		// default; this line exists so the choice is visible in audit and
+		// security scans rather than hidden behind an excluded rule class.
+		tlsCfg.InsecureSkipVerify = true // #nosec G402 -- user opted in via config
 	}
 	if t.CACert != "" {
 		pool, err := loadCACertPool(t.CACert)

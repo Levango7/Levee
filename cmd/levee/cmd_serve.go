@@ -28,6 +28,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -37,8 +38,10 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
@@ -217,6 +220,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
 	templateSvc := grpc.NewTemplateService(store, nil)
 	targetSvc := grpc.NewTargetService(nil)
+	// Credential-aware probing: when a master password is available, attach a
+	// resolver backed by the same encrypted credential store the secret CLI
+	// commands use, so CheckTarget probes targets with their stored
+	// credentials instead of unauthenticated. Without LEVEE_MASTER_PASSWORD
+	// the resolver stays nil (disabled): CheckTarget then falls back to an
+	// unauthenticated probe and reports a warning on the response. Documented
+	// limitation: serve mode has no other master-password source today — there
+	// is no --master-password flag or keyfile mechanism to wire instead.
+	if mp := os.Getenv("LEVEE_MASTER_PASSWORD"); mp != "" {
+		if credStore, err := credential.NewCredentialStore(store, mp); err != nil {
+			log.Warn("credential store unavailable; target checks will probe without credentials",
+				"error", err)
+		} else {
+			targetSvc.WithCredentialResolver(&serveCredentialResolver{store: credStore})
+			log.Info("target checks will resolve stored credentials for probes")
+		}
+	} else {
+		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
+			"(no resolver configured)")
+	}
 	auditSvc := grpc.NewAuditService(store)
 	systemSvc := grpc.NewSystemService(
 		store, cfg, optConfigPath,
@@ -316,6 +339,37 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("serve: %w", err)
 	}
 	return nil
+}
+
+// serveCredentialResolver adapts the encrypted credential store to the
+// grpc.CredentialResolver interface used by TargetService.CheckTarget. It
+// expands a stored credential reference (the credential NAME, e.g. the value
+// passed as target credential_ref) into transport credentials for probing.
+//
+// Stored plaintexts follow one of two conventions:
+//  1. a JSON object mirroring channel.CredentialRef (username / password /
+//     key_path / key_passphrase) — the structured form;
+//  2. any other plaintext is treated as a bare password or API token.
+//
+// Plaintext bytes are zeroed after decoding; the returned CredentialRef is a
+// private copy.
+type serveCredentialResolver struct {
+	store *credential.CredentialStore
+}
+
+// ResolveTargetCredential implements grpc.CredentialResolver.
+func (r *serveCredentialResolver) ResolveTargetCredential(ctx context.Context, ref string) (*channel.CredentialRef, error) {
+	plaintext, err := r.store.Retrieve(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer credential.SecureZero(plaintext)
+
+	var cred channel.CredentialRef
+	if err := json.Unmarshal(plaintext, &cred); err == nil && (cred.Username != "" || cred.Password != "" || cred.KeyPath != "" || cred.KeyPassphrase != "") {
+		return &cred, nil
+	}
+	return &channel.CredentialRef{Password: string(plaintext)}, nil
 }
 
 // loadTLSConfig reads the cert/key pair and returns a *tls.Config suitable for

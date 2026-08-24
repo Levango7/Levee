@@ -9,6 +9,7 @@ package grpc
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"time"
 
@@ -34,9 +35,14 @@ func NewAuditService(store state.Store) *AuditService {
 	return &AuditService{store: store}
 }
 
-// maxAuditFetchRows is a hard cap on how many audit rows one GetAuditLog
-// call may pull from the store before client-side filtering/pagination.
+// maxAuditFetchRows is retained as an import-compatibility constant for
+// callers that referenced the old single-fetch cap; GetAuditLog no longer
+// uses it (see auditStorePageSize below).
 const maxAuditFetchRows = 10000
+
+// auditStorePageSize is the number of audit rows fetched per store round
+// trip while walking results for one GetAuditLog response.
+const auditStorePageSize = 1000
 
 // verifyRunPageSize is the page size used when VerifyHashChain walks all
 // runs in the store (offset stepping until a short page).
@@ -46,12 +52,15 @@ const verifyRunPageSize = 1000
 // pagination. Entries are sourced from state.Store.ListAudits and converted
 // to pb.TraceEntry messages.
 //
-// The store's AuditFilter supports no offset/stepping, so page-looping is
-// not possible; instead the result set is fetched once with a raised hard
-// cap (maxAuditFetchRows instead of the previous maxPageSize=1000) before
-// time-range/change-id filtering and offset pagination are applied.
-// Filtered results beyond the cap are ignored — the response message has
-// no truncation field today, so the cap is only documented here.
+// Pagination semantics: the page token encodes how many FILTERED rows have
+// already been returned. Each request re-walks the store from the start in
+// auditStorePageSize-row fetches, skipping the first `skip` matching rows
+// and collecting the next pageSize of them, while counting the global
+// filtered total along the way. This keeps TotalSize stable across pages
+// and never loses or duplicates a row at filter boundaries; the O(store)
+// walk per request is an accepted MVP trade-off (audit volumes are small,
+// and the alternative — offset tokens into a filtered stream — cannot be
+// expressed by the store's row-offset pagination).
 func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogRequest) (*pb.GetAuditLogResponse, error) {
 	if req == nil {
 		req = &pb.GetAuditLogRequest{}
@@ -60,35 +69,6 @@ func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogReque
 		return nil, status.Error(codes.FailedPrecondition, "store not configured")
 	}
 
-	filter := state.AuditFilter{
-		RunID:  req.RunId,
-		Action: req.Action,
-		Actor:  req.Actor,
-		Limit:  maxAuditFetchRows,
-	}
-	audits, err := s.store.ListAudits(ctx, filter)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list audits: %v", err)
-	}
-
-	// Convert and apply time-range + change-id filters (not natively
-	// supported by AuditFilter).
-	entries := make([]*pb.TraceEntry, 0, len(audits))
-	for _, a := range audits {
-		if req.ChangeId != "" && a.RunID != req.ChangeId {
-			continue
-		}
-		ts := a.Timestamp.Unix()
-		if req.Since > 0 && ts < req.Since {
-			continue
-		}
-		if req.Until > 0 && ts > req.Until {
-			continue
-		}
-		entries = append(entries, auditToTraceEntry(a))
-	}
-
-	// Pagination.
 	pageSize := int(req.PageSize)
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
@@ -96,25 +76,65 @@ func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogReque
 	if pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
-	offset, err := parsePageToken(req.PageToken)
+	skip, err := parsePageToken(req.PageToken)
 	if err != nil {
 		return nil, err
 	}
 
-	total := len(entries)
-	if offset > total {
-		offset = total
+	entries := make([]*pb.TraceEntry, 0, pageSize)
+	total := 0 // global count of filtered rows
+
+	storeOffset := 0
+	for {
+		audits, ferr := s.store.ListAudits(ctx, state.AuditFilter{
+			RunID:  req.RunId,
+			Action: req.Action,
+			Actor:  req.Actor,
+			Limit:  auditStorePageSize,
+			Offset: storeOffset,
+		})
+		if ferr != nil {
+			return nil, status.Errorf(codes.Internal, "list audits: %v", ferr)
+		}
+
+		for _, a := range audits {
+			if req.ChangeId != "" && a.RunID != req.ChangeId {
+				continue
+			}
+			ts := a.Timestamp.Unix()
+			if req.Since > 0 && ts < req.Since {
+				continue
+			}
+			if req.Until > 0 && ts > req.Until {
+				continue
+			}
+			total++
+			switch {
+			case total <= skip:
+				// Returned by an earlier page.
+			case len(entries) < pageSize:
+				entries = append(entries, auditToTraceEntry(a))
+			}
+		}
+
+		if len(audits) < auditStorePageSize {
+			break // store exhausted — global count is now exact
+		}
+		storeOffset += len(audits)
 	}
-	end := offset + pageSize
-	if end > total {
-		end = total
+
+	hasMore := total > skip+len(entries)
+	nextToken := ""
+	if hasMore {
+		nextToken = fmt.Sprintf("%d", skip+len(entries))
 	}
-	page := entries[offset:end]
 
 	return &pb.GetAuditLogResponse{
-		Entries:       page,
+		Entries: entries,
+		// TotalSize is the GLOBAL filtered count, stable across pages so
+		// UI pagers can render a trustworthy total.
 		TotalSize:     int32(total),
-		NextPageToken: buildPageToken(end, total),
+		NextPageToken: nextToken,
 	}, nil
 }
 

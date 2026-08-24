@@ -1083,6 +1083,10 @@ func (s *SQLiteStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Au
 		q += " LIMIT ?"
 		args = append(args, filter.Limit)
 	}
+	if filter.Offset > 0 {
+		q += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

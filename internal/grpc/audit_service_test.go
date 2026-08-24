@@ -5,6 +5,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -169,6 +170,84 @@ func TestGetAuditLog_Pagination(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, resp.GetEntries(), 2)
 	assert.Equal(t, int32(5), resp.GetTotalSize())
+}
+
+// TestGetAuditLog_PaginationWalksAllPages pins the store-stepping contract:
+// following NextPageToken must yield every filtered row exactly once, in
+// order, with a stable global TotalSize on every page.
+func TestGetAuditLog_PaginationWalksAllPages(t *testing.T) {
+	svc, store := newTestAuditService(t)
+	ctx := context.Background()
+
+	seedRun(t, ctx, store, "run-1", "completed")
+	const total = 7
+	ids := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("aud-%02d", i)
+		ids = append(ids, id)
+		seedAudit(t, ctx, store, id, "run-1", "action")
+	}
+
+	var seen []string
+	token := ""
+	pages := 0
+	for {
+		resp, err := svc.GetAuditLog(ctx, &pb.GetAuditLogRequest{
+			PageSize:  3,
+			PageToken: token,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, int32(total), resp.GetTotalSize(), "global count must be stable per page")
+		for _, e := range resp.GetEntries() {
+			seen = append(seen, e.GetId())
+		}
+		pages++
+		if resp.GetNextPageToken() == "" {
+			break
+		}
+		token = resp.GetNextPageToken()
+		require.Less(t, pages, 10, "pagination did not terminate")
+	}
+
+	// Rows inserted in the same second have no guaranteed relative order
+	// (ORDER BY timestamp DESC), so assert set coverage + uniqueness rather
+	// than exact ordering.
+	assert.Len(t, seen, total, "walked pages must cover all rows exactly once")
+	assert.ElementsMatch(t, ids, seen, "walked pages must cover every row with no duplicates or losses")
+}
+
+// TestGetAuditLog_FilteredPaginationSkipsNonMatching pins that the resume
+// token lands exactly on the next MATCHING row when non-matching rows sit
+// between pages.
+func TestGetAuditLog_FilteredPaginationSkipsNonMatching(t *testing.T) {
+	svc, store := newTestAuditService(t)
+	ctx := context.Background()
+
+	seedRun(t, ctx, store, "run-1", "completed")
+	// Interleave: matching rows are aud-0/2/4, noise rows have other run IDs.
+	for i := 0; i < 5; i++ {
+		runID := "run-noise"
+		if i%2 == 0 {
+			runID = "run-1"
+		}
+		seedAudit(t, ctx, store, fmt.Sprintf("aud-%d", i), runID, "action")
+	}
+
+	first, err := svc.GetAuditLog(ctx, &pb.GetAuditLogRequest{PageSize: 1, ChangeId: "run-1"})
+	require.NoError(t, err)
+	require.Len(t, first.GetEntries(), 1)
+	require.NotEmpty(t, first.GetNextPageToken())
+
+	second, err := svc.GetAuditLog(ctx, &pb.GetAuditLogRequest{
+		PageSize: 5, ChangeId: "run-1", PageToken: first.GetNextPageToken(),
+	})
+	require.NoError(t, err)
+
+	got := []string{first.GetEntries()[0].GetId()}
+	for _, e := range second.GetEntries() {
+		got = append(got, e.GetId())
+	}
+	assert.ElementsMatch(t, []string{"aud-0", "aud-2", "aud-4"}, got, "no row lost or duplicated across the filter boundary")
 }
 
 func TestGetAuditLog_NilStore(t *testing.T) {

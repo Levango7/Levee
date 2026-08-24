@@ -1098,6 +1098,10 @@ func (s *PGStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit,
 		args = append(args, filter.Limit)
 		q += fmt.Sprintf(" LIMIT $%d", len(args))
 	}
+	if filter.Offset > 0 {
+		args = append(args, filter.Offset)
+		q += fmt.Sprintf(" OFFSET $%d", len(args))
+	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

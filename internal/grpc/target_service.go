@@ -9,6 +9,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -21,14 +22,27 @@ import (
 	"github.com/nexus/levee/internal/grpc/pb"
 )
 
+// CredentialResolver expands a stored, unresolved credential reference (the
+// CredentialRef string a target was registered with, e.g. "cred-a1b2c3") into
+// transport credentials usable by a channel.Target. Implementations are backed
+// by the credential store; TargetService itself never touches secret material.
+//
+// Resolution failures must NOT abort the RPC: CheckTarget treats them as a
+// soft condition, reports them on the response and falls back to an
+// unauthenticated probe.
+type CredentialResolver interface {
+	ResolveTargetCredential(ctx context.Context, ref string) (*channel.CredentialRef, error)
+}
+
 // TargetService implements pb.TargetServiceServer. It maintains an in-memory
 // registry of target hosts and optionally probes reachability via a
 // channel.ChannelFactory.
 type TargetService struct {
 	pb.UnimplementedTargetServiceServer
 
-	store   stateStore // reserved for future persistence; currently unused
-	factory channel.ChannelFactory
+	store    stateStore // reserved for future persistence; currently unused
+	factory  channel.ChannelFactory
+	resolver CredentialResolver // optional; nil disables credential resolution
 
 	mu      sync.RWMutex
 	targets map[string]*pb.Target // keyed by Id
@@ -56,6 +70,17 @@ func NewTargetService(factory channel.ChannelFactory) *TargetService {
 func NewTargetServiceWithStore(store interface{}, factory channel.ChannelFactory) *TargetService {
 	s := NewTargetService(factory)
 	s.store = store
+	return s
+}
+
+// WithCredentialResolver attaches an optional CredentialResolver used by
+// CheckTarget to expand a target's stored CredentialRef into real transport
+// credentials before probing. A nil resolver disables resolution: probes then
+// run unauthenticated (the previous behaviour), with a warning on the response
+// when the target carries a CredentialRef. Call this during service setup,
+// before the server starts serving.
+func (s *TargetService) WithCredentialResolver(r CredentialResolver) *TargetService {
+	s.resolver = r
 	return s
 }
 
@@ -234,11 +259,29 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 		timeout = channel.DefaultNoopTimeout
 	}
 
+	// Resolve the target's stored credential reference so the probe exercises
+	// the same authentication path as real execution. Resolution is
+	// best-effort: a missing resolver or a resolution failure degrades to an
+	// unauthenticated probe and is reported as a warning on the response
+	// (CheckTargetResponse has no dedicated warnings field, so warnings ride
+	// on Error behind a "warning:" prefix); it never hard-fails the RPC.
+	var warnings []string
 	tgt := &grpcTarget{
 		host:          t.Hostname,
 		port:          int(t.Port),
 		channelType:   t.ChannelType,
 		credentialRef: t.CredentialRef,
+	}
+	if ref := t.CredentialRef; ref != "" {
+		if s.resolver == nil {
+			warnings = append(warnings, "probed without credentials (no resolver configured)")
+		} else if resolved, err := s.resolver.ResolveTargetCredential(ctx, ref); err != nil {
+			warnings = append(warnings, fmt.Sprintf("credential %q could not be resolved (%v); probed without credentials", ref, err))
+		} else if resolved == nil {
+			warnings = append(warnings, fmt.Sprintf("credential %q resolved to no usable material; probed without credentials", ref))
+		} else {
+			tgt.cred = *resolved
+		}
 	}
 
 	prechecker := channel.NewPrechecker(nil, nil,
@@ -254,7 +297,7 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 	result := report.Results[0]
 	resp.Reachable = result.Reachable
 	resp.LatencyMs = result.Latency.Milliseconds()
-	resp.Error = result.Error
+	resp.Error = mergeProbeWarnings(result.Error, warnings)
 
 	// Update the cached Reachable flag.
 	s.mu.Lock()
@@ -272,6 +315,22 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 }
 
 // --- helpers -----------------------------------------------------------------
+
+// mergeProbeWarnings folds soft credential warnings into the probe error so
+// they reach the caller on CheckTargetResponse.Error (the response message has
+// no dedicated warnings field). Warnings are prefixed with "warning:" so
+// clients can distinguish them from hard probe failures; an existing probe
+// error is preserved verbatim after the warnings.
+func mergeProbeWarnings(probeErr string, warnings []string) string {
+	if len(warnings) == 0 {
+		return probeErr
+	}
+	joined := "warning: " + strings.Join(warnings, "; ")
+	if probeErr == "" {
+		return joined
+	}
+	return joined + "; " + probeErr
+}
 
 // matchLabelSelector returns true when target labels contain every key=value
 // pair from the selector. An empty selector matches everything.
@@ -325,15 +384,12 @@ type grpcTarget struct {
 
 	// credentialRef carries the stored, UNRESOLVED credential reference
 	// (e.g. "cred-a1b2c3") the target was registered with. The registry
-	// deliberately never holds secret material, so the reference cannot be
-	// expanded into a channel.CredentialRef here — that requires the
-	// credential provider, which is not wired into the precheck path yet.
-	// Previously the probe target was constructed with a hard-coded empty
-	// descriptor and the linkage was lost entirely; carrying the raw
-	// reference keeps it available to ChannelFactory implementations that
-	// resolve references themselves.
-	// TODO: once a ref→secret resolver is injected into TargetService,
-	// populate cred via Credentials() instead.
+	// deliberately never holds secret material. When TargetService has a
+	// CredentialResolver configured, CheckTarget expands the reference into
+	// cred before probing; without a resolver (or on resolution failure) cred
+	// stays empty and the probe runs unauthenticated, with a warning on the
+	// CheckTarget response. The raw reference is also kept available for
+	// ChannelFactory implementations that resolve references themselves.
 	credentialRef string
 }
 

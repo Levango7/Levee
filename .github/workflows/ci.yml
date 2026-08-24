@@ -190,9 +190,13 @@ jobs:
           go-version: '1.25'
           cache: true
       - name: run gosec
-        uses: securecodewarrior/gosec@v2.22.2
+        uses: securego/gosec@v2.28.0
         with:
-          args: -exclude=G104,G307,G402,G501,G505,G601 -exclude-dir=internal/grpc/pb -fmt=json -out=gosec-report.json ./...
+          # G104 (unhandled errors) and G307 (defer file.Close) are noisy
+          # low-signal classes here; G501/G505/G601 have no hits today but
+          # guard future dependency drift. G402 is NOT excluded: TLS verify
+          # skips must stay visible (the single vault opt-in carries #nosec).
+          args: -exclude=G104,G307,G501,G505,G601 -exclude-dir=internal/grpc/pb -fmt=json -out=gosec-report.json ./...
       - name: upload report
         uses: actions/upload-artifact@v4
         with:

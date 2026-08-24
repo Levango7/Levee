@@ -199,7 +199,15 @@ onMounted(load)
     <!-- Status summary cards -->
     <el-row :gutter="12" class="summary-row">
       <el-col v-for="s in summary" :key="s.value" :span="2.4">
-        <el-card shadow="hover" class="summary-card" @click="filter.status = s.value; applyFilter()">
+        <el-card
+          shadow="hover"
+          class="summary-card"
+          role="button"
+          tabindex="0"
+          @click="filter.status = s.value; applyFilter()"
+          @keyup.enter="filter.status = s.value; applyFilter()"
+          @keyup.space.prevent="filter.status = s.value; applyFilter()"
+        >
           <div class="summary-card__count">{{ s.count }}</div>
           <div class="summary-card__label">{{ s.label }}</div>
         </el-card>
@@ -290,6 +298,13 @@ onMounted(load)
 .summary-card {
   cursor: pointer;
   text-align: center;
+}
+
+/* Keyboard focus ring: the card is a role=button (tabindex=0), so focus
+   must be as visible as hover for keyboard users. */
+.summary-card:focus-visible {
+  outline: 2px solid var(--levee-primary, #409eff);
+  outline-offset: 2px;
 }
 
 .summary-card__count {

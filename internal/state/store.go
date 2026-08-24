@@ -167,6 +167,9 @@ type AuditFilter struct {
 	Action string
 	Actor  string
 	Limit  int
+	// Offset skips the first Offset matching rows (timestamp DESC order).
+	// Negative values are treated as 0. Use with Limit for pagination.
+	Offset int
 }
 
 // WORMStore is a restricted subset of Store that only allows append-only

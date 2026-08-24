@@ -1,12 +1,17 @@
 // target_service_test.go tests the TargetService gRPC handler. Targets are
 // held in an in-memory registry, so no store is required. CheckTarget is
-// tested without a ChannelFactory (cached path) to keep tests hermetic.
+// tested without a ChannelFactory (cached path) to keep tests hermetic; the
+// credential-resolution tests use a local in-memory factory/resolver double.
 package grpc
 
 import (
 	"context"
+	"errors"
+	"io"
+	"sync"
 	"testing"
 
+	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/grpc/pb"
 
 	"github.com/stretchr/testify/assert"
@@ -325,3 +330,205 @@ func TestCheckTarget_EmptyID(t *testing.T) {
 
 // Ensure emptypb is used.
 var _ = emptypb.Empty{}
+
+// =========================================================================
+// CheckTarget credential resolution
+// =========================================================================
+
+// probeChannel is a Channel stub whose Connect and Exec always succeed, so a
+// fresh CheckTarget probe reports the target as reachable.
+type probeChannel struct {
+	mu        sync.Mutex
+	connected bool
+}
+
+func (c *probeChannel) Connect(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.connected = true
+	return nil
+}
+
+func (c *probeChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult, error) {
+	return &channel.ExecResult{ExitCode: 0, Stdout: "ok\n"}, nil
+}
+
+func (c *probeChannel) Upload(ctx context.Context, remotePath string, content io.Reader) error {
+	return errors.New("probeChannel: upload not supported")
+}
+
+func (c *probeChannel) Download(ctx context.Context, remotePath string) (io.Reader, error) {
+	return nil, errors.New("probeChannel: download not supported")
+}
+
+func (c *probeChannel) Close() error { return nil }
+
+func (c *probeChannel) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connected
+}
+
+// probeFactory is a ChannelFactory that hands out probeChannels and records
+// the credentials of every target it is asked to create a channel for.
+type probeFactory struct {
+	mu    sync.Mutex
+	creds []channel.CredentialRef // one entry per Create call, in order
+}
+
+func (f *probeFactory) Create(target channel.Target) (channel.Channel, error) {
+	f.mu.Lock()
+	f.creds = append(f.creds, target.Credentials())
+	f.mu.Unlock()
+	return &probeChannel{}, nil
+}
+
+func (f *probeFactory) createdCredentials() []channel.CredentialRef {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]channel.CredentialRef(nil), f.creds...)
+}
+
+// mockResolver is a scripted CredentialResolver: refs present in creds resolve
+// successfully, refs in errs fail with the mapped error. Every call is
+// recorded.
+type mockResolver struct {
+	creds map[string]channel.CredentialRef
+	errs  map[string]error
+
+	mu    sync.Mutex
+	calls []string
+}
+
+func (m *mockResolver) ResolveTargetCredential(ctx context.Context, ref string) (*channel.CredentialRef, error) {
+	m.mu.Lock()
+	m.calls = append(m.calls, ref)
+	m.mu.Unlock()
+	if err, ok := m.errs[ref]; ok {
+		return nil, err
+	}
+	if cred, ok := m.creds[ref]; ok {
+		cp := cred
+		return &cp, nil
+	}
+	return nil, errors.New("mockResolver: unknown ref")
+}
+
+func (m *mockResolver) resolvedRefs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.calls...)
+}
+
+// addProbeTarget registers a target on svc and returns nothing; it fails the
+// test when registration fails.
+func addProbeTarget(t *testing.T, svc *TargetService, id, credentialRef string) {
+	t.Helper()
+	_, err := svc.AddTarget(context.Background(), &pb.AddTargetRequest{
+		Id:            id,
+		Hostname:      "h1",
+		ChannelType:   "ssh",
+		CredentialRef: credentialRef,
+	})
+	require.NoError(t, err)
+}
+
+const wantNoResolverWarning = "probed without credentials (no resolver configured)"
+
+func TestCheckTarget_ResolvedCredentialsUsedInProbe(t *testing.T) {
+	ctx := context.Background()
+	factory := &probeFactory{}
+	resolver := &mockResolver{creds: map[string]channel.CredentialRef{
+		"cred-1": {Username: "deploy", Password: "s3cret"},
+	}}
+	svc := NewTargetService(factory).WithCredentialResolver(resolver)
+
+	addProbeTarget(t, svc, "t1", "cred-1")
+
+	resp, err := svc.CheckTarget(ctx, &pb.CheckTargetRequest{Id: "t1", Fresh: true})
+	require.NoError(t, err)
+
+	// The probe must have received the RESOLVED credentials.
+	got := factory.createdCredentials()
+	require.Len(t, got, 1)
+	assert.Equal(t, channel.CredentialRef{Username: "deploy", Password: "s3cret"}, got[0])
+	assert.Equal(t, []string{"cred-1"}, resolver.resolvedRefs())
+
+	assert.True(t, resp.GetReachable())
+	// Happy path: no warning noise on the response.
+	assert.Empty(t, resp.GetError())
+}
+
+func TestCheckTarget_ResolveFailureFallsBackWithWarning(t *testing.T) {
+	ctx := context.Background()
+	factory := &probeFactory{}
+	resolver := &mockResolver{errs: map[string]error{
+		"cred-broken": errors.New("decryption failed"),
+	}}
+	svc := NewTargetService(factory).WithCredentialResolver(resolver)
+
+	addProbeTarget(t, svc, "t1", "cred-broken")
+
+	resp, err := svc.CheckTarget(ctx, &pb.CheckTargetRequest{Id: "t1", Fresh: true})
+	require.NoError(t, err) // never hard-fails because of misconfigured credentials
+
+	// The RPC still probed — unauthenticated (zero credentials).
+	got := factory.createdCredentials()
+	require.Len(t, got, 1)
+	assert.Equal(t, channel.CredentialRef{}, got[0])
+
+	// The warning surfaces on the response and mentions the fallback.
+	assert.Contains(t, resp.GetError(), "warning:")
+	assert.Contains(t, resp.GetError(), "cred-broken")
+	assert.Contains(t, resp.GetError(), "probed without credentials")
+
+	// A warning must not mask a successful probe outcome.
+	assert.True(t, resp.GetReachable())
+}
+
+func TestCheckTarget_NoResolverWithRefWarns(t *testing.T) {
+	ctx := context.Background()
+	factory := &probeFactory{}
+	svc := NewTargetService(factory) // no resolver attached
+
+	addProbeTarget(t, svc, "t1", "cred-1")
+
+	resp, err := svc.CheckTarget(ctx, &pb.CheckTargetRequest{Id: "t1", Fresh: true})
+	require.NoError(t, err)
+
+	// Probe still ran, unauthenticated.
+	got := factory.createdCredentials()
+	require.Len(t, got, 1)
+	assert.Equal(t, channel.CredentialRef{}, got[0])
+
+	assert.Contains(t, resp.GetError(), "warning:")
+	assert.Contains(t, resp.GetError(), wantNoResolverWarning)
+	assert.True(t, resp.GetReachable())
+}
+
+func TestCheckTarget_NoResolverNoRefQuiet(t *testing.T) {
+	ctx := context.Background()
+	factory := &probeFactory{}
+	svc := NewTargetService(factory) // no resolver attached
+
+	addProbeTarget(t, svc, "t1", "") // plain passwordless target
+
+	resp, err := svc.CheckTarget(ctx, &pb.CheckTargetRequest{Id: "t1", Fresh: true})
+	require.NoError(t, err)
+
+	assert.Len(t, factory.createdCredentials(), 1)
+	// No CredentialRef => no credential warning.
+	assert.Empty(t, resp.GetError())
+	assert.True(t, resp.GetReachable())
+}
+
+func TestMergeProbeWarnings(t *testing.T) {
+	assert.Equal(t, "", mergeProbeWarnings("", nil))
+	assert.Equal(t, "connect failed", mergeProbeWarnings("connect failed", nil))
+	assert.Equal(t,
+		"warning: probed without credentials (no resolver configured)",
+		mergeProbeWarnings("", []string{wantNoResolverWarning}))
+	assert.Equal(t,
+		"warning: w1; w2; connect failed",
+		mergeProbeWarnings("connect failed", []string{"w1", "w2"}))
+}

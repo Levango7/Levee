@@ -210,13 +210,21 @@ func (e *CompatExecutor) executeStep(ctx context.Context, runID, target string, 
 			"", "required", "approval required for step "+step.Name)
 	}
 
-	// Record gate checks (best-effort, simulated pass in MVP).
+	// Record declared gate checks. The compat runner is a SIMULATOR (no
+	// real target connection, R8 independence), so it cannot execute gate
+	// commands. Each declaration is recorded honestly as NOT executed:
+	// passed=false with an explanatory detail, never as a fabricated pass.
+	// Real gate execution lives in the engine path (ClosureRunner).
 	if step.Gate != nil {
+		notExecuted := map[string]any{
+			"error":  "compat: gate declared but not executed by the simulator",
+			"reason": "compat_simulator",
+		}
 		for _, c := range step.Gate.Pre {
-			_, _ = e.recorder.RecordGate(ctx, runID, c.Command, "pre_apply", true, nil)
+			_, _ = e.recorder.RecordGate(ctx, runID, c.Command, "pre_apply", false, notExecuted)
 		}
 		for _, c := range step.Gate.Post {
-			_, _ = e.recorder.RecordGate(ctx, runID, c.Command, "post_apply", true, nil)
+			_, _ = e.recorder.RecordGate(ctx, runID, c.Command, "post_apply", false, notExecuted)
 		}
 	}
 
