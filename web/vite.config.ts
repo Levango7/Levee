@@ -29,11 +29,6 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           // No rewrite needed — /api/* paths map directly to gateway routes.
         },
-        // Server-Sent Events stream used by the monitor view.
-        '/events': {
-          target: apiTarget,
-          changeOrigin: true,
-        },
       },
     },
     build: {

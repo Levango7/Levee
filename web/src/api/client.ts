@@ -25,6 +25,11 @@ export function setToken(token: string): void {
   }
 }
 
+// Explicit counterpart to setToken for logout / login-page "clear" actions.
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY)
+}
+
 // Singleton axios instance. Created once and reused; exporting the instance
 // itself would also work, but the per-verb helpers below give us a single
 // place to map AxiosError -> ApiError.
@@ -58,10 +63,15 @@ client.interceptors.response.use(
 
 function normalizeError(error: AxiosError): ApiError {
   if (error.response) {
-    const data = error.response.data as { message?: string; code?: number } | undefined
+    // The backend (grpc-gateway + our handlers) returns {"error": "..."} on
+    // failure; older shapes used {message}. Prefer error, then message, then
+    // the axios-generated message.
+    const data = error.response.data as
+      | { error?: string; message?: string; code?: number }
+      | undefined
     return {
       code: error.response.status,
-      message: data?.message || error.message || `HTTP ${error.response.status}`,
+      message: data?.error || data?.message || error.message || `HTTP ${error.response.status}`,
       details: data,
     }
   }

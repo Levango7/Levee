@@ -30,10 +30,11 @@ const approver = ref('operator')
 // One-tap token extracted from the deep-link query string. When present the
 // page attempts the action immediately on mount.
 const deeplinkToken = computed<string>(() => (route.query.token as string) || '')
-const deeplinkAction = computed<string>(() => {
-  // The action is encoded in the path: /m/approve/run-123 -> "approve".
-  const seg = route.path.split('/').filter(Boolean)
-  return seg[seg.length - 2] || ''
+const deeplinkAction = computed<'approve' | 'reject' | ''>(() => {
+  // The action is encoded in the path: /m/approve/<id> or /m/reject/<id>.
+  if (route.path.includes('/approve')) return 'approve'
+  if (route.path.includes('/reject')) return 'reject'
+  return ''
 })
 
 // --- data loading ----------------------------------------------------------
@@ -117,25 +118,28 @@ async function reject(): Promise<void> {
   }
 }
 
-async function oneTapApprove(token: string): Promise<void> {
+async function oneTap(action: 'approve' | 'reject', token: string): Promise<void> {
   try {
-    await changesApi.approveViaDeepLink(token)
-    ElMessage.success('一键审批通过')
+    if (action === 'approve') {
+      await changesApi.approveViaDeepLink(token)
+    } else {
+      await changesApi.rejectViaDeepLink(token)
+    }
+    ElMessage.success(action === 'approve' ? '一键审批通过' : '一键驳回成功')
     if (change.value) {
       await loadChange(change.value.id)
       await loadHistory(change.value.id)
     }
   } catch (err) {
-    ElMessage.error(`一键审批失败：${(err as { message?: string })?.message}`)
+    ElMessage.error(`一键${action === 'approve' ? '审批' : '驳回'}失败：${(err as { message?: string })?.message}`)
   }
 }
 
 // --- lifecycle -------------------------------------------------------------
 
 onMounted(async () => {
-  // Extract the run id from the route path: /m/approve/run-123 -> "run-123".
-  const seg = route.path.split('/').filter(Boolean)
-  const runID = seg[seg.length - 1]
+  // The change id comes from the route param: /m/approve/:id or /m/reject/:id.
+  const runID = String(route.params.id || '')
   if (!runID) {
     error.value = '缺少变更 ID'
     return
@@ -144,8 +148,8 @@ onMounted(async () => {
   await loadHistory(runID)
 
   // When a deep-link token is present, perform the one-tap action immediately.
-  if (deeplinkToken.value && deeplinkAction.value === 'approve') {
-    await oneTapApprove(deeplinkToken.value)
+  if (deeplinkToken.value && deeplinkAction.value) {
+    await oneTap(deeplinkAction.value, deeplinkToken.value)
     // Clear the token so a page refresh does not replay the action.
     router.replace({ path: route.path, query: {} })
   }

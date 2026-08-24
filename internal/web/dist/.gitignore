@@ -1,13 +1,3 @@
-# Build artifacts copied here by `make web` before `go build`. The committed
-# index.html placeholder keeps `go build` working without a frontend build.
-# Do not edit by hand.
-/assets/
-*.js
-*.css
-*.svg
-*.woff
-*.woff2
-*.ttf
-*.eot
-*.map
-favicon.ico
+# The built Web UI in this directory is committed on purpose: a plain
+# `go build` (no node/npm required) must embed a working UI. Refresh it with
+# `make web` after changing frontend code.

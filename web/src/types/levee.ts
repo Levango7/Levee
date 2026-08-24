@@ -3,7 +3,9 @@
 // TypeScript from the .proto file (which would require an extra build step).
 
 export type ChangeStatus =
+  | 'draft'
   | 'planned'
+  | 'pending'
   | 'pending_approval'
   | 'approved'
   | 'running'
@@ -123,8 +125,9 @@ export interface PageResult<T> {
   totalSize: number
 }
 
-// AuditPageResult mirrors the audit API response shape where the proto field
-// is "entries" not "items". Used for /audit/log and /audit/traces responses.
+// AuditPageResult mirrors the RAW audit API response shape where the proto
+// field is "entries" not "items". The api layer normalizes this into
+// PageResult<T> before views see it, so only the raw envelope uses this type.
 export interface AuditPageResult<T> {
   entries: T[]
   nextPageToken: string

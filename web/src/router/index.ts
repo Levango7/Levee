@@ -21,6 +21,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '变更详情' },
   },
   {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { title: '登录' },
+  },
+  {
     path: '/approval',
     name: 'approval',
     component: () => import('@/views/ApprovalView.vue'),
@@ -61,6 +67,20 @@ const routes: RouteRecordRaw[] = [
     name: 'system',
     component: () => import('@/views/SystemView.vue'),
     meta: { title: '系统状态' },
+  },
+  // Mobile approval deeplinks (push notifications link here):
+  // /m/approve/<changeId>?token=... and /m/reject/<changeId>?token=...
+  {
+    path: '/m/approve/:id',
+    name: 'mobile-approve',
+    component: () => import('@/views/MobileApprovalView.vue'),
+    meta: { title: '移动审批' },
+  },
+  {
+    path: '/m/reject/:id',
+    name: 'mobile-reject',
+    component: () => import('@/views/MobileApprovalView.vue'),
+    meta: { title: '移动审批' },
   },
   {
     path: '/:pathMatch(.*)*',

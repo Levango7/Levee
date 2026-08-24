@@ -19,7 +19,7 @@ const approver = ref('operator')
 async function loadPending(): Promise<void> {
   loading.value = true
   try {
-    const res = await changesApi.list({ statuses: ['pending_approval'], pageSize: 100 })
+    const res = await changesApi.list({ status: ['pending_approval'], pageSize: 100 })
     pending.value = res.items || []
   } catch (err) {
     ElMessage.error((err as { message?: string })?.message || '加载待审批列表失败')

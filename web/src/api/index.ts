@@ -17,36 +17,61 @@ import type {
 } from '@/types/levee'
 
 // ---------------------------------------------------------------------------
+// List response normalisation
+// ---------------------------------------------------------------------------
+
+// Raw protojson list responses key the item array by the proto field name:
+// /changes -> {changes}, /templates -> {templates}, /targets -> {targets},
+// /audit/* -> {entries}. Views consume the uniform PageResult<T> shape with
+// `items`, so every list wrapper maps its raw key into `items` here.
+type RawListKey = 'changes' | 'templates' | 'targets' | 'entries'
+
+interface RawListEnvelope {
+  nextPageToken?: string
+  totalSize?: number
+  [key: string]: unknown
+}
+
+function toPageResult<T>(raw: RawListEnvelope, key: RawListKey): PageResult<T> {
+  const items = (raw[key] ?? raw.items ?? []) as T[]
+  return {
+    items,
+    nextPageToken: raw.nextPageToken || '',
+    totalSize: raw.totalSize || 0,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // ChangeService
 // ---------------------------------------------------------------------------
 
 export interface ListChangesParams {
-  statuses?: ChangeStatus[]
-  teams?: string[]
-  environments?: string[]
+  /** Zero or more statuses; serialized as a single comma-joined `status` query param. */
+  status?: ChangeStatus[]
   labelContains?: string
   pageSize?: number
   pageToken?: string
-  sortBy?: string
-  sortOrder?: 'asc' | 'desc'
+}
+
+// The backend only accepts status (comma-split server-side), labelContains,
+// pageSize and pageToken; team/environment/sortBy/sortOrder params were removed.
+function changesListQuery(params: ListChangesParams): Record<string, string | number | undefined> {
+  const status = params.status && params.status.length > 0 ? params.status.join(',') : undefined
+  return {
+    status,
+    labelContains: params.labelContains,
+    pageSize: params.pageSize,
+    pageToken: params.pageToken,
+  }
 }
 
 export const changesApi = {
   list: (params: ListChangesParams): Promise<PageResult<Change>> =>
-    get<PageResult<Change>>('/changes', { params }),
+    get<RawListEnvelope>('/changes', { params: changesListQuery(params) }).then((raw) =>
+      toPageResult<Change>(raw, 'changes'),
+    ),
 
   get: (id: string): Promise<Change> => get<Change>(`/changes/${id}`),
-
-  create: (body: {
-    label: string
-    priority?: string
-    workflowFile?: string
-    templateName?: string
-    params?: Record<string, string>
-    team?: string
-    environment?: string
-    dryRun?: boolean
-  }): Promise<Change> => post<Change>('/changes', body),
 
   plan: (id: string, targetHosts?: string[], dryRun?: boolean): Promise<Plan> =>
     post<Plan>(`/changes/${id}/plan`, { targetHosts, dryRun }),
@@ -67,6 +92,9 @@ export const changesApi = {
 
   approveViaDeepLink: (token: string): Promise<{ status: string }> =>
     post<{ status: string }>('/changes/deeplink/approve', { token }),
+
+  rejectViaDeepLink: (token: string): Promise<{ status: string }> =>
+    post<{ status: string }>('/changes/deeplink/reject', { token }),
 
   pause: (id: string, reason?: string): Promise<Change> =>
     post<Change>(`/changes/${id}/pause`, { reason }),
@@ -111,7 +139,7 @@ export const changesApi = {
 
 export const templatesApi = {
   list: (params?: { nameContains?: string; pageSize?: number; pageToken?: string }): Promise<PageResult<Template>> =>
-    get<PageResult<Template>>('/templates', { params }),
+    get<RawListEnvelope>('/templates', { params }).then((raw) => toPageResult<Template>(raw, 'templates')),
 
   get: (name: string): Promise<Template> => get<Template>(`/templates/${encodeURIComponent(name)}`),
 
@@ -141,14 +169,37 @@ export const templatesApi = {
 // TargetService
 // ---------------------------------------------------------------------------
 
+export interface ListTargetsParams {
+  /** Label filter as key/value pairs; serialized to the single comma-joined `k=v,k2=v2` form the backend accepts. */
+  labelSelector?: Record<string, string>
+  channelType?: string
+  reachableOnly?: boolean
+  pageSize?: number
+  pageToken?: string
+}
+
+function targetsListQuery(params?: ListTargetsParams): Record<string, string | number | boolean | undefined> {
+  if (!params) return {}
+  const query: Record<string, string | number | boolean | undefined> = {
+    channelType: params.channelType,
+    reachableOnly: params.reachableOnly === undefined ? undefined : String(params.reachableOnly),
+    pageSize: params.pageSize,
+    pageToken: params.pageToken,
+  }
+  const selector = Object.entries(params.labelSelector ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join(',')
+  if (selector) {
+    query.labelSelector = selector
+  }
+  return query
+}
+
 export const targetsApi = {
-  list: (params?: {
-    labelSelector?: Record<string, string>
-    channelType?: string
-    reachableOnly?: boolean
-    pageSize?: number
-    pageToken?: string
-  }): Promise<PageResult<Target>> => get<PageResult<Target>>('/targets', { params }),
+  list: (params?: ListTargetsParams): Promise<PageResult<Target>> =>
+    get<RawListEnvelope>('/targets', { params: targetsListQuery(params) }).then((raw) =>
+      toPageResult<Target>(raw, 'targets'),
+    ),
 
   get: (id: string): Promise<Target> => get<Target>(`/targets/${id}`),
 
@@ -164,13 +215,15 @@ export const targetsApi = {
   remove: (id: string, force?: boolean): Promise<void> =>
     del<void>(`/targets/${id}`, { params: { force } }),
 
+  // fresh / timeoutSeconds are read from the query string by the backend,
+  // never from the POST body.
   check: (id: string, fresh?: boolean, timeoutSeconds?: number): Promise<{
     target: Target
     reachable: boolean
     latencyMs: number
     error: string
     checkedAt: number
-  }> => post(`/targets/${id}/check`, { fresh, timeoutSeconds }),
+  }> => post(`/targets/${id}/check`, {}, { params: { fresh, timeoutSeconds } }),
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +240,8 @@ export const auditApi = {
     until?: number
     pageSize?: number
     pageToken?: string
-  }): Promise<PageResult<TraceEntry>> => get<PageResult<TraceEntry>>('/audit/log', { params }),
+  }): Promise<PageResult<TraceEntry>> =>
+    get<RawListEnvelope>('/audit/log', { params }).then((raw) => toPageResult<TraceEntry>(raw, 'entries')),
 
   traces: (params: {
     changeId?: string
@@ -196,7 +250,8 @@ export const auditApi = {
     until?: number
     pageSize?: number
     pageToken?: string
-  }): Promise<PageResult<TraceEntry>> => get<PageResult<TraceEntry>>('/audit/traces', { params }),
+  }): Promise<PageResult<TraceEntry>> =>
+    get<RawListEnvelope>('/audit/traces', { params }).then((raw) => toPageResult<TraceEntry>(raw, 'entries')),
 
   verifyHashChain: (params: { runId?: string; changeId?: string }): Promise<{
     valid: boolean

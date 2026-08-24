@@ -4,7 +4,9 @@ import dayjs from 'dayjs'
 import type { ChangeStatus, Priority } from '@/types/levee'
 
 export const STATUS_LABEL: Record<ChangeStatus, string> = {
+  draft: '草稿',
   planned: '已计划',
+  pending: '待审批',
   pending_approval: '待审批',
   approved: '已审批',
   running: '执行中',
@@ -17,7 +19,9 @@ export const STATUS_LABEL: Record<ChangeStatus, string> = {
 }
 
 export const STATUS_COLOR: Record<ChangeStatus, string> = {
+  draft: 'info',
   planned: 'info',
+  pending: 'warning',
   pending_approval: 'warning',
   approved: 'primary',
   running: 'primary',

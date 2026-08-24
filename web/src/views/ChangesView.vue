@@ -14,21 +14,22 @@ const router = useRouter()
 
 interface FilterState {
   status: ChangeStatus | ''
-  team: string
-  environment: string
   labelContains: string
   pageSize: number
-  pageToken: string
 }
 
 const filter = reactive<FilterState>({
   status: '',
-  team: '',
-  environment: '',
   labelContains: '',
   pageSize: 20,
-  pageToken: '',
 })
+
+// Pagination state. The backend pages with opaque offset tokens, so the
+// current page number is tracked separately from the request params and each
+// response's nextPageToken is remembered to reach the following page.
+const currentPage = ref(1)
+// tokenChain[i] holds the token that fetches page i+2 (page 1 needs no token).
+const tokenChain = ref<string[]>([])
 
 const loading = ref(false)
 const changes = ref<Change[]>([])
@@ -37,7 +38,9 @@ const nextPageToken = ref('')
 const selected = ref<Change[]>([])
 
 const statusOptions: Array<{ value: ChangeStatus; label: string }> = [
+  { value: 'draft', label: '草稿' },
   { value: 'planned', label: '已计划' },
+  { value: 'pending', label: '待审批' },
   { value: 'pending_approval', label: '待审批' },
   { value: 'approved', label: '已审批' },
   { value: 'running', label: '执行中' },
@@ -63,19 +66,32 @@ const summary = computed(() => {
 async function load(): Promise<void> {
   loading.value = true
   try {
+    // Page 1 sends no token; page n reuses the token recorded when page n-1
+    // was loaded. Opaque tokens cannot be computed for skipped pages, so a
+    // forward jump beyond the known chain clamps back to the deepest page.
+    let pageToken = ''
+    if (currentPage.value > 1) {
+      pageToken = tokenChain.value[currentPage.value - 2] || ''
+      if (!pageToken) {
+        currentPage.value = tokenChain.value.length + 1
+        pageToken = currentPage.value > 1 ? tokenChain.value[currentPage.value - 2] || '' : ''
+      }
+    }
     const res = await changesApi.list({
-      statuses: filter.status ? [filter.status] : undefined,
-      teams: filter.team ? [filter.team] : undefined,
-      environments: filter.environment ? [filter.environment] : undefined,
+      status: filter.status ? [filter.status] : undefined,
       labelContains: filter.labelContains || undefined,
       pageSize: filter.pageSize,
-      pageToken: filter.pageToken || undefined,
-      sortBy: 'created_at',
-      sortOrder: 'desc',
+      pageToken: pageToken || undefined,
     })
     changes.value = res.items || []
     total.value = res.totalSize || 0
     nextPageToken.value = res.nextPageToken || ''
+    // Remember the token leading to the next page; drop stale deeper tokens.
+    const chain = tokenChain.value.slice(0, Math.max(currentPage.value - 1, 0))
+    if (nextPageToken.value) {
+      chain.push(nextPageToken.value)
+    }
+    tokenChain.value = chain
   } catch (err) {
     ElMessage.error((err as { message?: string })?.message || '加载变更列表失败')
   } finally {
@@ -84,17 +100,25 @@ async function load(): Promise<void> {
 }
 
 function applyFilter(): void {
-  filter.pageToken = ''
+  currentPage.value = 1
+  tokenChain.value = []
   load()
 }
 
 function resetFilter(): void {
   filter.status = ''
-  filter.team = ''
-  filter.environment = ''
   filter.labelContains = ''
-  filter.pageToken = ''
-  load()
+  applyFilter()
+}
+
+// Changing the page size invalidates the token chain; restart from page 1.
+function handlePageSizeChange(): void {
+  applyFilter()
+}
+
+function createViaTemplate(): void {
+  ElMessage.info('请在模板管理中使用模板实例化创建变更')
+  router.push('/templates')
 }
 
 function handleSelectionChange(rows: Change[]): void {
@@ -190,12 +214,6 @@ onMounted(load)
             <el-option v-for="opt in statusOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="团队">
-          <el-input v-model="filter.team" placeholder="按团队过滤" clearable style="width: 140px" />
-        </el-form-item>
-        <el-form-item label="环境">
-          <el-input v-model="filter.environment" placeholder="按环境过滤" clearable style="width: 140px" />
-        </el-form-item>
         <el-form-item label="名称">
           <el-input v-model="filter.labelContains" placeholder="名称包含" clearable style="width: 180px" />
         </el-form-item>
@@ -215,7 +233,7 @@ onMounted(load)
           <el-button :disabled="selected.length === 0" @click="bulkArchive">批量归档</el-button>
         </div>
         <div class="table-toolbar__right">
-          <el-button type="primary" @click="router.push('/changes/new')">新建变更</el-button>
+          <el-button type="primary" @click="createViaTemplate">新建变更</el-button>
         </div>
       </div>
 
@@ -251,11 +269,13 @@ onMounted(load)
 
       <div class="pager">
         <el-pagination
-          v-model:current-page="filter.pageSize"
-          :page-size="filter.pageSize"
+          v-model:current-page="currentPage"
+          v-model:page-size="filter.pageSize"
           :total="total"
-          layout="total, prev, pager, next"
+          :page-sizes="[10, 20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
           @current-change="load"
+          @size-change="handlePageSizeChange"
         />
       </div>
     </el-card>

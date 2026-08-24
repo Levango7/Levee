@@ -79,7 +79,6 @@ func (s *WebUIServer) buildMux() (http.Handler, error) {
 			req.Host = upstream.Host
 		}
 		mux.Handle("/api/", proxy)
-		mux.Handle("/events/", proxy)
 	}
 
 	// Static assets / SPA shell.
@@ -144,5 +143,5 @@ func (s *WebUIServer) DevProxyEnabled() bool {
 //
 //nolint:unused // symmetry helper, kept for future API path gating
 func isAPIPath(path string) bool {
-	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/events/")
+	return strings.HasPrefix(path, "/api/")
 }

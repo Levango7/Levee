@@ -4,12 +4,21 @@ LDFLAGS  := -ldflags "-s -w -X main.version=$(VERSION)"
 GOFLAGS  := -trimpath
 TARGETS  := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: all build test lint clean cross-build run
+.PHONY: all build web test lint clean cross-build run
 
 all: lint test build
 
+# `build` does NOT require node/npm: it compiles against the committed
+# internal/web/dist assets. Run `make web` first when the frontend changed.
 build:
 	go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/levee
+
+# Build the Web UI (npm ci + vite build) and refresh internal/web/dist so the
+# Go binary embeds the real assets. Preserves internal/web/dist/.gitignore.
+web:
+	cd web && npm ci && npm run build
+	find internal/web/dist -mindepth 1 ! -name '.gitignore' -exec rm -rf {} +
+	cp -r web/dist/. internal/web/dist/
 
 run:
 	go run ./cmd/levee $(ARGS)

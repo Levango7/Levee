@@ -56,9 +56,15 @@ func Handler(override ...fs.FS) http.Handler {
 // spaHandler is the SPA-aware file server. It tries to serve the requested
 // path from the embedded FS; if the path is missing and is not an API or
 // asset path, it serves index.html so the Vue router can take over.
+//
+// Every response carries baseline security headers. Cache-Control depends on
+// the served file: index.html is no-cache (the shell must revalidate so
+// deploys are picked up), while hashed /assets/* files are immutable.
 type spaHandler struct {
 	fsys fs.FS
 }
+
+const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
 
 // ServeHTTP implements http.Handler.
 func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +80,13 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Baseline security headers on every response, including 404s.
+	hdr := w.Header()
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	hdr.Set("X-Frame-Options", "DENY")
+	hdr.Set("Referrer-Policy", "no-referrer")
+	hdr.Set("Content-Security-Policy", contentSecurityPolicy)
+
 	clean := strings.TrimPrefix(r.URL.Path, "/")
 	if clean == "" {
 		clean = "index.html"
@@ -84,6 +97,7 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = f.Close() }()
 		stat, err := f.Stat()
 		if err == nil && !stat.IsDir() {
+			setCacheControl(w, clean)
 			http.ServeContent(w, r, stat.Name(), stat.ModTime(), readSeeker{f})
 			return
 		}
@@ -95,6 +109,7 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			defer func() { _ = f.Close() }()
 			stat, err := f.Stat()
 			if err == nil {
+				w.Header().Set("Cache-Control", "no-cache")
 				http.ServeContent(w, r, "index.html", stat.ModTime(), readSeeker{f})
 				return
 			}
@@ -104,6 +119,19 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+// setCacheControl sets the Cache-Control header for a file served out of the
+// embedded dist directory (path has the leading slash trimmed). Vite emits
+// content-hashed filenames under assets/, so they can be cached forever;
+// index.html must always be revalidated.
+func setCacheControl(w http.ResponseWriter, name string) {
+	switch {
+	case strings.HasPrefix(name, "assets/"), strings.Contains(name, "/assets/"):
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	case name == "index.html":
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+}
+
 // looksLikeAsset reports whether the path has a static-asset extension. We
 // use this to decide between SPA fallback (return index.html) and a hard 404
 // (a missing CSS/JS file should not return the HTML shell).
@@ -111,6 +139,7 @@ func looksLikeAsset(path string) bool {
 	for _, suffix := range []string{
 		".js", ".css", ".svg", ".png", ".jpg", ".jpeg", ".gif",
 		".ico", ".woff", ".woff2", ".ttf", ".eot", ".map",
+		".json", ".txt", ".webmanifest",
 	} {
 		if strings.HasSuffix(path, suffix) {
 			return true

@@ -6,6 +6,7 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { clearToken } from '@/api/client'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,13 +15,17 @@ const collapsed = ref(false)
 
 const pageTitle = computed(() => (route.meta.title as string) || 'LEVEE')
 
+// Standalone pages (login, mobile approval deeplinks) render without the
+// sidebar / header chrome so they work on phones and pre-auth screens.
+const showShell = computed(() => !route.path.startsWith('/m/') && route.path !== '/login')
+
 function toggleCollapse(): void {
   collapsed.value = !collapsed.value
 }
 
 function handleCommand(command: string): void {
   if (command === 'logout') {
-    localStorage.removeItem('levee.token')
+    clearToken()
     ElMessage.success('已退出登录')
     router.push('/login')
   } else if (command === 'docs') {
@@ -31,7 +36,7 @@ function handleCommand(command: string): void {
 
 <template>
   <el-container class="layout">
-    <el-aside :width="collapsed ? '64px' : '220px'" class="layout__aside">
+    <el-aside v-if="showShell" :width="collapsed ? '64px' : '220px'" class="layout__aside">
       <div class="layout__brand">
         <span class="layout__brand-mark">L</span>
         <span v-if="!collapsed" class="layout__brand-text">LEVEE</span>
@@ -74,7 +79,7 @@ function handleCommand(command: string): void {
     </el-aside>
 
     <el-container>
-      <el-header class="layout__header">
+      <el-header v-if="showShell" class="layout__header">
         <div class="layout__header-left">
           <el-button text @click="toggleCollapse">
             <el-icon><Fold v-if="!collapsed" /><Expand v-else /></el-icon>
