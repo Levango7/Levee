@@ -395,6 +395,16 @@ func TestIntegrationUploadDownload(t *testing.T) {
 	assert.Equal(t, content, downloaded)
 }
 
+// relaxSSHDefaults switches the ssh package's process-wide defaults to
+// insecure host checking for the duration of the test, restoring the previous
+// values afterwards. The integration tests dial in-process mock servers whose
+// host keys are not in any known_hosts file.
+func relaxSSHDefaults(t testing.TB) {
+	t.Helper()
+	ssh.SetDefaultConfig(false, "")
+	t.Cleanup(func() { ssh.SetDefaultConfig(true, "") })
+}
+
 // TestIntegrationPoolReuse verifies that the SSH connection pool reuses the
 // same underlying connection for multiple operations against one target.
 func TestIntegrationPoolReuse(t *testing.T) {
@@ -403,6 +413,7 @@ func TestIntegrationPoolReuse(t *testing.T) {
 
 	tgt := newIntegTarget(t, srv, "u", "p")
 
+	relaxSSHDefaults(t)
 	pool := ssh.NewPool(ssh.PoolConfig{
 		MaxPerTarget:        2,
 		IdleTimeout:         10 * time.Second,

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/executor"
+	"github.com/nexus/levee/internal/log"
 )
 
 // Task is the unit of work that a master dispatches to an agent. It is
@@ -204,12 +205,7 @@ func (e *AgentExecutor) Execute(ctx context.Context, task Task) Result {
 	}
 
 	start := time.Now()
-	var res Result
-	if e.runTask != nil {
-		res = e.runTask(runCtx, task)
-	} else {
-		res = e.executeWithExecutor(runCtx, task)
-	}
+	res := e.runRecovered(runCtx, task)
 	res.Duration = time.Since(start)
 	res.TaskID = task.ID
 	res.RunID = task.RunID
@@ -221,6 +217,35 @@ func (e *AgentExecutor) Execute(ctx context.Context, task Task) Result {
 		e.stats.failed.Add(1)
 	}
 	return res
+}
+
+// runRecovered runs the configured task implementation (hook or executor
+// dispatch) and converts a panic into a failed Result instead of crashing
+// the agent process. It mirrors the panic-recovery pattern of
+// internal/batch/controller.go: a misbehaving module must fail its own task,
+// never the whole runtime.
+func (e *AgentExecutor) runRecovered(ctx context.Context, task Task) (res Result) {
+	defer func() {
+		if r := recover(); r != nil {
+			res = Result{
+				TaskID:   task.ID,
+				RunID:    task.RunID,
+				BatchID:  task.BatchID,
+				Success:  false,
+				ExitCode: -1,
+				Error:    formatTaskError(task, fmt.Sprintf("panicked: %v", r)),
+			}
+			log.Error("agent: task panicked",
+				"task_id", task.ID,
+				"module", task.Module,
+				"action", task.Action,
+				"panic", fmt.Sprintf("%v", r))
+		}
+	}()
+	if e.runTask != nil {
+		return e.runTask(ctx, task)
+	}
+	return e.executeWithExecutor(ctx, task)
 }
 
 // executeWithExecutor is the production path: it dispatches through the
@@ -268,7 +293,29 @@ func (e *AgentExecutor) ExecuteBatch(ctx context.Context, tasks []Task) []Result
 	for i, task := range tasks {
 		wg.Add(1)
 		go func(idx int, t Task) {
-			defer wg.Done()
+			// Panic recovery (mirrors internal/batch/controller.go): a
+			// panicking task must not take down the whole ExecuteBatch;
+			// record it as a failed result and keep the wait group
+			// consistent.
+			defer func() {
+				if r := recover(); r != nil {
+					results[idx] = Result{
+						TaskID:   t.ID,
+						RunID:    t.RunID,
+						BatchID:  t.BatchID,
+						Success:  false,
+						ExitCode: -1,
+						Error:    formatTaskError(t, fmt.Sprintf("panicked: %v", r)),
+					}
+					e.stats.failed.Add(1)
+					log.Error("agent: batch task panicked",
+						"task_id", t.ID,
+						"module", t.Module,
+						"action", t.Action,
+						"panic", fmt.Sprintf("%v", r))
+				}
+				wg.Done()
+			}()
 			results[idx] = e.Execute(ctx, t)
 		}(i, task)
 	}

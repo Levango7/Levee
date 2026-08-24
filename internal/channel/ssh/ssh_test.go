@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 
 	"github.com/nexus/levee/internal/channel"
 )
@@ -662,6 +663,7 @@ func TestSSHPoolGetAndPut(t *testing.T) {
 	host, port := splitHostPort(t, srv.Addr())
 	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 
+	relaxHostChecking(t)
 	pool := NewPool(PoolConfig{
 		MaxPerTarget:        3,
 		IdleTimeout:         1 * time.Second,
@@ -693,6 +695,7 @@ func TestSSHPoolReuse(t *testing.T) {
 	host, port := splitHostPort(t, srv.Addr())
 	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 
+	relaxHostChecking(t)
 	pool := NewPool(PoolConfig{
 		MaxPerTarget:        2,
 		IdleTimeout:         10 * time.Second,
@@ -723,6 +726,7 @@ func TestSSHPoolMultipleConcurrent(t *testing.T) {
 	host, port := splitHostPort(t, srv.Addr())
 	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 
+	relaxHostChecking(t)
 	pool := NewPool(PoolConfig{
 		MaxPerTarget:        3,
 		IdleTimeout:         10 * time.Second,
@@ -765,6 +769,7 @@ func TestSSHPoolMaxPerTargetBlocks(t *testing.T) {
 	host, port := splitHostPort(t, srv.Addr())
 	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 
+	relaxHostChecking(t)
 	pool := NewPool(PoolConfig{
 		MaxPerTarget:        1,
 		IdleTimeout:         10 * time.Second,
@@ -798,6 +803,7 @@ func TestSSHPoolIdleReaping(t *testing.T) {
 	host, port := splitHostPort(t, srv.Addr())
 	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 
+	relaxHostChecking(t)
 	pool := NewPool(PoolConfig{
 		MaxPerTarget:        2,
 		IdleTimeout:         100 * time.Millisecond,
@@ -825,6 +831,7 @@ func TestSSHPoolClose(t *testing.T) {
 	host, port := splitHostPort(t, srv.Addr())
 	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 
+	relaxHostChecking(t)
 	pool := NewPool(PoolConfig{
 		MaxPerTarget:        2,
 		IdleTimeout:         10 * time.Second,
@@ -865,6 +872,7 @@ func TestSSHPoolMultipleTargets(t *testing.T) {
 	tgt1 := staticTarget{host: host1, port: port1, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 	tgt2 := staticTarget{host: host2, port: port2, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
 
+	relaxHostChecking(t)
 	pool := NewPool(PoolConfig{
 		MaxPerTarget:        2,
 		IdleTimeout:         10 * time.Second,
@@ -891,11 +899,51 @@ func TestSSHPoolMultipleTargets(t *testing.T) {
 
 // --- config / defaults tests -----------------------------------------------
 
+// relaxHostChecking switches the process-wide SSH defaults to insecure mode
+// for the duration of the test, restoring the previous defaults afterwards.
+// Pool tests need this because they dial the in-process mock server whose
+// host key is not in any known_hosts file.
+func relaxHostChecking(tb testing.TB) {
+	tb.Helper()
+	prevStrict, prevKnownHosts := currentDefaults()
+	SetDefaultConfig(false, "")
+	tb.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
+}
+
+func TestSetDefaultConfigRoundTrip(t *testing.T) {
+	prevStrict, prevKnownHosts := currentDefaults()
+	t.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
+
+	// Explicit opt-out propagates into NewConfig.
+	SetDefaultConfig(false, "/tmp/kh_known")
+	cfg := NewConfig()
+	assert.False(t, cfg.StrictHostCheck)
+	assert.Equal(t, "/tmp/kh_known", cfg.KnownHostsPath)
+
+	// Strict with an explicit path propagates verbatim.
+	SetDefaultConfig(true, "/tmp/kh_strict")
+	cfg = NewConfig()
+	assert.True(t, cfg.StrictHostCheck)
+	assert.Equal(t, "/tmp/kh_strict", cfg.KnownHostsPath)
+
+	// Strict with an empty path auto-detects ~/.ssh/known_hosts.
+	SetDefaultConfig(true, "")
+	cfg = NewConfig()
+	assert.True(t, cfg.StrictHostCheck)
+	assert.Equal(t, DefaultKnownHostsPath(), cfg.KnownHostsPath)
+}
+
 func TestNewConfig(t *testing.T) {
+	prevStrict, prevKnownHosts := currentDefaults()
+	t.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
+	SetDefaultConfig(true, "")
+
 	cfg := NewConfig()
 	assert.Equal(t, 0, cfg.Port, "NewConfig should leave Port zero so Target.Port() is honoured")
 	assert.Equal(t, DefaultConnectTimeout, cfg.ConnectTimeout)
-	assert.False(t, cfg.StrictHostCheck)
+	assert.True(t, cfg.StrictHostCheck, "NewConfig must default to strict host checking (secure-by-default)")
+	assert.NotEmpty(t, cfg.KnownHostsPath, "known_hosts path must be auto-detected when unset")
+	assert.Contains(t, cfg.KnownHostsPath, ".ssh")
 }
 
 func TestPoolConfigWithDefaults(t *testing.T) {
@@ -940,4 +988,105 @@ func TestPoolKey(t *testing.T) {
 
 	tgt = staticTarget{host: "10.0.0.1", port: 0, typ: "ssh"}
 	assert.Equal(t, "10.0.0.1:22", poolKey(tgt))
+}
+
+// --- host-key callback selection tests --------------------------------------
+
+// callbackFor builds a channel for cfg and returns its resolved host-key
+// callback via buildHostKeyCallback.
+func callbackFor(t *testing.T, cfg *Config) (ssh.HostKeyCallback, error) {
+	t.Helper()
+	ch := &SSHChannel{
+		target: staticTarget{host: "127.0.0.1", port: 22, typ: "ssh"},
+		cfg:    cfg,
+	}
+	return ch.buildHostKeyCallback()
+}
+
+func TestBuildHostKeyCallbackSelectionOverrideWins(t *testing.T) {
+	prevStrict, prevKnownHosts := currentDefaults()
+	t.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
+	SetDefaultConfig(true, "")
+
+	var calls int
+	override := func(string, net.Addr, ssh.PublicKey) error { calls++; return nil }
+
+	cb, err := callbackFor(t, &Config{StrictHostCheck: true, KnownHostsPath: "/nonexistent", HostKeyCallback: override})
+	require.NoError(t, err)
+	key := mockPublicKey(t)
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	require.NoError(t, cb("127.0.0.1", addr, key))
+	assert.Equal(t, 1, calls, "explicit HostKeyCallback must take precedence over known_hosts")
+}
+
+func TestBuildHostKeyCallbackInsecureAcceptsAnyKey(t *testing.T) {
+	cb, err := callbackFor(t, &Config{StrictHostCheck: false})
+	require.NoError(t, err)
+	require.NotNil(t, cb)
+	// Insecure mode must accept a key that appears in no known_hosts file.
+	key := mockPublicKey(t)
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	assert.NoError(t, cb("some-unknown-host.example.com", addr, key))
+}
+
+func TestBuildHostKeyCallbackStrictNoPathFails(t *testing.T) {
+	cb, err := callbackFor(t, &Config{StrictHostCheck: true, KnownHostsPath: ""})
+	require.Error(t, err)
+	assert.Nil(t, cb)
+	assert.Contains(t, err.Error(), "known_hosts")
+}
+
+func TestBuildHostKeyCallbackStrictMissingFileMentionsKeyscan(t *testing.T) {
+	cb, err := callbackFor(t, &Config{StrictHostCheck: true, KnownHostsPath: filepath.Join(t.TempDir(), "does_not_exist")})
+	require.Error(t, err)
+	assert.Nil(t, cb)
+	assert.Contains(t, err.Error(), "ssh-keyscan")
+}
+
+// writeKnownHosts creates a temporary known_hosts file trusting pubKey for
+// addr, returning the file path.
+func writeKnownHosts(t *testing.T, addrs []net.Addr, key ssh.PublicKey) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "known_hosts")
+	hostPorts := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		hostPorts = append(hostPorts, a.String())
+	}
+	line := knownhosts.Line(hostPorts, key)
+	require.NoError(t, os.WriteFile(path, []byte(line+"\n"), 0o600))
+	return path
+}
+
+func mockPublicKey(t *testing.T) ssh.PublicKey {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	pk, err := ssh.NewPublicKey(pub)
+	require.NoError(t, err)
+	return pk
+}
+
+func TestStrictHostCheckAgainstKnownHostsFile(t *testing.T) {
+	trustedKey := mockPublicKey(t)
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	path := writeKnownHosts(t, []net.Addr{addr}, trustedKey)
+
+	cb, err := callbackFor(t, &Config{StrictHostCheck: true, KnownHostsPath: path})
+	require.NoError(t, err)
+
+	// The trusted host+key combination verifies. Note that the SSH handshake
+	// delivers the hostname in host:port form.
+	assert.NoError(t, cb("127.0.0.1:22", addr, trustedKey))
+
+	// A different key for a known host (possible MITM / key rotation) fails
+	// and the error explains how to provision the new key.
+	otherKey := mockPublicKey(t)
+	err = cb("127.0.0.1:22", addr, otherKey)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ssh-keyscan")
+
+	// An unlisted host fails too.
+	err = cb("unlisted-host.example.com:22", addr, trustedKey)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ssh-keyscan")
 }

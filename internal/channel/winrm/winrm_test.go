@@ -336,6 +336,52 @@ func TestPoolGetMultipleTargetsSeparateBuckets(t *testing.T) {
 	p.Put(ch2)
 }
 
+func TestPoolGetDifferentCredentialsSeparateBuckets(t *testing.T) {
+	var created int32
+	p := newTestPool(3, &created)
+	defer p.Close()
+
+	// Same host, different usernames: the pool must never hand a channel
+	// authenticated as one user to a caller targeting another user.
+	t1 := newFakeTarget("h1") // Administrator
+	t2 := newFakeTarget("h1")
+	t2.cred.Username = "SvcDeploy"
+
+	ch1, err := p.Get(context.Background(), t1)
+	if err != nil {
+		t.Fatalf("Get admin: %v", err)
+	}
+	p.Put(ch1)
+
+	ch2, err := p.Get(context.Background(), t2)
+	if err != nil {
+		t.Fatalf("Get svcdeploy: %v", err)
+	}
+	if ch1 == ch2 {
+		t.Fatal("channels for different credentials to the same host must be distinct")
+	}
+	if atomic.LoadInt32(&created) != 2 {
+		t.Errorf("created = %d, want 2 (no credential aliasing)", created)
+	}
+	p.Put(ch2)
+
+	// Re-getting with the original credential must reuse the admin channel,
+	// not the SvcDeploy one.
+	ch3, err := p.Get(context.Background(), t1)
+	if err != nil {
+		t.Fatalf("Get admin again: %v", err)
+	}
+	if ch3 != ch1 {
+		t.Error("re-Get with original credential should reuse its own idle channel")
+	}
+	p.Put(ch3)
+
+	stats := p.Stats()
+	if len(stats) != 2 {
+		t.Errorf("stats buckets = %d, want 2 (one per username)", len(stats))
+	}
+}
+
 func TestPoolConcurrencyLimit(t *testing.T) {
 	var created int32
 	maxPerTarget := 2

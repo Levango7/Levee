@@ -42,10 +42,11 @@ import (
 // The zero value is not usable; callers must use DefaultSandboxConfig or
 // populate the fields explicitly.
 type SandboxConfig struct {
-	// CPUQuota is the maximum CPU time (user + system) the plugin may
-	// consume per invocation. Zero means "no limit". On platforms that
-	// do not support per-process CPU quotas the limit is enforced only
-	// through Timeout.
+	// CPUQuota caps the plugin's CPU usage as a RATE: it is the CPU time
+	// budget per 100ms scheduling period, where 100ms equals one full
+	// core (e.g. 250ms/100ms = 2.5 cores). Zero means "no limit". On
+	// platforms without per-process CPU quotas the limit degrades to
+	// Timeout enforcement only.
 	CPUQuota time.Duration `json:"cpu_quota" yaml:"cpu_quota"`
 
 	// MemoryLimit is the maximum resident set size the plugin may use,
@@ -173,17 +174,29 @@ func (s *Sandbox) Start(ctx context.Context) error {
 		return fmt.Errorf("sandbox %q: empty binary path", s.name)
 	}
 
-	if err := s.startLocked(); err != nil {
+	cmd, err := s.startLocked()
+	if err != nil {
 		return err
 	}
+	s.doneCh = make(chan struct{})
 	s.started.Store(true)
 	s.stopped.Store(false)
+	// Exactly one monitor goroutine per Start. Restarts are handled inside
+	// the monitor loop (which re-waits on the replacement process), so the
+	// monitor must NOT be respawned by startLocked — spawning there would
+	// multiply monitors on every crash.
+	go s.monitor(cmd)
 	return nil
 }
 
-// startLocked spawns the process and the monitor goroutine. The caller
-// must hold s.mu.
-func (s *Sandbox) startLocked() error {
+// startLocked spawns the plugin sub-process and applies resource limits.
+// The caller must hold s.mu. It does not touch doneCh or the monitor: both
+// belong to Start's lifecycle, not to a single process generation. The
+// spawned Cmd is returned AND stored in s.cmd; the monitor owns the returned
+// reference for Wait purposes and reads it without holding s.mu, which is
+// safe because only this function ever replaces it and only while its caller
+// holds s.mu.
+func (s *Sandbox) startLocked() (*exec.Cmd, error) {
 	cmd := exec.Command(s.binary, s.args...)
 	if len(s.env) > 0 {
 		cmd.Env = s.env
@@ -192,41 +205,35 @@ func (s *Sandbox) startLocked() error {
 	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("sandbox %q: start process: %w", s.name, err)
+		return nil, fmt.Errorf("sandbox %q: start process: %w", s.name, err)
 	}
 
 	s.cmd = cmd
-	s.doneCh = make(chan struct{})
 
 	// Apply resource limits best-effort. We do not fail Start when the
 	// limits cannot be applied: the wall-clock timeout still provides a
 	// safety net and we want plugins to load on platforms that lack the
-	// relevant syscalls. On Unix, rlimit-based limits only apply to the
-	// calling process (the host) and cannot constrain child processes
-	// once cmd.Start() has returned; the platform-specific
-	// applyResourceLimits logs a warning when MemoryLimit is configured.
+	// relevant syscalls (Linux enforces via cgroup v2; Windows via job
+	// objects; other Unix platforms log an informational warning).
 	applyResourceLimits(cmd.Process, s.config)
-	if s.config.MemoryLimit > 0 {
-		log.Warn("sandbox: memory limit is informational on this platform; use cgroups/job objects for hard enforcement",
-			"plugin", s.name, "memory_limit", s.config.MemoryLimit)
-	}
-
-	go s.monitor()
-	return nil
+	return cmd, nil
 }
 
 // monitor waits for the sub-process to exit and handles restart. It runs
-// in its own goroutine, one per Start call. The goroutine exits when the
-// process exits and either the restart budget is exhausted or Stop was
-// called.
-func (s *Sandbox) monitor() {
+// in its own goroutine, one per Start call, and owns the current process
+// generation's Cmd for Wait purposes (passed in and replaced on restart).
+// The goroutine exits when the process exits and either the restart budget
+// is exhausted or Stop was called. It must not block on s.mu while a
+// Stop is pending: Stop holds s.mu until it observes doneCh closing.
+func (s *Sandbox) monitor(cmd *exec.Cmd) {
 	defer close(s.doneCh)
 
 	for {
-		err := s.cmd.Wait()
+		// Wait without holding s.mu — the cmd reference is private to this
+		// monitor generation.
+		err := cmd.Wait()
 		s.mu.Lock()
 		s.waitErr = err
-		cmd := s.cmd
 		s.mu.Unlock()
 
 		// If Stop was called, do not restart.
@@ -244,18 +251,20 @@ func (s *Sandbox) monitor() {
 		crashCount := int(s.crashes.Add(1))
 		restarted := false
 		if s.config.MaxRestarts >= 0 && crashCount <= s.config.MaxRestarts {
-			// Back off before restart.
+			// Back off before restart (outside s.mu so a concurrent Stop is
+			// never blocked behind the sleep).
 			if s.config.RestartDelay > 0 {
 				time.Sleep(s.config.RestartDelay)
 			}
 			s.mu.Lock()
 			if !s.stopped.Load() {
-				if rerr := s.startLocked(); rerr != nil {
+				if next, rerr := s.startLocked(); rerr != nil {
 					log.Error("sandbox restart failed",
 						"plugin", s.name,
 						"crash", crashCount,
 						"err", rerr)
 				} else {
+					cmd = next // this monitor keeps owning the replacement
 					restarted = true
 				}
 			}
@@ -281,8 +290,7 @@ func (s *Sandbox) monitor() {
 			s.started.Store(false)
 			return
 		}
-		// Loop back to wait on the new process.
-		_ = cmd
+		// Loop back to wait on the replacement process started above.
 	}
 }
 
@@ -317,6 +325,7 @@ func (s *Sandbox) Stop(grace time.Duration) error {
 	select {
 	case <-done:
 		s.started.Store(false)
+		cleanupResources(cmd.Process)
 		return nil
 	case <-time.After(grace):
 	}
@@ -333,6 +342,7 @@ func (s *Sandbox) Stop(grace time.Duration) error {
 		<-done
 	}
 	s.started.Store(false)
+	cleanupResources(cmd.Process)
 	return nil
 }
 

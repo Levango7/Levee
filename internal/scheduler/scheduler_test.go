@@ -407,16 +407,20 @@ type mockDispatcher struct {
 	calls    atomic.Int32
 	results  map[string]agent.Result
 	failWith error
+	panicOn  map[string]any // task ID -> panic value
 }
 
 func newMockDispatcher() *mockDispatcher {
-	return &mockDispatcher{results: make(map[string]agent.Result)}
+	return &mockDispatcher{results: make(map[string]agent.Result), panicOn: make(map[string]any)}
 }
 
 func (d *mockDispatcher) Dispatch(ctx context.Context, agentID string, task agent.Task) (agent.Result, error) {
 	d.calls.Add(1)
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if v, ok := d.panicOn[task.ID]; ok {
+		panic(v)
+	}
 	if d.failWith != nil {
 		return agent.Result{}, d.failWith
 	}
@@ -463,6 +467,29 @@ func TestSchedulerCollectResultsError(t *testing.T) {
 	require.Len(t, out, 1)
 	assert.False(t, out[0].Success)
 	assert.NotEmpty(t, out[0].Error)
+}
+
+func TestSchedulerCollectResultsRecoversPanic(t *testing.T) {
+	r := agent.NewAgentRegistry()
+	require.NoError(t, r.Register(agent.AgentInfo{ID: "a1"}))
+	s := NewScheduler(r, RoundRobin)
+
+	d := newMockDispatcher()
+	d.panicOn["t-bad"] = "dispatch boom"
+	d.results["t-good"] = agent.Result{TaskID: "t-good", Success: true}
+	s.SetDispatcher(d)
+
+	out, err := s.CollectResults(nil, []Assignment{
+		{Task: agent.Task{ID: "t-good"}, AgentID: "a1"},
+		{Task: agent.Task{ID: "t-bad", Module: "shell"}, AgentID: "a1"},
+	})
+	require.Error(t, err, "the panic must surface as a dispatch error")
+	assert.Contains(t, err.Error(), "panicked")
+	require.Len(t, out, 2)
+	assert.True(t, out[0].Success)
+	assert.False(t, out[1].Success, "panicking dispatch must be recorded as a failed result")
+	assert.Contains(t, out[1].Error, "panicked")
+	assert.Contains(t, out[1].Error, "dispatch boom")
 }
 
 func TestSchedulerSnapshot(t *testing.T) {

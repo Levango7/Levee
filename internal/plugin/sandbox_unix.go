@@ -43,3 +43,7 @@ func doKill(p *os.Process) error {
 	}
 	return p.Signal(syscall.SIGKILL)
 }
+
+// cleanupResources releases per-process platform resources (cgroups, job
+// objects). Other Unix platforms track no such resources: nothing to do.
+func cleanupResources(_ *os.Process) {}

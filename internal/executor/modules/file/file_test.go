@@ -111,13 +111,29 @@ func (m *mockChannel) execCount() int {
 // --- helpers --------------------------------------------------------------
 
 // writeTempFile creates a temp file with the given content and returns its
-// path. The t.Cleanup hook removes it at the end of the test.
+// path. The t.Cleanup hook removes it at the end of the test. The containing
+// directory is added to LEVEE_FILE_MODULE_EXTRA_DIRS for the duration of the
+// test so that the absolute path passes resolveLocalSrc's control-node read
+// policy.
 func writeTempFile(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "src.txt")
 	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+	allowExtraDir(t, dir)
 	return p
+}
+
+// allowExtraDir adds dir to LEVEE_FILE_MODULE_EXTRA_DIRS for the remainder of
+// the test (restored afterwards). Successive calls accumulate.
+func allowExtraDir(t *testing.T, dir string) {
+	t.Helper()
+	prev := os.Getenv(extraDirsEnvVar)
+	if prev == "" {
+		t.Setenv(extraDirsEnvVar, dir)
+		return
+	}
+	t.Setenv(extraDirsEnvVar, prev+string(os.PathListSeparator)+dir)
 }
 
 // sha256Hex is a small helper for building expected checksum strings.
@@ -252,7 +268,73 @@ func TestCopyMissingSrc(t *testing.T) {
 		Channel: ch,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "read src")
+	assert.Contains(t, err.Error(), "must not be an absolute path")
+	assert.Contains(t, err.Error(), extraDirsEnvVar)
+}
+
+// --- resolveLocalSrc policy tests -------------------------------------------
+
+func TestResolveLocalSrcRelativeInsideWorkDirOK(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	got, err := resolveLocalSrc("configs/app.conf")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "configs", "app.conf"), got)
+
+	// A plain dot-relative path with redundant segments also resolves.
+	got, err = resolveLocalSrc("./a/../b.txt")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "b.txt"), got)
+}
+
+func TestResolveLocalSrcDotDotEscapeRejected(t *testing.T) {
+	dir := t.TempDir()
+	work := filepath.Join(dir, "work")
+	require.NoError(t, os.MkdirAll(work, 0o755))
+	t.Chdir(work)
+
+	_, err := resolveLocalSrc("../../secrets.txt")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes")
+	assert.Contains(t, err.Error(), extraDirsEnvVar)
+}
+
+func TestResolveLocalSrcAbsoluteRejected(t *testing.T) {
+	_, err := resolveLocalSrc(`/etc/shadow`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute")
+	assert.Contains(t, err.Error(), extraDirsEnvVar)
+
+	_, err = resolveLocalSrc(`C:\Windows\system32\config`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute")
+}
+
+func TestResolveLocalSrcAllowlistedAbsoluteOK(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "app.conf")
+	allowExtraDir(t, dir)
+
+	got, err := resolveLocalSrc(p)
+	require.NoError(t, err)
+	assert.Equal(t, p, got)
+
+	// A path under (not exactly at) the allowlisted directory is fine too.
+	sub := filepath.Join(dir, "sub", "x.txt")
+	got, err = resolveLocalSrc(sub)
+	require.NoError(t, err)
+	assert.Equal(t, sub, got)
+
+	// Sibling directories stay rejected even when one dir is allowlisted.
+	sibling := filepath.Join(filepath.Dir(dir), "sibling", "y.txt")
+	_, err = resolveLocalSrc(sibling)
+	require.Error(t, err)
+}
+
+func TestResolveLocalSrcEmptyRejected(t *testing.T) {
+	_, err := resolveLocalSrc("   ")
+	require.Error(t, err)
 }
 
 func TestCopyMissingDestArg(t *testing.T) {

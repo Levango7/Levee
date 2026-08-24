@@ -199,6 +199,19 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 
 	// 1. Pre-apply verification. A failure aborts before any change is
 	//    made: no locks, no apply, no rollback.
+	//
+	//    KNOWN GAP (audited, deliberately not papered over): RunPhase
+	//    executes only gates explicitly REGISTERED on cr.verifier. The
+	//    compiled plan carries per-step inline gate DECLARATIONS
+	//    (plan.PlanStep.Gate *dsl.GateSpec → GateCheck{Type,Command,...})
+	//    but no named gate REFERENCES, and nothing in the engine
+	//    materialises those declarations into registered verify.Gate
+	//    implementations. An empty GateManager therefore returns zero
+	//    results for every phase and every run silently passes. A future
+	//    fix should either compile GateSpecs into registered gates here or
+	//    introduce declared gate IDs that RunPhase can require to exist;
+	//    inventing such IDs now would fabricate semantics nothing else
+	//    shares.
 	preInput := verify.GateInput{
 		RunID:     result.RunID,
 		TargetIDs: targets,

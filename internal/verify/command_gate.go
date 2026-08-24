@@ -33,6 +33,65 @@ const (
 	DefaultCommandRetryDelay = 1 * time.Second
 )
 
+// Command-policy deviation from the shell module, documented deliberately:
+//
+// internal/executor/modules/shell validates commands against a strict
+// ALLOWLIST (alphanumerics plus -_./= and spaces). Verify gates
+// intentionally accept richer commands because readiness probes commonly
+// need pipelines ("journalctl -u app | grep -c started"), output
+// redirection ("... > /dev/null") and fd duplication ("2>&1"). Running the
+// shell whitelist here would make most real-world gates unexpressible.
+//
+// Instead the gate applies a metacharacter BLACKLIST
+// (validateGateCommand): it rejects the primitives that turn a single probe
+// into arbitrary code execution —
+//
+//   - command substitution: "$(...)" and backticks;
+//   - environment / parameter expansion: "$";
+//   - unconditional backgrounding: "&" (except fd duplication such as 2>&1);
+//   - sequential chaining: ";" and embedded newlines (which start a new
+//     command line).
+//
+// Conditional chaining via "&&" is rejected implicitly (it contains "&").
+// Unconditional "|" is allowed per the policy above; note that this makes
+// the conditional-or "||" syntactically acceptable too — accepted as part
+// of the same documented trade-off, since every element of an "||" chain
+// still runs under the gate's exit-code expectation.
+//
+// Gate commands today come from compiled plans authored by operators; the
+// blacklist is defence-in-depth for the case where plan content is derived
+// from less-trusted input.
+func validateGateCommand(cmd string) error {
+	if strings.TrimSpace(cmd) == "" {
+		return fmt.Errorf("empty command")
+	}
+	for i := 0; i < len(cmd); i++ {
+		switch c := cmd[i]; c {
+		case ';':
+			return fmt.Errorf("disallowed character ';' (sequential chaining is forbidden in gate commands)")
+		case '&':
+			// Allow fd-duplication redirections like 2>&1 / 1>&2; reject
+			// every other use (backgrounding / &&).
+			if i > 0 && cmd[i-1] == '>' && i+1 < len(cmd) && cmd[i+1] >= '0' && cmd[i+1] <= '9' {
+				continue
+			}
+			return fmt.Errorf("disallowed character '&' (backgrounding and && chaining are forbidden in gate commands; fd duplication like 2>&1 is allowed)")
+		case '`':
+			return fmt.Errorf("disallowed character '`' (backtick command substitution is forbidden in gate commands)")
+		case '$':
+			return fmt.Errorf("disallowed character '$' (command substitution and parameter expansion are forbidden in gate commands)")
+		case '\n', '\r':
+			return fmt.Errorf("disallowed newline (multi-command gate lines are forbidden)")
+		}
+	}
+	return nil
+}
+
+// ValidateGateCommand reports whether cmd satisfies the verify-gate command
+// policy (see validateGateCommand). It is exported so that plan compilers
+// and DSL tooling can reject unsafe gate commands before a workflow runs.
+func ValidateGateCommand(cmd string) error { return validateGateCommand(cmd) }
+
 // CommandGateOption configures a CommandGate at construction time. The
 // functional-options pattern keeps the constructor signature small while
 // allowing callers to override only the fields they care about.
@@ -84,11 +143,20 @@ type CommandGate struct {
 	timeout      time.Duration
 	retries      int
 	retryDelay   time.Duration
+
+	// policyErr holds the result of validateGateCommand for g.command. It is
+	// set at construction time and surfaced by Check so that an unsafe gate
+	// command can never reach a channel.
+	policyErr error
 }
 
 // NewCommandGate returns a CommandGate with the given name, phase and command.
 // The expected exit code defaults to 0 and the expected stdout defaults to
 // "" (not checked). Override the defaults with the provided options.
+//
+// The command is validated against the verify-gate command policy (see
+// validateGateCommand); violations do not panic here — they are reported by
+// Check (and available via PolicyError) so that construction remains total.
 func NewCommandGate(name string, phase GatePhase, cmd string, opts ...CommandGateOption) *CommandGate {
 	g := &CommandGate{
 		name:         name,
@@ -103,6 +171,7 @@ func NewCommandGate(name string, phase GatePhase, cmd string, opts ...CommandGat
 	for _, opt := range opts {
 		opt(g)
 	}
+	g.policyErr = validateGateCommand(cmd)
 	return g
 }
 
@@ -111,6 +180,10 @@ func (g *CommandGate) Name() string { return g.name }
 
 // Phase returns the phase at which this gate runs.
 func (g *CommandGate) Phase() GatePhase { return g.phase }
+
+// PolicyError returns the command-policy violation for this gate's command,
+// or nil when the command satisfies the policy.
+func (g *CommandGate) PolicyError() error { return g.policyErr }
 
 // Check runs the command on the target host through input.Channel and verifies
 // the exit code and stdout. It retries up to g.retries times on failure, with
@@ -136,6 +209,22 @@ func (g *CommandGate) Check(ctx context.Context, input GateInput) (GateResult, e
 				"cause":  err.Error(),
 			},
 		}, nil
+	}
+
+	// Enforce the gate command policy before touching the channel: an unsafe
+	// command must never execute, not even once.
+	if g.policyErr != nil {
+		return GateResult{
+			Passed:  false,
+			Message: fmt.Sprintf("command gate %q rejected unsafe command: %v", g.name, g.policyErr),
+			Details: map[string]any{
+				"gate":    "command",
+				"name":    g.name,
+				"command": g.command,
+				"reason":  "unsafe_command",
+				"cause":   g.policyErr.Error(),
+			},
+		}, fmt.Errorf("command gate %q: unsafe command: %w", g.name, g.policyErr)
 	}
 
 	if input.Channel == nil {

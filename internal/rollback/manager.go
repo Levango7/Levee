@@ -17,9 +17,10 @@ package rollback
 //     back, so that dependencies are undone in the correct order.
 //   - Reverse step order within a batch: within a batch, steps are rolled
 //     back in reverse execution order (last step first).
-//   - Whitelist enforcement: every rollback step's module.action must appear
-//     in the Manager's whitelist when the whitelist is non-empty. A step not
-//     in the whitelist is skipped (not executed) and the skip is recorded in
+//   - Whitelist enforcement: a rollback step is executed only when its
+//     module.action is allowed by the Manager's policy — WithWhitelistAll
+//     allows everything, otherwise the action must be listed via WithWhitelist.
+//     A denied step is skipped (not executed) and the denial is recorded in
 //     the result so that operators can audit what was not undone.
 //   - No-rollback passthrough: a plan step without a RollbackSpec is recorded
 // as skipped with reason "no rollback spec" — it is not an error.
@@ -29,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,31 +151,42 @@ type StepRollbackResult struct {
 // Manager may be reused across multiple Rollback calls (though in practice
 // each failed apply gets its own Manager).
 type Manager struct {
-	whitelist   map[string]bool // "module.action" -> true
-	concurrency int             // per-batch target parallelism; >= 1
-	stopOnError bool            // stop at first step error
+	whitelist    map[string]bool // "module.action" -> true
+	whitelistAll bool            // escape hatch: allow every module.action
+	concurrency  int             // per-batch target parallelism; >= 1
+	stopOnError  bool            // stop at first step error
 }
 
 // ManagerOption configures a Manager at construction time.
 type ManagerOption func(*Manager)
 
 // WithWhitelist sets the allowed rollback actions whitelist. Each entry is a
-// "module.action" string (e.g. "pkg.install", "file.copy"). When the
-// whitelist is non-empty, a rollback step whose module.action is not listed
-// is skipped (not executed) and the skip is recorded with reason
-// "not in rollback whitelist". When the whitelist is empty (the default), all
-// rollback steps are allowed — this keeps the zero-configuration path
-// permissive for tests and embedded use.
+// "module.action" string (e.g. "pkg.install", "file.copy"). A rollback step
+// whose module.action is not listed is denied: it is not executed and the
+// denial is recorded on the step result with a SkipReason that carries
+// ErrStepNotWhitelisted so callers can detect denials programmatically.
+//
+// An EMPTY whitelist denies every rollback step (deny-by-default); use
+// WithWhitelistAll for an explicit allow-all.
 //
 // The whitelist is the primary safety guard against a workflow author
 // smuggling a destructive action into a RollbackSpec. Production deployments
-// should always set it.
+// should always set an explicit whitelist instead of allowing everything.
 func WithWhitelist(actions []string) ManagerOption {
 	return func(m *Manager) {
 		for _, a := range actions {
 			m.whitelist[a] = true
 		}
 	}
+}
+
+// WithWhitelistAll explicitly allows every rollback step regardless of its
+// module.action. It replaces the previous insecure default (an empty
+// whitelist used to mean allow-all): opting into unrestricted rollback now
+// requires this deliberate, greppable declaration. Tests and embedded use
+// that genuinely want every step allowed should pass this option.
+func WithWhitelistAll() ManagerOption {
+	return func(m *Manager) { m.whitelistAll = true }
 }
 
 // WithConcurrency sets the per-batch target parallelism. n <= 0 is ignored
@@ -200,7 +213,9 @@ func WithStopOnError(b bool) ManagerOption {
 }
 
 // NewManager returns a Manager configured by opts. The zero-value defaults
-// are: empty whitelist (allow all), concurrency 1 (serial), stopOnError true.
+// are: empty whitelist (DENY every rollback step — use WithWhitelist to allow
+// specific actions or WithWhitelistAll for an explicit allow-all),
+// concurrency 1 (serial), stopOnError true.
 func NewManager(opts ...ManagerOption) *Manager {
 	m := &Manager{
 		whitelist:   make(map[string]bool),
@@ -211,6 +226,16 @@ func NewManager(opts ...ManagerOption) *Manager {
 		opt(m)
 	}
 	return m
+}
+
+// allows reports whether a "module.action" pair may be executed under the
+// configured whitelist policy: WithWhitelistAll allows everything; otherwise
+// the action must be listed explicitly (an empty whitelist denies all).
+func (m *Manager) allows(moduleAction string) bool {
+	if m.whitelistAll {
+		return true
+	}
+	return m.whitelist[moduleAction]
 }
 
 // Whitelist returns the configured rollback whitelist in sorted order. The
@@ -238,8 +263,9 @@ func (m *Manager) Whitelist() []string {
 //   - nil execFn: treated as "no-op" — all steps are recorded as skipped
 //     with reason "no execute function". This is useful for dry-run
 //     invocations that only want to see what would be rolled back.
-//   - whitelist non-empty: steps whose module.action is not listed are
-//     skipped with reason "not in rollback whitelist".
+//   - whitelist policy (deny-by-default): steps whose module.action is not
+//     allowed (WithWhitelistAll or listed via WithWhitelist) are skipped
+//     with reason "not in rollback whitelist".
 //   - stopOnError true: the Manager stops at the first step error and
 //     returns; remaining batches are not rolled back.
 //   - stopOnError false: the Manager continues and records all errors.
@@ -408,12 +434,14 @@ func (m *Manager) executeRollbackStep(ctx context.Context, target, origStepName 
 		Action:           rbStep.Action,
 	}
 
-	// Whitelist validation. When the whitelist is non-empty, only listed
-	// module.action pairs are allowed. An empty whitelist means "allow
-	// all" (permissive default for tests / embedded use).
-	if len(m.whitelist) > 0 && !m.whitelist[rbStep.Module+"."+rbStep.Action] {
+	// Whitelist validation. Deny-by-default: a module.action is allowed only
+	// when WithWhitelistAll was set or the pair is listed via WithWhitelist.
+	// A denied step is skipped (never executed) and the skip reason embeds
+	// ErrStepNotWhitelisted so callers can detect denials programmatically
+	// (see NotWhitelisted).
+	if !m.allows(rbStep.Module + "." + rbStep.Action) {
 		sr.Skipped = true
-		sr.SkipReason = fmt.Sprintf("%s.%s not in rollback whitelist", rbStep.Module, rbStep.Action)
+		sr.SkipReason = fmt.Sprintf("%s.%s not in rollback whitelist: %v", rbStep.Module, rbStep.Action, ErrStepNotWhitelisted)
 		return sr
 	}
 
@@ -444,9 +472,15 @@ func IsSkipped(sr StepRollbackResult) bool { return sr.Skipped }
 // step (executed and returned an error). Skipped steps are not errors.
 func HasError(sr StepRollbackResult) bool { return !sr.Skipped && sr.Error != nil }
 
-// ErrStepNotInWhitelist is a sentinel error type used to mark rollback steps
-// that were skipped because they were not in the whitelist. It is currently
-// recorded via the SkipReason string rather than the Error field (skipped
-// steps are not errors), but the sentinel is exported so callers can build
-// typed predicates if they want to distinguish skip reasons programmatically.
-var ErrStepNotInWhitelist = errors.New("rollback step not in whitelist")
+// ErrStepNotWhitelisted is the sentinel recorded (embedded in SkipReason) on
+// rollback steps that were denied because their module.action was not allowed
+// by the whitelist policy. Denied steps are never executed and are not errors;
+// use NotWhitelisted to classify them programmatically.
+var ErrStepNotWhitelisted = errors.New("rollback step not whitelisted")
+
+// NotWhitelisted reports whether a StepRollbackResult was denied by the
+// rollback whitelist policy. Denied steps are skipped (not executed) but are
+// distinct from other skip reasons such as a missing RollbackSpec.
+func NotWhitelisted(sr StepRollbackResult) bool {
+	return sr.Skipped && strings.Contains(sr.SkipReason, ErrStepNotWhitelisted.Error())
+}

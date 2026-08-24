@@ -35,6 +35,7 @@ import (
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/executor"
+	"github.com/nexus/levee/internal/log"
 )
 
 // Module is the user module singleton. It is stateless and safe for concurrent
@@ -250,21 +251,45 @@ func runRemoteStep(ctx context.Context, ch channel.Channel, cmd string) (*remote
 // setPassword sets name's password by uploading "name:password\n" to a
 // randomly-named temp file over the channel's file-transfer path and running
 // `chpasswd < file`. The plaintext credential therefore never travels inside
-// a command string. The same Exec removes the file before exiting so no
-// credential material is left on disk, even when chpasswd fails.
+// a command string.
+//
+// Exposure window hardening:
+//   - The upload target is /dev/shm/.levee-chpasswd-<rand> (tmpfs, never
+//     touching disk); /tmp is used only as a fallback when the /dev/shm
+//     upload fails (e.g. tmpfs missing or undersized).
+//   - The consuming Exec starts with `umask 077` so the file is only ever
+//     readable by root even during its short lifetime, removes it before
+//     exiting, and propagates chpasswd's exit status.
+//   - When an Upload fails, a best-effort `rm -f` is sent first so no
+//     partial credential material lingers at the failed target.
 func setPassword(ctx context.Context, ch channel.Channel, name, password string) (*remoteStep, error) {
 	var suffix [4]byte
 	if _, err := crand.Read(suffix[:]); err != nil {
 		return nil, fmt.Errorf("generate temp suffix: %w", err)
 	}
-	tmpPath := fmt.Sprintf("/tmp/.levee-chpasswd-%s", hex.EncodeToString(suffix[:]))
+	rand := hex.EncodeToString(suffix[:])
 
 	content := fmt.Sprintf("%s:%s\n", name, password)
+
+	tmpPath := "/dev/shm/.levee-chpasswd-" + rand
 	if err := ch.Upload(ctx, tmpPath, strings.NewReader(content)); err != nil {
-		return nil, fmt.Errorf("upload credentials: %w", err)
+		// Best-effort cleanup of any partial file at the shm target.
+		cleanup := fmt.Sprintf("rm -f %s", shellQuote(tmpPath))
+		if _, cErr := ch.Exec(ctx, cleanup); cErr != nil {
+			log.DebugCtx(ctx, "user: best-effort cleanup after upload failure failed",
+				"path", tmpPath, "err", cErr)
+		}
+		// Fall back to /tmp.
+		tmpPath = "/tmp/.levee-chpasswd-" + rand
+		if err := ch.Upload(ctx, tmpPath, strings.NewReader(content)); err != nil {
+			cleanup = fmt.Sprintf("rm -f %s", shellQuote(tmpPath))
+			_, _ = ch.Exec(ctx, cleanup)
+			return nil, fmt.Errorf("upload credentials: %w", err)
+		}
 	}
 
-	cmd := fmt.Sprintf("chpasswd < %s; rc=$?; rm -f %s; exit $rc", shellQuote(tmpPath), shellQuote(tmpPath))
+	cmd := fmt.Sprintf("umask 077; chpasswd < %s; rc=$?; rm -f %s; exit $rc",
+		shellQuote(tmpPath), shellQuote(tmpPath))
 	return runRemoteStep(ctx, ch, cmd)
 }
 

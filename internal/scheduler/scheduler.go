@@ -196,7 +196,30 @@ func (s *Scheduler) CollectResults(ctx context.Context, assignments []Assignment
 		}
 		wg.Add(1)
 		go func(idx int, a Assignment) {
-			defer wg.Done()
+			// Panic recovery (mirrors internal/batch/controller.go): a
+			// panicking dispatcher must not crash the scheduler; convert
+			// the panic into a failed result and keep the wait group
+			// consistent.
+			defer func() {
+				if r := recover(); r != nil {
+					results[idx] = agent.Result{
+						TaskID:  a.Task.ID,
+						RunID:   a.Task.RunID,
+						BatchID: a.Task.BatchID,
+						AgentID: a.AgentID,
+						Success: false,
+						Error:   fmt.Sprintf("scheduler: dispatch of task %s panicked: %v", a.Task.ID, r),
+					}
+					errOnce.Do(func() {
+						firstErr = fmt.Errorf("scheduler: dispatch of task %s panicked: %v", a.Task.ID, r)
+					})
+					log.Error("scheduler: dispatch panicked",
+						"task_id", a.Task.ID,
+						"agent_id", a.AgentID,
+						"panic", fmt.Sprintf("%v", r))
+				}
+				wg.Done()
+			}()
 			taskCtx := ctx
 			if a.Task.Timeout > 0 {
 				var cancel context.CancelFunc

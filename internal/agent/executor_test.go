@@ -40,6 +40,49 @@ func TestAgentExecuteWithHook(t *testing.T) {
 	assert.Equal(t, "ok", res.Stdout)
 }
 
+func TestAgentExecuteRecoversPanic(t *testing.T) {
+	e := NewAgentExecutor(1, nil)
+	e.SetRunTaskHook(func(ctx context.Context, task Task) Result {
+		panic("boom in module")
+	})
+
+	res := e.Execute(context.Background(), Task{ID: "t-panic", RunID: "r1", BatchID: "b1", Module: "shell", Action: "exec"})
+	require.False(t, res.Success, "panicking task must yield a failed result")
+	assert.Equal(t, "t-panic", res.TaskID)
+	assert.Equal(t, -1, res.ExitCode)
+	assert.Contains(t, res.Error, "panicked")
+	assert.Contains(t, res.Error, "boom in module")
+	// The failure must be reflected in the stats counters.
+	assert.Equal(t, int64(1), e.Stats().Failed)
+
+	// A subsequent task on the same executor still runs normally.
+	e.SetRunTaskHook(func(ctx context.Context, task Task) Result {
+		return Result{TaskID: task.ID, Success: true}
+	})
+	res2 := e.Execute(context.Background(), Task{ID: "t-ok"})
+	assert.True(t, res2.Success)
+}
+
+func TestAgentExecuteBatchRecoversPanic(t *testing.T) {
+	e := NewAgentExecutor(4, nil)
+	e.SetRunTaskHook(func(ctx context.Context, task Task) Result {
+		if task.ID == "t-bad" {
+			panic("batch boom")
+		}
+		return Result{TaskID: task.ID, Success: true}
+	})
+
+	results := e.ExecuteBatch(context.Background(), []Task{
+		{ID: "t-good"},
+		{ID: "t-bad", Module: "shell", Action: "exec"},
+	})
+	require.Len(t, results, 2)
+	assert.True(t, results[0].Success)
+	assert.False(t, results[1].Success, "panicking batch task must be recorded as failed")
+	assert.Contains(t, results[1].Error, "panicked")
+	assert.Contains(t, results[1].Error, "batch boom")
+}
+
 func TestAgentExecuteUnknownModule(t *testing.T) {
 	// Use a fresh executor with no modules registered so the lookup
 	// fails. We cannot easily reset the default executor's registry,

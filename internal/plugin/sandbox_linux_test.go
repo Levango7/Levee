@@ -3,157 +3,153 @@
 package plugin
 
 import (
-	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
 
-const testCGDir = "levee-plugin-test"
-
-// TestCgroupApplyLimits verifies applyResourceLimits actually creates the
-// cgroup directory and writes memory.max / cpu.max / cgroup.procs. It runs
-// the sandbox on a no-op sleep so the PID is stable enough to move into
-// the test cgroup. Skipped when /sys/fs/cgroup is not writable (non-root,
-// unprivileged container, or cgroup v1-only system).
-func TestCgroupApplyLimits(t *testing.T) {
+// requireCgroupWritable skips the test unless cgroup v2 is available AND we
+// can create subgroups under /sys/fs/cgroup (root or delegated container).
+func requireCgroupWritable(t *testing.T) {
+	t.Helper()
 	if !cgroupV2Available() {
 		t.Skip("cgroup v2 unavailable — skip cgroup sandbox tests")
 	}
-
-	// We need write access to the cgroup base to create our test group.
-	// If we can't write, skip rather than fail — CI often runs as non-root.
-	base := filepath.Join(cgroupBase, testCGDir)
-	if err := os.Mkdir(base, 0o755); err != nil {
-		t.Skipf("cannot create test cgroup at %s: %v — need cgroup-writable privileges", base, err)
+	probe := filepath.Join(cgroupBase, "levee-plugin-test-probe")
+	if err := os.Mkdir(probe, 0o755); err != nil {
+		t.Skipf("cannot create test cgroup at %s: %v — need cgroup-writable privileges", probe, err)
 	}
-	defer func() { _ = os.RemoveAll(base) }()
+	_ = os.Remove(probe)
+}
 
-	// Spin up a trivial child that sleeps long enough for us to attach it.
-	cmd := execCommandContext(globalCtx(), "sleep", "60")
+// startSleep spawns a trivially quiet child whose PID is stable enough to
+// move into a test cgroup.
+func startSleep(t *testing.T) (pid int, kill func()) {
+	t.Helper()
+	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleep: %v", err)
 	}
-	defer func() {
+	return cmd.Process.Pid, func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-	}()
-
-	p := cmd.Process
-
-	// Apply both memory and CPU limits — memory is 1 MiB (trivially
-	// exceeded by Go runtime, but the point here is that the file is
-	// written correctly, not that the process OOMs).
-	cfg := SandboxConfig{
-		MemoryLimit: 1024 * 1024, // 1 MiB
-		CPUQuota:    50 * time.Millisecond,
-	}
-	applyResourceLimits(p, cfg)
-
-	// Verify memory.max
-	memMax, err := os.ReadFile(filepath.Join(base, "memory.max"))
-	if err != nil {
-		t.Errorf("memory.max not found after applyResourceLimits: %v", err)
-	} else if got := string(memMax); got != "1048576\n" {
-		t.Errorf("memory.max = %q, want 1048576\\n", got)
-	}
-
-	// Verify cpu.max
-	cpuMax, err := os.ReadFile(filepath.Join(base, "cpu.max"))
-	if err != nil {
-		t.Errorf("cpu.max not found after applyResourceLimits: %v", err)
-	} else if got := string(cpuMax); got != "50000 100000\n" {
-		t.Errorf("cpu.max = %q, want 50000 100000\\n", got)
-	}
-
-	// Verify the PID is in cgroup.procs
-	procs, err := os.ReadFile(filepath.Join(base, "cgroup.procs"))
-	if err != nil {
-		t.Errorf("cgroup.procs not found: %v", err)
-	} else if got := string(procs); got != fmt.Sprintf("%d\n", p.Pid) {
-		t.Errorf("cgroup.procs = %q, want %q", got, fmt.Sprintf("%d\n", p.Pid))
 	}
 }
 
-// TestCgroupApplyLimitsNoMemory verifies that when MemoryLimit == 0 only
-// cpu.max is written (memory.max is left alone / not created by us).
-func TestCgroupApplyLimitsNoMemory(t *testing.T) {
-	if !cgroupV2Available() {
-		t.Skip("cgroup v2 unavailable")
-	}
+// TestCgroupApplyLimits verifies applyResourceLimits creates the cgroup
+// directory itself and writes memory.max / cpu.max / cgroup.procs correctly.
+func TestCgroupApplyLimits(t *testing.T) {
+	requireCgroupWritable(t)
 
-	base := filepath.Join(cgroupBase, testCGDir+"-no-mem")
-	if err := os.Mkdir(base, 0o755); err != nil {
-		t.Skipf("cannot create test cgroup: %v", err)
-	}
-	defer func() { _ = os.RemoveAll(base) }()
-
-	cmd := execCommandContext(globalCtx(), "sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start sleep: %v", err)
-	}
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
+	pid, kill := startSleep(t)
+	defer kill()
 
 	cfg := SandboxConfig{
-		CPUQuota: 250 * time.Millisecond, // 2.5 cores
+		MemoryLimit: 1024 * 1024, // 1 MiB — content check only, no OOM expected
+		CPUQuota:    50 * time.Millisecond,
 	}
-	applyResourceLimits(cmd.Process, cfg)
+	applyResourceLimits(&os.Process{Pid: pid}, cfg)
+	defer cleanupResources(&os.Process{Pid: pid})
 
-	cpuMax, err := os.ReadFile(filepath.Join(base, "cpu.max"))
+	dir := cgroupDirFor(pid)
+
+	memMax, err := os.ReadFile(filepath.Join(dir, "memory.max"))
+	if err != nil {
+		t.Errorf("memory.max not found after applyResourceLimits: %v", err)
+	} else if got := string(memMax); got != "1048576\n" {
+		t.Errorf("memory.max = %q, want %q", got, "1048576\n")
+	}
+
+	cpuMax, err := os.ReadFile(filepath.Join(dir, "cpu.max"))
+	if err != nil {
+		t.Errorf("cpu.max not found after applyResourceLimits: %v", err)
+	} else if got := string(cpuMax); got != "50000 100000\n" {
+		t.Errorf("cpu.max = %q, want %q", got, "50000 100000\n")
+	}
+
+	procs, err := os.ReadFile(filepath.Join(dir, "cgroup.procs"))
+	if err != nil {
+		t.Errorf("cgroup.procs not found: %v", err)
+	} else if want := strconv.Itoa(pid) + "\n"; string(procs) != want {
+		t.Errorf("cgroup.procs = %q, want %q", string(procs), want)
+	}
+}
+
+// TestCgroupApplyLimitsNoMemory verifies CPU-only configuration writes
+// cpu.max but leaves memory.max untouched.
+func TestCgroupApplyLimitsNoMemory(t *testing.T) {
+	requireCgroupWritable(t)
+
+	pid, kill := startSleep(t)
+	defer kill()
+
+	applyResourceLimits(&os.Process{Pid: pid}, SandboxConfig{
+		CPUQuota: 250 * time.Millisecond, // 2.5 cores
+	})
+	defer cleanupResources(&os.Process{Pid: pid})
+
+	dir := cgroupDirFor(pid)
+	cpuMax, err := os.ReadFile(filepath.Join(dir, "cpu.max"))
 	if err != nil {
 		t.Fatalf("cpu.max not found: %v", err)
 	}
 	if got := string(cpuMax); got != "250000 100000\n" {
-		t.Errorf("cpu.max = %q, want 250000 100000\\n", got)
+		t.Errorf("cpu.max = %q, want %q", got, "250000 100000\n")
 	}
 
-	// memory.max should NOT exist in our test group (we never wrote it).
-	_, err = os.ReadFile(filepath.Join(base, "memory.max"))
-	if err == nil {
-		t.Error("memory.max should not have been created when MemoryLimit == 0")
+	if _, err := os.ReadFile(filepath.Join(dir, "memory.max")); !os.IsNotExist(err) {
+		t.Errorf("memory.max should not exist when MemoryLimit == 0 (err=%v)", err)
 	}
 }
 
-// TestCgroupApplyLimitsNoQuota verifies that when both MemoryLimit and
-// CPUQuota are <= 0, no files are written and no cgroup side-effects occur.
+// TestCgroupApplyLimitsNoQuota verifies an empty config has zero
+// side-effects: no directory is created at all.
 func TestCgroupApplyLimitsNoQuota(t *testing.T) {
-	if !cgroupV2Available() {
-		t.Skip("cgroup v2 unavailable")
+	requireCgroupWritable(t)
+
+	pid, kill := startSleep(t)
+	defer kill()
+
+	applyResourceLimits(&os.Process{Pid: pid}, SandboxConfig{})
+
+	if _, err := os.Stat(cgroupDirFor(pid)); !os.IsNotExist(err) {
+		t.Errorf("cgroup dir should not exist after empty-config apply (err=%v)", err)
+	}
+}
+
+// TestCgroupCleanupResources verifies Stop's cleanup hook removes the
+// group directory once the process is gone.
+func TestCgroupCleanupResources(t *testing.T) {
+	requireCgroupWritable(t)
+
+	pid, kill := startSleep(t)
+	proc := &os.Process{Pid: pid}
+
+	applyResourceLimits(proc, SandboxConfig{CPUQuota: 50 * time.Millisecond})
+	dir := cgroupDirFor(pid)
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("cgroup dir missing before cleanup: %v", err)
 	}
 
-	base := filepath.Join(cgroupBase, testCGDir+"-no-quota")
-	if err := os.Mkdir(base, 0o755); err != nil {
-		t.Skipf("cannot create test cgroup: %v", err)
+	kill() // process must be gone for rmdir to succeed on a non-empty group
+	// Wait briefly for the kernel to release the group.
+	for i := 0; i < 50; i++ {
+		cleanupResources(proc)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	defer func() { _ = os.RemoveAll(base) }()
-
-	cmd := execCommandContext(globalCtx(), "sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start sleep: %v", err)
-	}
-	defer func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	}()
-
-	// Empty config — nothing should be written.
-	applyResourceLimits(cmd.Process, SandboxConfig{})
-
-	// Verify the process was NOT moved into our (empty) cgroup dir.
-	procs, err := os.ReadFile(filepath.Join(base, "cgroup.procs"))
-	if err == nil {
-		t.Errorf("cgroup.procs should be empty after no-quota apply; got %q", string(procs))
-	}
+	t.Errorf("cgroup dir %s still present after cleanupResources loop", dir)
 }
 
 // TestCgroupApplyLimitsNilProcess verifies the nil guard.
 func TestCgroupApplyLimitsNilProcess(t *testing.T) {
-	// Should not panic.
 	applyResourceLimits(nil, SandboxConfig{MemoryLimit: 1024})
+	cleanupResources(nil)
 }
 
 // TestFormatCpuMaxLinux directly exercises the Linux-specific helper.

@@ -45,7 +45,15 @@ func applyResourceLimits(p *os.Process, cfg SandboxConfig) {
 		return
 	}
 
-	dir := filepath.Join(cgroupBase, fmt.Sprintf("levee-plugin-%d", p.Pid))
+	dir := cgroupDirFor(p.Pid)
+	// A cgroup subgroup must exist before its control files can be
+	// written. Creating it requires write access to the delegated
+	// hierarchy; without that we degrade to timeout-only enforcement.
+	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+		log.Warn("plugin sandbox: create cgroup failed",
+			"pid", p.Pid, "dir", dir, "error", err.Error())
+		return
+	}
 	cleanup := func() { _ = os.Remove(dir) }
 
 	if cfg.MemoryLimit > 0 {
@@ -74,9 +82,27 @@ func applyResourceLimits(p *os.Process, cfg SandboxConfig) {
 	}
 }
 
+// cgroupDirFor returns the dedicated cgroup directory for a plugin pid.
+func cgroupDirFor(pid int) string {
+	return filepath.Join(cgroupBase, fmt.Sprintf("levee-plugin-%d", pid))
+}
+
+// cleanupResources removes the plugin's cgroup after the process has been
+// reaped. It is invoked by Sandbox.Stop on every platform; on Linux the
+// rmdir succeeds once the group is empty (the process is dead), and is a
+// harmless no-op failure otherwise.
+func cleanupResources(p *os.Process) {
+	if p == nil {
+		return
+	}
+	_ = os.Remove(cgroupDirFor(p.Pid))
+}
+
 // formatCpuMax renders a cpu.max value ("$QUOTA $PERIOD") for the given
-// CPU time budget. A 100ms period is used; quota above the period means
-// multiple cores (e.g. 250ms/100ms = 2.5 cores) and is preserved.
+// CPU quota. The value is a RATE, not a total: CPUQuota is the CPU time
+// budget per 100ms period, where 100ms of quota equals one full core
+// (250ms/100ms therefore means 2.5 cores). A zero or negative quota
+// degrades to one core rather than to "no limit".
 func formatCpuMax(quota time.Duration) string {
 	const periodUs = 100000 // 100ms
 	quotaUs := quota.Microseconds()

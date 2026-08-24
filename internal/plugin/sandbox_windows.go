@@ -97,3 +97,8 @@ func isProcessAlive(pid int) bool {
 	}
 	return exitCode == stillActive
 }
+
+// cleanupResources releases per-process platform resources (cgroups, job
+// objects). Windows job objects are torn down by the kernel when the last
+// process handle closes, so there is nothing to do here.
+func cleanupResources(_ *os.Process) {}

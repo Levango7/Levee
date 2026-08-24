@@ -106,8 +106,24 @@ func (r *execRecorder) setDelay(module, action string, d time.Duration) {
 func TestNewManagerDefaults(t *testing.T) {
 	m := NewManager()
 	assert.Empty(t, m.Whitelist())
+	assert.False(t, m.whitelistAll, "default policy must be deny-by-default, not allow-all")
 	assert.Equal(t, 1, m.concurrency)
 	assert.True(t, m.stopOnError)
+}
+
+func TestWithWhitelistAllOption(t *testing.T) {
+	m := NewManager(WithWhitelistAll())
+	assert.True(t, m.whitelistAll)
+	// allow-all must execute steps that no explicit whitelist mentions.
+	rec := newExecRecorder()
+	p := mkPlan([]plan.PlanStep{
+		withRollback(plan.PlanStep{Name: "s1", Module: "anything", Action: "whatever"},
+			rbStep("undo-s1", "any", "thing")),
+	})
+	res := m.Rollback(context.Background(), p, rec.fn())
+	require.NotNil(t, res)
+	assert.True(t, res.Success)
+	assert.Equal(t, 2, rec.count(), "WithWhitelistAll allows every module.action")
 }
 
 func TestWithWhitelist(t *testing.T) {
@@ -156,7 +172,7 @@ func TestRollbackEmptyPlan(t *testing.T) {
 }
 
 func TestRollbackNilExecFnDryRun(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	p := mkPlan([]plan.PlanStep{
 		withRollback(plan.PlanStep{Name: "s1", Module: "pkg", Action: "remove"},
 			rbStep("undo-s1", "pkg", "install")),
@@ -179,7 +195,7 @@ func TestRollbackNilExecFnDryRun(t *testing.T) {
 // --- single batch rollback -------------------------------------------------
 
 func TestSingleBatchRollback(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	p := mkPlan([]plan.PlanStep{
 		withRollback(plan.PlanStep{Name: "remove-nginx", Module: "pkg", Action: "remove"},
@@ -197,7 +213,7 @@ func TestSingleBatchRollback(t *testing.T) {
 }
 
 func TestSingleBatchMultipleStepsReversed(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	p := mkPlan([]plan.PlanStep{
 		withRollback(plan.PlanStep{Name: "s1", Module: "file", Action: "copy"},
@@ -227,7 +243,7 @@ func TestSingleBatchMultipleStepsReversed(t *testing.T) {
 // --- multi-batch reverse order ---------------------------------------------
 
 func TestMultiBatchReverseOrder(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	p := mkPlan(
 		[]plan.PlanStep{
@@ -256,7 +272,7 @@ func TestMultiBatchReverseOrder(t *testing.T) {
 }
 
 func TestMultiBatchReverseOrderExecutionSequence(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	p := mkPlan(
 		[]plan.PlanStep{
@@ -287,7 +303,7 @@ func TestMultiBatchReverseOrderExecutionSequence(t *testing.T) {
 // --- no rollback spec skipped ----------------------------------------------
 
 func TestNoRollbackSpecSkipped(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	p := mkPlan([]plan.PlanStep{
 		{Name: "no-rollback", Module: "shell", Action: "exec"}, // no Rollback
@@ -378,8 +394,8 @@ func TestWhitelistSkipsUnlistedSteps(t *testing.T) {
 	}
 }
 
-func TestWhitelistEmptyAllowsAll(t *testing.T) {
-	m := NewManager() // no whitelist
+func TestWhitelistEmptyDeniesAll(t *testing.T) {
+	m := NewManager() // empty whitelist: deny-by-default
 	rec := newExecRecorder()
 	p := mkPlan([]plan.PlanStep{
 		withRollback(plan.PlanStep{Name: "s1", Module: "anything", Action: "whatever"},
@@ -388,14 +404,38 @@ func TestWhitelistEmptyAllowsAll(t *testing.T) {
 
 	res := m.Rollback(context.Background(), p, rec.fn())
 	require.NotNil(t, res)
-	assert.True(t, res.Success)
-	assert.Equal(t, 2, rec.count(), "empty whitelist should allow all")
+	assert.True(t, res.Success, "denied steps are skips, not errors")
+	assert.Equal(t, 0, rec.count(), "empty whitelist must not execute any step")
+
+	for _, br := range res.BatchResults {
+		for _, tr := range br.TargetResults {
+			require.Len(t, tr.StepResults, 1)
+			sr := tr.StepResults[0]
+			assert.True(t, sr.Skipped)
+			assert.Contains(t, sr.SkipReason, "not in rollback whitelist")
+			assert.True(t, NotWhitelisted(sr), "denial should be detectable via NotWhitelisted")
+		}
+	}
+}
+
+func TestNotWhitelistedPredicate(t *testing.T) {
+	// Whitelist denial.
+	denied := StepRollbackResult{
+		Skipped:    true,
+		SkipReason: fmt.Sprintf("file.delete not in rollback whitelist: %v", ErrStepNotWhitelisted),
+	}
+	assert.True(t, NotWhitelisted(denied))
+
+	// Other skip reasons are not whitelist denials.
+	assert.False(t, NotWhitelisted(StepRollbackResult{Skipped: true, SkipReason: "no rollback spec"}))
+	assert.False(t, NotWhitelisted(StepRollbackResult{Skipped: true, SkipReason: "no execute function"}))
+	assert.False(t, NotWhitelisted(StepRollbackResult{}))
 }
 
 // --- error handling --------------------------------------------------------
 
 func TestStepErrorStopOnErrorTrue(t *testing.T) {
-	m := NewManager(WithStopOnError(true))
+	m := NewManager(WithStopOnError(true), WithWhitelistAll())
 	wantErr := errors.New("channel broken")
 	rec := newExecRecorder()
 	rec.setFail("pkg", "install", wantErr)
@@ -423,7 +463,7 @@ func TestStepErrorStopOnErrorTrue(t *testing.T) {
 }
 
 func TestStepErrorStopOnErrorFalse(t *testing.T) {
-	m := NewManager(WithStopOnError(false))
+	m := NewManager(WithStopOnError(false), WithWhitelistAll())
 	wantErr := errors.New("channel broken")
 	rec := newExecRecorder()
 	rec.setFail("pkg", "install", wantErr)
@@ -450,7 +490,7 @@ func TestStepErrorStopOnErrorFalse(t *testing.T) {
 }
 
 func TestPartialRollback(t *testing.T) {
-	m := NewManager(WithStopOnError(false))
+	m := NewManager(WithStopOnError(false), WithWhitelistAll())
 	rec := newExecRecorder()
 	// Make pkg.install fail but file.copy succeed.
 	rec.setFail("pkg", "install", errors.New("pkg fail"))
@@ -468,7 +508,7 @@ func TestPartialRollback(t *testing.T) {
 }
 
 func TestPartialRollbackAllFail(t *testing.T) {
-	m := NewManager(WithStopOnError(false))
+	m := NewManager(WithStopOnError(false), WithWhitelistAll())
 	rec := newExecRecorder()
 	rec.setFail("pkg", "install", errors.New("fail"))
 	p := mkPlan([]plan.PlanStep{
@@ -485,7 +525,7 @@ func TestPartialRollbackAllFail(t *testing.T) {
 // --- concurrency -----------------------------------------------------------
 
 func TestConcurrencySerial(t *testing.T) {
-	m := NewManager(WithConcurrency(1))
+	m := NewManager(WithConcurrency(1), WithWhitelistAll())
 	var atomicCount atomic.Int32
 	rec := newExecRecorder()
 	rec.setDelay("svc", "stop", 10*time.Millisecond)
@@ -511,7 +551,7 @@ func TestConcurrencySerial(t *testing.T) {
 }
 
 func TestConcurrencyParallel(t *testing.T) {
-	m := NewManager(WithConcurrency(4))
+	m := NewManager(WithConcurrency(4), WithWhitelistAll())
 	var atomicCount atomic.Int32
 	var maxConcurrent atomic.Int32
 	fn := func(ctx context.Context, target string, step dsl.Step) error {
@@ -550,7 +590,7 @@ func TestConcurrencyParallel(t *testing.T) {
 // --- context cancellation --------------------------------------------------
 
 func TestContextCancellation(t *testing.T) {
-	m := NewManager(WithStopOnError(false))
+	m := NewManager(WithStopOnError(false), WithWhitelistAll())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
@@ -588,7 +628,7 @@ func TestHasErrorPredicate(t *testing.T) {
 // --- duration --------------------------------------------------------------
 
 func TestRollbackDurationRecorded(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	rec.setDelay("svc", "stop", 10*time.Millisecond)
 	p := mkPlan([]plan.PlanStep{
@@ -616,7 +656,7 @@ func TestRollbackDurationRecorded(t *testing.T) {
 // --- multiple rollback steps per spec --------------------------------------
 
 func TestMultipleRollbackStepsPerSpec(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	p := mkPlan([]plan.PlanStep{
 		withRollback(plan.PlanStep{Name: "deploy", Module: "svc", Action: "deploy"},

@@ -47,7 +47,9 @@ func newTestClosureRunner(t *testing.T, store state.Store, gates ...verify.Gate)
 	for _, g := range gates {
 		gm.Register(g)
 	}
-	rm := rollback.NewManager()
+	// WithWhitelistAll: these tests exercise the full rollback flow with
+	// arbitrary module.action pairs, so the manager must not deny them.
+	rm := rollback.NewManager(rollback.WithWhitelistAll())
 	bc := batch.NewController()
 	return NewClosureRunner(store, lm, gm, rm, bc, nil)
 }

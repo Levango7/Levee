@@ -316,6 +316,55 @@ func TestCommandGateImplementsGateInterface(t *testing.T) {
 	assert.Equal(t, PhasePostBatch, g.Phase())
 }
 
+// --- tests: command policy blacklist ---------------------------------------
+
+func TestValidateGateCommandAllowed(t *testing.T) {
+	allowed := []string{
+		"systemctl is-active nginx",
+		"journalctl -u app | grep -c started",
+		"curl -fsS http://localhost:8080/health > /dev/null",
+		"tail -n 50 /var/log/app.log 2>&1",
+		"cat /etc/hostname",
+		"test -f /var/run/app.pid < /dev/null",
+	}
+	for _, cmd := range allowed {
+		assert.NoError(t, ValidateGateCommand(cmd), "command %q should pass the gate policy", cmd)
+	}
+}
+
+func TestValidateGateCommandRejected(t *testing.T) {
+	rejected := []struct {
+		cmd    string
+		reason string
+	}{
+		{"echo hi; rm -rf /", ";"},
+		{"sleep 5 &", "&"},
+		{"true && systemctl start app", "&"},
+		{"whoami $(id)", "$"},
+		{"echo ${PATH}", "$"},
+		{"echo `id`", "`"},
+		{"one\ntwo", "newline"},
+	}
+	for _, tc := range rejected {
+		err := ValidateGateCommand(tc.cmd)
+		require.Error(t, err, "command %q must be rejected", tc.cmd)
+		assert.Contains(t, err.Error(), tc.reason)
+	}
+}
+
+func TestCommandGateCheckRejectsUnsafeCommand(t *testing.T) {
+	ch := newFakeChannel(execResult(0, ""))
+	g := NewCommandGate("probe", PhasePostApply, `systemctl status nginx; cat /etc/shadow`)
+
+	require.Error(t, g.PolicyError())
+
+	r, err := g.Check(context.Background(), GateInput{Channel: ch})
+	require.Error(t, err)
+	assert.False(t, r.Passed)
+	assert.Equal(t, "unsafe_command", r.Details["reason"])
+	assert.Equal(t, int64(0), ch.calls.Load(), "unsafe command must never reach the channel")
+}
+
 // --- tests: integration with GateManager -----------------------------------
 
 func TestCommandGateRegisteredWithManager(t *testing.T) {

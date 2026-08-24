@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"text/template"
@@ -69,6 +70,106 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 	}
 }
 
+// extraDirsEnvVar lists additional control-node directories (separated by
+// os.PathListSeparator) that the file module may read src files from. It is
+// the explicit operator opt-out for reading outside the process working
+// directory.
+const extraDirsEnvVar = "LEVEE_FILE_MODULE_EXTRA_DIRS"
+
+// resolveLocalSrc validates and resolves a local src path for the file
+// module. Control-node reads are restricted to prevent workflow authors from
+// turning `file.copy` into an arbitrary-file-read primitive (e.g. src:
+// /etc/shadow uploaded to a target they control):
+//
+//   - absolute paths are rejected;
+//   - relative paths that escape the process working directory (../) are
+//     rejected;
+//   - directories listed in LEVEE_FILE_MODULE_EXTRA_DIRS (os.PathListSeparator
+//     separated) are explicitly allowed even though they lie outside the
+//     working directory.
+//
+// The returned path is the cleaned absolute path to read. Errors mention the
+// env opt-out so operators know how to widen access deliberately.
+func resolveLocalSrc(src string) (string, error) {
+	if strings.TrimSpace(src) == "" {
+		return "", fmt.Errorf("src is empty")
+	}
+	cleaned := filepath.Clean(src)
+	abs, err := filepath.Abs(cleaned)
+	if err != nil {
+		return "", fmt.Errorf("resolve src %q: %w", src, err)
+	}
+
+	// Treat as absolute both fully-qualified paths (C:\..., /...) and
+	// volume-less rooted paths (/etc/passwd), so that POSIX-style src values
+	// cannot slip past the policy on Windows control nodes either.
+	if isAbsolutePath(cleaned) {
+		if !inExtraDirs(abs) {
+			return "", fmt.Errorf("src %q must not be an absolute path: the file module only reads inside the control-node working directory (or LEVEE_FILE_MODULE_EXTRA_DIRS); move the file into the working directory or add its directory to %s", src, extraDirsEnvVar)
+		}
+		return abs, nil
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("determine working directory: %w", err)
+	}
+	if !withinDir(wd, abs) && !inExtraDirs(abs) {
+		return "", fmt.Errorf("src %q escapes the control-node working directory %s: the file module restricts local reads to that directory (opt out per directory via %s)", src, wd, extraDirsEnvVar)
+	}
+	return abs, nil
+}
+
+// isAbsolutePath reports whether p is an absolute or rooted path: fully
+// qualified (filepath.IsAbs) or starting at a root separator without a volume
+// prefix (e.g. "/etc/passwd" on Windows).
+func isAbsolutePath(p string) bool {
+	if filepath.IsAbs(p) {
+		return true
+	}
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`)
+}
+
+// withinDir reports whether path lies inside dir (after cleaning). Both must
+// be absolute. Comparison is case-insensitive on Windows-style filesystems.
+func withinDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
+}
+
+// inExtraDirs reports whether path falls under one of the directories listed
+// in LEVEE_FILE_MODULE_EXTRA_DIRS. Entries may be absolute or relative (they
+// are resolved against the working directory).
+func inExtraDirs(path string) bool {
+	raw := os.Getenv(extraDirsEnvVar)
+	if strings.TrimSpace(raw) == "" {
+		return false
+	}
+	for _, dir := range filepath.SplitList(raw) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		absDir, err := filepath.Abs(filepath.Clean(dir))
+		if err != nil {
+			continue
+		}
+		if withinDir(absDir, path) {
+			return true
+		}
+	}
+	return false
+}
+
 // copyFile uploads args["src"] to args["dest"] on the target. It first
 // computes the local sha256 and asks the target for the remote sha256; when
 // they match, the upload is skipped and Changed is false. After a successful
@@ -83,7 +184,11 @@ func (m *Module) copyFile(ctx context.Context, input executor.ModuleInput) (*exe
 		return nil, fmt.Errorf("file.copy: %w", err)
 	}
 
-	localContent, err := os.ReadFile(src)
+	srcPath, err := resolveLocalSrc(src)
+	if err != nil {
+		return nil, fmt.Errorf("file.copy: %w", err)
+	}
+	localContent, err := os.ReadFile(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("file.copy: read src: %w", err)
 	}
@@ -106,7 +211,11 @@ func (m *Module) templateFile(ctx context.Context, input executor.ModuleInput) (
 	}
 	vars, _ := input.Args["vars"].(map[string]any)
 
-	tmpl, err := template.ParseFiles(src)
+	srcPath, err := resolveLocalSrc(src)
+	if err != nil {
+		return nil, fmt.Errorf("file.template: %w", err)
+	}
+	tmpl, err := template.ParseFiles(srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("file.template: parse: %w", err)
 	}

@@ -47,15 +47,17 @@ func (p PoolConfig) healthCheckEnabled() bool {
 	return !p.DisableHealthCheck
 }
 
-// poolKey returns the pool bucket key for a target: host:port. Channels for
-// the same host:port share a bucket regardless of credentials (callers should
-// use consistent credentials per target).
+// poolKey returns the pool bucket key for a target: host:port plus username.
+// Channels are only reused when both the endpoint AND the credential identity
+// match: two different usernames pointed at the same host:port must never
+// share a pooled client, or one caller would execute commands under another
+// caller's authenticated session (credential aliasing).
 func poolKey(t channel.Target) string {
 	port := t.Port()
 	if port == 0 {
 		port = DefaultHTTPPort
 	}
-	return fmt.Sprintf("%s:%d", t.Host(), port)
+	return fmt.Sprintf("%s:%d|%s", t.Host(), port, t.Credentials().Username)
 }
 
 // --- targetPool -------------------------------------------------------------

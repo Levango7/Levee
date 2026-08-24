@@ -23,6 +23,7 @@ type mockChannel struct {
 	execResponses []execResponse
 	execResult    *channel.ExecResult
 	execErr       error
+	uploadErr     error
 	connected     bool
 	uploads       []uploadRecord
 }
@@ -65,6 +66,9 @@ func (m *mockChannel) Exec(_ context.Context, cmd string) (*channel.ExecResult, 
 func (m *mockChannel) Upload(_ context.Context, path string, content io.Reader) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.uploadErr != nil {
+		return m.uploadErr
+	}
 	b, err := io.ReadAll(content)
 	if err != nil {
 		return err
@@ -198,8 +202,73 @@ func TestAddWithPassword(t *testing.T) {
 	// Upload received name:password content and chpasswd reads that file.
 	require.Len(t, ch.uploads, 1, "exactly one credential upload expected")
 	assert.Equal(t, "bob:s3cret\n", ch.uploads[0].content)
+	assert.True(t, strings.HasPrefix(ch.uploads[0].path, "/dev/shm/.levee-chpasswd-"),
+		"upload target must live on tmpfs (/dev/shm), got %q", ch.uploads[0].path)
 	assert.Contains(t, ch.execAt(2), ch.uploads[0].path,
 		"chpasswd must read from the uploaded temp file")
+
+	// The consuming Exec hardens the exposure window: restrictive umask
+	// before reading the file, cleanup before exit.
+	cmd := ch.execAt(2)
+	assert.True(t, strings.HasPrefix(cmd, "umask 077; "),
+		"chpasswd Exec must start with `umask 077` to restrict file modes, got %q", cmd)
+	assert.Regexp(t, `rm -f '[^']+'; exit \$rc$`, cmd,
+		"the temp file must be removed before propagating chpasswd's exit code")
+}
+
+// failingUploadChannel fails Upload for /dev/shm targets so the /tmp
+// fallback path can be exercised.
+type failingUploadChannel struct {
+	mockChannel
+}
+
+func (m *failingUploadChannel) Upload(ctx context.Context, path string, content io.Reader) error {
+	if strings.HasPrefix(path, "/dev/shm/") {
+		return errors.New("no space left on device")
+	}
+	return m.mockChannel.Upload(ctx, path, content)
+}
+
+func TestSetPassword_FallsBackToTmpWhenShmUploadFails(t *testing.T) {
+	ch := &failingUploadChannel{mockChannel: mockChannel{connected: true}}
+
+	r, err := setPassword(context.Background(), ch, "bob", "s3cret")
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	assert.Equal(t, 0, r.exit)
+
+	// Two uploads attempted: first to /dev/shm (failed), then /tmp.
+	require.Len(t, ch.uploads, 1, "only the successful fallback upload is recorded")
+	assert.True(t, strings.HasPrefix(ch.uploads[0].path, "/tmp/.levee-chpasswd-"),
+		"fallback target must be under /tmp, got %q", ch.uploads[0].path)
+
+	// Best-effort cleanup of the failed shm target must have been sent.
+	require.GreaterOrEqual(t, ch.execCount(), 1)
+	assert.Contains(t, ch.execAt(0), "rm -f '/dev/shm/.levee-chpasswd-")
+
+	// The consuming Exec reads the /tmp fallback with umask + cleanup.
+	last := ch.lastExec()
+	assert.True(t, strings.HasPrefix(last, "umask 077; "))
+	assert.Contains(t, last, ch.uploads[0].path)
+	assert.NotContains(t, last, "s3cret")
+}
+
+func TestSetPassword_UploadFailsEverywhereReturnsErrorAfterCleanup(t *testing.T) {
+	ch := &mockChannel{connected: true}
+	ch.uploadErr = errors.New("sftp unavailable")
+
+	_, err := setPassword(context.Background(), ch, "bob", "s3cret")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upload credentials")
+
+	// Cleanup was still attempted for both candidate paths.
+	found := false
+	for _, cmd := range ch.execs {
+		if strings.HasPrefix(cmd, "rm -f ") && strings.Contains(cmd, ".levee-chpasswd-") {
+			found = true
+		}
+	}
+	assert.True(t, found, "a best-effort rm -f must be issued after upload failure")
 }
 
 func TestAddWithSSHKey(t *testing.T) {

@@ -449,7 +449,7 @@ func TestVerifyAfterRealRollbackSuccess(t *testing.T) {
 }
 
 func TestVerifyAfterRealRollbackPartial(t *testing.T) {
-	m := NewManager(WithStopOnError(false))
+	m := NewManager(WithStopOnError(false), WithWhitelistAll())
 	rec := newExecRecorder()
 	rec.setFail("pkg", "install", errors.New("boom"))
 	p := mkPlan([]plan.PlanStep{

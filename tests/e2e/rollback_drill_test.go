@@ -50,6 +50,7 @@ func setupDrillTest(t *testing.T) (*state.SQLiteStore, *MockCluster, *engine.Clo
 	gateMgr.Register(verify.NewNoopGate("pre-ok", verify.PhasePreApply, true))
 
 	rollbackMgr := rollback.NewManager(
+		rollback.WithWhitelistAll(),
 		rollback.WithConcurrency(2),
 		rollback.WithStopOnError(false),
 	)
@@ -336,7 +337,7 @@ func TestRollbackDrill_PostVerifyFail(t *testing.T) {
 	require.NoError(t, err)
 
 	// Run rollback and post-verify.
-	rollbackMgr := rollback.NewManager(rollback.WithStopOnError(false))
+	rollbackMgr := rollback.NewManager(rollback.WithWhitelistAll(), rollback.WithStopOnError(false))
 	execFn := makeExecFunc(cluster)
 	rbResult := rollbackMgr.Rollback(ctx, p, execFn)
 	require.NotNil(t, rbResult)

@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -59,12 +60,14 @@ type Config struct {
 	ConnectTimeout time.Duration
 
 	// KnownHostsPath is the path to a known_hosts file used for host-key
-	// verification. When empty and StrictHostCheck is true, host-key
-	// verification is disabled with a warning (insecure, intended for
-	// first-run bootstrapping).
+	// verification. When empty while StrictHostCheck is true, Connect fails
+	// with an error explaining how to provision the file (via ssh-keyscan);
+	// it never silently downgrades to insecure mode.
 	KnownHostsPath string
 
-	// StrictHostCheck governs host-key verification. When false the server's
+	// StrictHostCheck governs host-key verification. When true (the LEVEE
+	// default) the server's host key must be present in KnownHostsPath;
+	// unknown or mismatched keys abort the handshake. When false the server's
 	// host key is accepted without verification (insecure, suitable for
 	// tests / lab environments).
 	StrictHostCheck bool
@@ -81,16 +84,81 @@ type Config struct {
 	HostKeyCallback ssh.HostKeyCallback
 }
 
+// --- process-wide defaults --------------------------------------------------
+
+// defaultDefaultsMu guards the process-wide defaults below. They exist so
+// that the application bootstrap can plumb the loaded configuration
+// (channel.ssh.strict_host_check / channel.ssh.known_hosts) into this package
+// before the first connection, without the transport having to depend on the
+// config package (which would create an import cycle).
+var (
+	defaultsMu sync.RWMutex
+
+	// defaultStrict mirrors channel.ssh.strict_host_check. The zero state is
+	// strict-by-default: LEVEE verifies host keys unless the operator opts out.
+	defaultStrict = true
+
+	// defaultKnownHosts mirrors channel.ssh.known_hosts. When empty,
+	// DefaultKnownHostsPath() (~/.ssh/known_hosts) is used at NewConfig time.
+	defaultKnownHosts string
+)
+
+// SetDefaultConfig overrides the process-wide SSH defaults used by NewConfig
+// (and therefore by SSHFactory.Create and SSHPool.newAndConnect). It must be
+// called once during application bootstrap, before any channel is created.
+//
+// A strictHostCheck value of true enforces host-key verification against
+// knownHostsPath; false accepts any host key (insecure, lab use only).
+// When knownHostsPath is empty, DefaultKnownHostsPath() (~/.ssh/known_hosts)
+// is used automatically.
+//
+// This is the seam through which cfg.Channel.SSH reaches the transport: the
+// loader that reads channel.ssh.strict_host_check / channel.ssh.known_hosts
+// should forward them here.
+func SetDefaultConfig(strictHostCheck bool, knownHostsPath string) {
+	defaultsMu.Lock()
+	defer defaultsMu.Unlock()
+	defaultStrict = strictHostCheck
+	defaultKnownHosts = knownHostsPath
+}
+
+// currentDefaults returns the current process-wide defaults. Used by NewConfig
+// and by tests that temporarily override them.
+func currentDefaults() (strict bool, knownHosts string) {
+	defaultsMu.RLock()
+	defer defaultsMu.RUnlock()
+	return defaultStrict, defaultKnownHosts
+}
+
+// DefaultKnownHostsPath returns the conventional per-user known_hosts location
+// ($HOME/.ssh/known_hosts). It returns "" when the home directory cannot be
+// determined; callers then surface an explicit configuration error instead of
+// silently downgrading security.
+func DefaultKnownHostsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".ssh", "known_hosts")
+}
+
 // NewConfig returns a Config populated with LEVEE's defaults: 30 s connect
-// timeout, strict host checking disabled (lab-friendly). Port is left zero
-// so that Target.Port() is honoured; when the target port is also zero the
-// channel falls back to DefaultPort at dial time.
+// timeout, strict host checking ENABLED (secure-by-default) against the
+// process-wide known_hosts path set via SetDefaultConfig, falling back to
+// ~/.ssh/known_hosts. Port is left zero so that Target.Port() is honoured;
+// when the target port is also zero the channel falls back to DefaultPort at
+// dial time.
 // Callers should treat the returned value as a starting point and override
 // fields as needed.
 func NewConfig() *Config {
+	strict, knownHosts := currentDefaults()
+	if knownHosts == "" {
+		knownHosts = DefaultKnownHostsPath()
+	}
 	return &Config{
 		ConnectTimeout:  DefaultConnectTimeout,
-		StrictHostCheck: false,
+		StrictHostCheck: strict,
+		KnownHostsPath:  knownHosts,
 	}
 }
 
@@ -317,23 +385,57 @@ func loadKeyAuthMethod(cred channel.CredentialRef) (ssh.AuthMethod, error) {
 
 // buildHostKeyCallback returns the ssh.HostKeyCallback to use for this channel.
 // Precedence: Config.HostKeyCallback > known_hosts file > insecure (insecure
-// only when StrictHostCheck is false).
+// only when StrictHostCheck is false). In strict mode a missing known_hosts
+// file, an unknown host key or a changed host key all abort Connect with an
+// error that explains how to provision the key via ssh-keyscan; strict mode
+// never silently downgrades to insecure.
 func (c *SSHChannel) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 	if c.cfg.HostKeyCallback != nil {
 		return c.cfg.HostKeyCallback, nil
 	}
-	if c.cfg.StrictHostCheck {
-		if c.cfg.KnownHostsPath == "" {
-			return nil, fmt.Errorf("ssh: strict host checking enabled but no known_hosts path provided")
-		}
-		cb, err := knownhosts.New(c.cfg.KnownHostsPath)
-		if err != nil {
-			return nil, fmt.Errorf("ssh: load known_hosts %s: %w", c.cfg.KnownHostsPath, err)
-		}
-		return cb, nil
+	if !c.cfg.StrictHostCheck {
+		// Insecure: accept any host key. Suitable for lab / test environments.
+		return ssh.InsecureIgnoreHostKey(), nil
 	}
-	// Insecure: accept any host key. Suitable for lab / test environments.
-	return ssh.InsecureIgnoreHostKey(), nil
+	path := c.cfg.KnownHostsPath
+	if path == "" {
+		return nil, fmt.Errorf("ssh: strict host checking is enabled but no known_hosts path is configured; set channel.ssh.known_hosts or create %s", DefaultKnownHostsPath())
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("ssh: strict host checking is enabled but known_hosts file %s is not readable (%v); trust hosts by running e.g.: ssh-keyscan -H <hostname> >> %s", path, err, path)
+	}
+	cb, err := knownhosts.New(path)
+	if err != nil {
+		return nil, fmt.Errorf("ssh: load known_hosts %s: %w", path, err)
+	}
+	// Wrap the knownhosts callback so first-connect failures carry actionable
+	// remediation instead of the bare "knownhosts: key is unknown" error.
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		if err := cb(hostname, remote, key); err != nil {
+			host := scanTarget(hostname, remote)
+			return fmt.Errorf("ssh: host key verification failed for %s (host key not trusted by %s): if this is the expected host, add its key with: ssh-keyscan -H %s >> %s; if the key CHANGED, investigate before overriding",
+				host, path, host, path)
+		}
+		return nil
+	}, nil
+}
+
+// scanTarget returns the hostname to embed in remediation messages: the SSH
+// hostname when set ([host]:port for non-standard ports), else the remote
+// network address. The port suffix is stripped so the string can be pasted
+// into ssh-keyscan.
+func scanTarget(hostname string, remote net.Addr) string {
+	candidate := hostname
+	if candidate == "" && remote != nil {
+		candidate = remote.String()
+	}
+	if candidate == "" {
+		return "<hostname>"
+	}
+	if h, _, err := net.SplitHostPort(candidate); err == nil && h != "" {
+		return h
+	}
+	return strings.Trim(candidate, "[]")
 }
 
 // Exec runs cmd on the target and returns its full result. Exec blocks until

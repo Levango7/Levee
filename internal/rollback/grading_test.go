@@ -300,7 +300,7 @@ func TestGradeSummaryPartial(t *testing.T) {
 func TestGradeRealRollbackResultSuccess(t *testing.T) {
 	// Build a real RollbackResult via the Manager so the grading logic
 	// sees the actual shape produced by the rollback pipeline.
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	p := mkPlan([]plan.PlanStep{
 		withRollback(plan.PlanStep{Name: "s1", Module: "pkg", Action: "remove"},
 			rbStep("undo-s1", "pkg", "install")),
@@ -313,7 +313,7 @@ func TestGradeRealRollbackResultSuccess(t *testing.T) {
 }
 
 func TestGradeRealRollbackResultPartial(t *testing.T) {
-	m := NewManager(WithStopOnError(false))
+	m := NewManager(WithStopOnError(false), WithWhitelistAll())
 	rec := newExecRecorder()
 	rec.setFail("pkg", "install", errors.New("boom"))
 	p := mkPlan([]plan.PlanStep{
@@ -331,7 +331,7 @@ func TestGradeRealRollbackResultPartial(t *testing.T) {
 }
 
 func TestGradeRealRollbackResultFailure(t *testing.T) {
-	m := NewManager()
+	m := NewManager(WithWhitelistAll())
 	rec := newExecRecorder()
 	rec.setFail("pkg", "install", errors.New("boom"))
 	p := mkPlan([]plan.PlanStep{
