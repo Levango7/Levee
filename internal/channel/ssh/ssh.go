@@ -7,8 +7,9 @@
 // The implementation supports:
 //   - password and private-key authentication (encrypted keys via passphrase);
 //   - known_hosts verification with optional strict-host-check toggle;
-//   - command execution with full stdout/stderr/exit-code capture;
-//   - file upload/download via the SFTP sub-protocol;
+//   - command execution with full stdout/stderr/exit-code capture, with
+//     optional passwordless-sudo privilege escalation (Config.BecomeMethod);
+//   - file upload/download via the SFTP-free `cat` pipe strategy;
 //   - context-aware connect/exec with cancellation.
 //
 // All public types are safe for concurrent use once Connect has returned,
@@ -47,6 +48,9 @@ const DefaultPort = 22
 // caller does not supply a per-channel timeout via Config.ConnectTimeout.
 const DefaultConnectTimeout = 30 * time.Second
 
+// BecomeMethodSudo is the only supported Config.BecomeMethod value today.
+const BecomeMethodSudo = "sudo"
+
 // Config carries the tunable parameters for an SSH channel. The zero value is
 // not usable; callers should use NewConfig or populate at least the fields
 // relevant to their authentication strategy.
@@ -78,6 +82,22 @@ type Config struct {
 	// set, password otherwise).
 	AuthMethod string
 
+	// BecomeMethod selects privilege escalation for Exec. The empty string
+	// (the default) disables escalation: commands run as the connecting user.
+	// Only BecomeMethodSudo ("sudo") is supported today; any other non-empty
+	// value makes Exec fail closed with an error rather than silently running
+	// unprivileged.
+	//
+	// IMPORTANT: sudo escalation requires passwordless (NOPASSWD) sudo rights
+	// on the target for the connecting user. There is no interactive password
+	// prompt or key-based askpass support in the MVP: -n is passed to sudo so
+	// a password prompt fails fast instead of hanging the session.
+	BecomeMethod string
+
+	// BecomeUser is the account BecomeMethod escalates to. Empty means root
+	// (sudo's default). It is ignored when BecomeMethod is empty.
+	BecomeUser string
+
 	// HostKeyCallback, when non-nil, overrides the host-key verification
 	// derived from KnownHostsPath / StrictHostCheck. It is primarily
 	// intended for tests that want to inject an in-memory verifier.
@@ -88,7 +108,8 @@ type Config struct {
 
 // defaultDefaultsMu guards the process-wide defaults below. They exist so
 // that the application bootstrap can plumb the loaded configuration
-// (channel.ssh.strict_host_check / channel.ssh.known_hosts) into this package
+// (channel.ssh.strict_host_check / channel.ssh.known_hosts /
+// channel.ssh.become_method / channel.ssh.become_user) into this package
 // before the first connection, without the transport having to depend on the
 // config package (which would create an import cycle).
 var (
@@ -101,6 +122,13 @@ var (
 	// defaultKnownHosts mirrors channel.ssh.known_hosts. When empty,
 	// DefaultKnownHostsPath() (~/.ssh/known_hosts) is used at NewConfig time.
 	defaultKnownHosts string
+
+	// defaultBecomeMethod mirrors channel.ssh.become_method. Empty disables
+	// privilege escalation for every Exec on channels created via NewConfig.
+	defaultBecomeMethod string
+
+	// defaultBecomeUser mirrors channel.ssh.become_user. Empty means root.
+	defaultBecomeUser string
 )
 
 // SetDefaultConfig overrides the process-wide SSH defaults used by NewConfig
@@ -112,22 +140,42 @@ var (
 // When knownHostsPath is empty, DefaultKnownHostsPath() (~/.ssh/known_hosts)
 // is used automatically.
 //
+// becomeMethod / becomeUser plumb the privilege-escalation defaults:
+// becomeMethod is "" (disabled) or BecomeMethodSudo; becomeUser is the
+// escalation target ("" = root). See Config.BecomeMethod for the security
+// caveats (NOPASSWD required, -n fail-fast).
+//
 // This is the seam through which cfg.Channel.SSH reaches the transport: the
-// loader that reads channel.ssh.strict_host_check / channel.ssh.known_hosts
-// should forward them here.
-func SetDefaultConfig(strictHostCheck bool, knownHostsPath string) {
+// bootstrap in cmd/ should forward strict_host_check, known_hosts,
+// become_method and become_user here after config.Load.
+func SetDefaultConfig(strictHostCheck bool, knownHostsPath, becomeMethod, becomeUser string) {
 	defaultsMu.Lock()
 	defer defaultsMu.Unlock()
 	defaultStrict = strictHostCheck
 	defaultKnownHosts = knownHostsPath
+	defaultBecomeMethod = becomeMethod
+	defaultBecomeUser = becomeUser
+}
+
+// sshDefaults snapshots the process-wide SSH defaults.
+type sshDefaults struct {
+	strict       bool
+	knownHosts   string
+	becomeMethod string
+	becomeUser   string
 }
 
 // currentDefaults returns the current process-wide defaults. Used by NewConfig
 // and by tests that temporarily override them.
-func currentDefaults() (strict bool, knownHosts string) {
+func currentDefaults() sshDefaults {
 	defaultsMu.RLock()
 	defer defaultsMu.RUnlock()
-	return defaultStrict, defaultKnownHosts
+	return sshDefaults{
+		strict:       defaultStrict,
+		knownHosts:   defaultKnownHosts,
+		becomeMethod: defaultBecomeMethod,
+		becomeUser:   defaultBecomeUser,
+	}
 }
 
 // DefaultKnownHostsPath returns the conventional per-user known_hosts location
@@ -151,14 +199,17 @@ func DefaultKnownHostsPath() string {
 // Callers should treat the returned value as a starting point and override
 // fields as needed.
 func NewConfig() *Config {
-	strict, knownHosts := currentDefaults()
+	d := currentDefaults()
+	knownHosts := d.knownHosts
 	if knownHosts == "" {
 		knownHosts = DefaultKnownHostsPath()
 	}
 	return &Config{
 		ConnectTimeout:  DefaultConnectTimeout,
-		StrictHostCheck: strict,
+		StrictHostCheck: d.strict,
 		KnownHostsPath:  knownHosts,
+		BecomeMethod:    d.becomeMethod,
+		BecomeUser:      d.becomeUser,
 	}
 }
 
@@ -315,6 +366,36 @@ func (c *SSHChannel) Connect(ctx context.Context) error {
 	}
 }
 
+// buildExecCommand returns the command line that Exec should run for raw,
+// applying cfg's privilege-escalation (become) settings. It is a pure
+// function so the wrapping rules can be unit-tested without a live channel.
+//
+// With BecomeMethod empty, raw is returned unchanged. With BecomeMethodSudo,
+// raw is wrapped as
+//
+//	sudo -n -H [-u <BecomeUser>] -- bash -c <shell-quoted raw>
+//
+// so the original command runs inside bash under the escalation target.
+// -H sets HOME for the target user and -n makes sudo fail immediately instead
+// of blocking on a password prompt. Upload / Download deliberately bypass
+// this wrapper: they transfer files as the connecting account via `cat`, and
+// escalating file transfers is out of scope for the MVP.
+func buildExecCommand(raw string, cfg *Config) (string, error) {
+	switch method := strings.ToLower(strings.TrimSpace(cfg.BecomeMethod)); method {
+	case "":
+		return raw, nil
+	case BecomeMethodSudo:
+		if cfg.BecomeUser == "" {
+			return fmt.Sprintf("sudo -n -H -- bash -c %s", shellQuote(raw)), nil
+		}
+		return fmt.Sprintf("sudo -n -H -u %s -- bash -c %s", cfg.BecomeUser, shellQuote(raw)), nil
+	default:
+		// Fail closed: an operator explicitly requested escalation; silently
+		// running unprivileged would mask a misconfiguration.
+		return "", fmt.Errorf("ssh: unsupported become_method %q (only %q is supported)", cfg.BecomeMethod, BecomeMethodSudo)
+	}
+}
+
 // buildAuthMethods translates the CredentialRef into a slice of ssh.AuthMethod
 // according to Config.AuthMethod (with sensible inference when empty).
 func (c *SSHChannel) buildAuthMethods(cred channel.CredentialRef) ([]ssh.AuthMethod, error) {
@@ -441,6 +522,12 @@ func scanTarget(hostname string, remote net.Addr) string {
 // Exec runs cmd on the target and returns its full result. Exec blocks until
 // the command terminates or ctx is cancelled. When ctx is cancelled after the
 // session has started the remote process is sent SIGKILL via Close.
+//
+// When Config.BecomeMethod is set (sudo), cmd is wrapped for privilege
+// escalation before execution; see buildExecCommand. Escalation requires
+// passwordless (NOPASSWD) sudo rights for the connecting user — there is no
+// interactive prompt or key-based askpass in the MVP, and sudo's -n flag
+// makes a missing NOPASSWD rule fail fast instead of hanging.
 func (c *SSHChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult, error) {
 	if err := c.ensureConnected(); err != nil {
 		return nil, err
@@ -451,6 +538,13 @@ func (c *SSHChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult,
 	c.mu.Unlock()
 	if client == nil {
 		return nil, fmt.Errorf("ssh: not connected")
+	}
+
+	// Single choke point for privilege escalation. Upload / Download are
+	// intentionally not wrapped (see buildExecCommand).
+	runCmd, err := buildExecCommand(cmd, c.cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	session, err := client.NewSession()
@@ -473,7 +567,7 @@ func (c *SSHChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult,
 	}
 	doneCh := make(chan execResult, 1)
 	go func() {
-		doneCh <- execResult{session.Run(cmd)}
+		doneCh <- execResult{session.Run(runCmd)}
 	}()
 
 	select {

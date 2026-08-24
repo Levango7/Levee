@@ -124,6 +124,12 @@ func (c Config) resolvePort(targetPort int) int {
 
 // WinRMChannel implements channel.Channel over the WinRM protocol.
 //
+// Privilege boundary: every command runs as the account that authenticated
+// the WinRM session — there is no runas / elevation wrapping in the MVP.
+// Use an administrator account on the Windows target when workflows need
+// privileged operations; non-admin accounts simply fail with access-denied
+// errors from the remote side.
+//
 // A WinRMChannel is safe for concurrent use once connected: each Exec takes a
 // short-lived lock only to read the cached client, and the underlying
 // winrm.Client creates a fresh shell per Run so two concurrent Exec calls do

@@ -34,6 +34,8 @@ type Config struct {
 	Credential CredentialConfig `json:"credential" mapstructure:"credential"`
 	Notify     NotifyConfig     `json:"notify"     mapstructure:"notify"`
 	Permission PermissionConfig `json:"permission" mapstructure:"permission"`
+	Verify     VerifyConfig     `json:"verify"     mapstructure:"verify"`
+	Inventory  InventoryConfig  `json:"inventory"  mapstructure:"inventory"`
 }
 
 // ServerConfig holds server-mode runtime parameters.
@@ -95,6 +97,12 @@ type SSHConfig struct {
 	StrictHostCheck bool          `json:"strict_host_check" mapstructure:"strict_host_check"`
 	ConnectTimeout  time.Duration `json:"connect_timeout"   mapstructure:"connect_timeout"`
 	PoolSize        int           `json:"pool_size"         mapstructure:"pool_size"`
+	// BecomeMethod enables privilege escalation for Exec: "" (default,
+	// disabled) or "sudo". Any other value fails closed at Exec time.
+	BecomeMethod string `json:"become_method" mapstructure:"become_method"`
+	// BecomeUser is the escalation target when BecomeMethod=sudo; empty
+	// means root. Requires passwordless (NOPASSWD) sudo on the target.
+	BecomeUser string `json:"become_user" mapstructure:"become_user"`
 }
 
 // WinRMConfig configures the WinRM channel.
@@ -151,6 +159,21 @@ type WebhookConfig struct {
 type PermissionConfig struct {
 	DefaultTeam string `json:"default_team" mapstructure:"default_team"`
 	DefaultEnv  string `json:"default_env"  mapstructure:"default_env"`
+}
+
+// VerifyConfig holds settings for future verification / SLO gates.
+type VerifyConfig struct {
+	// PrometheusURL is the base URL of the Prometheus instance consulted by
+	// future SLO gates. Empty disables those gates (MVP default).
+	PrometheusURL string `json:"prometheus_url" mapstructure:"prometheus_url"`
+}
+
+// InventoryConfig holds inventory subsystem settings.
+type InventoryConfig struct {
+	// PatrolIntervalSeconds is the cadence, in seconds, of the future
+	// reachability patrol loop over inventoried targets. 0 (the default)
+	// disables the patrol.
+	PatrolIntervalSeconds int `json:"patrol_interval_seconds" mapstructure:"patrol_interval_seconds"`
 }
 
 // Load reads the configuration file at path, applies env-var overrides
@@ -307,6 +330,11 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	if cfg.Channel.SSH.PoolSize <= 0 {
 		problems = append(problems, "channel.ssh.pool_size must be > 0")
 	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Channel.SSH.BecomeMethod)) {
+	case "", "sudo":
+	default:
+		problems = append(problems, fmt.Sprintf("channel.ssh.become_method %q must be empty or sudo", cfg.Channel.SSH.BecomeMethod))
+	}
 
 	// Channel.WinRM
 	if cfg.Channel.WinRM.Port <= 0 || cfg.Channel.WinRM.Port > 65535 {
@@ -388,6 +416,11 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 		problems = append(problems, "permission.default_env is required")
 	}
 
+	// Inventory
+	if cfg.Inventory.PatrolIntervalSeconds < 0 {
+		problems = append(problems, "inventory.patrol_interval_seconds must be >= 0 (0 disables the patrol)")
+	}
+
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))
 	}
@@ -466,6 +499,12 @@ func setDefaults(v *viper.Viper) {
 	// Permission
 	v.SetDefault("permission.default_team", "default")
 	v.SetDefault("permission.default_env", "dev")
+
+	// Verify
+	v.SetDefault("verify.prometheus_url", "")
+
+	// Inventory (0 disables the future reachability patrol loop)
+	v.SetDefault("inventory.patrol_interval_seconds", 0)
 }
 
 // bindFile wires viper to the YAML file at path. The file extension is
@@ -531,6 +570,7 @@ func allKeys() []string {
 		"channel.ssh.port", "channel.ssh.auth_method", "channel.ssh.key_path",
 		"channel.ssh.known_hosts", "channel.ssh.strict_host_check",
 		"channel.ssh.connect_timeout", "channel.ssh.pool_size",
+		"channel.ssh.become_method", "channel.ssh.become_user",
 		"channel.winrm.port", "channel.winrm.transport",
 		"channel.winrm.connect_timeout", "channel.winrm.pool_size",
 		"approval.standard_timeout", "approval.high_timeout",
@@ -542,6 +582,8 @@ func allKeys() []string {
 		"notify.webhook.enabled", "notify.webhook.url",
 		"notify.webhook.timeout", "notify.webhook.retry",
 		"permission.default_team", "permission.default_env",
+		"verify.prometheus_url",
+		"inventory.patrol_interval_seconds",
 	}
 }
 

@@ -401,8 +401,8 @@ func TestIntegrationUploadDownload(t *testing.T) {
 // host keys are not in any known_hosts file.
 func relaxSSHDefaults(t testing.TB) {
 	t.Helper()
-	ssh.SetDefaultConfig(false, "")
-	t.Cleanup(func() { ssh.SetDefaultConfig(true, "") })
+	ssh.SetDefaultConfig(false, "", "", "")
+	t.Cleanup(func() { ssh.SetDefaultConfig(true, "", "", "") })
 }
 
 // TestIntegrationPoolReuse verifies that the SSH connection pool reuses the
