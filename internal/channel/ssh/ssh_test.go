@@ -905,38 +905,53 @@ func TestSSHPoolMultipleTargets(t *testing.T) {
 // host key is not in any known_hosts file.
 func relaxHostChecking(tb testing.TB) {
 	tb.Helper()
-	prevStrict, prevKnownHosts := currentDefaults()
-	SetDefaultConfig(false, "")
-	tb.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
+	prev := currentDefaults()
+	SetDefaultConfig(false, "", "", "")
+	tb.Cleanup(func() {
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+	})
 }
 
 func TestSetDefaultConfigRoundTrip(t *testing.T) {
-	prevStrict, prevKnownHosts := currentDefaults()
-	t.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
+	prev := currentDefaults()
+	t.Cleanup(func() {
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+	})
 
 	// Explicit opt-out propagates into NewConfig.
-	SetDefaultConfig(false, "/tmp/kh_known")
+	SetDefaultConfig(false, "/tmp/kh_known", "", "")
 	cfg := NewConfig()
 	assert.False(t, cfg.StrictHostCheck)
 	assert.Equal(t, "/tmp/kh_known", cfg.KnownHostsPath)
 
 	// Strict with an explicit path propagates verbatim.
-	SetDefaultConfig(true, "/tmp/kh_strict")
+	SetDefaultConfig(true, "/tmp/kh_strict", "", "")
 	cfg = NewConfig()
 	assert.True(t, cfg.StrictHostCheck)
 	assert.Equal(t, "/tmp/kh_strict", cfg.KnownHostsPath)
 
 	// Strict with an empty path auto-detects ~/.ssh/known_hosts.
-	SetDefaultConfig(true, "")
+	SetDefaultConfig(true, "", "", "")
 	cfg = NewConfig()
 	assert.True(t, cfg.StrictHostCheck)
 	assert.Equal(t, DefaultKnownHostsPath(), cfg.KnownHostsPath)
+
+	// Become defaults propagate into NewConfig (disabled by default).
+	assert.Empty(t, cfg.BecomeMethod)
+	assert.Empty(t, cfg.BecomeUser)
+
+	SetDefaultConfig(true, "", "sudo", "deploy")
+	cfg = NewConfig()
+	assert.Equal(t, BecomeMethodSudo, cfg.BecomeMethod)
+	assert.Equal(t, "deploy", cfg.BecomeUser)
 }
 
 func TestNewConfig(t *testing.T) {
-	prevStrict, prevKnownHosts := currentDefaults()
-	t.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
-	SetDefaultConfig(true, "")
+	prev := currentDefaults()
+	t.Cleanup(func() {
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+	})
+	SetDefaultConfig(true, "", "", "")
 
 	cfg := NewConfig()
 	assert.Equal(t, 0, cfg.Port, "NewConfig should leave Port zero so Target.Port() is honoured")
@@ -944,6 +959,7 @@ func TestNewConfig(t *testing.T) {
 	assert.True(t, cfg.StrictHostCheck, "NewConfig must default to strict host checking (secure-by-default)")
 	assert.NotEmpty(t, cfg.KnownHostsPath, "known_hosts path must be auto-detected when unset")
 	assert.Contains(t, cfg.KnownHostsPath, ".ssh")
+	assert.Empty(t, cfg.BecomeMethod, "become must be disabled by default (secure-by-default)")
 }
 
 func TestPoolConfigWithDefaults(t *testing.T) {
@@ -957,6 +973,124 @@ func TestShellQuote(t *testing.T) {
 	assert.Equal(t, "'hello'", shellQuote("hello"))
 	assert.Equal(t, `'it'\''s'`, shellQuote("it's"))
 	assert.Equal(t, `'/tmp/a b.txt'`, shellQuote("/tmp/a b.txt"))
+}
+
+func TestBuildExecCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		cfg     *Config
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "disabled returns raw unchanged",
+			raw:  "systemctl restart nginx",
+			cfg:  &Config{},
+			want: "systemctl restart nginx",
+		},
+		{
+			name: "sudo with empty user targets root",
+			raw:  "id",
+			cfg:  &Config{BecomeMethod: BecomeMethodSudo},
+			want: "sudo -n -H -- bash -c 'id'",
+		},
+		{
+			name: "sudo with explicit user",
+			raw:  "whoami",
+			cfg:  &Config{BecomeMethod: BecomeMethodSudo, BecomeUser: "deploy"},
+			want: "sudo -n -H -u deploy -- bash -c 'whoami'",
+		},
+		{
+			name: "quoting survives single quotes in command",
+			raw:  `echo it's alive`,
+			cfg:  &Config{BecomeMethod: BecomeMethodSudo, BecomeUser: "ops"},
+			want: `sudo -n -H -u ops -- bash -c 'echo it'\''s alive'`,
+		},
+		{
+			name: "become_method is case/space normalized",
+			raw:  "id",
+			cfg:  &Config{BecomeMethod: "  SUDO ", BecomeUser: "ops"},
+			want: "sudo -n -H -u ops -- bash -c 'id'",
+		},
+		{
+			name:    "unsupported method fails closed",
+			raw:     "id",
+			cfg:     &Config{BecomeMethod: "su", BecomeUser: "root"},
+			want:    "",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildExecCommand(tt.raw, tt.cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "become_method")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestSSHChannelExecBecomeWrapping verifies that Exec actually sends the
+// sudo-wrapped command line over the wire. The mock server records every
+// received exec payload verbatim (it cannot really run sudo), so this works
+// cross-platform without a real NOPASSWD target.
+func TestSSHChannelExecBecomeWrapping(t *testing.T) {
+	srv := newMockServer(t, "u", "p")
+	defer srv.Close()
+
+	host, port := splitHostPort(t, srv.Addr())
+	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
+	cfg := NewConfig()
+	cfg.StrictHostCheck = false
+	cfg.BecomeMethod = BecomeMethodSudo
+	cfg.BecomeUser = "ops"
+
+	ch, err := NewChannel(tgt, cfg)
+	require.NoError(t, err)
+	defer ch.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, ch.Connect(ctx))
+
+	_, _ = ch.Exec(ctx, "echo hi") // exit code irrelevant; we assert the payload
+
+	log := srv.ExecLog()
+	require.Len(t, log, 1)
+	assert.Equal(t, "sudo -n -H -u ops -- bash -c 'echo hi'", log[0])
+}
+
+// TestSSHChannelExecUnsupportedBecomeFailsClosed verifies that an unsupported
+// become_method aborts Exec with an error instead of running the command
+// unprivileged.
+func TestSSHChannelExecUnsupportedBecomeFailsClosed(t *testing.T) {
+	srv := newMockServer(t, "u", "p")
+	defer srv.Close()
+
+	host, port := splitHostPort(t, srv.Addr())
+	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
+	cfg := NewConfig()
+	cfg.StrictHostCheck = false
+	cfg.BecomeMethod = "runas"
+
+	ch, err := NewChannel(tgt, cfg)
+	require.NoError(t, err)
+	defer ch.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, ch.Connect(ctx))
+
+	_, err = ch.Exec(ctx, "echo should-not-run")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "become_method")
+	assert.Empty(t, srv.ExecLog(), "no command may reach the target when escalation is misconfigured")
 }
 
 func TestEffectivePort(t *testing.T) {
@@ -1004,9 +1138,11 @@ func callbackFor(t *testing.T, cfg *Config) (ssh.HostKeyCallback, error) {
 }
 
 func TestBuildHostKeyCallbackSelectionOverrideWins(t *testing.T) {
-	prevStrict, prevKnownHosts := currentDefaults()
-	t.Cleanup(func() { SetDefaultConfig(prevStrict, prevKnownHosts) })
-	SetDefaultConfig(true, "")
+	prev := currentDefaults()
+	t.Cleanup(func() {
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+	})
+	SetDefaultConfig(true, "", "", "")
 
 	var calls int
 	override := func(string, net.Addr, ssh.PublicKey) error { calls++; return nil }

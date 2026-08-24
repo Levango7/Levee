@@ -62,6 +62,8 @@ channel:
     strict_host_check: true
     connect_timeout: 5s
     pool_size: 4
+    become_method: sudo
+    become_user: deploy
   winrm:
     port: 5985
     transport: negotiate
@@ -99,6 +101,12 @@ notify:
 permission:
   default_team: ops
   default_env: staging
+
+verify:
+  prometheus_url: http://prometheus.internal:9090
+
+inventory:
+  patrol_interval_seconds: 60
 `
 }
 
@@ -139,6 +147,8 @@ func TestLoad_ValidFile(t *testing.T) {
 	assert.Equal(t, 2, cfg.Executor.RateLimit.PerTarget)
 	assert.Equal(t, 22, cfg.Channel.SSH.Port)
 	assert.Equal(t, "key", cfg.Channel.SSH.AuthMethod)
+	assert.Equal(t, "sudo", cfg.Channel.SSH.BecomeMethod)
+	assert.Equal(t, "deploy", cfg.Channel.SSH.BecomeUser)
 	assert.Equal(t, 5985, cfg.Channel.WinRM.Port)
 	assert.Equal(t, "negotiate", cfg.Channel.WinRM.Transport)
 	assert.Equal(t, 2*time.Hour, cfg.Approval.StandardTimeout)
@@ -151,6 +161,8 @@ func TestLoad_ValidFile(t *testing.T) {
 	assert.False(t, cfg.Notify.Webhook.Enabled)
 	assert.Equal(t, "ops", cfg.Permission.DefaultTeam)
 	assert.Equal(t, "staging", cfg.Permission.DefaultEnv)
+	assert.Equal(t, "http://prometheus.internal:9090", cfg.Verify.PrometheusURL)
+	assert.Equal(t, 60, cfg.Inventory.PatrolIntervalSeconds)
 }
 
 func TestLoad_DefaultsOnly(t *testing.T) {
@@ -178,6 +190,8 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, "key", cfg.Channel.SSH.AuthMethod)
 	assert.True(t, cfg.Channel.SSH.StrictHostCheck)
 	assert.Equal(t, 10, cfg.Channel.SSH.PoolSize)
+	assert.Empty(t, cfg.Channel.SSH.BecomeMethod, "become must be disabled by default")
+	assert.Empty(t, cfg.Channel.SSH.BecomeUser)
 	assert.Equal(t, 5985, cfg.Channel.WinRM.Port)
 	assert.Equal(t, "negotiate", cfg.Channel.WinRM.Transport)
 	assert.Equal(t, 5, cfg.Channel.WinRM.PoolSize)
@@ -198,18 +212,22 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, 3, cfg.Notify.Webhook.Retry)
 	assert.Equal(t, "default", cfg.Permission.DefaultTeam)
 	assert.Equal(t, "dev", cfg.Permission.DefaultEnv)
+	assert.Empty(t, cfg.Verify.PrometheusURL, "verify.prometheus_url must default to empty (gates disabled)")
+	assert.Equal(t, 0, cfg.Inventory.PatrolIntervalSeconds, "patrol loop must be disabled by default")
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
 	p := writeYAML(t, minimalValidYAML())
 
 	withEnv(t, map[string]string{
-		"LEVEE_SERVER_LOG_LEVEL":         "error",
-		"LEVEE_DATABASE_PATH":            "/tmp/levee/override.db",
-		"LEVEE_EXECUTOR_MAX_CONCURRENCY": "777",
-		"LEVEE_CHANNEL_SSH_PORT":         "2222",
-		"LEVEE_AUDIT_RETENTION_DAYS":     "7",
-		"LEVEE_PERMISSION_DEFAULT_ENV":   "prod",
+		"LEVEE_SERVER_LOG_LEVEL":                  "error",
+		"LEVEE_DATABASE_PATH":                     "/tmp/levee/override.db",
+		"LEVEE_EXECUTOR_MAX_CONCURRENCY":          "777",
+		"LEVEE_CHANNEL_SSH_PORT":                  "2222",
+		"LEVEE_CHANNEL_SSH_BECOME_USER":           "deploy",
+		"LEVEE_AUDIT_RETENTION_DAYS":              "7",
+		"LEVEE_PERMISSION_DEFAULT_ENV":            "prod",
+		"LEVEE_INVENTORY_PATROL_INTERVAL_SECONDS": "120",
 	})
 
 	cfg, err := Load(p)
@@ -220,8 +238,10 @@ func TestLoad_EnvOverride(t *testing.T) {
 	assert.Equal(t, "/tmp/levee/override.db", cfg.Database.Path)
 	assert.Equal(t, 777, cfg.Executor.MaxConcurrency)
 	assert.Equal(t, 2222, cfg.Channel.SSH.Port)
+	assert.Equal(t, "deploy", cfg.Channel.SSH.BecomeUser)
 	assert.Equal(t, 7, cfg.Audit.RetentionDays)
 	assert.Equal(t, "prod", cfg.Permission.DefaultEnv)
+	assert.Equal(t, 120, cfg.Inventory.PatrolIntervalSeconds)
 
 	// Non-overridden fields keep their file values.
 	assert.Equal(t, "/tmp/levee/data", cfg.Server.DataDir)
@@ -368,6 +388,36 @@ func TestValidate_InvalidWinRMTransport(t *testing.T) {
 	err = Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "winrm.transport")
+}
+
+func TestValidate_InvalidSSHBecomeMethod(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+
+	cfg.Channel.SSH.BecomeMethod = "runas"
+	err = Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "become_method")
+
+	// Empty (disabled) and sudo are the only accepted values.
+	cfg.Channel.SSH.BecomeMethod = ""
+	require.NoError(t, Validate(cfg))
+	cfg.Channel.SSH.BecomeMethod = "sudo"
+	require.NoError(t, Validate(cfg))
+}
+
+func TestValidate_NegativePatrolInterval(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+
+	cfg.Inventory.PatrolIntervalSeconds = -1
+	err = Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "patrol_interval_seconds")
+
+	// Zero is legal: it disables the patrol loop.
+	cfg.Inventory.PatrolIntervalSeconds = 0
+	require.NoError(t, Validate(cfg))
 }
 
 func TestValidate_WebhookEnabledRequiresURL(t *testing.T) {
