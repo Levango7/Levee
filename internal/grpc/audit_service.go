@@ -34,9 +34,24 @@ func NewAuditService(store state.Store) *AuditService {
 	return &AuditService{store: store}
 }
 
+// maxAuditFetchRows is a hard cap on how many audit rows one GetAuditLog
+// call may pull from the store before client-side filtering/pagination.
+const maxAuditFetchRows = 10000
+
+// verifyRunPageSize is the page size used when VerifyHashChain walks all
+// runs in the store (offset stepping until a short page).
+const verifyRunPageSize = 1000
+
 // GetAuditLog returns audit log entries matching the given filters, with
 // pagination. Entries are sourced from state.Store.ListAudits and converted
 // to pb.TraceEntry messages.
+//
+// The store's AuditFilter supports no offset/stepping, so page-looping is
+// not possible; instead the result set is fetched once with a raised hard
+// cap (maxAuditFetchRows instead of the previous maxPageSize=1000) before
+// time-range/change-id filtering and offset pagination are applied.
+// Filtered results beyond the cap are ignored — the response message has
+// no truncation field today, so the cap is only documented here.
 func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogRequest) (*pb.GetAuditLogResponse, error) {
 	if req == nil {
 		req = &pb.GetAuditLogRequest{}
@@ -49,7 +64,7 @@ func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogReque
 		RunID:  req.RunId,
 		Action: req.Action,
 		Actor:  req.Actor,
-		Limit:  maxPageSize,
+		Limit:  maxAuditFetchRows,
 	}
 	audits, err := s.store.ListAudits(ctx, filter)
 	if err != nil {
@@ -81,7 +96,10 @@ func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogReque
 	if pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
-	offset := parsePageToken(req.PageToken)
+	offset, err := parsePageToken(req.PageToken)
+	if err != nil {
+		return nil, err
+	}
 
 	total := len(entries)
 	if offset > total {
@@ -154,7 +172,10 @@ func (s *AuditService) ListAuditTraces(ctx context.Context, req *pb.ListAuditTra
 	if pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
-	offset := parsePageToken(req.PageToken)
+	offset, err := parsePageToken(req.PageToken)
+	if err != nil {
+		return nil, err
+	}
 
 	total := len(entries)
 	if offset > total {
@@ -195,13 +216,21 @@ func (s *AuditService) VerifyHashChain(ctx context.Context, req *pb.VerifyHashCh
 	} else if req.ChangeId != "" {
 		runIDs = append(runIDs, req.ChangeId)
 	} else {
-		// Verify all runs that have traces.
-		runs, err := s.store.ListRuns(ctx, state.RunFilter{Limit: maxPageSize})
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list runs: %v", err)
-		}
-		for _, r := range runs {
-			runIDs = append(runIDs, r.ID)
+		// Verify all runs, paging through the store with offset stepping
+		// until a page comes back short (RunFilter supports Offset,
+		// unlike AuditFilter). The previous single maxPageSize fetch
+		// silently skipped runs beyond the first 1000 rows.
+		for offset := 0; ; offset += verifyRunPageSize {
+			runs, err := s.store.ListRuns(ctx, state.RunFilter{Limit: verifyRunPageSize, Offset: offset})
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "list runs: %v", err)
+			}
+			for _, r := range runs {
+				runIDs = append(runIDs, r.ID)
+			}
+			if len(runs) < verifyRunPageSize {
+				break
+			}
 		}
 	}
 

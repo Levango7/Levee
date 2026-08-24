@@ -33,15 +33,48 @@ import (
 type requestIDKey struct{}
 
 // requestIDHeader is the metadata key clients may set to propagate
-// their own correlation id. Absent or empty values yield a fresh id.
+// their own correlation id. Absent, empty or invalid values yield a
+// fresh id.
 const requestIDHeader = "x-request-id"
 
+// actorHeader is the metadata key clients may set to assert the actor
+// they are acting on behalf of ("X-Acting-As" over REST). The value is
+// an assertion only — see the SECURITY note on actorFromCtx.
+const actorHeader = "x-actor"
+
+// maxHeaderValueLen caps client-supplied header-derived values (request
+// ids, actor names) before they are stored in contexts, echoed in
+// response headers or written to logs.
+const maxHeaderValueLen = 128
+
+// sanitizeHeaderValue strips CR/LF and all other control characters and
+// caps the result at maxHeaderValueLen. Client-supplied values are
+// echoed into response headers and structured logs; passing them through
+// unfiltered would allow log injection and HTTP header splitting. An
+// empty result means the input carried no usable content.
+func sanitizeHeaderValue(s string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1 // drop control characters (CR, LF, NUL, ...)
+		}
+		return r
+	}, s)
+	if len(clean) > maxHeaderValueLen {
+		clean = clean[:maxHeaderValueLen]
+	}
+	return clean
+}
+
 // ensureRequestID returns the client-supplied request id from the
-// incoming metadata, generating a random 16-hex-char id when absent.
+// incoming metadata, sanitized via sanitizeHeaderValue. Absent, control-
+// character-only or over-long-to-nothing values fall back to a freshly
+// generated random 16-hex-char id.
 func ensureRequestID(ctx context.Context) string {
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		if vals := md.Get(requestIDHeader); len(vals) > 0 && vals[0] != "" {
-			return vals[0]
+		if vals := md.Get(requestIDHeader); len(vals) > 0 {
+			if rid := sanitizeHeaderValue(vals[0]); rid != "" {
+				return rid
+			}
 		}
 	}
 	var b [8]byte
@@ -49,6 +82,20 @@ func ensureRequestID(ctx context.Context) string {
 		return "req-unknown"
 	}
 	return hex.EncodeToString(b[:])
+}
+
+// ensureActor returns the asserted actor identity from the incoming
+// "x-actor" metadata, sanitized; "" when unset or unusable.
+func ensureActor(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	vals := md.Get(actorHeader)
+	if len(vals) == 0 {
+		return ""
+	}
+	return sanitizeHeaderValue(vals[0])
 }
 
 // RequestIDFromContext returns the per-RPC request id injected by the
@@ -73,6 +120,11 @@ func loggingUnaryInterceptor(
 	start := time.Now()
 	rid := ensureRequestID(ctx)
 	ctx = context.WithValue(ctx, requestIDKey{}, rid)
+	// Propagate the (asserted) actor identity alongside the request id so
+	// handlers can attribute audits via actorFromCtx.
+	if actor := ensureActor(ctx); actor != "" {
+		ctx = context.WithValue(ctx, actorKey{}, actor)
+	}
 	resp, err := handler(ctx, req)
 	duration := time.Since(start)
 
@@ -105,7 +157,7 @@ func loggingStreamInterceptor(
 ) error {
 	start := time.Now()
 	rid := ensureRequestID(ss.Context())
-	err := handler(srv, &requestIDStream{ServerStream: ss, requestID: rid})
+	err := handler(srv, &requestIDStream{ServerStream: ss, requestID: rid, actor: ensureActor(ss.Context())})
 	duration := time.Since(start)
 
 	if err != nil {
@@ -127,14 +179,19 @@ func loggingStreamInterceptor(
 }
 
 // requestIDStream wraps a ServerStream so handlers observe the request
-// id via the stream context.
+// id and asserted actor identity via the stream context.
 type requestIDStream struct {
 	grpc.ServerStream
 	requestID string
+	actor     string
 }
 
 func (s *requestIDStream) Context() context.Context {
-	return context.WithValue(s.ServerStream.Context(), requestIDKey{}, s.requestID)
+	ctx := context.WithValue(s.ServerStream.Context(), requestIDKey{}, s.requestID)
+	if s.actor != "" {
+		ctx = context.WithValue(ctx, actorKey{}, s.actor)
+	}
+	return ctx
 }
 
 // recoveryUnaryInterceptor recovers from panics in unary handlers,

@@ -51,6 +51,91 @@ func TestEnsureRequestID(t *testing.T) {
 		assert.NotEqual(t, "", rid)
 		assert.Len(t, rid, 16)
 	})
+
+	t.Run("control-character-only header yields generated id", func(t *testing.T) {
+		ctx := incomingMDCtx(context.Background(), "x-request-id", "\r\n\x00")
+		rid := ensureRequestID(ctx)
+		require.Len(t, rid, 16, "unusable ids must be regenerated, not passed through")
+		assert.Regexp(t, `^[0-9a-f]{16}$`, rid)
+	})
+
+	t.Run("client id with embedded CRLF is sanitized", func(t *testing.T) {
+		ctx := incomingMDCtx(context.Background(), "x-request-id", "abc\r\nevil: header")
+		assert.Equal(t, "abcevil: header", ensureRequestID(ctx))
+	})
+}
+
+// --- sanitizeHeaderValue -----------------------------------------------------------------
+
+func TestSanitizeHeaderValue(t *testing.T) {
+	t.Run("strips control characters including CR/LF", func(t *testing.T) {
+		assert.Equal(t, "cleanvalue", sanitizeHeaderValue("cle\r\nan\x00value"))
+	})
+	t.Run("keeps printable unicode", func(t *testing.T) {
+		assert.Equal(t, "ops-team ✓", sanitizeHeaderValue("ops-team ✓"))
+	})
+	t.Run("caps length at 128", func(t *testing.T) {
+		in := strings.Repeat("x", 300)
+		require.Len(t, sanitizeHeaderValue(in), 128)
+	})
+	t.Run("empty stays empty", func(t *testing.T) {
+		assert.Empty(t, sanitizeHeaderValue(""))
+	})
+}
+
+// --- actor identity propagation ------------------------------------------------------------
+
+func TestActorIdentityPropagation(t *testing.T) {
+	t.Run("unary interceptor injects x-actor into context", func(t *testing.T) {
+		ctx := incomingMDCtx(context.Background(), "x-request-id", "rid-actor", "x-actor", "alice")
+		var seen string
+		handler := func(hctx context.Context, _ interface{}) (interface{}, error) {
+			seen = actorFromCtx(hctx)
+			return nil, nil
+		}
+		info := &grpcpkg.UnaryServerInfo{FullMethod: "/test/Method"}
+		_, err := loggingUnaryInterceptor(ctx, "req", info, handler)
+		require.NoError(t, err)
+		assert.Equal(t, "alice", seen, "handlers must observe the asserted actor")
+	})
+
+	t.Run("stream interceptor injects x-actor into stream context", func(t *testing.T) {
+		ctx := incomingMDCtx(context.Background(), "x-actor", "bob")
+		var seen string
+		handler := func(_ interface{}, ss grpcpkg.ServerStream) error {
+			seen = actorFromCtx(ss.Context())
+			return nil
+		}
+		err := loggingStreamInterceptor(nil, &fakeStream{ctx: ctx},
+			&grpcpkg.StreamServerInfo{FullMethod: "/test/Stream"}, handler)
+		require.NoError(t, err)
+		assert.Equal(t, "bob", seen)
+	})
+
+	t.Run("absent x-actor falls back to default", func(t *testing.T) {
+		var seen string
+		handler := func(hctx context.Context, _ interface{}) (interface{}, error) {
+			seen = actorFromCtx(hctx)
+			return nil, nil
+		}
+		_, err := loggingUnaryInterceptor(context.Background(), "req",
+			&grpcpkg.UnaryServerInfo{FullMethod: "/test/Method"}, handler)
+		require.NoError(t, err)
+		assert.Equal(t, "grpc-user", seen)
+	})
+
+	t.Run("x-actor control characters are stripped", func(t *testing.T) {
+		ctx := incomingMDCtx(context.Background(), "x-actor", "eve\nlog injection")
+		var seen string
+		handler := func(hctx context.Context, _ interface{}) (interface{}, error) {
+			seen = actorFromCtx(hctx)
+			return nil, nil
+		}
+		_, err := loggingUnaryInterceptor(ctx, "req",
+			&grpcpkg.UnaryServerInfo{FullMethod: "/test/Method"}, handler)
+		require.NoError(t, err)
+		assert.Equal(t, "evelog injection", seen)
+	})
 }
 
 // --- RequestIDFromContext / unary interceptor ---------------------------------
@@ -123,6 +208,30 @@ func TestLoggingStreamInterceptorSuccessPath(t *testing.T) {
 	err := loggingStreamInterceptor(nil, &fakeStream{ctx: context.Background()},
 		&grpcpkg.StreamServerInfo{FullMethod: "/test/Stream"}, handler)
 	require.NoError(t, err)
+}
+
+// --- auth stream interceptor -----------------------------------------------------------------
+
+func TestAuthStreamInterceptor(t *testing.T) {
+	handler := func(_ interface{}, _ grpcpkg.ServerStream) error { return nil }
+
+	t.Run("health watch stream is exempt like unary check", func(t *testing.T) {
+		err := AuthStreamInterceptor("s3cret")(nil, &fakeStream{ctx: context.Background()},
+			&grpcpkg.StreamServerInfo{FullMethod: "/grpc.health.v1.Health/Watch"}, handler)
+		assert.NoError(t, err, "health Watch must be reachable without credentials")
+	})
+
+	t.Run("business stream requires a token", func(t *testing.T) {
+		ctx := incomingMDCtx(context.Background(), "authorization", "Bearer s3cret")
+		err := AuthStreamInterceptor("s3cret")(nil, &fakeStream{ctx: ctx},
+			&grpcpkg.StreamServerInfo{FullMethod: "/levee.ChangeService/WatchChange"}, handler)
+		assert.NoError(t, err)
+
+		err = AuthStreamInterceptor("s3cret")(nil, &fakeStream{ctx: context.Background()},
+			&grpcpkg.StreamServerInfo{FullMethod: "/levee.ChangeService/WatchChange"}, handler)
+		require.Error(t, err)
+		assert.Equal(t, codes.Unauthenticated, status.Code(err))
+	})
 }
 
 // --- recovery interceptors -------------------------------------------------------

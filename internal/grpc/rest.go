@@ -16,11 +16,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/time/rate"
 
@@ -84,6 +88,13 @@ type Gateway struct {
 	// mobileApproval is optional; non-nil when the mobile approval service
 	// is configured. Used by the /changes/deeplink/approve REST endpoint.
 	mobileApproval mobileApprovalHandler
+
+	// limiterOnce lazily initialises the gateway-wide rate limiter so
+	// that BOTH route trees (RESTful "/" and legacy "/api/v1/") share a
+	// single token bucket. limiter stays nil when rate limiting is
+	// disabled via a negative RatePerSec.
+	limiterOnce sync.Once
+	limiter     *rate.Limiter
 }
 
 // mobileApprovalHandler wraps the MobileApprovalService for REST routing.
@@ -153,9 +164,12 @@ func (gw *Gateway) Start(ctx context.Context) error {
 func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 	mux := http.NewServeMux()
 	// RESTful routes take priority over /api/v1/ so the frontend can call
-	// /changes, /templates, etc. without the gRPC-style prefix.
-	mux.Handle("/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(gw.rateLimitMiddleware(gw.restRoute())))))
-	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(gw.rateLimitMiddleware(gw.route())))))
+	// /changes, /templates, etc. without the gRPC-style prefix. Both route
+	// trees share ONE rate limiter: separate buckets would let a client
+	// double its effective request budget by switching path styles.
+	lim := gw.sharedRateLimiter()
+	mux.Handle("/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(wrapWithLimiter(lim, gw.restRoute())))))
+	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(wrapWithLimiter(lim, gw.route())))))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if gw.change == nil {
@@ -231,32 +245,47 @@ func (gw *Gateway) route() http.Handler {
 // restRoute dispatches RESTful HTTP paths (e.g. /changes, /templates/:id)
 // to the corresponding gRPC handlers. It runs BEFORE /api/v1/ so the
 // frontend's Axios calls hit this layer first.
+//
+// Routing matches the FIRST path segment EXACTLY. The previous
+// strings.HasPrefix(path, "/changes") test made look-alike paths such as
+// "/changesfoo" dispatch into the change handlers instead of 404ing.
 func (gw *Gateway) restRoute() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimRight(r.URL.Path, "/")
 		method := r.Method
 
-		switch {
-		case strings.HasPrefix(path, "/changes"):
+		first := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
+		switch first {
+		case "changes":
 			gw.dispatchChange(w, r, method, path)
-		case strings.HasPrefix(path, "/templates"):
+		case "templates":
 			gw.dispatchTemplate(w, r, method, path)
-		case strings.HasPrefix(path, "/targets"):
+		case "targets":
 			gw.dispatchTarget(w, r, method, path)
-		case path == "/audit/log" && method == "GET":
-			gw.handleAuditLog(w, r)
-		case path == "/audit/traces" && method == "GET":
-			gw.handleAuditTraces(w, r)
-		case path == "/audit/verify" && method == "GET":
-			gw.handleAuditVerify(w, r)
-		case path == "/system/version" && method == "GET":
-			gw.handleSystemVersion(w, r)
-		case path == "/system/status" && method == "GET":
-			gw.handleSystemStatus(w, r)
-		case path == "/system/config" && method == "GET":
-			gw.handleSystemConfig(w, r)
-		case path == "/system/doctor" && method == "POST":
-			gw.handleSystemDoctor(w, r)
+		case "audit":
+			switch {
+			case path == "/audit/log" && method == "GET":
+				gw.handleAuditLog(w, r)
+			case path == "/audit/traces" && method == "GET":
+				gw.handleAuditTraces(w, r)
+			case path == "/audit/verify" && method == "GET":
+				gw.handleAuditVerify(w, r)
+			default:
+				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+			}
+		case "system":
+			switch {
+			case path == "/system/version" && method == "GET":
+				gw.handleSystemVersion(w, r)
+			case path == "/system/status" && method == "GET":
+				gw.handleSystemStatus(w, r)
+			case path == "/system/config" && method == "GET":
+				gw.handleSystemConfig(w, r)
+			case path == "/system/doctor" && method == "POST":
+				gw.handleSystemDoctor(w, r)
+			default:
+				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+			}
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		}
@@ -401,29 +430,23 @@ func (gw *Gateway) handleChangeList(w http.ResponseWriter, r *http.Request) {
 	if v := q.Get("status"); v != "" {
 		req.Statuses = strings.Split(v, ",")
 	}
-	if v := q.Get("team"); v != "" {
-		req.Teams = strings.Split(v, ",")
-	}
-	if v := q.Get("environment"); v != "" {
-		req.Environments = strings.Split(v, ",")
-	}
 	if v := q.Get("labelContains"); v != "" {
 		req.LabelContains = v
 	}
 	if v := q.Get("pageSize"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil {
-			req.PageSize = int32(n)
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid pageSize: "+v)
+			return
 		}
+		req.PageSize = int32(n)
 	}
 	if v := q.Get("pageToken"); v != "" {
 		req.PageToken = v
 	}
-	if v := q.Get("sortBy"); v != "" {
-		req.SortBy = v
-	}
-	if v := q.Get("sortOrder"); v != "" {
-		req.SortOrder = v
-	}
+	// NOTE: team/environment/sortBy/sortOrder query parameters are
+	// deliberately NOT parsed here — the backend never supported them,
+	// and silently accepting them made clients believe they worked.
 	resp, err := svc.ListChanges(ctx, req)
 	if err != nil {
 		writeGRPCError(w, err)
@@ -673,10 +696,23 @@ func (gw *Gateway) handleChangeLogs(w http.ResponseWriter, r *http.Request, id s
 	if v := q.Get("levels"); v != "" {
 		req.Levels = strings.Split(v, ",")
 	}
-	if v := q.Get("limit"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil {
-			req.Limit = int32(n)
+	if v := q.Get("since"); v != "" {
+		// Accept an RFC3339 timestamp; forward as a Unix-seconds lower
+		// bound. An unparseable value is a client error, not "no filter".
+		ts, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid since (want RFC3339): "+v)
+			return
 		}
+		req.Since = ts.Unix()
+	}
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid limit: "+v)
+			return
+		}
+		req.Limit = int32(n)
 	}
 	resp, err := svc.GetLogs(ctx, req)
 	if err != nil {
@@ -758,9 +794,12 @@ func (gw *Gateway) handleTemplateList(w http.ResponseWriter, r *http.Request) {
 		req.NameContains = v
 	}
 	if v := q.Get("pageSize"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil {
-			req.PageSize = int32(n)
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid pageSize: "+v)
+			return
 		}
+		req.PageSize = int32(n)
 	}
 	if v := q.Get("pageToken"); v != "" {
 		req.PageToken = v
@@ -854,9 +893,12 @@ func (gw *Gateway) handleTargetList(w http.ResponseWriter, r *http.Request) {
 		req.ReachableOnly = true
 	}
 	if v := q.Get("pageSize"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil {
-			req.PageSize = int32(n)
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid pageSize: "+v)
+			return
 		}
+		req.PageSize = int32(n)
 	}
 	if v := q.Get("pageToken"); v != "" {
 		req.PageToken = v
@@ -938,9 +980,12 @@ func (gw *Gateway) handleTargetCheck(w http.ResponseWriter, r *http.Request, id 
 		req.Fresh = true
 	}
 	if v := q.Get("timeoutSeconds"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil {
-			req.TimeoutSeconds = int32(n)
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid timeoutSeconds: "+v)
+			return
 		}
+		req.TimeoutSeconds = int32(n)
 	}
 	resp, err := svc.CheckTarget(ctx, req)
 	if err != nil {
@@ -972,19 +1017,28 @@ func (gw *Gateway) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 		req.Action = v
 	}
 	if v := q.Get("since"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			req.Since = n
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid since: "+v)
+			return
 		}
+		req.Since = n
 	}
 	if v := q.Get("until"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			req.Until = n
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid until: "+v)
+			return
 		}
+		req.Until = n
 	}
 	if v := q.Get("pageSize"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil {
-			req.PageSize = int32(n)
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid pageSize: "+v)
+			return
 		}
+		req.PageSize = int32(n)
 	}
 	if v := q.Get("pageToken"); v != "" {
 		req.PageToken = v
@@ -1009,19 +1063,28 @@ func (gw *Gateway) handleAuditTraces(w http.ResponseWriter, r *http.Request) {
 		req.RunIds = strings.Split(v, ",")
 	}
 	if v := q.Get("since"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			req.Since = n
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid since: "+v)
+			return
 		}
+		req.Since = n
 	}
 	if v := q.Get("until"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			req.Until = n
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid until: "+v)
+			return
 		}
+		req.Until = n
 	}
 	if v := q.Get("pageSize"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 32); err == nil {
-			req.PageSize = int32(n)
+		n, err := strconv.ParseInt(v, 10, 32)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid pageSize: "+v)
+			return
 		}
+		req.PageSize = int32(n)
 	}
 	if v := q.Get("pageToken"); v != "" {
 		req.PageToken = v
@@ -1084,9 +1147,10 @@ func (gw *Gateway) handleSystemConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
 	req := &pb.GetConfigRequest{}
 	q := r.URL.Query()
-	if q.Get("redactSecrets") == "true" {
-		req.RedactSecrets = true
-	}
+	// Redaction is the DEFAULT: the gateway sends redact_secrets=true
+	// unless the client explicitly passes ?redactSecrets=false. Omitting
+	// the flag must never leak credentials.
+	req.RedactSecrets = q.Get("redactSecrets") != "false"
 	if v := q.Get("section"); v != "" {
 		req.Section = v
 	}
@@ -1133,17 +1197,279 @@ func writeProto(w http.ResponseWriter, v proto.Message) {
 	_, _ = w.Write(out)
 }
 
-// readJSONBody reads JSON body into a plain struct (for hand-written types
-// that do not implement proto.Message).
-func readJSONBody(r *http.Request, v any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
-	if err != nil {
-		return fmt.Errorf("read body: %w", err)
-	}
-	if len(body) == 0 {
+// --- legacy proto-style JSON -------------------------------------------------
+//
+// The AlertService/DiagnosisService/ConversationService message types in
+// pb/levee_extra.pb.go are hand-written and predate protoreflect: they do
+// NOT implement the modern proto.Message interface (no ProtoReflect), so
+// protojson and writeProto/readProto cannot be used on them directly.
+// Their protobuf struct tags still carry the canonical lowerCamelCase JSON
+// name (json=<name>), so these helpers derive field names from those tags
+// and mirror the protojson behaviour that matters for the REST surface:
+// responses use lowerCamelCase keys, requests accept either spelling.
+
+// readProtoJSON decodes a request body into v using the proto-style JSON
+// rules below. An empty body leaves v untouched.
+func readProtoJSON(v any) func(*http.Request) error {
+	return func(r *http.Request) error {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
+		if err != nil {
+			return fmt.Errorf("read body: %w", err)
+		}
+		if len(body) == 0 {
+			return nil
+		}
+		if err := protoLikeUnmarshal(body, v); err != nil {
+			return fmt.Errorf("invalid request body: %w", err)
+		}
 		return nil
 	}
-	return json.Unmarshal(body, v)
+}
+
+// writeProtoJSON marshals v to JSON with lowerCamelCase keys derived from
+// the protobuf tags and writes it as the response.
+func writeProtoJSON(w http.ResponseWriter, v any) {
+	out, ok, err := protoLikeValue(reflect.ValueOf(v))
+	if err != nil || !ok {
+		writeJSONError(w, http.StatusInternalServerError, "marshal error")
+		return
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
+}
+
+// protoTagJSONName extracts the canonical json= component from a protobuf
+// struct tag ("bytes,2,opt,name=user_id,json=userId,proto3" → "userId").
+func protoTagJSONName(tag string) string {
+	for _, part := range strings.Split(tag, ",") {
+		if strings.HasPrefix(part, "json=") {
+			return strings.TrimPrefix(part, "json=")
+		}
+	}
+	return ""
+}
+
+// protoLikeFieldName returns the canonical lowerCamelCase wire name of a
+// struct field: the protobuf tag's json= name when present, else a
+// lowerCamelCased Go field name.
+func protoLikeFieldName(f reflect.StructField) string {
+	if name := protoTagJSONName(f.Tag.Get("protobuf")); name != "" {
+		return name
+	}
+	r := []rune(f.Name)
+	if len(r) == 0 {
+		return f.Name
+	}
+	return string(unicode.ToLower(r[0])) + string(r[1:])
+}
+
+// protoTagComponent extracts a key=value component from a protobuf struct
+// tag ("bytes,2,opt,name=user_id,json=userId,proto3", "name" → "user_id").
+func protoTagComponent(tag, key string) string {
+	want := key + "="
+	for _, part := range strings.Split(tag, ",") {
+		if strings.HasPrefix(part, want) {
+			return strings.TrimPrefix(part, want)
+		}
+	}
+	return ""
+}
+
+// protoLikeAcceptNames returns every input spelling accepted for a field:
+// the canonical camelCase name plus the snake_case proto/json-tag name,
+// mirroring protojson's dual-name tolerance.
+func protoLikeAcceptNames(f reflect.StructField) []string {
+	names := []string{protoLikeFieldName(f)}
+	add := func(n string) {
+		if n == "" || n == "-" {
+			return
+		}
+		for _, existing := range names {
+			if existing == n {
+				return
+			}
+		}
+		names = append(names, n)
+	}
+	if j := f.Tag.Get("json"); j != "" {
+		add(strings.Split(j, ",")[0])
+	}
+	add(protoTagComponent(f.Tag.Get("protobuf"), "name"))
+	return names
+}
+
+// protoLikeValue converts v into plain JSON-encodable values with camelCase
+// object keys. The second return is false when v is a nil pointer (nothing
+// to encode).
+func protoLikeValue(v reflect.Value) (any, bool, error) {
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return nil, false, nil
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		out := make(map[string]any, v.NumField())
+		t := v.Type()
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			if f.PkgPath != "" { // unexported
+				continue
+			}
+			val, ok, err := protoLikeValue(v.Field(i))
+			if err != nil {
+				return nil, false, err
+			}
+			if !ok {
+				continue // nil pointer field is omitted, like protojson
+			}
+			out[protoLikeFieldName(f)] = val
+		}
+		return out, true, nil
+	case reflect.Slice:
+		arr := make([]any, 0, v.Len())
+		for i := 0; i < v.Len(); i++ {
+			val, ok, err := protoLikeValue(v.Index(i))
+			if err != nil {
+				return nil, false, err
+			}
+			if !ok {
+				arr = append(arr, nil)
+				continue
+			}
+			arr = append(arr, val)
+		}
+		return arr, true, nil
+	case reflect.Map:
+		out := make(map[string]any, v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			key, _ := iter.Key().Interface().(string)
+			val, _, err := protoLikeValue(iter.Value())
+			if err != nil {
+				return nil, false, err
+			}
+			out[key] = val
+		}
+		return out, true, nil
+	default:
+		return v.Interface(), true, nil
+	}
+}
+
+// protoLikeUnmarshal decodes JSON data into v using the dual-name field
+// matching described above.
+func protoLikeUnmarshal(data []byte, v any) error {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	return assignProtoLike(raw, reflect.ValueOf(v))
+}
+
+// assignProtoLike assigns decoded JSON value raw into the settable value v.
+func assignProtoLike(raw any, v reflect.Value) error {
+	if !v.CanSet() && v.Kind() != reflect.Ptr {
+		return fmt.Errorf("cannot assign field")
+	}
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			v.Set(reflect.New(v.Type().Elem()))
+		}
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("expected JSON object")
+		}
+		t := v.Type()
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			if f.PkgPath != "" {
+				continue
+			}
+			for _, name := range protoLikeAcceptNames(f) {
+				val, present := obj[name]
+				if !present {
+					continue
+				}
+				if err := assignProtoLike(val, v.Field(i)); err != nil {
+					return err
+				}
+				break
+			}
+		}
+		return nil
+	case reflect.Slice:
+		arr, ok := raw.([]any)
+		if !ok {
+			return fmt.Errorf("expected JSON array")
+		}
+		out := reflect.MakeSlice(v.Type(), 0, len(arr))
+		for _, el := range arr {
+			ev := reflect.New(v.Type().Elem()).Elem()
+			if err := assignProtoLike(el, ev); err != nil {
+				return err
+			}
+			out = reflect.Append(out, ev)
+		}
+		v.Set(out)
+		return nil
+	case reflect.Map:
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("expected JSON object")
+		}
+		out := reflect.MakeMapWithSize(v.Type(), len(obj))
+		for k, val := range obj {
+			ev := reflect.New(v.Type().Elem()).Elem()
+			if err := assignProtoLike(val, ev); err != nil {
+				return err
+			}
+			out.SetMapIndex(reflect.ValueOf(k), ev)
+		}
+		v.Set(out)
+		return nil
+	case reflect.String:
+		s, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("expected JSON string")
+		}
+		v.SetString(s)
+		return nil
+	case reflect.Int64, reflect.Int32, reflect.Int:
+		f, ok := raw.(float64)
+		if !ok {
+			return fmt.Errorf("expected JSON number")
+		}
+		v.SetInt(int64(f))
+		return nil
+	case reflect.Float32, reflect.Float64:
+		f, ok := raw.(float64)
+		if !ok {
+			return fmt.Errorf("expected JSON number")
+		}
+		v.SetFloat(f)
+		return nil
+	case reflect.Bool:
+		b, ok := raw.(bool)
+		if !ok {
+			return fmt.Errorf("expected JSON boolean")
+		}
+		v.SetBool(b)
+		return nil
+	default:
+		return fmt.Errorf("unsupported field kind %s", v.Kind())
+	}
 }
 
 // writeJSON writes any struct as JSON response.
@@ -1688,7 +2014,7 @@ func (gw *Gateway) handleAlert(w http.ResponseWriter, r *http.Request, method st
 	switch method {
 	case "ReceiveAlert":
 		req := &pb.AlertMessage{}
-		if err := readJSONBody(r, req); err != nil {
+		if err := readProtoJSON(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1697,10 +2023,10 @@ func (gw *Gateway) handleAlert(w http.ResponseWriter, r *http.Request, method st
 			writeGRPCError(w, err)
 			return
 		}
-		writeJSON(w, resp)
+		writeProtoJSON(w, resp)
 	case "GetAlertStatus":
 		req := &pb.GetAlertStatusRequest{}
-		if err := readJSONBody(r, req); err != nil {
+		if err := readProtoJSON(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1709,7 +2035,7 @@ func (gw *Gateway) handleAlert(w http.ResponseWriter, r *http.Request, method st
 			writeGRPCError(w, err)
 			return
 		}
-		writeJSON(w, resp)
+		writeProtoJSON(w, resp)
 	case "SubscribeAlerts":
 		writeJSONError(w, http.StatusNotImplemented, "streaming RPCs not supported")
 	default:
@@ -1732,7 +2058,7 @@ func (gw *Gateway) handleDiagnosis(w http.ResponseWriter, r *http.Request, metho
 	switch method {
 	case "Diagnose":
 		req := &pb.DiagnoseRequest{}
-		if err := readJSONBody(r, req); err != nil {
+		if err := readProtoJSON(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1741,10 +2067,10 @@ func (gw *Gateway) handleDiagnosis(w http.ResponseWriter, r *http.Request, metho
 			writeGRPCError(w, err)
 			return
 		}
-		writeJSON(w, resp)
+		writeProtoJSON(w, resp)
 	case "GetDiagnosis":
 		req := &pb.GetDiagnosisRequest{}
-		if err := readJSONBody(r, req); err != nil {
+		if err := readProtoJSON(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1753,7 +2079,7 @@ func (gw *Gateway) handleDiagnosis(w http.ResponseWriter, r *http.Request, metho
 			writeGRPCError(w, err)
 			return
 		}
-		writeJSON(w, resp)
+		writeProtoJSON(w, resp)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "unknown method: "+method)
 	}
@@ -1774,7 +2100,7 @@ func (gw *Gateway) handleConversation(w http.ResponseWriter, r *http.Request, me
 	switch method {
 	case "SendMessage":
 		req := &pb.SendMessageRequest{}
-		if err := readJSONBody(r, req); err != nil {
+		if err := readProtoJSON(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -1783,7 +2109,7 @@ func (gw *Gateway) handleConversation(w http.ResponseWriter, r *http.Request, me
 			writeGRPCError(w, err)
 			return
 		}
-		writeJSON(w, resp)
+		writeProtoJSON(w, resp)
 	case "SubscribeConversation":
 		writeJSONError(w, http.StatusNotImplemented, "streaming RPCs not supported")
 	default:
@@ -1805,36 +2131,43 @@ func extractAuth(r *http.Request) metadata.MD {
 }
 
 // writeGRPCError maps a gRPC status error to an HTTP error response.
+//
+// Internal codes are scrubbed: the response body carries a generic
+// "internal error" message while the real cause is logged server-side.
+// Raw store/driver messages have previously leaked connection strings
+// and SQL errors to API clients.
 func writeGRPCError(w http.ResponseWriter, err error) {
 	st, ok := status.FromError(err)
 	if !ok {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		// Not a gRPC status at all: treat as internal, never echo the text.
+		slog.Default().Error("rest gateway internal error", "message", err.Error())
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	msg := st.Message()
 	switch st.Code() {
 	case grpccodes.InvalidArgument:
-		writeJSONError(w, http.StatusBadRequest, msg)
+		writeJSONError(w, http.StatusBadRequest, st.Message())
 	case grpccodes.NotFound:
-		writeJSONError(w, http.StatusNotFound, msg)
+		writeJSONError(w, http.StatusNotFound, st.Message())
 	case grpccodes.AlreadyExists:
-		writeJSONError(w, http.StatusConflict, msg)
+		writeJSONError(w, http.StatusConflict, st.Message())
 	case grpccodes.PermissionDenied:
-		writeJSONError(w, http.StatusForbidden, msg)
+		writeJSONError(w, http.StatusForbidden, st.Message())
 	case grpccodes.FailedPrecondition:
-		writeJSONError(w, http.StatusPreconditionFailed, msg)
+		writeJSONError(w, http.StatusPreconditionFailed, st.Message())
 	case grpccodes.Unimplemented:
-		writeJSONError(w, http.StatusNotImplemented, msg)
+		writeJSONError(w, http.StatusNotImplemented, st.Message())
 	case grpccodes.Unavailable:
-		writeJSONError(w, http.StatusServiceUnavailable, msg)
+		writeJSONError(w, http.StatusServiceUnavailable, st.Message())
 	case grpccodes.Unauthenticated:
-		writeJSONError(w, http.StatusUnauthorized, msg)
+		writeJSONError(w, http.StatusUnauthorized, st.Message())
 	case grpccodes.DeadlineExceeded:
-		writeJSONError(w, http.StatusGatewayTimeout, msg)
+		writeJSONError(w, http.StatusGatewayTimeout, st.Message())
 	case grpccodes.ResourceExhausted:
-		writeJSONError(w, http.StatusTooManyRequests, msg)
+		writeJSONError(w, http.StatusTooManyRequests, st.Message())
 	default:
-		writeJSONError(w, http.StatusInternalServerError, msg)
+		slog.Default().Error("rest gateway internal error", "code", st.Code().String(), "message", st.Message())
+		writeJSONError(w, http.StatusInternalServerError, "internal error")
 	}
 }
 
@@ -1877,25 +2210,37 @@ func corsMiddleware(origins []string, h http.Handler) http.Handler {
 	})
 }
 
-// rateLimitMiddleware enforces the gateway's global token bucket. When
-// the bucket is exhausted it responds 429 with a Retry-After hint.
-// Rate limiting is disabled when cfg.RatePerSec is negative.
-func (gw *Gateway) rateLimitMiddleware(h http.Handler) http.Handler {
-	rps := gw.cfg.RatePerSec
-	burst := gw.cfg.RateBurst
-	if rps == 0 {
-		rps = DefaultRatePerSec
-	}
-	if burst == 0 {
-		burst = DefaultRateBurst
-	}
-	if rps < 0 {
-		// Explicitly disabled.
+// sharedRateLimiter lazily initialises and returns the gateway-wide token
+// bucket shared by BOTH route trees. It returns nil when rate limiting is
+// explicitly disabled via a negative RatePerSec.
+func (gw *Gateway) sharedRateLimiter() *rate.Limiter {
+	gw.limiterOnce.Do(func() {
+		rps := gw.cfg.RatePerSec
+		burst := gw.cfg.RateBurst
+		if rps == 0 {
+			rps = DefaultRatePerSec
+		}
+		if burst == 0 {
+			burst = DefaultRateBurst
+		}
+		if rps < 0 {
+			// Explicitly disabled; leave gw.limiter nil.
+			return
+		}
+		gw.limiter = rate.NewLimiter(rate.Limit(rps), burst)
+	})
+	return gw.limiter
+}
+
+// wrapWithLimiter enforces lim against h, responding 429 with a
+// Retry-After hint when the bucket is exhausted. A nil limiter means
+// rate limiting is disabled and h is returned unchanged.
+func wrapWithLimiter(lim *rate.Limiter, h http.Handler) http.Handler {
+	if lim == nil {
 		return h
 	}
-	limiter := rate.NewLimiter(rate.Limit(rps), burst)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !limiter.Allow() {
+		if !lim.Allow() {
 			w.Header().Set("Retry-After", "1")
 			writeJSONError(w, http.StatusTooManyRequests, "rate limit exceeded")
 			return
@@ -1904,21 +2249,46 @@ func (gw *Gateway) rateLimitMiddleware(h http.Handler) http.Handler {
 	})
 }
 
+// rateLimitMiddleware wraps h with the gateway's SHARED token bucket (see
+// serveOn: one limiter covers both route trees). Rate limiting is disabled
+// when cfg.RatePerSec is negative.
+func (gw *Gateway) rateLimitMiddleware(h http.Handler) http.Handler {
+	return wrapWithLimiter(gw.sharedRateLimiter(), h)
+}
+
 // requestIDHeaderName is the HTTP header used to propagate the request
 // id to REST clients (mirrors the gRPC metadata key).
 const requestIDHeaderName = "X-Request-Id"
 
+// actingAsHeaderName is the HTTP header used to assert the actor a client
+// acts on behalf of; it mirrors the "x-actor" gRPC metadata key.
+const actingAsHeaderName = "X-Acting-As"
+
 // requestIDMiddleware assigns a per-request id (honouring a client
 // supplied X-Request-Id), echoes it on the response and exposes it to
-// handlers through the request context.
+// handlers through the request context. The asserted actor identity from
+// X-Acting-As is exposed via the same context key the gRPC interceptors
+// use (actorKey{}), so actorFromCtx works uniformly across transports.
+//
+// Both values are sanitized (control characters stripped, length capped);
+// an unusable client request id is replaced by a generated one.
+//
+// SECURITY: LEVEE authenticates with a shared bearer token, so the actor
+// value is an ASSERTION by the caller, not a proven identity — any token
+// holder may claim any name. Use it for audit attribution only, never for
+// authorization.
 func (gw *Gateway) requestIDMiddleware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rid := r.Header.Get(requestIDHeaderName)
+		rid := sanitizeHeaderValue(r.Header.Get(requestIDHeaderName))
 		if rid == "" {
 			rid = newRESTRequestID()
 		}
 		w.Header().Set(requestIDHeaderName, rid)
-		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), requestIDKey{}, rid)))
+		ctx := context.WithValue(r.Context(), requestIDKey{}, rid)
+		if actor := sanitizeHeaderValue(r.Header.Get(actingAsHeaderName)); actor != "" {
+			ctx = context.WithValue(ctx, actorKey{}, actor)
+		}
+		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

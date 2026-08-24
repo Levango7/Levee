@@ -105,6 +105,21 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
+// recordAudit persists an audit entry, downgrading failures to a logged
+// warning instead of silently discarding them. Audit writes are
+// deliberately non-fatal for the RPC that triggered them (the primary
+// state change has already been committed to the store), but the old
+// `_ = s.store.CreateAudit(...)` pattern made the loss invisible.
+func (s *ChangeService) recordAudit(ctx context.Context, audit *state.Audit) {
+	if err := s.store.CreateAudit(ctx, audit); err != nil {
+		log.Warn("audit write failed",
+			"run_id", audit.RunID,
+			"action", audit.Action,
+			"audit_id", audit.ID,
+			"error", err)
+	}
+}
+
 // runToPB converts a state.Run to a pb.Change. The two types have
 // overlapping but not identical fields; this helper centralises the
 // mapping so every RPC that returns a Change uses the same conversion.
@@ -146,15 +161,16 @@ func pbToRunParams(params map[string]string) string {
 	return string(b)
 }
 
-// actorFromCtx extracts the actor identity from the context. In
-// production this would come from the auth interceptor (which validates
-// the bearer token); for now we use a metadata key or fall back to
-// "grpc-user".
+// actorFromCtx extracts the actor identity from the context. The value is
+// populated by the logging interceptors from the "x-actor" gRPC metadata
+// key (and by the REST gateway's middleware from the X-Acting-As header).
+//
+// SECURITY: LEVEE authenticates requests with a shared bearer token, so
+// an actor name is an ASSERTION by the client, not a proof of identity —
+// any token holder may claim any actor string (sanitized). It is suitable
+// for audit-trail attribution and UX only, never for authorization
+// decisions. Falls back to "grpc-user" when unset.
 func actorFromCtx(ctx context.Context) string {
-	// We do not import metadata here to avoid an extra dependency in
-	// this helper; the auth interceptor already validated the token.
-	// The actor is conveyed via a context value set by a future
-	// audit interceptor; absent that, we use a constant.
 	if v, ok := ctx.Value(actorKey{}).(string); ok && v != "" {
 		return v
 	}
@@ -201,7 +217,7 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	}
 
 	// Record an audit entry for the creation.
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     runID,
 		Action:    "create",
@@ -265,7 +281,7 @@ func (s *ChangeService) CloneChange(ctx context.Context, req *pb.CloneChangeRequ
 		return nil, status.Errorf(codes.Internal, "create cloned run: %v", err)
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     runID,
 		Action:    "clone",
@@ -343,8 +359,11 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
-	// State guard: without auto-approve, only approved runs may be applied.
-	if !req.GetAutoApprove() && run.Status != "approved" && run.Status != "draft" {
+	// State guard: without auto-approve only approved runs may be applied.
+	// Drafts deliberately require autoApprove too — treating "draft" as an
+	// applyable state let unreviewed changes reach production whenever a
+	// client simply forgot to route them through the approval flow.
+	if !req.GetAutoApprove() && run.Status != "approved" {
 		return nil, status.Errorf(codes.FailedPrecondition, "change %q is in %q state, cannot apply", req.GetChangeId(), run.Status)
 	}
 
@@ -386,6 +405,14 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 			run.Status = "failed"
 			run.UpdatedAt = time.Now().UTC()
 			_ = s.store.UpdateRun(ctx, run)
+			s.publishEvent(&pb.ChangeEvent{
+				ChangeId:  run.ID,
+				EventType: "status_changed",
+				OldStatus: "running",
+				NewStatus: "failed",
+				Message:   err.Error(),
+				Timestamp: run.UpdatedAt.Unix(),
+			})
 			return &pb.ApplyResponse{
 				Change:  runToPB(run),
 				RunId:   execRunID,
@@ -400,6 +427,16 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		run.Status = finalStatus
 		run.UpdatedAt = time.Now().UTC()
 		_ = s.store.UpdateRun(ctx, run)
+		// Publish the terminal transition so WatchChange subscribers see
+		// completion/failure like any other status change.
+		s.publishEvent(&pb.ChangeEvent{
+			ChangeId:  run.ID,
+			EventType: "status_changed",
+			OldStatus: "running",
+			NewStatus: finalStatus,
+			Message:   finalStatus,
+			Timestamp: run.UpdatedAt.Unix(),
+		})
 		return &pb.ApplyResponse{
 			Change:  runToPB(run),
 			RunId:   execRunID,
@@ -467,6 +504,11 @@ func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, 
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "reload run: %v", err)
 		}
+		if run == nil {
+			// Deleted between the first load and the reload; surfacing the
+			// zero-value run as a "paused"/"running" change would lie.
+			return nil, status.Errorf(codes.NotFound, "change %q not found", runID)
+		}
 		return runToPB(run), nil
 	}
 
@@ -482,7 +524,7 @@ func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, 
 		return nil, status.Errorf(codes.Internal, "update run: %v", err)
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     runID,
 		Action:    action,
@@ -505,16 +547,22 @@ func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, 
 }
 
 // mapPauseError converts a pause-manager error into a gRPC status error.
+// Matching uses errors.Is against the sentinel errors exported by
+// internal/pause; the previous substring sniffing misclassified wrapped
+// errors and broke whenever a message was reworded.
 func mapPauseError(err error, runID string) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
 	switch {
-	case strings.Contains(msg, "not found"):
+	case errors.Is(err, pause.ErrRunNotFound):
 		return status.Errorf(codes.NotFound, "change %q not found", runID)
-	case strings.Contains(msg, "invalid"), strings.Contains(msg, "cannot"):
+	case errors.Is(err, pause.ErrNotPausable), errors.Is(err, pause.ErrNotResumable):
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
+	case errors.Is(err, pause.ErrPermissionDenied):
+		return status.Errorf(codes.PermissionDenied, "%v", err)
+	case errors.Is(err, pause.ErrEmptyRunID), errors.Is(err, pause.ErrEmptyActor):
+		return status.Errorf(codes.InvalidArgument, "%v", err)
 	default:
 		return status.Errorf(codes.Internal, "pause: %v", err)
 	}
@@ -523,16 +571,31 @@ func mapPauseError(err error, runID string) error {
 // isValidTransition reports whether a direct status transition is
 // legal. This is a simplified subset of the full state machine; the
 // pause manager enforces the complete rules when available.
+//
+// Status vocabulary (see TemplateService.InstantiateTemplate for where
+// each is produced):
+//
+//	draft    — created by CreateChange/CloneChange
+//	pending  — created by InstantiateTemplate (normal)
+//	planned  — created by InstantiateTemplate (dry-run preview)
+//	approved — approved draft/pending
+//	running / paused / completed / failed / cancelled /
+//	rolled_back / rejected / archived — lifecycle states
 func isValidTransition(from, to string) bool {
 	switch to {
 	case "paused":
 		return from == "running" || from == "pending"
 	case "running":
-		return from == "paused" || from == "pending" || from == "approved"
+		// planned/draft enter running only via ApplyChange with
+		// auto-approve; listing them here keeps Cancel/Pause-style direct
+		// transitions consistent with that vocabulary.
+		return from == "paused" || from == "pending" || from == "approved" ||
+			from == "draft" || from == "planned"
 	case "cancelled":
 		return from != "completed" && from != "cancelled" && from != "archived"
 	case "archived":
-		return from == "completed" || from == "failed" || from == "cancelled" || from == "rolled_back"
+		return from == "completed" || from == "failed" || from == "cancelled" || from == "rolled_back" ||
+			from == "draft" || from == "planned"
 	default:
 		return false
 	}
@@ -559,6 +622,18 @@ func (s *ChangeService) bulkTransition(ctx context.Context, targetStatus, action
 		return nil, status.Error(codes.Internal, "store not configured")
 	}
 
+	// Candidate filter applied before isValidTransition. ResumeAll may
+	// ONLY touch runs whose current status is "paused": the generic
+	// running-transition rule (paused|pending|approved|draft|planned →
+	// running) would otherwise let ResumeAll silently start drafts,
+	// pending approvals and completed-cycle runs, which is not what
+	// "resume" means. PauseAll keeps its existing sources via
+	// isValidTransition below.
+	allowedSources := map[string]bool{}
+	if targetStatus == "running" {
+		allowedSources["paused"] = true
+	}
+
 	runs, err := s.store.ListRuns(ctx, state.RunFilter{Limit: 0})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list runs: %v", err)
@@ -578,6 +653,11 @@ func (s *ChangeService) bulkTransition(ctx context.Context, targetStatus, action
 		}
 		_ = teamSet // team filtering would go here once runs carry a team field.
 
+		if len(allowedSources) > 0 && !allowedSources[run.Status] {
+			resp.SkippedChangeIds = append(resp.SkippedChangeIds, run.ID)
+			continue
+		}
+
 		if !isValidTransition(run.Status, targetStatus) {
 			resp.SkippedChangeIds = append(resp.SkippedChangeIds, run.ID)
 			continue
@@ -593,7 +673,7 @@ func (s *ChangeService) bulkTransition(ctx context.Context, targetStatus, action
 		}
 		resp.PausedChangeIds = append(resp.PausedChangeIds, run.ID)
 
-		_ = s.store.CreateAudit(ctx, &state.Audit{
+		s.recordAudit(ctx, &state.Audit{
 			ID:        newID("aud-"),
 			RunID:     run.ID,
 			Action:    action,
@@ -659,7 +739,7 @@ func (s *ChangeService) transitionStatusWithForce(ctx context.Context, runID, ne
 		return nil, status.Errorf(codes.Internal, "update run: %v", err)
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     runID,
 		Action:    action,
@@ -709,21 +789,30 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 		}
 	}
 
+	// With an engine the retry re-executes immediately ("running"); the
+	// no-engine fallback resets the run to "draft" so it can be re-planned,
+	// matching this function's contract — claiming "running" without an
+	// executor left the change stuck in a state nothing would ever finish.
+	newStatus := "running"
+	if s.engine == nil || s.engine.Retry == nil {
+		newStatus = "draft"
+	}
+
 	now := time.Now().UTC()
 	oldStatus := run.Status
-	run.Status = "running"
+	run.Status = newStatus
 	run.UpdatedAt = now
 	if err := s.store.UpdateRun(ctx, run); err != nil {
 		return nil, status.Errorf(codes.Internal, "update run: %v", err)
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "retry",
 		Actor:     actorFromCtx(ctx),
 		Target:    run.ID,
-		Result:    "running",
+		Result:    newStatus,
 		Timestamp: now,
 	})
 
@@ -731,7 +820,7 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 		ChangeId:  run.ID,
 		EventType: "status_changed",
 		OldStatus: oldStatus,
-		NewStatus: "running",
+		NewStatus: newStatus,
 		Message:   "retry triggered",
 		Timestamp: now.Unix(),
 	})
@@ -763,7 +852,7 @@ func (s *ChangeService) RetryHost(ctx context.Context, req *pb.RetryHostRequest)
 	}
 
 	now := time.Now().UTC()
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "retry-host",
@@ -808,9 +897,11 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		}
 		run.Status = "rolled_back"
 		run.UpdatedAt = time.Now().UTC()
-		_ = s.store.UpdateRun(ctx, run)
+		if err := s.store.UpdateRun(ctx, run); err != nil {
+			return nil, status.Errorf(codes.Internal, "update run after rollback: %v", err)
+		}
 
-		_ = s.store.CreateAudit(ctx, &state.Audit{
+		s.recordAudit(ctx, &state.Audit{
 			ID:        newID("aud-"),
 			RunID:     run.ID,
 			Action:    "rollback",
@@ -845,19 +936,36 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		return nil, status.Errorf(codes.Internal, "update run: %v", err)
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	// Honour caller-supplied run scoping: when the request identifies the
+	// original execution run, record the rollback against it so audits and
+	// traces group both under the same execution.
+	rollbackRunID := run.ID
+	if req.GetRunId() != "" {
+		rollbackRunID = req.GetRunId()
+	}
+
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "rollback",
 		Actor:     actorFromCtx(ctx),
-		Target:    run.ID,
+		Target:    rollbackRunID,
 		Result:    "rolled_back",
 		Timestamp: now,
 	})
 
+	s.publishEvent(&pb.ChangeEvent{
+		ChangeId:  run.ID,
+		EventType: "status_changed",
+		OldStatus: oldStatus,
+		NewStatus: "rolled_back",
+		Message:   "rollback completed",
+		Timestamp: now.Unix(),
+	})
+
 	return &pb.RollbackResponse{
 		Change:        runToPB(run),
-		RollbackRunId: run.ID,
+		RollbackRunId: rollbackRunID,
 		Success:       true,
 		Message:       "rollback completed (no engine; status only)",
 	}, nil
@@ -907,7 +1015,7 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 		return nil, status.Errorf(codes.Internal, "update run: %v", err)
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "approve",
@@ -967,7 +1075,7 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 		return nil, status.Errorf(codes.Internal, "update run: %v", err)
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "reject",
@@ -1030,56 +1138,145 @@ func (s *ChangeService) GetChange(ctx context.Context, req *pb.GetChangeRequest)
 
 // --- ListChanges -----------------------------------------------------------
 
+// listChangesScanCap bounds how many store rows one filtered ListChanges
+// call may scan when client-side filtering is active.
+const listChangesScanCap = 10000
+
 // ListChanges lists changes matching the supplied filter. Pagination is
-// cursor-based using the page token; the page size defaults to 50 when
+// offset-based using the page token; the page size defaults to 50 when
 // not specified.
+//
+// The store can only filter by a single status. When the request carries
+// multiple statuses or a label substring, filtering has to happen here,
+// so we page through the store with increasing offsets until enough
+// matching changes are collected or the source is exhausted — capped at
+// listChangesScanCap rows so a pathological filter cannot scan the whole
+// table on every request.
 func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequest) (*pb.ListChangesResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
 	}
 
-	// Build the store filter from the request. The store currently
-	// supports a single status filter; we take the first status from
-	// the request when multiple are supplied (the rest are ignored
-	// with a warning).
-	filter := state.RunFilter{Limit: int(req.GetPageSize())}
-	if filter.Limit <= 0 {
-		filter.Limit = 50
-	}
-	if len(req.GetStatuses()) > 0 {
-		filter.Status = req.GetStatuses()[0]
+	pageSize := int(req.GetPageSize())
+	if pageSize <= 0 {
+		pageSize = defaultPageSize
 	}
 
-	runs, err := s.store.ListRuns(ctx, filter)
+	offset, err := parsePageToken(req.GetPageToken())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "list runs: %v", err)
+		return nil, err
 	}
 
-	// Apply client-side filters that the store does not support
-	// natively: label-contains and the multi-status case.
-	changes := make([]*pb.Change, 0, len(runs))
-	for _, run := range runs {
-		c := runToPB(run)
-		if !matchLabelContains(c, req.GetLabelContains()) {
-			continue
+	statuses := req.GetStatuses()
+	labelContains := req.GetLabelContains()
+
+	// The store filters natively only when at most one status and no
+	// label filter is requested. With multiple statuses the store's
+	// single-status filter would wrongly exclude matches, so it must be
+	// left empty and matching done client-side via matchStatuses.
+	storeStatus := ""
+	switch {
+	case len(statuses) == 1:
+		storeStatus = statuses[0]
+	case len(statuses) > 1:
+		storeStatus = ""
+	}
+	clientFiltered := len(statuses) > 1 || labelContains != ""
+
+	var (
+		changes   []*pb.Change
+		nextToken string
+		totalSize int32
+	)
+
+	if !clientFiltered {
+		// Fast path: the store applies status (or none) plus offset/limit.
+		runs, err := s.store.ListRuns(ctx, state.RunFilter{
+			Status: storeStatus,
+			Limit:  pageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list runs: %v", err)
 		}
-		if !matchStatuses(c, req.GetStatuses()) {
-			continue
+		for _, run := range runs {
+			changes = append(changes, runToPB(run))
 		}
-		changes = append(changes, c)
+		// Unfiltered results: len(changes) IS the total for this page
+		// request (matching the historical behaviour).
+		totalSize = int32(len(changes))
+		if len(changes) == pageSize {
+			nextToken = fmt.Sprintf("%d", offset+pageSize)
+		}
+		return &pb.ListChangesResponse{
+			Changes:       changes,
+			NextPageToken: nextToken,
+			TotalSize:     totalSize,
+		}, nil
 	}
 
-	// Compute the next page token. We use a simple offset-based
-	// scheme encoded as a decimal string.
-	nextToken := ""
-	if len(changes) == filter.Limit {
-		nextToken = fmt.Sprintf("%d", parseOffset(req.GetPageToken())+filter.Limit)
+	// Filtered path: scan store pages with offset stepping until enough
+	// matches accumulate or the source is exhausted. fetchOffset tracks
+	// the STORE-level offset (which is what the page token encodes);
+	// scanned counts rows examined against the safety cap.
+	var (
+		matchedTotal int // all matches seen while scanning (authoritative once exhausted)
+		scanned      int
+		fetchOffset  = offset
+		exhausted    bool
+	)
+	changes = make([]*pb.Change, 0, pageSize)
+	for len(changes) < pageSize && !exhausted && scanned < listChangesScanCap {
+		batch := pageSize - len(changes)
+		if remaining := listChangesScanCap - scanned; batch > remaining {
+			batch = remaining
+		}
+		runs, err := s.store.ListRuns(ctx, state.RunFilter{
+			Status: storeStatus,
+			Limit:  batch,
+			Offset: fetchOffset,
+		})
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "list runs: %v", err)
+		}
+		scanned += len(runs)
+		fetchOffset += len(runs)
+		if len(runs) < batch {
+			exhausted = true
+		}
+		for _, run := range runs {
+			c := runToPB(run)
+			if !matchLabelContains(c, labelContains) {
+				continue
+			}
+			if !matchStatuses(c, statuses) {
+				continue
+			}
+			matchedTotal++
+			if len(changes) < pageSize {
+				changes = append(changes, c)
+			}
+		}
+	}
+
+	// TotalSize semantics: when the scan ran to exhaustion we know every
+	// match; mid-scan stops (page filled or cap hit) leave the total
+	// unknown, so report just the page length.
+	if exhausted {
+		totalSize = int32(matchedTotal)
+	} else {
+		totalSize = int32(len(changes))
+	}
+	// A full page that did not exhaust the source may have more; the next
+	// request resumes at the store offset this scan consumed.
+	if len(changes) == pageSize && !exhausted {
+		nextToken = fmt.Sprintf("%d", fetchOffset)
 	}
 
 	return &pb.ListChangesResponse{
 		Changes:       changes,
 		NextPageToken: nextToken,
-		TotalSize:     int32(len(changes)),
+		TotalSize:     totalSize,
 	}, nil
 }
 
@@ -1106,19 +1303,6 @@ func matchStatuses(c *pb.Change, statuses []string) bool {
 	return false
 }
 
-// parseOffset extracts the integer offset from a page token. An empty
-// or malformed token yields 0.
-func parseOffset(token string) int {
-	if token == "" {
-		return 0
-	}
-	var n int
-	if _, err := fmt.Sscanf(token, "%d", &n); err != nil {
-		return 0
-	}
-	return n
-}
-
 // --- ArchiveChange ---------------------------------------------------------
 
 // ArchiveChange marks a change as archived. When purgeArtifacts is
@@ -1138,6 +1322,17 @@ func (s *ChangeService) ArchiveChange(ctx context.Context, req *pb.ArchiveReques
 
 	if run.Status == "archived" {
 		return runToPB(run), nil
+	}
+
+	// Archiving is for finished work. Running/paused changes still own
+	// live execution state (an executor may be mid-step or waiting to
+	// resume) and must be cancelled or completed first. Everything else —
+	// completed|failed|cancelled|rejected|approved|pending|draft and
+	// rolled_back — may be archived.
+	switch run.Status {
+	case "running", "paused":
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"cannot archive change %q while %q; cancel it instead", req.GetChangeId(), run.Status)
 	}
 
 	oldStatus := run.Status
@@ -1163,7 +1358,7 @@ func (s *ChangeService) ArchiveChange(ctx context.Context, req *pb.ArchiveReques
 		}
 	}
 
-	_ = s.store.CreateAudit(ctx, &state.Audit{
+	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "archive",
@@ -1187,12 +1382,31 @@ func (s *ChangeService) ArchiveChange(ctx context.Context, req *pb.ArchiveReques
 
 // --- GetLogs ---------------------------------------------------------------
 
-// GetLogs returns log entries for a change. Logs are reconstructed
-// from the step stdout/stderr fields; when a limit is supplied the
-// result may be truncated.
+// GetLogs returns log entries for a change. Logs are reconstructed from
+// the step stdout/stderr fields (stdout maps to INFO, stderr to ERROR).
+//
+// All steps of the run are fetched before any limit is applied: the old
+// code passed the caller's limit straight into ListSteps, silently
+// dropping later steps even when earlier ones were filtered out by
+// level/since — truncation must happen AFTER filtering to be correct.
 func (s *ChangeService) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*pb.GetLogsResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
+	}
+
+	// Validate the level filter up front. Only INFO/ERROR exist in this
+	// projection of step output; anything else would silently match no
+	// entries and look like an empty log.
+	var levelFilter map[string]bool
+	if levels := req.GetLevels(); len(levels) > 0 {
+		levelFilter = make(map[string]bool, len(levels))
+		for _, l := range levels {
+			up := strings.ToUpper(l)
+			if up != "INFO" && up != "ERROR" {
+				return nil, status.Errorf(codes.InvalidArgument, "unsupported level %q (only INFO/ERROR exist)", l)
+			}
+			levelFilter[up] = true
+		}
 	}
 
 	runID := req.GetChangeId()
@@ -1200,24 +1414,21 @@ func (s *ChangeService) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*p
 		runID = req.GetRunId()
 	}
 
-	steps, err := s.store.ListSteps(ctx, state.StepFilter{RunID: runID, Limit: int(req.GetLimit())})
+	steps, err := s.store.ListSteps(ctx, state.StepFilter{RunID: runID})
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list steps: %v", err)
 	}
 
-	// Apply the optional level filter (DEBUG/INFO/WARN/ERROR). Empty
-	// means all levels. Stdout maps to INFO and stderr to ERROR below,
-	// so the filter decides which of the two is emitted per step.
-	var levelFilter map[string]bool
-	if levels := req.GetLevels(); len(levels) > 0 {
-		levelFilter = make(map[string]bool, len(levels))
-		for _, l := range levels {
-			levelFilter[strings.ToUpper(l)] = true
-		}
-	}
+	since := req.GetSince()
 
 	entries := make([]*pb.LogEntry, 0, len(steps)*2)
 	for _, step := range steps {
+		// Since filter: only emit steps that started at/after the given
+		// Unix timestamp. Steps with a nil StartedAt have no known time
+		// and are skipped whenever a lower bound is requested.
+		if since > 0 && (step.StartedAt == nil || step.StartedAt.Unix() < since) {
+			continue
+		}
 		if step.Stdout != "" && (levelFilter == nil || levelFilter["INFO"]) {
 			entries = append(entries, &pb.LogEntry{
 				RunId:     runID,
@@ -1238,7 +1449,7 @@ func (s *ChangeService) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*p
 		}
 	}
 
-	// Apply limit.
+	// Apply the limit last, after all filtering.
 	truncated := false
 	if req.GetLimit() > 0 && int32(len(entries)) > req.GetLimit() {
 		entries = entries[:req.GetLimit()]
@@ -1489,7 +1700,10 @@ func (s *ChangeService) StreamLogs(req *pb.StreamLogsRequest, stream grpcpkg.Ser
 		runID = req.GetRunId()
 	}
 
-	// Replay historical logs.
+	// Replay historical logs. Alongside the per-step ID set we track the
+	// newest replayed start timestamp as a watermark so the tail loop can
+	// skip anything older than what has already been sent.
+	var lastStepTs int64
 	steps, err := s.store.ListSteps(ctx, state.StepFilter{RunID: runID})
 	if err != nil {
 		return status.Errorf(codes.Internal, "list steps: %v", err)
@@ -1498,6 +1712,9 @@ func (s *ChangeService) StreamLogs(req *pb.StreamLogsRequest, stream grpcpkg.Ser
 	seen := make(map[string]bool, len(steps))
 	for _, step := range steps {
 		seen[step.ID] = true
+		if step.StartedAt != nil && step.StartedAt.Unix() > lastStepTs {
+			lastStepTs = step.StartedAt.Unix()
+		}
 		if err := sendStepLogs(stream, runID, step, levelSet); err != nil {
 			return err
 		}
@@ -1507,12 +1724,16 @@ func (s *ChangeService) StreamLogs(req *pb.StreamLogsRequest, stream grpcpkg.Ser
 		return nil
 	}
 
-	// Tail new logs by polling. We use a 1-second poll interval; a
-	// production implementation would use a notification channel from
-	// the executor, but polling is sufficient for the MVP and avoids
-	// coupling the gRPC layer to the executor's internals.
+	// Tail new logs by polling INCREMENTALLY: every tick only steps that
+	// are both unseen and at/after the watermark are emitted, instead of
+	// rescanning the full history each time. We use a 1-second poll
+	// interval; a production implementation would use a notification
+	// channel from the executor, but polling is sufficient for the MVP
+	// and avoids coupling the gRPC layer to the executor's internals.
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+
+	const maxSeenEntries = 5000
 
 	for {
 		select {
@@ -1524,14 +1745,36 @@ func (s *ChangeService) StreamLogs(req *pb.StreamLogsRequest, stream grpcpkg.Ser
 				log.Warn("stream logs: list steps failed", "run_id", runID, "error", err)
 				continue
 			}
+			newest := lastStepTs
 			for _, step := range steps {
 				if seen[step.ID] {
 					continue
 				}
 				seen[step.ID] = true
+				// Older than the watermark: already covered by a previous
+				// iteration (or evicted by pruning) — never re-emit.
+				if step.StartedAt != nil && step.StartedAt.Unix() < lastStepTs {
+					continue
+				}
+				if step.StartedAt != nil && step.StartedAt.Unix() > newest {
+					newest = step.StartedAt.Unix()
+				}
 				if err := sendStepLogs(stream, runID, step, levelSet); err != nil {
 					return err
 				}
+			}
+			lastStepTs = newest
+
+			// The seen set grows without bound on long-lived streams;
+			// once past maxSeenEntries, rebuild it from the current
+			// snapshot. Already-emitted steps stay suppressed because
+			// they are all at or below the watermark.
+			if len(seen) > maxSeenEntries {
+				fresh := make(map[string]bool, len(steps))
+				for _, step := range steps {
+					fresh[step.ID] = true
+				}
+				seen = fresh
 			}
 		}
 	}

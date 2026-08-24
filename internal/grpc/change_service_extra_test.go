@@ -271,17 +271,31 @@ func TestApplyChange_StateGuardRejectsCompletedWithoutAutoApprove(t *testing.T) 
 	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
 
-func TestApplyChange_NoEngineLeavesRunning(t *testing.T) {
+func TestApplyChange_DraftRequiresAutoApprove(t *testing.T) {
 	svc, store := newTestChangeService(t)
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-noeng"})
 	require.NoError(t, err)
 
-	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{ChangeId: created.GetId()})
+	// Draft without auto-approve is now rejected: only "approved" runs may
+	// be applied without the explicit override.
+	_, err = svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{ChangeId: created.GetId()})
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	run, err := store.GetRun(context.Background(), created.GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "draft", run.Status, "rejected apply must not mutate the run")
+
+	// With auto-approve the no-engine fallback still leaves it running.
+	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+		ChangeId:    created.GetId(),
+		AutoApprove: true,
+	})
 	require.NoError(t, err)
 	assert.True(t, resp.GetSuccess())
 	assert.Equal(t, "running", resp.GetChange().GetStatus())
 
-	run, err := store.GetRun(context.Background(), created.GetId())
+	run, err = store.GetRun(context.Background(), created.GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "running", run.Status)
 }
@@ -315,7 +329,10 @@ func TestApplyChange_EngineFailureMarksFailedAndReturnsInternal(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-fail"})
 	require.NoError(t, err)
 
-	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{ChangeId: created.GetId()})
+	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+		ChangeId:    created.GetId(),
+		AutoApprove: true,
+	})
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
 	require.NotNil(t, resp)
@@ -325,6 +342,76 @@ func TestApplyChange_EngineFailureMarksFailedAndReturnsInternal(t *testing.T) {
 	run, err := store.GetRun(context.Background(), created.GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "failed", run.Status)
+}
+
+// Terminal engine outcomes publish a status_changed event so WatchChange
+// subscribers observe completion/failure like any other transition.
+func TestApplyChange_EnginePathPublishesTerminalEvent(t *testing.T) {
+	t.Run("completed publishes terminal event", func(t *testing.T) {
+		engine := &recordingEngine{runID: "exec-3", runSuccess: true}
+		svc, _ := newTestChangeServiceWithEngine(t, engine.adapter())
+		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-term"})
+		require.NoError(t, err)
+
+		// Subscribe under the real change id before applying.
+		bus := svc.getEventBus()
+		ch := bus.subscribe(created.GetId())
+		defer bus.unsubscribe(created.GetId(), ch)
+
+		_, err = svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+			ChangeId:    created.GetId(),
+			AutoApprove: true,
+		})
+		require.NoError(t, err)
+
+		// The apply-started event is queued first; drain until the
+		// terminal transition arrives.
+		var terminal *pb.ChangeEvent
+		deadline := time.After(2 * time.Second)
+		for terminal == nil {
+			select {
+			case ev := <-ch:
+				if ev.GetNewStatus() == "completed" {
+					terminal = ev
+				}
+			case <-deadline:
+				t.Fatal("expected a terminal status_changed event")
+			}
+		}
+		assert.Equal(t, "status_changed", terminal.GetEventType())
+		assert.Equal(t, "running", terminal.GetOldStatus())
+		assert.Equal(t, "completed", terminal.GetNewStatus())
+	})
+
+	t.Run("engine error publishes failed event", func(t *testing.T) {
+		engine := &recordingEngine{runID: "exec-4", runErr: errors.New("boom")}
+		svc, _ := newTestChangeServiceWithEngine(t, engine.adapter())
+		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-term-fail"})
+		require.NoError(t, err)
+
+		bus := svc.getEventBus()
+		ch := bus.subscribe(created.GetId())
+		defer bus.unsubscribe(created.GetId(), ch)
+
+		_, _ = svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+			ChangeId:    created.GetId(),
+			AutoApprove: true,
+		})
+
+		var failed *pb.ChangeEvent
+		deadline := time.After(2 * time.Second)
+		for failed == nil {
+			select {
+			case ev := <-ch:
+				if ev.GetNewStatus() == "failed" {
+					failed = ev
+				}
+			case <-deadline:
+				t.Fatal("expected a failed status_changed event")
+			}
+		}
+		assert.Equal(t, "failed", failed.GetNewStatus())
+	})
 }
 
 // --- PauseAll / ResumeAll ----------------------------------------------------------
@@ -347,6 +434,10 @@ func TestPauseAllAndResumeAll(t *testing.T) {
 	require.NoError(t, err)
 	setRunStatus(t, store, done.GetId(), "completed")
 
+	draft, err := svc.CreateChange(ctx, &pb.CreateChangeRequest{Label: "bulk-draft"})
+	require.NoError(t, err)
+	_ = draft // stays in "draft": ResumeAll must never touch it
+
 	// Environment filter that matches nothing pauses nothing.
 	filtered, err := svc.PauseAll(ctx, &pb.PauseAllRequest{Environments: []string{"prod-only"}})
 	require.NoError(t, err)
@@ -356,7 +447,6 @@ func TestPauseAllAndResumeAll(t *testing.T) {
 	paused, err := svc.PauseAll(ctx, &pb.PauseAllRequest{Reason: "freeze"})
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{running.GetId(), pending.GetId()}, paused.GetPausedChangeIds())
-	assert.Equal(t, []string{done.GetId()}, paused.GetSkippedChangeIds())
 	assert.Equal(t, int32(2), paused.GetCount())
 
 	for _, id := range paused.GetPausedChangeIds() {
@@ -365,12 +455,16 @@ func TestPauseAllAndResumeAll(t *testing.T) {
 		assert.Equal(t, "paused", run.Status, "run %s", id)
 	}
 
-	// ResumeAll flips every paused run back to running; the completed run
-	// is reported as skipped because completed → running is not legal.
+	// ResumeAll resumes ONLY paused runs. The completed run is skipped
+	// (completed → running is not legal) and — critically — the still-
+	// drafted run is skipped too even though draft→running became a legal
+	// transition for other flows; "resume" means un-pause, nothing else.
 	resumed, err := svc.ResumeAll(ctx, &pb.PauseAllRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(2), resumed.GetCount())
-	assert.Equal(t, []string{done.GetId()}, resumed.GetSkippedChangeIds())
+	assert.ElementsMatch(t, []string{running.GetId(), pending.GetId()}, resumed.GetPausedChangeIds())
+	assert.Contains(t, resumed.GetSkippedChangeIds(), done.GetId())
+	assert.Contains(t, resumed.GetSkippedChangeIds(), draft.GetId())
 }
 
 func TestBulkTransition_ListRunsErrorIsInternal(t *testing.T) {
@@ -380,6 +474,171 @@ func TestBulkTransition_ListRunsErrorIsInternal(t *testing.T) {
 	_, err := svc.PauseAll(context.Background(), &pb.PauseAllRequest{})
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
+}
+
+// --- ListChanges pagination ---------------------------------------------------------
+
+// TestListChanges_MultiStatusPaginatesWithoutSkipping seeds runs across two
+// statuses interleaved with noise and pages through a multi-status filter.
+// The store can only filter one status, so the service must scan client-side;
+// the old implementation fetched only the first status and silently dropped
+// the rest.
+func TestListChanges_MultiStatusPaginatesWithoutSkipping(t *testing.T) {
+	svc, store := newTestChangeService(t)
+	ctx := context.Background()
+
+	seedRun := func(id string, status string) {
+		t.Helper()
+		now := time.Now().UTC().Add(-time.Duration(len(id)) * time.Second)
+		require.NoError(t, store.CreateRun(ctx, &state.Run{
+			ID: id, WorkflowName: "wf", Status: status,
+			CreatedAt: now, UpdatedAt: now, Creator: "test",
+		}))
+	}
+	for i := 0; i < 3; i++ {
+		seedRun(fmt.Sprintf("run-done-%02d", i), "completed")
+		seedRun(fmt.Sprintf("run-fail-%02d", i), "failed")
+	}
+
+	// The expected full ordering comes from the store itself so the test
+	// asserts pagination completeness, not store sort details.
+	allRuns, err := store.ListRuns(ctx, state.RunFilter{})
+	require.NoError(t, err)
+	var want []string
+	for _, r := range allRuns {
+		if r.Status == "failed" || r.Status == "completed" {
+			want = append(want, r.ID)
+		}
+	}
+	require.Len(t, want, 6)
+
+	// Page size 2 with statuses [failed completed]: every page must carry
+	// exactly pageSize matches until exhaustion — no gaps from unfiltered
+	// rows consuming page slots.
+	var got []string
+	token := ""
+	pages := 0
+	for {
+		resp, err := svc.ListChanges(ctx, &pb.ListChangesRequest{
+			Statuses:  []string{"failed", "completed"},
+			PageSize:  2,
+			PageToken: token,
+		})
+		require.NoError(t, err)
+		pages++
+		for _, c := range resp.GetChanges() {
+			got = append(got, c.GetId())
+		}
+		if resp.GetNextPageToken() == "" {
+			break
+		}
+		token = resp.GetNextPageToken()
+		require.Less(t, pages, 10, "pagination did not terminate")
+	}
+	require.Equal(t, want, got)
+
+	// Exhausted filtered scans know their full match count.
+	final, err := svc.ListChanges(ctx, &pb.ListChangesRequest{
+		Statuses: []string{"failed", "completed"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(6), final.GetTotalSize())
+}
+
+func TestListChanges_SingleStatusUsesOffsetPagination(t *testing.T) {
+	svc, store := newTestChangeService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		require.NoError(t, store.CreateRun(ctx, &state.Run{
+			ID: fmt.Sprintf("run-d-%02d", i), WorkflowName: "wf", Status: "draft",
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+			UpdatedAt: now, Creator: "test",
+		}))
+	}
+
+	first, err := svc.ListChanges(ctx, &pb.ListChangesRequest{Statuses: []string{"draft"}, PageSize: 2})
+	require.NoError(t, err)
+	require.Len(t, first.GetChanges(), 2)
+	require.NotEmpty(t, first.GetNextPageToken())
+
+	second, err := svc.ListChanges(ctx, &pb.ListChangesRequest{
+		Statuses: []string{"draft"}, PageSize: 2, PageToken: first.GetNextPageToken(),
+	})
+	require.NoError(t, err)
+	require.Len(t, second.GetChanges(), 2)
+
+	// No overlap between pages.
+	assert.NotEqual(t,
+		first.GetChanges()[0].GetId()+first.GetChanges()[1].GetId(),
+		second.GetChanges()[0].GetId()+second.GetChanges()[1].GetId())
+}
+
+func TestListChanges_LabelFilterScansUntilEnoughMatches(t *testing.T) {
+	svc, store := newTestChangeService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Only runs whose workflow name (mapped to label) contains "needle"
+	// should be returned, regardless of how many non-matching rows sit
+	// in front of them in the store ordering.
+	for i := 0; i < 4; i++ {
+		require.NoError(t, store.CreateRun(ctx, &state.Run{
+			ID: fmt.Sprintf("run-noise-%02d", i), WorkflowName: "noise", Status: "running",
+			CreatedAt: now.Add(time.Duration(i) * time.Second),
+			UpdatedAt: now, Creator: "test",
+		}))
+	}
+	require.NoError(t, store.CreateRun(ctx, &state.Run{
+		ID: "run-hit-1", WorkflowName: "find-the-needle-here", Status: "running",
+		CreatedAt: now, UpdatedAt: now, Creator: "test",
+	}))
+	require.NoError(t, store.CreateRun(ctx, &state.Run{
+		ID: "run-hit-2", WorkflowName: "another needle", Status: "running",
+		CreatedAt: now.Add(-time.Second), UpdatedAt: now, Creator: "test",
+	}))
+
+	resp, err := svc.ListChanges(ctx, &pb.ListChangesRequest{LabelContains: "needle"})
+	require.NoError(t, err)
+	ids := []string{}
+	for _, c := range resp.GetChanges() {
+		ids = append(ids, c.GetId())
+	}
+	assert.ElementsMatch(t, []string{"run-hit-1", "run-hit-2"}, ids)
+}
+
+// --- ArchiveChange state guard ------------------------------------------------------
+
+func TestArchiveChange_RejectsRunningAndPaused(t *testing.T) {
+	for _, st := range []string{"running", "paused"} {
+		t.Run(st, func(t *testing.T) {
+			svc, store := newTestChangeService(t)
+			created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "arch-guard"})
+			require.NoError(t, err)
+			setRunStatus(t, store, created.GetId(), st)
+
+			_, err = svc.ArchiveChange(context.Background(), &pb.ArchiveRequest{ChangeId: created.GetId()})
+			require.Error(t, err)
+			assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+			run, err := store.GetRun(context.Background(), created.GetId())
+			require.NoError(t, err)
+			assert.Equal(t, st, run.Status, "rejected archive must not mutate the run")
+		})
+	}
+
+	t.Run("terminal states still archiveable", func(t *testing.T) {
+		for _, st := range []string{"completed", "failed", "cancelled", "rejected", "rolled_back"} {
+			svc, store := newTestChangeService(t)
+			created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "arch-ok"})
+			require.NoError(t, err)
+			setRunStatus(t, store, created.GetId(), st)
+
+			resp, err := svc.ArchiveChange(context.Background(), &pb.ArchiveRequest{ChangeId: created.GetId()})
+			require.NoError(t, err, "status %q must be archivable", st)
+			assert.Equal(t, "archived", resp.GetStatus())
+		}
+	})
 }
 
 // --- RetryChange / RetryHost --------------------------------------------------------
@@ -413,14 +672,27 @@ func TestRetryChange(t *testing.T) {
 		assert.Equal(t, codes.NotFound, status.Code(err))
 	})
 
-	t.Run("without engine transitions to running", func(t *testing.T) {
+	t.Run("without engine resets to draft", func(t *testing.T) {
 		svc, store, id := makeSvc(t, nil)
 		resp, err := svc.RetryChange(context.Background(), &pb.RetryRequest{ChangeId: id})
 		require.NoError(t, err)
-		assert.Equal(t, "running", resp.GetStatus())
+		// No engine means nothing will execute the retry; the run resets
+		// to "draft" so it can be re-planned instead of being stuck in a
+		// "running" state no executor would ever finish.
+		assert.Equal(t, "draft", resp.GetStatus())
 		run, err := store.GetRun(context.Background(), id)
 		require.NoError(t, err)
-		assert.Equal(t, "running", run.Status)
+		assert.Equal(t, "draft", run.Status)
+
+		audits, err := store.ListAudits(context.Background(), state.AuditFilter{RunID: id})
+		require.NoError(t, err)
+		found := false
+		for _, a := range audits {
+			if a.Action == "retry" && a.Result == "draft" {
+				found = true
+			}
+		}
+		assert.True(t, found, "expected retry audit entry with draft result")
 	})
 
 	t.Run("delegates to engine retry", func(t *testing.T) {
@@ -532,11 +804,29 @@ func TestRollbackChange(t *testing.T) {
 		require.NoError(t, err)
 		setRunStatus(t, store, created.GetId(), "completed")
 
-		resp, err := svc.RollbackChange(context.Background(), &pb.RollbackRequest{ChangeId: created.GetId()})
+		// The fallback must publish the terminal event like every other
+		// transition does.
+		bus := svc.getEventBus()
+		ch := bus.subscribe(created.GetId())
+		defer bus.unsubscribe(created.GetId(), ch)
+
+		resp, err := svc.RollbackChange(context.Background(), &pb.RollbackRequest{
+			ChangeId: created.GetId(),
+			RunId:    "orig-exec-run", // caller-supplied trace scoping is honoured
+		})
 		require.NoError(t, err)
 		assert.True(t, resp.GetSuccess())
-		assert.Equal(t, created.GetId(), resp.GetRollbackRunId())
+		assert.Equal(t, "orig-exec-run", resp.GetRollbackRunId())
 		assert.Equal(t, "rolled_back", resp.GetChange().GetStatus())
+
+		select {
+		case ev := <-ch:
+			assert.Equal(t, "status_changed", ev.GetEventType())
+			assert.Equal(t, "completed", ev.GetOldStatus())
+			assert.Equal(t, "rolled_back", ev.GetNewStatus())
+		default:
+			t.Fatal("expected rollback status_changed event from fallback path")
+		}
 	})
 
 	t.Run("engine rollback returns hosts", func(t *testing.T) {
@@ -585,6 +875,10 @@ func (stubApprovalStore) Get(_ context.Context, id string) (*approval.Approval, 
 }
 
 func (stubApprovalStore) Update(context.Context, *approval.Approval) error { return nil }
+
+func (stubApprovalStore) UpdateIfPending(context.Context, *approval.Approval) (bool, error) {
+	return true, nil
+}
 
 func (stubApprovalStore) ListPending(context.Context) ([]*approval.Approval, error) {
 	return nil, nil
@@ -697,9 +991,11 @@ func TestMapPauseErrorTable(t *testing.T) {
 	}{
 		{"nil error", nil, codes.OK},
 		{"run not found", pause.ErrRunNotFound, codes.NotFound},
-		{"not pausable", pause.ErrNotPausable, codes.Internal},
-		{"explicit invalid", errors.New("invalid transition requested"), codes.FailedPrecondition},
-		{"cannot transition", errors.New("cannot pause completed run"), codes.FailedPrecondition},
+		{"not pausable", pause.ErrNotPausable, codes.FailedPrecondition},
+		{"not resumable", fmt.Errorf("wrapped: %w", pause.ErrNotResumable), codes.FailedPrecondition},
+		{"permission denied", fmt.Errorf("wrapped: %w", pause.ErrPermissionDenied), codes.PermissionDenied},
+		{"empty run id", pause.ErrEmptyRunID, codes.InvalidArgument},
+		{"empty actor", pause.ErrEmptyActor, codes.InvalidArgument},
 		{"unknown error", errors.New("disk on fire"), codes.Internal},
 	}
 	for _, tc := range tests {
@@ -731,18 +1027,18 @@ func TestPauseChange_DelegatesToPauseManager(t *testing.T) {
 	assert.Equal(t, "running", resumed.GetStatus())
 }
 
-func TestPauseChange_PauseManagerRejectsDraftAsInternal(t *testing.T) {
+func TestPauseChange_PauseManagerRejectsDraftAsPrecondition(t *testing.T) {
 	store := newTestStore(t)
 	svc := NewChangeService(store, nil, nil, pause.NewPauseManager(store))
 
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "pause-mgr-draft"})
 	require.NoError(t, err)
 
-	// Draft is not a pausable state; the pause manager rejects it and
-	// mapPauseError falls through to codes.Internal.
+	// Draft is not a pausable state; the pause manager rejects it with
+	// ErrNotPausable and mapPauseError surfaces codes.FailedPrecondition.
 	_, err = svc.PauseChange(context.Background(), &pb.PauseRequest{ChangeId: created.GetId()})
 	require.Error(t, err)
-	assert.Equal(t, codes.Internal, status.Code(err))
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
 
 // --- ArchiveChange purge -------------------------------------------------------------------
@@ -863,6 +1159,48 @@ func TestGetLogs_TruncationAndLevels(t *testing.T) {
 		require.NotEmpty(t, resp.GetEntries())
 		assert.Equal(t, id, resp.GetEntries()[0].GetRunId())
 	})
+
+	t.Run("unsupported level is rejected", func(t *testing.T) {
+		// DEBUG/WARN do not exist in the stdout/stderr projection; they
+		// must be a client error rather than silently matching nothing.
+		for _, lvl := range []string{"DEBUG", "WARN"} {
+			_, err := svc.GetLogs(ctx, &pb.GetLogsRequest{ChangeId: id, Levels: []string{lvl}})
+			require.Error(t, err, "level %s", lvl)
+			assert.Equal(t, codes.InvalidArgument, status.Code(err), "level %s", lvl)
+			assert.Contains(t, status.Convert(err).Message(), "unsupported level")
+		}
+	})
+
+	t.Run("limit applies after filtering", func(t *testing.T) {
+		// The step has 1 INFO + 1 ERROR entry. Requesting only ERROR with
+		// limit=1 must return that one entry (the old pre-limit on
+		// ListSteps would have truncated steps before filtering).
+		resp, err := svc.GetLogs(ctx, &pb.GetLogsRequest{ChangeId: id, Levels: []string{"ERROR"}, Limit: 5})
+		require.NoError(t, err)
+		require.Len(t, resp.GetEntries(), 1)
+		assert.False(t, resp.GetTruncated())
+		assert.Equal(t, "ERROR", resp.GetEntries()[0].GetLevel())
+	})
+
+	t.Run("since filters entries older than the timestamp", func(t *testing.T) {
+		old := time.Now().UTC().Add(-2 * time.Hour)
+		require.NoError(t, store.CreateBatch(ctx, &state.Batch{
+			ID: "batch-old", RunID: id, BatchNo: 2, Status: "completed",
+			TotalHosts: 1, Succeeded: 1, StartedAt: &old,
+		}))
+		require.NoError(t, store.CreateStep(ctx, &state.Step{
+			ID: "step-old", RunID: id, BatchID: "batch-old", Host: "h9",
+			StepName: "old-deploy", Status: "completed", Stdout: "ancient", StartedAt: &old,
+		}))
+
+		since := time.Now().UTC().Add(-time.Minute).Unix()
+		resp, err := svc.GetLogs(ctx, &pb.GetLogsRequest{ChangeId: id, Since: since})
+		require.NoError(t, err)
+		for _, e := range resp.GetEntries() {
+			assert.NotEqual(t, "ancient", e.GetMessage(), "entries before ?since must be filtered")
+		}
+		require.NotEmpty(t, resp.GetEntries())
+	})
 }
 
 // --- conversion helpers --------------------------------------------------------------------
@@ -904,17 +1242,24 @@ func TestActorFromCtx(t *testing.T) {
 	assert.Equal(t, "grpc-user", actorFromCtx(context.WithValue(context.Background(), actorKey{}, "")))
 }
 
-func TestParseOffsetTable(t *testing.T) {
+func TestParsePageTokenTable(t *testing.T) {
 	tests := []struct {
-		token string
-		want  int
+		token    string
+		want     int
+		wantCode codes.Code // codes.OK means no error expected
 	}{
-		{"", 0},
-		{"not-a-number", 0},
-		{"7", 7},
+		{"", 0, codes.OK},
+		{"7", 7, codes.OK},
+		{"not-a-number", 0, codes.InvalidArgument},
+		{"-3", 0, codes.InvalidArgument},
 	}
 	for _, tc := range tests {
-		assert.Equal(t, tc.want, parseOffset(tc.token), "parseOffset(%q)", tc.token)
+		got, err := parsePageToken(tc.token)
+		assert.Equal(t, tc.want, got, "parsePageToken(%q) offset", tc.token)
+		assert.Equal(t, tc.wantCode, status.Code(err), "parsePageToken(%q) error", tc.token)
+		if tc.wantCode == codes.OK {
+			assert.NoError(t, err, "parsePageToken(%q)", tc.token)
+		}
 	}
 }
 

@@ -4,6 +4,9 @@ package grpc
 import (
 	"fmt"
 	"strconv"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Pagination defaults.
@@ -12,17 +15,20 @@ const (
 	maxPageSize     = 1000
 )
 
-// parsePageToken decodes a page token into a numeric offset. An empty or
-// invalid token yields 0, so the caller starts from the beginning.
-func parsePageToken(token string) int {
+// parsePageToken decodes a page token into a numeric offset. An empty
+// token yields (0, nil) so the caller starts from the beginning. A
+// malformed or negative token yields a codes.InvalidArgument status
+// error: silently restarting from page 0 used to hide client bugs and
+// made pagination loops re-fetch the same data forever.
+func parsePageToken(token string) (int, error) {
 	if token == "" {
-		return 0
+		return 0, nil
 	}
 	n, err := strconv.Atoi(token)
 	if err != nil || n < 0 {
-		return 0
+		return 0, status.Errorf(codes.InvalidArgument, "invalid page token %q", token)
 	}
-	return n
+	return n, nil
 }
 
 // buildPageToken returns the next page token (the end offset) or an empty

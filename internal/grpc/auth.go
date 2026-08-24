@@ -62,6 +62,9 @@ func AuthInterceptor(expected string) grpc.UnaryServerInterceptor {
 // AuthInterceptor. It validates the bearer token once when the stream
 // is established; subsequent messages on the same stream are not
 // re-checked (the client is already authenticated).
+//
+// Like the unary interceptor it honours skipAuthMethods, so the standard
+// health Watch stream is reachable by unauthenticated load balancers.
 func AuthStreamInterceptor(expected string) grpc.StreamServerInterceptor {
 	return func(
 		srv interface{},
@@ -69,6 +72,10 @@ func AuthStreamInterceptor(expected string) grpc.StreamServerInterceptor {
 		info *grpc.StreamServerInfo,
 		handler grpc.StreamHandler,
 	) error {
+		// Skip auth for methods that are explicitly exempted.
+		if info != nil && skipAuthMethods[info.FullMethod] {
+			return handler(srv, ss)
+		}
 		if err := checkAuth(ss.Context(), expected); err != nil {
 			return err
 		}
@@ -78,11 +85,15 @@ func AuthStreamInterceptor(expected string) grpc.StreamServerInterceptor {
 
 // skipAuthMethods lists gRPC methods that are exempt from authentication.
 // This whitelist must stay minimal. Every business RPC requires a valid
-// Bearer token; only the standard gRPC health probe is public, so that
+// Bearer token; only the standard gRPC health probes are public, so that
 // load balancers and orchestrators can probe without credentials.
 var skipAuthMethods = map[string]bool{
-	// gRPC health check service, registered in server.go.
+	// gRPC health check service, registered in server.go. Both the unary
+	// Check and the streaming Watch must be exempt — a probe setup using
+	// long-lived Watch streams would otherwise fail auth while Check
+	// succeeded.
 	"/grpc.health.v1.Health/Check": true,
+	"/grpc.health.v1.Health/Watch": true,
 }
 
 // checkAuth performs the actual token validation. It returns nil when

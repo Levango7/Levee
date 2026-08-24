@@ -349,7 +349,9 @@ func TestGenerate_AuditChainTampered(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, traces, 3)
 	last := traces[len(traces)-1]
-	err = store.ExecRaw(context.Background(),
+	// state.SQLiteStore.ExecRaw was removed as an escape hatch; tests that
+	// need raw SQL use the exposed *sql.DB handle directly.
+	_, err = store.DB().ExecContext(context.Background(),
 		"UPDATE trace SET curr_hash = ? WHERE id = ?",
 		"tampered-curr-hash-value", last.ID)
 	require.NoError(t, err)

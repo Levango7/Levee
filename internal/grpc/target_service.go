@@ -141,7 +141,10 @@ func (s *TargetService) ListTargets(ctx context.Context, req *pb.ListTargetsRequ
 	if pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
-	offset := parsePageToken(req.PageToken)
+	offset, err := parsePageToken(req.PageToken)
+	if err != nil {
+		return nil, err
+	}
 
 	s.mu.RLock()
 	var matched []*pb.Target
@@ -232,10 +235,10 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 	}
 
 	tgt := &grpcTarget{
-		host:        t.Hostname,
-		port:        int(t.Port),
-		channelType: t.ChannelType,
-		cred:        channel.CredentialRef{},
+		host:          t.Hostname,
+		port:          int(t.Port),
+		channelType:   t.ChannelType,
+		credentialRef: t.CredentialRef,
 	}
 
 	prechecker := channel.NewPrechecker(nil, nil,
@@ -319,9 +322,25 @@ type grpcTarget struct {
 	port        int
 	channelType string
 	cred        channel.CredentialRef
+
+	// credentialRef carries the stored, UNRESOLVED credential reference
+	// (e.g. "cred-a1b2c3") the target was registered with. The registry
+	// deliberately never holds secret material, so the reference cannot be
+	// expanded into a channel.CredentialRef here — that requires the
+	// credential provider, which is not wired into the precheck path yet.
+	// Previously the probe target was constructed with a hard-coded empty
+	// descriptor and the linkage was lost entirely; carrying the raw
+	// reference keeps it available to ChannelFactory implementations that
+	// resolve references themselves.
+	// TODO: once a ref→secret resolver is injected into TargetService,
+	// populate cred via Credentials() instead.
+	credentialRef string
 }
 
 func (t *grpcTarget) Host() string                       { return t.host }
 func (t *grpcTarget) Port() int                          { return t.port }
 func (t *grpcTarget) Type() string                       { return t.channelType }
 func (t *grpcTarget) Credentials() channel.CredentialRef { return t.cred }
+
+// StoredCredentialRef returns the stored, unresolved credential reference.
+func (t *grpcTarget) StoredCredentialRef() string { return t.credentialRef }

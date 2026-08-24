@@ -169,7 +169,10 @@ func (s *TemplateService) ListTemplates(ctx context.Context, req *pb.ListTemplat
 	if pageSize > maxPageSize {
 		pageSize = maxPageSize
 	}
-	offset := parsePageToken(req.PageToken)
+	offset, err := parsePageToken(req.PageToken)
+	if err != nil {
+		return nil, err
+	}
 
 	var all []*pb.Template
 	if s.lib != nil {
@@ -316,9 +319,13 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 	if priority == "" {
 		priority = "normal"
 	}
-	runStatus := "planned"
-	if !req.DryRun {
-		runStatus = "pending_approval"
+	// Status vocabulary: normal instantiation creates a run in "pending"
+	// (awaiting approval execution flow); dry-run creates a "planned" run
+	// that is only a preview. Note CreateChange still creates "draft"
+	// runs; isValidTransition knows both vocabularies.
+	runStatus := "pending"
+	if req.DryRun {
+		runStatus = "planned"
 	}
 
 	now := time.Now().UTC()

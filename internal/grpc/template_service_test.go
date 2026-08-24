@@ -288,6 +288,27 @@ func TestInstantiateTemplate_DryRun(t *testing.T) {
 	assert.Equal(t, "1.2.3", resp.GetParams()["version"])
 }
 
+// Normal (non-dry-run) instantiation creates runs with status "pending",
+// matching the shared lifecycle vocabulary — the old "pending_approval"
+// value was unknown to the rest of the state machine.
+func TestInstantiateTemplate_NormalRunPending(t *testing.T) {
+	svc := newTestTemplateService(t)
+	ctx := context.Background()
+
+	_, err := svc.CreateTemplate(ctx, &pb.CreateTemplateRequest{
+		Name:            "deploy",
+		WorkflowContent: "steps: []",
+	})
+	require.NoError(t, err)
+
+	resp, err := svc.InstantiateTemplate(ctx, &pb.InstantiateTemplateRequest{
+		TemplateName: "deploy",
+		Label:        "deploy-v2",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "pending", resp.GetStatus())
+}
+
 func TestInstantiateTemplate_MissingRequiredParam(t *testing.T) {
 	svc := newTestTemplateService(t)
 	ctx := context.Background()

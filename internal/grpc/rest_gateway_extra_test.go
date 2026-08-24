@@ -118,8 +118,9 @@ func TestRESTChangeSubResourceEndpoints(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&plan))
 	assert.Contains(t, plan.ImpactSummary, "no engine configured")
 
-	// apply → 200, change moves to running.
-	resp2 := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/apply", `{}`)
+	// apply → 200, change moves to running. Drafts no longer apply without
+	// the explicit autoApprove override (audit fix: draft bypass removed).
+	resp2 := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/apply", `{"autoApprove":true}`)
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusOK, resp2.StatusCode)
 	var applied struct {
@@ -131,6 +132,11 @@ func TestRESTChangeSubResourceEndpoints(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&applied))
 	assert.True(t, applied.Success)
 	assert.Equal(t, "running", applied.Change.Status)
+
+	// Applying a draft WITHOUT autoApprove is now rejected (412).
+	draftResp := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/apply", `{}`)
+	require.NoError(t, readAndClose(draftResp))
+	assert.Equal(t, http.StatusPreconditionFailed, draftResp.StatusCode)
 
 	// pause → 200 from running.
 	resp3 := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/pause", `{"reason":"freeze"}`)
@@ -550,21 +556,24 @@ func TestAPIv1InvalidPathVariants(t *testing.T) {
 
 func TestWriteGRPCErrorMappingTable(t *testing.T) {
 	tests := []struct {
-		code grpccodes.Code
-		want int
+		code    grpccodes.Code
+		want    int
+		wantMsg string // expected body message; "" means echo "msg"
 	}{
-		{grpccodes.InvalidArgument, http.StatusBadRequest},
-		{grpccodes.NotFound, http.StatusNotFound},
-		{grpccodes.AlreadyExists, http.StatusConflict},
-		{grpccodes.PermissionDenied, http.StatusForbidden},
-		{grpccodes.FailedPrecondition, http.StatusPreconditionFailed},
-		{grpccodes.Unimplemented, http.StatusNotImplemented},
-		{grpccodes.Unavailable, http.StatusServiceUnavailable},
-		{grpccodes.Unauthenticated, http.StatusUnauthorized},
-		{grpccodes.DeadlineExceeded, http.StatusGatewayTimeout},
-		{grpccodes.ResourceExhausted, http.StatusTooManyRequests},
-		{grpccodes.Internal, http.StatusInternalServerError},
-		{grpccodes.Unknown, http.StatusInternalServerError},
+		{grpccodes.InvalidArgument, http.StatusBadRequest, ""},
+		{grpccodes.NotFound, http.StatusNotFound, ""},
+		{grpccodes.AlreadyExists, http.StatusConflict, ""},
+		{grpccodes.PermissionDenied, http.StatusForbidden, ""},
+		{grpccodes.FailedPrecondition, http.StatusPreconditionFailed, ""},
+		{grpccodes.Unimplemented, http.StatusNotImplemented, ""},
+		{grpccodes.Unavailable, http.StatusServiceUnavailable, ""},
+		{grpccodes.Unauthenticated, http.StatusUnauthorized, ""},
+		{grpccodes.DeadlineExceeded, http.StatusGatewayTimeout, ""},
+		{grpccodes.ResourceExhausted, http.StatusTooManyRequests, ""},
+		// Internal-class codes are scrubbed: the real message goes to the
+		// server log, the client gets a generic body.
+		{grpccodes.Internal, http.StatusInternalServerError, "internal error"},
+		{grpccodes.Unknown, http.StatusInternalServerError, "internal error"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.code.String(), func(t *testing.T) {
@@ -572,14 +581,21 @@ func TestWriteGRPCErrorMappingTable(t *testing.T) {
 			writeGRPCError(rec, status.Error(tc.code, "msg"))
 			assert.Equal(t, tc.want, rec.Code)
 			assert.Contains(t, rec.Header().Get("Content-Type"), "application/json")
-			assert.Contains(t, rec.Body.String(), "msg")
+			if tc.wantMsg == "" {
+				assert.Contains(t, rec.Body.String(), "msg")
+			} else {
+				assert.Contains(t, rec.Body.String(), tc.wantMsg)
+				assert.NotContains(t, rec.Body.String(), "msg", "internal details must not leak")
+			}
 		})
 	}
 
-	t.Run("non-gRPC error becomes 500", func(t *testing.T) {
+	t.Run("non-gRPC error becomes generic 500", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		writeGRPCError(rec, assertNotGRPC())
 		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+		assert.Contains(t, rec.Body.String(), "internal error")
+		assert.NotContains(t, rec.Body.String(), "plain error", "raw error text must not leak")
 	})
 }
 
@@ -775,4 +791,135 @@ func TestGatewayWithServicesServesData(t *testing.T) {
 func TestGatewayStopWithoutServerIsNoOp(t *testing.T) {
 	gw := NewGateway(ServeGatewayConfig{})
 	require.NoError(t, gw.Stop(context.Background()))
+}
+
+// --- routing exactness ----------------------------------------------------------------
+
+// TestRESTPrefixRoutingMatchesExactSegment pins the audit fix where
+// strings.HasPrefix(path, "/changes") dispatched look-alike paths such as
+// "/changesfoo" into the change handlers instead of 404ing.
+func TestRESTPrefixRoutingMatchesExactSegment(t *testing.T) {
+	_, srv, _ := startTestGatewayFull(t, ServeGatewayConfig{})
+
+	for _, path := range []string{"/changesfoo", "/templatesfoo", "/targetsfoo", "/auditfoo", "/systemfoo", "/systemconfig"} {
+		resp := doReq(t, http.MethodGet, srv.URL+path, "")
+		readAndClose(resp)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "path %s must not match a prefix route", path)
+	}
+
+	// The real prefixes keep working.
+	okResp := doReq(t, http.MethodGet, srv.URL+"/changes", "")
+	readAndClose(okResp)
+	assert.Equal(t, http.StatusOK, okResp.StatusCode)
+}
+
+// --- numeric query param validation ------------------------------------------------------
+
+// TestRESTInvalidNumericParamsAre400 covers the fix where malformed numeric
+// query values were silently ignored (pageSize=abc behaved like no filter).
+func TestRESTInvalidNumericParamsAre400(t *testing.T) {
+	_, srv, _ := startTestGatewayFull(t, ServeGatewayConfig{})
+
+	for _, path := range []string{
+		"/changes?pageSize=bogus",
+		"/changes?pageToken=-3",
+		"/templates?pageSize=bogus",
+		"/targets?pageSize=bogus",
+		"/audit/log?pageSize=bogus",
+		"/audit/log?since=yesterday",
+		"/audit/traces?until=soon",
+	} {
+		resp := doReq(t, http.MethodGet, srv.URL+path, "")
+		readAndClose(resp)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "path %s", path)
+	}
+}
+
+// --- request id sanitization + asserted actor ----------------------------------------------
+
+func TestRequestIDMiddlewareSanitizesAndInjectsActor(t *testing.T) {
+	gw := NewGateway(ServeGatewayConfig{})
+
+	var seenRID, seenActor string
+	handler := gw.requestIDMiddleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		seenRID = RequestIDFromContext(r.Context())
+		seenActor = actorFromCtx(r.Context())
+	}))
+
+	t.Run("actor header reaches handlers via actorFromCtx", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req.Header.Set("X-Acting-As", "alice@ops")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assert.Equal(t, "alice@ops", seenActor)
+	})
+
+	t.Run("control characters are stripped from ids and actors", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req.Header.Set("X-Request-Id", "bad\r\nid\x00value")
+		req.Header.Set("X-Acting-As", "eve\ninjected-log-line")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		echoed := rec.Header().Get("X-Request-Id")
+		assert.NotContains(t, echoed, "\r")
+		assert.NotContains(t, echoed, "\n")
+		assert.Equal(t, echoed, seenRID)
+		assert.Equal(t, "eveinjected-log-line", seenActor)
+	})
+
+	t.Run("empty-after-sanitization regenerates the request id", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		req.Header.Set("X-Request-Id", "\r\n\x00")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		assert.Len(t, rec.Header().Get("X-Request-Id"), 16, "expected a generated hex id")
+	})
+}
+
+// --- REST logs `since` filter -------------------------------------------------------------
+
+func TestRESTChangeLogsSinceFilter(t *testing.T) {
+	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
+	ctx := context.Background()
+
+	created, err := gw.change.CreateChange(ctx, &pb.CreateChangeRequest{Label: "logs-since"})
+	require.NoError(t, err)
+	id := created.GetId()
+
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	fresh := time.Now().UTC()
+	require.NoError(t, store.CreateBatch(ctx, &state.Batch{
+		ID: "batch-old", RunID: id, BatchNo: 1, Status: "completed",
+		TotalHosts: 1, Succeeded: 1, StartedAt: &old,
+	}))
+	require.NoError(t, store.CreateStep(ctx, &state.Step{
+		ID: "step-old", RunID: id, BatchID: "batch-old", Host: "h1",
+		StepName: "deploy", Status: "completed", Stdout: "ancient output", StartedAt: &old,
+	}))
+	require.NoError(t, store.CreateBatch(ctx, &state.Batch{
+		ID: "batch-new", RunID: id, BatchNo: 2, Status: "completed",
+		TotalHosts: 1, Succeeded: 1, StartedAt: &fresh,
+	}))
+	require.NoError(t, store.CreateStep(ctx, &state.Step{
+		ID: "step-new", RunID: id, BatchID: "batch-new", Host: "h1",
+		StepName: "verify", Status: "completed", Stdout: "fresh output", StartedAt: &fresh,
+	}))
+
+	since := fresh.Add(-time.Minute).Format(time.RFC3339)
+	resp := doReq(t, http.MethodGet, srv.URL+"/changes/"+id+"/logs?since="+since, "")
+	defer readAndClose(resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var logs struct {
+		Entries []struct {
+			Message string `json:"message"`
+		} `json:"entries"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&logs))
+	require.Len(t, logs.Entries, 1, "only steps newer than ?since are returned")
+	assert.Equal(t, "fresh output", logs.Entries[0].Message)
+
+	badResp := doReq(t, http.MethodGet, srv.URL+"/changes/"+id+"/logs?since=notatime", "")
+	readAndClose(badResp)
+	assert.Equal(t, http.StatusBadRequest, badResp.StatusCode, "unparseable RFC3339 since must be a 400")
 }

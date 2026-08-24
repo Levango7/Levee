@@ -140,11 +140,22 @@ func (s *AlertService) GetAlertStatus(ctx context.Context, req *pb.GetAlertStatu
 		return nil, status.Errorf(codes.NotFound, "alert %q not found", req.GetId())
 	}
 
+	// Zero (unset) timestamps are emitted as 0 rather than the huge
+	// negative Unix value time.Time.Zero().Unix() produces.
+	startsAt := int64(0)
+	if !a.StartsAt.IsZero() {
+		startsAt = a.StartsAt.Unix()
+	}
+	endsAt := int64(0)
+	if !a.EndsAt.IsZero() {
+		endsAt = a.EndsAt.Unix()
+	}
+
 	return &pb.AlertStatus{
 		Id:       a.ID,
 		Status:   a.Status.String(),
-		StartsAt: a.StartsAt.Unix(),
-		EndsAt:   a.EndsAt.Unix(),
+		StartsAt: startsAt,
+		EndsAt:   endsAt,
 		Severity: a.Severity.String(),
 	}, nil
 }

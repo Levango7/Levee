@@ -36,11 +36,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/spf13/cobra"
@@ -224,6 +226,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 	diagSvc := grpc.NewDiagnosisService(nil, slog.Default())
 	convSvc := grpc.NewConversationService(nil, slog.Default())
 
+	// Mobile approval: wire the deeplink approve/reject endpoints so the
+	// REST gateway's /changes/deeplink/* routes work out of the box. Push
+	// delivery stays disabled until a push manager is configured.
+	mobileSvc := approval.NewMobileApprovalService(
+		approval.NewService(newApprovalStoreAdapter(store)),
+		nil,
+		push.NewDeepLinkGenerator("levee", "https://levee.local"),
+	)
+
 	// 3. Build server options.
 	serverOpts := []grpc.Option{
 		grpc.WithListenAddr(serveOptAddr),
@@ -264,6 +275,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		RateBurst:   serveOptRateBurst,
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
+	gw.SetMobileApproval(mobileSvc)
 
 	// 6. Start the REST gateway on THIS instance. Start binds the port
 	//    synchronously so a bind failure fails the command instead of

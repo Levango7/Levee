@@ -128,8 +128,15 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 	return resp, nil
 }
 
-// GetConfig returns the current configuration, optionally redacting secret
-// fields and filtering to a specific section.
+// GetConfig returns the current configuration, optionally filtering to a
+// specific section.
+//
+// REDACTION IS THE DEFAULT. A nil request or RedactSecrets=true yields
+// redacted output; only a caller that EXPLICITLY sets RedactSecrets=false
+// receives raw secrets. The REST gateway enforces the same posture by
+// sending redact_secrets=true unless the client passes the explicit
+// ?redactSecrets=false override, so an omitted flag can never leak
+// credentials.
 func (s *SystemService) GetConfig(ctx context.Context, req *pb.GetConfigRequest) (*pb.Config, error) {
 	if s.cfg == nil {
 		return nil, status.Error(codes.FailedPrecondition, "config not loaded")
@@ -150,8 +157,8 @@ func (s *SystemService) GetConfig(ctx context.Context, req *pb.GetConfigRequest)
 		content = []byte(sectionContent)
 	}
 
-	// Redact secrets if requested.
-	if req != nil && req.RedactSecrets {
+	// Redact unless the caller explicitly opted out (nil request ⇒ redact).
+	if req == nil || req.GetRedactSecrets() {
 		content = []byte(redactSecrets(string(content)))
 	}
 
