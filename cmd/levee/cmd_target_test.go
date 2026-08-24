@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/state"
 )
 
 func TestTargetCmdRegistered(t *testing.T) {
@@ -110,15 +111,17 @@ func TestTargetOutputEnvelope(t *testing.T) {
 func TestPrintTargetListHuman(t *testing.T) {
 	defer resetRootFlags()
 
-	rows := []map[string]any{
-		{"host": "web-01.example.com"},
-		{"host": "db-01.example.com"},
+	rows := []*state.Target{
+		{Hostname: "web-01.example.com", Port: 22, ChannelType: "ssh", Status: state.StatusActive,
+			Labels: map[string]string{"env": "prod"}},
+		{Hostname: "db-01.example.com", Port: 22, ChannelType: "ssh", Status: state.StatusActive},
 	}
 
 	var buf bytes.Buffer
 	printTargetListHuman(&buf, rows)
 	assert.Contains(t, buf.String(), "web-01.example.com")
 	assert.Contains(t, buf.String(), "db-01.example.com")
+	assert.Contains(t, buf.String(), "env=prod")
 }
 
 func TestPrintTargetListHumanEmpty(t *testing.T) {
@@ -126,21 +129,23 @@ func TestPrintTargetListHumanEmpty(t *testing.T) {
 
 	var buf bytes.Buffer
 	printTargetListHuman(&buf, nil)
-	assert.Contains(t, buf.String(), "No targets found")
+	assert.Contains(t, buf.String(), "No targets in the inventory")
 }
 
 func TestPrintTargetImportHuman(t *testing.T) {
 	defer resetRootFlags()
 
 	output := map[string]any{
-		"file":     "hosts.txt",
-		"imported": 5,
+		"file":    "inventory.yaml",
+		"created": 5,
+		"updated": 2,
+		"failed":  0,
 	}
 
 	var buf bytes.Buffer
 	printTargetImportHuman(&buf, output)
 	assert.Contains(t, buf.String(), "5")
-	assert.Contains(t, buf.String(), "hosts.txt")
+	assert.Contains(t, buf.String(), "inventory.yaml")
 }
 
 func TestPrintTargetCheckHuman(t *testing.T) {
