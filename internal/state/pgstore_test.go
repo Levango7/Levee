@@ -45,7 +45,7 @@ func newPGTestStore(t *testing.T) (*PGStore, func()) {
 	// of FK constraints: children first, then parents.
 	truncateTables := []string{
 		"audit", "credentials", "locks", "approvals", "trace", "steps",
-		"batches", "runs", "cluster_nodes",
+		"batches", "runs", "cluster_nodes", "targets", "inventory_groups",
 	}
 	for _, tbl := range truncateTables {
 		if _, err := store.DB().ExecContext(ctx, "TRUNCATE TABLE "+tbl+" RESTART IDENTITY CASCADE"); err != nil {

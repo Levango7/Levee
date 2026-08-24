@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -172,6 +173,54 @@ type AuditFilter struct {
 	Offset int
 }
 
+// Target is a managed inventory host. It persists across daemon restarts,
+// unlike the earlier in-memory TargetService registry.
+type Target struct {
+	ID            string            `json:"id"`
+	Hostname      string            `json:"hostname"` // address: IP or DNS name
+	Port          int               `json:"port"`
+	ChannelType   string            `json:"channel_type"` // ssh|winrm
+	CredentialRef string            `json:"credential_ref,omitempty"`
+	Labels        map[string]string `json:"labels,omitempty"`
+	GroupID       string            `json:"group_id,omitempty"`
+	Status        string            `json:"status"` // active|frozen|retired
+	Reachable     bool              `json:"reachable"`
+	LastCheckedAt *time.Time        `json:"last_checked_at,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+}
+
+// InventoryGroup is a hierarchical grouping of targets. Names are unique
+// and path-style ("prod/db"); ParentID allows tree structures.
+type InventoryGroup struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	ParentID  string    `json:"parent_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ErrDuplicateTarget is wrapped by UpsertTarget when the (hostname, port)
+// pair is already owned by a different target ID.
+var ErrDuplicateTarget = errors.New("state: target address already in use")
+
+// Target lifecycle statuses. active targets may be selected for changes;
+// frozen targets are rejected at change creation AND apply time; retired
+// targets are kept for history queries only.
+const (
+	StatusActive  = "active"
+	StatusFrozen  = "frozen"
+	StatusRetired = "retired"
+)
+
+// TargetFilter narrows ListTargets results.
+type TargetFilter struct {
+	GroupID string
+	Status  string
+	// Labels requires EVERY listed label to match exactly (AND semantics).
+	Labels map[string]string
+	Limit  int
+	Offset int
+}
+
 // WORMStore is a restricted subset of Store that only allows append-only
 // operations on trace records, consistent with Write-Once-Read-Many semantics.
 // Use this interface in audit/WORM contexts to prevent accidental or malicious
@@ -286,6 +335,25 @@ type Store interface {
 	CreateAudit(ctx context.Context, audit *Audit) error
 	GetAudit(ctx context.Context, id string) (*Audit, error)
 	ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit, error)
+
+	// Inventory: managed target hosts and hierarchical groups.
+	UpsertInventoryGroup(ctx context.Context, group *InventoryGroup) error
+	GetInventoryGroup(ctx context.Context, id string) (*InventoryGroup, error)
+	GetInventoryGroupByName(ctx context.Context, name string) (*InventoryGroup, error)
+	ListInventoryGroups(ctx context.Context) ([]*InventoryGroup, error)
+	DeleteInventoryGroup(ctx context.Context, id string) error
+
+	// UpsertTarget inserts or updates by ID. The (hostname, port) pair is
+	// UNIQUE across the table: inserting a different ID with an address
+	// already owned by another row fails with a wrapped ErrDuplicateTarget.
+	UpsertTarget(ctx context.Context, target *Target) error
+	GetTarget(ctx context.Context, id string) (*Target, error)
+	FindTargetByAddress(ctx context.Context, hostname string, port int) (*Target, error)
+	ListTargets(ctx context.Context, filter TargetFilter) ([]*Target, error)
+	UpdateTargetStatus(ctx context.Context, id string, status string) error
+	SetTargetReachability(ctx context.Context, id string, reachable bool, at time.Time) error
+	DeleteTarget(ctx context.Context, id string) error
+	CountTargetsInGroup(ctx context.Context, groupID string) (int, error)
 
 	// Close releases all underlying resources.
 	Close() error

@@ -211,3 +211,32 @@ CREATE TABLE IF NOT EXISTS cluster_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_cluster_nodes_status ON cluster_nodes (status);
 CREATE INDEX IF NOT EXISTS idx_cluster_nodes_role   ON cluster_nodes (role);
+
+-- ---------------------------------------------------------------------------
+-- Inventory: managed target hosts and hierarchical groups (v1.11)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS inventory_groups (
+    id         TEXT        PRIMARY KEY,
+    name       TEXT        NOT NULL UNIQUE,
+    parent_id  TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS targets (
+    id              TEXT        PRIMARY KEY,
+    hostname        TEXT        NOT NULL,
+    port            INTEGER     NOT NULL DEFAULT 22,
+    channel_type    TEXT        NOT NULL DEFAULT 'ssh',
+    credential_ref  TEXT        NOT NULL DEFAULT '',
+    labels          JSONB       NOT NULL DEFAULT '{}',
+    group_id        TEXT,
+    status          TEXT        NOT NULL DEFAULT 'active',
+    reachable       BOOLEAN     NOT NULL DEFAULT FALSE,
+    last_checked_at TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (hostname, port),
+    FOREIGN KEY (group_id) REFERENCES inventory_groups (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_targets_group  ON targets (group_id);
+CREATE INDEX IF NOT EXISTS idx_targets_status ON targets (status);

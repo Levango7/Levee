@@ -177,3 +177,32 @@ CREATE INDEX IF NOT EXISTS idx_audit_run_id    ON audit (run_id);
 CREATE INDEX IF NOT EXISTS idx_audit_action    ON audit (action);
 CREATE INDEX IF NOT EXISTS idx_audit_actor     ON audit (actor);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit (timestamp);
+
+-- ---------------------------------------------------------------------------
+-- Inventory: managed target hosts and hierarchical groups (v1.11)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS inventory_groups (
+    id         TEXT    PRIMARY KEY,
+    name       TEXT    NOT NULL UNIQUE,          -- path-style name, e.g. "prod/db"
+    parent_id  TEXT,
+    created_at TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS targets (
+    id              TEXT    PRIMARY KEY,
+    hostname        TEXT    NOT NULL,             -- address (IP or DNS name)
+    port            INTEGER NOT NULL DEFAULT 22,
+    channel_type    TEXT    NOT NULL DEFAULT 'ssh',   -- ssh|winrm
+    credential_ref  TEXT    NOT NULL DEFAULT '',
+    labels          TEXT    NOT NULL DEFAULT '{}',    -- JSON object {"env":"prod"}
+    group_id        TEXT,
+    status          TEXT    NOT NULL DEFAULT 'active', -- active|frozen|retired
+    reachable       INTEGER NOT NULL DEFAULT 0,
+    last_checked_at TIMESTAMP,
+    created_at      TIMESTAMP NOT NULL,
+    UNIQUE (hostname, port),
+    FOREIGN KEY (group_id) REFERENCES inventory_groups (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_targets_group  ON targets (group_id);
+CREATE INDEX IF NOT EXISTS idx_targets_status ON targets (status);
