@@ -49,11 +49,17 @@ func NewSQLiteStore(ctx context.Context, dbPath string) (*SQLiteStore, error) {
 	}
 
 	// Apply pragmas on every pooled connection so they always hold.
+	// recursive_triggers=ON makes FK ON DELETE CASCADE deletions fire
+	// BEFORE DELETE triggers on the child table (trace), so a run delete
+	// that would cascade into trace rows is aborted by
+	// worm_prevent_trace_delete instead of silently bypassing WORM
+	// protection.
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA synchronous=NORMAL",
+		"PRAGMA recursive_triggers=ON",
 	}
 	for _, p := range pragmas {
 		if _, err := db.ExecContext(ctx, p); err != nil {
@@ -73,18 +79,6 @@ func NewSQLiteStore(ctx context.Context, dbPath string) (*SQLiteStore, error) {
 // DB exposes the underlying *sql.DB for advanced use cases (e.g. backups).
 // Callers must not close it; use Close instead.
 func (s *SQLiteStore) DB() *sql.DB { return s.db }
-
-// ExecRaw executes a raw SQL statement outside the Store CRUD methods. It is
-// intended for testing scenarios that need to bypass WORM triggers (e.g.
-// simulating tampering) or perform administrative operations not covered by
-// the Store interface. Production code must not use this method.
-func (s *SQLiteStore) ExecRaw(ctx context.Context, query string, args ...any) error {
-	_, err := s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("state: exec raw: %w", err)
-	}
-	return nil
-}
 
 // Close releases the underlying database connection pool.
 func (s *SQLiteStore) Close() error {
@@ -199,6 +193,10 @@ func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, e
 		q += " LIMIT ?"
 		args = append(args, filter.Limit)
 	}
+	if filter.Offset > 0 {
+		q += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -223,7 +221,12 @@ func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, e
 	return out, nil
 }
 
-// DeleteRun removes a run and all dependent rows (cascading via FK).
+// DeleteRun removes a run and all dependent rows (cascading via FK). WORM
+// protection is preserved: with PRAGMA recursive_triggers=ON the cascade
+// into the trace table fires the worm_prevent_trace_delete trigger, so
+// deleting a run that still has trace records fails with the WORM error
+// instead of silently removing audit history. Runs without traces delete
+// normally.
 func (s *SQLiteStore) DeleteRun(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM runs WHERE id = ?`, id)
 	if err != nil {
@@ -538,6 +541,31 @@ func (s *SQLiteStore) UpdateTrace(ctx context.Context, trace *Trace) error {
 	return nil
 }
 
+// UpdateTraceChecksum stamps the WORM content checksum into curr_hash, but
+// only when curr_hash is still empty. The conditional WHERE clause guarantees
+// an already-computed hash (content checksum or hash-chain link) is never
+// overwritten, complementing the worm_prevent_trace_update trigger which
+// permits curr_hash writes. An empty checksum or unknown trace id yields an
+// error.
+func (s *SQLiteStore) UpdateTraceChecksum(ctx context.Context, id string, checksum string) error {
+	if id == "" {
+		return fmt.Errorf("state: update trace checksum: empty id")
+	}
+	if checksum == "" {
+		return fmt.Errorf("state: update trace checksum %q: empty checksum", id)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE trace SET curr_hash=? WHERE id=? AND curr_hash=''`,
+		checksum, id)
+	if err != nil {
+		return fmt.Errorf("state: update trace checksum %q: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("state: update trace checksum %q: not found or checksum already present", id)
+	}
+	return nil
+}
+
 // ListTraces returns trace records matching the filter, ordered by timestamp
 // ascending. When multiple records share the same timestamp, the secondary sort
 // key id ASC guarantees a deterministic order. This is essential for the audit
@@ -655,6 +683,28 @@ func (s *SQLiteStore) UpdateApproval(ctx context.Context, approval *Approval) er
 		return fmt.Errorf("state: update approval %q: not found", approval.ID)
 	}
 	return nil
+}
+
+// UpdateApprovalIfPending is the compare-and-set variant of UpdateApproval:
+// it applies the update only when the stored row is still in status
+// "pending". It returns true when the update was applied and false when the
+// row was concurrently decided (or does not exist), so callers never
+// overwrite a terminal decision.
+func (s *SQLiteStore) UpdateApprovalIfPending(ctx context.Context, approval *Approval) (bool, error) {
+	if approval == nil {
+		return false, fmt.Errorf("state: update approval if pending: nil approval")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
+		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?
+		WHERE id=? AND status='pending'`,
+		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
+		approval.TimeoutAt, approval.ActedAt, approval.ID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update approval %q if pending: %w", approval.ID, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // ListApprovals returns approvals matching the filter, ordered by timeout_at ascending.
@@ -837,6 +887,21 @@ func (s *SQLiteStore) DeleteLock(ctx context.Context, id string) error {
 		return fmt.Errorf("state: delete lock %q: %w", id, err)
 	}
 	return nil
+}
+
+// DeleteLockByIDAndOwner deletes the lock identified by id but only when it
+// is still owned by owner. Ownership check and delete happen inside a single
+// statement so a concurrent ForceAcquire takeover (which reuses the same row
+// id with a new owner) can never be deleted by the stale owner. It returns
+// false when no row matched (lock taken over by another owner or already
+// gone).
+func (s *SQLiteStore) DeleteLockByIDAndOwner(ctx context.Context, id string, owner string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM locks WHERE id = ? AND owner = ?`, id, owner)
+	if err != nil {
+		return false, fmt.Errorf("state: delete lock %q owned by %q: %w", id, owner, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // DeleteExpiredLocks removes all locks whose expires_at is before the given

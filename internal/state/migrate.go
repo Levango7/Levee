@@ -48,22 +48,34 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 
-	// Execute the embedded schema statement by statement. SQLite's exec
-	// handles multiple statements but splitting explicitly yields clearer
-	// errors when one statement fails.
-	if err := execMultiStatement(ctx, db, schemaSQL); err != nil {
+	// Execute the embedded schema inside a single transaction so a failure
+	// halfway through cannot leave a half-applied schema behind. SQLite's
+	// modernc driver fully supports transactional DDL. IF NOT EXISTS keeps
+	// the statements idempotent so re-running after a rolled-back attempt
+	// (or on an already-migrated database) is safe.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("state: begin schema transaction: %w", err)
+	}
+	if err := execMultiStatement(ctx, tx, schemaSQL); err != nil {
+		_ = tx.Rollback()
 		return fmt.Errorf("state: apply schema: %w", err)
 	}
 
 	// Record the applied version. Use UPSERT so re-applying the same version
 	// does not violate the primary key constraint.
-	if _, err := db.ExecContext(
+	if _, err := tx.ExecContext(
 		ctx,
 		`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
 		 ON CONFLICT(version) DO UPDATE SET applied_at = excluded.applied_at`,
 		currentSchemaVersion, time.Now().UTC(),
 	); err != nil {
+		_ = tx.Rollback()
 		return fmt.Errorf("state: record schema version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("state: commit schema transaction: %w", err)
 	}
 
 	return nil
@@ -80,8 +92,15 @@ func appliedSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return version, nil
 }
 
+// dbExecutor is satisfied by both *sql.DB and *sql.Tx; it lets
+// execMultiStatement run against either a bare connection or a transaction.
+type dbExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // execMultiStatement splits a script on semicolons and executes each non-empty
-// statement individually. Comments (lines starting with --) are stripped
+// statement individually against the given executor (a *sql.DB or an open
+// *sql.Tx). Comments (lines starting with --) are stripped
 // conservatively: a line that begins with -- after trimming whitespace is
 // dropped entirely. This is sufficient for the bundled schema.sql which never
 // embeds -- inside string literals.
@@ -89,7 +108,7 @@ func appliedSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 // CREATE TRIGGER blocks (BEGIN...END) are kept as single statements because
 // their bodies contain semicolons that must not be treated as statement
 // separators.
-func execMultiStatement(ctx context.Context, db *sql.DB, script string) error {
+func execMultiStatement(ctx context.Context, db dbExecutor, script string) error {
 	// Strip line comments first.
 	lines := strings.Split(script, "\n")
 	for i, line := range lines {

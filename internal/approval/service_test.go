@@ -32,6 +32,19 @@ func newMockStore() *mockStore {
 	}
 }
 
+// cloneApproval returns a defensive copy of an approval (including slice
+// contents) so that concurrent Get callers never alias the stored record
+// while the service mutates its snapshot between read and CAS write.
+func cloneApproval(a *Approval) *Approval {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+	cp.Approvers = append([]string(nil), a.Approvers...)
+	cp.Decisions = append([]Decision(nil), a.Decisions...)
+	return &cp
+}
+
 func (m *mockStore) Create(ctx context.Context, a *Approval) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -41,7 +54,7 @@ func (m *mockStore) Create(ctx context.Context, a *Approval) error {
 	if _, ok := m.approvals[a.ID]; ok {
 		return fmt.Errorf("approval: duplicate id %s", a.ID)
 	}
-	m.approvals[a.ID] = a
+	m.approvals[a.ID] = cloneApproval(a)
 	return nil
 }
 
@@ -55,7 +68,7 @@ func (m *mockStore) Get(ctx context.Context, id string) (*Approval, error) {
 	if !ok {
 		return nil, nil
 	}
-	return a, nil
+	return cloneApproval(a), nil
 }
 
 func (m *mockStore) Update(ctx context.Context, a *Approval) error {
@@ -67,8 +80,29 @@ func (m *mockStore) Update(ctx context.Context, a *Approval) error {
 	if _, ok := m.approvals[a.ID]; !ok {
 		return fmt.Errorf("approval: not found %s", a.ID)
 	}
-	m.approvals[a.ID] = a
+	m.approvals[a.ID] = cloneApproval(a)
 	return nil
+}
+
+// UpdateIfPending mirrors the compare-and-set contract of the real stores:
+// the update applies only while the stored record is still pending. It can
+// be forced to lose the race via failOn["update-if-pending-lost"] (returns
+// false without applying) to exercise the service retry loop.
+func (m *mockStore) UpdateIfPending(_ context.Context, a *Approval) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.failOn["update-if-pending"] != nil {
+		return false, m.failOn["update-if-pending"]
+	}
+	stored, ok := m.approvals[a.ID]
+	if !ok || stored.Status != StatusPending {
+		return false, nil
+	}
+	if m.failOn["update-if-pending-lost"] != nil {
+		return false, nil
+	}
+	m.approvals[a.ID] = cloneApproval(a)
+	return true, nil
 }
 
 func (m *mockStore) ListPending(ctx context.Context) ([]*Approval, error) {
@@ -809,4 +843,161 @@ func TestCheckExpiry_ExpiresAtExactlyNowNotExpired(t *testing.T) {
 	require.NoError(t, err)
 	// notExpired must not appear.
 	assert.NotContains(t, expired, notExpired.ID)
+}
+
+// =========================================================================
+// Compare-and-set decision path (lost-update regression)
+// =========================================================================
+
+// TestApprove_ConcurrentDistinctApprovers_ExactlyOnceEffect fires many
+// goroutines at the same pending approval with MinApprovers=1. Exactly one
+// decision may be recorded and the approval must end approved exactly once;
+// every other caller must observe a terminal-state rejection or an explicit
+// conflict instead of silently overwriting.
+func TestApprove_ConcurrentDistinctApprovers_ExactlyOnceEffect(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := bgCtx()
+
+	a, err := svc.Create(ctx, CreateRequest{
+		RunID:        "run-1",
+		Level:        "standard",
+		MinApprovers: 1,
+	})
+	require.NoError(t, err)
+
+	const n = 16
+	var (
+		wg          sync.WaitGroup
+		mu          sync.Mutex
+		successes   int
+		conflicts   int
+		transitions int
+	)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			err := svc.Approve(ctx, a.ID, fmt.Sprintf("approver-%d", i))
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				successes++
+			case errors.Is(err, ErrConflict):
+				conflicts++
+			case errors.Is(err, ErrInvalidTransition):
+				transitions++
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, 1, successes, "exactly one approver may decide a MinApprovers=1 approval")
+	assert.Equal(t, n-1, conflicts+transitions, "every other attempt must be accounted for")
+
+	got, err := svc.Get(ctx, a.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, StatusApproved, got.Status)
+	assert.Len(t, got.Decisions, 1, "no lost update may inflate the decision list")
+}
+
+// TestReject_ConcurrentWithApprove_SingleWinner ensures approve and reject
+// racing on the same pending record produce exactly one terminal outcome
+// (one-vote-veto must not be overwritable by a concurrent approve).
+func TestReject_ConcurrentWithApprove_SingleWinner(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := bgCtx()
+
+	a, err := svc.Create(ctx, CreateRequest{
+		RunID:        "run-2",
+		Level:        "high",
+		MinApprovers: 1,
+		Approvers:    []string{"alice", "bob"},
+	})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	wg.Add(2)
+	go func() { defer wg.Done(); results[0] = svc.Approve(ctx, a.ID, "alice") }()
+	go func() { defer wg.Done(); results[1] = svc.Reject(ctx, a.ID, "bob", "no") }()
+	wg.Wait()
+
+	nils := 0
+	for _, err := range results {
+		if err == nil {
+			nils++
+		}
+	}
+	assert.Equal(t, 1, nils, "exactly one of the racing decisions may succeed")
+
+	got, err := svc.Get(ctx, a.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Len(t, got.Decisions, 1)
+	switch got.Status {
+	case StatusApproved, StatusRejected:
+		assert.Equal(t, got.Decisions[0].Action, map[Status]string{
+			StatusApproved: ActionApprove,
+			StatusRejected: ActionReject,
+		}[got.Status], "terminal status must match the winning decision")
+	default:
+		t.Fatalf("approval ended in non-terminal status %q", got.Status)
+	}
+}
+
+// TestApprove_CASLostThenSucceed exercises the retry loop: the first
+// compare-and-set attempt loses (simulated via the mock's failure key) but
+// after reloading, the second attempt applies.
+func TestApprove_CASLostThenSucceed(t *testing.T) {
+	svc, store := newService(t)
+	ctx := bgCtx()
+
+	a, err := svc.Create(ctx, CreateRequest{RunID: "run-3", Level: "standard"})
+	require.NoError(t, err)
+
+	store.failOn["update-if-pending-lost"] = errors.New("lost race")
+	_ = store.failOn["update-if-pending-lost"]
+
+	// With both attempts losing the CAS the service must surface ErrConflict.
+	err = svc.Approve(ctx, a.ID, "alice")
+	require.ErrorIs(t, err, ErrConflict)
+
+	// Now let CAS succeed: the retry loop records the decision.
+	delete(store.failOn, "update-if-pending-lost")
+	require.NoError(t, svc.Approve(ctx, a.ID, "alice"))
+
+	got, err := svc.Get(ctx, a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusApproved, got.Status)
+}
+
+// TestUpdateIfPending_RejectedWhenTerminal pins the mock contract used by
+// the concurrency tests: UpdateIfPending never applies once the stored
+// record has left StatusPending.
+func TestUpdateIfPending_RejectedWhenTerminal(t *testing.T) {
+	store := newMockStore()
+	a := &Approval{ID: "a1", RunID: "r1", Level: "standard", Status: StatusPending}
+	require.NoError(t, store.Create(bgCtx(), a))
+
+	ok, err := store.UpdateIfPending(bgCtx(), a)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	// Another actor decides the record through the plain Update path.
+	decided := cloneApproval(a)
+	decided.Status = StatusApproved
+	require.NoError(t, store.Update(bgCtx(), decided))
+
+	// A stale writer still holding the pending snapshot must lose the CAS.
+	ok, err = store.UpdateIfPending(bgCtx(), a)
+	require.NoError(t, err)
+	assert.False(t, ok, "CAS on a terminal record must report false")
+
+	stored, err := store.Get(bgCtx(), a.ID)
+	require.NoError(t, err)
+	assert.Equal(t, StatusApproved, stored.Status, "terminal overwrite must not happen")
 }

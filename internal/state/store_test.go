@@ -360,19 +360,160 @@ func TestTrace_CRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, list, 2)
 
-	// Delete: the WORM trigger prevents DELETE on the trace table, so we
-	// must disable it temporarily to verify the DeleteTrace method works.
-	require.NoError(t, store.ExecRaw(ctx, "DROP TRIGGER IF EXISTS worm_prevent_trace_delete"))
-	require.NoError(t, store.DeleteTrace(ctx, trace.ID))
-	require.NoError(t, store.ExecRaw(ctx, `
-CREATE TRIGGER IF NOT EXISTS worm_prevent_trace_delete
-BEFORE DELETE ON trace
-BEGIN
-    SELECT RAISE(ABORT, 'WORM violation: trace records cannot be deleted');
-END`))
+	// Delete: the WORM trigger prevents DELETE on the trace table, so
+	// DeleteTrace must fail with the WORM violation instead of removing
+	// audit history.
+	err = store.DeleteTrace(ctx, trace.ID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WORM")
 	got, err = store.GetTrace(ctx, trace.ID)
 	require.NoError(t, err)
-	assert.Nil(t, got)
+	require.NotNil(t, got, "WORM-protected trace must survive a delete attempt")
+
+	// UpdateTraceChecksum fills an empty curr_hash but never overwrites an
+	// existing checksum or chain hash (see dedicated test below).
+}
+
+// TestDeleteRun_WORMTracesBlockDelete pins the cascade-bypass fix: with
+// PRAGMA recursive_triggers=ON, the FK cascade into trace fires
+// worm_prevent_trace_delete, so deleting a run that still has traces fails
+// with the WORM error while a run without traces deletes normally.
+func TestDeleteRun_WORMTracesBlockDelete(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	mkRun := func(id string) *Run {
+		return &Run{
+			ID: id, WorkflowName: "w", TemplateName: "t", PlanHash: "h",
+			Status: "completed", CreatedAt: now, UpdatedAt: now, Creator: "u",
+		}
+	}
+
+	// Run WITH traces: DeleteRun must be refused by WORM protection.
+	require.NoError(t, store.CreateRun(ctx, mkRun("r-with-trace")))
+	require.NoError(t, store.CreateTrace(ctx, &Trace{
+		ID: "t-worm", RunID: "r-with-trace", Event: "plan", Actor: "u",
+		Detail: `{}`, CurrHash: "hash", Timestamp: now,
+	}))
+	err := store.DeleteRun(ctx, "r-with-trace")
+	require.Error(t, err, "deleting a run with WORM-protected traces must fail")
+	assert.Contains(t, err.Error(), "WORM")
+
+	// The run and its traces must still be intact after the refused delete.
+	gotRun, err := store.GetRun(ctx, "r-with-trace")
+	require.NoError(t, err)
+	assert.NotNil(t, gotRun)
+	traces, err := store.ListTraces(ctx, TraceFilter{RunID: "r-with-trace"})
+	require.NoError(t, err)
+	assert.Len(t, traces, 1, "no trace may vanish silently via cascade")
+
+	// Run WITHOUT traces: DeleteRun succeeds and cascades its batches.
+	require.NoError(t, store.CreateRun(ctx, mkRun("r-clean")))
+	require.NoError(t, store.CreateBatch(ctx, &Batch{ID: "b-clean", RunID: "r-clean", BatchNo: 1, Status: "pending"}))
+	require.NoError(t, store.DeleteRun(ctx, "r-clean"))
+	gotRun, err = store.GetRun(ctx, "r-clean")
+	require.NoError(t, err)
+	assert.Nil(t, gotRun)
+	gotBatch, err := store.GetBatch(ctx, "b-clean")
+	require.NoError(t, err)
+	assert.Nil(t, gotBatch, "batch rows must still cascade with the run")
+}
+
+func TestUpdateApprovalIfPending_CAS(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	require.NoError(t, store.CreateRun(ctx, &Run{
+		ID: "r1", WorkflowName: "w", TemplateName: "t", PlanHash: "h",
+		Status: "running", ApprovalStatus: "pending", ApprovalLevel: "high",
+		CreatedAt: now, UpdatedAt: now, Creator: "u",
+	}))
+	timeout := now.Add(time.Hour)
+	require.NoError(t, store.CreateApproval(ctx, &Approval{
+		ID: "a1", RunID: "r1", Level: "high", Approver: "",
+		Status: "pending", Comment: "{}", TimeoutAt: &timeout,
+	}))
+
+	loaded, err := store.GetApproval(ctx, "a1")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+
+	// CAS against a pending row applies and reports true.
+	acted := now.Add(time.Minute)
+	loaded.Status = "approved"
+	loaded.Approver = "alice"
+	loaded.ActedAt = &acted
+	ok, err := store.UpdateApprovalIfPending(ctx, loaded)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	got, err := store.GetApproval(ctx, "a1")
+	require.NoError(t, err)
+	assert.Equal(t, "approved", got.Status)
+	require.NotNil(t, got.ActedAt)
+
+	// CAS against a terminal row is refused and reports false — this is
+	// what prevents concurrent double decisions from inflating state.
+	stale := &Approval{
+		ID: "a1", RunID: "r1", Level: "high", Approver: "bob",
+		Status: "rejected", Comment: "{}", TimeoutAt: &timeout, ActedAt: &acted,
+	}
+	ok, err = store.UpdateApprovalIfPending(ctx, stale)
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	got, err = store.GetApproval(ctx, "a1")
+	require.NoError(t, err)
+	assert.Equal(t, "approved", got.Status, "terminal decision must not be overwritten")
+
+	// Unknown id also reports false.
+	stale.ID = "missing"
+	ok, err = store.UpdateApprovalIfPending(ctx, stale)
+	require.NoError(t, err)
+	assert.False(t, ok)
+
+	// Nil argument is rejected.
+	_, err = store.UpdateApprovalIfPending(ctx, nil)
+	require.Error(t, err)
+}
+
+func TestUpdateTraceChecksum(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	require.NoError(t, store.CreateRun(ctx, &Run{
+		ID: "r1", WorkflowName: "w", TemplateName: "t", PlanHash: "h",
+		Status: "running", ApprovalStatus: "pending",
+		CreatedAt: now, UpdatedAt: now, Creator: "u",
+	}))
+	require.NoError(t, store.CreateTrace(ctx, &Trace{
+		ID: "t1", RunID: "r1", Event: "plan", Actor: "u",
+		Detail: `{}`, Timestamp: now,
+	}))
+
+	checksum := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	require.NoError(t, store.UpdateTraceChecksum(ctx, "t1", checksum))
+
+	got, err := store.GetTrace(ctx, "t1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, checksum, got.CurrHash)
+
+	// A second write must be refused: only empty curr_hash may be filled.
+	err = store.UpdateTraceChecksum(ctx, "t1", "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210")
+	require.Error(t, err)
+	got, err = store.GetTrace(ctx, "t1")
+	require.NoError(t, err)
+	assert.Equal(t, checksum, got.CurrHash, "existing checksum must never be overwritten")
+
+	// Unknown id and empty checksum are rejected.
+	err = store.UpdateTraceChecksum(ctx, "missing", checksum)
+	require.Error(t, err)
+	err = store.UpdateTraceChecksum(ctx, "t1", "")
+	require.Error(t, err)
 }
 
 // =========================================================================

@@ -238,8 +238,9 @@ func (r *TraceRecorder) ListByRun(ctx context.Context, runID string) ([]*state.T
 }
 
 // Redact returns a copy of input with every sensitive field replaced by
-// "[REDACTED]". Matching is case-insensitive and recursive: nested maps are
-// walked and redacted in place. Non-map values are returned unchanged.
+// "[REDACTED]". Matching is case-insensitive and recursive: nested maps,
+// string-keyed maps and slices are walked and redacted. Non-composite values
+// are returned unchanged.
 //
 // Redact never mutates the input map; it always returns a fresh map (or the
 // original value when input is not a map).
@@ -254,16 +255,49 @@ func Redact(input map[string]any) map[string]any {
 	return out
 }
 
+// RedactStringMap returns a copy of m with every sensitive key's value
+// replaced by "[REDACTED]". It exists because trace details carry string
+// maps too (e.g. TraceRecord.Metadata), which previously bypassed redaction
+// entirely. Matching is case-insensitive; a nil input yields nil.
+func RedactStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if isSensitive(k) {
+			out[k] = redactedValue
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // redactValueForKey redacts a single value given its key. If the key is
 // sensitive the value is replaced with "[REDACTED]"; otherwise the value is
-// recursively redacted when it is a map.
+// recursively redacted when it is a composite (map or slice).
 func redactValueForKey(key string, value any) any {
 	if isSensitive(key) {
 		return redactedValue
 	}
+	return redactComposite(value)
+}
+
+// redactComposite recurses into maps and slices without a key context (e.g.
+// elements of a JSON array). Values of other types are returned unchanged.
+func redactComposite(value any) any {
 	switch v := value.(type) {
 	case map[string]any:
 		return Redact(v)
+	case map[string]string:
+		return RedactStringMap(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = redactComposite(item)
+		}
+		return out
 	default:
 		return value
 	}
@@ -277,15 +311,15 @@ func isSensitive(key string) bool {
 }
 
 // buildDetail serialises the TraceRecord into the JSON string stored in
-// state.Trace.Detail. Sensitive fields in Input/Output are redacted before
-// serialisation.
+// state.Trace.Detail. Sensitive fields in Input/Output/Metadata are redacted
+// before serialisation so credentials never reach the trace chain.
 func buildDetail(record TraceRecord) (string, error) {
 	d := traceDetail{
 		Target:   record.Target,
 		Input:    Redact(record.Input),
 		Output:   Redact(record.Output),
 		Duration: record.Duration.Milliseconds(),
-		Metadata: record.Metadata,
+		Metadata: RedactStringMap(record.Metadata),
 	}
 	if record.Error != nil {
 		d.Error = record.Error.Error()

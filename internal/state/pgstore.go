@@ -98,18 +98,6 @@ func NewPGStore(ctx context.Context, dsn string, cfg PGPoolConfig) (*PGStore, er
 // locks in internal/cluster). Callers must not close it; use Close instead.
 func (s *PGStore) DB() *sql.DB { return s.db }
 
-// ExecRaw executes a raw SQL statement outside the Store CRUD methods. It is
-// intended for testing scenarios that need to bypass WORM triggers or perform
-// administrative operations not covered by the Store interface. Production
-// code must not use this method.
-func (s *PGStore) ExecRaw(ctx context.Context, query string, args ...any) error {
-	_, err := s.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("state: exec raw: %w", err)
-	}
-	return nil
-}
-
 // Close releases the underlying database connection pool.
 func (s *PGStore) Close() error {
 	if s.db == nil {
@@ -223,6 +211,10 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 		args = append(args, filter.Limit)
 		q += fmt.Sprintf(" LIMIT $%d", len(args))
 	}
+	if filter.Offset > 0 {
+		args = append(args, filter.Offset)
+		q += fmt.Sprintf(" OFFSET $%d", len(args))
+	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -247,7 +239,11 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 	return out, nil
 }
 
-// DeleteRun removes a run and all dependent rows (cascading via FK).
+// DeleteRun removes a run and all dependent rows (cascading via FK). WORM
+// protection is preserved: the PostgreSQL FK cascade fires the
+// worm_prevent_trace_delete trigger on the trace table, so deleting a run
+// that still has trace records fails with the WORM error instead of silently
+// removing audit history. Runs without traces delete normally.
 func (s *PGStore) DeleteRun(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM runs WHERE id = $1`, id)
 	if err != nil {
@@ -564,6 +560,31 @@ func (s *PGStore) UpdateTrace(ctx context.Context, trace *Trace) error {
 	return nil
 }
 
+// UpdateTraceChecksum stamps the WORM content checksum into curr_hash, but
+// only when curr_hash is still empty. The conditional WHERE clause guarantees
+// an already-computed hash (content checksum or hash-chain link) is never
+// overwritten, complementing the worm_prevent_trace_update trigger which
+// permits curr_hash writes. An empty checksum or unknown trace id yields an
+// error.
+func (s *PGStore) UpdateTraceChecksum(ctx context.Context, id string, checksum string) error {
+	if id == "" {
+		return fmt.Errorf("state: update trace checksum: empty id")
+	}
+	if checksum == "" {
+		return fmt.Errorf("state: update trace checksum %q: empty checksum", id)
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE trace SET curr_hash=$1 WHERE id=$2 AND curr_hash=''`,
+		checksum, id)
+	if err != nil {
+		return fmt.Errorf("state: update trace checksum %q: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("state: update trace checksum %q: not found or checksum already present", id)
+	}
+	return nil
+}
+
 // ListTraces returns trace records matching the filter, ordered by timestamp
 // ascending with id as a deterministic tie-breaker. See SQLiteStore.ListTraces
 // for the rationale.
@@ -677,6 +698,28 @@ func (s *PGStore) UpdateApproval(ctx context.Context, approval *Approval) error 
 		return fmt.Errorf("state: update approval %q: not found", approval.ID)
 	}
 	return nil
+}
+
+// UpdateApprovalIfPending is the compare-and-set variant of UpdateApproval:
+// it applies the update only when the stored row is still in status
+// "pending". It returns true when the update was applied and false when the
+// row was concurrently decided (or does not exist), so callers never
+// overwrite a terminal decision.
+func (s *PGStore) UpdateApprovalIfPending(ctx context.Context, approval *Approval) (bool, error) {
+	if approval == nil {
+		return false, fmt.Errorf("state: update approval if pending: nil approval")
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
+		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7
+		WHERE id=$8 AND status='pending'`,
+		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
+		approval.TimeoutAt, approval.ActedAt, approval.ID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update approval %q if pending: %w", approval.ID, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // ListApprovals returns approvals matching the filter, ordered by timeout_at ascending.
@@ -859,6 +902,21 @@ func (s *PGStore) DeleteLock(ctx context.Context, id string) error {
 		return fmt.Errorf("state: delete lock %q: %w", id, err)
 	}
 	return nil
+}
+
+// DeleteLockByIDAndOwner deletes the lock identified by id but only when it
+// is still owned by owner. Ownership check and delete happen inside a single
+// statement so a concurrent ForceAcquire takeover (which reuses the same row
+// id with a new owner) can never be deleted by the stale owner. It returns
+// false when no row matched (lock taken over by another owner or already
+// gone).
+func (s *PGStore) DeleteLockByIDAndOwner(ctx context.Context, id string, owner string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM locks WHERE id = $1 AND owner = $2`, id, owner)
+	if err != nil {
+		return false, fmt.Errorf("state: delete lock %q owned by %q: %w", id, owner, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // DeleteExpiredLocks removes all locks whose expires_at is before the given

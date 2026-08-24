@@ -22,10 +22,12 @@ func newArchiveCmd() *cobra.Command {
 		Use:   "archive <run-id>",
 		Short: "Archive a run to WORM storage",
 		Long: "Archive a change run's audit traces to Write-Once-Read-Many " +
-			"(WORM) storage for compliance. Each trace record is appended " +
-			"with a content checksum. If archiving fails for any record, " +
-			"a warning is printed but the process continues (non-blocking). " +
-			"Exit code 7 indicates that some records failed to archive.",
+			"(WORM) storage for compliance. Each trace record that does not " +
+			"carry a content checksum yet is checksummed in place (empty " +
+			"curr_hash only; existing hashes are never rewritten). If " +
+			"archiving fails for any record, a warning is printed but the " +
+			"process continues (non-blocking). Exit code 7 indicates that " +
+			"some records failed to archive.",
 		Args: cobra.ExactArgs(1),
 		RunE: runArchive,
 	}
@@ -80,32 +82,8 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// 4. Open the WORM store and archive each trace.
-	worm, err := audit.NewWORMStore(store)
-	if err != nil {
-		return fmt.Errorf("create WORM store: %w", err)
-	}
-
-	var archived, failed, skipped int
-	var failedIDs []string
-
-	for _, t := range traces {
-		// Skip records that already have a WORM checksum (already archived).
-		if t.CurrHash != "" && isWORMChecksum(t.CurrHash) {
-			skipped++
-			continue
-		}
-
-		err := worm.Append(ctx, t)
-		if err != nil {
-			failed++
-			failedIDs = append(failedIDs, t.ID)
-			// Non-blocking: log warning and continue.
-			fmt.Fprintf(os.Stderr, "warning: failed to archive trace %q: %v\n", t.ID, err)
-			continue
-		}
-		archived++
-	}
+	// 4. Stamp a WORM content checksum onto every trace that lacks one.
+	archived, failed, skipped, failedIDs := archiveTraces(ctx, store, traces)
 
 	// 5. Build output.
 	output := map[string]any{
@@ -147,6 +125,39 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("%d of %d records failed to archive [exit=7]", failed, len(traces))
 	}
 	return nil
+}
+
+// archiveTraces stamps a WORM content checksum onto every trace that lacks
+// one and returns (archived, failed, skipped, failedIDs).
+//
+// The trace rows already exist, so a WORM Append can never be used here
+// (its write-once check rejects existing ids). Instead the checksum is
+// computed by the audit package and written through Store.UpdateTraceChecksum,
+// which only fills an empty curr_hash and therefore never overwrites an
+// already-computed checksum or chain hash. The archived counter reflects
+// checksum updates performed.
+func archiveTraces(ctx context.Context, store state.Store, traces []*state.Trace) (archived, failed, skipped int, failedIDs []string) {
+	for _, t := range traces {
+		// Skip records that already carry a WORM-size digest (already
+		// archived or already linked into a hash chain): both store a
+		// 64-char hash in curr_hash, and neither may ever be rewritten.
+		if isWORMChecksum(t.CurrHash) {
+			skipped++
+			continue
+		}
+
+		checksum := audit.ComputeChecksum(t)
+		if err := store.UpdateTraceChecksum(ctx, t.ID, checksum); err != nil {
+			failed++
+			failedIDs = append(failedIDs, t.ID)
+			// Non-blocking: log warning and continue.
+			fmt.Fprintf(os.Stderr, "warning: failed to archive trace %q: %v\n", t.ID, err)
+			continue
+		}
+		t.CurrHash = checksum
+		archived++
+	}
+	return archived, failed, skipped, failedIDs
 }
 
 // isWORMChecksum reports whether a hash looks like a WORM content checksum

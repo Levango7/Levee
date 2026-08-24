@@ -715,3 +715,144 @@ func TestRotateMasterPassword_DecryptWithNewPassword(t *testing.T) {
 	assert.Equal(t, []byte("top-secret-data"), got2)
 	SecureZero(got2)
 }
+
+// =========================================================================
+// RotateMasterPassword: rollback on mid-flight persistence failure
+// =========================================================================
+
+// failingUpdateStore wraps a state.Store and fails UpdateCredential for
+// selected credential ids. When requireOldBlob is true the failure only
+// triggers when the incoming ciphertext equals the given old blob — used to
+// fail specifically the rollback write (which re-persists the pre-rotation
+// blob) while letting the initial rotation write through.
+type failingUpdateStore struct {
+	state.Store
+	failIDs     map[string]struct{}
+	requireOld  map[string][]byte // id -> old blob; fail only on exact match
+	updateCalls int
+}
+
+func (f *failingUpdateStore) UpdateCredential(ctx context.Context, c *state.Credential) error {
+	f.updateCalls++
+	if _, bad := f.failIDs[c.ID]; bad {
+		return fmt.Errorf("simulated persist failure for %s", c.Name)
+	}
+	if want, ok := f.requireOld[c.ID]; ok && string(c.EncryptedData) == string(want) {
+		return fmt.Errorf("simulated rollback failure for %s", c.Name)
+	}
+	return f.Store.UpdateCredential(ctx, c)
+}
+
+// seedRotationFixture stores three credentials and returns their ids.
+func seedRotationFixture(t *testing.T, ctx context.Context, cs *CredentialStore) map[string]string {
+	t.Helper()
+	secrets := map[string]string{
+		"cred-a": "alpha-secret",
+		"cred-b": "beta-secret",
+		"cred-c": "gamma-secret",
+	}
+	for name, secret := range secrets {
+		_, err := cs.Store(ctx, CredentialSpec{Name: name, Type: "generic", Plaintext: []byte(secret)})
+		require.NoError(t, err)
+	}
+	return secrets
+}
+
+func TestRotateMasterPassword_RollbackOnPersistFailure(t *testing.T) {
+	base := newTestStore(t)
+	cs := newTestCredentialStore(t, base, "old-master")
+	ctx := context.Background()
+
+	secrets := seedRotationFixture(t, ctx, cs)
+
+	// Find the id of cred-b (second in name order) and make its persist fail.
+	creds, err := base.ListCredentials(ctx)
+	require.NoError(t, err)
+	require.Len(t, creds, 3)
+	var bID string
+	for _, c := range creds {
+		if c.Name == "cred-b" {
+			bID = c.ID
+		}
+	}
+	require.NotEmpty(t, bID)
+
+	fs := &failingUpdateStore{Store: base, failIDs: map[string]struct{}{bID: {}}}
+	cs.store = fs
+
+	count, err := cs.RotateMasterPassword(ctx, "old-master", "new-master")
+	require.Error(t, err, "rotation must fail when a row cannot be persisted")
+	assert.Equal(t, 0, count, "no credential counts as rotated when the rotation aborts")
+	assert.Contains(t, err.Error(), "rolled back")
+
+	// Every credential must still decrypt with the OLD master password:
+	// proof that the already-persisted rows were rolled back.
+	for name, secret := range secrets {
+		got, rerr := cs.Retrieve(ctx, name)
+		require.NoError(t, rerr, "%q must be readable with the old password after rollback", name)
+		assert.Equal(t, []byte(secret), got)
+		SecureZero(got)
+	}
+
+	// The in-memory master password must not have been switched.
+	csNew := newTestCredentialStore(t, base, "new-master")
+	_, rerr := csNew.Retrieve(ctx, "cred-a")
+	assert.ErrorIs(t, rerr, ErrDecryptFailed,
+		"store must not contain new-password ciphertext after failed rotation")
+}
+
+func TestRotateMasterPassword_FatalWhenRollbackFails(t *testing.T) {
+	base := newTestStore(t)
+	cs := newTestCredentialStore(t, base, "old-master")
+	ctx := context.Background()
+
+	secrets := seedRotationFixture(t, ctx, cs)
+
+	// Snapshot every credential's original ciphertext.
+	creds, err := base.ListCredentials(ctx)
+	require.NoError(t, err)
+	require.Len(t, creds, 3)
+	var (
+		aID  string
+		cID  string
+		oldA []byte
+	)
+	for _, c := range creds {
+		switch c.Name {
+		case "cred-a":
+			aID, oldA = c.ID, append([]byte(nil), c.EncryptedData...)
+		case "cred-c":
+			cID = c.ID
+		}
+	}
+	require.NotEmpty(t, aID)
+	require.NotEmpty(t, cID)
+
+	fs := &failingUpdateStore{
+		Store: base,
+		// cred-c's initial persist fails...
+		failIDs: map[string]struct{}{cID: {}},
+		// ...and cred-a's rollback write (old blob) fails too, leaving it
+		// stuck with new-password ciphertext.
+		requireOld: map[string][]byte{aID: oldA},
+	}
+	cs.store = fs
+
+	count, err := cs.RotateMasterPassword(ctx, "old-master", "new-master")
+	require.Error(t, err)
+	assert.Equal(t, 0, count)
+	assert.Contains(t, err.Error(), "FATAL", "unrecoverable rows must be reported as fatal")
+	assert.Contains(t, err.Error(), aID, "the unrecoverable credential id must be enumerated")
+
+	// cred-a is genuinely unrecoverable via the old password (its row holds
+	// new-password ciphertext); the other two were restored by rollback.
+	_, rerr := cs.Retrieve(ctx, "cred-a")
+	assert.ErrorIs(t, rerr, ErrDecryptFailed, "unrecoverable row keeps new ciphertext")
+
+	for _, name := range []string{"cred-b"} {
+		got, gerr := cs.Retrieve(ctx, name)
+		require.NoError(t, gerr)
+		assert.Equal(t, []byte(secrets[name]), got)
+		SecureZero(got)
+	}
+}

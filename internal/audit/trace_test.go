@@ -57,7 +57,7 @@ func createRun(t *testing.T, store state.Store, runID string) {
 func tamperTraceDetail(t *testing.T, store *state.SQLiteStore, traceID, newDetail string) {
 	t.Helper()
 	withWORMTriggerDisabled(t, store, func() {
-		err := store.ExecRaw(context.Background(),
+		_, err := store.DB().ExecContext(context.Background(),
 			"UPDATE trace SET detail = ? WHERE id = ?", newDetail, traceID)
 		require.NoError(t, err)
 	})
@@ -68,7 +68,7 @@ func tamperTraceDetail(t *testing.T, store *state.SQLiteStore, traceID, newDetai
 // timestamp), so updating curr_hash is allowed without disabling the trigger.
 func tamperTraceCurrHash(t *testing.T, store *state.SQLiteStore, traceID, newHash string) {
 	t.Helper()
-	err := store.ExecRaw(context.Background(),
+	_, err := store.DB().ExecContext(context.Background(),
 		"UPDATE trace SET curr_hash = ? WHERE id = ?", newHash, traceID)
 	require.NoError(t, err)
 }
@@ -78,7 +78,7 @@ func tamperTraceCurrHash(t *testing.T, store *state.SQLiteStore, traceID, newHas
 // without disabling the trigger.
 func tamperTracePrevHash(t *testing.T, store *state.SQLiteStore, traceID, newHash string) {
 	t.Helper()
-	err := store.ExecRaw(context.Background(),
+	_, err := store.DB().ExecContext(context.Background(),
 		"UPDATE trace SET prev_hash = ? WHERE id = ?", newHash, traceID)
 	require.NoError(t, err)
 }
@@ -113,9 +113,11 @@ END`
 func withWORMTriggerDisabled(t *testing.T, store *state.SQLiteStore, fn func()) {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, store.ExecRaw(ctx, "DROP TRIGGER IF EXISTS worm_prevent_trace_update"))
+	_, err := store.DB().ExecContext(ctx, "DROP TRIGGER IF EXISTS worm_prevent_trace_update")
+	require.NoError(t, err)
 	fn()
-	require.NoError(t, store.ExecRaw(ctx, wormUpdateTriggerSQL))
+	_, err = store.DB().ExecContext(ctx, wormUpdateTriggerSQL)
+	require.NoError(t, err)
 }
 
 func TestNewTraceRecorder_NilStore(t *testing.T) {

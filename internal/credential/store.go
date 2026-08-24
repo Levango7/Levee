@@ -443,16 +443,28 @@ func (cs *CredentialStore) Rotate(ctx context.Context, name string, newPlaintext
 	return cred, nil
 }
 
+// rotationUndo captures everything needed to undo one persisted step of a
+// master-password rotation: the affected row and its pre-rotation ciphertext.
+type rotationUndo struct {
+	cred    *state.Credential
+	oldBlob []byte
+}
+
 // RotateMasterPassword re-encrypts all stored credentials with a new master
 // password. The oldPW must match the current master password; otherwise
 // ErrMasterPasswordMismatch is returned.
 //
-// The operation is atomic in intent: if any credential fails to decrypt with
-// the old password, the entire rotation is aborted and no credentials are
-// modified. The in-memory masterPassword is only updated after all credentials
-// have been successfully re-encrypted and persisted.
+// Failure atomicity: every new ciphertext is computed up front; each row is
+// then persisted in order. If persisting item k fails, items 0..k-1 are
+// rolled back by re-persisting their OLD ciphertext blobs, leaving the store
+// exactly as before the call (the in-memory master password is not switched).
+// If the rollback itself fails for some rows, a fatal error enumerates the
+// unrecoverable credential ids: those rows hold new-password ciphertext while
+// the active master password is still the old one and manual recovery (e.g.
+// restoring from backup) is required.
 //
-// Returns the number of credentials re-encrypted.
+// Returns the number of credentials re-encrypted (zero unless the rotation
+// completed end-to-end).
 func (cs *CredentialStore) RotateMasterPassword(ctx context.Context, oldPW, newPW string) (count int, err error) {
 	if oldPW == "" || newPW == "" {
 		return 0, ErrEmptyMasterPassword
@@ -483,8 +495,8 @@ func (cs *CredentialStore) RotateMasterPassword(ctx context.Context, oldPW, newP
 	for _, cred := range creds {
 		pt, err := cs.decrypt(cred.EncryptedData)
 		if err != nil {
-			// Abort: cannot decrypt this credential with old password.
-			// Clean up any plaintexts we've already decrypted.
+			// Abort before touching anything: cannot decrypt this credential
+			// with the old password.
 			for _, p := range plaintexts {
 				SecureZero(p)
 			}
@@ -493,7 +505,8 @@ func (cs *CredentialStore) RotateMasterPassword(ctx context.Context, oldPW, newP
 		plaintexts[cred.ID] = pt
 	}
 
-	// Phase 2: Re-encrypt all credentials with new password.
+	// Phase 2a: Pre-compute ALL new ciphertexts so an encryption failure
+	// aborts before any row is modified.
 	newMP := make([]byte, len(newPW))
 	copy(newMP, newPW)
 
@@ -505,39 +518,77 @@ func (cs *CredentialStore) RotateMasterPassword(ctx context.Context, oldPW, newP
 		parallelism:    cs.parallelism,
 	}
 
-	reEncrypted := 0
+	newBlobs := make(map[string][]byte, len(creds))
 	for _, cred := range creds {
-		pt := plaintexts[cred.ID]
-
-		newBlob, err := tempStore.encrypt(pt)
+		blob, err := tempStore.encrypt(plaintexts[cred.ID])
 		if err != nil {
 			for _, p := range plaintexts {
 				SecureZero(p)
 			}
 			SecureZero(newMP)
-			return reEncrypted, fmt.Errorf("credential: re-encrypt %q during master rotation: %w", cred.Name, err)
+			for _, b := range newBlobs {
+				SecureZero(b)
+			}
+			return 0, fmt.Errorf("credential: re-encrypt %q during master rotation: %w", cred.Name, err)
 		}
+		newBlobs[cred.ID] = blob
+	}
 
-		cred.EncryptedData = newBlob
+	// Phase 2b: Persist each re-encrypted blob in order, recording enough
+	// state to roll back the already-persisted prefix on failure.
+	undo := make([]rotationUndo, 0, len(creds))
+	for _, cred := range creds {
+		oldBlob := cred.EncryptedData
+		cred.EncryptedData = newBlobs[cred.ID]
 		if err := cs.store.UpdateCredential(ctx, cred); err != nil {
+			cred.EncryptedData = oldBlob // restore the in-memory snapshot
+			perr := fmt.Errorf("credential: persist %q during master rotation: %w", cred.Name, err)
+			err := cs.rollbackMasterRotation(ctx, undo)
+			// Zero sensitive material regardless of outcome.
 			for _, p := range plaintexts {
 				SecureZero(p)
 			}
 			SecureZero(newMP)
-			return reEncrypted, fmt.Errorf("credential: persist %q during master rotation: %w", cred.Name, err)
+			for _, b := range newBlobs {
+				SecureZero(b)
+			}
+			if err != nil {
+				return 0, fmt.Errorf("%v; %v", perr, err)
+			}
+			return 0, fmt.Errorf("%v; %v", perr,
+				fmt.Sprintf("rolled back %d credential(s) to their previous ciphertext; master password unchanged", len(undo)))
 		}
-
-		SecureZero(pt)
-		delete(plaintexts, cred.ID)
-		reEncrypted++
+		undo = append(undo, rotationUndo{cred: cred, oldBlob: oldBlob})
 	}
 
-	// Phase 3: Update in-memory master password.
+	// Phase 3: Update in-memory master password only after every row has
+	// been persisted successfully.
 	SecureZero(cs.masterPassword)
 	cs.masterPassword = newMP
 
-	log.InfoCtx(ctx, "master password rotated", "credentials_affected", reEncrypted)
-	return reEncrypted, nil
+	log.InfoCtx(ctx, "master password rotated", "credentials_affected", len(creds))
+	return len(creds), nil
+}
+
+// rollbackMasterRotation re-persists the pre-rotation ciphertext for every
+// entry in undo. It returns a fatal error enumerating the credential ids for
+// which even the rollback failed; those rows are left with new-password
+// ciphertext while the active master password is still the old one.
+func (cs *CredentialStore) rollbackMasterRotation(ctx context.Context, undo []rotationUndo) error {
+	var unrecoverable []string
+	for _, u := range undo {
+		u.cred.EncryptedData = u.oldBlob
+		if err := cs.store.UpdateCredential(ctx, u.cred); err != nil {
+			unrecoverable = append(unrecoverable, u.cred.ID)
+			log.ErrorCtx(ctx, "master rotation rollback failed",
+				"credential_id", u.cred.ID, "err", err)
+		}
+	}
+	if len(unrecoverable) > 0 {
+		return fmt.Errorf("credential: FATAL: rollback failed for %d credential(s) %v — rows still hold NEW-password ciphertext while the active master password is unchanged; restore them from backup",
+			len(unrecoverable), unrecoverable)
+	}
+	return nil
 }
 
 // --- ID generation ----------------------------------------------------------

@@ -2,11 +2,8 @@ package audit
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/nexus/levee/internal/state"
 )
@@ -32,11 +29,6 @@ var (
 	// manual intervention is required.
 	ErrChainBroken = errors.New("audit: hash chain exists but is broken; manual intervention required")
 )
-
-// hashChainSeparator is the delimiter used when concatenating trace fields into
-// the hash input. A pipe is chosen because it does not appear in any individual
-// field by construction (ids are hex, events/actors are identifiers).
-const hashChainSeparator = "|"
 
 // HashChainBuilder builds a hash chain for the trace records of a run. It reads
 // the trace records from state.Store, sorts them by timestamp, computes the
@@ -231,29 +223,21 @@ func (b *HashChainBuilder) buildChainWithPrev(ctx context.Context, traces []*sta
 	return len(traces), current, nil
 }
 
-// ComputeHash computes the SHA-256 hash of a trace record chained to the given
-// prevHash. The hash input is the pipe-delimited concatenation of:
+// ComputeHash computes the canonical (V2) hash of a trace record chained to
+// the given prevHash: a SHA-256 digest — or HMAC-SHA256 when
+// LEVEE_AUDIT_HMAC_KEY is configured — over the length-prefixed concatenation of:
 //
-//	prevHash | trace.ID | trace.RunID | trace.Event | trace.Actor |
-//	trace.Detail | trace.Timestamp.UnixNano()
+//	prevHash, trace.ID, trace.RunID, trace.Event, trace.Actor,
+//	trace.Detail, trace.Timestamp.UnixNano()
 //
+// Each field is encoded as "<len>:<field>" and concatenated without any
+// separator, removing the ambiguity of the legacy pipe-delimited scheme.
 // The result is returned as a lower-case hex-encoded string. ComputeHash is
-// deterministic: the same inputs always produce the same output.
+// deterministic: the same inputs always produce the same output. V2 is the
+// default for all newly built chains; pre-V2 chains are still recognised by
+// Verify via the private legacy fallback (canonicalV1).
 func ComputeHash(trace *state.Trace, prevHash string) string {
-	if trace == nil {
-		// Hashing a nil trace is a programming error; return the hash of an
-		// empty payload so the chain stays well-defined rather than panicking.
-		trace = &state.Trace{}
-	}
-	payload := prevHash +
-		hashChainSeparator + trace.ID +
-		hashChainSeparator + trace.RunID +
-		hashChainSeparator + trace.Event +
-		hashChainSeparator + trace.Actor +
-		hashChainSeparator + trace.Detail +
-		hashChainSeparator + strconv.FormatInt(trace.Timestamp.UnixNano(), 10)
-	sum := sha256.Sum256([]byte(payload))
-	return hex.EncodeToString(sum[:])
+	return ComputeHashV2(trace, prevHash)
 }
 
 // Verify checks the integrity of the hash chain for the given run. It recomputes
@@ -261,6 +245,12 @@ func ComputeHash(trace *state.Trace, prevHash string) string {
 // against the stored CurrHash. The first mismatch yields ErrHashMismatch wrapped
 // with the trace id. An empty run id yields ErrEmptyRunID; a run with no trace
 // records yields ErrNoTraces.
+//
+// Legacy chains: records hashed with the pre-V2 pipe-delimited canonical
+// encoding are accepted — when the V2 digest mismatches, the legacy V1 digest
+// is tried before reporting a mismatch, so chains built before the V2
+// upgrade do not suddenly fail verification. New and rebuilt chains always
+// use V2. Use ChainVerifier when per-record legacy accounting is required.
 //
 // Verify does not modify the store; it only reads. Use Build to repair a broken
 // chain (e.g. after a partial tamper that should actually be detected rather
@@ -285,7 +275,7 @@ func (b *HashChainBuilder) Verify(ctx context.Context, runID string) (count int,
 				t.ID, t.PrevHash, prevHash, ErrHashMismatch)
 		}
 		want := ComputeHash(t, prevHash)
-		if t.CurrHash != want {
+		if t.CurrHash != want && t.CurrHash != legacyHash(t, prevHash) {
 			return i, fmt.Errorf("audit: trace %q curr hash mismatch: stored %q want %q: %w",
 				t.ID, t.CurrHash, want, ErrHashMismatch)
 		}

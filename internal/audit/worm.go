@@ -2,11 +2,8 @@ package audit
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/nexus/levee/internal/state"
 )
@@ -24,12 +21,6 @@ var (
 	// ErrWORMNotFound is returned by Read when no trace with the given id exists.
 	ErrWORMNotFound = errors.New("audit: trace not found")
 )
-
-// checksumSeparator is the delimiter used when concatenating trace fields into
-// the WORM checksum input. A pipe is chosen for consistency with the hash-chain
-// builder; it does not appear in any individual field by construction (ids are
-// hex, events/actors are identifiers).
-const checksumSeparator = "|"
 
 // WORMStore simulates Write-Once-Read-Many semantics on top of a regular
 // state.WORMStore. It enforces append-only writes for trace records and detects
@@ -149,33 +140,33 @@ func (w *WORMStore) Count(ctx context.Context, runID string) (int, error) {
 	return len(traces), nil
 }
 
-// computeChecksum returns the SHA-256 checksum of a trace record's content.
-// The checksum input is the pipe-delimited concatenation of:
+// computeChecksum returns the canonical (V2) content checksum of a trace
+// record: a SHA-256 digest — or HMAC-SHA256 when LEVEE_AUDIT_HMAC_KEY is
+// configured — over the length-prefixed concatenation of:
 //
-//	trace.ID | trace.RunID | trace.Event | trace.Actor | trace.Detail | trace.Timestamp.UnixNano()
+//	trace.ID, trace.RunID, trace.Event, trace.Actor, trace.Detail,
+//	trace.Timestamp.UnixNano()
 //
-// The result is a lower-case hex-encoded string. computeChecksum is
+// The length-prefix encoding removes the ambiguity of the legacy
+// pipe-delimited scheme (see canonical.go). computeChecksum is
 // deterministic: identical inputs always produce identical outputs. A nil
 // trace is treated as an empty record so the function never panics.
 func computeChecksum(trace *state.Trace) string {
-	if trace == nil {
-		trace = &state.Trace{}
-	}
-	payload := trace.ID +
-		checksumSeparator + trace.RunID +
-		checksumSeparator + trace.Event +
-		checksumSeparator + trace.Actor +
-		checksumSeparator + trace.Detail +
-		checksumSeparator + strconv.FormatInt(trace.Timestamp.UnixNano(), 10)
-	sum := sha256.Sum256([]byte(payload))
-	return hex.EncodeToString(sum[:])
+	return ComputeChecksum(trace)
 }
 
 // verifyChecksum reports whether the stored CurrHash matches the checksum
 // recomputed from the record's content. A mismatch indicates tampering.
+// Records checksummed before the V2 canonicalization was introduced are
+// still accepted: when the V2 digest does not match, the legacy V1
+// (pipe-separated) digest is tried so pre-existing chains do not suddenly
+// report tampering after an upgrade. New records must verify under V2.
 func verifyChecksum(trace *state.Trace) bool {
 	if trace == nil {
 		return false
 	}
-	return trace.CurrHash == computeChecksum(trace)
+	if trace.CurrHash == ComputeChecksum(trace) {
+		return true
+	}
+	return trace.CurrHash == legacyChecksum(trace)
 }

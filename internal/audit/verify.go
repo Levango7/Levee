@@ -68,11 +68,17 @@ type ChainFailure struct {
 // every record's stored CurrHash matches the recomputed hash and every
 // PrevHash equals the previous record's CurrHash. When Valid is false,
 // Failures contains one entry per tampered record.
+//
+// Records hashed with the pre-V2 (pipe-delimited) canonical encoding are
+// accepted as intact (they are not tampering), and are counted separately in
+// LegacyCount so operators retain visibility into how much of a chain still
+// uses the legacy encoding. New/rebuilt chains always use V2.
 type VerifyResult struct {
-	RunID    string         // run id that was verified
-	Valid    bool           // true when the chain is intact
-	Count    int            // number of trace records checked
-	Failures []ChainFailure // tamper details (empty when Valid)
+	RunID       string         // run id that was verified
+	Valid       bool           // true when the chain is intact
+	Count       int            // number of trace records checked
+	LegacyCount int            // records verified only under the legacy V1 encoding
+	Failures    []ChainFailure // tamper details (empty when Valid)
 }
 
 // ChainVerifier verifies the hash-chain integrity of a run's trace records.
@@ -132,6 +138,10 @@ func (v *ChainVerifier) Verify(ctx context.Context, runID string) (*VerifyResult
 		if failure != nil {
 			result.Failures = append(result.Failures, *failure)
 			result.Valid = false
+		} else if t.CurrHash != ComputeHash(t, prevHash) {
+			// Intact under the legacy V1 encoding only — accepted, but
+			// counted separately for visibility.
+			result.LegacyCount++
 		}
 		// Advance prevHash to the stored CurrHash so the next record's
 		// PrevHash is compared against this record's stored value (not the
@@ -168,7 +178,9 @@ func (v *ChainVerifier) VerifyStrict(ctx context.Context, runID string) error {
 // reports at most one failure:
 //  1. Empty CurrHash (unbuilt chain) — most fundamental.
 //  2. PrevHash continuity break.
-//  3. CurrHash mismatch (content tampering).
+//  3. CurrHash mismatch (content tampering). A stored hash that matches the
+//     legacy V1 (pipe-delimited) recomputation instead of V2 is accepted:
+//     pre-V2 records are legacy, not tampered.
 func checkTrace(t *state.Trace, index int, prevHash string) *ChainFailure {
 	expected := ComputeHash(t, prevHash)
 
@@ -198,8 +210,9 @@ func checkTrace(t *state.Trace, index int, prevHash string) *ChainFailure {
 		}
 	}
 
-	// 3. CurrHash must match the recomputed hash.
-	if t.CurrHash != expected {
+	// 3. CurrHash must match the recomputed hash under either the current
+	// (V2) or the legacy (V1) canonical encoding.
+	if t.CurrHash != expected && t.CurrHash != legacyHash(t, prevHash) {
 		return &ChainFailure{
 			TraceID:      t.ID,
 			Index:        index,

@@ -88,22 +88,34 @@ func pgMigrate(ctx context.Context, db *sql.DB) error {
 		return nil
 	}
 
-	// Execute the embedded schema statement by statement. PostgreSQL's
-	// database/sql driver does not accept multiple statements in a single
-	// Exec, so we split explicitly.
-	if err := pgExecMultiStatement(ctx, db, pgSchemaSQL); err != nil {
+	// Execute the embedded schema inside a single transaction so a failure
+	// halfway through cannot leave a half-applied schema behind.
+	// PostgreSQL DDL is fully transactional (including CREATE TRIGGER and
+	// function bodies), so this is atomic. IF NOT EXISTS keeps the
+	// statements idempotent for re-runs after a rolled-back attempt.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("state: begin pg schema transaction: %w", err)
+	}
+	if err := pgExecMultiStatement(ctx, tx, pgSchemaSQL); err != nil {
+		_ = tx.Rollback()
 		return fmt.Errorf("state: apply pg schema: %w", err)
 	}
 
 	// Record the applied version. Use UPSERT so re-applying the same version
 	// does not violate the primary key constraint.
-	if _, err := db.ExecContext(
+	if _, err := tx.ExecContext(
 		ctx,
 		`INSERT INTO schema_version (version, applied_at) VALUES ($1, $2)
 		 ON CONFLICT(version) DO UPDATE SET applied_at = EXCLUDED.applied_at`,
 		pgCurrentSchemaVersion, time.Now().UTC(),
 	); err != nil {
+		_ = tx.Rollback()
 		return fmt.Errorf("state: record pg schema version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("state: commit pg schema transaction: %w", err)
 	}
 
 	return nil
@@ -121,10 +133,11 @@ func pgAppliedSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 }
 
 // pgExecMultiStatement splits a script on semicolons and executes each
-// non-empty statement individually. It handles PostgreSQL dollar-quoted
+// non-empty statement individually against the given executor (a *sql.DB or
+// an open *sql.Tx). It handles PostgreSQL dollar-quoted
 // function bodies ($$ ... $$) and BEGIN...END trigger blocks, neither of
 // which can be split on a bare semicolon.
-func pgExecMultiStatement(ctx context.Context, db *sql.DB, script string) error {
+func pgExecMultiStatement(ctx context.Context, db dbExecutor, script string) error {
 	// Strip line comments first.
 	lines := strings.Split(script, "\n")
 	for i, line := range lines {

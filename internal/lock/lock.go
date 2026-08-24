@@ -218,6 +218,14 @@ func (s *stateLockStore) Acquire(ctx context.Context, target, owner string, ttl 
 // Release releases the lock on the target. Only the owner may release
 // the lock; otherwise ErrNotOwner is returned. Returns ErrLockNotFound
 // when the target has no lock.
+//
+// The delete itself is performed by state.Store.DeleteLockByIDAndOwner,
+// which checks ownership and deletes inside a single statement. Without
+// this, a stale owner could pass the owner check, be preempted by a
+// concurrent ForceAcquire takeover (which reuses the same row id with a
+// new owner), and then delete the *new* owner's lock. When the conditional
+// delete matches no rows the lock was taken over or is already gone; this
+// is logged at debug level and treated as success (idempotent release).
 func (s *stateLockStore) Release(ctx context.Context, target, owner string) error {
 	if target == "" {
 		return ErrEmptyTarget
@@ -232,8 +240,13 @@ func (s *stateLockStore) Release(ctx context.Context, target, owner string) erro
 	if existing.Owner != owner {
 		return fmt.Errorf("%w: target %s owned by %s, not %s", ErrNotOwner, target, existing.Owner, owner)
 	}
-	if err := s.store.DeleteLock(ctx, existing.ID); err != nil {
+	deleted, err := s.store.DeleteLockByIDAndOwner(ctx, existing.ID, owner)
+	if err != nil {
 		return fmt.Errorf("lock: delete: %w", err)
+	}
+	if !deleted {
+		log.DebugCtx(ctx, "lock already taken over or released by another actor",
+			"target", target, "owner", owner, "lock_id", existing.ID)
 	}
 	return nil
 }

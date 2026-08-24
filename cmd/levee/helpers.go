@@ -104,6 +104,19 @@ func (a *approvalStoreAdapter) Update(ctx context.Context, ap *approval.Approval
 	return a.store.UpdateApproval(ctx, sa)
 }
 
+// UpdateIfPending implements the compare-and-set half of approval.Store:
+// it maps to state.Store.UpdateApprovalIfPending, which applies the update
+// only while the stored row is still in status "pending" and reports
+// whether it won. This is what makes Approve/Reject exactly-once under
+// concurrent decisions.
+func (a *approvalStoreAdapter) UpdateIfPending(ctx context.Context, ap *approval.Approval) (bool, error) {
+	sa, err := approvalToState(ap)
+	if err != nil {
+		return false, fmt.Errorf("convert approval: %w", err)
+	}
+	return a.store.UpdateApprovalIfPending(ctx, sa)
+}
+
 func (a *approvalStoreAdapter) ListPending(ctx context.Context) ([]*approval.Approval, error) {
 	sas, err := a.store.ListApprovals(ctx, state.ApprovalFilter{
 		Status: string(approval.StatusPending),

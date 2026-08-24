@@ -128,11 +128,20 @@ type CreateRequest struct {
 //   - Create inserts a new approval; the ID must be set by the caller.
 //   - Get returns (nil, nil) when the approval does not exist.
 //   - Update overwrites all mutable columns; the ID is the key.
+//   - UpdateIfPending is a compare-and-set variant used by the decision
+//     path so that two concurrent decisions can never both overwrite the
+//     record after it has left StatusPending.
 //   - ListPending returns all approvals currently in StatusPending.
 type Store interface {
 	Create(ctx context.Context, a *Approval) error
 	Get(ctx context.Context, id string) (*Approval, error)
 	Update(ctx context.Context, a *Approval) error
+	// UpdateIfPending applies the update only when the stored record is
+	// still in StatusPending. It returns true when the update was applied
+	// and false when the record was concurrently decided (or vanished),
+	// letting the caller retry from a fresh read instead of overwriting a
+	// terminal decision.
+	UpdateIfPending(ctx context.Context, a *Approval) (bool, error)
 	ListPending(ctx context.Context) ([]*Approval, error)
 }
 
@@ -148,7 +157,17 @@ var (
 	ErrInvalidLevel         = errors.New("approval: invalid level")
 	ErrEmptyRunID           = errors.New("approval: empty run id")
 	ErrMinApproversTooLarge = errors.New("approval: min_approvers exceeds approvers")
+	// ErrConflict is returned when the compare-and-set update could not be
+	// applied because another actor kept winning the pending->decided
+	// transition for casMaxAttempts consecutive attempts. It signals a
+	// heavily contended approval, not a decision failure; retrying later is
+	// safe.
+	ErrConflict = errors.New("approval: concurrently modified, decision not recorded")
 )
+
+// casMaxAttempts bounds the compare-and-set retry loop in decide: one
+// initial attempt plus one retry after re-reading the record.
+const casMaxAttempts = 2
 
 // validLevel reports whether the given approval level is one of the
 // three legal tiers defined by the LEVEELang spec (standard / high /
@@ -224,85 +243,93 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Approval, err
 // approval transitions to StatusApproved. Otherwise it stays in
 // StatusPending so that further approvers may still decide.
 //
+// The decision is applied with a compare-and-set (UpdateIfPending): if a
+// concurrent decision wins the pending->decided transition first, the
+// record is re-read once and the decision re-attempted; if the CAS fails
+// again, ErrConflict is returned rather than overwriting the other actor's
+// decision.
+//
 // Returns an error when:
 //   - the approval does not exist;
 //   - the approval is no longer pending (illegal transition);
 //   - the approver is not in the Approvers list (when the list is
 //     non-empty);
-//   - the approver has already recorded a decision.
+//   - the approver has already recorded a decision;
+//   - the record kept changing concurrently (ErrConflict).
 func (s *Service) Approve(ctx context.Context, id string, approver string) error {
-	a, err := s.store.Get(ctx, id)
-	if err != nil {
-		return fmt.Errorf("approval: get: %w", err)
-	}
-	if a == nil {
-		return ErrNotFound
-	}
-	if !canTransition(a.Status, StatusApproved) {
-		return fmt.Errorf("%w: %s -> approved", ErrInvalidTransition, a.Status)
-	}
-	if !isAuthorized(a.Approvers, approver) {
-		return fmt.Errorf("%w: %s", ErrUnauthorizedApprover, approver)
-	}
-	if hasDecided(a.Decisions, approver) {
-		return fmt.Errorf("%w: %s", ErrDuplicateDecision, approver)
-	}
-
-	a.Decisions = append(a.Decisions, Decision{
-		Approver: approver,
-		Action:   ActionApprove,
-		At:       time.Now().UTC(),
-	})
-	if countApproves(a.Decisions) >= a.MinApprovers {
-		a.Status = StatusApproved
-	}
-
-	if err := s.store.Update(ctx, a); err != nil {
-		return fmt.Errorf("approval: update: %w", err)
-	}
-	log.InfoCtx(ctx, "approval decision recorded",
-		"id", id, "approver", approver, "action", ActionApprove, "status", a.Status)
-	return nil
+	return s.decide(ctx, id, approver, ActionApprove, "", StatusApproved)
 }
 
 // Reject records a "reject" decision from the given approver and
 // immediately transitions the approval to StatusRejected (one-vote-veto
 // semantics). The reason is stored with the decision for audit.
 //
+// Uses the same compare-and-set flow as Approve.
+//
 // Returns an error under the same conditions as Approve (with rejected
 // as the target state).
 func (s *Service) Reject(ctx context.Context, id string, approver string, reason string) error {
-	a, err := s.store.Get(ctx, id)
-	if err != nil {
-		return fmt.Errorf("approval: get: %w", err)
-	}
-	if a == nil {
-		return ErrNotFound
-	}
-	if !canTransition(a.Status, StatusRejected) {
-		return fmt.Errorf("%w: %s -> rejected", ErrInvalidTransition, a.Status)
-	}
-	if !isAuthorized(a.Approvers, approver) {
-		return fmt.Errorf("%w: %s", ErrUnauthorizedApprover, approver)
-	}
-	if hasDecided(a.Decisions, approver) {
-		return fmt.Errorf("%w: %s", ErrDuplicateDecision, approver)
-	}
+	return s.decide(ctx, id, approver, ActionReject, reason, StatusRejected)
+}
 
-	a.Decisions = append(a.Decisions, Decision{
-		Approver: approver,
-		Action:   ActionReject,
-		Reason:   reason,
-		At:       time.Now().UTC(),
-	})
-	a.Status = StatusRejected
+// decide is the shared compare-and-set implementation behind Approve and
+// Reject. Each attempt reloads the record, validates the decision against
+// the freshly-read state and applies it via Store.UpdateIfPending so two
+// racing decisions can never both overwrite a terminal state. A false
+// return from UpdateIfPending triggers at most one retry; persistent
+// contention surfaces as ErrConflict instead of a silent lost update.
+func (s *Service) decide(ctx context.Context, id string, approver string, action string, reason string, target Status) error {
+	var lastErr error
+	for attempt := 0; attempt < casMaxAttempts; attempt++ {
+		a, err := s.store.Get(ctx, id)
+		if err != nil {
+			return fmt.Errorf("approval: get: %w", err)
+		}
+		if a == nil {
+			return ErrNotFound
+		}
+		if !canTransition(a.Status, target) {
+			return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, a.Status, target)
+		}
+		if !isAuthorized(a.Approvers, approver) {
+			return fmt.Errorf("%w: %s", ErrUnauthorizedApprover, approver)
+		}
+		if hasDecided(a.Decisions, approver) {
+			return fmt.Errorf("%w: %s", ErrDuplicateDecision, approver)
+		}
 
-	if err := s.store.Update(ctx, a); err != nil {
-		return fmt.Errorf("approval: update: %w", err)
+		a.Decisions = append(a.Decisions, Decision{
+			Approver: approver,
+			Action:   action,
+			Reason:   reason,
+			At:       time.Now().UTC(),
+		})
+		switch target {
+		case StatusRejected:
+			a.Status = StatusRejected
+		default: // StatusApproved
+			if countApproves(a.Decisions) >= a.MinApprovers {
+				a.Status = StatusApproved
+			}
+		}
+
+		ok, err := s.store.UpdateIfPending(ctx, a)
+		if err != nil {
+			return fmt.Errorf("approval: update if pending: %w", err)
+		}
+		if ok {
+			log.InfoCtx(ctx, "approval decision recorded",
+				"id", id, "approver", approver, "action", action, "status", a.Status,
+				"attempt", attempt+1)
+			return nil
+		}
+		// The record was decided or modified concurrently between our read
+		// and write; loop back, re-read and retry once.
+		lastErr = fmt.Errorf("%w: approval %s for %s", ErrConflict, id, approver)
+		log.WarnCtx(ctx, "approval compare-and-set lost, retrying",
+			"id", id, "approver", approver, "attempt", attempt+1)
 	}
-	log.InfoCtx(ctx, "approval decision recorded",
-		"id", id, "approver", approver, "action", ActionReject, "status", a.Status)
-	return nil
+	return lastErr
 }
 
 // Get returns the approval record with the given ID. Returns (nil, nil)

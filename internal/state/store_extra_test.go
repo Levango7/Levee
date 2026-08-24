@@ -70,13 +70,6 @@ func TestMigrate_NilDBRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "nil db")
 }
 
-func TestExecRaw_InvalidSQLReturnsError(t *testing.T) {
-	store := newTestStore(t)
-	err := store.ExecRaw(context.Background(), "THIS IS NOT VALID SQL")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exec raw")
-}
-
 // =========================================================================
 // Nil-argument rejection for every Create*/Update* method
 // =========================================================================

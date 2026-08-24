@@ -870,3 +870,75 @@ func TestManager_ConcurrentAcquire_SingleWinner(t *testing.T) {
 	assert.GreaterOrEqual(t, held, 17, "the rest should get ErrLockHeld")
 	assert.LessOrEqual(t, held, 20, "held should not exceed total")
 }
+
+// =========================================================================
+// Release race regression (owner-check-then-delete vs ForceAcquire takeover)
+// =========================================================================
+
+// TestRelease_StaleOwnerAfterTakeoverDoesNotDeleteNewLock reproduces the
+// release race: run-1's lock expires and is taken over by run-2 (ForceAcquire
+// reuses the same row id). A stale Release from run-1 must fail with
+// ErrNotOwner and must never delete run-2's lock.
+func TestRelease_StaleOwnerAfterTakeoverDoesNotDeleteNewLock(t *testing.T) {
+	ls, _ := newTestLockStore(t)
+	ctx := bgCtx()
+
+	_, err := ls.Acquire(ctx, "host-01", "run-1", time.Nanosecond)
+	require.NoError(t, err)
+
+	// Let the lock expire, then let run-2 take it over.
+	time.Sleep(2 * time.Millisecond)
+	taken, err := ls.ForceAcquire(ctx, "host-01", "run-2", DefaultTTL)
+	require.NoError(t, err)
+	require.Equal(t, "run-2", taken.Owner)
+
+	// Stale owner attempts release: refused, and the new owner keeps the lock.
+	err = ls.Release(ctx, "host-01", "run-1")
+	require.ErrorIs(t, err, ErrNotOwner)
+
+	got, err := ls.Get(ctx, "host-01")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "run-2", got.Owner, "takeover owner must keep the lock")
+}
+
+// TestDeleteLockByIDAndOwner_Conditional pins the state-layer contract that
+// makes the fix race-free: ownership check and delete happen in one statement,
+// so a row whose owner changed between a read and the delete is not deleted.
+func TestDeleteLockByIDAndOwner_Conditional(t *testing.T) {
+	st := newTestStateStore(t)
+	ctx := bgCtx()
+	now := time.Now().UTC()
+
+	require.NoError(t, st.CreateLock(ctx, &state.Lock{
+		ID: "lock-1", Scope: "host:h1", Owner: "run-a", TTLSeconds: 60,
+		AcquiredAt: now, ExpiresAt: now.Add(time.Minute),
+	}))
+
+	// Wrong owner: no deletion.
+	deleted, err := st.DeleteLockByIDAndOwner(ctx, "lock-1", "run-b")
+	require.NoError(t, err)
+	assert.False(t, deleted)
+
+	got, err := st.GetLock(ctx, "lock-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	// Simulate a concurrent takeover changing only the owner on the same id:
+	// the stale owner's cached (id, owner) pair no longer matches.
+	got.Owner = "run-c"
+	require.NoError(t, st.UpdateLock(ctx, got))
+
+	deleted, err = st.DeleteLockByIDAndOwner(ctx, "lock-1", "run-a")
+	require.NoError(t, err)
+	assert.False(t, deleted, "stale owner must not delete the taken-over lock")
+
+	// Correct owner deletes; second attempt reports false (already gone).
+	deleted, err = st.DeleteLockByIDAndOwner(ctx, "lock-1", "run-c")
+	require.NoError(t, err)
+	assert.True(t, deleted)
+
+	deleted, err = st.DeleteLockByIDAndOwner(ctx, "lock-1", "run-c")
+	require.NoError(t, err)
+	assert.False(t, deleted)
+}

@@ -125,6 +125,9 @@ type RunFilter struct {
 	// Limit caps the number of returned runs. <= 0 means no cap (callers
 	// should set a sane limit to avoid loading the whole table).
 	Limit int
+	// Offset skips the first Offset matching rows (for keyset-free
+	// pagination). Negative values are treated as 0.
+	Offset int
 }
 
 // BatchFilter narrows ListBatches results within a run.
@@ -221,6 +224,13 @@ type Store interface {
 	CreateTrace(ctx context.Context, trace *Trace) error
 	GetTrace(ctx context.Context, id string) (*Trace, error)
 	UpdateTrace(ctx context.Context, trace *Trace) error
+	// UpdateTraceChecksum writes checksum into the curr_hash column of the
+	// trace identified by id, but only when curr_hash is still empty
+	// (WHERE id=? AND curr_hash=''). It exists so the archiver can stamp a
+	// WORM content checksum onto pre-existing, unchecksummed traces
+	// without ever overwriting an already-computed hash (checksum or chain
+	// hash). It returns an error when no row was updated.
+	UpdateTraceChecksum(ctx context.Context, id string, checksum string) error
 	ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace, error)
 	DeleteTrace(ctx context.Context, id string) error
 
@@ -228,6 +238,14 @@ type Store interface {
 	CreateApproval(ctx context.Context, approval *Approval) error
 	GetApproval(ctx context.Context, id string) (*Approval, error)
 	UpdateApproval(ctx context.Context, approval *Approval) error
+	// UpdateApprovalIfPending is a compare-and-set variant of
+	// UpdateApproval: it applies the update only when the stored row is
+	// still in status "pending" (WHERE id=? AND status='pending'). It
+	// returns true when the update was applied and false when the row was
+	// concurrently decided by another actor (or does not exist), so the
+	// caller can retry or report a conflict without ever overwriting a
+	// terminal decision.
+	UpdateApprovalIfPending(ctx context.Context, approval *Approval) (bool, error)
 	ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*Approval, error)
 	DeleteApproval(ctx context.Context, id string) error
 
@@ -244,6 +262,13 @@ type Store interface {
 	UpdateLockOwnedBy(ctx context.Context, id string, owner string, ttlSeconds int, now time.Time) (int64, error)
 	ListLocks(ctx context.Context) ([]*Lock, error)
 	DeleteLock(ctx context.Context, id string) error
+	// DeleteLockByIDAndOwner deletes the lock identified by id but only
+	// when it is still owned by owner. The ownership check and the delete
+	// happen inside a single statement so a concurrent ForceAcquire
+	// takeover (which reuses the same row id) cannot be deleted by the
+	// stale owner: rowsAffected==0 means the lock was taken over by
+	// another owner or is already gone.
+	DeleteLockByIDAndOwner(ctx context.Context, id string, owner string) (bool, error)
 	DeleteExpiredLocks(ctx context.Context, now time.Time) (int64, error)
 
 	// Credential CRUD.
