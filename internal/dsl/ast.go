@@ -119,16 +119,21 @@ type ApprovalSpec struct {
 
 // GateSpec groups verification checks by timing. Pre runs before the change
 // (pre_apply); Post runs after the change or after each batch (post_apply /
-// post_batch).
+// post_batch); Batch holds batch-timing checks that run after every batch
+// completes (post_batch) and is populated by batch-level gate declarations.
 type GateSpec struct {
-	Pre  []GateCheck
-	Post []GateCheck
+	Pre   []GateCheck
+	Post  []GateCheck
+	Batch []GateCheck
 }
 
 // GateCheck declares a single verification check. Type is one of
 // cmd / slo / probe / human. Command holds the command to run (for cmd) or
 // the query expression (for slo). ExpectExit and ExpectStdout apply to cmd
-// checks. Source identifies the metric backend for slo checks.
+// checks. Source identifies the metric backend for slo checks. Params is the
+// free-form parameter mapping for parameterised checks (probe / slo / human):
+// it is passed through verbatim by the parser and validated by the gate
+// implementation at materialisation / check time (fail-closed).
 type GateCheck struct {
 	Type         string
 	Command      string
@@ -136,4 +141,5 @@ type GateCheck struct {
 	ExpectStdout string
 	Source       string
 	Timeout      string
+	Params       map[string]any
 }

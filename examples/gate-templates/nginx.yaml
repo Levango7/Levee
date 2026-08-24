@@ -1,0 +1,74 @@
+# LEVEE gate template — nginx rolling restart with layered verification.
+#
+# Demonstrates:
+#   * cmd gate   — `systemctl is-active nginx` (exit code + stdout check)
+#   * probe gate — direct http GET with "{target}" expansion per target
+#
+# Shape follows the parser-supported schema (internal/dsl): each gate
+# declaration carries exactly ONE check sub-key (cmd | slo | probe | human)
+# that selects the type, plus an optional free-form `params:` mapping that is
+# passed through verbatim to the parameterised gates (probe / slo / human).
+# See docs/gates.md for the full Params reference.
+name: nginx-restart-gated
+version: "1.0"
+description: >
+  Rolling nginx restart gated by a systemd liveness command and a direct
+  HTTP health probe against every target.
+
+target:
+  name: web-frontends
+  type: static
+  hosts:
+    - 10.0.0.11
+    - 10.0.0.12
+
+window:
+  start: "02:00"
+  end: "04:00"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [50, 100]
+  max_concurrency: 2
+
+approval:
+  level: standard
+
+steps:
+  # Post-change command gate: systemd must report the unit active.
+  - name: reload-nginx
+    action: shell
+    args:
+      cmd: "systemctl reload nginx"
+    idempotent: true
+    verify:
+      cmd:
+        run: "systemctl is-active nginx"
+        expect_exit: 0
+        expect_stdout: "active"
+        timeout: 30s
+    rollback:
+      strategy: undo-action
+      steps:
+        - name: restart-nginx
+          action: shell
+          args:
+            cmd: "systemctl restart nginx"
+
+  # Post-change probe gate: every target must answer HTTP 200-299 on its own
+  # loopback (the {target} token expands over each GateInput target).
+  - name: smoke-test
+    action: shell
+    args:
+      cmd: "echo smoke-test placeholder"
+    idempotent: true
+    verify:
+      probe: {}
+      params:
+        kind: http
+        mode: direct
+        url: "http://{target}/"
+        expect_status: "200-299"
+        body_contains: "nginx"
+        timeout_seconds: 10

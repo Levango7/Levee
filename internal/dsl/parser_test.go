@@ -678,3 +678,72 @@ func TestParseErrorParseErrorFormat(t *testing.T) {
 	assert.Contains(t, s, "field=name")
 	assert.Contains(t, s, "line=5")
 }
+
+// TestParseGateParamsPassthrough verifies that the free-form params mapping
+// on a gate declaration is carried verbatim into GateCheck.Params for every
+// check type.
+func TestParseGateParamsPassthrough(t *testing.T) {
+	src := `
+name: gate-params
+target:
+  hosts: [10.0.0.1]
+steps:
+  - name: deploy
+    action: shell.run
+    verify:
+      probe: {}
+      params:
+        kind: http
+        mode: direct
+        url: "http://{target}/"
+        expect_status: "200-299"
+        timeout_seconds: 10
+gates:
+  - position: post_apply
+    human:
+      message: "confirm rollout"
+    params:
+      reason: "operator sign-off"
+      timeout_seconds: 60
+`
+	wf, err := NewParser().ParseBytes([]byte(src))
+	require.NoError(t, err)
+
+	// Step-level probe gate keeps its params.
+	require.Len(t, wf.Steps, 1)
+	g := wf.Steps[0].Gate
+	require.NotNil(t, g)
+	require.Len(t, g.Post, 1)
+	assert.Equal(t, "probe", g.Post[0].Type)
+	assert.Equal(t, map[string]any{
+		"kind":            "http",
+		"mode":            "direct",
+		"url":             "http://{target}/",
+		"expect_status":   "200-299",
+		"timeout_seconds": 10,
+	}, g.Post[0].Params)
+
+	// Workflow-level human gate keeps its params too.
+	require.NotNil(t, wf.Gate)
+	require.Len(t, wf.Gate.Post, 1)
+	assert.Equal(t, "human", wf.Gate.Post[0].Type)
+	assert.Equal(t, "operator sign-off", wf.Gate.Post[0].Params["reason"])
+	assert.Equal(t, 60, wf.Gate.Post[0].Params["timeout_seconds"])
+}
+
+// TestParseGateTemplates ensures the shipped gate templates under
+// examples/gate-templates stay valid against the parser.
+func TestParseGateTemplates(t *testing.T) {
+	matches, err := filepath.Glob(filepath.Join("..", "..", "examples", "gate-templates", "*.yaml"))
+	require.NoError(t, err)
+	require.NotEmpty(t, matches, "expected at least one gate template")
+
+	p := NewParser()
+	for _, path := range matches {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			wf, err := p.ParseFile(path)
+			require.NoError(t, err, "template %s must parse", path)
+			assert.NotEmpty(t, wf.Steps, "template %s must declare steps", path)
+		})
+	}
+}

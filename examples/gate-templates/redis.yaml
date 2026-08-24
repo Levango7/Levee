@@ -1,0 +1,61 @@
+# LEVEE gate template — Redis rolling upgrade with a batch-level gate.
+#
+# Demonstrates:
+#   * batch probe gate — a tcp probe (mode: remote, port 6379) that runs
+#     after EVERY batch completes and blocks the next batch on failure
+#
+# The batches.gate declaration is a batch-timing check: the engine compiles
+# it to the post_batch phase under deterministic names
+# ("step:<step>:batch:<i>") when the step declares GateSpec.Batch entries.
+# Shape follows the parser-supported schema (internal/dsl): one check
+# sub-key selects the type; `params:` carries the knobs verbatim.
+# See docs/gates.md for the full Params reference.
+name: redis-upgrade-gated
+version: "1.0"
+description: >
+  Rolling Redis upgrade in percentage batches with a remote TCP readiness
+  probe of 6379 between every batch.
+
+target:
+  name: redis-cluster
+  type: static
+  hosts:
+    - 10.2.0.31
+    - 10.2.0.32
+    - 10.2.0.33
+
+window:
+  start: "01:00"
+  end: "03:00"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [34, 67, 100]
+  max_concurrency: 1
+  # Batch-timing probe gate: after EVERY batch, open a TCP connection to
+  # port 6379 from inside a target (bash /dev/tcp). A failure blocks the
+  # next batch and triggers rollback.
+  gate:
+    probe: {}
+    params:
+      kind: tcp
+      mode: remote
+      host_port: "127.0.0.1:6379"
+      timeout_seconds: 5
+
+approval:
+  level: high
+
+steps:
+  - name: upgrade-redis
+    action: shell
+    args:
+      cmd: "yum update -y redis && systemctl restart redis"
+    irreversible: true
+    verify:
+      cmd:
+        run: "redis-cli ping"
+        expect_exit: 0
+        expect_stdout: "PONG"
+        timeout: 10s

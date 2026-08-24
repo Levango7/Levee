@@ -131,11 +131,34 @@ type ClosureRunner struct {
 	rollback     *rollback.Manager
 	batchCtrl    *batch.Controller
 	postVerifier *rollback.PostRollbackVerifier // optional, T037
+
+	// gateRuntime carries the dependencies parameterised verification gates
+	// need (Prometheus endpoint for slo gates, approver transport for human
+	// gates). It is supplied via WithGateRuntime; the zero value materialises
+	// plans whose declarations need no runtime, and any slo/human declaration
+	// against it fails materialisation with an explicit error (fail-closed).
+	gateRuntime GateRuntime
+}
+
+// ClosureOption configures optional ClosureRunner behaviour at construction
+// time.
+type ClosureOption func(*ClosureRunner)
+
+// WithGateRuntime supplies the runtime dependencies that parameterised
+// verification gates require: GateRuntime.PrometheusURL backs slo checks and
+// GateRuntime.Approver backs human checks. Omitting it is fine for plans
+// that only declare cmd/probe gates; a plan that declares slo/human gates
+// without the corresponding dependency fails at gate materialisation with an
+// explicit error naming the missing configuration.
+func WithGateRuntime(rt GateRuntime) ClosureOption {
+	return func(cr *ClosureRunner) { cr.gateRuntime = rt }
 }
 
 // NewClosureRunner returns a ClosureRunner wired to the given subsystems.
 // All required arguments must be non-nil; postVerifier is optional (pass
-// nil to disable post-rollback verification).
+// nil to disable post-rollback verification). Additional options may supply
+// runtime dependencies for parameterised verification gates (see
+// WithGateRuntime).
 //
 // The returned runner uses the lock manager's configured default TTL for
 // target locks. Override it via lockManager.SetTTL before calling Run.
@@ -146,8 +169,9 @@ func NewClosureRunner(
 	rollbackMgr *rollback.Manager,
 	batchCtrl *batch.Controller,
 	postVerifier *rollback.PostRollbackVerifier,
+	opts ...ClosureOption,
 ) *ClosureRunner {
-	return &ClosureRunner{
+	cr := &ClosureRunner{
 		store:        store,
 		lockManager:  lockManager,
 		verifier:     verifier,
@@ -155,6 +179,10 @@ func NewClosureRunner(
 		batchCtrl:    batchCtrl,
 		postVerifier: postVerifier,
 	}
+	for _, opt := range opts {
+		opt(cr)
+	}
+	return cr
 }
 
 // --- Run --------------------------------------------------------------------
@@ -199,12 +227,15 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 
 	// 1. Materialise inline gate declarations (plan.PlanStep.Gate) into
 	//    registered verify.Gate implementations so the phase runs below
-	//    actually execute what the workflow declared. Unsupported check
-	//    types fail materialisation — a declared gate must never silently
-	//    pass. Command gates execute against GateInput.Channel; when no
-	//    channel is supplied they report Passed=false ("missing channel"),
-	//    which fails the phase honestly rather than fabricating a pass.
-	if err := materializeStepGates(cr.verifier, p); err != nil {
+	//    actually execute what the workflow declared. Declarations the
+	//    engine cannot execute — unknown check types, invalid params, or
+	//    slo/human gates whose runtime dependency (Prometheus URL, approver)
+	//    was not supplied via WithGateRuntime — fail materialisation: a
+	//    declared gate must never silently pass. Command gates execute
+	//    against GateInput.Channel; when no channel is supplied they report
+	//    Passed=false ("missing channel"), which fails the phase honestly
+	//    rather than fabricating a pass.
+	if err := materializeStepGates(cr.verifier, p, cr.gateRuntime); err != nil {
 		result.Phase = PhaseFailed
 		result.Error = fmt.Errorf("closure: materialise gates: %w", err)
 		return result, result.Error

@@ -1,0 +1,60 @@
+# LEVEE gate template — MySQL primary maintenance with layered verification.
+#
+# Demonstrates:
+#   * cmd gate   — `mysqladmin ping` variant (exit code + stdout check)
+#   * probe gate — remote tcp dial of 3306 executed FROM the target through
+#                  the channel (bash /dev/tcp, POSIX best-effort)
+#
+# Shape follows the parser-supported schema (internal/dsl): each gate
+# declaration carries exactly ONE check sub-key (cmd | slo | probe | human)
+# that selects the type, plus an optional free-form `params:` mapping.
+# See docs/gates.md for the full Params reference.
+name: mysql-maintenance-gated
+version: "1.0"
+description: >
+  MySQL maintenance step gated by a mysqladmin liveness command and a
+  remotely-executed TCP probe of the 3306 listener.
+
+target:
+  name: db-primary
+  type: static
+  hosts:
+    - 10.1.0.21
+
+window:
+  start: "03:00"
+  end: "05:00"
+  timezone: UTC
+
+batches:
+  strategy: one-per-target
+
+steps:
+  # Post-change command gate: mysqld must answer a ping and print the
+  # canonical "mysqld is alive" line.
+  - name: flush-binlog
+    action: shell
+    args:
+      cmd: "mysql -e 'FLUSH BINARY LOGS'"
+    idempotent: true
+    verify:
+      cmd:
+        run: "mysqladmin -u monitor ping"
+        expect_exit: 0
+        expect_stdout: "mysqld is alive"
+        timeout: 15s
+
+  # Post-change probe gate: from inside the target (mode: remote), open a
+  # TCP connection to 127.0.0.1:3306 via bash's virtual /dev/tcp.
+  - name: verify-listener
+    action: shell
+    args:
+      cmd: "echo tcp-probe placeholder"
+    idempotent: true
+    verify:
+      probe: {}
+      params:
+        kind: tcp
+        mode: remote
+        host_port: "127.0.0.1:3306"
+        timeout_seconds: 5

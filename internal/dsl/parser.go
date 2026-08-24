@@ -238,6 +238,10 @@ type yamlGateRaw struct {
 	Slo      *yamlSloRaw   `yaml:"slo"`
 	Probe    *yamlProbeRaw `yaml:"probe"`
 	Human    *yamlHumanRaw `yaml:"human"`
+	// Params is the free-form parameter mapping consumed by parameterised
+	// gate types (probe / slo / human). It is passed through verbatim; each
+	// gate implementation validates its own keys fail-closed.
+	Params map[string]any `yaml:"params"`
 }
 
 type yamlCmdRaw struct {
@@ -564,40 +568,45 @@ func convertGate(g *yamlGateRaw) *GateSpec {
 	return &GateSpec{Post: []GateCheck{gc}}
 }
 
-// convertGateCheck converts a raw gate into a GateCheck.
+// convertGateCheck converts a raw gate into a GateCheck. The free-form
+// params mapping (when present) is passed through verbatim on every check
+// type; gate implementations validate their own keys fail-closed.
 func convertGateCheck(g *yamlGateRaw) (GateCheck, error) {
+	var gc GateCheck
 	switch {
 	case g.Cmd != nil:
-		return GateCheck{
+		gc = GateCheck{
 			Type:         "cmd",
 			Command:      g.Cmd.Run,
 			ExpectExit:   g.Cmd.ExpectExit,
 			ExpectStdout: g.Cmd.ExpectStdout,
 			Timeout:      g.Cmd.Timeout,
-		}, nil
+		}
 	case g.Slo != nil:
-		return GateCheck{
+		gc = GateCheck{
 			Type:    "slo",
 			Command: g.Slo.Query,
 			Source:  g.Slo.Source,
 			Timeout: g.Slo.Timeout,
-		}, nil
+		}
 	case g.Probe != nil:
-		return GateCheck{
+		gc = GateCheck{
 			Type:    "probe",
 			Command: g.Probe.URL,
 			Timeout: g.Probe.Timeout,
-		}, nil
+		}
 	case g.Human != nil:
-		return GateCheck{
+		gc = GateCheck{
 			Type:    "human",
 			Command: g.Human.Message,
 			Timeout: g.Human.Timeout,
-		}, nil
+		}
 	default:
 		return GateCheck{Type: "empty"}, newError("LE051", "gate",
 			"gate has no check (cmd/slo/probe/human)")
 	}
+	gc.Params = g.Params
+	return gc, nil
 }
 
 // ---------------------------------------------------------------------------
