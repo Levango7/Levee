@@ -4,7 +4,7 @@ package plugin
 
 import (
 	"os"
-	"time"
+	"syscall"
 
 	"github.com/nexus/levee/internal/log"
 )
@@ -16,14 +16,15 @@ import (
 // host's own resource limits without constraining the plugin subprocess,
 // which is both ineffective and potentially harmful (it would degrade
 // the host's ability to manage the child). On Windows, job-object–based
-// limits are handled in sandbox_windows.go.
+// limits are handled in sandbox_windows.go; on Linux, cgroup v2 limits
+// are handled in sandbox_linux.go.
 //
 // The wall-clock timeout (SandboxConfig.Timeout) remains the universal
 // safety net across all platforms.
 func applyResourceLimits(_ *os.Process, cfg SandboxConfig) {
 	if cfg.MemoryLimit > 0 {
 		log.Warn("sandbox: memory limit is informational on this platform; child processes are not constrained by rlimit",
-			"plugin", cfg, "memory_limit", cfg.MemoryLimit)
+			"memory_limit", cfg.MemoryLimit)
 	}
 }
 

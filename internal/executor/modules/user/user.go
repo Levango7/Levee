@@ -295,53 +295,55 @@ func userExists(ctx context.Context, ch channel.Channel, name string) (bool, err
 
 // buildUseraddCmd builds a useradd command line from the args map. Supported
 // optional keys: uid (int or numeric string), shell, home, groups (comma-
-// separated string or []string).
+// separated string or []string). All interpolated values are shell-quoted:
+// they originate in workflow DSL input and are executed by a remote shell.
 func buildUseraddCmd(args map[string]any) string {
 	name, _ := stringOk(args, "name")
 	parts := []string{"useradd"}
 	if v, ok := args["uid"]; ok {
 		if s := toIntString(v); s != "" {
-			parts = append(parts, "-u", s)
+			parts = append(parts, "-u", shellQuote(s))
 		}
 	}
 	if s, ok := stringOk(args, "shell"); ok {
-		parts = append(parts, "-s", s)
+		parts = append(parts, "-s", shellQuote(s))
 	}
 	if s, ok := stringOk(args, "home"); ok {
-		parts = append(parts, "-d", s)
+		parts = append(parts, "-d", shellQuote(s))
 	}
 	if s, ok := stringOk(args, "groups"); ok {
-		parts = append(parts, "-G", s)
+		parts = append(parts, "-G", shellQuote(s))
 	} else if gs, ok := args["groups"].([]string); ok && len(gs) > 0 {
-		parts = append(parts, "-G", strings.Join(gs, ","))
+		parts = append(parts, "-G", shellQuote(strings.Join(gs, ",")))
 	}
-	parts = append(parts, name)
+	parts = append(parts, shellQuote(name))
 	return strings.Join(parts, " ")
 }
 
 // buildUsermodCmd builds a usermod command line from the args map. Same
-// optional keys as useradd; missing keys are simply skipped.
+// optional keys as useradd; missing keys are simply skipped. All
+// interpolated values are shell-quoted for the same reason.
 func buildUsermodCmd(args map[string]any) string {
 	name, _ := stringOk(args, "name")
 	parts := []string{"usermod"}
 	if v, ok := args["uid"]; ok {
 		if s := toIntString(v); s != "" {
-			parts = append(parts, "-u", s)
+			parts = append(parts, "-u", shellQuote(s))
 		}
 	}
 	if s, ok := stringOk(args, "shell"); ok {
-		parts = append(parts, "-s", s)
+		parts = append(parts, "-s", shellQuote(s))
 	}
 	if s, ok := stringOk(args, "home"); ok {
-		parts = append(parts, "-d", s)
+		parts = append(parts, "-d", shellQuote(s))
 	}
 	if s, ok := stringOk(args, "group"); ok {
-		parts = append(parts, "-g", s)
+		parts = append(parts, "-g", shellQuote(s))
 	}
 	if s, ok := stringOk(args, "groups"); ok {
-		parts = append(parts, "-G", s)
+		parts = append(parts, "-G", shellQuote(s))
 	}
-	parts = append(parts, name)
+	parts = append(parts, shellQuote(name))
 	return strings.Join(parts, " ")
 }
 

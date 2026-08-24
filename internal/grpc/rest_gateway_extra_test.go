@@ -668,13 +668,15 @@ func TestServeGatewayStartsAndStopsOnContextCancel(t *testing.T) {
 	}))
 	baseURL := "http://" + addr
 
-	// The health endpoint must come up.
+	// The health endpoint must come up. ServeGateway registers no services,
+	// so the gateway reports 503 (unready) rather than 200 — either way the
+	// listener is reachable, which is what this lifecycle test asserts.
 	var up bool
 	for i := 0; i < 100 && !up; i++ {
 		resp, err := http.Get(baseURL + "/healthz")
 		if err == nil {
 			readAndClose(resp)
-			up = resp.StatusCode == http.StatusOK
+			up = resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusServiceUnavailable
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -693,6 +695,81 @@ func TestServeGatewayStartsAndStopsOnContextCancel(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	require.True(t, down, "gateway kept serving after context cancel")
+}
+
+// TestGatewayStartBindsSynchronously verifies that Start returns a real
+// error when the listen address is unavailable, instead of swallowing it
+// like the old fire-and-forget ServeGateway did.
+func TestGatewayStartBindsSynchronously(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = ln.Close() }() // hold the port so the bind below fails
+
+	gw := NewGateway(ServeGatewayConfig{Addr: ln.Addr().String()})
+	err = gw.Start(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "listen")
+}
+
+// TestGatewayHealthzReportsUnreadyWithoutServices pins the 503 contract for
+// a gateway whose services were never registered.
+func TestGatewayHealthzReportsUnreadyWithoutServices(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	gw := NewGateway(ServeGatewayConfig{Addr: addr})
+	require.NoError(t, gw.Start(context.Background()))
+	t.Cleanup(func() { _ = gw.Stop(context.Background()) })
+
+	resp, err := http.Get("http://" + addr + "/healthz")
+	require.NoError(t, err)
+	defer readAndClose(resp)
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+
+	var body struct {
+		Status string `json:"status"`
+		Reason string `json:"reason"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "unavailable", body.Status)
+}
+
+// TestGatewayWithServicesServesData pins the production wiring: after
+// SetServices + Start, /healthz is 200 and data endpoints respond (not
+// nil-panic). Regression guard for the dual-gateway serve bug.
+func TestGatewayWithServicesServesData(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	gw, _, store := startTestGatewayFull(t, ServeGatewayConfig{})
+	// Replace the httptest server path: use Start on the real listener.
+	gw.cfg.Addr = addr
+	require.NoError(t, gw.Start(context.Background()))
+	t.Cleanup(func() { _ = gw.Stop(context.Background()); _ = store.Close() })
+
+	resp, err := http.Get("http://" + addr + "/healthz")
+	require.NoError(t, err)
+	readAndClose(resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	httpReq := func(method, path string) *http.Response {
+		req, err := http.NewRequest(method, "http://"+addr+path, nil)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		return resp
+	}
+	resp = httpReq("GET", "/changes")
+	readAndClose(resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = httpReq("GET", "/system/version")
+	readAndClose(resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestGatewayStopWithoutServerIsNoOp(t *testing.T) {

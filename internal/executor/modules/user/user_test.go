@@ -129,7 +129,7 @@ func TestAddCreatesUserWhenAbsent(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, out.Changed)
-	assert.Contains(t, ch.execAt(1), "useradd bob")
+	assert.Contains(t, ch.execAt(1), "useradd 'bob'")
 }
 
 func TestAddWithAllAttributes(t *testing.T) {
@@ -152,10 +152,10 @@ func TestAddWithAllAttributes(t *testing.T) {
 	require.NoError(t, err)
 	cmd := ch.execAt(1)
 	assert.Contains(t, cmd, "useradd")
-	assert.Contains(t, cmd, "-u 2000")
-	assert.Contains(t, cmd, "-s /bin/zsh")
-	assert.Contains(t, cmd, "-d /home/bob")
-	assert.Contains(t, cmd, "-G wheel,docker")
+	assert.Contains(t, cmd, "-u '2000'")
+	assert.Contains(t, cmd, "-s '/bin/zsh'")
+	assert.Contains(t, cmd, "-d '/home/bob'")
+	assert.Contains(t, cmd, "-G 'wheel,docker'")
 	assert.Contains(t, cmd, "bob")
 }
 
@@ -291,8 +291,8 @@ func TestModifyRunsUsermod(t *testing.T) {
 	require.NoError(t, err)
 	cmd := ch.lastExec()
 	assert.Contains(t, cmd, "usermod")
-	assert.Contains(t, cmd, "-s /bin/bash")
-	assert.Contains(t, cmd, "-g staff")
+	assert.Contains(t, cmd, "-s '/bin/bash'")
+	assert.Contains(t, cmd, "-g 'staff'")
 	assert.Contains(t, cmd, "bob")
 }
 
@@ -346,7 +346,7 @@ func TestModuleRegistered(t *testing.T) {
 
 func TestBuildUseraddCmd(t *testing.T) {
 	cmd := buildUseraddCmd(map[string]any{"name": "bob"})
-	assert.Equal(t, "useradd bob", cmd)
+	assert.Equal(t, "useradd 'bob'", cmd)
 }
 
 func TestBuildUseraddCmdFull(t *testing.T) {
@@ -357,15 +357,31 @@ func TestBuildUseraddCmdFull(t *testing.T) {
 		"home":   "/home/bob",
 		"groups": "wheel",
 	})
-	assert.Contains(t, cmd, "-u 2000")
-	assert.Contains(t, cmd, "-s /bin/zsh")
-	assert.Contains(t, cmd, "-d /home/bob")
-	assert.Contains(t, cmd, "-G wheel")
+	assert.Contains(t, cmd, "-u '2000'")
+	assert.Contains(t, cmd, "-s '/bin/zsh'")
+	assert.Contains(t, cmd, "-d '/home/bob'")
+	assert.Contains(t, cmd, "-G 'wheel'")
 }
 
 func TestBuildUsermodCmd(t *testing.T) {
 	cmd := buildUsermodCmd(map[string]any{"name": "bob", "shell": "/bin/sh"})
-	assert.Equal(t, "usermod -s /bin/sh bob", cmd)
+	assert.Equal(t, "usermod -s '/bin/sh' 'bob'", cmd)
+}
+
+// TestBuildUserCmdsQuoteInjection pins the injection fix: workflow-supplied
+// attribute values must never break out of their shell arguments.
+func TestBuildUserCmdsQuoteInjection(t *testing.T) {
+	malicious := "/tmp/x; touch /tmp/pwned"
+	cmd := buildUseraddCmd(map[string]any{"name": "bob", "home": malicious})
+	assert.Contains(t, cmd, `-d '/tmp/x; touch /tmp/pwned'`)
+	assert.NotContains(t, cmd, "home /tmp/x;")
+
+	cmd = buildUsermodCmd(map[string]any{"name": "bob", "groups": "a; reboot"})
+	assert.Contains(t, cmd, `-G 'a; reboot'`)
+
+	// A single quote in the value is escaped with the '\'' idiom.
+	cmd = buildUseraddCmd(map[string]any{"name": "b'ob"})
+	assert.Contains(t, cmd, `'b'\''ob'`)
 }
 
 func TestToIntString(t *testing.T) {

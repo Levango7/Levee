@@ -53,6 +53,9 @@ var (
 	serveOptTLSCert string
 	serveOptTLSKey  string
 	serveOptToken   string
+	// serveOptHTTPAddr is the REST gateway listen address, separate from
+	// the gRPC --addr so both listeners can run side by side.
+	serveOptHTTPAddr string
 	// serveOptInsecure is the explicit opt-out for the startup safety
 	// checks: empty --token and wildcard CORS. Development convenience
 	// only; production deployments must not set it.
@@ -102,6 +105,7 @@ func newServeCmd() *cobra.Command {
 		RunE: runServe,
 	}
 	cmd.Flags().StringVar(&serveOptAddr, "addr", grpc.DefaultListenAddr, "Listen address")
+	cmd.Flags().StringVar(&serveOptHTTPAddr, "http-addr", ":8080", "REST gateway / Web UI listen address")
 	cmd.Flags().StringVar(&serveOptTLSCert, "tls-cert", "", "TLS certificate path (optional)")
 	cmd.Flags().StringVar(&serveOptTLSKey, "tls-key", "", "TLS key path (optional)")
 	cmd.Flags().StringVar(&serveOptToken, "token", "", "Bearer token required from clients (empty = no auth)")
@@ -128,7 +132,8 @@ func resolveServeToken() string {
 
 // runServe executes the `levee serve` command.
 func runServe(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// The bearer token comes from --token or the LEVEE_TOKEN environment
 	// variable (12-factor style; keeps container images startable without
@@ -252,7 +257,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 
 	gw := grpc.NewGateway(grpc.ServeGatewayConfig{
-		Addr:        ":8080",
+		Addr:        serveOptHTTPAddr,
 		CORSOrigins: serveOptCORSOrigins,
 		AuthToken:   token,
 		RatePerSec:  serveOptRateLimit,
@@ -260,19 +265,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 
-	// 6. Start the in-process REST-to-gRPC gateway (async, non-blocking).
-	// The gateway serves /api/v1/* for HTTP clients and the embedded SPA.
-	go func() {
-		if err := grpc.ServeGateway(context.Background(), grpc.ServeGatewayConfig{
-			Addr:        ":8080",
-			CORSOrigins: serveOptCORSOrigins,
-			AuthToken:   token,
-			RatePerSec:  serveOptRateLimit,
-			RateBurst:   serveOptRateBurst,
-		}); err != nil {
-			log.Error("gateway serve failed", "err", err)
-		}
-	}()
+	// 6. Start the REST gateway on THIS instance. Start binds the port
+	//    synchronously so a bind failure fails the command instead of
+	//    leaving a half-alive daemon; serving continues in the background.
+	if err := gw.Start(ctx); err != nil {
+		return fmt.Errorf("start gateway: %w", err)
+	}
+	log.Info("REST gateway listening", "addr", serveOptHTTPAddr)
 
 	// 6. Use the configured address (fall back to listen addr option).
 	addr := serveOptAddr
@@ -280,10 +279,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		addr = grpc.DefaultListenAddr
 	}
 
-	// 7. Wire signal handling for graceful shutdown.
-	_, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
+	// 7. Wire signal handling for graceful shutdown. Cancelling ctx stops
+	//    the REST gateway's serve loop; GracefulStop drains the gRPC server.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {

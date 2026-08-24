@@ -218,6 +218,15 @@ func formatISO8601(d time.Duration) string {
 	return fmt.Sprintf("PT%dS", secs)
 }
 
+// psQuote escapes a string for interpolation into a single-quoted PowerShell
+// literal, where a single quote is escaped by doubling it. Workflow-supplied
+// remote paths are untrusted input: without this escaping a path containing
+// a quote would terminate the literal and execute arbitrary script on the
+// Windows target.
+func psQuote(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
 // Connect establishes the WinRM session by constructing the underlying
 // winrm.Client. It is idempotent: calling Connect on an already-connected
 // channel is a no-op.
@@ -319,18 +328,19 @@ func (c *WinRMChannel) Upload(ctx context.Context, remotePath string, content io
 			end = len(data)
 		}
 		encoded := base64.StdEncoding.EncodeToString(data[offset:end])
+		quoted := psQuote(remotePath)
 
 		var ps string
 		if first {
 			ps = fmt.Sprintf(
 				`$b=[Convert]::FromBase64String('%s');[IO.File]::WriteAllBytes('%s',$b)`,
-				encoded, remotePath,
+				encoded, quoted,
 			)
 			first = false
 		} else {
 			ps = fmt.Sprintf(
 				`$b=[Convert]::FromBase64String('%s');$s=[IO.File]::Open('%s','Append');$s.Write($b);$s.Close()`,
-				encoded, remotePath,
+				encoded, quoted,
 			)
 		}
 
@@ -368,7 +378,7 @@ func (c *WinRMChannel) Download(ctx context.Context, remotePath string) (io.Read
 
 	ps := fmt.Sprintf(
 		`$b=[IO.File]::ReadAllBytes('%s');[Convert]::ToBase64String($b)`,
-		remotePath,
+		psQuote(remotePath),
 	)
 
 	stdout, stderr, exit, runErr := client.RunPSWithContext(ctx, ps)

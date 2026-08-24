@@ -60,16 +60,12 @@ type ServeGatewayConfig struct {
 }
 
 // ServeGateway starts an HTTP server on cfg.Addr that proxies /api/v1/*
-// requests to the in-process gRPC service implementations.
+// requests to the in-process gRPC service implementations. The gateway
+// created here has NO services registered — data endpoints will report 503
+// until SetServices is called. Production code should construct a Gateway
+// via NewGateway + SetServices and call Start instead.
 func ServeGateway(ctx context.Context, cfg ServeGatewayConfig) error {
-	gw := NewGateway(cfg)
-	go func() {
-		if err := gw.serve(ctx); err != nil {
-			// Log is not available here; errors are non-fatal for the gateway.
-			_ = err
-		}
-	}()
-	return nil
+	return NewGateway(cfg).Start(ctx)
 }
 
 // Gateway is the REST-to-gRPC gateway. It holds service references and can
@@ -141,7 +137,20 @@ func (gw *Gateway) Stop(ctx context.Context) error {
 	return gw.httpServer.Shutdown(ctx)
 }
 
-func (gw *Gateway) serve(ctx context.Context) error {
+// Start binds the gateway's listen address synchronously and serves in the
+// background until ctx is cancelled. Unlike the package-level ServeGateway,
+// Start runs on this Gateway instance, so services registered through
+// SetServices are honored. A bind failure is returned to the caller.
+func (gw *Gateway) Start(ctx context.Context) error {
+	ln, err := net.Listen("tcp", gw.cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("gateway: listen %s: %w", gw.cfg.Addr, err)
+	}
+	go func() { _ = gw.serveOn(ln, ctx) }()
+	return nil
+}
+
+func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 	mux := http.NewServeMux()
 	// RESTful routes take priority over /api/v1/ so the frontend can call
 	// /changes, /templates, etc. without the gRPC-style prefix.
@@ -149,21 +158,22 @@ func (gw *Gateway) serve(ctx context.Context) error {
 	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(gw.rateLimitMiddleware(gw.route())))))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if gw.change == nil {
+			// Services were never registered: data endpoints would fail.
+			// Report unhealthy so orchestrators do not route traffic here.
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"unavailable","reason":"services not registered"}`))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	gw.httpServer = &http.Server{
-		Addr:              gw.cfg.Addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
-	}
-
-	ln, err := net.Listen("tcp", gw.cfg.Addr)
-	if err != nil {
-		return fmt.Errorf("gateway: listen %s: %w", gw.cfg.Addr, err)
 	}
 
 	errCh := make(chan error, 1)
