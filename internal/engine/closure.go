@@ -138,6 +138,11 @@ type ClosureRunner struct {
 	// plans whose declarations need no runtime, and any slo/human declaration
 	// against it fails materialisation with an explicit error (fail-closed).
 	gateRuntime GateRuntime
+
+	// hostGuard is the optional pre-execution policy hook installed via
+	// WithHostGuard. It runs after target collection and before any lock is
+	// acquired; a non-nil error aborts the run with PhaseFailed.
+	hostGuard func(ctx context.Context, hosts []string) error
 }
 
 // ClosureOption configures optional ClosureRunner behaviour at construction
@@ -152,6 +157,17 @@ type ClosureOption func(*ClosureRunner)
 // explicit error naming the missing configuration.
 func WithGateRuntime(rt GateRuntime) ClosureOption {
 	return func(cr *ClosureRunner) { cr.gateRuntime = rt }
+}
+
+// WithHostGuard installs a pre-execution policy hook. It runs AFTER the
+// plan's target set is collected and BEFORE any lock is acquired; a
+// non-nil error aborts the run with PhaseFailed and no locks taken. This
+// is the enforcement point for the apply-time frozen-target re-check
+// (inventory.ValidateNotFrozen): planning rejects frozen hosts up front,
+// and this guard catches hosts that were frozen between planning and
+// execution. Omitting it disables the second check.
+func WithHostGuard(guard func(ctx context.Context, hosts []string) error) ClosureOption {
+	return func(cr *ClosureRunner) { cr.hostGuard = guard }
 }
 
 // NewClosureRunner returns a ClosureRunner wired to the given subsystems.
@@ -224,6 +240,17 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	// Collect the full target set (de-duplicated) for pre-apply gates
 	// and lock acquisition.
 	targets := collectTargets(p)
+
+	// 0. Pre-execution host policy (apply-time frozen re-check). Runs before
+	//    gates, locks and any mutation: a rejected host aborts the run
+	//    cleanly with PhaseFailed and no side effects.
+	if cr.hostGuard != nil {
+		if err := cr.hostGuard(ctx, targets); err != nil {
+			result.Phase = PhaseFailed
+			result.Error = fmt.Errorf("closure: host guard: %w", err)
+			return result, result.Error
+		}
+	}
 
 	// 1. Materialise inline gate declarations (plan.PlanStep.Gate) into
 	//    registered verify.Gate implementations so the phase runs below

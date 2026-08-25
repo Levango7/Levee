@@ -42,6 +42,7 @@ import (
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/state"
@@ -312,6 +313,14 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 	}
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+
+	// Frozen-target guard (first enforcement point): planning against a
+	// frozen host is rejected up front. Execution-time re-validation lives
+	// in the engine's host guard (ClosureRunner.WithHostGuard), which fires
+	// between target collection and lock acquisition.
+	if err := inventory.ValidateNotFrozen(ctx, s.store, req.GetTargetHosts()); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
 	// Delegate to the engine when available.

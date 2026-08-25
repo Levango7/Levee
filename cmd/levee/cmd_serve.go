@@ -221,7 +221,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	//    implementations so the daemon and CLI share one code path.
 	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
 	templateSvc := grpc.NewTemplateService(store, nil)
-	targetSvc := grpc.NewTargetService(nil)
+	targetSvc := grpc.NewTargetService(store, nil)
 	// Credential-aware probing: when a master password is available, attach a
 	// resolver backed by the same encrypted credential store the secret CLI
 	// commands use, so CheckTarget probes targets with their stored
