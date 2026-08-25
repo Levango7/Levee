@@ -84,6 +84,7 @@ func pbFromState(t *state.Target) *pb.Target {
 		CredentialRef: t.CredentialRef,
 		Labels:        labels,
 		Reachable:     t.Reachable,
+		Status:        t.Status,
 	}
 }
 

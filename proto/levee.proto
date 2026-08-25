@@ -60,6 +60,8 @@ message Target {
   string credential_ref = 5;
   map<string, string> labels = 6;
   bool reachable = 7;
+  // active / frozen / retired
+  string status = 8;
 }
 
 // Template is a reusable workflow definition.
