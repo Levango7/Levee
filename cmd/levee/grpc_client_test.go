@@ -44,7 +44,7 @@ func startTestServer(t *testing.T, store state.Store, token string) (*grpc.Serve
 
 	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
 	templateSvc := grpc.NewTemplateService(store, nil)
-	targetSvc := grpc.NewTargetService(nil)
+	targetSvc := grpc.NewTargetService(store, nil)
 	auditSvc := grpc.NewAuditService(store)
 	systemSvc := grpc.NewSystemService(
 		store, &config.Config{}, "",

@@ -1,17 +1,18 @@
 // TargetService implementation for the LEVEE gRPC API.
 //
 // TargetService manages the set of remote target hosts that LEVEE can act
-// on. Targets are held in an in-memory registry (guarded by a RWMutex) keyed
-// by ID. CheckTarget delegates reachability probing to the channel.Prechecker
-// when a ChannelFactory is available; otherwise it returns the cached
-// Reachable flag.
+// on. Targets are persisted in the state store (the same inventory rows the
+// InventoryService and the CLI serve), so registrations survive restarts and
+// REST/gRPC views match `levee target list`. CheckTarget delegates
+// reachability probing to channel.Prechecker when a ChannelFactory is
+// available; results are stamped back into the persistent row.
 package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/state"
 )
 
 // CredentialResolver expands a stored, unresolved credential reference (the
@@ -34,43 +36,24 @@ type CredentialResolver interface {
 	ResolveTargetCredential(ctx context.Context, ref string) (*channel.CredentialRef, error)
 }
 
-// TargetService implements pb.TargetServiceServer. It maintains an in-memory
-// registry of target hosts and optionally probes reachability via a
-// channel.ChannelFactory.
+// TargetService implements pb.TargetServiceServer on the persistent inventory
+// store, optionally probing reachability via a channel.ChannelFactory.
 type TargetService struct {
 	pb.UnimplementedTargetServiceServer
 
-	store    stateStore // reserved for future persistence; currently unused
+	store    state.Store
 	factory  channel.ChannelFactory
 	resolver CredentialResolver // optional; nil disables credential resolution
-
-	mu      sync.RWMutex
-	targets map[string]*pb.Target // keyed by Id
 }
 
-// stateStore is a minimal store interface alias to avoid importing state when
-// not needed. It matches state.Store but is kept here for clarity; the field
-// is reserved for future persistence without forcing callers to wire a full
-// store today.
-type stateStore interface{}
-
-// NewTargetService returns a TargetService with an empty in-memory target
-// registry. The optional factory enables real reachability probing in
-// CheckTarget; when nil, CheckTarget returns the cached Reachable flag.
-func NewTargetService(factory channel.ChannelFactory) *TargetService {
+// NewTargetService returns a store-backed TargetService. The optional factory
+// enables real reachability probing in CheckTarget; when nil, CheckTarget
+// returns the persisted Reachable flag.
+func NewTargetService(store state.Store, factory channel.ChannelFactory) *TargetService {
 	return &TargetService{
+		store:   store,
 		factory: factory,
-		targets: make(map[string]*pb.Target),
 	}
-}
-
-// NewTargetServiceWithStore is like NewTargetService but also accepts a
-// state.Store for future persistence. The store is currently retained but not
-// queried; target CRUD is in-memory.
-func NewTargetServiceWithStore(store interface{}, factory channel.ChannelFactory) *TargetService {
-	s := NewTargetService(factory)
-	s.store = store
-	return s
 }
 
 // WithCredentialResolver attaches an optional CredentialResolver used by
@@ -84,8 +67,29 @@ func (s *TargetService) WithCredentialResolver(r CredentialResolver) *TargetServ
 	return s
 }
 
-// AddTarget registers a new target host. When req.Id is empty a random ID is
-// generated. Duplicate IDs yield codes.AlreadyExists.
+// pbFromState maps a persistent inventory row onto the wire representation.
+func pbFromState(t *state.Target) *pb.Target {
+	if t == nil {
+		return nil
+	}
+	labels := t.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	return &pb.Target{
+		Id:            t.ID,
+		Hostname:      t.Hostname,
+		ChannelType:   t.ChannelType,
+		Port:          int32(t.Port),
+		CredentialRef: t.CredentialRef,
+		Labels:        labels,
+		Reachable:     t.Reachable,
+	}
+}
+
+// AddTarget registers a new target host in the persistent inventory. When
+// req.Id is empty a random ID is generated. Duplicate IDs and addresses
+// (hostname+port owned by another row) yield codes.AlreadyExists.
 func (s *TargetService) AddTarget(ctx context.Context, req *pb.AddTargetRequest) (*pb.Target, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
@@ -97,7 +101,7 @@ func (s *TargetService) AddTarget(ctx context.Context, req *pb.AddTargetRequest)
 	if channelType == "" {
 		channelType = "ssh"
 	}
-	port := req.Port
+	port := int(req.Port)
 	if port == 0 {
 		switch channelType {
 		case "winrm":
@@ -116,22 +120,28 @@ func (s *TargetService) AddTarget(ctx context.Context, req *pb.AddTargetRequest)
 		}
 	}
 
-	tgt := &pb.Target{
-		Id:            id,
-		Hostname:      req.Hostname,
-		ChannelType:   channelType,
-		Port:          port,
-		CredentialRef: req.CredentialRef,
-		Labels:        req.Labels,
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.targets[id]; exists {
+	if existing, err := s.store.GetTarget(ctx, id); err != nil {
+		return nil, status.Errorf(codes.Internal, "get target: %v", err)
+	} else if existing != nil {
 		return nil, status.Errorf(codes.AlreadyExists, "target %q already exists", id)
 	}
-	s.targets[id] = tgt
-	return cloneTarget(tgt), nil
+
+	row := &state.Target{
+		ID:            id,
+		Hostname:      req.Hostname,
+		Port:          port,
+		ChannelType:   channelType,
+		CredentialRef: req.CredentialRef,
+		Labels:        req.Labels,
+		Status:        state.StatusActive,
+	}
+	if err := s.store.UpsertTarget(ctx, row); err != nil {
+		if errors.Is(err, state.ErrDuplicateTarget) {
+			return nil, status.Errorf(codes.AlreadyExists, "%v", err)
+		}
+		return nil, status.Errorf(codes.Internal, "upsert target: %v", err)
+	}
+	return pbFromState(row), nil
 }
 
 // RemoveTarget removes a target by ID. Unknown IDs yield codes.NotFound.
@@ -140,19 +150,23 @@ func (s *TargetService) RemoveTarget(ctx context.Context, req *pb.RemoveTargetRe
 	if req == nil || strings.TrimSpace(req.Id) == "" {
 		return nil, status.Error(codes.InvalidArgument, "target id is required")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.targets[req.Id]; !ok {
+	existing, err := s.store.GetTarget(ctx, req.Id)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get target: %v", err)
+	}
+	if existing == nil {
 		return nil, status.Errorf(codes.NotFound, "target %q not found", req.Id)
 	}
-	delete(s.targets, req.Id)
+	if err := s.store.DeleteTarget(ctx, req.Id); err != nil {
+		return nil, status.Errorf(codes.Internal, "delete target: %v", err)
+	}
 	return &emptypb.Empty{}, nil
 }
 
-// ListTargets returns targets matching the given filters, with pagination.
-// LabelSelector matches targets whose labels contain all the given key=value
-// pairs. ChannelType filters by transport. ReachableOnly filters by the cached
-// Reachable flag.
+// ListTargets returns persisted targets matching the given filters, with
+// pagination. LabelSelector matches targets whose labels contain all the
+// given key=value pairs (pushed down to the store); ChannelType and
+// ReachableOnly are filtered after the fetch.
 
 func (s *TargetService) ListTargets(ctx context.Context, req *pb.ListTargetsRequest) (*pb.ListTargetsResponse, error) {
 	if req == nil {
@@ -171,23 +185,22 @@ func (s *TargetService) ListTargets(ctx context.Context, req *pb.ListTargetsRequ
 		return nil, err
 	}
 
-	s.mu.RLock()
-	var matched []*pb.Target
-	for _, t := range s.targets {
-		if !matchLabelSelector(t.Labels, req.LabelSelector) {
-			continue
-		}
-		if req.ChannelType != "" && t.ChannelType != req.ChannelType {
-			continue
-		}
-		if req.ReachableOnly && !t.Reachable {
-			continue
-		}
-		matched = append(matched, cloneTarget(t))
+	filter := state.TargetFilter{Labels: req.LabelSelector}
+	rows, err := s.store.ListTargets(ctx, filter)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list targets: %v", err)
 	}
-	s.mu.RUnlock()
 
-	sortTargetsByID(matched)
+	matched := make([]*pb.Target, 0, len(rows))
+	for _, row := range rows {
+		if req.ChannelType != "" && row.ChannelType != req.ChannelType {
+			continue
+		}
+		if req.ReachableOnly && !row.Reachable {
+			continue
+		}
+		matched = append(matched, pbFromState(row))
+	}
 
 	total := len(matched)
 	if offset > total {
@@ -199,10 +212,14 @@ func (s *TargetService) ListTargets(ctx context.Context, req *pb.ListTargetsRequ
 	}
 	page := matched[offset:end]
 
+	nextToken := ""
+	if end < total {
+		nextToken = fmt.Sprintf("%d", end)
+	}
 	return &pb.ListTargetsResponse{
 		Targets:       page,
 		TotalSize:     int32(total),
-		NextPageToken: buildPageToken(end, total),
+		NextPageToken: nextToken,
 	}, nil
 }
 
@@ -211,33 +228,36 @@ func (s *TargetService) GetTarget(ctx context.Context, req *pb.GetTargetRequest)
 	if req == nil || strings.TrimSpace(req.Id) == "" {
 		return nil, status.Error(codes.InvalidArgument, "target id is required")
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	t, ok := s.targets[req.Id]
-	if !ok {
+	row, err := s.store.GetTarget(ctx, req.Id)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get target: %v", err)
+	}
+	if row == nil {
 		return nil, status.Errorf(codes.NotFound, "target %q not found", req.Id)
 	}
-	return cloneTarget(t), nil
+	return pbFromState(row), nil
 }
 
 // CheckTarget probes target reachability. When Fresh is true and a
 // ChannelFactory is configured, a real connection probe is performed via
-// channel.Prechecker. Otherwise the cached Reachable flag is returned.
+// channel.Prechecker and the result is stamped into the persistent row.
+// Otherwise the stored Reachable flag is returned.
 func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequest) (*pb.CheckTargetResponse, error) {
 	if req == nil || strings.TrimSpace(req.Id) == "" {
 		return nil, status.Error(codes.InvalidArgument, "target id is required")
 	}
 
-	s.mu.RLock()
-	t, ok := s.targets[req.Id]
-	s.mu.RUnlock()
-	if !ok {
+	row, err := s.store.GetTarget(ctx, req.Id)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get target: %v", err)
+	}
+	if row == nil {
 		return nil, status.Errorf(codes.NotFound, "target %q not found", req.Id)
 	}
 
 	resp := &pb.CheckTargetResponse{
-		Target:    cloneTarget(t),
-		Reachable: t.Reachable,
+		Target:    pbFromState(row),
+		Reachable: row.Reachable,
 		CheckedAt: time.Now().UTC().Unix(),
 	}
 
@@ -247,8 +267,8 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 
 	// Fresh probe: use Prechecker when a factory is available.
 	if s.factory == nil {
-		// No factory — return cached state with a note.
-		if !t.Reachable {
+		// No factory — return persisted state with a note.
+		if !row.Reachable {
 			resp.Error = "no channel factory configured; returning cached state"
 		}
 		return resp, nil
@@ -267,16 +287,16 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 	// on Error behind a "warning:" prefix); it never hard-fails the RPC.
 	var warnings []string
 	tgt := &grpcTarget{
-		host:          t.Hostname,
-		port:          int(t.Port),
-		channelType:   t.ChannelType,
-		credentialRef: t.CredentialRef,
+		host:          row.Hostname,
+		port:          row.Port,
+		channelType:   row.ChannelType,
+		credentialRef: row.CredentialRef,
 	}
-	if ref := t.CredentialRef; ref != "" {
+	if ref := row.CredentialRef; ref != "" {
 		if s.resolver == nil {
 			warnings = append(warnings, "probed without credentials (no resolver configured)")
-		} else if resolved, err := s.resolver.ResolveTargetCredential(ctx, ref); err != nil {
-			warnings = append(warnings, fmt.Sprintf("credential %q could not be resolved (%v); probed without credentials", ref, err))
+		} else if resolved, rerr := s.resolver.ResolveTargetCredential(ctx, ref); rerr != nil {
+			warnings = append(warnings, fmt.Sprintf("credential %q could not be resolved (%v); probed without credentials", ref, rerr))
 		} else if resolved == nil {
 			warnings = append(warnings, fmt.Sprintf("credential %q resolved to no usable material; probed without credentials", ref))
 		} else {
@@ -299,17 +319,15 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 	resp.LatencyMs = result.Latency.Milliseconds()
 	resp.Error = mergeProbeWarnings(result.Error, warnings)
 
-	// Update the cached Reachable flag.
-	s.mu.Lock()
-	if cached, ok := s.targets[req.Id]; ok {
-		cached.Reachable = result.Reachable
+	// Stamp reachability into the persistent row and refresh the response.
+	now := time.Now().UTC()
+	if err := s.store.SetTargetReachability(ctx, row.ID, result.Reachable, now); err != nil {
+		resp.Error = mergeProbeWarnings(resp.Error, []string{fmt.Sprintf("persisting reachability failed: %v", err)})
 	}
-	s.mu.Unlock()
-	resp.Target = func() *pb.Target {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		return cloneTarget(s.targets[req.Id])
-	}()
+	row.Reachable = result.Reachable
+	v := now
+	row.LastCheckedAt = &v
+	resp.Target = pbFromState(row)
 
 	return resp, nil
 }

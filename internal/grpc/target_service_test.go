@@ -25,7 +25,7 @@ import (
 // registry and no channel factory.
 func newTestTargetService(t *testing.T) *TargetService {
 	t.Helper()
-	return NewTargetService(nil)
+	return NewTargetService(newTestStore(t), nil)
 }
 
 // =========================================================================
@@ -441,7 +441,7 @@ func TestCheckTarget_ResolvedCredentialsUsedInProbe(t *testing.T) {
 	resolver := &mockResolver{creds: map[string]channel.CredentialRef{
 		"cred-1": {Username: "deploy", Password: "s3cret"},
 	}}
-	svc := NewTargetService(factory).WithCredentialResolver(resolver)
+	svc := NewTargetService(newTestStore(t), factory).WithCredentialResolver(resolver)
 
 	addProbeTarget(t, svc, "t1", "cred-1")
 
@@ -465,7 +465,7 @@ func TestCheckTarget_ResolveFailureFallsBackWithWarning(t *testing.T) {
 	resolver := &mockResolver{errs: map[string]error{
 		"cred-broken": errors.New("decryption failed"),
 	}}
-	svc := NewTargetService(factory).WithCredentialResolver(resolver)
+	svc := NewTargetService(newTestStore(t), factory).WithCredentialResolver(resolver)
 
 	addProbeTarget(t, svc, "t1", "cred-broken")
 
@@ -489,7 +489,7 @@ func TestCheckTarget_ResolveFailureFallsBackWithWarning(t *testing.T) {
 func TestCheckTarget_NoResolverWithRefWarns(t *testing.T) {
 	ctx := context.Background()
 	factory := &probeFactory{}
-	svc := NewTargetService(factory) // no resolver attached
+	svc := NewTargetService(newTestStore(t), factory) // no resolver attached
 
 	addProbeTarget(t, svc, "t1", "cred-1")
 
@@ -509,7 +509,7 @@ func TestCheckTarget_NoResolverWithRefWarns(t *testing.T) {
 func TestCheckTarget_NoResolverNoRefQuiet(t *testing.T) {
 	ctx := context.Background()
 	factory := &probeFactory{}
-	svc := NewTargetService(factory) // no resolver attached
+	svc := NewTargetService(newTestStore(t), factory) // no resolver attached
 
 	addProbeTarget(t, svc, "t1", "") // plain passwordless target
 

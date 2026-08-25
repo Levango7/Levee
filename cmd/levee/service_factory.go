@@ -151,7 +151,7 @@ func buildLocalServices(deps *localDeps) *localServices {
 	ls := &localServices{
 		change:   grpc.NewChangeService(deps.store, deps.engine, deps.approval, nil),
 		template: grpc.NewTemplateService(deps.store, deps.templateLib),
-		target:   grpc.NewTargetService(deps.channelFactory),
+		target:   grpc.NewTargetService(deps.store, deps.channelFactory),
 		audit:    grpc.NewAuditService(deps.store),
 	}
 	if deps.config != nil {

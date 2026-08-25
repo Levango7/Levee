@@ -90,7 +90,7 @@ func startTestServerWithAllServices(t *testing.T, opts ...Option) (*Server, stat
 
 	changeSvc := NewChangeService(store, nil, nil, nil)
 	templateSvc := NewTemplateService(store, nil)
-	targetSvc := NewTargetService(nil)
+	targetSvc := NewTargetService(newTestStore(t), nil)
 	auditSvc := NewAuditService(store)
 	cfg := &config.Config{
 		Server:   config.ServerConfig{DataDir: t.TempDir(), LogLevel: "info", LogFormat: "text"},
