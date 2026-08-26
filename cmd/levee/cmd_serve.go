@@ -48,8 +48,10 @@ import (
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/metrics"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/tracing"
 
 	"github.com/spf13/cobra"
 )
@@ -160,6 +162,35 @@ func runServe(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load(optConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// 1b. Tracing: construct the process-wide tracer from the tracing
+	//     config section (disabled by default). Any construction error
+	//     (e.g. an unsupported exporter) degrades to the noop tracer
+	//     with a warning instead of keeping the daemon from starting.
+	tracer, tracingShutdown, err := tracing.New(tracing.Config{
+		Enabled:     cfg.Tracing.Enabled,
+		Exporter:    cfg.Tracing.Exporter,
+		Endpoint:    cfg.Tracing.Endpoint,
+		ServiceName: "levee",
+	})
+	if err != nil {
+		log.Warn("tracing construction failed, falling back to noop tracer", "error", err)
+		tracer, tracingShutdown, _ = tracing.New(tracing.Config{Enabled: false})
+	}
+	tracing.SetDefault(tracer)
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := tracingShutdown(stopCtx); err != nil {
+			log.Warn("tracing shutdown failed", "error", err)
+		}
+		tracing.SetDefault(nil)
+	}()
+	if cfg.Tracing.Enabled {
+		log.Info("tracing enabled", "exporter", cfg.Tracing.Exporter)
+	} else {
+		log.Info("tracing disabled (configure tracing.enabled to enable)")
 	}
 
 	// 2. Open the store. In cluster mode we use PostgreSQL; otherwise we
@@ -321,6 +352,12 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetMobileApproval(mobileSvc)
+
+	// 5e. Self-observability: expose the process-wide metrics collector
+	//     as Prometheus text format on the gateway mux. The endpoint is
+	//     unauthenticated, like /healthz, so monitoring agents can
+	//     scrape it without credentials.
+	gw.SetExtraRoute("/metrics", metrics.Default.Handler())
 
 	// 6. Start the REST gateway on THIS instance. Start binds the port
 	//    synchronously so a bind failure fails the command instead of

@@ -114,8 +114,8 @@ func (m *TargetHistoryEntry) ProtoMessage()  {}
 
 type TargetHistoryRequest struct {
 	// Host is the address (targets.hostname) to look up runs for.
-	Host string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
-	Limit int32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	Host  string `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+	Limit int32  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
 }
 
 func (m *TargetHistoryRequest) Reset()         { *m = TargetHistoryRequest{} }

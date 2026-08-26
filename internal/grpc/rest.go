@@ -95,6 +95,20 @@ type Gateway struct {
 	// disabled via a negative RatePerSec.
 	limiterOnce sync.Once
 	limiter     *rate.Limiter
+
+	// extraRoutes holds handlers registered via SetExtraRoute before
+	// Start. They are mounted verbatim on the gateway mux, without
+	// auth/CORS/rate-limit middleware, for operational endpoints such
+	// as /metrics.
+	extraMu     sync.Mutex
+	extraRoutes []extraRoute
+}
+
+// extraRoute pairs a mux pattern with the handler SetExtraRoute should
+// mount for it.
+type extraRoute struct {
+	pattern string
+	handler http.Handler
 }
 
 // mobileApprovalHandler wraps the MobileApprovalService for REST routing.
@@ -140,6 +154,16 @@ func (gw *Gateway) SetMobileApproval(m mobileApprovalHandler) {
 	gw.mobileApproval = m
 }
 
+// SetExtraRoute registers an additional route on the gateway's mux,
+// served verbatim (no auth, CORS or rate limiting), e.g. an
+// operational endpoint such as /metrics. Call it before Start; routes
+// registered after the gateway started are not mounted.
+func (gw *Gateway) SetExtraRoute(pattern string, handler http.Handler) {
+	gw.extraMu.Lock()
+	defer gw.extraMu.Unlock()
+	gw.extraRoutes = append(gw.extraRoutes, extraRoute{pattern: pattern, handler: handler})
+}
+
 // Stop gracefully shuts down the HTTP server.
 func (gw *Gateway) Stop(ctx context.Context) error {
 	if gw.httpServer == nil {
@@ -182,6 +206,15 @@ func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	// Mount operational routes registered via SetExtraRoute (e.g.
+	// /metrics). Like /healthz they bypass auth so monitoring agents
+	// can reach them without credentials.
+	gw.extraMu.Lock()
+	for _, er := range gw.extraRoutes {
+		mux.Handle(er.pattern, er.handler)
+	}
+	gw.extraMu.Unlock()
 
 	gw.httpServer = &http.Server{
 		Handler:           mux,

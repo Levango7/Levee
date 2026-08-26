@@ -23,10 +23,10 @@ const _ = grpc.SupportPackageIsVersion9
 // ===========================================================================
 
 const (
-	InventoryService_ListGroups_FullMethodName     = "/levee.InventoryService/ListGroups"
-	InventoryService_CreateGroup_FullMethodName    = "/levee.InventoryService/CreateGroup"
-	InventoryService_DeleteGroup_FullMethodName    = "/levee.InventoryService/DeleteGroup"
-	InventoryService_ImportTargets_FullMethodName  = "/levee.InventoryService/ImportTargets"
+	InventoryService_ListGroups_FullMethodName      = "/levee.InventoryService/ListGroups"
+	InventoryService_CreateGroup_FullMethodName     = "/levee.InventoryService/CreateGroup"
+	InventoryService_DeleteGroup_FullMethodName     = "/levee.InventoryService/DeleteGroup"
+	InventoryService_ImportTargets_FullMethodName   = "/levee.InventoryService/ImportTargets"
 	InventoryService_SetTargetStatus_FullMethodName = "/levee.InventoryService/SetTargetStatus"
 	InventoryService_TargetHistory_FullMethodName   = "/levee.InventoryService/TargetHistory"
 )

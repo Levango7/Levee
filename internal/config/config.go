@@ -36,6 +36,7 @@ type Config struct {
 	Permission PermissionConfig `json:"permission" mapstructure:"permission"`
 	Verify     VerifyConfig     `json:"verify"     mapstructure:"verify"`
 	Inventory  InventoryConfig  `json:"inventory"  mapstructure:"inventory"`
+	Tracing    TracingConfig    `json:"tracing"    mapstructure:"tracing"`
 }
 
 // ServerConfig holds server-mode runtime parameters.
@@ -174,6 +175,20 @@ type InventoryConfig struct {
 	// reachability patrol loop over inventoried targets. 0 (the default)
 	// disables the patrol.
 	PatrolIntervalSeconds int `json:"patrol_interval_seconds" mapstructure:"patrol_interval_seconds"`
+}
+
+// TracingConfig controls the distributed tracing plumbing for the
+// change lifecycle. Tracing is opt-in: every field defaults to the
+// disabled state so existing deployments are unaffected.
+type TracingConfig struct {
+	// Enabled turns trace_id generation/propagation and span export on.
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
+	// Exporter selects the span destination: stdout, otlp or none.
+	// Empty behaves like none.
+	Exporter string `json:"exporter" mapstructure:"exporter"`
+	// Endpoint is the collector address for the future OTLP exporter;
+	// unused by the stdout exporter.
+	Endpoint string `json:"endpoint" mapstructure:"endpoint"`
 }
 
 // Load reads the configuration file at path, applies env-var overrides
@@ -505,6 +520,11 @@ func setDefaults(v *viper.Viper) {
 
 	// Inventory (0 disables the future reachability patrol loop)
 	v.SetDefault("inventory.patrol_interval_seconds", 0)
+
+	// Tracing (disabled by default; operators opt in explicitly)
+	v.SetDefault("tracing.enabled", false)
+	v.SetDefault("tracing.exporter", "")
+	v.SetDefault("tracing.endpoint", "")
 }
 
 // bindFile wires viper to the YAML file at path. The file extension is
@@ -584,6 +604,7 @@ func allKeys() []string {
 		"permission.default_team", "permission.default_env",
 		"verify.prometheus_url",
 		"inventory.patrol_interval_seconds",
+		"tracing.enabled", "tracing.exporter", "tracing.endpoint",
 	}
 }
 

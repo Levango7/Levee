@@ -326,7 +326,7 @@ type Target struct {
 	Labels        map[string]string `protobuf:"bytes,6,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Reachable     bool              `protobuf:"varint,7,opt,name=reachable,proto3" json:"reachable,omitempty"`
 	// active / frozen / retired — lifecycle status from inventory store.
-	Status        string            `protobuf:"bytes,8,opt,name=status,proto3" json:"status,omitempty"`
+	Status        string `protobuf:"bytes,8,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

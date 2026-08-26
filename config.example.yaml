@@ -1,0 +1,292 @@
+# =============================================================================
+# LEVEE 配置示例（config.example.yaml）
+# =============================================================================
+#
+# 使用方法：
+#   复制本文件为 config.yaml 并按需修改：
+#     cp config.example.yaml config.yaml
+#
+# 配置文件查找顺序（来自 cmd/levee 的 -c/--config 旗标与 CLI 默认约定）：
+#   1. --config / -c 显式指定的路径（必须存在，否则启动失败）
+#   2. 默认位置 ~/.levee/config.yaml
+#   （未找到任何配置文件时，全部使用内置默认值 + 环境变量。）
+#
+# 单个配置键的生效优先级（见 internal/config/config.go）：
+#   环境变量 LEVEE_<SECTION>_<KEY>（最高）> 配置文件值 > 内置默认值（最低）
+#   例：LEVEE_DATABASE_PATH=/var/levee/levee.db 覆盖 database.path
+#        LEVEE_LOG_LEVEL=debug                   覆盖 log.level
+#
+# 说明：
+#   - 所有时间值使用 Go duration 语法：500ms / 10s / 5m / 4h / 24h
+#   - 路径支持 ~ 前缀展开（如 ~/.ssh/id_rsa）
+#   - 敏感值一律使用占位符（<...>），切勿将真实密钥提交到版本库
+#   - gRPC 服务的 --addr / --tls-cert / --tls-key / --token 是 `levee serve`
+#     的命令行旗标（token 亦可经 LEVEE_TOKEN 环境变量注入），不属于本文件
+#   - 凭据主密码通过 LEVEE_MASTER_PASSWORD 环境变量在运行时注入，不落盘
+#
+# 本文件与 internal/config/config.go 的结构体/mapstructure tag 一一对应。
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# server —— 服务运行参数（对应 ServerConfig）
+# -----------------------------------------------------------------------------
+server:
+  # 数据目录（SQLite 数据库、审计日志等落盘位置）。必填。 默认: ~/.levee/data
+  data_dir: ~/.levee/data
+  # 日志级别: debug | info | warn | error。 默认: info
+  log_level: info
+  # 日志格式: text | json。 默认: text
+  log_format: text
+
+# -----------------------------------------------------------------------------
+# database —— 数据库配置（对应 DatabaseConfig）
+# MVP 仅支持内嵌 SQLite；postgres 等其他 driver 为后续版本规划。
+# -----------------------------------------------------------------------------
+database:
+  # 数据库驱动，当前仅允许 sqlite。 默认: sqlite
+  driver: sqlite
+  # 数据库文件路径（绝对/相对路径，支持 ~）。
+  # 留空时自动派生为 <server.data_dir>/levee.db。必填（可留空由默认派生）。
+  path: ""    # 例: ~/.levee/data/levee.db
+  # 连接池：最大打开连接数（>= 0）。 默认: 50
+  max_open_conns: 50
+  # 连接池：最大空闲连接数（>= 0，且 <= max_open_conns）。 默认: 10
+  max_idle_conns: 10
+  # 连接池：连接最大存活时间（Go duration）。 默认: 30m
+  conn_max_lifetime: 30m
+
+# -----------------------------------------------------------------------------
+# log —— 日志参数（对应 LogConfig）
+# level/format 未显式设置时自动镜像 server.log_level / server.log_format。
+# -----------------------------------------------------------------------------
+log:
+  # 日志级别: debug | info | warn | error。 默认: 继承 server.log_level
+  level: info
+  # 日志格式: text | json。 默认: 继承 server.log_format
+  format: text
+  # 日志输出: stdout | stderr | <文件路径>。 默认: stderr
+  output: stderr
+
+# -----------------------------------------------------------------------------
+# executor —— L2 编排层调优（对应 ExecutorConfig）
+# -----------------------------------------------------------------------------
+executor:
+  # 单 run 默认并发数（> 0，且 <= max_concurrency）。 默认: 50
+  default_concurrency: 50
+  # 允许的最大并发数（> 0）。 默认: 200
+  max_concurrency: 200
+  # 目标机连接超时（> 0，Go duration）。 默认: 10s
+  connect_timeout: 10s
+  # 单步执行超时（> 0，Go duration）。 默认: 300s
+  exec_timeout: 300s
+  # 限速：三个粒度上限制每秒新建连接数（均 > 0）
+  rate_limit:
+    # 单目标机每秒新连接上限。 默认: 5
+    per_target: 5
+    # 单通道每秒新连接上限。 默认: 50
+    per_channel: 50
+    # 全局每秒新连接上限。 默认: 100
+    global: 100
+
+# -----------------------------------------------------------------------------
+# channel —— 通道实现配置（对应 ChannelConfig）
+# 当前一等公民为 SSH 与 WinRM；Agent / API / Interactive 为后续版本规划。
+# -----------------------------------------------------------------------------
+channel:
+  # SSH 通道（对应 SSHConfig）
+  ssh:
+    # SSH 端口（1..65535）。 默认: 22
+    port: 22
+    # 认证方式: key | password。 默认: key
+    auth_method: key
+    # 私钥路径（auth_method=key 时必填，支持 ~）。 默认: ~/.ssh/id_rsa
+    key_path: ~/.ssh/id_rsa
+    # known_hosts 文件路径（支持 ~）。 默认: ~/.ssh/known_hosts
+    known_hosts: ~/.ssh/known_hosts
+    # 严格主机密钥校验；生产环境强烈建议保持 true。 默认: true
+    strict_host_check: true
+    # SSH 连接超时（> 0，Go duration）。 默认: 10s
+    connect_timeout: 10s
+    # 单目标机 SSH 连接池大小（> 0）。 默认: 10
+    pool_size: 10
+    # 提权方式: "" (禁用，默认) | sudo。其他取值在 Exec 时 fail-closed。
+    # sudo 提权要求目标机已配置免密（NOPASSWD）sudo。 默认: ""
+    become_method: ""
+    # 提权目标用户（become_method=sudo 时生效）；空表示 root。 默认: ""
+    become_user: ""
+
+  # WinRM 通道（对应 WinRMConfig）
+  winrm:
+    # WinRM 端口（1..65535）。 默认: 5985（HTTP）；5986 为 HTTPS
+    port: 5985
+    # 传输/认证方式: negotiate | kerberos。 默认: negotiate
+    transport: negotiate
+    # WinRM 连接超时（> 0，Go duration）。 默认: 10s
+    connect_timeout: 10s
+    # 单目标机 WinRM 连接池大小（> 0）。 默认: 5
+    pool_size: 5
+
+# -----------------------------------------------------------------------------
+# approval —— 三级审批超时（对应 ApprovalConfig，均 > 0）
+# -----------------------------------------------------------------------------
+approval:
+  # 标准变更审批超时。 默认: 4h
+  standard_timeout: 4h
+  # 高危变更审批超时。 默认: 8h
+  high_timeout: 8h
+  # 紧急变更（--force）补审时限。 默认: 24h
+  emergency_supplement: 24h
+
+# -----------------------------------------------------------------------------
+# audit —— 防篡改审计子系统（对应 AuditConfig）
+# -----------------------------------------------------------------------------
+audit:
+  # 启用哈希链（tamper-evident）。 默认: true
+  hash_chain: true
+  # 启用 WORM（Write-Once-Read-Many）存储。 默认: true
+  worm_storage: true
+  # 审计记录保留天数（> 0）。 默认: 90
+  retention_days: 90
+  # 审计导出格式: json | csv。 默认: json
+  export_format: json
+
+# -----------------------------------------------------------------------------
+# lock —— 目标级互斥的分布式锁调优（对应 LockConfig）
+# -----------------------------------------------------------------------------
+lock:
+  # 锁 TTL（> 0，Go duration）。 默认: 1h
+  ttl: 1h
+  # 获取锁的重试间隔（> 0，Go duration）。 默认: 5s
+  retry_interval: 5s
+  # 最大重试次数（>= 0）。 默认: 10
+  max_retry: 10
+
+# -----------------------------------------------------------------------------
+# credential —— 凭据存储与加密参数（对应 CredentialConfig）
+# 注意：主密码不在本文件中配置，运行时通过 LEVEE_MASTER_PASSWORD 环境变量
+#       注入，绝不落盘；加密后的凭据由 `levee secret` 管理。
+# -----------------------------------------------------------------------------
+credential:
+  # 凭据存储后端: local (MVP) | vault (V1)。 默认: local
+  storage: local
+  # 加密算法（必填）。 默认: aes256-gcm
+  encryption: aes256-gcm
+  # 密钥派生算法（必填）。 默认: argon2id
+  key_derivation: argon2id
+
+# -----------------------------------------------------------------------------
+# notify —— 出站通知（对应 NotifyConfig），当前仅支持 webhook
+# -----------------------------------------------------------------------------
+notify:
+  webhook:
+    # 是否启用 webhook 通知。 默认: false
+    enabled: false
+    # webhook 接收地址（enabled=true 时必填）。使用占位符，勿写真密钥
+    url: ""                       # 例: https://hooks.example.com/levee/<your-token>
+    # 请求超时（enabled=true 时必须 > 0，Go duration）。 默认: 10s
+    timeout: 10s
+    # 失败重试次数（>= 0）。 默认: 3
+    retry: 3
+
+# -----------------------------------------------------------------------------
+# permission —— 权限命名空间默认值（对应 PermissionConfig）
+# -----------------------------------------------------------------------------
+permission:
+  # 默认团队（必填）。 默认: default
+  default_team: default
+  # 默认环境（必填）。 默认: dev
+  default_env: dev
+
+# -----------------------------------------------------------------------------
+# verify —— 未来验证 / SLO 门禁（对应 VerifyConfig）
+# -----------------------------------------------------------------------------
+verify:
+  # Prometheus 基础地址，供未来 SLO 门禁查询。
+  # 留空则禁用这些门禁（MVP 默认）。 默认: ""
+  prometheus_url: ""              # 例: http://prometheus.monitoring.svc:9090
+
+# -----------------------------------------------------------------------------
+# inventory —— 资产清单子系统（对应 InventoryConfig）
+# -----------------------------------------------------------------------------
+inventory:
+  # 对清单内目标做可达性巡检的周期（秒）。0 表示禁用巡检。 默认: 0
+  patrol_interval_seconds: 0
+
+# =============================================================================
+# 场景示例（按需取消注释并合并到上方正式段落）
+# =============================================================================
+#
+# -----------------------------------------------------------------------------
+# 场景一：最小单机（开箱即用，全部使用默认值）
+# -----------------------------------------------------------------------------
+# server:
+#   data_dir: ~/.levee/data
+# 其余键全部省略，使用内置默认值：
+#   SQLite 库自动落在 ~/.levee/data/levee.db，SSH key 认证，
+#   并发 50/200，审计哈希链 + WORM 开启。
+#
+# -----------------------------------------------------------------------------
+# 场景二：多节点集群
+# -----------------------------------------------------------------------------
+# 注意：database.driver 当前仅支持 sqlite（MVP），PostgreSQL 支持为后续
+#       版本规划；集群形态下建议每个节点使用独立 data_dir，或将数据库文件
+#       置于低延迟的本地盘，勿放网络共享盘以避免 SQLite 锁竞争。
+# server:
+#   data_dir: /var/lib/levee/data
+#   log_level: info
+#   log_format: json
+# database:
+#   driver: sqlite
+#   path: /var/lib/levee/data/levee.db
+#   max_open_conns: 100
+#   max_idle_conns: 20
+# executor:
+#   default_concurrency: 100
+#   max_concurrency: 400
+#   rate_limit:
+#     per_target: 10
+#     per_channel: 100
+#     global: 200
+# inventory:
+#   patrol_interval_seconds: 300
+# notify:
+#   webhook:
+#     enabled: true
+#     url: https://hooks.example.com/levee/<your-token>
+#     timeout: 10s
+#     retry: 3
+#
+# -----------------------------------------------------------------------------
+# 场景三：生产加固（开启全部安全开关）
+# -----------------------------------------------------------------------------
+# server:
+#   log_level: warn
+#   log_format: json
+# channel:
+#   ssh:
+#     auth_method: key
+#     key_path: /etc/levee/secrets/id_ed25519
+#     known_hosts: /etc/levee/known_hosts
+#     strict_host_check: true      # 保持严格主机密钥校验
+#     pool_size: 5
+#     become_method: ""            # 默认不提权；确需提权再用 sudo + 专用账号
+# audit:
+#   hash_chain: true               # 防篡改哈希链
+#   worm_storage: true             # 一次写入存储
+#   retention_days: 365            # 延长保留满足合规要求
+#   export_format: json
+# credential:
+#   storage: local                 # 具备 Vault 基础设施时可切换 vault
+#   encryption: aes256-gcm
+#   key_derivation: argon2id
+# executor:
+#   exec_timeout: 600s
+#   rate_limit:
+#     per_target: 2                # 收紧限速，防止打爆目标机
+#     per_channel: 20
+#     global: 50
+# log:
+#   output: /var/log/levee/levee.log
+# 另在运行时环境注入（不要写进任何文件）：
+#   LEVEE_MASTER_PASSWORD=<master-password>   # 凭据主密码，不落盘
+#   LEVEE_TOKEN=<api-token>                   # `levee serve` 的 Bearer token

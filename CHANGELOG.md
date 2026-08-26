@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## v1.12.0 - 2026-08-27
+
+### Added
+
+- **Self-metrics endpoint** (`internal/metrics/`): lightweight atomic-counter collector exposing 10 metric families (change lifecycle, batch duration, gates, approvals, channel acquisition, locks, rollbacks, backups, alerts) in Prometheus text 0.0.4 format; mounted at `/metrics` on the REST gateway; coverage 98.1%, 19 tests
+- **Data backup/restore** (`internal/backup/` + `levee backup` / `levee restore` CLI): SQLite backups via `VACUUM INTO` + `integrity_check` + `.sha256` checksum; pure-Go PostgreSQL SQL dump via pgx (no `pg_dump` dependency); restore performs an automatic `.pre-restore` safety backup, atomic replacement, and stale-WAL cleanup; flags: `backup [--output] [--verify-only] [--pg-dsn]`, `restore --input <path> [--yes]`; coverage 86.8%, 60 tests
+- **OpenTelemetry tracing** (`internal/tracing/`): Tracer interface + stdouttrace exporter + W3C `traceparent` parse/format utilities; initialized on `serve` startup with graceful noop fallback on failure; new `tracing` config section (`enabled` / `exporter` / `endpoint`, disabled by default); OTel v1.44.0; coverage 95.3%, 17 tests
+- **Dependabot** (`.github/dependabot.yml`): scheduled dependency updates for gomod / github-actions / docker ecosystems
+- **CodeQL** (`.github/workflows/codeql.yml`): security analysis on push / pull request / weekly schedule
+- **`config.example.yaml`**: complete example of all 52 config keys, cross-checked one-by-one against `internal/config/config.go` (zero fabricated keys), with default values and scenario examples
+- **`CODE_OF_CONDUCT.md`**: Contributor Covenant 2.1 full text
+
+### Changed
+
+- `internal/grpc/rest.go`: added `SetExtraRoute` generic extension point (~30 lines) so external handlers can be mounted on the gateway mux (used for `/metrics`); no impact on existing behavior
+
+详细说明见 [docs/release-notes/v1.12.0.md](docs/release-notes/v1.12.0.md)。
+
 ## v1.11.0 - 2026-08-27
 
 ### 安全加固
