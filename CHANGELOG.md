@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## v1.11.0 - 2026-08-27
+
 ### 安全加固
 
 - **P0 网关接线修复**：`levee serve` 此前会启动未挂载任何服务的 REST 网关；现改为启动配置的服务实例。`/healthz` 在服务注册完成前返回 503 `{"status":"unavailable"}`（服务随 serve 自动注册，正常运行时为 200）
@@ -30,6 +32,11 @@
 ### 文档
 
 - CLI 文档与实现对齐：`new <template> --params k=v`（移除虚构的 `--file/--template/--dry-run/--label/--priority`）、删除不存在的 `levee plan --dry-run` 步骤、push config / tenant create（配额默认 0 = 不限，存储单位 MB，补 `--max-api-rate`）/ drift schedule add（去 `--baseline`，补 `--alert/--enabled`）/ drift report（无 `--format`）/ agent start（默认值修正，补 `--max-concurrent`）/ serve 补 `--http-addr`
+
+### 工程修复
+
+- vet/gofmt 清理：`cmd_serve.go` IPv6 安全的 host:port 拼接（`net.JoinHostPort`），3 个文件格式对齐
+- 添加 Apache-2.0 LICENSE 文件
 
 ## v1.10.0 - 2026-08-23
 
