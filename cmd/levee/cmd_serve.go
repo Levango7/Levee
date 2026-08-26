@@ -35,15 +35,16 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/channel"
+	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/credential"
-	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
@@ -303,7 +304,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.Channel.SSH.KnownHosts,
 		cfg.Channel.SSH.BecomeMethod,
 		cfg.Channel.SSH.BecomeUser,
-	)	// 5d. Reachability patrol: periodically probe every active inventory
+	) // 5d. Reachability patrol: periodically probe every active inventory
 	// target so `reachable` reflects current reality. Disabled by default;
 	// enable with inventory.patrol_interval_seconds > 0.
 	if interval := cfg.Inventory.PatrolIntervalSeconds; interval > 0 {
@@ -434,7 +435,7 @@ func runReachabilityPatrol(ctx context.Context, store state.Store, interval time
 			if ctx.Err() != nil {
 				return
 			}
-			addr := fmt.Sprintf("%s:%d", t.Hostname, t.Port)
+			addr := net.JoinHostPort(t.Hostname, strconv.Itoa(t.Port))
 			conn, dialErr := net.DialTimeout("tcp", addr, 5*time.Second)
 			if dialErr == nil {
 				_ = conn.Close()

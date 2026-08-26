@@ -34,7 +34,7 @@ func mustParse(t *testing.T, data string) *File {
 }
 
 type memStore struct {
-	groups map[string]*state.InventoryGroup
+	groups  map[string]*state.InventoryGroup
 	targets map[string]*state.Target // by address key "host:port"
 }
 

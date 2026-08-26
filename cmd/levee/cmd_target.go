@@ -16,13 +16,13 @@ import (
 
 // Target command option variables.
 var (
-	targetListOptFormat   string
-	targetImportOptFile   string
-	targetImportOptGroup  string
-	targetCheckOptTarget  string
-	targetStatusOptTarget string
-	targetHistOptLimit    int
-	targetListGroupFilter string
+	targetListOptFormat    string
+	targetImportOptFile    string
+	targetImportOptGroup   string
+	targetCheckOptTarget   string
+	targetStatusOptTarget  string
+	targetHistOptLimit     int
+	targetListGroupFilter  string
 	targetListStatusFilter string
 )
 
