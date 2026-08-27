@@ -11,7 +11,6 @@ package grpc
 import (
 	"context"
 	crand "crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -52,8 +51,20 @@ type ServeGatewayConfig struct {
 	// CORSOrigins lists allowed origins. "*" or an empty slice allows all.
 	CORSOrigins []string
 	// AuthToken is the expected Bearer token for client authentication.
-	// When empty, authentication is disabled (development mode).
+	// When empty (and AuthTokens is empty), authentication is disabled
+	// (development mode).
 	AuthToken string
+	// AuthTokens lists additional named bearer tokens, each mapped to the
+	// subject it authenticates as. Together with AuthToken they form the
+	// accepted set. A request authenticated via a named token carries that
+	// token's subject for audit attribution, overriding any client-asserted
+	// X-Acting-As header.
+	AuthTokens []TokenIdentity
+	// MetricsPublic, when true, leaves operational extra routes (e.g.
+	// /metrics) reachable without a bearer token. By default (false) those
+	// routes require authentication whenever any token is configured, so
+	// deployment telemetry is not publicly readable.
+	MetricsPublic bool
 	// RatePerSec is the global token-bucket refill rate for the gateway.
 	// Zero selects DefaultRatePerSec; a negative value disables rate
 	// limiting entirely.
@@ -154,10 +165,11 @@ func (gw *Gateway) SetMobileApproval(m mobileApprovalHandler) {
 	gw.mobileApproval = m
 }
 
-// SetExtraRoute registers an additional route on the gateway's mux,
-// served verbatim (no auth, CORS or rate limiting), e.g. an
+// SetExtraRoute registers an additional route on the gateway's mux, e.g. an
 // operational endpoint such as /metrics. Call it before Start; routes
-// registered after the gateway started are not mounted.
+// registered after the gateway started are not mounted. Unless MetricsPublic
+// is set, the route is gated behind the same bearer auth as the API whenever
+// any token is configured (CORS and rate limiting still do not apply).
 func (gw *Gateway) SetExtraRoute(pattern string, handler http.Handler) {
 	gw.extraMu.Lock()
 	defer gw.extraMu.Unlock()
@@ -207,12 +219,18 @@ func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Mount operational routes registered via SetExtraRoute (e.g.
-	// /metrics). Like /healthz they bypass auth so monitoring agents
-	// can reach them without credentials.
+	// Mount operational routes registered via SetExtraRoute (e.g. /metrics).
+	// Unlike /healthz, these are gated behind the same bearer auth as the API
+	// whenever any token is configured, so deployment telemetry is not
+	// publicly readable by default. Set MetricsPublic to opt out (e.g. for
+	// scraping agents that cannot send credentials).
 	gw.extraMu.Lock()
 	for _, er := range gw.extraRoutes {
-		mux.Handle(er.pattern, er.handler)
+		h := er.handler
+		if !gw.cfg.MetricsPublic {
+			h = gw.authMiddleware(h)
+		}
+		mux.Handle(er.pattern, h)
 	}
 	gw.extraMu.Unlock()
 
@@ -353,30 +371,47 @@ func (gw *Gateway) dispatchChange(w http.ResponseWriter, r *http.Request, method
 			default:
 				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 			}
-		case "plan":
-			gw.handleChangePlan(w, r, id)
-		case "apply":
-			gw.handleChangeApply(w, r, id)
-		case "approve":
-			gw.handleChangeApprove(w, r, id)
-		case "reject":
-			gw.handleChangeReject(w, r, id)
-		case "pause":
-			gw.handleChangePause(w, r, id)
-		case "resume":
-			gw.handleChangeResume(w, r, id)
-		case "cancel":
-			gw.handleChangeCancel(w, r, id)
-		case "retry":
-			gw.handleChangeRetry(w, r, id)
-		case "rollback":
-			gw.handleChangeRollback(w, r, id)
-		case "archive":
-			gw.handleChangeArchive(w, r, id)
-		case "logs":
-			gw.handleChangeLogs(w, r, id)
-		case "trace":
-			gw.handleChangeTrace(w, r, id)
+		case "plan", "apply", "approve", "reject", "pause", "resume", "cancel", "retry", "rollback", "archive":
+			// State-changing actions must use POST. Rejecting other verbs
+			// prevents crawlers, link prefetchers and cached GETs from
+			// mutating change state (e.g. GET /changes/<id>/pause pausing a
+			// run).
+			if method != http.MethodPost {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use POST")
+				return
+			}
+			switch rest {
+			case "plan":
+				gw.handleChangePlan(w, r, id)
+			case "apply":
+				gw.handleChangeApply(w, r, id)
+			case "approve":
+				gw.handleChangeApprove(w, r, id)
+			case "reject":
+				gw.handleChangeReject(w, r, id)
+			case "pause":
+				gw.handleChangePause(w, r, id)
+			case "resume":
+				gw.handleChangeResume(w, r, id)
+			case "cancel":
+				gw.handleChangeCancel(w, r, id)
+			case "retry":
+				gw.handleChangeRetry(w, r, id)
+			case "rollback":
+				gw.handleChangeRollback(w, r, id)
+			case "archive":
+				gw.handleChangeArchive(w, r, id)
+			}
+		case "logs", "trace":
+			if method != http.MethodGet {
+				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use GET")
+				return
+			}
+			if rest == "logs" {
+				gw.handleChangeLogs(w, r, id)
+			} else {
+				gw.handleChangeTrace(w, r, id)
+			}
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown change sub-path: /"+rest)
 		}
@@ -606,9 +641,11 @@ func (gw *Gateway) handleChangePause(w http.ResponseWriter, r *http.Request, id 
 	body := struct {
 		Reason string `json:"reason,omitempty"`
 	}{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		// reason is optional; swallow decode errors gracefully
-		_ = err
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		// reason is optional: an empty body is fine, but a malformed one is
+		// a client error and must not be silently ignored.
+		writeJSONError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
 	}
 	req := &pb.PauseRequest{ChangeId: id, Reason: body.Reason}
 	resp, err := svc.PauseChange(ctx, req)
@@ -625,9 +662,11 @@ func (gw *Gateway) handleChangeResume(w http.ResponseWriter, r *http.Request, id
 	body := struct {
 		Reason string `json:"reason,omitempty"`
 	}{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		// reason is optional; swallow decode errors gracefully
-		_ = err
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		// reason is optional: an empty body is fine, but a malformed one is
+		// a client error and must not be silently ignored.
+		writeJSONError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
 	}
 	req := &pb.PauseRequest{ChangeId: id, Reason: body.Reason}
 	resp, err := svc.ResumeChange(ctx, req)
@@ -705,9 +744,11 @@ func (gw *Gateway) handleChangeArchive(w http.ResponseWriter, r *http.Request, i
 	body := struct {
 		PurgeArtifacts bool `json:"purgeArtifacts"`
 	}{}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		// purgeArtifacts defaults to false
-		_ = err
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		// purgeArtifacts defaults to false: an empty body is fine, but a
+		// malformed one is a client error and must not be silently ignored.
+		writeJSONError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
 	}
 	req := &pb.ArchiveRequest{ChangeId: id, PurgeArtifacts: body.PurgeArtifacts}
 	resp, err := svc.ArchiveChange(ctx, req)
@@ -2299,17 +2340,19 @@ const actingAsHeaderName = "X-Acting-As"
 
 // requestIDMiddleware assigns a per-request id (honouring a client
 // supplied X-Request-Id), echoes it on the response and exposes it to
-// handlers through the request context. The asserted actor identity from
-// X-Acting-As is exposed via the same context key the gRPC interceptors
-// use (actorKey{}), so actorFromCtx works uniformly across transports.
+// handlers through the request context. The actor identity is resolved with
+// the authenticated subject taking precedence over the client assertion (see
+// SECURITY note).
 //
 // Both values are sanitized (control characters stripped, length capped);
 // an unusable client request id is replaced by a generated one.
 //
-// SECURITY: LEVEE authenticates with a shared bearer token, so the actor
-// value is an ASSERTION by the caller, not a proven identity — any token
-// holder may claim any name. Use it for audit attribution only, never for
-// authorization.
+// SECURITY: when the request authenticates with a named bearer token,
+// authMiddleware injects the token's subject into the context and that proven
+// identity wins here. Only when no authenticated subject is present do we fall
+// back to the client-asserted X-Acting-As header, which is then an ASSERTION
+// only — any token holder may claim any name. Use it for audit attribution,
+// never for authorization.
 func (gw *Gateway) requestIDMiddleware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rid := sanitizeHeaderValue(r.Header.Get(requestIDHeaderName))
@@ -2318,8 +2361,12 @@ func (gw *Gateway) requestIDMiddleware(h http.Handler) http.Handler {
 		}
 		w.Header().Set(requestIDHeaderName, rid)
 		ctx := context.WithValue(r.Context(), requestIDKey{}, rid)
-		if actor := sanitizeHeaderValue(r.Header.Get(actingAsHeaderName)); actor != "" {
-			ctx = context.WithValue(ctx, actorKey{}, actor)
+		// Prefer the authenticated subject (set by authMiddleware) over the
+		// client-asserted X-Acting-As header.
+		if existing, _ := ctx.Value(actorKey{}).(string); existing == "" {
+			if actor := sanitizeHeaderValue(r.Header.Get(actingAsHeaderName)); actor != "" {
+				ctx = context.WithValue(ctx, actorKey{}, actor)
+			}
 		}
 		h.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -2335,12 +2382,15 @@ func newRESTRequestID() string {
 }
 
 // authMiddleware validates the Bearer token from the Authorization header
-// against cfg.expectedToken. When expectedToken is empty, auth is disabled
-// (development mode). Matches the same semantics as grpc.AuthInterceptor.
+// against the accepted set (cfg.AuthToken plus cfg.AuthTokens). When no token
+// is configured, auth is disabled (development mode). Matches the same
+// semantics as grpc.AuthInterceptorFor. A named token's authenticated subject
+// is injected into the request context (actorKey) so audit attribution uses
+// it in preference to any client-asserted X-Acting-As header.
 func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
+	tokens := AuthTokens{Legacy: gw.cfg.AuthToken, Named: gw.cfg.AuthTokens}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := gw.cfg.AuthToken
-		if token == "" {
+		if !tokens.Enabled() {
 			// Auth disabled: let the request through.
 			h.ServeHTTP(w, r)
 			return
@@ -2355,9 +2405,14 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(bearer), []byte(token)) != 1 {
+		subject, ok := tokens.Resolve(bearer)
+		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "invalid token")
 			return
+		}
+		if subject != "" {
+			ctx := context.WithValue(r.Context(), actorKey{}, subject)
+			r = r.WithContext(ctx)
 		}
 		h.ServeHTTP(w, r)
 	})

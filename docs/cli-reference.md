@@ -1908,7 +1908,8 @@ levee web --dev
 
 ```text
 levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--token <t>]
-           [--cors-origin <o>]... [--insecure]
+           [--auth-token name=secret]... [--metrics-public] [--cors-origin <o>]...
+           [--cluster --pg-dsn <dsn> --node-id <id> --node-addr <addr> --node-role <r>] [--insecure]
 ```
 
 **选项**
@@ -1919,16 +1920,27 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 | `--http-addr` | `:8080` | REST 网关 / Web UI 监听地址 |
 | `--tls-cert` | | TLS 证书路径（可选，省略则明文） |
 | `--tls-key` | | TLS 私钥路径（可选） |
-| `--token` | | 要求客户端提供的 Bearer token（必填，见下方安全门禁） |
+| `--token` | | 要求客户端提供的 Bearer token（见下方安全门禁；可用 `LEVEE_TOKEN` 环境变量代替） |
+| `--auth-token` | | 命名 Bearer token，格式 `name=secret`，可重复传入；`name` 成为认证后的操作主体（见下方多令牌身份） |
+| `--metrics-public` | `false` | 允许未鉴权访问 `/metrics`（默认：启用任一 token 后 `/metrics` 也要求 Bearer 鉴权） |
 | `--cors-origin` | 空（拒绝跨域） | REST 网关允许的 CORS 来源，可重复传入多个；传 `*` 表示允许所有来源 |
 | `--rate-limit` | `200` | REST 网关全局限流（req/s，令牌桶）；传负数关闭限流 |
 | `--rate-burst` | `400` | 令牌桶突发容量 |
+| `--cluster` | `false` | 启用集群模式（PostgreSQL 存储 + 集群协同，见下方说明） |
+| `--pg-dsn` | | PostgreSQL DSN（`--cluster` 时必填） |
+| `--node-id` | | 集群节点 ID（`--cluster` 时必填） |
+| `--node-addr` | | 集群节点地址（`--cluster` 时必填） |
+| `--node-role` | `worker` | 集群节点角色：`master` / `worker` |
 | `--insecure` | false | 显式接受无鉴权风险，仅供本地开发 |
 
 **说明**
 
-- 安全门禁：不传 `--token` 且未显式指定 `--insecure` 时，服务拒绝启动，避免生产环境意外暴露无鉴权 API
+- 安全门禁：未配置任何 token（`--token` / `LEVEE_TOKEN` / `--auth-token`）且未显式指定 `--insecure` 时，服务拒绝启动，避免生产环境意外暴露无鉴权 API
 - 设置 `--token` 后 gRPC 与 REST 网关均要求匹配的 Bearer token
+- **多令牌身份**：`--auth-token name=secret` 可重复传入，每个命名令牌映射到一个主体；命名令牌认证后，其主体注入请求上下文并**优先于**客户端自报的 `X-Acting-As`，使审计归属为“被证明的身份”。`--token` 单令牌行为完全向后兼容（不注入主体）
+- **/metrics 鉴权**：启用任一 token 后，`/metrics` 默认同样要求 Bearer 鉴权；无法携带凭据的采集器可用 `--metrics-public` 显式放开
+- **AI 引擎装配**：`serve` 启动时装配真实诊断引擎（日志采集/分析 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose` / `SendMessage` RPC 可直接使用；完整告警网关仍用独立的 `levee alert serve`
+- **集群模式**：当前集群协同仅限共享 PostgreSQL 存储（数据一致性 + 咨询锁），节点注册为进程内，尚无自动故障转移/跨节点调度；`--cluster` 启动时会输出告警提示
 - CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
 - 限流触发时返回 HTTP 429 并附带 `Retry-After`
 - 每个 REST 响应携带 `X-Request-Id`（可由客户端传入复用）；gRPC 日志含 `request_id` 字段，支持链路关联
@@ -1938,6 +1950,12 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 
 ```命令示例：启用 token 鉴权（生产推荐）
 levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cret
+
+命令示例：多令牌身份（按团队/系统划分主体）
+levee serve --token s3cret --auth-token alice=tok-a --auth-token ci-bot=tok-ci
+
+命令示例：放开 /metrics 供 Prometheus 无凭据抓取
+levee serve --token s3cret --metrics-public
 
 命令示例：本地开发（无鉴权，需显式确认）
 levee serve --token dev-token
@@ -2633,4 +2651,396 @@ levee push config --apns-key-file AuthKey.p8 --apns-team-id TEAM456 --apns-key-i
 
 命令示例：配置 FCM
 levee push config --fcm-key-file sa.json --fcm-project-id my-project
+```
+
+## 第24章 alert — 告警网关
+
+接收、去重、静默与分发告警。网关接收来自 Prometheus Alertmanager 与自定义 webhook 的告警，归一化为统一模型后，应用去重、聚合与静默规则，再转发给下游处理器。所有子命令均支持全局 `--json` 输出。
+
+### 24.1 alert serve
+
+在当前进程运行告警网关 HTTP 服务器，注册 Prometheus 与自定义 webhook 适配器，阻塞直到收到 SIGINT / SIGTERM。
+
+```text
+levee alert serve [--addr <a>] [--dedup <d>] [--aggregate <d>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--addr` | `:9095` | HTTP 监听地址 |
+| `--dedup` | `5m` | 去重窗口（`0` 关闭去重） |
+| `--aggregate` | `30s` | 聚合窗口（`0` 关闭聚合） |
+
+**示例**
+
+```命令示例：启动告警网关
+levee alert serve --addr :9095
+
+命令示例：关闭聚合
+levee alert serve --aggregate 0
+```
+
+### 24.2 alert list
+
+列出最近接收到的告警。
+
+```text
+levee alert list --server <url>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--server` | | 网关 URL（必填，如 `http://host:9095`） |
+
+**示例**
+
+```命令示例：列出最近告警
+levee alert list --server http://localhost:9095
+```
+
+### 24.3 alert show
+
+按 ID 查看单条告警（在最近缓冲区中查找）。
+
+```text
+levee alert show <id> --server <url>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<id>` | 是 | 告警 ID |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--server` | | 网关 URL（必填） |
+
+**说明**
+
+- 未找到对应 ID 时返回退出码 6
+
+**示例**
+
+```命令示例：查看单条告警
+levee alert show alert-001 --server http://localhost:9095
+```
+
+### 24.4 alert silence add
+
+添加静默规则。省略 `--server` 时在进程内演算规则（用于测试匹配表达式），否则调用网关 REST API。
+
+```text
+levee alert silence add [--match k=v]... [--duration <d>] [--reason <text>] [--source <s>] [--server <url>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--match` | | 标签匹配 `k=v`，可重复 |
+| `--duration` | `1h` | 静默时长 |
+| `--reason` | | 人类可读原因 |
+| `--source` | | 限定适配器来源（空 = 所有来源） |
+| `--server` | | 网关 URL（空 = 进程内演算） |
+
+**示例**
+
+```命令示例：添加静默规则到网关
+levee alert silence add --match env=prod --match severity=info --duration 2h --reason "计划内维护" --server http://localhost:9095
+
+命令示例：进程内测试规则匹配
+levee alert silence add --match env=prod --duration 1h
+```
+
+### 24.5 alert silence list
+
+列出静默规则。
+
+```text
+levee alert silence list --server <url>
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--server` | | 网关 URL（必填） |
+
+**示例**
+
+```命令示例：列出静默规则
+levee alert silence list --server http://localhost:9095
+```
+
+### 24.6 alert silence remove
+
+移除静默规则。
+
+```text
+levee alert silence remove <id> --server <url>
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<id>` | 是 | 静默规则 ID |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--server` | | 网关 URL（必填） |
+
+**示例**
+
+```命令示例：移除静默规则
+levee alert silence remove sil-001 --server http://localhost:9095
+```
+
+### 24.7 alert history
+
+查看告警历史（等价于 `alert list` 并附带 `--limit`，数据源相同）。
+
+```text
+levee alert history --server <url> [--limit <n>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--server` | | 网关 URL（必填） |
+| `--limit` | `50` | 最大返回条数（客户端截断最近 N 条） |
+
+**示例**
+
+```命令示例：查看最近 20 条告警历史
+levee alert history --server http://localhost:9095 --limit 20
+```
+
+## 第25章 diagnose — 诊断引擎
+
+对目标主机运行诊断引擎：并发采集与分析日志、探测健康状态，综合生成含发现项、根因与处置建议的诊断报告。
+
+### 25.1 diagnose
+
+```text
+levee diagnose <target> [--alert <id>] [--logs] [--health] [--window <d>]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<target>` | 是 | 目标主机名 |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--alert` | | 触发本次诊断的告警 ID（报告标记为告警触发） |
+| `--logs` | `false` | 仅运行日志采集与分析 |
+| `--health` | `false` | 仅运行健康探针 |
+| `--window` | `15m` | 日志回溯窗口（如 `15m`、`1h`） |
+
+**说明**
+
+- `--logs` 与 `--health` 互斥，同时传入返回退出码 2
+- 本地模式下使用进程内 shell 执行器，`levee diagnose localhost` 开箱即用；远程目标需配置 SSH / WinRM 通道（后续阶段），此前报告目标不可达
+- `--json` 输出完整诊断报告；`--quiet` 仅输出报告 ID
+
+**示例**
+
+```命令示例：诊断本机
+levee diagnose localhost
+
+命令示例：仅健康探针，回溯 1 小时日志窗口
+levee diagnose web-01 --health --window 1h
+
+命令示例：由告警触发的诊断（JSON 输出）
+levee diagnose web-01 --alert alert-001 --json
+```
+
+## 第26章 converse — AI 对话引擎
+
+与 LEVEE AI 对话引擎交互，支持单次消息与交互式多轮对话。命令默认装配推荐引擎（`/recommend` 开箱即用）；诊断引擎未配置时 `/diagnose` 返回说明性错误。
+
+### 26.1 converse
+
+```text
+levee converse [message] [--interactive] [--session <id>] [--user <id>] [--alert <id>] [--history] [--list]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `[message]` | 单次模式必填 | 发送给对话引擎的消息 |
+
+**选项**
+
+| 选项 | 短选项 | 默认值 | 说明 |
+|------|--------|--------|------|
+| `--interactive` | `-i` | `false` | 交互模式，进入 REPL 循环 |
+| `--session` | | | 指定已有会话 ID |
+| `--user` | | `cli-user` | 用户 ID |
+| `--alert` | | | 从告警 ID 创建会话 |
+| `--history` | | `false` | 显示会话历史并退出（需配合 `--session`） |
+| `--list` | | `false` | 列出所有活跃会话并退出 |
+
+**说明**
+
+- 单次模式：发送一条消息、打印回复后退出
+- 交互模式进入 REPL，本地特殊命令：`/exit`、`/quit`（退出）、`/help`（帮助）、`/state`（会话状态）、`/history`（历史）、`/sessions`（会话列表）、`/new`（新建会话）；其余文本转发给引擎；EOF（Ctrl-D）退出
+- `--history` 必须与 `--session` 同时使用
+
+**示例**
+
+```命令示例：单次对话
+levee converse "web-01 CPU 使用率过高"
+
+命令示例：交互式对话
+levee converse --interactive
+
+命令示例：在已有会话中继续
+levee converse --session sess-001 "继续诊断"
+
+命令示例：列出活跃会话
+levee converse --list
+
+命令示例：查看会话历史
+levee converse --session sess-001 --history
+```
+
+## 第27章 group — 目标分组管理
+
+管理分层目标清单分组。分层分组用于组织目标（如 `prod/db`）；每个目标至多属于一个分组，横切维度由标签（labels）承担。
+
+### 27.1 group add
+
+创建清单分组。
+
+```text
+levee group add <name> [--parent <parent>]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<name>` | 是 | 分组名称，唯一的路径式名称（如 `prod/db`） |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--parent` | | 父分组名称（用于建立层级） |
+
+**示例**
+
+```命令示例：创建顶层分组
+levee group add prod
+
+命令示例：创建子分组
+levee group add prod/db --parent prod
+```
+
+### 27.2 group list
+
+列出所有清单分组。
+
+```text
+levee group list
+```
+
+**输出**
+
+包含分组名称、ID 与父分组 ID。
+
+**示例**
+
+```命令示例：列出分组
+levee group list
+```
+
+## 第28章 backup / restore — 数据备份与恢复
+
+备份与恢复 LEVEE 数据存储。SQLite 通过 `VACUUM INTO` 快照（守护进程运行时亦安全）并附带 SHA-256 校验和；PostgreSQL 由纯 Go 实现导出为 SQL 脚本（无需 `pg_dump`）。
+
+### 28.1 backup
+
+创建一致性备份。
+
+```text
+levee backup [--output <path>] [--verify-only] [--pg-dsn <dsn>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--output` | 自动生成 | 备份输出文件路径（默认 `<db 目录>/levee-backup-<时间戳>.db` 或 `.sql`） |
+| `--verify-only` | `false` | 仅校验已有备份文件的校验和与完整性，不创建新备份 |
+| `--pg-dsn` | | PostgreSQL DSN；提供时备份 PostgreSQL（默认 SQLite，可用 `LEVEE_PG_DSN` 环境变量代替） |
+
+**说明**
+
+- 备份同时生成 `.sha256` 校验和 sidecar 文件
+- `--verify-only` 对已有备份执行完整性复检
+
+**示例**
+
+```命令示例：备份 SQLite（默认路径）
+levee backup
+
+命令示例：备份到指定路径
+levee backup --output /backup/levee-2026.db
+
+命令示例：备份 PostgreSQL
+levee backup --pg-dsn "postgres://user:pass@host:5432/levee"
+
+命令示例：仅校验已有备份
+levee backup --output /backup/levee-2026.db --verify-only
+```
+
+### 28.2 restore
+
+从备份恢复数据存储。替换前会先验证备份的 SHA-256 校验和（SQLite 另做 `PRAGMA integrity_check`）。
+
+```text
+levee restore --input <path> [--yes] [--pg-dsn <dsn>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--input` | | 待恢复的备份文件路径（必填） |
+| `--yes` | `false` | 跳过交互确认（脚本 / 非交互模式必须提供） |
+| `--pg-dsn` | | PostgreSQL DSN；提供时恢复到 PostgreSQL（默认 SQLite，可用 `LEVEE_PG_DSN` 环境变量代替） |
+
+**说明**
+
+- 恢复会用备份覆盖当前数据，默认需交互输入 `yes` 确认；`--json` 非交互模式下必须显式传 `--yes`
+- SQLite 恢复前自动在数据库旁写入 `<db>.pre-restore` 安全快照，误恢复可据此回退
+- 校验失败时不做任何替换
+
+**示例**
+
+```命令示例：恢复（交互确认）
+levee restore --input /backup/levee-2026.db
+
+命令示例：非交互恢复（脚本）
+levee restore --input /backup/levee-2026.db --yes
+
+命令示例：恢复到 PostgreSQL
+levee restore --input /backup/levee-2026.sql --pg-dsn "postgres://user:pass@host:5432/levee" --yes
 ```

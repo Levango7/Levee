@@ -63,6 +63,7 @@ type Server struct {
 	// Configuration captured at NewServer time.
 	tlsConfig  *tls.Config
 	authToken  string
+	authTokens []TokenIdentity
 	listenAddr string
 
 	// started guards against double Start; closed when Stop completes.
@@ -90,6 +91,17 @@ func WithTLS(cfg *tls.Config) Option {
 func WithAuthToken(token string) Option {
 	return func(s *Server) {
 		s.authToken = token
+	}
+}
+
+// WithAuthTokens configures additional named bearer tokens, each mapped to
+// the subject it authenticates as. Named tokens complement (not replace) the
+// single token set via WithAuthToken; together they form the accepted set.
+// Requests authenticated via a named token carry that token's subject for
+// audit attribution instead of the client-asserted actor.
+func WithAuthTokens(tokens []TokenIdentity) Option {
+	return func(s *Server) {
+		s.authTokens = tokens
 	}
 }
 
@@ -156,16 +168,19 @@ func NewServer(store state.Store, opts ...Option) *Server {
 	}
 
 	// Build the grpc.Server with interceptors and optional TLS.
+	// Assemble the accepted bearer-token set (legacy single token plus any
+	// named identities) and install the multi-token auth interceptors.
+	tokens := AuthTokens{Legacy: s.authToken, Named: s.authTokens}
 	serverOpts := []ggrpc.ServerOption{
 		ggrpc.ChainUnaryInterceptor(
 			recoveryUnaryInterceptor,
 			loggingUnaryInterceptor,
-			AuthInterceptor(s.authToken),
+			AuthInterceptorFor(tokens),
 		),
 		ggrpc.ChainStreamInterceptor(
 			recoveryStreamInterceptor,
 			loggingStreamInterceptor,
-			AuthStreamInterceptor(s.authToken),
+			AuthStreamInterceptorFor(tokens),
 		),
 	}
 	if s.tlsConfig != nil {

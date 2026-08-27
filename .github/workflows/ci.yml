@@ -46,6 +46,29 @@ jobs:
           args: --timeout 5m
 
   # ---------------------------------------------------------------------------
+  # frontend: type-check and build the Vue 3 web UI. The Go binary embeds the
+  # committed internal/web/dist assets, so this job guards the source that
+  # generates them even though the Go build itself does not run node.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: frontend (vue-tsc + vite build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm ci
+        run: npm ci
+      - name: type-check + build
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
   # test: race detector + coverage, uploads coverage to Codecov when
   # available. Runs on all three OSes to catch platform-specific bugs.
   # ---------------------------------------------------------------------------
@@ -224,6 +247,9 @@ jobs:
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          # Fail the build on fixable CRITICAL/HIGH CVEs so they block merge
+          # instead of only appearing in the uploaded report.
+          exit-code: 1
       - name: upload report
         uses: actions/upload-artifact@v4
         with:
@@ -243,19 +269,20 @@ jobs:
   check:
     name: check (all jobs passed)
     runs-on: ubuntu-latest
-    needs: [vet, lint, test, integration, build, gosec, trivy]
+    needs: [vet, lint, frontend, test, integration, build, gosec, trivy]
     if: always()
     steps:
       - name: aggregate
         run: |
           echo "vet=${{ needs.vet.result }}"
           echo "lint=${{ needs.lint.result }}"
+          echo "frontend=${{ needs.frontend.result }}"
           echo "test=${{ needs.test.result }}"
           echo "integration=${{ needs.integration.result }}"
           echo "build=${{ needs.build.result }}"
           echo "gosec=${{ needs.gosec.result }}"
           echo "trivy=${{ needs.trivy.result }}"
-          for job in vet lint test integration build gosec trivy; do
+          for job in vet lint frontend test integration build gosec trivy; do
             if [[ "${{ needs[job].result }}" != "success" ]]; then
               echo "::error::required job '$job' did not pass"
               exit 1

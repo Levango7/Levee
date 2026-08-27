@@ -173,6 +173,12 @@ func TestSubscribeAlerts_ReceivesBroadcast(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, stream.SendMsg(&pb.SubscribeRequest{}))
 
+	// Wait for the server to register the subscriber before broadcasting;
+	// otherwise the alert can race ahead of registration and be dropped,
+	// leaving RecvMsg blocked forever.
+	require.Eventually(t, func() bool { return svc.SubscriberCount() == 1 },
+		5*time.Second, 10*time.Millisecond, "subscriber not registered in time")
+
 	// Send an alert via the client. We use a unary invoke on the same
 	// connection so the alert flows through the registered server.
 	invokeCtx, invokeCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -221,6 +227,12 @@ func TestSubscribeAlerts_RespectsSeverityFilter(t *testing.T) {
 		"/levee.AlertService/SubscribeAlerts", ggrpc.StaticMethod())
 	require.NoError(t, err)
 	require.NoError(t, stream.SendMsg(&pb.SubscribeRequest{Severity: "critical"}))
+
+	// Wait for the server to register the subscriber before broadcasting;
+	// otherwise the alerts can race ahead of registration and be dropped,
+	// leaving RecvMsg blocked forever.
+	require.Eventually(t, func() bool { return svc.SubscriberCount() == 1 },
+		5*time.Second, 10*time.Millisecond, "subscriber not registered in time")
 
 	// Send a warning alert (should be filtered out).
 	var resp pb.AlertResponse

@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+### 安全修复
+
+- **REST 方法校验（P1）**：`/changes/{id}/{plan,apply,approve,reject,pause,resume,cancel,retry,rollback,archive}` 现强制 `POST`、`/changes/{id}/{logs,trace}` 强制 `GET`；此前任意 HTTP 方法（含 GET）即可触发状态变更，爬虫/预取可误暂停变更。`pause/resume/archive` 不再吞掉请求体解析错误：空体合法、畸形 JSON 返回 400。
+- **SSH BecomeUser 注入（P2）**：`buildExecCommand` 现对 `become_user` 也做 POSIX shell 引用（此前仅引用命令本体），阻断来自配置值的 `sudo -u` 注入面。
+- **/metrics 默认鉴权（P2）**：网关 `SetExtraRoute` 挂载的运维端点（`/metrics`）在配置了任一 token 时默认要求 Bearer 鉴权；新增 `--metrics-public` / `ServeGatewayConfig.MetricsPublic` 显式放开（供无法携带凭据的采集器）。
+
+### 新增
+
+- **多令牌身份认证**：`serve` 新增可重复 `--auth-token name=secret`，每个命名令牌映射到一个主体（subject）；gRPC 拦截器与 REST 中间件均支持 `AuthTokens`（`Legacy` + `Named`）。命名令牌认证后，其主体注入请求上下文并**优先于**客户端自报的 `X-Acting-As`，使审计归属为“被证明的身份”而非“断言”。单令牌（`--token`/`LEVEE_TOKEN`）行为完全向后兼容。
+- **serve 装配 AI 引擎**：`levee serve` 现装配真实的诊断引擎（日志管线 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose`/`SendMessage` RPC 不再返回 `Unimplemented`；告警服务保持独立环形存储（完整网关仍用 `levee alert serve`）。
+- **前端 CI 门禁**：新增 `frontend` 作业（`vue-tsc --noEmit` + `vite build`），并纳入 `check` 聚合门禁。
+
+### 变更
+
+- **Trivy 阻断合并**：`trivy` 作业对可修复的 CRITICAL/HIGH CVE 设 `exit-code: 1`，由“仅上报”改为“阻断”。
+- **集群模式如实标注**：`serve --cluster` 启动时输出告警，说明当前集群协同仅限共享 PostgreSQL 存储（数据一致性 + 咨询锁），节点注册为进程内、尚无自动故障转移/跨节点调度；README 特性描述同步收敛。
+- **前端产物清理**：`internal/web/dist` 重新构建，移除历史遗留的多代哈希资产，仅保留当前一代。
+
+### 文档
+
+- README 版本号由过时的 v1.10.0 更正为 v1.12.0。
+- 补充 v1.5.0 跳号说明（该号未发布）。
+- 修正 `.gitignore` 中 `.env"coverfunc.txt"` 的粘连/引号错误。
+- 新增生产部署与升级手册（docs/deployment.md）。
+- 补全 CLI 参考缺失命令（alert/backup/restore/group/converse/diagnose 等）。
+
+### 修复
+
+- **告警订阅流测试竞态**：`SubscribeAlerts` 广播为尽力而为（best-effort），订阅注册完成前发布的告警会被丢弃；相关流式测试此前以固定 `time.Sleep` 等待注册，在高负载下（如完整 `go test ./...`）可能竞态导致 `RecvMsg` 永久阻塞（触发 10 分钟单测超时）。新增 `AlertService.SubscriberCount()` 观测方法，全部 5 个订阅流式测试改为 `require.Eventually` 等待注册完成后再发布告警，消除挂起。
+
 ## v1.12.0 - 2026-08-27
 
 ### Added
@@ -241,6 +271,8 @@
 - 测试覆盖率: alert 90.8%, diagnosis 95.4%
 - 新增包: internal/alert, internal/diagnosis (扩展)
 - 新增 CLI 命令组: alert, diagnose
+
+> **说明**：不存在 v1.5.0 —— 版本号从 v1.4.0 直接跳到 v1.6.0（该号被跳过、未发布）。
 
 ## [1.4.0] - 2026-08-16 — Phase 3: 生态扩展
 

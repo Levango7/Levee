@@ -36,4 +36,6 @@ levee-data/
 
 # Config (keep examples, ignore local)
 configs/config.local.yaml
-.env"coverfunc.txt"  
+.env
+coverfunc.txt
+

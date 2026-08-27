@@ -277,6 +277,16 @@ func (s *AlertService) removeSubscriber(id int64) {
 	}
 }
 
+// SubscriberCount returns the number of active SubscribeAlerts subscribers.
+// It is safe for concurrent use and is intended for observability and test
+// synchronization (broadcast is best-effort and only reaches subscribers
+// that have completed registration).
+func (s *AlertService) SubscriberCount() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.subscribers)
+}
+
 // matchAlertFilter reports whether a matches the subscribe filter.
 func matchAlertFilter(a *alert.Alert, req *pb.SubscribeRequest) bool {
 	if req == nil {

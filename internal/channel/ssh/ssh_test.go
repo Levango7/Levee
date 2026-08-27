@@ -999,19 +999,25 @@ func TestBuildExecCommand(t *testing.T) {
 			name: "sudo with explicit user",
 			raw:  "whoami",
 			cfg:  &Config{BecomeMethod: BecomeMethodSudo, BecomeUser: "deploy"},
-			want: "sudo -n -H -u deploy -- bash -c 'whoami'",
+			want: "sudo -n -H -u 'deploy' -- bash -c 'whoami'",
 		},
 		{
 			name: "quoting survives single quotes in command",
 			raw:  `echo it's alive`,
 			cfg:  &Config{BecomeMethod: BecomeMethodSudo, BecomeUser: "ops"},
-			want: `sudo -n -H -u ops -- bash -c 'echo it'\''s alive'`,
+			want: `sudo -n -H -u 'ops' -- bash -c 'echo it'\''s alive'`,
 		},
 		{
 			name: "become_method is case/space normalized",
 			raw:  "id",
 			cfg:  &Config{BecomeMethod: "  SUDO ", BecomeUser: "ops"},
-			want: "sudo -n -H -u ops -- bash -c 'id'",
+			want: "sudo -n -H -u 'ops' -- bash -c 'id'",
+		},
+		{
+			name: "become_user with shell metacharacters is quoted",
+			raw:  "id",
+			cfg:  &Config{BecomeMethod: BecomeMethodSudo, BecomeUser: "root; touch /tmp/pwned"},
+			want: `sudo -n -H -u 'root; touch /tmp/pwned' -- bash -c 'id'`,
 		},
 		{
 			name:    "unsupported method fails closed",
@@ -1063,7 +1069,7 @@ func TestSSHChannelExecBecomeWrapping(t *testing.T) {
 
 	log := srv.ExecLog()
 	require.Len(t, log, 1)
-	assert.Equal(t, "sudo -n -H -u ops -- bash -c 'echo hi'", log[0])
+	assert.Equal(t, "sudo -n -H -u 'ops' -- bash -c 'echo hi'", log[0])
 }
 
 // TestSSHChannelExecUnsupportedBecomeFailsClosed verifies that an unsupported

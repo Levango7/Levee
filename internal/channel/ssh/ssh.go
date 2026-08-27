@@ -373,9 +373,12 @@ func (c *SSHChannel) Connect(ctx context.Context) error {
 // With BecomeMethod empty, raw is returned unchanged. With BecomeMethodSudo,
 // raw is wrapped as
 //
-//	sudo -n -H [-u <BecomeUser>] -- bash -c <shell-quoted raw>
+//	sudo -n -H [-u <shell-quoted BecomeUser>] -- bash -c <shell-quoted raw>
 //
 // so the original command runs inside bash under the escalation target.
+// Both BecomeUser and raw are shell-quoted: BecomeUser originates from the
+// (operator-editable) config, so leaving it unquoted would let a malicious
+// config value inject arbitrary shell before the `--` separator.
 // -H sets HOME for the target user and -n makes sudo fail immediately instead
 // of blocking on a password prompt. Upload / Download deliberately bypass
 // this wrapper: they transfer files as the connecting account via `cat`, and
@@ -388,7 +391,7 @@ func buildExecCommand(raw string, cfg *Config) (string, error) {
 		if cfg.BecomeUser == "" {
 			return fmt.Sprintf("sudo -n -H -- bash -c %s", shellQuote(raw)), nil
 		}
-		return fmt.Sprintf("sudo -n -H -u %s -- bash -c %s", cfg.BecomeUser, shellQuote(raw)), nil
+		return fmt.Sprintf("sudo -n -H -u %s -- bash -c %s", shellQuote(cfg.BecomeUser), shellQuote(raw)), nil
 	default:
 		// Fail closed: an operator explicitly requested escalation; silently
 		// running unprivileged would mask a misconfiguration.

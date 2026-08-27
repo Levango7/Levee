@@ -19,7 +19,7 @@ LEVEE 管 K8s 集群外（非云原生基础设施层），各管一摊。
 - **AI 辅助运维**：告警接入 → 拓扑诊断 → LLM 对话式定位 → RAG 知识增强推荐 → 自动执行 → 效果学习
 - **多通道执行**：SSH / WinRM 无代理通道，插件系统可扩展
 - **资源沙箱**：Linux 下 cgroup v2 硬限制插件内存/CPU；墙钟超时全平台兜底
-- **集群模式**：多节点部署 + PostgreSQL 存储后端可选
+- **集群模式**：PostgreSQL 共享存储 + 分布式咨询锁保证数据一致性（多节点成员注册已具备；自动故障转移/跨节点调度尚在开发中，见 `levee serve --cluster` 启动告警）
 - **安全默认**：auth 启动门禁、CORS 默认拒绝、限流、请求 ID 追踪、TLS 支持
 
 ## 快速开始
@@ -114,6 +114,7 @@ levee/
 | [docs/leveelang-spec.md](docs/leveelang-spec.md) | LEVEELang DSL 规范 |
 | [docs/levee-api.md](docs/levee-api.md) | CLI 命令与 API 设计 |
 | [docs/cli-reference.md](docs/cli-reference.md) | CLI 参考手册 |
+| [docs/deployment.md](docs/deployment.md) | 生产部署与升级手册 |
 | [docs/security-audit.md](docs/security-audit.md) | 安全审计与部署安全声明 |
 | [docs/opsmesh-integration-design.md](docs/opsmesh-integration-design.md) | OpsMesh 集成设计 |
 | [docs/release-notes/](docs/release-notes/) | 各版本发布说明 |
@@ -150,6 +151,6 @@ make cross-build  # 跨平台编译
 
 ## 版本
 
-当前版本 v1.10.0。MVP (3 个月) -> V1 (6 个月) -> V2 (12 个月)
+当前版本 v1.12.0。MVP (3 个月) -> V1 (6 个月) -> V2 (12 个月)
 
 详见 [docs/mvp-tasks.md](docs/mvp-tasks.md) 与 [CHANGELOG.md](CHANGELOG.md)。

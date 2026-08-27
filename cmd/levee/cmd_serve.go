@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -44,12 +45,15 @@ import (
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/credential"
+	"github.com/nexus/levee/internal/diagnosis"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
 	"github.com/nexus/levee/internal/push"
+	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/tracing"
 
@@ -87,6 +91,12 @@ var (
 	serveOptNodeID   string
 	serveOptNodeAddr string
 	serveOptNodeRole string
+
+	// serveOptAuthTokens holds repeatable --auth-token name=secret pairs that
+	// map each named bearer token to the subject it authenticates as.
+	serveOptAuthTokens []string
+	// serveOptMetricsPublic opts out of authenticating the /metrics route.
+	serveOptMetricsPublic bool
 )
 
 // serveGracefulShutdownTimeout is the deadline the server waits for in-flight
@@ -128,6 +138,8 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeAddr, "node-addr", "", "Cluster node address (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
+	cmd.Flags().StringArrayVar(&serveOptAuthTokens, "auth-token", nil, "Named bearer token name=secret (repeatable); the name becomes the authenticated actor")
+	cmd.Flags().BoolVar(&serveOptMetricsPublic, "metrics-public", false, "Expose /metrics without authentication (default: requires a token when auth is enabled)")
 	return cmd
 }
 
@@ -140,6 +152,54 @@ func resolveServeToken() string {
 	return os.Getenv("LEVEE_TOKEN")
 }
 
+// parseNamedTokens converts --auth-token name=secret pairs into
+// grpc.TokenIdentity values. Malformed entries (missing '=' or an empty
+// name/secret) are rejected so a typo cannot silently drop an identity.
+func parseNamedTokens(pairs []string) ([]grpc.TokenIdentity, error) {
+	out := make([]grpc.TokenIdentity, 0, len(pairs))
+	for _, p := range pairs {
+		name, secret, ok := strings.Cut(p, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" || secret == "" {
+			return nil, fmt.Errorf("--auth-token expects name=secret, got %q", p)
+		}
+		out = append(out, grpc.TokenIdentity{Token: secret, Subject: name})
+	}
+	return out, nil
+}
+
+// newServeDiagEngine builds the diagnosis engine for serve mode with both the
+// log pipeline and the health prober wired, using the in-process local
+// executor — the same self-diagnosis capability `levee diagnose` provides.
+func newServeDiagEngine() (*diagnosis.DiagEngine, error) {
+	cfg := diagnosis.DiagEngineConfig{
+		LogWindow: 15 * time.Minute,
+		Timeout:   60 * time.Second,
+	}
+	executor := newLocalExecutor()
+	collector, err := diagnosis.NewLogCollector(executor)
+	if err != nil {
+		return nil, fmt.Errorf("build log collector: %w", err)
+	}
+	cfg.Collector = collector
+	cfg.Analyzer = diagnosis.NewDefaultLogAnalyzer()
+	cfg.Prober = diagnosis.NewHealthProber(diagnosis.HealthProberConfig{Executor: executor})
+	return diagnosis.NewDiagEngine(cfg), nil
+}
+
+// newServeConvEngine builds the conversation engine for serve mode with the
+// built-in recommend engine wired, mirroring the `levee converse` defaults so
+// /recommend works out of the box over the API.
+func newServeConvEngine() *conversation.ConversationEngine {
+	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
+		Timeout: 30 * time.Second,
+	})
+	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
+		Recommend: recEngine,
+		Timeout:   60 * time.Second,
+	})
+}
+
 // runServe executes the `levee serve` command.
 func runServe(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -147,14 +207,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// The bearer token comes from --token or the LEVEE_TOKEN environment
 	// variable (12-factor style; keeps container images startable without
-	// baking secrets into CMD).
+	// baking secrets into CMD). Named identities come from repeatable
+	// --auth-token name=secret flags.
 	token := resolveServeToken()
+	namedTokens, err := parseNamedTokens(serveOptAuthTokens)
+	if err != nil {
+		return err
+	}
 
 	// 0. Safety gate: refuse to start with authentication disabled unless
 	//    the caller explicitly opted in via --insecure. This prevents an
 	//    unauthenticated daemon from reaching production by accident.
-	if token == "" && !serveOptInsecure {
-		return errors.New("refusing to start without --token (or LEVEE_TOKEN): all API requests would be unauthenticated. " +
+	if token == "" && len(namedTokens) == 0 && !serveOptInsecure {
+		return errors.New("refusing to start without --token (or LEVEE_TOKEN / --auth-token): all API requests would be unauthenticated. " +
 			"Pass --token <secret> for production, or --insecure to accept the risk for local development")
 	}
 
@@ -230,6 +295,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("start cluster manager: %w", err)
 		}
 		log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
+		log.Warn("cluster coordination is limited to the shared PostgreSQL store",
+			"detail", "node registry is per-process; automated failover and cross-node scheduling are not yet implemented — do not rely on HA guarantees")
 	} else {
 		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
 		if err != nil {
@@ -279,9 +346,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 		store, cfg, optConfigPath,
 		version, commitHash, buildTime, goVersion, time.Now(),
 	)
+	// Alert ingestion stays stand-alone here (the AlertService keeps its own
+	// bounded ring); run `levee alert serve` for the full gateway with
+	// Prometheus/custom adapters. Diagnosis and conversation get real engines
+	// so the corresponding RPCs are functional in serve mode instead of
+	// returning Unimplemented.
 	alertSvc := grpc.NewAlertService(nil, slog.Default())
-	diagSvc := grpc.NewDiagnosisService(nil, slog.Default())
-	convSvc := grpc.NewConversationService(nil, slog.Default())
+	diagEngine, diagErr := newServeDiagEngine()
+	if diagErr != nil {
+		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
+	}
+	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
+	convSvc := grpc.NewConversationService(newServeConvEngine(), slog.Default())
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the
 	// REST gateway's /changes/deeplink/* routes work out of the box. Push
@@ -303,6 +379,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	if token != "" {
 		serverOpts = append(serverOpts, grpc.WithAuthToken(token))
+	}
+	if len(namedTokens) > 0 {
+		serverOpts = append(serverOpts, grpc.WithAuthTokens(namedTokens))
 	}
 	tlsCfg, err := loadTLSConfig(serveOptTLSCert, serveOptTLSKey)
 	if err != nil {
@@ -344,19 +423,21 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	gw := grpc.NewGateway(grpc.ServeGatewayConfig{
-		Addr:        serveOptHTTPAddr,
-		CORSOrigins: serveOptCORSOrigins,
-		AuthToken:   token,
-		RatePerSec:  serveOptRateLimit,
-		RateBurst:   serveOptRateBurst,
+		Addr:          serveOptHTTPAddr,
+		CORSOrigins:   serveOptCORSOrigins,
+		AuthToken:     token,
+		AuthTokens:    namedTokens,
+		MetricsPublic: serveOptMetricsPublic,
+		RatePerSec:    serveOptRateLimit,
+		RateBurst:     serveOptRateBurst,
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetMobileApproval(mobileSvc)
 
-	// 5e. Self-observability: expose the process-wide metrics collector
-	//     as Prometheus text format on the gateway mux. The endpoint is
-	//     unauthenticated, like /healthz, so monitoring agents can
-	//     scrape it without credentials.
+	// 5e. Self-observability: expose the process-wide metrics collector as
+	//     Prometheus text format on the gateway mux. The route is gated
+	//     behind the same bearer auth as the API whenever any token is
+	//     configured; pass --metrics-public to allow unauthenticated scraping.
 	gw.SetExtraRoute("/metrics", metrics.Default.Handler())
 
 	// 6. Start the REST gateway on THIS instance. Start binds the port
@@ -393,7 +474,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 			"Pass --tls-cert/--tls-key for direct TLS, or terminate TLS at a sidecar/load balancer, " +
 			"or pass --insecure to silence this warning for local development")
 	}
-	log.Info("starting levee gRPC server", "addr", addr, "tls", tlsCfg != nil, "auth", token != "")
+	log.Info("starting levee gRPC server", "addr", addr, "tls", tlsCfg != nil,
+		"auth", token != "" || len(namedTokens) > 0, "named_tokens", len(namedTokens))
 	if err := srv.Start(addr); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}

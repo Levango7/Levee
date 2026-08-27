@@ -238,7 +238,8 @@ func TestSubscribeAlerts_SourceFilterDropsMismatchedAlerts(t *testing.T) {
 	go func() {
 		done <- svc.SubscribeAlerts(&pb.SubscribeRequest{Source: "prometheus"}, stream)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool { return svc.SubscriberCount() == 1 },
+		5*time.Second, 5*time.Millisecond, "subscriber not registered in time")
 
 	// Mismatched source — dropped by the filter.
 	svc.broadcast(alertFixture("custom", "warning"))
@@ -266,7 +267,8 @@ func TestSubscribeAlerts_SeverityFilterCaseInsensitive(t *testing.T) {
 	go func() {
 		done <- svc.SubscribeAlerts(&pb.SubscribeRequest{Severity: " CRITICAL "}, stream)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool { return svc.SubscriberCount() == 1 },
+		5*time.Second, 5*time.Millisecond, "subscriber not registered in time")
 
 	svc.broadcast(alertFixture("src", "info"))
 	svc.broadcast(alertFixture("src", "Critical"))
@@ -288,7 +290,8 @@ func TestSubscribeAlerts_NilRequestTreatedAsEmptyFilter(t *testing.T) {
 	go func() {
 		done <- svc.SubscribeAlerts(nil, stream)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool { return svc.SubscriberCount() == 1 },
+		5*time.Second, 5*time.Millisecond, "subscriber not registered in time")
 
 	svc.broadcast(alertFixture("any", "info"))
 	time.Sleep(50 * time.Millisecond)
