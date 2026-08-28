@@ -92,9 +92,10 @@ func TestAuthTokens_Resolve(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			subject, ok := tt.tokens.Resolve(tt.presented)
+			id, ok := tt.tokens.Resolve(context.Background(), tt.presented)
 			assert.Equal(t, tt.wantOK, ok)
-			assert.Equal(t, tt.wantSubject, subject)
+			assert.Equal(t, tt.wantSubject, id.Subject)
+			assert.Empty(t, id.Roles, "static tokens never carry roles")
 		})
 	}
 }

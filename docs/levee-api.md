@@ -842,6 +842,7 @@ RESTful 风格，支持两套路径：
 | GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee status` |
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | — |
 | POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | — |
+| GET | `/system/auth-info` | — | 公开认证描述符（SSO 探测，见 13.3，免 Bearer） | — |
 
 ### 13.3 认证
 
@@ -851,7 +852,14 @@ Token-based 认证，三种模式：
 - 门户（Web UI）：同源嵌入在二进制中，无需额外认证；外部调用需携带 Bearer token。
 - 移动端一键审批（deeplink）：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 不要求 Bearer 头，改以请求体中的一次性 token 作为认证凭据（`{"token": "<one-time-token>"}`）。token 由审批通知下发时生成：32 字节随机数、默认 30 分钟 TTL、单次消费、绑定 (run-id, 用户, 动作)；消费或过期后即失效。无效 / 过期 token 返回 401。该豁免仅覆盖这两个端点，其余端点仍强制 Bearer。
 
-> **安全提示**：默认情况下（不传 `--token`）鉴权处于关闭状态，所有 API 请求无需认证即可访问。生产环境必须通过 `--token <secret>` 设置 Bearer token。gRPC 和 REST 网关共享同一 token 校验逻辑。
+静态令牌之外还支持第四种凭据 —— **OIDC（可选，`auth.oidc.enabled` 开启）**：
+
+- 解析顺序：请求携带的 Bearer 令牌先与静态令牌集（constant-time 比较）比对，未命中且令牌为三段式 JWT 形态时，走 OIDC 验证（签名对 IdP JWKS 校验，外加 issuer / audience / exp 检查）。开启 OIDC 不影响既有静态令牌。
+- 配置：`auth.oidc`（`issuer_url`、`client_id`、`audience`、`username_claim`、`role_claim`、`role_map`，见 config.example.yaml）。`serve` 启动时即拉取 `<issuer_url>/.well-known/openid-configuration`，失败直接拒绝启动（fail-fast）；实现与 IdP 无关（Keycloak / Zitadel / Entra ID / Okta 等标准 OIDC 提供方均可）。
+- 身份注入：验证通过后，`username_claim`（默认 `preferred_username`，回退 `email`、`sub`）作为审计主体注入上下文，行为与命名令牌一致 —— 覆盖客户端自报的 `X-Acting-As`；`role_claim` 声明中的角色经 `role_map` 映射后注入 `RolesFromContext`（v1 仅用于审计与未来权限接线，尚无授权决策消费角色）。
+- 前端 SSO：登录页通过公开描述符 `GET /system/auth-info`（免 Bearer，返回 `oidcEnabled` / `issuerUrl` / `clientId` / `authorizeUrl` / `tokenUrl`，OIDC 关闭时仅返回 `oidcEnabled: false`）探测 SSO 是否可用；可用则展示 SSO 按钮，走 authorization code + PKCE（公共客户端，无 client secret）流程，`/login/callback` 在浏览器直接与 IdP token 端点交换令牌（要求 IdP 允许本站点的 CORS），存入 access_token（JWT 形态）或 id_token。
+
+> **安全提示**：默认情况下（不传 `--token` 且未启用 OIDC）鉴权处于关闭状态，所有 API 请求无需认证即可访问。生产环境必须通过 `--token <secret>` 设置 Bearer token 或启用 `auth.oidc`。gRPC 和 REST 网关共享同一凭据校验逻辑；`--insecure` 可显式接受无鉴权风险（本地开发）。
 
 ### 13.4 分页与过滤
 

@@ -33,6 +33,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/push"
 )
@@ -60,6 +61,11 @@ type ServeGatewayConfig struct {
 	// token's subject for audit attribution, overriding any client-asserted
 	// X-Acting-As header.
 	AuthTokens []TokenIdentity
+	// OIDC, when non-nil and enabled, additionally admits JWT-shaped bearer
+	// tokens verified against the configured OpenID Connect provider.
+	// Static tokens take precedence; the verified subject and roles are
+	// injected into the request context for audit attribution.
+	OIDC *auth.Verifier
 	// MetricsPublic, when true, leaves operational extra routes (e.g.
 	// /metrics) reachable without a bearer token. By default (false) those
 	// routes require authentication whenever any token is configured, so
@@ -326,6 +332,8 @@ func (gw *Gateway) restRoute() http.Handler {
 			}
 		case "system":
 			switch {
+			case path == "/system/auth-info" && method == "GET":
+				gw.handleSystemAuthInfo(w, r)
 			case path == "/system/version" && method == "GET":
 				gw.handleSystemVersion(w, r)
 			case path == "/system/status" && method == "GET":
@@ -1206,6 +1214,27 @@ func (gw *Gateway) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
 // -----------------------------------------------------------------------
 // System — RESTful handlers
 // -----------------------------------------------------------------------
+
+// handleSystemAuthInfo serves the public authentication descriptor consumed
+// by the login page. It is intentionally unauthenticated (exempted in
+// authMiddleware): the browser must learn whether SSO is offered before it
+// holds any credential. The response carries only non-secret discovery
+// data — the authorization/token endpoints are the IdP's own published
+// values and client_id is public by design. oidcEnabled is false when no
+// OIDC verifier is configured; the remaining keys are then absent.
+func (gw *Gateway) handleSystemAuthInfo(w http.ResponseWriter, r *http.Request) {
+	v := gw.cfg.OIDC
+	resp := map[string]any{
+		"oidcEnabled": v.Enabled(),
+	}
+	if authorizeURL, tokenURL := v.Endpoints(); authorizeURL != "" {
+		resp["issuerUrl"] = v.IssuerURL()
+		resp["clientId"] = v.ClientID()
+		resp["authorizeUrl"] = authorizeURL
+		resp["tokenUrl"] = tokenURL
+	}
+	writeJSON(w, resp)
+}
 
 func (gw *Gateway) handleSystemVersion(w http.ResponseWriter, r *http.Request) {
 	svc := gw.system
@@ -2120,13 +2149,15 @@ func newRESTRequestID() string {
 }
 
 // authMiddleware validates the Bearer token from the Authorization header
-// against the accepted set (cfg.AuthToken plus cfg.AuthTokens). When no token
-// is configured, auth is disabled (development mode). Matches the same
-// semantics as grpc.AuthInterceptorFor. A named token's authenticated subject
-// is injected into the request context (actorKey) so audit attribution uses
+// against the accepted credential sources (cfg.AuthToken plus cfg.AuthTokens,
+// plus OIDC verification for JWT-shaped tokens when a verifier is
+// configured). When no source is configured, auth is disabled (development
+// mode). Matches the same semantics as grpc.AuthInterceptorFor. A
+// named-token or OIDC-authenticated subject is injected into the request
+// context (actorKey, plus rolesKey for OIDC roles) so audit attribution uses
 // it in preference to any client-asserted X-Acting-As header.
 func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
-	tokens := AuthTokens{Legacy: gw.cfg.AuthToken, Named: gw.cfg.AuthTokens}
+	tokens := AuthTokens{Legacy: gw.cfg.AuthToken, Named: gw.cfg.AuthTokens, OIDC: gw.cfg.OIDC}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !tokens.Enabled() {
 			// Auth disabled: let the request through.
@@ -2141,6 +2172,12 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 			h.ServeHTTP(w, r)
 			return
 		}
+		// The OIDC discovery descriptor is public: the login page needs it
+		// to decide whether to offer SSO before it holds any token.
+		if r.URL.Path == "/system/auth-info" {
+			h.ServeHTTP(w, r)
+			return
+		}
 		auth := r.Header.Get("Authorization")
 		if auth == "" {
 			writeJSONError(w, http.StatusUnauthorized, "missing authorization header")
@@ -2151,14 +2188,13 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, err.Error())
 			return
 		}
-		subject, ok := tokens.Resolve(bearer)
+		id, ok := tokens.Resolve(r.Context(), bearer)
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		if subject != "" {
-			ctx := context.WithValue(r.Context(), actorKey{}, subject)
-			r = r.WithContext(ctx)
+		if id.Subject != "" || len(id.Roles) > 0 {
+			r = r.WithContext(withResolvedIdentity(r.Context(), id))
 		}
 		h.ServeHTTP(w, r)
 	})

@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/cluster"
@@ -168,6 +169,29 @@ func parseNamedTokens(pairs []string) ([]grpc.TokenIdentity, error) {
 	return out, nil
 }
 
+// buildOIDCVerifier converts the auth.oidc config section into an
+// auth.Verifier, performing IdP discovery. It returns (nil, nil) when OIDC
+// is disabled. Discovery runs under a 10s timeout so a hanging IdP cannot
+// stall startup indefinitely.
+func buildOIDCVerifier(ctx context.Context, cfg *config.Config) (*auth.Verifier, error) {
+	oc := cfg.Auth.OIDC
+	if !oc.Enabled {
+		return nil, nil
+	}
+	acfg := auth.OIDCConfig{
+		Enabled:       true,
+		IssuerURL:     oc.IssuerURL,
+		ClientID:      oc.ClientID,
+		Audience:      oc.Audience,
+		UsernameClaim: oc.UsernameClaim,
+		RoleClaim:     oc.RoleClaim,
+		RoleMap:       oc.RoleMap,
+	}
+	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return auth.NewVerifier(vctx, acfg)
+}
+
 // newServeDiagEngine builds the diagnosis engine for serve mode with both the
 // log pipeline and the health prober wired, using the in-process local
 // executor — the same self-diagnosis capability `levee diagnose` provides.
@@ -215,18 +239,30 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 0. Safety gate: refuse to start with authentication disabled unless
-	//    the caller explicitly opted in via --insecure. This prevents an
-	//    unauthenticated daemon from reaching production by accident.
-	if token == "" && len(namedTokens) == 0 && !serveOptInsecure {
-		return errors.New("refusing to start without --token (or LEVEE_TOKEN / --auth-token): all API requests would be unauthenticated. " +
-			"Pass --token <secret> for production, or --insecure to accept the risk for local development")
-	}
-
-	// 1. Load configuration.
+	// 0. Load configuration first: the safety gate below needs to know
+	//    whether auth.oidc provides an additional credential source.
 	cfg, err := config.Load(optConfigPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
+	}
+
+	// 0b. OIDC verifier. Discovery is fetched eagerly with a short timeout
+	//     so a misconfigured issuer fails the start (fail-fast) instead of
+	//     leaving a daemon that accepts no JWTs and cannot explain why.
+	oidcVerifier, err := buildOIDCVerifier(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("oidc: %w", err)
+	}
+	if oidcVerifier.Enabled() {
+		log.Info("oidc authentication enabled", "issuer", cfg.Auth.OIDC.IssuerURL)
+	}
+
+	// 0c. Safety gate: refuse to start with authentication disabled unless
+	//    the caller explicitly opted in via --insecure. This prevents an
+	//    unauthenticated daemon from reaching production by accident.
+	if token == "" && len(namedTokens) == 0 && !oidcVerifier.Enabled() && !serveOptInsecure {
+		return errors.New("refusing to start without --token (or LEVEE_TOKEN / --auth-token / auth.oidc.enabled): all API requests would be unauthenticated. " +
+			"Pass --token <secret> for production, or --insecure to accept the risk for local development")
 	}
 
 	// 1b. Tracing: construct the process-wide tracer from the tracing
@@ -384,6 +420,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if len(namedTokens) > 0 {
 		serverOpts = append(serverOpts, grpc.WithAuthTokens(namedTokens))
 	}
+	// Nil/disabled verifier is a no-op option: AuthTokens.OIDC stays
+	// disabled and only static tokens are accepted.
+	serverOpts = append(serverOpts, grpc.WithAuthVerifier(oidcVerifier))
 	tlsCfg, err := loadTLSConfig(serveOptTLSCert, serveOptTLSKey)
 	if err != nil {
 		return fmt.Errorf("load tls: %w", err)
@@ -428,6 +467,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		CORSOrigins:   serveOptCORSOrigins,
 		AuthToken:     token,
 		AuthTokens:    namedTokens,
+		OIDC:          oidcVerifier,
 		MetricsPublic: serveOptMetricsPublic,
 		RatePerSec:    serveOptRateLimit,
 		RateBurst:     serveOptRateBurst,

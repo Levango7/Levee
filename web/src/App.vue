@@ -15,9 +15,12 @@ const collapsed = ref(false)
 
 const pageTitle = computed(() => (route.meta.title as string) || 'LEVEE')
 
-// Standalone pages (login, mobile approval deeplinks) render without the
-// sidebar / header chrome so they work on phones and pre-auth screens.
-const showShell = computed(() => !route.path.startsWith('/m/') && route.path !== '/login')
+// Standalone pages (login, SSO callback, mobile approval deeplinks) render
+// without the sidebar / header chrome so they work on phones and pre-auth
+// screens.
+const showShell = computed(
+  () => !route.path.startsWith('/m/') && route.path !== '/login' && route.path !== '/login/callback',
+)
 
 function toggleCollapse(): void {
   collapsed.value = !collapsed.value

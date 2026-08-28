@@ -12,6 +12,7 @@
 
 ### 新增
 
+- **OIDC 单点登录（可选）**：`serve` 支持 OpenID Connect JWT 作为静态 Bearer 令牌之外的附加凭据源，与 IdP 无关（Keycloak / Zitadel / Entra ID / Okta 等标准提供方均可）。新增 `internal/auth` 包（`coreos/go-oidc/v3`）：启动时对 `auth.oidc.issuer_url` 做发现（10s 超时，失败拒绝启动——fail-fast，防止误配置导致令牌永远验不过却无告警），验证签名（JWKS）、issuer、audience、expiry；主体取 `username_claim`（默认 `preferred_username`，回退 `email`、`sub`），`role_claim` 声明经 `role_map` 映射后注入上下文（v1 仅审计/预留，无授权消费）。凭据解析顺序：静态令牌（constant-time）→ JWT 形态令牌走 OIDC 验证；启用 OIDC 不影响既有静态令牌，gRPC 拦截器与 REST 中间件行为一致。配置经 `auth.oidc` 段（`LEVEE_AUTH_OIDC_*` 环境变量同步可用，`role_map` 仅文件可配）。安全门同步扩展：无 `--token`、无 `--auth-token` 且未启用 OIDC 时仍拒绝启动。前端：登录页经公开描述符 `GET /system/auth-info`（免 Bearer）探测 SSO，展示“通过 SSO 登录”按钮，走 authorization code + PKCE（公共客户端，Web Crypto 生成 verifier/challenge，state 防 CSRF）；新增 `/login/callback` 在浏览器直接与 IdP token 端点交换令牌（要求 IdP 允许本站点 CORS），存 access_token（JWT 形态）或回退 id_token；静态令牌登录路径完全保留。
 - **多令牌身份认证**：`serve` 新增可重复 `--auth-token name=secret`，每个命名令牌映射到一个主体（subject）；gRPC 拦截器与 REST 中间件均支持 `AuthTokens`（`Legacy` + `Named`）。命名令牌认证后，其主体注入请求上下文并**优先于**客户端自报的 `X-Acting-As`，使审计归属为“被证明的身份”而非“断言”。单令牌（`--token`/`LEVEE_TOKEN`）行为完全向后兼容。
 - **serve 装配 AI 引擎**：`levee serve` 现装配真实的诊断引擎（日志管线 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose`/`SendMessage` RPC 不再返回 `Unimplemented`；告警服务保持独立环形存储（完整网关仍用 `levee alert serve`）。
 - **前端 CI 门禁**：新增 `frontend` 作业（`vue-tsc --noEmit` + `vite build`），并纳入 `check` 聚合门禁。

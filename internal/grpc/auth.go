@@ -4,9 +4,19 @@
 // RPCs (WatchChange, StreamLogs). Both share the same token-validation
 // logic.
 //
-// When the configured token is empty, authentication is disabled
+// Two credential sources are supported and are checked in this order:
+//
+//  1. Static bearer tokens (the legacy shared token plus any named
+//     identities), compared in constant time. These serve machine callers
+//     and break-glass access.
+//  2. OIDC-verified JWTs. When a verifier is configured and the presented
+//     token has the three-segment JWT shape, it is validated against the
+//     OpenID Connect provider (signature, issuer, audience, expiry). The
+//     verified subject and roles are injected into the request context.
+//
+// When no credential source is configured, authentication is disabled
 // entirely (development mode). This is the default; production
-// deployments must supply a non-empty token via WithAuthToken.
+// deployments must supply at least one source.
 //
 // The token is extracted from the "authorization" gRPC metadata header,
 // which mirrors the HTTP header of the same name. The value must use
@@ -18,6 +28,8 @@ import (
 	"context"
 	"crypto/subtle"
 	"strings"
+
+	"github.com/nexus/levee/internal/auth"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -44,8 +56,8 @@ type TokenIdentity struct {
 
 // AuthTokens is the set of bearer tokens the server accepts. Either Legacy
 // (a single shared token with no named identity) or Named (one identity per
-// token) may be populated; when both are empty authentication is disabled
-// (development mode).
+// token) may be populated; when both are empty and no OIDC verifier is
+// configured, authentication is disabled (development mode).
 type AuthTokens struct {
 	// Legacy is the original single shared token. It carries no named
 	// subject; the actor remains whatever the client asserts. Retained for
@@ -54,31 +66,54 @@ type AuthTokens struct {
 	// Named lists each accepted token mapped to the subject it
 	// authenticates as.
 	Named []TokenIdentity
+	// OIDC, when non-nil and enabled, verifies JWT-shaped bearer tokens
+	// against the configured OpenID Connect provider. Static tokens are
+	// always checked first, so enabling OIDC extends the accepted
+	// credential set without invalidating existing machine identities.
+	OIDC *auth.Verifier
 }
 
-// Enabled reports whether any token is configured. When false,
+// Enabled reports whether any credential source is configured. When false,
 // authentication is disabled and all requests are admitted.
-func (a AuthTokens) Enabled() bool { return a.Legacy != "" || len(a.Named) > 0 }
+func (a AuthTokens) Enabled() bool {
+	return a.Legacy != "" || len(a.Named) > 0 || a.OIDC.Enabled()
+}
 
-// Resolve validates a presented bearer token against the accepted set. On a
-// match it returns the authenticated subject and true; the subject is "" for
-// the legacy single token, which carries no named identity. On a mismatch it
-// returns ("", false). Callers must check Enabled first — Resolve on a
-// disabled set never matches.
+// ResolvedIdentity is the outcome of authenticating a presented bearer
+// token: the audit subject and, for OIDC-authenticated callers, the roles
+// verified from the token. Static-token callers carry no roles.
+type ResolvedIdentity struct {
+	Subject string
+	Roles   []string
+}
+
+// Resolve authenticates a presented bearer token and returns the resolved
+// identity plus true on a match. Static tokens (legacy + named) are checked
+// first with constant-time comparison; when none matches and the token has
+// the three-segment JWT shape, it is verified against the configured OIDC
+// provider. On a mismatch it returns (zero value, false). Callers must check
+// Enabled first — Resolve on a disabled set never matches.
 //
-// Comparisons use crypto/subtle.ConstantTimeCompare to avoid timing
-// side-channels. The token set is small and operator-bounded, so the linear
-// scan leaks at most the set size through timing, which is acceptable.
-func (a AuthTokens) Resolve(token string) (subject string, ok bool) {
+// Static-token comparisons use crypto/subtle.ConstantTimeCompare to avoid
+// timing side-channels. The token set is small and operator-bounded, so the
+// linear scan leaks at most the set size through timing, which is
+// acceptable.
+func (a AuthTokens) Resolve(ctx context.Context, token string) (ResolvedIdentity, bool) {
 	if a.Legacy != "" && subtle.ConstantTimeCompare([]byte(token), []byte(a.Legacy)) == 1 {
-		return "", true
+		return ResolvedIdentity{}, true
 	}
 	for _, ti := range a.Named {
 		if ti.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(ti.Token)) == 1 {
-			return ti.Subject, true
+			return ResolvedIdentity{Subject: ti.Subject}, true
 		}
 	}
-	return "", false
+	if a.OIDC.Enabled() && auth.LooksLikeJWT(token) {
+		id, err := a.OIDC.Verify(ctx, token)
+		if err == nil {
+			return ResolvedIdentity{Subject: id.Subject, Roles: id.Roles}, true
+		}
+	}
+	return ResolvedIdentity{}, false
 }
 
 // AuthInterceptor returns a unary server interceptor that validates a single
@@ -114,9 +149,7 @@ func AuthInterceptorFor(tokens AuthTokens) grpc.UnaryServerInterceptor {
 		if err != nil {
 			return nil, err
 		}
-		if subject != "" {
-			ctx = context.WithValue(ctx, actorKey{}, subject)
-		}
+		ctx = withResolvedIdentity(ctx, subject)
 		return handler(ctx, req)
 	}
 }
@@ -149,24 +182,50 @@ func AuthStreamInterceptorFor(tokens AuthTokens) grpc.StreamServerInterceptor {
 		if err != nil {
 			return err
 		}
-		if subject != "" {
-			ss = &authSubjectStream{ServerStream: ss, subject: subject}
+		if subject.Subject != "" || len(subject.Roles) > 0 {
+			ss = &authSubjectStream{ServerStream: ss, identity: subject}
 		}
 		return handler(srv, ss)
 	}
 }
 
+// withResolvedIdentity injects an authenticated identity into the context:
+// the subject under actorKey and any verified roles under rolesKey. Static
+// legacy-token callers carry neither, leaving the client-asserted actor
+// fallback in place.
+func withResolvedIdentity(ctx context.Context, id ResolvedIdentity) context.Context {
+	if id.Subject != "" {
+		ctx = context.WithValue(ctx, actorKey{}, id.Subject)
+	}
+	if len(id.Roles) > 0 {
+		ctx = context.WithValue(ctx, rolesKey{}, id.Roles)
+	}
+	return ctx
+}
+
+// rolesKey is the context key carrying roles verified from an OIDC token.
+type rolesKey struct{}
+
+// RolesFromContext returns the roles verified for the caller, if any. It is
+// empty for static-token callers and when no role claim is configured. In
+// v1 roles are surfaced for audit attribution and future permission wiring
+// only — no authorization decision consumes them yet.
+func RolesFromContext(ctx context.Context) []string {
+	roles, _ := ctx.Value(rolesKey{}).([]string)
+	return roles
+}
+
 // authSubjectStream overrides the stream context to carry the authenticated
-// subject, mirroring the unary interceptor's context injection. It layers on
+// identity, mirroring the unary interceptor's context injection. It layers on
 // top of any upstream context (e.g. the logging interceptor's asserted actor),
 // so the authenticated subject wins on lookup.
 type authSubjectStream struct {
 	grpc.ServerStream
-	subject string
+	identity ResolvedIdentity
 }
 
 func (s *authSubjectStream) Context() context.Context {
-	return context.WithValue(s.ServerStream.Context(), actorKey{}, s.subject)
+	return withResolvedIdentity(s.ServerStream.Context(), s.identity)
 }
 
 // skipAuthMethods lists gRPC methods that are exempt from authentication.
@@ -183,36 +242,37 @@ var skipAuthMethods = map[string]bool{
 }
 
 // checkAuthTokens performs the actual token validation against the accepted
-// set. It returns the authenticated subject and nil when authentication is
-// disabled (empty set) or when the request carries a matching Bearer token;
-// otherwise it returns a gRPC status error with codes.Unauthenticated. The
-// subject is "" for the legacy single token and for disabled auth.
-func checkAuthTokens(ctx context.Context, tokens AuthTokens) (string, error) {
-	// Empty token set ⇒ auth disabled (development mode).
+// set. It returns the resolved identity and nil when authentication is
+// disabled (no credential source) or when the request carries a matching
+// credential; otherwise it returns a gRPC status error with
+// codes.Unauthenticated. The identity is zero-valued for the legacy single
+// token and for disabled auth.
+func checkAuthTokens(ctx context.Context, tokens AuthTokens) (ResolvedIdentity, error) {
+	// No credential source ⇒ auth disabled (development mode).
 	if !tokens.Enabled() {
-		return "", nil
+		return ResolvedIdentity{}, nil
 	}
 
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return "", status.Error(codes.Unauthenticated, "missing metadata")
+		return ResolvedIdentity{}, status.Error(codes.Unauthenticated, "missing metadata")
 	}
 
 	values := md.Get(authorizationHeader)
 	if len(values) == 0 {
-		return "", status.Error(codes.Unauthenticated, "missing authorization header")
+		return ResolvedIdentity{}, status.Error(codes.Unauthenticated, "missing authorization header")
 	}
 
 	token, err := extractBearerToken(values[0])
 	if err != nil {
-		return "", err
+		return ResolvedIdentity{}, err
 	}
 
-	subject, ok := tokens.Resolve(token)
+	id, ok := tokens.Resolve(ctx, token)
 	if !ok {
-		return "", status.Error(codes.Unauthenticated, "invalid token")
+		return ResolvedIdentity{}, status.Error(codes.Unauthenticated, "invalid token")
 	}
-	return subject, nil
+	return id, nil
 }
 
 // extractBearerToken parses a "Bearer <token>" header value and returns

@@ -26,6 +26,14 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/LoginView.vue'),
     meta: { title: '登录' },
   },
+  // OIDC authorization-code redirect target: the IdP sends the browser back
+  // here with ?code=...&state=...; the view completes the token exchange.
+  {
+    path: '/login/callback',
+    name: 'login-callback',
+    component: () => import('@/views/LoginCallbackView.vue'),
+    meta: { title: 'SSO 登录' },
+  },
   {
     path: '/approval',
     name: 'approval',

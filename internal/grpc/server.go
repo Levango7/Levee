@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/pause"
@@ -61,10 +62,11 @@ type Server struct {
 	healthServer *health.Server
 
 	// Configuration captured at NewServer time.
-	tlsConfig  *tls.Config
-	authToken  string
-	authTokens []TokenIdentity
-	listenAddr string
+	tlsConfig    *tls.Config
+	authToken    string
+	authTokens   []TokenIdentity
+	authVerifier *auth.Verifier
+	listenAddr   string
 
 	// started guards against double Start; closed when Stop completes.
 	mu      sync.Mutex
@@ -102,6 +104,16 @@ func WithAuthToken(token string) Option {
 func WithAuthTokens(tokens []TokenIdentity) Option {
 	return func(s *Server) {
 		s.authTokens = tokens
+	}
+}
+
+// WithAuthVerifier configures OIDC JWT verification as an additional
+// credential source. When verifier is nil or disabled, only static bearer
+// tokens are accepted (unchanged behaviour). Verified subjects and roles
+// are injected into the request context for audit attribution.
+func WithAuthVerifier(verifier *auth.Verifier) Option {
+	return func(s *Server) {
+		s.authVerifier = verifier
 	}
 }
 
@@ -168,9 +180,10 @@ func NewServer(store state.Store, opts ...Option) *Server {
 	}
 
 	// Build the grpc.Server with interceptors and optional TLS.
-	// Assemble the accepted bearer-token set (legacy single token plus any
-	// named identities) and install the multi-token auth interceptors.
-	tokens := AuthTokens{Legacy: s.authToken, Named: s.authTokens}
+	// Assemble the accepted credential set (legacy single token plus any
+	// named identities plus the optional OIDC verifier) and install the
+	// multi-source auth interceptors.
+	tokens := AuthTokens{Legacy: s.authToken, Named: s.authTokens, OIDC: s.authVerifier}
 	serverOpts := []ggrpc.ServerOption{
 		ggrpc.ChainUnaryInterceptor(
 			recoveryUnaryInterceptor,

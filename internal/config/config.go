@@ -24,6 +24,7 @@ import (
 // for all subsystem configuration.
 type Config struct {
 	Server     ServerConfig     `json:"server"     mapstructure:"server"`
+	Auth       AuthConfig       `json:"auth"       mapstructure:"auth"`
 	Database   DatabaseConfig   `json:"database"   mapstructure:"database"`
 	Log        LogConfig        `json:"log"        mapstructure:"log"`
 	Executor   ExecutorConfig   `json:"executor"   mapstructure:"executor"`
@@ -55,6 +56,43 @@ type DatabaseConfig struct {
 	MaxOpenConns    int           `json:"max_open_conns"    mapstructure:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"    mapstructure:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime" mapstructure:"conn_max_lifetime"`
+}
+
+// AuthConfig groups API authentication settings. Static bearer tokens are
+// configured via flags/env (--token, --auth-token, LEVEE_TOKEN) rather than
+// this file; the auth section currently only carries OIDC.
+type AuthConfig struct {
+	OIDC AuthOIDCConfig `json:"oidc" mapstructure:"oidc"`
+}
+
+// AuthOIDCConfig configures OpenID Connect authentication as an alternative
+// to static bearer tokens. When enabled, tokens that look like JWTs are
+// verified against the issuer; static tokens keep working alongside and are
+// checked first. Discovery is fetched at serve startup and a failure is
+// fatal (fail-fast), so a misconfigured issuer cannot silently disable auth.
+//
+// role_map maps IdP role claims to LEVEE role names; unmapped roles pass
+// through unchanged. role_map is file-only — environment variables cannot
+// express nested maps.
+type AuthOIDCConfig struct {
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
+	// IssuerURL is the OIDC issuer, e.g. https://idp.example.com. Discovery
+	// is read from <IssuerURL>/.well-known/openid-configuration.
+	IssuerURL string `json:"issuer_url" mapstructure:"issuer_url"`
+	// ClientID is the OIDC client identifier LEVEE expects in the aud claim.
+	ClientID string `json:"client_id" mapstructure:"client_id"`
+	// Audience overrides ClientID as the expected audience when the IdP
+	// issues access tokens with a distinct API audience. Empty means use
+	// ClientID.
+	Audience string `json:"audience" mapstructure:"audience"`
+	// UsernameClaim is the ID-token claim used as the audit subject.
+	// Empty defaults to preferred_username.
+	UsernameClaim string `json:"username_claim" mapstructure:"username_claim"`
+	// RoleClaim names the token claim holding the user's roles. Empty
+	// disables role extraction (roles pass as empty).
+	RoleClaim string `json:"role_claim" mapstructure:"role_claim"`
+	// RoleMap translates claim roles into LEVEE roles.
+	RoleMap map[string]string `json:"role_map" mapstructure:"role_map"`
 }
 
 // LogConfig holds logging parameters. In the bundled config.yaml these
@@ -525,6 +563,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tracing.enabled", false)
 	v.SetDefault("tracing.exporter", "")
 	v.SetDefault("tracing.endpoint", "")
+
+	// Auth.OIDC (disabled by default; static bearer tokens stay primary)
+	v.SetDefault("auth.oidc.enabled", false)
+	v.SetDefault("auth.oidc.issuer_url", "")
+	v.SetDefault("auth.oidc.client_id", "")
+	v.SetDefault("auth.oidc.audience", "")
+	v.SetDefault("auth.oidc.username_claim", "preferred_username")
+	v.SetDefault("auth.oidc.role_claim", "")
+	v.SetDefault("auth.oidc.role_map", map[string]string{})
 }
 
 // bindFile wires viper to the YAML file at path. The file extension is
@@ -605,6 +652,9 @@ func allKeys() []string {
 		"verify.prometheus_url",
 		"inventory.patrol_interval_seconds",
 		"tracing.enabled", "tracing.exporter", "tracing.endpoint",
+		"auth.oidc.enabled", "auth.oidc.issuer_url", "auth.oidc.client_id",
+		"auth.oidc.audience", "auth.oidc.username_claim", "auth.oidc.role_claim",
+		"auth.oidc.role_map",
 	}
 }
 

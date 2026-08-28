@@ -212,6 +212,31 @@ inventory:
   # 对清单内目标做可达性巡检的周期（秒）。0 表示禁用巡检。 默认: 0
   patrol_interval_seconds: 0
 
+# -----------------------------------------------------------------------------
+# auth —— API 认证（静态令牌由 --token / --auth-token / LEVEE_TOKEN 提供，
+# 此处只承载 OIDC；对应 AuthConfig）
+# -----------------------------------------------------------------------------
+auth:
+  oidc:
+    # 启用 OIDC JWT 验证。开启后，形如 JWT（三段式）的 Bearer 令牌会先尝试
+    # 静态令牌比对、再走 IdP 验证；静态令牌不受影响。 默认: false
+    enabled: false
+    # IdP 的 issuer 地址，发现文档读取自
+    # <issuer_url>/.well-known/openid-configuration。serve 启动时即拉取，
+    # 失败直接拒绝启动（fail-fast）。 例: https://idp.example.com/realms/levee
+    issuer_url: ""
+    # LEVEE 在 IdP 注册的 client_id（同时作为期望的 aud，除非另配 audience）
+    client_id: ""
+    # 期望的 aud 声明。留空使用 client_id；IdP 为 API 单独签发 audience 时才需配置
+    audience: ""
+    # 作为审计主体（subject）的用户声明。 默认: preferred_username
+    username_claim: preferred_username
+    # 携带角色的声明名。留空表示不提取角色。 默认: ""
+    role_claim: ""
+    # IdP 角色 -> LEVEE 角色映射；未命中的角色原样保留。仅文件可配
+    # （环境变量无法表达嵌套映射）。 默认: {}
+    role_map: {}
+
 # =============================================================================
 # 场景示例（按需取消注释并合并到上方正式段落）
 # =============================================================================
