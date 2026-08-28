@@ -21,10 +21,10 @@ func newApplyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apply <run-id>",
 		Short: "Trigger apply for a change run",
-		Long: "Trigger the apply phase for a change run. The command performs " +
-			"hash verification, creates a pre-apply snapshot, executes batches " +
-			"sequentially, runs verification gates, and triggers rollback on " +
-			"failure. Use --force to skip the approval check.",
+		Long: "Mark the run as running (status-only apply in this build: batches, " +
+			"verification gates and rollback are executed by the engine when one " +
+			"is wired; the standalone CLI marks status only). Use --force to skip " +
+			"the approval check.",
 		Args: cobra.ExactArgs(1),
 		RunE: runApply,
 	}
@@ -33,8 +33,9 @@ func newApplyCmd() *cobra.Command {
 }
 
 // runApply executes the `levee apply <run-id>` command.
-// MVP: marks the run status as "running" and outputs confirmation.
-// Full engine integration (ClosureRunner) will be wired in a later batch.
+// Status-only apply: transitions the run to "running" and reports the
+// outcome. Full engine integration (ClosureRunner) is not wired into the
+// standalone CLI yet, so this command performs no batch execution.
 func runApply(cmd *cobra.Command, args []string) error {
 	applyOptRunID := args[0]
 
@@ -63,23 +64,30 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("run %q is in %q state, cannot apply [exit=4]", applyOptRunID, run.Status)
 	}
 
-	// 4. Transition the run to "running".
-	//    In the full implementation this is where ClosureRunner.Run would be
-	//    invoked; the MVP simply updates the status and records a trace.
+	// 4. Transition the run to "running" via a compare-and-set on the
+	//    current status, so a concurrent apply (or approval decision)
+	//    cannot race this one into a bogus double transition.
 	now := time.Now().UTC()
-	run.Status = "running"
-	run.UpdatedAt = now
-	if err := store.UpdateRun(ctx, run); err != nil {
+	ok, err := store.UpdateRunStatusIf(ctx, run.ID, run.Status, "running", now)
+	if err != nil {
 		return fmt.Errorf("update run: %w", err)
+	}
+	if !ok {
+		latest, lerr := store.GetRun(ctx, applyOptRunID)
+		if lerr == nil && latest != nil {
+			return fmt.Errorf("run %q is in %q state, cannot apply [exit=4]", applyOptRunID, latest.Status)
+		}
+		return fmt.Errorf("run %q cannot be applied: concurrent status change [exit=4]", applyOptRunID)
 	}
 
 	// 5. Output the result.
 	output := map[string]any{
-		"run_id":     applyOptRunID,
-		"status":     "running",
-		"applied_at": now,
-		"applied_by": currentActor(),
-		"force":      applyOptForce,
+		"run_id":       applyOptRunID,
+		"status":       "running",
+		"applied_at":   now,
+		"applied_by":   currentActor(),
+		"force":        applyOptForce,
+		"engine_wired": false,
 	}
 
 	if optJSON {
@@ -96,6 +104,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stdout, "Run %s apply triggered by %s\n", applyOptRunID, currentActor())
+	fmt.Fprintln(os.Stdout, "WARNING: no execution engine wired in this build; apply is status-only (no batches executed)")
 	return nil
 }
 

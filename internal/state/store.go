@@ -255,6 +255,14 @@ type Store interface {
 	CreateRun(ctx context.Context, run *Run) error
 	GetRun(ctx context.Context, id string) (*Run, error)
 	UpdateRun(ctx context.Context, run *Run) error
+	// UpdateRunStatusIf atomically transitions a run's status from `from`
+	// to `to` (WHERE id=? AND status=?), stamping updated_at with the given
+	// time. It returns (true, nil) when the transition was applied and
+	// (false, nil) when the run does not exist or its current status is not
+	// `from` — the row is left untouched in that case. Callers use it to
+	// guard state-machine transitions (e.g. only "approved" runs may
+	// become "running") against concurrent racers.
+	UpdateRunStatusIf(ctx context.Context, id string, from string, to string, updatedAt time.Time) (bool, error)
 	ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error)
 	DeleteRun(ctx context.Context, id string) error
 

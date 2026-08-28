@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ import (
 type recordingEngine struct {
 	runID      string
 	runSuccess bool
+	runPhase   string
 	runErr     error
 	plan       *pb.Plan
 	planErr    error
@@ -51,10 +53,10 @@ type recordingEngine struct {
 
 func (e *recordingEngine) adapter() *EngineAdapter {
 	return &EngineAdapter{
-		Run: func(_ context.Context, _ string, autoApprove bool, _ int32) (string, bool, error) {
+		Run: func(_ context.Context, _ string, autoApprove bool, _ int32) (string, bool, string, error) {
 			atomic.AddInt32(&e.runCalled, 1)
 			e.lastAutoApprove = autoApprove
-			return e.runID, e.runSuccess, e.runErr
+			return e.runID, e.runSuccess, e.runPhase, e.runErr
 		},
 		Plan: func(_ context.Context, _ string, hosts []string) (*pb.Plan, error) {
 			atomic.AddInt32(&e.planCalled, 1)
@@ -286,18 +288,20 @@ func TestApplyChange_DraftRequiresAutoApprove(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "draft", run.Status, "rejected apply must not mutate the run")
 
-	// With auto-approve the no-engine fallback still leaves it running.
-	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+	// With auto-approve but NO engine wired, apply is refused
+	// (FailedPrecondition) instead of faking a success that would leave
+	// the run stuck in "running" forever.
+	_, err = svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
 		ChangeId:    created.GetId(),
 		AutoApprove: true,
 	})
-	require.NoError(t, err)
-	assert.True(t, resp.GetSuccess())
-	assert.Equal(t, "running", resp.GetChange().GetStatus())
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+	assert.Contains(t, err.Error(), "no engine wired")
 
 	run, err = store.GetRun(context.Background(), created.GetId())
 	require.NoError(t, err)
-	assert.Equal(t, "running", run.Status)
+	assert.Equal(t, "draft", run.Status, "refused apply must not mutate the run")
 }
 
 func TestApplyChange_EngineSuccessCompletes(t *testing.T) {
@@ -1496,4 +1500,88 @@ func TestPublishEventDropsForSlowSubscriber(t *testing.T) {
 		drained++
 	}
 	assert.Equal(t, 16, drained)
+}
+
+// TestApplyChange_EngineRolledBackPersistsStatus verifies the phase
+// propagation: when the engine reports phase "rolled_back" the run ends in
+// "rolled_back" (not "failed"), so a successful rollback is distinguishable
+// from a hard failure for retry/rollback tooling.
+func TestApplyChange_EngineRolledBackPersistsStatus(t *testing.T) {
+	engine := &recordingEngine{runID: "exec-rb-1", runSuccess: false, runPhase: "rolled_back"}
+	svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
+	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-rb"})
+	require.NoError(t, err)
+
+	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+		ChangeId:    created.GetId(),
+		AutoApprove: true,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.GetSuccess())
+	assert.Equal(t, "rolled_back", resp.GetMessage())
+	assert.Equal(t, "rolled_back", resp.GetChange().GetStatus())
+
+	run, err := store.GetRun(context.Background(), created.GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "rolled_back", run.Status)
+}
+
+// TestApplyChange_ConcurrentDoubleApplyIsSerialised verifies the CAS guard:
+// two racing ApplyChange calls on the same run cannot both transition it.
+// The first caller wins the "approved -> running" transition; the second
+// observes a FailedPrecondition with the current (already terminal) state.
+func TestApplyChange_ConcurrentDoubleApplyIsSerialised(t *testing.T) {
+	// The stub engine is deliberately slow so both callers pass the
+	// advisory state guard before either reaches the store.
+	release := make(chan struct{})
+	engine := &EngineAdapter{
+		Run: func(_ context.Context, _ string, _ bool, _ int32) (string, bool, string, error) {
+			<-release
+			return "exec-race", true, "completed", nil
+		},
+	}
+	svc, store := newTestChangeServiceWithEngine(t, engine)
+
+	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-race"})
+	require.NoError(t, err)
+	// Approve the run so both goroutines take the non-auto-approve path and
+	// both see status "approved" before the CAS decides the winner.
+	run, err := store.GetRun(context.Background(), created.GetId())
+	require.NoError(t, err)
+	run.Status = "approved"
+	require.NoError(t, store.UpdateRun(context.Background(), run))
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			_, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{ChangeId: created.GetId()})
+			results[idx] = err
+		}(i)
+	}
+	close(start)
+	// Let both goroutines reach the store, then unblock the engine.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	successes := 0
+	for _, err := range results {
+		if err == nil {
+			successes++
+			continue
+		}
+		// The loser must surface a precondition failure, not an internal
+		// error, and must never have seen a bogus double-execution.
+		assert.Equal(t, codes.FailedPrecondition, status.Code(err), "loser error: %v", err)
+	}
+	assert.Equal(t, 1, successes, "exactly one apply must win the CAS race")
+
+	run, err = store.GetRun(context.Background(), created.GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "completed", run.Status)
 }

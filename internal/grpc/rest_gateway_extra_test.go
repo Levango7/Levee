@@ -118,32 +118,25 @@ func TestRESTChangeSubResourceEndpoints(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&plan))
 	assert.Contains(t, plan.ImpactSummary, "no engine configured")
 
-	// apply → 200, change moves to running. Drafts no longer apply without
-	// the explicit autoApprove override (audit fix: draft bypass removed).
+	// apply → 412 (FailedPrecondition): this gateway has no execution
+	// engine wired, so apply is refused instead of faking success and
+	// leaving the run stuck in "running".
 	resp2 := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/apply", `{"autoApprove":true}`)
-	defer resp2.Body.Close()
-	require.Equal(t, http.StatusOK, resp2.StatusCode)
-	var applied struct {
-		Success bool `json:"success"`
-		Change  struct {
-			Status string `json:"status"`
-		} `json:"change"`
-	}
-	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&applied))
-	assert.True(t, applied.Success)
-	assert.Equal(t, "running", applied.Change.Status)
+	require.NoError(t, readAndClose(resp2))
+	assert.Equal(t, http.StatusPreconditionFailed, resp2.StatusCode)
 
-	// Applying a draft WITHOUT autoApprove is now rejected (412).
+	// Applying a draft WITHOUT autoApprove is also rejected (412).
 	draftResp := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/apply", `{}`)
 	require.NoError(t, readAndClose(draftResp))
 	assert.Equal(t, http.StatusPreconditionFailed, draftResp.StatusCode)
 
-	// pause → 200 from running.
-	resp3 := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/pause", `{"reason":"freeze"}`)
-	defer resp3.Body.Close()
-	require.Equal(t, http.StatusOK, resp3.StatusCode)
+	// pause from draft is not a legal transition → 412.
+	pauseResp := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/pause", `{"reason":"freeze"}`)
+	require.NoError(t, readAndClose(pauseResp))
+	assert.Equal(t, http.StatusPreconditionFailed, pauseResp.StatusCode)
 
-	// resume → 200.
+	// resume → 200: draft -> running is a legal transition and the
+	// gateway's status tracking remains fully functional without an engine.
 	resp4 := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/resume", `{}`)
 	defer resp4.Body.Close()
 	require.Equal(t, http.StatusOK, resp4.StatusCode)

@@ -11,9 +11,10 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - misspell  # disabled: codebase mixes UK spelling in comments/strings with US spelling
-                # in API identifiers; no single locale covers both without false positives.
-                # Run `misspell -locale UK` or `-locale US` manually when targeting a specific file.
+    - misspell  # enabled. NOTE: the codebase mixes UK spelling in comments/strings
+                # with US spelling in API identifiers; CI passes today, but when a
+                # specific file regresses, run `misspell -locale UK` or `-locale US`
+                # manually to isolate the variant that flagged it.
     - revive
     - gocyclo
     - bodyclose

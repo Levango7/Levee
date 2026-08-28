@@ -173,6 +173,24 @@ func (s *PGStore) UpdateRun(ctx context.Context, run *Run) error {
 	return nil
 }
 
+// UpdateRunStatusIf atomically transitions a run's status from `from` to
+// `to`, stamping updated_at. It returns (false, nil) when the run does not
+// exist or its current status is not `from`, leaving the row untouched.
+func (s *PGStore) UpdateRunStatusIf(ctx context.Context, id string, from string, to string, updatedAt time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status=$1, updated_at=$2 WHERE id=$3 AND status=$4`,
+		to, updatedAt, id, from,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update run status %q %s->%s: %w", id, from, to, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update run status %q: rows affected: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // ListRuns returns runs matching the filter, ordered by created_at descending.
 func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error) {
 	var (

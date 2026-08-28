@@ -397,6 +397,13 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			TotalTargets: countTargets(executedBatches),
 			CreatedAt:    p.CreatedAt,
 		}
+		// Deliberately detached from ctx: cancellation is itself one of
+		// the rollback triggers, so a rollback must run to completion
+		// even when the caller's context is already cancelled or about
+		// to be. Interrupting it with the caller's ctx would leave
+		// applied batches unwound. Trade-off: rollback cannot be
+		// cancelled once triggered; it relies on per-step execution
+		// timeouts for bounded runtime.
 		rbResult := cr.rollback.Rollback(context.Background(), executedPlan, execFn)
 		result.RollbackResult = rbResult
 

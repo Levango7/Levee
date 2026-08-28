@@ -403,9 +403,14 @@ type ServiceDeps struct {
 // configurations). Production code constructs an EngineAdapter that
 // delegates to a real ClosureRunner; tests use a stub.
 type EngineAdapter struct {
-	// Run executes a plan and returns a run ID and success flag. The
+	// Run executes a plan and returns a run ID, a success flag and the
+	// engine's terminal phase. The phase mirrors engine.ClosurePhase
+	// ("completed" / "rolled_back" / "failed"); it is empty when the
+	// engine could not determine one. ApplyChange maps phase
+	// "rolled_back" to the run status "rolled_back" so a successful
+	// rollback is distinguishable from a hard failure. The
 	// implementation must be safe for concurrent use.
-	Run func(ctx context.Context, changeID string, autoApprove bool, maxConcurrency int32) (runID string, success bool, err error)
+	Run func(ctx context.Context, changeID string, autoApprove bool, maxConcurrency int32) (runID string, success bool, phase string, err error)
 
 	// Plan generates a plan for a change without applying it. Returns
 	// the plan as a *pb.Plan ready to be returned to the gRPC client.

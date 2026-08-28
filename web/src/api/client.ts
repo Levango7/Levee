@@ -54,15 +54,46 @@ client.interceptors.request.use(
   (error) => Promise.reject(error),
 )
 
+// Guards against concurrent 401s triggering multiple redirects. Once we start
+// navigating to /login, every other in-flight 401 can safely be ignored.
+let redirectingToLogin = false
+
+// Paths where a 401 must not trigger a redirect (the login flow itself).
+const LOGIN_PATHS = new Set(['/login', '/login/callback'])
+
+function handleUnauthorized(): void {
+  clearToken()
+  const path = window.location.pathname
+  if (redirectingToLogin || LOGIN_PATHS.has(path)) {
+    return
+  }
+  redirectingToLogin = true
+  window.location.href = '/login'
+}
+
 // Response interceptor: unwrap errors into a stable ApiError shape so callers
 // do not have to deal with AxiosError internals.
 client.interceptors.response.use(
   (response) => response,
-  (error: AxiosError) => Promise.reject(normalizeError(error)),
+  (error: AxiosError) => {
+    if (error.response?.status === 401) {
+      handleUnauthorized()
+    }
+    return Promise.reject(normalizeError(error))
+  },
 )
 
 function normalizeError(error: AxiosError): ApiError {
   if (error.response) {
+    // A 401 always means the session expired; show a consistent message
+    // instead of leaking the raw backend error to the page.
+    if (error.response.status === 401) {
+      return {
+        code: 401,
+        message: '登录已过期，请重新登录',
+        details: error.response.data,
+      }
+    }
     // The backend (grpc-gateway + our handlers) returns {"error": "..."} on
     // failure; older shapes used {message}. Prefer error, then message, then
     // the axios-generated message.

@@ -356,6 +356,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// 3. Build the service implementations. We reuse the in-process
 	//    implementations so the daemon and CLI share one code path.
 	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
+	// The execution engine (ClosureRunner) is not wired into serve yet:
+	// ApplyChange reports FailedPrecondition ("status-only mode") rather
+	// than pretending to execute. Plan/approve/status tracking remain
+	// fully functional.
+	log.Warn("serve: no execution engine wired; ApplyChange RPC will return FailedPrecondition (status-only mode)")
 	templateSvc := grpc.NewTemplateService(store, nil)
 	targetSvc := grpc.NewTargetService(store, nil)
 	// Credential-aware probing: when a master password is available, attach a

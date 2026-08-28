@@ -376,14 +376,35 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		return nil, status.Errorf(codes.FailedPrecondition, "change %q is in %q state, cannot apply", req.GetChangeId(), run.Status)
 	}
 
-	// Transition to running.
+	// No engine wired: refuse instead of faking success. A run left in
+	// "running" that never completes is worse than an explicit refusal,
+	// and the status transition below is deliberately NOT applied.
+	if s.engine == nil || s.engine.Run == nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"no engine wired in this deployment: apply performs no execution (status-only mode); plan/approve/status tracking remain available")
+	}
+
+	// Transition to running via a compare-and-set on the current status.
+	// The guard above is advisory; the CAS makes it atomic so two
+	// concurrent ApplyChange calls cannot both pass the status check and
+	// double-execute the run (or clobber each other's terminal state).
 	now := time.Now().UTC()
 	oldStatus := run.Status
-	run.Status = "running"
-	run.UpdatedAt = now
-	if err := s.store.UpdateRun(ctx, run); err != nil {
+	ok, err := s.store.UpdateRunStatusIf(ctx, run.ID, oldStatus, "running", now)
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update run to running: %v", err)
 	}
+	if !ok {
+		// Another actor transitioned the run first; surface the current
+		// state so the caller can react without a second round trip.
+		latest, lerr := s.store.GetRun(ctx, req.GetChangeId())
+		if lerr == nil && latest != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "change %q is in %q state, cannot apply", req.GetChangeId(), latest.Status)
+		}
+		return nil, status.Errorf(codes.FailedPrecondition, "change %q cannot be applied: concurrent status change", req.GetChangeId())
+	}
+	run.Status = "running"
+	run.UpdatedAt = now
 
 	// Record a trace for the apply start.
 	_ = s.store.CreateTrace(ctx, &state.Trace{
@@ -407,60 +428,55 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	})
 
 	// Delegate to the engine when available.
-	if s.engine != nil && s.engine.Run != nil {
-		execRunID, success, err := s.engine.Run(ctx, req.GetChangeId(), req.GetAutoApprove(), req.GetMaxConcurrency())
-		if err != nil {
-			// Mark the run as failed.
-			run.Status = "failed"
-			run.UpdatedAt = time.Now().UTC()
-			_ = s.store.UpdateRun(ctx, run)
-			s.publishEvent(&pb.ChangeEvent{
-				ChangeId:  run.ID,
-				EventType: "status_changed",
-				OldStatus: "running",
-				NewStatus: "failed",
-				Message:   err.Error(),
-				Timestamp: run.UpdatedAt.Unix(),
-			})
-			return &pb.ApplyResponse{
-				Change:  runToPB(run),
-				RunId:   execRunID,
-				Success: false,
-				Message: err.Error(),
-			}, status.Errorf(codes.Internal, "engine: %v", err)
-		}
-		finalStatus := "completed"
-		if !success {
-			finalStatus = "failed"
-		}
-		run.Status = finalStatus
+	execRunID, success, phase, err := s.engine.Run(ctx, req.GetChangeId(), req.GetAutoApprove(), req.GetMaxConcurrency())
+	if err != nil {
+		// Mark the run as failed.
+		run.Status = "failed"
 		run.UpdatedAt = time.Now().UTC()
 		_ = s.store.UpdateRun(ctx, run)
-		// Publish the terminal transition so WatchChange subscribers see
-		// completion/failure like any other status change.
 		s.publishEvent(&pb.ChangeEvent{
 			ChangeId:  run.ID,
 			EventType: "status_changed",
 			OldStatus: "running",
-			NewStatus: finalStatus,
-			Message:   finalStatus,
+			NewStatus: "failed",
+			Message:   err.Error(),
 			Timestamp: run.UpdatedAt.Unix(),
 		})
 		return &pb.ApplyResponse{
 			Change:  runToPB(run),
 			RunId:   execRunID,
-			Success: success,
-			Message: finalStatus,
-		}, nil
+			Success: false,
+			Message: err.Error(),
+		}, status.Errorf(codes.Internal, "engine: %v", err)
 	}
-
-	// Fallback (no engine): leave the run in "running" status; a
-	// subsequent engine integration will complete it.
+	finalStatus := "failed"
+	switch {
+	case phase == "rolled_back":
+		// The engine unwound the change after a verification failure.
+		// Distinguish a successful rollback from a hard failure so
+		// retry/rollback tooling and operators can tell them apart.
+		finalStatus = "rolled_back"
+	case success:
+		finalStatus = "completed"
+	}
+	run.Status = finalStatus
+	run.UpdatedAt = time.Now().UTC()
+	_ = s.store.UpdateRun(ctx, run)
+	// Publish the terminal transition so WatchChange subscribers see
+	// completion/failure like any other status change.
+	s.publishEvent(&pb.ChangeEvent{
+		ChangeId:  run.ID,
+		EventType: "status_changed",
+		OldStatus: "running",
+		NewStatus: finalStatus,
+		Message:   finalStatus,
+		Timestamp: run.UpdatedAt.Unix(),
+	})
 	return &pb.ApplyResponse{
 		Change:  runToPB(run),
-		RunId:   run.ID,
-		Success: true,
-		Message: "apply triggered (no engine; MVP status only)",
+		RunId:   execRunID,
+		Success: success,
+		Message: finalStatus,
 	}, nil
 }
 

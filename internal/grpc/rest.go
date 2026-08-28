@@ -114,9 +114,11 @@ type Gateway struct {
 	limiter     *rate.Limiter
 
 	// extraRoutes holds handlers registered via SetExtraRoute before
-	// Start. They are mounted verbatim on the gateway mux, without
-	// auth/CORS/rate-limit middleware, for operational endpoints such
-	// as /metrics.
+	// Start. They are mounted verbatim on the gateway mux: no CORS and
+	// no rate limiting, but (unlike earlier revisions of this comment
+	// suggested) bearer auth DOES apply whenever any token is
+	// configured, unless the route owner opted out via MetricsPublic.
+	// See SetExtraRoute for the exact gating semantics.
 	extraMu     sync.Mutex
 	extraRoutes []extraRoute
 }

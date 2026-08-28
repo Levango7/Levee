@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **ApplyChange 状态机竞态（P1）**：`ApplyChange` 读-判-写状态流转此前非原子——两个并发请求可同时通过状态检查并互相覆盖终态（双跑/状态翻转/审计污染）。新增 `state.Store.UpdateRunStatusIf`（`WHERE id=? AND status=?` 的 compare-and-set，SQLite/PG 双实现），gRPC `ApplyChange` 与 CLI `apply` 均改用 CAS 抢占 `approved/pending/draft → running`；失败方返回 `FailedPrecondition` 并携带最新状态（SQLite/PG 各新增 CAS 测试 + gRPC 并发双跑互斥测试 `TestApplyChange_ConcurrentDoubleApplyIsSerialised`）。
+- **回滚状态语义丢失（P2）**：`EngineAdapter.Run` 此前只返回 success bool，引擎 `PhaseRolledBack` 在 `ApplyChange` 中被压平为 `failed`，回滚成功与彻底失败不可区分（而 `RetryChange` 依赖 `rolled_back` 状态却永远等不到）。`EngineAdapter.Run` 新增 `phase` 返回值，`phase=="rolled_back"` 时 run 落库 `rolled_back`（新增 `TestApplyChange_EngineRolledBackPersistsStatus`）。
+- **无引擎 apply 假成功（P0 级体验缺陷）**：serve/网关未接线执行引擎时 `ApplyChange` 此前返回 `Success:true` 并把 run 置 `running` 后永久卡死。现改为 `FailedPrecondition`（"no engine wired ... status-only mode"）且不做状态流转；`serve` 启动时输出引擎未接线的 WARN 日志；CLI `apply` 保留状态流转但帮助文本如实描述为 status-only、非 JSON 输出追加 WARNING 行、JSON 输出新增 `engine_wired:false`。
+
+### 前端
+
+- **401 统一处理（UX）**：`web/src/api/client.ts` 响应拦截器对 401 统一清除本地 token 并跳转 `/login`（登录/回调页豁免防死循环；并发 401 只触发一次重定向），错误文案统一为「登录已过期，请重新登录」。`internal/web/dist` 同步重新构建。
+
+### 文档
+
+- 修正 `internal/grpc/rest.go` 中 `SetExtraRoute` 鉴权语义的矛盾注释（实际行为：配置 token 时挂载端点默认要求 Bearer 鉴权，CORS/限流不适用）。
+- 补注 `closure.go` 回滚路径刻意使用 `context.Background()` 的意图（回滚触发即不可取消，依赖逐步执行超时控制运行时长）。
+- 修正 `.golangci.yml` 中 `misspell` 启用的过时注释（原文误标 disabled）。
+
 ### 安全修复
 
 - **REST 方法校验（P1）**：`/changes/{id}/{plan,apply,approve,reject,pause,resume,cancel,retry,rollback,archive}` 现强制 `POST`、`/changes/{id}/{logs,trace}` 强制 `GET`；此前任意 HTTP 方法（含 GET）即可触发状态变更，爬虫/预取可误暂停变更。`pause/resume/archive` 不再吞掉请求体解析错误：空体合法、畸形 JSON 返回 400。
