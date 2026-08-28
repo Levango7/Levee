@@ -1940,7 +1940,7 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 - **多令牌身份**：`--auth-token name=secret` 可重复传入，每个命名令牌映射到一个主体；命名令牌认证后，其主体注入请求上下文并**优先于**客户端自报的 `X-Acting-As`，使审计归属为“被证明的身份”。`--token` 单令牌行为完全向后兼容（不注入主体）
 - **/metrics 鉴权**：启用任一 token 后，`/metrics` 默认同样要求 Bearer 鉴权；无法携带凭据的采集器可用 `--metrics-public` 显式放开
 - **AI 引擎装配**：`serve` 启动时装配真实诊断引擎（日志采集/分析 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose` / `SendMessage` RPC 可直接使用；完整告警网关仍用独立的 `levee alert serve`
-- **集群模式**：当前集群协同仅限共享 PostgreSQL 存储（数据一致性 + 咨询锁），节点注册为进程内，尚无自动故障转移/跨节点调度；`--cluster` 启动时会输出告警提示
+- **集群模式**：集群协同覆盖共享 PostgreSQL 存储（数据一致性）、持久化成员注册（`cluster_nodes` 表心跳 + stale 检测，leader 按确定性策略收敛）与租约式分布式锁（`cluster_locks` 表，过期租约自动可被抢占，带单调 fence token）；在途变更的自动故障转移/跨节点调度尚未实现；`--cluster` 启动时会输出告警提示
 - CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
 - 限流触发时返回 HTTP 429 并附带 `Retry-After`
 - 每个 REST 响应携带 `X-Request-Id`（可由客户端传入复用）；gRPC 日志含 `request_id` 字段，支持链路关联

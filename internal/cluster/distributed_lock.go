@@ -1,21 +1,25 @@
-// distributed_lock.go implements a distributed mutex backed by PostgreSQL
-// advisory locks (pg_advisory_lock / pg_advisory_unlock).
+// distributed_lock.go implements a distributed mutex backed by a PostgreSQL
+// lease table (cluster_locks).
 //
-// Advisory locks are session-level locks identified by a 64-bit integer key.
-// They are not tied to any table or row, survive transactions, and are
-// automatically released when the holding session disconnects. This makes
-// them ideal for cluster-wide mutual exclusion in LEVEE: a master node holds
-// the lock for a scope (e.g. "run:<id>") while orchestrating, and workers
-// respect the lock before picking up work.
+// Each lock row records its owner and a lease expiry. Acquire is a single
+// atomic INSERT ... ON CONFLICT statement: it succeeds when the key is free,
+// when the caller already owns it (lease refresh), or when the current
+// lease has expired (reclaim). A holder keeps its lease alive by calling
+// Refresh periodically; a node that crashes or loses database connectivity
+// stops refreshing, so its lease expires and another node can take the lock
+// over. This is the property advisory locks cannot provide: they are
+// released on disconnect but never expire, so a hung-but-connected holder
+// would block the key forever.
 //
-// We use the single-bigint form (pg_advisory_lock(bigint)) so the key space is
-// the full int64 range. The lock key is derived from a stable hash of the
-// caller-supplied string key (see lockKeyHash).
+// Every successful acquisition (or reclaim) carries a strictly increasing
+// fence_token drawn from a dedicated sequence. Work guarded by a lock should
+// persist the fence token with its state transitions so that a zombie holder
+// that wakes up after its lease was reclaimed cannot corrupt work owned by
+// the new holder (fencing).
 //
-// Because advisory locks are session-scoped, the DistributedLockManager keeps
-// a dedicated *sql.DB connection per held lock (acquired via db.Conn) so that
-// releasing one lock does not release another held by the same process. The
-// connection is returned to the pool on Release.
+// The manager also keeps an in-process record of the locks this process
+// holds so IsHeld / ListHeld / ReleaseAll do not need a database round-trip;
+// the table remains the source of truth for cross-node visibility.
 
 package cluster
 
@@ -24,7 +28,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"sync"
 	"time"
 
@@ -32,50 +35,80 @@ import (
 )
 
 // ErrLockNotHeld is returned when an operation requires the caller to hold a
-// lock but the lock is not held by the given owner.
+// lock but the lock is not held by the given owner (or its lease was lost).
 var ErrLockNotHeld = errors.New("cluster: lock not held")
 
 // ErrLockBusy is returned when Acquire fails because another owner holds the
-// lock. Callers should retry with backoff.
+// lock with a live lease. Callers should retry with backoff.
 var ErrLockBusy = errors.New("cluster: lock busy")
 
-// DistributedLock represents a held advisory lock. The fields are informational;
-// the actual lock state lives in the PostgreSQL backend.
+// DistributedLock represents a held lease lock. Key/Owner/TTL/AcquiredAt
+// mirror the table row; FenceToken is the monotonic acquisition sequence
+// value for this holding of the lock.
 type DistributedLock struct {
-	Key        string // caller-supplied lock key
-	Owner      string // owner identifier (e.g. node ID)
-	TTL        time.Duration
-	AcquiredAt time.Time
-	conn       *sql.Conn // dedicated connection holding the advisory lock
+	Key         string // caller-supplied lock key
+	Owner       string // owner identifier (e.g. node ID)
+	TTL         time.Duration
+	FenceToken  int64
+	AcquiredAt  time.Time
+	LeaseExpiry time.Time
 }
 
-// DistributedLockManager coordinates PostgreSQL advisory locks. It is safe
-// for concurrent use. A single manager should be shared by all goroutines in
-// a process so that lock state (held connections) is centralised.
+// ReleasedLock describes a lock row removed by ReleaseStale.
+type ReleasedLock struct {
+	Key   string
+	Owner string
+}
+
+// DistributedLockManager coordinates PostgreSQL lease locks. It is safe for
+// concurrent use. A single manager should be shared by all goroutines in a
+// process so that held-lock state is centralised.
 type DistributedLockManager struct {
 	db *sql.DB
 
 	mu   sync.RWMutex
-	held map[string]*DistributedLock // key -> lock
+	held map[string]*DistributedLock // key -> lock (this process only)
 }
 
 // NewDistributedLockManager returns a manager backed by the given *sql.DB.
-// The db must point at the same PostgreSQL instance used by the PGStore.
+// The db must point at the same PostgreSQL instance used by the PGStore. A
+// nil db yields a manager whose Acquire/Refresh/ReleaseStale calls fail —
+// useful for in-process tests of the surrounding lifecycle.
 func NewDistributedLockManager(db *sql.DB) *DistributedLockManager {
-	if db == nil {
-		return &DistributedLockManager{held: make(map[string]*DistributedLock)}
-	}
 	return &DistributedLockManager{db: db, held: make(map[string]*DistributedLock)}
 }
 
-// Acquire obtains an exclusive advisory lock on key for owner. If the lock is
-// already held (by this process or another), it returns ErrLockBusy. The
-// returned lock is tracked by the manager until Release is called.
+// acquireLockSQL atomically claims a lock row. The INSERT path covers a free
+// key; the ON CONFLICT update fires only when the caller already owns the
+// row (lease refresh, fence token kept) or the lease has expired (reclaim,
+// fresh fence token). When neither condition holds the UPDATE is suppressed
+// by its WHERE clause and no row is returned — the caller sees ErrLockBusy.
 //
-// The ttl parameter is informational only — PostgreSQL advisory locks do not
-// expire. Callers that want TTL semantics should run a background refresher
-// (see Refresh) or use the database row-level lock pattern instead. We keep
-// ttl in the struct so monitoring code can report stale acquisitions.
+// Sequence gaps are expected and harmless: the VALUES expression consumes a
+// fence token even on the conflict path. Monotonicity is what matters.
+const acquireLockSQL = `
+INSERT INTO cluster_locks (key, owner, fence_token, acquired_at, lease_expires)
+VALUES ($1, $2, nextval('cluster_locks_fence_seq'), NOW(), NOW() + ($3::bigint * INTERVAL '1 millisecond'))
+ON CONFLICT (key) DO UPDATE
+SET owner = EXCLUDED.owner,
+    fence_token = CASE WHEN cluster_locks.owner = EXCLUDED.owner
+                       THEN cluster_locks.fence_token
+                       ELSE nextval('cluster_locks_fence_seq') END,
+    acquired_at = CASE WHEN cluster_locks.owner = EXCLUDED.owner
+                       THEN cluster_locks.acquired_at
+                       ELSE NOW() END,
+    lease_expires = NOW() + ($3::bigint * INTERVAL '1 millisecond')
+WHERE cluster_locks.owner = EXCLUDED.owner OR cluster_locks.lease_expires < NOW()
+RETURNING fence_token, acquired_at, lease_expires`
+
+// Acquire obtains an exclusive lease lock on key for owner with the given
+// lease ttl. If another owner holds the key with a live lease it returns
+// ErrLockBusy. Re-acquiring a key already owned by the same owner refreshes
+// the lease and keeps the existing fence token.
+//
+// The lease is only valid while it is refreshed: once it expires, any other
+// owner may reclaim the key. Holders must call Refresh at an interval well
+// below ttl (the ClusterManager does this for its own locks).
 func (m *DistributedLockManager) Acquire(ctx context.Context, key, owner string, ttl time.Duration) (*DistributedLock, error) {
 	if key == "" {
 		return nil, fmt.Errorf("cluster: acquire: empty key")
@@ -83,116 +116,156 @@ func (m *DistributedLockManager) Acquire(ctx context.Context, key, owner string,
 	if owner == "" {
 		return nil, fmt.Errorf("cluster: acquire: empty owner")
 	}
+	if ttl <= 0 {
+		return nil, fmt.Errorf("cluster: acquire: non-positive ttl")
+	}
 	if m.db == nil {
 		return nil, fmt.Errorf("cluster: acquire: nil db")
 	}
 
-	// Fast path: already held by this process.
-	m.mu.RLock()
-	if existing, ok := m.held[key]; ok {
-		m.mu.RUnlock()
-		if existing.Owner == owner {
-			return existing, nil
-		}
+	var fence int64
+	var acquiredAt, expiry time.Time
+	err := m.db.QueryRowContext(ctx, acquireLockSQL, key, owner, ttl.Milliseconds()).
+		Scan(&fence, &acquiredAt, &expiry)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrLockBusy
 	}
-	m.mu.RUnlock()
-
-	// Slow path: try to acquire via pg_advisory_lock. We use a dedicated
-	// connection so releasing this lock does not release others.
-	conn, err := m.db.Conn(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("cluster: acquire conn: %w", err)
-	}
-
-	pgKey := lockKeyHash(key)
-	// pg_try_advisory_lock returns true/false immediately; we use it to avoid
-	// blocking on a lock held by another session.
-	var ok bool
-	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", pgKey).Scan(&ok); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("cluster: try advisory lock: %w", err)
-	}
-	if !ok {
-		_ = conn.Close()
-		return nil, ErrLockBusy
+		return nil, fmt.Errorf("cluster: acquire: %w", err)
 	}
 
 	lock := &DistributedLock{
-		Key:        key,
-		Owner:      owner,
-		TTL:        ttl,
-		AcquiredAt: time.Now().UTC(),
-		conn:       conn,
+		Key:         key,
+		Owner:       owner,
+		TTL:         ttl,
+		FenceToken:  fence,
+		AcquiredAt:  acquiredAt,
+		LeaseExpiry: expiry,
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	// Re-check under write lock: another goroutine may have acquired the same
-	// key between the fast path and here.
-	if existing, ok := m.held[key]; ok {
-		// Release our freshly acquired lock and return the existing one.
-		_, _ = conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", pgKey)
-		_ = conn.Close()
-		if existing.Owner == owner {
-			return existing, nil
-		}
-		return nil, ErrLockBusy
-	}
 	m.held[key] = lock
-	log.Debug("distributed lock acquired", "key", key, "owner", owner)
+	m.mu.Unlock()
+	log.Debug("distributed lock acquired", "key", key, "owner", owner, "fence_token", fence)
 	return lock, nil
 }
 
-// Release frees the advisory lock held by owner on key. If the lock is not
-// held by owner, it returns ErrLockNotHeld.
+// Release frees the lock held by owner on key. If the lock is not held by
+// owner (or the lease was already reclaimed) it returns ErrLockNotHeld.
 func (m *DistributedLockManager) Release(ctx context.Context, key, owner string) error {
 	if key == "" {
 		return fmt.Errorf("cluster: release: empty key")
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	lock, ok := m.held[key]
-	if !ok {
-		return ErrLockNotHeld
-	}
-	if lock.Owner != owner {
-		return ErrLockNotHeld
+	if m.db == nil {
+		return fmt.Errorf("cluster: release: nil db")
 	}
 
-	pgKey := lockKeyHash(key)
-	var unlocked bool
-	if err := lock.conn.QueryRowContext(ctx, "SELECT pg_advisory_unlock($1)", pgKey).Scan(&unlocked); err != nil {
-		// Even if the unlock query fails, drop the local state so the manager
-		// does not leak entries. The connection close will release the lock
-		// server-side anyway.
-		log.Warn("advisory unlock query failed", "key", key, "error", err)
+	res, err := m.db.ExecContext(ctx,
+		`DELETE FROM cluster_locks WHERE key = $1 AND owner = $2`, key, owner)
+	if err != nil {
+		return fmt.Errorf("cluster: release: %w", err)
 	}
-	if !unlocked {
-		log.Warn("advisory unlock returned false", "key", key)
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("cluster: release: rows affected: %w", err)
 	}
-	if err := lock.conn.Close(); err != nil {
-		log.Warn("lock conn close failed", "key", key, "error", err)
+
+	m.mu.Lock()
+	if held, ok := m.held[key]; ok && held.Owner == owner {
+		delete(m.held, key)
 	}
-	delete(m.held, key)
+	m.mu.Unlock()
+
+	if n == 0 {
+		return ErrLockNotHeld
+	}
 	log.Debug("distributed lock released", "key", key, "owner", owner)
 	return nil
 }
 
-// Refresh extends the recorded TTL of a held lock. Because PostgreSQL advisory
-// locks do not expire, this is a no-op apart from updating the in-memory
-// AcquiredAt timestamp. It returns ErrLockNotHeld if the lock is not held by
-// owner.
+// Refresh extends the lease of a held lock. It returns ErrLockNotHeld when
+// the lock is not held by owner or the lease has already expired — in both
+// cases the caller must stop acting on the assumption that it holds the
+// lock and re-acquire if appropriate.
 func (m *DistributedLockManager) Refresh(ctx context.Context, key, owner string, ttl time.Duration) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	lock, ok := m.held[key]
-	if !ok || lock.Owner != owner {
+	if ttl <= 0 {
+		return fmt.Errorf("cluster: refresh: non-positive ttl")
+	}
+	if m.db == nil {
+		return fmt.Errorf("cluster: refresh: nil db")
+	}
+
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE cluster_locks
+		 SET lease_expires = NOW() + ($3::bigint * INTERVAL '1 millisecond')
+		 WHERE key = $1 AND owner = $2 AND lease_expires >= NOW()`,
+		key, owner, ttl.Milliseconds())
+	if err != nil {
+		return fmt.Errorf("cluster: refresh: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("cluster: refresh: rows affected: %w", err)
+	}
+	if n == 0 {
+		// Lease lost: drop local state so IsHeld reflects reality.
+		m.mu.Lock()
+		if held, ok := m.held[key]; ok && held.Owner == owner {
+			delete(m.held, key)
+		}
+		m.mu.Unlock()
 		return ErrLockNotHeld
 	}
-	lock.AcquiredAt = time.Now().UTC()
-	lock.TTL = ttl
+
+	m.mu.Lock()
+	if held, ok := m.held[key]; ok && held.Owner == owner {
+		held.TTL = ttl
+		held.LeaseExpiry = time.Now().UTC().Add(ttl)
+	}
+	m.mu.Unlock()
 	return nil
+}
+
+// ReleaseStale removes every lock row whose lease has expired and returns
+// the removed entries. It is idempotent: rows already reclaimed by a new
+// Acquire are not reported. Intended for the ClusterManager health loop and
+// for operational hygiene; correctness does not depend on it because
+// Acquire can always reclaim an expired row itself.
+func (m *DistributedLockManager) ReleaseStale(ctx context.Context) ([]ReleasedLock, error) {
+	if m.db == nil {
+		return nil, fmt.Errorf("cluster: release stale: nil db")
+	}
+	rows, err := m.db.QueryContext(ctx,
+		`DELETE FROM cluster_locks WHERE lease_expires < NOW() RETURNING key, owner`)
+	if err != nil {
+		return nil, fmt.Errorf("cluster: release stale: %w", err)
+	}
+	defer rows.Close()
+
+	var released []ReleasedLock
+	for rows.Next() {
+		var r ReleasedLock
+		if err := rows.Scan(&r.Key, &r.Owner); err != nil {
+			return nil, fmt.Errorf("cluster: release stale: scan: %w", err)
+		}
+		released = append(released, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cluster: release stale: rows: %w", err)
+	}
+
+	if len(released) > 0 {
+		// Drop any local entries whose lease was swept (they belong to this
+		// process but were never refreshed in time).
+		m.mu.Lock()
+		for _, r := range released {
+			if held, ok := m.held[r.Key]; ok && held.Owner == r.Owner {
+				delete(m.held, r.Key)
+			}
+		}
+		m.mu.Unlock()
+	}
+	return released, nil
 }
 
 // IsHeld reports whether the lock on key is currently held by this process.
@@ -205,7 +278,8 @@ func (m *DistributedLockManager) IsHeld(key string) bool {
 	return ok
 }
 
-// IsHeldBy reports whether the lock on key is held by the given owner.
+// IsHeldBy reports whether the lock on key is held by the given owner in
+// this process.
 func (m *DistributedLockManager) IsHeldBy(key, owner string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -229,39 +303,22 @@ func (m *DistributedLockManager) ListHeld() []DistributedLock {
 // cluster shutdown and ignores individual errors so that one stuck lock does
 // not prevent the rest from being released.
 func (m *DistributedLockManager) ReleaseAll(ctx context.Context) []error {
-	m.mu.Lock()
-	keys := make([]string, 0, len(m.held))
-	for k := range m.held {
-		keys = append(keys, k)
+	m.mu.RLock()
+	type heldRef struct {
+		key   string
+		owner string
 	}
-	m.mu.Unlock()
+	refs := make([]heldRef, 0, len(m.held))
+	for k, l := range m.held {
+		refs = append(refs, heldRef{key: k, owner: l.Owner})
+	}
+	m.mu.RUnlock()
 
 	var errs []error
-	for _, k := range keys {
-		// We do not know the owner here, so we read it under the lock.
-		m.mu.RLock()
-		lock, ok := m.held[k]
-		m.mu.RUnlock()
-		if !ok {
-			continue
-		}
-		if err := m.Release(ctx, k, lock.Owner); err != nil {
-			errs = append(errs, fmt.Errorf("release %q: %w", k, err))
+	for _, r := range refs {
+		if err := m.Release(ctx, r.key, r.owner); err != nil {
+			errs = append(errs, fmt.Errorf("release %q: %w", r.key, err))
 		}
 	}
 	return errs
-}
-
-// lockKeyHash derives a stable int64 PostgreSQL advisory-lock key from a
-// string key. We use FNV-1a because it is fast, has good distribution for
-// short strings, and the int64 result fits pg_advisory_lock(bigint).
-//
-// The hash is deterministic across processes (unlike a Go map hash), so two
-// processes acquiring "run:abc" will hit the same PostgreSQL lock key.
-func lockKeyHash(key string) int64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(key))
-	// Convert uint64 to int64. PostgreSQL advisory lock accepts bigint, so
-	// negative values are fine; we just need a 1:1 mapping.
-	return int64(h.Sum64())
 }

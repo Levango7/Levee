@@ -16,6 +16,7 @@
 - **serve 装配 AI 引擎**：`levee serve` 现装配真实的诊断引擎（日志管线 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose`/`SendMessage` RPC 不再返回 `Unimplemented`；告警服务保持独立环形存储（完整网关仍用 `levee alert serve`）。
 - **前端 CI 门禁**：新增 `frontend` 作业（`vue-tsc --noEmit` + `vite build`），并纳入 `check` 聚合门禁。
 - **发布工作流**：新增 `.github/workflows/release.yml`——推送 `v*` tag 时自动触发 goreleaser，按既有 `.goreleaser.yml` 构建 linux/darwin/windows × amd64/arm64 产物并发布 Release；此前仅有 goreleaser 配置、无触发工作流，发布依赖手工构建。
+- **集群成员持久化与租约锁**：集群模式（`serve --cluster`）新增两项协调能力。其一，持久化节点注册：节点写入 `cluster_nodes` 表并周期心跳（健康循环每 10s 刷新、30s 未心跳被标记 offline），各节点本地注册表从共享表收敛，leader 按确定性策略（active master 最小 ID，缺则 active worker 最小 ID）独立收敛——此前节点注册仅为进程内，节点之间互不可见。其二，租约式分布式锁（`cluster_locks` 表）取代原 PG advisory lock：锁带租约过期时间，持有者周期续租，持有者崩溃/失联后租约到期即可以被其他节点自动抢占（advisory lock 永不失效，挂死但连接存活的持有者会永久阻塞锁键）；每次获取/抢占携带单调递增的 fence token 供接管隔离。两张表由 cluster 包首次使用时自建（幂等 DDL），不依赖 state 包 schema 版本。在途变更的自动故障转移与跨节点调度仍未实现，启动告警文案同步更新。
 
 ### 变更
 

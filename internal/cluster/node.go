@@ -234,6 +234,43 @@ func (r *NodeRegistry) electLeaderLocked() bool {
 	return false
 }
 
+// SyncFromPeers reconciles the registry with a shared cluster view (e.g.
+// the cluster_nodes table). Every peer in the view is upserted; local
+// entries absent from the view are removed except keepID — this process's
+// own node, which must survive a transient failure to write its row. After
+// reconciliation the leader slot is re-validated and re-elected if needed,
+// so all nodes applying the same deterministic policy to the same view
+// converge on the same leader.
+func (r *NodeRegistry) SyncFromPeers(peers []Node, keepID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	seen := make(map[string]bool, len(peers))
+	for i := range peers {
+		p := peers[i]
+		seen[p.ID] = true
+		if existing, ok := r.nodes[p.ID]; ok {
+			*existing = p
+		} else {
+			r.nodes[p.ID] = &p
+		}
+	}
+	for id := range r.nodes {
+		if !seen[id] && id != keepID {
+			delete(r.nodes, id)
+		}
+	}
+
+	if r.leaderID != "" {
+		if n, ok := r.nodes[r.leaderID]; !ok || n.Status != StatusActive {
+			r.leaderID = ""
+			r.electLeaderLocked()
+		}
+	} else {
+		_ = r.electLeaderLocked()
+	}
+}
+
 // MarkStale transitions nodes whose LastHeartbeat is older than maxAge to
 // StatusOffline. It returns the IDs of the nodes that were marked stale.
 // If the leader becomes stale, a new leader is elected.

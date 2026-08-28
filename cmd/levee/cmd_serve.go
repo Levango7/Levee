@@ -295,8 +295,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("start cluster manager: %w", err)
 		}
 		log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
-		log.Warn("cluster coordination is limited to the shared PostgreSQL store",
-			"detail", "node registry is per-process; automated failover and cross-node scheduling are not yet implemented — do not rely on HA guarantees")
+		log.Warn("cluster coordination covers shared storage, membership and locking only",
+			"detail", "nodes register and heartbeat via PostgreSQL; stale peers are marked offline and expired lock leases are reclaimed automatically. "+
+				"Automated failover of in-flight changes and cross-node scheduling are not yet implemented — do not rely on HA guarantees")
 	} else {
 		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
 		if err != nil {

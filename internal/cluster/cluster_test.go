@@ -146,3 +146,112 @@ func TestClusterManagerGetNodesGetLeader(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "m1", leader.ID)
 }
+
+// TestClusterPGTwoNodeVisibility exercises the shared PostgreSQL registry:
+// two managers backed by the same database see each other, and a node that
+// stops heartbeating (crash simulation) is marked offline by its peer.
+func TestClusterPGTwoNodeVisibility(t *testing.T) {
+	dsn := pgTestDSN()
+	if dsn == "" {
+		t.Skip("LEVEE_PG_TEST_DSN not set; skipping PostgreSQL cluster test")
+	}
+	db := openTestDB(t, dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	require.NoError(t, ensureClusterSchema(ctx, db))
+	// Isolate from rows left by earlier runs of this or other suites.
+	_, err := db.ExecContext(ctx, `DELETE FROM cluster_nodes`)
+	require.NoError(t, err)
+
+	cfgA := ManagerConfig{SelfID: "node-a", HealthCheckInterval: 100 * time.Millisecond, HeartbeatTimeout: 500 * time.Millisecond}
+	cfgB := ManagerConfig{SelfID: "node-b", HealthCheckInterval: 100 * time.Millisecond, HeartbeatTimeout: 500 * time.Millisecond}
+	mgrA := NewClusterManager(db, cfgA)
+	mgrB := NewClusterManager(db, cfgB)
+
+	require.NoError(t, mgrA.Join(Node{ID: "node-a", Address: "a:9090", Role: RoleMaster}))
+	require.NoError(t, mgrB.Join(Node{ID: "node-b", Address: "b:9090", Role: RoleWorker}))
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	require.NoError(t, mgrA.Start(runCtx))
+	require.NoError(t, mgrB.Start(runCtx))
+
+	// A must discover B through the shared table.
+	assert.Eventually(t, func() bool {
+		n, ok := mgrA.Registry().Get("node-b")
+		return ok && n.Status == StatusActive
+	}, 5*time.Second, 50*time.Millisecond, "node-a never saw node-b as active")
+
+	// Leader converges to the master role on both sides.
+	leaderA, okA := mgrA.GetLeader()
+	leaderB, okB := mgrB.GetLeader()
+	if assert.True(t, okA) && assert.True(t, okB) {
+		assert.Equal(t, "node-a", leaderA.ID)
+		assert.Equal(t, "node-a", leaderB.ID)
+	}
+
+	// Simulate a crash of B: stop its loop WITHOUT Leave, so the node row
+	// stays in the table with an ageing heartbeat.
+	stopCtx, stopCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer stopCancel()
+	require.NoError(t, mgrB.Stop(stopCtx))
+
+	// A must mark B offline once the heartbeat ages past the timeout.
+	assert.Eventually(t, func() bool {
+		n, ok := mgrA.Registry().Get("node-b")
+		return ok && n.Status == StatusOffline
+	}, 5*time.Second, 50*time.Millisecond, "node-a never marked node-b offline")
+
+	// Graceful leave removes the row entirely.
+	require.NoError(t, mgrA.Leave("node-b"))
+	assert.Eventually(t, func() bool {
+		_, ok := mgrA.Registry().Get("node-b")
+		return !ok
+	}, 5*time.Second, 50*time.Millisecond, "node-b row still visible after leave")
+
+	require.NoError(t, mgrA.Stop(stopCtx))
+}
+
+// TestClusterPGStaleLockSweep verifies the health loop releases lock leases
+// whose holder stopped refreshing (crash simulation).
+func TestClusterPGStaleLockSweep(t *testing.T) {
+	dsn := pgTestDSN()
+	if dsn == "" {
+		t.Skip("LEVEE_PG_TEST_DSN not set; skipping PostgreSQL cluster test")
+	}
+	db := openTestDB(t, dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	require.NoError(t, ensureClusterSchema(ctx, db))
+
+	// A "dead" node grabs a lock with a short lease and never refreshes.
+	dead := NewDistributedLockManager(db)
+	key := "test:cluster:sweep:" + time.Now().Format("150405.000000000")
+	_, err := dead.Acquire(ctx, key, "dead-node", 500*time.Millisecond)
+	require.NoError(t, err)
+
+	// A live manager whose health loop sweeps stale leases.
+	mgr := NewClusterManager(db, ManagerConfig{
+		SelfID:              "node-a",
+		HealthCheckInterval: 100 * time.Millisecond,
+		HeartbeatTimeout:    time.Minute,
+	})
+	require.NoError(t, mgr.Join(Node{ID: "node-a", Address: "a:9090"}))
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	require.NoError(t, mgr.Start(runCtx))
+
+	// The sweep must remove the expired lease, after which the key is free.
+	assert.Eventually(t, func() bool {
+		_, err := mgr.Locks().Acquire(ctx, key, "node-a", time.Minute)
+		if err != nil {
+			return false
+		}
+		return true
+	}, 5*time.Second, 100*time.Millisecond, "expired lease was never swept")
+	require.NoError(t, mgr.Locks().Release(ctx, key, "node-a"))
+
+	stopCtx, stopCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer stopCancel()
+	require.NoError(t, mgr.Stop(stopCtx))
+}

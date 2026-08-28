@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nexus/levee/internal/log"
@@ -47,10 +48,11 @@ type ClusterManager struct {
 	registry *NodeRegistry
 	locks    *DistributedLockManager
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	done    chan struct{}
-	started bool
+	mu          sync.Mutex
+	cancel      context.CancelFunc
+	done        chan struct{}
+	started     bool
+	schemaReady atomic.Bool // cluster tables ensured (only when db != nil)
 }
 
 // NewClusterManager returns a manager backed by the given *sql.DB. The db may
@@ -86,6 +88,9 @@ func (m *ClusterManager) Start(ctx context.Context) error {
 	defer m.mu.Unlock()
 	if m.started {
 		return nil
+	}
+	if err := m.ensureSchema(ctx); err != nil {
+		return err
 	}
 	innerCtx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
@@ -129,15 +134,35 @@ func (m *ClusterManager) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Join registers a node with the cluster. It is a thin wrapper around
-// Registry.Register so callers do not need to reach into the registry.
+// Join registers a node with the cluster. The node is recorded both in the
+// local registry and — when backed by PostgreSQL — in the shared
+// cluster_nodes table so other nodes can see it. It is a thin wrapper
+// around Registry.Register plus the table upsert.
 func (m *ClusterManager) Join(node Node) error {
-	return m.registry.Register(node)
+	if err := m.registry.Register(node); err != nil {
+		return err
+	}
+	if m.db == nil {
+		return nil
+	}
+	ctx := context.Background()
+	if err := m.ensureSchema(ctx); err != nil {
+		return err
+	}
+	return upsertNode(ctx, m.db, node)
 }
 
-// Leave deregisters a node and, if it was the leader, triggers a new election.
+// Leave deregisters a node and, if it was the leader, triggers a new
+// election. With a PostgreSQL backend the shared node row is removed as
+// well so peers stop seeing the node on their next sync.
 func (m *ClusterManager) Leave(nodeID string) error {
-	return m.registry.Deregister(nodeID)
+	if err := m.registry.Deregister(nodeID); err != nil {
+		return err
+	}
+	if m.db == nil {
+		return nil
+	}
+	return deleteNode(context.Background(), m.db, nodeID)
 }
 
 // HealthCheckResult is the outcome of a single health-check sweep.
@@ -185,7 +210,10 @@ func (m *ClusterManager) SelfHeartbeat() error {
 }
 
 // healthCheckLoop is the background goroutine started by Start. It refreshes
-// this node's heartbeat and marks stale nodes on every tick.
+// this node's heartbeat and marks stale nodes on every tick. With a
+// PostgreSQL backend it additionally synchronises the shared node table and
+// sweeps expired lock leases, so all nodes converge on one membership view
+// and dead holders' locks become reclaimable.
 func (m *ClusterManager) healthCheckLoop(ctx context.Context) {
 	defer close(m.done)
 	ticker := time.NewTicker(m.cfg.HealthCheckInterval)
@@ -210,7 +238,66 @@ func (m *ClusterManager) healthCheckLoop(ctx context.Context) {
 		if len(result.StaleNodes) > 0 {
 			log.Warn("marked stale nodes", "count", len(result.StaleNodes), "ids", result.StaleNodes)
 		}
+
+		if m.db != nil {
+			m.syncWithPG(ctx)
+		}
 	}
+}
+
+// syncWithPG performs one round of shared-state synchronisation against the
+// PostgreSQL backend: refresh our heartbeat row, mark stale peers, fold the
+// table view into the local registry, and sweep expired lock leases. Every
+// step is best-effort — a transient database failure logs and retries on the
+// next tick instead of stopping the loop.
+func (m *ClusterManager) syncWithPG(ctx context.Context) {
+	if m.cfg.SelfID != "" {
+		if err := heartbeatNode(ctx, m.db, m.cfg.SelfID); err != nil {
+			log.Warn("cluster: pg heartbeat failed", "error", err)
+		}
+	}
+
+	stale, err := markStaleNodes(ctx, m.db, m.cfg.HeartbeatTimeout)
+	if err != nil {
+		log.Warn("cluster: pg mark stale failed", "error", err)
+	} else if len(stale) > 0 {
+		log.Warn("cluster: peers marked stale", "count", len(stale), "ids", stale)
+	}
+
+	nodes, err := listNodes(ctx, m.db)
+	if err != nil {
+		log.Warn("cluster: pg list nodes failed", "error", err)
+	} else {
+		m.registry.SyncFromPeers(nodes, m.cfg.SelfID)
+	}
+
+	released, err := m.locks.ReleaseStale(ctx)
+	if err != nil {
+		log.Warn("cluster: release stale locks failed", "error", err)
+	} else if len(released) > 0 {
+		keys := make([]string, 0, len(released))
+		for _, r := range released {
+			keys = append(keys, r.Key)
+		}
+		log.Warn("cluster: expired lock leases released", "count", len(released), "keys", keys)
+	}
+}
+
+// ensureSchema applies the cluster coordination tables once. Failures are
+// not cached: the next call retries, so a transient database outage during
+// startup does not permanently disable schema creation.
+func (m *ClusterManager) ensureSchema(ctx context.Context) error {
+	if m.db == nil {
+		return nil
+	}
+	if m.schemaReady.Load() {
+		return nil
+	}
+	if err := ensureClusterSchema(ctx, m.db); err != nil {
+		return err
+	}
+	m.schemaReady.Store(true)
+	return nil
 }
 
 // EnsureStarted returns an error if the manager has not been started. It is
