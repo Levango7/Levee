@@ -13,6 +13,7 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,6 +36,7 @@ import (
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/push"
 )
 
 // Default gateway rate-limit values. The limiter is a global token
@@ -829,7 +831,7 @@ func (gw *Gateway) handleDeeplinkApprove(w http.ResponseWriter, r *http.Request)
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
 	if err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token); err != nil {
-		writeGRPCError(w, err)
+		writeDeeplinkError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "approved"})
@@ -849,10 +851,23 @@ func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
 	if err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token); err != nil {
-		writeGRPCError(w, err)
+		writeDeeplinkError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "rejected"})
+}
+
+// writeDeeplinkError maps deep-link token validation failures to 401 so a
+// mobile client can distinguish an expired or forged one-time token from a
+// server fault. The token sentinels come from the push package and survive
+// the %w wrapping applied by MobileApprovalService. Every other error keeps
+// the standard gRPC-error mapping.
+func writeDeeplinkError(w http.ResponseWriter, err error) {
+	if errors.Is(err, push.ErrInvalidToken) || errors.Is(err, push.ErrTokenExpired) {
+		writeJSONError(w, http.StatusUnauthorized, "invalid or expired deeplink token")
+		return
+	}
+	writeGRPCError(w, err)
 }
 
 // -----------------------------------------------------------------------
@@ -2392,6 +2407,14 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !tokens.Enabled() {
 			// Auth disabled: let the request through.
+			h.ServeHTTP(w, r)
+			return
+		}
+		// Mobile deep-link endpoints authenticate via a one-time token in
+		// the request body (validated by the handler itself), not via
+		// Bearer header. Skip Bearer enforcement here; the handler will
+		// reject requests with missing or invalid tokens.
+		if r.URL.Path == "/changes/deeplink/approve" || r.URL.Path == "/changes/deeplink/reject" {
 			h.ServeHTTP(w, r)
 			return
 		}

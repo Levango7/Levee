@@ -34,6 +34,7 @@
 
 ### 修复
 
+- **移动一键审批 401**：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 现接受请求体内的一次性 token 作为认证凭据，不再要求 Bearer 头——此前启用鉴权后，无法携带 Bearer 的移动设备点击审批深链必然 401。一次性 token 为 32 字节随机数、30 分钟 TTL、单次消费并绑定 (run-id, 用户, 动作)；无效/过期 token 现返回 401（此前被不透明地映射为 500）。豁免仅覆盖这两个端点，其余端点的 Bearer 校验不受影响。
 - **告警订阅流测试竞态**：`SubscribeAlerts` 广播为尽力而为（best-effort），订阅注册完成前发布的告警会被丢弃；相关流式测试此前以固定 `time.Sleep` 等待注册，在高负载下（如完整 `go test ./...`）可能竞态导致 `RecvMsg` 永久阻塞（触发 10 分钟单测超时）。新增 `AlertService.SubscriberCount()` 观测方法，全部 5 个订阅流式测试改为 `require.Eventually` 等待注册完成后再发布告警，消除挂起。
 
 ## v1.12.0 - 2026-08-27

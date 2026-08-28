@@ -9,6 +9,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
@@ -460,4 +462,62 @@ func TestDeeplinkMissingTokenIs400(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestDeeplinkBypassesBearerAuthWhenTokenConfigured pins the mobile approval
+// flow: the deeplink endpoints authenticate via the one-time token in the
+// request body, so they must stay reachable from devices that cannot send a
+// Bearer header, while every other endpoint keeps requiring the token.
+func TestDeeplinkBypassesBearerAuthWhenTokenConfigured(t *testing.T) {
+	gw, srv, _ := startTestGateway(t, ServeGatewayConfig{AuthToken: "s3cret"})
+	stub := &stubMobileApproval{}
+	gw.SetMobileApproval(stub)
+
+	// No Authorization header: the one-time token in the body is the
+	// credential, so the request must reach the handler.
+	resp, err := http.Post(srv.URL+"/changes/deeplink/approve", "application/json",
+		strings.NewReader(`{"token":"tok-123"}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "approve", stub.lastAction)
+	assert.Equal(t, "tok-123", stub.lastToken)
+
+	rejectResp, err := http.Post(srv.URL+"/changes/deeplink/reject", "application/json",
+		strings.NewReader(`{"token":"tok-456"}`))
+	require.NoError(t, err)
+	defer rejectResp.Body.Close()
+	require.Equal(t, http.StatusOK, rejectResp.StatusCode)
+	assert.Equal(t, "reject", stub.lastAction)
+	assert.Equal(t, "tok-456", stub.lastToken)
+
+	// Regression guard: ordinary endpoints still require the Bearer token.
+	noAuth, err := http.Get(srv.URL + "/system/version")
+	require.NoError(t, err)
+	noAuth.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, noAuth.StatusCode)
+}
+
+// TestDeeplinkInvalidTokenIs401 verifies that token-validation failures are
+// reported as 401 (not an opaque 500) so mobile clients can tell an expired
+// or forged link apart from a server fault.
+func TestDeeplinkInvalidTokenIs401(t *testing.T) {
+	for name, sentinel := range map[string]error{
+		"invalid": push.ErrInvalidToken,
+		"expired": push.ErrTokenExpired,
+	} {
+		t.Run(name, func(t *testing.T) {
+			gw, srv, _ := startTestGateway(t, ServeGatewayConfig{AuthToken: "s3cret"})
+			stub := &stubMobileApproval{
+				err: fmt.Errorf("approval: mobile: validate token: %w", sentinel),
+			}
+			gw.SetMobileApproval(stub)
+
+			resp, err := http.Post(srv.URL+"/changes/deeplink/approve", "application/json",
+				strings.NewReader(`{"token":"forged"}`))
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		})
+	}
 }

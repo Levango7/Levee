@@ -823,7 +823,8 @@ RESTful 风格，支持两套路径：
 | POST | `/changes/:id/archive` | `/api/v1/ChangeService/ArchiveChange` | 归档 | `levee archive` |
 | GET | `/changes/:id/logs` | `/api/v1/ChangeService/GetLogs` | 查看日志 | `levee logs` |
 | GET | `/changes/:id/trace` | `/api/v1/ChangeService/GetTrace` | 查看 trace | `levee trace` |
-| POST | `/changes/deeplink/approve` | — | 一键审批（移动端） | — |
+| POST | `/changes/deeplink/approve` | — | 一键审批（移动端，一次性 token 认证，见 13.3） | — |
+| POST | `/changes/deeplink/reject` | — | 一键驳回（移动端，一次性 token 认证，见 13.3） | — |
 | POST | `/templates` | `/api/v1/TemplateService/CreateTemplate` | 创建模板 | `levee template create` |
 | GET | `/templates` | `/api/v1/TemplateService/ListTemplates` | 列出模板 | `levee template list` |
 | GET | `/templates/:name` | `/api/v1/TemplateService/GetTemplate` | 查看模板 | `levee template show` |
@@ -844,10 +845,11 @@ RESTful 风格，支持两套路径：
 
 ### 13.3 认证
 
-Token-based 认证，两种模式：
+Token-based 认证，三种模式：
 
-- CLI / API 客户端：Bearer token，通过 `--token` 或配置文件 `auth.token` 传入，请求头 `Authorization: Bearer <token>`。
+- CLI / API 客户端：Bearer token，通过 `--token` 或配置文件 `auth.token` 传入，请求头 `Authorization: Bearer <token>`。多令牌部署可用可重复的 `--auth-token name=secret`，命名令牌认证后其主体覆盖客户端自报的 `X-Acting-As`。
 - 门户（Web UI）：同源嵌入在二进制中，无需额外认证；外部调用需携带 Bearer token。
+- 移动端一键审批（deeplink）：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 不要求 Bearer 头，改以请求体中的一次性 token 作为认证凭据（`{"token": "<one-time-token>"}`）。token 由审批通知下发时生成：32 字节随机数、默认 30 分钟 TTL、单次消费、绑定 (run-id, 用户, 动作)；消费或过期后即失效。无效 / 过期 token 返回 401。该豁免仅覆盖这两个端点，其余端点仍强制 Bearer。
 
 > **安全提示**：默认情况下（不传 `--token`）鉴权处于关闭状态，所有 API 请求无需认证即可访问。生产环境必须通过 `--token <secret>` 设置 Bearer token。gRPC 和 REST 网关共享同一 token 校验逻辑。
 
