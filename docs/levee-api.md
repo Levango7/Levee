@@ -800,7 +800,7 @@ RESTful 风格，支持两套路径：
 
 资源命名用复数名词，子资源用路径嵌套（`/changes/:id/approve`）。HTTP 方法语义：GET 查询、POST 创建 / 动作、DELETE 删除。
 
-所有端点返回统一 JSON 结构（同 12.2），HTTP 状态码与退出码对齐：200 成功、400 验证失败、401 认证失败、403 权限不足、404 不存在、409 冲突（如目标机互斥锁占用）、422 审批被拒、500 一般错误、503 连接失败、504 超时。
+成功响应体为 proto 消息直接序列化的 JSON（不带 12.2 的 `data`/`meta`/`error` 外层包装，字段约定见 13.5）；错误响应体为 `{"error": "<message>"}`。HTTP 状态码与 gRPC 状态码对齐：200 成功、400 验证失败（InvalidArgument）、401 认证失败（Unauthenticated）、403 权限不足（PermissionDenied）、404 不存在（NotFound）、409 冲突（AlreadyExists，如目标机互斥锁占用）、412 前置条件不满足（FailedPrecondition）、429 限流（ResourceExhausted）、501 未实现（Unimplemented）、503 连接失败 / 服务不可用（Unavailable）、504 超时（DeadlineExceeded）、500 一般错误（其余）。
 
 ### 13.2 端点清单
 
@@ -865,6 +865,17 @@ Token-based 认证，两种模式：
 | `fields` | string list | 全部字段 | 投影字段，逗号分隔，减少传输 |
 
 过滤参数按资源域不同，如 `/changes` 支持 `status`、`template`、`initiator`、`from`、`to`，`/audit` 支持 `who`、`action`、`change`。过滤参数均为可选，多参数间为 AND 关系。
+
+### 13.5 JSON 字段约定（protojson）
+
+REST 网关的成功响应由 protojson（proto3 JSON 规范，默认选项）序列化，客户端集成时必须遵循以下约定：
+
+1. **字段命名**：响应键名为 lowerCamelCase（如 `changeId`、`createdAt`、`planHash`）。请求体同时接受 lowerCamelCase 与原始 snake_case 两种拼写（如 `change_id` 与 `changeId` 均可）。
+2. **零值省略**：proto3 零值字段**不会出现在响应中**——数值 `0`、空字符串 `""`、`false`、空列表、空映射、未设置的 message 字段均被省略。客户端必须把"字段缺失"等价于"该字段为零值"处理，不得区分二者；也不要依赖字段在响应中必然出现。
+3. **int64 字段**：int64 字段（如 `createdAt` / `updatedAt` Unix 秒时间戳、`durationMs`）按 proto3 JSON 规范输出为 **JSON 字符串**（避免 64 位精度丢失），客户端应按字符串接收后再解析为数值。
+4. **错误响应**：非 2xx 响应体统一为 `{"error": "<message>"}`（见 13.1 状态码映射）。
+
+> **例外（手写兼容消息）**：`/api/v1/AlertService/ReceiveAlert`、`/api/v1/AlertService/GetAlertStatus`、`/api/v1/DiagnosisService/Diagnose`、`/api/v1/DiagnosisService/GetDiagnosis`、`/api/v1/ConversationService/SendMessage` 五个端点的消息类型为手写实现（不走 protojson），采用内部镜像序列化：键名同样为 lowerCamelCase、请求同样接受两种拼写、nil message 字段同样省略；但**标量零值会照常输出**（`0` / `""` / `false` 会显式出现），且 int64 输出为 **JSON 数字**而非字符串。客户端对这五个端点不应依赖上述第 2、3 条约定。
 
 ---
 

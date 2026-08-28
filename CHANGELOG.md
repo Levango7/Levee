@@ -15,6 +15,7 @@
 - **多令牌身份认证**：`serve` 新增可重复 `--auth-token name=secret`，每个命名令牌映射到一个主体（subject）；gRPC 拦截器与 REST 中间件均支持 `AuthTokens`（`Legacy` + `Named`）。命名令牌认证后，其主体注入请求上下文并**优先于**客户端自报的 `X-Acting-As`，使审计归属为“被证明的身份”而非“断言”。单令牌（`--token`/`LEVEE_TOKEN`）行为完全向后兼容。
 - **serve 装配 AI 引擎**：`levee serve` 现装配真实的诊断引擎（日志管线 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose`/`SendMessage` RPC 不再返回 `Unimplemented`；告警服务保持独立环形存储（完整网关仍用 `levee alert serve`）。
 - **前端 CI 门禁**：新增 `frontend` 作业（`vue-tsc --noEmit` + `vite build`），并纳入 `check` 聚合门禁。
+- **发布工作流**：新增 `.github/workflows/release.yml`——推送 `v*` tag 时自动触发 goreleaser，按既有 `.goreleaser.yml` 构建 linux/darwin/windows × amd64/arm64 产物并发布 Release；此前仅有 goreleaser 配置、无触发工作流，发布依赖手工构建。
 
 ### 变更
 
@@ -29,6 +30,7 @@
 - 修正 `.gitignore` 中 `.env"coverfunc.txt"` 的粘连/引号错误。
 - 新增生产部署与升级手册（docs/deployment.md）。
 - 补全 CLI 参考缺失命令（alert/backup/restore/group/converse/diagnose 等）。
+- `docs/levee-api.md` 新增 13.5 节，声明 REST JSON 字段约定：protojson 序列化采用 lowerCamelCase 键名、**省略 proto3 零值字段**（客户端须将缺失字段视为零值）、int64 输出为 JSON 字符串；并如实标注 AlertService/DiagnosisService/ConversationService 五个端点的手写镜像序列化差异（标量零值显式输出、int64 为数字）。同步修正 13.1 与实现不符的描述：REST 成功响应为 proto 消息直接序列化（无 `data`/`meta`/`error` 包装），HTTP 状态码映射改按 `writeGRPCError` 实际实现（移除不存在的 422，补 412/429/501）。
 
 ### 修复
 
