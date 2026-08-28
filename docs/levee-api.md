@@ -877,7 +877,7 @@ REST 网关的成功响应由 protojson（proto3 JSON 规范，默认选项）�
 3. **int64 字段**：int64 字段（如 `createdAt` / `updatedAt` Unix 秒时间戳、`durationMs`）按 proto3 JSON 规范输出为 **JSON 字符串**（避免 64 位精度丢失），客户端应按字符串接收后再解析为数值。
 4. **错误响应**：非 2xx 响应体统一为 `{"error": "<message>"}`（见 13.1 状态码映射）。
 
-> **例外（手写兼容消息）**：`/api/v1/AlertService/ReceiveAlert`、`/api/v1/AlertService/GetAlertStatus`、`/api/v1/DiagnosisService/Diagnose`、`/api/v1/DiagnosisService/GetDiagnosis`、`/api/v1/ConversationService/SendMessage` 五个端点的消息类型为手写实现（不走 protojson），采用内部镜像序列化：键名同样为 lowerCamelCase、请求同样接受两种拼写、nil message 字段同样省略；但**标量零值会照常输出**（`0` / `""` / `false` 会显式出现），且 int64 输出为 **JSON 数字**而非字符串。客户端对这五个端点不应依赖上述第 2、3 条约定。
+所有端点（含 AlertService / DiagnosisService / ConversationService）统一遵循上述约定，无例外。
 
 ---
 

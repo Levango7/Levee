@@ -543,6 +543,78 @@ func TestAPIv1MethodMatrix(t *testing.T) {
 	}
 }
 
+// TestExtraServicesProtoJSONContract pins the serialization contract for the
+// Alert/Diagnosis/Conversation REST endpoints now that they use protojson
+// (previously a hand-written reflection mirror). It guards the three
+// behaviours documented in docs/levee-api.md §13.5: proto3 zero-value fields
+// are omitted, int64 fields are emitted as JSON strings, and request bodies
+// accept both camelCase and snake_case spellings.
+func TestExtraServicesProtoJSONContract(t *testing.T) {
+	_, srv, _ := startTestGatewayFull(t, ServeGatewayConfig{})
+
+	post := func(service, method, body string) (*http.Response, map[string]any) {
+		t.Helper()
+		resp, err := http.Post(
+			fmt.Sprintf("%s/api/v1/%s/%s", srv.URL, service, method),
+			"application/json", strings.NewReader(body))
+		require.NoError(t, err)
+		raw, err := io.ReadAll(resp.Body)
+		require.NoError(t, resp.Body.Close())
+		require.NoError(t, err)
+		var m map[string]any
+		if len(raw) > 0 {
+			require.NoError(t, json.Unmarshal(raw, &m), "body: %s", raw)
+		}
+		return resp, m
+	}
+
+	// Zero-value omission: a successful ReceiveAlert has an empty `reason`,
+	// which protojson must omit (the old mirror emitted "reason":"").
+	t.Run("ReceiveAlert omits zero-value fields", func(t *testing.T) {
+		resp, m := post("AlertService", "ReceiveAlert", `{"source":"prom","title":"t"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "accepted", m["status"])
+		assert.NotEmpty(t, m["id"])
+		_, hasReason := m["reason"]
+		assert.False(t, hasReason, "empty reason must be omitted per protojson zero-value elision")
+	})
+
+	// int64 as JSON string: GetAlertStatus.startsAt is a Unix timestamp and
+	// must be serialised as a string, not a JSON number.
+	t.Run("GetAlertStatus emits int64 as string", func(t *testing.T) {
+		resp, _ := post("AlertService", "ReceiveAlert", `{"id":"contract-1","source":"prom","title":"t"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		resp, m := post("AlertService", "GetAlertStatus", `{"id":"contract-1"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		startsAt, ok := m["startsAt"].(string)
+		require.True(t, ok, "startsAt must be a JSON string, got %T (%v)", m["startsAt"], m["startsAt"])
+		assert.NotEmpty(t, startsAt)
+		_, hasEndsAt := m["endsAt"]
+		assert.False(t, hasEndsAt, "zero endsAt must be omitted")
+	})
+
+	// Dual-name tolerance: both snake_case and camelCase request spellings
+	// are accepted for the same field.
+	t.Run("SendMessage accepts snake_case and camelCase", func(t *testing.T) {
+		resp, m := post("ConversationService", "SendMessage", `{"user_id":"u1","text":"/help"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.NotEmpty(t, m["text"])
+		resp, m = post("ConversationService", "SendMessage", `{"userId":"u1","text":"/help"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.NotEmpty(t, m["text"])
+	})
+
+	// Diagnose responses follow the same contract.
+	t.Run("Diagnose response follows protojson", func(t *testing.T) {
+		resp, m := post("DiagnosisService", "Diagnose", `{"target":"h1"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.NotEmpty(t, m["id"])
+		if v, present := m["durationMs"]; present {
+			assert.IsType(t, "", v, "durationMs (int64) must be a JSON string")
+		}
+	})
+}
+
 func TestAPIv1InvalidPathVariants(t *testing.T) {
 	_, srv, _ := startTestGatewayFull(t, ServeGatewayConfig{})
 

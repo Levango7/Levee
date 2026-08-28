@@ -24,6 +24,7 @@
 - **Trivy 阻断合并**：`trivy` 作业对可修复的 CRITICAL/HIGH CVE 设 `exit-code: 1`，由“仅上报”改为“阻断”。
 - **集群模式如实标注**：`serve --cluster` 启动时输出告警，说明当前集群协同仅限共享 PostgreSQL 存储（数据一致性 + 咨询锁），节点注册为进程内、尚无自动故障转移/跨节点调度；README 特性描述同步收敛。
 - **前端产物清理**：`internal/web/dist` 重新构建，移除历史遗留的多代哈希资产，仅保留当前一代。
+- **手写服务 pb 全量切换为生成代码，REST 序列化统一 protojson**：AlertService / DiagnosisService / ConversationService / InventoryService 的 pb 绑定现为 protoc 生成代码——手写文件与 `proto_regenerate` build tag 双轨脚手架移除（上一条目中的 `levee_extra*.regen.pb.go` 提升为正式文件），`scripts/gen-proto.sh` 直接产出全部四个绑定文件，CI `proto` 作业相应简化为工具链再生 + 字节级漂移检查 + 构建。`/api/v1/{AlertService,DiagnosisService,ConversationService}` 五个非流式端点由手写反射镜像切换为 protojson（`rest.go` 移除 `readProtoJSON`/`writeProtoJSON` 及约 270 行 protoLike* 镜像机制），与其他全部端点统一遵循 13.5 约定。**客户端可见变化**：这五个端点的响应中，proto3 标量零值不再显式输出（此前 `0`/`""`/`false` 会出现，现按规范省略），int64 由 JSON 数字改为 JSON 字符串；请求体仍同时接受 camelCase 与 snake_case 拼写。仓库前端未消费这五个端点（已全量检索确认），新增契约测试 `TestExtraServicesProtoJSONContract` 固化零值省略 / int64 字符串 / 双拼写兼容三项行为。
 
 ### 文档
 

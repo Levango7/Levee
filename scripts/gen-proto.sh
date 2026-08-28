@@ -12,17 +12,11 @@
 #   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
 #   go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
 #
-# Outputs:
+# Outputs (all canonical generated code, always compiled):
 #   proto/levee.proto       -> internal/grpc/pb/levee.pb.go
 #                              internal/grpc/pb/levee_grpc.pb.go
-#      Canonical generated code, always compiled.
-#
-#   proto/levee_extra.proto -> internal/grpc/pb/levee_extra.regen.pb.go
-#                              internal/grpc/pb/levee_extra_grpc.regen.pb.go
-#      Generated stand-ins for the hand-written extra bindings, compiled
-#      only with `-tags proto_regenerate`. The hand-written files
-#      (levee_extra*.pb.go, inventory_extra*.pb.go) carry the inverse
-#      `//go:build !proto_regenerate` tag and remain the default build.
+#   proto/levee_extra.proto -> internal/grpc/pb/levee_extra.pb.go
+#                              internal/grpc/pb/levee_extra_grpc.pb.go
 #
 # Usage:
 #   ./scripts/gen-proto.sh          # regenerate in place
@@ -64,21 +58,10 @@ trap 'rm -rf "$OUT"' EXIT
     --go-grpc_out=paths=source_relative:"$OUT" \
     proto/levee.proto proto/levee_extra.proto
 
-# Main bindings: canonical generated output, always compiled.
-cp "$OUT/levee.pb.go"      internal/grpc/pb/levee.pb.go
-cp "$OUT/levee_grpc.pb.go" internal/grpc/pb/levee_grpc.pb.go
-
-# Extra bindings: regenerated track, gated behind the proto_regenerate tag.
-{
-    echo '//go:build proto_regenerate'
-    echo
-    cat "$OUT/levee_extra.pb.go"
-} > internal/grpc/pb/levee_extra.regen.pb.go
-{
-    echo '//go:build proto_regenerate'
-    echo
-    cat "$OUT/levee_extra_grpc.pb.go"
-} > internal/grpc/pb/levee_extra_grpc.regen.pb.go
+cp "$OUT/levee.pb.go"            internal/grpc/pb/levee.pb.go
+cp "$OUT/levee_grpc.pb.go"       internal/grpc/pb/levee_grpc.pb.go
+cp "$OUT/levee_extra.pb.go"      internal/grpc/pb/levee_extra.pb.go
+cp "$OUT/levee_extra_grpc.pb.go" internal/grpc/pb/levee_extra_grpc.pb.go
 
 echo "regenerated internal/grpc/pb/:"
 ls -1 internal/grpc/pb/

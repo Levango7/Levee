@@ -146,10 +146,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # proto: regenerate the Go protobuf bindings with the pinned protoc
-  # toolchain and verify (a) the checked-in generated files are
-  # byte-identical to a fresh regeneration (no drift), and (b) the
-  # proto_regenerate build track — generated stand-ins for the hand-written
-  # extra bindings — compiles and passes the full test suite.
+  # toolchain and verify the checked-in generated files are byte-identical
+  # to a fresh regeneration (no drift).
   # ---------------------------------------------------------------------------
   proto:
     name: proto regenerate check
@@ -174,10 +172,8 @@ jobs:
         run: bash scripts/gen-proto.sh
       - name: drift check (checked-in files must match regeneration)
         run: git diff --exit-code -- internal/grpc/pb/
-      - name: build (proto_regenerate track)
-        run: go build -tags proto_regenerate ./...
-      - name: go test (proto_regenerate track)
-        run: go test -tags proto_regenerate ./... -count=1 -timeout 600s
+      - name: build sanity
+        run: go build ./...
 
   # ---------------------------------------------------------------------------
   # build: cross-platform binary build matrix. Produces artifacts for

@@ -19,12 +19,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"golang.org/x/time/rate"
 
@@ -1286,281 +1284,6 @@ func writeProto(w http.ResponseWriter, v proto.Message) {
 	_, _ = w.Write(out)
 }
 
-// --- legacy proto-style JSON -------------------------------------------------
-//
-// The AlertService/DiagnosisService/ConversationService message types in
-// pb/levee_extra.pb.go are hand-written and predate protoreflect: they do
-// NOT implement the modern proto.Message interface (no ProtoReflect), so
-// protojson and writeProto/readProto cannot be used on them directly.
-// Their protobuf struct tags still carry the canonical lowerCamelCase JSON
-// name (json=<name>), so these helpers derive field names from those tags
-// and mirror the protojson behaviour that matters for the REST surface:
-// responses use lowerCamelCase keys, requests accept either spelling.
-
-// readProtoJSON decodes a request body into v using the proto-style JSON
-// rules below. An empty body leaves v untouched.
-func readProtoJSON(v any) func(*http.Request) error {
-	return func(r *http.Request) error {
-		body, err := io.ReadAll(io.LimitReader(r.Body, 4*1024*1024))
-		if err != nil {
-			return fmt.Errorf("read body: %w", err)
-		}
-		if len(body) == 0 {
-			return nil
-		}
-		if err := protoLikeUnmarshal(body, v); err != nil {
-			return fmt.Errorf("invalid request body: %w", err)
-		}
-		return nil
-	}
-}
-
-// writeProtoJSON marshals v to JSON with lowerCamelCase keys derived from
-// the protobuf tags and writes it as the response.
-func writeProtoJSON(w http.ResponseWriter, v any) {
-	out, ok, err := protoLikeValue(reflect.ValueOf(v))
-	if err != nil || !ok {
-		writeJSONError(w, http.StatusInternalServerError, "marshal error")
-		return
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(b)
-}
-
-// protoTagJSONName extracts the canonical json= component from a protobuf
-// struct tag ("bytes,2,opt,name=user_id,json=userId,proto3" → "userId").
-func protoTagJSONName(tag string) string {
-	for _, part := range strings.Split(tag, ",") {
-		if strings.HasPrefix(part, "json=") {
-			return strings.TrimPrefix(part, "json=")
-		}
-	}
-	return ""
-}
-
-// protoLikeFieldName returns the canonical lowerCamelCase wire name of a
-// struct field: the protobuf tag's json= name when present, else a
-// lowerCamelCased Go field name.
-func protoLikeFieldName(f reflect.StructField) string {
-	if name := protoTagJSONName(f.Tag.Get("protobuf")); name != "" {
-		return name
-	}
-	r := []rune(f.Name)
-	if len(r) == 0 {
-		return f.Name
-	}
-	return string(unicode.ToLower(r[0])) + string(r[1:])
-}
-
-// protoTagComponent extracts a key=value component from a protobuf struct
-// tag ("bytes,2,opt,name=user_id,json=userId,proto3", "name" → "user_id").
-func protoTagComponent(tag, key string) string {
-	want := key + "="
-	for _, part := range strings.Split(tag, ",") {
-		if strings.HasPrefix(part, want) {
-			return strings.TrimPrefix(part, want)
-		}
-	}
-	return ""
-}
-
-// protoLikeAcceptNames returns every input spelling accepted for a field:
-// the canonical camelCase name plus the snake_case proto/json-tag name,
-// mirroring protojson's dual-name tolerance.
-func protoLikeAcceptNames(f reflect.StructField) []string {
-	names := []string{protoLikeFieldName(f)}
-	add := func(n string) {
-		if n == "" || n == "-" {
-			return
-		}
-		for _, existing := range names {
-			if existing == n {
-				return
-			}
-		}
-		names = append(names, n)
-	}
-	if j := f.Tag.Get("json"); j != "" {
-		add(strings.Split(j, ",")[0])
-	}
-	add(protoTagComponent(f.Tag.Get("protobuf"), "name"))
-	return names
-}
-
-// protoLikeValue converts v into plain JSON-encodable values with camelCase
-// object keys. The second return is false when v is a nil pointer (nothing
-// to encode).
-func protoLikeValue(v reflect.Value) (any, bool, error) {
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			return nil, false, nil
-		}
-		v = v.Elem()
-	}
-	switch v.Kind() {
-	case reflect.Struct:
-		out := make(map[string]any, v.NumField())
-		t := v.Type()
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			if f.PkgPath != "" { // unexported
-				continue
-			}
-			val, ok, err := protoLikeValue(v.Field(i))
-			if err != nil {
-				return nil, false, err
-			}
-			if !ok {
-				continue // nil pointer field is omitted, like protojson
-			}
-			out[protoLikeFieldName(f)] = val
-		}
-		return out, true, nil
-	case reflect.Slice:
-		arr := make([]any, 0, v.Len())
-		for i := 0; i < v.Len(); i++ {
-			val, ok, err := protoLikeValue(v.Index(i))
-			if err != nil {
-				return nil, false, err
-			}
-			if !ok {
-				arr = append(arr, nil)
-				continue
-			}
-			arr = append(arr, val)
-		}
-		return arr, true, nil
-	case reflect.Map:
-		out := make(map[string]any, v.Len())
-		iter := v.MapRange()
-		for iter.Next() {
-			key, _ := iter.Key().Interface().(string)
-			val, _, err := protoLikeValue(iter.Value())
-			if err != nil {
-				return nil, false, err
-			}
-			out[key] = val
-		}
-		return out, true, nil
-	default:
-		return v.Interface(), true, nil
-	}
-}
-
-// protoLikeUnmarshal decodes JSON data into v using the dual-name field
-// matching described above.
-func protoLikeUnmarshal(data []byte, v any) error {
-	var raw any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	return assignProtoLike(raw, reflect.ValueOf(v))
-}
-
-// assignProtoLike assigns decoded JSON value raw into the settable value v.
-func assignProtoLike(raw any, v reflect.Value) error {
-	if !v.CanSet() && v.Kind() != reflect.Ptr {
-		return fmt.Errorf("cannot assign field")
-	}
-	if v.Kind() == reflect.Ptr {
-		if v.IsNil() {
-			v.Set(reflect.New(v.Type().Elem()))
-		}
-		v = v.Elem()
-	}
-	switch v.Kind() {
-	case reflect.Struct:
-		obj, ok := raw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("expected JSON object")
-		}
-		t := v.Type()
-		for i := 0; i < t.NumField(); i++ {
-			f := t.Field(i)
-			if f.PkgPath != "" {
-				continue
-			}
-			for _, name := range protoLikeAcceptNames(f) {
-				val, present := obj[name]
-				if !present {
-					continue
-				}
-				if err := assignProtoLike(val, v.Field(i)); err != nil {
-					return err
-				}
-				break
-			}
-		}
-		return nil
-	case reflect.Slice:
-		arr, ok := raw.([]any)
-		if !ok {
-			return fmt.Errorf("expected JSON array")
-		}
-		out := reflect.MakeSlice(v.Type(), 0, len(arr))
-		for _, el := range arr {
-			ev := reflect.New(v.Type().Elem()).Elem()
-			if err := assignProtoLike(el, ev); err != nil {
-				return err
-			}
-			out = reflect.Append(out, ev)
-		}
-		v.Set(out)
-		return nil
-	case reflect.Map:
-		obj, ok := raw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("expected JSON object")
-		}
-		out := reflect.MakeMapWithSize(v.Type(), len(obj))
-		for k, val := range obj {
-			ev := reflect.New(v.Type().Elem()).Elem()
-			if err := assignProtoLike(val, ev); err != nil {
-				return err
-			}
-			out.SetMapIndex(reflect.ValueOf(k), ev)
-		}
-		v.Set(out)
-		return nil
-	case reflect.String:
-		s, ok := raw.(string)
-		if !ok {
-			return fmt.Errorf("expected JSON string")
-		}
-		v.SetString(s)
-		return nil
-	case reflect.Int64, reflect.Int32, reflect.Int:
-		f, ok := raw.(float64)
-		if !ok {
-			return fmt.Errorf("expected JSON number")
-		}
-		v.SetInt(int64(f))
-		return nil
-	case reflect.Float32, reflect.Float64:
-		f, ok := raw.(float64)
-		if !ok {
-			return fmt.Errorf("expected JSON number")
-		}
-		v.SetFloat(f)
-		return nil
-	case reflect.Bool:
-		b, ok := raw.(bool)
-		if !ok {
-			return fmt.Errorf("expected JSON boolean")
-		}
-		v.SetBool(b)
-		return nil
-	default:
-		return fmt.Errorf("unsupported field kind %s", v.Kind())
-	}
-}
-
 // writeJSON writes any struct as JSON response.
 func writeJSON(w http.ResponseWriter, v any) {
 	out, err := json.Marshal(v)
@@ -2103,7 +1826,7 @@ func (gw *Gateway) handleAlert(w http.ResponseWriter, r *http.Request, method st
 	switch method {
 	case "ReceiveAlert":
 		req := &pb.AlertMessage{}
-		if err := readProtoJSON(req)(r); err != nil {
+		if err := readProto(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2112,10 +1835,10 @@ func (gw *Gateway) handleAlert(w http.ResponseWriter, r *http.Request, method st
 			writeGRPCError(w, err)
 			return
 		}
-		writeProtoJSON(w, resp)
+		writeProto(w, resp)
 	case "GetAlertStatus":
 		req := &pb.GetAlertStatusRequest{}
-		if err := readProtoJSON(req)(r); err != nil {
+		if err := readProto(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2124,7 +1847,7 @@ func (gw *Gateway) handleAlert(w http.ResponseWriter, r *http.Request, method st
 			writeGRPCError(w, err)
 			return
 		}
-		writeProtoJSON(w, resp)
+		writeProto(w, resp)
 	case "SubscribeAlerts":
 		writeJSONError(w, http.StatusNotImplemented, "streaming RPCs not supported")
 	default:
@@ -2147,7 +1870,7 @@ func (gw *Gateway) handleDiagnosis(w http.ResponseWriter, r *http.Request, metho
 	switch method {
 	case "Diagnose":
 		req := &pb.DiagnoseRequest{}
-		if err := readProtoJSON(req)(r); err != nil {
+		if err := readProto(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2156,10 +1879,10 @@ func (gw *Gateway) handleDiagnosis(w http.ResponseWriter, r *http.Request, metho
 			writeGRPCError(w, err)
 			return
 		}
-		writeProtoJSON(w, resp)
+		writeProto(w, resp)
 	case "GetDiagnosis":
 		req := &pb.GetDiagnosisRequest{}
-		if err := readProtoJSON(req)(r); err != nil {
+		if err := readProto(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2168,7 +1891,7 @@ func (gw *Gateway) handleDiagnosis(w http.ResponseWriter, r *http.Request, metho
 			writeGRPCError(w, err)
 			return
 		}
-		writeProtoJSON(w, resp)
+		writeProto(w, resp)
 	default:
 		writeJSONError(w, http.StatusBadRequest, "unknown method: "+method)
 	}
@@ -2189,7 +1912,7 @@ func (gw *Gateway) handleConversation(w http.ResponseWriter, r *http.Request, me
 	switch method {
 	case "SendMessage":
 		req := &pb.SendMessageRequest{}
-		if err := readProtoJSON(req)(r); err != nil {
+		if err := readProto(req)(r); err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2198,7 +1921,7 @@ func (gw *Gateway) handleConversation(w http.ResponseWriter, r *http.Request, me
 			writeGRPCError(w, err)
 			return
 		}
-		writeProtoJSON(w, resp)
+		writeProto(w, resp)
 	case "SubscribeConversation":
 		writeJSONError(w, http.StatusNotImplemented, "streaming RPCs not supported")
 	default:

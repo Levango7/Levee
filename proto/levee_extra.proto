@@ -8,13 +8,12 @@ option go_package = "github.com/nexus/levee/internal/grpc/pb;pb";
 // AlertService - alert ingestion, status lookup and streaming
 // ============================================================================
 //
-// Added in C5 (task 132). Split out of levee.proto so the extra services can
-// be regenerated independently: `protoc --go_out --go-grpc_out` over this
-// file produces internal/grpc/pb/levee_extra.pb.go and
-// levee_extra_grpc.pb.go (see scripts/gen-proto.sh). The checked-in Go files
-// were hand-written while protoc was unavailable in the build environment;
-// they are kept as the default build and this generated output is verified
-// against them under the `proto_regenerate` build tag.
+// Added in C5 (task 132); InventoryService (v1.11) was added later. Split
+// out of levee.proto so these services can be regenerated independently:
+// `scripts/gen-proto.sh` runs protoc over this file to produce
+// internal/grpc/pb/levee_extra.pb.go and levee_extra_grpc.pb.go. The CI
+// "proto regenerate check" job verifies the checked-in bindings stay
+// byte-identical to a fresh regeneration.
 
 service AlertService {
   rpc ReceiveAlert(AlertMessage) returns (AlertResponse);
@@ -151,10 +150,7 @@ message ReplyMessage {
 // InventoryService - target groups, bulk import, lifecycle status, history
 // ============================================================================
 //
-// v1.11 asset-management additions. The checked-in Go bindings live in
-// internal/grpc/pb/inventory_extra.pb.go and inventory_extra_grpc.pb.go
-// (hand-written while protoc was unavailable); field numbers below mirror
-// those struct tags exactly.
+// v1.11 asset-management additions.
 
 service InventoryService {
   rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
