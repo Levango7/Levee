@@ -23,6 +23,9 @@ zn_cov
 *.swp
 *.swo
 
+# Agent tooling state
+.zcode/
+
 # OS
 .DS_Store
 Thumbs.db
