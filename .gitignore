@@ -26,6 +26,9 @@ zn_cov
 # Agent tooling state
 .zcode/
 
+# gen-proto.sh scratch dir (cleaned up by trap, just in case)
+.protoc-out.*.tmp/
+
 # OS
 .DS_Store
 Thumbs.db

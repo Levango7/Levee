@@ -325,7 +325,7 @@ type Target struct {
 	CredentialRef string            `protobuf:"bytes,5,opt,name=credential_ref,json=credentialRef,proto3" json:"credential_ref,omitempty"`
 	Labels        map[string]string `protobuf:"bytes,6,rep,name=labels,proto3" json:"labels,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Reachable     bool              `protobuf:"varint,7,opt,name=reachable,proto3" json:"reachable,omitempty"`
-	// active / frozen / retired — lifecycle status from inventory store.
+	// active / frozen / retired
 	Status        string `protobuf:"bytes,8,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -4728,7 +4728,7 @@ const file_levee_proto_rawDesc = "" +
 	"\x05hosts\x18\x02 \x03(\tR\x05hosts\x12'\n" +
 	"\x0fmax_concurrency\x18\x03 \x01(\x05R\x0emaxConcurrency\x12\x1d\n" +
 	"\n" +
-	"wait_after\x18\x04 \x01(\x03R\twaitAfter\"\x9e\x02\n" +
+	"wait_after\x18\x04 \x01(\x03R\twaitAfter\"\xb6\x02\n" +
 	"\x06Target\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12!\n" +
@@ -4736,7 +4736,8 @@ const file_levee_proto_rawDesc = "" +
 	"\x04port\x18\x04 \x01(\x05R\x04port\x12%\n" +
 	"\x0ecredential_ref\x18\x05 \x01(\tR\rcredentialRef\x121\n" +
 	"\x06labels\x18\x06 \x03(\v2\x19.levee.Target.LabelsEntryR\x06labels\x12\x1c\n" +
-	"\treachable\x18\a \x01(\bR\treachable\x1a9\n" +
+	"\treachable\x18\a \x01(\bR\treachable\x12\x16\n" +
+	"\x06status\x18\b \x01(\tR\x06status\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd2\x01\n" +

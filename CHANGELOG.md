@@ -17,6 +17,7 @@
 - **前端 CI 门禁**：新增 `frontend` 作业（`vue-tsc --noEmit` + `vite build`），并纳入 `check` 聚合门禁。
 - **发布工作流**：新增 `.github/workflows/release.yml`——推送 `v*` tag 时自动触发 goreleaser，按既有 `.goreleaser.yml` 构建 linux/darwin/windows × amd64/arm64 产物并发布 Release；此前仅有 goreleaser 配置、无触发工作流，发布依赖手工构建。
 - **集群成员持久化与租约锁**：集群模式（`serve --cluster`）新增两项协调能力。其一，持久化节点注册：节点写入 `cluster_nodes` 表并周期心跳（健康循环每 10s 刷新、30s 未心跳被标记 offline），各节点本地注册表从共享表收敛，leader 按确定性策略（active master 最小 ID，缺则 active worker 最小 ID）独立收敛——此前节点注册仅为进程内，节点之间互不可见。其二，租约式分布式锁（`cluster_locks` 表）取代原 PG advisory lock：锁带租约过期时间，持有者周期续租，持有者崩溃/失联后租约到期即可以被其他节点自动抢占（advisory lock 永不失效，挂死但连接存活的持有者会永久阻塞锁键）；每次获取/抢占携带单调递增的 fence token 供接管隔离。两张表由 cluster 包首次使用时自建（幂等 DDL），不依赖 state 包 schema 版本。在途变更的自动故障转移与跨节点调度仍未实现，启动告警文案同步更新。
+- **protobuf 契约补源与双轨再生**：新增 `proto/levee_extra.proto`，为手写的 AlertService / DiagnosisService / ConversationService / InventoryService 四个服务补齐 .proto 定义（共 24 个消息，字段编号与既有手写 pb 的 struct tag 逐一比对对齐）；原内嵌于 `proto/levee.proto` 尾部的 extra 定义拆分至该文件（主文件仅保留核心域消息，尾部留有指引注释）。新增 `scripts/gen-proto.sh`（锁定 protoc v27.0 + protoc-gen-go v1.36.12 + protoc-gen-go-grpc v1.6.2，与已检入生成代码的版本头一致）。手写文件（`levee_extra*.pb.go`、`inventory_extra*.pb.go`）标注 `//go:build !proto_regenerate`，默认构建行为不变；protoc 再生输出以 `levee_extra*.regen.pb.go` 落盘并标注 `//go:build proto_regenerate`，作为可再生的验证轨道（两轨字段/服务契约已逐字段比对一致，双轨全量测试均通过）。新增 CI `proto` 作业：用锁定版本工具链再生后与检入文件做字节级漂移检查（git diff），并在 proto_regenerate 轨道执行 build + 全量测试；已纳入 `check` 聚合门禁。
 
 ### 变更
 
@@ -35,6 +36,7 @@
 
 ### 修复
 
+- **Target.status 序列化丢失**：`pb.Target` 的 `Status` 字段（v1.11.0 引入，af62981）当时以手工编辑方式加入生成文件 `internal/grpc/pb/levee.pb.go` 的 Go 结构体，未同步更新文件内嵌的 protobuf 描述符（rawDesc）。protobuf-go 的序列化完全由描述符驱动，该字段对 protojson 与二进制 wire 编码均不可见——“REST/gRPC 暴露库存生命周期状态”实际静默失效：字段在进程内可读写，但 REST 响应与 gRPC 传输永远丢弃它（实测 wire 字节与 protojson 输出均无 field 8）。本次以锁定工具链从当前 `proto/levee.proto` 再生该文件（与手工版本的差异仅为 field 8 的描述符字节与一行注释），`status` 现按 proto3 语义正常序列化（非空时输出，空值省略）。
 - **移动一键审批 401**：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 现接受请求体内的一次性 token 作为认证凭据，不再要求 Bearer 头——此前启用鉴权后，无法携带 Bearer 的移动设备点击审批深链必然 401。一次性 token 为 32 字节随机数、30 分钟 TTL、单次消费并绑定 (run-id, 用户, 动作)；无效/过期 token 现返回 401（此前被不透明地映射为 500）。豁免仅覆盖这两个端点，其余端点的 Bearer 校验不受影响。
 - **告警订阅流测试竞态**：`SubscribeAlerts` 广播为尽力而为（best-effort），订阅注册完成前发布的告警会被丢弃；相关流式测试此前以固定 `time.Sleep` 等待注册，在高负载下（如完整 `go test ./...`）可能竞态导致 `RecvMsg` 永久阻塞（触发 10 分钟单测超时）。新增 `AlertService.SubscriberCount()` 观测方法，全部 5 个订阅流式测试改为 `require.Eventually` 等待注册完成后再发布告警，消除挂起。
 
