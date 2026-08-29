@@ -5,14 +5,14 @@
 // localStorage (key `levee.token`) and attached as an Authorization header by
 // the axios interceptor in @/api/client.
 //
-// When the server has OIDC enabled (announced by the public
-// /system/auth-info descriptor) an additional SSO button starts the
-// authorization-code + PKCE flow (see @/api/sso).
+// When the server has SSO enabled (announced by the public
+// /system/auth-info descriptor) additional buttons start the OIDC
+// (authorization code + PKCE, see @/api/sso) or GitHub OAuth flows.
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { clearToken, getToken, setToken } from '@/api/client'
-import { fetchAuthInfo, startSSOLogin, type AuthInfo } from '@/api/sso'
+import { fetchAuthInfo, startSSOLogin, startGitHubLogin, type AuthInfo } from '@/api/sso'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,7 +32,7 @@ const redirect = computed(() => {
 onMounted(async () => {
   try {
     const info = await fetchAuthInfo()
-    if (info.oidcEnabled) {
+    if (info.oidcEnabled || info.githubEnabled) {
       ssoInfo.value = info
     }
   } catch {
@@ -49,6 +49,15 @@ async function ssoLogin(): Promise<void> {
     ElMessage.error(err instanceof Error ? err.message : 'SSO 跳转失败')
   } finally {
     loading.value = false
+  }
+}
+
+function githubLogin(): void {
+  if (!ssoInfo.value) return
+  try {
+    startGitHubLogin(ssoInfo.value, redirect.value)
+  } catch (err) {
+    ElMessage.error(err instanceof Error ? err.message : 'GitHub 跳转失败')
   }
 }
 
@@ -101,6 +110,16 @@ function clearStoredToken(): void {
       <template v-if="ssoInfo">
         <el-divider class="login__divider">或</el-divider>
         <el-button
+          v-if="ssoInfo.githubEnabled"
+          size="large"
+          class="login__btn"
+          :disabled="loading"
+          @click="githubLogin"
+        >
+          通过 GitHub 登录
+        </el-button>
+        <el-button
+          v-if="ssoInfo.oidcEnabled"
           size="large"
           class="login__btn login__sso"
           :disabled="loading"

@@ -4,15 +4,20 @@
 // RPCs (WatchChange, StreamLogs). Both share the same token-validation
 // logic.
 //
-// Two credential sources are supported and are checked in this order:
+// Three credential sources are supported and are checked in this order:
 //
 //  1. Static bearer tokens (the legacy shared token plus any named
 //     identities), compared in constant time. These serve machine callers
 //     and break-glass access.
-//  2. OIDC-verified JWTs. When a verifier is configured and the presented
+//  2. LEVEE session tokens minted by the SSO login endpoints (GitHub
+//     OAuth today). They are local HMAC-signed tokens carrying the
+//     identity verified at login time.
+//  3. OIDC-verified JWTs. When a verifier is configured and the presented
 //     token has the three-segment JWT shape, it is validated against the
-//     OpenID Connect provider (signature, issuer, audience, expiry). The
-//     verified subject and roles are injected into the request context.
+//     OpenID Connect provider (signature, issuer, audience, expiry).
+//
+// The verified subject and roles of sources 2 and 3 are injected into the
+// request context.
 //
 // When no credential source is configured, authentication is disabled
 // entirely (development mode). This is the default; production
@@ -54,10 +59,11 @@ type TokenIdentity struct {
 	Subject string
 }
 
-// AuthTokens is the set of bearer tokens the server accepts. Either Legacy
+// AuthTokens is the set of credentials the server accepts. Either Legacy
 // (a single shared token with no named identity) or Named (one identity per
-// token) may be populated; when both are empty and no OIDC verifier is
-// configured, authentication is disabled (development mode).
+// token) may be populated for static tokens; Sessions admits LEVEE-local
+// session tokens minted by the SSO flows (GitHub today). When every source
+// is empty, authentication is disabled (development mode).
 type AuthTokens struct {
 	// Legacy is the original single shared token. It carries no named
 	// subject; the actor remains whatever the client asserts. Retained for
@@ -67,32 +73,39 @@ type AuthTokens struct {
 	// authenticates as.
 	Named []TokenIdentity
 	// OIDC, when non-nil and enabled, verifies JWT-shaped bearer tokens
-	// against the configured OpenID Connect provider. Static tokens are
-	// always checked first, so enabling OIDC extends the accepted
-	// credential set without invalidating existing machine identities.
+	// against the configured OpenID Connect provider.
 	OIDC *auth.Verifier
+	// Sessions, when non-nil, verifies LEVEE-local session tokens minted by
+	// the SSO login endpoints (see rest.go's /auth/github handler).
+	Sessions *auth.SessionManager
 }
 
 // Enabled reports whether any credential source is configured. When false,
 // authentication is disabled and all requests are admitted.
 func (a AuthTokens) Enabled() bool {
-	return a.Legacy != "" || len(a.Named) > 0 || a.OIDC.Enabled()
+	return a.Legacy != "" || len(a.Named) > 0 || a.OIDC.Enabled() || a.Sessions != nil
 }
 
 // ResolvedIdentity is the outcome of authenticating a presented bearer
-// token: the audit subject and, for OIDC-authenticated callers, the roles
-// verified from the token. Static-token callers carry no roles.
+// token: the audit subject and, for SSO-authenticated callers, the roles
+// verified at login time. Static-token callers carry no roles.
 type ResolvedIdentity struct {
 	Subject string
 	Roles   []string
 }
 
 // Resolve authenticates a presented bearer token and returns the resolved
-// identity plus true on a match. Static tokens (legacy + named) are checked
-// first with constant-time comparison; when none matches and the token has
-// the three-segment JWT shape, it is verified against the configured OIDC
-// provider. On a mismatch it returns (zero value, false). Callers must check
-// Enabled first — Resolve on a disabled set never matches.
+// identity plus true on a match. Sources are checked in order:
+//
+//  1. Static tokens (legacy + named), constant-time comparison.
+//  2. LEVEE session tokens (SSO logins) when a session manager is
+//     configured — these are also JWT-shaped, so they are tried before the
+//     OIDC verifier to avoid a spurious IdP round-trip against a local
+//     token.
+//  3. OIDC-verified JWTs for three-segment tokens.
+//
+// On a mismatch it returns (zero value, false). Callers must check Enabled
+// first — Resolve on a disabled set never matches.
 //
 // Static-token comparisons use crypto/subtle.ConstantTimeCompare to avoid
 // timing side-channels. The token set is small and operator-bounded, so the
@@ -105,6 +118,11 @@ func (a AuthTokens) Resolve(ctx context.Context, token string) (ResolvedIdentity
 	for _, ti := range a.Named {
 		if ti.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(ti.Token)) == 1 {
 			return ResolvedIdentity{Subject: ti.Subject}, true
+		}
+	}
+	if a.Sessions != nil {
+		if claims, err := a.Sessions.VerifySession(token); err == nil {
+			return ResolvedIdentity{Subject: claims.Subject, Roles: claims.Roles}, true
 		}
 	}
 	if a.OIDC.Enabled() && auth.LooksLikeJWT(token) {

@@ -843,6 +843,7 @@ RESTful 风格，支持两套路径：
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | — |
 | POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | — |
 | GET | `/system/auth-info` | — | 公开认证描述符（SSO 探测，见 13.3，免 Bearer） | — |
+| POST | `/auth/github` | — | GitHub OAuth code 交换（服务端，见 13.3，免 Bearer） | — |
 
 ### 13.3 认证
 
@@ -852,12 +853,24 @@ Token-based 认证，三种模式：
 - 门户（Web UI）：同源嵌入在二进制中，无需额外认证；外部调用需携带 Bearer token。
 - 移动端一键审批（deeplink）：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 不要求 Bearer 头，改以请求体中的一次性 token 作为认证凭据（`{"token": "<one-time-token>"}`）。token 由审批通知下发时生成：32 字节随机数、默认 30 分钟 TTL、单次消费、绑定 (run-id, 用户, 动作)；消费或过期后即失效。无效 / 过期 token 返回 401。该豁免仅覆盖这两个端点，其余端点仍强制 Bearer。
 
-静态令牌之外还支持第四种凭据 —— **OIDC（可选，`auth.oidc.enabled` 开启）**：
+静态令牌之外还支持第四种凭据 —— **SSO（可选，`auth.oidc` 或 `auth.github` 开启）**：
 
-- 解析顺序：请求携带的 Bearer 令牌先与静态令牌集（constant-time 比较）比对，未命中且令牌为三段式 JWT 形态时，走 OIDC 验证（签名对 IdP JWKS 校验，外加 issuer / audience / exp 检查）。开启 OIDC 不影响既有静态令牌。
-- 配置：`auth.oidc`（`issuer_url`、`client_id`、`audience`、`username_claim`、`role_claim`、`role_map`，见 config.example.yaml）。`serve` 启动时即拉取 `<issuer_url>/.well-known/openid-configuration`，失败直接拒绝启动（fail-fast）；实现与 IdP 无关（Keycloak / Zitadel / Entra ID / Okta 等标准 OIDC 提供方均可）。
+- 解析顺序：请求携带的 Bearer 令牌先与静态令牌集（constant-time 比较）比对，未命中再依次尝试 LEVEE 会话令牌（SSO 登录产物，本地 HMAC 校验）与三段式 JWT 形态的 OIDC 验证。开启任一 SSO 不影响既有静态令牌。
+
+**OIDC 模式**：
+
+- 配置 `auth.oidc`（`issuer_url`、`client_id`、`audience`、`username_claim`、`role_claim`、`role_map`，见 config.example.yaml）。`serve` 启动时即拉取 `<issuer_url>/.well-known/openid-configuration`，失败直接拒绝启动（fail-fast）；实现与 IdP 无关（Keycloak / Zitadel / Entra ID / Okta 等标准 OIDC 提供方均可）。
 - 身份注入：验证通过后，`username_claim`（默认 `preferred_username`，回退 `email`、`sub`）作为审计主体注入上下文，行为与命名令牌一致 —— 覆盖客户端自报的 `X-Acting-As`；`role_claim` 声明中的角色经 `role_map` 映射后注入 `RolesFromContext`（v1 仅用于审计与未来权限接线，尚无授权决策消费角色）。
-- 前端 SSO：登录页通过公开描述符 `GET /system/auth-info`（免 Bearer，返回 `oidcEnabled` / `issuerUrl` / `clientId` / `authorizeUrl` / `tokenUrl`，OIDC 关闭时仅返回 `oidcEnabled: false`）探测 SSO 是否可用；可用则展示 SSO 按钮，走 authorization code + PKCE（公共客户端，无 client secret）流程，`/login/callback` 在浏览器直接与 IdP token 端点交换令牌（要求 IdP 允许本站点的 CORS），存入 access_token（JWT 形态）或 id_token。
+- 前端流程：authorization code + PKCE（公共客户端，无 client secret），`/login/callback` 在浏览器直接与 IdP token 端点交换令牌（要求 IdP 允许本站点的 CORS），存入 access_token（JWT 形态）或 id_token。
+
+**GitHub 模式**（`auth.github`）：
+
+- GitHub 不是 OIDC 提供方（access token 不透明、token 端点无浏览器 CORS），因此 code 交换在**服务端**完成：浏览器携带 `{"code","state"}` POST 到 `/auth/github`（免 Bearer——调用者此时尚无凭据；state 由网关校验防 CSRF），网关以 client_secret 与 GitHub 换取 token、调 `/user` 与 `/user/teams` 完成身份与成员校验后**丢弃 GitHub token**，签发 LEVEE 本地会话令牌（HS256 HMAC，12h TTL）返回 `{token, subject, roles}`。此后浏览器请求走本地会话令牌，**不访问 api.github.com**（无逐请求限流/可用性耦合）。client_secret 全程不出进程。
+- 访问控制：`org` 限制仅该组织成员可登录（内部部署必须设置；留空 = 任何 GitHub 用户完成授权即可登录）；`team_role_map` 以 `"org/team-slug"` 键把 GitHub 团队映射为 LEVEE 角色（未列出的团队不产生角色）。审计主体 = GitHub 用户名（login），与命名令牌同权注入。
+- 会话密钥：`session_secret` 为空时使用进程内随机密钥——重启后所有 SSO 会话失效、多节点不共享；多节点 / 负载均衡部署必须配置 ≥32 字符的共享密钥。
+- 前端流程：与 OIDC 共用 `/login/callback`；回调视图按 `/system/auth-info` 宣告的提供方选择补全方式（GitHub → POST 网关，OIDC → 浏览器直连 IdP）。
+
+两种模式的公开描述符统一为 `GET /system/auth-info`（免 Bearer）：返回 `oidcEnabled`、（开启时）`issuerUrl`/`clientId`/`authorizeUrl`/`tokenUrl`，以及 `githubEnabled`、（开启时）`githubClientId`/`githubOrg`；全部为公开值（client_id 本就是公开标识、端点为提供方自有公开地址），无任何秘密。
 
 > **安全提示**：默认情况下（不传 `--token` 且未启用 OIDC）鉴权处于关闭状态，所有 API 请求无需认证即可访问。生产环境必须通过 `--token <secret>` 设置 Bearer token 或启用 `auth.oidc`。gRPC 和 REST 网关共享同一凭据校验逻辑；`--insecure` 可显式接受无鉴权风险（本地开发）。
 

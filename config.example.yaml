@@ -237,6 +237,28 @@ auth:
     # （环境变量无法表达嵌套映射）。 默认: {}
     role_map: {}
 
+  # GitHub OAuth 登录（GitHub 非 OIDC 提供方：令牌不透明、token 端点无
+  # 浏览器 CORS，因此 code 交换在服务端完成，由网关签发 LEVEE 本地会话
+  # 令牌，后续请求走本地 HMAC 校验、不访问 api.github.com）
+  github:
+    # 启用 GitHub 登录。开启后登录页出现"通过 GitHub 登录"按钮。 默认: false
+    enabled: false
+    # GitHub OAuth App 的 client_id / client_secret
+    # （GitHub -> Settings -> Developer settings -> OAuth Apps 注册，
+    # 回调地址填 <你的站点>/login/callback）
+    client_id: ""
+    client_secret: ""
+    # 限制仅该 GitHub 组织成员可登录。留空 = 任何 GitHub 用户完成授权即可
+    # 登录（内部部署务必设置！）。 默认: ""
+    org: ""
+    # GitHub 团队 -> LEVEE 角色映射，键为 "org/team-slug"；未列出的团队
+    # 不产生角色。仅文件可配。 默认: {}
+    team_role_map: {}              # 例: { "acme/admins": admin, "acme/devs": operator }
+    # LEVEE 会话令牌的 HMAC 密钥（SSO 登录产物）。留空 = 进程内随机密钥
+    # （重启后所有会话失效，多节点/负载均衡部署必须配置共享密钥）。
+    # 至少 32 字符。 默认: ""
+    session_secret: ""             # 例: openssl rand -hex 32 的输出
+
 # =============================================================================
 # 场景示例（按需取消注释并合并到上方正式段落）
 # =============================================================================

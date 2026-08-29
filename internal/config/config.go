@@ -60,9 +60,36 @@ type DatabaseConfig struct {
 
 // AuthConfig groups API authentication settings. Static bearer tokens are
 // configured via flags/env (--token, --auth-token, LEVEE_TOKEN) rather than
-// this file; the auth section currently only carries OIDC.
+// this file; this section carries the SSO providers.
 type AuthConfig struct {
-	OIDC AuthOIDCConfig `json:"oidc" mapstructure:"oidc"`
+	OIDC   AuthOIDCConfig   `json:"oidc"   mapstructure:"oidc"`
+	GitHub AuthGitHubConfig `json:"github" mapstructure:"github"`
+}
+
+// AuthGitHubConfig configures the GitHub OAuth login flow. GitHub is not an
+// OIDC provider (opaque tokens, no browser CORS on the token endpoint), so
+// the gateway runs the code exchange server-side and mints a LEVEE session
+// token instead; see internal/auth/github.go.
+//
+// When org is empty ANY GitHub user that completes the OAuth grant can sign
+// in — set it for internal deployments. team_role_map maps "org/team" slugs
+// to LEVEE roles (file-only; env vars cannot express nested maps).
+type AuthGitHubConfig struct {
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
+	// ClientID / ClientSecret come from a GitHub OAuth App registration
+	// (Settings → Developer settings → OAuth Apps).
+	ClientID     string `json:"client_id"     mapstructure:"client_id"`
+	ClientSecret string `json:"client_secret" mapstructure:"client_secret"`
+	// Org restricts login to members of this GitHub org. Empty admits any
+	// GitHub user.
+	Org string `json:"org" mapstructure:"org"`
+	// TeamRoleMap maps "org/team-slug" to LEVEE role names. Teams absent
+	// from the map contribute nothing.
+	TeamRoleMap map[string]string `json:"team_role_map" mapstructure:"team_role_map"`
+	// SessionSecret is the HMAC key for LEVEE session tokens minted by SSO
+	// logins. Empty selects a per-process random key: sessions die on
+	// restart and do not work across multiple nodes. At least 32 chars.
+	SessionSecret string `json:"session_secret" mapstructure:"session_secret"`
 }
 
 // AuthOIDCConfig configures OpenID Connect authentication as an alternative
@@ -572,6 +599,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.oidc.username_claim", "preferred_username")
 	v.SetDefault("auth.oidc.role_claim", "")
 	v.SetDefault("auth.oidc.role_map", map[string]string{})
+
+	// Auth.GitHub (disabled by default)
+	v.SetDefault("auth.github.enabled", false)
+	v.SetDefault("auth.github.client_id", "")
+	v.SetDefault("auth.github.client_secret", "")
+	v.SetDefault("auth.github.org", "")
+	v.SetDefault("auth.github.team_role_map", map[string]string{})
+	v.SetDefault("auth.github.session_secret", "")
 }
 
 // bindFile wires viper to the YAML file at path. The file extension is
@@ -655,6 +690,8 @@ func allKeys() []string {
 		"auth.oidc.enabled", "auth.oidc.issuer_url", "auth.oidc.client_id",
 		"auth.oidc.audience", "auth.oidc.username_claim", "auth.oidc.role_claim",
 		"auth.oidc.role_map",
+		"auth.github.enabled", "auth.github.client_id", "auth.github.client_secret",
+		"auth.github.org", "auth.github.session_secret", "auth.github.team_role_map",
 	}
 }
 

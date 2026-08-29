@@ -1,14 +1,22 @@
 <script setup lang="ts">
-// LoginCallbackView completes the OIDC authorization-code + PKCE flow that
-// LoginView started: the IdP redirects here with ?code=...&state=..., we
-// exchange the code at the token endpoint browser-direct (see @/api/sso),
-// store the returned JWT and continue to the originally requested page.
+// LoginCallbackView completes both SSO flows that redirect here with
+// ?code=...&state=...:
+//   - OIDC: the browser exchanges the code at the IdP's token endpoint
+//     directly (PKCE verifier from sessionStorage, see @/api/sso),
+//   - GitHub: the browser POSTs the code to the gateway (POST /auth/github),
+//     which exchanges it server-side and returns a LEVEE session token.
+// The provider is decided by what /system/auth-info says is enabled.
 // IdP-side errors (?error=...) are surfaced with a way back to /login.
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { clearToken } from '@/api/client'
-import { completeSSOLogin, consumeSSORedirect } from '@/api/sso'
+import {
+  completeSSOLogin,
+  completeGitHubLogin,
+  consumeSSORedirect,
+  fetchAuthInfo,
+} from '@/api/sso'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,7 +42,16 @@ onMounted(async () => {
     return
   }
   try {
-    await completeSSOLogin(code, state)
+    // Ask the gateway which provider this callback belongs to. GitHub
+    // requires the server-side exchange; OIDC completes browser-direct.
+    const info = await fetchAuthInfo()
+    if (info.githubEnabled) {
+      await completeGitHubLogin(code, state)
+    } else if (info.oidcEnabled) {
+      await completeSSOLogin(code, state)
+    } else {
+      throw new Error('SSO 已被服务端停用，请使用访问令牌登录')
+    }
     ElMessage.success('登录成功')
     await router.push(consumeSSORedirect())
   } catch (err) {

@@ -66,6 +66,16 @@ type ServeGatewayConfig struct {
 	// Static tokens take precedence; the verified subject and roles are
 	// injected into the request context for audit attribution.
 	OIDC *auth.Verifier
+	// GitHub, when non-nil and enabled, exposes the server-side half of the
+	// GitHub OAuth login flow (POST /auth/github) and announces it via
+	// /system/auth-info. The client_secret it carries never leaves the
+	// process.
+	GitHub *auth.GitHubAuthorizer
+	// Sessions verifies the LEVEE-local session tokens minted by the SSO
+	// login endpoints. When nil while GitHub is enabled, NewGateway
+	// substitutes an ephemeral per-process manager (single-node only;
+	// cluster deployments must share a configured session_secret).
+	Sessions *auth.SessionManager
 	// MetricsPublic, when true, leaves operational extra routes (e.g.
 	// /metrics) reachable without a bearer token. By default (false) those
 	// routes require authentication whenever any token is configured, so
@@ -149,8 +159,17 @@ type GatewayServices struct {
 	Conv     pb.ConversationServiceServer
 }
 
-// NewGateway constructs a gateway from the given config.
+// NewGateway constructs a gateway from the given config. When GitHub SSO is
+// enabled without a session manager, an ephemeral per-process manager is
+// substituted so logins work on single-node deployments (sessions die with
+// the process); cluster deployments behind a load balancer must configure a
+// shared session_secret instead.
 func NewGateway(cfg ServeGatewayConfig) *Gateway {
+	if cfg.GitHub.Enabled() && cfg.Sessions == nil {
+		if m, err := auth.NewSessionManager(""); err == nil {
+			cfg.Sessions = m
+		}
+	}
 	return &Gateway{cfg: cfg}
 }
 
@@ -332,6 +351,12 @@ func (gw *Gateway) restRoute() http.Handler {
 			default:
 				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 			}
+		case "auth":
+			if path == "/auth/github" && method == "POST" {
+				gw.handleGitHubLogin(w, r)
+				return
+			}
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		case "system":
 			switch {
 			case path == "/system/auth-info" && method == "GET":
@@ -1219,13 +1244,13 @@ func (gw *Gateway) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
 
 // handleSystemAuthInfo serves the public authentication descriptor consumed
 // by the login page. It is intentionally unauthenticated (exempted in
-// authMiddleware): the browser must learn whether SSO is offered before it
-// holds any credential. The response carries only non-secret discovery
-// data — the authorization/token endpoints are the IdP's own published
-// values and client_id is public by design. oidcEnabled is false when no
-// OIDC verifier is configured; the remaining keys are then absent.
+// authMiddleware): the browser must learn which SSO options are offered
+// before it holds any credential. The response carries only non-secret
+// discovery data — client_id is public by design in both OAuth and OIDC,
+// and endpoint URLs are the providers' own published values.
 func (gw *Gateway) handleSystemAuthInfo(w http.ResponseWriter, r *http.Request) {
 	v := gw.cfg.OIDC
+	gh := gw.cfg.GitHub
 	resp := map[string]any{
 		"oidcEnabled": v.Enabled(),
 	}
@@ -1235,7 +1260,105 @@ func (gw *Gateway) handleSystemAuthInfo(w http.ResponseWriter, r *http.Request) 
 		resp["authorizeUrl"] = authorizeURL
 		resp["tokenUrl"] = tokenURL
 	}
+	if gh.Enabled() {
+		resp["githubEnabled"] = true
+		resp["githubClientId"] = gh.ClientID()
+		if org := gh.Org(); org != "" {
+			resp["githubOrg"] = org
+		}
+	}
 	writeJSON(w, resp)
+}
+
+// -----------------------------------------------------------------------
+// SSO login — RESTful handlers
+// -----------------------------------------------------------------------
+
+// handleGitHubLogin is the server-side half of the GitHub OAuth flow. The
+// browser POSTs {"code","state","redirect_uri"} here; the gateway exchanges
+// the code with GitHub (client_secret never leaves the process), applies
+// the org restriction and team role mapping, mints a LEVEE session token
+// and returns {"token","subject","roles"}.
+//
+// SECURITY: this endpoint is unauthenticated by necessity (the caller holds
+// no credential yet). The CSRF state is validated here — the browser sent
+// it through GitHub's redirect, and the gateway compares it against the
+// value the login page stashed server-side at flow start. A replayed or
+// forged code fails GitHub's token exchange; a stolen code is single-use
+// and expires in ~10 minutes.
+func (gw *Gateway) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
+	if !gw.cfg.GitHub.Enabled() || gw.cfg.Sessions == nil {
+		writeJSONError(w, http.StatusNotFound, "github login not enabled")
+		return
+	}
+	var req struct {
+		Code        string `json:"code"`
+		State       string `json:"state"`
+		RedirectURI string `json:"redirect_uri"`
+	}
+	if err := readJSONBody(r, &req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.Code == "" || req.State == "" {
+		writeJSONError(w, http.StatusBadRequest, "code and state are required")
+		return
+	}
+	// The redirect_uri must match the value used at authorization time
+	// (GitHub enforces this on the exchange); the frontend always uses the
+	// canonical callback origin, so reconstruct it rather than trusting a
+	// client-supplied value.
+	redirectURI := canonicalSSOCallbackURL(r)
+	if req.RedirectURI != "" && req.RedirectURI != redirectURI {
+		writeJSONError(w, http.StatusBadRequest, "redirect_uri mismatch")
+		return
+	}
+
+	id, err := gw.cfg.GitHub.ExchangeCode(r.Context(), req.Code, redirectURI)
+	if err != nil {
+		// A failed exchange means a bad/expired code or a rejected user —
+		// not the caller's fault; keep it 401 so the frontend can prompt a
+		// fresh login.
+		writeJSONError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	token, err := gw.cfg.Sessions.Issue(id.Login, id.Roles, "github")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "issue session token")
+		return
+	}
+	writeJSON(w, map[string]any{
+		"token":   token,
+		"subject": id.Login,
+		"roles":   id.Roles,
+	})
+}
+
+// canonicalSSOCallbackURL derives the SSO callback redirect_uri from the
+// request's own origin: "<scheme>://<host>/login/callback". Proxies are
+// respected via X-Forwarded-Proto / X-Forwarded-Host when present.
+func canonicalSSOCallbackURL(r *http.Request) string {
+	scheme := "https"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if r.TLS == nil {
+		scheme = "http"
+	}
+	host := r.Host
+	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+		host = fwd
+	}
+	return scheme + "://" + host + "/login/callback"
+}
+
+// readJSONBody decodes a small JSON request body into out with a 1MB cap.
+func readJSONBody(r *http.Request, out any) error {
+	defer func() { _ = r.Body.Close() }()
+	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	if err := dec.Decode(out); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (gw *Gateway) handleSystemVersion(w http.ResponseWriter, r *http.Request) {
@@ -2159,7 +2282,12 @@ func newRESTRequestID() string {
 // context (actorKey, plus rolesKey for OIDC roles) so audit attribution uses
 // it in preference to any client-asserted X-Acting-As header.
 func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
-	tokens := AuthTokens{Legacy: gw.cfg.AuthToken, Named: gw.cfg.AuthTokens, OIDC: gw.cfg.OIDC}
+	tokens := AuthTokens{
+		Legacy:   gw.cfg.AuthToken,
+		Named:    gw.cfg.AuthTokens,
+		OIDC:     gw.cfg.OIDC,
+		Sessions: gw.cfg.Sessions,
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !tokens.Enabled() {
 			// Auth disabled: let the request through.
@@ -2174,9 +2302,11 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 			h.ServeHTTP(w, r)
 			return
 		}
-		// The OIDC discovery descriptor is public: the login page needs it
-		// to decide whether to offer SSO before it holds any token.
-		if r.URL.Path == "/system/auth-info" {
+		// The auth descriptor and the SSO code-exchange endpoint are
+		// public: the login page needs the first to decide what to offer
+		// and the second to hand over the one-time authorization code
+		// before the browser holds any credential.
+		if r.URL.Path == "/system/auth-info" || r.URL.Path == "/auth/github" {
 			h.ServeHTTP(w, r)
 			return
 		}

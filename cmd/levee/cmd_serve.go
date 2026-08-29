@@ -192,6 +192,35 @@ func buildOIDCVerifier(ctx context.Context, cfg *config.Config) (*auth.Verifier,
 	return auth.NewVerifier(vctx, acfg)
 }
 
+// buildGitHubAuth converts the auth.github config section into the OAuth
+// authorizer plus the session manager for SSO-minted tokens. Both are nil
+// when GitHub login is disabled. The session manager is shared by both SSO
+// providers (only GitHub exists today) so all browser logins verify under
+// one key.
+func buildGitHubAuth(cfg *config.Config) (*auth.GitHubAuthorizer, *auth.SessionManager, error) {
+	if !cfg.Auth.GitHub.Enabled {
+		return nil, nil, nil
+	}
+	gh, err := auth.NewGitHubAuthorizer(auth.GitHubConfig{
+		Enabled:      true,
+		ClientID:     cfg.Auth.GitHub.ClientID,
+		ClientSecret: cfg.Auth.GitHub.ClientSecret,
+		Org:          cfg.Auth.GitHub.Org,
+		TeamRoleMap:  cfg.Auth.GitHub.TeamRoleMap,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	// The session manager keys browser session tokens. When GitHub is the
+	// only SSO provider it is only needed once it is enabled; a configured
+	// secret is validated eagerly so a too-short value fails startup.
+	sessions, err := auth.NewSessionManager(cfg.Auth.GitHub.SessionSecret)
+	if err != nil {
+		return nil, nil, err
+	}
+	return gh, sessions, nil
+}
+
 // newServeDiagEngine builds the diagnosis engine for serve mode with both the
 // log pipeline and the health prober wired, using the in-process local
 // executor — the same self-diagnosis capability `levee diagnose` provides.
@@ -257,11 +286,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Info("oidc authentication enabled", "issuer", cfg.Auth.OIDC.IssuerURL)
 	}
 
+	// 0b2. GitHub SSO. The OAuth app credentials are validated up front and
+	//      the session manager keys the local tokens minted at login. An
+	//      empty session_secret yields an ephemeral per-process key — fine
+	//      for a single node, not for a cluster.
+	githubAuth, sessionMgr, err := buildGitHubAuth(cfg)
+	if err != nil {
+		return fmt.Errorf("github auth: %w", err)
+	}
+	if githubAuth.Enabled() {
+		if sessionMgr != nil && sessionMgr.Ephemeral() {
+			log.Warn("github sso enabled with an ephemeral session key: sessions die on restart and do not work across nodes; set auth.github.session_secret for multi-node deployments")
+		}
+		log.Info("github authentication enabled", "org", cfg.Auth.GitHub.Org)
+	}
+
 	// 0c. Safety gate: refuse to start with authentication disabled unless
 	//    the caller explicitly opted in via --insecure. This prevents an
 	//    unauthenticated daemon from reaching production by accident.
-	if token == "" && len(namedTokens) == 0 && !oidcVerifier.Enabled() && !serveOptInsecure {
-		return errors.New("refusing to start without --token (or LEVEE_TOKEN / --auth-token / auth.oidc.enabled): all API requests would be unauthenticated. " +
+	if token == "" && len(namedTokens) == 0 && !oidcVerifier.Enabled() &&
+		!githubAuth.Enabled() && !serveOptInsecure {
+		return errors.New("refusing to start without --token (or LEVEE_TOKEN / --auth-token / auth.oidc.enabled / auth.github.enabled): all API requests would be unauthenticated. " +
 			"Pass --token <secret> for production, or --insecure to accept the risk for local development")
 	}
 
@@ -473,6 +518,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 		AuthToken:     token,
 		AuthTokens:    namedTokens,
 		OIDC:          oidcVerifier,
+		GitHub:        githubAuth,
+		Sessions:      sessionMgr,
 		MetricsPublic: serveOptMetricsPublic,
 		RatePerSec:    serveOptRateLimit,
 		RateBurst:     serveOptRateBurst,

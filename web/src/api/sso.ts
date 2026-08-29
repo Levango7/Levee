@@ -14,8 +14,9 @@
 //
 // The stored token is the access token when it is a JWT (three dot-separated
 // segments, verifiable by the backend); otherwise the id_token is used,
-// which is always a JWT the OIDC verifier accepts.
-import { get, setToken } from './client'
+// which is always a JWT the OIDC verifier accepts. (GitHub logins store a
+// LEVEE session token returned by the gateway instead — see below.)
+import { get, post, setToken } from './client'
 
 const SSO_VERIFIER_KEY = 'levee.sso.codeVerifier'
 const SSO_STATE_KEY = 'levee.sso.state'
@@ -28,6 +29,9 @@ export interface AuthInfo {
   clientId?: string
   authorizeUrl?: string
   tokenUrl?: string
+  githubEnabled?: boolean
+  githubClientId?: string
+  githubOrg?: string
 }
 
 export function fetchAuthInfo(): Promise<AuthInfo> {
@@ -143,4 +147,55 @@ export function consumeSSORedirect(fallback = '/'): string {
   const redirect = sessionStorage.getItem(SSO_REDIRECT_KEY)
   sessionStorage.removeItem(SSO_REDIRECT_KEY)
   return redirect && redirect.startsWith('/') ? redirect : fallback
+}
+
+// --- GitHub OAuth flow -------------------------------------------------------
+//
+// GitHub's token endpoint does not serve browser CORS, so unlike the OIDC
+// flow the code exchange runs server-side: the browser POSTs the code to
+// the LEVEE gateway (POST /auth/github) and receives a LEVEE session token.
+// PKCE does not apply to GitHub's flow; the CSRF state stays the same.
+
+const GITHUB_AUTHORIZE_URL = 'https://github.com/login/oauth/authorize'
+
+// startGitHubLogin redirects the browser to GitHub's authorization page.
+// The state nonce is shared with the OIDC flow (same sessionStorage slot).
+export function startGitHubLogin(authInfo: AuthInfo, redirect: string): void {
+  if (!authInfo.githubClientId) {
+    throw new Error('GitHub 登录未启用或配置不完整')
+  }
+  const state = randomString(16)
+  sessionStorage.setItem(SSO_STATE_KEY, state)
+  sessionStorage.setItem(SSO_REDIRECT_KEY, redirect)
+
+  const url = new URL(GITHUB_AUTHORIZE_URL)
+  url.searchParams.set('client_id', authInfo.githubClientId)
+  url.searchParams.set('redirect_uri', `${window.location.origin}/login/callback`)
+  url.searchParams.set('scope', 'read:user read:org')
+  url.searchParams.set('state', state)
+  window.location.assign(url.toString())
+}
+
+// completeGitHubLogin exchanges the authorization code server-side and
+// stores the returned LEVEE session token. The gateway enforces the org
+// restriction and team role mapping; failures surface as user-presentable
+// errors here.
+export async function completeGitHubLogin(code: string, state: string): Promise<void> {
+  const expectedState = sessionStorage.getItem(SSO_STATE_KEY)
+  if (!expectedState) {
+    throw new Error('SSO 会话已过期，请重新登录')
+  }
+  if (state !== expectedState) {
+    throw new Error('SSO 状态校验失败（可能的 CSRF），请重新登录')
+  }
+  const login = await post<{ token: string; subject: string; roles?: string[] }>(
+    '/auth/github',
+    { code, state },
+  )
+  if (!login.token) {
+    throw new Error('服务端未返回会话令牌')
+  }
+  setToken(login.token)
+  sessionStorage.removeItem(SSO_STATE_KEY)
+  sessionStorage.removeItem(SSO_REDIRECT_KEY)
 }
