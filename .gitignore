@@ -25,6 +25,7 @@ zn_cov
 
 # Agent tooling state
 .zcode/
+.workbuddy/
 
 # gen-proto.sh scratch dir (cleaned up by trap, just in case)
 .protoc-out.*.tmp/

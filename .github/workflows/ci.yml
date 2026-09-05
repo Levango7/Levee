@@ -42,7 +42,8 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v2.12
+          # Keep in lockstep with the Makefile lint target's baseline version.
+          version: v2.13
           args: --timeout 5m
 
   # ---------------------------------------------------------------------------
@@ -95,9 +96,15 @@ jobs:
         run: go test -cover -coverprofile=coverage.out ./...
       - name: coverage gate
         if: matrix.os == 'ubuntu-latest'
+        # The gate measures hand-written code only: generated protobuf bindings
+        # (internal/grpc/pb, ~3.1k statements at 0%) are filtered out of the
+        # profile before computing the total. Floor stays 60 this round; the
+        # filtered baseline sits near 71 — raising the floor to 70 is a
+        # scheduled next-round action (see CHANGELOG Unreleased).
         run: |
-          total=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%","",$3); print $3}')
-          echo "total statement coverage: ${total}%"
+          grep -v '/internal/grpc/pb/' coverage.out > coverage_scoped.out
+          total=$(go tool cover -func=coverage_scoped.out | awk '/^total:/ {gsub("%","",$3); print $3}')
+          echo "statement coverage (generated pb excluded): ${total}%"
           awk -v t="$total" 'BEGIN { exit !(t+0 >= 60.0) }' || {
             echo "::error::coverage ${total}% is below the 60% floor"; exit 1; }
       - name: upload coverage

@@ -32,6 +32,9 @@ test-integration:
 test-e2e:
 	go test -race -tags=e2e ./tests/e2e/...
 
+# Baseline: golangci-lint v2.13 — keep in lockstep with the CI lint job
+# (.github/workflows/ci.yml). Version drift between local and CI silently
+# changes which issues the gate enforces.
 lint:
 	golangci-lint run ./...
 

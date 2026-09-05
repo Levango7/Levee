@@ -1,0 +1,40 @@
+# Normalize line endings at the repository boundary. Without this, Windows
+# working copies with core.autocrlf=true materialize .go files as CRLF and
+# gofmt/golangci-lint then report "not properly formatted" locally while CI
+# (which sees LF in the repo and on checkout) stays green — a gate that
+# cannot be reproduced on half the contributors' machines.
+
+* text=auto
+
+# Git meta files follow the repo convention (LF).
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+# Go, shell, and text sources are always LF, in the repo AND on checkout,
+# so lint results are OS-independent.
+*.go text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.proto text eol=lf
+*.json text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+
+# Windows batch scripts genuinely need CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Generated and binary artifacts: no eol conversion, no text diffs.
+*.pb.go -text
+*.pb.gw.go -text
+internal/web/dist/** -text
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.exe binary
