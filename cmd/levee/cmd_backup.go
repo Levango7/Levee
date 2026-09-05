@@ -208,9 +208,10 @@ func snapshotPreRestore(ctx context.Context, mgr *backup.Manager) (string, error
 
 	pre := dbPath + preRestoreSuffix
 	// VACUUM INTO refuses to overwrite: drop the previous snapshot and its
-	// sidecar so this one can be written.
-	os.Remove(pre)
-	os.Remove(pre + backup.ChecksumSuffix)
+	// sidecar so this one can be written. Removal errors are best-effort
+	// (missing files are the normal case).
+	_ = os.Remove(pre)
+	_ = os.Remove(pre + backup.ChecksumSuffix)
 
 	if err := mgr.BackupSQLite(ctx, pre); err != nil {
 		return "", err

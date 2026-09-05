@@ -240,7 +240,7 @@ func (m *DistributedLockManager) ReleaseStale(ctx context.Context) ([]ReleasedLo
 	if err != nil {
 		return nil, fmt.Errorf("cluster: release stale: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var released []ReleasedLock
 	for rows.Next() {

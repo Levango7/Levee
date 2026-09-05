@@ -9,11 +9,12 @@ import (
 	"context"
 	"strings"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/state"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 // InventoryService serves asset-management RPCs on the persistent store.

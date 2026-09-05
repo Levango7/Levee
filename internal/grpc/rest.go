@@ -1248,7 +1248,7 @@ func (gw *Gateway) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
 // before it holds any credential. The response carries only non-secret
 // discovery data — client_id is public by design in both OAuth and OIDC,
 // and endpoint URLs are the providers' own published values.
-func (gw *Gateway) handleSystemAuthInfo(w http.ResponseWriter, r *http.Request) {
+func (gw *Gateway) handleSystemAuthInfo(w http.ResponseWriter, _ *http.Request) {
 	v := gw.cfg.OIDC
 	gh := gw.cfg.GitHub
 	resp := map[string]any{

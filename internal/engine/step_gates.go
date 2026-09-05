@@ -135,77 +135,7 @@ func gateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck, rt Gat
 		return verify.NewProbeGate(name, phase, params), nil
 
 	case "slo":
-		// Without a Prometheus endpoint there is no honest way to evaluate an
-		// SLO threshold, so materialisation aborts instead of registering a
-		// gate that would guess.
-		if rt.PrometheusURL == "" {
-			return nil, fmt.Errorf("slo gate %q requires verify.prometheus_url configuration", name)
-		}
-		// The verify.SLOGate is bound to the post-batch phase; a declaration
-		// asking for any other timing would register a gate RunPhase never
-		// sees (silent skip), so reject it up front.
-		if phase != verify.PhasePostBatch {
-			return nil, fmt.Errorf("gate %q: slo checks execute in the post_batch phase only, got phase %q", name, phase)
-		}
-
-		pp, err := parseStrictParams(c.Params, map[string]string{
-			"query":           "string",
-			"threshold":       "float",
-			"comparison":      "string",
-			"timeout_seconds": "int",
-		})
-		if err != nil {
-			return nil, fmt.Errorf("gate %q: %w", name, err)
-		}
-
-		// The PromQL expression comes from the classic query field; the
-		// params mapping may override it.
-		query := c.Command
-		if q, ok := pp["query"].(string); ok && q != "" {
-			query = q
-		}
-		if query == "" {
-			return nil, fmt.Errorf("slo gate %q requires a PromQL query (the check's query field or the \"query\" param)", name)
-		}
-
-		rawThreshold, ok := pp["threshold"]
-		if !ok {
-			return nil, fmt.Errorf("slo gate %q requires a numeric \"threshold\" param", name)
-		}
-		threshold := rawThreshold.(float64)
-
-		// Comparison operator. The documented LEVEELang spellings are
-		// lt|gt|lte|gte (default lte); the historical le/ge/eq spellings are
-		// accepted as aliases. Anything else is a hard error — the underlying
-		// SLOGate would silently coerce unknown operators to lt, which must
-		// never flip a threshold's direction unnoticed.
-		comparison := "le"
-		if cmp, ok := pp["comparison"].(string); ok && cmp != "" {
-			switch cmp {
-			case "lt":
-				comparison = "lt"
-			case "gt":
-				comparison = "gt"
-			case "lte", "le":
-				comparison = "le"
-			case "gte", "ge":
-				comparison = "ge"
-			case "eq":
-				comparison = "eq"
-			default:
-				return nil, fmt.Errorf("slo gate %q: unknown comparison %q (supported: lt|gt|lte|gte, plus aliases le|ge|eq)", name, cmp)
-			}
-		}
-
-		timeout := 5 * time.Second // documented default for slo timeout_seconds
-		if t, ok := pp["timeout_seconds"].(int); ok && t > 0 {
-			timeout = time.Duration(t) * time.Second
-		}
-
-		return verify.NewSLOGate(name, query, threshold, comparison,
-			verify.WithSLOSource(rt.PrometheusURL),
-			verify.WithSLOTimeout(timeout),
-		), nil
+		return sloGateFromCheck(name, phase, c, rt)
 
 	case "human":
 		// A human gate without an approver transport can only block forever
@@ -221,6 +151,83 @@ func gateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck, rt Gat
 	default:
 		return nil, fmt.Errorf("gate %q: check type %q is not executable by the engine (supported: cmd|probe|slo|human)", name, c.Type)
 	}
+}
+
+// sloGateFromCheck compiles a "slo" GateCheck. It is split out of
+// gateFromCheck purely to keep that dispatcher readable; behaviour is
+// unchanged.
+func sloGateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck, rt GateRuntime) (verify.Gate, error) {
+	// Without a Prometheus endpoint there is no honest way to evaluate an
+	// SLO threshold, so materialisation aborts instead of registering a
+	// gate that would guess.
+	if rt.PrometheusURL == "" {
+		return nil, fmt.Errorf("slo gate %q requires verify.prometheus_url configuration", name)
+	}
+	// The verify.SLOGate is bound to the post-batch phase; a declaration
+	// asking for any other timing would register a gate RunPhase never
+	// sees (silent skip), so reject it up front.
+	if phase != verify.PhasePostBatch {
+		return nil, fmt.Errorf("gate %q: slo checks execute in the post_batch phase only, got phase %q", name, phase)
+	}
+
+	pp, err := parseStrictParams(c.Params, map[string]string{
+		"query":           "string",
+		"threshold":       "float",
+		"comparison":      "string",
+		"timeout_seconds": "int",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("gate %q: %w", name, err)
+	}
+
+	// The PromQL expression comes from the classic query field; the
+	// params mapping may override it.
+	query := c.Command
+	if q, ok := pp["query"].(string); ok && q != "" {
+		query = q
+	}
+	if query == "" {
+		return nil, fmt.Errorf("slo gate %q requires a PromQL query (the check's query field or the \"query\" param)", name)
+	}
+
+	rawThreshold, ok := pp["threshold"]
+	if !ok {
+		return nil, fmt.Errorf("slo gate %q requires a numeric \"threshold\" param", name)
+	}
+	threshold := rawThreshold.(float64)
+
+	// Comparison operator. The documented LEVEELang spellings are
+	// lt|gt|lte|gte (default lte); the historical le/ge/eq spellings are
+	// accepted as aliases. Anything else is a hard error — the underlying
+	// SLOGate would silently coerce unknown operators to lt, which must
+	// never flip a threshold's direction unnoticed.
+	comparison := "le"
+	if cmp, ok := pp["comparison"].(string); ok && cmp != "" {
+		switch cmp {
+		case "lt":
+			comparison = "lt"
+		case "gt":
+			comparison = "gt"
+		case "lte", "le":
+			comparison = "le"
+		case "gte", "ge":
+			comparison = "ge"
+		case "eq":
+			comparison = "eq"
+		default:
+			return nil, fmt.Errorf("slo gate %q: unknown comparison %q (supported: lt|gt|lte|gte, plus aliases le|ge|eq)", name, cmp)
+		}
+	}
+
+	timeout := 5 * time.Second // documented default for slo timeout_seconds
+	if t, ok := pp["timeout_seconds"].(int); ok && t > 0 {
+		timeout = time.Duration(t) * time.Second
+	}
+
+	return verify.NewSLOGate(name, query, threshold, comparison,
+		verify.WithSLOSource(rt.PrometheusURL),
+		verify.WithSLOTimeout(timeout),
+	), nil
 }
 
 // parseStrictParams validates a free-form params mapping against an allowed

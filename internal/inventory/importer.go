@@ -12,8 +12,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nexus/levee/internal/state"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // Store is the subset of state.Store the importer needs.
@@ -129,7 +130,9 @@ func (im *Importer) ensureGroup(ctx context.Context, name string, known map[stri
 }
 
 // Import applies f to the store. Per-row failures are accumulated into the
-// returned Summary — one bad entry never aborts the whole file.
+// returned Summary — one bad entry never aborts the whole file. The work is
+// split into importGroups (declarative group tree first) and per-target
+// importTarget calls; the Summary accumulates across both phases.
 func (im *Importer) Import(ctx context.Context, f *File, defaultGroup string) (*Summary, error) {
 	sum := &Summary{}
 	if f == nil {
@@ -137,6 +140,17 @@ func (im *Importer) Import(ctx context.Context, f *File, defaultGroup string) (*
 	}
 	known := map[string]string{}
 
+	im.importGroups(ctx, f, known, sum)
+
+	for i, td := range f.Targets {
+		im.importTarget(ctx, td, fmt.Sprintf("targets[%d]", i), defaultGroup, known, sum)
+	}
+	return sum, nil
+}
+
+// importGroups materialises f.Groups (including parent links) into the
+// store, recording per-group failures in sum.
+func (im *Importer) importGroups(ctx context.Context, f *File, known map[string]string, sum *Summary) {
 	for _, gd := range f.Groups {
 		if strings.TrimSpace(gd.Name) == "" {
 			sum.Failed++
@@ -164,94 +178,96 @@ func (im *Importer) Import(ctx context.Context, f *File, defaultGroup string) (*
 			}
 		}
 	}
+}
 
-	for i, td := range f.Targets {
-		row := fmt.Sprintf("targets[%d]", i)
-		host, port, err := splitAddress(td.Address)
+// importTarget merges one target declaration into the store: normalises
+// address/channel/status defaults, resolves its group, and either updates
+// the existing (host,port) row — preserving credential/labels/status where
+// the re-declaration is silent — or creates a new one. Failures are
+// accumulated into sum.
+func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, defaultGroup string, known map[string]string, sum *Summary) {
+	host, port, err := splitAddress(td.Address)
+	if err != nil {
+		im.fail(sum, row, err)
+		return
+	}
+	if td.Port > 0 {
+		port = td.Port
+	}
+	if port == 0 {
+		port = 22
+	}
+	channel := td.ChannelType
+	if channel == "" {
+		channel = "ssh"
+	}
+	if !validChannels[channel] {
+		im.fail(sum, row, fmt.Errorf("invalid channel_type %q (ssh|winrm)", channel))
+		return
+	}
+	status := td.Status
+	if status == "" {
+		status = state.StatusActive
+	}
+	if !validStatuses[status] {
+		im.fail(sum, row, fmt.Errorf("invalid status %q", status))
+		return
+	}
+
+	groupID := ""
+	groupName := td.Group
+	if groupName == "" {
+		groupName = defaultGroup
+	}
+	if groupName != "" {
+		gid, err := im.ensureGroup(ctx, groupName, known)
 		if err != nil {
 			im.fail(sum, row, err)
-			continue
+			return
 		}
-		if td.Port > 0 {
-			port = td.Port
-		}
-		if port == 0 {
-			port = 22
-		}
-		channel := td.ChannelType
-		if channel == "" {
-			channel = "ssh"
-		}
-		if !validChannels[channel] {
-			im.fail(sum, row, fmt.Errorf("invalid channel_type %q (ssh|winrm)", channel))
-			continue
-		}
-		status := td.Status
-		if status == "" {
-			status = state.StatusActive
-		}
-		if !validStatuses[status] {
-			im.fail(sum, row, fmt.Errorf("invalid status %q", status))
-			continue
-		}
+		groupID = gid
+	}
 
-		groupID := ""
-		groupName := td.Group
-		if groupName == "" {
-			groupName = defaultGroup
-		}
-		if groupName != "" {
-			gid, err := im.ensureGroup(ctx, groupName, known)
-			if err != nil {
-				im.fail(sum, row, err)
-				continue
-			}
-			groupID = gid
-		}
+	existing, err := im.store.FindTargetByAddress(ctx, host, port)
+	if err != nil {
+		im.fail(sum, row, err)
+		return
+	}
 
-		existing, err := im.store.FindTargetByAddress(ctx, host, port)
-		if err != nil {
-			im.fail(sum, row, err)
-			continue
+	tg := &state.Target{
+		ID:            newID("tgt-"),
+		Hostname:      host,
+		Port:          port,
+		ChannelType:   channel,
+		CredentialRef: td.CredentialRef,
+		Labels:        td.Labels,
+		GroupID:       groupID,
+		Status:        status,
+	}
+	if existing != nil {
+		tg.ID = existing.ID
+		if tg.CredentialRef == "" {
+			tg.CredentialRef = existing.CredentialRef
 		}
-
-		tg := &state.Target{
-			ID:            newID("tgt-"),
-			Hostname:      host,
-			Port:          port,
-			ChannelType:   channel,
-			CredentialRef: td.CredentialRef,
-			Labels:        td.Labels,
-			GroupID:       groupID,
-			Status:        status,
+		if len(tg.Labels) == 0 && len(existing.Labels) > 0 && status == existing.Status {
+			tg.Labels = existing.Labels // pure address re-declaration keeps labels
 		}
-		if existing != nil {
-			tg.ID = existing.ID
-			if tg.CredentialRef == "" {
-				tg.CredentialRef = existing.CredentialRef
-			}
-			if len(tg.Labels) == 0 && len(existing.Labels) > 0 && status == existing.Status {
-				tg.Labels = existing.Labels // pure address re-declaration keeps labels
-			}
-			if td.Status == "" && existing.Status != "" {
-				tg.Status = existing.Status // re-import never silently un-freezes
-			}
-			sum.Updated++
-		} else {
-			sum.Created++
+		if td.Status == "" && existing.Status != "" {
+			tg.Status = existing.Status // re-import never silently un-freezes
 		}
-		if err := im.store.UpsertTarget(ctx, tg); err != nil {
-			sum.Failed++
-			sum.Errors = append(sum.Errors, fmt.Sprintf("%s %s:%d: %v", row, host, port, err))
-			if sum.Created > 0 && existing == nil {
-				sum.Created-- // rolled back by the failed upsert
-			} else if existing != nil {
-				sum.Updated--
-			}
-			continue
+		sum.Updated++
+	} else {
+		sum.Created++
+	}
+	if err := im.store.UpsertTarget(ctx, tg); err != nil {
+		sum.Failed++
+		sum.Errors = append(sum.Errors, fmt.Sprintf("%s %s:%d: %v", row, host, port, err))
+		if sum.Created > 0 && existing == nil {
+			sum.Created-- // rolled back by the failed upsert
+		} else if existing != nil {
+			sum.Updated--
 		}
 	}
-	return sum, nil
 }
 
 func (im *Importer) fail(sum *Summary, row string, err error) {

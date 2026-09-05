@@ -253,7 +253,41 @@ func newServeConvEngine() *conversation.ConversationEngine {
 	})
 }
 
-// runServe executes the `levee serve` command.
+// setupServeTracing builds the process-wide tracer from the tracing config
+// section. Any construction error (e.g. an unsupported exporter) degrades
+// to the noop tracer with a warning instead of keeping the daemon from
+// starting. It returns a shutdown function for the caller to defer.
+func setupServeTracing(cfg *config.Config) func() {
+	tracer, tracingShutdown, err := tracing.New(tracing.Config{
+		Enabled:     cfg.Tracing.Enabled,
+		Exporter:    cfg.Tracing.Exporter,
+		Endpoint:    cfg.Tracing.Endpoint,
+		ServiceName: "levee",
+	})
+	if err != nil {
+		log.Warn("tracing construction failed, falling back to noop tracer", "error", err)
+		tracer, tracingShutdown, _ = tracing.New(tracing.Config{Enabled: false})
+	}
+	tracing.SetDefault(tracer)
+	if cfg.Tracing.Enabled {
+		log.Info("tracing enabled", "exporter", cfg.Tracing.Exporter)
+	} else {
+		log.Info("tracing disabled (configure tracing.enabled to enable)")
+	}
+	return func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := tracingShutdown(stopCtx); err != nil {
+			log.Warn("tracing shutdown failed", "error", err)
+		}
+		tracing.SetDefault(nil)
+	}
+}
+
+// runServe executes the `levee serve` command. The assembly is split into
+// focused helpers (setupServeTracing, openServeStore, buildServeServices,
+// buildServeServerOpts); this function keeps the sequential wiring and owns
+// every resource's defer-based cleanup.
 func runServe(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -311,81 +345,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// 1b. Tracing: construct the process-wide tracer from the tracing
-	//     config section (disabled by default). Any construction error
-	//     (e.g. an unsupported exporter) degrades to the noop tracer
-	//     with a warning instead of keeping the daemon from starting.
-	tracer, tracingShutdown, err := tracing.New(tracing.Config{
-		Enabled:     cfg.Tracing.Enabled,
-		Exporter:    cfg.Tracing.Exporter,
-		Endpoint:    cfg.Tracing.Endpoint,
-		ServiceName: "levee",
-	})
-	if err != nil {
-		log.Warn("tracing construction failed, falling back to noop tracer", "error", err)
-		tracer, tracingShutdown, _ = tracing.New(tracing.Config{Enabled: false})
-	}
-	tracing.SetDefault(tracer)
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := tracingShutdown(stopCtx); err != nil {
-			log.Warn("tracing shutdown failed", "error", err)
-		}
-		tracing.SetDefault(nil)
-	}()
-	if cfg.Tracing.Enabled {
-		log.Info("tracing enabled", "exporter", cfg.Tracing.Exporter)
-	} else {
-		log.Info("tracing disabled (configure tracing.enabled to enable)")
-	}
+	//     config section (disabled by default).
+	shutdownTracing := setupServeTracing(cfg)
+	defer shutdownTracing()
 
 	// 2. Open the store. In cluster mode we use PostgreSQL; otherwise we
 	//    fall back to the single-node SQLite store.
-	var store state.Store
-	var clusterMgr *cluster.ClusterManager
-	if serveOptCluster {
-		if serveOptPGDSN == "" {
-			return errors.New("--cluster requires --pg-dsn")
-		}
-		if serveOptNodeID == "" || serveOptNodeAddr == "" {
-			return errors.New("--cluster requires --node-id and --node-addr")
-		}
-		pgStore, err := state.NewPGStore(ctx, serveOptPGDSN, state.PGPoolConfig{
-			MaxOpenConns:    cfg.Database.MaxOpenConns,
-			MaxIdleConns:    cfg.Database.MaxIdleConns,
-			ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
-		})
-		if err != nil {
-			return fmt.Errorf("open postgres store: %w", err)
-		}
-		store = pgStore
-		clusterMgr = cluster.NewClusterManager(pgStore.DB(), cluster.ManagerConfig{
-			SelfID: serveOptNodeID,
-		})
-		if err := clusterMgr.Join(cluster.Node{
-			ID:      serveOptNodeID,
-			Address: serveOptNodeAddr,
-			Status:  cluster.StatusActive,
-			Role:    cluster.NodeRole(serveOptNodeRole),
-		}); err != nil {
-			_ = store.Close()
-			return fmt.Errorf("join cluster: %w", err)
-		}
-		if err := clusterMgr.Start(ctx); err != nil {
-			_ = store.Close()
-			return fmt.Errorf("start cluster manager: %w", err)
-		}
-		log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
-		log.Warn("cluster coordination covers shared storage, membership and locking only",
-			"detail", "nodes register and heartbeat via PostgreSQL; stale peers are marked offline and expired lock leases are reclaimed automatically. "+
-				"Automated failover of in-flight changes and cross-node scheduling are not yet implemented — do not rely on HA guarantees")
-	} else {
-		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
-		if err != nil {
-			return fmt.Errorf("open store: %w", err)
-		}
-		store = sqliteStore
-		log.Info("single-node mode (SQLite)")
+	store, clusterMgr, err := openServeStore(ctx, cfg)
+	if err != nil {
+		return err
 	}
 	defer func() { _ = store.Close() }()
 	if clusterMgr != nil {
@@ -400,85 +368,15 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 3. Build the service implementations. We reuse the in-process
 	//    implementations so the daemon and CLI share one code path.
-	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
-	// The execution engine (ClosureRunner) is not wired into serve yet:
-	// ApplyChange reports FailedPrecondition ("status-only mode") rather
-	// than pretending to execute. Plan/approve/status tracking remain
-	// fully functional.
-	log.Warn("serve: no execution engine wired; ApplyChange RPC will return FailedPrecondition (status-only mode)")
-	templateSvc := grpc.NewTemplateService(store, nil)
-	targetSvc := grpc.NewTargetService(store, nil)
-	// Credential-aware probing: when a master password is available, attach a
-	// resolver backed by the same encrypted credential store the secret CLI
-	// commands use, so CheckTarget probes targets with their stored
-	// credentials instead of unauthenticated. Without LEVEE_MASTER_PASSWORD
-	// the resolver stays nil (disabled): CheckTarget then falls back to an
-	// unauthenticated probe and reports a warning on the response. Documented
-	// limitation: serve mode has no other master-password source today — there
-	// is no --master-password flag or keyfile mechanism to wire instead.
-	if mp := os.Getenv("LEVEE_MASTER_PASSWORD"); mp != "" {
-		if credStore, err := credential.NewCredentialStore(store, mp); err != nil {
-			log.Warn("credential store unavailable; target checks will probe without credentials",
-				"error", err)
-		} else {
-			targetSvc.WithCredentialResolver(&serveCredentialResolver{store: credStore})
-			log.Info("target checks will resolve stored credentials for probes")
-		}
-	} else {
-		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
-			"(no resolver configured)")
-	}
-	auditSvc := grpc.NewAuditService(store)
-	systemSvc := grpc.NewSystemService(
-		store, cfg, optConfigPath,
-		version, commitHash, buildTime, goVersion, time.Now(),
-	)
-	// Alert ingestion stays stand-alone here (the AlertService keeps its own
-	// bounded ring); run `levee alert serve` for the full gateway with
-	// Prometheus/custom adapters. Diagnosis and conversation get real engines
-	// so the corresponding RPCs are functional in serve mode instead of
-	// returning Unimplemented.
-	alertSvc := grpc.NewAlertService(nil, slog.Default())
-	diagEngine, diagErr := newServeDiagEngine()
-	if diagErr != nil {
-		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
-	}
-	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
-	convSvc := grpc.NewConversationService(newServeConvEngine(), slog.Default())
-
-	// Mobile approval: wire the deeplink approve/reject endpoints so the
-	// REST gateway's /changes/deeplink/* routes work out of the box. Push
-	// delivery stays disabled until a push manager is configured.
-	mobileSvc := approval.NewMobileApprovalService(
-		approval.NewService(newApprovalStoreAdapter(store)),
-		nil,
-		push.NewDeepLinkGenerator("levee", "https://levee.local"),
-	)
+	svcs := buildServeServices(store, cfg)
+	changeSvc, templateSvc, targetSvc := svcs.changeSvc, svcs.templateSvc, svcs.targetSvc
+	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
+	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
 
 	// 3. Build server options.
-	serverOpts := []grpc.Option{
-		grpc.WithListenAddr(serveOptAddr),
-		grpc.WithChangeService(changeSvc),
-		grpc.WithTemplateService(templateSvc),
-		grpc.WithTargetService(targetSvc),
-		grpc.WithAuditService(auditSvc),
-		grpc.WithSystemService(systemSvc),
-	}
-	if token != "" {
-		serverOpts = append(serverOpts, grpc.WithAuthToken(token))
-	}
-	if len(namedTokens) > 0 {
-		serverOpts = append(serverOpts, grpc.WithAuthTokens(namedTokens))
-	}
-	// Nil/disabled verifier is a no-op option: AuthTokens.OIDC stays
-	// disabled and only static tokens are accepted.
-	serverOpts = append(serverOpts, grpc.WithAuthVerifier(oidcVerifier))
-	tlsCfg, err := loadTLSConfig(serveOptTLSCert, serveOptTLSKey)
+	serverOpts, tlsCfg, err := buildServeServerOpts(svcs, token, namedTokens, oidcVerifier)
 	if err != nil {
-		return fmt.Errorf("load tls: %w", err)
-	}
-	if tlsCfg != nil {
-		serverOpts = append(serverOpts, grpc.WithTLS(tlsCfg))
+		return err
 	}
 
 	// 4. Construct and start the server.
@@ -573,6 +471,167 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("serve: %w", err)
 	}
 	return nil
+}
+
+// serveServices bundles the in-process service implementations the daemon
+// (gRPC server + REST gateway) shares.
+type serveServices struct {
+	changeSvc   *grpc.ChangeService
+	templateSvc *grpc.TemplateService
+	targetSvc   *grpc.TargetService
+	auditSvc    *grpc.AuditService
+	systemSvc   *grpc.SystemService
+	alertSvc    *grpc.AlertService
+	diagSvc     *grpc.DiagnosisService
+	convSvc     *grpc.ConversationService
+	mobileSvc   *approval.MobileApprovalService
+}
+
+// buildServeServices constructs the in-process service implementations,
+// mirroring the CLI code paths. Split out of runServe; behaviour unchanged.
+func buildServeServices(store state.Store, cfg *config.Config) serveServices {
+	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
+	// The execution engine (ClosureRunner) is not wired into serve yet:
+	// ApplyChange reports FailedPrecondition ("status-only mode") rather
+	// than pretending to execute. Plan/approve/status tracking remain
+	// fully functional.
+	log.Warn("serve: no execution engine wired; ApplyChange RPC will return FailedPrecondition (status-only mode)")
+	templateSvc := grpc.NewTemplateService(store, nil)
+	targetSvc := grpc.NewTargetService(store, nil)
+	// Credential-aware probing: when a master password is available, attach a
+	// resolver backed by the same encrypted credential store the secret CLI
+	// commands use, so CheckTarget probes targets with their stored
+	// credentials instead of unauthenticated. Without LEVEE_MASTER_PASSWORD
+	// the resolver stays nil (disabled): CheckTarget then falls back to an
+	// unauthenticated probe and reports a warning on the response. Documented
+	// limitation: serve mode has no other master-password source today — there
+	// is no --master-password flag or keyfile mechanism to wire instead.
+	if mp := os.Getenv("LEVEE_MASTER_PASSWORD"); mp != "" {
+		if credStore, err := credential.NewCredentialStore(store, mp); err != nil {
+			log.Warn("credential store unavailable; target checks will probe without credentials",
+				"error", err)
+		} else {
+			targetSvc.WithCredentialResolver(&serveCredentialResolver{store: credStore})
+			log.Info("target checks will resolve stored credentials for probes")
+		}
+	} else {
+		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
+			"(no resolver configured)")
+	}
+	auditSvc := grpc.NewAuditService(store)
+	systemSvc := grpc.NewSystemService(
+		store, cfg, optConfigPath,
+		version, commitHash, buildTime, goVersion, time.Now(),
+	)
+	// Alert ingestion stays stand-alone here (the AlertService keeps its own
+	// bounded ring); run `levee alert serve` for the full gateway with
+	// Prometheus/custom adapters. Diagnosis and conversation get real engines
+	// so the corresponding RPCs are functional in serve mode instead of
+	// returning Unimplemented.
+	alertSvc := grpc.NewAlertService(nil, slog.Default())
+	diagEngine, diagErr := newServeDiagEngine()
+	if diagErr != nil {
+		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
+	}
+	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
+	convSvc := grpc.NewConversationService(newServeConvEngine(), slog.Default())
+
+	// Mobile approval: wire the deeplink approve/reject endpoints so the
+	// REST gateway's /changes/deeplink/* routes work out of the box. Push
+	// delivery stays disabled until a push manager is configured.
+	mobileSvc := approval.NewMobileApprovalService(
+		approval.NewService(newApprovalStoreAdapter(store)),
+		nil,
+		push.NewDeepLinkGenerator("levee", "https://levee.local"),
+	)
+	return serveServices{
+		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
+		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
+		diagSvc: diagSvc, convSvc: convSvc, mobileSvc: mobileSvc,
+	}
+}
+
+// buildServeServerOpts assembles the gRPC server options (services, auth,
+// TLS) and returns the TLS config alongside them — runServe inspects it for
+// the plaintext-traffic warning. Split out of runServe; behaviour unchanged.
+func buildServeServerOpts(svcs serveServices, token string, namedTokens []grpc.TokenIdentity, oidcVerifier *auth.Verifier) ([]grpc.Option, *tls.Config, error) {
+	serverOpts := []grpc.Option{
+		grpc.WithListenAddr(serveOptAddr),
+		grpc.WithChangeService(svcs.changeSvc),
+		grpc.WithTemplateService(svcs.templateSvc),
+		grpc.WithTargetService(svcs.targetSvc),
+		grpc.WithAuditService(svcs.auditSvc),
+		grpc.WithSystemService(svcs.systemSvc),
+	}
+	if token != "" {
+		serverOpts = append(serverOpts, grpc.WithAuthToken(token))
+	}
+	if len(namedTokens) > 0 {
+		serverOpts = append(serverOpts, grpc.WithAuthTokens(namedTokens))
+	}
+	// Nil/disabled verifier is a no-op option: AuthTokens.OIDC stays
+	// disabled and only static tokens are accepted.
+	serverOpts = append(serverOpts, grpc.WithAuthVerifier(oidcVerifier))
+	tlsCfg, err := loadTLSConfig(serveOptTLSCert, serveOptTLSKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load tls: %w", err)
+	}
+	if tlsCfg != nil {
+		serverOpts = append(serverOpts, grpc.WithTLS(tlsCfg))
+	}
+	return serverOpts, tlsCfg, nil
+}
+
+// openServeStore opens the backend store for serve mode. In cluster mode it
+// requires --pg-dsn/--node-id/--node-addr, opens PostgreSQL, joins and
+// starts the cluster manager; otherwise it opens the single-node SQLite
+// store. The caller owns both returned resources (store.Close,
+// clusterMgr.Stop). Split out of runServe; behaviour unchanged.
+func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *cluster.ClusterManager, error) {
+	if !serveOptCluster {
+		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open store: %w", err)
+		}
+		log.Info("single-node mode (SQLite)")
+		return sqliteStore, nil, nil
+	}
+	if serveOptPGDSN == "" {
+		return nil, nil, errors.New("--cluster requires --pg-dsn")
+	}
+	if serveOptNodeID == "" || serveOptNodeAddr == "" {
+		return nil, nil, errors.New("--cluster requires --node-id and --node-addr")
+	}
+	pgStore, err := state.NewPGStore(ctx, serveOptPGDSN, state.PGPoolConfig{
+		MaxOpenConns:    cfg.Database.MaxOpenConns,
+		MaxIdleConns:    cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("open postgres store: %w", err)
+	}
+	store := state.Store(pgStore)
+	clusterMgr := cluster.NewClusterManager(pgStore.DB(), cluster.ManagerConfig{
+		SelfID: serveOptNodeID,
+	})
+	if err := clusterMgr.Join(cluster.Node{
+		ID:      serveOptNodeID,
+		Address: serveOptNodeAddr,
+		Status:  cluster.StatusActive,
+		Role:    cluster.NodeRole(serveOptNodeRole),
+	}); err != nil {
+		_ = store.Close()
+		return nil, nil, fmt.Errorf("join cluster: %w", err)
+	}
+	if err := clusterMgr.Start(ctx); err != nil {
+		_ = store.Close()
+		return nil, nil, fmt.Errorf("start cluster manager: %w", err)
+	}
+	log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
+	log.Warn("cluster coordination covers shared storage, membership and locking only",
+		"detail", "nodes register and heartbeat via PostgreSQL; stale peers are marked offline and expired lock leases are reclaimed automatically. "+
+			"Automated failover of in-flight changes and cross-node scheduling are not yet implemented — do not rely on HA guarantees")
+	return store, clusterMgr, nil
 }
 
 // serveCredentialResolver adapts the encrypted credential store to the

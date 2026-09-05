@@ -35,11 +35,6 @@ func NewAuditService(store state.Store) *AuditService {
 	return &AuditService{store: store}
 }
 
-// maxAuditFetchRows is retained as an import-compatibility constant for
-// callers that referenced the old single-fetch cap; GetAuditLog no longer
-// uses it (see auditStorePageSize below).
-const maxAuditFetchRows = 10000
-
 // auditStorePageSize is the number of audit rows fetched per store round
 // trip while walking results for one GetAuditLog response.
 const auditStorePageSize = 1000

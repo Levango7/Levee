@@ -205,7 +205,7 @@ func (m *Manager) RestoreSQLite(ctx context.Context, backupPath string) error {
 		return fmt.Errorf("backup: create temp restore file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // best-effort cleanup; no-op after rename
+	defer func() { _ = os.Remove(tmpPath) }() // best-effort cleanup; no-op after rename
 
 	if err := copyFileContents(backupPath, tmp); err != nil {
 		_ = tmp.Close()
@@ -501,11 +501,11 @@ func (m *Manager) BackupPostgreSQL(ctx context.Context, outputPath string) error
 
 	if err := dumpPostgres(ctx, &pgLiveSource{db: db}, f); err != nil {
 		_ = f.Close()
-		os.Remove(outputPath) // never leave a partial backup behind
+		_ = os.Remove(outputPath) // never leave a partial backup behind
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(outputPath)
+		_ = os.Remove(outputPath)
 		return fmt.Errorf("backup: flush output file: %w", err)
 	}
 	return WriteChecksumFile(outputPath)

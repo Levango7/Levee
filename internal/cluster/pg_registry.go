@@ -99,7 +99,7 @@ FROM cluster_nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("cluster: list nodes: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var nodes []Node
 	for rows.Next() {
@@ -130,7 +130,7 @@ RETURNING id`,
 	if err != nil {
 		return nil, fmt.Errorf("cluster: mark stale: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var stale []string
 	for rows.Next() {

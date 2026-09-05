@@ -351,49 +351,6 @@ func mergeProbeWarnings(probeErr string, warnings []string) string {
 	return joined + "; " + probeErr
 }
 
-// matchLabelSelector returns true when target labels contain every key=value
-// pair from the selector. An empty selector matches everything.
-func matchLabelSelector(labels, selector map[string]string) bool {
-	for k, v := range selector {
-		if labels[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-// cloneTarget returns a shallow copy of a pb.Target so callers cannot mutate
-// the registry entry.
-func cloneTarget(t *pb.Target) *pb.Target {
-	if t == nil {
-		return nil
-	}
-	cp := &pb.Target{
-		Id:            t.Id,
-		Hostname:      t.Hostname,
-		ChannelType:   t.ChannelType,
-		Port:          t.Port,
-		CredentialRef: t.CredentialRef,
-		Reachable:     t.Reachable,
-	}
-	if t.Labels != nil {
-		cp.Labels = make(map[string]string, len(t.Labels))
-		for k, v := range t.Labels {
-			cp.Labels[k] = v
-		}
-	}
-	return cp
-}
-
-// sortTargetsByID sorts a slice of pb.Target by Id ascending.
-func sortTargetsByID(ts []*pb.Target) {
-	for i := 1; i < len(ts); i++ {
-		for j := i; j > 0 && ts[j-1].Id > ts[j].Id; j-- {
-			ts[j-1], ts[j] = ts[j], ts[j-1]
-		}
-	}
-}
-
 // grpcTarget adapts a pb.Target to the channel.Target interface for precheck.
 type grpcTarget struct {
 	host        string

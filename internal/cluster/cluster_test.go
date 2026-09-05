@@ -244,10 +244,7 @@ func TestClusterPGStaleLockSweep(t *testing.T) {
 	// The sweep must remove the expired lease, after which the key is free.
 	assert.Eventually(t, func() bool {
 		_, err := mgr.Locks().Acquire(ctx, key, "node-a", time.Minute)
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	}, 5*time.Second, 100*time.Millisecond, "expired lease was never swept")
 	require.NoError(t, mgr.Locks().Release(ctx, key, "node-a"))
 

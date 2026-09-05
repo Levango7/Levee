@@ -15,21 +15,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fixtureIdP is a minimal in-process OpenID Connect provider: a discovery
+// fixtureIDP is a minimal in-process OpenID Connect provider: a discovery
 // document plus a JWKS endpoint backed by a fresh RSA key. It exists so the
 // verifier tests never touch a real IdP.
-type fixtureIdP struct {
+type fixtureIDP struct {
 	srv    *httptest.Server
 	key    *rsa.PrivateKey
 	issuer string
 }
 
-func newFixtureIdP(t *testing.T) *fixtureIdP {
+func newFixtureIDP(t *testing.T) *fixtureIDP {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	idp := &fixtureIdP{key: key}
+	idp := &fixtureIDP{key: key}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -60,7 +60,7 @@ func newFixtureIdP(t *testing.T) *fixtureIdP {
 }
 
 // sign issues a compact JWT with the given claims, signed by the fixture key.
-func (f *fixtureIdP) sign(t *testing.T, claims map[string]any) string {
+func (f *fixtureIDP) sign(t *testing.T, claims map[string]any) string {
 	t.Helper()
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.RS256, Key: f.key},
@@ -76,7 +76,7 @@ func (f *fixtureIdP) sign(t *testing.T, claims map[string]any) string {
 	return raw
 }
 
-func (f *fixtureIdP) standardClaims(aud string) map[string]any {
+func (f *fixtureIDP) standardClaims(aud string) map[string]any {
 	return map[string]any{
 		"iss":                f.issuer,
 		"sub":                "user-123",
@@ -87,7 +87,7 @@ func (f *fixtureIdP) standardClaims(aud string) map[string]any {
 	}
 }
 
-func newTestVerifier(t *testing.T, idp *fixtureIdP, mutate func(*OIDCConfig)) *Verifier {
+func newTestVerifier(t *testing.T, idp *fixtureIDP, mutate func(*OIDCConfig)) *Verifier {
 	t.Helper()
 	cfg := OIDCConfig{
 		Enabled:   true,
@@ -133,7 +133,7 @@ func TestNewVerifier_DiscoveryFailure(t *testing.T) {
 }
 
 func TestNewVerifier_ExposesEndpoints(t *testing.T) {
-	idp := newFixtureIdP(t)
+	idp := newFixtureIDP(t)
 	v := newTestVerifier(t, idp, nil)
 	authURL, tokenURL := v.Endpoints()
 	assert.Equal(t, idp.issuer+"/authorize", authURL)
@@ -143,7 +143,7 @@ func TestNewVerifier_ExposesEndpoints(t *testing.T) {
 }
 
 func TestVerify_ValidToken(t *testing.T) {
-	idp := newFixtureIdP(t)
+	idp := newFixtureIDP(t)
 	v := newTestVerifier(t, idp, func(c *OIDCConfig) {
 		c.RoleClaim = "roles"
 		c.RoleMap = map[string]string{"levee-admin": "admin"}
@@ -160,7 +160,7 @@ func TestVerify_ValidToken(t *testing.T) {
 }
 
 func TestVerify_SubjectFallbackEmailThenSub(t *testing.T) {
-	idp := newFixtureIdP(t)
+	idp := newFixtureIDP(t)
 	v := newTestVerifier(t, idp, nil)
 
 	// No preferred_username: falls back to email.
@@ -180,7 +180,7 @@ func TestVerify_SubjectFallbackEmailThenSub(t *testing.T) {
 }
 
 func TestVerify_WrongAudience(t *testing.T) {
-	idp := newFixtureIdP(t)
+	idp := newFixtureIDP(t)
 	v := newTestVerifier(t, idp, nil)
 	_, err := v.Verify(context.Background(), idp.sign(t, idp.standardClaims("other-api")))
 	require.Error(t, err)
@@ -188,7 +188,7 @@ func TestVerify_WrongAudience(t *testing.T) {
 }
 
 func TestVerify_Expired(t *testing.T) {
-	idp := newFixtureIdP(t)
+	idp := newFixtureIDP(t)
 	v := newTestVerifier(t, idp, nil)
 	claims := idp.standardClaims("levee")
 	claims["exp"] = time.Now().Add(-time.Hour).Unix()
@@ -198,7 +198,7 @@ func TestVerify_Expired(t *testing.T) {
 }
 
 func TestVerify_BadSignature(t *testing.T) {
-	idp := newFixtureIdP(t)
+	idp := newFixtureIDP(t)
 	v := newTestVerifier(t, idp, nil)
 
 	// A second key not present in the fixture JWKS.
@@ -221,7 +221,7 @@ func TestVerify_BadSignature(t *testing.T) {
 }
 
 func TestVerify_WrongIssuer(t *testing.T) {
-	idp := newFixtureIdP(t)
+	idp := newFixtureIDP(t)
 	v := newTestVerifier(t, idp, nil)
 	claims := idp.standardClaims("levee")
 	claims["iss"] = "https://evil.example.com"

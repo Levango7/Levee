@@ -24,12 +24,11 @@ import (
 // encodings are concatenated without any separator. The length prefix makes
 // the field boundaries unambiguous regardless of field content.
 //
-// canonicalVersion is the version used for all newly computed hashes and
-// checksums. Records produced before V2 was introduced are still accepted by
-// the verification paths (see canonicalV1 and the legacy fallbacks in
-// verifyChecksum / HashChainBuilder.Verify / ChainVerifier.Verify), which
-// detect them by recomputing the V1 digest.
-const canonicalVersion = 2
+// All newly computed hashes and checksums use V2. Records produced before V2
+// was introduced are still accepted by the verification paths (see
+// canonicalV1 and the legacy fallbacks in verifyChecksum /
+// HashChainBuilder.Verify / ChainVerifier.Verify), which detect them by
+// recomputing the V1 digest.
 
 // legacySeparator is the V1 field delimiter ("|"), kept private so it can
 // never be reintroduced into new digests.
@@ -47,9 +46,8 @@ const minHMACKeyLen = 16
 const EnvHMACKey = "LEVEE_AUDIT_HMAC_KEY"
 
 var (
-	keyOnce     sync.Once
-	hmacKey     []byte
-	hmacKeyRead bool
+	keyOnce sync.Once
+	hmacKey []byte
 )
 
 // auditKey lazily resolves the HMAC key from the environment exactly once.

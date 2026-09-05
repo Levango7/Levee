@@ -155,65 +155,78 @@ func NewProbeGate(name string, phase GatePhase, params map[string]any) *ProbeGat
 // type-checked loosely (YAML numbers may arrive as int / int64 / float64)
 // and cross-checked against the selected kind/mode. The first violation is
 // returned; later keys are not examined.
+//
+// Implementation is split in two phases: per-key parsing (applyParamKey)
+// and fail-closed cross-field validation (validateParamCombination).
 func (g *ProbeGate) applyParams(params map[string]any) error {
 	for k, v := range params {
-		var err error
-		switch k {
-		case "kind":
-			g.kind, err = paramString(v, k)
-			if err == nil {
-				switch g.kind {
-				case "http", "tcp", "script":
-				default:
-					err = fmt.Errorf(`probe param "kind" must be one of http|tcp|script, got %q`, g.kind)
-				}
-			}
-		case "mode":
-			g.mode, err = paramString(v, k)
-			if err == nil {
-				switch g.mode {
-				case "direct", "remote":
-				default:
-					err = fmt.Errorf(`probe param "mode" must be one of direct|remote, got %q`, g.mode)
-				}
-			}
-		case "url":
-			g.url, err = paramString(v, k)
-		case "host_port":
-			g.hostPort, err = paramString(v, k)
-		case "port_from_target":
-			g.portFromTarget, err = paramBool(v, k)
-		case "expect_status":
-			g.expectStatusLo, g.expectStatusHi, err = parseExpectStatus(v)
-		case "body_contains":
-			g.bodyContains, err = paramString(v, k)
-		case "body_regex":
-			g.bodyRegexSrc, err = paramString(v, k)
-			if err == nil {
-				g.bodyRegex, err = regexp.Compile(g.bodyRegexSrc)
-				if err != nil {
-					err = fmt.Errorf("probe param %q is not a valid regular expression: %w", k, err)
-				}
-			}
-		case "script":
-			g.script, err = paramString(v, k)
-		case "interpreter":
-			g.interpreter, err = paramString(v, k)
-		case "timeout_seconds":
-			g.timeout, err = paramDurationSeconds(v, k)
-		case "expect_exit":
-			g.expectExit, err = paramInt(v, k)
-		default:
-			return fmt.Errorf("probe param %q is not supported (valid keys: %s)", k, strings.Join(validProbeParamKeys, ", "))
-		}
-		if err != nil {
+		if err := g.applyParamKey(k, v); err != nil {
 			return err
 		}
 	}
+	return g.validateParamCombination()
+}
 
-	// Cross-field validation. Everything below is fail-closed: the error is
-	// surfaced by Check, never silently ignored.
+// applyParamKey parses and assigns one probe param key, type-checking the
+// value and validating enum domains. Returns an error for unknown keys or
+// the first type/domain violation.
+func (g *ProbeGate) applyParamKey(k string, v any) error {
+	var err error
+	switch k {
+	case "kind":
+		g.kind, err = paramString(v, k)
+		if err == nil {
+			switch g.kind {
+			case "http", "tcp", "script":
+			default:
+				err = fmt.Errorf(`probe param "kind" must be one of http|tcp|script, got %q`, g.kind)
+			}
+		}
+	case "mode":
+		g.mode, err = paramString(v, k)
+		if err == nil {
+			switch g.mode {
+			case "direct", "remote":
+			default:
+				err = fmt.Errorf(`probe param "mode" must be one of direct|remote, got %q`, g.mode)
+			}
+		}
+	case "url":
+		g.url, err = paramString(v, k)
+	case "host_port":
+		g.hostPort, err = paramString(v, k)
+	case "port_from_target":
+		g.portFromTarget, err = paramBool(v, k)
+	case "expect_status":
+		g.expectStatusLo, g.expectStatusHi, err = parseExpectStatus(v)
+	case "body_contains":
+		g.bodyContains, err = paramString(v, k)
+	case "body_regex":
+		g.bodyRegexSrc, err = paramString(v, k)
+		if err == nil {
+			g.bodyRegex, err = regexp.Compile(g.bodyRegexSrc)
+			if err != nil {
+				err = fmt.Errorf("probe param %q is not a valid regular expression: %w", k, err)
+			}
+		}
+	case "script":
+		g.script, err = paramString(v, k)
+	case "interpreter":
+		g.interpreter, err = paramString(v, k)
+	case "timeout_seconds":
+		g.timeout, err = paramDurationSeconds(v, k)
+	case "expect_exit":
+		g.expectExit, err = paramInt(v, k)
+	default:
+		return fmt.Errorf("probe param %q is not supported (valid keys: %s)", k, strings.Join(validProbeParamKeys, ", "))
+	}
+	return err
+}
 
+// validateParamCombination runs the fail-closed cross-field checks after all
+// keys have been parsed. Everything here is surfaced by Check, never
+// silently ignored.
+func (g *ProbeGate) validateParamCombination() error {
 	if g.kind == "" {
 		return fmt.Errorf(`probe param "kind" is required (one of http|tcp|script)`)
 	}
@@ -224,45 +237,62 @@ func (g *ProbeGate) applyParams(params map[string]any) error {
 
 	switch g.kind {
 	case "http":
-		if g.url == "" {
-			return fmt.Errorf(`probe param "url" is required for kind=http`)
-		}
-		if g.script != "" {
-			return fmt.Errorf(`probe param "script" applies to kind=script only`)
-		}
-		if g.hostPort != "" {
-			return fmt.Errorf(`probe param "host_port" applies to kind=tcp only`)
-		}
-		if g.bodyContains != "" || g.bodyRegex != nil {
-			// Body inspection reads the response payload directly, which only
-			// the direct http client does today; curl -w in remote mode
-			// reports the status code alone.
-			if g.mode != "direct" {
-				return fmt.Errorf(`probe params "body_contains"/"body_regex" apply to mode=direct only`)
-			}
-		}
+		return g.validateHTTPCombination()
 	case "tcp":
-		if g.url != "" {
-			return fmt.Errorf(`probe param "url" applies to kind=http only`)
-		}
-		if g.hostPort == "" && !g.portFromTarget {
-			return fmt.Errorf(`kind=tcp requires "host_port" or "port_from_target"`)
-		}
-		if g.hostPort != "" && g.portFromTarget {
-			return fmt.Errorf(`kind=tcp accepts either "host_port" or "port_from_target", not both`)
-		}
+		return g.validateTCPCombination()
 	case "script":
-		if g.script == "" {
-			return fmt.Errorf(`probe param "script" is required for kind=script`)
-		}
-		if g.url != "" {
-			return fmt.Errorf(`probe param "url" applies to kind=http only`)
-		}
-		if g.hostPort != "" {
-			return fmt.Errorf(`probe param "host_port" applies to kind=tcp only`)
+		return g.validateScriptCombination()
+	}
+	return nil
+}
+
+// validateHTTPCombination checks kind=http field rules.
+func (g *ProbeGate) validateHTTPCombination() error {
+	if g.url == "" {
+		return fmt.Errorf(`probe param "url" is required for kind=http`)
+	}
+	if g.script != "" {
+		return fmt.Errorf(`probe param "script" applies to kind=script only`)
+	}
+	if g.hostPort != "" {
+		return fmt.Errorf(`probe param "host_port" applies to kind=tcp only`)
+	}
+	if g.bodyContains != "" || g.bodyRegex != nil {
+		// Body inspection reads the response payload directly, which only
+		// the direct http client does today; curl -w in remote mode
+		// reports the status code alone.
+		if g.mode != "direct" {
+			return fmt.Errorf(`probe params "body_contains"/"body_regex" apply to mode=direct only`)
 		}
 	}
+	return nil
+}
 
+// validateTCPCombination checks kind=tcp field rules.
+func (g *ProbeGate) validateTCPCombination() error {
+	if g.url != "" {
+		return fmt.Errorf(`probe param "url" applies to kind=http only`)
+	}
+	if g.hostPort == "" && !g.portFromTarget {
+		return fmt.Errorf(`kind=tcp requires "host_port" or "port_from_target"`)
+	}
+	if g.hostPort != "" && g.portFromTarget {
+		return fmt.Errorf(`kind=tcp accepts either "host_port" or "port_from_target", not both`)
+	}
+	return nil
+}
+
+// validateScriptCombination checks kind=script field rules.
+func (g *ProbeGate) validateScriptCombination() error {
+	if g.script == "" {
+		return fmt.Errorf(`probe param "script" is required for kind=script`)
+	}
+	if g.url != "" {
+		return fmt.Errorf(`probe param "url" applies to kind=http only`)
+	}
+	if g.hostPort != "" {
+		return fmt.Errorf(`probe param "host_port" applies to kind=tcp only`)
+	}
 	return nil
 }
 
