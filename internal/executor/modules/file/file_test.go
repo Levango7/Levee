@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -306,9 +307,19 @@ func TestResolveLocalSrcAbsoluteRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "absolute")
 	assert.Contains(t, err.Error(), extraDirsEnvVar)
 
-	_, err = resolveLocalSrc(`C:\Windows\system32\config`)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "absolute")
+	if runtime.GOOS == "windows" {
+		_, err = resolveLocalSrc(`C:\Windows\system32\config`)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "absolute")
+	} else {
+		// A Windows drive-letter path is an ordinary relative file name on
+		// Unix (it resolves inside the working directory, which is policy-
+		// legal there). The rooted form that survives filepath.Clean via
+		// ".." is the second absolute-path shape rejected on every OS.
+		_, err = resolveLocalSrc(`/etc/../shadow`)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "absolute")
+	}
 }
 
 func TestResolveLocalSrcAllowlistedAbsoluteOK(t *testing.T) {

@@ -781,25 +781,34 @@ func TestConcurrent_GrantThenReadConsistency(t *testing.T) {
 	const writers = 200
 	const readerPasses = 50
 	var observed int64
+	first := make(chan struct{})
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Writer: grant a unique action marker on a fixed team/env.
+	// Writer: grant a unique action marker on a fixed team/env. Once the
+	// first marker lands, release the reader.
 	go func() {
 		defer wg.Done()
 		for n := 0; n < writers; n++ {
 			m.Grant("sre", "prod", fmt.Sprintf("marker_%d", n))
+			if n == 0 {
+				close(first)
+			}
 		}
 	}()
 
 	// Reader: repeatedly scan all markers and count how many are visible
-	// across multiple passes. Because the writer is concurrently adding
-	// markers, at least one pass should observe a non-empty set — unless
-	// the writer has not started yet, in which case the final consistency
-	// check below still proves correctness.
+	// across multiple passes. The start-sync (wait for the writer's first
+	// grant) keeps the overlap deterministic: on a loaded CI runner the
+	// reader used to finish all passes before the writer's first Grant,
+	// leaving observed==0 — a scheduling artefact, not a matrix defect. The
+	// channel close also establishes the happens-before edge, so
+	// "observed >= 1" is guaranteed while the remaining passes still race
+	// the writer's concurrent adds.
 	go func() {
 		defer wg.Done()
+		<-first
 		for pass := 0; pass < readerPasses; pass++ {
 			for n := 0; n < writers; n++ {
 				if m.Allow("sre", "prod", fmt.Sprintf("marker_%d", n)) {
