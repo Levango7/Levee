@@ -299,16 +299,7 @@ func TestKMSManager_GetCredential_Fallback(t *testing.T) {
 		mgr := newTestKMSManager(t, []KMSProvider{p})
 		require.NoError(t, mgr.SetDefaultProvider("vault"))
 
-		// Store a credential in the local fallback.
 		ctx := context.Background()
-		pt := make([]byte, 5)
-		copy(pt, "local")
-		_, err := mgr.GetCredential(ctx, "test") // first call: will try KMS then fallback
-		// We need to store the credential first.
-		_ = err
-
-		// Use the manager's fallback directly to store a credential.
-		// We access it via a helper that stores through the local store.
 		storeCredentialForFallback(t, mgr, "fb-cred", "local-secret")
 
 		cred, err := mgr.GetCredential(ctx, "fb-cred")
@@ -349,17 +340,22 @@ func TestKMSManager_GetCredential_Fallback(t *testing.T) {
 // fallback store so GetCredential can find it when the KMS path fails.
 func storeCredentialForFallback(t *testing.T, mgr *KMSManager, name, plaintext string) {
 	t.Helper()
-	// We need access to the fallback CredentialStore. Since it is unexported,
-	// we use the manager's own GetCredential with a healthy provider that
-	// returns the secret — but that defeats the purpose. Instead, we use a
-	// small trick: register a provider that fails, then call GetCredential
-	// to trigger the fallback path. But the fallback needs the credential
-	// to exist in the local store first.
-	//
-	// The cleanest approach is to reach into the manager via a test helper
-	// that stores through the fallback. We add a test-only method on
-	// KMSManager for this purpose.
-	storeInFallbackForTest(mgr, name, plaintext)
+	// The fallback CredentialStore is unexported, so the test reaches for
+	// it directly (same package). A loaded shared runner under -race has
+	// been measured at ~9s for a single Store (the argon2id KDF dominates)
+	// -- a tight timeout here once expired silently while the error was
+	// discarded, turning this fixture into a baffling "not found" on the
+	// GetCredential that follows. Give the KDF room and fail loudly.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pt := make([]byte, len(plaintext))
+	copy(pt, plaintext)
+	_, err := mgr.fallback.Store(ctx, CredentialSpec{
+		Name:      name,
+		Type:      "test",
+		Plaintext: pt,
+	})
+	require.NoError(t, err)
 }
 
 // =========================================================================
@@ -470,19 +466,3 @@ func TestNewKMSManagerFromConfig(t *testing.T) {
 	assert.True(t, mgr.HasFallback())
 }
 
-// --- test-only helper to store in fallback -------------------------------
-
-// storeInFallbackForTest stores a credential in the manager's fallback
-// CredentialStore. It is defined here (in the same package) so tests can
-// populate the local store without going through the KMS path.
-func storeInFallbackForTest(mgr *KMSManager, name, plaintext string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	pt := make([]byte, len(plaintext))
-	copy(pt, plaintext)
-	_, _ = mgr.fallback.Store(ctx, CredentialSpec{
-		Name:      name,
-		Type:      "test",
-		Plaintext: pt,
-	})
-}
