@@ -62,10 +62,22 @@ func pgJoinPlaceholders(clauses []string) string {
 	return strings.Join(out, " AND ")
 }
 
-// pgMigrate applies the embedded PostgreSQL schema to the given database. It
-// is idempotent: running it on an already-migrated database is a no-op. The
-// schema_version table records the highest version applied so future
-// migrations can skip already-applied steps.
+// pgMigrations lists the forward PostgreSQL upgrade steps, mirroring
+// migrations on the SQLite side. Same shape rules apply: ascending, starting
+// at pgBaseSchemaVersion+1, gapless, ending at pgCurrentSchemaVersion; and
+// pgschema.sql gains the matching change so fresh databases land directly on
+// pgCurrentSchemaVersion (see migrations for the full convention).
+var pgMigrations = []migrationStep{
+	// v2 (SA-018 credentials tags) is added by the next commit.
+}
+
+// pgMigrate applies the embedded PostgreSQL schema and any pending forward
+// migrations to the given database. Idempotent; semantics mirror Migrate:
+// fresh databases are built from pgschema.sql in one transaction and land on
+// pgCurrentSchemaVersion, versioned databases run only the pending steps,
+// each committed atomically with its version row. PostgreSQL DDL is fully
+// transactional (including CREATE TRIGGER and function bodies), so every
+// step is atomic.
 func pgMigrate(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("state: pg migrate: nil db handle")
@@ -84,40 +96,70 @@ func pgMigrate(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("state: read pg schema version: %w", err)
 	}
-	if applied >= pgCurrentSchemaVersion {
+	// Mirrors Migrate: no fast path needed, the step loop is the no-op when
+	// no step has a version above `applied`.
+
+	if applied < pgBaseSchemaVersion {
+		// Fresh database: build the complete schema from pgschema.sql inside
+		// a single transaction. IF NOT EXISTS keeps the statements idempotent
+		// for re-runs after a rolled-back attempt.
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("state: begin pg schema transaction: %w", err)
+		}
+		if err := pgExecMultiStatement(ctx, tx, pgSchemaSQL); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("state: apply pg schema: %w", err)
+		}
+		if err := pgRecordSchemaVersion(ctx, tx, pgCurrentSchemaVersion); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("state: commit pg schema transaction: %w", err)
+		}
 		return nil
 	}
 
-	// Execute the embedded schema inside a single transaction so a failure
-	// halfway through cannot leave a half-applied schema behind.
-	// PostgreSQL DDL is fully transactional (including CREATE TRIGGER and
-	// function bodies), so this is atomic. IF NOT EXISTS keeps the
-	// statements idempotent for re-runs after a rolled-back attempt.
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("state: begin pg schema transaction: %w", err)
+	// Upgrading database: one transaction per pending step.
+	for _, step := range pgMigrations {
+		if step.version <= applied {
+			continue
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("state: begin pg migration v%d transaction: %w", step.version, err)
+		}
+		for _, stmt := range step.stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("state: apply pg migration v%d (%q): %w",
+					step.version, firstLine(stmt), err)
+			}
+		}
+		if err := pgRecordSchemaVersion(ctx, tx, step.version); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("state: commit pg migration v%d: %w", step.version, err)
+		}
 	}
-	if err := pgExecMultiStatement(ctx, tx, pgSchemaSQL); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("state: apply pg schema: %w", err)
-	}
+	return nil
+}
 
-	// Record the applied version. Use UPSERT so re-applying the same version
-	// does not violate the primary key constraint.
+// pgRecordSchemaVersion upserts the applied version inside the given
+// transaction. UPSERT so re-applying the same version does not violate the
+// primary key constraint.
+func pgRecordSchemaVersion(ctx context.Context, tx *sql.Tx, version int) error {
 	if _, err := tx.ExecContext(
 		ctx,
 		`INSERT INTO schema_version (version, applied_at) VALUES ($1, $2)
 		 ON CONFLICT(version) DO UPDATE SET applied_at = EXCLUDED.applied_at`,
-		pgCurrentSchemaVersion, time.Now().UTC(),
+		version, time.Now().UTC(),
 	); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("state: record pg schema version: %w", err)
+		return fmt.Errorf("state: record pg schema version %d: %w", version, err)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("state: commit pg schema transaction: %w", err)
-	}
-
 	return nil
 }
 

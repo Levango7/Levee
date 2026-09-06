@@ -18,13 +18,48 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
-// currentSchemaVersion is bumped whenever a forward migration is added.
+// baseSchemaVersion is the version that schema.sql alone describes: the
+// full schema as of the initial release, with no forward steps applied.
+const baseSchemaVersion = 1
+
+// currentSchemaVersion is bumped whenever a forward migration step is added
+// to migrations. It must always equal the version of the highest step (or
+// baseSchemaVersion when the list is empty), and schema.sql must be kept in
+// sync so that a fresh database built from it lands on this version.
 const currentSchemaVersion = 1
 
-// Migrate applies the embedded schema to the given database. It is idempotent:
-// running it on an already-migrated database is a no-op. The schema_version
-// table records the highest version applied so future migrations can skip
-// already-applied steps.
+// migrationStep is one forward schema upgrade, identified by the version it
+// brings the database TO. stmts are plain single DDL/DML statements executed
+// in order inside a single transaction that also records the version row,
+// so a step either applies fully or not at all.
+type migrationStep struct {
+	version int
+	stmts   []string
+}
+
+// migrations lists the forward steps that take a database from a previously
+// applied version up to currentSchemaVersion. It must stay sorted ascending,
+// start at baseSchemaVersion+1, have no gaps, and end at currentSchemaVersion.
+//
+// CONVENTION (guarded by TestMigrationsTable_Shape): whenever a step is
+// added here, schema.sql gains the same change so fresh databases are built
+// directly at currentSchemaVersion and never replay upgrade steps. That is
+// why SQLite-only-idiomatic statements (ALTER TABLE ... ADD COLUMN, which
+// lacks an IF NOT EXISTS form) are safe: steps only run on databases that
+// predate them.
+var migrations = []migrationStep{
+	// v2 (SA-018 credentials tags) is added by the next commit.
+}
+
+// Migrate applies the embedded schema and any pending forward migrations to
+// the given database. It is idempotent: running it on an already-migrated
+// database is a no-op.
+//
+// A fresh database (no schema_version rows) is built by replaying schema.sql
+// in one transaction and lands directly on currentSchemaVersion. A database
+// that already carries a recorded version only runs the migration steps with
+// a higher version, each step committed atomically with its version row, so
+// an interrupted upgrade resumes at the exact step boundary.
 func Migrate(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("state: migrate: nil db handle")
@@ -43,41 +78,78 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("state: read schema version: %w", err)
 	}
-	if applied >= currentSchemaVersion {
-		// Already up to date.
+	// No separate "already current" fast path is needed: an up-to-date
+	// database simply has no steps with a higher version, so the step loop
+	// below is the no-op.
+
+	if applied < baseSchemaVersion {
+		// Fresh database: build the complete base schema from schema.sql.
+		// Execute the embedded schema inside a single transaction so a failure
+		// halfway through cannot leave a half-applied schema behind. SQLite's
+		// modernc driver fully supports transactional DDL. IF NOT EXISTS keeps
+		// the statements idempotent so re-running after a rolled-back attempt
+		// (or on an already-migrated database) is safe.
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("state: begin schema transaction: %w", err)
+		}
+		if err := execMultiStatement(ctx, tx, schemaSQL); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("state: apply schema: %w", err)
+		}
+		// schema.sql is maintained at the current shape, so a fresh database
+		// lands on currentSchemaVersion without replaying upgrade steps.
+		if err := recordSchemaVersion(ctx, tx, currentSchemaVersion); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("state: commit schema transaction: %w", err)
+		}
 		return nil
 	}
 
-	// Execute the embedded schema inside a single transaction so a failure
-	// halfway through cannot leave a half-applied schema behind. SQLite's
-	// modernc driver fully supports transactional DDL. IF NOT EXISTS keeps
-	// the statements idempotent so re-running after a rolled-back attempt
-	// (or on an already-migrated database) is safe.
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("state: begin schema transaction: %w", err)
+	// Upgrading database: run each pending step in ascending order, one
+	// transaction per step, so a crash resumes at the step boundary rather
+	// than redoing (or skipping) whole steps.
+	for _, step := range migrations {
+		if step.version <= applied {
+			continue
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("state: begin migration v%d transaction: %w", step.version, err)
+		}
+		for _, stmt := range step.stmts {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("state: apply migration v%d (%q): %w",
+					step.version, firstLine(stmt), err)
+			}
+		}
+		if err := recordSchemaVersion(ctx, tx, step.version); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("state: commit migration v%d: %w", step.version, err)
+		}
 	}
-	if err := execMultiStatement(ctx, tx, schemaSQL); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("state: apply schema: %w", err)
-	}
+	return nil
+}
 
-	// Record the applied version. Use UPSERT so re-applying the same version
-	// does not violate the primary key constraint.
+// recordSchemaVersion upserts the applied schema version inside the given
+// transaction. UPSERT so re-applying the same version does not violate the
+// primary key constraint.
+func recordSchemaVersion(ctx context.Context, tx *sql.Tx, version int) error {
 	if _, err := tx.ExecContext(
 		ctx,
 		`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)
 		 ON CONFLICT(version) DO UPDATE SET applied_at = excluded.applied_at`,
-		currentSchemaVersion, time.Now().UTC(),
+		version, time.Now().UTC(),
 	); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("state: record schema version: %w", err)
+		return fmt.Errorf("state: record schema version %d: %w", version, err)
 	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("state: commit schema transaction: %w", err)
-	}
-
 	return nil
 }
 

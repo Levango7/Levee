@@ -39,8 +39,13 @@ import (
 //go:embed pgschema.sql
 var pgSchemaSQL string
 
+// pgBaseSchemaVersion is the version that pgschema.sql alone describes,
+// mirroring baseSchemaVersion for the PostgreSQL migration path.
+const pgBaseSchemaVersion = 1
+
 // pgCurrentSchemaVersion mirrors currentSchemaVersion for the PostgreSQL
-// migration path. Bump whenever a forward PostgreSQL migration is added.
+// migration path. Bump whenever a forward PostgreSQL migration step is added
+// to pgMigrations; pgschema.sql must gain the same change.
 const pgCurrentSchemaVersion = 1
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
