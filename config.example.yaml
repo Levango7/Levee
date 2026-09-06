@@ -196,6 +196,12 @@ permission:
   default_team: default
   # 默认环境（必填）。 默认: dev
   default_env: dev
+  # ⚠ 权限矩阵文件（teams × environments × actions，见 cmd_user 加载的
+  # matrix YAML）风险须知：给某团队授予 `admin` 且环境为通配 `*` 意味着
+  # 该团队对当前与未来所有环境全权（admin 超集规则）。这是 LEVEE 启动/加载
+  # 时会 WARN（列出涉及团队）的配置，生产矩阵应逐环境显式授权；矩阵中出现
+  # AllActions 之外的 action 名同样会 WARN（拼错的 action 静默失效，
+  # 既授不了权也挡不住人）。
 
 # -----------------------------------------------------------------------------
 # verify —— 未来验证 / SLO 门禁（对应 VerifyConfig）

@@ -20,6 +20,8 @@ import (
 	"sync"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/log"
 )
 
 // Supported actions. These are the operations that can be authorised by
@@ -66,7 +68,26 @@ var (
 	ErrConfigInvalid = errors.New("permission: invalid config")
 	ErrUnknownTeam   = errors.New("permission: unknown team")
 	ErrUnknownEnv    = errors.New("permission: unknown environment")
+	// ErrUnknownAction is returned in StrictActions mode when Grant or
+	// Revoke is called with an action name outside AllActions (SA-013).
+	ErrUnknownAction = errors.New("permission: unknown action")
 )
+
+// knownActions indexes AllActions for O(1) membership checks.
+var knownActions = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(AllActions))
+	for _, a := range AllActions {
+		m[a] = struct{}{}
+	}
+	return m
+}()
+
+// isKnownAction reports whether action is one of the AllActions recognised
+// by the matrix.
+func isKnownAction(action string) bool {
+	_, ok := knownActions[action]
+	return ok
+}
 
 // PermissionMatrix is the team × environment permission matrix. It
 // defines which team can perform which actions on which environment.
@@ -95,6 +116,28 @@ type PermissionMatrix struct {
 	// revokes tracks explicitly revoked permissions:
 	// team → env → action → true. Revokes take precedence over grants.
 	revokes map[string]map[string]map[string]bool
+	// StrictActions rejects unknown action names (not listed in AllActions)
+	// with ErrUnknownAction instead of accepting them with a WARN
+	// (SA-013/SA-016). False by default so existing configs with stray
+	// action names keep loading until operators clean them up.
+	//
+	// Load once, never mutate afterwards: the flag is read by concurrent
+	// Grant/Revoke/LoadFromConfig callers without synchronisation.
+	StrictActions bool
+	// warn is the warning sink for the admin-wildcard and unknown-action
+	// notices. Defaults to log.Warn; tests inject a collector. Same
+	// load-once discipline as StrictActions.
+	warn func(msg string, kv ...any)
+}
+
+// warnf routes a warning through the injectable sink (or log.Warn by
+// default).
+func (m *PermissionMatrix) warnf(msg string, kv ...any) {
+	if m.warn != nil {
+		m.warn(msg, kv...)
+		return
+	}
+	log.Warn(msg, kv...)
 }
 
 // PermissionConfig is the configuration file format for the permission
@@ -132,6 +175,15 @@ func NewPermissionMatrix() *PermissionMatrix {
 // It resets any existing rules in the matrix (both grants and revokes)
 // before loading. Only grants are populated from the config; use Revoke
 // to add explicit denials after loading.
+//
+// Hardening behaviour (SA-013/SA-016):
+//   - Actions outside AllActions WARN per occurrence; with StrictActions
+//     the whole load fails atomically (the matrix keeps its previous state).
+//   - A grant of the admin SUPER-SET on the env wildcard "*" WARNs once,
+//     listing the affected teams: it makes those teams globally all-powerful
+//     on every current and future environment, which is almost always a
+//     deployment accident waiting to happen. This is a WARN, not an error:
+//     some single-operator deployments genuinely want it.
 func (m *PermissionMatrix) LoadFromConfig(cfg PermissionConfig) error {
 	if len(cfg.Teams) == 0 {
 		return fmt.Errorf("%w: no teams defined", ErrConfigInvalid)
@@ -140,6 +192,7 @@ func (m *PermissionMatrix) LoadFromConfig(cfg PermissionConfig) error {
 	// Build the new grants map outside the critical section to minimise
 	// the time the write lock is held. Revokes are always reset on load.
 	newGrants := make(map[string]map[string]map[string]bool)
+	var adminWildcardTeams []string
 	for _, team := range cfg.Teams {
 		if team.Name == "" {
 			return fmt.Errorf("%w: team name is empty", ErrConfigInvalid)
@@ -151,6 +204,16 @@ func (m *PermissionMatrix) LoadFromConfig(cfg PermissionConfig) error {
 			for _, action := range env.Actions {
 				if action == "" {
 					return fmt.Errorf("%w: action is empty for team %q env %q", ErrConfigInvalid, team.Name, env.Name)
+				}
+				if !isKnownAction(action) {
+					if m.StrictActions {
+						return fmt.Errorf("%w: %q for team %q env %q", ErrUnknownAction, action, team.Name, env.Name)
+					}
+					m.warnf("permission: unknown permission action in config",
+						"team", team.Name, "env", env.Name, "action", action)
+				}
+				if action == ActionAdmin && env.Name == Wildcard {
+					adminWildcardTeams = append(adminWildcardTeams, team.Name)
 				}
 				if newGrants[team.Name] == nil {
 					newGrants[team.Name] = make(map[string]map[string]bool)
@@ -168,6 +231,11 @@ func (m *PermissionMatrix) LoadFromConfig(cfg PermissionConfig) error {
 	defer m.mu.Unlock()
 	m.grants = newGrants
 	m.revokes = make(map[string]map[string]map[string]bool)
+
+	if len(adminWildcardTeams) > 0 {
+		m.warnf("permission: admin super-set granted on env wildcard; teams become all-powerful on every environment",
+			"teams", adminWildcardTeams)
+	}
 	return nil
 }
 
@@ -395,14 +463,27 @@ func (m *PermissionMatrix) Environments() []string {
 
 // Grant grants the action to the team on the environment. Use the
 // Wildcard ("*") for team or env to grant broadly. Empty team, env, or
-// action is ignored.
-func (m *PermissionMatrix) Grant(team, env, action string) {
+// action is ignored (no error).
+//
+// Unknown action names (outside AllActions) WARN per call and are still
+// recorded — with StrictActions they are rejected with ErrUnknownAction
+// instead (SA-013). Warning dedup is deliberately not attempted: this is
+// one warning per Grant call, so a caller looping over Grant produces a
+// naturally grouped block of log lines.
+func (m *PermissionMatrix) Grant(team, env, action string) error {
 	if team == "" || env == "" || action == "" {
-		return
+		return nil
+	}
+	if !isKnownAction(action) {
+		if m.StrictActions {
+			return fmt.Errorf("%w: %q (team %q env %q)", ErrUnknownAction, action, team, env)
+		}
+		m.warnf("permission: unknown permission action granted", "team", team, "env", env, "action", action)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.grant(team, env, action)
+	return nil
 }
 
 // grant is the internal helper that adds a grant entry without
@@ -420,14 +501,25 @@ func (m *PermissionMatrix) grant(team, env, action string) {
 // Revoke revokes the action from the team on the environment. A revoke
 // takes precedence over a grant, even a wildcard grant. Use the
 // Wildcard ("*") for team or env to revoke broadly. Empty team, env, or
-// action is ignored.
-func (m *PermissionMatrix) Revoke(team, env, action string) {
+// action is ignored (no error).
+//
+// Unknown action names follow the same policy as Grant: WARN per call by
+// default, ErrUnknownAction with StrictActions. An unknown action in a
+// revoke entry is usually a typo that silently protects nothing.
+func (m *PermissionMatrix) Revoke(team, env, action string) error {
 	if team == "" || env == "" || action == "" {
-		return
+		return nil
+	}
+	if !isKnownAction(action) {
+		if m.StrictActions {
+			return fmt.Errorf("%w: %q (team %q env %q)", ErrUnknownAction, action, team, env)
+		}
+		m.warnf("permission: unknown permission action revoked", "team", team, "env", env, "action", action)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.revoke(team, env, action)
+	return nil
 }
 
 // revoke is the internal helper that adds a revoke entry without

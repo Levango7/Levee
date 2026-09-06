@@ -59,7 +59,13 @@ const TargetAll = "*"
 const (
 	ResultSuccess = "success"
 	ResultFailed  = "failed"
+	ResultDenied  = "denied"
 )
+
+// ActionPermissionDenied is the audit action recorded when a global
+// pause/resume request is rejected by the PermissionChecker (SA-007).
+// The rejected permission name is stored in the audit Target.
+const ActionPermissionDenied = "permission.denied"
 
 // Permission strings consumed by PauseAll / ResumeAll and checked via
 // PermissionChecker.HasPermission.
@@ -118,6 +124,13 @@ type PermissionChecker interface {
 // to that actor. A nil or empty checker denies every permission.
 type SimplePermissionChecker struct {
 	perms map[string][]string
+	// onDeny, when set, fires on every denial decision made by
+	// HasPermission (SA-007 denial-audit wiring). It is a plain callback
+	// field rather than a state.Store or permission-package dependency:
+	// the pause layer stays decoupled from both, and deployments without a
+	// store (pure in-memory / tests) simply leave it nil and keep the
+	// historical log-only behaviour.
+	onDeny func(actor, permission string)
 }
 
 // NewSimplePermissionChecker builds a SimplePermissionChecker from a map
@@ -133,8 +146,20 @@ func NewSimplePermissionChecker(perms map[string][]string) *SimplePermissionChec
 	return &SimplePermissionChecker{perms: copied}
 }
 
+// SetDenyRecorder installs a callback invoked on every denial decision
+// made by HasPermission. Install it at construction time, before the
+// checker is shared across goroutines (the field is not synchronised).
+// A nil fn is a no-op.
+func (c *SimplePermissionChecker) SetDenyRecorder(fn func(actor, permission string)) {
+	if c == nil || fn == nil {
+		return
+	}
+	c.onDeny = fn
+}
+
 // HasPermission reports whether the actor holds the named permission.
-// A nil receiver always returns false.
+// A nil receiver always returns false. A denial fires the optional deny
+// recorder installed via SetDenyRecorder.
 func (c *SimplePermissionChecker) HasPermission(actor, permission string) bool {
 	if c == nil {
 		return false
@@ -144,7 +169,44 @@ func (c *SimplePermissionChecker) HasPermission(actor, permission string) bool {
 			return true
 		}
 	}
+	if c.onDeny != nil {
+		c.onDeny(actor, permission)
+	}
 	return false
+}
+
+// NewDenialAuditRecorder returns a denial recorder for
+// SimplePermissionChecker.SetDenyRecorder that persists every rejection as
+// a row in the audit table (SA-007): Action="permission.denied",
+// Result="denied", Actor=<rejected subject>, Target=<rejected permission>,
+// RunID="" (the audit table has run_id DEFAULT ” with NO foreign key, so
+// rejections that happen BEFORE any run is picked — the only place the CLI
+// pause path enforces permissions — can still be recorded).
+//
+// Write failures (including ID minting failures) are logged and swallowed:
+// the denial itself is the security decision and must not depend on the
+// observability path.
+func NewDenialAuditRecorder(store state.Store) func(actor, permission string) {
+	return func(actor, permission string) {
+		id, err := newID()
+		if err != nil {
+			log.Warn("pause: permission-denied audit id generation failed; entry skipped",
+				"actor", actor, "permission", permission, "err", err)
+			return
+		}
+		audit := &state.Audit{
+			ID:        id,
+			Action:    ActionPermissionDenied,
+			Actor:     actor,
+			Target:    permission,
+			Result:    ResultDenied,
+			Timestamp: time.Now().UTC(),
+		}
+		if err := store.CreateAudit(context.Background(), audit); err != nil {
+			log.Warn("pause: permission-denied audit write failed",
+				"actor", actor, "permission", permission, "err", err)
+		}
+	}
 }
 
 // --- PauseResult ------------------------------------------------------------

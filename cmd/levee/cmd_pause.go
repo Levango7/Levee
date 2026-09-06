@@ -184,8 +184,11 @@ func runPauseAll(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	// 2. Build the permission checker from environment.
+	// 2. Build the permission checker from environment and wire denial
+	//    auditing: a rejected pause-all is recorded in the audit table
+	//    (action=permission.denied) before any run is touched (SA-007).
 	perm := newCLIPermissionChecker()
+	perm.SetDenyRecorder(pause.NewDenialAuditRecorder(store))
 
 	// 3. Create the PauseManager and pause all runs.
 	mgr := pause.NewPauseManager(store)
@@ -238,8 +241,10 @@ func runResumeAll(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	// 2. Build the permission checker from environment.
+	// 2. Build the permission checker from environment and wire denial
+	//    auditing (SA-007).
 	perm := newCLIPermissionChecker()
+	perm.SetDenyRecorder(pause.NewDenialAuditRecorder(store))
 
 	// 3. Create the PauseManager and resume all runs.
 	mgr := pause.NewPauseManager(store)
@@ -305,7 +310,10 @@ func mapPauseError(err error) error {
 // comma-separated list of permissions granted to the current actor. When the
 // variable is not set, the actor is granted both pause:all and resume:all
 // (admin-by-default for CLI mode).
-func newCLIPermissionChecker() pause.PermissionChecker {
+//
+// The concrete *pause.SimplePermissionChecker is returned so callers can
+// install a deny recorder (pause.NewDenialAuditRecorder) before use.
+func newCLIPermissionChecker() *pause.SimplePermissionChecker {
 	permsStr := os.Getenv("LEVEE_PERMISSIONS")
 	if permsStr == "" {
 		// Admin-by-default in CLI mode: grant all pause/resume permissions.
