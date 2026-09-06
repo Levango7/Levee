@@ -289,13 +289,18 @@ jobs:
   trivy:
     name: trivy
     runs-on: ubuntu-latest
+    # security-events: write — upload-sarif; without it the upload fails with
+    # "Resource not accessible by integration" once the sarif steps actually
+    # run (default repo token is read-only).
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
       - name: build docker image
         run: docker build -t levee:scan .
       # Visibility pass first: SARIF output silences stdout, so without this
-      # the gate below fails with no finding list anywhere in the job log
-      # (and the sarif steps only run/upload afterwards, skipped on failure).
+      # a failing run has no finding list anywhere in the job log.
       # exit-code 0: this step never gates, it only prints the table.
       - name: scan (print findings)
         uses: aquasecurity/trivy-action@v0.36.0
@@ -305,7 +310,13 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 0
-      - name: scan (gate + sarif)
+      # NOTE: trivy-action forces an ALL-severity scan when format is sarif
+      # (its own log line: "Building SARIF report with all severities"), so
+      # exit-code: 1 here would block merge on every fixable MEDIUM/LOW too —
+      # not the documented gate. Gate semantics therefore live in the explicit
+      # jq step below; this step only produces the report, filtered down to
+      # CRITICAL/HIGH via limit-severities-for-sarif.
+      - name: scan (sarif)
         # v0.30.0's composite referenced aquasecurity/setup-trivy@v0.2.2 by
         # (since-deleted) tag; v0.36.0 pins the setup action to a commit SHA.
         uses: aquasecurity/trivy-action@v0.36.0
@@ -314,10 +325,9 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          limit-severities-for-sarif: true
           ignore-unfixed: true
-          # Fail the build on fixable CRITICAL/HIGH CVEs so they block merge
-          # instead of only appearing in the uploaded report.
-          exit-code: 1
+          exit-code: 0
       - name: upload report
         if: always() && hashFiles('trivy-results.sarif') != ''
         uses: actions/upload-artifact@v4
@@ -330,6 +340,16 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
+      # Gate last: a red run then still leaves the artifact and the Code
+      # Scanning alert. Blocking set = exactly what the filtered sarif kept
+      # (fixable CRITICAL/HIGH), independent of the action's all-severity quirk.
+      - name: gate (fixable CRITICAL/HIGH block merge)
+        run: |
+          test -f trivy-results.sarif || { echo "::error::trivy-results.sarif missing"; exit 1; }
+          total=$(jq '[.runs[]?.results[]?] | length' trivy-results.sarif)
+          echo "blocking findings: ${total}"
+          jq -r '.runs[]?.results[]? | .ruleId' trivy-results.sarif
+          test "${total}" -eq 0
 
   # ---------------------------------------------------------------------------
   # check: composite gate job that PRs must pass before merge. Branch
