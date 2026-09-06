@@ -13,11 +13,16 @@
 - **`drift baseline delete` 静默无效**：删除后保存只写不删，磁盘上的孤儿 JSON 文件被后续任意 drift 命令重新装载，被删基线"复活"。新增 `syncJSONDir` 目录全量对账（写入期望集 + 删除不在期望集中的 `*.json`），`baseline delete` 与 `schedule remove`（同类问题）同时修复；对账顺带拒绝含路径分隔符的 host/ID 文件名，封死以主机名/作业 ID 逃逸数据目录的路径穿越面。
 - **`drift report` 缺 `--host` 打印空主机趋势**：不再输出空 host 的伪趋势表，改为 `no host specified (use --host)` 并以 exit=2 退出。
 - **`system config set` Windows 路径 panic**：定位配置目录时按 `'/'` 做 `LastIndex`，Windows 反斜杠路径返回 -1 导致切片越界 panic；改用 `filepath.Dir`。
+- **gRPC 服务器发布竞态（CI `-race` 捕获，生产代码）**：`Server.Start` 在 `mu` 临界区外写 `s.listener`，与 `Stop`/`GracefulStop`/`Addr` 的锁内读构成数据竞态——`Addr()` 可能读到半发布状态或读到与关闭操作不一致的 listener。`Start` 的 listener 发布移入锁内，`Stop`/`GracefulStop` 锁内快照、锁外关闭，`Addr` 补锁读取。
+- **ShellRunner 输出缓冲竞态（CI `-race` 捕获，生产代码）**：命令超时路径上主 goroutine 读取 stdout/stderr 汇总时，`exec` 的 io 拷贝 goroutine 仍在向同一 `bytes.Buffer` 写入。输出缓冲改为带互斥锁的 `syncBuffer`（`io.Writer` 接口不变），超时截断与正常完成两条路径统一消竞态。
 
 ### 测试
 
 - **CLI 命令族 e2e（E-2）**：新增 12 个测试文件覆盖 drift / calendar / target / secret / pause / retry / audit / system / push / plugin / chatops / 共享 helper——每条命令走真实 `rootCmd.Execute()`，SQLite 临时库 + `--config` 隔离（push 族此前会写入真实用户目录，一并修复为隔离夹具）。harness 以"复位全部选项变量 + 遍历命令树清 pflag `Changed`"模拟 fresh process，消除 cobra 进程内全局状态跨用例泄漏（曾致 no-flag `drift detect` 误检、calendar 局部更新误报必填）。`cmd/levee`（剔除 serve）行覆盖率 45.9% → **66.8%**（质量方案目标 ≥60% 达成；最差的 `cmd_drift.go` 33.7% → 78.9%）。audit 族含 WORM 端到端篡改检测（临时库 DROP 触发器后裸 UPDATE 篡改 detail，`verify` 报 tampered / exit=6）。
 - **前端单元测试基线（E-3）**：`web/` 引入 vitest + jsdom（38 用例全绿）——`api/client`（token 三态存取、Bearer 请求拦截、`AxiosError → ApiError` 归一化的 401/5xx/网络/预请求四类路径、401 清 token 与统一文案、403 不清 token，传输层在 axios adapter 处替换，拦截器与 baseURL 走真实逻辑）；`api/sso`（OIDC PKCE 与 GitHub 两条登录流的 state/verifier 持久化、CSRF state 校验、令牌交换请求体、JWT access_token 优先 / id_token 回退的选牌逻辑、登录后一次性凭据清理、开放重定向防护）；`utils/format`（时间戳/时长/运行时长格式化与边界、状态/优先级标签色表一致性）。jsdom 的 `window.location` 不可伪造（unforgeable），401 重定向与 SSO 跳转以可观测副作用（token 清除、storage 簿记）断言并在配置中定点 origin、过滤 jsdom 导航噪音；Node ≥25 原生 webstorage 全局遮蔽 jsdom Storage，`vitest.setup.ts` 以内存实现顶替。CI `frontend` 作业纳入 `npm run test`（vitest → vue-tsc → vite build 三连）。
+
+- **集成套件语义对账（tests/integration）**：b12eafc 改变 apply 语义（有引擎同步完成至 `completed`、无引擎 `FailedPrecondition` 拒绝）后，lifecycle 套件的旧断言仍停留在"apply 后 running、可 pause"时代。重写：生命周期主用例改为 创建→计划→批准→apply→`completed`（run_id 非空、审计哈希链有效），终态 `CancelChange` 断言拒绝（`FailedPrecondition`）且状态不变；新增回归 `TestApplyChange_NoEngineRefused`（无引擎 apply 拒绝且状态停留 `approved`）；pause/resume 自终态非法、跨服务审计计数、哈希链完整性用例同步对账。
+- **diagnosis 窗口用例 Linux 抖动修复**：`TestCollect_InvalidWindow` 原以秒级截断构造 `Start > End`，Linux 纳秒精度单调钟下不总成立（CI 偶发假阴/假阳）；改为同一时间戳显式构造非法窗口。
 
 ### 前端
 
@@ -58,6 +63,8 @@
 ### 变更
 
 - **CI 工具链与口径对齐**：`.gitattributes` 统一行尾；CI golangci-lint 升至 v2.13 与本地同配置（本轮清零存量 34 处告警）；CI 覆盖率统计剔除生成代码。E 轮测试补齐后 **CI 覆盖率地板 60% → 70%** 落地（state sqlite+PG 联合口径 ≥75%、CLI 剔 serve ≥60%、web vitest 纳入 CI）。
+- **CI 行动项修复（master 转绿）**：地板抬升触发的那次 CI 运行暴露 8 个红作业——其中 lint、trivy、gosec 等为存量债务（master 自 2026-08-28 前即持续红色，与本轮提交无关），逐项修复：`golangci-lint-action` v6→v7（v6 无法解析 v2.x 工具版本串）；`trivy-action` v0.30.0→v0.36.0（v0.30.0 的组合实现按已被上游删除的 `setup-trivy@v0.2.2` tag 引用，v0.36.0 已改为 commit SHA 钉定）；Windows 测试步骤给 `-coverprofile=coverage.out` 加引号（pwsh 默认 shell 会把未加引号的路径拆成 `-coverprofile=coverage` + 裸包名 `.out` 导致 setup 失败）；其余为上文两个 `-race` 生产竞态、diagnosis 窗口用例与集成套件语义对账。
+- **gosec 全量分诊（60 → 0）**：默认流水线口径（剔 pb）下 60 条发现逐条处置——28 处权限收紧（目录 0o755→0o750、文件 0o644→0o600，快照/备份/盘点库/模板库/插件沙箱等落盘路径）；32 处附逐条理由的 `#nosec` 标注（每条先读代码核实：如快照恢复的 Walk 遍历的是操作员自有存储目录、calendar 动态 WHERE 全部为 `?` 占位参数拼接、SSH 弱主机密钥校验是配置显式 opt-in 且严格模式永不降级、`system config set` 写的是操作员 `--config` 自指路径且无服务端可达路径）；G304（40 条，"按变量路径加载配置/模板/插件/基线"即产品形态）与 G115（17 条，protobuf 分页/计数的有界 int↔int32 转换）两类经全量人工审读后在 CI 参数整体排除并注释理由。此后 gosec 新增任何一条发现都是净新信号。
 - **Trivy 阻断合并**：`trivy` 作业对可修复的 CRITICAL/HIGH CVE 设 `exit-code: 1`，由“仅上报”改为“阻断”。
 - **集群模式如实标注**：`serve --cluster` 启动时输出告警，说明当前集群协同仅限共享 PostgreSQL 存储（数据一致性 + 咨询锁），节点注册为进程内、尚无自动故障转移/跨节点调度；README 特性描述同步收敛。
 - **前端产物清理**：`internal/web/dist` 重新构建，移除历史遗留的多代哈希资产，仅保留当前一代。
