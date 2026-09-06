@@ -2,6 +2,8 @@ package audit
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -71,6 +73,52 @@ func TestAppend_DuplicateID_ReturnsErrAlreadyExists(t *testing.T) {
 	// Second append with the same id must fail.
 	err := w.Append(ctx, newWORMTrace("run-1", "trace-1", now.Add(time.Second)))
 	require.ErrorIs(t, err, ErrAlreadyExists)
+}
+
+// SA-014 (C-7): concurrent double-append of the same id. Both goroutines can
+// pass the GetTrace precheck (TOCTOU window); the loser's duplicate insert
+// must still surface as ErrAlreadyExists via the state.ErrTraceExists
+// mapping, never as a raw constraint error.
+func TestAppend_ConcurrentSameID_OnlyOneWins(t *testing.T) {
+	w, store := newWORMStore(t)
+	ctx := context.Background()
+	createRun(t, store, "run-1")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errs[i] = w.Append(ctx, newWORMTrace("run-1", "race-1", now))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	ok, dup, other := 0, 0, 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			ok++
+		case errors.Is(err, ErrAlreadyExists):
+			dup++
+		default:
+			t.Errorf("unexpected append error: %v", err)
+			other++
+		}
+	}
+	assert.Equal(t, 1, ok, "exactly one append must succeed")
+	assert.Equal(t, 1, dup, "the loser must get ErrAlreadyExists")
+	assert.Equal(t, 0, other)
+
+	// Exactly one row persisted, and it verifies under WORM read.
+	got, err := w.Read(ctx, "race-1")
+	require.NoError(t, err)
+	assert.Equal(t, "run-1", got.RunID)
 }
 
 func TestAppend_NilTrace(t *testing.T) {

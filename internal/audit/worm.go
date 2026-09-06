@@ -90,6 +90,14 @@ func (w *WORMStore) Append(ctx context.Context, trace *state.Trace) error {
 	trace.CurrHash = computeChecksum(trace)
 
 	if err := w.store.CreateTrace(ctx, trace); err != nil {
+		// The GetTrace precheck above is a fast path; between it and this
+		// insert a concurrent writer may have claimed the same id (TOCTOU).
+		// The store layer maps the backend UNIQUE conflict to
+		// state.ErrTraceExists, which translates to the same WORM outcome
+		// as the precheck hit: ErrAlreadyExists, never a raw driver error.
+		if errors.Is(err, state.ErrTraceExists) {
+			return fmt.Errorf("audit: append trace %q: %w", trace.ID, ErrAlreadyExists)
+		}
 		return fmt.Errorf("audit: append trace %q: %w", trace.ID, err)
 	}
 	return nil

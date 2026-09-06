@@ -517,6 +517,9 @@ func (s *SQLiteStore) CreateTrace(ctx context.Context, trace *Trace) error {
 		trace.ID, trace.RunID, trace.Event, trace.Actor, trace.Detail, trace.PrevHash, trace.CurrHash, trace.Timestamp,
 	)
 	if err != nil {
+		if isUniqueConstraint(err) {
+			return fmt.Errorf("state: create trace %q: %w", trace.ID, ErrTraceExists)
+		}
 		return fmt.Errorf("state: create trace: %w", err)
 	}
 	return nil
