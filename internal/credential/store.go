@@ -521,8 +521,10 @@ func (cs *CredentialStore) Store(ctx context.Context, spec CredentialSpec) (*sta
 }
 
 // Retrieve reads and decrypts the credential with the given name. The
-// returned plaintext is the caller's responsibility; use SecureZero on
-// it as soon as it is no longer needed.
+// returned plaintext MUST be zeroed with SecureZero as soon as it is no
+// longer needed — this is a hard obligation on every caller. New code
+// should prefer RetrieveInto, which owns the zeroing (including on the
+// panic path) instead of carrying that obligation.
 //
 // Returns ErrNotFound when the credential does not exist and
 // ErrDecryptFailed when the master password does not match the one used
@@ -548,6 +550,24 @@ func (cs *CredentialStore) Retrieve(ctx context.Context, name string) ([]byte, e
 	// Debug-level only, and only the name — never the plaintext.
 	log.DebugCtx(ctx, "credential retrieved", "name", name)
 	return plaintext, nil
+}
+
+// RetrieveInto decrypts the credential with the given name, hands the
+// plaintext to fn, and unconditionally SecureZero's the buffer when fn
+// returns — the deferred zeroing also runs while a panic unwinds, so there
+// is no path where the decrypted bytes outlive the callback. fn's return
+// value is passed through; fn must not retain or copy the slice beyond the
+// call (it becomes garbage-filled after return).
+//
+// This is the preferred read API (SA-011): unlike Retrieve, it leaves no
+// uncleared secret in caller hands.
+func (cs *CredentialStore) RetrieveInto(ctx context.Context, name string, fn func(secret []byte) error) error {
+	plaintext, err := cs.Retrieve(ctx, name)
+	if err != nil {
+		return err
+	}
+	defer SecureZero(plaintext)
+	return fn(plaintext)
 }
 
 // Delete removes the credential with the given name. Returns ErrNotFound

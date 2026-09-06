@@ -664,6 +664,12 @@ func (r *serveCredentialResolver) ResolveTargetCredential(ctx context.Context, r
 	if err := json.Unmarshal(plaintext, &cred); err == nil && (cred.Username != "" || cred.Password != "" || cred.KeyPath != "" || cred.KeyPassphrase != "") {
 		return &cred, nil
 	}
+	// SA-011 known residue: channel.CredentialRef.Password is a string, and
+	// Go strings cannot be zeroed, so this conversion leaves one copy of the
+	// secret behind for the bare-password convention. Erasing it requires
+	// changing CredentialRef to []byte across ssh/winrm/grpc, which was
+	// scoped out of the hardening round by design; tracked as a known
+	// residual in the SA-011 ledger row, not as a fixed issue.
 	return &channel.CredentialRef{Password: string(plaintext)}, nil
 }
 

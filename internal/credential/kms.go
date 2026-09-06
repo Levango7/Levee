@@ -374,6 +374,9 @@ func (m *KMSManager) GetCredential(ctx context.Context, name string) (*KMSCreden
 		return nil, fmt.Errorf("credential: %q: %w", name, ErrKMSUnavailable)
 	}
 
+	// NOTE(SA-011): intentional ownership transfer — the plaintext lives on
+	// in KMSCredential for the KMS consumer. New call sites that consume the
+	// secret within the call should prefer CredentialStore.RetrieveInto.
 	plaintext, err := fallback.Retrieve(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("credential: kms fallback for %q: %w", name, err)

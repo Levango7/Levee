@@ -159,6 +159,10 @@ func (p *CredentialProvider) Get(ctx context.Context, target string) (*ResolvedC
 		return nil, fmt.Errorf("credential: resolve failed for target %q: %w", target, err)
 	}
 
+	// NOTE(SA-011): this call site intentionally passes plaintext ownership
+	// upward via ResolvedCredential, so it cannot use RetrieveInto. New code
+	// that only needs the secret within the call should prefer
+	// CredentialStore.RetrieveInto, which zeroes for you.
 	plaintext, err := p.store.Retrieve(ctx, credName)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
