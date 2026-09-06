@@ -100,15 +100,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         # The gate measures hand-written code only: generated protobuf bindings
         # (internal/grpc/pb, ~3.1k statements at 0%) are filtered out of the
-        # profile before computing the total. Floor stays 60 this round; the
-        # filtered baseline sits near 71 — raising the floor to 70 is a
-        # scheduled next-round action (see CHANGELOG Unreleased).
+        # profile before computing the total. Floor raised 60 -> 70 after the
+        # E-workflow test round (2026-09): the CI-side baseline (no PG suites
+        # counted) measures ~80%.
         run: |
           grep -v '/internal/grpc/pb/' coverage.out > coverage_scoped.out
           total=$(go tool cover -func=coverage_scoped.out | awk '/^total:/ {gsub("%","",$3); print $3}')
           echo "statement coverage (generated pb excluded): ${total}%"
-          awk -v t="$total" 'BEGIN { exit !(t+0 >= 60.0) }' || {
-            echo "::error::coverage ${total}% is below the 60% floor"; exit 1; }
+          awk -v t="$total" 'BEGIN { exit !(t+0 >= 70.0) }' || {
+            echo "::error::coverage ${total}% is below the 70% floor"; exit 1; }
       - name: upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v4
