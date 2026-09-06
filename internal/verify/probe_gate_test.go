@@ -93,6 +93,17 @@ func TestProbeGateHTTPDirectPass(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, res.Passed, "message: %s", res.Message)
 	assert.Equal(t, int64(1), hits.Load())
+	// Guard the strictly-positive latency assertion against pathological
+	// runner clocks: a GitHub Actions Windows runner with a virtualized TSC
+	// was observed reading a full loopback HTTP round-trip as exactly 0
+	// elapsed (false "0s is not positive" red). If the monotonic clock cannot
+	// even observe a bounded 1ms sleep, this granularity assertion is vacuous
+	// on that runner, so skip rather than flake.
+	t0 := time.Now()
+	time.Sleep(time.Millisecond)
+	if time.Since(t0) == 0 {
+		t.Skip("runner monotonic clock cannot observe elapsed time; latency assertion is vacuous here")
+	}
 	assert.Positive(t, res.Latency)
 }
 
