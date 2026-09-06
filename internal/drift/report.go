@@ -198,6 +198,8 @@ func AnalyzeTrend(history []*DriftReport, host string) *DriftTrend {
 // nanosecond timestamp. Two reports generated in the same nanosecond will share
 // an ID; in practice this is unlikely because report generation involves
 // non-trivial work, and the ID is only used for display / correlation.
+// SA-012 classification: observational — report IDs are display labels, not
+// identity or authorization credentials, so the timestamp source is acceptable.
 func generateReportID() string {
 	now := time.Now().UTC().UnixNano()
 	return fmt.Sprintf("rpt-%d", now)

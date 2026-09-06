@@ -129,8 +129,12 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		})
 	}
 
+	planID, err := newPlanID()
+	if err != nil {
+		return nil, err
+	}
 	plan := &Plan{
-		ID:           newPlanID(),
+		ID:           planID,
 		WorkflowName: wf.Meta.Name,
 		Batches:      batches,
 		TotalTargets: len(resolvedTargets),
@@ -281,12 +285,13 @@ func convertSteps(steps []dsl.Step) []PlanStep {
 }
 
 // newPlanID generates a unique plan identifier using crypto/rand. The
-// ID has the form "plan-<16-hex-chars>". On the extremely unlikely
-// event that rand.Read fails, it falls back to a timestamp-based ID.
-func newPlanID() string {
+// ID has the form "plan-<16-hex-chars>". Plan IDs are uniqueness-critical,
+// so a rand.Read failure is returned as an error — no timestamp fallback
+// (SA-012).
+func newPlanID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("plan-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("plan: generate plan id: %w", err)
 	}
-	return "plan-" + hex.EncodeToString(b)
+	return "plan-" + hex.EncodeToString(b), nil
 }

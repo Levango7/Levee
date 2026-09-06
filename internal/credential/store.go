@@ -30,6 +30,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"runtime"
 	"time"
 
@@ -461,8 +462,12 @@ func (cs *CredentialStore) Store(ctx context.Context, spec CredentialSpec) (*sta
 	}
 
 	now := time.Now().UTC()
+	credID, err := newID(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
 	cred := &state.Credential{
-		ID:            newID(),
+		ID:            credID,
 		Name:          spec.Name,
 		Type:          spec.Type,
 		EncryptedData: blob,
@@ -735,14 +740,15 @@ func (cs *CredentialStore) rollbackMasterRotation(ctx context.Context, undo []ro
 
 // --- ID generation ----------------------------------------------------------
 
-// newID generates a unique credential identifier using crypto/rand. The
-// ID has the form "cred-<16-hex-chars>". On the extremely unlikely event
-// that rand.Read fails, it falls back to a timestamp-based ID so the
-// caller always gets a usable, unique-enough identifier.
-func newID() string {
+// newID generates a unique credential identifier as "cred-<16-hex-chars>"
+// from the given random source (crypto/rand.Reader in production; tests
+// inject a failing reader to exercise the error path). There is NO
+// timestamp fallback: credential IDs are uniqueness-critical primary keys,
+// so a random-source failure is surfaced as an error (SA-012).
+func newID(r io.Reader) (string, error) {
 	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("cred-%d", time.Now().UnixNano())
+	if _, err := io.ReadFull(r, b); err != nil {
+		return "", fmt.Errorf("credential: generate id: %w", err)
 	}
-	return "cred-" + hex.EncodeToString(b)
+	return "cred-" + hex.EncodeToString(b), nil
 }

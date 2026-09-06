@@ -275,7 +275,8 @@ func TestRegistryToManagerDuplicateName(t *testing.T) {
 // --- Output helpers --------------------------------------------------------
 
 func TestTenantToMap(t *testing.T) {
-	tt := tenant.NewTenant("acme", "ACME")
+	tt, err := tenant.NewTenant("acme", "ACME")
+	require.NoError(t, err)
 	m := tenantToMap(tt)
 	assert.Equal(t, tt.ID, m["id"])
 	assert.Equal(t, "acme", m["name"])

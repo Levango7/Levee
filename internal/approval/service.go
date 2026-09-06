@@ -219,8 +219,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Approval, err
 	}
 
 	now := time.Now().UTC()
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
 	a := &Approval{
-		ID:           newID(),
+		ID:           id,
 		RunID:        req.RunID,
 		Level:        req.Level,
 		Status:       StatusPending,
@@ -412,13 +416,14 @@ func countApproves(decisions []Decision) int {
 	return n
 }
 
-// newID generates a unique approval identifier using crypto/rand. The
-// ID has the form "approval-<16-hex-chars>". On the extremely unlikely
-// event that rand.Read fails, it falls back to a timestamp-based ID.
-func newID() string {
+// newID generates a unique approval identifier of the form
+// "approval-<16-hex-chars>". The approval ID is what decisions reference,
+// so it is uniqueness-critical: a crypto/rand failure is an error, never a
+// timestamp fallback (SA-012).
+func newID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("approval-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("approval: generate id: %w", err)
 	}
-	return "approval-" + hex.EncodeToString(b)
+	return "approval-" + hex.EncodeToString(b), nil
 }

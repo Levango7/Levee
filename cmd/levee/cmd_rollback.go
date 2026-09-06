@@ -69,15 +69,21 @@ func runRollback(cmd *cobra.Command, args []string) error {
 
 	// 4. Transition the run to "rolling_back".
 	now := time.Now().UTC()
+	// 5. Record an audit entry. Mint the audit identity BEFORE mutating
+	// anything: a CSPRNG failure must fail the command outright, never
+	// degrade to a timestamp-based audit id.
+	auditID, err := newRollbackAuditID()
+	if err != nil {
+		return err
+	}
 	run.Status = "rolling_back"
 	run.UpdatedAt = now
 	if err := store.UpdateRun(ctx, run); err != nil {
 		return fmt.Errorf("update run: %w", err)
 	}
 
-	// 5. Record an audit entry.
 	audit := &state.Audit{
-		ID:        newRollbackAuditID(),
+		ID:        auditID,
 		RunID:     rollbackOptRunID,
 		Action:    "rollback",
 		Actor:     actor,
@@ -125,10 +131,12 @@ func isRollbackableStatus(status string) bool {
 }
 
 // newRollbackAuditID generates a unique audit identifier for rollback actions.
-func newRollbackAuditID() string {
+// A crypto/rand failure is returned as an error: audit identities must
+// never fall back to predictable timestamp-based values.
+func newRollbackAuditID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("audit-rollback-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("generate rollback audit id: %w", err)
 	}
-	return "audit-rollback-" + hex.EncodeToString(b)
+	return "audit-rollback-" + hex.EncodeToString(b), nil
 }

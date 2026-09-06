@@ -67,6 +67,14 @@ func runCancel(cmd *cobra.Command, args []string) error {
 
 	// 4. Transition the run to "cancelled".
 	now := time.Now().UTC()
+	// Mint the audit identity BEFORE mutating anything: a CSPRNG failure
+	// must fail the command outright, not after the transition is
+	// persisted (and never degrade to a timestamp-based audit id —
+	// predictable audit identifiers are exactly what we refuse to emit).
+	auditID, err := newCancelAuditID()
+	if err != nil {
+		return err
+	}
 	run.Status = "cancelled"
 	run.UpdatedAt = now
 	if err := store.UpdateRun(ctx, run); err != nil {
@@ -75,7 +83,7 @@ func runCancel(cmd *cobra.Command, args []string) error {
 
 	// 5. Record an audit entry.
 	audit := &state.Audit{
-		ID:        newCancelAuditID(),
+		ID:        auditID,
 		RunID:     cancelOptRunID,
 		Action:    "cancel",
 		Actor:     actor,
@@ -126,11 +134,12 @@ func isCancellableStatus(status string) bool {
 }
 
 // newCancelAuditID generates a unique audit identifier for cancel actions.
-func newCancelAuditID() string {
+// A crypto/rand failure is returned as an error: audit identities must
+// never fall back to predictable timestamp-based values.
+func newCancelAuditID() (string, error) {
 	b := make([]byte, 8)
-	// Best-effort random; on error fall back to timestamp.
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("audit-cancel-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("generate cancel audit id: %w", err)
 	}
-	return "audit-cancel-" + hex.EncodeToString(b)
+	return "audit-cancel-" + hex.EncodeToString(b), nil
 }

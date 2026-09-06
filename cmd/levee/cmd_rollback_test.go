@@ -104,7 +104,8 @@ func TestRollbackCmdStateConflictExitCode(t *testing.T) {
 }
 
 func TestNewRollbackAuditID(t *testing.T) {
-	id := newRollbackAuditID()
+	id, err := newRollbackAuditID()
+	require.NoError(t, err)
 	assert.NotEmpty(t, id)
 	assert.Contains(t, id, "audit-rollback-")
 }
@@ -112,7 +113,8 @@ func TestNewRollbackAuditID(t *testing.T) {
 func TestNewRollbackAuditIDUniqueness(t *testing.T) {
 	ids := make(map[string]bool)
 	for i := 0; i < 100; i++ {
-		id := newRollbackAuditID()
+		id, err := newRollbackAuditID()
+		require.NoError(t, err)
 		assert.False(t, ids[id], "rollback audit ID should be unique: %s", id)
 		ids[id] = true
 	}

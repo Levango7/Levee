@@ -2268,6 +2268,9 @@ func (gw *Gateway) requestIDMiddleware(h http.Handler) http.Handler {
 func newRESTRequestID() string {
 	var b [8]byte
 	if _, err := crand.Read(b[:]); err != nil {
+		// SA-012 classification: observational. Request IDs are log
+		// correlation labels, not identity/authorization credentials, so a
+		// static label is an acceptable degradation.
 		return "req-unknown"
 	}
 	return hex.EncodeToString(b[:])

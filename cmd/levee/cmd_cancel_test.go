@@ -104,7 +104,8 @@ func TestCancelCmdStateConflictExitCode(t *testing.T) {
 }
 
 func TestNewCancelAuditID(t *testing.T) {
-	id := newCancelAuditID()
+	id, err := newCancelAuditID()
+	require.NoError(t, err)
 	assert.NotEmpty(t, id)
 	assert.Contains(t, id, "audit-cancel-")
 }
@@ -112,7 +113,8 @@ func TestNewCancelAuditID(t *testing.T) {
 func TestNewCancelAuditIDUniqueness(t *testing.T) {
 	ids := make(map[string]bool)
 	for i := 0; i < 100; i++ {
-		id := newCancelAuditID()
+		id, err := newCancelAuditID()
+		require.NoError(t, err)
 		assert.False(t, ids[id], "cancel audit ID should be unique: %s", id)
 		ids[id] = true
 	}

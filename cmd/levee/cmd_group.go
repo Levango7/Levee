@@ -15,11 +15,14 @@ import (
 	"github.com/nexus/levee/internal/state"
 )
 
-// newGroupID generates a random hex id with the grp- prefix.
-func newGroupID() string {
+// newGroupID generates a random hex id with the grp- prefix. A crypto/rand
+// failure is returned as an error — group IDs are uniqueness-critical.
+func newGroupID() (string, error) {
 	b := make([]byte, 5)
-	_, _ = rand.Read(b)
-	return "grp-" + hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate group id: %w", err)
+	}
+	return "grp-" + hex.EncodeToString(b), nil
 }
 
 var (
@@ -87,7 +90,11 @@ func runGroupAdd(cmd *cobra.Command, args []string) error {
 		parentID = p.ID
 	}
 
-	g := &state.InventoryGroup{ID: newGroupID(), Name: name, ParentID: parentID}
+	id, err := newGroupID()
+	if err != nil {
+		return err
+	}
+	g := &state.InventoryGroup{ID: id, Name: name, ParentID: parentID}
 	if err := store.UpsertInventoryGroup(ctx, g); err != nil {
 		return fmt.Errorf("create group: %w", err)
 	}

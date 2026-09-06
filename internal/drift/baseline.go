@@ -130,8 +130,12 @@ func (bm *BaselineManager) GenerateFromSnapshot(host string, runID string, snaps
 		return nil, fmt.Errorf("drift: generate baseline: %w", ErrEmptyBaseline)
 	}
 
+	baselineID, err := generateBaselineID()
+	if err != nil {
+		return nil, err
+	}
 	baseline := &Baseline{
-		ID:          generateBaselineID(),
+		ID:          baselineID,
 		Host:        host,
 		SourceRunID: runID,
 		CreatedAt:   time.Now().UTC(),
@@ -188,7 +192,11 @@ func (bm *BaselineManager) Set(host string, baseline *Baseline) error {
 	stored := *baseline
 	stored.Host = host
 	if stored.ID == "" {
-		stored.ID = generateBaselineID()
+		id, err := generateBaselineID()
+		if err != nil {
+			return err
+		}
+		stored.ID = id
 	}
 	if stored.CreatedAt.IsZero() {
 		stored.CreatedAt = time.Now().UTC()
@@ -328,13 +336,13 @@ func extractSnapshotItems(host string, runID string) ([]BaselineItem, error) {
 
 // --- ID generation ----------------------------------------------------------
 
-// generateBaselineID returns a random 16-byte hex string suitable for use as a
-// Baseline.ID. If the crypto RNG fails it falls back to a timestamp-based id
-// so that construction never fails.
-func generateBaselineID() string {
+// generateBaselineID returns a random 16-byte hex string suitable for use as
+// a Baseline.ID. Baseline IDs are uniqueness-critical primary keys, so a
+// crypto/rand failure is an error — no timestamp fallback (SA-012).
+func generateBaselineID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("bl-t%d", time.Now().UnixNano())
+		return "", fmt.Errorf("drift: generate baseline id: %w", err)
 	}
-	return "bl-" + hex.EncodeToString(b)
+	return "bl-" + hex.EncodeToString(b), nil
 }

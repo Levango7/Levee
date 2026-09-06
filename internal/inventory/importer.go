@@ -91,10 +91,12 @@ func splitAddress(addr string) (string, int, error) {
 	return addr, 0, nil
 }
 
-func newID(prefix string) string {
+func newID(prefix string) (string, error) {
 	b := make([]byte, 5)
-	_, _ = rand.Read(b)
-	return prefix + hex.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("inventory: generate id: %w", err)
+	}
+	return prefix + hex.EncodeToString(b), nil
 }
 
 // Importer applies inventory files to the store.
@@ -121,7 +123,11 @@ func (im *Importer) ensureGroup(ctx context.Context, name string, known map[stri
 			return g.ID, nil
 		}
 	}
-	g := &state.InventoryGroup{ID: newID("grp-"), Name: name}
+	grpID, err := newID("grp-")
+	if err != nil {
+		return "", err
+	}
+	g := &state.InventoryGroup{ID: grpID, Name: name}
 	if err := im.store.UpsertInventoryGroup(ctx, g); err != nil {
 		return "", err
 	}
@@ -234,8 +240,13 @@ func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, 
 		return
 	}
 
+	tgID, err := newID("tgt-")
+	if err != nil {
+		im.fail(sum, row, err)
+		return
+	}
 	tg := &state.Target{
-		ID:            newID("tgt-"),
+		ID:            tgID,
 		Hostname:      host,
 		Port:          port,
 		ChannelType:   channel,

@@ -401,8 +401,12 @@ func (m *SnapshotManager) CreateSnapshot(ctx context.Context, runID, target stri
 		snapType = m.snapType
 	}
 
+	snapID, err := newSnapshotID()
+	if err != nil {
+		return nil, err
+	}
 	snap := &Snapshot{
-		ID:        newSnapshotID(),
+		ID:        snapID,
 		RunID:     runID,
 		Target:    target,
 		Type:      snapType,
@@ -607,14 +611,15 @@ func (m *SnapshotManager) RestoreSnapshot(ctx context.Context, snapshotID string
 
 // newSnapshotID generates a unique snapshot identifier using crypto/rand,
 // matching the style of plan.newPlanID. The ID has the form
-// "snap-<16-hex-chars>". On the extremely unlikely event that rand.Read
-// fails, it falls back to a timestamp-based ID.
-func newSnapshotID() string {
+// "snap-<16-hex-chars>". Snapshot IDs are uniqueness-critical (they name
+// on-disk directories), so a rand.Read failure is returned as an error — no
+// timestamp fallback (SA-012).
+func newSnapshotID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("snap-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("rollback: generate snapshot id: %w", err)
 	}
-	return "snap-" + hex.EncodeToString(b)
+	return "snap-" + hex.EncodeToString(b), nil
 }
 
 // --- path flattening helpers -----------------------------------------------

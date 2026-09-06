@@ -94,6 +94,12 @@ func NewChangeService(
 // "run-" → "run-a1b2c3...". It panics only when crypto/rand fails,
 // which indicates a broken system RNG; the recovery interceptor
 // converts such panics into codes.Internal.
+//
+// SA-012 exemption (review decision): the panic-then-recover posture is a
+// deliberate per-service strategy — every call site sits behind the
+// recovery interceptor, which turns RNG failure into a clean codes.Internal
+// instead of a timestamp fallback. This site is intentionally NOT converted
+// to the (string, error) hard-fail convention in this round.
 func newID(prefix string) string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {

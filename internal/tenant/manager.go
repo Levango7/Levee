@@ -54,7 +54,10 @@ func (tm *TenantManager) Create(ctx context.Context, name, displayName string, q
 		return nil, fmt.Errorf("%w: empty name", ErrInvalidTenant)
 	}
 
-	t := NewTenant(name, displayName)
+	t, err := NewTenant(name, displayName)
+	if err != nil {
+		return nil, err
+	}
 	if err := t.Validate(); err != nil {
 		return nil, err
 	}

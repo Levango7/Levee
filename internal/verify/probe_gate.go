@@ -740,8 +740,10 @@ func probeTargetLabel(i int, targets []string) string {
 }
 
 // randHex8 returns 8 hex characters from crypto/rand, falling back to a
-// timestamp-derived value if the CSPRNG is unavailable (mirroring
-// newRunID's defensive posture). Used only for temp-file uniqueness.
+// timestamp-derived value if the CSPRNG is unavailable. SA-012
+// classification: observational — used only for temp-file name uniqueness,
+// never as an identity or authorization credential, so a timestamp value is
+// an acceptable degradation.
 func randHex8() string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {

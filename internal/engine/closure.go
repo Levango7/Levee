@@ -36,7 +36,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"time"
 
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/dsl"
@@ -219,14 +218,20 @@ func NewClosureRunner(
 //     treated as a dry-run: batch execution is a no-op and rollback
 //     records every step as skipped.
 //
-// The returned *ClosureResult is always non-nil. The returned error is
+// The returned *ClosureResult is always non-nil (the only exception being
+// an extraordinary crypto/rand failure while minting the run id, which
+// returns a nil result and an error). The returned error is
 // non-nil only for fatal pre-conditions (nil plan, pre-apply gate
 // failure, lock conflict, context cancellation before execution). When
 // rollback is triggered, the error is nil and the outcome is carried in
 // the result's Phase and RollbackResult fields.
 func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.ExecuteFunc) (*ClosureResult, error) {
+	runID, err := newRunID()
+	if err != nil {
+		return nil, err
+	}
 	result := &ClosureResult{
-		RunID: newRunID(),
+		RunID: runID,
 		Phase: PhaseCompleted,
 	}
 
@@ -513,14 +518,13 @@ func (cr *ClosureRunner) releaseLocks(ctx context.Context, owner string, acquire
 	}
 }
 
-// newRunID generates a unique run identifier using crypto/rand. The ID
-// has the form "run-<16-hex-chars>". On the extremely unlikely event
-// that rand.Read fails, it falls back to a timestamp-based ID so the
-// caller always gets a usable, unique-enough identifier.
-func newRunID() string {
+// newRunID generates a unique run identifier of the form "run-<16-hex-chars>".
+// Run IDs key the execution record and the audit chain, so a crypto/rand
+// failure is an error — no timestamp fallback (SA-012).
+func newRunID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("run-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("engine: generate run id: %w", err)
 	}
-	return "run-" + hex.EncodeToString(b)
+	return "run-" + hex.EncodeToString(b), nil
 }

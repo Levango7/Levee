@@ -13,6 +13,7 @@ import (
 	"crypto/cipher"
 	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -274,6 +275,19 @@ func TestV1HeaderConstantsSelfConsistent(t *testing.T) {
 	assert.Equal(t, 55, minV1BlobLen)
 	assert.Equal(t, v1HeaderLen-1, v1OffNonce+int(nonceLen)-1)
 	assert.Equal(t, byte('L'), v1Magic[0])
+}
+
+// brokenReader always fails, exercising the injectable reader of newID.
+type brokenReader struct{}
+
+func (brokenReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestNewIDFailsOnBrokenReader(t *testing.T) {
+	// SA-012: credential ids have no timestamp fallback — a broken random
+	// source surfaces as an error (the reader is injectable precisely for
+	// this).
+	_, err := newID(brokenReader{})
+	assert.Error(t, err)
 }
 
 func TestLegacyHeadlessBlobsHaveNoMagic(t *testing.T) {

@@ -165,7 +165,8 @@ func TestRetryLimitExitCode(t *testing.T) {
 }
 
 func TestNewRetryAuditID(t *testing.T) {
-	id := newRetryAuditID()
+	id, err := newRetryAuditID()
+	require.NoError(t, err)
 	assert.NotEmpty(t, id)
 	assert.Contains(t, id, "audit-retry-")
 }
@@ -173,7 +174,8 @@ func TestNewRetryAuditID(t *testing.T) {
 func TestNewRetryAuditIDUniqueness(t *testing.T) {
 	ids := make(map[string]bool)
 	for i := 0; i < 100; i++ {
-		id := newRetryAuditID()
+		id, err := newRetryAuditID()
+		require.NoError(t, err)
 		assert.False(t, ids[id], "retry audit ID should be unique: %s", id)
 		ids[id] = true
 	}

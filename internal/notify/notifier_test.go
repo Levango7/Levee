@@ -67,13 +67,16 @@ func newMock(name string) *mockNotifier {
 // --- Helpers ---------------------------------------------------------------
 
 func validMessage() Message {
-	msg := NewMessage(
+	msg, err := NewMessage(
 		string(TriggerRunStarted),
 		"run-123",
 		LevelInfo,
 		"Run started",
 		"Pipeline run run-123 has started",
 	)
+	if err != nil {
+		panic(err)
+	}
 	msg.Recipients = []Recipient{Initiator("u1", "Alice")}
 	return msg
 }
@@ -141,13 +144,14 @@ func TestTriggerPoint_Constants(t *testing.T) {
 }
 
 func TestNewMessage(t *testing.T) {
-	msg := NewMessage(
+	msg, err := NewMessage(
 		string(TriggerRunStarted),
 		"run-1",
 		LevelInfo,
 		"title",
 		"body",
 	)
+	require.NoError(t, err)
 	assert.NotEmpty(t, msg.ID, "ID should be auto-generated")
 	assert.Equal(t, "run_started", msg.Event)
 	assert.Equal(t, "run-1", msg.RunID)
@@ -162,7 +166,8 @@ func TestNewMessage(t *testing.T) {
 func TestNewMessage_UniqueIDs(t *testing.T) {
 	ids := make(map[string]bool, 100)
 	for i := 0; i < 100; i++ {
-		m := NewMessage("e", "r", LevelInfo, "t", "b")
+		m, err := NewMessage("e", "r", LevelInfo, "t", "b")
+		require.NoError(t, err)
 		assert.False(t, ids[m.ID], "duplicate id generated: %s", m.ID)
 		ids[m.ID] = true
 	}

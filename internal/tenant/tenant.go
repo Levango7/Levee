@@ -127,11 +127,16 @@ type Tenant struct {
 
 // NewTenant creates a new Tenant with a generated ID, Active status and
 // the current timestamp. It does not validate the name; callers should
-// call Validate before persisting the tenant.
-func NewTenant(name, displayName string) *Tenant {
+// call Validate before persisting the tenant. A failure to mint the
+// tenant ID is returned as an error.
+func NewTenant(name, displayName string) (*Tenant, error) {
+	id, err := newTenantID()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now().UTC()
 	return &Tenant{
-		ID:          newTenantID(),
+		ID:          id,
 		Name:        name,
 		DisplayName: displayName,
 		Namespace:   NamespaceFor(name),
@@ -139,19 +144,19 @@ func NewTenant(name, displayName string) *Tenant {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 		Labels:      make(map[string]string),
-	}
+	}, nil
 }
 
 // newTenantID generates a unique tenant identifier using crypto/rand. The
-// ID has the form "tenant-<16-hex-chars>". On the extremely unlikely event
-// that rand.Read fails, it falls back to a timestamp-based ID so the
-// caller always gets a usable, unique-enough identifier.
-func newTenantID() string {
+// ID has the form "tenant-<16-hex-chars>". Tenant IDs are identity
+// credentials, so a rand.Read failure is returned as an error — no
+// timestamp fallback (SA-012).
+func newTenantID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("tenant-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("tenant: generate id: %w", err)
 	}
-	return "tenant-" + hex.EncodeToString(b)
+	return "tenant-" + hex.EncodeToString(b), nil
 }
 
 // NamespaceFor returns the per-tenant namespace prefix for a given name.

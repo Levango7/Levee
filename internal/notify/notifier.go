@@ -367,31 +367,36 @@ func (m *NotificationManager) NotifyAsync(ctx context.Context, msg Message) {
 // --- Constructors ----------------------------------------------------------
 
 // generateID returns a random 16-byte hex string suitable for use as a
-// Message.ID. If the crypto RNG fails it falls back to a timestamp-based id
-// so that construction never fails.
-func generateID() string {
+// Message.ID. Message IDs are used for delivery de-duplication and audit
+// correlation, so a crypto/rand failure is an error — no timestamp fallback
+// (SA-012).
+func generateID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback: never fail construction.
-		return fmt.Sprintf("t%d", time.Now().UnixNano())
+		return "", fmt.Errorf("notify: generate message id: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // NewMessage constructs a Message with a generated ID and the current
 // timestamp. Recipients and Metadata are left nil; callers can append to
 // them after construction. The event and runID are stored as-is; validation
-// happens at send time.
-func NewMessage(event, runID string, level MessageLevel, title, body string) Message {
+// happens at send time. A failure to mint the message ID is returned as an
+// error.
+func NewMessage(event, runID string, level MessageLevel, title, body string) (Message, error) {
+	id, err := generateID()
+	if err != nil {
+		return Message{}, err
+	}
 	return Message{
-		ID:        generateID(),
+		ID:        id,
 		Event:     event,
 		RunID:     runID,
 		Level:     level,
 		Title:     title,
 		Body:      body,
 		Timestamp: time.Now(),
-	}
+	}, nil
 }
 
 // NewRecipient constructs a Recipient with the given type, id and name.

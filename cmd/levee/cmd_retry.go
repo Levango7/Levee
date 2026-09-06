@@ -89,8 +89,14 @@ func runRetry(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("run %q has reached retry limit (%d/%d) [exit=5]", retryOptRunID, retryCount, maxRetryAttempts)
 	}
 
-	// 5. Transition the run to "running" (retry).
+	// 5. Transition the run to "running" (retry). Mint the audit identity
+	// BEFORE mutating anything: a CSPRNG failure must fail the command
+	// outright, never degrade to a timestamp-based audit id.
 	now := time.Now().UTC()
+	auditID, err := newRetryAuditID()
+	if err != nil {
+		return err
+	}
 	run.Status = "running"
 	run.UpdatedAt = now
 	if err := store.UpdateRun(ctx, run); err != nil {
@@ -99,7 +105,7 @@ func runRetry(cmd *cobra.Command, args []string) error {
 
 	// 6. Record an audit entry.
 	audit := &state.Audit{
-		ID:        newRetryAuditID(),
+		ID:        auditID,
 		RunID:     retryOptRunID,
 		Action:    "retry",
 		Actor:     actor,
@@ -179,8 +185,12 @@ func runRetryHost(cmd *cobra.Command, args []string) error {
 
 	// 5. Record an audit entry for the host retry.
 	now := time.Now().UTC()
+	auditID, err := newRetryAuditID()
+	if err != nil {
+		return err
+	}
 	audit := &state.Audit{
-		ID:        newRetryAuditID(),
+		ID:        auditID,
 		RunID:     retryHostOptRunID,
 		Action:    "retry_host",
 		Actor:     actor,
@@ -262,10 +272,12 @@ func countHostRetries(ctx context.Context, store state.Store, runID, host string
 }
 
 // newRetryAuditID generates a unique audit identifier for retry actions.
-func newRetryAuditID() string {
+// A crypto/rand failure is returned as an error: audit identities must
+// never fall back to predictable timestamp-based values.
+func newRetryAuditID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("audit-retry-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("generate retry audit id: %w", err)
 	}
-	return "audit-retry-" + hex.EncodeToString(b)
+	return "audit-retry-" + hex.EncodeToString(b), nil
 }

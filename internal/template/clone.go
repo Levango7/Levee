@@ -241,20 +241,29 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 	}
 
 	// 7. Write an audit entry recording the clone action.
-	audit := &state.Audit{
-		ID:        newAuditID(),
-		RunID:     clonedRunID,
-		Action:    ActionClone,
-		Actor:     actor,
-		Target:    runID,
-		Result:    ResultSuccess,
-		Timestamp: now,
-	}
-	if err := c.store.CreateAudit(ctx, audit); err != nil {
-		// Audit write failure is observability-only: the clone has already
-		// been persisted, so we log and continue rather than undoing it.
-		log.WarnCtx(ctx, "clone audit write failed",
-			"original_run_id", runID, "cloned_run_id", clonedRunID, "actor", actor, "err", err)
+	auditID, auditErr := newAuditID()
+	if auditErr != nil {
+		// Observability-only path (SA-012 classification): the clone is
+		// already persisted, so a failure to mint the audit ID skips the
+		// entry (logged) instead of failing the clone.
+		log.WarnCtx(ctx, "clone audit id generation failed; audit entry skipped",
+			"original_run_id", runID, "cloned_run_id", clonedRunID, "actor", actor, "err", auditErr)
+	} else {
+		audit := &state.Audit{
+			ID:        auditID,
+			RunID:     clonedRunID,
+			Action:    ActionClone,
+			Actor:     actor,
+			Target:    runID,
+			Result:    ResultSuccess,
+			Timestamp: now,
+		}
+		if err := c.store.CreateAudit(ctx, audit); err != nil {
+			// Audit write failure is observability-only: the clone has already
+			// been persisted, so we log and continue rather than undoing it.
+			log.WarnCtx(ctx, "clone audit write failed",
+				"original_run_id", runID, "cloned_run_id", clonedRunID, "actor", actor, "err", err)
+		}
 	}
 
 	log.InfoCtx(ctx, "run cloned",
@@ -300,11 +309,10 @@ func newStepID() (string, error) {
 	return "step-" + hex.EncodeToString(b), nil
 }
 
-func newAuditID() string {
+func newAuditID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback: timestamp-based ID so the audit entry is still usable.
-		return fmt.Sprintf("audit-%d", time.Now().UnixNano())
+		return "", err
 	}
-	return "audit-" + hex.EncodeToString(b)
+	return "audit-" + hex.EncodeToString(b), nil
 }

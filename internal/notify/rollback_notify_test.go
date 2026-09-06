@@ -176,7 +176,8 @@ func TestRollbackIndependentFromApply(t *testing.T) {
 	require.NoError(t, mgr.Register(mock))
 
 	// Send an apply-style notification directly through the manager.
-	applyMsg := NewMessage(string(TriggerRunCompleted), "run-x", LevelInfo, "Run completed", "apply finished")
+	applyMsg, err := NewMessage(string(TriggerRunCompleted), "run-x", LevelInfo, "Run completed", "apply finished")
+	require.NoError(t, err)
 	applyMsg.Recipients = []Recipient{Initiator("alice", "alice")}
 	require.NoError(t, mgr.Notify(context.Background(), applyMsg))
 

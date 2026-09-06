@@ -9,6 +9,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mustTenant builds a Tenant and fails the test if ID minting fails.
+func mustTenant(t *testing.T, name, displayName string) *Tenant {
+	t.Helper()
+	tt, err := NewTenant(name, displayName)
+	require.NoError(t, err)
+	return tt
+}
+
 func TestTenantStatusString(t *testing.T) {
 	cases := []struct {
 		status TenantStatus
@@ -48,7 +56,7 @@ func TestParseTenantStatus(t *testing.T) {
 }
 
 func TestNewTenant(t *testing.T) {
-	tt := NewTenant("acme", "ACME Corp")
+	tt := mustTenant(t, "acme", "ACME Corp")
 	assert.NotEmpty(t, tt.ID)
 	assert.True(t, strings.HasPrefix(tt.ID, "tenant-"))
 	assert.Equal(t, "acme", tt.Name)
@@ -74,7 +82,7 @@ func TestTenantValidate(t *testing.T) {
 	}{
 		{
 			name:   "valid",
-			tenant: NewTenant("acme", "ACME"),
+			tenant: mustTenant(t, "acme", "ACME"),
 		},
 		{
 			name:    "nil",
@@ -85,7 +93,7 @@ func TestTenantValidate(t *testing.T) {
 		{
 			name: "empty id",
 			tenant: func() *Tenant {
-				tt := NewTenant("acme", "ACME")
+				tt := mustTenant(t, "acme", "ACME")
 				tt.ID = ""
 				return tt
 			}(),
@@ -95,7 +103,7 @@ func TestTenantValidate(t *testing.T) {
 		{
 			name: "empty name",
 			tenant: func() *Tenant {
-				tt := NewTenant("acme", "ACME")
+				tt := mustTenant(t, "acme", "ACME")
 				tt.Name = ""
 				return tt
 			}(),
@@ -105,7 +113,7 @@ func TestTenantValidate(t *testing.T) {
 		{
 			name: "invalid name uppercase",
 			tenant: func() *Tenant {
-				tt := NewTenant("ACME", "ACME")
+				tt := mustTenant(t, "ACME", "ACME")
 				return tt
 			}(),
 			wantErr: true,
@@ -114,7 +122,7 @@ func TestTenantValidate(t *testing.T) {
 		{
 			name: "invalid name single char",
 			tenant: func() *Tenant {
-				tt := NewTenant("a", "A")
+				tt := mustTenant(t, "a", "A")
 				return tt
 			}(),
 			wantErr: true,
@@ -123,7 +131,7 @@ func TestTenantValidate(t *testing.T) {
 		{
 			name: "invalid name underscore",
 			tenant: func() *Tenant {
-				tt := NewTenant("ac_me", "ACME")
+				tt := mustTenant(t, "ac_me", "ACME")
 				return tt
 			}(),
 			wantErr: true,
@@ -132,7 +140,7 @@ func TestTenantValidate(t *testing.T) {
 		{
 			name: "invalid namespace mismatch",
 			tenant: func() *Tenant {
-				tt := NewTenant("acme", "ACME")
+				tt := mustTenant(t, "acme", "ACME")
 				tt.Namespace = "tenant-other"
 				return tt
 			}(),
@@ -141,11 +149,11 @@ func TestTenantValidate(t *testing.T) {
 		},
 		{
 			name:   "valid with hyphen",
-			tenant: NewTenant("acme-prod", "ACME Prod"),
+			tenant: mustTenant(t, "acme-prod", "ACME Prod"),
 		},
 		{
 			name:   "valid with digits",
-			tenant: NewTenant("acme-123", "ACME 123"),
+			tenant: mustTenant(t, "acme-123", "ACME 123"),
 		},
 	}
 	for _, c := range cases {
@@ -162,7 +170,7 @@ func TestTenantValidate(t *testing.T) {
 }
 
 func TestTenantIsOperational(t *testing.T) {
-	tt := NewTenant("acme", "ACME")
+	tt := mustTenant(t, "acme", "ACME")
 	assert.True(t, tt.IsOperational())
 
 	tt.Status = TenantSuspended
@@ -227,7 +235,8 @@ func TestMustTenantFromContextPanics(t *testing.T) {
 func TestNewTenantIDUniqueness(t *testing.T) {
 	ids := make(map[string]struct{}, 1000)
 	for i := 0; i < 1000; i++ {
-		id := newTenantID()
+		id, err := newTenantID()
+		require.NoError(t, err)
 		assert.True(t, strings.HasPrefix(id, "tenant-"))
 		_, dup := ids[id]
 		assert.False(t, dup, "duplicate id generated: %s", id)

@@ -151,15 +151,21 @@ func scope(target string) string {
 }
 
 // toStateLock converts a lock.Lock to a state.Lock, generating a new ID.
-func toStateLock(l *Lock) *state.Lock {
+// Lock IDs are uniqueness-critical primary keys, so ID generation failure is
+// propagated (SA-012).
+func toStateLock(l *Lock) (*state.Lock, error) {
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
 	return &state.Lock{
-		ID:         newID(),
+		ID:         id,
 		Scope:      scope(l.Target),
 		Owner:      l.Owner,
 		TTLSeconds: int(l.TTL / time.Second),
 		AcquiredAt: l.AcquiredAt,
 		ExpiresAt:  l.ExpiresAt,
-	}
+	}, nil
 }
 
 // fromStateLock converts a state.Lock to a lock.Lock. The scope is
@@ -208,7 +214,10 @@ func (s *stateLockStore) Acquire(ctx context.Context, target, owner string, ttl 
 		ExpiresAt:  now.Add(ttl),
 		TTL:        ttl,
 	}
-	sl := toStateLock(l)
+	sl, err := toStateLock(l)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.store.CreateLock(ctx, sl); err != nil {
 		return nil, fmt.Errorf("lock: create: %w", err)
 	}
@@ -326,7 +335,10 @@ func (s *stateLockStore) ForceAcquire(ctx context.Context, target, owner string,
 		ExpiresAt:  now.Add(ttl),
 		TTL:        ttl,
 	}
-	sl := toStateLock(l)
+	sl, err := toStateLock(l)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.store.CreateLock(ctx, sl); err != nil {
 		return nil, fmt.Errorf("lock: force acquire create: %w", err)
 	}
@@ -526,8 +538,17 @@ func (m *LockManager) isTargetBusy(ctx context.Context, target string) (bool, er
 // prevent the preemption itself (the preemption is the safety-critical
 // action; the audit entry is observability).
 func (m *LockManager) recordAudit(ctx context.Context, target, oldOwner, newOwner string) {
+	// Audit IDs are part of the observability path: a crypto/rand failure
+	// skips the audit entry (logged) rather than blocking the safety-critical
+	// preemption that this entry merely records (SA-012 classification).
+	id, err := newID()
+	if err != nil {
+		log.WarnCtx(ctx, "lock audit id generation failed; audit entry skipped",
+			"target", target, "old_owner", oldOwner, "new_owner", newOwner, "err", err)
+		return
+	}
 	audit := &state.Audit{
-		ID:        newID(),
+		ID:        id,
 		RunID:     newOwner,
 		Action:    "lock",
 		Actor:     newOwner,
@@ -545,13 +566,12 @@ func (m *LockManager) recordAudit(ctx context.Context, target, oldOwner, newOwne
 }
 
 // newID generates a unique lock identifier using crypto/rand. The ID has
-// the form "lock-<16-hex-chars>". On the extremely unlikely event that
-// rand.Read fails, it falls back to a timestamp-based ID so the caller
-// always gets a usable, unique-enough identifier.
-func newID() string {
+// the form "lock-<16-hex-chars>". Lock IDs are uniqueness-critical, so a
+// rand.Read failure is returned as an error — no timestamp fallback (SA-012).
+func newID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("lock-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("lock: generate id: %w", err)
 	}
-	return "lock-" + hex.EncodeToString(b)
+	return "lock-" + hex.EncodeToString(b), nil
 }

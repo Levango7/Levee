@@ -156,7 +156,8 @@ func TestGenerateToken_Unique(t *testing.T) {
 	g := NewDeepLinkGenerator("levee", "")
 	seen := make(map[string]bool, 100)
 	for i := 0; i < 100; i++ {
-		tok := g.GenerateToken()
+		tok, err := g.GenerateToken()
+		require.NoError(t, err)
 		assert.NotEmpty(t, tok)
 		assert.False(t, seen[tok], "token %q duplicated at iteration %d", tok, i)
 		seen[tok] = true
@@ -165,7 +166,8 @@ func TestGenerateToken_Unique(t *testing.T) {
 
 func TestGenerateToken_HexEncoded(t *testing.T) {
 	g := NewDeepLinkGenerator("levee", "")
-	tok := g.GenerateToken()
+	tok, err := g.GenerateToken()
+	require.NoError(t, err)
 	// 32 bytes -> 64 hex chars.
 	assert.Len(t, tok, 64)
 	for _, c := range tok {

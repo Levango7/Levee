@@ -88,8 +88,11 @@ func validateRollbackInputs(runID, initiator string) error {
 // call produces a new Message with a fresh ID and timestamp, which is what
 // makes rollback notifications independent from each other and from any
 // apply notification that may have been sent earlier for the same run.
-func buildRollbackMessage(event TriggerPoint, runID string, level MessageLevel, title, body, initiator, approver, oncall string) Message {
-	msg := NewMessage(string(event), runID, level, title, body)
+func buildRollbackMessage(event TriggerPoint, runID string, level MessageLevel, title, body, initiator, approver, oncall string) (Message, error) {
+	msg, err := NewMessage(string(event), runID, level, title, body)
+	if err != nil {
+		return Message{}, err
+	}
 	msg.Recipients = rollbackRecipients(initiator, approver, oncall)
 	msg.Metadata = map[string]string{
 		"run_id":    runID,
@@ -100,7 +103,7 @@ func buildRollbackMessage(event TriggerPoint, runID string, level MessageLevel, 
 		"rollback":  "true",
 		"scope":     "rollback",
 	}
-	return msg
+	return msg, nil
 }
 
 // sendRollback is the shared delivery helper. It validates the inputs,
@@ -115,7 +118,10 @@ func (rn *RollbackNotifier) sendRollback(ctx context.Context, event TriggerPoint
 		return fmt.Errorf("notify: rollback: %w", ErrNotifierNotFound)
 	}
 
-	msg := buildRollbackMessage(event, runID, level, title, body, initiator, approver, oncall)
+	msg, err := buildRollbackMessage(event, runID, level, title, body, initiator, approver, oncall)
+	if err != nil {
+		return err
+	}
 	if err := rn.manager.Notify(ctx, msg); err != nil {
 		log.Warn("notify: rollback send failed",
 			"event", string(event),

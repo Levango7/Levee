@@ -126,15 +126,15 @@ func (g *DeepLinkGenerator) ValidateToken(token string) (runID, userID, action s
 // GenerateToken returns a fresh 32-byte hex-encoded random string. It is
 // exposed so callers can mint ad-hoc tokens (e.g. for non-approval flows)
 // without going through the action-specific helpers. The token is not stored
-// by this call; storage is the caller's responsibility.
-func (g *DeepLinkGenerator) GenerateToken() string {
+// by this call; storage is the caller's responsibility. Deeplink tokens are
+// one-time authorization credentials, so a crypto/rand failure is returned
+// as an error — never a timestamp-derived fallback (SA-012).
+func (g *DeepLinkGenerator) GenerateToken() (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		// Fall back to a timestamp-based token. rand.Read failing is
-		// extraordinary; we still want a non-empty unique-ish string.
-		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("push: deeplink: generate token: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }
 
 // CleanupExpired removes all expired tokens from the in-memory store and
@@ -167,7 +167,10 @@ func (g *DeepLinkGenerator) generateLink(action, runID, userID string) (*DeepLin
 		return nil, fmt.Errorf("push: deeplink: empty user id for action %q", action)
 	}
 
-	token := g.GenerateToken()
+	token, err := g.GenerateToken()
+	if err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	exp := now.Add(g.currentTTL())
 

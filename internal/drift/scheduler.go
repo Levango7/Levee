@@ -122,7 +122,11 @@ func (s *DriftScheduler) AddJob(job DriftJob) error {
 	}
 
 	if job.ID == "" {
-		job.ID = generateJobID()
+		id, err := generateJobID()
+		if err != nil {
+			return err
+		}
+		job.ID = id
 	}
 
 	// Compute the next run time from now.
@@ -461,12 +465,12 @@ func nextOccurrence(cronExpr string, from time.Time) (time.Time, error) {
 // --- ID generation ----------------------------------------------------------
 
 // generateJobID returns a random 16-byte hex string suitable for use as a
-// DriftJob.ID. If the crypto RNG fails it falls back to a timestamp-based id
-// so that construction never fails.
-func generateJobID() string {
+// DriftJob.ID. Job IDs are uniqueness-critical primary keys, so a crypto/rand
+// failure is an error — no timestamp fallback (SA-012).
+func generateJobID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("job-t%d", time.Now().UnixNano())
+		return "", fmt.Errorf("drift: generate job id: %w", err)
 	}
-	return "job-" + hex.EncodeToString(b)
+	return "job-" + hex.EncodeToString(b), nil
 }

@@ -355,8 +355,12 @@ func (m *PauseManager) transitionAll(ctx context.Context, action, actor, target 
 func (m *PauseManager) writeAudit(ctx context.Context, action, actor, target, result,
 	runIDForAudit string) error {
 
+	id, err := newID()
+	if err != nil {
+		return err
+	}
 	audit := &state.Audit{
-		ID:        newID(),
+		ID:        id,
 		RunID:     runIDForAudit,
 		Action:    action,
 		Actor:     actor,
@@ -368,13 +372,12 @@ func (m *PauseManager) writeAudit(ctx context.Context, action, actor, target, re
 }
 
 // newID generates a unique audit identifier using crypto/rand. The ID has
-// the form "pause-<16-hex-chars>". On the extremely unlikely event that
-// rand.Read fails, it falls back to a timestamp-based ID so the caller
-// always gets a usable, unique-enough identifier.
-func newID() string {
+// the form "pause-<16-hex-chars>". Audit IDs are uniqueness-critical, so a
+// rand.Read failure is returned as an error — no timestamp fallback (SA-012).
+func newID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("pause-%d", time.Now().UnixNano())
+		return "", fmt.Errorf("pause: generate id: %w", err)
 	}
-	return "pause-" + hex.EncodeToString(b)
+	return "pause-" + hex.EncodeToString(b), nil
 }

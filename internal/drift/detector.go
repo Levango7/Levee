@@ -329,13 +329,20 @@ func (d *DriftDetector) sendDriftAlert(ctx context.Context, host string, result 
 		return
 	}
 
-	msg := notify.NewMessage(
+	// Best-effort path (SA-012): a message-ID failure skips the alert (logged)
+	// instead of surfacing an error from this void-returning detector hook.
+	msg, err := notify.NewMessage(
 		"drift_detected",
 		result.Host,
 		notify.LevelWarning,
 		fmt.Sprintf("Configuration drift detected on %s", host),
 		buildAlertBody(result),
 	)
+	if err != nil {
+		log.Error("drift: failed to build drift alert",
+			"host", host, "err", err)
+		return
+	}
 	msg.Metadata = map[string]string{
 		"host":         host,
 		"drift_count":  fmt.Sprintf("%d", result.DriftCount),
