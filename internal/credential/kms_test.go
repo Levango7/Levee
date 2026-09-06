@@ -465,4 +465,3 @@ func TestNewKMSManagerFromConfig(t *testing.T) {
 	assert.Equal(t, "vault", mgr.DefaultProvider())
 	assert.True(t, mgr.HasFallback())
 }
-
