@@ -15,6 +15,12 @@
 - **`system config set` Windows 路径 panic**：定位配置目录时按 `'/'` 做 `LastIndex`，Windows 反斜杠路径返回 -1 导致切片越界 panic；改用 `filepath.Dir`。
 - **gRPC 服务器发布竞态（CI `-race` 捕获，生产代码）**：`Server.Start` 在 `mu` 临界区外写 `s.listener`，与 `Stop`/`GracefulStop`/`Addr` 的锁内读构成数据竞态——`Addr()` 可能读到半发布状态或读到与关闭操作不一致的 listener。`Start` 的 listener 发布移入锁内，`Stop`/`GracefulStop` 锁内快照、锁外关闭，`Addr` 补锁读取。
 - **ShellRunner 输出缓冲竞态（CI `-race` 捕获，生产代码）**：命令超时路径上主 goroutine 读取 stdout/stderr 汇总时，`exec` 的 io 拷贝 goroutine 仍在向同一 `bytes.Buffer` 写入。输出缓冲改为带互斥锁的 `syncBuffer`（`io.Writer` 接口不变），超时截断与正常完成两条路径统一消竞态。
+- **变更事件总线发布竞态（CI `-race` 捕获，生产代码）**：`publishEvent` 先在 `bus.mu` 锁内取出订阅者 map 引用、解锁后再遍历，而 `WatchChange` 退出时的 `unsubscribe` 并发向同一 map 删除键——race 检测器报 `WARNING: DATA RACE`，且 Go runtime 对"边遍历边写 map"可直接 fatal 崩溃。改为 fan-out 全程持锁：投递本身是非阻塞 `select/default`，锁持有时间有界。
+- **插件沙箱 `Stop` 竞态 + 必然空等宽限期（CI `-race` 捕获，生产代码）**：`Stop` 在 `s.mu` 临界区内等待 `doneCh`，而 monitor 必须先拿到 `s.mu` 记录 waitErr 才能关闭 `doneCh`——等待永远失败、宽限期每次都耗满，然后读 `cmd.ProcessState` 判断进程是否已被回收；该字段由 monitor 协程里的 `cmd.Wait()` 写入，无任何同步边，构成真竞态（`TestManager*`/`TestSandbox*` 六测试在 linux/macOS race 腿全红）。重构为：锁内快照 cmd/doneCh、锁外等宽限；升级 kill 不再读 `ProcessState`（kill 到已退出的进程本就无害，以 `doneCh` 关闭作为进程消亡的唯一证据）。附带效果：`internal/plugin` 包测试 18.9s → 1.3s，不再每测固定空等宽限期。
+- **gRPC `GracefulStop` 超时回退死锁（CI 10 分钟超时元凶，生产代码）**：宽限期耗尽后回退调用 grpc 的 `Stop()`，与仍在进行的 `GracefulStop()` 并发——grpc 文档明示二者互斥；v1.83.1 实现中 graceful 路径持 server 互斥等待 `handlersWG`，并发 `Stop()` 与之死锁，`Serve` 的退出等待（`<-s.done`）连带挂起整个关停序列（ubuntu race 腿 `TestGracefulStopTimeoutFallsBackToHardStop` 挂 9m22s 拖死整包测试二进制）。新增连接追踪监听器：graceful 排空进行中触发硬停时不再触碰 grpc `Stop()`，改为关闭监听器与全部已跟踪连接——HTTP/2 传输层被强断、客户端收到连接错误、grpc 在传输层关闭时取消所有活动流的 context，尊重 ctx 的 handler 得以退出（忽略 ctx 的 handler 与 grpc 自身 `Stop()` 行为一致，只能等其自然返回）。`gateStore` 测试网关同步改为感知 ctx。
+- **`unflattenPath` Unix 下返回双斜杠**：Unix 的 flatten 把前导 `/` 编码为第一个 `_`，unflatten 剥掉 `root` 标记后替换出的路径已自带前导分隔符，再手动前插一个分隔符得到 `//etc/nginx/nginx.conf`（Linux/macOS `TestUnflattenPathAbsolute` 红）；现仅当重建结果不以分隔符开头（Windows 盘符形态）才前插。
+- **Dockerfile 构建基底标签不存在（trivy 作业红灯）**：`golang:1.25-alpine3.20` 从未发布（Go 1.25 镜像从未跟踪 alpine 3.20），`docker build` 直接拉取失败。builder 改用官方为每个受支持 Go 系列必发的无后缀别名 `golang:1.25-alpine`；运行时基底升 `alpine:3.22`（`ALPINE_VERSION` 自此只约束运行时阶段）。
+- **Linux 构建上下文安全/风格残留（本地工具盲区补漏）**：Windows 本地 gosec/golangci-lint 看不见 `_linux.go` 文件，ubuntu 腿暴露 `sandbox_linux.go` 三处——cgroup 目录 `0o755`→`0o750`（G301）、控制文件打开模式 `0o644`→`0o600` 并补 `Close` 错误处理（G302/errcheck）、`formatCpuMax`→`formatCPUMax`（revive）。本地复验流程同步固化 `set GOOS=linux` gosec/lint/vet 三件套。
 
 ### 测试
 
@@ -23,6 +29,8 @@
 
 - **集成套件语义对账（tests/integration）**：b12eafc 改变 apply 语义（有引擎同步完成至 `completed`、无引擎 `FailedPrecondition` 拒绝）后，lifecycle 套件的旧断言仍停留在"apply 后 running、可 pause"时代。重写：生命周期主用例改为 创建→计划→批准→apply→`completed`（run_id 非空、审计哈希链有效），终态 `CancelChange` 断言拒绝（`FailedPrecondition`）且状态不变；新增回归 `TestApplyChange_NoEngineRefused`（无引擎 apply 拒绝且状态停留 `approved`）；pause/resume 自终态非法、跨服务审计计数、哈希链完整性用例同步对账。
 - **diagnosis 窗口用例 Linux 抖动修复**：`TestCollect_InvalidWindow` 原以秒级截断构造 `Start > End`，Linux 纳秒精度单调钟下不总成立（CI 偶发假阴/假阳）；改为同一时间戳显式构造非法窗口。
+- **权限矩阵并发一致性用例改确定性启动同步（windows 腿红灯修复）**：`TestConcurrent_GrantThenReadConsistency` 断言"读者在写者并发期间至少观测到 1 次授权"，但该重叠纯靠调度碰运气——windows runner 上读者 1 万次扫描可全部跑完而写者一次 Grant 都未开始（`observed==0` 假红）。改为启动同步：写者首笔 Grant 后关闭信号通道、读者等通道再扫描；通道关闭顺带建立 happens-before，断言从概率性变确定性（其余 49+1 遍扫描仍与写者真并发）。
+- **file 模块绝对路径拒绝用例按平台拆分（linux/macOS 腿红灯修复）**：`TestResolveLocalSrcAbsoluteRejected` 用 `C:\Windows\...` 作第二个绝对路径样本，但 Unix 上盘符路径是普通相对文件名（策略上合法），断言必然假红。改为按 `runtime.GOOS` 分发：Windows 验盘符绝对路径，Unix 验经 `filepath.Clean` 的 `..` 存活的根路径形态（两平台都保有双重样本）。
 
 ### 前端
 
