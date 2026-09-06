@@ -364,11 +364,12 @@ jobs:
     steps:
       - name: aggregate
         run: |
-          # ${{ }} is rendered by the Actions expression engine BEFORE bash
-          # runs, so `needs[job].result` inside a bash loop expands to "" --
-          # the engine sees a literal `job`, not the bash variable, and there
-          # is no such needs entry. Hand each result to bash as a literal
-          # name:value pair instead and check them there.
+          # The Actions engine interpolates every expression in this block
+          # BEFORE the script reaches bash, so `needs[job].result` inside a
+          # bash loop expands to "": the engine sees a literal `job`, not
+          # the bash variable, and there is no such needs entry. Hand each
+          # result to bash as a literal name:value pair instead and check
+          # them there.
           status="vet:${{ needs.vet.result }} lint:${{ needs.lint.result }} frontend:${{ needs.frontend.result }} test:${{ needs.test.result }} integration:${{ needs.integration.result }} proto:${{ needs.proto.result }} build:${{ needs.build.result }} gosec:${{ needs.gosec.result }} trivy:${{ needs.trivy.result }}"
           rc=0
           for pair in $status; do
