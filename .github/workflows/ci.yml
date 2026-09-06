@@ -237,7 +237,7 @@ jobs:
           CGO_ENABLED: 0
         run: go build -trimpath -ldflags "-s -w" -o levee${{ matrix.ext }} ./cmd/levee
       - name: upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: levee-${{ matrix.os }}-${{ matrix.arch }}
           path: levee${{ matrix.ext }}
@@ -275,7 +275,7 @@ jobs:
           # individually annotated with justified #nosec reasons.
           args: -exclude=G104,G115,G304,G307,G501,G505,G601 -exclude-dir=internal/grpc/pb -fmt=json -out=gosec-report.json ./...
       - name: upload report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: gosec-report
           path: gosec-report.json
@@ -330,7 +330,7 @@ jobs:
           exit-code: 0
       - name: upload report
         if: always() && hashFiles('trivy-results.sarif') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: trivy-results
           path: trivy-results.sarif
