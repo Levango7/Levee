@@ -208,7 +208,7 @@ func (s *PGStore) ListTargets(ctx context.Context, filter TargetFilter) ([]*Targ
 		q += " LIMIT " + nextArg(filter.Limit)
 	}
 	if filter.Offset > 0 {
-		q += " OFFSET " + nextArg(filter.Offset)
+		q += " OFFSET " + nextArg(filter.Offset) // #nosec G202 -- nextArg returns a $N placeholder; value binds via args
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)

@@ -235,7 +235,7 @@ func handleCheck(req *checkRequest, cfg *config) checkResponse {
 	var resp *http.Response
 	for attempt := 0; attempt <= retries; attempt++ {
 		var reqErr error
-		resp, reqErr = http.Get(url)
+		resp, reqErr = http.Get(url) // #nosec G107 -- sample plugin; URL comes from plugin config
 		if reqErr == nil {
 			break
 		}

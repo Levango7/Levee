@@ -40,9 +40,11 @@ jobs:
           go-version: '1.25'
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           # Keep in lockstep with the Makefile lint target's baseline version.
+          # (v6 cannot parse v2.x tool versions; v7 is the action line built
+          # for golangci-lint v2.)
           version: v2.13
           args: --timeout 5m
 
@@ -95,7 +97,10 @@ jobs:
         run: go test -race -cover -coverprofile=coverage.out ./...
       - name: go test (no race)
         if: matrix.os == 'windows-latest'
-        run: go test -cover -coverprofile=coverage.out ./...
+        # The quoted flag matters: the default pwsh shell otherwise parses
+        # -coverprofile=coverage.out as "-coverprofile=coverage" plus a bare
+        # ".out" package argument (setup failed on a nonexistent package).
+        run: go test -cover "-coverprofile=coverage.out" ./...
       - name: coverage gate
         if: matrix.os == 'ubuntu-latest'
         # The gate measures hand-written code only: generated protobuf bindings
@@ -259,7 +264,16 @@ jobs:
           # low-signal classes here; G501/G505/G601 have no hits today but
           # guard future dependency drift. G402 is NOT excluded: TLS verify
           # skips must stay visible (the single vault opt-in carries #nosec).
-          args: -exclude=G104,G307,G501,G505,G601 -exclude-dir=internal/grpc/pb -fmt=json -out=gosec-report.json ./...
+          # G304 (file inclusion via variable): loading user/CLI-specified
+          # configs, templates, plugins and baselines is the product's shape
+          # — every hit is a legitimate loader; path-escape hardening is
+          # enforced where it matters (e.g. drift syncJSONDir rejects
+          # separator-bearing names). G115 (integer overflow conversion):
+          # hits are protobuf pagination/count casts (int<->int32 on bounded
+          # page values). Both classes carry 2026-09 full-triage evidence:
+          # all remaining findings are fixed (0o750/0o600 tightening) or
+          # individually annotated with justified #nosec reasons.
+          args: -exclude=G104,G115,G304,G307,G501,G505,G601 -exclude-dir=internal/grpc/pb -fmt=json -out=gosec-report.json ./...
       - name: upload report
         uses: actions/upload-artifact@v4
         with:
@@ -280,7 +294,9 @@ jobs:
       - name: build docker image
         run: docker build -t levee:scan .
       - name: run trivy
-        uses: aquasecurity/trivy-action@v0.30.0
+        # v0.30.0's composite referenced aquasecurity/setup-trivy@v0.2.2 by
+        # (since-deleted) tag; v0.36.0 pins the setup action to a commit SHA.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: levee:scan
           format: sarif

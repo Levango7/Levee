@@ -216,14 +216,14 @@ func loadTenantRegistry(path string) (*tenantRegistry, error) {
 // path. The parent directory is created if it does not exist.
 func saveTenantRegistry(path string, reg *tenantRegistry) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create tenant registry dir: %w", err)
 	}
 	data, err := yaml.Marshal(reg)
 	if err != nil {
 		return fmt.Errorf("marshal tenant registry: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write tenant registry: %w", err)
 	}
 	return nil

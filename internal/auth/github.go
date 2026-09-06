@@ -47,7 +47,7 @@ type GitHubConfig struct {
 const GitHubLoginURL = "https://github.com/login/oauth/authorize"
 
 const (
-	githubTokenURL = "https://github.com/login/oauth/access_token"
+	githubTokenURL = "https://github.com/login/oauth/access_token" // #nosec G101 -- public OAuth endpoint URL constant, not a credential
 	githubAPIBase  = "https://api.github.com"
 )
 

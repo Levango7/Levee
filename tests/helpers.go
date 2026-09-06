@@ -58,7 +58,7 @@ func TempDir(t *testing.T) string {
 func WriteFile(t *testing.T, dir, name string, content []byte) string {
 	t.Helper()
 	p := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(p, content, 0o644))
+	require.NoError(t, os.WriteFile(p, content, 0o600))
 	return p
 }
 

@@ -159,7 +159,7 @@ func NewTemplateLibrary(baseDir string) (*TemplateLibrary, error) {
 	if baseDir == "" {
 		return nil, fmt.Errorf("template: empty base dir")
 	}
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	if err := os.MkdirAll(baseDir, 0o750); err != nil {
 		return nil, fmt.Errorf("template: create base dir: %w", err)
 	}
 	return &TemplateLibrary{baseDir: baseDir}, nil
@@ -394,7 +394,7 @@ func (l *TemplateLibrary) writeLocked(tmpl *Template) error {
 		return fmt.Errorf("template: encode %s: %w", tmpl.Name, err)
 	}
 	path := l.templatePath(tmpl.Name)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("template: write file %s: %w", tmpl.Name, err)
 	}
 	return nil

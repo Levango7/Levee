@@ -117,14 +117,14 @@ func loadUserRegistry(path string) (*userRegistry, error) {
 // The parent directory is created if it does not exist.
 func saveUserRegistry(path string, reg *userRegistry) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create user registry dir: %w", err)
 	}
 	data, err := yaml.Marshal(reg)
 	if err != nil {
 		return fmt.Errorf("marshal user registry: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write user registry: %w", err)
 	}
 	return nil

@@ -196,9 +196,9 @@ func (e *localExecutor) Execute(ctx context.Context, _, command string) (string,
 	// syntax we use powershell, otherwise the platform default.
 	if strings.HasPrefix(command, "powershell ") {
 		psCmd := strings.TrimPrefix(command, "powershell ")
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCmd)
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", psCmd) // #nosec G204 -- collection command is operator input by design
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+		cmd = exec.CommandContext(ctx, "sh", "-c", command) // #nosec G204 -- collection command is operator input by design
 	}
 
 	var stdout, stderr strings.Builder

@@ -745,7 +745,7 @@ func driftDataDir() (string, error) {
 	}
 	applySecurityConfig(cfg)
 	dir := filepath.Join(cfg.Server.DataDir, "drift")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("create drift dir: %w", err)
 	}
 	return dir, nil
@@ -758,7 +758,7 @@ func baselinesDir() (string, error) {
 		return "", err
 	}
 	bd := filepath.Join(dir, "baselines")
-	if err := os.MkdirAll(bd, 0o755); err != nil {
+	if err := os.MkdirAll(bd, 0o750); err != nil {
 		return "", fmt.Errorf("create baselines dir: %w", err)
 	}
 	return bd, nil
@@ -771,7 +771,7 @@ func jobsDir() (string, error) {
 		return "", err
 	}
 	jd := filepath.Join(dir, "jobs")
-	if err := os.MkdirAll(jd, 0o755); err != nil {
+	if err := os.MkdirAll(jd, 0o750); err != nil {
 		return "", fmt.Errorf("create jobs dir: %w", err)
 	}
 	return jd, nil
@@ -842,7 +842,7 @@ func syncJSONDir(dir string, desired map[string][]byte) error {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 			return fmt.Errorf("invalid entry name %q", name)
 		}
-		if err := os.WriteFile(filepath.Join(dir, name+".json"), data, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), data, 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}
 	}

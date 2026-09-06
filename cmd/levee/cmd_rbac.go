@@ -531,14 +531,14 @@ func saveRBACRoleTree(path string, tree *permission.RoleTree) error {
 			Permissions: direct,
 		})
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create role tree dir: %w", err)
 	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal role tree: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write role tree: %w", err)
 	}
 	return nil
@@ -567,14 +567,14 @@ func loadRBACPolicySet(path string) (*permission.PolicySet, error) {
 
 // saveRBACPolicySet writes the policy set to a YAML file.
 func saveRBACPolicySet(path string, ps *permission.PolicySet) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create policy dir: %w", err)
 	}
 	data, err := ps.MarshalYAML()
 	if err != nil {
 		return fmt.Errorf("marshal policies: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write policies: %w", err)
 	}
 	return nil

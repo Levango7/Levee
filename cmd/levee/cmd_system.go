@@ -451,7 +451,7 @@ func setConfigValue(cfgPath, key, value string) error {
 	if dir == "" {
 		dir = "."
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
@@ -478,7 +478,11 @@ func setConfigValue(cfgPath, key, value string) error {
 	}
 	content += yamlLine + "\n"
 
-	if err := os.WriteFile(cfgPath, []byte(content), 0o644); err != nil {
+	// cfgPath comes from the operator's own --config flag or the $HOME
+	// default; the only caller is this CLI command (no server-side path
+	// reaches here), and writing to the config file the operator names is the
+	// command's purpose. key is whitelist-validated by validateConfigKey.
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil { // #nosec G703 -- operator-named config file via --config flag; no untrusted input reaches here
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil

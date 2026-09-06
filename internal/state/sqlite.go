@@ -234,7 +234,7 @@ func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, e
 		approval_status, approval_level, created_at, updated_at, creator, incident_id
 		FROM runs`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY created_at DESC"
 	if filter.Limit > 0 {
@@ -362,7 +362,7 @@ func (s *SQLiteStore) ListBatches(ctx context.Context, filter BatchFilter) ([]*B
 	q := `SELECT id, run_id, batch_no, status, total_hosts, succeeded, failed, started_at, completed_at
 		FROM batches`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY batch_no ASC"
 	if filter.Limit > 0 {
@@ -492,7 +492,7 @@ func (s *SQLiteStore) ListSteps(ctx context.Context, filter StepFilter) ([]*Step
 		stdout, stderr, duration_ms, started_at, completed_at
 		FROM steps`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY started_at ASC"
 	if filter.Limit > 0 {
@@ -642,7 +642,7 @@ func (s *SQLiteStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Tr
 
 	q := `SELECT id, run_id, event, actor, detail, prev_hash, curr_hash, timestamp FROM trace`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY timestamp ASC, id ASC"
 	if filter.Limit > 0 {
@@ -779,7 +779,7 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, filter ApprovalFilter) 
 
 	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at FROM approvals`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY timeout_at ASC"
 	if filter.Limit > 0 {
@@ -1127,7 +1127,7 @@ func (s *SQLiteStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Au
 
 	q := `SELECT id, run_id, action, actor, target, result, timestamp FROM audit`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY timestamp DESC"
 	if filter.Limit > 0 {

@@ -236,7 +236,7 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 	}
 	if filter.Offset > 0 {
 		args = append(args, filter.Offset)
-		q += fmt.Sprintf(" OFFSET $%d", len(args))
+		q += fmt.Sprintf(" OFFSET $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -359,7 +359,7 @@ func (s *PGStore) ListBatches(ctx context.Context, filter BatchFilter) ([]*Batch
 	q += " ORDER BY batch_no ASC"
 	if filter.Limit > 0 {
 		args = append(args, filter.Limit)
-		q += fmt.Sprintf(" LIMIT $%d", len(args))
+		q += fmt.Sprintf(" LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -489,7 +489,7 @@ func (s *PGStore) ListSteps(ctx context.Context, filter StepFilter) ([]*Step, er
 	q += " ORDER BY started_at ASC"
 	if filter.Limit > 0 {
 		args = append(args, filter.Limit)
-		q += fmt.Sprintf(" LIMIT $%d", len(args))
+		q += fmt.Sprintf(" LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -635,7 +635,7 @@ func (s *PGStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace,
 	q += " ORDER BY timestamp ASC, id ASC"
 	if filter.Limit > 0 {
 		args = append(args, filter.Limit)
-		q += fmt.Sprintf(" LIMIT $%d", len(args))
+		q += fmt.Sprintf(" LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -774,7 +774,7 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 	q += " ORDER BY timeout_at ASC"
 	if filter.Limit > 0 {
 		args = append(args, filter.Limit)
-		q += fmt.Sprintf(" LIMIT $%d", len(args))
+		q += fmt.Sprintf(" LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -1126,7 +1126,7 @@ func (s *PGStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit,
 	}
 	if filter.Offset > 0 {
 		args = append(args, filter.Offset)
-		q += fmt.Sprintf(" OFFSET $%d", len(args))
+		q += fmt.Sprintf(" OFFSET $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)

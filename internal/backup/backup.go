@@ -153,7 +153,7 @@ func (m *Manager) BackupSQLite(ctx context.Context, outputPath string) error {
 	// VACUUM INTO takes a filename SQL literal. validateOutputPath rejects
 	// control characters; the remaining injection vector is the quote
 	// character itself, which SQL escapes by doubling.
-	vacuumStmt := fmt.Sprintf("VACUUM INTO '%s'", strings.ReplaceAll(outputPath, "'", "''"))
+	vacuumStmt := fmt.Sprintf("VACUUM INTO '%s'", strings.ReplaceAll(outputPath, "'", "''")) // #nosec G201 -- VACUUM INTO accepts no bind parameter; single quotes escaped above
 	if _, err := src.ExecContext(ctx, vacuumStmt); err != nil {
 		return fmt.Errorf("backup: vacuum into %q: %w", outputPath, err)
 	}

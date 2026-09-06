@@ -22,7 +22,7 @@ import (
 // Google OAuth2 token endpoint. We use the public token endpoint; the JWT
 // grant is signed with the service-account private key.
 const (
-	googleOAuth2TokenEndpoint = "https://oauth2.googleapis.com/token"
+	googleOAuth2TokenEndpoint = "https://oauth2.googleapis.com/token" // #nosec G101 -- public Google OAuth endpoint URL, not a credential
 	googleFCMScope            = "https://www.googleapis.com/auth/firebase.messaging"
 	oauth2JWTExpiry           = 1 * time.Hour
 )

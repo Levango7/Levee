@@ -479,7 +479,7 @@ func (c *SSHChannel) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 	}
 	if !c.cfg.StrictHostCheck {
 		// Insecure: accept any host key. Suitable for lab / test environments.
-		return ssh.InsecureIgnoreHostKey(), nil
+		return ssh.InsecureIgnoreHostKey(), nil // #nosec G106 -- explicit StrictHostCheck=false lab opt-in; strict mode never downgrades
 	}
 	path := c.cfg.KnownHostsPath
 	if path == "" {

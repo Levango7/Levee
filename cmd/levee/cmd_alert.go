@@ -358,7 +358,7 @@ func runAlertHistory(cmd *cobra.Command, args []string) error {
 
 // alertGetAndPrint fetches url and forwards the JSON body to PrintJSON.
 func alertGetAndPrint(url string) error {
-	resp, err := http.Get(url)
+	resp, err := http.Get(url) // #nosec G107 -- URL is operator-supplied via CLI flag/config
 	if err != nil {
 		return fmt.Errorf("alert http: %w", err)
 	}

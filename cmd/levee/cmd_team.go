@@ -209,14 +209,14 @@ func loadPermissionConfig(path string) (*permission.PermissionConfig, error) {
 // at path. The parent directory is created if it does not exist.
 func savePermissionConfig(path string, cfg *permission.PermissionConfig) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create permission config dir: %w", err)
 	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal permission config: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write permission config: %w", err)
 	}
 	return nil

@@ -197,7 +197,7 @@ func (s *Sandbox) Start(ctx context.Context) error {
 // safe because only this function ever replaces it and only while its caller
 // holds s.mu.
 func (s *Sandbox) startLocked() (*exec.Cmd, error) {
-	cmd := exec.Command(s.binary, s.args...)
+	cmd := exec.Command(s.binary, s.args...) // #nosec G204 -- plugin binary+args come from the loaded plugin manifest
 	if len(s.env) > 0 {
 		cmd.Env = s.env
 	}

@@ -217,7 +217,7 @@ func (s *SQLiteStore) ListWindows(ctx context.Context, filter WindowFilter) ([]*
 		repeat_rule, cron_expr, created_at, updated_at
 		FROM calendar_windows`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY start_time ASC"
 	if filter.Limit > 0 {

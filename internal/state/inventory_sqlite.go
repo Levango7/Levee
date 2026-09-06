@@ -224,7 +224,7 @@ func (s *SQLiteStore) ListTargets(ctx context.Context, filter TargetFilter) ([]*
 
 	q := `SELECT ` + sqliteTargetColumns + ` FROM targets`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ")
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
 	q += " ORDER BY hostname, port"
 	if filter.Limit > 0 {

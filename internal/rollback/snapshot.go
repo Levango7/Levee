@@ -146,7 +146,7 @@ func NewFileSnapshotStore(rootDir string) (*FileSnapshotStore, error) {
 	if rootDir == "" {
 		return nil, fmt.Errorf("snapshot store: root dir is empty")
 	}
-	if err := os.MkdirAll(rootDir, 0o755); err != nil {
+	if err := os.MkdirAll(rootDir, 0o750); err != nil {
 		return nil, fmt.Errorf("snapshot store: mkdir %s: %w", rootDir, err)
 	}
 	return &FileSnapshotStore{rootDir: rootDir, index: make(map[string]*Snapshot)}, nil
@@ -178,10 +178,10 @@ func (s *FileSnapshotStore) Create(ctx context.Context, snap *Snapshot) (string,
 	}
 
 	dir := s.snapshotDir(snap)
-	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "files"), 0o750); err != nil {
 		return "", fmt.Errorf("snapshot store create: mkdir files: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "configs"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "configs"), 0o750); err != nil {
 		return "", fmt.Errorf("snapshot store create: mkdir configs: %w", err)
 	}
 
@@ -190,7 +190,7 @@ func (s *FileSnapshotStore) Create(ctx context.Context, snap *Snapshot) (string,
 	if err != nil {
 		return "", fmt.Errorf("snapshot store create: marshal meta: %w", err)
 	}
-	if err := os.WriteFile(metaPath, data, 0o644); err != nil {
+	if err := os.WriteFile(metaPath, data, 0o600); err != nil {
 		return "", fmt.Errorf("snapshot store create: write meta: %w", err)
 	}
 
@@ -234,7 +234,7 @@ func (s *FileSnapshotStore) Get(ctx context.Context, id string) (*Snapshot, erro
 		if info.IsDir() || filepath.Base(path) != "meta.json" {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := os.ReadFile(path) // #nosec G122 -- operator-owned snapshot store; symlink TOCTOU residual documented in the SA ledger
 		if rerr != nil {
 			return rerr
 		}
@@ -279,7 +279,7 @@ func (s *FileSnapshotStore) List(ctx context.Context, runID, target string) ([]*
 		if info.IsDir() || filepath.Base(path) != "meta.json" {
 			return nil
 		}
-		data, rerr := os.ReadFile(path)
+		data, rerr := os.ReadFile(path) // #nosec G122 -- operator-owned snapshot store; symlink TOCTOU residual documented in the SA ledger
 		if rerr != nil {
 			return rerr
 		}
@@ -508,7 +508,7 @@ func (m *SnapshotManager) writePathMap(snapDir string, pathMap map[string]string
 		return fmt.Errorf("marshal path map: %w", err)
 	}
 	pathFile := filepath.Join(snapDir, "paths.json")
-	if err := os.WriteFile(pathFile, data, 0o644); err != nil {
+	if err := os.WriteFile(pathFile, data, 0o600); err != nil {
 		return fmt.Errorf("write path map: %w", err)
 	}
 	return nil
@@ -588,7 +588,7 @@ func (m *SnapshotManager) RestoreSnapshot(ctx context.Context, snapshotID string
 		if !ok {
 			orig = unflattenPath(rel)
 		}
-		if err := os.MkdirAll(filepath.Dir(orig), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(orig), 0o750); err != nil { // #nosec G122 -- operator-owned snapshot store; symlink TOCTOU residual documented in the SA ledger
 			return fmt.Errorf("mkdir %s: %w", filepath.Dir(orig), err)
 		}
 		if err := copyFile(path, orig); err != nil {
@@ -682,7 +682,7 @@ func unflattenPath(flat string) string {
 // copyFile copies a single file from src to dst, creating dst's parent
 // directory if needed. It preserves the file mode of src.
 func copyFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 	}
 	srcF, err := os.Open(src)

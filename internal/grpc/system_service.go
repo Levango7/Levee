@@ -274,7 +274,7 @@ func (s *SystemService) doctorCheckDataDir() *pb.DoctorCheck {
 	}
 	// Test writability by creating a temp file.
 	tmpFile := s.cfg.Server.DataDir + string(os.PathSeparator) + ".levee-doctor-probe"
-	if err := os.WriteFile(tmpFile, []byte("probe"), 0o644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte("probe"), 0o600); err != nil {
 		c.Status = "fail"
 		c.Message = fmt.Sprintf("data_dir not writable: %v", err)
 		c.Remediation = "check directory permissions"

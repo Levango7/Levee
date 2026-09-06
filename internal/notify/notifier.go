@@ -351,7 +351,7 @@ func (m *NotificationManager) Notify(ctx context.Context, msg Message) error {
 // abort in-flight deliveries. If you need cancellation, use Notify with a
 // deadline-bearing context.
 func (m *NotificationManager) NotifyAsync(ctx context.Context, msg Message) {
-	go func() {
+	go func() { // #nosec G118 -- deliberate detach so notifications survive caller cancellation
 		// Detach from the caller's context so that cancelling ctx after
 		// NotifyAsync returns does not interrupt delivery.
 		bg := context.Background()

@@ -71,7 +71,7 @@ const (
 	// DefaultTemperature is applied when LLMConfig.Temperature is zero.
 	DefaultTemperature = 0.2
 	// EnvOpenAIAPIKey is the environment variable name for the OpenAI API key.
-	EnvOpenAIAPIKey = "OPENAI_API_KEY"
+	EnvOpenAIAPIKey = "OPENAI_API_KEY" // #nosec G101 -- environment variable NAME constant, holds no secret value
 )
 
 // --- Public types -----------------------------------------------------------
