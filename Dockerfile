@@ -3,7 +3,7 @@
 # Multi-stage Dockerfile for levee.
 #
 # Stage 1 (node):       installs npm dependencies and builds the Vue frontend.
-# Stage 2 (builder):    Go 1.25 image compiles the CLI binary with version
+# Stage 2 (builder):    Go 1.26 image compiles the CLI binary with version
 #                       injection and static linking (CGO_ENABLED=0).
 # Stage 3 (dist):       copies the binary plus the embedded frontend assets
 #                       from internal/web/dist so the runtime image is minimal.
@@ -15,7 +15,7 @@
 # Run:
 #   docker run --rm -p 8080:8080 -p 9090:9090 levee:dev serve
 
-ARG GO_VERSION=1.25
+ARG GO_VERSION=1.26
 # Runtime alpine release. The builder stage deliberately uses the
 # version-less "golang:<ver>-alpine" alias (published for every maintained
 # Go series) instead of pinning an alpine-patch combo that only exists for

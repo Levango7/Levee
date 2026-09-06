@@ -128,7 +128,7 @@ levee/
 
 ## 技术栈
 
-- Go 1.25+（静态编译，单二进制）
+- Go 1.26+（静态编译，单二进制）
 - SQLite（嵌入式，零依赖）/ PostgreSQL（集群模式可选）
 - SSH: golang.org/x/crypto/ssh
 - WinRM: masterzen/winrm

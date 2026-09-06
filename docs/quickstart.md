@@ -32,7 +32,7 @@ levee version
 
 ### 源码编译
 
-需要 Go 1.25+。
+需要 Go 1.26+。
 
 ```命令示例：从源码编译安装
 git clone https://github.com/nexus/levee.git

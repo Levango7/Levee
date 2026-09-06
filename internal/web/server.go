@@ -70,13 +70,18 @@ func (s *WebUIServer) buildMux() (http.Handler, error) {
 		if err != nil {
 			return nil, fmt.Errorf("web: parse api backend url: %w", err)
 		}
-		proxy := httputil.NewSingleHostReverseProxy(upstream)
-		// Restore the original path so the gateway sees /api/v1/... even
-		// though we matched on /api/.
-		originalDirector := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			originalDirector(req)
-			req.Host = upstream.Host
+		// Rewrite instead of the (Go 1.26-deprecated) Director: the
+		// outbound path is preserved verbatim, so the gateway still sees
+		// /api/v1/... even though we matched on /api/; SetXForwarded
+		// mirrors the default director's X-Forwarded-* injection; and the
+		// outbound Host is pinned to the upstream, as the old director
+		// wrapper did.
+		proxy := &httputil.ReverseProxy{
+			Rewrite: func(pr *httputil.ProxyRequest) {
+				pr.SetURL(upstream)
+				pr.SetXForwarded()
+				pr.Out.Host = upstream.Host
+			},
 		}
 		mux.Handle("/api/", proxy)
 	}

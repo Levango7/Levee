@@ -52,6 +52,7 @@
 
 ### 安全修复
 
+- **x/crypto 升级 v0.56.0（连带 go1.26 工具链升代）**：收口 trivy 台账上最后两条依赖类遗留（CVE-2026-56855 MEDIUM、CVE-2026-78662 LOW）。v0.56.0 声明 go 1.26.0，故模块 go 指令 1.25.0→1.26.0，`ci.yml`（7 处 setup-go）、`release.yml`、`Dockerfile` `GO_VERSION`、README/quickstart 同步升代。go1.26 弃用 `httputil.ReverseProxy.Director`（staticcheck SA1019 即拦），`internal/web` API 代理迁移到等价的 `Rewrite` 形态（`SetURL`+`SetXForwarded`+固定出站 Host），`TestServer_ApiProxy` 断言收紧为锁定"完整路径透传 + Host 钉到上游"两条行为契约。
 - **REST 方法校验（P1）**：`/changes/{id}/{plan,apply,approve,reject,pause,resume,cancel,retry,rollback,archive}` 现强制 `POST`、`/changes/{id}/{logs,trace}` 强制 `GET`；此前任意 HTTP 方法（含 GET）即可触发状态变更，爬虫/预取可误暂停变更。`pause/resume/archive` 不再吞掉请求体解析错误：空体合法、畸形 JSON 返回 400。
 - **SSH BecomeUser 注入（P2）**：`buildExecCommand` 现对 `become_user` 也做 POSIX shell 引用（此前仅引用命令本体），阻断来自配置值的 `sudo -u` 注入面。
 - **/metrics 默认鉴权（P2）**：网关 `SetExtraRoute` 挂载的运维端点（`/metrics`）在配置了任一 token 时默认要求 Bearer 鉴权；新增 `--metrics-public` / `ServeGatewayConfig.MetricsPublic` 显式放开（供无法携带凭据的采集器）。

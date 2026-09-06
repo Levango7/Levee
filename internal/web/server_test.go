@@ -44,7 +44,9 @@ func TestServer_ServesSpa(t *testing.T) {
 // TestServer_ApiProxy verifies that /api/* is forwarded to the upstream
 // gateway when APIBackendURL is configured.
 func TestServer_ApiProxy(t *testing.T) {
+	var gotPath, gotHost string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotHost = r.URL.Path, r.Host
 		w.Header().Set("X-Upstream", "yes")
 		w.Write([]byte(`{"ok":true}`))
 	}))
@@ -60,12 +62,22 @@ func TestServer_ApiProxy(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/changes", nil)
+	req.Host = "levee.example"
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
 	}
 	if rec.Header().Get("X-Upstream") != "yes" {
 		t.Error("expected upstream header, proxy not wired")
+	}
+	// Contract pinned from the pre-Rewrite director behaviour: full path
+	// preserved, outbound Host pinned to the upstream.
+	if gotPath != "/api/v1/changes" {
+		t.Errorf("upstream path = %q, want /api/v1/changes", gotPath)
+	}
+	wantHost := strings.TrimPrefix(upstream.URL, "http://")
+	if gotHost != wantHost {
+		t.Errorf("upstream host = %q, want %q", gotHost, wantHost)
 	}
 }
 
