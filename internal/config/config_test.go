@@ -533,3 +533,37 @@ channel:
 	assert.Equal(t, "warn", cfg.Log.Level)
 	assert.Equal(t, "json", cfg.Log.Format)
 }
+
+// SA-019: state.sqlite_synchronous default, override and validation.
+
+func TestLoad_StateSQLiteSynchronousDefault(t *testing.T) {
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+`)
+	cfg, err := Load(p)
+	require.NoError(t, err)
+	assert.Equal(t, "normal", cfg.State.SQLiteSynchronous)
+	require.NoError(t, Validate(cfg))
+}
+
+func TestLoad_StateSQLiteSynchronousOverride(t *testing.T) {
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+state:
+  sqlite_synchronous: full
+`)
+	cfg, err := Load(p)
+	require.NoError(t, err)
+	assert.Equal(t, "full", cfg.State.SQLiteSynchronous)
+	require.NoError(t, Validate(cfg))
+}
+
+func TestValidate_StateSQLiteSynchronousInvalid(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+
+	cfg.State.SQLiteSynchronous = "always"
+	err = Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "state.sqlite_synchronous")
+}

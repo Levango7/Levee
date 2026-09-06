@@ -148,7 +148,8 @@ func runSystemStatus(cmd *cobra.Command, args []string) error {
 	dbStatus := "ok"
 	dbErr := ""
 	ctx := context.Background()
-	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
+	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path,
+		state.WithSynchronous(cfg.State.SQLiteSynchronous))
 	if err != nil {
 		dbStatus = "unreachable"
 		dbErr = err.Error()
@@ -295,7 +296,8 @@ func runSystemDoctor(cmd *cobra.Command, args []string) error {
 	// Check 2: Database reachable.
 	if cfg != nil {
 		ctx := context.Background()
-		store, dbErr := state.NewSQLiteStore(ctx, cfg.Database.Path)
+		store, dbErr := state.NewSQLiteStore(ctx, cfg.Database.Path,
+			state.WithSynchronous(cfg.State.SQLiteSynchronous))
 		if dbErr != nil {
 			checks = append(checks, map[string]any{
 				"check":  "database",

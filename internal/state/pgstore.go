@@ -46,7 +46,7 @@ const pgBaseSchemaVersion = 1
 // pgCurrentSchemaVersion mirrors currentSchemaVersion for the PostgreSQL
 // migration path. Bump whenever a forward PostgreSQL migration step is added
 // to pgMigrations; pgschema.sql must gain the same change.
-const pgCurrentSchemaVersion = 1
+const pgCurrentSchemaVersion = 2
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
@@ -966,9 +966,9 @@ func (s *PGStore) CreateCredential(ctx context.Context, cred *Credential) error 
 		return fmt.Errorf("state: create credential: nil credential")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO credentials
-		(id, name, type, encrypted_data, created_at, rotated_at)
-		VALUES ($1,$2,$3,$4,$5,$6)`,
-		cred.ID, cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt,
+		(id, name, type, encrypted_data, created_at, rotated_at, tags)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		cred.ID, cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.Tags,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create credential: %w", err)
@@ -979,10 +979,10 @@ func (s *PGStore) CreateCredential(ctx context.Context, cred *Credential) error 
 // GetCredential returns the credential with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetCredential(ctx context.Context, id string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at
+		id, name, type, encrypted_data, created_at, rotated_at, tags
 		FROM credentials WHERE id = $1`, id)
 	c := &Credential{}
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -995,10 +995,10 @@ func (s *PGStore) GetCredential(ctx context.Context, id string) (*Credential, er
 // GetCredentialByName returns the credential with the given unique name, or (nil, nil).
 func (s *PGStore) GetCredentialByName(ctx context.Context, name string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at
+		id, name, type, encrypted_data, created_at, rotated_at, tags
 		FROM credentials WHERE name = $1`, name)
 	c := &Credential{}
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1014,9 +1014,9 @@ func (s *PGStore) UpdateCredential(ctx context.Context, cred *Credential) error 
 		return fmt.Errorf("state: update credential: nil credential")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET
-		name=$1, type=$2, encrypted_data=$3, created_at=$4, rotated_at=$5
-		WHERE id=$6`,
-		cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.ID,
+		name=$1, type=$2, encrypted_data=$3, created_at=$4, rotated_at=$5, tags=$6
+		WHERE id=$7`,
+		cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.Tags, cred.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update credential %q: %w", cred.ID, err)
@@ -1030,7 +1030,7 @@ func (s *PGStore) UpdateCredential(ctx context.Context, cred *Credential) error 
 // ListCredentials returns all credentials, ordered by name ascending.
 func (s *PGStore) ListCredentials(ctx context.Context) ([]*Credential, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at
+		id, name, type, encrypted_data, created_at, rotated_at, tags
 		FROM credentials ORDER BY name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("state: list credentials: %w", err)
@@ -1040,7 +1040,7 @@ func (s *PGStore) ListCredentials(ctx context.Context) ([]*Credential, error) {
 	var out []*Credential
 	for rows.Next() {
 		c := &Credential{}
-		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags); err != nil {
 			return nil, fmt.Errorf("state: list credentials scan: %w", err)
 		}
 		out = append(out, c)

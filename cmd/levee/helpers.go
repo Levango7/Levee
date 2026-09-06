@@ -35,7 +35,8 @@ func openStore(ctx context.Context) (*state.SQLiteStore, error) {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 	applySecurityConfig(cfg)
-	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
+	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path,
+		state.WithSynchronous(cfg.State.SQLiteSynchronous))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}

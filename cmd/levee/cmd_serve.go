@@ -590,7 +590,8 @@ func buildServeServerOpts(svcs serveServices, token string, namedTokens []grpc.T
 // clusterMgr.Stop). Split out of runServe; behaviour unchanged.
 func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *cluster.ClusterManager, error) {
 	if !serveOptCluster {
-		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
+		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path,
+			state.WithSynchronous(cfg.State.SQLiteSynchronous))
 		if err != nil {
 			return nil, nil, fmt.Errorf("open store: %w", err)
 		}

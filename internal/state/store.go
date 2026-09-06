@@ -94,6 +94,10 @@ type Lock struct {
 
 // Credential is an encrypted credential reference. The plaintext never enters
 // the database, logs or trace; only AES-GCM ciphertext is stored.
+//
+// Tags carries operator metadata (e.g. target/env) as the JSON encoding of a
+// map[string]string, or "" when the credential has no tags. The state layer
+// stores it verbatim; the credential package owns encode/decode.
 type Credential struct {
 	ID            string     `json:"id"`
 	Name          string     `json:"name"`
@@ -101,6 +105,7 @@ type Credential struct {
 	EncryptedData []byte     `json:"encrypted_data"`
 	CreatedAt     time.Time  `json:"created_at"`
 	RotatedAt     *time.Time `json:"rotated_at,omitempty"`
+	Tags          string     `json:"tags,omitempty"`
 }
 
 // Audit is a high-level audit log entry. Audit entries describe who did what

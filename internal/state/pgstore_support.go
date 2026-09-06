@@ -68,7 +68,15 @@ func pgJoinPlaceholders(clauses []string) string {
 // pgschema.sql gains the matching change so fresh databases land directly on
 // pgCurrentSchemaVersion (see migrations for the full convention).
 var pgMigrations = []migrationStep{
-	// v2 (SA-018 credentials tags) is added by the next commit.
+	{
+		// SA-018: credentials.tags (see migrations on the SQLite side).
+		// The statement is dialect-compatible; kept as its own table so a
+		// future PG-only step (e.g. types, functions) can diverge freely.
+		version: 2,
+		stmts: []string{
+			`ALTER TABLE credentials ADD COLUMN tags TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // pgMigrate applies the embedded PostgreSQL schema and any pending forward

@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -48,7 +48,16 @@ type migrationStep struct {
 // lacks an IF NOT EXISTS form) are safe: steps only run on databases that
 // predate them.
 var migrations = []migrationStep{
-	// v2 (SA-018 credentials tags) is added by the next commit.
+	{
+		// SA-018: credentials.tags persists the operator metadata map as
+		// JSON text ('' when absent). Only runs on databases built before
+		// schema.sql gained the column; fresh databases get it from
+		// schema.sql directly.
+		version: 2,
+		stmts: []string{
+			`ALTER TABLE credentials ADD COLUMN tags TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // Migrate applies the embedded schema and any pending forward migrations to

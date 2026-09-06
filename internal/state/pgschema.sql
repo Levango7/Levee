@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS credentials (
     encrypted_data BYTEA   NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL,
     rotated_at     TIMESTAMPTZ,
+    tags           TEXT    NOT NULL DEFAULT '',      -- v2: JSON map[string]string, '' = none
     UNIQUE (name)
 );
 

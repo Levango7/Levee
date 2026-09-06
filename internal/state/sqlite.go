@@ -18,13 +18,43 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
+// SQLiteOption customises NewSQLiteStore at open time. Options are applied
+// in order; the zero option set reproduces the historical behaviour.
+type SQLiteOption func(*sqliteOpenOptions)
+
+type sqliteOpenOptions struct {
+	synchronous string // "" | "normal" | "full" (case-insensitive)
+}
+
+// WithSynchronous sets the SQLite synchronous pragma: "normal" (default;
+// WAL checkpoint-batched fsync) or "full" (fsync per commit, for deployments
+// where audit durability outranks the small write amplification, SA-019).
+// An empty string keeps the default. Any other value fails NewSQLiteStore.
+func WithSynchronous(mode string) SQLiteOption {
+	return func(o *sqliteOpenOptions) { o.synchronous = mode }
+}
+
 // NewSQLiteStore opens (or creates) the database at dbPath, applies migrations
 // and configures connection-level pragmas. Use ":memory:" for an in-memory
 // database (useful in tests); in that case a single shared connection is used
 // so the in-memory database survives across calls.
-func NewSQLiteStore(ctx context.Context, dbPath string) (*SQLiteStore, error) {
+func NewSQLiteStore(ctx context.Context, dbPath string, opts ...SQLiteOption) (*SQLiteStore, error) {
 	if dbPath == "" {
 		return nil, fmt.Errorf("state: empty db path")
+	}
+
+	var o sqliteOpenOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	syn := strings.ToLower(strings.TrimSpace(o.synchronous))
+	if syn == "" {
+		syn = "normal"
+	}
+	switch syn {
+	case "normal", "full":
+	default:
+		return nil, fmt.Errorf("state: invalid synchronous mode %q: must be normal|full", o.synchronous)
 	}
 
 	// For :memory: databases we must keep a single connection alive for the
@@ -58,7 +88,7 @@ func NewSQLiteStore(ctx context.Context, dbPath string) (*SQLiteStore, error) {
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA busy_timeout=5000",
-		"PRAGMA synchronous=NORMAL",
+		"PRAGMA synchronous=" + strings.ToUpper(syn),
 		"PRAGMA recursive_triggers=ON",
 	}
 	for _, p := range pragmas {
@@ -946,9 +976,9 @@ func (s *SQLiteStore) CreateCredential(ctx context.Context, cred *Credential) er
 		return fmt.Errorf("state: create credential: nil credential")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO credentials
-		(id, name, type, encrypted_data, created_at, rotated_at)
-		VALUES (?,?,?,?,?,?)`,
-		cred.ID, cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt,
+		(id, name, type, encrypted_data, created_at, rotated_at, tags)
+		VALUES (?,?,?,?,?,?,?)`,
+		cred.ID, cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.Tags,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create credential: %w", err)
@@ -959,10 +989,10 @@ func (s *SQLiteStore) CreateCredential(ctx context.Context, cred *Credential) er
 // GetCredential returns the credential with the given id, or (nil, nil) if not found.
 func (s *SQLiteStore) GetCredential(ctx context.Context, id string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at
+		id, name, type, encrypted_data, created_at, rotated_at, tags
 		FROM credentials WHERE id = ?`, id)
 	c := &Credential{}
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -975,10 +1005,10 @@ func (s *SQLiteStore) GetCredential(ctx context.Context, id string) (*Credential
 // GetCredentialByName returns the credential with the given unique name, or (nil, nil).
 func (s *SQLiteStore) GetCredentialByName(ctx context.Context, name string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at
+		id, name, type, encrypted_data, created_at, rotated_at, tags
 		FROM credentials WHERE name = ?`, name)
 	c := &Credential{}
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -994,9 +1024,9 @@ func (s *SQLiteStore) UpdateCredential(ctx context.Context, cred *Credential) er
 		return fmt.Errorf("state: update credential: nil credential")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET
-		name=?, type=?, encrypted_data=?, created_at=?, rotated_at=?
+		name=?, type=?, encrypted_data=?, created_at=?, rotated_at=?, tags=?
 		WHERE id=?`,
-		cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.ID,
+		cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.Tags, cred.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update credential %q: %w", cred.ID, err)
@@ -1010,7 +1040,7 @@ func (s *SQLiteStore) UpdateCredential(ctx context.Context, cred *Credential) er
 // ListCredentials returns all credentials, ordered by name ascending.
 func (s *SQLiteStore) ListCredentials(ctx context.Context) ([]*Credential, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at
+		id, name, type, encrypted_data, created_at, rotated_at, tags
 		FROM credentials ORDER BY name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("state: list credentials: %w", err)
@@ -1020,7 +1050,7 @@ func (s *SQLiteStore) ListCredentials(ctx context.Context) ([]*Credential, error
 	var out []*Credential
 	for rows.Next() {
 		c := &Credential{}
-		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags); err != nil {
 			return nil, fmt.Errorf("state: list credentials scan: %w", err)
 		}
 		out = append(out, c)

@@ -28,6 +28,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -167,7 +168,36 @@ type CredentialSpec struct {
 	Name      string            // 凭据名（唯一键）
 	Type      string            // 凭据类型：ssh_key, ssh_password, winrm_password, api_token, ...
 	Plaintext []byte            // 凭据明文（加密后清零）
-	Tags      map[string]string // 标签（如 target=host-a, env=prod）；当前未持久化，保留以供未来扩展
+	Tags      map[string]string // 标签（如 target=host-a, env=prod）；持久化为 credentials.tags 的 JSON map（SA-018）
+}
+
+// encodeTags serialises a tag map for the state.Credential.Tags column.
+// nil or empty maps store "" (the column's zero value), keeping rows written
+// before SA-018 indistinguishable from tag-less rows written after it.
+func encodeTags(tags map[string]string) (string, error) {
+	if len(tags) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		// map[string]string is always marshalable; defensive wrapping only.
+		return "", fmt.Errorf("credential: encode tags: %w", err)
+	}
+	return string(b), nil
+}
+
+// ParseCredentialTags decodes the tags column of a stored credential back
+// into a map. Empty (pre-SA-018 or tag-less rows) yields a nil map and no
+// error; malformed JSON yields an error naming the credential.
+func ParseCredentialTags(cred *state.Credential) (map[string]string, error) {
+	if cred == nil || cred.Tags == "" {
+		return nil, nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(cred.Tags), &m); err != nil {
+		return nil, fmt.Errorf("credential: parse tags of %q: %w", cred.Name, err)
+	}
+	return m, nil
 }
 
 // NewCredentialStore creates a new CredentialStore backed by the given
@@ -466,12 +496,17 @@ func (cs *CredentialStore) Store(ctx context.Context, spec CredentialSpec) (*sta
 	if err != nil {
 		return nil, err
 	}
+	tags, err := encodeTags(spec.Tags)
+	if err != nil {
+		return nil, err
+	}
 	cred := &state.Credential{
 		ID:            credID,
 		Name:          spec.Name,
 		Type:          spec.Type,
 		EncryptedData: blob,
 		CreatedAt:     now,
+		Tags:          tags,
 	}
 	if err := cs.store.CreateCredential(ctx, cred); err != nil {
 		return nil, fmt.Errorf("credential: persist: %w", err)

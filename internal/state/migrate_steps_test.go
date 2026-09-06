@@ -58,36 +58,40 @@ func TestMigrate_FakeSteps_AppliedIncrementallyAndExactlyOnce(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	// Fresh store lands on base version.
+	// Fresh store lands on the current version (schema.sql alone).
 	v, err := appliedSchemaVersion(ctx, store.DB())
 	require.NoError(t, err)
-	require.Equal(t, baseSchemaVersion, v)
+	require.Equal(t, currentSchemaVersion, v)
 
-	// Step v2 appears after the database was built: upgrading runs exactly
+	// Steps are numbered above the real table so they look pending against
+	// a database that already carries currentSchemaVersion.
+	next := currentSchemaVersion + 1
+
+	// Step appears after the database was built: upgrading runs exactly
 	// the pending steps.
 	withFakeSteps(t,
-		migrationStep{version: 2, stmts: []string{`CREATE TABLE fake_step_a (x INTEGER)`}},
+		migrationStep{version: next, stmts: []string{`CREATE TABLE fake_step_a (x INTEGER)`}},
 	)
 	require.NoError(t, Migrate(ctx, store.DB()))
-	assert.True(t, tableExists(t, store, "fake_step_a"), "pending step v2 must be applied")
+	assert.True(t, tableExists(t, store, "fake_step_a"), "pending step must be applied")
 	v, err = appliedSchemaVersion(ctx, store.DB())
 	require.NoError(t, err)
-	assert.Equal(t, 2, v, "version row must advance with the step")
+	assert.Equal(t, next, v, "version row must advance with the step")
 
 	// Re-running with the same table is a no-op (the CREATE would fail if
 	// the step re-ran).
 	require.NoError(t, Migrate(ctx, store.DB()))
 
-	// A later step v3 skips everything at or below the applied version.
+	// A later step skips everything at or below the applied version.
 	withFakeSteps(t,
-		migrationStep{version: 2, stmts: []string{`CREATE TABLE fake_step_a (x INTEGER)`}},
-		migrationStep{version: 3, stmts: []string{`CREATE TABLE fake_step_b (y INTEGER)`}},
+		migrationStep{version: next, stmts: []string{`CREATE TABLE fake_step_a (x INTEGER)`}},
+		migrationStep{version: next + 1, stmts: []string{`CREATE TABLE fake_step_b (y INTEGER)`}},
 	)
 	require.NoError(t, Migrate(ctx, store.DB()))
 	assert.True(t, tableExists(t, store, "fake_step_b"))
 	v, err = appliedSchemaVersion(ctx, store.DB())
 	require.NoError(t, err)
-	assert.Equal(t, 3, v)
+	assert.Equal(t, next+1, v)
 }
 
 func TestMigrate_FailedStep_IsAtomicAndNotRecorded(t *testing.T) {
@@ -96,7 +100,7 @@ func TestMigrate_FailedStep_IsAtomicAndNotRecorded(t *testing.T) {
 
 	// The second statement fails; the first must be rolled back with it and
 	// the version must not advance.
-	withFakeSteps(t, migrationStep{version: 2, stmts: []string{
+	withFakeSteps(t, migrationStep{version: currentSchemaVersion + 1, stmts: []string{
 		`CREATE TABLE fake_rolled_back (x INTEGER)`,
 		`INSERT INTO no_such_table VALUES (1)`,
 	}})
@@ -105,10 +109,10 @@ func TestMigrate_FailedStep_IsAtomicAndNotRecorded(t *testing.T) {
 		"failed step must roll its whole transaction back")
 	v, err := appliedSchemaVersion(ctx, store.DB())
 	require.NoError(t, err)
-	assert.Equal(t, baseSchemaVersion, v, "failed step must not record its version")
+	assert.Equal(t, currentSchemaVersion, v, "failed step must not record its version")
 
 	// Retrying with the fault removed applies the step cleanly.
-	withFakeSteps(t, migrationStep{version: 2, stmts: []string{
+	withFakeSteps(t, migrationStep{version: currentSchemaVersion + 1, stmts: []string{
 		`CREATE TABLE fake_rolled_back (x INTEGER)`,
 	}})
 	require.NoError(t, Migrate(ctx, store.DB()))
@@ -121,7 +125,7 @@ func TestMigrate_StepsNotReplayedOnFreshDatabase(t *testing.T) {
 	// schema.sql mirrors them; a replayed ADD COLUMN-style step would fail).
 	// An always-failing fake step proves the fresh path skips the table:
 	// if it ran, newTestStore's Migrate would error out.
-	withFakeSteps(t, migrationStep{version: 2, stmts: []string{
+	withFakeSteps(t, migrationStep{version: currentSchemaVersion + 1, stmts: []string{
 		`INSERT INTO definitely_missing_table VALUES (1)`,
 	}})
 	store := newTestStore(t) // Migrate runs at construction and must succeed
@@ -138,13 +142,13 @@ func TestPGMigrate_FakeStep(t *testing.T) {
 
 	orig := pgMigrations
 	pgMigrations = []migrationStep{
-		{version: 2, stmts: []string{`CREATE TABLE fake_step_pg (x INTEGER)`}},
+		{version: pgCurrentSchemaVersion + 1, stmts: []string{`CREATE TABLE fake_step_pg (x INTEGER)`}},
 	}
 	t.Cleanup(func() { pgMigrations = orig })
 
 	v, err := pgAppliedSchemaVersion(ctx, store.DB())
 	require.NoError(t, err)
-	require.Equal(t, pgBaseSchemaVersion, v)
+	require.Equal(t, pgCurrentSchemaVersion, v)
 
 	require.NoError(t, pgMigrate(ctx, store.DB()))
 	var n int
@@ -153,7 +157,7 @@ func TestPGMigrate_FakeStep(t *testing.T) {
 	assert.Equal(t, 1, n, "pending pg step must be applied")
 	v, err = pgAppliedSchemaVersion(ctx, store.DB())
 	require.NoError(t, err)
-	assert.Equal(t, 2, v)
+	assert.Equal(t, pgCurrentSchemaVersion+1, v)
 
 	// Idempotent re-run.
 	require.NoError(t, pgMigrate(ctx, store.DB()))

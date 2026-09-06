@@ -39,6 +39,7 @@ type Config struct {
 	Inventory  InventoryConfig  `json:"inventory"  mapstructure:"inventory"`
 	Tracing    TracingConfig    `json:"tracing"    mapstructure:"tracing"`
 	Security   SecurityConfig   `json:"security"   mapstructure:"security"`
+	State      StateConfig      `json:"state"      mapstructure:"state"`
 }
 
 // ServerConfig holds server-mode runtime parameters.
@@ -208,6 +209,16 @@ type SecurityConfig struct {
 	SensitiveFields []string `json:"sensitive_fields" mapstructure:"sensitive_fields"`
 }
 
+// StateConfig tunes the state store (SQLite) beyond the connection/pool
+// settings in DatabaseConfig.
+type StateConfig struct {
+	// SQLiteSynchronous sets the SQLite synchronous pragma: "normal"
+	// (default, WAL checkpoint-batched fsync — current behaviour) or
+	// "full" (fsync per commit; use when audit durability outranks the
+	// ~1-2% write amplification).
+	SQLiteSynchronous string `json:"sqlite_synchronous" mapstructure:"sqlite_synchronous"`
+}
+
 // LockConfig tunes the distributed mutex used for target-level mutual exclusion.
 type LockConfig struct {
 	TTL           time.Duration `json:"ttl"            mapstructure:"ttl"`
@@ -366,6 +377,15 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	}
 	if cfg.Database.MaxIdleConns > cfg.Database.MaxOpenConns && cfg.Database.MaxOpenConns > 0 {
 		problems = append(problems, "database.max_idle_conns must be <= database.max_open_conns")
+	}
+
+	// State (SA-019). Empty is tolerated and behaves like the default
+	// ("normal"); an unrecognised value is a config error rather than a
+	// silently ignored pragma.
+	switch strings.ToLower(strings.TrimSpace(cfg.State.SQLiteSynchronous)) {
+	case "", "normal", "full":
+	default:
+		problems = append(problems, fmt.Sprintf("state.sqlite_synchronous %q must be one of normal|full", cfg.State.SQLiteSynchronous))
 	}
 
 	// Log
@@ -578,6 +598,9 @@ func setDefaults(v *viper.Viper) {
 	// key is not env-bound)
 	v.SetDefault("security.sensitive_fields", []string{})
 
+	// State
+	v.SetDefault("state.sqlite_synchronous", "normal")
+
 	// Lock
 	v.SetDefault("lock.ttl", "1h")
 	v.SetDefault("lock.retry_interval", "5s")
@@ -682,6 +705,7 @@ func allKeys() []string {
 		"database.driver", "database.path",
 		"database.max_open_conns", "database.max_idle_conns",
 		"database.conn_max_lifetime",
+		"state.sqlite_synchronous",
 		"log.level", "log.format", "log.output",
 		"executor.default_concurrency", "executor.max_concurrency",
 		"executor.connect_timeout", "executor.exec_timeout",
