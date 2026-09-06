@@ -10,6 +10,11 @@
 //   - The master password lives only in process memory; it is never written
 //     to disk, never logged, and never emitted to the audit trace.
 //   - Credential plaintext is zeroed immediately after encryption.
+//   - Ciphertext blobs are self-describing (v1 format): the argon2id cost
+//     parameters are embedded in a versioned header, so raising the defaults
+//     never orphans stored credentials (see "Blob format versioning").
+//     Two released generations of headless pre-v1 blobs (64MiB and 194MiB
+//     defaults) remain readable through an authenticated parameter chain.
 //
 // This package does NOT call audit.TraceRecorder and does NOT log plaintext.
 // Logs include only the credential name and the operation result.
@@ -21,6 +26,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -55,6 +61,60 @@ const (
 	defaultMemoryCost  uint32 = 194 * 1024
 	defaultParallelism uint8  = 4
 )
+
+// --- Blob format versioning (SA-005 / SA-015) -------------------------------
+//
+// Versioned (v1) self-describing blob layout — the KDF parameters travel
+// with the ciphertext, so any future parameter bump can never break
+// existing records again:
+//
+//	header = "LEV1"(4B magic) || ver(1B = 0x01) || timeCost(1B) ||
+//	         memoryCostKiB(4B big-endian) || parallelism(1B) ||
+//	         salt(16B) || nonce(12B)                          // 39 bytes
+//	blob   = header || AES-256-GCM sealed ciphertext(+16B tag) // ≥ 55 bytes
+//
+// timeCost is encoded in one byte: values above 255 cannot be written to a
+// v1 blob and are rejected by encrypt (memoryCost uses 4 bytes because the
+// argon2 memoryCost domain is uint32 KiB; parallelism was already a uint8).
+const (
+	v1Magic      = "LEV1"
+	v1Version    = 0x01
+	v1HeaderLen  = len(v1Magic) + 1 + 1 + 4 + 1 + saltLen + nonceLen // 39
+	v1TagLen     = 16                                                // GCM auth tag
+	minV1BlobLen = v1HeaderLen + v1TagLen                            // 55
+
+	// maxV1TimeCost is the largest timeCost encodable in the v1 header.
+	maxV1TimeCost = 255
+
+	// Byte offsets inside a v1 header.
+	v1OffVersion = len(v1Magic) // 4
+	v1OffTime    = 5
+	v1OffMem     = 6
+	v1OffPar     = 10
+	v1OffSalt    = 11
+	v1OffNonce   = v1OffSalt + saltLen // 27
+)
+
+// legacyHeadlessCandidates enumerates the KDF parameter sets of the two
+// released generations of HEADLESS (pre-v1) blobs, tried in order when a
+// stored blob carries no v1 magic. GCM authentication decides which one is
+// right, so no guesswork can silently mis-decrypt:
+//
+//   - v1.11.0 / v1.12.x: salt||nonce||ct derived with the OWASP-2024
+//     defaults raised in v1.11.0 (t=3, m=194MiB, p=4) — the store's own
+//     configured params usually cover this case.
+//   - ≤ v1.10.0: derived with the ORIGINAL parameters (t=3, m=64MiB, p=4).
+//
+// Both entries are historical constants and must never change. Removal
+// window: evaluate dropping this chain two major versions after the v1
+// blob format ships (RotateMasterPassword upgrades rows opportunistically).
+var legacyHeadlessCandidates = []struct {
+	time, mem uint32
+	par       uint8
+}{
+	{defaultTimeCost, defaultMemoryCost, defaultParallelism},
+	{3, 64 * 1024, 4},
+}
 
 // --- Sentinel errors --------------------------------------------------------
 
@@ -204,8 +264,13 @@ func (cs *CredentialStore) deriveKey(salt []byte) []byte {
 
 // encrypt encrypts plaintext using AES-256-GCM with a per-credential key
 // derived from the master password and a fresh random salt. The returned
-// blob has the format: salt(16) || nonce(12) || ciphertext.
+// blob is self-describing (format v1, see "Blob format versioning" above):
+// LEV1 header carrying the KDF parameters, salt and nonce, followed by the
+// GCM-sealed ciphertext.
 func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
+	if cs.timeCost > maxV1TimeCost {
+		return nil, fmt.Errorf("credential: timeCost %d exceeds the v1 blob encoding limit (%d)", cs.timeCost, maxV1TimeCost)
+	}
 	salt := make([]byte, saltLen)
 	if n, err := rand.Read(salt); err != nil || n != saltLen {
 		return nil, fmt.Errorf("credential: generate salt: %w", err)
@@ -229,19 +294,57 @@ func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
 	}
 
 	// Seal appends ciphertext+tag to the dst (nil) and returns the whole
-	// thing. We assemble salt || nonce || ciphertext manually.
+	// thing. We assemble header || ciphertext explicitly so the header is
+	// built exactly once at its final offsets.
 	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
 
-	blob := make([]byte, 0, saltLen+len(nonce)+len(ciphertext))
-	blob = append(blob, salt...)
-	blob = append(blob, nonce...)
+	header := make([]byte, v1HeaderLen)
+	copy(header, v1Magic)
+	header[v1OffVersion] = v1Version
+	header[v1OffTime] = byte(cs.timeCost)
+	binary.BigEndian.PutUint32(header[v1OffMem:v1OffPar], cs.memoryCost)
+	header[v1OffPar] = cs.parallelism
+	copy(header[v1OffSalt:], salt)
+	copy(header[v1OffNonce:], nonce)
+
+	blob := make([]byte, 0, v1HeaderLen+len(ciphertext))
+	blob = append(blob, header...)
 	blob = append(blob, ciphertext...)
 	return blob, nil
 }
 
-// decrypt decrypts a blob produced by encrypt back to the original plaintext.
-// The blob format is: salt(16) || nonce(12) || ciphertext.
+// decrypt decrypts a stored blob back to plaintext, handling every released
+// format (see "Blob format versioning"):
+//
+//   - v1 blobs (magic "LEV1" + version byte 0x01): parameters come from the
+//     header. A failure here is a HARD error — a corrupted v1 record must
+//     not silently probe legacy parameter chains.
+//   - everything else is treated as a headless legacy blob
+//     (salt||nonce||ct) and tried against legacyHeadlessCandidates in
+//     order; the GCM auth tag is the arbiter. A blob whose first four
+//     bytes merely collide with the magic (version byte ≠ 0x01, odds
+//     2^-32·255/256) lands here too.
 func (cs *CredentialStore) decrypt(blob []byte) ([]byte, error) {
+	if len(blob) >= v1OffVersion+1 && bytes.HasPrefix(blob, []byte(v1Magic)) && blob[v1OffVersion] == v1Version {
+		if len(blob) < minV1BlobLen {
+			return nil, ErrInvalidCiphertext
+		}
+		timeCost := uint32(blob[v1OffTime])
+		memKiB := binary.BigEndian.Uint32(blob[v1OffMem:v1OffPar])
+		par := blob[v1OffPar]
+		// Reject structurally impossible parameter sets (argon2.Key panics
+		// when memKiB < 8*par or par == 0) before spending the derivation.
+		if par == 0 || memKiB < uint32(par)*8 {
+			return nil, ErrInvalidCiphertext
+		}
+		return cs.openWith(
+			blob[v1OffSalt:v1OffNonce],
+			blob[v1OffNonce:v1HeaderLen],
+			blob[v1HeaderLen:],
+			timeCost, memKiB, par,
+		)
+	}
+
 	if len(blob) < saltLen+nonceLen {
 		return nil, ErrInvalidCiphertext
 	}
@@ -249,7 +352,46 @@ func (cs *CredentialStore) decrypt(blob []byte) ([]byte, error) {
 	nonce := blob[saltLen : saltLen+nonceLen]
 	ciphertext := blob[saltLen+nonceLen:]
 
-	key := cs.deriveKey(salt)
+	// Headless legacy chain: the store's own parameters first (covers
+	// custom-parameter stores that wrote pre-v1 blobs), then the released
+	// historical sets. Each attempt costs one argon2 derivation only on the
+	// paths that actually miss; the common upgrade path (store params equal
+	// to the v1.11+ defaults) hits on the first try.
+	type candidate struct {
+		time, mem uint32
+		par       uint8
+		legacy    bool
+	}
+	cands := []candidate{{cs.timeCost, cs.memoryCost, cs.parallelism, false}}
+	for _, lc := range legacyHeadlessCandidates {
+		if lc.time == cs.timeCost && lc.mem == cs.memoryCost && lc.par == cs.parallelism {
+			continue // already first candidate
+		}
+		cands = append(cands, candidate{lc.time, lc.mem, lc.par, true})
+	}
+
+	var lastErr error
+	for _, cand := range cands {
+		// argon2.Key panics on structurally invalid params; skip rather
+		// than attempt.
+		if cand.par == 0 || cand.mem < uint32(cand.par)*8 {
+			continue
+		}
+		pt, err := cs.openWith(salt, nonce, ciphertext, cand.time, cand.mem, cand.par)
+		if err == nil {
+			log.Info("credential: decrypted a pre-v1 headless blob; rotate the master password (or re-store the credential) to upgrade it to the self-describing v1 format")
+			return pt, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// openWith derives a key with the given argon2id parameters and opens the
+// GCM ciphertext. It is the single decrypt funnel: v1 and legacy paths both
+// end here, differing only in where the parameters came from.
+func (cs *CredentialStore) openWith(salt, nonce, ciphertext []byte, timeCost, memKiB uint32, parallelism uint8) ([]byte, error) {
+	key := argon2.Key(cs.masterPassword, salt, timeCost, memKiB, parallelism, keyLen)
 	defer SecureZero(key)
 
 	block, err := aes.NewCipher(key)
