@@ -278,9 +278,11 @@ func (s *Server) Start(addr string) error {
 	if err != nil {
 		return fmt.Errorf("grpc: listen on %s: %w", addr, err)
 	}
-	s.listener = ln
 
+	// Publish the listener and the started flag together under s.mu: Addr()
+	// is polled concurrently from test/health goroutines while Start runs.
 	s.mu.Lock()
+	s.listener = ln
 	s.started = true
 	s.mu.Unlock()
 
@@ -314,6 +316,7 @@ func (s *Server) Stop() error {
 		return nil
 	}
 	s.started = false
+	ln := s.listener
 	s.mu.Unlock()
 
 	// Flip the health status first so probes stop routing traffic
@@ -325,8 +328,8 @@ func (s *Server) Stop() error {
 	if s.grpcServer != nil {
 		s.grpcServer.Stop()
 	}
-	if s.listener != nil {
-		_ = s.listener.Close()
+	if ln != nil {
+		_ = ln.Close()
 	}
 	log.Info("grpc server stopped")
 	return nil
@@ -355,12 +358,13 @@ func (s *Server) GracefulStop(ctx context.Context) error {
 
 	select {
 	case <-done:
-		if s.listener != nil {
-			_ = s.listener.Close()
-		}
 		s.mu.Lock()
+		ln := s.listener
 		s.started = false
 		s.mu.Unlock()
+		if ln != nil {
+			_ = ln.Close()
+		}
 		log.Info("grpc server graceful stop completed")
 		return nil
 	case <-ctx.Done():
@@ -370,8 +374,11 @@ func (s *Server) GracefulStop(ctx context.Context) error {
 }
 
 // Addr returns the address the server is listening on, or an empty
-// string if the server has not been started.
+// string if the server has not been started. Takes s.mu because Start()
+// publishes the listener concurrently.
 func (s *Server) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener == nil {
 		return ""
 	}

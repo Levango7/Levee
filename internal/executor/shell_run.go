@@ -20,8 +20,32 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 )
+
+// syncBuffer is a mutex-guarded bytes.Buffer. os/exec spawns copy goroutines
+// whenever cmd.Stdout / cmd.Stderr is a plain io.Writer, and those goroutines
+// keep writing until the pipe closes (i.e. until Wait reaps the process). On
+// the timeout path Run snapshots the output *before* Wait returns, so an
+// unguarded bytes.Buffer would be read while the copy goroutine writes — a
+// race the -race detector flags (CI run 2026-09-06).
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
 
 // DefaultShellTimeout is the wall-clock budget applied to a ShellRunner when
 // the caller does not override it via WithTimeout. 30 seconds is long enough
@@ -126,8 +150,10 @@ func (r *ShellRunner) Run(ctx context.Context, command string) (*ShellRunResult,
 	// Capture stdout and stderr into separate buffers so that ShellRunResult
 	// can report them independently. We do not stream because the bare-shell
 	// path is meant for short commands; long-running streaming output should
-	// go through the workflow pipeline instead.
-	var stdout, stderr bytes.Buffer
+	// go through the workflow pipeline instead. The buffers are mutex-guarded
+	// (syncBuffer) because the exec copy goroutines may still be writing when
+	// the timeout path snapshots them below.
+	var stdout, stderr syncBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -233,9 +259,9 @@ func buildShellCommand(command string) *exec.Cmd {
 	if runtime.GOOS == "windows" {
 		// /c tells cmd to execute the string and then terminate. Without it
 		// cmd would drop into an interactive prompt and hang forever.
-		return exec.Command("cmd", "/c", command)
+		return exec.Command("cmd", "/c", command) // #nosec G204 -- shell runner executes operator-supplied command by design
 	}
-	return exec.Command("sh", "-c", command)
+	return exec.Command("sh", "-c", command) // #nosec G204 -- shell runner executes operator-supplied command by design
 }
 
 // isBlank reports whether s contains only whitespace. It is a tiny helper so
