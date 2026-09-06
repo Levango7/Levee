@@ -45,6 +45,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	applySecurityConfig(cfg)
 
 	// 2. Open the template library and load the template.
 	lib, err := template.NewTemplateLibrary(templateDir(cfg))

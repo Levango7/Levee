@@ -126,6 +126,7 @@ func openPluginManager(ctx context.Context) (*plugin.PluginManager, func(), erro
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
 	}
+	applySecurityConfig(cfg)
 
 	registryPath := pluginRegistryPath(cfg)
 	registry, err := plugin.NewRegistry(ctx, registryPath)

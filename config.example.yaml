@@ -260,6 +260,18 @@ auth:
     session_secret: ""             # 例: openssl rand -hex 32 的输出
 
 # =============================================================================
+# security —— 安全加固开关
+# =============================================================================
+security:
+  # 追加自定义敏感字段名，合并进审计脱敏内置词表（password/passwd/key/token/
+  # secret/credential/private_key/api_key/passphrase/auth_code/refresh_token/
+  # access_token/ssh_key/cert/certificate/connection_string）。
+  # 匹配规则与内置一致：大小写不敏感，精确命中或 `_`/`-` 词边界后缀命中
+  # （license_plate 命中 licenseplate，sortkey 不命中）。不校验字段是否真实
+  # 存在，写错只是空转。仅文件可配（环境变量无法表达列表）。 默认: []
+  sensitive_fields: []             # 例: [ "license_plate", "vault_uri" ]
+
+# =============================================================================
 # 场景示例（按需取消注释并合并到上方正式段落）
 # =============================================================================
 #

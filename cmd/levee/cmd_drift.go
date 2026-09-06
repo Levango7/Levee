@@ -735,6 +735,7 @@ func driftDataDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
 	}
+	applySecurityConfig(cfg)
 	dir := filepath.Join(cfg.Server.DataDir, "drift")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create drift dir: %w", err)

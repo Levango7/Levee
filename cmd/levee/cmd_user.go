@@ -292,6 +292,7 @@ func loadConfigForCmd() (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	applySecurityConfig(cfg)
 	return cfg, nil
 }
 

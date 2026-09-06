@@ -308,6 +308,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	applySecurityConfig(cfg)
 
 	// 0b. OIDC verifier. Discovery is fetched eagerly with a short timeout
 	//     so a misconfigured issuer fails the start (fail-fast) instead of

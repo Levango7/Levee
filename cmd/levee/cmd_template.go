@@ -107,6 +107,7 @@ func openTemplateLibrary(_ctx context.Context) (*template.TemplateLibrary, error
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	applySecurityConfig(cfg)
 	dir := templateDir(cfg)
 	lib, err := template.NewTemplateLibrary(dir)
 	if err != nil {

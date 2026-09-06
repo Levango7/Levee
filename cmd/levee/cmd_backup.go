@@ -104,6 +104,7 @@ func resolveBackupManager(pgDSN string) (*backup.Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	applySecurityConfig(cfg)
 	return backup.NewManagerSQLite(cfg.Database.Path), nil
 }
 

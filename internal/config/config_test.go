@@ -127,6 +127,23 @@ func withEnv(t *testing.T, kv map[string]string) {
 	}
 }
 
+func TestLoad_SecuritySensitiveFields(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()+`
+security:
+  sensitive_fields:
+    - license_plate
+    - VaultURI
+`))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"license_plate", "VaultURI"}, cfg.Security.SensitiveFields)
+
+	// Absent section yields an empty (non-error) value; Validate never
+	// existence-checks entries.
+	cfg2, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+	assert.Empty(t, cfg2.Security.SensitiveFields)
+}
+
 func TestLoad_ValidFile(t *testing.T) {
 	p := writeYAML(t, minimalValidYAML())
 	cfg, err := Load(p)

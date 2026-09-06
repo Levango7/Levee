@@ -38,6 +38,7 @@ type Config struct {
 	Verify     VerifyConfig     `json:"verify"     mapstructure:"verify"`
 	Inventory  InventoryConfig  `json:"inventory"  mapstructure:"inventory"`
 	Tracing    TracingConfig    `json:"tracing"    mapstructure:"tracing"`
+	Security   SecurityConfig   `json:"security"   mapstructure:"security"`
 }
 
 // ServerConfig holds server-mode runtime parameters.
@@ -192,6 +193,19 @@ type AuditConfig struct {
 	WormStorage   bool   `json:"worm_storage"   mapstructure:"worm_storage"`
 	RetentionDays int    `json:"retention_days" mapstructure:"retention_days"`
 	ExportFormat  string `json:"export_format"  mapstructure:"export_format"`
+}
+
+// SecurityConfig groups hardening knobs that are registered into process
+// wide subsystem registries at startup.
+type SecurityConfig struct {
+	// SensitiveFields appends custom field names to the audit redaction
+	// vocabulary on top of the built-in table (see internal/audit/redact.go).
+	// Names are matched case-insensitively, exact or via a '_'/-'-' word
+	// boundary suffix. No existence validation is performed: an unknown
+	// field name is simply a no-op. Deliberately absent from the LEVEE_*
+	// environment binding table (allKeys): BindEnv can only surface a
+	// scalar, which cannot represent a list.
+	SensitiveFields []string `json:"sensitive_fields" mapstructure:"sensitive_fields"`
 }
 
 // LockConfig tunes the distributed mutex used for target-level mutual exclusion.
@@ -559,6 +573,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audit.worm_storage", true)
 	v.SetDefault("audit.retention_days", 90)
 	v.SetDefault("audit.export_format", "json")
+
+	// Security (yaml-only; see SecurityConfig.SensitiveFields for why this
+	// key is not env-bound)
+	v.SetDefault("security.sensitive_fields", []string{})
 
 	// Lock
 	v.SetDefault("lock.ttl", "1h")

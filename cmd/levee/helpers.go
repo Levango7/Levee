@@ -11,9 +11,21 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/state"
 )
+
+// applySecurityConfig propagates security-related configuration into the
+// process-wide subsystem registries. Call it after every successful
+// config.Load so audit redaction sees the full security.sensitive_fields
+// vocabulary before any trace is recorded (SA-009/SA-010).
+func applySecurityConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	audit.SetSensitiveFields(cfg.Security.SensitiveFields)
+}
 
 // openStore loads the LEVEE configuration and opens a SQLite store. The caller
 // is responsible for calling Close on the returned store when done.
@@ -22,6 +34,7 @@ func openStore(ctx context.Context) (*state.SQLiteStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+	applySecurityConfig(cfg)
 	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path)
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)

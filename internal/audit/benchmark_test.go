@@ -61,6 +61,42 @@ func BenchmarkBuildDetail(b *testing.B) {
 	}
 }
 
+// BenchmarkRedact_NestedStructs guards the SA-010 hot path: secret-free
+// structs must pass through the walker without conversion or extra
+// allocation churn, and structs with one deep hit must pay only one rebuild.
+func BenchmarkRedact_NestedStructs(b *testing.B) {
+	b.ReportAllocs()
+	type leaf struct {
+		Name string `json:"name"`
+		Host string `json:"host"`
+	}
+	type branch struct {
+		Leaves []leaf            `json:"leaves"`
+		Extra  map[string]string `json:"extra"`
+		Hidden string            `json:"hidden_password,omitempty"`
+	}
+	secretFree := []branch{
+		{Leaves: []leaf{{Name: "a", Host: "h1"}, {Name: "b", Host: "h2"}}, Extra: map[string]string{"k": "v"}},
+		{Leaves: []leaf{{Name: "c", Host: "h3"}}},
+	}
+	withHit := []branch{
+		{Leaves: []leaf{{Name: "a", Host: "h1"}, {Name: "b", Host: "h2"}}, Extra: map[string]string{"k": "v"}, Hidden: "pw"},
+		{Leaves: []leaf{{Name: "c", Host: "h3"}}},
+	}
+	b.Run("SecretFree", func(b *testing.B) {
+		input := map[string]any{"branches": secretFree}
+		for i := 0; i < b.N; i++ {
+			_ = Redact(input)
+		}
+	})
+	b.Run("WithHit", func(b *testing.B) {
+		input := map[string]any{"branches": withHit}
+		for i := 0; i < b.N; i++ {
+			_ = Redact(input)
+		}
+	})
+}
+
 func BenchmarkIsSensitive(b *testing.B) {
 	b.ReportAllocs()
 	keys := []string{"password", "username", "token", "host", "secret", "name"}

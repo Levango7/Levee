@@ -382,6 +382,7 @@ func pushConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	applySecurityConfig(cfg)
 	return filepath.Join(cfg.Server.DataDir, "push.json"), nil
 }
 
