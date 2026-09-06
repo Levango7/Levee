@@ -17,6 +17,7 @@
 ### 测试
 
 - **CLI 命令族 e2e（E-2）**：新增 12 个测试文件覆盖 drift / calendar / target / secret / pause / retry / audit / system / push / plugin / chatops / 共享 helper——每条命令走真实 `rootCmd.Execute()`，SQLite 临时库 + `--config` 隔离（push 族此前会写入真实用户目录，一并修复为隔离夹具）。harness 以"复位全部选项变量 + 遍历命令树清 pflag `Changed`"模拟 fresh process，消除 cobra 进程内全局状态跨用例泄漏（曾致 no-flag `drift detect` 误检、calendar 局部更新误报必填）。`cmd/levee`（剔除 serve）行覆盖率 45.9% → **66.8%**（质量方案目标 ≥60% 达成；最差的 `cmd_drift.go` 33.7% → 78.9%）。audit 族含 WORM 端到端篡改检测（临时库 DROP 触发器后裸 UPDATE 篡改 detail，`verify` 报 tampered / exit=6）。
+- **前端单元测试基线（E-3）**：`web/` 引入 vitest + jsdom（38 用例全绿）——`api/client`（token 三态存取、Bearer 请求拦截、`AxiosError → ApiError` 归一化的 401/5xx/网络/预请求四类路径、401 清 token 与统一文案、403 不清 token，传输层在 axios adapter 处替换，拦截器与 baseURL 走真实逻辑）；`api/sso`（OIDC PKCE 与 GitHub 两条登录流的 state/verifier 持久化、CSRF state 校验、令牌交换请求体、JWT access_token 优先 / id_token 回退的选牌逻辑、登录后一次性凭据清理、开放重定向防护）；`utils/format`（时间戳/时长/运行时长格式化与边界、状态/优先级标签色表一致性）。jsdom 的 `window.location` 不可伪造（unforgeable），401 重定向与 SSO 跳转以可观测副作用（token 清除、storage 簿记）断言并在配置中定点 origin、过滤 jsdom 导航噪音；Node ≥25 原生 webstorage 全局遮蔽 jsdom Storage，`vitest.setup.ts` 以内存实现顶替。CI `frontend` 作业纳入 `npm run test`（vitest → vue-tsc → vite build 三连）。
 
 ### 前端
 

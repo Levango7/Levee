@@ -52,7 +52,7 @@ jobs:
   # generates them even though the Go build itself does not run node.
   # ---------------------------------------------------------------------------
   frontend:
-    name: frontend (vue-tsc + vite build)
+    name: frontend (vitest + vue-tsc + vite build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -66,6 +66,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: npm ci
         run: npm ci
+      - name: unit tests
+        run: npm run test
       - name: type-check + build
         run: npm run build
 

@@ -1,3 +1,4 @@
+/// <reference types="vitest" />
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'node:path'
@@ -30,6 +31,20 @@ export default defineConfig(({ mode }) => {
           // No rewrite needed — /api/* paths map directly to gateway routes.
         },
       },
+    },
+    // Unit tests run under vitest (jsdom provides localStorage / window so
+    // the api client and SSO helpers can be exercised unmodified).
+    test: {
+      environment: 'jsdom',
+      // Pin the document origin: redirect_uri construction asserts depend on
+      // window.location.origin (vitest's jsdom default is :3000).
+      environmentOptions: { jsdom: { url: 'http://localhost/' } },
+      setupFiles: ['./vitest.setup.ts'],
+      include: ['src/**/*.spec.ts'],
+      // jsdom cannot navigate, so the un-fakeable window.location calls log
+      // "Not implemented: navigation" through the virtual console. The tests
+      // assert the observable side effects instead; drop just that noise.
+      onConsoleLog: (log) => !log.includes('Not implemented: navigation'),
     },
     build: {
       outDir: 'dist',
