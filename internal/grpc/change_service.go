@@ -1905,10 +1905,15 @@ func (s *ChangeService) publishEvent(ev *pb.ChangeEvent) {
 	if bus == nil {
 		return
 	}
+	// The fan-out iterates the live subscriber map, so it must hold bus.mu
+	// for the whole loop: unsubscribe deletes entries from it concurrently,
+	// and iterating an unsynchronised map while another goroutine writes it
+	// is a data race (and can crash the process on map corruption). The
+	// sends are non-blocking (select/default), so the lock is never held
+	// longer than the map walk itself.
 	bus.mu.Lock()
-	subs := bus.subs[ev.GetChangeId()]
-	bus.mu.Unlock()
-	for ch := range subs {
+	defer bus.mu.Unlock()
+	for ch := range bus.subs[ev.GetChangeId()] {
 		select {
 		case ch <- ev:
 		default:

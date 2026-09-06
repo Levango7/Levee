@@ -71,6 +71,81 @@ type Server struct {
 	// started guards against double Start; closed when Stop completes.
 	mu      sync.Mutex
 	started bool
+
+	// stopGraceful reports that the underlying grpc.Server's one-shot stop
+	// has been initiated via GracefulStop. Once it fires, grpc's Stop()
+	// must never be called concurrently: grpc documents the two as
+	// mutually exclusive, and in current grpc versions a concurrent Stop
+	// deadlocks against the graceful drain (which holds the grpc server
+	// mutex while waiting for handlers). A hard stop over a live graceful
+	// drain therefore force-closes the accepted connections instead.
+	// Guarded by mu; stays true for the server's remaining lifetime
+	// (grpc's stop trigger cannot be rewound).
+	stopGraceful bool
+
+	// conns tracks every connection accepted by the listener so the
+	// forced-stop path above can tear the transports down. Published by
+	// Start under mu.
+	conns *connTracker
+}
+
+// connTracker wraps a net.Listener so every accepted connection is known
+// to the Server and can be force-closed during a hard stop that runs
+// while a grpc graceful drain is still in flight (see Server.GracefulStop).
+// Closing a connection kills its HTTP/2 transport, which cancels the
+// contexts of the RPCs it carries — ctx-respecting handlers unwind on it.
+type connTracker struct {
+	net.Listener
+	mu    sync.Mutex
+	conns map[net.Conn]struct{}
+}
+
+func newConnTracker(l net.Listener) *connTracker {
+	return &connTracker{Listener: l, conns: make(map[net.Conn]struct{})}
+}
+
+func (t *connTracker) Accept() (net.Conn, error) {
+	c, err := t.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.conns[c] = struct{}{}
+	t.mu.Unlock()
+	return &trackedConn{Conn: c, tracker: t}, nil
+}
+
+// closeAll force-closes every tracked connection. Closing an already-closed
+// connection is a no-op error we discard, and self-removal happens in
+// trackedConn.Close.
+func (t *connTracker) closeAll() {
+	t.mu.Lock()
+	conns := make([]net.Conn, 0, len(t.conns))
+	for c := range t.conns {
+		conns = append(conns, c)
+	}
+	t.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
+// trackedConn removes itself from its tracker when closed, keeping the
+// tracked set bounded by the live connection count.
+type trackedConn struct {
+	net.Conn
+	tracker *connTracker
+	once    sync.Once
+}
+
+func (c *trackedConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() {
+		c.tracker.mu.Lock()
+		delete(c.tracker.conns, c.Conn)
+		c.tracker.mu.Unlock()
+	})
+	return err
 }
 
 // Option configures a Server at construction time. Options are applied
@@ -279,10 +354,15 @@ func (s *Server) Start(addr string) error {
 		return fmt.Errorf("grpc: listen on %s: %w", addr, err)
 	}
 
+	// Track accepted connections so a hard stop that arrives during a
+	// graceful drain can force-close their transports (see GracefulStop).
+	trackLn := newConnTracker(ln)
+
 	// Publish the listener and the started flag together under s.mu: Addr()
 	// is polled concurrently from test/health goroutines while Start runs.
 	s.mu.Lock()
 	s.listener = ln
+	s.conns = trackLn
 	s.started = true
 	s.mu.Unlock()
 
@@ -291,7 +371,7 @@ func (s *Server) Start(addr string) error {
 	}
 
 	log.Info("grpc server listening", "addr", ln.Addr().String(), "tls", s.tlsConfig != nil)
-	if err := s.grpcServer.Serve(ln); err != nil {
+	if err := s.grpcServer.Serve(trackLn); err != nil {
 		// Serve returns the listener error when the listener is closed
 		// under it (Stop). Distinguish that benign case from a real
 		// serve error by checking whether the server was stopped.
@@ -309,6 +389,13 @@ func (s *Server) Start(addr string) error {
 // Stop immediately closes the listener and stops the gRPC server. All
 // in-flight RPCs are cancelled. Stop is idempotent and safe to call
 // multiple times.
+//
+// If a graceful drain is still running, grpc's Stop() must not be invoked
+// concurrently with it (it would deadlock), so Stop force-closes the
+// listener and every tracked connection instead: transports die, clients
+// see connection errors, and the cancelled stream contexts let
+// ctx-respecting handlers unwind. Handlers that ignore their context leak
+// until they return — the same behaviour grpc's own Stop() exhibits.
 func (s *Server) Stop() error {
 	s.mu.Lock()
 	if !s.started {
@@ -317,12 +404,25 @@ func (s *Server) Stop() error {
 	}
 	s.started = false
 	ln := s.listener
+	tr := s.conns
+	gracefulInFlight := s.stopGraceful
 	s.mu.Unlock()
 
 	// Flip the health status first so probes stop routing traffic
 	// before the listener goes away.
 	if s.healthServer != nil {
 		s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	}
+
+	if gracefulInFlight {
+		if ln != nil {
+			_ = ln.Close()
+		}
+		if tr != nil {
+			tr.closeAll()
+		}
+		log.Info("grpc server stopped (forced during graceful drain)")
+		return nil
 	}
 
 	if s.grpcServer != nil {
@@ -339,13 +439,16 @@ func (s *Server) Stop() error {
 // server. It is the preferred shutdown path for production deployments
 // because it avoids cancelling in-progress changes. The optional ctx
 // imposes a deadline: when the context expires before all RPCs drain,
-// GracefulStop falls back to a hard Stop.
+// GracefulStop falls back to a hard Stop. The fallback never races the
+// in-progress grpc drain — Stop routes through the connection-tracking
+// force-close path while the drain is alive.
 func (s *Server) GracefulStop(ctx context.Context) error {
 	s.mu.Lock()
 	if !s.started {
 		s.mu.Unlock()
 		return nil
 	}
+	s.stopGraceful = true
 	s.mu.Unlock()
 
 	done := make(chan struct{})

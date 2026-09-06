@@ -146,7 +146,15 @@ type gateStore struct {
 
 func (g *gateStore) ListRuns(ctx context.Context, filter state.RunFilter) ([]*state.Run, error) {
 	g.once.Do(func() { close(g.entered) })
-	<-g.release
+	// Honour ctx cancellation: a hard stop over a live graceful drain
+	// force-closes the transport, which cancels the handler context. Only
+	// ctx-respecting handlers can unwind on it — grpc's own Stop() leaves
+	// handlers that ignore their context running.
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return g.Store.ListRuns(ctx, filter)
 }
 
