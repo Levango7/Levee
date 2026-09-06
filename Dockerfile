@@ -82,7 +82,13 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /ca-certificates.crt
 # ---------------------------------------------------------------------------
 FROM alpine:${ALPINE_VERSION}
 
+# Alpine base images are point-in-time snapshots: alpine:3.22 (== 3.22.5)
+# still ships openssl 3.5.7-r0, which carries CVE-2026-14456 (HIGH, denial of
+# service in QUIC servers), fixed in 3.5.8-r0 — the trivy gate blocks on it.
+# Upgrading every package to the current repo release on each build keeps the
+# runtime image free of already-fixed base CVEs at no maintenance cost.
 RUN apk add --no-cache tzdata dumb-init && \
+    apk upgrade --no-cache && \
     cp /usr/share/zoneinfo/UTC /etc/localtime && \
     echo "UTC" > /etc/timezone
 
