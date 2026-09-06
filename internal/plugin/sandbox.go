@@ -223,8 +223,10 @@ func (s *Sandbox) startLocked() (*exec.Cmd, error) {
 // in its own goroutine, one per Start call, and owns the current process
 // generation's Cmd for Wait purposes (passed in and replaced on restart).
 // The goroutine exits when the process exits and either the restart budget
-// is exhausted or Stop was called. It must not block on s.mu while a
-// Stop is pending: Stop holds s.mu until it observes doneCh closing.
+// is exhausted or Stop was called. It must never hold s.mu across
+// cmd.Wait: Stop takes s.mu briefly to snapshot the process handle, and
+// Stop's grace wait runs without the lock so the monitor can always make
+// progress recording the wait error and closing doneCh.
 func (s *Sandbox) monitor(cmd *exec.Cmd) {
 	defer close(s.doneCh)
 
@@ -300,14 +302,15 @@ func (s *Sandbox) monitor(cmd *exec.Cmd) {
 // safe to call from any goroutine.
 func (s *Sandbox) Stop(grace time.Duration) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if !s.started.Load() {
+		s.mu.Unlock()
 		return nil
 	}
-
 	s.stopped.Store(true)
 	cmd := s.cmd
+	done := s.doneCh
+	s.mu.Unlock()
+
 	if cmd == nil || cmd.Process == nil {
 		s.started.Store(false)
 		return nil
@@ -320,8 +323,10 @@ func (s *Sandbox) Stop(grace time.Duration) error {
 			"plugin", s.name, "err", err)
 	}
 
-	// Wait with a grace deadline.
-	done := s.doneCh
+	// Wait with a grace deadline. s.mu must NOT be held here: the monitor
+	// re-acquires it to record the wait error before it can close doneCh,
+	// so holding the lock across the wait would guarantee the grace period
+	// expires even for a process that is already exiting.
 	select {
 	case <-done:
 		s.started.Store(false)
@@ -330,17 +335,23 @@ func (s *Sandbox) Stop(grace time.Duration) error {
 	case <-time.After(grace):
 	}
 
-	// Escalate to kill. If the process has already been reaped by the
-	// monitor goroutine in the meantime (ProcessState is set), skip the
-	// kill: on Windows Kill() on a dead process returns "invalid
-	// argument" and on Unix it returns ESRCH. We still wait for doneCh
-	// to be closed to avoid racing the monitor.
-	if cmd.ProcessState == nil {
-		if err := killProcess(cmd.Process); err != nil {
+	// Escalate to kill. We deliberately do not inspect cmd.ProcessState:
+	// that field is written by cmd.Wait() on the monitor goroutine, and
+	// reading it here without synchronisation is a data race (the monitor
+	// may be blocked on s.mu for waitErr precisely because the process
+	// died during the grace window). A Kill racing the process's own exit
+	// is harmless (ESRCH on Unix, invalid handle on Windows), and the wait
+	// on done is what actually proves the process is gone.
+	if err := killProcess(cmd.Process); err != nil {
+		select {
+		case <-done:
+			// The monitor reaped the process concurrently; the kill error
+			// is benign.
+		default:
 			return fmt.Errorf("sandbox %q: kill: %w", s.name, err)
 		}
-		<-done
 	}
+	<-done
 	s.started.Store(false)
 	cleanupResources(cmd.Process)
 	return nil

@@ -164,9 +164,9 @@ func TestFormatCpuMaxLinux(t *testing.T) {
 		{quota: 0, want: "100000 100000"},
 	}
 	for _, tc := range cases {
-		got := formatCpuMax(tc.quota)
+		got := formatCPUMax(tc.quota)
 		if got != tc.want {
-			t.Errorf("formatCpuMax(%v) = %q, want %q", tc.quota, got, tc.want)
+			t.Errorf("formatCPUMax(%v) = %q, want %q", tc.quota, got, tc.want)
 		}
 	}
 }

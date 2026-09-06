@@ -49,7 +49,7 @@ func applyResourceLimits(p *os.Process, cfg SandboxConfig) {
 	// A cgroup subgroup must exist before its control files can be
 	// written. Creating it requires write access to the delegated
 	// hierarchy; without that we degrade to timeout-only enforcement.
-	if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+	if err := os.Mkdir(dir, 0o750); err != nil && !os.IsExist(err) {
 		log.Warn("plugin sandbox: create cgroup failed",
 			"pid", p.Pid, "dir", dir, "error", err.Error())
 		return
@@ -64,7 +64,7 @@ func applyResourceLimits(p *os.Process, cfg SandboxConfig) {
 		}
 	}
 	if cfg.CPUQuota > 0 {
-		if err := writeCgroupFile(dir, "cpu.max", formatCpuMax(cfg.CPUQuota)); err != nil {
+		if err := writeCgroupFile(dir, "cpu.max", formatCPUMax(cfg.CPUQuota)); err != nil {
 			log.Warn("plugin sandbox: set cpu.max failed", "pid", p.Pid, "error", err.Error())
 			cleanup()
 			return
@@ -98,12 +98,12 @@ func cleanupResources(p *os.Process) {
 	_ = os.Remove(cgroupDirFor(p.Pid))
 }
 
-// formatCpuMax renders a cpu.max value ("$QUOTA $PERIOD") for the given
+// formatCPUMax renders a cpu.max value ("$QUOTA $PERIOD") for the given
 // CPU quota. The value is a RATE, not a total: CPUQuota is the CPU time
 // budget per 100ms period, where 100ms of quota equals one full core
 // (250ms/100ms therefore means 2.5 cores). A zero or negative quota
 // degrades to one core rather than to "no limit".
-func formatCpuMax(quota time.Duration) string {
+func formatCPUMax(quota time.Duration) string {
 	const periodUs = 100000 // 100ms
 	quotaUs := quota.Microseconds()
 	if quotaUs <= 0 {
@@ -115,11 +115,11 @@ func formatCpuMax(quota time.Duration) string {
 // writeCgroupFile writes one line to a cgroup control file using a
 // single write(2), as the kernel requires for internal files.
 func writeCgroupFile(dir, file, content string) error {
-	f, err := os.OpenFile(filepath.Join(dir, file), os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, file), os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", file, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if _, err := f.WriteString(content + "\n"); err != nil {
 		return fmt.Errorf("write %s: %w", file, err)
 	}
