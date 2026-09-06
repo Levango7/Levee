@@ -637,7 +637,7 @@ func newSnapshotID() (string, error) {
 //
 // On Windows:
 //
-//	"C:\etc\nginx.conf"    → "rootC_etc_nginx.conf"
+//	"C:\etc\nginx.conf"    → "rootC__etc_nginx.conf"
 //
 // flattenPath is not required to be perfectly invertible; the
 // SnapshotManager writes a paths.json mapping at create time that
@@ -671,8 +671,16 @@ func flattenPath(p string) string {
 // only falls back to unflattenPath for backward compatibility.
 func unflattenPath(flat string) string {
 	if strings.HasPrefix(flat, "root") {
-		rest := strings.TrimPrefix(flat, "root")
-		return string(filepath.Separator) + strings.ReplaceAll(rest, "_", string(filepath.Separator))
+		rest := strings.ReplaceAll(strings.TrimPrefix(flat, "root"), "_", string(filepath.Separator))
+		// On Unix the leading "/" is already encoded as the first "_", so
+		// the reconstruction starts with a separator on its own; prepending
+		// another one would yield "//etc/...". Windows absolutes start with
+		// the drive letter, where the leading separator still has to be
+		// added (best-effort: the drive is unrecoverable anyway).
+		if strings.HasPrefix(rest, string(filepath.Separator)) {
+			return rest
+		}
+		return string(filepath.Separator) + rest
 	}
 	return strings.ReplaceAll(flat, "_", string(filepath.Separator))
 }
