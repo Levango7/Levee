@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/nexus/levee/internal/config"
@@ -444,7 +445,9 @@ func sortedKeys(m map[string]bool) []string {
 // use viper's WriteConfig, but that requires the config to have been read
 // from a file which may not always be the case.
 func setConfigValue(cfgPath, key, value string) error {
-	dir := cfgPath[:strings.LastIndex(cfgPath, "/")]
+	// filepath.Dir understands both separators; a "/"-only LastIndex would
+	// return -1 on Windows paths and panic the slice expression.
+	dir := filepath.Dir(cfgPath)
 	if dir == "" {
 		dir = "."
 	}

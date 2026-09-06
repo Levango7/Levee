@@ -285,8 +285,11 @@ func runDriftBaselineAuto(cmd *cobra.Command, args []string) error {
 	// Configure a snapshot source that reads from the rollback snapshot
 	// store. For MVP we use a file-based source that reads baseline items
 	// from <dataDir>/drift/snapshots/<runID>/<host>.json.
+	// SetSnapshotSource mutates a process-wide global, so restore the
+	// default no-op source on the way out (nil is the documented default).
 	src := newFileSnapshotSource()
 	drift.SetSnapshotSource(src)
+	defer drift.SetSnapshotSource(nil)
 
 	baseline, err := bm.AutoGenerate(driftOptHost, driftOptRunID)
 	if err != nil {
@@ -501,7 +504,8 @@ func runDriftScheduleAdd(cmd *cobra.Command, args []string) error {
 		Enabled:      driftOptEnabled,
 		AlertOnDrift: driftOptAlert,
 	}
-	if err := scheduler.AddJob(job); err != nil {
+	added, err := scheduler.AddJob(job)
+	if err != nil {
 		return fmt.Errorf("drift schedule add: %w", err)
 	}
 
@@ -509,7 +513,8 @@ func runDriftScheduleAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("drift schedule add: save: %w", err)
 	}
 
-	added, _ := scheduler.GetJob(job.ID)
+	// added carries the scheduler-generated ID/NextRun: job is passed by
+	// value to AddJob, so job.ID would still be empty here.
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  jobToMap(added),
@@ -518,10 +523,10 @@ func runDriftScheduleAdd(cmd *cobra.Command, args []string) error {
 		})
 	}
 	if optQuiet {
-		fmt.Fprintln(os.Stdout, job.ID)
+		fmt.Fprintln(os.Stdout, added.ID)
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "Scheduled job added: %s\n", job.ID)
+	fmt.Fprintf(os.Stdout, "Scheduled job added: %s\n", added.ID)
 	fmt.Fprintf(os.Stdout, "  Name: %s\n", added.Name)
 	fmt.Fprintf(os.Stdout, "  Cron: %s\n", added.CronExpr)
 	fmt.Fprintf(os.Stdout, "  Hosts: %s\n", strings.Join(added.Hosts, ","))
@@ -670,6 +675,9 @@ func newDriftReportCmd() *cobra.Command {
 
 // runDriftReport executes `levee drift report`.
 func runDriftReport(cmd *cobra.Command, args []string) error {
+	if driftOptHost == "" {
+		return fmt.Errorf("drift report: no host specified (use --host) [exit=2]")
+	}
 	bm, err := loadBaselinesFromDisk()
 	if err != nil {
 		return fmt.Errorf("drift report: load baselines: %w", err)
@@ -805,21 +813,53 @@ func loadBaselinesFromDisk() (*drift.BaselineManager, error) {
 }
 
 // saveBaselinesToDisk writes all baselines to the baselines directory as
-// individual JSON files keyed by host.
+// individual JSON files keyed by host, deleting files whose host no longer
+// has a baseline (otherwise `baseline delete` would leave the file behind
+// and every later command would resurrect the baseline from disk).
 func saveBaselinesToDisk(bm *drift.BaselineManager) error {
 	bd, err := baselinesDir()
 	if err != nil {
 		return err
 	}
 
+	desired := make(map[string][]byte, 0)
 	for _, b := range bm.List() {
 		data, err := json.MarshalIndent(b, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal baseline: %w", err)
 		}
-		filename := filepath.Join(bd, b.Host+".json")
-		if err := os.WriteFile(filename, data, 0o644); err != nil {
-			return fmt.Errorf("write baseline: %w", err)
+		desired[b.Host] = data
+	}
+	return syncJSONDir(bd, desired)
+}
+
+// syncJSONDir reconciles dir with the desired set of entries, writing each
+// blob as "<name>.json" and removing any *.json file whose stem is not
+// desired. Names become file names, so path separators and dot-names are
+// rejected (they would escape the directory).
+func syncJSONDir(dir string, desired map[string][]byte) error {
+	for name, data := range desired {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+			return fmt.Errorf("invalid entry name %q", name)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read dir: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		if _, keep := desired[strings.TrimSuffix(entry.Name(), ".json")]; keep {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("remove stale %s: %w", entry.Name(), err)
 		}
 	}
 	return nil
@@ -853,7 +893,7 @@ func loadJobsFromDisk(s *drift.DriftScheduler) error {
 		}
 		// Re-add the job; ignore "already exists" errors from race
 		// conditions.
-		if err := s.AddJob(job); err != nil {
+		if _, err := s.AddJob(job); err != nil {
 			continue
 		}
 	}
@@ -861,24 +901,24 @@ func loadJobsFromDisk(s *drift.DriftScheduler) error {
 }
 
 // saveJobsToDisk writes all jobs to the jobs directory as individual JSON
-// files keyed by job ID.
+// files keyed by job ID, deleting files whose job no longer exists (otherwise
+// `schedule remove` would leave the file behind and the job would resurrect
+// on the next command that loads jobs from disk).
 func saveJobsToDisk(s *drift.DriftScheduler) error {
 	jd, err := jobsDir()
 	if err != nil {
 		return err
 	}
 
+	desired := make(map[string][]byte, 0)
 	for _, j := range s.ListJobs() {
 		data, err := json.MarshalIndent(j, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal job: %w", err)
 		}
-		filename := filepath.Join(jd, j.ID+".json")
-		if err := os.WriteFile(filename, data, 0o644); err != nil {
-			return fmt.Errorf("write job: %w", err)
-		}
+		desired[j.ID] = data
 	}
-	return nil
+	return syncJSONDir(jd, desired)
 }
 
 // loadBaselineYAML reads a baseline YAML file and returns the parsed items.

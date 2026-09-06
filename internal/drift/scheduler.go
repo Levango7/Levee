@@ -110,21 +110,25 @@ func NewScheduler(detector *DriftDetector, baselineMgr *BaselineManager) *DriftS
 //
 // NextRun is computed from the cron expression and the current time so the
 // job is ready to fire as soon as the scheduler is started.
-func (s *DriftScheduler) AddJob(job DriftJob) error {
+//
+// It returns a copy of the stored job so callers can observe the generated
+// ID and NextRun: job is passed by value, so without the return the caller
+// could never see an ID it did not supply (and historically did not).
+func (s *DriftScheduler) AddJob(job DriftJob) (*DriftJob, error) {
 	if job.CronExpr == "" {
-		return fmt.Errorf("drift: add job: empty cron expression")
+		return nil, fmt.Errorf("drift: add job: empty cron expression")
 	}
 	if _, err := parseCron(job.CronExpr); err != nil {
-		return fmt.Errorf("drift: add job: %w", err)
+		return nil, fmt.Errorf("drift: add job: %w", err)
 	}
 	if len(job.Hosts) == 0 {
-		return fmt.Errorf("drift: add job: empty hosts")
+		return nil, fmt.Errorf("drift: add job: empty hosts")
 	}
 
 	if job.ID == "" {
 		id, err := generateJobID()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		job.ID = id
 	}
@@ -132,7 +136,7 @@ func (s *DriftScheduler) AddJob(job DriftJob) error {
 	// Compute the next run time from now.
 	next, err := nextOccurrence(job.CronExpr, time.Now().UTC())
 	if err != nil {
-		return fmt.Errorf("drift: add job: compute next run: %w", err)
+		return nil, fmt.Errorf("drift: add job: compute next run: %w", err)
 	}
 	job.NextRun = next
 
@@ -140,7 +144,7 @@ func (s *DriftScheduler) AddJob(job DriftJob) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.jobs[job.ID]; exists {
-		return fmt.Errorf("drift: add job %q: %w", job.ID, ErrJobExists)
+		return nil, fmt.Errorf("drift: add job %q: %w", job.ID, ErrJobExists)
 	}
 	stored := job // copy
 	s.jobs[job.ID] = &stored
@@ -151,7 +155,8 @@ func (s *DriftScheduler) AddJob(job DriftJob) error {
 		"cron", stored.CronExpr,
 		"hosts", len(stored.Hosts),
 		"next_run", stored.NextRun.Format(time.RFC3339))
-	return nil
+	out := stored // copy: callers must not reach into the live registry entry
+	return &out, nil
 }
 
 // RemoveJob removes the job with the given ID. It returns ErrJobNotFound when

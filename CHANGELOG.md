@@ -9,6 +9,14 @@
 - **ApplyChange 状态机竞态（P1）**：`ApplyChange` 读-判-写状态流转此前非原子——两个并发请求可同时通过状态检查并互相覆盖终态（双跑/状态翻转/审计污染）。新增 `state.Store.UpdateRunStatusIf`（`WHERE id=? AND status=?` 的 compare-and-set，SQLite/PG 双实现），gRPC `ApplyChange` 与 CLI `apply` 均改用 CAS 抢占 `approved/pending/draft → running`；失败方返回 `FailedPrecondition` 并携带最新状态（SQLite/PG 各新增 CAS 测试 + gRPC 并发双跑互斥测试 `TestApplyChange_ConcurrentDoubleApplyIsSerialised`）。
 - **回滚状态语义丢失（P2）**：`EngineAdapter.Run` 此前只返回 success bool，引擎 `PhaseRolledBack` 在 `ApplyChange` 中被压平为 `failed`，回滚成功与彻底失败不可区分（而 `RetryChange` 依赖 `rolled_back` 状态却永远等不到）。`EngineAdapter.Run` 新增 `phase` 返回值，`phase=="rolled_back"` 时 run 落库 `rolled_back`（新增 `TestApplyChange_EngineRolledBackPersistsStatus`）。
 - **无引擎 apply 假成功（P0 级体验缺陷）**：serve/网关未接线执行引擎时 `ApplyChange` 此前返回 `Success:true` 并把 run 置 `running` 后永久卡死。现改为 `FailedPrecondition`（"no engine wired ... status-only mode"）且不做状态流转；`serve` 启动时输出引擎未接线的 WARN 日志；CLI `apply` 保留状态流转但帮助文本如实描述为 status-only、非 JSON 输出追加 WARNING 行、JSON 输出新增 `engine_wired:false`。
+- **`drift schedule add` 恒 panic**：`DriftScheduler.AddJob` 按值接收 job，调度器生成的 ID/NextRun 只存在内部副本，调用方持有的 `job.ID` 始终为空——CLI 以空 ID 回查 `GetJob("")` 得到 nil 且错误被丢弃，随后 `jobToMap(nil)` 空指针崩溃（该命令自诞生起从未成功过）。`AddJob` 改为返回存储副本 `(*DriftJob, error)`，CLI 与磁盘装载路径改用返回值；`internal/drift` 无外部调用方，API 变更完全收敛。
+- **`drift baseline delete` 静默无效**：删除后保存只写不删，磁盘上的孤儿 JSON 文件被后续任意 drift 命令重新装载，被删基线"复活"。新增 `syncJSONDir` 目录全量对账（写入期望集 + 删除不在期望集中的 `*.json`），`baseline delete` 与 `schedule remove`（同类问题）同时修复；对账顺带拒绝含路径分隔符的 host/ID 文件名，封死以主机名/作业 ID 逃逸数据目录的路径穿越面。
+- **`drift report` 缺 `--host` 打印空主机趋势**：不再输出空 host 的伪趋势表，改为 `no host specified (use --host)` 并以 exit=2 退出。
+- **`system config set` Windows 路径 panic**：定位配置目录时按 `'/'` 做 `LastIndex`，Windows 反斜杠路径返回 -1 导致切片越界 panic；改用 `filepath.Dir`。
+
+### 测试
+
+- **CLI 命令族 e2e（E-2）**：新增 12 个测试文件覆盖 drift / calendar / target / secret / pause / retry / audit / system / push / plugin / chatops / 共享 helper——每条命令走真实 `rootCmd.Execute()`，SQLite 临时库 + `--config` 隔离（push 族此前会写入真实用户目录，一并修复为隔离夹具）。harness 以"复位全部选项变量 + 遍历命令树清 pflag `Changed`"模拟 fresh process，消除 cobra 进程内全局状态跨用例泄漏（曾致 no-flag `drift detect` 误检、calendar 局部更新误报必填）。`cmd/levee`（剔除 serve）行覆盖率 45.9% → **66.8%**（质量方案目标 ≥60% 达成；最差的 `cmd_drift.go` 33.7% → 78.9%）。audit 族含 WORM 端到端篡改检测（临时库 DROP 触发器后裸 UPDATE 篡改 detail，`verify` 报 tampered / exit=6）。
 
 ### 前端
 

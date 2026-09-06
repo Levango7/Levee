@@ -34,13 +34,18 @@ func TestAddJob(t *testing.T) {
 		Enabled:  true,
 	}
 
-	err := s.AddJob(job)
+	added, err := s.AddJob(job)
 	require.NoError(t, err)
+	require.NotNil(t, added)
 
-	// The ID is generated inside AddJob; retrieve it via ListJobs.
+	// The generated ID must be observable on the returned copy: AddJob
+	// takes job by value, so a caller-provided struct never learns it
+	// (regression guard for the `drift schedule add` nil-deref panic).
+	assert.NotEmpty(t, added.ID)
+
 	jobs := s.ListJobs()
 	require.Len(t, jobs, 1)
-	assert.NotEmpty(t, jobs[0].ID)
+	assert.Equal(t, jobs[0].ID, added.ID)
 
 	got, err := s.GetJob(jobs[0].ID)
 	require.NoError(t, err)
@@ -60,12 +65,13 @@ func TestAddJob_AutoID(t *testing.T) {
 		CronExpr: "0 * * * *",
 		Hosts:    []string{"web-01"},
 	}
-	err := s.AddJob(job)
+	added, err := s.AddJob(job)
 	require.NoError(t, err)
+	assert.NotEmpty(t, added.ID)
 
 	jobs := s.ListJobs()
 	require.Len(t, jobs, 1)
-	assert.NotEmpty(t, jobs[0].ID)
+	assert.Equal(t, jobs[0].ID, added.ID)
 }
 
 func TestAddJob_DuplicateID(t *testing.T) {
@@ -79,10 +85,10 @@ func TestAddJob_DuplicateID(t *testing.T) {
 		CronExpr: "0 * * * *",
 		Hosts:    []string{"web-01"},
 	}
-	err := s.AddJob(job)
+	_, err := s.AddJob(job)
 	require.NoError(t, err)
 
-	err = s.AddJob(job)
+	_, err = s.AddJob(job)
 	assert.ErrorIs(t, err, ErrJobExists)
 }
 
@@ -96,7 +102,7 @@ func TestAddJob_InvalidCron(t *testing.T) {
 		CronExpr: "invalid",
 		Hosts:    []string{"web-01"},
 	}
-	err := s.AddJob(job)
+	_, err := s.AddJob(job)
 	assert.Error(t, err)
 }
 
@@ -110,7 +116,7 @@ func TestAddJob_EmptyCron(t *testing.T) {
 		CronExpr: "",
 		Hosts:    []string{"web-01"},
 	}
-	err := s.AddJob(job)
+	_, err := s.AddJob(job)
 	assert.Error(t, err)
 }
 
@@ -124,7 +130,7 @@ func TestAddJob_EmptyHosts(t *testing.T) {
 		CronExpr: "0 * * * *",
 		Hosts:    nil,
 	}
-	err := s.AddJob(job)
+	_, err := s.AddJob(job)
 	assert.Error(t, err)
 }
 
@@ -140,7 +146,7 @@ func TestRemoveJob(t *testing.T) {
 		CronExpr: "0 * * * *",
 		Hosts:    []string{"web-01"},
 	}
-	err := s.AddJob(job)
+	_, err := s.AddJob(job)
 	require.NoError(t, err)
 
 	jobs := s.ListJobs()
@@ -176,7 +182,7 @@ func TestListJobs(t *testing.T) {
 			CronExpr: "0 * * * *",
 			Hosts:    []string{"web-01"},
 		}
-		err := s.AddJob(job)
+		_, err := s.AddJob(job)
 		require.NoError(t, err)
 	}
 
@@ -197,7 +203,7 @@ func TestListJobs_Sorted(t *testing.T) {
 			CronExpr: "0 * * * *",
 			Hosts:    []string{"web-01"},
 		}
-		err := s.AddJob(job)
+		_, err := s.AddJob(job)
 		require.NoError(t, err)
 	}
 
@@ -369,14 +375,11 @@ func TestGetHistory(t *testing.T) {
 // addTestJob is a helper that adds a job to the scheduler and returns the
 // generated job ID. It panics on error (test-only helper).
 func addTestJob(s *DriftScheduler, job DriftJob) string {
-	if err := s.AddJob(job); err != nil {
+	added, err := s.AddJob(job)
+	if err != nil {
 		panic(err)
 	}
-	jobs := s.ListJobs()
-	if len(jobs) == 0 {
-		panic("no jobs after add")
-	}
-	return jobs[len(jobs)-1].ID
+	return added.ID
 }
 
 // --- Start / Stop ----------------------------------------------------------
