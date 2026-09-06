@@ -25,6 +25,15 @@
 - **REST 方法校验（P1）**：`/changes/{id}/{plan,apply,approve,reject,pause,resume,cancel,retry,rollback,archive}` 现强制 `POST`、`/changes/{id}/{logs,trace}` 强制 `GET`；此前任意 HTTP 方法（含 GET）即可触发状态变更，爬虫/预取可误暂停变更。`pause/resume/archive` 不再吞掉请求体解析错误：空体合法、畸形 JSON 返回 400。
 - **SSH BecomeUser 注入（P2）**：`buildExecCommand` 现对 `become_user` 也做 POSIX shell 引用（此前仅引用命令本体），阻断来自配置值的 `sudo -u` 注入面。
 - **/metrics 默认鉴权（P2）**：网关 `SetExtraRoute` 挂载的运维端点（`/metrics`）在配置了任一 token 时默认要求 Bearer 鉴权；新增 `--metrics-public` / `ServeGatewayConfig.MetricsPublic` 显式放开（供无法携带凭据的采集器）。
+- **凭据 blob 版本化（SA-005/SA-015）**：加密 blob 添加版本前缀 + 自描述 KDF 参数——存量密文按写入时的参数解密、新写入用当前参数。收口 v1.11.0 argon2id 提参至 194MiB 造成的存量密文断代（v1.11/12 为 194MiB 代、v1.10 前为 64MiB 代），并为未来算法/参数迁移留出演进路径。
+- **随机 ID 生成失败统一硬失败（SA-012）**：身份类标识（凭据 ID、deeplink 一次性授权 token、审批/运行/锁/快照/租户/通知/计划/盘点导入等）在 `crypto/rand` 失败时一律返回错误并逐点传播，deeplink 不再降级为可猜测的 `fallback-<nano>` 时间戳；纯观测类 ID（请求关联标签、临时文件名、展示标签）保留降级并以注释标注分类；`change_service` 的 panic+recovery 策略经评审豁免。
+- **审计脱敏增强（SA-009/SA-010）**：内置敏感词表 8→16（新增 passphrase/auth_code/refresh_token/access_token/ssh_key/cert/certificate/connection_string）；匹配升级为 `_`/`-` 词边界后缀命中（`db_password` 命中、`sort_key` 不误伤、裸 `key` 仅全等匹配）；新增 `security.sensitive_fields` 自定义词表（进程级注册、热路径无锁）；脱敏支持结构体/嵌入/切片/指针的 reflect 遍历（可见性口径 = `json.Marshal` 可见字段，无命中子树原值透传零漂移）。已文档化边界：值内嵌明文（如 error 文本中的 `secret=…`）无键上下文，键名规则不可覆盖。
+- **权限矩阵加固（SA-013/SA-016）**：`Grant`/`Revoke` 未知 action 默认 WARN 后仍记录（兼容存量拼写），新增 `StrictActions` 严格模式整批拒绝且装载原子生效；`admin` + 环境通配 `*` 授予组合在装载完成后汇总 WARN 一次并列出受影响团队。
+- **权限拒绝审计接线（SA-007，部分修复）**：CLI 全局暂停/恢复的权限拒绝现落审计表一行（`permission.denied`，含 Actor 与权限串；选择 audit 表因 CLI 拒绝发生在选定任何 run 之前）。剩余边界已文档化：serve 路径不构造 PermissionMatrix（`LoadFrom*` 仅 cmd_user/cmd_rbac 调用），gRPC 侧权限检查接线待生产装配。
+- **WORM 重复写入错误语义收口（SA-014，台账降档 LOW）**：`state.CreateTrace` 将驱动 UNIQUE 约束错误映射为 `ErrTraceExists` 哨兵（SQLite 按约束错误码集合判定、不误分类 FK 违反；PG 按 SQLSTATE 23505），`WORMStore.Append` 转译为 `ErrAlreadyExists`——TOCTOU 竞态输家不再收到不透明 SQL 错误；双后端并发双写约束测试固化"恰好一方成功"。
+- **凭据 Tags 持久化（SA-018）**：新增 `credentials.tags` 列（schema v2 迁移步，SQLite/PG 形状一致，v1→v2 升级以手工构建的旧库文件实测），以 JSON map 存储；无 tag 行以 `''` 存储与历史行不可区分；`Rotate`/`RotateMasterPassword` 保留 tags。
+- **SQLite 持久级别可配置（SA-019）**：新增 `state.sqlite_synchronous = normal|full`（默认 `normal`；`full` 每提交 fsync，供审计强持久场景，写放大约 1-2%；非法值拒绝启动），环境变量 `LEVEE_STATE_SQLITE_SYNCHRONOUS` 同步可用。
+- **RetrieveInto 回调式凭据读取（SA-011，部分修复）**：`CredentialStore.RetrieveInto` 在回调返回（含 panic 展开）后必然 `SecureZero` 明文；`Retrieve` 文档清零义务升为 MUST 并推荐新代码走 RetrieveInto。已知残留（代码注释标注、非本轮修复）：serve 凭据解析器裸密码路径经 `string` 返回（`CredentialRef.Password` 为 string 类型不可清零，类型改造波及 ssh/winrm/grpc 通道）。
 
 ### 新增
 
@@ -39,6 +48,7 @@
 
 ### 变更
 
+- **CI 工具链与口径对齐**：`.gitattributes` 统一行尾；CI golangci-lint 升至 v2.13 与本地同配置（本轮清零存量 34 处告警）；CI 覆盖率统计剔除生成代码。覆盖率地板本轮维持 60%，质量方案明确**下轮把 CI 覆盖率地板抬到 70%**（state sqlite+PG 联合口径 ≥75%、CLI 剔 serve ≥60%、web vitest 纳入 CI）。
 - **Trivy 阻断合并**：`trivy` 作业对可修复的 CRITICAL/HIGH CVE 设 `exit-code: 1`，由“仅上报”改为“阻断”。
 - **集群模式如实标注**：`serve --cluster` 启动时输出告警，说明当前集群协同仅限共享 PostgreSQL 存储（数据一致性 + 咨询锁），节点注册为进程内、尚无自动故障转移/跨节点调度；README 特性描述同步收敛。
 - **前端产物清理**：`internal/web/dist` 重新构建，移除历史遗留的多代哈希资产，仅保留当前一代。
@@ -92,6 +102,8 @@
 - [SA-006] 权限矩阵添加 sync.RWMutex 保证线程安全
 - [SA-007] 权限校验拒绝时自动记录审计 trace
 - [SA-008] 哈希链排序添加二级排序键确保确定性
+
+> **勘误（2026-09-06 追加，不改写上文历史行文）**：上文 SA-007 条目与当时实际落地不符——v1.11.0 交付的是拒绝审计**机制**（recorder 注入点），生产路径（CLI/serve）并未接线，权限拒绝不会自动落审计记录，"自动记录审计 trace"属过度声明（核查证据见 `docs/security-audit.md` "2026-09-06 核查记录"）。实际接线（CLI 全局暂停/恢复拒绝落审计表）于 Unreleased 落地。
 
 ### Bug 修复
 

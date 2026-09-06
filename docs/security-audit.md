@@ -82,7 +82,7 @@
 
 ### HIGH（高危）
 
-#### [SA-004] SecureZero 可能被编译器优化掉
+#### [SA-004] SecureZero 可能被编译器优化掉 [已修复 v1.11.0]
 
 **位置**：`internal/credential/store.go:216-220`
 
@@ -100,7 +100,7 @@
 
 ---
 
-#### [SA-005] argon2id 参数偏低——OWASP 最低推荐不足以应对 GPU 攻击
+#### [SA-005] argon2id 参数偏低——OWASP 最低推荐不足以应对 GPU 攻击 [已修复 v1.11.0]
 
 **位置**：`internal/credential/store.go:46-50`
 
@@ -118,7 +118,7 @@
 
 ---
 
-#### [SA-006] 权限矩阵非线程安全——并发读写可导致数据竞争
+#### [SA-006] 权限矩阵非线程安全——并发读写可导致数据竞争 [已修复 v1.11.0]
 
 **位置**：`internal/permission/matrix.go:83-90`
 
@@ -136,7 +136,7 @@
 
 ---
 
-#### [SA-007] 权限校验缺少操作级审计——拒绝决策未自动记录审计 trace
+#### [SA-007] 权限校验缺少操作级审计——拒绝决策未自动记录审计 trace [部分修复+边界]
 
 **位置**：`internal/permission/checker.go:130-161`
 
@@ -154,7 +154,7 @@
 
 ---
 
-#### [SA-008] 哈希链排序依赖时间戳——相同时间戳的记录顺序不确定
+#### [SA-008] 哈希链排序依赖时间戳——相同时间戳的记录顺序不确定 [已修复 v1.11.0]
 
 **位置**：`internal/audit/hashchain.go:69`，`internal/state/sqlite.go:548`
 
@@ -173,7 +173,7 @@
 
 ### MEDIUM（中危）
 
-#### [SA-009] 敏感字段脱敏列表不完整——可能遗漏自定义敏感字段
+#### [SA-009] 敏感字段脱敏列表不完整——可能遗漏自定义敏感字段 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/audit/trace.go:51-60`
 
@@ -191,7 +191,7 @@
 
 ---
 
-#### [SA-010] 脱敏仅覆盖 map[string]any——结构体中的敏感字段不受保护
+#### [SA-010] 脱敏仅覆盖 map[string]any——结构体中的敏感字段不受保护 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/audit/trace.go:260-270`
 
@@ -209,7 +209,7 @@
 
 ---
 
-#### [SA-011] 凭据明文在 Retrieve 后的生命周期不受控
+#### [SA-011] 凭据明文在 Retrieve 后的生命周期不受控 [部分修复+边界]
 
 **位置**：`internal/credential/store.go:275-296`
 
@@ -227,7 +227,7 @@
 
 ---
 
-#### [SA-012] newID 在 rand.Read 失败时降级为时间戳——可预测性风险
+#### [SA-012] newID 在 rand.Read 失败时降级为时间戳——可预测性风险 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/credential/store.go:379-385`
 
@@ -243,7 +243,7 @@
 
 ---
 
-#### [SA-013] 权限矩阵的通配符 "admin" 超集可能意外扩大权限
+#### [SA-013] 权限矩阵的通配符 "admin" 超集可能意外扩大权限 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/permission/matrix.go:199-204`
 
@@ -261,7 +261,7 @@
 
 ---
 
-#### [SA-014] WORM Append 存在 TOCTOU 竞态——存在性检查与写入非原子
+#### [SA-014] WORM Append 存在 TOCTOU 竞态——存在性检查与写入非原子 [已修复 本方案后 Unreleased；台账降档 LOW]
 
 **位置**：`internal/audit/worm.go:82-98`
 
@@ -281,7 +281,7 @@
 
 ### LOW（低危）
 
-#### [SA-015] 凭据密文 blob 格式无版本标识——未来算法迁移困难
+#### [SA-015] 凭据密文 blob 格式无版本标识——未来算法迁移困难 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/credential/store.go:143-176`
 
@@ -297,7 +297,7 @@
 
 ---
 
-#### [SA-016] 权限矩阵不验证 action 名称——任意字符串均可作为权限
+#### [SA-016] 权限矩阵不验证 action 名称——任意字符串均可作为权限 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/permission/matrix.go:368-385`
 
@@ -315,7 +315,7 @@
 
 ---
 
-#### [SA-017] 哈希链使用 SHA-256 而非 HMAC——无法证明链的来源真实性
+#### [SA-017] 哈希链使用 SHA-256 而非 HMAC——无法证明链的来源真实性 [已修复 v1.11.0（opt-in：`LEVEE_AUDIT_HMAC_KEY`）]
 
 **位置**：`internal/audit/hashchain.go:156-171`
 
@@ -332,7 +332,7 @@
 
 ---
 
-#### [SA-018] 凭据 Tags 字段未持久化——可能包含安全元数据
+#### [SA-018] 凭据 Tags 字段未持久化——可能包含安全元数据 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/credential/store.go:98`
 
@@ -348,7 +348,7 @@
 
 ---
 
-#### [SA-019] SQLite synchronous=NORMAL——极端情况下可能丢失最近写入
+#### [SA-019] SQLite synchronous=NORMAL——极端情况下可能丢失最近写入 [已修复 本方案后 Unreleased]
 
 **位置**：`internal/state/sqlite.go:56`
 
@@ -366,7 +366,7 @@
 
 ### INFO（信息）
 
-#### [SA-020] AES-256-GCM nonce 使用 crypto/rand——实现正确
+#### [SA-020] AES-256-GCM nonce 使用 crypto/rand——实现正确 [无需修复：实现正确]
 
 **位置**：`internal/credential/store.go:162-165`
 
@@ -374,7 +374,7 @@
 
 ---
 
-#### [SA-021] argon2id 使用 per-credential salt——实现正确
+#### [SA-021] argon2id 使用 per-credential salt——实现正确 [无需修复：实现正确]
 
 **位置**：`internal/credential/store.go:145-148`
 
@@ -382,7 +382,7 @@
 
 ---
 
-#### [SA-022] 日志不记录凭据明文——实现正确
+#### [SA-022] 日志不记录凭据明文——实现正确 [无需修复：实现正确]
 
 **位置**：`internal/credential/store.go:260-264`, `internal/credential/provider.go:170-171`
 
@@ -390,7 +390,7 @@
 
 ---
 
-#### [SA-023] 权限矩阵默认拒绝——实现正确
+#### [SA-023] 权限矩阵默认拒绝——实现正确 [无需修复：实现正确]
 
 **位置**：`internal/permission/matrix.go:184-207`
 
@@ -398,7 +398,7 @@
 
 ---
 
-#### [SA-024] 审计 trace 的 Input/Output 自动脱敏——实现正确
+#### [SA-024] 审计 trace 的 Input/Output 自动脱敏——实现正确 [无需修复：实现正确]
 
 **位置**：`internal/audit/trace.go:282-298`
 
@@ -406,7 +406,7 @@
 
 ---
 
-#### [SA-025] WORM 校验机制能检测内容篡改——实现正确
+#### [SA-025] WORM 校验机制能检测内容篡改——实现正确 [无需修复：实现正确]
 
 **位置**：`internal/audit/worm.go:146-175`
 
@@ -414,7 +414,7 @@
 
 ---
 
-#### [SA-026] ChainVerifier 能检测多种篡改类型——实现正确
+#### [SA-026] ChainVerifier 能检测多种篡改类型——实现正确 [无需修复：实现正确]
 
 **位置**：`internal/audit/verify.go:172-214`
 
@@ -443,20 +443,52 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 
 这三个 CRITICAL 问题应优先修复。此外，`SecureZero` 可能被优化掉（SA-004）和 argon2 参数偏低（SA-005）也应在下一个迭代中解决。权限矩阵的线程安全（SA-006）和审计记录缺失（SA-007）是生产化前的必要修复项。
 
-#### 修复摘要
+#### 修复摘要（26 项全量终态，2026-09-06 更新）
 
-| 编号 | 级别 | 问题摘要 | 修复版本 | 修复方式 |
-|------|------|----------|----------|----------|
-| SA-001 | CRITICAL | WORM 存储可被底层 SQLite 绕过 | v1.0.0 | 硬编码 SQLite 触发器阻止 UPDATE/DELETE + WORMStore 接口 |
-| SA-002 | CRITICAL | 哈希链可被 Build 重建销毁证据 | v1.0.0 | Build 前先 Verify + 拒绝重建已存在链 + BuildForce 管理恢复 |
-| SA-003 | CRITICAL | 主密码无轮换机制 | v1.0.0 | RotateMasterPassword 三阶段原子轮换 + SecureZero 清理 |
-| SA-004 | HIGH | SecureZero 可能被编译器优化掉 | Unreleased | runtime.KeepAlive 防止优化 |
-| SA-005 | HIGH | argon2id 参数偏低 | Unreleased | memory cost 提升至 194MiB（OWASP 2024） |
-| SA-006 | HIGH | 权限矩阵非线程安全 | Unreleased | sync.RWMutex 保护并发读写 |
-| SA-007 | HIGH | 权限校验缺少操作级审计 | Unreleased | 拒绝时自动记录审计 trace |
-| SA-008 | HIGH | 哈希链排序依赖时间戳 | Unreleased | 添加二级排序键确保确定性 |
+| 编号 | 级别（原→终态） | 状态 | 修复方式 |
+|------|----------------|------|----------|
+| SA-001 | CRITICAL | 已修复（v1.0.0） | 硬编码 SQLite 触发器阻止 UPDATE/DELETE + WORMStore 接口 |
+| SA-002 | CRITICAL | 已修复（v1.0.0） | Build 前先 Verify + 拒绝重建已存在链 + BuildForce 管理恢复 |
+| SA-003 | CRITICAL | 已修复（v1.0.0） | RotateMasterPassword 三阶段原子轮换 + SecureZero 清理 |
+| SA-004 | HIGH | 已修复（v1.11.0） | SecureZero 末尾 runtime.KeepAlive 防止编译器优化 |
+| SA-005 | HIGH | 已修复（v1.11.0） | argon2id memory cost 提升至 194MiB（OWASP 2024）；提参造成的存量断代（v1.11/12 为 194MiB 代、v1.10 前为 64MiB 代）由 Unreleased 的 blob 版本化收口（见 SA-015） |
+| SA-006 | HIGH | 已修复（v1.11.0） | sync.RWMutex 保护并发读写；本轮另修正 checker.go 中过时的"构造后不得变更"注释 |
+| SA-007 | HIGH | **部分修复+边界** | v1.11.0 交付的拒绝审计机制核查为**生产零接线**（CHANGELOG"自动记录审计 trace"行文系虚假锚点，已加勘误）；本轮（Unreleased）CLI 全局暂停/恢复拒绝路径接线落审计表（`permission.denied` 行）；剩余边界：serve 路径不构造 PermissionMatrix（LoadFrom* 仅 cmd_user/cmd_rbac 调用），gRPC 侧接线待生产装配 |
+| SA-008 | HIGH | 已修复（v1.11.0） | SQLite/PG 双后端 `ORDER BY timestamp, id` 二级排序键 |
+| SA-009 | MEDIUM | 已修复（Unreleased） | 词表 8→16（新增 passphrase/auth_code/refresh_token/access_token/ssh_key/cert/certificate/connection_string）；`_`/`-` 词边界后缀匹配（`db_password` 命中、`sort_key` 不误伤，裸 `key` 仅全等）；`security.sensitive_fields` 配置扩展 |
+| SA-010 | MEDIUM | 已修复（Unreleased） | reflect 遍历结构体/嵌入/切片/指针（可见性口径 = json.Marshal 可见字段，known-leaf 短路 + 深度上限 8，无命中子树原值透传）；已文档化边界：值内嵌明文（如 error 文本 `secret=…`）无键上下文，键名规则不可覆盖 |
+| SA-011 | MEDIUM | **部分修复+边界** | RetrieveInto 回调式读取（defer 清零含 panic 展开路径）+ Retrieve 文档清零义务升为 MUST；残留（已标注、非本轮修复）：serve 凭据解析器的裸密码路径返回 `string`——`CredentialRef.Password` 为 string 类型不可清零，改造波及 ssh/winrm/grpc 通道，登记为已知残留 |
+| SA-012 | MEDIUM | 已修复（Unreleased） | 身份类标识（凭据 ID、deeplink 一次性 token、审批/锁/租户/通知等）rand 失败一律硬失败并逐点传播；纯观测类保留降级并以注释标注分类；change_service 的 panic+recovery 策略评审豁免 |
+| SA-013 | MEDIUM | 已修复（Unreleased） | `admin` + 环境通配 `*` 组合在装载后汇总 WARN 一次并列出受影响团队；config.example.yaml 权限段说明风险 |
+| SA-014 | MEDIUM→LOW | 已修复（Unreleased） | CreateTrace 按后端驱动错误类型（SQLite 约束码集合不含误分类 FK / PG 23505）映射 `ErrTraceExists`，WORM Append 转为 `ErrAlreadyExists`，GetTrace 预检降为快速路径；并发约束测试双后端固化；因竞态仅剩错误语义问题，台账降档 LOW |
+| SA-015 | LOW | 已修复（Unreleased） | blob 前缀版本 + 自描述 KDF 参数：旧密文按自带参数解密、新写入用当前参数，算法/参数迁移不再破坏性 |
+| SA-016 | LOW | 已修复（Unreleased） | Grant/Revoke 未知动作默认 WARN 后仍记录（兼容存量）；`StrictActions` 严格模式整批拒绝、装载原子生效 |
+| SA-017 | LOW | 已修复（v1.11.0，opt-in） | V2 canonical 化 + HMAC-SHA256 密钥摘要（`LEVEE_AUDIT_HMAC_KEY` ≥16 字节；未设置时回退无密钥 SHA-256 并 WARN）。实现随 035967a 落入 v1.11.0，当时台账未标注，本轮核查回填；部署文档已补 env 说明 |
+| SA-018 | LOW | 已修复（Unreleased） | `credentials.tags` 经 schema v2 迁移步持久化为 JSON map（schema.sql 全量形状与迁移步双轨、SQLite/PG 一致，v1→v2 升级以手工构建的旧库文件实测）；Rotate/RotateMasterPassword 保留 tags；无 tag 行与历史行不可区分（`''`） |
+| SA-019 | LOW | 已修复（Unreleased） | 新增 `state.sqlite_synchronous = normal|full`（默认 normal；full 每提交 fsync，审计强持久场景，写放大约 1-2%）；非法值启动即拒 |
+| SA-020 | INFO | 无需修复 | AES-GCM 随机 nonce + per-credential salt，实现正确 |
+| SA-021 | INFO | 无需修复 | argon2id per-credential salt，实现正确 |
+| SA-022 | INFO | 无需修复 | 凭据明文不进日志，实现正确 |
+| SA-023 | INFO | 无需修复 | 权限矩阵默认拒绝，实现正确 |
+| SA-024 | INFO | 无需修复 | trace Input/Output 自动脱敏，实现正确（覆盖面已由 SA-009/010 增强） |
+| SA-025 | INFO | 无需修复 | WORM checksum 覆盖全部内容字段，实现正确 |
+| SA-026 | INFO | 无需修复 | ChainVerifier 三类篡改检出，实现正确 |
 
-## 部署安全声明（2026-08-22）
+统计（2026-09-06 终态）：26 项中 已修复 17（v1.0.0 ×3、v1.11.0 ×5、Unreleased ×9）、部分修复+边界 2（SA-007、SA-011）、无需修复 7（SA-020~026）、未闭环 0。
+
+### 2026-09-06 核查记录
+
+本轮对上述 26 项逐条复核（方法与完整设计见 `docs/quality-hardening-2026-09.md`），要点：
+
+- **方法**：每项状态判定由独立核查代理在**当前代码库 + git 历史**上重演，不接受台账或 CHANGELOG 行文作为证据；"已修复"必须指向当前代码证据（文件:行为）或可定位的提交锚点，二者皆无则判"仍有效"。
+- **虚假锚点点名**：CHANGELOG v1.11.0"[SA-007] 权限校验拒绝时自动记录审计 trace"与代码事实不符——机制（recorder 注入点）存在但生产路径零接线，已在 CHANGELOG 原处追加勘误（不改写历史行文）。
+- **漏标回填**：SA-017 实际已随 v1.11.0 落地（`LEVEE_AUDIT_HMAC_KEY` opt-in HMAC 摘要），台账此前未标注，本轮回填。
+- **断代确认**：SA-005 提参确认于 v1.11.0 发布（2026-08-27），其副作用（存量密文 KDF 参数断代，即 SA-015）由本轮 blob 版本化收口。
+- **前提证伪**：SA-011 设计稿所称"Retrieve 存在额外明文 string 拷贝"经设计基线（0e8d74f）核对不成立；剩余暴露仅为 `CredentialRef.Password` 的 string 类型残留，按诚实原则登记为已知残留而非宣称修复。
+- **降档**：SA-014 经 C-7 消除错误语义问题后，竞态本身仅剩"预检后被约束兜底"的良性路径，台账降档 LOW。
+- **本轮修复的测试环境限制**：并发正确性测试以 `-count=5` 重复压力替代 `-race`（该机无 C 工具链，race detector 不可用），CI（linux）仍以 `-race` 为准。
+
+## 部署安全声明（2026-08-22，2026-09-06 修订）
 
 ### 已加固项
 
@@ -473,11 +505,11 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 ### 已知限制
 
 - **多租户隔离未接线**：`internal/tenant.IsolatedStore` 已实现且测试完备，但 daemon 服务路径（`levee serve`）当前为单租户运行，未按请求接入租户上下文。多租户部署前必须完成 per-request 租户传播的架构改造；在此之前请勿将 `--tenant` 相关能力视为生产可用。
-- **沙箱内存限制**：Unix 平台子进程内存不受限（`setrlimit` 仅作用于宿主进程，见 sandbox_unix.go）；依赖墙钟超时兜底。需要强隔离时请在容器/cgroup 层面限制。
-- **速率限制**：gRPC 与 REST 网关暂无内置限流，请在 LB/网关侧实施。
-- **审计 Actor 为声明式身份**：审计记录中的 Actor 来自客户端自报的身份（CLI 端取 `LEVEE_ACTOR` 环境变量，缺省 `cli-user`；服务端从请求上下文/元数据读取，缺省 `grpc-user`）。在共享 token 鉴权模式下，Actor 是**断言（asserted）而非可证明（proven）**——任何持有 token 的调用方都可自称任意身份。需要不可抵赖性时必须引入每用户独立凭证或 mTLS/签名身份。
-- **KMS/Vault 出站 TLS 校验可配置关闭**：Vault Provider 提供 `Insecure` 配置项、KMS 集成提供跳过证书校验的传输构造（`kms_helpers.go`），用于自签名证书的内网环境。**生产环境必须保持证书校验开启**（`Insecure=false`）；开启即放弃对中间人攻击的防护。
+- **沙箱内存限制**：Unix 平台子进程内存不受限（`setrlimit` 仅作用于宿主进程，见 `internal/plugin/sandbox_unix.go`）；依赖墙钟超时兜底。需要强隔离时请在容器/cgroup 层面限制。
+- **速率限制**：REST 网关内置全局限流（令牌桶，`--rate-limit` / `--rate-burst`，429 + `Retry-After`）；**gRPC 原生端口无内置限流**，请在 LB/网关侧实施。
+- **审计 Actor 为声明式身份（单令牌模式）/可证明身份（命名令牌或 SSO）**：审计记录中的 Actor 在共享单 token（`--token`/`LEVEE_TOKEN`）模式下来自客户端自报（CLI 端取 `LEVEE_ACTOR` 环境变量，缺省 `cli-user`；服务端从请求元数据读取，缺省 `grpc-user`），是**断言（asserted）而非可证明（proven）**——任何持有 token 的调用方都可自称任意身份。启用命名多令牌（`--auth-token name=secret`）、OIDC 或 GitHub SSO 后，认证主体注入请求上下文并**优先于**自报的 `X-Acting-As`，Actor 成为可证明身份。需要不可抵赖性时须启用上述凭据源之一或 mTLS。
+- **Vault 出站 TLS 校验可配置关闭**：Vault Provider 提供 `Insecure` 配置项（`insecure_vault`），用于自签名证书的内网环境。**生产环境必须保持证书校验开启**（`Insecure=false`）；开启即放弃对中间人攻击的防护。
 - **file 模块本地读取路径围栏**：`internal/executor/modules/file` 的 copy/template 动作已限制 `src` 只能取进程工作目录内的相对路径；绝对路径或越出工作目录的路径会被拒绝，除非目标目录列入 `LEVEE_FILE_MODULE_EXTRA_DIRS` 允许列表（`os.PathListSeparator` 分隔）。请保持该列表最小化，并通过 RBAC 限制 file 模块的使用面。
 
 
-**风险评级**：3 个 CRITICAL 已在 v1.0.0 修复，5 个 HIGH 正在修复中。建议在修复所有 HIGH 问题后再进入生产阶段。
+**风险评级**（2026-09-06 更新）：3 个 CRITICAL 已在 v1.0.0 修复；5 个 HIGH 中 SA-004/005/006/008 已修复（v1.11.0），SA-007 机制与 CLI 拒绝路径已接线、剩余边界见修复摘要。26 项台账全部终态、无未闭环 HIGH 及以上项；生产准入决策改以上方"已知限制"为约束清单（重点：多租户未接线、gRPC 原生端口无限流、单令牌模式 Actor 不可证明）。
