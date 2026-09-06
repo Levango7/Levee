@@ -43,13 +43,38 @@ CREATE TABLE IF NOT EXISTS cluster_locks (
 CREATE SEQUENCE IF NOT EXISTS cluster_locks_fence_seq;
 `
 
-// ensureClusterSchema applies clusterSchemaSQL. All statements are IF NOT
-// EXISTS, so concurrent application by several nodes is safe.
+// clusterSchemaDDLAdvisoryLockKey is the key of the session-level advisory
+// lock that serialises all LEVEE schema DDL against one PostgreSQL
+// database. Keep in sync with pgSchemaDDLAdvisoryLockKey in
+// internal/state/pgstore_support.go.
+const clusterSchemaDDLAdvisoryLockKey int64 = 770_001
+
+// ensureClusterSchema applies clusterSchemaSQL behind a session-level
+// advisory lock. "CREATE ... IF NOT EXISTS" is NOT safe against concurrent
+// application: the existence check and the catalog insert are not atomic,
+// and two sessions creating the same object abort on a catalog unique index
+// (pg_type_typname_nsp_index). cluster_nodes is also created by the state
+// package's pgschema.sql, so the lock key matches pgMigrate's to serialise
+// both paths across nodes and binaries.
 func ensureClusterSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("cluster: ensure schema: nil db")
 	}
-	if _, err := db.ExecContext(ctx, clusterSchemaSQL); err != nil {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("cluster: ensure schema conn: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, clusterSchemaDDLAdvisoryLockKey); err != nil {
+		return fmt.Errorf("cluster: ensure schema lock: %w", err)
+	}
+	// Unlock on a cancellation-proof context; even if the unlock itself
+	// cannot run, closing the connection below releases the session lock.
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx),
+			`SELECT pg_advisory_unlock($1)`, clusterSchemaDDLAdvisoryLockKey)
+	}()
+	if _, err := conn.ExecContext(ctx, clusterSchemaSQL); err != nil {
 		return fmt.Errorf("cluster: ensure schema: %w", err)
 	}
 	return nil

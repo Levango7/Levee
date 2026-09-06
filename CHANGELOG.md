@@ -21,6 +21,8 @@
 - **`unflattenPath` Unix 下返回双斜杠**：Unix 的 flatten 把前导 `/` 编码为第一个 `_`，unflatten 剥掉 `root` 标记后替换出的路径已自带前导分隔符，再手动前插一个分隔符得到 `//etc/nginx/nginx.conf`（Linux/macOS `TestUnflattenPathAbsolute` 红）；现仅当重建结果不以分隔符开头（Windows 盘符形态）才前插。
 - **Dockerfile 构建基底标签不存在（trivy 作业红灯）**：`golang:1.25-alpine3.20` 从未发布（Go 1.25 镜像从未跟踪 alpine 3.20），`docker build` 直接拉取失败。builder 改用官方为每个受支持 Go 系列必发的无后缀别名 `golang:1.25-alpine`；运行时基底升 `alpine:3.22`（`ALPINE_VERSION` 自此只约束运行时阶段）。
 - **Linux 构建上下文安全/风格残留（本地工具盲区补漏）**：Windows 本地 gosec/golangci-lint 看不见 `_linux.go` 文件，ubuntu 腿暴露 `sandbox_linux.go` 三处——cgroup 目录 `0o755`→`0o750`（G301）、控制文件打开模式 `0o644`→`0o600` 并补 `Close` 错误处理（G302/errcheck）、`formatCpuMax`→`formatCPUMax`（revive）。本地复验流程同步固化 `set GOOS=linux` gosec/lint/vet 三件套。
+- **分布式锁并发冲突错误误分类（windows 腿红灯暴露的生产缺陷）**：`internal/lock` 的 `Acquire` 在"查重后插入"窗口被并发对手抢占时，底层 `CreateLock` 的数据库 UNIQUE 约束错误被当作 `lock: create` 通用错误抛出——调用方无法把"锁已被并发持有"与"存储故障"区分开，`ForceAcquire` 抢占竞态同样裸抛。新增 `isUniqueViolation`（按 SQLite `UNIQUE constraint failed` / PostgreSQL `duplicate key value violates unique constraint` 文案匹配，与 registry、inventory 既有惯例口径一致）：`Acquire` 输家归一为 `ErrLockHeld` 哨兵，`ForceAcquire` 输家自动重试。`TestManager_ConcurrentAcquire_SingleWinner` 断言同步收紧为恰好 `1` 个成功、其余全部 `ErrLockHeld`（旧界限恰好容忍了该缺陷，测试此前常绿、本次调度才暴露）。
+- **PostgreSQL 并发建表目录竞态（integration&postgres 腿红灯，生产多节点同样暴露）**：`CREATE TABLE IF NOT EXISTS` 的存在性检查与系统目录插入非原子——多个连接并发创建同名表会在 `pg_type_typname_nsp_index` 唯一索引上相撞，输家事务整体以 `duplicate key value` 中止。CI 里 state 与 cluster 两个测试二进制并发创建 `cluster_nodes` 触发（state 的 pgschema.sql 与 cluster 的自建 DDL 都含该表）；生产上多节点同时对同一库首次启动同样会失败。`pgMigrate`（internal/state）与 `ensureClusterSchema`（internal/cluster）改在**专用连接**（`db.Conn`）上以共享 key 的 `pg_advisory_lock` 串行化 DDL——DDL 全程持有同一连接，完成经 `context.WithoutCancel` 解锁、`conn.Close()` 作为兜底释放（即使 DSN 配 `MaxOpenConns=1` 也不会自锁死）；`dbExecutor` 接口加 `QueryRowContext` 以同时接受 `*sql.DB`/`*sql.Tx`/`*sql.Conn`。新增回归 `TestClusterPGConcurrentEnsureSchemaSerialisesDDL`（6 goroutine 并发建 schema）。
 
 ### 测试
 
@@ -31,6 +33,8 @@
 - **diagnosis 窗口用例 Linux 抖动修复**：`TestCollect_InvalidWindow` 原以秒级截断构造 `Start > End`，Linux 纳秒精度单调钟下不总成立（CI 偶发假阴/假阳）；改为同一时间戳显式构造非法窗口。
 - **权限矩阵并发一致性用例改确定性启动同步（windows 腿红灯修复）**：`TestConcurrent_GrantThenReadConsistency` 断言"读者在写者并发期间至少观测到 1 次授权"，但该重叠纯靠调度碰运气——windows runner 上读者 1 万次扫描可全部跑完而写者一次 Grant 都未开始（`observed==0` 假红）。改为启动同步：写者首笔 Grant 后关闭信号通道、读者等通道再扫描；通道关闭顺带建立 happens-before，断言从概率性变确定性（其余 49+1 遍扫描仍与写者真并发）。
 - **file 模块绝对路径拒绝用例按平台拆分（linux/macOS 腿红灯修复）**：`TestResolveLocalSrcAbsoluteRejected` 用 `C:\Windows\...` 作第二个绝对路径样本，但 Unix 上盘符路径是普通相对文件名（策略上合法），断言必然假红。改为按 `runtime.GOOS` 分发：Windows 验盘符绝对路径，Unix 验经 `filepath.Clean` 的 `..` 存活的根路径形态（两平台都保有双重样本）。
+- **集群 leader 可见性断言改确定性收敛（windows/PG 腿红灯修复）**：`TestClusterPGTwoNodeVisibility` 在"发现对端 active"的 Eventually 之后立即裸读 `GetLeader`，但各 manager 的内存视图要等下一轮心跳才刷新——node-b 侧 leader 可能尚未收敛，断言纯赌时序。改为 `require.Eventually` 等双侧都产出 leader 再断言 ID 一致。
+- **trivy 作业可见性重构（CI）**：门禁步 `format: sarif` + `exit-code: 1` 失败时 stdout 零输出，sarif 只被其后的上传步消费——而上传步没有 `if: always()`，门禁一红即被跳过，红灯完全盲视（上一轮 trivy 失败只能看到 exit 1）。门禁前新增"scan (print findings)"步（`format: table`、CRITICAL/HIGH、`exit-code: 0`）先打印明细，两个上传步改 `if: always() && hashFiles('trivy-results.sarif') != ''`。
 
 ### 前端
 

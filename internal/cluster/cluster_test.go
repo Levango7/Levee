@@ -6,6 +6,7 @@ package cluster
 import (
 	"context"
 	"database/sql"
+	"sync"
 	"testing"
 	"time"
 
@@ -182,13 +183,19 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 		return ok && n.Status == StatusActive
 	}, 5*time.Second, 50*time.Millisecond, "node-a never saw node-b as active")
 
-	// Leader converges to the master role on both sides.
-	leaderA, okA := mgrA.GetLeader()
-	leaderB, okB := mgrB.GetLeader()
-	if assert.True(t, okA) && assert.True(t, okB) {
-		assert.Equal(t, "node-a", leaderA.ID)
-		assert.Equal(t, "node-a", leaderB.ID)
-	}
+	// Leader converges to the master role on both sides. Election runs on
+	// each node's own table view, refreshed once per health tick, so a
+	// snapshot right after A saw B can legitimately miss the leader on B —
+	// wait for both views to converge instead.
+	var leaderA, leaderB *Node
+	var okA, okB bool
+	require.Eventually(t, func() bool {
+		leaderA, okA = mgrA.GetLeader()
+		leaderB, okB = mgrB.GetLeader()
+		return okA && okB
+	}, 5*time.Second, 50*time.Millisecond, "leaders never converged on both sides")
+	assert.Equal(t, "node-a", leaderA.ID)
+	assert.Equal(t, "node-a", leaderB.ID)
 
 	// Simulate a crash of B: stop its loop WITHOUT Leave, so the node row
 	// stays in the table with an ageing heartbeat.
@@ -210,6 +217,56 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "node-b row still visible after leave")
 
 	require.NoError(t, mgrA.Stop(stopCtx))
+}
+
+// TestClusterPGConcurrentEnsureSchemaSerialisesDDL is the regression test
+// for the pg_type_typname_nsp_index catalog race: on a fresh database, two
+// sessions running CREATE TABLE IF NOT EXISTS cluster_nodes concurrently
+// both pass the existence check, and the loser aborts when the winner's
+// catalog insert becomes visible. ensureClusterSchema must serialise its
+// DDL batch on the shared schema advisory lock. The tables are dropped
+// first so the statements genuinely create objects — with the tables
+// already present the race window does not exist.
+func TestClusterPGConcurrentEnsureSchemaSerialisesDDL(t *testing.T) {
+	dsn := pgTestDSN()
+	if dsn == "" {
+		t.Skip("LEVEE_PG_TEST_DSN not set; skipping PostgreSQL cluster test")
+	}
+	db := openTestDB(t, dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+
+	for _, stmt := range []string{
+		"DROP TABLE IF EXISTS cluster_locks CASCADE",
+		"DROP TABLE IF EXISTS cluster_nodes CASCADE",
+		"DROP SEQUENCE IF EXISTS cluster_locks_fence_seq CASCADE",
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("drop for fresh-db window: %v", err)
+		}
+	}
+
+	const n = 6
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = ensureClusterSchema(ctx, db)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		require.NoErrorf(t, err, "concurrent ensureClusterSchema #%d", i)
+	}
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pg_tables
+		  WHERE schemaname = 'public'
+		    AND tablename IN ('cluster_nodes', 'cluster_locks')`).Scan(&count))
+	assert.Equal(t, 2, count, "schema must exist exactly once after concurrent ensure")
 }
 
 // TestClusterPGStaleLockSweep verifies the health loop releases lock leases

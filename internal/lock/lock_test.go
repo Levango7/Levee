@@ -862,13 +862,12 @@ func TestManager_ConcurrentAcquire_SingleWinner(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Exactly one goroutine wins the lock; the rest get ErrLockHeld.
-	// Note: under heavy concurrency, a goroutine may occasionally fail to
-	// compete due to scheduling jitter, so we assert a tolerant range
-	// instead of an exact count.
+	// Exactly one goroutine wins the lock; every other goroutine must
+	// observe ErrLockHeld — either through the initial Get or through the
+	// CreateLock UNIQUE-violation mapping (the check-then-insert window).
+	// A raw driver error escaping here means the conflict mapping broke.
 	assert.Equal(t, 1, success, "exactly one goroutine should acquire the lock")
-	assert.GreaterOrEqual(t, held, 17, "the rest should get ErrLockHeld")
-	assert.LessOrEqual(t, held, 20, "held should not exceed total")
+	assert.Equal(t, n-1, held, "every loser must see ErrLockHeld")
 }
 
 // =========================================================================

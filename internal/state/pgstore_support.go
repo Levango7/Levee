@@ -79,6 +79,12 @@ var pgMigrations = []migrationStep{
 	},
 }
 
+// pgSchemaDDLAdvisoryLockKey is the key of the session-level advisory lock
+// that serialises all LEVEE schema DDL against one PostgreSQL database.
+// Keep in sync with clusterSchemaDDLAdvisoryLockKey in
+// internal/cluster/pg_registry.go.
+const pgSchemaDDLAdvisoryLockKey int64 = 770_001
+
 // pgMigrate applies the embedded PostgreSQL schema and any pending forward
 // migrations to the given database. Idempotent; semantics mirror Migrate:
 // fresh databases are built from pgschema.sql in one transaction and land on
@@ -86,21 +92,46 @@ var pgMigrations = []migrationStep{
 // each committed atomically with its version row. PostgreSQL DDL is fully
 // transactional (including CREATE TRIGGER and function bodies), so every
 // step is atomic.
+//
+// All DDL runs behind a session-level advisory lock: "CREATE ... IF NOT
+// EXISTS" is not concurrency-safe (the existence check and the catalog
+// insert are not atomic, so two sessions creating the same object abort on
+// a catalog unique index such as pg_type_typname_nsp_index), several LEVEE
+// nodes may share one database and migrate it at startup, and the cluster
+// package applies overlapping objects (cluster_nodes) from another binary.
 func pgMigrate(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("state: pg migrate: nil db handle")
 	}
 
+	// Reserve one connection and hold the advisory lock on it for the whole
+	// migration; every statement below runs on that same connection so a
+	// MaxOpenConns=1 pool cannot starve itself while the lock is held.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("state: pg migrate conn: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, pgSchemaDDLAdvisoryLockKey); err != nil {
+		return fmt.Errorf("state: pg migrate advisory lock: %w", err)
+	}
+	// Unlock on a cancellation-proof context; even if the unlock itself
+	// cannot run, closing the connection below releases the session lock.
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx),
+			`SELECT pg_advisory_unlock($1)`, pgSchemaDDLAdvisoryLockKey)
+	}()
+
 	// Ensure schema_version exists first so we can record progress even if
 	// the very first run fails halfway through.
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (
 		version    INTEGER PRIMARY KEY,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	)`); err != nil {
 		return fmt.Errorf("state: create pg schema_version: %w", err)
 	}
 
-	applied, err := pgAppliedSchemaVersion(ctx, db)
+	applied, err := pgAppliedSchemaVersion(ctx, conn)
 	if err != nil {
 		return fmt.Errorf("state: read pg schema version: %w", err)
 	}
@@ -111,7 +142,7 @@ func pgMigrate(ctx context.Context, db *sql.DB) error {
 		// Fresh database: build the complete schema from pgschema.sql inside
 		// a single transaction. IF NOT EXISTS keeps the statements idempotent
 		// for re-runs after a rolled-back attempt.
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("state: begin pg schema transaction: %w", err)
 		}
@@ -134,7 +165,7 @@ func pgMigrate(ctx context.Context, db *sql.DB) error {
 		if step.version <= applied {
 			continue
 		}
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("state: begin pg migration v%d transaction: %w", step.version, err)
 		}
@@ -173,7 +204,7 @@ func pgRecordSchemaVersion(ctx context.Context, tx *sql.Tx, version int) error {
 
 // pgAppliedSchemaVersion returns the highest version recorded in
 // schema_version, or 0 if the table is empty.
-func pgAppliedSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
+func pgAppliedSchemaVersion(ctx context.Context, db dbExecutor) (int, error) {
 	var version int
 	err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version)
 	if err != nil {

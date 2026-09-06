@@ -173,10 +173,12 @@ func appliedSchemaVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return version, nil
 }
 
-// dbExecutor is satisfied by both *sql.DB and *sql.Tx; it lets
-// execMultiStatement run against either a bare connection or a transaction.
+// dbExecutor is satisfied by *sql.DB, *sql.Tx and *sql.Conn; it lets
+// execMultiStatement run against a pooled handle, a reserved connection or
+// a transaction.
 type dbExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // execMultiStatement splits a script on semicolons and executes each non-empty

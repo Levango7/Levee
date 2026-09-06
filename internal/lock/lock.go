@@ -181,6 +181,21 @@ func fromStateLock(sl *state.Lock) *Lock {
 	}
 }
 
+// isUniqueViolation reports whether err is a UNIQUE-constraint violation
+// from SQLite or PostgreSQL. Neither driver exposes a sentinel we can use
+// without an engine-specific import, so the codebase detects these by
+// message (same approach as internal/state/registry.go and
+// inventory_service.go). Here it is the signal that CreateLock raced
+// another acquirer.
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") ||
+		strings.Contains(msg, "duplicate key value violates unique constraint")
+}
+
 // Acquire attempts to acquire a lock on the target. If the target has no
 // lock, a new lock is created. If the target already has a lock
 // (regardless of expiration status), ErrLockHeld is returned. Use
@@ -219,6 +234,13 @@ func (s *stateLockStore) Acquire(ctx context.Context, target, owner string, ttl 
 		return nil, err
 	}
 	if err := s.store.CreateLock(ctx, sl); err != nil {
+		if isUniqueViolation(err) {
+			// The existence check above and this insert are not a single
+			// atomic step: a concurrent acquirer inserted the row first.
+			// Its row IS the lock this call wanted, so honour the documented
+			// contract and report ErrLockHeld rather than a raw driver error.
+			return nil, fmt.Errorf("%w: target %s (concurrent acquirer won the insert)", ErrLockHeld, target)
+		}
 		return nil, fmt.Errorf("lock: create: %w", err)
 	}
 	return fromStateLock(sl), nil
@@ -340,6 +362,12 @@ func (s *stateLockStore) ForceAcquire(ctx context.Context, target, owner string,
 		return nil, err
 	}
 	if err := s.store.CreateLock(ctx, sl); err != nil {
+		if isUniqueViolation(err) {
+			// Lost the insert race against a concurrent acquirer. Retry
+			// from scratch: the winner's row is now visible via Get and the
+			// unexpired-guard above decides between ErrLockHeld and takeover.
+			return s.ForceAcquire(ctx, target, owner, ttl)
+		}
 		return nil, fmt.Errorf("lock: force acquire create: %w", err)
 	}
 	return fromStateLock(sl), nil
