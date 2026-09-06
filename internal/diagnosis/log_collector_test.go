@@ -129,7 +129,11 @@ func TestCollect_EmptySources(t *testing.T) {
 
 func TestCollect_InvalidWindow(t *testing.T) {
 	c := mustCollector(t, newMockExecutor())
-	w := TimeWindow{Start: time.Now(), End: time.Now()}
+	// One clock reading for both ends: two time.Now() calls are strictly
+	// ordered by the monotonic clock on coarse-grained platforms (Windows),
+	// which silently made the zero-width window valid on CI (Linux, ns clock).
+	now := time.Now()
+	w := TimeWindow{Start: now, End: now}
 	_, err := c.Collect(context.Background(), "host", []LogSource{{Name: "x"}}, w)
 	require.ErrorIs(t, err, ErrZeroWindow)
 }

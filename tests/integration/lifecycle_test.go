@@ -2,10 +2,12 @@
 
 // Package integration tests the full change lifecycle through the gRPC
 // service layer backed by a real SQLite store: create → plan → approve →
-// apply → pause → resume → cancel. It verifies cross-service invariants
-// (audit entries, run status transitions, hash chain integrity) rather than
-// individual service methods — those are covered by unit tests in
-// internal/grpc/.
+// apply (engine stub settles running → completed) and the terminal-state
+// guards that refuse cancel/pause afterwards. A no-engine deployment
+// refuses apply outright (status-only honesty). It verifies cross-service
+// invariants (audit entries, run status transitions, hash chain integrity)
+// rather than individual service methods — those are covered by unit tests
+// in internal/grpc/.
 package integration
 
 import (
@@ -21,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // newTestStore returns a fresh SQLite store backed by a temp file. Each
@@ -38,7 +42,10 @@ func newTestStore(t *testing.T) state.Store {
 
 // newServices wires a minimal set of services for the integration test.
 // Engine/approval/pause are nil so the service falls back to no-op paths;
-// the store is shared so cross-service state consistency is verified.
+// note that in this wiring ApplyChange is *refused* with FailedPrecondition
+// (status-only honesty, see TestApplyChange_NoEngineRefused). Tests that
+// exercise apply use newServicesWithEngine.
+// The store is shared so cross-service state consistency is verified.
 func newServices(t *testing.T) (*grpc.ChangeService, *grpc.TemplateService, *grpc.AuditService, state.Store) {
 	t.Helper()
 	store := newTestStore(t)
@@ -48,13 +55,35 @@ func newServices(t *testing.T) (*grpc.ChangeService, *grpc.TemplateService, *grp
 	return changeSvc, templateSvc, auditSvc, store
 }
 
+// newServicesWithEngine is newServices with a synchronous stub engine.
+// Since the honest-apply change (no engine wired → apply refused with
+// FailedPrecondition instead of a fake "running" transition), lifecycle
+// tests that drive apply must provide an engine. The stub completes
+// immediately with phase "completed", so ApplyChange settles the run to
+// the terminal status "completed" — exactly what the real synchronous
+// ClosureRunner does on success.
+func newServicesWithEngine(t *testing.T) (*grpc.ChangeService, *grpc.AuditService, state.Store) {
+	t.Helper()
+	store := newTestStore(t)
+	engine := &grpc.EngineAdapter{
+		Run: func(_ context.Context, changeID string, _ bool, _ int32) (string, bool, string, error) {
+			return "exec-" + changeID, true, "completed", nil
+		},
+	}
+	changeSvc := grpc.NewChangeService(store, engine, nil, nil)
+	auditSvc := grpc.NewAuditService(store)
+	return changeSvc, auditSvc, store
+}
+
 // ---------------------------------------------------------------------------
-// End-to-end change lifecycle: draft → approved → running → paused → active → cancelled
+// End-to-end change lifecycle: draft → planned → approved → running →
+// completed (stub engine settles synchronously), plus terminal-state
+// protection: a completed change refuses cancel/pause.
 // ---------------------------------------------------------------------------
 
-func TestChangeLifecycle_CreatePlanApproveApplyPauseResumeCancel(t *testing.T) {
+func TestChangeLifecycle_CreatePlanApproveApplyCancel(t *testing.T) {
 	ctx := context.Background()
-	changeSvc, _, auditSvc, store := newServices(t)
+	changeSvc, auditSvc, store := newServicesWithEngine(t)
 
 	// 1. Create a change (status: draft).
 	createResp, err := changeSvc.CreateChange(ctx, &pb.CreateChangeRequest{
@@ -90,69 +119,89 @@ func TestChangeLifecycle_CreatePlanApproveApplyPauseResumeCancel(t *testing.T) {
 	require.NotNil(t, approveResp)
 	assert.Equal(t, "approved", approveResp.GetStatus())
 
-	// 4. Apply the change with auto-approve (status: running, creates a trace).
+	// 4. Apply with the stub engine. The engine settles synchronously with
+	// phase "completed", so ApplyChange must carry the run through
+	// running → completed (never a stuck "running").
 	applyResp, err := changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{
 		ChangeId:    changeID,
 		AutoApprove: true,
 	})
 	require.NoError(t, err)
 	require.NotNil(t, applyResp)
-	assert.Equal(t, "running", applyResp.GetChange().GetStatus())
+	assert.Equal(t, "completed", applyResp.GetChange().GetStatus())
+	assert.True(t, applyResp.GetSuccess())
+	assert.NotEmpty(t, applyResp.GetRunId(), "apply must surface the engine run id")
 
 	// Build the hash chain so verification can pass.
 	// In production this is done by the audit service; here we do it explicitly
-	// because ApplyChange creates traces with empty hashes (MVP behavior).
+	// because the stub engine creates traces with empty hashes (MVP behavior).
 	builder, err := audit.NewHashChainBuilder(store)
 	require.NoError(t, err)
 	_, _, err = builder.Build(ctx, changeID)
 	require.NoError(t, err)
 
-	// 5. Pause the change (status: paused).
-	pauseResp, err := changeSvc.PauseChange(ctx, &pb.PauseRequest{
-		ChangeId: changeID,
-		Reason:   "pausing for integration test",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, pauseResp)
-	assert.Equal(t, "paused", pauseResp.GetStatus())
-
-	// Verify pause persisted in store.
-	run, err := store.GetRun(ctx, changeID)
-	require.NoError(t, err)
-	require.NotNil(t, run)
-	assert.Equal(t, "paused", run.Status)
-
-	// 6. Resume the change (status: running).
-	resumeResp, err := changeSvc.ResumeChange(ctx, &pb.PauseRequest{
-		ChangeId: changeID,
-		Reason:   "resuming for integration test",
-	})
-	require.NoError(t, err)
-	require.NotNil(t, resumeResp)
-	assert.Equal(t, "running", resumeResp.GetStatus())
-
-	// 7. Cancel the change (status: cancelled).
-	cancelResp, err := changeSvc.CancelChange(ctx, &pb.CancelRequest{
+	// 5. Cancel the completed change — must be refused. Terminal states
+	// protect completed runs from being rewritten to cancelled.
+	_, err = changeSvc.CancelChange(ctx, &pb.CancelRequest{
 		ChangeId: changeID,
 		Force:    false,
 	})
-	require.NoError(t, err)
-	require.NotNil(t, cancelResp)
-	assert.Equal(t, "cancelled", cancelResp.GetStatus())
+	require.Error(t, err, "cancelling a completed change must be refused")
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 
-	// 8. Verify audit trail has the apply trace.
+	// Verify status persisted and was not rewritten by the refused cancel.
+	run, err := store.GetRun(ctx, changeID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, "completed", run.Status)
+
+	// 6. Verify audit trail has the apply trace.
 	traces, err := auditSvc.ListAuditTraces(ctx, &pb.ListAuditTracesRequest{
 		ChangeId: changeID,
 	})
 	require.NoError(t, err)
 	assert.NotEmpty(t, traces.GetEntries(), "apply should have produced at least one trace entry")
 
-	// 9. Verify hash chain integrity.
+	// 7. Verify hash chain integrity.
 	verifyResp, err := auditSvc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{
 		ChangeId: changeID,
 	})
 	require.NoError(t, err)
 	assert.True(t, verifyResp.GetValid())
+}
+
+// TestApplyChange_NoEngineRefused guards the status-only honesty fix: a
+// deployment without an engine must refuse apply with FailedPrecondition
+// instead of faking a "running" transition that never completes. The run
+// must stay untouched in its pre-apply status.
+func TestApplyChange_NoEngineRefused(t *testing.T) {
+	ctx := context.Background()
+	changeSvc, _, _, store := newServices(t)
+
+	createResp, err := changeSvc.CreateChange(ctx, &pb.CreateChangeRequest{
+		Label:        "no-engine-refusal",
+		Priority:     "high",
+		WorkflowFile: "workflow.levee",
+		TemplateName: "deploy-web",
+	})
+	require.NoError(t, err)
+	changeID := createResp.GetId()
+
+	_, err = changeSvc.ApproveChange(ctx, &pb.ApproveRequest{ChangeId: changeID})
+	require.NoError(t, err)
+
+	applyResp, err := changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{
+		ChangeId:    changeID,
+		AutoApprove: true,
+	})
+	require.Error(t, err, "apply must be refused when no engine is wired")
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+	assert.Nil(t, applyResp)
+
+	run, err := store.GetRun(ctx, changeID)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, "approved", run.Status, "a refused apply must not mutate status")
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +210,7 @@ func TestChangeLifecycle_CreatePlanApproveApplyPauseResumeCancel(t *testing.T) {
 
 func TestCrossService_AuditOnEveryTransition(t *testing.T) {
 	ctx := context.Background()
-	changeSvc, _, auditSvc, store := newServices(t)
+	changeSvc, auditSvc, store := newServicesWithEngine(t)
 
 	// Create and apply a change (apply creates a trace entry).
 	createResp, err := changeSvc.CreateChange(ctx, &pb.CreateChangeRequest{
@@ -182,7 +231,7 @@ func TestCrossService_AuditOnEveryTransition(t *testing.T) {
 		AutoApprove: true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "running", applyResp.GetChange().GetStatus())
+	assert.Equal(t, "completed", applyResp.GetChange().GetStatus())
 
 	// Build the hash chain after apply so trace verification works.
 	builder, _ := audit.NewHashChainBuilder(store)
@@ -196,19 +245,23 @@ func TestCrossService_AuditOnEveryTransition(t *testing.T) {
 	initialCount := len(tracesBefore.GetEntries())
 	assert.GreaterOrEqual(t, initialCount, 1, "apply should produce at least one trace entry")
 
-	// Pause and resume — these use the audit log (not traces), so trace count stays the same.
+	// Transitions that the state machine rejects (pause/resume on a
+	// completed change) must fail *before* writing anything: the trace
+	// count stays untouched.
 	_, err = changeSvc.PauseChange(ctx, &pb.PauseRequest{ChangeId: changeID, Reason: "pause"})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 	_, err = changeSvc.ResumeChange(ctx, &pb.PauseRequest{ChangeId: changeID, Reason: "resume"})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 
-	// Verify traces are unchanged (pause/resume don't add traces, they add audit log entries).
+	// Verify traces are unchanged (rejected transitions record nothing).
 	tracesAfter, err := auditSvc.ListAuditTraces(ctx, &pb.ListAuditTracesRequest{
 		ChangeId: changeID,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, initialCount, len(tracesAfter.GetEntries()),
-		"pause/resume should not modify trace count")
+		"rejected transitions should not modify trace count")
 }
 
 // ---------------------------------------------------------------------------
@@ -322,7 +375,7 @@ done:
 
 func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 	ctx := context.Background()
-	changeSvc, _, auditSvc, store := newServices(t)
+	changeSvc, auditSvc, store := newServicesWithEngine(t)
 
 	// Create, approve, and apply (creates the trace that forms the hash chain).
 	createResp, err := changeSvc.CreateChange(ctx, &pb.CreateChangeRequest{
@@ -341,29 +394,27 @@ func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 		AutoApprove: true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "running", applyResp.GetChange().GetStatus())
+	assert.Equal(t, "completed", applyResp.GetChange().GetStatus())
 
 	// Build the hash chain after apply so verification works.
 	builder, _ := audit.NewHashChainBuilder(store)
 	_, _, _ = builder.Build(ctx, changeID)
 
-	// Perform a sequence of state transitions after apply.
+	// Attempt transitions after completion. The state machine refuses pause
+	// on a completed run; a refused op must not corrupt the chain.
 	_, err = changeSvc.PauseChange(ctx, &pb.PauseRequest{
 		ChangeId: changeID,
 		Reason:   "pause for chain test",
 	})
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 
-	_, err = changeSvc.ResumeChange(ctx, &pb.PauseRequest{
-		ChangeId: changeID,
-		Reason:   "resume",
-	})
-	require.NoError(t, err)
-
+	// A valid archival transition is allowed from completed and exercises a
+	// write path on top of the built chain.
 	_, err = changeSvc.CancelChange(ctx, &pb.CancelRequest{
 		ChangeId: changeID,
 	})
-	require.NoError(t, err)
+	require.Error(t, err, "cancel must stay refused from completed")
 
 	// Verify hash chain is still valid after all transitions.
 	verifyResp, err := auditSvc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{
@@ -371,5 +422,5 @@ func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, verifyResp.GetValid(),
-		"hash chain should remain valid after create → approve → apply → pause → resume → cancel")
+		"hash chain should remain valid after create → approve → apply → refused transitions")
 }
