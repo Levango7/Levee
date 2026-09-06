@@ -37,6 +37,7 @@
 - **集群 leader 可见性断言改确定性收敛（windows/PG 腿红灯修复）**：`TestClusterPGTwoNodeVisibility` 在"发现对端 active"的 Eventually 之后立即裸读 `GetLeader`，但各 manager 的内存视图要等下一轮心跳才刷新——node-b 侧 leader 可能尚未收敛，断言纯赌时序。改为 `require.Eventually` 等双侧都产出 leader 再断言 ID 一致。
 - **trivy 作业可见性重构（CI）**：门禁步 `format: sarif` + `exit-code: 1` 失败时 stdout 零输出，sarif 只被其后的上传步消费——而上传步没有 `if: always()`，门禁一红即被跳过，红灯完全盲视（上一轮 trivy 失败只能看到 exit 1）。门禁前新增"scan (print findings)"步（`format: table`、CRITICAL/HIGH、`exit-code: 0`）先打印明细，两个上传步改 `if: always() && hashFiles('trivy-results.sarif') != ''`。
 - **trivy 门禁语义修正 + Code Scanning 权限补齐（CI，可见性重构揭出的两层潜伏问题）**：① trivy-action 在 `format: sarif` 下强制按全等级扫描（其日志自述 "Building SARIF report with all severities"，`severity` 输入不参与退出码判定），门禁步 `exit-code: 1` 实际会把可修复的 MEDIUM/LOW 一并拦红（x/crypto v0.55.0 的两条中低危即触发）——与门禁声明的"仅拦可修复 CRITICAL/HIGH"语义不符。sarif 步改 `exit-code: 0` + `limit-severities-for-sarif: true`（报告仍按 CRITICAL/HIGH 过滤），门禁移到两个上传步之后：显式 `jq` 统计过滤后 sarif 的 `runs[].results` 计数并打印 CVE 清单，红灯运行不再牺牲报告与 Code Scanning 告警。② `upload-sarif` 步历史上从未真正执行过（门禁先红即被跳过），`if: always()` 补上后立刻暴露 trivy 作业缺 `security-events: write`（`Resource not accessible by integration`），作业级 `permissions` 补齐。
+- **check 聚合作业恒红修复（CI，首次全绿运行暴露）**：聚合脚本循环体里的 `${{ needs[job].result }}` 从未生效——Actions 表达式引擎在 bash 启动前渲染 `${{ }}`，引擎只见到字面 `job`（bash 循环变量对其不可见），查无此 needs 条目渲染为空串，`[[ "" != "success" ]]` 首个迭代必炸；此前从未暴露是因为运行总在叶子作业就红了，第 6 轮 16 个叶子全绿才把聚合作业自身打到红灯。改为把各 needs 结果以字面 `name:value` 对传入 bash 逐项检查，顺带把"遇首个失败即 exit"改为汇总报告所有未通过作业（错误信息携带具体 result）。
 
 ### 前端
 

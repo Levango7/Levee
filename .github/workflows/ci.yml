@@ -364,19 +364,21 @@ jobs:
     steps:
       - name: aggregate
         run: |
-          echo "vet=${{ needs.vet.result }}"
-          echo "lint=${{ needs.lint.result }}"
-          echo "frontend=${{ needs.frontend.result }}"
-          echo "test=${{ needs.test.result }}"
-          echo "integration=${{ needs.integration.result }}"
-          echo "proto=${{ needs.proto.result }}"
-          echo "build=${{ needs.build.result }}"
-          echo "gosec=${{ needs.gosec.result }}"
-          echo "trivy=${{ needs.trivy.result }}"
-          for job in vet lint frontend test integration proto build gosec trivy; do
-            if [[ "${{ needs[job].result }}" != "success" ]]; then
-              echo "::error::required job '$job' did not pass"
-              exit 1
+          # ${{ }} is rendered by the Actions expression engine BEFORE bash
+          # runs, so `needs[job].result` inside a bash loop expands to "" --
+          # the engine sees a literal `job`, not the bash variable, and there
+          # is no such needs entry. Hand each result to bash as a literal
+          # name:value pair instead and check them there.
+          status="vet:${{ needs.vet.result }} lint:${{ needs.lint.result }} frontend:${{ needs.frontend.result }} test:${{ needs.test.result }} integration:${{ needs.integration.result }} proto:${{ needs.proto.result }} build:${{ needs.build.result }} gosec:${{ needs.gosec.result }} trivy:${{ needs.trivy.result }}"
+          rc=0
+          for pair in $status; do
+            job=${pair%%:*}
+            result=${pair#*:}
+            echo "$job=$result"
+            if [[ "$result" != "success" ]]; then
+              echo "::error::required job '$job' did not pass ($result)"
+              rc=1
             fi
           done
-          echo "All required jobs passed"
+          if [[ $rc -eq 0 ]]; then echo "All required jobs passed"; fi
+          exit $rc
