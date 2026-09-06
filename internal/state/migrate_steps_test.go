@@ -137,14 +137,33 @@ func TestMigrate_StepsNotReplayedOnFreshDatabase(t *testing.T) {
 
 func TestPGMigrate_FakeStep(t *testing.T) {
 	store, cleanup := newPGTestStore(t)
-	defer cleanup()
+	// Register the store close as the FIRST t.Cleanup so it runs LAST
+	// (cleanups are LIFO); the deferred form would close the pool before
+	// the database undo below, making those Execs silently no-op and
+	// leaking fake_step_pg + the version row into the shared test DB.
+	t.Cleanup(cleanup)
 	ctx := context.Background()
 
 	orig := pgMigrations
 	pgMigrations = []migrationStep{
 		{version: pgCurrentSchemaVersion + 1, stmts: []string{`CREATE TABLE fake_step_pg (x INTEGER)`}},
 	}
-	t.Cleanup(func() { pgMigrations = orig })
+	t.Cleanup(func() {
+		pgMigrations = orig
+		// Undo the shared-database side effects while the pool is still
+		// open: recorded version rows above current would make later
+		// NewPGStore calls skip real pending steps, and the fake table must
+		// not linger for other tests. Errors are surfaced, not swallowed.
+		_, err := store.DB().ExecContext(ctx,
+			`DELETE FROM schema_version WHERE version > $1`, pgCurrentSchemaVersion)
+		if err != nil {
+			t.Errorf("cleanup schema_version: %v", err)
+		}
+		_, err = store.DB().ExecContext(ctx, `DROP TABLE IF EXISTS fake_step_pg`)
+		if err != nil {
+			t.Errorf("cleanup drop fake_step_pg: %v", err)
+		}
+	})
 
 	v, err := pgAppliedSchemaVersion(ctx, store.DB())
 	require.NoError(t, err)

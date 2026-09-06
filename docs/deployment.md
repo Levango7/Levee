@@ -289,6 +289,31 @@ levee serve --cluster \
 - **Web UI 打开但无数据**：确认 `levee web --api` 指向的网关地址可达，且浏览器请求携带了有效 token（同源代理时由网关鉴权）。
 - **SSH 目标机连接失败**：检查 `channel.ssh` 配置（端口/密钥/known_hosts）；`strict_host_check` 开启时首次连接需先建立 known_hosts 记录。
 
+## 附录：本地覆盖率联合口径（state sqlite+PG）
+
+`internal/state` 的质量门以 **sqlite+PG 联合口径 ≥75%** 计。两条 `-coverprofile` 分别来自两种后端，需按"同一代码块取 max 命中数"合并——用仓内工具 `scripts/merge-cover.ps1`，否则联合口径不可复现。完整命令序列：
+
+```powershell
+# 1. 起与 CI 同参数的 PostgreSQL（或复用 CI 环境）
+docker run -d --name levee-ci-pg -e POSTGRES_USER=levee -e POSTGRES_PASSWORD=levee-ci `
+  -e POSTGRES_DB=levee_test -p 5432:5432 postgres:16-alpine
+
+# 2. sqlite 口径（不设 DSN，PG 用例自动 skip）
+go test ./internal/state/... -count=1 -coverprofile=cover_sqlite.out
+
+# 3. PG 口径（同一二进制内 sqlite 用例照常执行）
+$env:LEVEE_PG_TEST_DSN = 'postgres://levee:levee-ci@localhost:5432/levee_test?sslmode=disable'
+go test ./internal/state/... ./internal/cluster/... -count=1 -coverprofile=cover_pg.out
+
+# 4. 合并出 state 的联合口径并查看总数
+powershell -NoProfile -ExecutionPolicy Bypass -Command `
+  "& .\scripts\merge-cover.ps1 -ProfilePaths cover_sqlite.out,cover_pg.out `
+   -OutFile cover_merged.out -Filter github.com/nexus/levee/internal/state"
+go tool cover -func=cover_merged.out | Select-Object -Last 1
+```
+
+注意：state 与 cluster 的测试二进制在该库上**并发**执行（`go test` 多包并行是默认行为），state 侧测试助手只截断自己拥有的表，不要截断 `cluster_nodes`/`cluster_locks`。
+
 ## 参考
 
 - [cli-reference.md](cli-reference.md) — 全部命令与旗标

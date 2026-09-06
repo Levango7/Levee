@@ -187,12 +187,18 @@ func TestPGMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	// Re-create the v1 shape on the fresh v2 database: drop the column and
-	// the version row, insert a legacy-shaped row via explicit columns.
-	// One statement per Exec: the extended protocol rejects multi-command.
-	_, err := store.DB().ExecContext(ctx, `ALTER TABLE credentials DROP COLUMN tags`)
+	// Re-create the v1 shape on the shared test database: drop the column and
+	// rewrite the version ledger as exactly {1} (applied = MAX over rows).
+	// Leaving the ledger empty would read back applied=0 and send pgMigrate
+	// down the fresh-build path (CREATE IF NOT EXISTS no-ops), skipping step
+	// replay entirely. IF EXISTS keeps the simulation robust when a previous
+	// run left the column already gone. One statement per Exec: the extended
+	// protocol rejects multi-command.
+	_, err := store.DB().ExecContext(ctx, `ALTER TABLE credentials DROP COLUMN IF EXISTS tags`)
 	require.NoError(t, err)
-	_, err = store.DB().ExecContext(ctx, `DELETE FROM schema_version WHERE version >= 2`)
+	_, err = store.DB().ExecContext(ctx, `DELETE FROM schema_version`)
+	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (1)`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `INSERT INTO credentials
 		(id, name, type, encrypted_data, created_at)

@@ -909,6 +909,40 @@ func TestLock_DeleteExpiredLocks_StrictlyBefore(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+// Compare-and-set release, SQLite side (mirrors TestPG_DeleteLockByIDAndOwner):
+// only the recorded owner may delete; a wrong owner or a missing lock must
+// report false without touching rows.
+func TestLock_DeleteLockByIDAndOwner(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	require.NoError(t, store.CreateLock(ctx, &Lock{
+		ID: "cas-lock-1", Scope: "host:h1", Owner: "run-a", TTLSeconds: 60,
+		AcquiredAt: now, ExpiresAt: now.Add(time.Minute),
+	}))
+
+	deleted, err := store.DeleteLockByIDAndOwner(ctx, "cas-lock-1", "run-b")
+	require.NoError(t, err)
+	assert.False(t, deleted, "wrong owner must not delete")
+
+	kept, err := store.GetLock(ctx, "cas-lock-1")
+	require.NoError(t, err)
+	assert.NotNil(t, kept, "failed CAS release must leave the lock intact")
+
+	deleted, err = store.DeleteLockByIDAndOwner(ctx, "cas-lock-1", "run-a")
+	require.NoError(t, err)
+	assert.True(t, deleted)
+
+	gone, err := store.GetLock(ctx, "cas-lock-1")
+	require.NoError(t, err)
+	assert.Nil(t, gone)
+
+	deleted, err = store.DeleteLockByIDAndOwner(ctx, "cas-lock-1", "run-a")
+	require.NoError(t, err)
+	assert.False(t, deleted, "re-release of a gone lock reports false")
+}
+
 func TestLock_GetByScopeAndListOrdering(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

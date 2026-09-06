@@ -30,6 +30,16 @@ func TestInventoryGroupCRUD(t *testing.T) {
 	err = store.UpsertInventoryGroup(ctx, dup)
 	require.Error(t, err)
 
+	// Lookup by unique name (hit + miss).
+	byName, err := store.GetInventoryGroupByName(ctx, "prod/db")
+	require.NoError(t, err)
+	require.NotNil(t, byName)
+	assert.Equal(t, "grp-1", byName.ID)
+
+	missingName, err := store.GetInventoryGroupByName(ctx, "staging/db")
+	require.NoError(t, err)
+	assert.Nil(t, missingName)
+
 	all, err := store.ListInventoryGroups(ctx)
 	require.NoError(t, err)
 	assert.Len(t, all, 1)
@@ -148,7 +158,25 @@ func TestPG_InventoryRoundTrip(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	tg := &Target{ID: "pg-tgt", Hostname: "pg-host", Port: 2222, ChannelType: "ssh",
+	// Group lifecycle on PG — must behave exactly like SQLite.
+	require.NoError(t, store.UpsertInventoryGroup(ctx,
+		&InventoryGroup{ID: "pg-grp", Name: "pg-prod", CreatedAt: time.Now().UTC()}))
+	grp, err := store.GetInventoryGroup(ctx, "pg-grp")
+	require.NoError(t, err)
+	require.NotNil(t, grp)
+	byName, err := store.GetInventoryGroupByName(ctx, "pg-prod")
+	require.NoError(t, err)
+	require.NotNil(t, byName)
+	assert.Equal(t, "pg-grp", byName.ID)
+	dupName, err := store.GetInventoryGroupByName(ctx, "no-such-group")
+	require.NoError(t, err)
+	assert.Nil(t, dupName)
+
+	all, err := store.ListInventoryGroups(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, all)
+
+	tg := &Target{ID: "pg-tgt", Hostname: "pg-host", Port: 2222, ChannelType: "ssh", GroupID: "pg-grp",
 		Labels: map[string]string{"env": "staging"}, Status: StatusActive, CreatedAt: time.Now().UTC()}
 	require.NoError(t, store.UpsertTarget(ctx, tg))
 
@@ -160,4 +188,41 @@ func TestPG_InventoryRoundTrip(t *testing.T) {
 	filtered, err := store.ListTargets(ctx, TargetFilter{Labels: map[string]string{"env": "staging"}})
 	require.NoError(t, err)
 	assert.Len(t, filtered, 1)
+
+	// Duplicate address under a different ID maps to the sentinel, as on SQLite.
+	other := &Target{ID: "pg-tgt-2", Hostname: "pg-host", Port: 2222, ChannelType: "ssh", CreatedAt: time.Now().UTC()}
+	err = store.UpsertTarget(ctx, other)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrDuplicateTarget), "got %v", err)
+
+	byAddr, err := store.FindTargetByAddress(ctx, "pg-host", 2222)
+	require.NoError(t, err)
+	require.NotNil(t, byAddr)
+	assert.Equal(t, "pg-tgt", byAddr.ID)
+	missingAddr, err := store.FindTargetByAddress(ctx, "pg-host", 9999)
+	require.NoError(t, err)
+	assert.Nil(t, missingAddr)
+
+	require.NoError(t, store.UpdateTargetStatus(ctx, "pg-tgt", StatusFrozen))
+	now := time.Now().UTC()
+	require.NoError(t, store.SetTargetReachability(ctx, "pg-tgt", true, now))
+	got, err = store.GetTarget(ctx, "pg-tgt")
+	require.NoError(t, err)
+	assert.Equal(t, StatusFrozen, got.Status)
+	require.NotNil(t, got.LastCheckedAt)
+	assert.True(t, got.Reachable)
+
+	n, err := store.CountTargetsInGroup(ctx, "pg-grp")
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	require.NoError(t, store.DeleteTarget(ctx, "pg-tgt"))
+	gone, err := store.GetTarget(ctx, "pg-tgt")
+	require.NoError(t, err)
+	assert.Nil(t, gone)
+
+	require.NoError(t, store.DeleteInventoryGroup(ctx, "pg-grp"))
+	goneGrp, err := store.GetInventoryGroup(ctx, "pg-grp")
+	require.NoError(t, err)
+	assert.Nil(t, goneGrp)
 }
