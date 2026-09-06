@@ -16,7 +16,12 @@
 #   docker run --rm -p 8080:8080 -p 9090:9090 levee:dev serve
 
 ARG GO_VERSION=1.25
-ARG ALPINE_VERSION=3.20
+# Runtime alpine release. The builder stage deliberately uses the
+# version-less "golang:<ver>-alpine" alias (published for every maintained
+# Go series) instead of pinning an alpine-patch combo that only exists for
+# whichever alpine the Go image happened to track when it was built
+# ("1.25-alpine3.20" never existed and broke the trivy image scan).
+ARG ALPINE_VERSION=3.22
 ARG NODE_VERSION=20-alpine
 
 # ---------------------------------------------------------------------------
@@ -35,7 +40,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2: builder
 # ---------------------------------------------------------------------------
-FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
+FROM golang:${GO_VERSION}-alpine AS builder
 
 RUN apk add --no-cache git ca-certificates
 
