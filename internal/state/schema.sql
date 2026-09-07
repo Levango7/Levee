@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS runs (
     updated_at      DATETIME NOT NULL,
     creator         TEXT    NOT NULL,
     incident_id     TEXT    NOT NULL DEFAULT '',
+    -- SPLITTER HAZARD (see store_edge_test.go "sqlite schema" tests): the
+    -- SQLite splitter ends a statement when a LINE ends with ';'. A column
+    -- line with a trailing inline comment may contain ';' inside the
+    -- comment, but must never END with ';' — keep the closing ');' on its
+    -- own line. The PG splitter learned this the hard way (inline
+    -- comment with ';' cut a CREATE TABLE in half, SQLSTATE 42601).
     plan_json       TEXT    NOT NULL DEFAULT ''      -- canonical plan.Plan JSON ('' = not planned; v3, last: mirrors ALTER append order)
 );
 

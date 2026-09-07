@@ -236,6 +236,57 @@ func (g *ExecutionGuard) ExpiredExecutions(ctx context.Context) ([]string, error
 	return ids, nil
 }
 
+// DefaultOrphanGracePeriod bounds how long a running run may exist without
+// an execution row before the takeover treats it as an orphan: the run
+// entered "running" via the CAS in ApplyChange but the executor crashed
+// (or was refused at Begin) in the window before registering a lease, so
+// no lease can ever expire for it and the expired-scan alone would leave
+// it stuck in "running" forever — the exact dead zone the takeover exists
+// to eliminate. The grace must comfortably exceed the CAS→Begin critical
+// section (microseconds in-process) so a healthy execution is never
+// mistaken for an orphan: by construction a healthy execution HAS a row.
+const DefaultOrphanGracePeriod = 5 * time.Minute
+
+// OrphanedExecutions returns the run IDs that are stuck in "running"
+// with NO execution row and whose updated_at is older than the grace
+// period. These are the CAS→Begin crash-window orphans (or runs left
+// behind by executors from before the fencing rollout); the expired
+// scan cannot see them because there is no lease to expire. Only
+// "running" runs are eligible — terminal and paused states are never
+// touched by the takeover.
+func (g *ExecutionGuard) OrphanedExecutions(ctx context.Context, grace time.Duration) ([]string, error) {
+	if g.db == nil {
+		return nil, fmt.Errorf("cluster: orphaned executions: nil db")
+	}
+	if grace <= 0 {
+		grace = DefaultOrphanGracePeriod
+	}
+	rows, err := g.db.QueryContext(ctx, `
+SELECT r.id
+FROM runs r
+WHERE r.status = 'running'
+  AND r.updated_at < NOW() - ($1::bigint * INTERVAL '1 millisecond')
+  AND NOT EXISTS (SELECT 1 FROM run_execution e WHERE e.run_id = r.id)
+ORDER BY r.id`,
+		grace.Milliseconds())
+	if err != nil {
+		return nil, fmt.Errorf("cluster: orphaned executions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("cluster: orphaned executions: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cluster: orphaned executions: rows: %w", err)
+	}
+	return ids, nil
+}
+
 // DeleteExecution removes the execution row unconditionally. This is
 // the TAKEOVER's primitive (owner-agnostic by design: the takeover
 // settles the run regardless of who the row claims); executors release

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/cluster"
+	"github.com/nexus/levee/internal/metrics"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
@@ -132,10 +133,16 @@ func TestTakeover_LeaderSettlesExpiredRun(t *testing.T) {
 	require.NoError(t, err)
 	env.expireLease(t, runID)
 
-	// node-a (leader) sweeps.
+	// node-a (leader) sweeps. The settled outcome must be observable on
+	// the takeover counter family without scraping logs; metrics.Default
+	// is process-global, so assert the DELTA around this sweep.
+	settledBefore := metrics.Default.TakeoverEventsTotal(metrics.TakeoverResultSettled)
 	res, err := env.loopy.TakeoverOnce(ctx)
 	require.NoError(t, err)
 	assert.Contains(t, res.Settled, runID)
+	assert.Equal(t, settledBefore+1,
+		metrics.Default.TakeoverEventsTotal(metrics.TakeoverResultSettled),
+		"one settled candidate must increment levee_takeover_events_total{result=\"settled\"}")
 
 	run, err := env.store.GetRun(ctx, runID)
 	require.NoError(t, err)
@@ -238,6 +245,104 @@ func TestTakeover_LiveLeaseNotTouched(t *testing.T) {
 	env.seedRunningRun(t, runID)
 	_, err := env.guard.Register(ctx, runID, "node-b", time.Minute)
 	require.NoError(t, err)
+
+	res, err := env.loopy.TakeoverOnce(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, res.Settled, runID)
+
+	run, err := env.store.GetRun(ctx, runID)
+	require.NoError(t, err)
+	assert.Equal(t, "running", run.Status)
+}
+
+// TestTakeover_OrphanedRunConverges pins the CAS→Begin crash-window
+// dead zone: a run whose CAS to "running" succeeded but whose executor
+// died (or was refused at Begin) before registering a lease has NO
+// execution row — the expired-lease scan is blind to it. The orphan scan
+// must converge it after the grace period, closing the last path by
+// which a run could rot in "running" forever.
+func TestTakeover_OrphanedRunConverges(t *testing.T) {
+	env := newTakeoverEnv(t)
+	ctx := context.Background()
+	const runID = "run-tk-7"
+
+	// The orphan: running, no execution row, aged past grace.
+	env.seedRunningRun(t, runID)
+	_, err := env.db.ExecContext(ctx,
+		`UPDATE runs SET updated_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, runID)
+	require.NoError(t, err)
+
+	res, err := env.loopy.TakeoverOnce(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, res.Settled, runID)
+
+	run, err := env.store.GetRun(ctx, runID)
+	require.NoError(t, err)
+	assert.Equal(t, "interrupted", run.Status)
+	assert.Len(t, env.tracesOf(t, runID, "interrupted_by_takeover"), 1)
+}
+
+// TestTakeover_OrphanGracePeriodHoldsNewRunningRun: a fresh running run
+// without a row (the executor is inside the CAS→Begin critical section,
+// or Begin refused and the error path is settling it) must NOT be
+// interrupted during the grace window.
+func TestTakeover_OrphanGracePeriodHoldsNewRunningRun(t *testing.T) {
+	env := newTakeoverEnv(t)
+	ctx := context.Background()
+	const runID = "run-tk-8"
+
+	env.seedRunningRun(t, runID) // updated_at = now, no execution row
+
+	res, err := env.loopy.TakeoverOnce(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, res.Settled, runID, "a fresh running run is inside the grace window")
+
+	run, err := env.store.GetRun(ctx, runID)
+	require.NoError(t, err)
+	assert.Equal(t, "running", run.Status)
+}
+
+// TestTakeover_OrphanScanSparesTerminalStates: only "running" runs are
+// orphan candidates; a terminal run without an execution row — however
+// old — is never touched.
+func TestTakeover_OrphanScanSparesTerminalStates(t *testing.T) {
+	env := newTakeoverEnv(t)
+	ctx := context.Background()
+	const runID = "run-tk-9"
+
+	env.seedRunningRun(t, runID)
+	ok, err := env.store.UpdateRunStatusIf(ctx, runID, "running", "completed", time.Now().UTC())
+	require.NoError(t, err)
+	require.True(t, ok)
+	_, err = env.db.ExecContext(ctx,
+		`UPDATE runs SET updated_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, runID)
+	require.NoError(t, err)
+
+	res, err := env.loopy.TakeoverOnce(ctx)
+	require.NoError(t, err)
+	assert.NotContains(t, res.Settled, runID)
+	assert.NotContains(t, res.Skipped, runID)
+
+	run, err := env.store.GetRun(ctx, runID)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", run.Status)
+}
+
+// TestTakeover_OrphanedRunningRunWithLiveLeaseNotOrphan: a running run
+// WITH a live execution row is not an orphan even when its updated_at
+// is old — the lease is the executor's liveness proof.
+func TestTakeover_OrphanedRunningRunWithLiveLeaseNotOrphan(t *testing.T) {
+	env := newTakeoverEnv(t)
+	ctx := context.Background()
+	const runID = "run-tk-10"
+
+	env.seedRunningRun(t, runID)
+	_, err := env.db.ExecContext(ctx,
+		`UPDATE runs SET updated_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, runID)
+	require.NoError(t, err)
+	lease, err := env.guard.Register(ctx, runID, "node-b", time.Minute)
+	require.NoError(t, err)
+	defer func() { _ = env.guard.End(context.WithoutCancel(ctx), lease) }()
 
 	res, err := env.loopy.TakeoverOnce(ctx)
 	require.NoError(t, err)

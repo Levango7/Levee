@@ -49,6 +49,20 @@ export const PRIORITY_COLOR: Record<Priority, string> = {
   urgent: 'danger',
 }
 
+// Retryable statuses mirror the backend RetryChange admission set
+// (change_service.go): failed, rolled_back, and interrupted — the cluster
+// takeover terminal whose machine re-drive entry point IS retry. Keep in
+// sync with the gRPC guard when the admission set changes.
+const RETRYABLE_STATUSES: ReadonlySet<ChangeStatus> = new Set([
+  'failed',
+  'rolled_back',
+  'interrupted',
+])
+
+export function isRetryableStatus(status: ChangeStatus): boolean {
+  return RETRYABLE_STATUSES.has(status)
+}
+
 export function formatTimestamp(ts: number): string {
   if (!ts) return '-'
   return dayjs.unix(ts).format('YYYY-MM-DD HH:mm:ss')

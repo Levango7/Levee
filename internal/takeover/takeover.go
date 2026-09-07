@@ -39,6 +39,13 @@ import (
 // without an explicit interval.
 const DefaultInterval = 10 * time.Second
 
+// DefaultOrphanGracePeriod mirrors cluster.DefaultOrphanGracePeriod: how
+// long a running run without an execution row ages before the takeover
+// treats it as a CAS→Begin crash-window orphan. The constant is redefined
+// here so the takeover package's sweep behaviour is readable in one
+// place; the guard's own default applies when callers pass <= 0.
+const DefaultOrphanGracePeriod = cluster.DefaultOrphanGracePeriod
+
 // Loop is the takeover coordinator. It is cluster-only: construction
 // requires the PostgreSQL-backed cluster manager and execution guard.
 type Loop struct {
@@ -138,6 +145,14 @@ type TakeoverResult struct {
 // non-leader returns an empty result with no error (leadership is
 // convergent, so the check is advisory — the per-run lock and status
 // CAS below remain the correctness guards).
+//
+// Candidates are the union of two scans: (a) executions whose lease
+// expired without renewal — the executor died mid-flight; (b) runs stuck
+// in "running" with NO execution row whose updated_at aged past the
+// orphan grace period — the executor died (or was refused at Begin) in
+// the CAS→Begin critical section, so no lease exists that could ever
+// expire for them. Without (b) those runs rot in "running" forever —
+// the exact dead zone the takeover exists to eliminate.
 func (l *Loop) TakeoverOnce(ctx context.Context) (TakeoverResult, error) {
 	result := TakeoverResult{}
 
@@ -148,6 +163,22 @@ func (l *Loop) TakeoverOnce(ctx context.Context) (TakeoverResult, error) {
 	candidates, err := l.guard.ExpiredExecutions(ctx)
 	if err != nil {
 		return result, fmt.Errorf("takeover: scan expired executions: %w", err)
+	}
+	orphans, err := l.guard.OrphanedExecutions(ctx, DefaultOrphanGracePeriod)
+	if err != nil {
+		// The orphan scan is a second best-effort source: report it, but
+		// still settle what the expired scan found.
+		log.Warn("takeover: orphan scan failed", "error", err)
+	} else {
+		seen := make(map[string]bool, len(candidates)+len(orphans))
+		for _, id := range candidates {
+			seen[id] = true
+		}
+		for _, id := range orphans {
+			if !seen[id] {
+				candidates = append(candidates, id)
+			}
+		}
 	}
 
 	for _, runID := range candidates {
@@ -160,8 +191,10 @@ func (l *Loop) TakeoverOnce(ctx context.Context) (TakeoverResult, error) {
 		}
 		if settled {
 			result.Settled = append(result.Settled, runID)
+			metrics.Default.IncTakeoverEvent(metrics.TakeoverResultSettled)
 		} else {
 			result.Skipped = append(result.Skipped, runID)
+			metrics.Default.IncTakeoverEvent(metrics.TakeoverResultSkipped)
 		}
 	}
 	return result, nil

@@ -217,6 +217,34 @@ func TestFormatLabelValue(t *testing.T) {
 		`levee_alerts_processed_total{source="weird\"source\\with\nnewline"} 1`)
 }
 
+// TestTakeoverCounterFamily pins the takeover sweep-result series: the
+// two preset labels render at zero (stable dashboard series) and both
+// outcomes increment their own series.
+func TestTakeoverCounterFamily(t *testing.T) {
+	m := New()
+
+	var zero strings.Builder
+	require.NoError(t, m.Render(&zero))
+	assert.Contains(t, zero.String(),
+		`levee_takeover_events_total{result="settled"} 0`)
+	assert.Contains(t, zero.String(),
+		`levee_takeover_events_total{result="skipped"} 0`)
+
+	m.IncTakeoverEvent(TakeoverResultSettled)
+	m.IncTakeoverEvent(TakeoverResultSettled)
+	m.IncTakeoverEvent(TakeoverResultSkipped)
+
+	assert.Equal(t, int64(2), m.TakeoverEventsTotal(TakeoverResultSettled))
+	assert.Equal(t, int64(1), m.TakeoverEventsTotal(TakeoverResultSkipped))
+
+	var b strings.Builder
+	require.NoError(t, m.Render(&b))
+	assert.Contains(t, b.String(),
+		`levee_takeover_events_total{result="settled"} 2`)
+	assert.Contains(t, b.String(),
+		`levee_takeover_events_total{result="skipped"} 1`)
+}
+
 func TestFormatFloat(t *testing.T) {
 	assert.Equal(t, "0", formatFloat(0))
 	assert.Equal(t, "2.5", formatFloat(2.5))

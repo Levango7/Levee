@@ -6,6 +6,12 @@
 
 ### 新增
 
+- **B 系列收尾四项（C1–C4，`docs/design-cluster-failover.md` 承诺对齐）**：
+  - **孤儿 run 扫描（C1，补齐设计 §7.2-B2 承诺的候选扫描另一半）**：`ExecutionGuard.OrphanedExecutions`（`running` 且无 `run_execution` 行且 `updated_at` 老于宽限——默认 5 分钟）并入接管循环候选（与过期租约扫描去重合并）。此前 `ExpiredExecutions` 只扫有租约的行，CAS→Begin 微秒级窗口崩溃的 run 将永远卡在 `running`——恰好是接管要消灭的死区；宽限期保证不误伤健康执行（健康执行必有行）。四个 PG 门控用例：孤儿收敛 interrupted+trace / 宽限期内新 running 不动 / 有活租约不算孤儿 / 终态永不触碰。
+  - **接管结果计数器（C2，补齐设计 §3-5 承诺）**：`levee_takeover_events_total{result}`（settled/skipped 预注册零值序列），`TakeoverOnce` 对每个候选按结果打点——接管行为在 `/metrics` 可观测，不再只能翻日志；与既有 `levee_changes_total{interrupted}`（run 状态转移维度）正交互补。
+  - **前端重试入口（C3）**：`isRetryableStatus` 纯函数（镜像后端 RetryChange 准入集 failed/rolled_back/interrupted，spec 用例对词表补集防漂移）+ ChangesView 操作列"重试"按钮（confirm 弹窗防误触，调既有 retry API）；vitest 40 用例全绿 + dist 重建。此前前端 retry API client 存在但**零调用方**——interrupted 的机器入口在 UI 不可达（所有可重试状态均然）。
+  - **SQLite splitter 防御钉（C4）**：`splitSQLStatements` 按"行尾分号"切分，行尾 inline 注释含分号（plan_json 列即此形态）依赖"注释行不以分号结尾"这一隐性约定才不被切断——PG 侧同类形态已造成过生产建表事故。schema.sql 加 SPLITTER HAZARD 警示注释 + 两个用例钉住安全形态与切分规则。
+
 - **收敛选举无条件重选（CI 真 PG 腿揭出的生产缺陷）**：`NodeRegistry.Register` 自动把本地注册表里第一个 master 设为 leader，而后 `SyncFromPeers` 折叠共享表视图时只在"旧 leader 掉线"才重选——节点在只含自己的本地视图上加入时会**自封 leader 且永不纠正**（自己永远 active）。生产后果：新加入节点可长期自认为是 leader（B 的 takeover 循环是 leader-only，错误的自认会让非 leader 节点试图接管）。修复：`SyncFromPeers` 折叠后**无条件重跑**确定性选举策略（最小 active master ID）——对同一共享视图幂等、全节点必然收敛一致。CI 表现：`TestTakeover_NonLeaderDoesNotAct` 在真 PG 上翻车（follower 自认 leader 竟然接管成功），本地无 DSN 跳过故此前未拦住。
 - **takeover 测试夹具收敛时序**：leader 收敛改为 `Eventually` 双节点断言（驱动 sync 轮直到两视图同 leader，不再赌单次同步）；测试自身行清库用 `TRUNCATE ... CASCADE`（`DELETE trace` 被 WORM 触发器拦；state 包测试同套路）。本地以 docker `postgres:16-alpine` 起真 PG 实测：takeover 6 用例 + integration 3 e2e + serve 层 3 验收 + cluster/state 全包全绿。
 

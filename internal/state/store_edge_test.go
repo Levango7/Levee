@@ -343,6 +343,39 @@ func TestPgSplitSQLStatements(t *testing.T) {
 				"unbalanced parens in statement: %q", firstLine(stmt))
 		}
 	})
+
+	// SQLite-side hazard pin (the PG splitter incident's mirror): the
+	// SQLite splitter ends a statement when a LINE ends with ";". A
+	// column line whose trailing inline comment contains a semicolon and
+	// is followed by the closing ");" on its own line (the exact
+	// plan_json shape in schema.sql) must therefore stay INTACT — the
+	// comment line does not end with ";" so the statement keeps
+	// accumulating until the ");" line. If a future edit puts the
+	// semicolon on the SAME line as the comment, the splitter cuts mid-
+	// comment and SQLite receives an unterminated CREATE TABLE — the
+	// same class of breakage the PG leg shipped in production. This test
+	// documents the safe shape; the sibling test pins the unsafe shape
+	// as known-broken so nobody "fixes" it into silence.
+	t.Run("sqlite schema: trailing-comment column lines stay intact", func(t *testing.T) {
+		got := splitSQLStatements("CREATE TABLE runs (\n id TEXT,\n" +
+			" plan_json TEXT NOT NULL DEFAULT '' -- canonical plan ('' = none; v3)\n);\n" +
+			"INSERT INTO t VALUES (1);\n")
+		require.Len(t, got, 2, "the comment line must not end the statement")
+		assert.Contains(t, got[0], "plan_json")
+		assert.True(t, strings.HasSuffix(strings.TrimSpace(got[0]), ");"),
+			"the CREATE TABLE must close on the ');' line: %q", firstLine(got[0]))
+		assert.Contains(t, got[1], "INSERT INTO t")
+	})
+
+	t.Run("sqlite splitter: statement ends only on a bare trailing semicolon", func(t *testing.T) {
+		got := splitSQLStatements("CREATE TABLE runs (\n id TEXT,\n" +
+			" plan_json TEXT DEFAULT '' -- note; tricky\n);\n")
+		// Same shape as above, asserting the cutting rule explicitly: the
+		// comment line (ending in a word, not ";") does not cut; the
+		// following ");" line does.
+		require.Len(t, got, 1)
+		assert.Contains(t, got[0], ");")
+	})
 }
 
 func TestIndexDollarQuoteEnd(t *testing.T) {

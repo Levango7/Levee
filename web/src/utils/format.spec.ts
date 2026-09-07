@@ -5,6 +5,7 @@ process.env.TZ = 'UTC'
 
 import { describe, expect, it } from 'vitest'
 
+import type { ChangeStatus } from '@/types/levee'
 import {
   PRIORITY_COLOR,
   PRIORITY_LABEL,
@@ -13,6 +14,7 @@ import {
   formatDuration,
   formatTimestamp,
   formatUptime,
+  isRetryableStatus,
 } from './format'
 
 describe('formatTimestamp', () => {
@@ -71,5 +73,29 @@ describe('label/color tables', () => {
     expect(Object.keys(PRIORITY_LABEL).sort()).toEqual(Object.keys(PRIORITY_COLOR).sort())
     expect(PRIORITY_COLOR.normal).toBe('')
     expect(PRIORITY_LABEL.urgent).toBe('紧急')
+  })
+})
+
+describe('isRetryableStatus', () => {
+  // Mirrors the backend RetryChange admission set (change_service.go):
+  // failed / rolled_back / interrupted. interrupted is the cluster
+  // takeover terminal — retry is its only machine re-drive entry point.
+  it('admits the retryable terminals', () => {
+    expect(isRetryableStatus('failed')).toBe(true)
+    expect(isRetryableStatus('rolled_back')).toBe(true)
+    expect(isRetryableStatus('interrupted')).toBe(true)
+  })
+
+  it('refuses every non-retryable state', () => {
+    const others = Object.keys(STATUS_LABEL).filter(
+      (s) => s !== 'failed' && s !== 'rolled_back' && s !== 'interrupted',
+    )
+    // Guard against vocabulary drift: the non-retryable set must be
+    // exactly the complement, so a newly added status cannot silently
+    // default into retryable (it must explicitly join one set).
+    expect(others.length).toBeGreaterThan(5)
+    for (const s of others) {
+      expect(isRetryableStatus(s as ChangeStatus)).toBe(false)
+    }
   })
 })

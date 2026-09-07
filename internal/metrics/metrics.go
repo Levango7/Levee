@@ -75,6 +75,18 @@ const (
 	familyRollbacks       = "levee_rollbacks_total"
 	familyBackups         = "levee_backup_total"
 	familyAlertsProcessed = "levee_alerts_processed_total"
+	familyTakeovers       = "levee_takeover_events_total"
+)
+
+// Takeover sweep results for levee_takeover_events_total.
+const (
+	// TakeoverResultSetled: the sweep interrupted the run (running →
+	// interrupted under the per-run lock and status CAS).
+	TakeoverResultSettled = "settled"
+	// TakeoverResultSkipped: the run was a candidate but stood down —
+	// not in a takeable state anymore (settled elsewhere, paused) or
+	// another node held the per-run takeover lock.
+	TakeoverResultSkipped = "skipped"
 )
 
 // changeStatuses lists the lifecycle statuses always exported for
@@ -240,6 +252,7 @@ type Metrics struct {
 	approvals      *labeledCounters
 	backups        *labeledCounters
 	alerts         *labeledCounters
+	takeovers      *labeledCounters
 	channelAcquire *matrixCounters
 
 	// Batch duration is a simplified histogram: only sum and count are
@@ -260,6 +273,7 @@ func New() *Metrics {
 		approvals:      newLabeledCounters(ApprovalActionApprove, ApprovalActionReject, ApprovalActionTimeout),
 		backups:        newLabeledCounters(BackupResultOK, BackupResultFail),
 		alerts:         newLabeledCounters(),
+		takeovers:      newLabeledCounters(TakeoverResultSettled, TakeoverResultSkipped),
 		channelAcquire: newMatrixCounters(),
 	}
 }
@@ -351,6 +365,15 @@ func (m *Metrics) BackupsTotal(result string) int64 { return m.backups.value(res
 // AlertsProcessedTotal returns the counter value for one alert source.
 func (m *Metrics) AlertsProcessedTotal(source string) int64 { return m.alerts.value(source) }
 
+// IncTakeoverEvent records one failover-takeover sweep outcome for a
+// candidate run; result should be TakeoverResultSettled or
+// TakeoverResultSkipped (design-cluster-failover.md §3-5: the takeover
+// is observable without scraping logs).
+func (m *Metrics) IncTakeoverEvent(result string) { m.takeovers.inc(result) }
+
+// TakeoverEventsTotal returns the counter value for one takeover result.
+func (m *Metrics) TakeoverEventsTotal(result string) int64 { return m.takeovers.value(result) }
+
 // Handler returns an http.Handler that serves all collected metrics in
 // the Prometheus text exposition format (version 0.0.4), including
 // # HELP and # TYPE annotation lines. Register it on the serve
@@ -419,6 +442,10 @@ func (m *Metrics) render(b *strings.Builder) {
 	writeCounterFamily(b, familyAlertsProcessed,
 		"Total number of alerts processed by LEVEE, partitioned by source.",
 		"source", m.alerts.snapshot())
+
+	writeCounterFamily(b, familyTakeovers,
+		"Total number of failover-takeover sweep outcomes for candidate runs, partitioned by result.",
+		"result", m.takeovers.snapshot())
 }
 
 // writeCounterFamily renders one single-label counter family with its
