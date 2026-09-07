@@ -155,8 +155,16 @@ jobs:
         run: go test -tags integration ./tests/integration/ -count=1 -timeout 300s
       - name: go test (e2e rollback drills)
         run: go test -tags e2e ./tests/e2e/ -count=1 -timeout 600s
-      - name: go test (postgres store + distributed locks + takeover)
-        run: go test ./internal/state/... ./internal/cluster/... ./internal/takeover/... -count=1 -timeout 600s
+      # takeover runs SEPARATELY from state/cluster: all three share the
+      # single CI postgres database, and `go test` executes package
+      # binaries in parallel — the state suite's TRUNCATE ... CASCADE
+      # wipes runs/trace rows the takeover tests are mid-flight on (and
+      # vice versa), producing order-dependent false reds (observed:
+      # TestTakeover_SweepIsIdempotent's trace assertion reading 0 rows).
+      - name: go test (postgres store + distributed locks)
+        run: go test ./internal/state/... ./internal/cluster/... -count=1 -timeout 600s
+      - name: go test (takeover, isolated step)
+        run: go test ./internal/takeover/... -count=1 -timeout 300s
 
   # ---------------------------------------------------------------------------
   # proto: regenerate the Go protobuf bindings with the pinned protoc

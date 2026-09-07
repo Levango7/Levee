@@ -212,8 +212,13 @@ func TestTakeover_SweepIsIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	env.expireLease(t, runID)
 
-	_, err = env.loopy.TakeoverOnce(ctx)
+	// First sweep MUST settle: if it silently stands down (lock loss,
+	// CAS miss), the idempotency assertion below would "pass" vacuously
+	// while the takeover never happened. Pin the settlement explicitly.
+	first, err := env.loopy.TakeoverOnce(ctx)
 	require.NoError(t, err)
+	require.Contains(t, first.Settled, runID, "the first sweep must settle the expired run")
+
 	res, err := env.loopy.TakeoverOnce(ctx)
 	require.NoError(t, err)
 	assert.NotContains(t, res.Settled, runID)
