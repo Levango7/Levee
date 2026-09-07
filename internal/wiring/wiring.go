@@ -61,6 +61,12 @@ type Engine struct {
 	lockTTL             time.Duration
 	maxParallelRuns     int
 	rollbackConcurrency int
+
+	// sem is the process-wide parallel-run semaphore (capacity =
+	// maxParallelRuns). Acquire is non-blocking: beyond the cap a run
+	// fast-fails instead of queueing. Initialised in NewEngine after
+	// options so WithMaxParallelRuns is honoured.
+	sem chan struct{}
 }
 
 // Option customises an Engine (see With* helpers).
@@ -104,5 +110,9 @@ func NewEngine(store state.Store, opts ...Option) *Engine {
 	for _, opt := range opts {
 		opt(e)
 	}
+	if e.maxParallelRuns < 1 {
+		e.maxParallelRuns = DefaultMaxParallelRuns
+	}
+	e.sem = make(chan struct{}, e.maxParallelRuns)
 	return e
 }

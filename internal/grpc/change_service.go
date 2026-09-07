@@ -852,23 +852,50 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 		return nil, status.Errorf(codes.FailedPrecondition, "can only retry failed or rolled_back changes; current status: %q", run.Status)
 	}
 
+	oldStatus := run.Status
+
 	if s.engine != nil && s.engine.Retry != nil {
 		if err := s.engine.Retry(ctx, req.GetChangeId(), req.GetReplan(), req.GetTargetHosts()); err != nil {
 			return nil, status.Errorf(codes.Internal, "engine retry: %v", err)
 		}
+		// The engine retried synchronously and owns the run's status
+		// lifecycle (CAS into "running", terminal write out). Re-read the
+		// run so the response, audit and event reflect the actual outcome
+		// instead of blindly claiming "running".
+		run, err = s.store.GetRun(ctx, req.GetChangeId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "get run after retry: %v", err)
+		}
+		if run == nil {
+			return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+		}
+		now := time.Now().UTC()
+		s.recordAudit(ctx, &state.Audit{
+			ID:        newID("aud-"),
+			RunID:     run.ID,
+			Action:    "retry",
+			Actor:     actorFromCtx(ctx),
+			Target:    run.ID,
+			Result:    run.Status,
+			Timestamp: now,
+		})
+		s.publishEvent(&pb.ChangeEvent{
+			ChangeId:  run.ID,
+			EventType: "status_changed",
+			OldStatus: oldStatus,
+			NewStatus: run.Status,
+			Message:   "retry finished",
+			Timestamp: now.Unix(),
+		})
+		return runToPB(run), nil
 	}
 
-	// With an engine the retry re-executes immediately ("running"); the
-	// no-engine fallback resets the run to "draft" so it can be re-planned,
-	// matching this function's contract — claiming "running" without an
-	// executor left the change stuck in a state nothing would ever finish.
-	newStatus := "running"
-	if s.engine == nil || s.engine.Retry == nil {
-		newStatus = "draft"
-	}
-
+	// No-engine fallback: reset the run to "draft" so it can be re-planned
+	// and re-applied, matching this function's contract — claiming "running"
+	// without an executor left the change stuck in a state nothing would
+	// ever finish.
+	newStatus := "draft"
 	now := time.Now().UTC()
-	oldStatus := run.Status
 	run.Status = newStatus
 	run.UpdatedAt = now
 	if err := s.store.UpdateRun(ctx, run); err != nil {

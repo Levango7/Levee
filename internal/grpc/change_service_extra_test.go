@@ -756,9 +756,13 @@ func TestRetryChange(t *testing.T) {
 			TargetHosts: []string{"h1"},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "running", resp.GetStatus())
 		assert.Equal(t, int32(1), atomic.LoadInt32(&engine.retryCalled))
 		assert.Equal(t, []string{"h1"}, engine.lastHosts)
+		// The handler re-reads the run after the synchronous engine retry
+		// (the retry closure owns the status lifecycle). This stub leaves
+		// the run untouched, so the response must reflect the run's real
+		// status and must not blindly claim "running".
+		assert.Equal(t, "failed", resp.GetStatus())
 	})
 
 	t.Run("engine error maps to internal", func(t *testing.T) {

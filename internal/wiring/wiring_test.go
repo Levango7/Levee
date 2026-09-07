@@ -145,13 +145,13 @@ func TestGeneratePlan_RunNotFound(t *testing.T) {
 
 func TestLooksLikeWorkflowPath(t *testing.T) {
 	cases := map[string]bool{
-		"name: x\nsteps:\n":   false, // multiline → inline
-		"steps: []":           false, // colon-space mapping, not a path
-		"deploy/app.levee":    true,
-		`C:\work\app.levee`:   true,
-		"app.levee.yaml":      true,
-		"nginx":               false, // bare word: neither YAML nor path — reported as inline failure
-		"weird name.levee":    false, // extension with a space is not path-like
+		"name: x\nsteps:\n": false, // multiline → inline
+		"steps: []":         false, // colon-space mapping, not a path
+		"deploy/app.levee":  true,
+		`C:\work\app.levee`: true,
+		"app.levee.yaml":    true,
+		"nginx":             false, // bare word: neither YAML nor path — reported as inline failure
+		"weird name.levee":  false, // extension with a space is not path-like
 	}
 	for src, want := range cases {
 		assert.Equal(t, want, looksLikeWorkflowPath(src), "src=%q", src)
