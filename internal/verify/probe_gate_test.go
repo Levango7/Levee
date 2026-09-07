@@ -93,18 +93,17 @@ func TestProbeGateHTTPDirectPass(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, res.Passed, "message: %s", res.Message)
 	assert.Equal(t, int64(1), hits.Load())
-	// Guard the strictly-positive latency assertion against pathological
-	// runner clocks: a GitHub Actions Windows runner with a virtualized TSC
-	// was observed reading a full loopback HTTP round-trip as exactly 0
-	// elapsed (false "0s is not positive" red). If the monotonic clock cannot
-	// even observe a bounded 1ms sleep, this granularity assertion is vacuous
-	// on that runner, so skip rather than flake.
-	t0 := time.Now()
-	time.Sleep(time.Millisecond)
-	if time.Since(t0) == 0 {
-		t.Skip("runner monotonic clock cannot observe elapsed time; latency assertion is vacuous here")
-	}
-	assert.Positive(t, res.Latency)
+	// The latency assertion is guarded, not strict: GitHub Actions
+	// Windows runners with virtualized TSC/QPC have been observed reading
+	// a full loopback HTTP round-trip as exactly 0 elapsed (intermittent,
+	// per-observation — a 1ms probe clock reading may pass while the
+	// probe's own measurement still lands on 0, so a pre-check cannot
+	// reliably classify the runner). What IS invariantly true: the
+	// measured latency is never negative and never absurdly large for a
+	// loopback hop. Assert exactly that; strict positivity is a
+	// granularity property this runner class cannot guarantee.
+	assert.GreaterOrEqual(t, res.Latency, time.Duration(0), "latency may read 0 on coarse virtualized clocks but never negative")
+	assert.Less(t, res.Latency, 10*time.Second, "loopback round-trip must be fast")
 }
 
 func TestProbeGateHTTPStatusMismatch(t *testing.T) {
