@@ -483,10 +483,18 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	// Delegate to the engine when available.
 	execRunID, success, phase, err := s.engine.Run(ctx, req.GetChangeId(), req.GetAutoApprove(), req.GetMaxConcurrency())
 	if err != nil {
-		// Mark the run as failed.
-		run.Status = "failed"
-		run.UpdatedAt = time.Now().UTC()
-		_ = s.store.UpdateRun(ctx, run)
+		// Mark the run as failed — via CAS from "running". A failed CAS
+		// means another actor (failover takeover, a concurrent pause)
+		// already moved the run; the executor must not blindly overwrite
+		// that state with "failed", and the winning actor owns the event.
+		if !s.casRunStatus(ctx, run, "failed") {
+			return &pb.ApplyResponse{
+				Change:  runToPB(run),
+				RunId:   execRunID,
+				Success: false,
+				Message: fmt.Sprintf("engine error: %v; status superseded to %q", err, run.Status),
+			}, status.Errorf(codes.FailedPrecondition, "engine: %v (run status was concurrently changed to %q)", err, run.Status)
+		}
 		s.publishEvent(&pb.ChangeEvent{
 			ChangeId:  run.ID,
 			EventType: "status_changed",
@@ -512,9 +520,19 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	case success:
 		finalStatus = "completed"
 	}
-	run.Status = finalStatus
-	run.UpdatedAt = time.Now().UTC()
-	_ = s.store.UpdateRun(ctx, run)
+	// Terminal write via CAS from "running": the run must still be ours
+	// to settle. A failed CAS means a failover takeover (or any other
+	// actor) interrupted the run mid-flight and already wrote a terminal
+	// state; overwriting it would resurrect this executor's verdict over
+	// the cluster's.
+	if !s.casRunStatus(ctx, run, finalStatus) {
+		return &pb.ApplyResponse{
+			Change:  runToPB(run),
+			RunId:   execRunID,
+			Success: false,
+			Message: fmt.Sprintf("status superseded to %q", run.Status),
+		}, status.Errorf(codes.FailedPrecondition, "run status was concurrently changed to %q while executing", run.Status)
+	}
 	// Publish the terminal transition so WatchChange subscribers see
 	// completion/failure like any other status change.
 	s.publishEvent(&pb.ChangeEvent{
@@ -531,6 +549,41 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		Success: success,
 		Message: finalStatus,
 	}, nil
+}
+
+// casRunStatus settles a run from "running" to final via a compare-and-set.
+// It reports whether this executor won the settle and mutates run in place
+// with the authoritative status:
+//
+//   - CAS success (true): run.Status/UpdatedAt reflect final; the caller
+//     owns the terminal transition and publishes it.
+//   - CAS failure (false): another actor (failover takeover → interrupted,
+//     a concurrent pause → paused) already moved the run; run is re-read so
+//     run.Status names the winner's state. The caller must NOT publish a
+//     transition — the winning actor owns the event.
+//   - Store error (false): run.Status stays final (best effort); the
+//     caller reports the error it already has.
+//
+// This is the single choke point that keeps a late executor from over-
+// writing a terminal state another actor already wrote (B1).
+func (s *ChangeService) casRunStatus(ctx context.Context, run *state.Run, final string) (won bool) {
+	now := time.Now().UTC()
+	ok, err := s.store.UpdateRunStatusIf(ctx, run.ID, "running", final, now)
+	if err != nil {
+		log.Warn("terminal status CAS failed", "run_id", run.ID, "error", err)
+		return false
+	}
+	if ok {
+		run.Status = final
+		run.UpdatedAt = now
+		return true
+	}
+	// Lost the race: surface the winner's state.
+	if latest, lerr := s.store.GetRun(ctx, run.ID); lerr == nil && latest != nil {
+		run.Status = latest.Status
+		run.UpdatedAt = latest.UpdatedAt
+	}
+	return false
 }
 
 // --- PauseChange / ResumeChange --------------------------------------------

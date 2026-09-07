@@ -59,3 +59,106 @@
 ## 6. 成本
 
 实现+测试+核验约 4-6 个提交；主要工时在确定性双节点测试的打磨（参考：本轮 KMS/沙箱教训，测试质量是生命线）。工具链零新增。
+
+## 7. 实施方案（v0.4，前置 A 已合入，待拍板）
+
+A 合入后的代码事实（2026-09-07 复核，比 §0 更精确的四点）：
+
+- **fencing 原语已存在但尚未被消费**：`cluster_locks.fence_token` 是单调序列
+  （`cluster_locks_fence_seq`），`DistributedLockManager.Acquire` 每次易主都发新
+  token；`clusterNodes` 心跳/摘除、`GetLeader`（收敛式选举）均可直接复用。
+- **证据持久化是"闭包完成后一次落库"**（`wiring.executePlan`：`runner.Run` 全程
+  进程内执行，`persistClosureResults` 在 Run 返回后一次性写 batch/step 行）。
+  因此 §2-R1 缓解②"每一次步骤写入 CAS"在实施中收敛为**结构性写入点**的
+  epoch 校验（详见 7.2-B3）。
+- **⚠ 闭包的失败语义与"中止"耦合了"回滚"**（本次细化新发现，v0.3 未识别）：
+  `closure.Run` 进入批次执行后，**任何**失败路径——步骤错误、批后门禁失败、
+  ctx 取消——都置 `triggerRollback=true`，且回滚刻意用 `context.Background()`
+  跑到完成（closure.go:394-412 的既有设计）。含义：**围栏失主信号绝不能走
+  ctx 取消或普通错误传播**，否则失主僵尸会触发一次不可取消的自动回滚，
+  带着 undo 命令扑向生产主机——这正是 R1 要防的远端双写，且以更危险的
+  "回滚"形态出现。解法见 7.2-B2 的引擎哨兵。
+- **A 遗留终态盲写洞**：`ApplyChange` 错误路径、`retryChange` 终态、
+  `rollbackChange` 终态都是 `GetRun`+`UpdateRun` 盲写。接管把 run 置
+  `interrupted` 后，僵尸复活的第一件事就是把终态盖回去。fencing 不做
+  终态 CAS 化等于没做（7.2-B1）。
+
+### 7.1 分层与依赖方向（硬约束）
+
+- `internal/cluster`：只加**原语**——`run_execution` 表（并入 `clusterSchemaSQL`
+  的 advisory-lock 串行建表路径，共享 770_001 锁键，**不进** pgschema.sql：
+  非集群 PG 库不需要，少一处镜像就少一处漂移）+ `ExecutionGuard`（登记/
+  续约/`Owns` 复验/候选扫描）。epoch 单调性复用 `cluster_locks_fence_seq`
+  的 nextval 模式（新序列 `run_execution_epoch_seq`，INSERT…ON CONFLICT
+  DO UPDATE 与 acquireLockSQL 同形——已被证明的 SQL 形态）。零新依赖。
+- `internal/engine`：**唯一**改动是围栏哨兵 `ErrFencedOut` + 批次失败分支
+  识别哨兵后**跳过回滚**直接失败（~10 行 + 文档注释）。闭包的其余执行
+  语义一行不动。回滚路径内的失主由 execFn 的 Owns 门禁自然失败化 undo
+  步骤（不派发、不重试派发），无需引擎改动。
+- `internal/takeover`（新包）：**语义层**——依赖 `state.Store` + `cluster`
+  原语。leader 独占 + 每 run 接管锁 + `running→interrupted` 状态 CAS
+  三重幂等。不 import wiring/engine。
+- `internal/wiring`：定义 `ExecutionGuard`/`ExecutionLease` 接口
+  （nil=单节点，行为零变化）+ 接线。依赖方向无环。
+
+### 7.2 提交分解（B1–B5，每个提交独立成立、独立全绿）
+
+| 提交 | 内容 | 关键测试 |
+|------|------|---------|
+| **B1** | **终态写入 CAS 化**（A 遗留洞，先行独立修复）：`ApplyChange` 成功/错误路径、`retryChange` 终态改 `UpdateRunStatusIf(running→final)`；CAS 失败=已被并发转移，如实返回当前状态、不写不发事件。`rollbackChange` 保持现状（非 running 源状态，属 Q3 范围）。单节点语义不变（期望值恒 running，无人竞争） | gRPC 层：并发 apply/pause 竞争败者不脏写；wiring 层 retry CAS 竞争败者错误明确；全量既有套件零回归 |
+| **B2** | **围栏与登记**：`run_execution` DDL+序列；`cluster.ExecutionGuard`：`Begin`（INSERT…ON CONFLICT，易主必发新 epoch，RETURNING epoch）、`Owns`（**续约式复验**——见下）、`Heartbeat`、`End`（仍持有时删行，僵尸 End 为 0 行无副作用）、候选扫描（`lease_expires<NOW() ∪ status=running` 且 `run_execution` 无行且 `updated_at` 老于孤儿宽限 5min 常量）。引擎哨兵 `ErrFencedOut`+免回滚分支。`wiring`：`WithExecutionGuard`、`runChange/retryChange` 头部 Begin（**失败即拒**——集群模式下无围栏的执行就是接管盲区，run 落 failed 可重试）、每步派发前 `Owns` 门禁、心跳 goroutine（TTL/3，独立于步骤进度——慢步骤期间健康节点不掉租约；TTL 语义=死后检测延迟，不是执行时长上限）、`defer End`、落库前 `Owns` 复验 | guard 单测（PG 门控）：epoch 单调、旧主重登记必废、行删即失主、续约式 Owns 延长租约；引擎单测：哨兵失败→PhaseFailed+零回滚；wiring 单测（假 guard）：Begin 失败拒绝执行、Owns=false 跳落库+失主错误、End 幂等 |
+| **B3** | **接管循环** `internal/takeover`：leader-only（收敛选举视图）+ 每 run 接管锁 + 事务内 `UpdateRunStatusIf(running→interrupted)` + 防御性 batch/step 标记（按构造 0 行命中——行只以终态落库，语句为未来增量持久化留形并如实注明）+ `CreateTrace("interrupted_by_takeover", actor="cluster-takeover")` + 删执行行；`TakeoverOnce()` 测试钩子；`levee_takeover_events_total{result}` 计数。**ci.yml** 的 integration&postgres 作业包清单加 `./internal/takeover/...`。serve 旗标：`--cluster-takeover-interval`（默认 10s，≤0 禁循环但**不禁**登记/围栏）、`--cluster-exec-lease-ttl`（默认 30s） | takeover 单测（PG 门控）：过期→interrupted+trace+行删+计数；重扫幂等；非 leader 零动作；孤儿宽限内不误伤；活节点但执行租约过期同样接管（执行存活≠节点存活，租约是唯一权威） |
+| **B4** | **`interrupted` 全触点**：`isValidTransition`（archived 合法前态+、cancelled 拒绝）、`RetryChange` 准入（见 Q1）、WatchChange `terminalStates`、状态机文档注释、`metrics.changeStatuses` 增标签、前端 label/色表 + vitest 用例 + dist 重建 | gRPC 状态机表测试扩展；前端三连 |
+| **B5** | **双节点 e2e + 文档收口**：tests/integration（PG）三用例（见 7.4）；CHANGELOG；本设计稿状态置已实施；README 集群段改写 + 删告警（以 §4 全过为前置） | 7.4 全部 |
+
+### 7.3 关键机制的因果链（细化版，供实现时对照）
+
+1. **健康长执行不被误杀**：心跳 goroutine 以 TTL/3 独立续约，与步骤进度
+   解耦——一个跑 10 分钟的慢 SSH 步骤期间租约始终新鲜。TTL 的语义因此
+   是"**死后检测延迟上界**"，不是执行时长上限。默认 TTL=30s ⇒ 崩溃后最迟
+   ~TTL+interval≈40s 收敛，满足 §4-1 的 ≤2×TTL。
+2. **续约式 Owns 关闭落库 TOCTOU**：`Owns` 的 UPDATE 在校验的同时延长租约
+   ——Owns 通过 ⇒ 租约在随后 TTL 内不可能过期 ⇒ 接管循环不可能在校验与
+   落库之间插入。若 Owns 只读不续约，"校验通过→接管→落库"的毫秒窗口
+   就会漏出迟到证据行。这个"为什么必须续约"的因果写进 Owns 的文档注释。
+3. **失主僵尸的三道门，全部不走 ctx**：① 每步派发前 Owns（远端门）；
+   ② 落库前 Owns（证据门）；③ 终态 CAS（状态门，B1）。失主信号=哨兵
+   错误，引擎免回滚分支消化之——**绝不取消 ctx**（7 开头发现的耦合）。
+   GC 停顿僵尸醒来后的首个 Owns 必失败，后续零派发、零落库、零状态写。
+4. **孤儿扫描的可达性论证**：B2 起集群模式所有 apply/retry 都 Begin 登记
+   且 Begin 失败即拒——因此"running 无执行行"只可能来自 B 之前的历史崩溃
+   （一次性存量）或 CAS-running 与 Begin 之间的微秒级崩溃窗口；5min 宽限
+   常量覆盖两者且不可能误伤健康执行（健康执行必有行）。
+5. **手动 RollbackChange 明确在围栏外**（Q3 推荐口径）：不经 running、不
+   登记；节点死在手动回滚中途时 run 停在其非 running 源终态，接管循环按
+   构造跳过，人工可重发。README 如实注明。
+
+### 7.4 验收映射（§4 → 具体测试，全部挂现有 integration&postgres 作业）
+
+| §4 条款 | 测试 |
+|---------|------|
+| 1. 崩溃 ≤2×TTL 收敛 + 审计链完整 | `TestTakeover_TwoNodeConvergence`：双 `ClusterManager`（1s 间隔/2s TTL 配置加速）+ 双 wiring 引擎共享真 PG；node-a apply 阻塞于 loopback 步骤（通道 release 门，确定性）；真实健康循环走完 `Eventually(interrupted, 10s)`；断言 trace 存在、哈希链 verify 通过 |
+| 2. 僵尸复活零污染 | `TestTakeover_ZombieWritesRejected`：人工 `UPDATE run_execution SET lease_expires=NOW()-1s` 制造过期（无 sleep）→ node-b `TakeoverOnce()` → 放行阻塞通道模拟僵尸醒来 → 断言：后续步骤行零新增（落库门）、run 仍 interrupted（CAS 门）、接管锁期间无双写 |
+| 3. 无双写 | 同上 + 接管窗口内并发 `TakeoverOnce()`×2（不同节点）恰好一个产出 trace |
+| 4. 单节点零改动 | 全量既有套件 + guard=nil 路径审查（B1 的 CAS 化是唯一公共路径改动，B2-B5 触点全部集群门控） |
+| 5. 确定性 | 无 sleep（过期靠注入、死亡靠断水/阻塞门、循环靠 `TakeoverOnce` 直调或 Eventually-on-state）；review 阶段 grep 校验 |
+| 6. CI ≤+3min | integration&postgres 作业时长前后对比 |
+
+**Q2 裁定（本次细化定案，不再作为开放问题）**：死亡模拟采用**进程内断水**
+（阻塞通道 + 注入过期租约 + 停心跳），不引入 kill -9 子进程腿。论证：PG 与
+接管循环可观测的全部状态只有（a）run_execution 行、（b）run 状态、（c）审计
+行——kill -9 与断水在这三处产生的 DB 可见状态**完全一致**，差异仅是进程残骸，
+而进程残骸不在任何验收断言的观测面内；真子进程腿恰恰是我们刚清剿完的 CI
+flaky 温床（进程回收时序）。等价性论证写进测试文件头注释。
+
+### 7.5 拍板记录（v0.4，2026-09-07，实施口径全定）
+
+- **Q1 → 可 Retry**：`interrupted` 加入 `RetryChange` 可重试集，从干净计划
+  重驱动（与接管"永不重跑副作用"不矛盾：接管不做远端补偿，重驱动是
+  显式新执行，走完整审批/围栏/落库门）。
+- **Q2 → 断水模拟定案**（7.4 末段，等价性论证入测试文件头注释）。
+- **Q3 → rollback 在接管面外**：rollbackChange 不经 running、不登记；
+  节点死在手动回滚中途时 run 停在原终态，人工可重发。README 如实注明。
+
+至此 §7 实施口径全部落定，无开放问题。开工约束：按 B1→B5 顺序提交，
+每提交独立全绿；全局核验 + CI 双分支绿后才动 README 告警与设计稿状态。

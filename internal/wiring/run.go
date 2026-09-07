@@ -215,13 +215,15 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 	case err == nil && phase == string(engine.PhaseCompleted):
 		final = "completed"
 	}
-	run, gerr := e.store.GetRun(ctx, changeID)
-	if gerr == nil && run != nil {
-		run.Status = final
-		run.UpdatedAt = utcNow()
-		if uerr := e.store.UpdateRun(ctx, run); uerr != nil {
-			err = errors.Join(err, fmt.Errorf("wiring: final status write: %w", uerr))
-		}
+	// Terminal write via CAS from "running": if another actor (failover
+	// takeover, a concurrent apply) already moved the run, the retry
+	// executor must not overwrite the winner's state. The run row read
+	// below names the authoritative status either way.
+	ok, casErr := e.store.UpdateRunStatusIf(ctx, changeID, "running", final, utcNow())
+	if casErr != nil {
+		err = errors.Join(err, fmt.Errorf("wiring: retry final status write: %w", casErr))
+	} else if !ok {
+		err = errors.Join(err, fmt.Errorf("wiring: retry verdict superseded: change %q no longer running (concurrently transitioned)", changeID))
 	}
 	_ = e.store.CreateTrace(ctx, &state.Trace{
 		ID:        newID("trc-"),

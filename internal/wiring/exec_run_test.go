@@ -423,6 +423,59 @@ func TestRetryChange_WithoutHostsOrReplanRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "explicit host subset")
 }
 
+// TestRetryChange_TerminalSupersededConcurrently pins the B1 discipline
+// on the wiring side: retryChange's terminal write is a CAS from
+// "running", so when another actor (a failover takeover) moves the run
+// while the retry executes, the retry's verdict must not overwrite the
+// winner's state. The race is staged deterministically: the loopback
+// channel blocks inside Exec, the takeover transition happens from the
+// test goroutine, then the channel is released so the retry finishes and
+// attempts its (now stale) terminal write.
+func TestRetryChange_TerminalSupersededConcurrently(t *testing.T) {
+	rec := &loopRecorder{
+		release: make(chan struct{}),
+		entered: make(chan string, 8),
+	}
+	e, store := newLoopEngine(t, rec)
+	seedLocalTargets(t, store, "web-1")
+	seedRun(t, store, "run-retry3", execWorkflowYAML)
+	planAndPersist(t, e, store, "run-retry3", []string{"web-1"})
+	setRunStatus(t, store, "run-retry3", "failed")
+
+	done := make(chan error, 1)
+	go func() {
+		done <- e.retryChange(context.Background(), "run-retry3", false, []string{"web-1"})
+	}()
+
+	// Wait until the retry is inside Exec (past its running CAS), then
+	// simulate the takeover winning the run.
+	select {
+	case <-rec.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("retry never reached Exec")
+	}
+	run, err := store.GetRun(context.Background(), "run-retry3")
+	require.NoError(t, err)
+	require.Equal(t, "running", run.Status)
+	ok, err := store.UpdateRunStatusIf(context.Background(), "run-retry3", "running", "interrupted", utcNowStub())
+	require.NoError(t, err)
+	require.True(t, ok, "takeover CAS must win while the retry is blocked in Exec")
+
+	close(rec.release)
+	err = <-done
+	require.Error(t, err, "the superseded retry must report the loss, not claim success")
+	assert.Contains(t, err.Error(), "superseded")
+
+	run, err = store.GetRun(context.Background(), "run-retry3")
+	require.NoError(t, err)
+	assert.Equal(t, "interrupted", run.Status,
+		"the takeover's terminal state must survive the retry executor's late verdict")
+}
+
+// utcNowStub mirrors wiring.utcNow for tests in this file that need the
+// same timestamp shape without importing the unexported helper.
+func utcNowStub() time.Time { return time.Now().UTC() }
+
 func TestRollbackChange_ManualUndo(t *testing.T) {
 	rec := &loopRecorder{}
 	e, store := newLoopEngine(t, rec)
