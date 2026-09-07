@@ -15,6 +15,7 @@ export const STATUS_LABEL: Record<ChangeStatus, string> = {
   failed: '失败',
   cancelled: '已取消',
   rolled_back: '已回滚',
+  interrupted: '已中断',
   archived: '已归档',
 }
 
@@ -30,6 +31,7 @@ export const STATUS_COLOR: Record<ChangeStatus, string> = {
   failed: 'danger',
   cancelled: 'info',
   rolled_back: 'info',
+  interrupted: 'danger',
   archived: 'info',
 }
 

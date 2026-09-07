@@ -1,3 +1,0 @@
-# The built Web UI in this directory is committed on purpose: a plain
-# `go build` (no node/npm required) must embed a working UI. Refresh it with
-# `make web` after changing frontend code.

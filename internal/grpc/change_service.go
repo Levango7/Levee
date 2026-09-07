@@ -712,6 +712,9 @@ func mapPauseError(err error, runID string) error {
 //	approved — approved draft/pending
 //	running / paused / completed / failed / cancelled /
 //	rolled_back / rejected / archived — lifecycle states
+//	interrupted — terminal: the executor node died mid-flight and the
+//	              cluster takeover settled the run (cluster mode only);
+//	              re-drive explicitly via RetryChange
 func isValidTransition(from, to string) bool {
 	switch to {
 	case "paused":
@@ -723,10 +726,14 @@ func isValidTransition(from, to string) bool {
 		return from == "paused" || from == "pending" || from == "approved" ||
 			from == "draft" || from == "planned"
 	case "cancelled":
-		return from != "completed" && from != "cancelled" && from != "archived"
+		// interrupted is a TAKEOVER terminal: the executor died and the
+		// cluster wrote the verdict — cancelling afterwards would rewrite
+		// history the audit chain already recorded.
+		return from != "completed" && from != "cancelled" && from != "archived" &&
+			from != "interrupted"
 	case "archived":
 		return from == "completed" || from == "failed" || from == "cancelled" || from == "rolled_back" ||
-			from == "draft" || from == "planned"
+			from == "interrupted" || from == "draft" || from == "planned"
 	default:
 		return false
 	}
@@ -910,8 +917,14 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
-	if run.Status != "failed" && run.Status != "rolled_back" {
-		return nil, status.Errorf(codes.FailedPrecondition, "can only retry failed or rolled_back changes; current status: %q", run.Status)
+	// interrupted (cluster takeover verdict) is retryable by design
+	// (design-cluster-failover.md §7.5-Q1): the takeover deliberately
+	// never re-executes anything, so RetryChange is the machine entry
+	// point for re-driving an interrupted change from its clean,
+	// hash-bound plan. It is NOT auto-resume: retry is a fresh, explicit
+	// execution through the full approval/fencing/evidence gates.
+	if run.Status != "failed" && run.Status != "rolled_back" && run.Status != "interrupted" {
+		return nil, status.Errorf(codes.FailedPrecondition, "can only retry failed, rolled_back or interrupted changes; current status: %q", run.Status)
 	}
 
 	oldStatus := run.Status
@@ -1828,6 +1841,7 @@ func (s *ChangeService) WatchChange(req *pb.WatchChangeRequest, stream grpcpkg.S
 		"archived":    true,
 		"rolled_back": true,
 		"rejected":    true,
+		"interrupted": true, // takeover terminal (cluster mode)
 	}
 
 	for {

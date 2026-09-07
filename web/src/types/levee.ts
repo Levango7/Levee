@@ -14,6 +14,7 @@ export type ChangeStatus =
   | 'failed'
   | 'cancelled'
   | 'rolled_back'
+  | 'interrupted'
   | 'archived'
 
 export type Priority = 'low' | 'normal' | 'high' | 'urgent'

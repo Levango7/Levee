@@ -33,6 +33,12 @@ const (
 	StatusSucceeded  = "succeeded"
 	StatusFailed     = "failed"
 	StatusRolledBack = "rolled_back"
+	// StatusInterrupted is the cluster failover-takeover terminal: the
+	// executor node died mid-flight and the takeover loop settled the
+	// run (design-cluster-failover.md). Single-node deployments never
+	// produce it, but the counter family pre-registers the label so
+	// dashboards see a stable series.
+	StatusInterrupted = "interrupted"
 
 	// Gate results for levee_gates_total.
 	GateResultPass = "pass"
@@ -77,6 +83,7 @@ const (
 var changeStatuses = []string{
 	StatusCreated, StatusApproved, StatusRunning,
 	StatusSucceeded, StatusFailed, StatusRolledBack,
+	StatusInterrupted,
 }
 
 // Default is the process-wide collector instance. LEVEE subsystems
