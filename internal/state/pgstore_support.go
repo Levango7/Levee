@@ -254,10 +254,16 @@ func pgExecMultiStatement(ctx context.Context, db dbExecutor, script string) err
 // respecting:
 //  1. Dollar-quoted function bodies ($$ ... $$ or $tag$ ... $tag$).
 //  2. BEGIN...END blocks inside CREATE FUNCTION / CREATE TRIGGER.
+//  3. Single-quoted string literals (” is an escaped quote, per PG rules) —
+//     ";" and "--" inside a literal are data, not structure.
+//  4. Inline -- comments trailing code: their text may contain ";" (e.g. a
+//     column-comment vocabulary list), which must not split the statement.
+//     This class of breakage actually happened: a fresh-database runs-table
+//     DDL was cut mid-comment by an inline "…; …" annotation.
 //
-// A naive split on ";" would break both, so we walk the script character by
-// character and only treat ";" as a separator when not inside a dollar-quote
-// or BEGIN...END block.
+// A naive split on ";" would break all of the above, so we walk the script
+// character by character and only treat ";" as a separator when outside a
+// dollar-quote, string literal, or BEGIN...END block.
 func pgSplitSQLStatements(script string) []string {
 	var statements []string
 	var current strings.Builder
@@ -265,6 +271,7 @@ func pgSplitSQLStatements(script string) []string {
 	inDollarQuote := false
 	dollarTag := "" // empty means $$ ... $$
 	inBeginEnd := 0 // nesting depth of BEGIN...END
+	inString := false
 
 	i := 0
 	for i < len(script) {
@@ -272,8 +279,9 @@ func pgSplitSQLStatements(script string) []string {
 
 		// Detect start/end of dollar quote. A dollar quote is $tag$ ... $tag$
 		// where tag is optional (e.g. $$). We scan forward to find the
-		// matching closing tag.
-		if ch == '$' {
+		// matching closing tag. Guarded by inString: a dollar inside a
+		// string literal is data.
+		if ch == '$' && !inString {
 			end := indexDollarQuoteEnd(script, i)
 			if end > i {
 				tag := script[i : end+1]
@@ -296,6 +304,37 @@ func pgSplitSQLStatements(script string) []string {
 		if inDollarQuote {
 			current.WriteByte(ch)
 			i++
+			continue
+		}
+
+		// Single-quoted string literal: ";" and "--" inside it are data.
+		// Two adjacent quotes inside a literal are PG's escaped quote.
+		if ch == '\'' {
+			if !inString {
+				inString = true
+			} else if i+1 < len(script) && script[i+1] == '\'' {
+				current.WriteString("''")
+				i += 2
+				continue
+			} else {
+				inString = false
+			}
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+		if inString {
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+
+		// Inline -- comment: skip to end of line (kept out of the statement;
+		// its text may contain ";" without ending the statement).
+		if ch == '-' && i+1 < len(script) && script[i+1] == '-' {
+			for i < len(script) && script[i] != '\n' {
+				i++
+			}
 			continue
 		}
 
