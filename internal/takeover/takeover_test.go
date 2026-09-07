@@ -49,15 +49,20 @@ func newTakeoverEnv(t *testing.T) *takeoverEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() })
 
+	// Clean slate: these tests own their rows. TRUNCATE (not DELETE —
+	// the WORM trigger rejects row deletes on trace) with CASCADE so a
+	// previous run's leftover rows can never collide. cluster_nodes is
+	// deliberately NOT truncated: the state and cluster package test
+	// binaries run concurrently against this database and own rows there.
+	_, err = db.ExecContext(context.Background(), `
+TRUNCATE TABLE trace, steps, batches, runs, run_execution, cluster_locks RESTART IDENTITY CASCADE`)
+	require.NoError(t, err)
+
 	joinNode := func(id string) *cluster.ClusterManager {
 		mgr := cluster.NewClusterManager(db, cluster.ManagerConfig{SelfID: id})
 		require.NoError(t, mgr.Join(cluster.Node{ID: id, Address: "127.0.0.1:0", Role: cluster.RoleMaster, Status: cluster.StatusActive}))
 		require.NoError(t, mgr.Start(context.Background()))
 		t.Cleanup(func() { _ = mgr.Stop(context.Background()) })
-		// Refresh the convergent leader view: managers fold the shared
-		// table into their local registry on their first sync; do it once
-		// synchronously so the leader is established before the test.
-		require.NoError(t, mgr.SyncOnceForTest(context.Background()))
 		return mgr
 	}
 	env := &takeoverEnv{
@@ -67,6 +72,24 @@ func newTakeoverEnv(t *testing.T) *takeoverEnv {
 		mgrA:  joinNode("node-a"),
 		mgrB:  joinNode("node-b"),
 	}
+
+	// Leadership convergence. A single sync round is NOT enough: each
+	// manager's first SyncFromPeers folds the shared table into a local
+	// registry that may still be missing the other node's row (join and
+	// sync race), and electLeaderLocked then elects on the partial view —
+	// node-b can end up believing IT is the leader (the smallest active
+	// master in a registry containing only itself). The background loop
+	// would converge eventually; tests cannot wait on wall-clock, so we
+	// drive sync rounds and assert convergence on the OBSERVABLE (both
+	// registries reporting the same leader, which must be node-a).
+	require.Eventually(t, func() bool {
+		_ = env.mgrA.SyncOnceForTest(context.Background())
+		_ = env.mgrB.SyncOnceForTest(context.Background())
+		la, okA := env.mgrA.GetLeader()
+		lb, okB := env.mgrB.GetLeader()
+		return okA && okB && la.ID == "node-a" && lb.ID == "node-a"
+	}, 10*time.Second, 20*time.Millisecond, "both nodes must converge on node-a as leader before the test proper")
+
 	env.loopy = NewLoop(env.mgrA, env.guard, store, "node-a", time.Second)
 	return env
 }

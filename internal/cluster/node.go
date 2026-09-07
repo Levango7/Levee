@@ -237,10 +237,16 @@ func (r *NodeRegistry) electLeaderLocked() bool {
 // SyncFromPeers reconciles the registry with a shared cluster view (e.g.
 // the cluster_nodes table). Every peer in the view is upserted; local
 // entries absent from the view are removed except keepID — this process's
-// own node, which must survive a transient failure to write its row. After
-// reconciliation the leader slot is re-validated and re-elected if needed,
-// so all nodes applying the same deterministic policy to the same view
-// converge on the same leader.
+// own node, which must survive a transient failure to write its row.
+//
+// After reconciliation the leader is RE-ELECTED UNCONDITIONALLY from the
+// folded view. Register auto-elects the first local master as leader, so
+// a node that joined while its local registry only contained itself
+// self-elects; deferring to the previous leader while it stays active
+// would never correct that (the node itself is always active). Re-running
+// the deterministic policy (smallest active master ID) on the same folded
+// view is idempotent and converges every node on the same leader — the
+// whole point of convergent election.
 func (r *NodeRegistry) SyncFromPeers(peers []Node, keepID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -261,14 +267,11 @@ func (r *NodeRegistry) SyncFromPeers(peers []Node, keepID string) {
 		}
 	}
 
-	if r.leaderID != "" {
-		if n, ok := r.nodes[r.leaderID]; !ok || n.Status != StatusActive {
-			r.leaderID = ""
-			r.electLeaderLocked()
-		}
-	} else {
-		_ = r.electLeaderLocked()
-	}
+	// Unconditional re-election on the folded view. electLeaderLocked
+	// clears leaderID when no eligible node exists (e.g. keepID-only
+	// view), which Register re-establishes on the next local join.
+	r.leaderID = ""
+	_ = r.electLeaderLocked()
 }
 
 // MarkStale transitions nodes whose LastHeartbeat is older than maxAge to

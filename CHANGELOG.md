@@ -6,6 +6,9 @@
 
 ### 新增
 
+- **收敛选举无条件重选（CI 真 PG 腿揭出的生产缺陷）**：`NodeRegistry.Register` 自动把本地注册表里第一个 master 设为 leader，而后 `SyncFromPeers` 折叠共享表视图时只在"旧 leader 掉线"才重选——节点在只含自己的本地视图上加入时会**自封 leader 且永不纠正**（自己永远 active）。生产后果：新加入节点可长期自认为是 leader（B 的 takeover 循环是 leader-only，错误的自认会让非 leader 节点试图接管）。修复：`SyncFromPeers` 折叠后**无条件重跑**确定性选举策略（最小 active master ID）——对同一共享视图幂等、全节点必然收敛一致。CI 表现：`TestTakeover_NonLeaderDoesNotAct` 在真 PG 上翻车（follower 自认 leader 竟然接管成功），本地无 DSN 跳过故此前未拦住。
+- **takeover 测试夹具收敛时序**：leader 收敛改为 `Eventually` 双节点断言（驱动 sync 轮直到两视图同 leader，不再赌单次同步）；测试自身行清库用 `TRUNCATE ... CASCADE`（`DELETE trace` 被 WORM 触发器拦；state 包测试同套路）。本地以 docker `postgres:16-alpine` 起真 PG 实测：takeover 6 用例 + integration 3 e2e + serve 层 3 验收 + cluster/state 全包全绿。
+
 - **集群在途变更故障接管（设计 B 全部落地，`docs/design-cluster-failover.md`）**：集群模式下节点在 apply 中途崩溃，run 从此不再永久卡死在 `running` 等人工救库——leader 的接管循环在租约过期后把它收敛到新终态 **`interrupted`**，全程审计留痕；接管**永不重跑副作用**，重驱动是人工经 `RetryChange` 的显式新执行（§7.5-Q1）——
   - **执行围栏（fencing）**：新表 `run_execution`（run_id/owner/epoch 单调序列/lease_expires，并入 clusterSchemaSQL 的 advisory-lock 串行建表路径）。集群模式所有 apply/retry 执行前必须**登记租约**（活租约被他人持有时拒绝执行=集群单飞），心跳 TTL/3 独立于步骤进度续约（慢 SSH 不掉租约；TTL 语义=死后检测延迟上界而非执行时长上限）；`Owns` **续约式复验**（校验同时延长租约，构造上关闭"校验→接管→落库"TOCTOU）；步骤派发前、证据落库前双重门禁；终态写入全部 CAS 化（B1：`casRunStatus` choke point + `retryChange` 终态 CAS——迟到的僵尸不再能覆盖接管赢家的状态，事件发布纪律=赢家独占）。
   - **失主免回滚哨兵**：闭包进入批次执行后任何失败都触发刻意不可取消的自动回滚（既有设计），失主信号若走 ctx 取消会让僵尸带着 undo 扑向生产主机——新增 `engine.ErrFencedOut` 哨兵，`closure.Run` 识别后**跳过回滚直接失败**（引擎净改动 ~15 行）；wiring 的 `SentinelAdapter`（`WithExecutionGuard` 内置强制适配）把 cluster 层哨兵错误链映射进引擎哨兵，组合根忘包适配器再无静默降级面。
