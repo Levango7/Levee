@@ -6,6 +6,14 @@
 
 ### 新增
 
+- **集群在途变更故障接管（设计 B 全部落地，`docs/design-cluster-failover.md`）**：集群模式下节点在 apply 中途崩溃，run 从此不再永久卡死在 `running` 等人工救库——leader 的接管循环在租约过期后把它收敛到新终态 **`interrupted`**，全程审计留痕；接管**永不重跑副作用**，重驱动是人工经 `RetryChange` 的显式新执行（§7.5-Q1）——
+  - **执行围栏（fencing）**：新表 `run_execution`（run_id/owner/epoch 单调序列/lease_expires，并入 clusterSchemaSQL 的 advisory-lock 串行建表路径）。集群模式所有 apply/retry 执行前必须**登记租约**（活租约被他人持有时拒绝执行=集群单飞），心跳 TTL/3 独立于步骤进度续约（慢 SSH 不掉租约；TTL 语义=死后检测延迟上界而非执行时长上限）；`Owns` **续约式复验**（校验同时延长租约，构造上关闭"校验→接管→落库"TOCTOU）；步骤派发前、证据落库前双重门禁；终态写入全部 CAS 化（B1：`casRunStatus` choke point + `retryChange` 终态 CAS——迟到的僵尸不再能覆盖接管赢家的状态，事件发布纪律=赢家独占）。
+  - **失主免回滚哨兵**：闭包进入批次执行后任何失败都触发刻意不可取消的自动回滚（既有设计），失主信号若走 ctx 取消会让僵尸带着 undo 扑向生产主机——新增 `engine.ErrFencedOut` 哨兵，`closure.Run` 识别后**跳过回滚直接失败**（引擎净改动 ~15 行）；wiring 的 `SentinelAdapter`（`WithExecutionGuard` 内置强制适配）把 cluster 层哨兵错误链映射进引擎哨兵，组合根忘包适配器再无静默降级面。
+  - **接管循环（`internal/takeover`）**：leader 独占（收敛选举视图；per-run 接管锁 + `running→interrupted` 状态 CAS 双重幂等兜底）→ 防御性非终态步骤标记（`state.Store.MarkNonTerminalSteps`，SQLite/PG 双实现；当前"闭包完成后一次落库"形态下按构造 0 行命中，为未来增量持久化留形）→ `interrupted_by_takeover` 审计 trace → 删执行行（续行 executor 重新登记，旧主被缺行本身围栏）→ 指标计数。`TakeoverOnce()` 测试钩子全程无时钟依赖。
+  - **`interrupted` 全触点**：状态机（可 archived、拒 cancelled——接管判定已被审计链记录）、`RetryChange` 准入（failed/rolled_back/**interrupted**）、WatchChange 终态集、`levee_changes_total` 预注册标签、前端色表（已中断/danger）+ dist 重建。
+  - **serve 旗标**：`--cluster-takeover-interval`（默认 10s，≤0 只禁循环、围栏永在）、`--cluster-exec-lease-ttl`（默认 30s）；组合根类型桥保持 wiring↛cluster 依赖方向。
+  - **验收（tests/integration，真 PG）**：崩溃执行者 ≤2×TTL 收敛 interrupted + 审计哈希链验证通过；僵尸复活零污染（零步骤行/零 undo 派发/终态不被盖写）；双节点并发接管恰一个赢家。死亡模拟=进程内断水+定点租约过期 UPDATE，与 kill -9 在全部断言观测面上等价（等价性论证入测试文件头）。
+  - 如实注明（§7.5-Q3）：手动 `RollbackChange` 在围栏外（不经 running、不登记），节点死在手动回滚中途时 run 停在原终态、人工可重发；跨节点调度、快照入 PG、断点续跑仍在 backlog（R5 硬边界）。
 - **执行引擎接线（设计 A 全部落地，`docs/design-engine-wiring.md`）**："计划 → 审批 → 执行"自此闭环，serve 模式从 status-only 演示变为真实执行变更——
   - **计划持久化 + plan_hash 绑定**：`PlanChange` 把生成的计划工件持久化到 run 行（`plan_json` 列，SQLite/PG 双实现）并写入 `plan_hash`；引擎路径的 apply/retry/rollback 先加载存储计划并做哈希门校验，工件缺失或被篡改 → `FailedPrecondition` 引导重新 plan——apply 执行的必是被批准的那份计划，审批语义自此成立。从未 plan 过的 run 拒绝 apply（明确报错，不再静默 status-only 假成功）。
   - **组装工厂 + 显式开关**：新增 `internal/wiring` 组装工厂（`NewEngine(store, WithCredentialResolver/WithMaxParallelRuns/WithGatePrometheusURL/WithChannelRegistry…)` → `EngineAdapter`），"生产级组装配方"从 e2e 演练测试提升为生产代码。`serve --engine-enabled`（默认 **false**，关闭时行为与此前完全一致；开启时装配执行引擎、通道注册表与凭据解析，`LEVEE_MASTER_PASSWORD` 未设置则匿名拨号并输出警告，与目标探测同口径）。

@@ -1,7 +1,7 @@
-# 设计提案（v0.2 已评审）：集群在途变更的故障接管（failover takeover）
+# 设计提案：集群在途变更的故障接管（failover takeover）
 
-状态：**评审通过（2026-09-07：Q1 新终态 interrupted / Q2 leader 独占 / Q3 断点续跑进 backlog / Q4 跨节点调度出局）**。
-**前置依赖（评审后新增）**：生产考古发现 serve 未接线执行引擎（详见 design-engine-wiring.md）——"在途变更"在生产中尚不存在，故本设计的实现排在其前置 A（引擎接入）之后；fencing 恰好接在 A 的 EngineAdapter 执行循环上。A 过审合入前，本设计冻结不动工。
+状态：**已实施（B1–B5，2026-09-08）**。落定口径：新终态 `interrupted`；leader 独占接管；断点续跑进 backlog（本期只做中断收敛）；跨节点调度出局。实施拍板见 §7.5（Q1 interrupted 可 Retry 重驱动 / Q2 断水模拟定案 / Q3 手动 rollback 在围栏外）。验收状态：B1 终态 CAS 化、B2 围栏+哨兵免回滚、B3 接管循环、B4 `interrupted` 全触点、B5 双节点 e2e（收敛/僵尸零污染/无双写）全部落地；CI integration&postgres 腿执行真 PG 验收。README 集群告警已按 §4 验收达成删除。
+**前置依赖**：执行引擎接入（design-engine-wiring.md，设计 A）已合入——"在途变更"在生产中真实存在，fencing 接在 A 的 EngineAdapter 执行循环上。
 
 ## 0. 今天的事实基线（代码考古结论）
 

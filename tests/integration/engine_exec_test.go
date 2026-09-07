@@ -46,6 +46,13 @@ type loopRecorder struct {
 	cmds    []string // "host\x00cmd"
 	closes  int
 	failCmd map[string]bool // exact command → force exit 1
+
+	// release, when non-nil, makes Exec block until closed (the executor
+	// "hangs" mid-step); entered signals that a channel is inside the
+	// gate. Used by the takeover e2e suite for deterministic crash
+	// staging.
+	release chan struct{}
+	entered chan string
 }
 
 func (r *loopRecorder) recordDial(host string) {
@@ -100,7 +107,20 @@ func (c *loopChannel) Connect(context.Context) error {
 	return nil
 }
 
-func (c *loopChannel) Exec(_ context.Context, cmd string) (*channel.ExecResult, error) {
+func (c *loopChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult, error) {
+	if c.rec.release != nil {
+		if c.rec.entered != nil {
+			select {
+			case c.rec.entered <- c.host:
+			default:
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-c.rec.release:
+		}
+	}
 	c.rec.recordCmd(c.host, cmd)
 	if c.rec.failCmd[cmd] {
 		return &channel.ExecResult{ExitCode: 1, Stderr: "loopback: forced failure for " + cmd}, nil
