@@ -181,6 +181,34 @@ func (g *ExecutionGuard) End(ctx context.Context, lease *ExecLease) error {
 	return nil
 }
 
+// LeaseGuardHandle pairs a lease with the guard that issued it, exposing
+// the lease-bound operations (Owns/Heartbeat/End) without the caller
+// needing to thread the guard and lease separately. Composition roots
+// adapt this to their execution-layer interface.
+type LeaseGuardHandle struct {
+	g     *ExecutionGuard
+	lease *ExecLease
+	ttl   time.Duration
+}
+
+// LeaseGuard returns the lease-bound handle for a lease issued by this
+// guard, renewing with the given ttl.
+func (g *ExecutionGuard) LeaseGuard(lease *ExecLease, ttl time.Duration) *LeaseGuardHandle {
+	return &LeaseGuardHandle{g: g, lease: lease, ttl: ttl}
+}
+
+func (l *LeaseGuardHandle) Owns(ctx context.Context) error {
+	return l.g.Owns(ctx, l.lease, l.ttl)
+}
+
+func (l *LeaseGuardHandle) Heartbeat(ctx context.Context) error {
+	return l.g.Heartbeat(ctx, l.lease, l.ttl)
+}
+
+func (l *LeaseGuardHandle) End(ctx context.Context) error {
+	return l.g.End(ctx, l.lease)
+}
+
 // ExpiredExecutions returns the run IDs whose lease has expired — the
 // takeover candidates. Row state is not modified here; the takeover loop
 // settles each candidate under its own per-run lock and status CAS.
@@ -206,6 +234,47 @@ func (g *ExecutionGuard) ExpiredExecutions(ctx context.Context) ([]string, error
 		return nil, fmt.Errorf("cluster: expired executions: rows: %w", err)
 	}
 	return ids, nil
+}
+
+// DeleteExecution removes the execution row unconditionally. This is
+// the TAKEOVER's primitive (owner-agnostic by design: the takeover
+// settles the run regardless of who the row claims); executors release
+// through ExecLease-End, which is owner-checked.
+func (g *ExecutionGuard) DeleteExecution(ctx context.Context, runID string) error {
+	if g.db == nil {
+		return fmt.Errorf("cluster: delete execution: nil db")
+	}
+	if runID == "" {
+		return fmt.Errorf("cluster: delete execution: empty run id")
+	}
+	if _, err := g.db.ExecContext(ctx, `DELETE FROM run_execution WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("cluster: delete execution for %q: %w", runID, err)
+	}
+	return nil
+}
+
+// GetExecution returns the current execution row for a run, or (nil,
+// nil) when the run has no row. Diagnostics and tests.
+func (g *ExecutionGuard) GetExecution(ctx context.Context, runID string) (*ExecLease, error) {
+	if g.db == nil {
+		return nil, fmt.Errorf("cluster: get execution: nil db")
+	}
+	if runID == "" {
+		return nil, fmt.Errorf("cluster: get execution: empty run id")
+	}
+	var lease ExecLease
+	var expiry time.Time
+	err := g.db.QueryRowContext(ctx,
+		`SELECT run_id, owner, epoch, lease_expires FROM run_execution WHERE run_id = $1`, runID).
+		Scan(&lease.RunID, &lease.Owner, &lease.Epoch, &expiry)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cluster: get execution for %q: %w", runID, err)
+	}
+	lease.Expiry = expiry
+	return &lease, nil
 }
 
 // check validates the shared preconditions of the guard operations.

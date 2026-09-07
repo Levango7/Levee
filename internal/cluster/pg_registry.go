@@ -97,6 +97,13 @@ func ensureClusterSchema(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// EnsureClusterSchemaForTest applies the cluster schema on the given
+// handle. Exported for cross-package tests (internal/takeover) that boot
+// their own stack; production callers reach it through ClusterManager.
+func EnsureClusterSchemaForTest(ctx context.Context, db *sql.DB) error {
+	return ensureClusterSchema(ctx, db)
+}
+
 // upsertNode inserts or refreshes a node row. On conflict the mutable fields
 // are updated and the heartbeat stamped; joined_at is preserved.
 func upsertNode(ctx context.Context, db *sql.DB, node Node) error {

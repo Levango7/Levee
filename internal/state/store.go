@@ -272,6 +272,15 @@ type Store interface {
 	// guard state-machine transitions (e.g. only "approved" runs may
 	// become "running") against concurrent racers.
 	UpdateRunStatusIf(ctx context.Context, id string, from string, to string, updatedAt time.Time) (bool, error)
+	// MarkNonTerminalSteps flips every step row of the run whose status
+	// is a non-terminal vocabulary (running/pending) to the given
+	// terminal marker, and returns the number of rows flipped. It is the
+	// defensive terminal-marking pass of the failover takeover: with the
+	// current persist-once evidence model it matches 0 rows by
+	// construction (step rows only land with terminal statuses), but a
+	// future incremental-persistence model cannot silently reintroduce
+	// the "step stuck in running" failure mode while this exists.
+	MarkNonTerminalSteps(ctx context.Context, runID string, marker string) (int64, error)
 	ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error)
 	DeleteRun(ctx context.Context, id string) error
 

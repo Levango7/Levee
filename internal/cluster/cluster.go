@@ -209,6 +209,19 @@ func (m *ClusterManager) SelfHeartbeat() error {
 	return m.registry.Heartbeat(m.cfg.SelfID, time.Now().UTC())
 }
 
+// SyncOnceForTest performs one synchronous round of the shared-state
+// synchronisation (heartbeat, stale marks, registry fold, lock sweep).
+// Exported for cross-package tests that need a converged leadership
+// view without waiting for the background ticker; the background loop
+// calls the same private method every tick.
+func (m *ClusterManager) SyncOnceForTest(ctx context.Context) error {
+	if m.db == nil {
+		return errors.New("cluster: sync once: nil db")
+	}
+	m.syncWithPG(ctx)
+	return nil
+}
+
 // healthCheckLoop is the background goroutine started by Start. It refreshes
 // this node's heartbeat and marks stale nodes on every tick. With a
 // PostgreSQL backend it additionally synchronises the shared node table and

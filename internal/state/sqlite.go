@@ -203,6 +203,24 @@ func (s *SQLiteStore) UpdateRunStatusIf(ctx context.Context, id string, from str
 	return n > 0, nil
 }
 
+// MarkNonTerminalSteps flips the run's non-terminal step rows
+// (status IN running/pending) to marker; see the Store interface for the
+// takeover rationale.
+func (s *SQLiteStore) MarkNonTerminalSteps(ctx context.Context, runID string, marker string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE steps SET status=? WHERE run_id=? AND status IN ('running','pending')`,
+		marker, runID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("state: mark non-terminal steps for %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("state: mark non-terminal steps for %q: rows: %w", runID, err)
+	}
+	return n, nil
+}
+
 // ListRuns returns runs matching the filter, ordered by created_at descending.
 func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error) {
 	var (

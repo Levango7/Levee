@@ -28,6 +28,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +57,7 @@ import (
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/takeover"
 	"github.com/nexus/levee/internal/tracing"
 	"github.com/nexus/levee/internal/wiring"
 
@@ -93,6 +95,14 @@ var (
 	serveOptNodeID   string
 	serveOptNodeAddr string
 	serveOptNodeRole string
+	// serveOptClusterTakeoverInterval is the failover-takeover sweep
+	// period (cluster mode). <= 0 disables the LOOP only — execution
+	// fencing (leases) stays active whenever the engine is enabled.
+	serveOptClusterTakeoverInterval time.Duration
+	// serveOptClusterExecLeaseTTL bounds an execution lease. Renewals run
+	// at TTL/3; the TTL bounds post-crash detection latency, not
+	// execution duration.
+	serveOptClusterExecLeaseTTL time.Duration
 
 	// serveOptAuthTokens holds repeatable --auth-token name=secret pairs that
 	// map each named bearer token to the subject it authenticates as.
@@ -150,6 +160,8 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeAddr, "node-addr", "", "Cluster node address (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
+	cmd.Flags().DurationVar(&serveOptClusterTakeoverInterval, "cluster-takeover-interval", takeover.DefaultInterval, "Failover takeover sweep period; <=0 disables the takeover loop (fencing stays active) (cluster mode)")
+	cmd.Flags().DurationVar(&serveOptClusterExecLeaseTTL, "cluster-exec-lease-ttl", cluster.DefaultExecLeaseTTL, "Execution-lease TTL: bounds post-crash takeover detection latency; renewals run at TTL/3 (cluster mode)")
 	cmd.Flags().StringArrayVar(&serveOptAuthTokens, "auth-token", nil, "Named bearer token name=secret (repeatable); the name becomes the authenticated actor")
 	cmd.Flags().BoolVar(&serveOptMetricsPublic, "metrics-public", false, "Expose /metrics without authentication (default: requires a token when auth is enabled)")
 	cmd.Flags().BoolVar(&serveOptEngineEnabled, "engine-enabled", false, "Wire the execution engine: PlanChange generates and persists real plans and ApplyChange executes approved changes (targets must be registered in the inventory; set LEVEE_MASTER_PASSWORD for credentialed channels)")
@@ -381,9 +393,42 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// 2b. Cluster failover takeover (design-cluster-failover.md). In
+	// cluster mode with the execution engine enabled, executions run
+	// fenced (run_execution leases) and the leader runs the takeover
+	// loop that settles crashed executors' runs to "interrupted". The
+	// loop flag is independent of the engine flag: --cluster-takeover-interval
+	// <= 0 disables the loop but never the fencing itself.
+	var execGuard *cluster.ExecutionGuard
+	var takeoverLoop *takeover.Loop
+	if clusterMgr != nil {
+		execGuard = cluster.NewExecutionGuard(pgStoreDB(store))
+		if serveOptEngineEnabled {
+			log.Info("execution fencing enabled", "lease_ttl", serveOptClusterExecLeaseTTL)
+		}
+		if serveOptClusterTakeoverInterval > 0 {
+			takeoverLoop = takeover.NewLoop(clusterMgr, execGuard, store, serveOptNodeID, serveOptClusterTakeoverInterval)
+			if err := takeoverLoop.Start(ctx); err != nil {
+				return fmt.Errorf("start takeover loop: %w", err)
+			}
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := takeoverLoop.Stop(stopCtx); err != nil {
+					log.Warn("takeover loop stop failed", "error", err)
+				}
+			}()
+			log.Info("failover takeover loop enabled (leader-only)",
+				"interval", serveOptClusterTakeoverInterval,
+				"lease_ttl", serveOptClusterExecLeaseTTL)
+		} else {
+			log.Info("failover takeover loop disabled (--cluster-takeover-interval<=0); execution fencing remains active")
+		}
+	}
+
 	// 3. Build the service implementations. We reuse the in-process
 	//    implementations so the daemon and CLI share one code path.
-	svcs := buildServeServices(store, cfg)
+	svcs := buildServeServices(store, cfg, execGuard)
 	changeSvc, templateSvc, targetSvc := svcs.changeSvc, svcs.templateSvc, svcs.targetSvc
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
@@ -504,7 +549,10 @@ type serveServices struct {
 
 // buildServeServices constructs the in-process service implementations,
 // mirroring the CLI code paths. Split out of runServe; behaviour unchanged.
-func buildServeServices(store state.Store, cfg *config.Config) serveServices {
+// execGuard is non-nil only in cluster mode: it attaches the execution
+// fencing to the engine so cluster-mode executions register leases and
+// every write is epoch-checked.
+func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) serveServices {
 	// Credential store first: the engine (when enabled) and target probing
 	// share the encrypted store backed by LEVEE_MASTER_PASSWORD. Without it
 	// the resolver stays nil (disabled): CheckTarget probes unauthenticated
@@ -547,6 +595,15 @@ func buildServeServices(store state.Store, cfg *config.Config) serveServices {
 			log.Info("execution engine slo gates will query Prometheus", "url", serveOptEngineGatePrometheus)
 		} else {
 			log.Info("execution engine slo gates have no Prometheus URL: declared slo gates fail closed")
+		}
+		if execGuard != nil {
+			// Cluster mode: executions are fenced by run_execution leases.
+			// Begin failure refuses the run outright (no invisible
+			// takeover candidates) and losing the lease mid-flight stops
+			// the executor without rolling back.
+			opts = append(opts,
+				wiring.WithExecutionGuard(clusterExecGuardAdapter{g: execGuard}, serveOptNodeID),
+				wiring.WithExecLeaseTTL(serveOptClusterExecLeaseTTL))
 		}
 		engine = wiring.NewEngine(store, opts...).Adapter()
 		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
@@ -625,6 +682,32 @@ func buildServeServerOpts(svcs serveServices, token string, namedTokens []grpc.T
 	return serverOpts, tlsCfg, nil
 }
 
+// clusterExecGuardAdapter bridges the cluster package's concrete
+// ExecutionGuard to the wiring layer's interface. The wiring layer
+// cannot import internal/cluster (it sits below the composition root),
+// so the bridge lives here where both sides are already imported. The
+// lease it returns re-exposes Owns/Heartbeat/End; the wiring layer's
+// SentinelAdapter (applied inside WithExecutionGuard) maps the cluster
+// fence errors onto the engine sentinel chain.
+type clusterExecGuardAdapter struct{ g *cluster.ExecutionGuard }
+
+func (a clusterExecGuardAdapter) Begin(ctx context.Context, runID string) (wiring.ExecutionLease, error) {
+	lease, err := a.g.Register(ctx, runID, serveOptNodeID, serveOptClusterExecLeaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	return a.g.LeaseGuard(lease, serveOptClusterExecLeaseTTL), nil
+}
+
+// pgStoreDB extracts the *sql.DB from the cluster-mode store. Returns
+// nil for the single-node SQLite store (fencing is cluster-only).
+func pgStoreDB(store state.Store) *sql.DB {
+	if pg, ok := store.(*state.PGStore); ok {
+		return pg.DB()
+	}
+	return nil
+}
+
 // openServeStore opens the backend store for serve mode. In cluster mode it
 // requires --pg-dsn/--node-id/--node-addr, opens PostgreSQL, joins and
 // starts the cluster manager; otherwise it opens the single-node SQLite
@@ -672,9 +755,7 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 		return nil, nil, fmt.Errorf("start cluster manager: %w", err)
 	}
 	log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
-	log.Warn("cluster coordination covers shared storage, membership and locking only",
-		"detail", "nodes register and heartbeat via PostgreSQL; stale peers are marked offline and expired lock leases are reclaimed automatically. "+
-			"Automated failover of in-flight changes and cross-node scheduling are not yet implemented — do not rely on HA guarantees")
+	log.Info("cluster coordination: shared storage, membership, locking; in-flight changes are fenced (run_execution leases) and the takeover loop settles crashed executors' runs to interrupted")
 	return store, clusterMgr, nil
 }
 
