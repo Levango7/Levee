@@ -57,6 +57,7 @@ import (
 	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/tracing"
+	"github.com/nexus/levee/internal/wiring"
 
 	"github.com/spf13/cobra"
 )
@@ -96,8 +97,12 @@ var (
 	// serveOptAuthTokens holds repeatable --auth-token name=secret pairs that
 	// map each named bearer token to the subject it authenticates as.
 	serveOptAuthTokens []string
-	// serveOptMetricsPublic opts out of authenticating the /metrics route.
-	serveOptMetricsPublic bool
+// serveOptMetricsPublic opts out of authenticating the /metrics route.
+serveOptMetricsPublic bool
+// serveOptEngineEnabled wires the execution engine (plan generation +
+// apply execution) into the ChangeService. Off by default: a deployment
+// stays status-only unless the operator explicitly opts in.
+serveOptEngineEnabled bool
 )
 
 // serveGracefulShutdownTimeout is the deadline the server waits for in-flight
@@ -141,6 +146,7 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
 	cmd.Flags().StringArrayVar(&serveOptAuthTokens, "auth-token", nil, "Named bearer token name=secret (repeatable); the name becomes the authenticated actor")
 	cmd.Flags().BoolVar(&serveOptMetricsPublic, "metrics-public", false, "Expose /metrics without authentication (default: requires a token when auth is enabled)")
+	cmd.Flags().BoolVar(&serveOptEngineEnabled, "engine-enabled", false, "Wire the execution engine: PlanChange generates and persists real plans and ApplyChange executes approved changes (targets must be registered in the inventory; set LEVEE_MASTER_PASSWORD for credentialed channels)")
 	return cmd
 }
 
@@ -491,33 +497,52 @@ type serveServices struct {
 // buildServeServices constructs the in-process service implementations,
 // mirroring the CLI code paths. Split out of runServe; behaviour unchanged.
 func buildServeServices(store state.Store, cfg *config.Config) serveServices {
-	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
-	// The execution engine (ClosureRunner) is not wired into serve yet:
-	// ApplyChange reports FailedPrecondition ("status-only mode") rather
-	// than pretending to execute. Plan/approve/status tracking remain
-	// fully functional.
-	log.Warn("serve: no execution engine wired; ApplyChange RPC will return FailedPrecondition (status-only mode)")
-	templateSvc := grpc.NewTemplateService(store, nil)
-	targetSvc := grpc.NewTargetService(store, nil)
-	// Credential-aware probing: when a master password is available, attach a
-	// resolver backed by the same encrypted credential store the secret CLI
-	// commands use, so CheckTarget probes targets with their stored
-	// credentials instead of unauthenticated. Without LEVEE_MASTER_PASSWORD
-	// the resolver stays nil (disabled): CheckTarget then falls back to an
-	// unauthenticated probe and reports a warning on the response. Documented
-	// limitation: serve mode has no other master-password source today — there
-	// is no --master-password flag or keyfile mechanism to wire instead.
+	// Credential store first: the engine (when enabled) and target probing
+	// share the encrypted store backed by LEVEE_MASTER_PASSWORD. Without it
+	// the resolver stays nil (disabled): CheckTarget probes unauthenticated
+	// and engine channels dial targets without credentials. Documented
+	// limitation: serve mode has no other master-password source today —
+	// there is no --master-password flag or keyfile mechanism to wire instead.
+	var credResolver *serveCredentialResolver
 	if mp := os.Getenv("LEVEE_MASTER_PASSWORD"); mp != "" {
 		if credStore, err := credential.NewCredentialStore(store, mp); err != nil {
 			log.Warn("credential store unavailable; target checks will probe without credentials",
 				"error", err)
 		} else {
-			targetSvc.WithCredentialResolver(&serveCredentialResolver{store: credStore})
+			credResolver = &serveCredentialResolver{store: credStore}
 			log.Info("target checks will resolve stored credentials for probes")
 		}
 	} else {
 		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
 			"(no resolver configured)")
+	}
+
+	// Execution engine (--engine-enabled, off by default). When wired, the
+	// ChangeService gains real plan generation (persisted plan artifacts)
+	// and apply execution via internal/wiring; when nil, ApplyChange keeps
+	// refusing with FailedPrecondition ("status-only mode") instead of
+	// pretending to execute.
+	var engine *grpc.EngineAdapter
+	if serveOptEngineEnabled {
+		var opts []wiring.Option
+		if credResolver != nil {
+			opts = append(opts, wiring.WithCredentialResolver(credResolver))
+			log.Info("execution engine enabled with credential resolution for target channels")
+		} else {
+			log.Warn("execution engine enabled WITHOUT LEVEE_MASTER_PASSWORD: channels will dial targets without credentials")
+		}
+		engine = wiring.NewEngine(store, opts...).Adapter()
+		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
+	} else {
+		log.Info("serve: execution engine not wired (--engine-enabled=false); ApplyChange RPC returns FailedPrecondition (status-only mode). Plan/approve/status tracking remain fully functional.")
+	}
+	changeSvc := grpc.NewChangeService(store, engine, nil, nil)
+	templateSvc := grpc.NewTemplateService(store, nil)
+	targetSvc := grpc.NewTargetService(store, nil)
+	if credResolver != nil {
+		// Credential-aware probing: CheckTarget probes targets with their
+		// stored credentials instead of unauthenticated.
+		targetSvc.WithCredentialResolver(credResolver)
 	}
 	auditSvc := grpc.NewAuditService(store)
 	systemSvc := grpc.NewSystemService(
