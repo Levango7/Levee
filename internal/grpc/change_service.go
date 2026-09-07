@@ -185,6 +185,15 @@ func actorFromCtx(ctx context.Context) string {
 	return "grpc-user"
 }
 
+// ContextWithActor returns a context carrying the actor name used for
+// audit attribution by service-layer calls. It exists for in-process
+// callers (the CLI's local mode calls services directly, bypassing the
+// gRPC/REST interceptors that normally set the actor). The same
+// trust caveat as actorFromCtx applies: the name is an assertion.
+func ContextWithActor(ctx context.Context, actor string) context.Context {
+	return context.WithValue(ctx, actorKey{}, actor)
+}
+
 // actorKey is the context key type for the actor identity.
 type actorKey struct{}
 

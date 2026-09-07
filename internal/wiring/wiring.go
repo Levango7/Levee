@@ -61,6 +61,7 @@ type Engine struct {
 	lockTTL             time.Duration
 	maxParallelRuns     int
 	rollbackConcurrency int
+	gatePrometheusURL   string
 
 	// sem is the process-wide parallel-run semaphore (capacity =
 	// maxParallelRuns). Acquire is non-blocking: beyond the cap a run
@@ -95,6 +96,14 @@ func WithLockTTL(d time.Duration) Option {
 // the cap). Must be > 0.
 func WithMaxParallelRuns(n int) Option {
 	return func(e *Engine) { e.maxParallelRuns = n }
+}
+
+// WithGatePrometheusURL supplies the Prometheus HTTP base URL used by
+// declared slo verification gates. Empty (the default) keeps the existing
+// fail-closed semantics: an slo gate without a Prometheus runtime fails
+// materialisation instead of silently passing.
+func WithGatePrometheusURL(url string) Option {
+	return func(e *Engine) { e.gatePrometheusURL = url }
 }
 
 // NewEngine returns an Engine with the given store and options applied.

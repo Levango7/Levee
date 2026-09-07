@@ -233,12 +233,12 @@ levee reject run-abc123 --reason "变更窗口已关闭"
 
 ## 第3章 执行控制
 
-### 3.1 apply
+### 3.1 plan
 
-触发 run 执行。
+为变更 run 生成并持久化执行计划。计划工件绑定 `plan_hash` 存到 run 行上，apply 执行的必是这份已持久化的计划。
 
 ```text
-levee apply <run-id> [--force]
+levee plan <run-id> --targets h1,h2 [--dry-run]
 ```
 
 **参数**
@@ -251,13 +251,53 @@ levee apply <run-id> [--force]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--force` | `false` | 跳过审批检查，强制执行 |
+| `--targets` | | 目标主机列表（必填，逗号分隔或重复传参；须存在于资源清单） |
+| `--dry-run` | `false` | 只生成并展示计划，不持久化 |
 
 **说明**
 
-- 不加 `--force` 时，仅 `approved` 状态的 run 可执行
-- 加 `--force` 时，`pending` 和 `draft` 状态也可执行
-- 执行流程：hash 校验 -> pre-apply 快照 -> 分批执行 -> 验证门禁 -> 失败回滚
+- 计划生成只读取存储与资源清单，不连接任何目标主机，因此无需引擎开关
+- 正式生成后计划持久化并与 `plan_hash` 绑定；`--dry-run` 不持久化，apply 在此之前会拒绝执行（exit=4）
+- 未列入 `--targets` 的主机不会出现在计划批次中；未知/已退役主机被拒绝（exit=1）
+- 批次并行度取工作流定义；apply 时可用 `--max-concurrency` 统一覆盖
+
+**示例**
+
+```命令示例：生成并持久化计划
+levee plan run-abc123 --targets web-01,web-02
+
+命令示例：预览不持久化
+levee plan run-abc123 --targets web-01 --dry-run
+```
+
+### 3.2 apply
+
+触发 run 执行。
+
+```text
+levee apply <run-id> [--force] [--engine-enabled] [--max-concurrency N]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<run-id>` | 是 | run ID |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--force` | `false` | 跳过审批检查，强制执行（引擎路径下映射为自动批准） |
+| `--engine-enabled` | `false` | 通过进程内执行引擎真实执行（默认关闭：仅状态流转，不触达目标主机） |
+| `--max-concurrency` | `0` | 统一覆盖计划中各批次的并行度上限（`0` 表示按计划原值执行） |
+
+**说明**
+
+- 不加 `--force` 时，仅 `approved` 状态的 run 可执行；加 `--force` 时 `pending`/`draft` 也可执行
+- 默认路径（不加 `--engine-enabled`）为 status-only：只做状态流转，不真实执行
+- `--engine-enabled` 与 serve 走同一 ChangeService 路径（审批、冻结、计划门完全一致）：run 必须先经 `levee plan`（或 gRPC PlanChange）持久化计划，否则拒绝执行且状态不变（exit=4）
+- 引擎路径同步执行到终态并回写状态（`completed` / `rolled_back` / `failed`），批次与步骤证据落库；执行失败时 JSON 输出先行打印、随后以 exit=1 退出
 
 **示例**
 
@@ -266,9 +306,14 @@ levee apply run-abc123
 
 命令示例：强制执行
 levee apply run-abc123 --force
+
+命令示例：引擎真实执行
+levee plan run-abc123 --targets web-01,web-02
+levee approve run-abc123
+levee apply run-abc123 --engine-enabled
 ```
 
-### 3.2 pause
+### 3.3 pause
 
 暂停单个 run。
 
@@ -293,7 +338,7 @@ levee pause <run-id>
 levee pause run-abc123
 ```
 
-### 3.3 resume
+### 3.4 resume
 
 恢复暂停的 run。
 
@@ -318,7 +363,7 @@ levee resume <run-id>
 levee resume run-abc123
 ```
 
-### 3.4 pause-all
+### 3.5 pause-all
 
 全局暂停所有 run。
 
@@ -344,7 +389,7 @@ levee pause-all [--reason TEXT]
 levee pause-all --reason "紧急维护窗口"
 ```
 
-### 3.5 resume-all
+### 3.6 resume-all
 
 全局恢复所有暂停的 run。
 
@@ -369,7 +414,7 @@ levee resume-all [--reason TEXT]
 levee resume-all --reason "维护窗口结束"
 ```
 
-### 3.6 cancel
+### 3.7 cancel
 
 取消未执行的 run。
 
@@ -401,7 +446,7 @@ levee cancel <run-id> [--reason TEXT]
 levee cancel run-abc123 --reason "需求变更"
 ```
 
-### 3.7 retry
+### 3.8 retry
 
 重试失败的 run。
 
@@ -427,7 +472,7 @@ levee retry <run-id>
 levee retry run-abc123
 ```
 
-### 3.8 retry-host
+### 3.9 retry-host
 
 重试 run 中失败的主机。
 
@@ -453,7 +498,7 @@ levee retry-host <run-id> <host>
 levee retry-host run-abc123 web01.prod
 ```
 
-### 3.9 rollback
+### 3.10 rollback
 
 手动触发回滚。
 

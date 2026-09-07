@@ -73,6 +73,10 @@ func (e *Engine) newRunRunner() *engine.ClosureRunner {
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			return inventory.ValidateNotFrozen(ctx, store, hosts)
 		}),
+		// Gate runtime: only the slo gate consumes PrometheusURL. With the
+		// default (empty) the materialisation of an slo/human gate still
+		// fails closed exactly as it would with no runtime attached.
+		engine.WithGateRuntime(engine.GateRuntime{PrometheusURL: e.gatePrometheusURL}),
 	)
 }
 

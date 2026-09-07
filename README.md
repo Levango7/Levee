@@ -20,7 +20,7 @@ LEVEE 管 K8s 集群外（非云原生基础设施层），各管一摊。
 
 ## 核心特性
 
-- **变更流水线**：计划 -> 审批 -> 分批执行 -> 验证门禁 -> 自动回滚，全程审计哈希链留痕（WORM）
+- **变更流水线**：计划 -> 审批 -> 分批执行 -> 验证门禁 -> 自动回滚，全程审计哈希链留痕（WORM）；真实执行由执行引擎承担，显式 `--engine-enabled` 开启（默认关闭；计划持久化 + plan_hash 绑定，apply 执行的必是被批准的那份计划）
 - **双协议 API**：gRPC（5+ 服务）+ REST 网关（`/api/v1/`），共享同一服务实例
 - **AI 辅助运维**：告警接入 → 拓扑诊断 → LLM 对话式定位 → RAG 知识增强推荐 → 自动执行 → 效果学习
 - **多通道执行**：SSH / WinRM 无代理通道，插件系统可扩展
@@ -56,6 +56,14 @@ make build
 
 # 可选：CORS 白名单、限流、网关监听地址
 ./levee serve --token <secret> --cors-origin https://ops.example.com --rate-limit 200 --rate-burst 400 --http-addr :8080
+
+# 执行引擎（默认关闭）：开启后 PlanChange 生成并持久化真实计划、
+# ApplyChange 经 SSH/WinRM 通道真正执行被批准的计划（失败自动回滚）。
+# 关闭时 apply 明确拒绝（FailedPrecondition），不会假装执行。
+# 并发执行上限 --engine-max-parallel-runs（默认 4，超出的 apply 快速失败）；
+# slo 验证门禁需 --engine-gate-prometheus 提供 Prometheus 地址，缺省则 slo 门禁 fail-closed。
+# 目标凭据解析依赖 LEVEE_MASTER_PASSWORD 环境变量（未设置时通道匿名拨号并输出警告）。
+./levee serve --token <secret> --engine-enabled
 ```
 
 无 token 且未传 `--insecure` 时服务拒绝启动；无 TLS 时输出明文传输警告。

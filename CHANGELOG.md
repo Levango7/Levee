@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **执行引擎接线（设计 A 全部落地，`docs/design-engine-wiring.md`）**："计划 → 审批 → 执行"自此闭环，serve 模式从 status-only 演示变为真实执行变更——
+  - **计划持久化 + plan_hash 绑定**：`PlanChange` 把生成的计划工件持久化到 run 行（`plan_json` 列，SQLite/PG 双实现）并写入 `plan_hash`；引擎路径的 apply/retry/rollback 先加载存储计划并做哈希门校验，工件缺失或被篡改 → `FailedPrecondition` 引导重新 plan——apply 执行的必是被批准的那份计划，审批语义自此成立。从未 plan 过的 run 拒绝 apply（明确报错，不再静默 status-only 假成功）。
+  - **组装工厂 + 显式开关**：新增 `internal/wiring` 组装工厂（`NewEngine(store, WithCredentialResolver/WithMaxParallelRuns/WithGatePrometheusURL/WithChannelRegistry…)` → `EngineAdapter`），"生产级组装配方"从 e2e 演练测试提升为生产代码。`serve --engine-enabled`（默认 **false**，关闭时行为与此前完全一致；开启时装配执行引擎、通道注册表与凭据解析，`LEVEE_MASTER_PASSWORD` 未设置则匿名拨号并输出警告，与目标探测同口径）。
+  - **执行闭包 + 证据持久化**：apply 经 `ClosureRunner` 按已存计划同步执行（SSH/Local 通道、inventory 冻结守卫、cmd/human/slo 门禁、`rollback.Manager` 自动回滚、`batch.Controller` 中断策略）；批次行按 `(run_id, batch_no)` 复用更新、步骤行只追加（action/exit_code/stdout/stderr/耗时全量落库），自动回滚的 undo 证据与前向证据同轮持久化。`RetryChange` 支持主机子集重规划（复用批次行、CAS 抢占 running、trace 记 `retry_finished`）；`RollbackChange` 支持手动回滚（→ `rolled_back`）。并发闸为 `max-parallel-runs` 信号量：第 N+1 个 apply 快速失败并提示排队。
+  - **CLI 引擎路径**：新增 `levee plan <run-id> --targets h1,h2 [--dry-run]`（CLI 侧唯一的计划持久化入口；生成阶段不触达任何主机故无需引擎开关，`--dry-run` 只预览不持久化）。`levee apply --engine-enabled` 走与 serve 完全相同的进程内 `ChangeService` 路径（审批/冻结/计划门全部共享而非重写；`--force` 映射自动批准、`--max-concurrency` 统一覆盖批次并行度；未 plan 或门拒绝 → exit=4，执行失败 → exit=1 且 JSON 输出先行）。默认路径保持 status-only 且帮助文本如实标注。
+  - **运维配置面**：`serve --engine-max-parallel-runs`（默认 4）、`--engine-gate-prometheus`（未配置时 slo 门禁 fail-closed 拒绝执行，与未接引擎同语义）。导出 `grpc.ContextWithActor` 供进程内 CLI 调用注入审计主体。
+  - 如实注明：快照子系统（`rollback.SnapshotManager`）当前仍无非测试消费者，故**未**提供快照目录配置旗标——接一个"看似可配、实为死配置"的旗标违反设计 R7 边界（不新增执行语义），待其真正被消费时再接线。
+
 ### 修复
 
 - **ApplyChange 状态机竞态（P1）**：`ApplyChange` 读-判-写状态流转此前非原子——两个并发请求可同时通过状态检查并互相覆盖终态（双跑/状态翻转/审计污染）。新增 `state.Store.UpdateRunStatusIf`（`WHERE id=? AND status=?` 的 compare-and-set，SQLite/PG 双实现），gRPC `ApplyChange` 与 CLI `apply` 均改用 CAS 抢占 `approved/pending/draft → running`；失败方返回 `FailedPrecondition` 并携带最新状态（SQLite/PG 各新增 CAS 测试 + gRPC 并发双跑互斥测试 `TestApplyChange_ConcurrentDoubleApplyIsSerialised`）。

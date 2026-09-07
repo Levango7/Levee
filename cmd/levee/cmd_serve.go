@@ -97,12 +97,18 @@ var (
 	// serveOptAuthTokens holds repeatable --auth-token name=secret pairs that
 	// map each named bearer token to the subject it authenticates as.
 	serveOptAuthTokens []string
-// serveOptMetricsPublic opts out of authenticating the /metrics route.
-serveOptMetricsPublic bool
-// serveOptEngineEnabled wires the execution engine (plan generation +
-// apply execution) into the ChangeService. Off by default: a deployment
-// stays status-only unless the operator explicitly opts in.
-serveOptEngineEnabled bool
+	// serveOptMetricsPublic opts out of authenticating the /metrics route.
+	serveOptMetricsPublic bool
+	// serveOptEngineEnabled wires the execution engine (plan generation +
+	// apply execution) into the ChangeService. Off by default: a deployment
+	// stays status-only unless the operator explicitly opts in.
+	serveOptEngineEnabled bool
+	// serveOptEngineMaxParallel caps concurrently executing runs inside
+	// this process; applies beyond the cap fast-fail.
+	serveOptEngineMaxParallel int
+	// serveOptEngineGatePrometheus is the Prometheus HTTP base URL consumed
+	// by declared slo verification gates (empty = slo gates fail closed).
+	serveOptEngineGatePrometheus string
 )
 
 // serveGracefulShutdownTimeout is the deadline the server waits for in-flight
@@ -147,6 +153,8 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&serveOptAuthTokens, "auth-token", nil, "Named bearer token name=secret (repeatable); the name becomes the authenticated actor")
 	cmd.Flags().BoolVar(&serveOptMetricsPublic, "metrics-public", false, "Expose /metrics without authentication (default: requires a token when auth is enabled)")
 	cmd.Flags().BoolVar(&serveOptEngineEnabled, "engine-enabled", false, "Wire the execution engine: PlanChange generates and persists real plans and ApplyChange executes approved changes (targets must be registered in the inventory; set LEVEE_MASTER_PASSWORD for credentialed channels)")
+	cmd.Flags().IntVar(&serveOptEngineMaxParallel, "engine-max-parallel-runs", wiring.DefaultMaxParallelRuns, "Concurrently executing runs allowed by the engine; additional applies fast-fail (requires --engine-enabled)")
+	cmd.Flags().StringVar(&serveOptEngineGatePrometheus, "engine-gate-prometheus", "", "Prometheus HTTP base URL used by slo verification gates; empty means slo gates fail closed (requires --engine-enabled)")
 	return cmd
 }
 
@@ -530,6 +538,15 @@ func buildServeServices(store state.Store, cfg *config.Config) serveServices {
 			log.Info("execution engine enabled with credential resolution for target channels")
 		} else {
 			log.Warn("execution engine enabled WITHOUT LEVEE_MASTER_PASSWORD: channels will dial targets without credentials")
+		}
+		if serveOptEngineMaxParallel > 0 {
+			opts = append(opts, wiring.WithMaxParallelRuns(serveOptEngineMaxParallel))
+		}
+		if serveOptEngineGatePrometheus != "" {
+			opts = append(opts, wiring.WithGatePrometheusURL(serveOptEngineGatePrometheus))
+			log.Info("execution engine slo gates will query Prometheus", "url", serveOptEngineGatePrometheus)
+		} else {
+			log.Info("execution engine slo gates have no Prometheus URL: declared slo gates fail closed")
 		}
 		engine = wiring.NewEngine(store, opts...).Adapter()
 		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
