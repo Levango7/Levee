@@ -367,6 +367,62 @@ func TestClosureRunner_ContextCancel(t *testing.T) {
 	assertLocksReleased(t, store, "host-a", "host-b")
 }
 
+// TestClosureRunner_FencedOutSkipsRollback pins the failover fencing
+// contract: when a step callback fails with (a chain wrapping)
+// ErrFencedOut — the executor lost its lease to a failover takeover —
+// the closure must fail WITHOUT triggering the automatic rollback.
+// Dispatching undo commands from a superseded executor is the exact
+// remote double-write the fencing design prohibits. The sentinel must
+// be recognised through the fmt.Errorf wrapping the batch controller
+// applies to step errors.
+func TestClosureRunner_FencedOutSkipsRollback(t *testing.T) {
+	store := newTestStore(t)
+	cr := newTestClosureRunner(t, store)
+
+	p := newTestPlan([][]string{{"host-a"}})
+	var undoCalls int32
+	execFn := func(_ context.Context, _ string, step dsl.Step) error {
+		if step.Action == "downgrade" {
+			atomic.AddInt32(&undoCalls, 1)
+			return nil
+		}
+		// Fail the forward step with the fencing sentinel, wrapped the way
+		// the wiring layer wraps cluster.ErrFencedOut.
+		return fmt.Errorf("wiring: step %q on %q: %w", step.Name, "host-a", ErrFencedOut)
+	}
+
+	result, err := cr.Run(context.Background(), p, execFn)
+	require.Error(t, err)
+	assert.ErrorIs(t, result.Error, ErrFencedOut)
+	assert.Equal(t, PhaseFailed, result.Phase)
+	assert.Nil(t, result.RollbackResult, "a fenced-out execution must NOT trigger rollback")
+	assert.Zero(t, atomic.LoadInt32(&undoCalls), "no undo command may be dispatched after fencing out")
+	// Locks must still be released (the deferred release is unconditional).
+	assertLocksReleased(t, store, "host-a")
+}
+
+// TestClosureRunner_FencedOutInWrappedStepError recognises the sentinel
+// when the batch controller wraps it one level deeper (the mockExecutor's
+// failOn path returns a bare error; the closure's batch-error branch must
+// still see through %w chains).
+func TestClosureRunner_FencedOutInWrappedStepError(t *testing.T) {
+	store := newTestStore(t)
+	cr := newTestClosureRunner(t, store)
+	p := newTestPlan([][]string{{"host-a"}})
+
+	exec := &mockExecutor{failOn: func(target, action string) error {
+		if action == "upgrade" {
+			return fmt.Errorf("wiring: step %q on %q: %w", "apply-change", target, ErrFencedOut)
+		}
+		return nil
+	}}
+
+	result, err := cr.Run(context.Background(), p, exec.exec)
+	require.Error(t, err)
+	assert.Equal(t, PhaseFailed, result.Phase)
+	assert.Nil(t, result.RollbackResult)
+}
+
 // --- Additional edge-case tests -------------------------------------------
 
 // Nil plan returns a failed result without panicking.

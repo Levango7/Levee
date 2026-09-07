@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/engine"
@@ -105,8 +106,30 @@ func (e *Engine) runChange(ctx context.Context, changeID string, _ bool, maxConc
 // executePlan drives the full closure once and persists batch/step rows
 // under the change's run id (operator-visible evidence). Callers own the
 // parallel-run slot (see acquire); executePlan itself does not take one.
+//
+// When an execution guard is attached (cluster mode), the whole closure
+// runs fenced: the lease is claimed before dispatch, renewed by a
+// background heartbeat (TTL/3, independent of step progress — slow steps
+// never let the lease lapse), re-validated before evidence persistence,
+// and released at the end. Losing the lease mid-flight surfaces as an
+// engine.ErrFencedOut error chain: step dispatch stops immediately, the
+// closure skips its automatic rollback (see closure.go), and this
+// function refuses to persist the superseded evidence.
 func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan) (execRunID string, success bool, phase string, err error) {
-	rx, err := newRunExec(ctx, e)
+	// Fencing begin: in cluster mode an execution without a lease would
+	// be an invisible takeover candidate — refuse outright instead.
+	var lease ExecutionLease
+	if e.guard != nil {
+		lease, err = e.guard.Begin(ctx, changeID)
+		if err != nil {
+			return "", false, "", fmt.Errorf("wiring: fenced execution of %q: %w", changeID, err)
+		}
+		defer func() { _ = lease.End(context.WithoutCancel(ctx)) }()
+		stopHeartbeat := e.startLeaseHeartbeat(lease)
+		defer stopHeartbeat()
+	}
+
+	rx, err := newRunExec(ctx, e, lease)
 	if err != nil {
 		return "", false, "", err
 	}
@@ -120,6 +143,18 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan)
 		// Only possible for an extraordinary rand failure in Run.
 		return "", false, "", errors.Join(
 			fmt.Errorf("wiring: closure run for change %q produced no result", changeID), runErr)
+	}
+
+	// Evidence gate: a superseded executor must not persist its late
+	// evidence — the takeover's interrupted state and its audit chain
+	// must not be polluted by rows from an execution the cluster has
+	// already written off. Dirty evidence is worse than missing
+	// evidence (the takeover trace records what happened).
+	if lease != nil {
+		if oerr := lease.Owns(context.WithoutCancel(ctx)); oerr != nil {
+			return res.RunID, false, string(res.Phase), fmt.Errorf(
+				"wiring: %q fenced out before evidence persistence: %w", changeID, oerr)
+		}
 	}
 
 	persistErr := e.persistClosureResults(ctx, changeID, p, res, rx.snapshotOutputs())
@@ -136,6 +171,36 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan)
 		return res.RunID, false, string(res.Phase), fmt.Errorf("wiring: persisting step evidence: %w", persistErr)
 	}
 	return res.RunID, res.Phase == engine.PhaseCompleted, string(res.Phase), nil
+}
+
+// startLeaseHeartbeat renews the execution lease at TTL/3 from a
+// background goroutine until the returned stop function is called.
+// Renewal is deliberately decoupled from step progress: the TTL bounds
+// post-crash detection latency, not execution duration, so a healthy
+// executor running slow steps keeps its lease indefinitely. A failed
+// renewal (fenced out) stops the loop — the step-dispatch Owns gate
+// will surface the loss at the next structural write.
+func (e *Engine) startLeaseHeartbeat(lease ExecutionLease) (stop func()) {
+	interval := e.execLeaseTTL / 3
+	if interval <= 0 {
+		interval = time.Second
+	}
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if err := lease.Heartbeat(context.Background()); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 // retryChange is the EngineAdapter.Retry closure. It re-executes synchronously
@@ -255,7 +320,13 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		return "", nil, err
 	}
 
-	rx, err := newRunExec(ctx, e)
+	// Manual rollback is deliberately OUTSIDE the fencing perimeter
+	// (design §7.5-Q3): it does not transit through "running" and does
+	// not register an execution lease. A node dying mid-rollback leaves
+	// the run in its source (non-running) terminal state, where the
+	// takeover loop's running-only scan never picks it up and an
+	// operator can simply re-issue the rollback.
+	rx, err := newRunExec(ctx, e, nil)
 	if err != nil {
 		return "", nil, err
 	}

@@ -40,20 +40,23 @@ type stepOutput struct {
 
 // runExec is the run-scoped execution context: an inventory snapshot, the
 // lazily dialled channels (shared across steps of the same target, closed
-// together at the end of the run) and the step output sink. It is created
-// per apply and is safe for the concurrent step dispatch the batch
-// controller performs within a batch.
+// together at the end of the run), the step output sink and — in cluster
+// mode — the execution lease every step re-validates before dispatch. It
+// is created per apply and is safe for the concurrent step dispatch the
+// batch controller performs within a batch.
 type runExec struct {
 	e       *Engine
 	targets map[string]*state.Target
+	lease   ExecutionLease // nil in single-node mode (fencing disabled)
 
 	mu      sync.Mutex
 	chans   map[string]channel.Channel
 	outputs map[string]stepOutput
 }
 
-// newRunExec snapshots the inventory for one execution run.
-func newRunExec(ctx context.Context, e *Engine) (*runExec, error) {
+// newRunExec snapshots the inventory for one execution run. lease may be
+// nil (fencing disabled).
+func newRunExec(ctx context.Context, e *Engine, lease ExecutionLease) (*runExec, error) {
 	all, err := e.store.ListTargets(ctx, state.TargetFilter{})
 	if err != nil {
 		return nil, fmt.Errorf("wiring: inventory snapshot: %w", err)
@@ -67,6 +70,7 @@ func newRunExec(ctx context.Context, e *Engine) (*runExec, error) {
 	return &runExec{
 		e:       e,
 		targets: byHost,
+		lease:   lease,
 		chans:   make(map[string]channel.Channel),
 		outputs: make(map[string]stepOutput),
 	}, nil
@@ -79,7 +83,20 @@ func (r *runExec) executeFunc() rollback.ExecuteFunc {
 }
 
 // exec dispatches a single workflow step on a single target.
+//
+// Cluster-mode fencing gate: before any dispatch (forward or rollback
+// undo), the execution lease is re-validated. Losing ownership returns
+// an error chain wrapping engine.ErrFencedOut — the closure's batch
+// controller propagates it as the step error, and closure.Run recognises
+// the sentinel and SKIPS the automatic rollback (a fenced-out executor
+// dispatching undo commands is the exact double-write fencing exists to
+// prevent).
 func (r *runExec) exec(ctx context.Context, host string, step dsl.Step) error {
+	if r.lease != nil {
+		if err := r.lease.Owns(ctx); err != nil {
+			return fmt.Errorf("wiring: step %q on %q: %w", step.Name, host, err)
+		}
+	}
 	ch, ct, err := r.channelFor(ctx, host)
 	if err != nil {
 		return fmt.Errorf("wiring: target %q: %w", host, err)

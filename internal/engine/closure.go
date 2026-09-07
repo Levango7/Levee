@@ -37,6 +37,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	stderrors "errors"
+
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/lock"
@@ -47,6 +49,22 @@ import (
 )
 
 // --- Phase identifiers ------------------------------------------------------
+
+// ErrFencedOut is the sentinel an execution-layer step callback returns
+// when it has lost ownership of the run (execution lease invalidated by a
+// failover takeover, see docs/design-cluster-failover.md §7.3-3). It is
+// deliberately NOT context cancellation and NOT a plain step error:
+// once the closure has entered batch execution, every failure path —
+// including ctx cancellation — triggers the rollback flow, and that flow
+// deliberately runs detached to completion (see the rollback section of
+// Run). A fenced-out executor must therefore fail WITHOUT rolling back:
+// its undo commands are exactly the remote double-write fencing exists
+// to prevent. The engine package defines its own sentinel (rather than
+// importing cluster's) so the closure stays dependency-free; the wiring
+// layer wraps cluster.ErrFencedOut into this one and Run recognises it
+// via errors.Is, including through the fmt.Errorf("%…w") wrappers the
+// batch controller produces.
+var ErrFencedOut = stderrors.New("engine: execution fenced out")
 
 // ClosurePhase identifies the outcome phase of a closure run. It is the
 // stable string carried in ClosureResult.Phase.
@@ -315,12 +333,17 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	defer cr.releaseLocks(context.Background(), result.RunID, acquired)
 
 	// 3. Batch execution. Batches run sequentially; after each batch we
-	//    run the post-batch gates. A batch error or gate failure stops
-	//    further batches and triggers rollback. We track which batches
-	//    were actually executed so rollback only reverses applied work.
+	// run the post-batch gates. A batch error or gate failure stops
+	// further batches and triggers rollback — EXCEPT when the failure is
+	// ErrFencedOut: losing ownership of the run (failover takeover) is
+	// not a change failure, and rolling back would dispatch undo commands
+	// from an executor the cluster just invalidated — the exact remote
+	// double-write fencing exists to prevent. We track which batches
+	// were actually executed so rollback only reverses applied work.
 	batchExecFn := adaptExecFunc(execFn)
 	var triggerRollback bool
 	var rollbackReason string
+	var fencedOut bool
 	executedBatches := make([]plan.Batch, 0, len(p.Batches))
 
 	for i, b := range p.Batches {
@@ -344,10 +367,17 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		result.BatchResults = append(result.BatchResults, brs...)
 		executedBatches = append(executedBatches, b)
 
-		// A batch error aborts further batches and triggers rollback.
+		// A batch error aborts further batches and triggers rollback —
+		// unless the error is the fencing sentinel (skip-rollback above).
 		if len(brs) > 0 && brs[len(brs)-1].Error != nil {
+			lastErr := brs[len(brs)-1].Error
+			if stderrors.Is(lastErr, ErrFencedOut) {
+				fencedOut = true
+				rollbackReason = fmt.Sprintf("execution fenced out during batch %d", b.Index)
+				break
+			}
 			triggerRollback = true
-			rollbackReason = fmt.Sprintf("batch %d execution failed: %v", b.Index, brs[len(brs)-1].Error)
+			rollbackReason = fmt.Sprintf("batch %d execution failed: %v", b.Index, lastErr)
 			break
 		}
 
@@ -388,9 +418,19 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	}
 
 	// 5. Rollback path. When a verification or batch failure triggered
-	//    rollback, reverse only the executed batches via rollback.Manager.
-	//    Then, when a PostRollbackVerifier is configured, run the
-	//    post-rollback verification (T037).
+	// rollback, reverse only the executed batches via rollback.Manager.
+	// Then, when a PostRollbackVerifier is configured, run the
+	// post-rollback verification (T037).
+	//
+	// Fenced-out executions never reach here: they fail fast below
+	// without rolling back (see the batch-loop comment) — the undo
+	// dispatches of a superseded executor are the double-write the
+	// fencing design prohibits.
+	if fencedOut {
+		result.Phase = PhaseFailed
+		result.Error = fmt.Errorf("closure: %s; not rolling back: %w", rollbackReason, ErrFencedOut)
+		return result, result.Error
+	}
 	if triggerRollback {
 		// Build a sub-plan containing only the batches that were actually
 		// executed, so rollback does not try to undo work that never

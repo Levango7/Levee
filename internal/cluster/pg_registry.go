@@ -41,6 +41,23 @@ CREATE TABLE IF NOT EXISTS cluster_locks (
 );
 
 CREATE SEQUENCE IF NOT EXISTS cluster_locks_fence_seq;
+
+-- run_execution: execution lease / fencing rows for in-flight changes
+-- (failover takeover, design-cluster-failover.md §7.2-B2). One row per
+-- executing run; epoch is a fencing token that increases on every owner
+-- change, so writes by a superseded owner match 0 rows and fail closed.
+-- Kept out of the state package's pgschema.sql deliberately: only
+-- cluster deployments need it and this file's advisory-lock-serialised
+-- path guarantees creation before any guard use.
+CREATE TABLE IF NOT EXISTS run_execution (
+    run_id         TEXT PRIMARY KEY,
+    owner          TEXT NOT NULL,
+    epoch          BIGINT NOT NULL,
+    registered_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_expires  TIMESTAMPTZ NOT NULL
+);
+
+CREATE SEQUENCE IF NOT EXISTS run_execution_epoch_seq;
 `
 
 // clusterSchemaDDLAdvisoryLockKey is the key of the session-level advisory
