@@ -522,9 +522,13 @@ type EngineAdapter struct {
 	// implementation must be safe for concurrent use.
 	Run func(ctx context.Context, changeID string, autoApprove bool, maxConcurrency int32) (runID string, success bool, phase string, err error)
 
-	// Plan generates a plan for a change without applying it. Returns
-	// the plan as a *pb.Plan ready to be returned to the gRPC client.
-	Plan func(ctx context.Context, changeID string, targetHosts []string) (*pb.Plan, error)
+	// Plan generates a plan for a change without applying it. Returns the
+	// plan as a *pb.Plan ready for the client, plus the canonical
+	// StoredPlan artifact for PlanChange to persist on the run (nil or
+	// empty when nothing should be persisted, e.g. dry runs). ApplyChange
+	// refuses to execute a run whose persisted plan is missing or no
+	// longer matches its plan hash.
+	Plan func(ctx context.Context, changeID string, targetHosts []string) (*pb.Plan, *StoredPlan, error)
 
 	// Rollback rolls back a change. Returns the rollback run ID and the
 	// list of hosts that were rolled back.
@@ -532,4 +536,16 @@ type EngineAdapter struct {
 
 	// Retry re-runs failed hosts for a change.
 	Retry func(ctx context.Context, changeID string, replan bool, targetHosts []string) error
+}
+
+// StoredPlan is the canonical plan artifact EngineAdapter.Plan hands back
+// for persistence on the run (A1). JSON is the encoding/json encoding of
+// the engine's plan.Plan; Hash is plan.ComputeHash of that same plan.
+// PlanChange stores both on run.plan_json / run.plan_hash (unless the
+// request is a dry run); ApplyChange re-verifies the hash against the
+// stored JSON before executing it, so a change can never execute a plan
+// other than the one it was approved against.
+type StoredPlan struct {
+	JSON string
+	Hash string
 }

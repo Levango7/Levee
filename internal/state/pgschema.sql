@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at      TIMESTAMPTZ NOT NULL,
     updated_at      TIMESTAMPTZ NOT NULL,
     creator         TEXT    NOT NULL,
-    incident_id     TEXT    NOT NULL DEFAULT ''
+    incident_id     TEXT    NOT NULL DEFAULT '',
+    plan_json       TEXT    NOT NULL DEFAULT ''      -- canonical plan.Plan JSON ('' = not planned; v3, last: mirrors ALTER append order)
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);

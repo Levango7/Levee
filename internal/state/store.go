@@ -10,11 +10,15 @@ import (
 // executed serially; each Batch owns multiple Steps executed concurrently
 // across hosts.
 type Run struct {
-	ID             string    `json:"id"`
-	WorkflowName   string    `json:"workflow_name"`
-	TemplateName   string    `json:"template_name"`
-	Params         string    `json:"params"` // JSON encoded
-	PlanHash       string    `json:"plan_hash"`
+	ID           string `json:"id"`
+	WorkflowName string `json:"workflow_name"`
+	TemplateName string `json:"template_name"`
+	Params       string `json:"params"` // JSON encoded
+	PlanHash     string `json:"plan_hash"`
+	// PlanJSON is the canonical JSON encoding of the generated plan.Plan
+	// ('' when no plan has been persisted). Apply refuses to execute
+	// without it and re-verifies PlanHash against it to detect drift.
+	PlanJSON       string    `json:"plan_json"`
 	Status         string    `json:"status"`
 	ApprovalStatus string    `json:"approval_status"`
 	ApprovalLevel  string    `json:"approval_level"`

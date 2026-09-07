@@ -89,6 +89,24 @@ func TestMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 		(id, name, type, encrypted_data, created_at)
 		VALUES ('old-1', 'prod-ssh', 'ssh_key', x'00', '2026-01-01 00:00:00')`)
 	require.NoError(t, err)
+	// The v3 step (runs.plan_json) also replays against this legacy file,
+	// so the fixture must carry the v1-era runs DDL like any real pre-v2
+	// database would.
+	_, err = db.ExecContext(ctx, `CREATE TABLE runs (
+		id TEXT PRIMARY KEY,
+		workflow_name TEXT NOT NULL,
+		template_name TEXT NOT NULL,
+		params TEXT NOT NULL DEFAULT '{}',
+		plan_hash TEXT NOT NULL,
+		status TEXT NOT NULL,
+		approval_status TEXT NOT NULL DEFAULT 'pending',
+		approval_level TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		creator TEXT NOT NULL,
+		incident_id TEXT NOT NULL DEFAULT ''
+	)`)
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
 	// Opening the store runs the pending v2 step against the legacy file.
@@ -116,7 +134,8 @@ func TestMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 
 // TestMigrate_FreshAndUpgraded_SchemaShapesMatch guards the sync convention
 // between schema.sql and migrations: a fresh database and a v1-upgraded one
-// must expose identical credentials column shapes.
+// must expose identical column shapes for every migrated table (credentials
+// gained tags in v2, runs gained plan_json in v3).
 func TestMigrate_FreshAndUpgraded_SchemaShapesMatch(t *testing.T) {
 	ctx := context.Background()
 	fresh := newTestStore(t)
@@ -135,15 +154,32 @@ func TestMigrate_FreshAndUpgraded_SchemaShapesMatch(t *testing.T) {
 		encrypted_data BLOB NOT NULL, created_at DATETIME NOT NULL,
 		rotated_at DATETIME, UNIQUE (name))`)
 	require.NoError(t, err)
+	// v1-era runs DDL (see TestMigrate_V1ToV2_CredentialsTags): the replayed
+	// v3 step alters this table.
+	_, err = db.ExecContext(ctx, `CREATE TABLE runs (
+		id TEXT PRIMARY KEY,
+		workflow_name TEXT NOT NULL,
+		template_name TEXT NOT NULL,
+		params TEXT NOT NULL DEFAULT '{}',
+		plan_hash TEXT NOT NULL,
+		status TEXT NOT NULL,
+		approval_status TEXT NOT NULL DEFAULT 'pending',
+		approval_level TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL,
+		updated_at DATETIME NOT NULL,
+		creator TEXT NOT NULL,
+		incident_id TEXT NOT NULL DEFAULT ''
+	)`)
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 	upgraded, err := NewSQLiteStore(ctx, legacyPath)
 	require.NoError(t, err)
 	defer func() { _ = upgraded.Close() }()
 
-	cols := func(store *SQLiteStore) [][3]string {
+	cols := func(store *SQLiteStore, table string) [][3]string {
 		rows, err := store.DB().QueryContext(ctx,
 			`SELECT name, type, "notnull" || '|' || COALESCE(dflt_value, '<none>')
-			 FROM pragma_table_info('credentials') ORDER BY cid`)
+			 FROM pragma_table_info(?) ORDER BY cid`, table)
 		require.NoError(t, err)
 		defer func() { _ = rows.Close() }()
 		var out [][3]string
@@ -155,8 +191,10 @@ func TestMigrate_FreshAndUpgraded_SchemaShapesMatch(t *testing.T) {
 		require.NoError(t, rows.Err())
 		return out
 	}
-	assert.Equal(t, cols(fresh), cols(upgraded),
-		"schema.sql and the migration steps must produce the same credentials shape")
+	for _, table := range []string{"credentials", "runs"} {
+		assert.Equal(t, cols(fresh, table), cols(upgraded, table),
+			"schema.sql and the migration steps must produce the same %s shape", table)
+	}
 }
 
 func TestNewSQLiteStore_SynchronousOption(t *testing.T) {
@@ -195,6 +233,8 @@ func TestPGMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 	// run left the column already gone. One statement per Exec: the extended
 	// protocol rejects multi-command.
 	_, err := store.DB().ExecContext(ctx, `ALTER TABLE credentials DROP COLUMN IF EXISTS tags`)
+	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS plan_json`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `DELETE FROM schema_version`)
 	require.NoError(t, err)

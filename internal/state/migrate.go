@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -56,6 +56,15 @@ var migrations = []migrationStep{
 		version: 2,
 		stmts: []string{
 			`ALTER TABLE credentials ADD COLUMN tags TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		// A1 (engine wiring): runs.plan_json persists the canonical plan
+		// produced by PlanChange so apply can re-verify plan_hash and
+		// execute the exact approved plan. '' means "never planned".
+		version: 3,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
 }

@@ -77,6 +77,14 @@ var pgMigrations = []migrationStep{
 			`ALTER TABLE credentials ADD COLUMN tags TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// A1 (engine wiring): runs.plan_json (see migrations on the
+		// SQLite side). Statement is dialect-compatible.
+		version: 3,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // pgSchemaDDLAdvisoryLockKey is the key of the session-level advisory lock

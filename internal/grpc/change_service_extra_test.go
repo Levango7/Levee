@@ -9,6 +9,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/pause"
+	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
@@ -36,6 +38,7 @@ type recordingEngine struct {
 	runPhase   string
 	runErr     error
 	plan       *pb.Plan
+	stored     *StoredPlan
 	planErr    error
 	rollbackID string
 	rbHosts    []string
@@ -58,13 +61,13 @@ func (e *recordingEngine) adapter() *EngineAdapter {
 			e.lastAutoApprove = autoApprove
 			return e.runID, e.runSuccess, e.runPhase, e.runErr
 		},
-		Plan: func(_ context.Context, _ string, hosts []string) (*pb.Plan, error) {
+		Plan: func(_ context.Context, _ string, hosts []string) (*pb.Plan, *StoredPlan, error) {
 			atomic.AddInt32(&e.planCalled, 1)
 			e.lastHosts = hosts
 			if e.planErr != nil {
-				return nil, e.planErr
+				return nil, nil, e.planErr
 			}
-			return e.plan, nil
+			return e.plan, e.stored, nil
 		},
 		Rollback: func(_ context.Context, _, _ string, _ bool) (string, []string, error) {
 			atomic.AddInt32(&e.rollbackCalled, 1)
@@ -79,6 +82,47 @@ func (e *recordingEngine) adapter() *EngineAdapter {
 			return e.retryErr
 		},
 	}
+}
+
+// testPlan is the canonical single-batch plan used to seed runs for
+// apply-path tests: ApplyChange requires a persisted plan whose hash
+// verifies (A1), so stub-engine tests must plant one.
+func testPlan() *plan.Plan {
+	return &plan.Plan{
+		ID:           "plan-test-1",
+		WorkflowName: "test-workflow",
+		Batches: []plan.Batch{{
+			Index:   0,
+			Targets: []string{"web-1"},
+			Steps: []plan.PlanStep{{
+				Name:   "restart",
+				Module: "svc",
+				Action: "restart",
+				Args:   map[string]any{"name": "nginx"},
+			}},
+			MaxConcurrency: 1,
+		}},
+		TotalTargets: 1,
+		CreatedAt:    time.Now().UTC(),
+	}
+}
+
+// persistPlanOnRun writes the canonical plan artifact (JSON + matching
+// plan.ComputeHash) onto the run, mirroring what PlanChange persists when
+// the engine is wired.
+func persistPlanOnRun(t *testing.T, store state.Store, runID string) *plan.Plan {
+	t.Helper()
+	ctx := context.Background()
+	p := testPlan()
+	raw, err := json.Marshal(p)
+	require.NoError(t, err)
+	run, err := store.GetRun(ctx, runID)
+	require.NoError(t, err)
+	run.PlanJSON = string(raw)
+	run.PlanHash = plan.ComputeHash(p)
+	run.UpdatedAt = time.Now().UTC()
+	require.NoError(t, store.UpdateRun(ctx, run))
+	return p
 }
 
 // setRunStatus moves a run to an arbitrary status directly in the store.
@@ -309,6 +353,7 @@ func TestApplyChange_EngineSuccessCompletes(t *testing.T) {
 	svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-eng"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 
 	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
 		ChangeId:       created.GetId(),
@@ -332,6 +377,7 @@ func TestApplyChange_EngineFailureMarksFailedAndReturnsInternal(t *testing.T) {
 	svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-fail"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 
 	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
 		ChangeId:    created.GetId(),
@@ -353,9 +399,10 @@ func TestApplyChange_EngineFailureMarksFailedAndReturnsInternal(t *testing.T) {
 func TestApplyChange_EnginePathPublishesTerminalEvent(t *testing.T) {
 	t.Run("completed publishes terminal event", func(t *testing.T) {
 		engine := &recordingEngine{runID: "exec-3", runSuccess: true}
-		svc, _ := newTestChangeServiceWithEngine(t, engine.adapter())
+		svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-term"})
 		require.NoError(t, err)
+		persistPlanOnRun(t, store, created.GetId())
 
 		// Subscribe under the real change id before applying.
 		bus := svc.getEventBus()
@@ -389,9 +436,10 @@ func TestApplyChange_EnginePathPublishesTerminalEvent(t *testing.T) {
 
 	t.Run("engine error publishes failed event", func(t *testing.T) {
 		engine := &recordingEngine{runID: "exec-4", runErr: errors.New("boom")}
-		svc, _ := newTestChangeServiceWithEngine(t, engine.adapter())
+		svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-term-fail"})
 		require.NoError(t, err)
+		persistPlanOnRun(t, store, created.GetId())
 
 		bus := svc.getEventBus()
 		ch := bus.subscribe(created.GetId())
@@ -1511,6 +1559,7 @@ func TestApplyChange_EngineRolledBackPersistsStatus(t *testing.T) {
 	svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-rb"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 
 	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
 		ChangeId:    created.GetId(),
@@ -1544,6 +1593,7 @@ func TestApplyChange_ConcurrentDoubleApplyIsSerialised(t *testing.T) {
 
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-race"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 	// Approve the run so both goroutines take the non-auto-approve path and
 	// both see status "approved" before the CAS decides the winner.
 	run, err := store.GetRun(context.Background(), created.GetId())

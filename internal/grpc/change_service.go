@@ -45,6 +45,7 @@ import (
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/pause"
+	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/state"
 
 	grpcpkg "google.golang.org/grpc"
@@ -331,18 +332,23 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 
 	// Delegate to the engine when available.
 	if s.engine != nil && s.engine.Plan != nil {
-		plan, err := s.engine.Plan(ctx, req.GetChangeId(), req.GetTargetHosts())
+		planMsg, stored, err := s.engine.Plan(ctx, req.GetChangeId(), req.GetTargetHosts())
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "plan: %v", err)
 		}
-		// Persist the plan hash on the run for later verification.
-		if plan != nil && !req.GetDryRun() {
+		// Persist the canonical plan artifact on the run (A1). Apply
+		// executes exactly this JSON and re-verifies its hash, so the
+		// approved change can never drift from the planned one. Dry runs
+		// are previews and persist nothing.
+		if planMsg != nil && stored != nil && stored.JSON != "" && !req.GetDryRun() {
+			run.PlanJSON = stored.JSON
+			run.PlanHash = stored.Hash
 			run.UpdatedAt = time.Now().UTC()
 			if err := s.store.UpdateRun(ctx, run); err != nil {
-				log.Warn("failed to update run after plan", "run_id", req.GetChangeId(), "error", err)
+				log.Warn("failed to persist plan on run", "run_id", req.GetChangeId(), "error", err)
 			}
 		}
-		return plan, nil
+		return planMsg, nil
 	}
 
 	// Fallback: return a minimal plan with no batches. This keeps the
@@ -353,6 +359,22 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 		Batches:       []*pb.Batch{},
 		ImpactSummary: "no engine configured; empty plan",
 	}, nil
+}
+
+// verifyStoredPlanHash recomputes the canonical hash of the plan JSON
+// persisted on the run and compares it with run.PlanHash. A mismatch (or
+// an unparsable artifact) means the stored plan drifted from the one that
+// was approved; callers must refuse to execute and demand a re-plan.
+func verifyStoredPlanHash(run *state.Run) error {
+	var p plan.Plan
+	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
+		return fmt.Errorf("stored plan for change %q is corrupt and cannot be verified: %v (re-plan required)", run.ID, err)
+	}
+	got := plan.ComputeHash(&p)
+	if got == "" || got != run.PlanHash {
+		return fmt.Errorf("stored plan for change %q does not match its plan hash (plan replaced or corrupted since approval; re-plan required)", run.ID)
+	}
+	return nil
 }
 
 // --- ApplyChange -----------------------------------------------------------
@@ -388,6 +410,22 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	if s.engine == nil || s.engine.Run == nil {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"no engine wired in this deployment: apply performs no execution (status-only mode); plan/approve/status tracking remain available")
+	}
+
+	// The engine executes the plan artifact persisted on the run — never
+	// one re-derived at apply time. A run without a stored plan (created
+	// before engine wiring, or never planned) is refused with guidance;
+	// a stored plan whose hash no longer matches means the plan was
+	// replaced or the row corrupted after approval, and is refused too.
+	// Both refusals run before the status CAS so a refused apply leaves
+	// the run untouched.
+	if run.PlanJSON == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"change %q has no persisted plan: call PlanChange (then approve) before applying; runs created before engine wiring require a fresh plan",
+			req.GetChangeId())
+	}
+	if err := verifyStoredPlanHash(run); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
 	// Transition to running via a compare-and-set on the current status.
@@ -1018,6 +1056,17 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 	}
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+
+	// An approval attests to a concrete plan. With an execution engine
+	// wired, approving a run that has no persisted plan would bless a
+	// change whose executable content can only be re-derived at apply
+	// time — exactly the drift the plan artifact prevents. Refuse and
+	// point at PlanChange. (Status-only deployments keep the legacy
+	// free-flowing behaviour: no engine, no execution, no gate.)
+	if s.engine != nil && s.engine.Run != nil && run.PlanJSON == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"change %q has no persisted plan to approve: call PlanChange before approving", req.GetChangeId())
 	}
 
 	now := time.Now().UTC()

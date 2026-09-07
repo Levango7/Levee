@@ -46,7 +46,7 @@ const pgBaseSchemaVersion = 1
 // pgCurrentSchemaVersion mirrors currentSchemaVersion for the PostgreSQL
 // migration path. Bump whenever a forward PostgreSQL migration step is added
 // to pgMigrations; pgschema.sql must gain the same change.
-const pgCurrentSchemaVersion = 2
+const pgCurrentSchemaVersion = 3
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
@@ -124,10 +124,10 @@ func (s *PGStore) CreateRun(ctx context.Context, run *Run) error {
 		return fmt.Errorf("state: create run: nil run")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO runs
-		(id, workflow_name, template_name, params, plan_hash, status,
+		(id, workflow_name, template_name, params, plan_hash, plan_json, status,
 		 approval_status, approval_level, created_at, updated_at, creator, incident_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		run.ID, run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.Status,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		run.ID, run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.CreatedAt, run.UpdatedAt, run.Creator, run.IncidentID,
 	)
 	if err != nil {
@@ -139,12 +139,12 @@ func (s *PGStore) CreateRun(ctx context.Context, run *Run) error {
 // GetRun returns the run with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetRun(ctx context.Context, id string) (*Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, workflow_name, template_name, params, plan_hash, status,
+		id, workflow_name, template_name, params, plan_hash, plan_json, status,
 		approval_status, approval_level, created_at, updated_at, creator, incident_id
 		FROM runs WHERE id = $1`, id)
 	r := &Run{}
 	err := row.Scan(
-		&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.Status,
+		&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 		&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -162,10 +162,10 @@ func (s *PGStore) UpdateRun(ctx context.Context, run *Run) error {
 		return fmt.Errorf("state: update run: nil run")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE runs SET
-		workflow_name=$1, template_name=$2, params=$3, plan_hash=$4, status=$5,
-		approval_status=$6, approval_level=$7, updated_at=$8, creator=$9, incident_id=$10
-		WHERE id=$11`,
-		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.Status,
+		workflow_name=$1, template_name=$2, params=$3, plan_hash=$4, plan_json=$5, status=$6,
+		approval_status=$7, approval_level=$8, updated_at=$9, creator=$10, incident_id=$11
+		WHERE id=$12`,
+		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.ID,
 	)
@@ -223,7 +223,7 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 		args = append(args, filter.IncidentID)
 	}
 
-	q := `SELECT id, workflow_name, template_name, params, plan_hash, status,
+	q := `SELECT id, workflow_name, template_name, params, plan_hash, plan_json, status,
 		approval_status, approval_level, created_at, updated_at, creator, incident_id
 		FROM runs`
 	if len(clauses) > 0 {
@@ -249,7 +249,7 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 	for rows.Next() {
 		r := &Run{}
 		if err := rows.Scan(
-			&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.Status,
+			&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 			&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 		); err != nil {
 			return nil, fmt.Errorf("state: list runs scan: %w", err)

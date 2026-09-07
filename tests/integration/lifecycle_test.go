@@ -12,13 +12,16 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
@@ -69,10 +72,54 @@ func newServicesWithEngine(t *testing.T) (*grpc.ChangeService, *grpc.AuditServic
 		Run: func(_ context.Context, changeID string, _ bool, _ int32) (string, bool, string, error) {
 			return "exec-" + changeID, true, "completed", nil
 		},
+		// Plan mirrors the A1 contract: a pb.Plan for the client plus the
+		// canonical StoredPlan artifact PlanChange persists on the run.
+		// Approve/Apply then accept the run because its persisted plan
+		// verifies against its plan hash.
+		Plan: func(_ context.Context, changeID string, hosts []string) (*pb.Plan, *grpc.StoredPlan, error) {
+			targets := hosts
+			if len(targets) == 0 {
+				targets = []string{"localhost"}
+			}
+			p := &plan.Plan{
+				ID:           "plan-" + changeID,
+				WorkflowName: "integration-test",
+				Batches: []plan.Batch{{
+					Index:   0,
+					Targets: targets,
+					Steps: []plan.PlanStep{{
+						Name: "noop", Module: "shell", Action: "run",
+					}},
+					MaxConcurrency: 1,
+				}},
+				TotalTargets: len(targets),
+				CreatedAt:    time.Now().UTC(),
+			}
+			raw, err := json.Marshal(p)
+			if err != nil {
+				return nil, nil, err
+			}
+			return &pb.Plan{
+				ChangeId:      changeID,
+				TargetHosts:   targets,
+				ImpactSummary: "integration stub plan",
+			}, &grpc.StoredPlan{JSON: string(raw), Hash: plan.ComputeHash(p)}, nil
+		},
 	}
 	changeSvc := grpc.NewChangeService(store, engine, nil, nil)
 	auditSvc := grpc.NewAuditService(store)
 	return changeSvc, auditSvc, store
+}
+
+// planForTest drives a non-dry PlanChange so the run carries the persisted
+// plan artifact that Approve/Apply require once an engine is wired.
+func planForTest(t *testing.T, svc *grpc.ChangeService, changeID string) {
+	t.Helper()
+	_, err := svc.PlanChange(context.Background(), &pb.PlanChangeRequest{
+		ChangeId:    changeID,
+		TargetHosts: []string{"web-1"},
+	})
+	require.NoError(t, err)
 }
 
 // ---------------------------------------------------------------------------
@@ -100,10 +147,11 @@ func TestChangeLifecycle_CreatePlanApproveApplyCancel(t *testing.T) {
 	changeID := createResp.GetId()
 	assert.Equal(t, "draft", createResp.GetStatus())
 
-	// 2. Plan the change.
+	// 2. Plan the change (non-dry): persists the plan artifact on the
+	// run, which Approve/Apply require with an engine wired.
 	planResp, err := changeSvc.PlanChange(ctx, &pb.PlanChangeRequest{
 		ChangeId:    changeID,
-		DryRun:      true,
+		DryRun:      false,
 		TargetHosts: []string{},
 	})
 	require.NoError(t, err)
@@ -220,6 +268,7 @@ func TestCrossService_AuditOnEveryTransition(t *testing.T) {
 	})
 	require.NoError(t, err)
 	changeID := createResp.GetId()
+	planForTest(t, changeSvc, changeID)
 
 	_, err = changeSvc.ApproveChange(ctx, &pb.ApproveRequest{
 		ChangeId: changeID,
@@ -377,7 +426,7 @@ func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 	ctx := context.Background()
 	changeSvc, auditSvc, store := newServicesWithEngine(t)
 
-	// Create, approve, and apply (creates the trace that forms the hash chain).
+	// Create, plan, approve, and apply (creates the trace that forms the hash chain).
 	createResp, err := changeSvc.CreateChange(ctx, &pb.CreateChangeRequest{
 		Label:        "chain-test",
 		WorkflowFile: "workflow.levee",
@@ -386,6 +435,7 @@ func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 	require.NoError(t, err)
 	changeID := createResp.GetId()
 
+	planForTest(t, changeSvc, changeID)
 	_, err = changeSvc.ApproveChange(ctx, &pb.ApproveRequest{ChangeId: changeID})
 	require.NoError(t, err)
 
