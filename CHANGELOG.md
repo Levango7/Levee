@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [v1.13.0] - 2026-09-08 — 执行引擎接线 + 集群故障接管
+
+本版落地两大设计（`docs/design-engine-wiring.md` / `docs/design-cluster-failover.md`）：**A —— 执行引擎接入 serve**，计划→审批→执行自此真实闭环（计划持久化 + plan_hash 绑定、显式 `--engine-enabled`、CLI plan/apply 引擎路径、批次/步骤证据落库）；**B —— 集群在途变更故障接管**，执行节点崩溃后其运行中变更由租约围栏与 leader 接管循环收敛至新终态 `interrupted`（审计留痕、永不重跑副作用、`RetryChange` 显式重驱动）。另含双 SSO（OIDC/GitHub）、多令牌认证、REST 方法校验等安全加固与全链测试战役。详细说明见 [docs/release-notes/v1.13.0.md](docs/release-notes/v1.13.0.md)。以下为逐条明细。
+
 ### 新增
 
 - **B 系列收尾四项（C1–C4，`docs/design-cluster-failover.md` 承诺对齐）**：

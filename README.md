@@ -165,6 +165,6 @@ make cross-build  # 跨平台编译
 
 ## 版本
 
-当前版本 v1.12.0。MVP (3 个月) -> V1 (6 个月) -> V2 (12 个月)
+当前版本 v1.13.0。MVP (3 个月) -> V1 (6 个月) -> V2 (12 个月)
 
 详见 [docs/mvp-tasks.md](docs/mvp-tasks.md) 与 [CHANGELOG.md](CHANGELOG.md)。
