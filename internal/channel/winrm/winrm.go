@@ -122,6 +122,22 @@ func (c Config) resolvePort(targetPort int) int {
 
 // --- WinRMChannel -----------------------------------------------------------
 
+// winRMClient is the subset of *winrm.Client that WinRMChannel uses. It is
+// introduced as a seam so tests can inject a stub that returns preset
+// results without a real Windows target — the *winrm.Client struct (from
+// masterzen/winrm) satisfies it, so the default factory passes it through.
+type winRMClient interface {
+	RunWithContext(ctx context.Context, command string, stdout, stderr io.Writer) (int, error)
+	RunPSWithContext(ctx context.Context, command string) (string, string, int, error)
+}
+
+// newWinRMClient is the production client factory, wrapped so it satisfies
+// the winRMClient seam. Tests override WinRMChannel.clientFactory to inject
+// stubs; this default keeps production behaviour byte-identical.
+func newWinRMClient(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+	return winrm.NewClientWithParameters(endpoint, user, password, params)
+}
+
 // WinRMChannel implements channel.Channel over the WinRM protocol.
 //
 // Privilege boundary: every command runs as the account that authenticated
@@ -139,8 +155,13 @@ type WinRMChannel struct {
 	target channel.Target
 	cfg    Config
 
+	// clientFactory builds the underlying winrm client. It is initialised in
+	// newChannel to newWinRMClient and exists as a seam so tests can inject
+	// a stub (via the unexported field) without a real Windows target.
+	clientFactory func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error)
+
 	mu        sync.RWMutex
-	client    *winrm.Client
+	client    winRMClient
 	connected bool
 }
 
@@ -169,8 +190,9 @@ func newChannel(target channel.Target, cfg Config) (*WinRMChannel, error) {
 	}
 
 	return &WinRMChannel{
-		target: target,
-		cfg:    cfg.withDefaults(),
+		target:        target,
+		cfg:           cfg.withDefaults(),
+		clientFactory: newWinRMClient,
 	}, nil
 }
 
@@ -185,8 +207,9 @@ func (c *WinRMChannel) buildEndpoint() *winrm.Endpoint {
 	}
 }
 
-// buildClient creates a new winrm.Client with the configured transport.
-func (c *WinRMChannel) buildClient() (*winrm.Client, error) {
+// buildClient creates a new winrm client with the configured transport,
+// delegating to the injectable clientFactory seam.
+func (c *WinRMChannel) buildClient() (winRMClient, error) {
 	endpoint := c.buildEndpoint()
 	cred := c.target.Credentials()
 
@@ -207,7 +230,7 @@ func (c *WinRMChannel) buildClient() (*winrm.Client, error) {
 		return nil, fmt.Errorf("winrm: unsupported transport %q", c.cfg.Transport)
 	}
 
-	client, err := winrm.NewClientWithParameters(endpoint, cred.Username, cred.Password, params)
+	client, err := c.clientFactory(endpoint, cred.Username, cred.Password, params)
 	if err != nil {
 		return nil, fmt.Errorf("winrm: create client: %w", err)
 	}
