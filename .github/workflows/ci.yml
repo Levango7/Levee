@@ -292,7 +292,11 @@ jobs:
   # ---------------------------------------------------------------------------
   # trivy: scan the built Docker image for known CVEs in base images and
   # dependency libraries. Requires the image to be built first; we build
-  # it inline here.
+  # it inline here. NOTE: the Dockerfile MUST run `apk upgrade --no-cache` in
+  # BOTH the builder and runtime stages — the golang:<ver>-alpine alias is a
+  # point-in-time snapshot, and a base-package CVE (e.g. CVE-2026-84445,
+  # previously CVE-2026-14456 openssl) published between releases will
+  # otherwise land in the scanned image and gate the merge.
   # ---------------------------------------------------------------------------
   trivy:
     name: trivy
