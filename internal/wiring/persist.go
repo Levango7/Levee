@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/engine"
+	"github.com/nexus/levee/internal/executor"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
@@ -266,3 +267,181 @@ func attachOutput(step *state.Step, outputs map[string]stepOutput, key string) {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// --- resumable retry -------------------------------------------------------
+
+// resumeEvidence is the persisted evidence for one skipped step of a
+// resumable retry — it records that the step was intentionally not
+// re-dispatched because it had already completed via an idempotent module.
+type resumeEvidence struct {
+	BatchNo  int
+	Host     string
+	StepName string
+	Action   string
+}
+
+// completedIdempotentBatches returns the batch numbers (1-based) whose every
+// (step, host) combination already has a persisted "success" row AND whose
+// module declares itself idempotent. These batches can be skipped on a
+// resumable retry without changing target state.
+//
+// The check is conservative: any missing row, any non-success status, any
+// non-idempotent module, or any step with no declared module leaves the batch
+// OUT of the result (it will be re-run). Batches with zero steps are never
+// reported as completable — re-running an empty batch is harmless and avoids
+// a surprising "everything skipped" outcome when evidence is absent.
+func (e *Engine) completedIdempotentBatches(ctx context.Context, changeID string, p *plan.Plan) (map[int]bool, error) {
+	batches, err := e.store.ListBatches(ctx, state.BatchFilter{RunID: changeID})
+	if err != nil {
+		return nil, fmt.Errorf("wiring: list batches for %q: %w", changeID, err)
+	}
+	noToID := make(map[int]string, len(batches))
+	for _, b := range batches {
+		noToID[b.BatchNo] = b.ID
+	}
+
+	steps, err := e.store.ListSteps(ctx, state.StepFilter{RunID: changeID, Limit: 10000})
+	if err != nil {
+		return nil, fmt.Errorf("wiring: list steps for %q: %w", changeID, err)
+	}
+
+	// key (batch_no, step_name, host) -> succeeded.
+	type stepKey struct {
+		batchNo  int
+		stepName string
+		host     string
+	}
+	succeeded := make(map[stepKey]bool, len(steps))
+	for _, s := range steps {
+		batchNo := batchNoForID(noToID, s.BatchID)
+		if batchNo == 0 {
+			continue
+		}
+		if s.Status != "success" {
+			continue
+		}
+		succeeded[stepKey{batchNo: batchNo, stepName: s.StepName, host: s.Host}] = true
+	}
+
+	completable := make(map[int]bool)
+	for _, b := range p.Batches {
+		batchNo := b.Index + 1
+		if len(b.Steps) == 0 || len(b.Targets) == 0 {
+			continue
+		}
+		allDone := true
+		for _, ps := range b.Steps {
+			if !executor.DefaultExecutor().IsIdempotent(ps.Module) {
+				allDone = false
+				break
+			}
+			for _, host := range b.Targets {
+				if !succeeded[stepKey{batchNo: batchNo, stepName: ps.Name, host: host}] {
+					allDone = false
+					break
+				}
+			}
+			if !allDone {
+				break
+			}
+		}
+		if allDone {
+			completable[batchNo] = true
+		}
+	}
+	return completable, nil
+}
+
+// batchNoForID inverts the batchNo->ID map produced by ListBatches. Returns 0
+// when the id is unknown (a step whose batch row somehow vanished).
+func batchNoForID(noToID map[int]string, id string) int {
+	for no, bid := range noToID {
+		if bid == id {
+			return no
+		}
+	}
+	return 0
+}
+
+// buildResumePlan returns a plan identical to p but with every batch whose
+// number is in skip removed, plus the list of skipped (batch, step, host)
+// evidence triples that callers must persist for audit completeness. Batches
+// are renumbered so their Index values remain contiguous (the plan is a fresh
+// copy; the input is not mutated). BatchNo in the evidence uses the ORIGINAL
+// 1-based numbering so it stays aligned with already-persisted rows.
+func buildResumePlan(p *plan.Plan, skip map[int]bool) (*plan.Plan, []resumeEvidence) {
+	resume := &plan.Plan{
+		ID:           p.ID,
+		WorkflowName: p.WorkflowName,
+		TotalTargets: 0,
+		CreatedAt:    p.CreatedAt,
+	}
+	var skipped []resumeEvidence
+	newIndex := 0
+	for _, b := range p.Batches {
+		originalBatchNo := b.Index + 1
+		// A batch is skippable only when the caller flagged it AND it
+		// actually has work (steps and targets). An empty batch is never
+		// skipped — completedIdempotentBatches already excludes those,
+		// but this guards buildResumePlan when called directly.
+		if skip[originalBatchNo] && len(b.Steps) > 0 && len(b.Targets) > 0 {
+			for _, ps := range b.Steps {
+				for _, host := range b.Targets {
+					skipped = append(skipped, resumeEvidence{
+						BatchNo:  originalBatchNo,
+						Host:     host,
+						StepName: ps.Name,
+						Action:   ps.Module + "." + ps.Action,
+					})
+				}
+			}
+			continue
+		}
+		b.Index = newIndex
+		newIndex++
+		resume.TotalTargets += len(b.Targets)
+		resume.Batches = append(resume.Batches, b)
+	}
+	return resume, skipped
+}
+
+// persistResumeEvidence writes the skipped-step evidence rows for a resumable
+// retry. Each skipped (batch, step, host) triple becomes a "skipped" step row
+// with a reason that names the idempotency guarantee. Best-evidence: a store
+// failure is logged but does not abort the run (the operator already has the
+// original success rows for these steps).
+func (e *Engine) persistResumeEvidence(ctx context.Context, changeID string, skipped []resumeEvidence) {
+	now := utcNow()
+	for _, sk := range skipped {
+		_ = e.store.CreateStep(ctx, &state.Step{
+			ID:          newID("stp-"),
+			RunID:       changeID,
+			BatchID:     batchIDForBatchNo(e, ctx, changeID, sk.BatchNo),
+			Host:        sk.Host,
+			StepName:    sk.StepName,
+			Action:      sk.Action,
+			Status:      "skipped",
+			Stderr:      "skipped on resume: already completed by idempotent module",
+			DurationMs:  0,
+			StartedAt:   &now,
+			CompletedAt: &now,
+		})
+	}
+}
+
+// batchIDForBatchNo resolves the persisted batch row id for a batch number, so
+// skipped step rows link to the correct batch. Returns "" on miss (the step
+// row will fail the batch FK; that is caught by CreateStep and logged by
+// persistResumeEvidence's caller convention).
+func batchIDForBatchNo(e *Engine, ctx context.Context, changeID string, batchNo int) string {
+	batches, err := e.store.ListBatches(ctx, state.BatchFilter{RunID: changeID})
+	if err != nil {
+		return ""
+	}
+	for _, b := range batches {
+		if b.BatchNo == batchNo {
+			return b.ID
+		}
+	}
+	return ""
+}

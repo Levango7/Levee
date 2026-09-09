@@ -100,7 +100,7 @@ func (e *Engine) runChange(ctx context.Context, changeID string, _ bool, maxConc
 			p.Batches[i].MaxConcurrency = int(maxConcurrency)
 		}
 	}
-	return e.executePlan(ctx, changeID, p)
+	return e.executePlan(ctx, changeID, p, false)
 }
 
 // executePlan drives the full closure once and persists batch/step rows
@@ -115,7 +115,16 @@ func (e *Engine) runChange(ctx context.Context, changeID string, _ bool, maxConc
 // engine.ErrFencedOut error chain: step dispatch stops immediately, the
 // closure skips its automatic rollback (see closure.go), and this
 // function refuses to persist the superseded evidence.
-func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan) (execRunID string, success bool, phase string, err error) {
+//
+// resumable selects retry-from-interrupt semantics: when true, batches whose
+// every (step, host) combination already has a "success" row from an
+// idempotent module are skipped (their evidence is recorded as "skipped"),
+// so a node that crashed mid-flight resumes from where it broke instead of
+// re-running the whole plan. resumable MUST be true only when retrying a run
+// that ended in the "interrupted" terminal state — for fresh applies and for
+// failed/rolled_back retries it must be false (a rollback may have undone a
+// previously-successful step, making the skip unsafe).
+func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan, resumable bool) (execRunID string, success bool, phase string, err error) {
 	// Fencing begin: in cluster mode an execution without a lease would
 	// be an invisible takeover candidate — refuse outright instead.
 	var lease ExecutionLease
@@ -127,6 +136,18 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan)
 		defer func() { _ = lease.End(context.WithoutCancel(ctx)) }()
 		stopHeartbeat := e.startLeaseHeartbeat(lease)
 		defer stopHeartbeat()
+	}
+
+	// Resumable retry: drop batches that already completed idempotently and
+	// persist "skipped" evidence for audit completeness. The engine then runs
+	// the filtered plan unchanged.
+	if resumable {
+		skip, serr := e.completedIdempotentBatches(ctx, changeID, p)
+		if serr == nil && len(skip) > 0 {
+			resumePlan, skipped := buildResumePlan(p, skip)
+			e.persistResumeEvidence(ctx, changeID, skipped)
+			p = resumePlan
+		}
 	}
 
 	rx, err := newRunExec(ctx, e, lease)
@@ -272,7 +293,12 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		return fmt.Errorf("wiring: retry refused: change %q status changed concurrently (no longer %q)", changeID, old)
 	}
 
-	execRunID, _, phase, err := e.executePlan(ctx, changeID, p)
+	// A retry out of "interrupted" resumes from where the crashed execution
+	// stopped: batches whose every step already succeeded via an idempotent
+	// module are skipped. Other sources (failed/rolled_back) always re-run
+	// the full plan — a rollback may have undone a previously-successful
+	// step, so skipping would be unsafe.
+	execRunID, _, phase, err := e.executePlan(ctx, changeID, p, old == "interrupted")
 	final := "failed"
 	switch {
 	case phase == string(engine.PhaseRolledBack):
