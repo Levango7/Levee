@@ -242,3 +242,20 @@ CREATE TABLE IF NOT EXISTS targets (
 
 CREATE INDEX IF NOT EXISTS idx_targets_group  ON targets (group_id);
 CREATE INDEX IF NOT EXISTS idx_targets_status ON targets (status);
+
+-- ---------------------------------------------------------------------------
+-- run_assignment: cross-node dispatch assignments (design-cluster-dispatch.md).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS run_assignment (
+    run_id      TEXT PRIMARY KEY,
+    owner_node  TEXT NOT NULL,
+    epoch       BIGINT NOT NULL,
+    state       TEXT NOT NULL,
+    result      TEXT NOT NULL DEFAULT '',
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_id, epoch)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state);
+CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);

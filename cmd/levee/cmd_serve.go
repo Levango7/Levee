@@ -50,6 +50,7 @@ import (
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/diagnosis"
+	"github.com/nexus/levee/internal/dispatch"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
@@ -103,6 +104,13 @@ var (
 	// at TTL/3; the TTL bounds post-crash detection latency, not
 	// execution duration.
 	serveOptClusterExecLeaseTTL time.Duration
+	// serveOptClusterDispatchInterval is the cross-node dispatch sweep period
+	// (cluster mode). <= 0 disables the dispatch loop; takeover and fencing
+	// are unaffected.
+	serveOptClusterDispatchInterval time.Duration
+	// serveOptClusterDispatchWorkerCapacity bounds how many runs a single
+	// worker executes concurrently before the dispatcher treats it saturated.
+	serveOptClusterDispatchWorkerCapacity int
 
 	// serveOptAuthTokens holds repeatable --auth-token name=secret pairs that
 	// map each named bearer token to the subject it authenticates as.
@@ -162,6 +170,8 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
 	cmd.Flags().DurationVar(&serveOptClusterTakeoverInterval, "cluster-takeover-interval", takeover.DefaultInterval, "Failover takeover sweep period; <=0 disables the takeover loop (fencing stays active) (cluster mode)")
 	cmd.Flags().DurationVar(&serveOptClusterExecLeaseTTL, "cluster-exec-lease-ttl", cluster.DefaultExecLeaseTTL, "Execution-lease TTL: bounds post-crash takeover detection latency; renewals run at TTL/3 (cluster mode)")
+	cmd.Flags().DurationVar(&serveOptClusterDispatchInterval, "cluster-dispatch-interval", dispatch.DefaultInterval, "Cross-node dispatch sweep period; <=0 disables the dispatch loop (cluster mode)")
+	cmd.Flags().IntVar(&serveOptClusterDispatchWorkerCapacity, "cluster-dispatch-capacity", dispatch.DefaultWorkerCapacity, "Max concurrent runs per worker node; the dispatcher treats a node at capacity as saturated (cluster mode)")
 	cmd.Flags().StringArrayVar(&serveOptAuthTokens, "auth-token", nil, "Named bearer token name=secret (repeatable); the name becomes the authenticated actor")
 	cmd.Flags().BoolVar(&serveOptMetricsPublic, "metrics-public", false, "Expose /metrics without authentication (default: requires a token when auth is enabled)")
 	cmd.Flags().BoolVar(&serveOptEngineEnabled, "engine-enabled", false, "Wire the execution engine: PlanChange generates and persists real plans and ApplyChange executes approved changes (targets must be registered in the inventory; set LEVEE_MASTER_PASSWORD for credentialed channels)")
@@ -393,6 +403,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// In-cluster coordination handles (created lazily; may be nil in
+	// single-node mode). Both loops are cluster-only.
+	var dispatchWorkerLoop *dispatch.WorkerLoop
+
 	// 2b. Cluster failover takeover (design-cluster-failover.md). In
 	// cluster mode with the execution engine enabled, executions run
 	// fenced (run_execution leases) and the leader runs the takeover
@@ -424,6 +438,32 @@ func runServe(cmd *cobra.Command, args []string) error {
 		} else {
 			log.Info("failover takeover loop disabled (--cluster-takeover-interval<=0); execution fencing remains active")
 		}
+
+		// 2c. Cross-node dispatch (design-cluster-dispatch.md). In cluster mode
+		// the leader periodically assigns approved runs to idle workers.
+		// Independent of the takeover loop: both run concurrently.
+		var dispatchLoop *dispatch.Loop
+		if serveOptEngineEnabled {
+			if serveOptClusterDispatchInterval > 0 {
+				dispatchLoop = dispatch.NewLoop(clusterMgr, store, serveOptNodeID,
+					serveOptClusterDispatchInterval, serveOptClusterDispatchWorkerCapacity)
+				if err := dispatchLoop.Start(ctx); err != nil {
+					return fmt.Errorf("start dispatch loop: %w", err)
+				}
+				defer func() {
+					stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := dispatchLoop.Stop(stopCtx); err != nil {
+						log.Warn("dispatch loop stop failed", "error", err)
+					}
+				}()
+				log.Info("cross-node dispatch loop enabled (leader-only)",
+					"interval", serveOptClusterDispatchInterval,
+					"worker_capacity", serveOptClusterDispatchWorkerCapacity)
+			} else {
+				log.Info("cross-node dispatch loop disabled (--cluster-dispatch-interval<=0)")
+			}
+		}
 	}
 
 	// 3. Build the service implementations. We reuse the in-process
@@ -433,7 +473,26 @@ func runServe(cmd *cobra.Command, args []string) error {
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
 
-	// 3. Build server options.
+	// 3b. Dispatch worker loop: runs on every cluster node (including the
+	// leader). Pulls pending assignments for this node and executes them
+	// through the engine-wired gRPC apply path. Requires the engine and
+	// cluster mode; independent of the leader-only dispatch loop.
+	if clusterMgr != nil && serveOptEngineEnabled {
+			dispatchWorkerLoop = dispatch.NewWorkerLoop(store, &grpcChangeExecutor{svc: changeSvc}, serveOptNodeID, 2*time.Second)
+			if err := dispatchWorkerLoop.Start(ctx); err != nil {
+				return fmt.Errorf("start dispatch worker loop: %w", err)
+			}
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := dispatchWorkerLoop.Stop(stopCtx); err != nil {
+					log.Warn("dispatch worker loop stop failed", "error", err)
+				}
+			}()
+			log.Info("dispatch worker loop enabled", "node_id", serveOptNodeID, "interval", 2*time.Second)
+		}
+
+		// 3c. Build server options.
 	serverOpts, tlsCfg, err := buildServeServerOpts(svcs, token, namedTokens, oidcVerifier)
 	if err != nil {
 		return err

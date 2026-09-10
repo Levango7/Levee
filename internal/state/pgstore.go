@@ -23,7 +23,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-
+	"strings"
 	"time"
 
 	_ "embed" // required for go:embed
@@ -1074,6 +1074,157 @@ func (s *PGStore) DeleteCredential(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM credentials WHERE id = $1`, id)
 	if err != nil {
 		return fmt.Errorf("state: delete credential %q: %w", id, err)
+	}
+	return nil
+}
+
+// =========================================================================
+// Dispatch assignment CRUD
+// =========================================================================
+
+// CreateAssignment inserts a new run_assignment row.
+func (s *PGStore) CreateAssignment(ctx context.Context, a *Assignment) error {
+	if a == nil {
+		return fmt.Errorf("state: create assignment: nil assignment")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO run_assignment
+		(run_id, owner_node, epoch, state, result, assigned_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,NOW(),NOW())`,
+		a.RunID, a.OwnerNode, a.Epoch, a.State, a.Result,
+	)
+	if err != nil {
+		return fmt.Errorf("state: create assignment for %q: %w", a.RunID, err)
+	}
+	return nil
+}
+
+// GetAssignment returns the assignment for runID, or (nil, nil) if none.
+func (s *PGStore) GetAssignment(ctx context.Context, runID string) (*Assignment, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT
+		run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment WHERE run_id = $1`, runID)
+	a := &Assignment{}
+	if err := row.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: get assignment %q: %w", runID, err)
+	}
+	return a, nil
+}
+
+// UpdateAssignmentStateIf is a compare-and-set on (run_id, epoch, state).
+func (s *PGStore) UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=$1, result=CASE WHEN $2='done' THEN COALESCE(NULLIF(result,''), $3) ELSE result END, updated_at=NOW()
+		WHERE run_id=$4 AND epoch=$5 AND state=$6`,
+		next, next, next, runID, epoch, expected,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// Reassign bumps the epoch and resets state to pending for a run.
+func (s *PGStore) Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET owner_node=$1, epoch=epoch+1, state=$2, result='', updated_at=NOW()
+		WHERE run_id=$3 AND epoch=$4`,
+		newNode, AssignStatePending, runID, prevEpoch,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// ListAssignments returns assignments matching the filter, ordered by
+// assigned_at ascending.
+func (s *PGStore) ListAssignments(ctx context.Context, filter AssignmentFilter) ([]*Assignment, error) {
+	var (
+		clauses []string
+		args    []any
+		idx     int
+	)
+	next := func() int {
+		idx++
+		return idx
+	}
+	if filter.RunID != "" {
+		clauses = append(clauses, fmt.Sprintf("run_id = $%d", next()))
+		args = append(args, filter.RunID)
+	}
+	if filter.OwnerNode != "" {
+		clauses = append(clauses, fmt.Sprintf("owner_node = $%d", next()))
+		args = append(args, filter.OwnerNode)
+	}
+	if filter.State != "" {
+		clauses = append(clauses, fmt.Sprintf("state = $%d", next()))
+		args = append(args, filter.State)
+	}
+	if len(filter.ExcludeStates) > 0 {
+		placeholders := make([]string, len(filter.ExcludeStates))
+		for i := range filter.ExcludeStates {
+			placeholders[i] = fmt.Sprintf("$%d", next())
+			args = append(args, filter.ExcludeStates[i])
+		}
+		clauses = append(clauses, "state NOT IN ("+strings.Join(placeholders, ",")+")") // #nosec G202 -- fragments static, values bound
+	}
+
+	q := `SELECT run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment`
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
+	}
+	q += " ORDER BY assigned_at ASC"
+	if filter.Limit > 0 {
+		q += fmt.Sprintf(" LIMIT $%d", next())
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("state: list assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Assignment
+	for rows.Next() {
+		a := &Assignment{}
+		if err := rows.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("state: list assignments scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list assignments rows: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteAssignment removes the assignment for a run. Idempotent.
+func (s *PGStore) DeleteAssignment(ctx context.Context, runID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM run_assignment WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("state: delete assignment %q: %w", runID, err)
+	}
+	return nil
+}
+
+// SetAssignmentResult writes the terminal result onto an assignment row.
+func (s *PGStore) SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE run_assignment SET result=$1, updated_at=NOW() WHERE run_id=$2 AND epoch=$3`,
+		result, runID, epoch)
+	if err != nil {
+		return fmt.Errorf("state: set result for %q: %w", runID, err)
 	}
 	return nil
 }

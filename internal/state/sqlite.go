@@ -1089,6 +1089,159 @@ func (s *SQLiteStore) DeleteCredential(ctx context.Context, id string) error {
 }
 
 // =========================================================================
+// Dispatch assignment CRUD
+// =========================================================================
+
+// CreateAssignment inserts a new run_assignment row.
+func (s *SQLiteStore) CreateAssignment(ctx context.Context, a *Assignment) error {
+	if a == nil {
+		return fmt.Errorf("state: create assignment: nil assignment")
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO run_assignment
+		(run_id, owner_node, epoch, state, result, assigned_at, updated_at)
+		VALUES (?,?,?,?,?,?,?)`,
+		a.RunID, a.OwnerNode, a.Epoch, a.State, a.Result, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("state: create assignment for %q: %w", a.RunID, err)
+	}
+	return nil
+}
+
+// GetAssignment returns the assignment for runID, or (nil, nil) if none.
+func (s *SQLiteStore) GetAssignment(ctx context.Context, runID string) (*Assignment, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT
+		run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment WHERE run_id = ?`, runID)
+	a := &Assignment{}
+	if err := row.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: get assignment %q: %w", runID, err)
+	}
+	return a, nil
+}
+
+// UpdateAssignmentStateIf is a compare-and-set on (run_id, epoch, state): it
+// advances expected→next only while the row still matches (runID, epoch,
+// expected). It reports (true, nil) when applied and (false, nil) when the row
+// is missing or no longer matches (a concurrent actor won the race).
+func (s *SQLiteStore) UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=?, result=CASE WHEN ?='done' THEN COALESCE(NULLIF(result,''), ?) ELSE result END, updated_at=?
+		WHERE run_id=? AND epoch=? AND state=?`,
+		next, next, next, time.Now().UTC(), runID, epoch, expected,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// Reassign bumps the epoch and resets state to pending for a run, giving it to
+// a fresh worker. It succeeds only when the existing row matches (runID,
+// prevEpoch) — a stale scheduler that no longer owns the assignment is ignored.
+func (s *SQLiteStore) Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET owner_node=?, epoch=epoch+1, state=?, result='', updated_at=?
+		WHERE run_id=? AND epoch=?`,
+		newNode, AssignStatePending, time.Now().UTC(), runID, prevEpoch,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// ListAssignments returns assignments matching the filter, ordered by
+// assigned_at ascending. The ExcludeStates clause lists assignments whose
+// state is NOT in the given set (i.e. "active" assignments).
+func (s *SQLiteStore) ListAssignments(ctx context.Context, filter AssignmentFilter) ([]*Assignment, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	if filter.RunID != "" {
+		clauses = append(clauses, "run_id = ?")
+		args = append(args, filter.RunID)
+	}
+	if filter.OwnerNode != "" {
+		clauses = append(clauses, "owner_node = ?")
+		args = append(args, filter.OwnerNode)
+	}
+	if filter.State != "" {
+		clauses = append(clauses, "state = ?")
+		args = append(args, filter.State)
+	}
+	if len(filter.ExcludeStates) > 0 {
+		placeholders := make([]string, len(filter.ExcludeStates))
+		for i := range filter.ExcludeStates {
+			placeholders[i] = "?"
+			args = append(args, filter.ExcludeStates[i])
+		}
+		clauses = append(clauses, "state NOT IN ("+strings.Join(placeholders, ",")+")") // #nosec G202 -- fragments static, values bound
+	}
+
+	q := `SELECT run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment`
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
+	}
+	q += " ORDER BY assigned_at ASC"
+	if filter.Limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("state: list assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Assignment
+	for rows.Next() {
+		a := &Assignment{}
+		if err := rows.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("state: list assignments scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list assignments rows: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteAssignment removes the assignment for a run. Idempotent.
+func (s *SQLiteStore) DeleteAssignment(ctx context.Context, runID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM run_assignment WHERE run_id = ?`, runID); err != nil {
+		return fmt.Errorf("state: delete assignment %q: %w", runID, err)
+	}
+	return nil
+}
+
+// SetAssignmentResult writes the terminal result onto an assignment row.
+func (s *SQLiteStore) SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE run_assignment SET result=?, updated_at=? WHERE run_id=? AND epoch=?`,
+		result, time.Now().UTC(), runID, epoch)
+	if err != nil {
+		return fmt.Errorf("state: set result for %q: %w", runID, err)
+	}
+	return nil
+}
+
+// =========================================================================
 // Audit CRUD
 // =========================================================================
 

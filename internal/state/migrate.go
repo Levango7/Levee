@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -67,6 +67,24 @@ var migrations = []migrationStep{
 			`ALTER TABLE runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+		{
+			// Cross-node dispatch: new table run_assignment records which worker
+			// node an approved run was dispatched to (design-cluster-dispatch.md).
+			// Fresh databases get the table from schema.sql directly; this step
+			// only runs on databases built before schema.sql gained it.
+			version: 4,
+			stmts: []string{
+				`CREATE TABLE IF NOT EXISTS run_assignment (` +
+					`run_id TEXT PRIMARY KEY, owner_node TEXT NOT NULL, ` +
+					`epoch BIGINT NOT NULL, state TEXT NOT NULL, ` +
+					`result TEXT NOT NULL DEFAULT '', ` +
+					`assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
+					`updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
+					`UNIQUE (run_id, epoch))`,
+				`CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state)`,
+				`CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state)`,
+			},
+		},
 }
 
 // Migrate applies the embedded schema and any pending forward migrations to

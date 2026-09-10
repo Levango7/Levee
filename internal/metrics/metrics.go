@@ -76,6 +76,15 @@ const (
 	familyBackups         = "levee_backup_total"
 	familyAlertsProcessed = "levee_alerts_processed_total"
 	familyTakeovers       = "levee_takeover_events_total"
+	familyDispatch        = "levee_dispatched_runs_total"
+)
+
+// Dispatch results for levee_dispatched_runs_total.
+const (
+	// DispatchResultClaimed: the sweep assigned the run to a worker.
+	DispatchResultClaimed = "claimed"
+	// DispatchResultSkippedBusy: no worker had spare capacity.
+	DispatchResultSkippedBusy = "skipped_busy"
 )
 
 // Takeover sweep results for levee_takeover_events_total.
@@ -253,6 +262,7 @@ type Metrics struct {
 	backups        *labeledCounters
 	alerts         *labeledCounters
 	takeovers      *labeledCounters
+	dispatch       *labeledCounters
 	channelAcquire *matrixCounters
 
 	// Batch duration is a simplified histogram: only sum and count are
@@ -274,6 +284,7 @@ func New() *Metrics {
 		backups:        newLabeledCounters(BackupResultOK, BackupResultFail),
 		alerts:         newLabeledCounters(),
 		takeovers:      newLabeledCounters(TakeoverResultSettled, TakeoverResultSkipped),
+		dispatch:       newLabeledCounters(DispatchResultClaimed, DispatchResultSkippedBusy),
 		channelAcquire: newMatrixCounters(),
 	}
 }
@@ -374,6 +385,12 @@ func (m *Metrics) IncTakeoverEvent(result string) { m.takeovers.inc(result) }
 // TakeoverEventsTotal returns the counter value for one takeover result.
 func (m *Metrics) TakeoverEventsTotal(result string) int64 { return m.takeovers.value(result) }
 
+// IncDispatch records one cross-node dispatch outcome.
+func (m *Metrics) IncDispatch(result string) { m.dispatch.inc(result) }
+
+// DispatchEventsTotal returns the counter value for one dispatch result.
+func (m *Metrics) DispatchEventsTotal(result string) int64 { return m.dispatch.value(result) }
+
 // Handler returns an http.Handler that serves all collected metrics in
 // the Prometheus text exposition format (version 0.0.4), including
 // # HELP and # TYPE annotation lines. Register it on the serve
@@ -446,6 +463,10 @@ func (m *Metrics) render(b *strings.Builder) {
 	writeCounterFamily(b, familyTakeovers,
 		"Total number of failover-takeover sweep outcomes for candidate runs, partitioned by result.",
 		"result", m.takeovers.snapshot())
+
+	writeCounterFamily(b, familyDispatch,
+		"Total number of cross-node dispatch outcomes for approved runs, partitioned by result.",
+		"result", m.dispatch.snapshot())
 }
 
 // writeCounterFamily renders one single-label counter family with its

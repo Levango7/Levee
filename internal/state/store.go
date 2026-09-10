@@ -362,6 +362,29 @@ type Store interface {
 	GetAudit(ctx context.Context, id string) (*Audit, error)
 	ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit, error)
 
+	// Dispatch assignment CRUD (design-cluster-dispatch.md).
+	CreateAssignment(ctx context.Context, a *Assignment) error
+	GetAssignment(ctx context.Context, runID string) (*Assignment, error)
+	// UpdateAssignmentStateIf is a compare-and-set on (run_id, epoch, state):
+	// it applies expected→next only when the row's current state is expected.
+	// It reports (true, nil) when the transition was applied and (false, nil)
+	// when the row does not exist or its state/epoch no longer matches (a
+	// concurrent actor won the race). Callers use it to serialise assignment
+	// state transitions without a distributed lock.
+	UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error)
+	// Reassign bumps the epoch and resets state to pending for a run, used by
+	// the dispatch loop when a worker dies and the run must be given to a
+	// fresh node. It returns (true, nil) when the existing row matched
+	// (runID, prevEpoch) and was bumped.
+	Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error)
+	// SetAssignmentResult writes the terminal result onto an assignment row
+	// identified by (runID, epoch). Best-evidence: a store failure is logged
+	// by the caller but never aborts the run's terminal transition.
+	SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error
+	ListAssignments(ctx context.Context, filter AssignmentFilter) ([]*Assignment, error)
+	// DeleteAssignment removes the assignment for a run. Idempotent.
+	DeleteAssignment(ctx context.Context, runID string) error
+
 	// Inventory: managed target hosts and hierarchical groups.
 	UpsertInventoryGroup(ctx context.Context, group *InventoryGroup) error
 	GetInventoryGroup(ctx context.Context, id string) (*InventoryGroup, error)
@@ -384,3 +407,43 @@ type Store interface {
 	// Close releases all underlying resources.
 	Close() error
 }
+
+// Assignment is the cross-node dispatch assignment for a run
+// (design-cluster-dispatch.md). One active assignment per run (run_id PK).
+// The epoch increases on every reassignment so a stale scheduler can detect
+// that it no longer owns the assignment it is about to write.
+type Assignment struct {
+	RunID      string
+	OwnerNode  string
+	Epoch      int64
+	State      string // pending | executing | done | interrupted
+	Result     string // completed | failed | rolled_back | '' (while not done)
+	AssignedAt time.Time
+	UpdatedAt  time.Time
+}
+
+// AssignmentFilter narrows ListAssignments results. Empty fields are ignored;
+// non-empty fields combine with AND.
+type AssignmentFilter struct {
+	RunID     string
+	OwnerNode string
+	State     string
+	// States is the inverse of State: list assignments whose state is NOT in
+	// this set. Used to find "active" assignments (state NOT IN (done,
+	// interrupted)). Ignored when empty.
+	ExcludeStates []string
+	Limit         int
+}
+
+const (
+	// Assignment states.
+	AssignStatePending      = "pending"
+	AssignmentStateExecuting = "executing"
+	AssignmentStateDone      = "done"
+	AssignmentStateInterrupted = "interrupted"
+
+	// Assignment results (mirrors the run status vocabulary).
+	AssignResultCompleted   = "completed"
+	AssignResultFailed      = "failed"
+	AssignResultRolledBack  = "rolled_back"
+)

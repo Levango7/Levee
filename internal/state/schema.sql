@@ -214,3 +214,23 @@ CREATE TABLE IF NOT EXISTS targets (
 
 CREATE INDEX IF NOT EXISTS idx_targets_group  ON targets (group_id);
 CREATE INDEX IF NOT EXISTS idx_targets_status ON targets (status);
+
+-- run_assignment: cross-node dispatch assignments (design-cluster-dispatch.md).
+-- One active assignment per run (run_id PK). Records which worker node was
+-- dispatched to execute an approved run, the monotonic epoch that changes on
+-- every reassignment, and the terminal outcome. Forward-compatible with a
+-- future batch-level model: the UNIQUE(run_id, epoch) constraint keeps history,
+-- and the PK can be widened to (run_id, batch_no) without touching existing rows.
+CREATE TABLE IF NOT EXISTS run_assignment (
+    run_id      TEXT    PRIMARY KEY,
+    owner_node  TEXT    NOT NULL,
+    epoch       BIGINT  NOT NULL,
+    state       TEXT    NOT NULL,               -- pending | executing | done | interrupted
+    result      TEXT    NOT NULL DEFAULT '',    -- completed | failed | rolled_back | ''
+    assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_id, epoch)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state);
+CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
