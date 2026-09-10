@@ -23,6 +23,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1187,7 +1188,7 @@ func (s *PGStore) ListAssignments(ctx context.Context, filter AssignmentFilter) 
 	}
 	q += " ORDER BY assigned_at ASC"
 	if filter.Limit > 0 {
-		q += fmt.Sprintf(" LIMIT $%d", next())
+		q += " LIMIT $" + strconv.Itoa(next()) // #nosec G202 -- static fragment; value bound via placeholder
 		args = append(args, filter.Limit)
 	}
 

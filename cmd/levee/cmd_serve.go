@@ -320,6 +320,64 @@ func setupServeTracing(cfg *config.Config) func() {
 	}
 }
 
+// startTakeoverAndFencing sets up the execution-fencing guard and the
+// failover-takeover loop (design-cluster-failover.md) in cluster mode.
+// Both are nil in single-node mode. Returns a started takeover loop (or nil
+// when the interval disables it) and the execGuard the engine assembly needs.
+func startTakeoverAndFencing(takeoverLoop **takeover.Loop, execGuard **cluster.ExecutionGuard,
+	clusterMgr *cluster.ClusterManager, store state.Store, nodeID string,
+	engineEnabled bool, interval time.Duration, ctx context.Context) error {
+
+	*execGuard = cluster.NewExecutionGuard(pgStoreDB(store))
+	if engineEnabled {
+		log.Info("execution fencing enabled", "lease_ttl", serveOptClusterExecLeaseTTL)
+	}
+	if interval > 0 {
+		*takeoverLoop = takeover.NewLoop(clusterMgr, *execGuard, store, nodeID, interval)
+		if err := (*takeoverLoop).Start(ctx); err != nil {
+			return fmt.Errorf("start takeover loop: %w", err)
+		}
+		log.Info("failover takeover loop enabled (leader-only)",
+			"interval", interval, "lease_ttl", serveOptClusterExecLeaseTTL)
+	} else {
+		log.Info("failover takeover loop disabled (--cluster-takeover-interval<=0); execution fencing remains active")
+	}
+	return nil
+}
+
+// startDispatchAndWorkerLoops wires up the two cluster-dispatch loops
+// (design-cluster-dispatch.md): the leader-only dispatch loop that assigns
+// approved runs to idle workers, and the per-node worker loop that executes
+// the runs assigned to this node. Both require cluster mode and the
+// execution engine; when either is disabled the loops are simply not started
+// and the single-node apply path is untouched.
+func startDispatchAndWorkerLoops(dispatchLoop **dispatch.Loop, workerLoop **dispatch.WorkerLoop,
+	clusterMgr *cluster.ClusterManager, store state.Store, changeSvc interface {
+		ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error)
+	}, nodeID string, engineEnabled bool, interval time.Duration, capacity int, ctx context.Context) error {
+
+	if !engineEnabled {
+		return nil
+	}
+	if interval > 0 {
+		*dispatchLoop = dispatch.NewLoop(clusterMgr, store, nodeID, interval, capacity)
+		if err := (*dispatchLoop).Start(ctx); err != nil {
+			return fmt.Errorf("start dispatch loop: %w", err)
+		}
+		log.Info("cross-node dispatch loop enabled (leader-only)",
+			"interval", interval, "worker_capacity", capacity)
+	} else {
+		log.Info("cross-node dispatch loop disabled (--cluster-dispatch-interval<=0)")
+	}
+
+	*workerLoop = dispatch.NewWorkerLoop(store, &grpcChangeExecutor{svc: changeSvc}, nodeID, 2*time.Second)
+	if err := (*workerLoop).Start(ctx); err != nil {
+		return fmt.Errorf("start dispatch worker loop: %w", err)
+	}
+	log.Info("dispatch worker loop enabled", "node_id", nodeID, "interval", 2*time.Second)
+	return nil
+}
+
 // runServe executes the `levee serve` command. The assembly is split into
 // focused helpers (setupServeTracing, openServeStore, buildServeServices,
 // buildServeServerOpts); this function keeps the sequential wiring and owns
@@ -405,64 +463,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// In-cluster coordination handles (created lazily; may be nil in
 	// single-node mode). Both loops are cluster-only.
+	var dispatchLoop *dispatch.Loop
 	var dispatchWorkerLoop *dispatch.WorkerLoop
-
-	// 2b. Cluster failover takeover (design-cluster-failover.md). In
-	// cluster mode with the execution engine enabled, executions run
-	// fenced (run_execution leases) and the leader runs the takeover
-	// loop that settles crashed executors' runs to "interrupted". The
-	// loop flag is independent of the engine flag: --cluster-takeover-interval
-	// <= 0 disables the loop but never the fencing itself.
 	var execGuard *cluster.ExecutionGuard
 	var takeoverLoop *takeover.Loop
 	if clusterMgr != nil {
-		execGuard = cluster.NewExecutionGuard(pgStoreDB(store))
-		if serveOptEngineEnabled {
-			log.Info("execution fencing enabled", "lease_ttl", serveOptClusterExecLeaseTTL)
-		}
-		if serveOptClusterTakeoverInterval > 0 {
-			takeoverLoop = takeover.NewLoop(clusterMgr, execGuard, store, serveOptNodeID, serveOptClusterTakeoverInterval)
-			if err := takeoverLoop.Start(ctx); err != nil {
-				return fmt.Errorf("start takeover loop: %w", err)
-			}
-			defer func() {
-				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := takeoverLoop.Stop(stopCtx); err != nil {
-					log.Warn("takeover loop stop failed", "error", err)
-				}
-			}()
-			log.Info("failover takeover loop enabled (leader-only)",
-				"interval", serveOptClusterTakeoverInterval,
-				"lease_ttl", serveOptClusterExecLeaseTTL)
-		} else {
-			log.Info("failover takeover loop disabled (--cluster-takeover-interval<=0); execution fencing remains active")
-		}
-
-		// 2c. Cross-node dispatch (design-cluster-dispatch.md). In cluster mode
-		// the leader periodically assigns approved runs to idle workers.
-		// Independent of the takeover loop: both run concurrently.
-		var dispatchLoop *dispatch.Loop
-		if serveOptEngineEnabled {
-			if serveOptClusterDispatchInterval > 0 {
-				dispatchLoop = dispatch.NewLoop(clusterMgr, store, serveOptNodeID,
-					serveOptClusterDispatchInterval, serveOptClusterDispatchWorkerCapacity)
-				if err := dispatchLoop.Start(ctx); err != nil {
-					return fmt.Errorf("start dispatch loop: %w", err)
-				}
-				defer func() {
-					stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					if err := dispatchLoop.Stop(stopCtx); err != nil {
-						log.Warn("dispatch loop stop failed", "error", err)
-					}
-				}()
-				log.Info("cross-node dispatch loop enabled (leader-only)",
-					"interval", serveOptClusterDispatchInterval,
-					"worker_capacity", serveOptClusterDispatchWorkerCapacity)
-			} else {
-				log.Info("cross-node dispatch loop disabled (--cluster-dispatch-interval<=0)")
-			}
+		if err := startTakeoverAndFencing(&takeoverLoop, &execGuard, clusterMgr, store,
+			serveOptNodeID, serveOptEngineEnabled, serveOptClusterTakeoverInterval, ctx); err != nil {
+			return err
 		}
 	}
 
@@ -473,26 +481,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
 
-	// 3b. Dispatch worker loop: runs on every cluster node (including the
-	// leader). Pulls pending assignments for this node and executes them
-	// through the engine-wired gRPC apply path. Requires the engine and
-	// cluster mode; independent of the leader-only dispatch loop.
-	if clusterMgr != nil && serveOptEngineEnabled {
-			dispatchWorkerLoop = dispatch.NewWorkerLoop(store, &grpcChangeExecutor{svc: changeSvc}, serveOptNodeID, 2*time.Second)
-			if err := dispatchWorkerLoop.Start(ctx); err != nil {
-				return fmt.Errorf("start dispatch worker loop: %w", err)
-			}
-			defer func() {
-				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := dispatchWorkerLoop.Stop(stopCtx); err != nil {
-					log.Warn("dispatch worker loop stop failed", "error", err)
-				}
-			}()
-			log.Info("dispatch worker loop enabled", "node_id", serveOptNodeID, "interval", 2*time.Second)
-		}
+	// 3b. Cross-node dispatch (design-cluster-dispatch.md). In cluster mode
+	// the leader periodically assigns approved runs to idle workers and
+	// every node (including the leader) runs a worker loop that executes
+	// the runs assigned to it. Independent of the takeover loop: both run
+	// concurrently in cluster mode.
+	if err := startDispatchAndWorkerLoops(&dispatchLoop, &dispatchWorkerLoop, clusterMgr, store,
+		changeSvc, serveOptNodeID, serveOptEngineEnabled, serveOptClusterDispatchInterval,
+		serveOptClusterDispatchWorkerCapacity, ctx); err != nil {
+		return err
+	}
 
-		// 3c. Build server options.
+	// 3c. Build server options.
 	serverOpts, tlsCfg, err := buildServeServerOpts(svcs, token, namedTokens, oidcVerifier)
 	if err != nil {
 		return err
