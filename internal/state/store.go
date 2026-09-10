@@ -437,13 +437,13 @@ type AssignmentFilter struct {
 
 const (
 	// Assignment states.
-	AssignStatePending      = "pending"
-	AssignmentStateExecuting = "executing"
-	AssignmentStateDone      = "done"
+	AssignStatePending         = "pending"
+	AssignmentStateExecuting   = "executing"
+	AssignmentStateDone        = "done"
 	AssignmentStateInterrupted = "interrupted"
 
 	// Assignment results (mirrors the run status vocabulary).
-	AssignResultCompleted   = "completed"
-	AssignResultFailed      = "failed"
-	AssignResultRolledBack  = "rolled_back"
+	AssignResultCompleted  = "completed"
+	AssignResultFailed     = "failed"
+	AssignResultRolledBack = "rolled_back"
 )

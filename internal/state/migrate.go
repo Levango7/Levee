@@ -67,24 +67,24 @@ var migrations = []migrationStep{
 			`ALTER TABLE runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
-		{
-			// Cross-node dispatch: new table run_assignment records which worker
-			// node an approved run was dispatched to (design-cluster-dispatch.md).
-			// Fresh databases get the table from schema.sql directly; this step
-			// only runs on databases built before schema.sql gained it.
-			version: 4,
-			stmts: []string{
-				`CREATE TABLE IF NOT EXISTS run_assignment (` +
-					`run_id TEXT PRIMARY KEY, owner_node TEXT NOT NULL, ` +
-					`epoch BIGINT NOT NULL, state TEXT NOT NULL, ` +
-					`result TEXT NOT NULL DEFAULT '', ` +
-					`assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
-					`updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
-					`UNIQUE (run_id, epoch))`,
-				`CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state)`,
-				`CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state)`,
-			},
+	{
+		// Cross-node dispatch: new table run_assignment records which worker
+		// node an approved run was dispatched to (design-cluster-dispatch.md).
+		// Fresh databases get the table from schema.sql directly; this step
+		// only runs on databases built before schema.sql gained it.
+		version: 4,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS run_assignment (` +
+				`run_id TEXT PRIMARY KEY, owner_node TEXT NOT NULL, ` +
+				`epoch BIGINT NOT NULL, state TEXT NOT NULL, ` +
+				`result TEXT NOT NULL DEFAULT '', ` +
+				`assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
+				`updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
+				`UNIQUE (run_id, epoch))`,
+			`CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state)`,
+			`CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state)`,
 		},
+	},
 }
 
 // Migrate applies the embedded schema and any pending forward migrations to
