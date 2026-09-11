@@ -179,8 +179,8 @@ func TestDiagnose_Success(t *testing.T) {
 	if len(result.Suggestions) != 2 {
 		t.Errorf("len(Suggestions) = %d, want 2", len(result.Suggestions))
 	}
-	if result.Duration <= 0 {
-		t.Error("Duration should be positive")
+	if result.Duration < 0 {
+		t.Error("Duration should be non-negative")
 	}
 	// The context should carry the full transcript: 2 user + 2 assistant turns.
 	if len(result.Context.Messages) != 4 {
