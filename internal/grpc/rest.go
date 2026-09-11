@@ -36,6 +36,7 @@ import (
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/push"
+	"github.com/nexus/levee/internal/state"
 )
 
 // Default gateway rate-limit values. The limiter is a global token
@@ -103,6 +104,7 @@ func ServeGateway(ctx context.Context, cfg ServeGatewayConfig) error {
 // be started with Serve or manually via start().
 type Gateway struct {
 	cfg        ServeGatewayConfig
+	store      state.Store // backend store for direct queries (cluster status)
 	httpServer *http.Server
 	change     *ChangeService
 	template   *TemplateService
@@ -191,6 +193,10 @@ func (gw *Gateway) SetServices(change *ChangeService, template *TemplateService,
 func (gw *Gateway) SetMobileApproval(m mobileApprovalHandler) {
 	gw.mobileApproval = m
 }
+
+// SetStore sets the backend store the gateway queries directly for endpoints
+// that do not map to a gRPC service (e.g. cluster status).
+func (gw *Gateway) SetStore(s state.Store) { gw.store = s }
 
 // SetExtraRoute registers an additional route on the gateway's mux, e.g. an
 // operational endpoint such as /metrics. Call it before Start; routes
@@ -365,6 +371,8 @@ func (gw *Gateway) restRoute() http.Handler {
 				gw.handleSystemVersion(w, r)
 			case path == "/system/status" && method == "GET":
 				gw.handleSystemStatus(w, r)
+			case path == "/system/cluster-status" && method == "GET":
+				gw.handleClusterStatus(w, r)
 			case path == "/system/config" && method == "GET":
 				gw.handleSystemConfig(w, r)
 			case path == "/system/doctor" && method == "POST":
@@ -1381,6 +1389,48 @@ func (gw *Gateway) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeProto(w, resp)
+}
+
+// handleClusterStatus serves a read-only view of the cluster's dispatch
+// state: registered nodes and assignment summary (counts per state and
+// per-node active load). It queries the store directly rather than going
+// through a gRPC service, because the data lives in the state layer that
+// the gateway already holds.
+func (gw *Gateway) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if gw.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "no store configured")
+		return
+	}
+
+	nodes, err := gw.store.ListClusterNodes(ctx)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("list nodes: %v", err))
+		return
+	}
+	summary, err := gw.store.AssignmentSummary(ctx)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("assignment summary: %v", err))
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"nodes":   nodes,
+		"summary": summary,
+		"backend": backendLabel(gw.store),
+	})
+}
+
+// backendLabel returns a human-readable backend name for the store.
+func backendLabel(s state.Store) string {
+	switch s.(type) {
+	case *state.PGStore:
+		return "postgres"
+	case *state.SQLiteStore:
+		return "sqlite"
+	default:
+		return "unknown"
+	}
 }
 
 func (gw *Gateway) handleSystemConfig(w http.ResponseWriter, r *http.Request) {

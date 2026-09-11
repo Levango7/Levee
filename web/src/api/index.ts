@@ -286,6 +286,30 @@ export const systemApi = {
     checks: Array<{ name: string; status: string; message: string; remediation: string }>
     checkedAt: number
   }> => post('/system/doctor', {}),
+  clusterStatus: (): Promise<ClusterStatus> => get<ClusterStatus>('/system/cluster-status'),
+}
+
+// --- Cluster status types (mirror internal/state/backend) ---
+
+export interface ClusterNodeDTO {
+  id: string
+  address: string
+  role: string
+  status: string
+  lastHeartbeat: string
+  joinedAt: string
+}
+
+export interface AssignmentSummaryDTO {
+  counts: Record<string, number>
+  nodeLoad: Record<string, number>
+  totalActive: number
+}
+
+export interface ClusterStatus {
+  nodes: ClusterNodeDTO[]
+  summary: AssignmentSummaryDTO
+  backend: string
 }
 
 // Re-export primitive helpers for views that need ad-hoc calls.

@@ -1241,6 +1241,76 @@ func (s *SQLiteStore) SetAssignmentResult(ctx context.Context, runID string, epo
 	return nil
 }
 
+// isMissingTableError reports whether err is a "no such table" failure from
+// the SQLite driver. The cluster_nodes and run_assignment tables exist only
+// in PostgreSQL; single-node SQLite must treat their absence as empty.
+func isMissingTableError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
+// ListClusterNodes returns every registered cluster node, ordered by ID.
+// Single-node (SQLite) deployments have no cluster_nodes table — return
+// (nil, nil) so callers uniformly treat "no rows" as an empty cluster.
+func (s *SQLiteStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, address, role, status, last_heartbeat, joined_at FROM cluster_nodes ORDER BY id`)
+	if err != nil {
+		// The cluster_nodes table is PostgreSQL-only. Treat a missing table
+		// as an empty cluster rather than an error so the same Store
+		// interface works for both backends.
+		if isMissingTableError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: list cluster nodes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var nodes []ClusterNode
+	for rows.Next() {
+		var n ClusterNode
+		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt); err != nil {
+			return nil, fmt.Errorf("state: list cluster nodes scan: %w", err)
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list cluster nodes rows: %w", err)
+	}
+	return nodes, nil
+}
+
+// AssignmentSummary aggregates run_assignment rows across both backends.
+func (s *SQLiteStore) AssignmentSummary(ctx context.Context) (*AssignmentSummary, error) {
+	summary := &AssignmentSummary{Counts: map[string]int{}, NodeLoad: map[string]int{}}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT state, owner_node, COUNT(*) FROM run_assignment GROUP BY state, owner_node`)
+	if err != nil {
+		if isMissingTableError(err) {
+			return summary, nil
+		}
+		return nil, fmt.Errorf("state: assignment summary: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var state, node string
+		var count int
+		if err := rows.Scan(&state, &node, &count); err != nil {
+			return nil, fmt.Errorf("state: assignment summary scan: %w", err)
+		}
+		summary.Counts[state] += count
+		if state == AssignStatePending || state == AssignmentStateExecuting {
+			summary.NodeLoad[node] += count
+			summary.TotalActive += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: assignment summary rows: %w", err)
+	}
+	return summary, nil
+}
+
+// =========================================================================
+
 // =========================================================================
 // Audit CRUD
 // =========================================================================

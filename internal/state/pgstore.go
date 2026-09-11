@@ -1230,6 +1230,57 @@ func (s *PGStore) SetAssignmentResult(ctx context.Context, runID string, epoch i
 	return nil
 }
 
+// ListClusterNodes returns every registered cluster node, ordered by id.
+func (s *PGStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, address, role, status, last_heartbeat, joined_at FROM cluster_nodes ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("state: list cluster nodes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var nodes []ClusterNode
+	for rows.Next() {
+		var n ClusterNode
+		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt); err != nil {
+			return nil, fmt.Errorf("state: list cluster nodes scan: %w", err)
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list cluster nodes rows: %w", err)
+	}
+	return nodes, nil
+}
+
+// AssignmentSummary aggregates run_assignment rows for the cluster status view.
+func (s *PGStore) AssignmentSummary(ctx context.Context) (*AssignmentSummary, error) {
+	summary := &AssignmentSummary{Counts: map[string]int{}, NodeLoad: map[string]int{}}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT state, owner_node, COUNT(*) FROM run_assignment GROUP BY state, owner_node`)
+	if err != nil {
+		return nil, fmt.Errorf("state: assignment summary: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var state, node string
+		var count int
+		if err := rows.Scan(&state, &node, &count); err != nil {
+			return nil, fmt.Errorf("state: assignment summary scan: %w", err)
+		}
+		summary.Counts[state] += count
+		if state == AssignStatePending || state == AssignmentStateExecuting {
+			summary.NodeLoad[node] += count
+			summary.TotalActive += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: assignment summary rows: %w", err)
+	}
+	return summary, nil
+}
+
 // =========================================================================
 // Audit CRUD
 // =========================================================================

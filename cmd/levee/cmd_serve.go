@@ -543,6 +543,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetMobileApproval(mobileSvc)
+	gw.SetStore(store)
 
 	// 5e. Self-observability: expose the process-wide metrics collector as
 	//     Prometheus text format on the gateway mux. The route is gated

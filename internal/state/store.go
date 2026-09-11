@@ -385,6 +385,15 @@ type Store interface {
 	// DeleteAssignment removes the assignment for a run. Idempotent.
 	DeleteAssignment(ctx context.Context, runID string) error
 
+	// ListClusterNodes returns every registered cluster node, ordered by ID.
+	// Single-node (SQLite) deployments have no cluster_nodes table and
+	// simply return (nil, nil).
+	ListClusterNodes(ctx context.Context) ([]ClusterNode, error)
+
+	// AssignmentSummary aggregates the run_assignment rows for the cluster
+	// status view: counts per state and per-node active load.
+	AssignmentSummary(ctx context.Context) (*AssignmentSummary, error)
+
 	// Inventory: managed target hosts and hierarchical groups.
 	UpsertInventoryGroup(ctx context.Context, group *InventoryGroup) error
 	GetInventoryGroup(ctx context.Context, id string) (*InventoryGroup, error)
@@ -433,6 +442,25 @@ type AssignmentFilter struct {
 	// interrupted)). Ignored when empty.
 	ExcludeStates []string
 	Limit         int
+}
+
+// ClusterNode is the persisted view of a cluster member
+// (design-cluster-dispatch.md). Single-node (SQLite) deployments have no
+// cluster_nodes table; callers get (nil, nil) from ListClusterNodes.
+type ClusterNode struct {
+	ID            string
+	Address       string
+	Role          string // master | worker
+	Status        string // active | offline
+	LastHeartbeat time.Time
+	JoinedAt      time.Time
+}
+
+// AssignmentSummary aggregates run_assignment rows for the cluster status view.
+type AssignmentSummary struct {
+	Counts      map[string]int // state -> count
+	NodeLoad    map[string]int // owner_node -> active count
+	TotalActive int
 }
 
 const (
