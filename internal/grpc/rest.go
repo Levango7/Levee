@@ -34,6 +34,7 @@ import (
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/nexus/levee/internal/auth"
+	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/state"
@@ -114,6 +115,10 @@ type Gateway struct {
 	alert      pb.AlertServiceServer
 	diag       pb.DiagnosisServiceServer
 	conv       pb.ConversationServiceServer
+	// convEngine is the underlying ConversationEngine, used by the REST
+	// session-management endpoints (NewSession/ListSessions/etc.) that do
+	// not map to a gRPC method. nil when conversation is not configured.
+	convEngine *conversation.ConversationEngine
 	// mobileApproval is optional; non-nil when the mobile approval service
 	// is configured. Used by the /changes/deeplink/approve REST endpoint.
 	mobileApproval mobileApprovalHandler
@@ -197,6 +202,14 @@ func (gw *Gateway) SetMobileApproval(m mobileApprovalHandler) {
 // SetStore sets the backend store the gateway queries directly for endpoints
 // that do not map to a gRPC service (e.g. cluster status).
 func (gw *Gateway) SetStore(s state.Store) { gw.store = s }
+
+// SetConversationEngine registers the ConversationEngine the gateway calls
+// directly for the session-management REST endpoints (NewSession/ListSessions
+// /GetSession/CloseSession), which do not map to a gRPC method. The engine
+// must be set in addition to the gRPC ConversationService.
+func (gw *Gateway) SetConversationEngine(e *conversation.ConversationEngine) {
+	gw.convEngine = e
+}
 
 // SetExtraRoute registers an additional route on the gateway's mux, e.g. an
 // operational endpoint such as /metrics. Call it before Start; routes
@@ -380,6 +393,8 @@ func (gw *Gateway) restRoute() http.Handler {
 			default:
 				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 			}
+		case "conversation":
+			gw.dispatchConversation(w, r, method, path)
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		}
@@ -2130,6 +2145,157 @@ func (gw *Gateway) handleConversation(w http.ResponseWriter, r *http.Request, me
 		writeJSONError(w, http.StatusNotImplemented, "streaming RPCs not supported")
 	default:
 		writeJSONError(w, http.StatusBadRequest, "unknown method: "+method)
+	}
+}
+
+// -----------------------------------------------------------------------
+// Conversation session management (REST-only: not gRPC methods)
+// -----------------------------------------------------------------------
+
+// dispatchConversation routes /conversation/* paths to the appropriate
+// session-management handler. These endpoints call the ConversationEngine
+// directly rather than going through gRPC, because NewSession/ListSessions/
+// GetSession/CloseSession are not part of the ConversationService gRPC API.
+func (gw *Gateway) dispatchConversation(w http.ResponseWriter, r *http.Request, method, path string) {
+	if gw.convEngine == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "conversation engine not configured")
+		return
+	}
+	// /conversation/sessions
+	if path == "/conversation/sessions" || path == "/conversation/sessions/" {
+		switch method {
+		case http.MethodPost:
+			gw.handleConversationNewSession(w, r)
+		case http.MethodGet:
+			gw.handleConversationListSessions(w, r)
+		default:
+			writeJSONError(w, http.StatusMethodNotAllowed, method+" not allowed")
+		}
+		return
+	}
+	// /conversation/sessions/{id} and /conversation/sessions/{id}/messages
+	rest := strings.TrimPrefix(path, "/conversation/sessions/")
+	if idx := strings.Index(rest, "/"); idx > 0 {
+		sid := rest[:idx]
+		suffix := rest[idx:]
+		if suffix == "/messages" {
+			gw.handleConversationPostMessage(w, r, sid)
+			return
+		}
+	}
+	if rest != "" && !strings.Contains(rest, "/") {
+		switch method {
+		case http.MethodGet:
+			gw.handleConversationGetSession(w, r, rest)
+		case http.MethodDelete:
+			gw.handleConversationCloseSession(w, r, rest)
+		default:
+			writeJSONError(w, http.StatusMethodNotAllowed, method+" not allowed")
+		}
+		return
+	}
+	writeJSONError(w, http.StatusNotFound, "not found: "+path)
+}
+
+// handleConversationNewSession creates a new conversation session.
+func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID  string `json:"user_id"`
+		AlertID string `json:"alert_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.UserID) == "" {
+		writeJSONError(w, http.StatusBadRequest, "user_id is required")
+		return
+	}
+	var sess *conversation.Session
+	var err error
+	if req.AlertID != "" {
+		sess, err = gw.convEngine.NewSessionFromAlert(req.UserID, req.AlertID)
+	} else {
+		sess, err = gw.convEngine.NewSession(req.UserID)
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"session": sessToDTO(sess)})
+}
+
+// handleConversationListSessions lists sessions for a user.
+func (gw *Gateway) handleConversationListSessions(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	if strings.TrimSpace(userID) == "" {
+		writeJSONError(w, http.StatusBadRequest, "user_id query parameter is required")
+		return
+	}
+	sessions := gw.convEngine.ListSessions(userID)
+	dtos := make([]map[string]any, 0, len(sessions))
+	for _, s := range sessions {
+		dtos = append(dtos, sessToDTO(s))
+	}
+	writeJSON(w, map[string]any{"sessions": dtos})
+}
+
+// handleConversationGetSession returns a single session with its history.
+func (gw *Gateway) handleConversationGetSession(w http.ResponseWriter, _ *http.Request, sessionID string) {
+	sess, err := gw.convEngine.GetSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	writeJSON(w, map[string]any{"session": sessToDTO(sess)})
+}
+
+// handleConversationPostMessage sends a message to a session and returns
+// the engine's reply.
+func (gw *Gateway) handleConversationPostMessage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req struct {
+		UserID string `json:"user_id"`
+		Text   string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	reply, err := gw.convEngine.HandleMessage(r.Context(), sessionID, req.UserID, req.Text)
+	if err != nil {
+		switch {
+		case errors.Is(err, conversation.ErrEmptyMessage):
+			writeJSONError(w, http.StatusBadRequest, "text is required")
+		case errors.Is(err, conversation.ErrSessionNotFound):
+			writeJSONError(w, http.StatusNotFound, "session not found")
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, map[string]any{"reply": reply})
+}
+
+// handleConversationCloseSession closes (removes) a session.
+func (gw *Gateway) handleConversationCloseSession(w http.ResponseWriter, _ *http.Request, sessionID string) {
+	if err := gw.convEngine.CloseSession(sessionID); err != nil {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sessToDTO builds a JSON-safe view of a conversation.Session (locks the
+// session only long enough to copy the needed fields).
+func sessToDTO(s *conversation.Session) map[string]any {
+	return map[string]any{
+		"id":         s.ID,
+		"user_id":    s.UserID,
+		"alert_id":   s.AlertID,
+		"state":      s.GetState().String(),
+		"messages":   s.History(),
+		"created_at": s.CreatedAt,
+		"updated_at": s.UpdatedAt,
 	}
 }
 

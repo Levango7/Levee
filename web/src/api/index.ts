@@ -312,5 +312,53 @@ export interface ClusterStatus {
   backend: string
 }
 
+// ---------------------------------------------------------------------------
+// ConversationService
+// ---------------------------------------------------------------------------
+
+export interface ConversationMessageDTO {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: string
+  action?: { type: string; payload?: Record<string, string> }
+}
+
+export interface ConversationSessionDTO {
+  id: string
+  user_id: string
+  alert_id?: string
+  state: string
+  messages: ConversationMessageDTO[]
+  created_at: string
+  updated_at: string
+}
+
+export interface ConversationReplyDTO {
+  text: string
+  action_type?: string
+  action_payload?: Record<string, string>
+  session_id?: string
+}
+
+export const conversationApi = {
+  newSession: (userID: string, alertID?: string): Promise<ConversationSessionDTO> =>
+    post<{ session: ConversationSessionDTO }>('/conversation/sessions', { user_id: userID, alert_id: alertID })
+      .then(r => r.session),
+
+  listSessions: (userID: string): Promise<ConversationSessionDTO[]> =>
+    get<{ sessions: ConversationSessionDTO[] }>('/conversation/sessions', { params: { user_id: userID } })
+      .then(r => r.sessions),
+
+  getSession: (sessionID: string): Promise<ConversationSessionDTO> =>
+    get<ConversationSessionDTO>(`/conversation/sessions/${sessionID}`),
+
+  sendMessage: (sessionID: string, userID: string, text: string): Promise<ConversationReplyDTO> =>
+    post<ConversationReplyDTO>(`/conversation/sessions/${sessionID}/messages`, { user_id: userID, text }),
+
+  closeSession: (sessionID: string): Promise<void> =>
+    del(`/conversation/sessions/${sessionID}`),
+}
+
 // Re-export primitive helpers for views that need ad-hoc calls.
 export { get, post, put, del }

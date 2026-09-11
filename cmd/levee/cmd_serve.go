@@ -544,6 +544,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetMobileApproval(mobileSvc)
 	gw.SetStore(store)
+	gw.SetConversationEngine(svcs.convEngine)
 
 	// 5e. Self-observability: expose the process-wide metrics collector as
 	//     Prometheus text format on the gateway mux. The route is gated
@@ -604,6 +605,7 @@ type serveServices struct {
 	alertSvc    *grpc.AlertService
 	diagSvc     *grpc.DiagnosisService
 	convSvc     *grpc.ConversationService
+	convEngine  *conversation.ConversationEngine
 	mobileSvc   *approval.MobileApprovalService
 }
 
@@ -694,7 +696,8 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
 	}
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
-	convSvc := grpc.NewConversationService(newServeConvEngine(), slog.Default())
+	convEngine := newServeConvEngine()
+	convSvc := grpc.NewConversationService(convEngine, slog.Default())
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the
 	// REST gateway's /changes/deeplink/* routes work out of the box. Push
@@ -707,7 +710,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	return serveServices{
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
-		diagSvc: diagSvc, convSvc: convSvc, mobileSvc: mobileSvc,
+		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
 	}
 }
 

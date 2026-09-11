@@ -59,6 +59,12 @@ const routes: RouteRecordRaw[] = [
 		meta: { title: '集群状态' },
 	},
 	{
+		path: '/conversation',
+		name: 'conversation',
+		component: () => import('@/views/ConversationView.vue'),
+		meta: { title: 'AI 对话' },
+	},
+	{
 		path: '/templates',
     name: 'templates',
     component: () => import('@/views/TemplatesView.vue'),
