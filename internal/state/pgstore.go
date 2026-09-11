@@ -1131,6 +1131,27 @@ func (s *PGStore) UpdateAssignmentStateIf(ctx context.Context, runID string, epo
 	return n > 0, nil
 }
 
+// UpdateAssignmentState transitions an assignment to next if its current
+// state is pending or executing. It is the takeover loop's tool for
+// reflecting an interrupted run onto its dispatch assignment row: dispatch
+// may later reclaim that row (Reassign), so a fixed expected-state CAS
+// would race — instead we only touch active rows and stand down when the
+// row is already terminal (done/interrupted).
+func (s *PGStore) UpdateAssignmentState(ctx context.Context, runID, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=$1, updated_at=NOW()
+		WHERE run_id=$2 AND state IN ($3, $4)`,
+		next, runID, AssignStatePending, AssignmentStateExecuting)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
 // Reassign bumps the epoch and resets state to pending for a run.
 func (s *PGStore) Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment

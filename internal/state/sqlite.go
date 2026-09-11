@@ -1144,6 +1144,24 @@ func (s *SQLiteStore) UpdateAssignmentStateIf(ctx context.Context, runID string,
 	return n > 0, nil
 }
 
+// UpdateAssignmentState transitions an assignment to next if its current
+// state is pending or executing (see PGStore.UpdateAssignmentState for the
+// rationale). SQLite path mirrors the PG semantics for interface parity.
+func (s *SQLiteStore) UpdateAssignmentState(ctx context.Context, runID, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=?, updated_at=?
+		WHERE run_id=? AND state IN (?, ?)`,
+		next, time.Now().UTC(), runID, AssignStatePending, AssignmentStateExecuting)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
 // Reassign bumps the epoch and resets state to pending for a run, giving it to
 // a fresh worker. It succeeds only when the existing row matches (runID,
 // prevEpoch) — a stale scheduler that no longer owns the assignment is ignored.

@@ -372,6 +372,13 @@ type Store interface {
 	// concurrent actor won the race). Callers use it to serialise assignment
 	// state transitions without a distributed lock.
 	UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error)
+	// UpdateAssignmentState transitions an assignment to next if its current
+	// state is one of the active states (pending, executing). It is a
+	// takeover-path helper: dispatch's Reassign can reclaim interrupted rows,
+	// so the takeover must not CAS against a fixed expected state — instead
+	// it stands down when the row is already terminal (done/interrupted).
+	// Returns (true, nil) when the transition was applied.
+	UpdateAssignmentState(ctx context.Context, runID, next string) (bool, error)
 	// Reassign bumps the epoch and resets state to pending for a run, used by
 	// the dispatch loop when a worker dies and the run must be given to a
 	// fresh node. It returns (true, nil) when the existing row matched
