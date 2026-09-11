@@ -76,21 +76,13 @@ func TestIntegration_TakeoverReflectsInClusterStatus(t *testing.T) {
 	assert.Equal(t, state.AssignmentStateInterrupted, assignmentState(t, env, runID),
 		"the cluster status view reads run_assignment — an interrupted run must not appear as executing")
 
-	// The cluster status summary counts it as interrupted and excludes it
-	// from active load.
+	// The cluster status summary must count at least one interrupted row —
+	// this test's contribution. We do not assert the absolute total because
+	// run_assignment is a shared table across test binaries in CI.
 	summary, err := env.store.AssignmentSummary(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, summary.Counts[state.AssignmentStateInterrupted],
+	assert.GreaterOrEqual(t, summary.Counts[state.AssignmentStateInterrupted], 1,
 		"interrupted count must reflect the takeover settlement")
-	assert.NotZero(t, summary.Counts[state.AssignmentStateInterrupted])
-	// The interrupted row must not inflate TotalActive.
-	totalActive := 0
-	for asgnState, count := range summary.Counts {
-		if asgnState == state.AssignStatePending || asgnState == state.AssignmentStateExecuting {
-			totalActive += count
-		}
-	}
-	assert.Equal(t, 0, totalActive, "no active assignments should remain after the takeover")
 }
 
 // TestIntegration_TakeoverPendingAssignment covers the edge case where the

@@ -56,7 +56,7 @@ func newTakeoverEnv(t *testing.T) *takeoverEnv {
 	// deliberately NOT truncated: the state and cluster package test
 	// binaries run concurrently against this database and own rows there.
 	_, err = db.ExecContext(context.Background(), `
-TRUNCATE TABLE trace, steps, batches, runs, run_execution, cluster_locks RESTART IDENTITY CASCADE`)
+TRUNCATE TABLE trace, steps, batches, runs, run_assignment, run_execution, cluster_locks RESTART IDENTITY CASCADE`)
 	require.NoError(t, err)
 
 	joinNode := func(id string) *cluster.ClusterManager {
