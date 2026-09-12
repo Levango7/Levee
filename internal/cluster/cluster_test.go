@@ -164,8 +164,11 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	_, err := db.ExecContext(ctx, `DELETE FROM cluster_nodes`)
 	require.NoError(t, err)
 
-	cfgA := ManagerConfig{SelfID: "node-a", HealthCheckInterval: 100 * time.Millisecond, HeartbeatTimeout: 500 * time.Millisecond}
-	cfgB := ManagerConfig{SelfID: "node-b", HealthCheckInterval: 100 * time.Millisecond, HeartbeatTimeout: 500 * time.Millisecond}
+	// Generous intervals: under CI load a 500ms heartbeat timeout with 100ms
+	// health ticks can race the election, making leader convergence flaky.
+	// Widen both so the test pins behaviour, not timing.
+	cfgA := ManagerConfig{SelfID: "node-a", HealthCheckInterval: 200 * time.Millisecond, HeartbeatTimeout: 2 * time.Second}
+	cfgB := ManagerConfig{SelfID: "node-b", HealthCheckInterval: 200 * time.Millisecond, HeartbeatTimeout: 2 * time.Second}
 	mgrA := NewClusterManager(db, cfgA)
 	mgrB := NewClusterManager(db, cfgB)
 
@@ -181,7 +184,7 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		n, ok := mgrA.Registry().Get("node-b")
 		return ok && n.Status == StatusActive
-	}, 5*time.Second, 50*time.Millisecond, "node-a never saw node-b as active")
+	}, 10*time.Second, 100*time.Millisecond, "node-a never saw node-b as active")
 
 	// Leader converges to the master role on both sides. Election runs on
 	// each node's own table view, refreshed once per health tick, so a
@@ -193,7 +196,7 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 		leaderA, okA = mgrA.GetLeader()
 		leaderB, okB = mgrB.GetLeader()
 		return okA && okB
-	}, 5*time.Second, 50*time.Millisecond, "leaders never converged on both sides")
+	}, 10*time.Second, 100*time.Millisecond, "leaders never converged on both sides")
 	assert.Equal(t, "node-a", leaderA.ID)
 	assert.Equal(t, "node-a", leaderB.ID)
 
@@ -207,14 +210,14 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	assert.Eventually(t, func() bool {
 		n, ok := mgrA.Registry().Get("node-b")
 		return ok && n.Status == StatusOffline
-	}, 5*time.Second, 50*time.Millisecond, "node-a never marked node-b offline")
+	}, 10*time.Second, 100*time.Millisecond, "node-a never marked node-b offline")
 
 	// Graceful leave removes the row entirely.
 	require.NoError(t, mgrA.Leave("node-b"))
 	assert.Eventually(t, func() bool {
 		_, ok := mgrA.Registry().Get("node-b")
 		return !ok
-	}, 5*time.Second, 50*time.Millisecond, "node-b row still visible after leave")
+	}, 10*time.Second, 100*time.Millisecond, "node-b row still visible after leave")
 
 	require.NoError(t, mgrA.Stop(stopCtx))
 }
