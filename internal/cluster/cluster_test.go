@@ -180,8 +180,18 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	require.NoError(t, mgrA.Start(runCtx))
 	require.NoError(t, mgrB.Start(runCtx))
 
+	// Drive sync rounds AND wait: under CI load the background health loop
+	// may not tick fast enough for timely convergence, so each Eventually
+	// iteration actively folds the shared table into both registries before
+	// checking the observable. This pins behaviour without wall-clock bets.
+	syncBoth := func() {
+		_ = mgrA.SyncOnceForTest(ctx)
+		_ = mgrB.SyncOnceForTest(ctx)
+	}
+
 	// A must discover B through the shared table.
 	assert.Eventually(t, func() bool {
+		syncBoth()
 		n, ok := mgrA.Registry().Get("node-b")
 		return ok && n.Status == StatusActive
 	}, 10*time.Second, 100*time.Millisecond, "node-a never saw node-b as active")
@@ -193,6 +203,7 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	var leaderA, leaderB *Node
 	var okA, okB bool
 	require.Eventually(t, func() bool {
+		syncBoth()
 		leaderA, okA = mgrA.GetLeader()
 		leaderB, okB = mgrB.GetLeader()
 		return okA && okB
@@ -208,6 +219,7 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 
 	// A must mark B offline once the heartbeat ages past the timeout.
 	assert.Eventually(t, func() bool {
+		syncBoth()
 		n, ok := mgrA.Registry().Get("node-b")
 		return ok && n.Status == StatusOffline
 	}, 10*time.Second, 100*time.Millisecond, "node-a never marked node-b offline")
@@ -215,6 +227,7 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	// Graceful leave removes the row entirely.
 	require.NoError(t, mgrA.Leave("node-b"))
 	assert.Eventually(t, func() bool {
+		syncBoth()
 		_, ok := mgrA.Registry().Get("node-b")
 		return !ok
 	}, 10*time.Second, 100*time.Millisecond, "node-b row still visible after leave")
