@@ -354,6 +354,7 @@ func startTakeoverAndFencing(takeoverLoop **takeover.Loop, execGuard **cluster.E
 func startDispatchAndWorkerLoops(dispatchLoop **dispatch.Loop, workerLoop **dispatch.WorkerLoop,
 	clusterMgr *cluster.ClusterManager, store state.Store, changeSvc interface {
 		ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error)
+		RetryChange(ctx context.Context, req *pb.RetryRequest) (*pb.Change, error)
 	}, nodeID string, engineEnabled bool, interval time.Duration, capacity int, ctx context.Context) error {
 
 	if !engineEnabled {
@@ -370,7 +371,7 @@ func startDispatchAndWorkerLoops(dispatchLoop **dispatch.Loop, workerLoop **disp
 		log.Info("cross-node dispatch loop disabled (--cluster-dispatch-interval<=0)")
 	}
 
-	*workerLoop = dispatch.NewWorkerLoop(store, &grpcChangeExecutor{svc: changeSvc}, nodeID, 2*time.Second)
+	*workerLoop = dispatch.NewWorkerLoop(store, &grpcChangeExecutor{svc: changeSvc, store: store}, nodeID, 2*time.Second)
 	if err := (*workerLoop).Start(ctx); err != nil {
 		return fmt.Errorf("start dispatch worker loop: %w", err)
 	}

@@ -312,6 +312,26 @@ export interface ClusterStatus {
   backend: string
 }
 
+export interface BatchProgressDTO {
+  batch_no: number
+  status: string
+  total_hosts: number
+  succeeded: number
+  failed: number
+}
+
+export interface BatchSummaryDTO {
+  batches: BatchProgressDTO[]
+  current_batch_no: number
+  total_batches: number
+  done_batches: number
+}
+
+export const batchApi = {
+  batchStatus: (runID: string): Promise<BatchSummaryDTO> =>
+    get<BatchSummaryDTO>('/system/batch-status', { params: { run_id: runID } }),
+}
+
 // ---------------------------------------------------------------------------
 // ConversationService
 // ---------------------------------------------------------------------------

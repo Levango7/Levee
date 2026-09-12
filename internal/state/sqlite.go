@@ -1327,6 +1327,42 @@ func (s *SQLiteStore) AssignmentSummary(ctx context.Context) (*AssignmentSummary
 	return summary, nil
 }
 
+// BatchSummary returns the per-batch progress of a run. SQLite path mirrors
+// the PG semantics; returns (nil, nil) when the batches table is missing
+// (single-node deployments that never created batches).
+func (s *SQLiteStore) BatchSummary(ctx context.Context, runID string) (*BatchSummary, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT batch_no, status, total_hosts, succeeded, failed
+		 FROM batches WHERE run_id = ? ORDER BY batch_no`, runID)
+	if err != nil {
+		if isMissingTableError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: batch summary %q: %w", runID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	summary := &BatchSummary{Batches: []BatchProgress{}}
+	for rows.Next() {
+		var bp BatchProgress
+		if err := rows.Scan(&bp.BatchNo, &bp.Status, &bp.TotalHosts, &bp.Succeeded, &bp.Failed); err != nil {
+			return nil, fmt.Errorf("state: batch summary scan: %w", err)
+		}
+		if summary.CurrentBatchNo == 0 && !batchDoneStates[bp.Status] {
+			summary.CurrentBatchNo = bp.BatchNo
+		}
+		if batchDoneStates[bp.Status] {
+			summary.DoneBatches++
+		}
+		summary.Batches = append(summary.Batches, bp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: batch summary rows: %w", err)
+	}
+	summary.TotalBatches = len(summary.Batches)
+	return summary, nil
+}
+
 // =========================================================================
 
 // =========================================================================

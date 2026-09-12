@@ -386,6 +386,8 @@ func (gw *Gateway) restRoute() http.Handler {
 				gw.handleSystemStatus(w, r)
 			case path == "/system/cluster-status" && method == "GET":
 				gw.handleClusterStatus(w, r)
+			case path == "/system/batch-status" && method == "GET":
+				gw.handleBatchStatus(w, r)
 			case path == "/system/config" && method == "GET":
 				gw.handleSystemConfig(w, r)
 			case path == "/system/doctor" && method == "POST":
@@ -1434,6 +1436,34 @@ func (gw *Gateway) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		"summary": summary,
 		"backend": backendLabel(gw.store),
 	})
+}
+
+// handleBatchStatus serves the per-batch progress of a run (cluster v2
+// observability). Read-only; queries the batches table directly.
+func (gw *Gateway) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if gw.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "no store configured")
+		return
+	}
+
+	runID := r.URL.Query().Get("run_id")
+	if strings.TrimSpace(runID) == "" {
+		writeJSONError(w, http.StatusBadRequest, "run_id query parameter is required")
+		return
+	}
+
+	summary, err := gw.store.BatchSummary(ctx, runID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("batch summary: %v", err))
+		return
+	}
+	if summary == nil {
+		// No batches (or missing table): return an empty summary rather than 404
+		// so the frontend can render "no batch data" uniformly.
+		summary = &state.BatchSummary{Batches: []state.BatchProgress{}}
+	}
+	writeJSON(w, summary)
 }
 
 // backendLabel returns a human-readable backend name for the store.

@@ -401,6 +401,12 @@ type Store interface {
 	// status view: counts per state and per-node active load.
 	AssignmentSummary(ctx context.Context) (*AssignmentSummary, error)
 
+	// BatchSummary returns the per-batch progress of a run: the batch
+	// list (ordered by batch_no) and the batch_no of the first non-terminal
+	// batch (the one the executor should resume from, or 0 when all are
+	// terminal). Returns (nil, nil, nil) when the run has no batches.
+	BatchSummary(ctx context.Context, runID string) (*BatchSummary, error)
+
 	// Inventory: managed target hosts and hierarchical groups.
 	UpsertInventoryGroup(ctx context.Context, group *InventoryGroup) error
 	GetInventoryGroup(ctx context.Context, id string) (*InventoryGroup, error)
@@ -470,7 +476,40 @@ type AssignmentSummary struct {
 	TotalActive int
 }
 
+// BatchSummary is the per-batch progress of a run (cluster v2 observability).
+type BatchSummary struct {
+	Batches        []BatchProgress // ordered by batch_no
+	CurrentBatchNo int             // first non-terminal batch_no, or 0 when all terminal
+	TotalBatches   int
+	DoneBatches    int
+}
+
+// BatchProgress is a single batch's execution status.
+type BatchProgress struct {
+	BatchNo    int    // 1-based sequence number
+	Status     string // pending | running | done | failed | interrupted
+	TotalHosts int
+	Succeeded  int
+	Failed     int
+}
+
+// batchDoneStates are the batch statuses that count as fully completed for
+// the cluster v2 observability view. Note: "failed" and "interrupted" are
+// NOT terminal in the execution sense — they need re-execution/resumption, so
+// they are excluded here. CurrentBatchNo points at the first batch NOT in
+// this set, i.e. the one the executor should resume from.
+var batchDoneStates = map[string]bool{
+	BatchStateDone: true,
+}
+
 const (
+	// Batch states (run-level batches within a run).
+	BatchStatePending     = "pending"
+	BatchStateRunning     = "running"
+	BatchStateDone        = "done"
+	BatchStateFailed      = "failed"
+	BatchStateInterrupted = "interrupted"
+
 	// Assignment states.
 	AssignStatePending         = "pending"
 	AssignmentStateExecuting   = "executing"
