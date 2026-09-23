@@ -165,6 +165,11 @@ jobs:
         run: go test ./internal/state/... ./internal/cluster/... -count=1 -timeout 600s
       - name: go test (takeover, isolated step)
         run: go test ./internal/takeover/... -count=1 -timeout 300s
+      # Backup restore drill (D-3): the drill creates/restores/drops its OWN
+      # scratch databases, so it never touches the shared levee_test database;
+      # kept as a separate step anyway so a drill failure is attributable.
+      - name: go test (postgres backup restore drill)
+        run: go test ./internal/backup/... -count=1 -timeout 600s
 
   # ---------------------------------------------------------------------------
   # proto: regenerate the Go protobuf bindings with the pinned protoc

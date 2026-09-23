@@ -98,6 +98,16 @@ var pgMigrations = []migrationStep{
 	},
 }
 
+// MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and
+// any pending forward migrations to db. It is the exported entry point of
+// pgMigrate for packages outside state that must guarantee the LEVEE schema
+// before touching data — currently the backup package, whose restore path
+// replays migrations onto the target database before inserting dumped rows.
+// Idempotent; see pgMigrate for the full semantics.
+func MigratePostgres(ctx context.Context, db *sql.DB) error {
+	return pgMigrate(ctx, db)
+}
+
 // pgSchemaDDLAdvisoryLockKey is the key of the session-level advisory lock
 // that serialises all LEVEE schema DDL against one PostgreSQL database.
 // Keep in sync with clusterSchemaDDLAdvisoryLockKey in

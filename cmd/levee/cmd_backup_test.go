@@ -30,6 +30,7 @@ func resetBackupFlags() {
 	restoreOptInput = ""
 	restoreOptYes = false
 	restoreOptPGDSN = ""
+	restoreOptAllowDestructive = false
 }
 
 // withBackupDataDir points LEVEE_SERVER_DATA_DIR at a temp directory so the
@@ -290,6 +291,19 @@ func TestRestoreCmdMissingInputFile(t *testing.T) {
 	_, err := executeCommand("restore", "--input", filepath.Join(dir, "missing.db"), "--yes", "--json")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stat backup file")
+}
+
+func TestRestoreCmdAllowDestructiveRejectsSQLite(t *testing.T) {
+	defer resetRootFlags()
+	defer resetBackupFlags()
+
+	dir := withBackupDataDir(t)
+	// --allow-destructive-restore is PostgreSQL-only; on the default SQLite
+	// manager it must fail fast before anything is replaced.
+	_, err := executeCommand("restore", "--input", filepath.Join(dir, "x.db"),
+		"--yes", "--allow-destructive-restore", "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--allow-destructive-restore")
 }
 
 func TestBackupCmdPostgresUnreachable(t *testing.T) {

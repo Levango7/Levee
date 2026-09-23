@@ -3040,6 +3040,7 @@ levee backup [--output <path>] [--verify-only] [--pg-dsn <dsn>]
 
 - 备份同时生成 `.sha256` 校验和 sidecar 文件
 - `--verify-only` 对已有备份执行完整性复检
+- PostgreSQL 备份在单一连接的 `REPEATABLE READ READ ONLY` 快照事务内完成全部读取，并持有与 schema 迁移相同的 advisory lock——备份内部一致且绝不跨越迁移中点；表按外键依赖拓扑序（父表在前）写出
 
 **示例**
 
@@ -3061,7 +3062,7 @@ levee backup --output /backup/levee-2026.db --verify-only
 从备份恢复数据存储。替换前会先验证备份的 SHA-256 校验和（SQLite 另做 `PRAGMA integrity_check`）。
 
 ```text
-levee restore --input <path> [--yes] [--pg-dsn <dsn>]
+levee restore --input <path> [--yes] [--pg-dsn <dsn>] [--allow-destructive-restore]
 ```
 
 **选项**
@@ -3071,12 +3072,15 @@ levee restore --input <path> [--yes] [--pg-dsn <dsn>]
 | `--input` | | 待恢复的备份文件路径（必填） |
 | `--yes` | `false` | 跳过交互确认（脚本 / 非交互模式必须提供） |
 | `--pg-dsn` | | PostgreSQL DSN；提供时恢复到 PostgreSQL（默认 SQLite，可用 `LEVEE_PG_DSN` 环境变量代替） |
+| `--allow-destructive-restore` | `false` | 允许恢复到**非空** PostgreSQL 数据库（仅灾难恢复；回放期间临时挂起 WORM 触发器并在提交前校验恢复） |
 
 **说明**
 
 - 恢复会用备份覆盖当前数据，默认需交互输入 `yes` 确认；`--json` 非交互模式下必须显式传 `--yes`
 - SQLite 恢复前自动在数据库旁写入 `<db>.pre-restore` 安全快照，误恢复可据此回退
 - 校验失败时不做任何替换
+- PostgreSQL 恢复主路径面向**空库**：恢复前自动重放迁移建齐当前 schema，再按目标库实时外键依赖重排回放（v1.13 及更早的字母序旧备份同样可恢复）；`schema_version` 行不回放，schema 版本始终由迁移器决定
+- PostgreSQL 目标库仍有数据时主路径**拒绝**并列出持数表；仅 `--allow-destructive-restore` 会在单事务内临时挂起用户触发器（含 trace 的 WORM 守卫，需表属主权限，外键约束保持生效）完成回放，提交前重新启用并校验 WORM 触发器在位，任何失败整体回滚
 
 **示例**
 
@@ -3086,6 +3090,9 @@ levee restore --input /backup/levee-2026.db
 命令示例：非交互恢复（脚本）
 levee restore --input /backup/levee-2026.db --yes
 
-命令示例：恢复到 PostgreSQL
+命令示例：恢复到 PostgreSQL 空库（自动重放迁移建 schema）
 levee restore --input /backup/levee-2026.sql --pg-dsn "postgres://user:pass@host:5432/levee" --yes
+
+命令示例：灾难恢复到非空 PostgreSQL 库（显式破坏性恢复）
+levee restore --input /backup/levee-2026.sql --pg-dsn "postgres://user:pass@host:5432/levee" --yes --allow-destructive-restore
 ```

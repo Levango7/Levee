@@ -578,6 +578,8 @@ type fakePGSource struct {
 	tablesErr   error
 	cols        map[string][]columnInfo
 	colsErr     error
+	fks         []fkEdge
+	fksErr      error
 	rows        map[string][][]string
 	rowsErr     error
 	emittedRows int
@@ -592,6 +594,10 @@ func (f *fakePGSource) listColumns(ctx context.Context, table string) ([]columnI
 		return nil, f.colsErr
 	}
 	return f.cols[table], nil
+}
+
+func (f *fakePGSource) listForeignKeys(ctx context.Context) ([]fkEdge, error) {
+	return f.fks, f.fksErr
 }
 
 func (f *fakePGSource) forEachRow(ctx context.Context, table string, cols []columnInfo, emit func([]string) error) error {
@@ -627,7 +633,7 @@ func TestDumpPostgresHappyPath(t *testing.T) {
 
 	out := buf.String()
 	assert.Contains(t, out, "-- LEVEE PostgreSQL backup ")
-	assert.Contains(t, out, "-- tables: runs, trace")
+	assert.Contains(t, out, "-- tables (FK topological order): runs, trace")
 	assert.Contains(t, out, `CREATE TABLE IF NOT EXISTS "runs"`)
 	assert.Contains(t, out, `DELETE FROM "runs";`)
 	assert.Contains(t, out, `INSERT INTO "runs" ("id", "status") VALUES ('run-1', 'completed');`)
@@ -782,6 +788,21 @@ func newInfoSchemaSQLite(t *testing.T) *sql.DB {
 		('public', 'runs', 'status', 'TEXT',    'YES', 2),
 		('public', 'runs', 'n',      'INTEGER', 'YES', 3)`)
 	require.NoError(t, err)
+	// The FK query joins table_constraints / key_column_usage /
+	// constraint_column_usage; emulate them too (empty: no foreign keys in
+	// this fixture).
+	_, err = infoDB.Exec(`CREATE TABLE table_constraints (
+		constraint_schema TEXT, constraint_name TEXT, table_schema TEXT, constraint_type TEXT
+	)`)
+	require.NoError(t, err)
+	_, err = infoDB.Exec(`CREATE TABLE key_column_usage (
+		constraint_schema TEXT, constraint_name TEXT, table_name TEXT
+	)`)
+	require.NoError(t, err)
+	_, err = infoDB.Exec(`CREATE TABLE constraint_column_usage (
+		constraint_schema TEXT, constraint_name TEXT, table_name TEXT, table_schema TEXT
+	)`)
+	require.NoError(t, err)
 	require.NoError(t, infoDB.Close())
 
 	escaped := strings.ReplaceAll(filepath.Join(dir, "info.db"), "'", "''")
@@ -793,7 +814,7 @@ func newInfoSchemaSQLite(t *testing.T) *sql.DB {
 
 func TestPGLiveSourceAgainstEmulatedInfoSchema(t *testing.T) {
 	ctx := context.Background()
-	src := &pgLiveSource{db: newInfoSchemaSQLite(t)}
+	src := &pgLiveSource{q: newInfoSchemaSQLite(t)}
 
 	tables, err := src.listTables(ctx)
 	require.NoError(t, err)
@@ -893,9 +914,10 @@ func TestRestorePostgresUnreachable(t *testing.T) {
 	assert.Contains(t, err.Error(), "ping postgres")
 }
 
-// execRestoreStatements is plain transactional DML and can be exercised with
-// SQLite: the statements are equally valid there.
-func TestExecRestoreStatementsRoundTrip(t *testing.T) {
+// execStatements is plain DML and can be exercised with SQLite: the
+// statements are equally valid there. Transaction management is the caller's
+// job (execSafeRestore / execDestructiveRestore wrap it for PostgreSQL).
+func TestExecStatementsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "tx.db"))
 	require.NoError(t, err)
@@ -910,7 +932,7 @@ func TestExecRestoreStatementsRoundTrip(t *testing.T) {
 		`DELETE FROM runs`,
 		`INSERT INTO runs (id, status) VALUES ('new', 'restored')`,
 	}
-	require.NoError(t, execRestoreStatements(ctx, db, stmts))
+	require.NoError(t, execStatements(ctx, db, stmts))
 
 	var status string
 	require.NoError(t, db.QueryRow(`SELECT status FROM runs WHERE id = 'new'`).Scan(&status))
@@ -922,7 +944,7 @@ func TestExecRestoreStatementsRoundTrip(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
-func TestExecRestoreStatementsRollsBack(t *testing.T) {
+func TestExecStatementsRollbackByCaller(t *testing.T) {
 	ctx := context.Background()
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "tx.db"))
 	require.NoError(t, err)
@@ -937,12 +959,172 @@ func TestExecRestoreStatementsRollsBack(t *testing.T) {
 		`DELETE FROM runs`,
 		`INSERT INTO nonexistent_table VALUES (1)`, // fails mid-stream
 	}
-	err = execRestoreStatements(ctx, db, stmts)
+	tx, err := db.Begin()
+	require.NoError(t, err)
+	err = execStatements(ctx, tx, stmts)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "restore statement 2")
+	require.NoError(t, tx.Rollback())
 
 	// Rollback must have restored the original row.
 	var count int
 	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM runs`).Scan(&count))
 	assert.Equal(t, 1, count)
+}
+
+// --- topological ordering (D-3 v2) ------------------------------------------
+
+func TestTopoSortTablesParentsFirst(t *testing.T) {
+	ordered, err := topoSortTables(
+		[]string{"batches", "runs", "steps"},
+		[]fkEdge{{Table: "batches", References: "runs"}, {Table: "steps", References: "batches"}},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"runs", "batches", "steps"}, ordered)
+}
+
+func TestTopoSortTablesDeterministicForIndependentTables(t *testing.T) {
+	ordered, err := topoSortTables([]string{"b", "a", "c"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "b", "c"}, ordered)
+}
+
+func TestTopoSortTablesIgnoresEdgesOutsideSet(t *testing.T) {
+	ordered, err := topoSortTables([]string{"a"}, []fkEdge{{Table: "a", References: "ghost"}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a"}, ordered)
+}
+
+func TestTopoSortTablesCycleDetected(t *testing.T) {
+	_, err := topoSortTables(
+		[]string{"a", "b", "z"},
+		[]fkEdge{{Table: "a", References: "b"}, {Table: "b", References: "a"}},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dependency cycle")
+	assert.Contains(t, err.Error(), "a, b")
+}
+
+func TestTopoSortTablesSelfReferenceDetected(t *testing.T) {
+	_, err := topoSortTables([]string{"nodes"}, []fkEdge{{Table: "nodes", References: "nodes"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dependency cycle")
+}
+
+func TestDumpPostgresOrdersByForeignKeys(t *testing.T) {
+	f := newFakePGSource()
+	// Alphabetical order would dump the child first; the FK edge must flip
+	// the two tables.
+	f.tables = []string{"child", "parent"}
+	f.cols = map[string][]columnInfo{
+		"child":  {{Name: "id", DataType: "text", NotNull: true}},
+		"parent": {{Name: "id", DataType: "text", NotNull: true}},
+	}
+	f.rows = map[string][][]string{"child": {}, "parent": {}}
+	f.fks = []fkEdge{{Table: "child", References: "parent"}}
+
+	var buf strings.Builder
+	require.NoError(t, dumpPostgres(context.Background(), f, &buf))
+	out := buf.String()
+	assert.Contains(t, out, "-- tables (FK topological order): parent, child")
+	assert.Less(t, strings.Index(out, `DELETE FROM "parent"`), strings.Index(out, `DELETE FROM "child"`))
+}
+
+func TestDumpPostgresListForeignKeysError(t *testing.T) {
+	f := newFakePGSource()
+	f.fksErr = fmt.Errorf("catalog down")
+	err := dumpPostgres(context.Background(), f, &strings.Builder{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "catalog down")
+}
+
+func TestDumpPostgresFKCycleFails(t *testing.T) {
+	f := newFakePGSource()
+	f.fks = []fkEdge{{Table: "runs", References: "trace"}, {Table: "trace", References: "runs"}}
+	err := dumpPostgres(context.Background(), f, &strings.Builder{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dependency cycle")
+}
+
+// --- restore replay ordering (D-3 v2) ----------------------------------------
+
+func TestClassifyDumpStatement(t *testing.T) {
+	table, err := classifyDumpStatement(`INSERT INTO "runs" ("id") VALUES ('r1');`)
+	require.NoError(t, err)
+	assert.Equal(t, "runs", table)
+
+	table, err = classifyDumpStatement(`DELETE FROM "trace";`)
+	require.NoError(t, err)
+	assert.Equal(t, "trace", table)
+
+	table, err = classifyDumpStatement("CREATE TABLE IF NOT EXISTS \"batches\" (\n  \"id\" text\n);")
+	require.NoError(t, err)
+	assert.Equal(t, "batches", table)
+
+	_, err = classifyDumpStatement(`DROP TABLE runs;`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unrecognised statement")
+}
+
+func TestOrderRestoreStatementsReordersLegacyDump(t *testing.T) {
+	// A v1.13-era dump: lexicographic order, child (batches) before parent
+	// (runs), plus a schema_version group that must not be replayed.
+	stmts := []string{
+		`DELETE FROM "batches";`,
+		`INSERT INTO "batches" ("id", "run_id") VALUES ('b1', 'r1');`,
+		`DELETE FROM "runs";`,
+		`INSERT INTO "runs" ("id") VALUES ('r1');`,
+		`DELETE FROM "schema_version";`,
+		`INSERT INTO "schema_version" ("version") VALUES (5);`,
+	}
+	liveTables := []string{"batches", "runs", "schema_version"}
+	edges := []fkEdge{{Table: "batches", References: "runs"}}
+
+	out, err := orderRestoreStatements(stmts, liveTables, edges)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		`DELETE FROM "runs";`,
+		`INSERT INTO "runs" ("id") VALUES ('r1');`,
+		`DELETE FROM "batches";`,
+		`INSERT INTO "batches" ("id", "run_id") VALUES ('b1', 'r1');`,
+	}, out)
+}
+
+func TestOrderRestoreStatementsKeepsUnknownTablesLast(t *testing.T) {
+	stmts := []string{
+		`INSERT INTO "runs" ("id") VALUES ('r1');`,
+		`INSERT INTO "retired_table" ("id") VALUES ('x');`,
+	}
+	out, err := orderRestoreStatements(stmts, []string{"runs"}, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Contains(t, out[1], `"retired_table"`)
+}
+
+func TestOrderRestoreStatementsRejectsUnknownStatement(t *testing.T) {
+	_, err := orderRestoreStatements([]string{`TRUNCATE runs;`}, []string{"runs"}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unrecognised statement")
+}
+
+func TestOrderRestoreStatementsPropagatesLiveCycle(t *testing.T) {
+	stmts := []string{`INSERT INTO "a" ("id") VALUES ('1');`}
+	edges := []fkEdge{{Table: "a", References: "a"}}
+	_, err := orderRestoreStatements(stmts, []string{"a"}, edges)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dependency cycle")
+}
+
+// pgNonEmptyTables against the emulated catalog: the emulated "runs" table
+// holds two rows, an added empty "batches" table and the excluded
+// schema_version must not be reported.
+func TestPGNonEmptyTables(t *testing.T) {
+	db := newInfoSchemaSQLite(t)
+	_, err := db.Exec(`CREATE TABLE batches (id TEXT)`)
+	require.NoError(t, err)
+
+	nonEmpty, err := pgNonEmptyTables(context.Background(), db,
+		[]string{"batches", "runs", "schema_version"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"runs"}, nonEmpty)
 }
