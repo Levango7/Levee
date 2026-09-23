@@ -680,7 +680,8 @@ func TestArchiveChange_RejectsRunningAndPaused(t *testing.T) {
 	}
 
 	t.Run("terminal states still archiveable", func(t *testing.T) {
-		for _, st := range []string{"completed", "failed", "cancelled", "rejected", "rolled_back"} {
+		for _, st := range []string{"completed", "failed", "cancelled", "rejected", "rolled_back",
+			"rolled_back_partial", "rollback_incomplete"} {
 			svc, store := newTestChangeService(t)
 			created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "arch-ok"})
 			require.NoError(t, err)
@@ -771,6 +772,22 @@ func TestRetryChange(t *testing.T) {
 		_, err := svc.RetryChange(context.Background(), &pb.RetryRequest{ChangeId: id})
 		require.Error(t, err)
 		assert.Equal(t, codes.Internal, status.Code(err))
+	})
+	t.Run("guard admits D-2 rollback verdicts", func(t *testing.T) {
+		// D-2 v2: rolled_back_partial / rollback_incomplete are
+		// failure-family terminals — RetryChange is their re-drive
+		// entry, so the guard must admit them.
+		for _, st := range []string{"rolled_back_partial", "rollback_incomplete"} {
+			engine := &recordingEngine{}
+			svc, store, id := makeSvc(t, engine)
+			setRunStatus(t, store, id, st)
+			resp, err := svc.RetryChange(context.Background(), &pb.RetryRequest{ChangeId: id})
+			require.NoError(t, err, "status %q must admit retry", st)
+			assert.Equal(t, int32(1), atomic.LoadInt32(&engine.retryCalled))
+			// The stub engine leaves the run untouched; the response
+			// reflects the run's real status.
+			assert.Equal(t, st, resp.GetStatus())
+		}
 	})
 }
 
@@ -1577,6 +1594,75 @@ func TestApplyChange_EngineRolledBackPersistsStatus(t *testing.T) {
 	run, err := store.GetRun(context.Background(), created.GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "rolled_back", run.Status)
+}
+
+// TestApplyChange_RollbackVerdictPhasesPersistDistinctStatuses pins the
+// D-2 v2 design item 4 mapping: each engine rollback verdict becomes its
+// own run status — never collapsing into "failed" and never conflated with
+// a clean "rolled_back".
+func TestApplyChange_RollbackVerdictPhasesPersistDistinctStatuses(t *testing.T) {
+	for _, phase := range []string{"rolled_back_partial", "rollback_incomplete"} {
+		t.Run(phase, func(t *testing.T) {
+			engine := &recordingEngine{runID: "exec-" + phase, runSuccess: false, runPhase: phase}
+			svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
+			created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-" + phase})
+			require.NoError(t, err)
+			persistPlanOnRun(t, store, created.GetId())
+
+			resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+				ChangeId:    created.GetId(),
+				AutoApprove: true,
+			})
+			require.NoError(t, err)
+			assert.False(t, resp.GetSuccess())
+			assert.Equal(t, phase, resp.GetMessage())
+			assert.Equal(t, phase, resp.GetChange().GetStatus())
+
+			run, err := store.GetRun(context.Background(), created.GetId())
+			require.NoError(t, err)
+			assert.Equal(t, phase, run.Status)
+		})
+	}
+}
+
+// TestRollbackChange_GuardAdmitsPartialVerdicts: D-2 v2 — the manual
+// rollback is the remediation entry for a partial/incomplete automatic
+// rollback, so the status guard must admit both verdicts while a clean
+// rolled_back stays refused (nothing left to undo).
+func TestRollbackChange_GuardAdmitsPartialVerdicts(t *testing.T) {
+	newSvc := func(t *testing.T, st string) (*ChangeService, state.Store, *recordingEngine, string) {
+		engine := &recordingEngine{rollbackID: "rb-d2", rbHosts: []string{"web-1"}}
+		svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
+		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "rb-d2"})
+		require.NoError(t, err)
+		setRunStatus(t, store, created.GetId(), st)
+		return svc, store, engine, created.GetId()
+	}
+
+	for _, st := range []string{"rolled_back_partial", "rollback_incomplete"} {
+		t.Run(st+" is rollbackable", func(t *testing.T) {
+			svc, store, engine, id := newSvc(t, st)
+			resp, err := svc.RollbackChange(context.Background(), &pb.RollbackRequest{ChangeId: id})
+			require.NoError(t, err, "status %q must admit manual rollback", st)
+			assert.Equal(t, int32(1), atomic.LoadInt32(&engine.rollbackCalled))
+			assert.Equal(t, "rb-d2", resp.GetRollbackRunId())
+			// The successful manual rollback settles the run on rolled_back.
+			run, getErr := store.GetRun(context.Background(), id)
+			require.NoError(t, getErr)
+			assert.Equal(t, "rolled_back", run.Status)
+		})
+	}
+
+	t.Run("clean rolled_back stays refused", func(t *testing.T) {
+		svc, store, engine, id := newSvc(t, "rolled_back")
+		_, err := svc.RollbackChange(context.Background(), &pb.RollbackRequest{ChangeId: id})
+		require.Error(t, err)
+		assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+		assert.Zero(t, atomic.LoadInt32(&engine.rollbackCalled), "refused rollback must not reach the engine")
+		run, getErr := store.GetRun(context.Background(), id)
+		require.NoError(t, getErr)
+		assert.Equal(t, "rolled_back", run.Status, "refused rollback must not mutate the run")
+	})
 }
 
 // TestApplyChange_ConcurrentDoubleApplyIsSerialised verifies the CAS guard:

@@ -220,5 +220,7 @@ func printTraceRecord(w io.Writer, t *state.Trace) {
 // isTerminalStatus reports whether the run status is terminal (no further
 // changes expected).
 func isTerminalStatus(status string) bool {
-	return status == "completed" || status == "failed" || status == "cancelled" || status == "rolled_back"
+	return status == "completed" || status == "failed" || status == "cancelled" || status == "rolled_back" ||
+		// D-2 v2 rollback verdicts are terminal too.
+		status == "rolled_back_partial" || status == "rollback_incomplete"
 }

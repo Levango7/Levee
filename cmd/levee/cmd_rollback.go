@@ -30,7 +30,8 @@ func newRollbackCmd() *cobra.Command {
 			"invokes the rollback steps declared on each plan step. " +
 			"After rollback completes, post-rollback verification is run " +
 			"to confirm the target is in a healthy state. " +
-			"Only runs in \"running\", \"completed\", or \"failed\" status " +
+			"Only runs in \"running\", \"completed\", \"failed\", " +
+			"\"rolled_back_partial\", or \"rollback_incomplete\" status " +
 			"can be rolled back. Use --force to override status checks.",
 		Args: cobra.ExactArgs(1),
 		RunE: runRollback,
@@ -125,9 +126,12 @@ func runRollback(cmd *cobra.Command, args []string) error {
 }
 
 // isRollbackableStatus reports whether a run in the given status can be
-// rolled back.
+// rolled back. The D-2 v2 rollback verdicts are included: a partial or
+// incomplete rollback is precisely the state a manual rollback completes.
+// A clean rolled_back is excluded — nothing left to undo.
 func isRollbackableStatus(status string) bool {
-	return status == "running" || status == "completed" || status == "failed"
+	return status == "running" || status == "completed" || status == "failed" ||
+		status == "rolled_back_partial" || status == "rollback_incomplete"
 }
 
 // newRollbackAuditID generates a unique audit identifier for rollback actions.

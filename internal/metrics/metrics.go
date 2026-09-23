@@ -39,6 +39,12 @@ const (
 	// produce it, but the counter family pre-registers the label so
 	// dashboards see a stable series.
 	StatusInterrupted = "interrupted"
+	// StatusRolledBackPartial / StatusRollbackIncomplete are the D-2 v2
+	// rollback verdicts: some required compensation was missing / none
+	// completed. Pre-registered like interrupted so the label set stays
+	// stable for dashboards.
+	StatusRolledBackPartial  = "rolled_back_partial"
+	StatusRollbackIncomplete = "rollback_incomplete"
 
 	// Gate results for levee_gates_total.
 	GateResultPass = "pass"
@@ -104,6 +110,7 @@ const (
 var changeStatuses = []string{
 	StatusCreated, StatusApproved, StatusRunning,
 	StatusSucceeded, StatusFailed, StatusRolledBack,
+	StatusRolledBackPartial, StatusRollbackIncomplete,
 	StatusInterrupted,
 }
 

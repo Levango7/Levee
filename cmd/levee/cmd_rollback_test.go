@@ -53,6 +53,8 @@ func TestIsRollbackableStatus(t *testing.T) {
 		{"running", true},
 		{"completed", true},
 		{"failed", true},
+		{"rolled_back_partial", true},
+		{"rollback_incomplete", true},
 		{"pending", false},
 		{"draft", false},
 		{"approved", false},

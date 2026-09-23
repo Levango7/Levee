@@ -63,6 +63,12 @@ func (e *grpcChangeExecutor) retry(ctx context.Context, runID string) (string, e
 	switch resp.GetStatus() {
 	case "rolled_back":
 		return "rolled_back", nil
+	case "rolled_back_partial", "rollback_incomplete":
+		// D-2 v2: the run row keeps the precise verdict; the assignment
+		// result vocabulary (completed | failed | rolled_back) records
+		// anything that is not a clean outcome as "failed" so dispatch
+		// and operators treat it as needing attention.
+		return "failed", nil
 	case "completed", "done":
 		return "completed", nil
 	case "failed":

@@ -113,6 +113,8 @@ func TestIsTerminalStatus(t *testing.T) {
 		{"failed", true},
 		{"cancelled", true},
 		{"rolled_back", true},
+		{"rolled_back_partial", true},
+		{"rollback_incomplete", true},
 		{"running", false},
 		{"pending", false},
 		{"paused", false},

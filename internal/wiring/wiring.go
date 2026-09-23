@@ -104,6 +104,13 @@ type Engine struct {
 	rollbackConcurrency int
 	gatePrometheusURL   string
 
+	// snapshotDir roots the pre-apply snapshot store. Empty (the default)
+	// disables snapshot capture/restore: workflows declaring
+	// strategy "snapshot" run with capture skipped (the pre-wiring
+	// behaviour) rather than failing — an operator opting in later only
+	// needs the flag, not a workflow rewrite.
+	snapshotDir string
+
 	// guard issues execution leases in cluster mode; nil = fencing
 	// disabled (single-node). execLeaseTTL is the lease lifetime the
 	// guard issues/renews with; heartbeats run at TTL/3.

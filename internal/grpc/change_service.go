@@ -755,11 +755,13 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	}
 	finalStatus := "failed"
 	switch {
-	case phase == "rolled_back":
-		// The engine unwound the change after a verification failure.
-		// Distinguish a successful rollback from a hard failure so
-		// retry/rollback tooling and operators can tell them apart.
-		finalStatus = "rolled_back"
+	case phase == "rolled_back", phase == "rolled_back_partial", phase == "rollback_incomplete":
+		// The engine ran its rollback flow. D-2 v2 design item 4: the
+		// three-way verdict surfaces as its own run status so a clean
+		// rollback ("rolled_back") is never conflated with a partial or
+		// incomplete one — clients and UIs that do not know the new
+		// values render them as text (design: 增量，不删旧值).
+		finalStatus = phase
 	case success:
 		finalStatus = "completed"
 	}
@@ -955,6 +957,10 @@ func mapPauseError(err error, runID string) error {
 //	approved — approved draft/pending
 //	running / paused / completed / failed / cancelled /
 //	rolled_back / rejected / archived — lifecycle states
+//	rolled_back_partial / rollback_incomplete — terminal: D-2 v2 rollback
+//	          verdicts (some compensation missing / none completed);
+//	          distinct from rolled_back so a clean rollback is never
+//	          claimed when state was not fully restored
 //	interrupted — terminal: the executor node died mid-flight and the
 //	              cluster takeover settled the run (cluster mode only);
 //	              re-drive explicitly via RetryChange
@@ -974,8 +980,13 @@ func isValidTransition(from, to string) bool {
 		// history the audit chain already recorded.
 		return from != "completed" && from != "cancelled" && from != "archived" &&
 			from != "interrupted"
+	// archived: every terminal outcome is archivable, including the D-2 v2
+	// rollback verdicts (rolled_back_partial / rollback_incomplete) — an
+	// operator must be able to seal the history of a partially-rolled-back
+	// change exactly like a clean one.
 	case "archived":
 		return from == "completed" || from == "failed" || from == "cancelled" || from == "rolled_back" ||
+			from == "rolled_back_partial" || from == "rollback_incomplete" ||
 			from == "interrupted" || from == "draft" || from == "planned"
 	default:
 		return false
@@ -1166,8 +1177,15 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 	// point for re-driving an interrupted change from its clean,
 	// hash-bound plan. It is NOT auto-resume: retry is a fresh, explicit
 	// execution through the full approval/fencing/evidence gates.
-	if run.Status != "failed" && run.Status != "rolled_back" && run.Status != "interrupted" {
-		return nil, status.Errorf(codes.FailedPrecondition, "can only retry failed, rolled_back or interrupted changes; current status: %q", run.Status)
+	//
+	// D-2 v2: rolled_back_partial / rollback_incomplete are retryable too
+	// — they are failure-family terminals (the forward apply failed and
+	// the rollback did not fully settle the state), and without a retry
+	// entry they would be dead-end statuses the apply path refuses
+	// (status guard: approved only).
+	if run.Status != "failed" && run.Status != "rolled_back" && run.Status != "interrupted" &&
+		run.Status != "rolled_back_partial" && run.Status != "rollback_incomplete" {
+		return nil, status.Errorf(codes.FailedPrecondition, "can only retry failed, rolled_back, rolled_back_partial, rollback_incomplete or interrupted changes; current status: %q", run.Status)
 	}
 
 	oldStatus := run.Status
@@ -1296,8 +1314,14 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
-	if run.Status != "completed" && run.Status != "failed" {
-		return nil, status.Errorf(codes.FailedPrecondition, "can only rollback completed or failed changes; current status: %q", run.Status)
+	// D-2 v2: rolled_back_partial / rollback_incomplete are exactly the
+	// states a manual rollback exists to remediate — the automatic
+	// compensation left a gap, and finishing it must not require a
+	// re-apply first. A clean rolled_back stays excluded: there is
+	// nothing left to undo (double-undo protection).
+	if run.Status != "completed" && run.Status != "failed" &&
+		run.Status != "rolled_back_partial" && run.Status != "rollback_incomplete" {
+		return nil, status.Errorf(codes.FailedPrecondition, "can only rollback completed, failed, rolled_back_partial or rollback_incomplete changes; current status: %q", run.Status)
 	}
 
 	now := time.Now().UTC()
@@ -1422,6 +1446,9 @@ const (
 var terminalRunStatuses = map[string]bool{
 	"approved": true, "rejected": true, "running": true,
 	"completed": true, "failed": true, "rolled_back": true,
+	// D-2 v2 rollback verdicts: terminal like rolled_back — a late
+	// settlement must not resurrect or demote them either.
+	"rolled_back_partial": true, "rollback_incomplete": true,
 	"cancelled": true, "archived": true, "interrupted": true,
 }
 
@@ -2327,8 +2354,11 @@ func (s *ChangeService) WatchChange(req *pb.WatchChangeRequest, stream grpcpkg.S
 		"cancelled":   true,
 		"archived":    true,
 		"rolled_back": true,
-		"rejected":    true,
-		"interrupted": true, // takeover terminal (cluster mode)
+		// D-2 v2 rollback verdicts: terminal — the stream must end.
+		"rolled_back_partial": true,
+		"rollback_incomplete": true,
+		"rejected":            true,
+		"interrupted":         true, // takeover terminal (cluster mode)
 	}
 
 	for {

@@ -111,3 +111,26 @@ func TestExecute_RetryRolledBack(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "rolled_back", result)
 }
+
+// D-2 v2: the run row keeps the precise verdict (rolled_back_partial /
+// rollback_incomplete), while the assignment result vocabulary stays
+// completed|failed|rolled_back — anything that is not a clean outcome
+// records as "failed" so dispatch and operators treat it as needing
+// attention.
+func TestExecute_RetryPartialVerdictMapsToFailed(t *testing.T) {
+	for _, st := range []string{"rolled_back_partial", "rollback_incomplete"} {
+		st := st
+		t.Run(st, func(t *testing.T) {
+			svc := &fakeChangeService{
+				retryResp: &pb.Change{Status: st},
+			}
+			store := newExecutorTestStore(t, &state.Run{ID: "r1", Status: "interrupted"})
+
+			ex := &grpcChangeExecutor{svc: svc, store: store}
+			result, err := ex.Execute(context.Background(), "r1")
+
+			require.NoError(t, err)
+			assert.Equal(t, "failed", result)
+		})
+	}
+}

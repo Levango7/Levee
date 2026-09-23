@@ -76,13 +76,27 @@ const (
 	PhaseCompleted ClosurePhase = "completed"
 
 	// PhaseRolledBack indicates a verification failure triggered rollback
-	// and the rollback succeeded (every rollback step completed without
-	// error).
+	// and the rollback fully restored what had been applied: every executed
+	// step that needed compensation got it, and no step's side effects were
+	// left undetermined (D-2 v2 verdict).
 	PhaseRolledBack ClosurePhase = "rolled_back"
 
+	// PhasePartialRollback indicates the rollback ran but did NOT fully
+	// restore the run: some required compensations were skipped or failed
+	// while others completed (D-2 v2). Deliberately NOT reported as
+	// rolled_back — claiming a clean rollback would be a statement the
+	// evidence does not support. Operators must inspect the host state.
+	PhasePartialRollback ClosurePhase = "rolled_back_partial"
+
+	// PhaseRollbackIncomplete indicates executed work needed compensation but
+	// nothing could be restored (no compensation completed), or the executed
+	// steps left undetermined side effects (D-2 v2). Treat as an incident
+	// requiring human remediation, not as a settled rollback.
+	PhaseRollbackIncomplete ClosurePhase = "rollback_incomplete"
+
 	// PhaseFailed indicates the closure could not complete cleanly. This
-	// covers pre-apply gate failure, lock conflict, batch execution error
-	// without rollback, and rollback failure (partial or total).
+	// covers pre-apply gate failure, lock conflict, and batch execution error
+	// without rollback.
 	PhaseFailed ClosurePhase = "failed"
 )
 
@@ -449,7 +463,15 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// applied batches unwound. Trade-off: rollback cannot be
 		// cancelled once triggered; it relies on per-step execution
 		// timeouts for bounded runtime.
-		rbResult := cr.rollback.Rollback(context.Background(), executedPlan, execFn)
+		// D-2 v2: compensate exactly what the apply evidence says actually
+		// ran. result.BatchResults accumulates every batch outcome
+		// (including the failed batch's partial results), so steps never
+		// dispatched are not compensated; steps whose forward execution
+		// failed are compensated and counted in UnknownSideEffects —
+		// surfaced below for operator inspection, informational per
+		// design item 3.
+		ledger := rollback.LedgerFromBatchResults(result.BatchResults)
+		rbResult := cr.rollback.RollbackWithLedger(context.Background(), executedPlan, execFn, ledger)
 		result.RollbackResult = rbResult
 
 		// Post-rollback verification (T037), when configured.
@@ -469,12 +491,23 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			result.Error = fmt.Errorf("closure: %s", rollbackReason)
 			return result, nil
 		}
-		// Rollback failed (partial or total).
-		result.Phase = PhaseFailed
-		if rbResult.Error != nil {
-			result.Error = fmt.Errorf("closure: %s; rollback failed: %w", rollbackReason, rbResult.Error)
+		// Not a clean rollback (D-2 v2): distinguish "some state restored,
+		// some not" from "nothing restored" so operators and status
+		// mapping never mistake an uncompensated gap for a settled
+		// rollback. The counts come from the compensation bookkeeping,
+		// not from whether individual commands happened to error;
+		// undetermined forward side effects are reported alongside.
+		verdict := fmt.Sprintf("compensations %d/%d completed, %d forward steps with undetermined side effects",
+			rbResult.CompletedCompensations, rbResult.RequiredCompensations, rbResult.UnknownSideEffects)
+		if rbResult.PartialRollback {
+			result.Phase = PhasePartialRollback
 		} else {
-			result.Error = fmt.Errorf("closure: %s; rollback failed", rollbackReason)
+			result.Phase = PhaseRollbackIncomplete
+		}
+		if rbResult.Error != nil {
+			result.Error = fmt.Errorf("closure: %s; rollback incomplete (%s): %w", rollbackReason, verdict, rbResult.Error)
+		} else {
+			result.Error = fmt.Errorf("closure: %s; rollback incomplete (%s)", rollbackReason, verdict)
 		}
 		return result, nil
 	}

@@ -150,6 +150,15 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan,
 		}
 	}
 
+	// D-2 v2 design item 5 (fail-closed): a plan that declares
+	// snapshot-based rollback requires a wired snapshot store — without
+	// one, capture never happens and the rollback would discover
+	// mid-unwind that its restore basis does not exist. Refuse BEFORE
+	// any dispatch instead of skipping afterwards.
+	if err := e.checkSnapshotCapability(p); err != nil {
+		return "", false, "", err
+	}
+
 	rx, err := newRunExec(ctx, e, lease)
 	if err != nil {
 		return "", false, "", err
@@ -301,8 +310,13 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 	execRunID, _, phase, err := e.executePlan(ctx, changeID, p, old == "interrupted")
 	final := "failed"
 	switch {
-	case phase == string(engine.PhaseRolledBack):
-		final = "rolled_back"
+	case phase == string(engine.PhaseRolledBack),
+		phase == string(engine.PhasePartialRollback),
+		phase == string(engine.PhaseRollbackIncomplete):
+		// D-2 v2 design item 4: each rollback verdict keeps its own run
+		// status; a partial or incomplete rollback must not read as a
+		// clean "rolled_back" (or as a plain failure).
+		final = phase
 	case err == nil && phase == string(engine.PhaseCompleted):
 		final = "completed"
 	}
@@ -363,7 +377,17 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		rollback.WithConcurrency(e.rollbackConcurrency),
 		rollback.WithStopOnError(false),
 	)
-	res := mgr.Rollback(ctx, p, rx.executeFunc())
+
+	// D-2 v2 design item 1: the manual path holds no BatchResults, so
+	// its execution ledger derives from the persisted forward step
+	// evidence (the steps table) — compensate what provably ran, and
+	// nothing else. An unreadable evidence set fails closed: falling
+	// back to the whole plan would restore the pre-D-2 over-broad undo.
+	ledger, lerr := e.ledgerFromStoredSteps(ctx, changeID, p)
+	if lerr != nil {
+		return "", nil, lerr
+	}
+	res := mgr.RollbackWithLedger(ctx, p, rx.executeFunc(), ledger)
 
 	rbID := newID("rb-")
 	persistErr := e.persistRollbackResults(ctx, changeID, res, rx.snapshotOutputs())
@@ -383,6 +407,88 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		return rbID, hosts, fmt.Errorf("wiring: rollback succeeded but persisting evidence failed: %w", persistErr)
 	}
 	return rbID, hosts, nil
+}
+
+// planNeedsSnapshot reports whether any step of p declares the
+// strategy-"snapshot" rollback basis (D-2 v2 design item 5).
+func planNeedsSnapshot(p *plan.Plan) bool {
+	for _, b := range p.Batches {
+		for _, s := range b.Steps {
+			if s.Rollback != nil && s.Rollback.Strategy == "snapshot" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkSnapshotCapability fails closed when p declares snapshot-based
+// rollback but this engine cannot capture/restore (no
+// --engine-snapshot-dir, or the store/manager cannot be constructed).
+// Called before any dispatch so the gap surfaces as a refusal, never as
+// a mid-rollback "restore not wired" skip (D-2 v2 design item 5).
+func (e *Engine) checkSnapshotCapability(p *plan.Plan) error {
+	if !planNeedsSnapshot(p) {
+		return nil
+	}
+	if e.snapshotDir == "" {
+		return fmt.Errorf("wiring: plan %q declares snapshot rollback but no snapshot store is configured (--engine-snapshot-dir); refusing to execute (fail-closed, D-2 v2)", p.ID)
+	}
+	snapStore, err := rollback.NewFileSnapshotStore(e.snapshotDir)
+	if err != nil {
+		return fmt.Errorf("wiring: plan %q declares snapshot rollback but the snapshot store at %q is unusable: %w (fail-closed, D-2 v2)", p.ID, e.snapshotDir, err)
+	}
+	if _, err := rollback.NewSnapshotManager(snapStore); err != nil {
+		return fmt.Errorf("wiring: plan %q declares snapshot rollback but the snapshot manager is unusable: %w (fail-closed, D-2 v2)", p.ID, err)
+	}
+	return nil
+}
+
+// ledgerFromStoredSteps derives the manual-rollback execution ledger from
+// persisted forward step evidence (D-2 v2 design item 1). Only rows that
+// match a FORWARD plan step of p on its declaring batch/target count:
+//   - status "success" → ran (MarkRan)
+//   - status "failed"  → dispatched and failed (MarkUnknown: it still needs
+//     its declared compensation; residue undetermined)
+//   - status "skipped" → resume marker, not a dispatch — ignored (the
+//     original success row exists alongside it)
+//
+// Undo rows written by a previous rollback do not match forward step names
+// in the normal case and are ignored; a workflow that names an undo step
+// identically to a forward step is the documented ambiguity left to the
+// future compensation-idempotency extension point. With no forward evidence
+// at all the ledger is empty and nothing is compensated — pre-engine runs
+// cannot reach this path (loadStoredPlan refuses runs without a stored
+// artifact).
+func (e *Engine) ledgerFromStoredSteps(ctx context.Context, changeID string, p *plan.Plan) (*rollback.ExecutionLedger, error) {
+	rows, err := e.store.ListSteps(ctx, state.StepFilter{RunID: changeID})
+	if err != nil {
+		return nil, fmt.Errorf("wiring: list steps for rollback ledger: %w", err)
+	}
+	forward := make(map[string]map[string]bool)
+	for _, b := range p.Batches {
+		for _, t := range b.Targets {
+			if forward[t] == nil {
+				forward[t] = make(map[string]bool)
+			}
+			for _, s := range b.Steps {
+				forward[t][s.Name] = true
+			}
+		}
+	}
+	ledger := rollback.NewExecutionLedger()
+	for _, row := range rows {
+		if row == nil || !forward[row.Host][row.StepName] {
+			continue
+		}
+		switch row.Status {
+		case "success":
+			ledger.MarkRan(row.Host, row.StepName)
+		case "failed":
+			ledger.MarkUnknown(row.Host, row.StepName)
+		}
+	}
+	return ledger, nil
 }
 
 // --- stored plan helpers ----------------------------------------------------
