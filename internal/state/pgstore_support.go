@@ -85,6 +85,17 @@ var pgMigrations = []migrationStep{
 			`ALTER TABLE runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// D-1 v2 (approval/plan binding + concurrent-vote CAS): approvals
+		// gains plan_hash and revision (see migrations on the SQLite side).
+		// Both statements are dialect-compatible; fresh databases get them
+		// from pgschema.sql directly.
+		version: 4,
+		stmts: []string{
+			`ALTER TABLE approvals ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE approvals ADD COLUMN revision BIGINT NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // pgSchemaDDLAdvisoryLockKey is the key of the session-level advisory lock

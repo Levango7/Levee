@@ -105,6 +105,14 @@ type Approval struct {
 	Decisions    []Decision `json:"decisions"`
 	CreatedAt    time.Time  `json:"created_at"`
 	ExpiresAt    time.Time  `json:"expires_at"`
+	// PlanHash is the plan artifact this approval attests to. Empty means
+	// "legacy record" (created before D-1 v2): it still settles regardless
+	// of plan, preserving behaviour for pre-migration rows.
+	PlanHash string `json:"plan_hash"`
+	// Revision is the optimistic-lock version used by the concurrent decision
+	// CAS. It is carried by the store round-trip so the CAS compares the exact
+	// record the caller read.
+	Revision int64 `json:"revision"`
 }
 
 // --- CreateRequest ----------------------------------------------------------
@@ -117,6 +125,9 @@ type CreateRequest struct {
 	Approvers    []string
 	MinApprovers int
 	ExpiresAt    time.Time
+	// PlanHash is the plan artifact the new approval attests to. Leave empty
+	// to create a legacy (plan-agnostic) approval record.
+	PlanHash string
 }
 
 // --- Store ------------------------------------------------------------------
@@ -165,9 +176,21 @@ var (
 	ErrConflict = errors.New("approval: concurrently modified, decision not recorded")
 )
 
-// casMaxAttempts bounds the compare-and-set retry loop in decide: one
-// initial attempt plus one retry after re-reading the record.
-const casMaxAttempts = 2
+// casMaxAttempts bounds the compare-and-set retry loop in decide. The
+// revision guard means concurrent partial votes now actively conflict (that is
+// the point: no silent overwrite), so the budget covers one initial attempt
+// plus retries for several approvers deciding at once. Exhausting it surfaces
+// ErrConflict (nothing is lost — the caller may retry).
+const casMaxAttempts = 4
+
+// casRetryBackoff spaces out retries with a small, attempt-proportional delay
+// so a burst of simultaneous decisions does not spin on the same revision.
+func casRetryBackoff(attempt int) {
+	if attempt <= 0 {
+		return
+	}
+	time.Sleep(time.Duration(attempt) * 2 * time.Millisecond)
+}
 
 // validLevel reports whether the given approval level is one of the
 // three legal tiers defined by the LEVEELang spec (standard / high /
@@ -188,6 +211,31 @@ func validLevel(level string) bool {
 // underlying Store is.
 type Service struct {
 	store Store
+
+	// onDecision, when non-nil, is invoked after every successfully
+	// recorded decision (approve or reject, including partial decisions
+	// that keep the record pending). It receives the freshly updated
+	// approval plus the action verb. The hook exists so callers (serve
+	// wiring, notification / ChatOps fan-out) can observe decisions without
+	// the approval package importing them — keeping the dependency graph
+	// acyclic. Implementations must be safe for concurrent use and should
+	// return quickly; errors are the observer's to handle (they are
+	// ignored by the service so a failing side channel can never fail the
+	// decision itself).
+	onDecision func(a *Approval, action string)
+}
+
+// DecisionObserver is the signature of the optional decision hook
+// installable via WithDecisionObserver.
+type DecisionObserver func(a *Approval, action string)
+
+// WithDecisionObserver installs a post-decision observer on the service.
+// Pass nil to remove a previously installed observer. The observer fires
+// only after the decision has been durably recorded (UpdateIfPending
+// succeeded), never on speculative reads or failed attempts.
+func (s *Service) WithDecisionObserver(fn DecisionObserver) *Service {
+	s.onDecision = fn
+	return s
 }
 
 // NewService returns a ready-to-use approval Service backed by the
@@ -233,6 +281,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Approval, err
 		Decisions:    nil,
 		CreatedAt:    now,
 		ExpiresAt:    req.ExpiresAt,
+		PlanHash:     req.PlanHash,
 	}
 	if err := s.store.Create(ctx, a); err != nil {
 		return nil, fmt.Errorf("approval: create: %w", err)
@@ -295,6 +344,13 @@ func (s *Service) decide(ctx context.Context, id string, approver string, action
 		if !canTransition(a.Status, target) {
 			return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, a.Status, target)
 		}
+		// Defensive: a legacy or malformed record with MinApprovers<=0 must
+		// not auto-approve on the first vote (countApproves(1) >= 0).
+		// Well-formed records are clamped to 1 at Create; this clamps rows
+		// written before the clamp existed.
+		if a.MinApprovers <= 0 {
+			a.MinApprovers = 1
+		}
 		if !isAuthorized(a.Approvers, approver) {
 			return fmt.Errorf("%w: %s", ErrUnauthorizedApprover, approver)
 		}
@@ -325,13 +381,17 @@ func (s *Service) decide(ctx context.Context, id string, approver string, action
 			log.InfoCtx(ctx, "approval decision recorded",
 				"id", id, "approver", approver, "action", action, "status", a.Status,
 				"attempt", attempt+1)
+			if s.onDecision != nil {
+				s.onDecision(a, action)
+			}
 			return nil
 		}
 		// The record was decided or modified concurrently between our read
-		// and write; loop back, re-read and retry once.
+		// and write; back off briefly, loop back, re-read and retry.
 		lastErr = fmt.Errorf("%w: approval %s for %s", ErrConflict, id, approver)
 		log.WarnCtx(ctx, "approval compare-and-set lost, retrying",
 			"id", id, "approver", approver, "attempt", attempt+1)
+		casRetryBackoff(attempt + 1)
 	}
 	return lastErr
 }

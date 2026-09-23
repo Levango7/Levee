@@ -83,6 +83,14 @@ type Approval struct {
 	Comment   string     `json:"comment"`
 	TimeoutAt *time.Time `json:"timeout_at,omitempty"`
 	ActedAt   *time.Time `json:"acted_at,omitempty"`
+	// PlanHash is the plan artifact the approval attests to. Empty means
+	// "legacy record": it still settles/authorises runs regardless of plan,
+	// preserving behaviour for rows created before D-1 v2.
+	PlanHash string `json:"plan_hash"`
+	// Revision is the optimistic-lock version used by the concurrent decision
+	// CAS (UpdateApprovalIfPending). It guards against a stale writer
+	// overwriting a partial vote that another actor just recorded.
+	Revision int64 `json:"revision"`
 }
 
 // Lock is a mutex lock with a TTL. Locks are scoped (e.g. host:<name>) and
@@ -272,6 +280,20 @@ type Store interface {
 	// guard state-machine transitions (e.g. only "approved" runs may
 	// become "running") against concurrent racers.
 	UpdateRunStatusIf(ctx context.Context, id string, from string, to string, updatedAt time.Time) (bool, error)
+	// UpdateRunApprovalStatusIf atomically transitions a run's status from
+	// `from` to `to` AND sets approval_status, stamping updated_at. It
+	// returns (true, nil) when the row matched and was updated, (false, nil)
+	// when the run does not exist or its current status is not `from`. It is
+	// the single-CAS write behind approval settlement so a settled outcome
+	// (status + approval status) is written atomically instead of a read-then
+	// full-row UpdateRun that could clobber a concurrent state transition.
+	UpdateRunApprovalStatusIf(ctx context.Context, id string, from string, to string, approvalStatus string, updatedAt time.Time) (bool, error)
+	// UpdateRunPlan overwrites only the plan artifact (plan_json, plan_hash)
+	// on an existing run, touching updated_at. Unlike a full-row UpdateRun it
+	// never writes status/approval_status, so persisting a plan can never
+	// clobber a concurrent state transition (e.g. settlement or apply that
+	// runs between a caller's GetRun and this write).
+	UpdateRunPlan(ctx context.Context, id string, planJSON string, planHash string, updatedAt time.Time) error
 	// MarkNonTerminalSteps flips every step row of the run whose status
 	// is a non-terminal vocabulary (running/pending) to the given
 	// terminal marker, and returns the number of rows flipped. It is the

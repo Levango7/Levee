@@ -145,6 +145,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     comment    TEXT    NOT NULL DEFAULT '',
     timeout_at TIMESTAMPTZ,
     acted_at   TIMESTAMPTZ,
+    plan_hash  TEXT    NOT NULL DEFAULT '',          -- D-1 v2: plan the approval attests to ('' = legacy, any plan)
+    revision   BIGINT  NOT NULL DEFAULT 0,           -- D-1 v2: optimistic-lock version for concurrent decisions
     FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
 );
 

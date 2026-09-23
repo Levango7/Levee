@@ -174,11 +174,13 @@ func approvalToState(ap *approval.Approval) (*state.Approval, error) {
 	}
 
 	sa := &state.Approval{
-		ID:      ap.ID,
-		RunID:   ap.RunID,
-		Level:   ap.Level,
-		Status:  string(ap.Status),
-		Comment: string(extraJSON),
+		ID:       ap.ID,
+		RunID:    ap.RunID,
+		Level:    ap.Level,
+		Status:   string(ap.Status),
+		Comment:  string(extraJSON),
+		PlanHash: ap.PlanHash,
+		Revision: ap.Revision,
 	}
 
 	if !ap.ExpiresAt.IsZero() {
@@ -197,26 +199,32 @@ func approvalToState(ap *approval.Approval) (*state.Approval, error) {
 }
 
 // stateToApproval converts a state.Approval back to an approval.Approval.
+// A non-empty Comment that fails to parse is treated as a hard error rather
+// than silently returning a zero-valued record: approver identity, quorum and
+// existing decisions are governance data, and silently degrading them could
+// let a record pass through with MinApprovers effectively 0 (which the
+// service re-clamps to 1) or lose prior votes. ListPending callers already
+// skip malformed records; decision paths surface this error to the operator.
 func stateToApproval(sa *state.Approval) (*approval.Approval, error) {
 	ap := &approval.Approval{
-		ID:     sa.ID,
-		RunID:  sa.RunID,
-		Level:  sa.Level,
-		Status: approval.Status(sa.Status),
+		ID:       sa.ID,
+		RunID:    sa.RunID,
+		Level:    sa.Level,
+		Status:   approval.Status(sa.Status),
+		PlanHash: sa.PlanHash,
+		Revision: sa.Revision,
 	}
 
-	// Restore extra fields from the JSON blob in Comment.
 	if sa.Comment != "" {
 		var extra approvalExtra
-		if err := json.Unmarshal([]byte(sa.Comment), &extra); err == nil {
-			ap.Approvers = extra.Approvers
-			ap.MinApprovers = extra.MinApprovers
-			ap.Decisions = extra.Decisions
-			ap.CreatedAt = extra.CreatedAt
-			ap.ExpiresAt = extra.ExpiresAt
+		if err := json.Unmarshal([]byte(sa.Comment), &extra); err != nil {
+			return nil, fmt.Errorf("approval %q has unparsable metadata (comment %q): %w", sa.ID, sa.Comment, err)
 		}
-		// If unmarshal fails, the extra fields are left at zero values.
-		// This is defensive: the record may have been created by a different path.
+		ap.Approvers = extra.Approvers
+		ap.MinApprovers = extra.MinApprovers
+		ap.Decisions = extra.Decisions
+		ap.CreatedAt = extra.CreatedAt
+		ap.ExpiresAt = extra.ExpiresAt
 	}
 
 	if sa.TimeoutAt != nil && ap.ExpiresAt.IsZero() {

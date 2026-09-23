@@ -41,11 +41,13 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/plan"
+	"github.com/nexus/levee/internal/risk"
 	"github.com/nexus/levee/internal/state"
 
 	grpcpkg "google.golang.org/grpc"
@@ -63,6 +65,13 @@ type ChangeService struct {
 	engine   *EngineAdapter
 	approval *approval.Service
 	pause    *pause.PauseManager
+
+	// onApprovalCreate fires after kickoffApproval durably created a
+	// pending approval record. Mirrors approval.Service's
+	// DecisionObserver contract: observer errors are ignored so a
+	// failing side channel (ChatOps / Jira mirrors) can never fail the
+	// approval chain itself. Nil is a no-op.
+	onApprovalCreate func(a *approval.Approval)
 
 	// eventBus distributes change events to WatchChange subscribers.
 	// It is lazily initialised on first subscription.
@@ -87,6 +96,17 @@ func NewChangeService(
 		approval: appr,
 		pause:    pauseMgr,
 	}
+}
+
+// WithApprovalCreateObserver installs a post-create observer on the
+// service. It fires after kickoffApproval durably created the pending
+// approval (the same moment the ChatOps / Jira mirrors want to react
+// to). Observer panics are recovered per-call; observer failures are
+// logged by the bridge, never by this service — the local chain stays
+// the system of record. Pass nil to remove.
+func (s *ChangeService) WithApprovalCreateObserver(fn func(a *approval.Approval)) *ChangeService {
+	s.onApprovalCreate = fn
+	return s
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -350,12 +370,53 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 		// approved change can never drift from the planned one. Dry runs
 		// are previews and persist nothing.
 		if planMsg != nil && stored != nil && stored.JSON != "" && !req.GetDryRun() {
+			prevHash := run.PlanHash
+			now := time.Now().UTC()
+			// A targeted plan write: unlike a full-row UpdateRun it never
+			// touches status/approval_status, so persisting the new plan can
+			// not clobber a concurrent transition (settlement or apply that
+			// ran between the GetRun above and here).
+			if err := s.store.UpdateRunPlan(ctx, req.GetChangeId(), stored.JSON, stored.Hash, now); err != nil {
+				// Drop-in locking artifact not persisted: surfacing the
+				// failure is the honest outcome. Continuing would return a
+				// "planned" success while the durable state still holds the
+				// old plan — exactly the drift the plan artifact exists to
+				// rule out.
+				return nil, status.Errorf(codes.Internal, "persist plan on run: %v", err)
+			}
+			// Mirror the persisted plan onto the in-memory run so the
+			// kickoff below signs and reads the CURRENT artifact (it
+			// early-returns on empty PlanJSON).
 			run.PlanJSON = stored.JSON
 			run.PlanHash = stored.Hash
-			run.UpdatedAt = time.Now().UTC()
-			if err := s.store.UpdateRun(ctx, run); err != nil {
-				log.Warn("failed to persist plan on run", "run_id", req.GetChangeId(), "error", err)
+			run.UpdatedAt = now
+			// Approval binding (D-1 v2): an approval attests to a specific
+			// plan (PlanHash). When a NEW plan (different hash) is persisted
+			// on a run that was already approved, that approval is no longer
+			// valid — the run is sent back to draft/pending so it cannot be
+			// applied until the new plan is approved. Terminal runs are left
+			// untouched (re-planning a completed/failed run is a retry, not a
+			// re-approval gate).
+			if run.Status == "approved" && stored.Hash != "" && stored.Hash != prevHash {
+				if ok, cerr := s.store.UpdateRunApprovalStatusIf(ctx, req.GetChangeId(), "approved", "draft", "pending", now); cerr != nil {
+					return nil, status.Errorf(codes.Internal, "reset run to draft after re-plan: %v", cerr)
+				} else if !ok {
+					log.Warn("re-plan: run status changed concurrently before approval reset", "run_id", req.GetChangeId())
+				} else {
+					// Mirror the CAS outcome onto the in-memory run so the
+					// kickoff below (whose tail does an UpdateRun when the
+					// tier changes) cannot write the stale 'approved' back.
+					run.Status = "draft"
+					run.ApprovalStatus = "pending"
+				}
 			}
+			// Approval kickoff (R4 routing): now that the artifact (with
+			// its risk floor) is durable, start the approval chain the
+			// workflow declared — nobody did this before, so
+			// ApproveChange could only ever find manually-seeded
+			// records. The tier is max(workflow declaration, plan floor):
+			// the floor can RAISE but never LOWER the declared level.
+			s.kickoffApproval(ctx, run)
 		}
 		return planMsg, nil
 	}
@@ -368,6 +429,158 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 		Batches:       []*pb.Batch{},
 		ImpactSummary: "no engine configured; empty plan",
 	}, nil
+}
+
+// kickoffApproval starts the approval chain for a freshly planned run
+// (design: 计划→审批 gating). Before this existed, a workflow's
+// approval declaration never produced a pending approval record —
+// ApproveChange could only find manually seeded rows, so the approval
+// chain was effectively manual. This closes the loop:
+//
+//   - the tier is max(workflow's declared level, plan's ApprovalFloor) —
+//     the floor (any irreversible step ⇒ at least high) can RAISE but
+//     never LOWER the declaration (R4);
+//   - the approver set comes from the workflow declaration; without one
+//     the run's creator becomes the sole approver with a 24h expiry
+//     (fail-safe default: an unreviewed workflow still gets a real
+//     approval record rather than none);
+//   - idempotent: a re-plan of an already-kicked-off run replaces its
+//     pending approval (the old pending row is superseded by a fresh
+//     one matching the new plan).
+//
+// Failures are logged, never fatal: planning must succeed even when the
+// approval subsystem is degraded (the apply gate re-checks approval
+// anyway, so a missing kickoff cannot let an unapproved change run).
+func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) {
+	if s.approval == nil || run == nil || run.PlanJSON == "" {
+		return
+	}
+
+	// The approval floor ships inside the persisted artifact.
+	var p plan.Plan
+	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
+		log.Warn("approval kickoff: plan artifact unparsable; skipping", "run_id", run.ID, "error", err)
+		return
+	}
+
+	// Workflow declaration: parse the inline source when possible (the
+	// common path — template-instantiated runs carry rendered YAML). A
+	// path-shaped source or parse failure degrades to "no declaration"
+	// and the floor alone drives the tier — never the reverse.
+	declared := ""
+	if spec := parseInlineApprovalSpec(run.WorkflowName); spec != nil {
+		declared = spec.Level
+	}
+
+	tier := risk.MaxLevel(declared, p.ApprovalFloor)
+	if tier == "" {
+		tier = "standard"
+	}
+
+	// Approver set: declared approvers win; otherwise the creator (the
+	// least-privilege default that still leaves a record the chain can
+	// resolve; deployments wanting stricter separation declare
+	// approvers explicitly).
+	approvers := []string{}
+	minApprovers := 0
+	if spec := parseInlineApprovalSpec(run.WorkflowName); spec != nil {
+		approvers = spec.Approvers
+		minApprovers = spec.MinApprovers
+	}
+	if len(approvers) == 0 {
+		approvers = []string{run.Creator}
+		minApprovers = 1
+	}
+	if minApprovers > len(approvers) {
+		minApprovers = len(approvers)
+	}
+
+	// Supersede any pending approval from an earlier plan of this run.
+	approvals, err := s.store.ListApprovals(ctx, state.ApprovalFilter{RunID: run.ID, Status: "pending"})
+	if err == nil {
+		for _, old := range approvals {
+			// Mark the superseded row expired so the pending list stays
+			// clean; the audit trail keeps both (the old row is updated,
+			// not deleted). ActedAt records when the supersession
+			// happened; Comment carries the reason.
+			now := time.Now().UTC()
+			old.Status = "expired"
+			old.ActedAt = &now
+			if old.Comment == "" {
+				old.Comment = "superseded by re-plan"
+			}
+			if err := s.store.UpdateApproval(ctx, old); err != nil {
+				log.Warn("approval kickoff: superseding old pending approval failed", "run_id", run.ID, "approval_id", old.ID, "error", err)
+			}
+		}
+	}
+
+	created, err := s.approval.Create(ctx, approval.CreateRequest{
+		RunID:        run.ID,
+		Level:        tier,
+		Approvers:    approvers,
+		MinApprovers: minApprovers,
+		ExpiresAt:    time.Now().UTC().Add(24 * time.Hour),
+		PlanHash:     run.PlanHash,
+	})
+	if err != nil {
+		log.Warn("approval kickoff: create failed; apply gate still enforces approval", "run_id", run.ID, "level", tier, "error", err)
+		return
+	}
+
+	// Record the effective tier on the run so the UI/CLI surface it.
+	if run.ApprovalLevel != tier {
+		run.ApprovalLevel = tier
+		run.UpdatedAt = time.Now().UTC()
+		if err := s.store.UpdateRun(ctx, run); err != nil {
+			log.Warn("approval kickoff: persisting tier on run failed", "run_id", run.ID, "error", err)
+		}
+	}
+
+	s.recordAudit(ctx, &state.Audit{
+		ID:        newID("aud-"),
+		RunID:     run.ID,
+		Action:    "approval_kickoff",
+		Actor:     "system",
+		Target:    created.ID,
+		Result:    tier,
+		Timestamp: time.Now().UTC(),
+	})
+	log.Info("approval chain kicked off",
+		"run_id", run.ID,
+		"level", tier,
+		"declared", declared,
+		"floor", p.ApprovalFloor,
+		"min_approvers", minApprovers)
+
+	// Post-create observer (ChatOps card, Jira mirror, ...): the record
+	// is durable, so mirror failures can only lose visibility, never
+	// correctness.
+	if s.onApprovalCreate != nil {
+		s.onApprovalCreate(created)
+	}
+}
+
+// parseInlineApprovalSpec extracts the approval declaration from an
+// inline workflow YAML source. Returns nil when the source is not
+// inline YAML or carries no approval declaration — callers treat that
+// as "no declaration" and let the risk floor drive the tier.
+func parseInlineApprovalSpec(src string) *dsl.ApprovalSpec {
+	src = strings.TrimSpace(src)
+	if src == "" {
+		return nil
+	}
+	// Path-shaped sources (single line with a separator, no newlines)
+	// are workflow files the gRPC layer cannot read; treat as no
+	// declaration — the floor alone drives the tier.
+	if !strings.ContainsAny(src, "\n\r") && (strings.ContainsAny(src, `/\`) || !strings.Contains(src, " ")) {
+		return nil
+	}
+	wf, err := dsl.NewParser().ParseBytes([]byte(src))
+	if err != nil || wf == nil {
+		return nil
+	}
+	return wf.Approval
 }
 
 // verifyStoredPlanHash recomputes the canonical hash of the plan JSON
@@ -435,6 +648,36 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	}
 	if err := verifyStoredPlanHash(run); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+	}
+
+	// Approval/plan binding (D-1 v2): with an execution engine and an
+	// approval service wired, the run may only be applied when an approval
+	// row that ATTESTs TO THE CURRENT plan revision is actually approved.
+	// This is the final defence against the "approve v1, re-plan to v2, apply
+	// v2 under a v1 approval" drift: the state guard above proves status
+	// 'approved', but not WHICH plan that approval covered.
+	// approvalPlanMatch owns the compatibility rule (empty plan_hash = legacy,
+	// still authorises) and is shared with settlement so both gates agree.
+	// autoApprove is an explicit bypass and skips this check.
+	if !req.GetAutoApprove() && s.approval != nil {
+		approvals, aerr := s.store.ListApprovals(ctx, state.ApprovalFilter{RunID: run.ID, Status: "approved"})
+		if aerr != nil {
+			return nil, status.Errorf(codes.Internal, "list approvals: %v", aerr)
+		}
+		matched, legacy := false, false
+		for _, a := range approvals {
+			if ok, lg := approvalPlanMatch(a, run.PlanHash); ok {
+				matched, legacy = true, lg
+				break
+			}
+		}
+		if !matched {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"change %q has no approved approval matching the current plan version %q; re-plan invalidated the prior approval — approve the new plan before applying", req.GetChangeId(), run.PlanHash)
+		}
+		if legacy {
+			log.Warn("apply: authorising via legacy (empty plan_hash) approval; no plan binding", "run_id", run.ID)
+		}
 	}
 
 	// Transition to running via a compare-and-set on the current status.
@@ -1142,6 +1385,201 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 	}, nil
 }
 
+// --- approval settlement ----------------------------------------------------
+
+// SettleState is the outcome of SettleApproval.
+type SettleState int
+
+const (
+	// SettleNone means no approval rows exist for the run (nothing to
+	// settle — the pre-kickoff behaviour, where a decision surface acted
+	// directly on the run).
+	SettleNone SettleState = iota
+	// SettlePending means the approval chain is still in progress
+	// (partial quorum, e.g. 1/2 approves). The run MUST stay in its
+	// pre-decision state so a later apply cannot ride an unfinished
+	// quorum.
+	SettlePending
+	// SettleApproved means the quorum was reached; the run moved to
+	// "approved".
+	SettleApproved
+	// SettleRejected means a one-vote veto landed; the run moved to
+	// "rejected".
+	SettleRejected
+	// SettleExpired means the only approval rows are expired (kicked
+	// off, then superseded by a re-plan, and nobody decided). The run
+	// stays untouched — the fresh pending row from the re-plan is what
+	// the next decision settles on.
+	SettleExpired
+)
+
+// terminalRunStatuses lists run statuses that settlement must never
+// overwrite. A run already approved/rejected/running/settled carries a
+// stronger verdict than any late-settling approval row: approval rows
+// can be re-kicked-off by re-plans, and an approval that settled long
+// after the run moved on (expired silently, decided by a stale approver
+// path) must not resurrect or demote the run.
+var terminalRunStatuses = map[string]bool{
+	"approved": true, "rejected": true, "running": true,
+	"completed": true, "failed": true, "rolled_back": true,
+	"cancelled": true, "archived": true, "interrupted": true,
+}
+
+// SettleApproval is the SINGLE settlement point that mirrors approval
+// chain outcomes onto the run after any decision surface (gRPC
+// ApproveChange/RejectChange, CLI approve/reject, ChatOps approve/
+// reject, mobile deeplink) records a decision. It reads the run's
+// approval rows' latest status and moves the run accordingly:
+//
+//   - approval approved (quorum reached)   → run "approved"
+//   - approval rejected (one-vote veto)    → run "rejected"
+//   - approval still pending (1/N votes)   → run UNTOUCHED (the quorum
+//     gate: `min_approvers: 2` must not let the first vote through)
+//   - no approval rows                     → SettleNone (legacy direct
+//     behaviour; callers that already moved the run themselves keep
+//     working — this is the pre-kickoff compatibility path)
+//
+// Settlement never downgrades a terminal run status (terminalRunStatuses).
+//
+// The method is idempotent: settling an already-settled run is a no-op.
+// Errors are returned (not swallowed): a decision surface that cannot
+// persist the run transition must not report success to its user, or the
+// operator would believe a change approved while the apply gate still
+// refuses it.
+func (s *ChangeService) SettleApproval(ctx context.Context, runID string) (SettleState, error) {
+	if s.store == nil {
+		return SettleNone, fmt.Errorf("settle approval: store not configured")
+	}
+
+	// Load every approval row for the run (not just pending): the
+	// decision just recorded may have moved it to approved/rejected.
+	rows, err := s.store.ListApprovals(ctx, state.ApprovalFilter{RunID: runID})
+	if err != nil {
+		return SettleNone, fmt.Errorf("settle approval: list approvals: %w", err)
+	}
+	if len(rows) == 0 {
+		return SettleNone, nil
+	}
+
+	run, err := s.store.GetRun(ctx, runID)
+	if err != nil {
+		return SettleNone, fmt.Errorf("settle approval: get run: %w", err)
+	}
+	if run == nil {
+		return SettleNone, fmt.Errorf("settle approval: run %q not found", runID)
+	}
+
+	// Approval signatures PlanHash (D-1 v2): a row NOT matching the run's
+	// current plan is a dangling approval from an older plan and must not
+	// settle this run. approvalPlanMatch owns the exact compatibility rule
+	// (empty plan_hash = legacy, still honoured) and is shared with the apply
+	// gate so the two can never disagree.
+	matching := make([]*state.Approval, 0, len(rows))
+	legacySettled := false
+	for _, r := range rows {
+		ok, legacy := approvalPlanMatch(r, run.PlanHash)
+		if !ok {
+			continue // approval attests to a different plan revision
+		}
+		if legacy {
+			legacySettled = true
+		}
+		matching = append(matching, r)
+	}
+	if len(matching) == 0 {
+		// No approval row is valid for the current plan: nothing decidable.
+		// A prior plan's approved/rejected rows must not settle this run.
+		return SettleNone, nil
+	}
+	if legacySettled && run.PlanHash != "" {
+		log.Warn("settle approval: matched legacy (empty plan_hash) approval for an engine-born run; no plan binding",
+			"run_id", runID, "plan_hash", run.PlanHash)
+	}
+
+	// Find the LIVE chain state: prefer a pending row (an in-progress
+	// quorum), then a decided row, then expiry-only.
+	var pending, approvedRow, rejectedRow bool
+	for _, r := range matching {
+		switch r.Status {
+		case "pending":
+			pending = true
+		case "approved":
+			approvedRow = true
+		case "rejected":
+			rejectedRow = true
+		}
+	}
+
+	// Vote arithmetic happens on the approval row (decide() already did
+	// it durably); settlement only mirrors the outcome.
+	switch {
+	case rejectedRow && !pending:
+		// One-vote veto reached; no live pending row can outvote it.
+		return SettleRejected, s.transitionRunForApproval(ctx, run, "rejected", "rejected")
+	case approvedRow && !pending:
+		return SettleApproved, s.transitionRunForApproval(ctx, run, "approved", "approved")
+	case pending:
+		// Quorum still in progress (e.g. 1/2): the run must NOT move.
+		// Applying on a partial quorum is exactly the multi-approver
+		// bypass this settlement exists to close.
+		return SettlePending, nil
+	default:
+		// Only expired/superseded rows: nothing decidable.
+		return SettleExpired, nil
+	}
+}
+
+// approvalPlanMatch reports whether an approval row authorises the given plan
+// revision, and whether it matched only through the legacy (empty plan_hash)
+// rule. Settlement and the apply gate MUST share this one predicate so the two
+// gates can never disagree about which approval authorises which revision:
+//
+//   - a row with an empty plan_hash is a pre-binding (legacy) record: it
+//     matches any plan, preserving behaviour for databases written before
+//     plan binding existed;
+//   - a row bound to a revision matches only that exact revision, and never
+//     a run whose plan hash is itself empty.
+func approvalPlanMatch(row *state.Approval, planHash string) (matched, legacy bool) {
+	if row == nil {
+		return false, false
+	}
+	if row.PlanHash == "" {
+		return true, true
+	}
+	return planHash != "" && row.PlanHash == planHash, false
+}
+
+// transitionRunForApproval moves the run to the approval outcome when
+// it is still in a decidable state, honouring terminal protection. It
+// returns nil when the run was already in (or beyond) the target state.
+func (s *ChangeService) transitionRunForApproval(ctx context.Context, run *state.Run, status, approvalStatus string) error {
+	// Terminal protection: a settled run is never resurrected or
+	// demoted by a late approval outcome.
+	if terminalRunStatuses[run.Status] && run.Status != status {
+		log.Warn("settle approval: run already terminal; keeping status",
+			"run_id", run.ID, "current", run.Status, "approval_outcome", status)
+		return nil
+	}
+	if run.Status == status && run.ApprovalStatus == approvalStatus {
+		return nil // already settled; idempotent
+	}
+	now := time.Now().UTC()
+	// Single CAS for status + approval_status: a read-then full-row UpdateRun
+	// could clobber a concurrent transition (e.g. apply moving approved ->
+	// running between the GetRun in SettleApproval and this write). If the
+	// CAS loses, the run moved concurrently and we leave it untouched.
+	ok, err := s.store.UpdateRunApprovalStatusIf(ctx, run.ID, run.Status, status, approvalStatus, now)
+	if err != nil {
+		return fmt.Errorf("settle approval: update run %q to %s: %w", run.ID, status, err)
+	}
+	if !ok {
+		log.Warn("settle approval: CAS lost; run moved concurrently, leaving status untouched",
+			"run_id", run.ID, "outcome", status)
+		return nil
+	}
+	return nil
+}
+
 // --- ApproveChange / RejectChange ------------------------------------------
 
 // ApproveChange records an approval decision. When the approval service
@@ -1188,13 +1626,53 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 		if err := s.approval.Approve(ctx, approvals[0].ID, req.GetApprover()); err != nil {
 			return nil, mapApprovalError(err)
 		}
+
+		// Settle the run from the approval chain's durable state — NOT
+		// from this one vote. `min_approvers: 2` must not let the first
+		// vote flip the run to approved (the quorum gate lives in
+		// approval.decide; settlement only mirrors its outcome).
+		settled, err := s.SettleApproval(ctx, req.GetChangeId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "settle approval: %v", err)
+		}
+		if settled == SettlePending {
+			// Partial quorum: the decision is recorded but the change
+			// is not approved yet. Report the in-progress state so the
+			// caller (and the ChatOps card, and the audit trail) sees
+			// the truth instead of a fabricated approval.
+			run, err = s.store.GetRun(ctx, req.GetChangeId())
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "reload run: %v", err)
+			}
+			s.recordAudit(ctx, &state.Audit{
+				ID:        newID("aud-"),
+				RunID:     run.ID,
+				Action:    "approve",
+				Actor:     req.GetApprover(),
+				Target:    run.ID,
+				Result:    "recorded; quorum pending",
+				Timestamp: now,
+			})
+			return runToPB(run), nil
+		}
 	}
 
-	run.Status = "approved"
-	run.ApprovalStatus = "approved"
-	run.UpdatedAt = now
-	if err := s.store.UpdateRun(ctx, run); err != nil {
-		return nil, status.Errorf(codes.Internal, "update run: %v", err)
+	// Legacy no-approval-service path (or the quorum completed): the
+	// run transitions to approved. With the approval service configured,
+	// SettleApproval above already performed the durable transition;
+	// without it this direct write preserves the pre-wiring behaviour.
+	if s.approval == nil {
+		run.Status = "approved"
+		run.ApprovalStatus = "approved"
+		run.UpdatedAt = now
+		if err := s.store.UpdateRun(ctx, run); err != nil {
+			return nil, status.Errorf(codes.Internal, "update run: %v", err)
+		}
+	} else {
+		run, err = s.store.GetRun(ctx, req.GetChangeId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "reload run: %v", err)
+		}
 	}
 
 	s.recordAudit(ctx, &state.Audit{
@@ -1248,13 +1726,22 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 		if err := s.approval.Reject(ctx, approvals[0].ID, req.GetRejecter(), req.GetReason()); err != nil {
 			return nil, mapApprovalError(err)
 		}
-	}
-
-	run.Status = "rejected"
-	run.ApprovalStatus = "rejected"
-	run.UpdatedAt = now
-	if err := s.store.UpdateRun(ctx, run); err != nil {
-		return nil, status.Errorf(codes.Internal, "update run: %v", err)
+		// One-vote veto: the rejection is durable, settle the run from
+		// the chain state (rejected rows have no pending outvoter).
+		if _, err := s.SettleApproval(ctx, req.GetChangeId()); err != nil {
+			return nil, status.Errorf(codes.Internal, "settle approval: %v", err)
+		}
+		run, err = s.store.GetRun(ctx, req.GetChangeId())
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "reload run: %v", err)
+		}
+	} else {
+		run.Status = "rejected"
+		run.ApprovalStatus = "rejected"
+		run.UpdatedAt = now
+		if err := s.store.UpdateRun(ctx, run); err != nil {
+			return nil, status.Errorf(codes.Internal, "update run: %v", err)
+		}
 	}
 
 	s.recordAudit(ctx, &state.Audit{

@@ -4,6 +4,65 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **并发多人审批丢票（P0，D-1 v2：pending-only CAS 丢票）**：多人审批未达 quorum 时状态仍为 pending，`decide()` 读完整投票列表→追加→`UpdateIfPending`，但底层 UPDATE 条件仅有 `WHERE id=? AND status='pending'`，没有投票内容版本比较——并发两票可同时“成功”而后写覆盖前写。修法：`approvals` 表新增 `revision` 列（SQLite v5 / PG v4 迁移），`UpdateApprovalIfPending` 的 WHERE 追加 `AND revision=?`、SET 自增；`decide()` CAS 失败重读重试。真实 SQLite + 生产适配器上，20 轮并发 2/2 审批每一票都持久化、quorum 正确（`TestApproveConcurrent_Quorum2NoLostVotes`）。
+- **计划与审批版本未绑定，批准可漂移（P0，D-1 v2）**：PlanChange 保存新计划不重置 run 审批状态、重 plan 只废止旧 pending 审批、结算读全部审批行、Apply 不校验“当前版本计划获得过批准”。修法：`approvals` 新增 `plan_hash` 列；Approval/CreateRequest/SettleApproval/kickoff 全链路携带并过滤 plan_hash（空 = legacy 仍参与，兼容存量）；Apply 增加“审批匹配当前计划版本”门禁（无匹配即拒绝）；PlanChange 改 plan 成功后把 approved run CAS 回 draft/pending，且持久化失败改为显式报错（不再告警后继续）。
+- **审批结算 run 状态写入无 CAS（P2）**：`transitionRunForApproval` 读取后整行 `UpdateRun`，可被并发状态迁移覆盖。改为一并更新 status + approval_status 的单次 CAS（新 store 原语 `UpdateRunApprovalStatusIf`）。
+- **PlanChange 全行 UpdateRun 会覆盖并发状态**：计划持久化改为专用写 `UpdateRunPlan`（只写 plan_json/plan_hash/updated_at），不再触碰 status/approval_status。
+- **SQLite 惰性连接丢失 pragma（并发写 BUSY）**：文件库连接池多连接时 `PRAGMA busy_timeout/WAL` 只在一个连接上生效，新连接不继承，并发审批写会 `SQLITE_BUSY`。改为在 DSN 上以 `_pragma=` 声明，使每条连接都继承（busy_timeout=5000/WAL/foreign_keys/synchronous/recursive_triggers）。
+- **审批元数据解析失败静默降级（P1）**：`stateToApproval` 解析 Comment JSON 失败时改为返回错误（fail-closed），不再返回零值记录令 MinApprovers≈0；`decide()` 对 MinApprovers≤0 兜底为 1。
+- **审批-计划匹配规则单点化 + 重试加固（D-1 v2 加固）**：`approvalPlanMatch` 成为结算与 Apply 门禁共用的唯一判定（legacy 空 plan_hash 规则只此一处），避免两个门禁日后漂移；该判定明确“无计划版本的 run 不被版本化审批授权”。并发票 CAS 重试预算 2→4 并加入小幅退避（`casRetryBackoff`），使多审批人同时决策时收敛而非抛出伪冲突（ErrConflict 仍是穷尽后的诚实结果）。
+- **升级数据安全测试**：新增 `TestMigrate_LegacyApprovalRowSurvivesUpgrade`——升级前的 in-flight pending 审批行在 v2→v5 迁移后原样保留（plan_hash 空、revision 0）且仍可被 CAS 决策；3 审批人并发 3/3 quorum 回归（`TestApproveConcurrent_Quorum3NoLostVotes`）；autoApprove 显式绕过审批门禁的回归（`TestApplyChange_AutoApproveBypassesPlanApprovalGate`）。
+- **unparam 清理（D-1 v2 加固）**：`settleApprovalFromCLI` 去掉未使用的 `actor` 参数，并把 `action` 用于部分票进度提示（原先两处告警）。`itsm/jira.Client.do` 的同类清理留在工作区，随该新包自身的提交一并入库。
+
+- **审批多人门在 run 层被短路（P0：`min_approvers ≥ 2` 时第一票即放行）**：`ApproveChange` 此前调完 `approval.Service.Approve` 后**不看法票结果**，无条件把 run 置 approved——approval 层 `decide()` 的多人票语义（1/N 票保持 pending）在 run 层被完全绕过：`min_approvers: 2` 的变更，第一个审批人点同意即生效。修法：新增 **`ChangeService.SettleApproval` 单一结算点**——决策记录后读取该 run 全部 approval 行的**落库后状态**（approved/rejected/pending/expired）镜像到 run（票满→approved、一票否决→rejected、1/N→run 保持原状），终态保护（approved/rejected/running/completed/… 永不被迟到的结算降级或复活），幂等（重复结算 no-op）。
+- **三个决策面记录决策后 run 永不翻转（P1：approve 了但 apply 永远拒绝）**：CLI `levee approve/reject`、ChatOps `approve/reject`、移动端 deeplink 三面都**直调** `approval.Service`（只写 approval 行）从不回写 run——run 永远停在 draft，后续 `apply` 因状态门拒绝，而操作员以为已批准。修法：三面全部收敛到 `SettleApproval`（CLI/ChatOps 在决策落库后显式调用并打印进度——"quorum still pending" 提示还需 N 票；deeplink 走 REST 层：`ApproveViaDeepLink/RejectViaDeepLink` 改返回 runID，网关结算，部分票响应 `recorded; quorum pending` 而非谎报 approved）。
+- **CLI `levee plan` 不启动审批链（P1：kickoff 断链的 CLI 残留）**：`newCLIChangeService` 此前 approval service 恒为 nil——CLI 规划的变更同样不产生 pending approval，`levee approve` 找不到记录。修法：与 serve 同口径接上真实 approval adapter。
+- **多人票测试基建缺陷**：kickoff 测试 adapter 的 Get 往返丢失 Decisions（Comment JSON 只编 Approvers/MinApprovers），`decide()` 的读-改-写会**跨决策丢票**（第二票时第一票消失、永远 1/2）——补全字段往返后多人票门才真正可测。
+
+### 新增
+
+- **危险度评分与审批分级自动路由（R4 红线落地，`internal/risk`）**：变更加"有多危险"从此可量化、可解释、可路由——
+  - **评分因子**（5 类，均带分值上限防单因子淹没）：不可逆步骤数（×20，沿用 batch 1 的 `PlanStep.Irreversible` 判定，单一来源）；破坏性动作名词典（remove/delete/drop/truncate/destroy/purge/wipe，白名单滞后模块时的纵深防御）；影响面分档（复用 `plan.ImpactAnalyzer` 的低/中/高档）；无回滚声明步骤数；批次扇出。
+  - **审批下限推导**：分数带（0-39 standard / 40-69 high / 70+ emergency）之上叠加硬红线——**任一不可逆步骤 ⇒ 至少 high**（分数再低也不豁免）；不可逆 + 高档影响面 ⇒ emergency。评分与因子明细落盘进 plan_json 工件（`Plan.RiskScore/RiskFactors/ApprovalFloor`），批准的分数即执行的分数（plan_hash 绑定）。
+  - **审批链启动补断链（kickoffApproval）**：workflow 的 `approval:` 声明此前从未产生 pending approval 记录——ApproveChange 只能找到手工 seed 的行，审批链实际从未被系统启动过。现在 `PlanChange` 成功持久化工件后自动创建 pending approval：**tier = max(workflow 声明, 计划下限)**（下限只升不降，声明 emergency 仍赢过 floor high）；审批人集合取 workflow 声明，无声明时创建者兜底 + 24h 过期（fail-safe：无审批声明的变更也留真实记录而非无记录）；重 plan 覆盖旧 pending（旧行标 expired，审计留双份）。失败仅告警不阻断——apply 门的审批检查仍是最终防线。serve 侧 ChangeService 此前 approval service 恒为 nil，已接上真实 adapter。
+  - **风险包零依赖设计**：`risk` 不 import `plan`（`plan` 反向持有风险字段），调用方组装扁平 `Input`——依赖图无环，字段面只有一处真身。
+- **单步验证门 API（`POST /gates/verify`，`internal/grpc/rest_gate.go`）**：操作员/流水线预检/ChatOps"现在跑一条健康检查"的按需单步验证——无需为一次检查规划整个变更：
+  - 复用引擎同源 `verify.NewCommandGate/NewProbeGate/NewSLOGate` 构造器（零重实现、零语义漂移）；cmd 检查经注入的 ChannelDialer 对 inventory 目标拨号执行（未知/retired 目标前置拒绝），probe 自描述，slo 必须配置 Prometheus URL 否则 fail-closed。
+  - **human 显式排除**：阻塞审批检查点不属于单步验证语义，指向审批链（ApproveChange/mobile）。
+  - 每次执行落审计（action `gate_verify`，带可选 run_id 关联）——按需检查不留审计盲区。REST 400 语义：调用方描述了系统诚实无法执行的检查（未知类型/缺参/缺运行时依赖），是请求错误而非服务器错误。
+  - serve 接线：`--engine-enabled` 时经 `wiring.Engine.Dial`（inventory 查询 + 凭据展开 + registry 拨号与 apply 路径同口径）注入 dialer；无引擎时端点不挂载（404）。
+- **ITSM Jira 出站审批桥（`internal/itsm/jira`）**：审批留痕对外可追溯——审批链开始建 Jira issue（携带 `approval:<id>` 标签做链接），审批决策经 JQL 按标签定位镜像 issue 并评论（"approved by alice (2/2)"）：
+  - **纯出站镜像**：LEVEE 自身 store 是唯一事实来源，apply 路径不读 Jira——Jira 故障只延迟镜像、永不阻断或伪造审批。
+  - **config 驱动 no-op**：`notify.jira.enabled=false`（默认）什么都不装什么都不拨；启用必须齐 url/project_key/api_token（env `LEVEE_NOTIFY_JIRA_API_TOKEN` 可覆盖），缺了 serve 启动失败（拒绝半桥）。Jira Cloud 走 Basic（email:token），Server/DC 走 Bearer。
+  - **错误遏制**：所有外发 best-effort，错误日志后丢弃——镜像失败绝不影响审批链本身。kickoff 侧经 ChangeService 新增 `WithApprovalCreateObserver` 钩子（与 approval.Service 的 DecisionObserver 同契约语义：副作用失败不连坐主流程）。
+- **审批创建观察者（`ChangeService.WithApprovalCreateObserver`）**：kickoff 后落库即可通知外部镜像（ChatOps 卡/Jira issue）——chatopsbridge 的 `OnApprovalCreated` 此前同样从未被生产调用，观察者面补齐后两个桥均可挂上。
+
+- **回滚快照全链路接线（修复"声明了但零执行"缺陷）**：`rollback: {strategy: snapshot}` 此前 DSL 可声明、plan 携带，但创建与恢复两侧都无消费者（v1.13.0 Known Limitations 原文承认 "built-but-unwired"）。六层全部接通：
+  - **DSL 声明面**：`RollbackSpec.SnapshotPaths`（步骤级 `snapshot_paths:` 列表，声明要备份的目标机路径）+ parser 透传。
+  - **采集（创建）侧**：closure 增加采集阶段（锁获取后、首个批次前，设计 4.4.4.2"快照创建失败则该目标机不进 apply"）；`engine.Snapshotter` 接口 + `WithSnapshotter/SetSnapshotter` 钩子；只对 `strategy: snapshot` 步骤采集。
+  - **通道感知采集器**（`internal/wiring/snapshotter.go`）：经既有 channel 缓存对目标机执行 `base64 '<path>'` 拉取文件内容（修复 SnapshotManager 只认本地 FS 的缺陷——naive 接线会快照 master 自己的文件系统）；`base64` 编码传输杜绝引号/注入面；payload 落 `files/<flattened>` + `paths.json`，与本地 FS 采集**字节兼容**（`rollback.WriteSnapshotPayloads/ReadSnapshotPayloads`）。
+  - **恢复（回滚）侧**：`rollback.Manager` 新增 `strategy: snapshot` 分支——恢复快照**而非**执行 undo 步骤（混合执行等于双重撤销，被显式禁止）；`WithSnapshotRestore` + `WithRunID/SetRunID` 注入恢复回调与闭包 run id；fail-closed 三路：无回调→skip "not wired"（绝不静默降级成 undo）、无 run id→skip、恢复错误→step 失败（操作员可见）。
+  - **键设计**：快照按 **change id** 键存（非闭包 run id）——手动 `RollbackChange` 路径只知 change id 也能找到快照；重跑覆盖旧采集，恢复总是回到最近一次执行前状态。
+  - **serve 旗标**：`--engine-snapshot-dir`（空=禁用，快照步骤恢复为 "not wired" skip 而非失败）；闭包自动回滚与手动回滚两条路径都装配恢复回调。
+- **local 通道（`internal/channel/local`）**——通道插件化开放的第一个证明实现：
+  - CI/沙箱/单机自测场景的零网络执行通道（在 LEVEE 进程本地 OS 执行，实现完整 `channel.Channel` 契约）。
+  - **三重安全门禁**（防"workflow 任意命令上 master 执行"的 R2 红线）：程序白名单（精确名匹配，`map[string]ArgPolicy`）+ 参数策略（`ArgNone`/`ArgPrefix`(仅 --flag)/`ArgShell`(信任沙箱)）+ 沙箱根目录（Upload/Download 路径穿越拒绝，`../` 与根外绝对路径均 `ErrPolicyDenied`）。
+  - **fail-closed 默认**：零值策略拒绝一切；未 enable 时 Connect/Exec/Upload/Download 全部 `ErrDisabled`；Windows 拒绝 Exec（os/exec 解析 cmd 内建/PATHEXT 无法白名单化，平台门在 Exec 入口，CheckPolicy 保持纯逻辑便于跨平台测试）。
+  - 工厂经 `init()` 注册进 `DefaultRegistry()`（"local"），`local.Target` 实现 `channel.Target`。
+- **通道插件开发指南（`docs/channel-plugins.md`）**：第三方通道注册的完整文档——Channel/ChannelFactory/Target 契约表、安全底线（凭据零泄露/fail-closed/命令注入收敛）、参考实现对照（local→winrm→ssh 按复杂度）、注册后的引擎行为链、测试要求、已知限制。
+- **MySQL 动作模块（`internal/executor/modules/mysql`）**：设计文档 8 大场景中最重的"数据库 schema 变更 / 主从切换"场景首次落地代码实现——
+  - `mysql.query`：幂等 DDL/DML；SQL 全程 base64 编码经管道传输（`base64 -d | mysql`），SQL 文本永不上命令行，杜绝引号/反引号/`$(...)` 注入面；破坏性语句（DROP TABLE/DATABASE/INDEX/USER、TRUNCATE、无 WHERE 的 DELETE）在 query 动作上直接拒绝，引导走显式标记不可逆的受审步骤（R2 红线）。
+  - `mysql.pt_osc`：封装 pt-online-schema-change 在线大表变更；alter 子句白名单正则（ADD/DROP/MODIFY/CHANGE/RENAME COLUMN、INDEX/KEY/CONSTRAINT、ALTER COLUMN SET/DROP DEFAULT、CONVERT TO CHARSET、ENGINE=）双端锚定 + 单引号 shell 转义，白名单外子句（PARTITION BY、LOAD DATA、链式命令）拒绝执行。
+  - `mysql.replica_switch`：主从切换编排（SHOW SLAVE STATUS → STOP SLAVE → CHANGE MASTER TO MASTER_AUTO_POSITION → START SLAVE），逐步失败即中止且后续步骤不再执行；强制 `confirm=yes` 确认门——不可逆拓扑变更必须显式声明。
+  - 主机名/标识符双校验规则（hostname 允许 `.-:[]`，库/表/用户名仅 `[A-Za-z0-9_$]`），`port`/`user`/`database` 全部标识符校验后才可拼接。
+- **不可逆动作检查器生产接线（修复"有框架零接线"缺陷）**：`IrreversibleChecker` 此前仅测试注册、生产代码从未接线。现在 `plan.Generator` 在生成时对每个步骤执行检查（显式声明优先，其次默认白名单 pkg.remove/file.delete/user.remove/mysql.replica_switch/mysql.pt_osc），判定结果连同 reason 落盘到 `PlanStep.Irreversible/IrreversibleReason`（进 plan_json 工件）——审批分级（R4）与回滚门禁（R2）自此有单一事实来源，下游无需重新推导。
+- **mysql 动作登记 DSL 类型签名表**（`internal/dsl/typechecker.go`）：`mysql.query/pt_osc/replica_switch` 的 args 类型完整登记，编译期类型检查覆盖新模块。
+- **一键合规报告（`levee audit report`）**：时间窗（--since/--until，日期或 RFC3339）内全部变更 run 的审批链、哈希链验证结论（复用 ChainVerifier）、回滚记录聚合为自包含 HTML（无外部资源、可归档可邮件），--output 落盘或 stdout；监管/审计人员离线可读，"给监管看的一键报告"。
+- **ChatOps 审批桥（`internal/notify/chatopsbridge`）**：approval 服务新增可选 `DecisionObserver` 钩子（决策落库后触发，错误不影响决策本身）；桥接包把审批创建/决策转换为 chatops 事件（approval_requested 卡 + approval_decision 进度卡"1/2 approved"/一票否决）广播到 BotManager（钉钉/飞书/Slack）。审批人从此在群里看到实时审批流，无需登录 LEVEE。
+- **README 定位升级**：从"非云原生基础设施"（资产位置边界）升级为"高危变更治理"（变更危险度边界）——云上云下、集群内外的高危变更统一归口；ArgoCD/Flux（集群内声明式交付）与 OpsMesh（日常自动化）的分层叙事保留。
+
 ### 安全修复
 
 - **CVE-2026-84445（CRITICAL/HIGH）修复**：builder 阶段基础镜像 alpine 包升级。runtime 阶段已有 `apk upgrade --no-cache`（上次 CVE-2026-14456 openssl 的同模式修复），但 builder 阶段（`golang:1.26-alpine`）缺失该步骤，导致该基础镜像新发布的 CVE 在 trivy 门禁被检出阻断。builder 阶段补上 `apk upgrade --no-cache`，与 runtime 阶段同模式，消除 builder 层已修复基础 CVE。

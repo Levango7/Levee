@@ -140,16 +140,18 @@ func TestApprovalAdapter_ListPendingSkipsMalformed(t *testing.T) {
 
 	pending, err := adapter.ListPending(ctx)
 	require.NoError(t, err)
-	// stateToApproval leaves zero-value extras on broken JSON instead of
-	// failing, so both rows must surface (defensive path, never an error).
-	require.Len(t, pending, 2)
+	// D-1 v2 (P1-2): stateToApproval hard-fails on unparseable metadata, so
+	// ListPending skips the broken row instead of surfacing a zero-value
+	// record that could be mistaken for a decidable quorum. Any attempt to
+	// Approve the broken row surfaces the parse error (fail-closed) rather
+	// than silently defaulting MinApprovers to 0.
+	require.Len(t, pending, 1)
 	byID := map[string]*approval.Approval{}
 	for _, a := range pending {
 		byID[a.ID] = a
 	}
 	assert.NotNil(t, byID["ap-ok"])
-	require.NotNil(t, byID["ap-broken"])
-	assert.Equal(t, approval.Status("pending"), byID["ap-broken"].Status)
+	assert.Nil(t, byID["ap-broken"], "malformed records are skipped, not surfaced as pending")
 }
 
 func TestStateToApproval_ZeroTimeoutCopy(t *testing.T) {

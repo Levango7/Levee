@@ -47,7 +47,7 @@ const pgBaseSchemaVersion = 1
 // pgCurrentSchemaVersion mirrors currentSchemaVersion for the PostgreSQL
 // migration path. Bump whenever a forward PostgreSQL migration step is added
 // to pgMigrations; pgschema.sql must gain the same change.
-const pgCurrentSchemaVersion = 3
+const pgCurrentSchemaVersion = 4
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
@@ -195,6 +195,43 @@ func (s *PGStore) UpdateRunStatusIf(ctx context.Context, id string, from string,
 		return false, fmt.Errorf("state: update run status %q: rows affected: %w", id, err)
 	}
 	return n > 0, nil
+}
+
+// UpdateRunApprovalStatusIf atomically transitions a run's status and
+// approval_status in one compare-and-set (WHERE status = from). See the Store
+// interface for the rationale: approval settlement writes both columns as one
+// CAS so a settled outcome cannot clobber a concurrent state transition.
+func (s *PGStore) UpdateRunApprovalStatusIf(ctx context.Context, id string, from string, to string, approvalStatus string, updatedAt time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status=$1, approval_status=$2, updated_at=$3 WHERE id=$4 AND status=$5`,
+		to, approvalStatus, updatedAt, id, from,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q %s->%s: %w", id, from, to, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q: rows affected: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateRunPlan overwrites only the plan artifact and updated_at. See the
+// Store interface for why it avoids touching status/approval_status.
+func (s *PGStore) UpdateRunPlan(ctx context.Context, id string, planJSON string, planHash string, updatedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET plan_json=$1, plan_hash=$2, updated_at=$3 WHERE id=$4`,
+		planJSON, planHash, updatedAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("state: update run plan %q: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("state: update run plan %q: rows affected: %w", id, err)
+	} else if n == 0 {
+		return fmt.Errorf("state: update run plan %q: not found", id)
+	}
+	return nil
 }
 
 // MarkNonTerminalSteps flips the run's non-terminal step rows
@@ -698,10 +735,10 @@ func (s *PGStore) CreateApproval(ctx context.Context, approval *Approval) error 
 		return fmt.Errorf("state: create approval: nil approval")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals
-		(id, run_id, level, approver, status, comment, timeout_at, acted_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		(id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		approval.ID, approval.RunID, approval.Level, approval.Approver, approval.Status,
-		approval.Comment, approval.TimeoutAt, approval.ActedAt,
+		approval.Comment, approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.Revision,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create approval: %w", err)
@@ -712,10 +749,10 @@ func (s *PGStore) CreateApproval(ctx context.Context, approval *Approval) error 
 // GetApproval returns the approval with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, level, approver, status, comment, timeout_at, acted_at
+		id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision
 		FROM approvals WHERE id = $1`, id)
 	a := &Approval{}
-	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt)
+	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -725,16 +762,18 @@ func (s *PGStore) GetApproval(ctx context.Context, id string) (*Approval, error)
 	return a, nil
 }
 
-// UpdateApproval overwrites all mutable columns of an existing approval.
+// UpdateApproval overwrites all mutable columns of an existing approval and
+// bumps its revision so any in-flight decision CAS (UpdateApprovalIfPending)
+// that read the old revision loses and must re-read.
 func (s *PGStore) UpdateApproval(ctx context.Context, approval *Approval) error {
 	if approval == nil {
 		return fmt.Errorf("state: update approval: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7
-		WHERE id=$8`,
+		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1
+		WHERE id=$9`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update approval %q: %w", approval.ID, err)
@@ -747,18 +786,20 @@ func (s *PGStore) UpdateApproval(ctx context.Context, approval *Approval) error 
 
 // UpdateApprovalIfPending is the compare-and-set variant of UpdateApproval:
 // it applies the update only when the stored row is still in status
-// "pending". It returns true when the update was applied and false when the
-// row was concurrently decided (or does not exist), so callers never
-// overwrite a terminal decision.
+// "pending" AND its revision is the one the caller read. The revision check
+// is what prevents two concurrent partial votes (both leaving the row
+// pending) from silently overwriting each other: the second writer carries
+// a stale revision, so it loses the CAS and the caller re-reads and retries.
+// It returns true when the update was applied and false otherwise.
 func (s *PGStore) UpdateApprovalIfPending(ctx context.Context, approval *Approval) (bool, error) {
 	if approval == nil {
 		return false, fmt.Errorf("state: update approval if pending: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7
-		WHERE id=$8 AND status='pending'`,
+		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1
+		WHERE id=$9 AND status='pending' AND revision=$10`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID, approval.Revision,
 	)
 	if err != nil {
 		return false, fmt.Errorf("state: update approval %q if pending: %w", approval.ID, err)
@@ -786,7 +827,7 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 		args = append(args, filter.Status)
 	}
 
-	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at FROM approvals`
+	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision FROM approvals`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
 	}
@@ -805,7 +846,7 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 	var out []*Approval
 	for rows.Next() {
 		a := &Approval{}
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision); err != nil {
 			return nil, fmt.Errorf("state: list approvals scan: %w", err)
 		}
 		out = append(out, a)

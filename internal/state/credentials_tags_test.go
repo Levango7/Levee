@@ -107,6 +107,20 @@ func TestMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 		incident_id TEXT NOT NULL DEFAULT ''
 	)`)
 	require.NoError(t, err)
+	// The v5 step (approvals.plan_hash/revision) also replays against this
+	// legacy file, so the fixture must carry the v1-era approvals DDL.
+	_, err = db.ExecContext(ctx, `CREATE TABLE approvals (
+		id TEXT PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		level TEXT NOT NULL,
+		approver TEXT NOT NULL,
+		status TEXT NOT NULL,
+		comment TEXT NOT NULL DEFAULT '',
+		timeout_at DATETIME,
+		acted_at DATETIME,
+		FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
+	)`)
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
 	// Opening the store runs the pending v2 step against the legacy file.
@@ -171,6 +185,20 @@ func TestMigrate_FreshAndUpgraded_SchemaShapesMatch(t *testing.T) {
 		incident_id TEXT NOT NULL DEFAULT ''
 	)`)
 	require.NoError(t, err)
+	// The replayed v5 step alters approvals, so the fixture carries the
+	// v1-era approvals DDL (no plan_hash/revision columns yet).
+	_, err = db.ExecContext(ctx, `CREATE TABLE approvals (
+		id TEXT PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		level TEXT NOT NULL,
+		approver TEXT NOT NULL,
+		status TEXT NOT NULL,
+		comment TEXT NOT NULL DEFAULT '',
+		timeout_at DATETIME,
+		acted_at DATETIME,
+		FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
+	)`)
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 	upgraded, err := NewSQLiteStore(ctx, legacyPath)
 	require.NoError(t, err)
@@ -191,7 +219,7 @@ func TestMigrate_FreshAndUpgraded_SchemaShapesMatch(t *testing.T) {
 		require.NoError(t, rows.Err())
 		return out
 	}
-	for _, table := range []string{"credentials", "runs"} {
+	for _, table := range []string{"credentials", "runs", "approvals"} {
 		assert.Equal(t, cols(fresh, table), cols(upgraded, table),
 			"schema.sql and the migration steps must produce the same %s shape", table)
 	}

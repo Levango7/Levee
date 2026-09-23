@@ -68,11 +68,32 @@ func NewSQLiteStore(ctx context.Context, dbPath string, opts ...SQLiteOption) (*
 		dsn = "file::memory:?cache=shared"
 	}
 
+	prefix := "?"
+	if strings.Contains(dsn, "?") {
+		prefix = "&"
+	}
+	// DSN-level pragmas so EVERY pooled connection inherits them. Applying
+	// them via db.ExecContext below only hits one connection, so when the
+	// pool opens more connections under concurrent load (e.g. several
+	// approvers deciding at once) those new connections would miss
+	// busy_timeout and fail with SQLITE_BUSY instead of waiting — exactly the
+	// concurrent-vote path D-1 v2 guards. The values here must match the
+	// ExecContext loop beneath (kept for idempotency on the first connection).
+	dsn += prefix + "_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=synchronous(" + strings.ToUpper(syn) + ")" +
+		"&_pragma=recursive_triggers(1)"
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("state: open sqlite: %w", err)
 	}
 
+	// :memory: databases must keep a single connection alive for the
+	// lifetime of the store, otherwise each pool connection sees a fresh
+	// in-memory database. We achieve this by setting max open/inactive conns
+	// to 1.
 	if dbPath == ":memory:" {
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
@@ -201,6 +222,43 @@ func (s *SQLiteStore) UpdateRunStatusIf(ctx context.Context, id string, from str
 		return false, fmt.Errorf("state: update run status %q: rows affected: %w", id, err)
 	}
 	return n > 0, nil
+}
+
+// UpdateRunApprovalStatusIf atomically transitions a run's status and
+// approval_status in one compare-and-set (WHERE status = from). See the Store
+// interface for the rationale: approval settlement writes both columns as one
+// CAS so a settled outcome cannot clobber a concurrent state transition.
+func (s *SQLiteStore) UpdateRunApprovalStatusIf(ctx context.Context, id string, from string, to string, approvalStatus string, updatedAt time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status=?, approval_status=?, updated_at=? WHERE id=? AND status=?`,
+		to, approvalStatus, updatedAt, id, from,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q %s->%s: %w", id, from, to, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q: rows affected: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateRunPlan overwrites only the plan artifact and updated_at. See the
+// Store interface for why it avoids touching status/approval_status.
+func (s *SQLiteStore) UpdateRunPlan(ctx context.Context, id string, planJSON string, planHash string, updatedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET plan_json=?, plan_hash=?, updated_at=? WHERE id=?`,
+		planJSON, planHash, updatedAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("state: update run plan %q: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("state: update run plan %q: rows affected: %w", id, err)
+	} else if n == 0 {
+		return fmt.Errorf("state: update run plan %q: not found", id)
+	}
+	return nil
 }
 
 // MarkNonTerminalSteps flips the run's non-terminal step rows
@@ -706,25 +764,26 @@ func (s *SQLiteStore) CreateApproval(ctx context.Context, approval *Approval) er
 	if approval == nil {
 		return fmt.Errorf("state: create approval: nil approval")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals
-		(id, run_id, level, approver, status, comment, timeout_at, acted_at)
-		VALUES (?,?,?,?,?,?,?,?)`,
+	res, err := s.db.ExecContext(ctx, `INSERT INTO approvals
+		(id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		approval.ID, approval.RunID, approval.Level, approval.Approver, approval.Status,
-		approval.Comment, approval.TimeoutAt, approval.ActedAt,
+		approval.Comment, approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.Revision,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create approval: %w", err)
 	}
+	_ = res
 	return nil
 }
 
 // GetApproval returns the approval with the given id, or (nil, nil) if not found.
 func (s *SQLiteStore) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, level, approver, status, comment, timeout_at, acted_at
+		id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision
 		FROM approvals WHERE id = ?`, id)
 	a := &Approval{}
-	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt)
+	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -734,16 +793,18 @@ func (s *SQLiteStore) GetApproval(ctx context.Context, id string) (*Approval, er
 	return a, nil
 }
 
-// UpdateApproval overwrites all mutable columns of an existing approval.
+// UpdateApproval overwrites all mutable columns of an existing approval and
+// bumps its revision so any in-flight decision CAS (UpdateApprovalIfPending)
+// that read the old revision loses and must re-read.
 func (s *SQLiteStore) UpdateApproval(ctx context.Context, approval *Approval) error {
 	if approval == nil {
 		return fmt.Errorf("state: update approval: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?
+		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?, plan_hash=?, revision=revision+1
 		WHERE id=?`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update approval %q: %w", approval.ID, err)
@@ -756,18 +817,20 @@ func (s *SQLiteStore) UpdateApproval(ctx context.Context, approval *Approval) er
 
 // UpdateApprovalIfPending is the compare-and-set variant of UpdateApproval:
 // it applies the update only when the stored row is still in status
-// "pending". It returns true when the update was applied and false when the
-// row was concurrently decided (or does not exist), so callers never
-// overwrite a terminal decision.
+// "pending" AND its revision is the one the caller read. The revision check
+// is what prevents two concurrent partial votes (both leaving the row
+// pending) from silently overwriting each other: the second writer carries
+// a stale revision, so it loses the CAS and the caller re-reads and retries.
+// It returns true when the update was applied and false otherwise.
 func (s *SQLiteStore) UpdateApprovalIfPending(ctx context.Context, approval *Approval) (bool, error) {
 	if approval == nil {
 		return false, fmt.Errorf("state: update approval if pending: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?
-		WHERE id=? AND status='pending'`,
+		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?, plan_hash=?, revision=revision+1
+		WHERE id=? AND status='pending' AND revision=?`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID, approval.Revision,
 	)
 	if err != nil {
 		return false, fmt.Errorf("state: update approval %q if pending: %w", approval.ID, err)
@@ -795,7 +858,7 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, filter ApprovalFilter) 
 		args = append(args, filter.Status)
 	}
 
-	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at FROM approvals`
+	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision FROM approvals`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
@@ -814,7 +877,7 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, filter ApprovalFilter) 
 	var out []*Approval
 	for rows.Next() {
 		a := &Approval{}
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision); err != nil {
 			return nil, fmt.Errorf("state: list approvals scan: %w", err)
 		}
 		out = append(out, a)

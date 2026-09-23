@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -83,6 +83,19 @@ var migrations = []migrationStep{
 				`UNIQUE (run_id, epoch))`,
 			`CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state)`,
 			`CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state)`,
+		},
+	},
+	{
+		// D-1 v2 (approval/plan binding + concurrent-vote CAS): approvals
+		// gains plan_hash (the plan the approval attests to; '' = legacy,
+		// still settles) and revision (optimistic-lock version so two
+		// concurrent partial votes cannot overwrite each other). Steps only
+		// run on databases built before schema.sql gained the columns; fresh
+		// databases get them from schema.sql directly.
+		version: 5,
+		stmts: []string{
+			`ALTER TABLE approvals ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE approvals ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
 }
