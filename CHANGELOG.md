@@ -6,6 +6,13 @@
 
 ### 修复
 
+- **集群 assignment 不回收：worker 分派后死亡则 run 永久卡死（P1，D-4 v2：claim timeout + epoch fencing + 容量口径）**：dispatch 把 run 交给某 worker 后写入 `pending` assignment，若该 worker 在**领取之前**死亡（或停止轮询），这一行永远停在 `pending`：`candidates` 视其为「有活跃 assignment」而永久跳过该 run，takeover 只处理已过期执行租约（pending 没有租约）也看不见它——run 既执行不了、也不会被重派，只能人工改库；同一缺陷的另一面是 `workerLoads` **只统计 executing**，pending 这类「已承诺工作」不计入容量，leader 会在节点队列未清空时继续超发（P1-6）。修法（零 schema 变更）：
+  - **claim timeout**（默认 10m，`levee serve --cluster-dispatch-claim-timeout` 可配）：leader 每轮扫描**先回收**超过该时长仍未领取的 pending assignment——10m 远大于 CAS→Begin 临界区与 worker 轮询间隔，健康集群永不触发，只把「worker 半路死亡」的暴露时间从「无限」压到「一个超时窗口」。
+  - **回收即重派 + epoch fencing**：新 store 原语 `ReclaimAssignment` 在 `(run_id, epoch, state='pending')` 上 CAS，成功后 `epoch+1` 并把 owner 指向当前负载最低的活跃节点；迟到 worker 的领取 CAS 仍比较旧 epoch 因而失败——**不双执行**（与既有 `Reassign` 的区别：后者只比 epoch、不锁状态，用于终态行重派，拿它回收会把已领取的 executing 行拖回 pending）。
+  - **孤儿行终止**：run 已不在 `approved`（暂停 / 重 plan 回 draft / 终态）时，回收不重派而把 assignment 置 `interrupted`（终态），该行随即停止计入负载；后续重新批准经 `Reassign` 以 `epoch+1` 重新开始，旧 epoch 不会复活。
+  - **容量口径修正**：`workerLoads` 改为「只排除终态（done/interrupted）」，pending 计入负载；`sortByLoad` 单点化并被回收与配对共用，保证重派始终落到负载最低节点。
+  - 留痕：metric `levee_dispatch_attempts_total{result=reclaimed}` + `stale pending assignment reclaimed` 日志（含 stale_owner/new_owner/epoch/age）。
+  - 测试：dispatch 新增 5 用例（超时收敛到活跃节点、迟到领取被 epoch 拒绝且当前 owner 仍可领取、未超时不动、非 approved run 转 interrupted、负载计入 pending + 容量不再超发）；state 新增 `ReclaimAssignment` SQLite CAS 用例 2 个与 PG 用例 1 个（PG 套件内跑）；`docs/design-cluster-dispatch.md` 补 6.1 节与失败处理表行。
 - **PG 备份能生成不能恢复（P1，D-3 v2：一致性快照 + 可恢复回放）**：PostgreSQL dump 此前在连接池上逐语句执行——每张表可能读到不同提交点的快照，外键引用链可在 dump 中间断裂；且按字母序写 `DELETE/INSERT`（子表先于父表，恢复到带 FK 的正式 schema 必然违约）；`DELETE FROM runs` 的级联又会触发 trace 的 WORM 删除守卫，使恢复到已有库必然失败。净效果："能备份、不能恢复"。修法：
   - **一致性快照**：dump 固定在单一连接的 `REPEATABLE READ READ ONLY` 事务内执行全部目录与数据读取，并持有与 `state.pgMigrate` 相同的 schema advisory lock（770_001）——备份内部一致且绝不跨越迁移中点。
   - **FK 拓扑序**：dump 从 information_schema 读取外键依赖并拓扑排序（父表在前，字典序 tie-break 保证确定性，头注释标注顺序）；依赖环（含自引用 FK）检测后明确报错，绝不静默产出错误顺序。

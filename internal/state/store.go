@@ -405,7 +405,22 @@ type Store interface {
 	// the dispatch loop when a worker dies and the run must be given to a
 	// fresh node. It returns (true, nil) when the existing row matched
 	// (runID, prevEpoch) and was bumped.
+	//
+	// Callers must only reassign a row whose transition is already over
+	// (terminal) or whose owner is known dead: the CAS compares the epoch
+	// alone, so an executing row keeps its epoch and would be dragged back to
+	// pending. Stale-pending reclaim uses ReclaimAssignment instead.
 	Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error)
+	// ReclaimAssignment is the stale-assignment counterpart of Reassign: it
+	// bumps the epoch and re-points a PENDING assignment at newNode, CASing on
+	// (runID, epoch, state=pending). The state guard is what makes reclaim
+	// safe where Reassign is not — a worker that claimed the row in the
+	// meantime (pending→executing keeps the epoch) wins the race and the
+	// reclaim stands down, so a claimed assignment is never dragged back to
+	// pending (which would let two nodes execute the same run). The epoch bump
+	// is the fencing half: the previous owner's late claim CAS still compares
+	// its stale epoch and fails. Returns (true, nil) when the reclaim applied.
+	ReclaimAssignment(ctx context.Context, runID string, epoch int64, newNode string) (bool, error)
 	// SetAssignmentResult writes the terminal result onto an assignment row
 	// identified by (runID, epoch). Best-evidence: a store failure is logged
 	// by the caller but never aborts the run's terminal transition.

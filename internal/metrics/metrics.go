@@ -91,6 +91,10 @@ const (
 	DispatchResultClaimed = "claimed"
 	// DispatchResultSkippedBusy: no worker had spare capacity.
 	DispatchResultSkippedBusy = "skipped_busy"
+	// DispatchResultReclaimed: a pending assignment whose owner never claimed
+	// it within the claim timeout was re-pointed at a live worker (epoch
+	// bumped, so the stale owner's late claim is fenced out).
+	DispatchResultReclaimed = "reclaimed"
 )
 
 // Takeover sweep results for levee_takeover_events_total.
@@ -291,7 +295,7 @@ func New() *Metrics {
 		backups:        newLabeledCounters(BackupResultOK, BackupResultFail),
 		alerts:         newLabeledCounters(),
 		takeovers:      newLabeledCounters(TakeoverResultSettled, TakeoverResultSkipped),
-		dispatch:       newLabeledCounters(DispatchResultClaimed, DispatchResultSkippedBusy),
+		dispatch:       newLabeledCounters(DispatchResultClaimed, DispatchResultSkippedBusy, DispatchResultReclaimed),
 		channelAcquire: newMatrixCounters(),
 	}
 }

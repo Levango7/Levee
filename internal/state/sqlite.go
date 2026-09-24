@@ -1244,6 +1244,26 @@ func (s *SQLiteStore) Reassign(ctx context.Context, runID string, prevEpoch int6
 	return n > 0, nil
 }
 
+// ReclaimAssignment bumps the epoch and re-points a stale pending assignment
+// at newNode. Unlike Reassign it also CASes on state=pending, so a worker that
+// claimed the row in the meantime (pending→executing, same epoch) beats the
+// reclaim instead of being overwritten.
+func (s *SQLiteStore) ReclaimAssignment(ctx context.Context, runID string, epoch int64, newNode string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET owner_node=?, epoch=epoch+1, state=?, result='', updated_at=?
+		WHERE run_id=? AND epoch=? AND state=?`,
+		newNode, AssignStatePending, time.Now().UTC(), runID, epoch, AssignStatePending,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: reclaim assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: reclaim assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
 // ListAssignments returns assignments matching the filter, ordered by
 // assigned_at ascending. The ExcludeStates clause lists assignments whose
 // state is NOT in the given set (i.e. "active" assignments).

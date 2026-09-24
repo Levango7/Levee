@@ -110,6 +110,20 @@ Loop:
 | 调度器 leader 死亡 | 新 leader 收敛选举后重新 `DispatchOnce()`，跳过已有 `executing` 的 assignment | 收敛选举 |
 | 执行 CAS 竞争败 | 快速失败，assignment 留给胜出者 | 已有 CAS |
 | 同一 run 被双调度 | `ON CONFLICT ... WHERE` 串行化，输家跳过 | 新表约束 |
+| **worker 分派后、领取前死亡** | leader 扫描回收：claim timeout 超时 → 重指到活跃节点并 `epoch+1`（旧 owner 迟到领取被 epoch fencing 拒绝） | 新 `ReclaimAssignment`（D-4 v2） |
+
+### 6.1 调度回收与容量（D-4 v2）
+
+`pending` assignment 在 worker 领取前就是「已承诺的容量」，同时也可能永久卡住：owner 在分派之后、领取之前死亡（或停止轮询）时，行停在 `pending`，而 `candidates` 把它当「有活跃 assignment」永远跳过该 run —— 既执行不了，也不会被重派。
+
+修法（零 schema 变更）：
+
+- **claim timeout（默认 10m，`--cluster-dispatch-claim-timeout` 可配）**：leader 每次扫描先回收超时仍未领取的 `pending` assignment，重指到当前负载最低的活跃节点。10m 远大于 CAS→Begin 临界区与 worker 轮询间隔（2s），健康集群永不触发。
+- **epoch fencing**：回收走 `ReclaimAssignment`，CAS 条件为 `(run_id, epoch, state='pending')`，成功后 `epoch+1`——迟到 worker 的领取 CAS 仍比较旧 epoch 因而失败，同一 run 不会被两个节点执行。与既有 `Reassign` 的关键差别正在此：`Reassign` 只比 epoch、不锁状态（用于终态行重派），拿它做回收会把已被领取的 `executing` 行拖回 `pending`。
+- **孤儿行终止**：若该 run 已不在 `approved`（暂停、重 plan 回 draft、已终态），回收不重派，而把 assignment 置 `interrupted`——没有可执行的工作，该行必须停止计入负载；后续重新批准经 `Reassign` 以 `epoch+1` 重新开始，旧 epoch 不会复活。
+- **容量计入 pending + executing**：`workerLoads` 只排除终态（`done`/`interrupted`）。pending 是已承诺的工作，只算 `executing` 会让 leader 在节点队列未清空时继续超发（P1-6）。
+
+回收留痕：metric `levee_dispatch_attempts_total{result=reclaimed}` + 日志 `stale pending assignment reclaimed`（含 `stale_owner` / `new_owner` / `epoch` / `age`）。
 
 ## 7. 与单节点路径的兼容性
 
@@ -121,7 +135,7 @@ Loop:
 
 - `levee_dispatched_runs_total{state=pending|executing|done|interrupted}` 计数
 - `levee_worker_active_runs{node_id=...}` gauge
-- `levee_dispatch_attempts_total{result=claimed|skipped_busy|skipped_conflict}` 计数
+- `levee_dispatch_attempts_total{result=claimed|skipped_busy|reclaimed}` 计数
 - assignment 状态变迁走 trace（actor="cluster-dispatch"）
 
 ## 9. 风险与缓解

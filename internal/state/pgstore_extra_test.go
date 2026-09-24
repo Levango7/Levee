@@ -32,6 +32,48 @@ func requireTimePtrEqual(t *testing.T, name string, want, got *time.Time) {
 	require.True(t, want.Equal(*got), "%s: want %v, got %v", name, *want, *got)
 }
 
+// TestPGStore_ReclaimAssignmentCAS pins the D-4 reclaim guard against a real
+// PostgreSQL: only a pending row at the expected epoch is re-pointed; an
+// executing row (same epoch, claimed meanwhile) wins the race.
+func TestPGStore_ReclaimAssignmentCAS(t *testing.T) {
+	store, cleanup := newPGTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateRun(ctx, &Run{
+		ID: "run-reclaim-pg", WorkflowName: "wf", TemplateName: "tpl", Params: "{}",
+		PlanHash: "ph", Status: "approved", ApprovalStatus: "approved",
+		CreatedAt: now, UpdatedAt: now, Creator: "test",
+	}))
+	require.NoError(t, store.CreateAssignment(ctx, &Assignment{
+		RunID: "run-reclaim-pg", OwnerNode: "node-dead", Epoch: 1, State: AssignStatePending,
+	}))
+
+	ok, err := store.ReclaimAssignment(ctx, "run-reclaim-pg", 1, "node-live")
+	require.NoError(t, err)
+	require.True(t, ok, "the stale pending row must be reclaimed")
+
+	a, err := store.GetAssignment(ctx, "run-reclaim-pg")
+	require.NoError(t, err)
+	assert.Equal(t, "node-live", a.OwnerNode)
+	assert.Equal(t, int64(2), a.Epoch)
+
+	// The claimed row is executing now: the next reclaim must stand down.
+	ok, err = store.UpdateAssignmentStateIf(ctx, "run-reclaim-pg", 2, AssignStatePending, AssignmentStateExecuting)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	ok, err = store.ReclaimAssignment(ctx, "run-reclaim-pg", 2, "node-other")
+	require.NoError(t, err)
+	assert.False(t, ok, "an executing assignment must never be dragged back to pending")
+
+	// A stale claim against the pre-reclaim epoch is fenced out.
+	ok, err = store.UpdateAssignmentStateIf(ctx, "run-reclaim-pg", 1, AssignStatePending, AssignmentStateExecuting)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
 func TestPGStore_NilRecordRejection(t *testing.T) {
 	store, cleanup := newPGTestStore(t)
 	defer cleanup()

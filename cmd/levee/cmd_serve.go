@@ -111,6 +111,10 @@ var (
 	// serveOptClusterDispatchWorkerCapacity bounds how many runs a single
 	// worker executes concurrently before the dispatcher treats it saturated.
 	serveOptClusterDispatchWorkerCapacity int
+	// serveOptClusterDispatchClaimTimeout bounds how long a pending
+	// assignment may sit unclaimed before the leader reclaims it (re-points
+	// it at a live worker with a bumped epoch, fencing the stale owner out).
+	serveOptClusterDispatchClaimTimeout time.Duration
 
 	// serveOptAuthTokens holds repeatable --auth-token name=secret pairs that
 	// map each named bearer token to the subject it authenticates as.
@@ -172,6 +176,7 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&serveOptClusterExecLeaseTTL, "cluster-exec-lease-ttl", cluster.DefaultExecLeaseTTL, "Execution-lease TTL: bounds post-crash takeover detection latency; renewals run at TTL/3 (cluster mode)")
 	cmd.Flags().DurationVar(&serveOptClusterDispatchInterval, "cluster-dispatch-interval", dispatch.DefaultInterval, "Cross-node dispatch sweep period; <=0 disables the dispatch loop (cluster mode)")
 	cmd.Flags().IntVar(&serveOptClusterDispatchWorkerCapacity, "cluster-dispatch-capacity", dispatch.DefaultWorkerCapacity, "Max concurrent runs per worker node; the dispatcher treats a node at capacity as saturated (cluster mode)")
+	cmd.Flags().DurationVar(&serveOptClusterDispatchClaimTimeout, "cluster-dispatch-claim-timeout", dispatch.DefaultClaimTimeout, "How long a pending assignment may wait unclaimed before the leader reclaims it (re-points it at a live worker with a bumped epoch, fencing the stale owner out) (cluster mode)")
 	cmd.Flags().StringArrayVar(&serveOptAuthTokens, "auth-token", nil, "Named bearer token name=secret (repeatable); the name becomes the authenticated actor")
 	cmd.Flags().BoolVar(&serveOptMetricsPublic, "metrics-public", false, "Expose /metrics without authentication (default: requires a token when auth is enabled)")
 	cmd.Flags().BoolVar(&serveOptEngineEnabled, "engine-enabled", false, "Wire the execution engine: PlanChange generates and persists real plans and ApplyChange executes approved changes (targets must be registered in the inventory; set LEVEE_MASTER_PASSWORD for credentialed channels)")
@@ -355,18 +360,18 @@ func startDispatchAndWorkerLoops(dispatchLoop **dispatch.Loop, workerLoop **disp
 	clusterMgr *cluster.ClusterManager, store state.Store, changeSvc interface {
 		ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error)
 		RetryChange(ctx context.Context, req *pb.RetryRequest) (*pb.Change, error)
-	}, nodeID string, engineEnabled bool, interval time.Duration, capacity int, ctx context.Context) error {
+	}, nodeID string, engineEnabled bool, interval time.Duration, capacity int, claimTimeout time.Duration, ctx context.Context) error {
 
 	if !engineEnabled {
 		return nil
 	}
 	if interval > 0 {
-		*dispatchLoop = dispatch.NewLoop(clusterMgr, store, nodeID, interval, capacity)
+		*dispatchLoop = dispatch.NewLoop(clusterMgr, store, nodeID, interval, capacity, claimTimeout)
 		if err := (*dispatchLoop).Start(ctx); err != nil {
 			return fmt.Errorf("start dispatch loop: %w", err)
 		}
 		log.Info("cross-node dispatch loop enabled (leader-only)",
-			"interval", interval, "worker_capacity", capacity)
+			"interval", interval, "worker_capacity", capacity, "claim_timeout", claimTimeout)
 	} else {
 		log.Info("cross-node dispatch loop disabled (--cluster-dispatch-interval<=0)")
 	}
@@ -489,7 +494,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// concurrently in cluster mode.
 	if err := startDispatchAndWorkerLoops(&dispatchLoop, &dispatchWorkerLoop, clusterMgr, store,
 		changeSvc, serveOptNodeID, serveOptEngineEnabled, serveOptClusterDispatchInterval,
-		serveOptClusterDispatchWorkerCapacity, ctx); err != nil {
+		serveOptClusterDispatchWorkerCapacity, serveOptClusterDispatchClaimTimeout, ctx); err != nil {
 		return err
 	}
 
