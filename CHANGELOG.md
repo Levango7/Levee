@@ -100,6 +100,8 @@
 - **`docs/cli-reference.md` apply 终态词表补齐**：引擎路径回写的终态补上 D-2 v2 的 `rolled_back_partial` / `rollback_incomplete`，并注明「回滚未完全收敛不得报告为干净的 `rolled_back`」。
 - **`docs/design-cluster-dispatch.md` 标注 assignment `result` 词表是刻意冻结的**：run 状态新增两个回滚判定后，`run_assignment.result` 仍只认 `completed | failed | rolled_back`；映射点在 `cmd/levee/grpc_change_executor.go`（`retry()` 显式归为 `failed`，`apply()` 经 default 分支落到 `failed`），run 行保留精确状态。补这条是为了防止后来者把「看起来漏了」的词表当 bug「修掉」，反而动到 assignment 终态识别与「是否已分派/已终结」的判定。
 
+- **`docs/levee-api.md` 13.5 分页与过滤参数表同样失真（按 handler 逐个核对订正）**：原文声明的 `limit`（默认 20、上限 100）/ `offset` / `sort` / `fields` 以及「`/changes` 支持 `template`/`initiator`/`from`/`to`、`/audit` 支持 `who`/`action`/`change`」几乎全不存在——网关不校验未知参数，传了会被静默忽略，而 `rest.go` 正是为杜绝「假装支持」才刻意不解析它们。现改为按 `internal/grpc/rest.go` 逐 handler 列出的实际参数表（`/changes`：`status`/`labelContains`/`pageSize`/`pageToken`；`/audit/log`：`actor` 而非 `who`、`changeId` 而非 `change`；targets/templates/system-config 各自实际解析项），并单列「刻意不支持」清单。分页事实一并订正：默认 `pageSize` 是 **50**（原文写 20）；`maxPageSize = 1000` 的上限**只在审计类服务生效**，`ListChanges` 侧没有上限钳制（原文的「上限 100」两头不靠）；`pageToken` 是「下一页起始偏移」的十进制字符串（`helpers.go` 的 `parsePageToken`/`buildPageToken`），畸形或负值返回 `InvalidArgument` 而非静默回到第 0 页；**没有**字段投影。
+
 ## [v1.13.0] - 2026-09-08 — 执行引擎接线 + 集群故障接管
 
 本版落地两大设计（`docs/design-engine-wiring.md` / `docs/design-cluster-failover.md`）：**A —— 执行引擎接入 serve**，计划→审批→执行自此真实闭环（计划持久化 + plan_hash 绑定、显式 `--engine-enabled`、CLI plan/apply 引擎路径、批次/步骤证据落库）；**B —— 集群在途变更故障接管**，执行节点崩溃后其运行中变更由租约围栏与 leader 接管循环收敛至新终态 `interrupted`（审计留痕、永不重跑副作用、`RetryChange` 显式重驱动）。另含双 SSO（OIDC/GitHub）、多令牌认证、REST 方法校验等安全加固与全链测试战役。详细说明见 [docs/release-notes/v1.13.0.md](docs/release-notes/v1.13.0.md)。以下为逐条明细。

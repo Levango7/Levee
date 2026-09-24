@@ -899,18 +899,24 @@ Token-based 认证，三种模式：
 
 ### 13.5 分页与过滤
 
-标准分页参数：
+网关解析哪些 query 参数**因端点而异**，且**不校验未知参数**：传了不存在的参数会被静默忽略。`rest.go` 对此有明确注释——历史上曾「假装支持」若干参数，导致客户端以为它们生效，故一律不解析。下面的表与 `internal/grpc/rest.go` 逐 handler 对应：
 
-表：分页与过滤参数说明表
+| 端点（handler） | 实际解析的 query 参数 |
+| --- | --- |
+| `GET /changes`（`handleChangeList`） | `status`（逗号分隔，**精确匹配** `run.status`）、`labelContains`、`pageSize`、`pageToken` |
+| 变更日志（`handleChangeLogs`） | `runId`、`levels`、`limit`、`since`、`until` |
+| 变更 trace（`handleChangeTrace`） | `runId`、`verify` |
+| `GET /audit/log`（`handleAuditLog`） | `changeId`、`runId`、`action`、`actor`、`since`、`until`、`pageSize`、`pageToken` |
+| `GET /audit/traces`（`handleAuditTraces`） | `changeId`、`runIds`、`since`、`until`、`pageSize`、`pageToken` |
+| `GET /audit/verify`（`handleAuditVerify`） | `changeId`、`runId` |
+| `GET /targets`（`handleTargetList`） | `labelSelector`、`channelType`、`reachableOnly`、`pageSize`、`pageToken` |
+| 目标探测（`handleTargetCheck`） | `fresh`、`timeoutSeconds` |
+| `GET /templates`（`handleTemplateList`） | `nameContains`、`pageSize`、`pageToken` |
+| `GET /system/config`（`handleSystemConfig`） | `section`、`redactSecrets` |
 
-| 参数 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `limit` | int | 20 | 返回条数，上限 100 |
-| `offset` | int | 0 | 偏移量 |
-| `sort` | string | 按 created_at desc | 排序字段，如 `updated_at asc` |
-| `fields` | string list | 全部字段 | 投影字段，逗号分隔，减少传输 |
+**刻意不支持**（旧版文档曾错误宣称支持）：`/changes` 的 `template`、`initiator`、`from`、`to`；`/audit/log` 的 `who`（实际参数名是 `actor`）与 `change`（实际是 `changeId`）；以及全局的 `offset`、`sort` / `sortBy` / `sortOrder`、`fields`、`team`、`environment`。
 
-过滤参数按资源域不同，如 `/changes` 支持 `status`、`template`、`initiator`、`from`、`to`，`/audit` 支持 `who`、`action`、`change`。过滤参数均为可选，多参数间为 AND 关系。
+分页参数是 `pageSize` + `pageToken`，**没有 `offset` 参数**——`pageToken` 是"下一页起始偏移"的十进制字符串（`helpers.go` 的 `parsePageToken` / `buildPageToken`），空串表示从头开始，畸形或负值返回 `InvalidArgument`（刻意不静默回到第 0 页）。默认 `pageSize` 是 **50**；`maxPageSize = 1000` 的上限只在审计类服务里生效（`audit_service.go`），`ListChanges` 侧**没有**上限钳制。**没有字段投影**（`fields` 不被解析）。`limit` 仅在变更日志端点存在，含义是返回条数而非分页游标。
 
 ### 13.6 JSON 字段约定（protojson）
 
