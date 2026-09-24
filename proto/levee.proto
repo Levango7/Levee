@@ -15,7 +15,12 @@ import "google/protobuf/empty.proto";
 message Change {
   string id = 1;
   string label = 2;
-  // planned/pending_approval/approved/running/paused/completed/failed/cancelled/rolled_back/archived
+  // Run lifecycle status. Mirrors the state machine in
+  // internal/grpc/change_service.go (isValidTransition / terminalRunStatuses):
+  // draft/planned/pending/approved/rejected/running/paused/completed/failed/
+  // cancelled/rolled_back/interrupted/archived, plus the D-2 v2 rollback
+  // verdicts rolled_back_partial and rollback_incomplete (a rollback that did
+  // not fully settle is NOT reported as a clean rolled_back).
   string status = 3;
   // low/normal/high/urgent
   string priority = 4;
@@ -621,7 +626,8 @@ message GetRunReportRequest {
 message RunReport {
   string change_id = 1;
   string run_id = 2;
-  // running/completed/failed/paused/cancelled/rolled_back
+  // Run status, same vocabulary as Change.status above (including the D-2 v2
+  // rolled_back_partial / rollback_incomplete verdicts).
   string status = 3;
   int64 started_at = 4;
   int64 finished_at = 5;

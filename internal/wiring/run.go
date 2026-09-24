@@ -29,6 +29,7 @@ import (
 
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/engine"
+	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/lock"
 	"github.com/nexus/levee/internal/log"
@@ -282,8 +283,14 @@ func (e *Engine) startLeaseHeartbeat(lease ExecutionLease) (stop func()) {
 // RetryHost path passes it; deriving "failed hosts" from step rows cannot
 // tell a still-failing host from one a previous retry already fixed).
 // With replan=true a fresh plan is generated and persisted (for the request
-// hosts or the stored plan's hosts) and re-executed whole — the operator
-// re-approved by invoking retry with replan.
+// hosts or the stored plan's hosts). It is re-executed whole ONLY when an
+// approved approval attests to that new plan version (legacy unbound rows
+// included, via the same rule the apply gate uses). Otherwise the new plan
+// is persisted but NOT executed: the run goes back to draft/pending with
+// its pending approval rows superseded — exactly what PlanChange does for a
+// re-planned run — and RetryChange reports FailedPrecondition. Invoking
+// retry with replan is therefore a re-plan request, never a way to execute a
+// fresh plan under the approval that covered the previous one.
 func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, targetHosts []string) error {
 	release, err := e.acquire(changeID)
 	if err != nil {
@@ -305,6 +312,18 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		if err != nil {
 			return fmt.Errorf("wiring: replan: %w", err)
 		}
+		// D-1 v2 gate — this path used to skip approval entirely. A
+		// re-plan mints a NEW plan version, and the approval that
+		// authorised the previous one says nothing about this one;
+		// executing the fresh plan under it is precisely the
+		// "approve v1, execute v2" drift the apply gate refuses. Ask the
+		// store whether any APPROVED row attests to the new hash, using
+		// the same predicate settlement and apply use
+		// (state.Approval.MatchesPlan) so the three gates cannot drift.
+		authorised, legacy, err := e.planAuthorised(ctx, changeID, stored.Hash)
+		if err != nil {
+			return fmt.Errorf("wiring: replan approval check: %w", err)
+		}
 		run, err := e.store.GetRun(ctx, changeID)
 		if err != nil || run == nil {
 			return fmt.Errorf("wiring: get run for replan: %w", err)
@@ -314,6 +333,21 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		run.UpdatedAt = utcNow()
 		if err := e.store.UpdateRun(ctx, run); err != nil {
 			return fmt.Errorf("wiring: persist replan: %w", err)
+		}
+		if !authorised {
+			// Fail closed. The new plan is durable (the operator asked
+			// for it and may want to inspect it), but it is NOT executed:
+			// hand the run back to the approval flow the way PlanChange
+			// does for a re-planned run, so the next step is
+			// approve -> apply instead of retry.
+			if err := e.reenterApprovalFlow(ctx, run); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: change %q was re-planned to plan %s but no approved approval attests to that version; approve it, then apply the change",
+				grpc.ErrReplanNeedsApproval, changeID, stored.Hash)
+		}
+		if legacy {
+			log.Warn("retry replan: authorising via legacy (empty plan_hash) approval; no plan binding", "change_id", changeID)
 		}
 		p, err = e.loadStoredPlan(ctx, changeID)
 		if err != nil {
@@ -382,6 +416,63 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		return err
 	}
 	_ = execRunID
+	return nil
+}
+
+// planAuthorised reports whether any APPROVED approval row for this change
+// attests to planHash, and whether the match came from a legacy (unbound) row.
+// It deliberately filters on status="approved": pending, rejected and
+// superseded rows authorise nothing, and letting a pending row through would
+// reintroduce the very drift this gate closes.
+func (e *Engine) planAuthorised(ctx context.Context, changeID, planHash string) (matched, legacy bool, err error) {
+	approvals, err := e.store.ListApprovals(ctx, state.ApprovalFilter{RunID: changeID, Status: "approved"})
+	if err != nil {
+		return false, false, err
+	}
+	for _, a := range approvals {
+		if ok, lg := a.MatchesPlan(planHash); ok {
+			return true, lg, nil
+		}
+	}
+	return false, false, nil
+}
+
+// reenterApprovalFlow puts a re-planned run back into the approval flow:
+// status draft, approval_status pending, and every still-pending approval row
+// of the PREVIOUS plan version marked expired. This mirrors the supersede
+// step kickoffApproval performs on a re-plan, for the same reason: an
+// approval decision collected against the old plan says nothing about the
+// new one, and leaving it pending would let a late vote settle the run.
+//
+// Rows are expired, never deleted — the audit trail keeps both versions. A
+// failure to expire an individual row is logged and swallowed (the apply
+// gate re-checks approvals anyway), but a failure to write the run itself is
+// fatal: returning success with a run still in a failure terminal would
+// misrepresent the change as re-planned.
+func (e *Engine) reenterApprovalFlow(ctx context.Context, run *state.Run) error {
+	now := utcNow()
+	run.Status = "draft"
+	run.ApprovalStatus = "pending"
+	run.UpdatedAt = now
+	if err := e.store.UpdateRun(ctx, run); err != nil {
+		return fmt.Errorf("wiring: re-enter approval flow for %q: %w", run.ID, err)
+	}
+	approvals, err := e.store.ListApprovals(ctx, state.ApprovalFilter{RunID: run.ID, Status: "pending"})
+	if err != nil {
+		return fmt.Errorf("wiring: list pending approvals for %q: %w", run.ID, err)
+	}
+	for _, old := range approvals {
+		actedAt := now
+		old.Status = "expired"
+		old.ActedAt = &actedAt
+		if old.Comment == "" {
+			old.Comment = "superseded by retry re-plan"
+		}
+		if err := e.store.UpdateApproval(ctx, old); err != nil {
+			log.Warn("retry replan: superseding old pending approval failed",
+				"change_id", run.ID, "approval_id", old.ID, "error", err)
+		}
+	}
 	return nil
 }
 

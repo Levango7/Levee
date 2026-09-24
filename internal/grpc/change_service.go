@@ -1198,6 +1198,15 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 
 	if s.engine != nil && s.engine.Retry != nil {
 		if err := s.engine.Retry(ctx, req.GetChangeId(), req.GetReplan(), req.GetTargetHosts()); err != nil {
+			// A re-plan that no approved approval covers is a governance
+			// outcome, not an engine fault: the engine persisted the fresh
+			// plan and handed the run back to the approval flow without
+			// executing anything. Report it as FailedPrecondition so the
+			// operator is told to approve the new plan (REST: 412) instead
+			// of seeing an opaque 500.
+			if errors.Is(err, ErrReplanNeedsApproval) {
+				return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+			}
 			return nil, status.Errorf(codes.Internal, "engine retry: %v", err)
 		}
 		// The engine retried synchronously and owns the run's status
@@ -1565,21 +1574,11 @@ func (s *ChangeService) SettleApproval(ctx context.Context, runID string) (Settl
 // approvalPlanMatch reports whether an approval row authorises the given plan
 // revision, and whether it matched only through the legacy (empty plan_hash)
 // rule. Settlement and the apply gate MUST share this one predicate so the two
-// gates can never disagree about which approval authorises which revision:
-//
-//   - a row with an empty plan_hash is a pre-binding (legacy) record: it
-//     matches any plan, preserving behaviour for databases written before
-//     plan binding existed;
-//   - a row bound to a revision matches only that exact revision, and never
-//     a run whose plan hash is itself empty.
+// gates can never disagree about which approval authorises which revision.
+// The rule itself now lives on state.Approval.MatchesPlan, which the retry
+// re-plan gate also calls — three gates, one implementation.
 func approvalPlanMatch(row *state.Approval, planHash string) (matched, legacy bool) {
-	if row == nil {
-		return false, false
-	}
-	if row.PlanHash == "" {
-		return true, true
-	}
-	return planHash != "" && row.PlanHash == planHash, false
+	return row.MatchesPlan(planHash)
 }
 
 // transitionRunForApproval moves the run to the approval outcome when

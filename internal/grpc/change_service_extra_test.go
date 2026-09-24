@@ -773,6 +773,20 @@ func TestRetryChange(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, codes.Internal, status.Code(err))
 	})
+
+	t.Run("re-plan needing approval maps to precondition", func(t *testing.T) {
+		// The engine re-planned and handed the run back to the approval
+		// flow without executing. That is a governance outcome the
+		// operator must act on, not an engine fault: 412, not 500.
+		engine := &recordingEngine{retryErr: errors.Join(
+			ErrReplanNeedsApproval, errors.New(`change "x" was re-planned`))}
+		svc, _, id := makeSvc(t, engine)
+		_, err := svc.RetryChange(context.Background(), &pb.RetryRequest{ChangeId: id, Replan: true})
+		require.Error(t, err)
+		assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+		assert.Contains(t, status.Convert(err).Message(), "approval")
+	})
+
 	t.Run("guard admits D-2 rollback verdicts", func(t *testing.T) {
 		// D-2 v2: rolled_back_partial / rollback_incomplete are
 		// failure-family terminals — RetryChange is their re-drive

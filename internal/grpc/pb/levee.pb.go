@@ -27,7 +27,12 @@ type Change struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Label string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
-	// planned/pending_approval/approved/running/paused/completed/failed/cancelled/rolled_back/archived
+	// Run lifecycle status. Mirrors the state machine in
+	// internal/grpc/change_service.go (isValidTransition / terminalRunStatuses):
+	// draft/planned/pending/approved/rejected/running/paused/completed/failed/
+	// cancelled/rolled_back/interrupted/archived, plus the D-2 v2 rollback
+	// verdicts rolled_back_partial and rollback_incomplete (a rollback that did
+	// not fully settle is NOT reported as a clean rolled_back).
 	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
 	// low/normal/high/urgent
 	Priority     string            `protobuf:"bytes,4,opt,name=priority,proto3" json:"priority,omitempty"`
@@ -4225,7 +4230,8 @@ type RunReport struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	ChangeId string                 `protobuf:"bytes,1,opt,name=change_id,json=changeId,proto3" json:"change_id,omitempty"`
 	RunId    string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	// running/completed/failed/paused/cancelled/rolled_back
+	// Run status, same vocabulary as Change.status above (including the D-2 v2
+	// rolled_back_partial / rollback_incomplete verdicts).
 	Status      string        `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
 	StartedAt   int64         `protobuf:"varint,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	FinishedAt  int64         `protobuf:"varint,5,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`

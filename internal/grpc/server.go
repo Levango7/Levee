@@ -538,6 +538,17 @@ type EngineAdapter struct {
 	Retry func(ctx context.Context, changeID string, replan bool, targetHosts []string) error
 }
 
+// ErrReplanNeedsApproval is what EngineAdapter.Retry returns when replan=true
+// minted a NEW plan version that no approved approval attests to. The engine
+// has already persisted the regenerated plan and put the run back into the
+// approval flow (draft/pending, pending approval rows superseded); nothing
+// was executed. RetryChange maps it to FailedPrecondition rather than
+// Internal: this is the operator being told to approve the new plan, not an
+// engine fault. The alternative — executing the fresh plan under the approval
+// that covered the PREVIOUS version — is exactly the "approve v1, execute v2"
+// drift the apply gate refuses.
+var ErrReplanNeedsApproval = errors.New("re-plan requires a fresh approval before execution")
+
 // StoredPlan is the canonical plan artifact EngineAdapter.Plan hands back
 // for persistence on the run (A1). JSON is the encoding/json encoding of
 // the engine's plan.Plan; Hash is plan.ComputeHash of that same plan.

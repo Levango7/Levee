@@ -93,6 +93,30 @@ type Approval struct {
 	Revision int64 `json:"revision"`
 }
 
+// MatchesPlan reports whether this approval row authorises the plan version
+// identified by planHash, and whether it matched only through the legacy
+// (empty PlanHash) rule.
+//
+// It lives here, next to the struct, because THREE gates depend on it and
+// they must never disagree about which approval authorises which revision:
+// settlement, the apply gate, and the retry re-plan gate. When a fourth gate
+// appears it must call this too rather than re-implement the rule.
+//
+//   - a row with an empty PlanHash is a pre-binding (legacy) record: it
+//     matches any plan, preserving behaviour for databases written before
+//     plan binding existed;
+//   - a row bound to a revision matches only that exact revision, and never
+//     a run whose plan hash is itself empty.
+func (a *Approval) MatchesPlan(planHash string) (matched, legacy bool) {
+	if a == nil {
+		return false, false
+	}
+	if a.PlanHash == "" {
+		return true, true
+	}
+	return planHash != "" && a.PlanHash == planHash, false
+}
+
 // Lock is a mutex lock with a TTL. Locks are scoped (e.g. host:<name>) and
 // enforce mutual exclusion across concurrent runs.
 type Lock struct {
