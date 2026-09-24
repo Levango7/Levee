@@ -120,7 +120,7 @@ func TestMobileApproveViaDeepLink_Success(t *testing.T) {
 	require.NoError(t, err)
 
 	// Approve via the deep link.
-	err = mobile.ApproveViaDeepLink(ctx, link.Token)
+	_, err = mobile.ApproveViaDeepLink(ctx, link.Token)
 	require.NoError(t, err)
 
 	// History recorded.
@@ -134,7 +134,7 @@ func TestMobileApproveViaDeepLink_Success(t *testing.T) {
 
 func TestMobileApproveViaDeepLink_InvalidToken(t *testing.T) {
 	mobile, _, _, _, _ := newMobileServiceWithPush(t)
-	err := mobile.ApproveViaDeepLink(bgCtx(), "bogus-token")
+	_, err := mobile.ApproveViaDeepLink(bgCtx(), "bogus-token")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, push.ErrInvalidToken)
 }
@@ -149,7 +149,7 @@ func TestMobileApproveViaDeepLink_ExpiredToken(t *testing.T) {
 	require.NoError(t, err)
 
 	time.Sleep(10 * time.Millisecond)
-	err = mobile.ApproveViaDeepLink(ctx, link.Token)
+	_, err = mobile.ApproveViaDeepLink(ctx, link.Token)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, push.ErrTokenExpired)
 }
@@ -162,8 +162,8 @@ func TestMobileApproveViaDeepLink_SingleUse(t *testing.T) {
 	link, err := deeplink.GenerateApprovalLink("run-1", "alice")
 	require.NoError(t, err)
 
-	require.NoError(t, mobile.ApproveViaDeepLink(ctx, link.Token))
-	err = mobile.ApproveViaDeepLink(ctx, link.Token)
+	require.NoError(t, func() error { _, err := mobile.ApproveViaDeepLink(ctx, link.Token); return err }())
+	_, err = mobile.ApproveViaDeepLink(ctx, link.Token)
 	require.Error(t, err)
 }
 
@@ -175,7 +175,7 @@ func TestMobileApproveViaDeepLink_WrongAction(t *testing.T) {
 	link, err := deeplink.GenerateRejectLink("run-1", "alice")
 	require.NoError(t, err)
 
-	err = mobile.ApproveViaDeepLink(ctx, link.Token)
+	_, err = mobile.ApproveViaDeepLink(ctx, link.Token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not approve")
 }
@@ -188,7 +188,7 @@ func TestMobileApproveViaDeepLink_NoPendingApproval(t *testing.T) {
 	link, err := deeplink.GenerateApprovalLink("run-no-approval", "alice")
 	require.NoError(t, err)
 
-	err = mobile.ApproveViaDeepLink(ctx, link.Token)
+	_, err = mobile.ApproveViaDeepLink(ctx, link.Token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no pending approval")
 }
@@ -203,7 +203,7 @@ func TestMobileRejectViaDeepLink_Success(t *testing.T) {
 	link, err := deeplink.GenerateRejectLink("run-1", "alice")
 	require.NoError(t, err)
 
-	err = mobile.RejectViaDeepLink(ctx, link.Token)
+	_, err = mobile.RejectViaDeepLink(ctx, link.Token)
 	require.NoError(t, err)
 
 	hist, err := mobile.GetApprovalHistory(ctx, "alice")
@@ -216,7 +216,7 @@ func TestMobileRejectViaDeepLink_Success(t *testing.T) {
 
 func TestMobileRejectViaDeepLink_InvalidToken(t *testing.T) {
 	mobile, _, _, _, _ := newMobileServiceWithPush(t)
-	err := mobile.RejectViaDeepLink(bgCtx(), "bogus")
+	_, err := mobile.RejectViaDeepLink(bgCtx(), "bogus")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, push.ErrInvalidToken)
 }
@@ -229,7 +229,7 @@ func TestMobileRejectViaDeepLink_WrongAction(t *testing.T) {
 	link, err := deeplink.GenerateApprovalLink("run-1", "alice")
 	require.NoError(t, err)
 
-	err = mobile.RejectViaDeepLink(ctx, link.Token)
+	_, err = mobile.RejectViaDeepLink(ctx, link.Token)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not reject")
 }
@@ -252,9 +252,9 @@ func TestMobileGetApprovalHistory_MostRecentFirst(t *testing.T) {
 	require.NoError(t, mobile.RequestApproval(ctx, "run-2", "alice"))
 
 	link1, _ := deeplink.GenerateApprovalLink("run-1", "alice")
-	require.NoError(t, mobile.ApproveViaDeepLink(ctx, link1.Token))
+	require.NoError(t, func() error { _, err := mobile.ApproveViaDeepLink(ctx, link1.Token); return err }())
 	link2, _ := deeplink.GenerateRejectLink("run-2", "alice")
-	require.NoError(t, mobile.RejectViaDeepLink(ctx, link2.Token))
+	require.NoError(t, func() error { _, err := mobile.RejectViaDeepLink(ctx, link2.Token); return err }())
 
 	hist, err := mobile.GetApprovalHistory(ctx, "alice")
 	require.NoError(t, err)
@@ -276,7 +276,7 @@ func TestMobileGetApprovalHistory_CappedAtMaxEntries(t *testing.T) {
 		require.NoError(t, mobile.RequestApproval(ctx, runID, "alice"))
 		link, err := deeplink.GenerateApprovalLink(runID, "alice")
 		require.NoError(t, err)
-		require.NoError(t, mobile.ApproveViaDeepLink(ctx, link.Token))
+		require.NoError(t, func() error { _, err := mobile.ApproveViaDeepLink(ctx, link.Token); return err }())
 	}
 	hist, err := mobile.GetApprovalHistory(ctx, "alice")
 	require.NoError(t, err)
@@ -289,7 +289,7 @@ func TestMobileGetApprovalHistory_ReturnsCopy(t *testing.T) {
 
 	require.NoError(t, mobile.RequestApproval(ctx, "run-1", "alice"))
 	link, _ := deeplink.GenerateApprovalLink("run-1", "alice")
-	require.NoError(t, mobile.ApproveViaDeepLink(ctx, link.Token))
+	require.NoError(t, func() error { _, err := mobile.ApproveViaDeepLink(ctx, link.Token); return err }())
 
 	hist, err := mobile.GetApprovalHistory(ctx, "alice")
 	require.NoError(t, err)
@@ -320,7 +320,7 @@ func TestMobileApprovalFlow_FullCycle(t *testing.T) {
 	// 3. Generate a one-tap approve link and consume it.
 	link, err := deeplink.GenerateApprovalLink("run-42", "bob")
 	require.NoError(t, err)
-	require.NoError(t, mobile.ApproveViaDeepLink(ctx, link.Token))
+	require.NoError(t, func() error { _, err := mobile.ApproveViaDeepLink(ctx, link.Token); return err }())
 
 	// 4. Verify the approval is now approved.
 	got, err := svc.Get(ctx, approvalID)

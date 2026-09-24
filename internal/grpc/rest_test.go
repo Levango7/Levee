@@ -409,16 +409,16 @@ type stubMobileApproval struct {
 	err        error
 }
 
-func (s *stubMobileApproval) ApproveViaDeepLink(_ context.Context, token string) error {
+func (s *stubMobileApproval) ApproveViaDeepLink(_ context.Context, token string) (string, error) {
 	s.lastAction = "approve"
 	s.lastToken = token
-	return s.err
+	return "run-1", s.err
 }
 
-func (s *stubMobileApproval) RejectViaDeepLink(_ context.Context, token string) error {
+func (s *stubMobileApproval) RejectViaDeepLink(_ context.Context, token string) (string, error) {
 	s.lastAction = "reject"
 	s.lastToken = token
-	return s.err
+	return "run-1", s.err
 }
 
 func TestDeeplinkApproveWithoutServiceIs503(t *testing.T) {

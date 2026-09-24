@@ -122,21 +122,26 @@ func (s *MobileApprovalService) RequestApproval(ctx context.Context, runID, user
 // ApproveViaDeepLink consumes a one-tap approval token and records an approve
 // decision on the bound approval. The token is single-use; a second call with
 // the same token returns ErrInvalidToken from the push package.
-func (s *MobileApprovalService) ApproveViaDeepLink(ctx context.Context, token string) error {
+//
+// It returns the runID the token was bound to, so the caller (the REST
+// gateway) can settle the run from the approval chain state — mirroring
+// a completed quorum onto the run is ChangeService territory and must
+// not live in this package (approval is a layer below grpc).
+func (s *MobileApprovalService) ApproveViaDeepLink(ctx context.Context, token string) (string, error) {
 	runID, userID, action, err := s.deeplink.ValidateToken(token)
 	if err != nil {
-		return fmt.Errorf("approval: mobile: validate token: %w", err)
+		return "", fmt.Errorf("approval: mobile: validate token: %w", err)
 	}
 	if action != push.ActionApprove {
-		return fmt.Errorf("approval: mobile: token action %q is not approve", action)
+		return "", fmt.Errorf("approval: mobile: token action %q is not approve", action)
 	}
 
 	approvalID, err := s.findPendingApprovalID(ctx, runID)
 	if err != nil {
-		return err
+		return runID, err
 	}
 	if err := s.approvalSvc.Approve(ctx, approvalID, userID); err != nil {
-		return fmt.Errorf("approval: mobile: approve: %w", err)
+		return runID, fmt.Errorf("approval: mobile: approve: %w", err)
 	}
 	s.recordHistory(userID, ApprovalRecord{
 		ApprovalID: approvalID,
@@ -148,27 +153,28 @@ func (s *MobileApprovalService) ApproveViaDeepLink(ctx context.Context, token st
 	})
 	log.InfoCtx(ctx, "approval: mobile: approved via deep link",
 		"run_id", runID, "user_id", userID)
-	return nil
+	return runID, nil
 }
 
 // RejectViaDeepLink consumes a one-tap reject token and records a reject
-// decision on the bound approval.
-func (s *MobileApprovalService) RejectViaDeepLink(ctx context.Context, token string) error {
+// decision on the bound approval. Returns the runID (see
+// ApproveViaDeepLink for the settlement contract).
+func (s *MobileApprovalService) RejectViaDeepLink(ctx context.Context, token string) (string, error) {
 	runID, userID, action, err := s.deeplink.ValidateToken(token)
 	if err != nil {
-		return fmt.Errorf("approval: mobile: validate token: %w", err)
+		return "", fmt.Errorf("approval: mobile: validate token: %w", err)
 	}
 	if action != push.ActionReject {
-		return fmt.Errorf("approval: mobile: token action %q is not reject", action)
+		return "", fmt.Errorf("approval: mobile: token action %q is not reject", action)
 	}
 
 	approvalID, err := s.findPendingApprovalID(ctx, runID)
 	if err != nil {
-		return err
+		return runID, err
 	}
 	reason := "rejected via mobile deep link"
 	if err := s.approvalSvc.Reject(ctx, approvalID, userID, reason); err != nil {
-		return fmt.Errorf("approval: mobile: reject: %w", err)
+		return runID, fmt.Errorf("approval: mobile: reject: %w", err)
 	}
 	s.recordHistory(userID, ApprovalRecord{
 		ApprovalID: approvalID,
@@ -181,7 +187,7 @@ func (s *MobileApprovalService) RejectViaDeepLink(ctx context.Context, token str
 	})
 	log.InfoCtx(ctx, "approval: mobile: rejected via deep link",
 		"run_id", runID, "user_id", userID)
-	return nil
+	return runID, nil
 }
 
 // GetApprovalHistory returns the recent mobile approval decisions for the

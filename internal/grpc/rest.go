@@ -149,9 +149,12 @@ type extraRoute struct {
 
 // mobileApprovalHandler wraps the MobileApprovalService for REST routing.
 // It is an interface so we can avoid importing the approval package here.
+// The deep-link methods return the runID the token was bound to so the
+// gateway can settle the run from the approval chain state (the
+// settlement itself lives on ChangeService — this layer only routes).
 type mobileApprovalHandler interface {
-	ApproveViaDeepLink(ctx context.Context, token string) error
-	RejectViaDeepLink(ctx context.Context, token string) error
+	ApproveViaDeepLink(ctx context.Context, token string) (string, error)
+	RejectViaDeepLink(ctx context.Context, token string) (string, error)
 }
 
 // GatewayServices bundles the service implementations for NewGateway.
@@ -888,11 +891,25 @@ func (gw *Gateway) handleDeeplinkApprove(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
-	if err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token); err != nil {
+	runID, err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token)
+	if err != nil {
 		writeDeeplinkError(w, err)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "approved"})
+	// Settle the run from the chain state: a completed quorum moves the
+	// run to approved; a partial one (min_approvers > 1) leaves it
+	// untouched and the response says so.
+	out := map[string]string{"status": "approved"}
+	if gw.change != nil {
+		settled, serr := gw.change.SettleApproval(ctx, runID)
+		if serr != nil {
+			slog.Default().Warn("deeplink approve: settle failed (decision is durable; run state not mirrored)",
+				"run_id", runID, "error", serr)
+		} else if settled == SettlePending {
+			out["status"] = "recorded; quorum pending"
+		}
+	}
+	writeJSON(w, out)
 }
 
 func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) {
@@ -908,9 +925,17 @@ func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
-	if err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token); err != nil {
+	runID, err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token)
+	if err != nil {
 		writeDeeplinkError(w, err)
 		return
+	}
+	// One-vote veto: settle the rejection onto the run.
+	if gw.change != nil {
+		if _, serr := gw.change.SettleApproval(ctx, runID); serr != nil {
+			slog.Default().Warn("deeplink reject: settle failed (decision is durable; run state not mirrored)",
+				"run_id", runID, "error", serr)
+		}
 	}
 	writeJSON(w, map[string]string{"status": "rejected"})
 }
