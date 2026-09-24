@@ -169,14 +169,15 @@ jobs:
         run: go test -tags integration ./tests/integration/ -count=1 -timeout 300s
       - name: go test (e2e rollback drills)
         run: go test -tags e2e ./tests/e2e/ -count=1 -timeout 600s
-      # takeover runs SEPARATELY from state/cluster: all three share the
-      # single CI postgres database, and `go test` executes package
-      # binaries in parallel — the state suite's TRUNCATE ... CASCADE
-      # wipes runs/trace rows the takeover tests are mid-flight on (and
-      # vice versa), producing order-dependent false reds (observed:
-      # TestTakeover_SweepIsIdempotent's trace assertion reading 0 rows).
-      - name: go test (postgres store + distributed locks)
-        run: go test ./internal/state/... ./internal/cluster/... -count=1 -timeout 600s
+      # state, cluster and takeover share the single CI postgres database.
+      # Keep each package binary in its own step: a combined `go test` runs
+      # package binaries in parallel, and state's TRUNCATE ... CASCADE would
+      # otherwise wipe cluster/takeover rows (or hit the trace WORM trigger)
+      # while those tests are in flight.
+      - name: go test (postgres state store, isolated step)
+        run: go test ./internal/state/... -count=1 -timeout 600s
+      - name: go test (distributed locks/cluster, isolated step)
+        run: go test ./internal/cluster/... -count=1 -timeout 600s
       - name: go test (takeover, isolated step)
         run: go test ./internal/takeover/... -count=1 -timeout 300s
       # Backup restore drill (D-3): the drill creates/restores/drops its OWN
