@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: [main, master, develop]
+    # A release tag must create a CI run for the exact tagged commit. The
+    # release workflow waits for this run's aggregate check before packaging.
+    tags: ['v*']
   pull_request:
     branches: [main, master, develop]
 
@@ -12,6 +15,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  release-gate:
+    name: release gate policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: unit tests
+        run: python -m unittest -v scripts/test_require_ci_release.py
+
   # ---------------------------------------------------------------------------
   # vet: cheap structural checks, runs first to fail fast.
   # ---------------------------------------------------------------------------
@@ -376,7 +390,7 @@ jobs:
   check:
     name: check (all jobs passed)
     runs-on: ubuntu-latest
-    needs: [vet, lint, frontend, test, integration, proto, build, gosec, trivy]
+    needs: [release-gate, vet, lint, frontend, test, integration, proto, build, gosec, trivy]
     if: always()
     steps:
       - name: aggregate
@@ -387,7 +401,7 @@ jobs:
           # the bash variable, and there is no such needs entry. Hand each
           # result to bash as a literal name:value pair instead and check
           # them there.
-          status="vet:${{ needs.vet.result }} lint:${{ needs.lint.result }} frontend:${{ needs.frontend.result }} test:${{ needs.test.result }} integration:${{ needs.integration.result }} proto:${{ needs.proto.result }} build:${{ needs.build.result }} gosec:${{ needs.gosec.result }} trivy:${{ needs.trivy.result }}"
+          status="release-gate:${{ needs.release-gate.result }} vet:${{ needs.vet.result }} lint:${{ needs.lint.result }} frontend:${{ needs.frontend.result }} test:${{ needs.test.result }} integration:${{ needs.integration.result }} proto:${{ needs.proto.result }} build:${{ needs.build.result }} gosec:${{ needs.gosec.result }} trivy:${{ needs.trivy.result }}"
           rc=0
           for pair in $status; do
             job=${pair%%:*}
