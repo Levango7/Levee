@@ -252,7 +252,7 @@ func (c *LocalChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResul
 		return nil, fmt.Errorf("local: resolve %q: %w", fields[0], err)
 	}
 	var stdout, stderr bytes.Buffer
-	proc := exec.CommandContext(ctx, path, fields[1:]...)
+	proc := exec.CommandContext(ctx, path, fields[1:]...) // #nosec G204 -- program already matched the CheckPolicy allow-list (exact program name + per-program arg rules) before LookPath resolution
 	proc.Stdout = &stdout
 	proc.Stderr = &stderr
 	runErr := proc.Run()
