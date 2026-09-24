@@ -568,8 +568,7 @@ func (e *Engine) loadStoredPlan(ctx context.Context, changeID string) (*plan.Pla
 	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
 		return nil, fmt.Errorf("wiring: stored plan for %q is corrupt: %w", changeID, err)
 	}
-	hash := plan.ComputeHash(&p)
-	if hash == "" || hash != run.PlanHash {
+	if !plan.VerifyHash(&p, run.PlanHash) {
 		return nil, fmt.Errorf("wiring: stored plan for %q does not match its plan hash (drift or corruption); re-plan required", changeID)
 	}
 	return &p, nil
@@ -584,9 +583,15 @@ func narrowPlan(p *plan.Plan, hosts []string) *plan.Plan {
 		want[h] = true
 	}
 	out := &plan.Plan{
-		ID:           p.ID,
-		WorkflowName: p.WorkflowName,
-		CreatedAt:    p.CreatedAt,
+		ID:            p.ID,
+		WorkflowName:  p.WorkflowName,
+		CreatedAt:     p.CreatedAt,
+		RiskScore:     p.RiskScore,
+		RiskFactors:   p.RiskFactors,
+		ApprovalFloor: p.ApprovalFloor,
+		Approval:      p.Approval,
+		Rollback:      p.Rollback,
+		Gate:          p.Gate,
 	}
 	for _, b := range p.Batches {
 		var keep []string
@@ -603,6 +608,7 @@ func narrowPlan(p *plan.Plan, hosts []string) *plan.Plan {
 			Targets:        keep,
 			Steps:          b.Steps,
 			MaxConcurrency: b.MaxConcurrency,
+			Gate:           b.Gate,
 		}
 		out.Batches = append(out.Batches, nb)
 	}

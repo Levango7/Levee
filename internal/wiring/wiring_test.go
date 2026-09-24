@@ -109,6 +109,30 @@ func TestGeneratePlan_WorkflowFile(t *testing.T) {
 	assert.Equal(t, "run-file", msg.GetChangeId())
 }
 
+func TestLoadStoredPlanAcceptsLegacyV1(t *testing.T) {
+	e, store := newTestEngine(t, "web-1")
+	ctx := context.Background()
+	p := &plan.Plan{
+		ID: "legacy-id", WorkflowName: "legacy", TotalTargets: 1,
+		Batches: []plan.Batch{{
+			Index: 0, Targets: []string{"web-1"},
+			Steps: []plan.PlanStep{{Name: "noop", Module: "shell", Action: "exec"}},
+		}},
+	}
+	raw, err := json.Marshal(p)
+	require.NoError(t, err)
+	run := &state.Run{
+		ID: "legacy-load", WorkflowName: "legacy", Status: "approved",
+		PlanJSON: string(raw), PlanHash: plan.ComputeHashV1(p),
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, store.CreateRun(ctx, run))
+
+	got, err := e.loadStoredPlan(ctx, run.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "legacy", got.WorkflowName)
+}
+
 func TestGeneratePlan_UnknownAndRetiredTargetsRejected(t *testing.T) {
 	ctx := context.Background()
 	e, store := newTestEngine(t, "web-1", "db-old")

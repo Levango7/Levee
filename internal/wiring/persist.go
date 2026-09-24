@@ -371,10 +371,16 @@ func batchNoForID(noToID map[int]string, id string) int {
 // 1-based numbering so it stays aligned with already-persisted rows.
 func buildResumePlan(p *plan.Plan, skip map[int]bool) (*plan.Plan, []resumeEvidence) {
 	resume := &plan.Plan{
-		ID:           p.ID,
-		WorkflowName: p.WorkflowName,
-		TotalTargets: 0,
-		CreatedAt:    p.CreatedAt,
+		ID:            p.ID,
+		WorkflowName:  p.WorkflowName,
+		TotalTargets:  0,
+		CreatedAt:     p.CreatedAt,
+		RiskScore:     p.RiskScore,
+		RiskFactors:   p.RiskFactors,
+		ApprovalFloor: p.ApprovalFloor,
+		Approval:      p.Approval,
+		Rollback:      p.Rollback,
+		Gate:          p.Gate,
 	}
 	var skipped []resumeEvidence
 	newIndex := 0

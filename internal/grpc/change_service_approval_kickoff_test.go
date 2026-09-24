@@ -9,6 +9,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/state"
@@ -153,9 +155,15 @@ func newKickoffService(t *testing.T, engine *EngineAdapter) (*ChangeService, sta
 // approval floor (simulating the risk assessor's stamp).
 func planWithFloor(t *testing.T, floor string) *StoredPlan {
 	t.Helper()
+	return planWithGovernance(t, floor, nil)
+}
+
+func planWithGovernance(t *testing.T, floor string, approvalSpec *dsl.ApprovalSpec) *StoredPlan {
+	t.Helper()
 	p := testPlan()
 	p.ApprovalFloor = floor
 	p.RiskScore = 45
+	p.Approval = approvalSpec
 	raw, err := json.Marshal(p)
 	require.NoError(t, err)
 	return &StoredPlan{JSON: string(raw), Hash: plan.ComputeHash(p)}
@@ -192,10 +200,12 @@ func TestPlanChange_KicksOffApprovalChain(t *testing.T) {
 }
 
 func TestApprovalRouting_DeclaredEmergencyWinsOverHighFloor(t *testing.T) {
-	// Workflow declares emergency (inline YAML); floor high ⇒ tier
-	// emergency (the declaration can demand MORE review than the floor).
-	inline := "name: wf\ntargets:\n  - name: web\n    hosts: [\"web-1\"]\nsteps:\n  - name: s\n    action: shell.exec\n    args:\n      cmd: uname\napproval:\n  level: emergency\n"
-	sp := planWithFloor(t, "high")
+	// The v2 artifact carries the declaration. Use a path-shaped workflow
+	// source to prove kickoff consumes the hash-bound artifact rather than
+	// re-parsing inline source.
+	sp := planWithGovernance(t, "high", &dsl.ApprovalSpec{
+		Level: "emergency", Approvers: []string{"alice", "bob"}, MinApprovers: 2,
+	})
 	engine := &recordingEngine{plan: &pb.Plan{ChangeId: "x"}, stored: sp}
 	svc, store := newKickoffService(t, engine.adapter())
 	created, err := svc.CreateChange(ContextWithActor(context.Background(), "alice"), &pb.CreateChangeRequest{
@@ -203,11 +213,11 @@ func TestApprovalRouting_DeclaredEmergencyWinsOverHighFloor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Inject the inline workflow source.
+	// A path-shaped source cannot be parsed by the legacy fallback.
 	ctx := context.Background()
 	run, err := store.GetRun(ctx, created.GetId())
 	require.NoError(t, err)
-	run.WorkflowName = inline
+	run.WorkflowName = `C:\workflows\approval.levee.yaml`
 	require.NoError(t, store.UpdateRun(ctx, run))
 
 	_, err = svc.PlanChange(ctx, &pb.PlanChangeRequest{
@@ -221,6 +231,27 @@ func TestApprovalRouting_DeclaredEmergencyWinsOverHighFloor(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, approvals, 1)
 	assert.Equal(t, "emergency", approvals[0].Level, "max(declared emergency, floor high) = emergency")
+}
+
+func TestApprovalRouting_LegacyInlineFallback(t *testing.T) {
+	sp := planWithFloor(t, "high")
+	engine := &recordingEngine{plan: &pb.Plan{ChangeId: "x"}, stored: sp}
+	svc, store := newKickoffService(t, engine.adapter())
+	created, err := svc.CreateChange(ContextWithActor(context.Background(), "alice"), &pb.CreateChangeRequest{Label: "legacy-inline"})
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	run, err := store.GetRun(ctx, created.GetId())
+	require.NoError(t, err)
+	run.WorkflowName = "name: legacy\ntargets:\n  - name: web\n    hosts: [web-1]\nsteps:\n  - name: s\n    action: shell.exec\n    args:\n      cmd: uname\napproval:\n  level: emergency\n  approvers: [alice, bob]\n  min_approvers: 2\n"
+	require.NoError(t, store.UpdateRun(ctx, run))
+	_, err = svc.PlanChange(ctx, &pb.PlanChangeRequest{ChangeId: created.GetId(), TargetHosts: []string{"web-1"}})
+	require.NoError(t, err)
+
+	approvals, err := store.ListApprovals(ctx, state.ApprovalFilter{RunID: created.GetId(), Status: "pending"})
+	require.NoError(t, err)
+	require.Len(t, approvals, 1)
+	assert.Equal(t, "emergency", approvals[0].Level)
 }
 
 func TestApprovalRouting_RePlanSupersedesPending(t *testing.T) {
@@ -253,6 +284,23 @@ func TestApprovalRouting_RePlanSupersedesPending(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, expired, 1, "the superseded row is expired, not deleted")
+}
+
+func TestKickoffSkipsPlanHashMismatch(t *testing.T) {
+	sp := planWithFloor(t, "high")
+	sp.Hash = "v2:" + strings.Repeat("0", 64)
+	engine := &recordingEngine{plan: &pb.Plan{ChangeId: "x"}, stored: sp}
+	svc, store := newKickoffService(t, engine.adapter())
+	created, err := svc.CreateChange(ContextWithActor(context.Background(), "alice"), &pb.CreateChangeRequest{Label: "bad-hash"})
+	require.NoError(t, err)
+
+	_, err = svc.PlanChange(context.Background(), &pb.PlanChangeRequest{
+		ChangeId: created.GetId(), TargetHosts: []string{"web-1"},
+	})
+	require.NoError(t, err)
+	approvals, err := store.ListApprovals(context.Background(), state.ApprovalFilter{RunID: created.GetId()})
+	require.NoError(t, err)
+	assert.Empty(t, approvals, "hash-bound approval routing must not consume a drifted artifact")
 }
 
 func TestKickoffSkippedWithoutApprovalService(t *testing.T) {

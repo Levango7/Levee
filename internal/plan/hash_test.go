@@ -1,18 +1,30 @@
 package plan
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // hashPlan builds a plan with one batch, the given targets and steps,
 // then returns its hash. Convenience helper for hash tests.
 func hashPlan(name string, targets []string, steps ...PlanStep) string {
 	return ComputeHash(buildPlan(name, targets, steps...))
+}
+
+func assertV2Hash(t *testing.T, hash string) {
+	t.Helper()
+	require.True(t, strings.HasPrefix(hash, hashPrefixV2), "hash must carry v2 prefix: %q", hash)
+	digest := strings.TrimPrefix(hash, hashPrefixV2)
+	require.Len(t, digest, 64, "sha256 hex length")
+	assert.True(t, isLowerHex(digest), "hash digest must be lowercase hex")
 }
 
 // TestComputeHashSamePlan verifies that computing the hash of the same
@@ -29,16 +41,10 @@ func TestComputeHashSamePlan(t *testing.T) {
 	assert.Equal(t, h1, h2, "same plan must yield same hash")
 }
 
-// TestComputeHashFormat verifies the hash is a 64-char lowercase hex
-// string (SHA-256 digest).
+// TestComputeHashFormat verifies the versioned v2 SHA-256 hash format.
 func TestComputeHashFormat(t *testing.T) {
 	plan := buildPlan("wf-fmt", []string{"host-a"})
-	h := ComputeHash(plan)
-	assert.Len(t, h, 64, "sha256 hex length")
-	for _, c := range h {
-		assert.True(t, (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'),
-			"hash char %q must be lowercase hex", c)
-	}
+	assertV2Hash(t, ComputeHash(plan))
 }
 
 // TestComputeHashDifferentWorkflowName verifies that two plans differing
@@ -224,7 +230,7 @@ func TestComputeHashEmptyPlan(t *testing.T) {
 	plan := &Plan{ID: "p", WorkflowName: "", Batches: nil}
 	h := ComputeHash(plan)
 	assert.NotEmpty(t, h, "empty plan should still hash")
-	assert.Len(t, h, 64)
+	assertV2Hash(t, h)
 }
 
 // TestComputeHashIndirectTargetsAffectHash verifies that indirect
@@ -302,11 +308,108 @@ func TestComputeHashLargePlan(t *testing.T) {
 	h2 := ComputeHash(plan)
 	assert.NotEmpty(t, h1)
 	assert.Equal(t, h1, h2)
-	assert.Len(t, h1, 64)
+	assertV2Hash(t, h1)
 }
 
 // TestComputeHashMultiBatchDeterministic verifies that a multi-batch
 // plan hashes deterministically across repeated calls.
+func legacyGoldenPlan() *Plan {
+	return &Plan{
+		ID: "ignored", WorkflowName: "legacy-wf", TotalTargets: 2,
+		CreatedAt: time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC),
+		Batches: []Batch{{
+			Index: 0, Targets: []string{"host-b", "host-a"}, MaxConcurrency: 2,
+			Steps: []PlanStep{{Name: "exec", Module: "shell", Action: "exec", Args: map[string]any{"z": 2, "a": 1}}},
+		}},
+	}
+}
+
+func TestVerifyHashLegacyV1(t *testing.T) {
+	plan := buildPlan("legacy", []string{"host-a"})
+	legacy := ComputeHashV1(plan)
+	require.Len(t, legacy, 64)
+	assert.True(t, VerifyHash(plan, legacy), "persisted v1 plans must remain executable")
+}
+
+func TestComputeHashV1GoldenCompatibility(t *testing.T) {
+	const golden = "cf0eaad0689171cb20099c38b378c04a20ecbfd5831e769a3a70515012ba0391"
+	plan := legacyGoldenPlan()
+	assert.Equal(t, golden, ComputeHashV1(plan), "legacy canonical bytes must remain stable")
+	assert.True(t, VerifyHash(plan, golden))
+}
+
+func TestVerifyHashRejectsUnknownVersion(t *testing.T) {
+	plan := buildPlan("unknown", []string{"host-a"})
+	assert.False(t, VerifyHash(plan, "v3:"+strings.Repeat("a", 64)))
+	assert.False(t, VerifyHash(plan, strings.ToUpper(ComputeHashV1(plan))))
+}
+
+func TestComputeHashGovernanceFieldsAffectV2(t *testing.T) {
+	base := buildPlan("governance", []string{"host-a"}, PlanStep{
+		Name: "restart", Module: "svc", Action: "restart",
+		Args:         map[string]any{"name": "nginx"},
+		Rollback:     &dsl.RollbackSpec{Strategy: "snapshot", SnapshotPaths: []string{"/etc/b", "/etc/a"}},
+		Approval:     &dsl.ApprovalSpec{Level: "high", Approvers: []string{"bob", "alice"}, MinApprovers: 2},
+		Gate:         &dsl.GateSpec{Post: []dsl.GateCheck{{Type: "cmd", Command: "true"}}},
+		Irreversible: true, IrreversibleReason: "destructive",
+	})
+	base.RiskScore = 77
+	base.Approval = &dsl.ApprovalSpec{Level: "high", Approvers: []string{"charlie"}}
+	base.Rollback = &dsl.RollbackSpec{Strategy: "snapshot", SnapshotPaths: []string{"/etc/main.conf"}}
+	base.Gate = &dsl.GateSpec{Pre: []dsl.GateCheck{{Type: "cmd", Command: "true"}}}
+	base.Batches[0].Gate = &dsl.GateSpec{Batch: []dsl.GateCheck{{Type: "cmd", Command: "true"}}}
+	baseline := ComputeHash(base)
+
+	tests := []struct {
+		name   string
+		mutate func(*Plan)
+	}{
+		{"risk score", func(p *Plan) { p.RiskScore++ }},
+		{"risk factor", func(p *Plan) { p.RiskFactors = []RiskFactor{{Rule: "new", Points: 1}} }},
+		{"approval floor", func(p *Plan) { p.ApprovalFloor = "emergency" }},
+		{"workflow approval", func(p *Plan) { p.Approval.Level = "emergency" }},
+		{"workflow rollback", func(p *Plan) { p.Rollback.Strategy = "undo-action" }},
+		{"workflow gate", func(p *Plan) { p.Gate.Pre[0].Command = "false" }},
+		{"batch gate", func(p *Plan) { p.Batches[0].Gate.Batch[0].Command = "false" }},
+		{"rollback strategy", func(p *Plan) { p.Batches[0].Steps[0].Rollback.Strategy = "undo-action" }},
+		{"snapshot path", func(p *Plan) { p.Batches[0].Steps[0].Rollback.SnapshotPaths[0] = "/etc/c" }},
+		{"approval", func(p *Plan) { p.Batches[0].Steps[0].Approval.MinApprovers = 3 }},
+		{"gate", func(p *Plan) { p.Batches[0].Steps[0].Gate.Post[0].Command = "false" }},
+		{"irreversible", func(p *Plan) { p.Batches[0].Steps[0].Irreversible = false }},
+		{"irreversible reason", func(p *Plan) { p.Batches[0].Steps[0].IrreversibleReason = "other" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(base)
+			require.NoError(t, err)
+			var clone Plan
+			require.NoError(t, json.Unmarshal(raw, &clone))
+			tt.mutate(&clone)
+			assert.NotEqual(t, baseline, ComputeHash(&clone))
+		})
+	}
+}
+
+func TestComputeHashV2SetOrderingStable(t *testing.T) {
+	mk := func(factors []RiskFactor, approvers, paths []string) string {
+		p := buildPlan("sets", []string{"host-a"}, PlanStep{
+			Name: "s", Rollback: &dsl.RollbackSpec{SnapshotPaths: paths},
+			Approval: &dsl.ApprovalSpec{Approvers: approvers},
+		})
+		p.RiskFactors = factors
+		return ComputeHash(p)
+	}
+	a := mk(
+		[]RiskFactor{{Rule: "z", Points: 2, Detail: "z"}, {Rule: "a", Points: 1, Detail: "a"}},
+		[]string{"bob", "alice"}, []string{"/b", "/a"},
+	)
+	b := mk(
+		[]RiskFactor{{Rule: "a", Points: 1, Detail: "a"}, {Rule: "z", Points: 2, Detail: "z"}},
+		[]string{"alice", "bob"}, []string{"/a", "/b"},
+	)
+	assert.Equal(t, a, b)
+}
+
 func TestComputeHashMultiBatchDeterministic(t *testing.T) {
 	plan := buildPlanBatches("wf", []Batch{
 		{Index: 0, Targets: []string{"h-a", "h-b"}, Steps: []PlanStep{
@@ -321,10 +424,8 @@ func TestComputeHashMultiBatchDeterministic(t *testing.T) {
 	assert.Equal(t, h1, h2)
 }
 
-// TestComputeHashHexEncoding verifies the hash is hex by checking it
-// only contains hex chars and is lowercase.
+// TestComputeHashHexEncoding verifies the version and lowercase digest encoding.
 func TestComputeHashHexEncoding(t *testing.T) {
 	plan := buildPlan("wf", []string{"host-a"})
-	h := ComputeHash(plan)
-	assert.False(t, strings.ContainsAny(h, "GHijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ "))
+	assertV2Hash(t, ComputeHash(plan))
 }

@@ -243,9 +243,9 @@ func TestPlanE2E_SerialSingleBatch(t *testing.T) {
 	assert.Equal(t, 3, report.TotalAffected)
 	assert.Equal(t, RiskLevelLow, report.RiskLevel)
 
-	// 哈希：64 字符 hex（SHA-256），且可自校验。
+	// 哈希：带 v2 版本前缀的 SHA-256，且可自校验。
 	hash := ComputeHash(p)
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -294,7 +294,7 @@ func TestPlanE2E_PercentMultiBatch(t *testing.T) {
 
 	// 哈希稳定且可校验。
 	hash := ComputeHash(p)
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -317,7 +317,7 @@ func TestPlanE2E_SingleTargetSingleBatch(t *testing.T) {
 	assert.Equal(t, 1, report.TotalAffected)
 	assert.Equal(t, RiskLevelLow, report.RiskLevel)
 
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -334,7 +334,7 @@ func TestPlanE2E_ImpactAnalysis_WithIndirect(t *testing.T) {
 	assert.Equal(t, RiskLevelLow, report.RiskLevel)
 
 	// 哈希可计算且可校验（哈希 canonical 包含影响面，锁定 blast radius）。
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -353,7 +353,7 @@ func TestPlanE2E_HashDeterminism(t *testing.T) {
 	h1 := ComputeHash(p1)
 	h2 := ComputeHash(p2)
 	assert.Equal(t, h1, h2, "相同输入应产生确定性哈希")
-	assert.Len(t, h1, 64)
+	assertV2Hash(t, h1)
 
 	// 哈希确定性来自 canonical 排除了 ID/CreatedAt（hash.go 的 canonicalPlan
 	// 不含这两个字段）。此处不断言 ID/CreatedAt 必然不同：两次 time.Now 在
@@ -495,7 +495,7 @@ func TestPlanE2E_FixedStrategy_FromAST(t *testing.T) {
 
 	// 哈希可计算且可校验。
 	hash := ComputeHash(p)
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 

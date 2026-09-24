@@ -23,7 +23,7 @@
 | # | 风险 | 固有 | 缓解 | 残余 |
 |---|------|------|------|------|
 | R1 | **生产首次真触达远端主机**：从"不会执行"变为"会执行"，本身就是最大行为变化 | 高 | 总开关 `--engine-enabled`（默认 **false**，维持现状 FailedPrecondition）；试点按需显式开启。灰度权在部署者手里 | 低 |
-| R2 | 执行到的计划≠批准的计划（计划现算现执行的既有语义） | 高 | **计划持久化**：PlanChange 序列化计划入 run（新列 `plan_json`，SQLite/PG 双轨），审批只允许带已存计划的 run；apply 读存量计划并校验 `plan_hash`，参数漂移即拒（FailedPrecondition） | 低 |
+| R2 | 执行到的计划≠批准的计划（计划现算现执行的既有语义） | 高 | **计划持久化 + 治理感知 hash**：PlanChange 序列化计划入 run（新列 `plan_json`，SQLite/PG 双轨），审批只允许带已存计划的 run；新计划使用 `v2:<sha256>`，hash 覆盖 workflow/step/batch 的审批、回滚、门禁、不可逆判定与风险结论；apply 读存量计划并按 hash 版本校验，参数或治理漂移即拒（FailedPrecondition）。裸 64 位 v1 存量 hash 继续按旧 canonical 验证，重新 plan 后升级 v2 | 低 |
 | R3 | 凭据/连接在请求路径上的耗时与泄漏（KMS 教训：argon2id 单次可达秒级） | 中 | 连接与凭据解析按 run 作用域缓存、run 结束统一关闭；执行超时沿用步骤级超时；凭据不落步骤 stdout（审计脱敏已有） | 低 |
 | R4 | serve 并发执行失控 | 中 | 每 run 独立 runner（绕开单实例约束）+ 服务端并发闸 `--engine-max-parallel-runs`（默认 4），超出即 FailedPrecondition 快速失败；目标级互斥仍由引擎锁保证 | 低 |
 | R5 | 参数化门禁（command/probe remote/slo）在 serve 缺运行时依赖 | 中 | 门禁运行时按需组装：command/probe 复用执行器同一拨号器；slo 需配置 Prometheus 地址，缺配置时门禁**fail-closed**（既有语义），部署者可选择性开启 | 低 |
@@ -34,7 +34,7 @@
 
 ## 3. 设计骨架（约 5-7 提交，串行可做）
 
-1. **A1 计划持久化**：`run.plan_json`（迁移含 advisory-lock 路径）；PlanChange 写入 + 置 `plan_hash`；审批/apply 消费存量计划；hash 不符拒执行；旧 run（无存量计划）apply 时明确报错引导重新 plan。
+1. **A1 计划持久化**：`run.plan_json`（迁移含 advisory-lock 路径）；PlanChange 写入 + 置 `plan_hash`；审批/apply 消费存量计划；hash 不符拒执行；旧 run（无存量计划）apply 时明确报错引导重新 plan。P1-1 后新 hash 为 `v2:<sha256>`，覆盖治理语义；存量裸 64 位 v1 hash 保持兼容，重新 plan/re-approve 才升级 v2。
 2. **A2 组装层**：serve 启动时按 `--engine-enabled` 构造 lockMgr/gateMgr(+runtime)/rollbackMgr(快照目录)/batchCtrl 工厂（每 run 独立实例）；关闭时维持现状一行不变。
 3. **A3 execFn 适配器**：`plan.PlanStep` → 目标解析（inventory/target）→ 凭据解析（master password）→ 通道拨号（run 级连接缓存，统一 Close）→ `executor.Executor` 分发 → 步骤输出映射进引擎回调。
 4. **A4 EngineAdapter.Run 闭包**：读 run+plan → 并发闸 → NewClosureRunner → Run(execFn) → phase/success 映射（既有映射表）；RetryChange/Rollback 同步接线（Rollback 复用 rollbackMgr）。
@@ -44,7 +44,7 @@
 
 1. `--engine-enabled=false`（默认）：全量既有行为与测试零变化。
 2. 开启后 gRPC e2e：plan→approve→apply 走本地通道打到本机的真实步骤 → run `completed`、步骤行落库、审计链完整。
-3. 计划漂移（改参后旧计划 apply）被 plan_hash 拒。
+3. 计划漂移（改参或改审批/回滚/门禁/风险语义后旧计划 apply）被 v2 plan_hash 拒；存量 v1 计划仍可执行并重新 plan/re-approve 升级。
 4. 并发闸生效：第 N+1 个并发 apply 快速 FailedPrecondition。
 5. 回滚路径经 serve 触发可达 `rolled_back`（复用 rollback drill 场景上移到 serve 层）。
 6. 双平台/全量测试 + lint/gosec 全绿；无新增 flaky。

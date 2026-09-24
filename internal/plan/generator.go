@@ -61,6 +61,15 @@ type Plan struct {
 	// routing takes max(workflow declaration, ApprovalFloor) — the
 	// floor can raise but never lower the tier.
 	ApprovalFloor string `json:"approval_floor,omitempty"`
+
+	// Approval, Rollback and Gate preserve workflow-level governance
+	// declarations in the approved artifact. ChangeService consumes
+	// Approval directly for kickoff routing; the remaining declarations
+	// are audit/hash identity even where execution still consumes their
+	// step-level overrides.
+	Approval *dsl.ApprovalSpec `json:"approval,omitempty"`
+	Rollback *dsl.RollbackSpec `json:"rollback,omitempty"`
+	Gate     *dsl.GateSpec     `json:"gate,omitempty"`
 }
 
 // RiskFactor mirrors risk.Factor (rule / points / detail) as a plan
@@ -90,12 +99,18 @@ type Batch struct {
 	// MaxConcurrency caps the in-batch parallelism. Zero means
 	// unlimited (the apply phase decides its own default).
 	MaxConcurrency int
+
+	// Gate preserves the workflow's post_batch gate declaration. Current
+	// execution still consumes gates from PlanStep; persisting this keeps
+	// declared batch-boundary governance inside the approved hash.
+	Gate *dsl.GateSpec `json:"gate,omitempty"`
 }
 
 // PlanStep is a single step in a plan, derived from a dsl.Step. It
-// carries the module/action to invoke, the action arguments and the
-// optional rollback / approval / gate overrides. Step-level overrides
-// take precedence over workflow-level defaults during execution.
+// carries the module/action to invoke, the action arguments and optional
+// step-level rollback / approval / gate declarations. Execution consumes
+// these step declarations directly; workflow-level declarations are retained
+// at the Plan level for approval routing and hash identity.
 //
 // Irreversible / IrreversibleReason record the verdict of the executor's
 // IrreversibleChecker at plan time (explicit author declaration or
@@ -185,6 +200,7 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 			Targets:        targets,
 			Steps:          planSteps,
 			MaxConcurrency: wf.Batches.MaxConcurrency,
+			Gate:           wf.Batches.Gate,
 		})
 	}
 
@@ -198,6 +214,9 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		Batches:      batches,
 		TotalTargets: len(resolvedTargets),
 		CreatedAt:    time.Now().UTC(),
+		Approval:     wf.Approval,
+		Rollback:     wf.Rollback,
+		Gate:         wf.Gate,
 	}
 	return plan, nil
 }

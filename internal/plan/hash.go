@@ -1,15 +1,8 @@
-// Package plan provides a stable content-addressed hash for plan locking.
-//
-// ComputeHash canonicalizes a Plan into an order-stable JSON form and
-// returns its SHA-256 digest. The canonical form includes the workflow
-// name, the sorted target set, the batch structure (indices, sorted
-// per-batch targets, steps with sorted args), and the impact report
-// (direct + indirect targets). The hash is hex-encoded.
-//
-// Canonicalization guarantees that target order within a batch does not
-// affect the hash (sets are sorted), while batch order and step order
-// are preserved (they carry execution semantics). Map keys (step args)
-// are serialised in lexicographic order by encoding/json.
+// Package plan provides versioned, content-addressed hashes for plan
+// locking. ComputeHash emits the current v2 digest; VerifyHash accepts both
+// v2 governance-aware hashes and legacy 64-hex v1 hashes so persisted plans
+// remain executable after upgrade. Re-planning is required to migrate a v1
+// artifact to v2 governance coverage.
 package plan
 
 import (
@@ -17,25 +10,43 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strings"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
-// ComputeHash returns the SHA-256 hash of the canonical representation
-// of the plan. The canonical form includes:
-//   - workflow_name
-//   - the sorted, deduplicated target set across all batches
-//   - the batch list (index, sorted per-batch targets, steps, max
-//     concurrency) — batch order is preserved
-//   - the step list per batch (name, module, action, args) — step order
-//     is preserved; args map keys are sorted by encoding/json
-//   - the impact report (sorted direct + indirect targets)
-//
-// The hash is lowercase hex-encoded (64 chars). Returns the empty
-// string when plan is nil or canonical serialization fails.
+const (
+	// HashVersionV2 is the current plan hash version. V2 includes the
+	// approval, rollback, verification-gate and risk semantics that V1 left
+	// outside the canonical form.
+	HashVersionV2 = "v2"
+	// HashVersionV1 is the legacy execution-only hash format.
+	HashVersionV1 = "v1"
+	hashPrefixV2  = HashVersionV2 + ":"
+	legacyHashLen = 64
+)
+
+// ComputeHash returns the current versioned SHA-256 plan hash (v2:<hex>).
+// Returns the empty string when plan is nil or canonical serialization fails.
 func ComputeHash(plan *Plan) string {
 	if plan == nil {
 		return ""
 	}
-	data, err := json.Marshal(buildCanonical(plan))
+	return hashPrefixV2 + hashCanonical(buildCanonicalV2(plan))
+}
+
+// ComputeHashV1 returns the legacy 64-hex execution-only hash. It exists for
+// upgrade verification and regression fixtures; new code should use
+// ComputeHash / VerifyHash.
+func ComputeHashV1(plan *Plan) string {
+	if plan == nil {
+		return ""
+	}
+	return hashCanonical(buildCanonicalV1(plan))
+}
+
+func hashCanonical(canonical any) string {
+	data, err := json.Marshal(canonical)
 	if err != nil {
 		return ""
 	}
@@ -43,23 +54,35 @@ func ComputeHash(plan *Plan) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// VerifyHash reports whether the computed hash of the plan equals the
-// expected hash. Returns false when plan is nil, when the expected
-// string is empty, or when the hashes differ. The comparison is a plain
-// string equality (both sides are hex-encoded digests of equal length,
-// so timing attack is not a concern for plan locking; use
-// crypto/subtle.ConstantTimeCompare if constant-time is required).
+// VerifyHash reports whether the plan matches the version encoded by
+// expected. V2 hashes cover governance fields; bare 64-hex expected values
+// are verified with the legacy V1 algorithm. Unknown/malformed versions fail.
 func VerifyHash(plan *Plan, expected string) bool {
 	if plan == nil || expected == "" {
 		return false
 	}
-	return ComputeHash(plan) == expected
+	switch {
+	case strings.HasPrefix(expected, hashPrefixV2):
+		return ComputeHash(plan) == expected
+	case len(expected) == legacyHashLen && isLowerHex(expected):
+		return ComputeHashV1(plan) == expected
+	default:
+		return false
+	}
 }
 
-// canonicalPlan is the order-stable representation of a Plan used for
-// hashing. All target slices are sorted; all maps rely on
-// encoding/json's lexicographic key ordering for stability. Batch and
-// step slices preserve their order (execution semantics).
+func isLowerHex(value string) bool {
+	for _, c := range value {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// canonicalPlan is the legacy V1 execution-only representation. V2 embeds
+// this unchanged and adds governance fields; the V1 builder remains
+// byte-for-byte compatible with already-persisted 64-hex hashes.
 type canonicalPlan struct {
 	WorkflowName string           `json:"workflow_name"`
 	Targets      []string         `json:"targets"`
@@ -77,12 +100,8 @@ type canonicalBatch struct {
 	MaxConcurrency int             `json:"max_concurrency"`
 }
 
-// canonicalStep is the order-stable representation of a PlanStep. Args
-// is a map[string]any whose top-level keys are sorted by encoding/json;
-// nested maps are recursively canonicalized so their keys are sorted
-// too. Rollback / Approval / Gate are not included in the hash because
-// they are runtime directives, not plan identity — two plans that differ
-// only in approval routing are considered the same change.
+// canonicalStep is the V1 execution step. Governance directives are added
+// by canonicalStepV2 below.
 type canonicalStep struct {
 	Name   string         `json:"name"`
 	Module string         `json:"module"`
@@ -90,18 +109,100 @@ type canonicalStep struct {
 	Args   map[string]any `json:"args"`
 }
 
-// canonicalImpact is the order-stable representation of the impact
-// report. Both target lists are already sorted by ImpactAnalyzer.
+// canonicalImpact is the order-stable representation of the impact report.
+// Both target lists are already sorted by ImpactAnalyzer.
 type canonicalImpact struct {
 	DirectTargets   []string `json:"direct_targets"`
 	IndirectTargets []string `json:"indirect_targets"`
 }
 
-// buildCanonical constructs the canonical representation of the plan.
-// The global target set is deduplicated and sorted; per-batch targets
-// are sorted (preserving set membership); steps preserve order; args
-// are recursively canonicalized so nested map keys are stable.
+// canonicalPlanV2 extends the execution identity with every governance
+// directive that is persisted with a plan and can alter approval,
+// compensation or verification behaviour.
+type canonicalPlanV2 struct {
+	Version       string                `json:"hash_version"`
+	WorkflowName  string                `json:"workflow_name"`
+	Targets       []string              `json:"targets"`
+	Batches       []canonicalBatchV2    `json:"batches"`
+	Impact        canonicalImpact       `json:"impact"`
+	RiskScore     int                   `json:"risk_score"`
+	RiskFactors   []canonicalRiskFactor `json:"risk_factors"`
+	ApprovalFloor string                `json:"approval_floor"`
+	Approval      *canonicalApproval    `json:"approval,omitempty"`
+	Rollback      *canonicalRollback    `json:"rollback,omitempty"`
+	Gate          *canonicalGate        `json:"gate,omitempty"`
+}
+
+type canonicalBatchV2 struct {
+	Index          int               `json:"index"`
+	Targets        []string          `json:"targets"`
+	Steps          []canonicalStepV2 `json:"steps"`
+	MaxConcurrency int               `json:"max_concurrency"`
+	Gate           *canonicalGate    `json:"gate,omitempty"`
+}
+
+type canonicalRiskFactor struct {
+	Rule   string `json:"rule"`
+	Points int    `json:"points"`
+	Detail string `json:"detail"`
+}
+
+type canonicalStepV2 struct {
+	Execution          canonicalStep      `json:"execution"`
+	Rollback           *canonicalRollback `json:"rollback,omitempty"`
+	Approval           *canonicalApproval `json:"approval,omitempty"`
+	Gate               *canonicalGate     `json:"gate,omitempty"`
+	Irreversible       bool               `json:"irreversible"`
+	IrreversibleReason string             `json:"irreversible_reason,omitempty"`
+}
+
+type canonicalRollback struct {
+	Strategy      string                  `json:"strategy"`
+	OnFailure     string                  `json:"on_failure"`
+	VerifyAfter   bool                    `json:"verify_after"`
+	SnapshotPaths []string                `json:"snapshot_paths"`
+	Steps         []canonicalRollbackStep `json:"steps"`
+}
+
+type canonicalRollbackStep struct {
+	Name   string         `json:"name"`
+	Module string         `json:"module"`
+	Action string         `json:"action"`
+	Args   map[string]any `json:"args"`
+}
+
+type canonicalApproval struct {
+	Level            string   `json:"level"`
+	Approvers        []string `json:"approvers"`
+	Timeout          string   `json:"timeout"`
+	MinApprovers     int      `json:"min_approvers"`
+	ExcludeInitiator bool     `json:"exclude_initiator"`
+}
+
+type canonicalGate struct {
+	Pre   []canonicalGateCheck `json:"pre"`
+	Post  []canonicalGateCheck `json:"post"`
+	Batch []canonicalGateCheck `json:"batch"`
+}
+
+type canonicalGateCheck struct {
+	Type         string         `json:"type"`
+	Command      string         `json:"command"`
+	ExpectExit   int            `json:"expect_exit"`
+	ExpectStdout string         `json:"expect_stdout"`
+	Source       string         `json:"source"`
+	Timeout      string         `json:"timeout"`
+	Params       map[string]any `json:"params"`
+}
+
+// buildCanonicalV1 constructs the legacy execution-only representation.
+// Do not reorder fields or change its JSON tags: persisted V1 hashes depend
+// on the exact bytes produced here.
 func buildCanonical(plan *Plan) canonicalPlan {
+	return buildCanonicalV1(plan)
+}
+
+func buildCanonicalV1(plan *Plan) canonicalPlan {
 	// Global target set across all batches (deduplicated, sorted).
 	targetSet := make(map[string]struct{})
 	for _, b := range plan.Batches {
@@ -138,17 +239,113 @@ func buildCanonical(plan *Plan) canonicalPlan {
 	}
 }
 
-// canonicalSteps converts plan steps to canonical steps, preserving
-// step order. Args are deep-canonicalized via canonicalArgs so nested
-// map keys are stabilized.
+// canonicalSteps converts plan steps to V1 execution steps, preserving
+// step order and recursively stabilising map keys.
 func canonicalSteps(steps []PlanStep) []canonicalStep {
+	return canonicalStepsV1(steps)
+}
+
+func canonicalStepsV1(steps []PlanStep) []canonicalStep {
 	out := make([]canonicalStep, len(steps))
-	for i, s := range steps {
+	for i, step := range steps {
 		out[i] = canonicalStep{
-			Name:   s.Name,
-			Module: s.Module,
-			Action: s.Action,
-			Args:   canonicalArgs(s.Args),
+			Name: step.Name, Module: step.Module, Action: step.Action, Args: canonicalArgs(step.Args),
+		}
+	}
+	return out
+}
+
+func buildCanonicalV2(plan *Plan) canonicalPlanV2 {
+	v1 := buildCanonicalV1(plan)
+	batches := make([]canonicalBatchV2, len(plan.Batches))
+	for i, batch := range plan.Batches {
+		batches[i] = canonicalBatchV2{
+			Index: batch.Index, Targets: sortedCopy(batch.Targets),
+			Steps: canonicalStepsV2(batch.Steps), MaxConcurrency: batch.MaxConcurrency,
+			Gate: canonicalGateV2(batch.Gate),
+		}
+	}
+	return canonicalPlanV2{
+		Version: HashVersionV2, WorkflowName: v1.WorkflowName, Targets: v1.Targets,
+		Batches: batches, Impact: v1.Impact, RiskScore: plan.RiskScore,
+		RiskFactors: canonicalRiskFactors(plan.RiskFactors), ApprovalFloor: plan.ApprovalFloor,
+		Approval: canonicalApprovalV2(plan.Approval), Rollback: canonicalRollbackV2(plan.Rollback),
+		Gate: canonicalGateV2(plan.Gate),
+	}
+}
+
+func canonicalRiskFactors(in []RiskFactor) []canonicalRiskFactor {
+	out := make([]canonicalRiskFactor, len(in))
+	for i, factor := range in {
+		out[i] = canonicalRiskFactor(factor)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Rule != out[j].Rule {
+			return out[i].Rule < out[j].Rule
+		}
+		if out[i].Points != out[j].Points {
+			return out[i].Points < out[j].Points
+		}
+		return out[i].Detail < out[j].Detail
+	})
+	return out
+}
+
+func canonicalStepsV2(steps []PlanStep) []canonicalStepV2 {
+	out := make([]canonicalStepV2, len(steps))
+	for i, step := range steps {
+		out[i] = canonicalStepV2{
+			Execution: canonicalStepsV1([]PlanStep{step})[0],
+			Rollback:  canonicalRollbackV2(step.Rollback), Approval: canonicalApprovalV2(step.Approval),
+			Gate: canonicalGateV2(step.Gate), Irreversible: step.Irreversible,
+			IrreversibleReason: step.IrreversibleReason,
+		}
+	}
+	return out
+}
+
+func canonicalRollbackV2(spec *dsl.RollbackSpec) *canonicalRollback {
+	if spec == nil {
+		return nil
+	}
+	steps := make([]canonicalRollbackStep, len(spec.Steps))
+	for i, step := range spec.Steps {
+		steps[i] = canonicalRollbackStep{
+			Name: step.Name, Module: step.Module, Action: step.Action, Args: canonicalArgs(step.Args),
+		}
+	}
+	return &canonicalRollback{
+		Strategy: spec.Strategy, OnFailure: spec.OnFailure, VerifyAfter: spec.VerifyAfter,
+		SnapshotPaths: sortedCopy(spec.SnapshotPaths), Steps: steps,
+	}
+}
+
+func canonicalApprovalV2(spec *dsl.ApprovalSpec) *canonicalApproval {
+	if spec == nil {
+		return nil
+	}
+	return &canonicalApproval{
+		Level: spec.Level, Approvers: sortedCopy(spec.Approvers), Timeout: spec.Timeout,
+		MinApprovers: spec.MinApprovers, ExcludeInitiator: spec.ExcludeInitiator,
+	}
+}
+
+func canonicalGateV2(spec *dsl.GateSpec) *canonicalGate {
+	if spec == nil {
+		return nil
+	}
+	return &canonicalGate{
+		Pre: canonicalGateChecks(spec.Pre), Post: canonicalGateChecks(spec.Post), Batch: canonicalGateChecks(spec.Batch),
+	}
+}
+
+func canonicalGateChecks(in []dsl.GateCheck) []canonicalGateCheck {
+	out := make([]canonicalGateCheck, len(in))
+	for i, check := range in {
+		out[i] = canonicalGateCheck{
+			Type: check.Type, Command: check.Command, ExpectExit: check.ExpectExit,
+			ExpectStdout: check.ExpectStdout, Source: check.Source, Timeout: check.Timeout,
+			Params: canonicalArgs(check.Params),
 		}
 	}
 	return out

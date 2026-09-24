@@ -754,7 +754,7 @@ $ levee list --status running --json
       "status": "running",
       "progress": { "batch_done": 2, "batch_total": 3 },
       "initiator": "user-a",
-      "plan_hash": "sha256:9f4b...",
+      "plan_hash": "v2:9f4b...",
       "created_at": "2026-08-15T02:10:00+08:00",
       "updated_at": "2026-08-15T02:14:32+08:00"
     }

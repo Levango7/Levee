@@ -10,8 +10,10 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
+	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,6 +67,30 @@ func TestPlanChange_DryRunPersistsNothing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", run.PlanJSON, "dry-run plans are previews and must not be persisted")
 	assert.Equal(t, "", run.PlanHash)
+}
+
+func TestVerifyStoredPlanHashAcceptsLegacyV1(t *testing.T) {
+	p := testPlan()
+	raw, err := json.Marshal(p)
+	require.NoError(t, err)
+	run := &state.Run{ID: "legacy-plan", PlanJSON: string(raw), PlanHash: plan.ComputeHashV1(p)}
+	assert.NoError(t, verifyStoredPlanHash(run))
+}
+
+func TestVerifyStoredPlanHashRejectsV2GovernanceDrift(t *testing.T) {
+	p := testPlan()
+	p.Approval = &dsl.ApprovalSpec{Level: "high", MinApprovers: 2}
+	raw, err := json.Marshal(p)
+	require.NoError(t, err)
+	run := &state.Run{ID: "v2-plan", PlanJSON: string(raw), PlanHash: plan.ComputeHash(p)}
+
+	var stored plan.Plan
+	require.NoError(t, json.Unmarshal([]byte(run.PlanJSON), &stored))
+	stored.Approval.MinApprovers = 1
+	tampered, err := json.Marshal(&stored)
+	require.NoError(t, err)
+	run.PlanJSON = string(tampered)
+	assert.ErrorContains(t, verifyStoredPlanHash(run), "does not match its plan hash")
 }
 
 func TestApplyChange_RefusesMissingPlan(t *testing.T) {

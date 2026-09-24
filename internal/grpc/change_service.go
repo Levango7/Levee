@@ -462,13 +462,20 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) {
 		log.Warn("approval kickoff: plan artifact unparsable; skipping", "run_id", run.ID, "error", err)
 		return
 	}
+	if !plan.VerifyHash(&p, run.PlanHash) {
+		log.Warn("approval kickoff: plan artifact hash mismatch; skipping", "run_id", run.ID)
+		return
+	}
 
-	// Workflow declaration: parse the inline source when possible (the
-	// common path — template-instantiated runs carry rendered YAML). A
-	// path-shaped source or parse failure degrades to "no declaration"
-	// and the floor alone drives the tier — never the reverse.
+	// Workflow approval is persisted in the artifact and covered by the
+	// versioned plan hash. V1 legacy artifacts predate this field, so they
+	// retain the old inline-source fallback.
+	spec := p.Approval
+	if spec == nil {
+		spec = parseInlineApprovalSpec(run.WorkflowName)
+	}
 	declared := ""
-	if spec := parseInlineApprovalSpec(run.WorkflowName); spec != nil {
+	if spec != nil {
 		declared = spec.Level
 	}
 
@@ -483,7 +490,7 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) {
 	// approvers explicitly).
 	approvers := []string{}
 	minApprovers := 0
-	if spec := parseInlineApprovalSpec(run.WorkflowName); spec != nil {
+	if spec != nil {
 		approvers = spec.Approvers
 		minApprovers = spec.MinApprovers
 	}
@@ -592,8 +599,7 @@ func verifyStoredPlanHash(run *state.Run) error {
 	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
 		return fmt.Errorf("stored plan for change %q is corrupt and cannot be verified: %v (re-plan required)", run.ID, err)
 	}
-	got := plan.ComputeHash(&p)
-	if got == "" || got != run.PlanHash {
+	if !plan.VerifyHash(&p, run.PlanHash) {
 		return fmt.Errorf("stored plan for change %q does not match its plan hash (plan replaced or corrupted since approval; re-plan required)", run.ID)
 	}
 	return nil

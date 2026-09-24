@@ -366,7 +366,7 @@ plan → 审批 → apply → verify → (回滚 | 归档)
 
 ##### 4.4.2.5 plan 哈希锁定
 
-plan 阶段产出 `plan_hash = hash(workflow + 目标集 + 参数 + 批次划分 + 影响面)`。审批基于此哈希，apply 前校验哈希一致，不一致则阻断（防止审批后偷偷改参数）。
+plan 阶段产出 `plan_hash = v2:sha256(workflow + 目标集 + 参数 + 批次划分 + 影响面 + 审批/回滚/门禁/不可逆/风险语义)`。审批基于此版本化哈希，apply 前按 hash 版本校验一致，不一致阻断（防止审批后偷偷改参数或治理要求）。存量裸 64 位 v1 hash 按旧 canonical 继续验证；重新 plan/re-approve 后升级为 v2。
 
 #### 4.4.3 审批阶段
 

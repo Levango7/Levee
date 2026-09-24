@@ -387,11 +387,17 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// the batch.Controller's concurrency and error-policy logic
 		// while giving us a clean boundary to insert post-batch gates.
 		subPlan := &plan.Plan{
-			ID:           p.ID,
-			WorkflowName: p.WorkflowName,
-			Batches:      []plan.Batch{b},
-			TotalTargets: len(b.Targets),
-			CreatedAt:    p.CreatedAt,
+			ID:            p.ID,
+			WorkflowName:  p.WorkflowName,
+			Batches:       []plan.Batch{b},
+			TotalTargets:  len(b.Targets),
+			CreatedAt:     p.CreatedAt,
+			RiskScore:     p.RiskScore,
+			RiskFactors:   p.RiskFactors,
+			ApprovalFloor: p.ApprovalFloor,
+			Approval:      p.Approval,
+			Rollback:      p.Rollback,
+			Gate:          p.Gate,
 		}
 		brs := cr.batchCtrl.Execute(ctx, subPlan, batchExecFn)
 		result.BatchResults = append(result.BatchResults, brs...)
@@ -466,11 +472,17 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// executed, so rollback does not try to undo work that never
 		// started.
 		executedPlan := &plan.Plan{
-			ID:           p.ID,
-			WorkflowName: p.WorkflowName,
-			Batches:      executedBatches,
-			TotalTargets: countTargets(executedBatches),
-			CreatedAt:    p.CreatedAt,
+			ID:            p.ID,
+			WorkflowName:  p.WorkflowName,
+			Batches:       executedBatches,
+			TotalTargets:  countTargets(executedBatches),
+			CreatedAt:     p.CreatedAt,
+			RiskScore:     p.RiskScore,
+			RiskFactors:   p.RiskFactors,
+			ApprovalFloor: p.ApprovalFloor,
+			Approval:      p.Approval,
+			Rollback:      p.Rollback,
+			Gate:          p.Gate,
 		}
 		// Deliberately detached from ctx: cancellation is itself one of
 		// the rollback triggers, so a rollback must run to completion
