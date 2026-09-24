@@ -174,6 +174,12 @@ type ClosureRunner struct {
 	// WithHostGuard. It runs after target collection and before any lock is
 	// acquired; a non-nil error aborts the run with PhaseFailed.
 	hostGuard func(ctx context.Context, hosts []string) error
+
+	// snapshotter is the optional pre-apply snapshot coordinator installed
+	// via WithSnapshotter. It runs after lock acquisition and before batch
+	// execution; a capture failure aborts the run (no mutation). Nil means
+	// snapshot capture/restore is disabled (the pre-wiring no-op).
+	snapshotter Snapshotter
 }
 
 // ClosureOption configures optional ClosureRunner behaviour at construction
@@ -346,6 +352,16 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	// that a cancelled ctx does not prevent lock cleanup.
 	defer cr.releaseLocks(context.Background(), result.RunID, acquired)
 
+	// 2.5 Pre-apply snapshot capture (design §4.4.4.2). Runs after all
+	// locks are held and before the first mutation; a capture failure
+	// aborts the run with the locks released (defer above) and zero side
+	// effects on any target. Disabled when no snapshotter is installed.
+	if err := cr.captureSnapshots(ctx, result.RunID, p); err != nil {
+		result.Phase = PhaseFailed
+		result.Error = fmt.Errorf("closure: pre-apply snapshot: %w", err)
+		return result, result.Error
+	}
+
 	// 3. Batch execution. Batches run sequentially; after each batch we
 	// run the post-batch gates. A batch error or gate failure stops
 	// further batches and triggers rollback — EXCEPT when the failure is
@@ -463,6 +479,11 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// applied batches unwound. Trade-off: rollback cannot be
 		// cancelled once triggered; it relies on per-step execution
 		// timeouts for bounded runtime.
+		//
+		// The run id keys snapshot lookup for strategy-"snapshot" steps
+		// (SetRunID right before the flow — the Manager was constructed
+		// before the run id existed).
+		cr.rollback.SetRunID(result.RunID)
 		// D-2 v2: compensate exactly what the apply evidence says actually
 		// ran. result.BatchResults accumulates every batch outcome
 		// (including the failed batch's partial results), so steps never

@@ -16,6 +16,7 @@ import (
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
+	"github.com/nexus/levee/internal/risk"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -51,6 +52,13 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 		return nil, nil, fmt.Errorf("wiring: generate plan: %w", err)
 	}
 
+	// Risk scoring (R4): score the generated plan and stamp the verdict
+	// onto the artifact — the approved change's score is exactly the
+	// executed one (plan_hash binds them). The floor feeds the approval
+	// tier routing on the PlanChange side (max of the workflow's own
+	// declaration and this floor).
+	assessPlanRisk(p)
+
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wiring: marshal plan: %w", err)
@@ -60,6 +68,43 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 		return nil, nil, fmt.Errorf("wiring: plan hash computation failed")
 	}
 	return planToPB(changeID, p), &grpc.StoredPlan{JSON: string(raw), Hash: hash}, nil
+}
+
+// assessPlanRisk scores the plan with risk.Assessor and stamps the
+// verdict (score, explainable factors, approval floor) onto the plan
+// artifact. The blast-radius band comes from the plan package's own
+// ImpactAnalyzer so the risk package stays plan-free (cycle avoidance).
+func assessPlanRisk(p *plan.Plan) {
+	if p == nil {
+		return
+	}
+	in := risk.Input{BatchCount: len(p.Batches)}
+	for _, b := range p.Batches {
+		for _, s := range b.Steps {
+			in.Steps = append(in.Steps, risk.Step{
+				Name:         s.Name,
+				Action:       s.Action,
+				Irreversible: s.Irreversible,
+				HasRollback:  s.Rollback != nil,
+			})
+		}
+	}
+	if report := plan.NewImpactAnalyzer().Analyze(p); report != nil {
+		in.DirectTargets = len(report.DirectTargets)
+		in.IndirectTargets = len(report.IndirectTargets)
+		in.BlastHigh = report.RiskLevel == plan.RiskLevelHigh
+	}
+	assessment := risk.NewAssessor().Assess(in)
+	p.RiskScore = assessment.Score
+	p.ApprovalFloor = assessment.ApprovalFloor
+	if len(assessment.Factors) > 0 {
+		p.RiskFactors = make([]plan.RiskFactor, 0, len(assessment.Factors))
+		for _, f := range assessment.Factors {
+			p.RiskFactors = append(p.RiskFactors, plan.RiskFactor{
+				Rule: f.Rule, Points: f.Points, Detail: f.Detail,
+			})
+		}
+	}
 }
 
 // resolveWorkflow parses the run's workflow source. WorkflowName holds the

@@ -384,6 +384,31 @@ var actionSignatures = map[string]map[string]Type{
 		"name":    TypeString{},
 		"version": TypeString{},
 	},
+	"mysql.query": {
+		"sql":      TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+		"password": TypeString{},
+	},
+	"mysql.pt_osc": {
+		"database": TypeString{},
+		"table":    TypeString{},
+		"alter":    TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+		"password": TypeString{},
+	},
+	"mysql.replica_switch": {
+		"new_primary": TypeString{},
+		"confirm":     TypeString{},
+		"host":        TypeString{},
+		"port":        TypeString{},
+		"user":        TypeString{},
+		"password":    TypeString{},
+	},
 }
 
 // batchStrategyEnum is the enum of allowed batch strategies.

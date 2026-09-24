@@ -18,6 +18,7 @@ import (
 
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/errors"
+	"github.com/nexus/levee/internal/executor"
 )
 
 // Plan is the executable plan structure produced by the Generator. It
@@ -42,6 +43,33 @@ type Plan struct {
 
 	// CreatedAt is the plan creation timestamp (UTC).
 	CreatedAt time.Time
+
+	// RiskScore is the plan's danger score (0-100) computed at plan
+	// time. It ships inside the plan artifact so the approved change's
+	// score is exactly the executed one (the plan_hash binds them).
+	RiskScore int `json:"risk_score,omitempty"`
+
+	// RiskFactors is the explainable breakdown behind RiskScore (one
+	// entry per contributing rule). Serialised into the artifact for
+	// the CLI / audit report. The assessor (internal/risk) produces the
+	// values; the plan package mirrors the entry shape so it can live
+	// in the artifact without an import cycle.
+	RiskFactors []RiskFactor `json:"risk_factors,omitempty"`
+
+	// ApprovalFloor is the minimum approval tier the plan demands
+	// (R4: any irreversible step ⇒ at least high). The approval
+	// routing takes max(workflow declaration, ApprovalFloor) — the
+	// floor can raise but never lower the tier.
+	ApprovalFloor string `json:"approval_floor,omitempty"`
+}
+
+// RiskFactor mirrors risk.Factor (rule / points / detail) as a plan
+// artifact type. Kept structurally identical so the wiring layer can
+// copy entries over field by field without reflection.
+type RiskFactor struct {
+	Rule   string `json:"rule"`
+	Points int    `json:"points"`
+	Detail string `json:"detail"`
 }
 
 // Batch is a single execution batch. It contains a subset of the
@@ -68,24 +96,54 @@ type Batch struct {
 // carries the module/action to invoke, the action arguments and the
 // optional rollback / approval / gate overrides. Step-level overrides
 // take precedence over workflow-level defaults during execution.
+//
+// Irreversible / IrreversibleReason record the verdict of the executor's
+// IrreversibleChecker at plan time (explicit author declaration or
+// whitelist match). Downstream consumers (approval tier routing per R4,
+// automatic-rollback gating per R2) read these fields instead of
+// re-deriving the verdict, so the plan artifact is the single source of
+// truth for what was judged irreversible when the plan was approved.
 type PlanStep struct {
-	Name     string
-	Module   string
-	Action   string
-	Args     map[string]any
-	Rollback *dsl.RollbackSpec
-	Approval *dsl.ApprovalSpec
-	Gate     *dsl.GateSpec
+	Name               string
+	Module             string
+	Action             string
+	Args               map[string]any
+	Rollback           *dsl.RollbackSpec
+	Approval           *dsl.ApprovalSpec
+	Gate               *dsl.GateSpec
+	Irreversible       bool
+	IrreversibleReason string
 }
 
 // Generator transforms a parsed Workflow AST into an executable Plan.
 // The zero value is not ready — use NewGenerator. A Generator is
 // stateless and safe for concurrent use.
-type Generator struct{}
+type Generator struct {
+	// irreversible judges each step's reversibility at plan time. The
+	// verdict is persisted onto PlanStep so approval tier routing (R4)
+	// and rollback gating (R2) consume the plan artifact rather than
+	// re-deriving the verdict.
+	irreversible *executor.IrreversibleChecker
+}
 
-// NewGenerator returns a ready-to-use Generator.
+// NewGenerator returns a ready-to-use Generator with an IrreversibleChecker
+// populated with the engine's default destructive-action whitelist. The
+// whitelist registers the actions that are irreversible by nature so that
+// workflow authors do not have to repeat irreversible: true on every such
+// step; an explicit author declaration still takes priority (checked
+// first).
 func NewGenerator() *Generator {
-	return &Generator{}
+	c := executor.NewIrreversibleChecker()
+	for _, pair := range [][2]string{
+		{"pkg", "remove"},
+		{"file", "delete"},
+		{"user", "remove"},
+		{"mysql", "replica_switch"},
+		{"mysql", "pt_osc"},
+	} {
+		c.RegisterWhitelist(pair[0], pair[1])
+	}
+	return &Generator{irreversible: c}
 }
 
 // Generate builds a Plan from the given Workflow and resolved target
@@ -115,8 +173,9 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 	}
 
 	// Convert workflow steps to plan steps once; every batch shares
-	// the same step sequence.
-	planSteps := convertSteps(wf.Steps)
+	// the same step sequence. The conversion also stamps the
+	// irreversible verdict onto each step.
+	planSteps := g.convertSteps(wf.Steps)
 
 	// Build batches with consecutive 0-based indices.
 	batches := make([]Batch, 0, len(batchTargets))
@@ -268,17 +327,28 @@ func splitFixed(targets []string, steps []int) [][]string {
 // approval / gate overrides. The output slice is always non-nil when
 // the input is non-nil, so that batches carry an explicit (possibly
 // empty) step sequence.
-func convertSteps(steps []dsl.Step) []PlanStep {
+// convertSteps converts dsl steps to plan steps, stamping each with the
+// IrreversibleChecker verdict. An explicit author declaration
+// (irreversible: true) wins over the whitelist; both routes record a
+// human-readable reason on the step for the audit trail.
+func (g *Generator) convertSteps(steps []dsl.Step) []PlanStep {
 	out := make([]PlanStep, len(steps))
 	for i, s := range steps {
+		verdict := g.irreversible.Check(executor.Step{
+			Module:       s.Module,
+			Action:       s.Action,
+			Irreversible: s.Irreversible,
+		})
 		out[i] = PlanStep{
-			Name:     s.Name,
-			Module:   s.Module,
-			Action:   s.Action,
-			Args:     s.Args,
-			Rollback: s.Rollback,
-			Approval: s.Approval,
-			Gate:     s.Gate,
+			Name:               s.Name,
+			Module:             s.Module,
+			Action:             s.Action,
+			Args:               s.Args,
+			Rollback:           s.Rollback,
+			Approval:           s.Approval,
+			Gate:               s.Gate,
+			Irreversible:       verdict.Irreversible,
+			IrreversibleReason: verdict.Reason,
 		}
 	}
 	return out

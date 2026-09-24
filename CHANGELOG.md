@@ -80,7 +80,7 @@
 - **不可逆动作检查器生产接线（修复"有框架零接线"缺陷）**：`IrreversibleChecker` 此前仅测试注册、生产代码从未接线。现在 `plan.Generator` 在生成时对每个步骤执行检查（显式声明优先，其次默认白名单 pkg.remove/file.delete/user.remove/mysql.replica_switch/mysql.pt_osc），判定结果连同 reason 落盘到 `PlanStep.Irreversible/IrreversibleReason`（进 plan_json 工件）——审批分级（R4）与回滚门禁（R2）自此有单一事实来源，下游无需重新推导。
 - **mysql 动作登记 DSL 类型签名表**（`internal/dsl/typechecker.go`）：`mysql.query/pt_osc/replica_switch` 的 args 类型完整登记，编译期类型检查覆盖新模块。
 - **一键合规报告（`levee audit report`）**：时间窗（--since/--until，日期或 RFC3339）内全部变更 run 的审批链、哈希链验证结论（复用 ChainVerifier）、回滚记录聚合为自包含 HTML（无外部资源、可归档可邮件），--output 落盘或 stdout；监管/审计人员离线可读，"给监管看的一键报告"。
-- **ChatOps 审批桥（`internal/notify/chatopsbridge`）**：approval 服务新增可选 `DecisionObserver` 钩子（决策落库后触发，错误不影响决策本身）；桥接包把审批创建/决策转换为 chatops 事件（approval_requested 卡 + approval_decision 进度卡"1/2 approved"/一票否决）广播到 BotManager（钉钉/飞书/Slack）。审批人从此在群里看到实时审批流，无需登录 LEVEE。
+- **ChatOps 审批桥（`internal/notify/chatopsbridge`）**：approval 服务提供可选 `DecisionObserver` 钩子（决策落库后触发，错误不影响决策本身）；桥接包把审批创建/决策转换为 chatops 事件（approval_requested 卡 + approval_decision 进度卡"1/2 approved"/一票否决）广播到调用方提供的 BotManager。包内单测钉住 observer 组合与事件语义；常驻 bot 进程及 BotManager 生命周期属于部署侧组合，不在默认 serve 启动路径中。
 - **README 定位升级**：从"非云原生基础设施"（资产位置边界）升级为"高危变更治理"（变更危险度边界）——云上云下、集群内外的高危变更统一归口；ArgoCD/Flux（集群内声明式交付）与 OpsMesh（日常自动化）的分层叙事保留。
 
 ### 安全修复

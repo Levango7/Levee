@@ -196,6 +196,13 @@ type Manager struct {
 	whitelistAll bool            // escape hatch: allow every module.action
 	concurrency  int             // per-batch target parallelism; >= 1
 	stopOnError  bool            // stop at first step error
+
+	// snapshotRestore is the optional strategy-"snapshot" restore callback
+	// (see WithSnapshotRestore). runID keys the snapshot lookup (see
+	// WithRunID). Both are supplied by the wiring layer; the engine passes
+	// its closure run id when assembling the rollback manager.
+	snapshotRestore SnapshotRestoreFunc
+	runID           string
 }
 
 // ManagerOption configures a Manager at construction time.
@@ -251,6 +258,41 @@ func WithStopOnError(b bool) ManagerOption {
 	return func(m *Manager) {
 		m.stopOnError = b
 	}
+}
+
+// SnapshotRestoreFunc restores the pre-apply snapshot of a single plan step
+// on a single target. It is supplied by the wiring layer (which owns the
+// channel transport and the snapshot store); the rollback package stays
+// transport-agnostic exactly like ExecuteFunc. runID is the closure run id
+// under which the snapshot was captured.
+type SnapshotRestoreFunc func(ctx context.Context, runID, target string, step plan.PlanStep) error
+
+// WithSnapshotRestore installs the snapshot-restore callback used when a
+// step's RollbackSpec.Strategy is "snapshot". Without it, a snapshot
+// rollback step is recorded as skipped ("snapshot restore not wired") —
+// never silently executed as an undo action. With it, the callback
+// restores the captured files; a callback error marks the step failed.
+func WithSnapshotRestore(fn SnapshotRestoreFunc) ManagerOption {
+	return func(m *Manager) {
+		m.snapshotRestore = fn
+	}
+}
+
+// WithRunID records the closure run id the rollback belongs to. Snapshot
+// lookup (strategy "snapshot") is keyed by this id; without it the
+// restore callback receives an empty run id and fails closed.
+func WithRunID(runID string) ManagerOption {
+	return func(m *Manager) {
+		m.runID = runID
+	}
+}
+
+// SetRunID records the closure run id for the next Rollback invocation.
+// The closure runner calls it right before triggering the rollback flow
+// (the run id is minted per Run, after the Manager was constructed and
+// injected). ClosureRunner is single-flight, so the write needs no lock.
+func (m *Manager) SetRunID(runID string) {
+	m.runID = runID
 }
 
 // NewManager returns a Manager configured by opts. The zero-value defaults
@@ -525,6 +567,20 @@ func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []pla
 			continue
 		}
 
+		// Snapshot strategy: restore the pre-apply snapshot instead of
+		// running undo steps (design 4.4.6.3 — the snapshot half of the
+		// rollback protocol). The declared undo Steps are NOT executed:
+		// a snapshot step declares its rollback basis as the captured
+		// state, and mixing both would double-undo. Without a wired
+		// restore callback the step is skipped with an explicit reason —
+		// never silently executed as an undo action.
+		if ps.Rollback.Strategy == "snapshot" {
+			sr := m.restoreSnapshotStep(ctx, target, ps)
+			sr.SideEffectsUnknown = unknown
+			tr.StepResults = append(tr.StepResults, sr)
+			continue
+		}
+
 		// RollbackSpec present: execute each declared rollback step. The
 		// steps inside the spec run in declared order (the author chose
 		// that order intentionally); only the outer plan-step order is
@@ -536,6 +592,45 @@ func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []pla
 		}
 	}
 	return tr
+}
+
+// restoreSnapshotStep rolls back one strategy-"snapshot" step on one
+// target: it invokes the wired SnapshotRestoreFunc (which locates the
+// pre-apply capture for m.runID/target/step and writes it back over the
+// declared paths). Fail-closed paths:
+//
+//   - no restore callback wired: skipped, "snapshot restore not wired"
+//     (the step never silently degrades into an undo action);
+//   - no run id recorded: skipped, "snapshot restore without run id";
+//   - callback error: the step is failed (not skipped) — a partial or
+//     missing restore is operator-visible.
+//
+// The result carries the original step's module/action so audit output
+// shows what was undone.
+func (m *Manager) restoreSnapshotStep(ctx context.Context, target string, ps plan.PlanStep) StepRollbackResult {
+	sr := StepRollbackResult{
+		OrigStepName:     ps.Name,
+		RollbackStepName: "snapshot:" + ps.Name,
+		Module:           ps.Module,
+		Action:           ps.Action,
+	}
+	if m.snapshotRestore == nil {
+		sr.Skipped = true
+		sr.SkipReason = "snapshot restore not wired"
+		return sr
+	}
+	if m.runID == "" {
+		sr.Skipped = true
+		sr.SkipReason = "snapshot restore without run id"
+		return sr
+	}
+	start := time.Now()
+	err := m.snapshotRestore(ctx, m.runID, target, ps)
+	sr.Duration = time.Since(start)
+	if err != nil {
+		sr.Error = fmt.Errorf("rollback snapshot of %s.%s on %s: %w", ps.Module, ps.Action, target, err)
+	}
+	return sr
 }
 
 // executeRollbackStep runs a single rollback step (from a RollbackSpec.Steps

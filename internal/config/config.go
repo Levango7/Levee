@@ -236,6 +236,7 @@ type CredentialConfig struct {
 // NotifyConfig configures outbound notifications. Today only webhook is supported.
 type NotifyConfig struct {
 	Webhook WebhookConfig `json:"webhook" mapstructure:"webhook"`
+	Jira    JiraConfig    `json:"jira"    mapstructure:"jira"`
 }
 
 // WebhookConfig configures the webhook notifier.
@@ -244,6 +245,32 @@ type WebhookConfig struct {
 	URL     string        `json:"url"     mapstructure:"url"`
 	Timeout time.Duration `json:"timeout" mapstructure:"timeout"`
 	Retry   int           `json:"retry"   mapstructure:"retry"`
+}
+
+// JiraConfig configures the outbound ITSM Jira approval bridge. When
+// enabled, every approval kickoff creates a Jira issue and approval
+// decisions post comments onto it — the ITSM side of the approval
+// trail. Disabled (the default) is a complete no-op: nothing dials
+// out, no issue is created, the bridge is not installed.
+type JiraConfig struct {
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
+	// URL is the Jira base URL, e.g. https://jira.example.com (the
+	// client hits <URL>/rest/api/3/...).
+	URL string `json:"url" mapstructure:"url"`
+	// APIToken is the bearer token (Atlassian API token or PAT).
+	// Prefer the LEVEE_JIRA_TOKEN env var over committing it to the
+	// config file; the env var wins when both are set.
+	APIToken string `json:"api_token" mapstructure:"api_token"`
+	// Email is the account email the token belongs to (used for the
+	// Basic auth header Jira Cloud expects; empty keeps Bearer-only).
+	Email string `json:"email" mapstructure:"email"`
+	// ProjectKey is the Jira project the approval issues land in, e.g.
+	// "OPS".
+	ProjectKey string `json:"project_key" mapstructure:"project_key"`
+	// IssueType is the issue type name, e.g. "Task" or "Change".
+	IssueType string `json:"issue_type" mapstructure:"issue_type"`
+	// Timeout bounds each HTTP round-trip. Default 10s.
+	Timeout time.Duration `json:"timeout" mapstructure:"timeout"`
 }
 
 // PermissionConfig holds default permission namespace values.
@@ -648,6 +675,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.github.org", "")
 	v.SetDefault("auth.github.team_role_map", map[string]string{})
 	v.SetDefault("auth.github.session_secret", "")
+
+	// Notify.Jira (outbound ITSM approval bridge; disabled by default)
+	v.SetDefault("notify.jira.enabled", false)
+	v.SetDefault("notify.jira.url", "")
+	v.SetDefault("notify.jira.api_token", "")
+	v.SetDefault("notify.jira.email", "")
+	v.SetDefault("notify.jira.project_key", "")
+	v.SetDefault("notify.jira.issue_type", "Task")
+	v.SetDefault("notify.jira.timeout", 10*time.Second)
 }
 
 // bindFile wires viper to the YAML file at path. The file extension is
@@ -725,6 +761,9 @@ func allKeys() []string {
 		"credential.storage", "credential.encryption", "credential.key_derivation",
 		"notify.webhook.enabled", "notify.webhook.url",
 		"notify.webhook.timeout", "notify.webhook.retry",
+		"notify.jira.enabled", "notify.jira.url", "notify.jira.api_token",
+		"notify.jira.email", "notify.jira.project_key",
+		"notify.jira.issue_type", "notify.jira.timeout",
 		"permission.default_team", "permission.default_env",
 		"verify.prometheus_url",
 		"inventory.patrol_interval_seconds",

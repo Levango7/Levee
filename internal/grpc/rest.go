@@ -122,6 +122,9 @@ type Gateway struct {
 	// mobileApproval is optional; non-nil when the mobile approval service
 	// is configured. Used by the /changes/deeplink/approve REST endpoint.
 	mobileApproval mobileApprovalHandler
+	// gateService is optional; non-nil when ad-hoc gate verification is
+	// configured. Used by the POST /gates/verify endpoint (rest_gate.go).
+	gateService gateServiceHandler
 
 	// limiterOnce lazily initialises the gateway-wide rate limiter so
 	// that BOTH route trees (RESTful "/" and legacy "/api/v1/") share a
@@ -358,52 +361,69 @@ func (gw *Gateway) restRoute() http.Handler {
 		switch first {
 		case "changes":
 			gw.dispatchChange(w, r, method, path)
+		case "gates":
+			if path == "/gates/verify" && method == "POST" {
+				gw.handleGateVerify(w, r)
+				return
+			}
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		case "templates":
 			gw.dispatchTemplate(w, r, method, path)
 		case "targets":
 			gw.dispatchTarget(w, r, method, path)
-		case "audit":
-			switch {
-			case path == "/audit/log" && method == "GET":
-				gw.handleAuditLog(w, r)
-			case path == "/audit/traces" && method == "GET":
-				gw.handleAuditTraces(w, r)
-			case path == "/audit/verify" && method == "GET":
-				gw.handleAuditVerify(w, r)
-			default:
-				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-			}
-		case "auth":
-			if path == "/auth/github" && method == "POST" {
-				gw.handleGitHubLogin(w, r)
-				return
-			}
-			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-		case "system":
-			switch {
-			case path == "/system/auth-info" && method == "GET":
-				gw.handleSystemAuthInfo(w, r)
-			case path == "/system/version" && method == "GET":
-				gw.handleSystemVersion(w, r)
-			case path == "/system/status" && method == "GET":
-				gw.handleSystemStatus(w, r)
-			case path == "/system/cluster-status" && method == "GET":
-				gw.handleClusterStatus(w, r)
-			case path == "/system/batch-status" && method == "GET":
-				gw.handleBatchStatus(w, r)
-			case path == "/system/config" && method == "GET":
-				gw.handleSystemConfig(w, r)
-			case path == "/system/doctor" && method == "POST":
-				gw.handleSystemDoctor(w, r)
-			default:
-				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-			}
+		case "audit", "auth", "system":
+			gw.dispatchOperationalRest(w, r, first, method, path)
 		case "conversation":
 			gw.dispatchConversation(w, r, method, path)
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		}
 	})
+}
+
+// dispatchOperationalRest handles the audit, authentication, and system
+// route families. Keeping these exact path switches out of restRoute prevents
+// the top-level dispatcher from growing past the project's complexity gate
+// whenever a new operational endpoint is added.
+func (gw *Gateway) dispatchOperationalRest(w http.ResponseWriter, r *http.Request, family, method, path string) {
+	switch family {
+	case "audit":
+		switch {
+		case path == "/audit/log" && method == "GET":
+			gw.handleAuditLog(w, r)
+		case path == "/audit/traces" && method == "GET":
+			gw.handleAuditTraces(w, r)
+		case path == "/audit/verify" && method == "GET":
+			gw.handleAuditVerify(w, r)
+		default:
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+		}
+	case "auth":
+		if path == "/auth/github" && method == "POST" {
+			gw.handleGitHubLogin(w, r)
+			return
+		}
+		writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+	case "system":
+		switch {
+		case path == "/system/auth-info" && method == "GET":
+			gw.handleSystemAuthInfo(w, r)
+		case path == "/system/version" && method == "GET":
+			gw.handleSystemVersion(w, r)
+		case path == "/system/status" && method == "GET":
+			gw.handleSystemStatus(w, r)
+		case path == "/system/cluster-status" && method == "GET":
+			gw.handleClusterStatus(w, r)
+		case path == "/system/batch-status" && method == "GET":
+			gw.handleBatchStatus(w, r)
+		case path == "/system/config" && method == "GET":
+			gw.handleSystemConfig(w, r)
+		case path == "/system/doctor" && method == "POST":
+			gw.handleSystemDoctor(w, r)
+		default:
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+		}
+	}
 }
 
 func (gw *Gateway) dispatchChange(w http.ResponseWriter, r *http.Request, method, path string) {

@@ -995,6 +995,7 @@ rollback 字段声明回滚计划，是 workflow 的必需块（对应设计红�
 | on_failure | string | 是 | 触发策略：auto / manual |
 | verify_after | bool | 否 | 回滚后是否验证，缺省 true |
 | step | 块 | 否 | 回滚步骤声明（undo-action 策略时必需） |
+| snapshot_paths | list | 否 | snapshot 策略时要备份的目标机路径列表（apply 前采集，回滚时原样恢复） |
 
 回滚策略：
 
@@ -1011,6 +1012,7 @@ rollback 字段声明回滚计划，是 workflow 的必需块（对应设计红�
 ```leveelang
 rollback {
   strategy: "snapshot"
+  snapshot_paths: ["/etc/nginx/nginx.conf", "/etc/nginx/conf.d/"]
   on_failure: "auto"
   verify_after: true
 }

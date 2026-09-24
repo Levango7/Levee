@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/executor"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/state"
 
@@ -61,6 +63,13 @@ func seedRun(t *testing.T, store state.Store, id, workflowSource string) {
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}))
+}
+
+func TestBuiltinRegistrationsAreWired(t *testing.T) {
+	_, ok := channel.DefaultRegistry().Factory("local")
+	assert.True(t, ok, "wiring must register the built-in local channel")
+	_, ok = executor.DefaultExecutor().Module("mysql")
+	assert.True(t, ok, "wiring must register the built-in mysql executor")
 }
 
 func TestGeneratePlan_InlineYAML(t *testing.T) {

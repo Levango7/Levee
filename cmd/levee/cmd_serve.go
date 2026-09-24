@@ -53,6 +53,7 @@ import (
 	"github.com/nexus/levee/internal/dispatch"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/itsm/jira"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
 	"github.com/nexus/levee/internal/push"
@@ -131,6 +132,10 @@ var (
 	// serveOptEngineGatePrometheus is the Prometheus HTTP base URL consumed
 	// by declared slo verification gates (empty = slo gates fail closed).
 	serveOptEngineGatePrometheus string
+	// serveOptEngineSnapshotDir roots the pre-apply snapshot store for
+	// strategy-"snapshot" rollback. Empty keeps capture disabled; plans
+	// declaring snapshot strategy are then rejected before apply.
+	serveOptEngineSnapshotDir string
 )
 
 // serveGracefulShutdownTimeout is the deadline the server waits for in-flight
@@ -182,6 +187,7 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&serveOptEngineEnabled, "engine-enabled", false, "Wire the execution engine: PlanChange generates and persists real plans and ApplyChange executes approved changes (targets must be registered in the inventory; set LEVEE_MASTER_PASSWORD for credentialed channels)")
 	cmd.Flags().IntVar(&serveOptEngineMaxParallel, "engine-max-parallel-runs", wiring.DefaultMaxParallelRuns, "Concurrently executing runs allowed by the engine; additional applies fast-fail (requires --engine-enabled)")
 	cmd.Flags().StringVar(&serveOptEngineGatePrometheus, "engine-gate-prometheus", "", "Prometheus HTTP base URL used by slo verification gates; empty means slo gates fail closed (requires --engine-enabled)")
+	cmd.Flags().StringVar(&serveOptEngineSnapshotDir, "engine-snapshot-dir", "", "Root directory for pre-apply rollback snapshots (design 4.4.4.2); workflow steps declaring strategy \"snapshot\" capture their target files here before apply and restore them on rollback (empty = snapshot capture disabled; requires --engine-enabled)")
 	return cmd
 }
 
@@ -482,7 +488,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 3. Build the service implementations. We reuse the in-process
 	//    implementations so the daemon and CLI share one code path.
-	svcs := buildServeServices(store, cfg, execGuard)
+	svcs, err := buildServeServices(store, cfg, execGuard)
+	if err != nil {
+		return err
+	}
 	changeSvc, templateSvc, targetSvc := svcs.changeSvc, svcs.templateSvc, svcs.targetSvc
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
@@ -552,6 +561,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	gw.SetStore(store)
 	gw.SetConversationEngine(svcs.convEngine)
 
+	// Ad-hoc gate verification (POST /gates/verify): expose the engine's
+	// channel dialing + Prometheus URL through the GateService. Only
+	// when the execution engine is wired — without it there is no
+	// honest way to dial targets, and the endpoint answers 404 instead
+	// of failing closed on every call.
+	if svcs.gateSvc != nil {
+		gw.SetGateService(svcs.gateSvc)
+		log.Info("ad-hoc gate verification enabled (POST /gates/verify)")
+	}
+
 	// 5e. Self-observability: expose the process-wide metrics collector as
 	//     Prometheus text format on the gateway mux. The route is gated
 	//     behind the same bearer auth as the API whenever any token is
@@ -613,6 +632,9 @@ type serveServices struct {
 	convSvc     *grpc.ConversationService
 	convEngine  *conversation.ConversationEngine
 	mobileSvc   *approval.MobileApprovalService
+	// gateSvc is the ad-hoc gate verification service (POST
+	// /gates/verify); nil when the execution engine is not wired.
+	gateSvc *grpc.GateService
 }
 
 // buildServeServices constructs the in-process service implementations,
@@ -620,7 +642,7 @@ type serveServices struct {
 // execGuard is non-nil only in cluster mode: it attaches the execution
 // fencing to the engine so cluster-mode executions register leases and
 // every write is epoch-checked.
-func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) serveServices {
+func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
 	// Credential store first: the engine (when enabled) and target probing
 	// share the encrypted store backed by LEVEE_MASTER_PASSWORD. Without it
 	// the resolver stays nil (disabled): CheckTarget probes unauthenticated
@@ -647,6 +669,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	// refusing with FailedPrecondition ("status-only mode") instead of
 	// pretending to execute.
 	var engine *grpc.EngineAdapter
+	var eng *wiring.Engine
 	if serveOptEngineEnabled {
 		var opts []wiring.Option
 		if credResolver != nil {
@@ -664,6 +687,12 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		} else {
 			log.Info("execution engine slo gates have no Prometheus URL: declared slo gates fail closed")
 		}
+		if serveOptEngineSnapshotDir != "" {
+			opts = append(opts, wiring.WithSnapshotDir(serveOptEngineSnapshotDir))
+			log.Info("execution engine snapshot capture enabled; strategy-snapshot steps capture target files pre-apply and restore on rollback", "dir", serveOptEngineSnapshotDir)
+		} else {
+			log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
+		}
 		if execGuard != nil {
 			// Cluster mode: executions are fenced by run_execution leases.
 			// Begin failure refuses the run outright (no invisible
@@ -673,12 +702,37 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 				wiring.WithExecutionGuard(clusterExecGuardAdapter{g: execGuard}, serveOptNodeID),
 				wiring.WithExecLeaseTTL(serveOptClusterExecLeaseTTL))
 		}
-		engine = wiring.NewEngine(store, opts...).Adapter()
+		eng = wiring.NewEngine(store, opts...)
+		engine = eng.Adapter()
 		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
 	} else {
 		log.Info("serve: execution engine not wired (--engine-enabled=false); ApplyChange RPC returns FailedPrecondition (status-only mode). Plan/approve/status tracking remain fully functional.")
 	}
-	changeSvc := grpc.NewChangeService(store, engine, nil, nil)
+	// Approval service over the same store: PlanChange kicks off the
+	// approval chain (R4 risk-tiered routing; see ChangeService.
+	// kickoffApproval) and ApproveChange/RejectChange then find real
+	// pending records. Before this wiring those RPCs only ever saw
+	// manually seeded rows.
+	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
+
+	// Outbound ITSM Jira mirror (notify.jira.*): decision comments and
+	// kickoff issues keep the org's change record where ITSM lives.
+	// Disabled (the default) keeps everything a no-op; enabled requires
+	// url/project/token, else wiring fails loudly.
+	jiraBridge := jira.NewApprovalBridge(cfg.Notify.Jira)
+	if cfg.Notify.Jira.Enabled {
+		if cfg.Notify.Jira.URL == "" || cfg.Notify.Jira.ProjectKey == "" || cfg.Notify.Jira.APIToken == "" {
+			return serveServices{}, fmt.Errorf("notify.jira.enabled=true requires url, project_key and api_token (or LEVEE_NOTIFY_JIRA_API_TOKEN)")
+		}
+		approvalSvc.WithDecisionObserver(jiraBridge.OnDecision)
+		log.Info("jira approval mirror enabled",
+			"url", cfg.Notify.Jira.URL, "project", cfg.Notify.Jira.ProjectKey)
+	}
+
+	changeSvc := grpc.NewChangeService(store, engine, approvalSvc, nil)
+	if jiraBridge != nil {
+		changeSvc.WithApprovalCreateObserver(jiraBridge.OnApprovalCreated)
+	}
 	templateSvc := grpc.NewTemplateService(store, nil)
 	targetSvc := grpc.NewTargetService(store, nil)
 	if credResolver != nil {
@@ -713,11 +767,21 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		nil,
 		push.NewDeepLinkGenerator("levee", "https://levee.local"),
 	)
+
+	// Ad-hoc gate verification (POST /gates/verify): only meaningful
+	// with a live engine (channel dialing + Prometheus URL). Without
+	// the engine the gateway leaves the route unmounted (404) — cmd
+	// checks against remote targets would have no honest transport.
+	var gateSvc *grpc.GateService
+	if eng != nil {
+		gateSvc = grpc.NewGateService(store, eng.Dial, serveOptEngineGatePrometheus)
+	}
 	return serveServices{
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
 		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
-	}
+		gateSvc: gateSvc,
+	}, nil
 }
 
 // buildServeServerOpts assembles the gRPC server options (services, auth,

@@ -272,11 +272,12 @@ type yamlHumanRaw struct {
 }
 
 type yamlRollbackRaw struct {
-	Strategy    string        `yaml:"strategy"`
-	OnFailure   string        `yaml:"on_failure"`
-	VerifyAfter bool          `yaml:"verify_after"`
-	Step        *yamlStepRaw  `yaml:"step"`
-	Steps       []yamlStepRaw `yaml:"steps"`
+	Strategy      string        `yaml:"strategy"`
+	OnFailure     string        `yaml:"on_failure"`
+	VerifyAfter   bool          `yaml:"verify_after"`
+	Step          *yamlStepRaw  `yaml:"step"`
+	Steps         []yamlStepRaw `yaml:"steps"`
+	SnapshotPaths []string      `yaml:"snapshot_paths"`
 }
 
 // ---------------------------------------------------------------------------
@@ -539,9 +540,10 @@ func splitAction(action string) (module, name string) {
 // singular "step" and plural "steps" forms.
 func convertRollback(r *yamlRollbackRaw) (*RollbackSpec, error) {
 	spec := &RollbackSpec{
-		Strategy:    r.Strategy,
-		OnFailure:   r.OnFailure,
-		VerifyAfter: r.VerifyAfter,
+		Strategy:      r.Strategy,
+		OnFailure:     r.OnFailure,
+		VerifyAfter:   r.VerifyAfter,
+		SnapshotPaths: r.SnapshotPaths,
 	}
 	if r.Step != nil {
 		s, err := convertStep(r.Step)

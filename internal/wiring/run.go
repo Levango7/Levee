@@ -4,6 +4,17 @@
 // plan when replan is requested); Rollback reverses the stored plan via
 // rollback.Manager. All three honour the process-wide parallel-run cap and
 // re-verify the plan artifact before touching any target.
+//
+// Snapshot wiring (design §4.4.4.2 / §4.4.6.3): when a snapshot store is
+// configured (--engine-snapshot-dir / WithSnapshotDir), every execution
+// installs a channel-aware remoteSnapshotter on the closure (capture
+// before the first batch) and the matching SnapshotRestoreFunc on the
+// rollback manager (restore instead of undo steps for strategy
+// "snapshot"). Without a store both halves are disabled: capture is
+// skipped (pre-wiring behaviour) and snapshot steps restore as "not
+// wired" skips — never silent undo actions. Snapshots are keyed by the
+// CHANGE id so the manual RollbackChange path (which knows no closure
+// run id) finds them too.
 
 package wiring
 
@@ -20,6 +31,7 @@ import (
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/lock"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
@@ -52,17 +64,38 @@ func (e *Engine) acquire(changeID string) (func(), error) {
 //     slo/human checks) fail the run rather than silently passing;
 //   - the host guard re-validates frozen targets between lock acquisition
 //     and mutation (planning-time check alone is stale).
-func (e *Engine) newRunRunner() *engine.ClosureRunner {
+func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunner {
 	lockMgr := lock.NewLockManager(lock.NewLockStore(e.store), e.store)
 	lockMgr.SetTTL(e.lockTTL)
 
 	gateMgr := verify.NewGateManager()
 
-	rollbackMgr := rollback.NewManager(
+	// Snapshot halves: the capture hook (engine.WithSnapshotter) and the
+	// restore callback (rollback.WithSnapshotRestore) share one manager
+	// over one store. Both stay nil when no snapshot dir is configured —
+	// the closure then skips capture entirely (its nil check) and the
+	// restore side records "not wired" skips.
+	var snapHook engine.Snapshotter
+	snapOpts := make([]rollback.ManagerOption, 0, 5)
+	if rx != nil && e.snapshotDir != "" {
+		if store, err := rollback.NewFileSnapshotStore(e.snapshotDir); err != nil {
+			log.Error("snapshot store init failed; snapshot capture disabled", "error", err)
+		} else if mgr, err := rollback.NewSnapshotManager(store); err != nil {
+			log.Error("snapshot manager init failed; snapshot capture disabled", "error", err)
+		} else {
+			snapshotter := newRemoteSnapshotter(rx, mgr, changeID)
+			snapHook = snapshotter
+			snapOpts = append(snapOpts,
+				rollback.WithSnapshotRestore(snapshotter.RestoreForStep),
+				rollback.WithRunID(changeID))
+		}
+	}
+
+	rollbackMgr := rollback.NewManager(append([]rollback.ManagerOption{
 		rollback.WithWhitelistAll(),
 		rollback.WithConcurrency(e.rollbackConcurrency),
 		rollback.WithStopOnError(false),
-	)
+	}, snapOpts...)...)
 
 	batchCtrl := batch.NewController(
 		batch.WithBatchErrorPolicy(batch.PolicyAbort),
@@ -70,7 +103,7 @@ func (e *Engine) newRunRunner() *engine.ClosureRunner {
 	)
 
 	store := e.store
-	return engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, nil,
+	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, nil,
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			return inventory.ValidateNotFrozen(ctx, store, hosts)
 		}),
@@ -79,6 +112,12 @@ func (e *Engine) newRunRunner() *engine.ClosureRunner {
 		// fails closed exactly as it would with no runtime attached.
 		engine.WithGateRuntime(engine.GateRuntime{PrometheusURL: e.gatePrometheusURL}),
 	)
+	if snapHook != nil {
+		// The WithSnapshotter option is applied post-construction via a
+		// dedicated setter to keep the constructor signature stable.
+		cr.SetSnapshotter(snapHook)
+	}
+	return cr
 }
 
 // runChange is the EngineAdapter.Run closure. ChangeService has already
@@ -165,8 +204,10 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan,
 	}
 	defer rx.close()
 
-	// Fresh subsystem instances per execution (see newRunRunner).
-	runner := e.newRunRunner()
+	// Fresh subsystem instances per execution (see newRunRunner). The
+	// runner needs rx (the snapshotter captures over its channel cache),
+	// so it is assembled AFTER the runExec exists.
+	runner := e.newRunRunner(rx, changeID)
 
 	res, runErr := runner.Run(ctx, p, rx.executeFunc())
 	if res == nil {
@@ -372,11 +413,27 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 	}
 	defer rx.close()
 
-	mgr := rollback.NewManager(
+	mgrOpts := []rollback.ManagerOption{
 		rollback.WithWhitelistAll(),
 		rollback.WithConcurrency(e.rollbackConcurrency),
 		rollback.WithStopOnError(false),
-	)
+	}
+	// Manual rollback shares the snapshot store: strategy-"snapshot"
+	// steps restore their pre-apply capture (keyed by the CHANGE id, so
+	// this path finds them without knowing any closure run id).
+	if e.snapshotDir != "" {
+		if store, err := rollback.NewFileSnapshotStore(e.snapshotDir); err != nil {
+			log.Error("snapshot store init failed; manual rollback runs without snapshot restore", "error", err)
+		} else if snapMgr, err := rollback.NewSnapshotManager(store); err != nil {
+			log.Error("snapshot manager init failed; manual rollback runs without snapshot restore", "error", err)
+		} else {
+			snapshotter := newRemoteSnapshotter(rx, snapMgr, changeID)
+			mgrOpts = append(mgrOpts,
+				rollback.WithSnapshotRestore(snapshotter.RestoreForStep),
+				rollback.WithRunID(changeID))
+		}
+	}
+	mgr := rollback.NewManager(mgrOpts...)
 
 	// D-2 v2 design item 1: the manual path holds no BatchResults, so
 	// its execution ledger derives from the persisted forward step

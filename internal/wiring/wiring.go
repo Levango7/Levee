@@ -30,6 +30,7 @@ import (
 	"github.com/nexus/levee/internal/state"
 
 	// Register the built-in transports on channel.DefaultRegistry().
+	_ "github.com/nexus/levee/internal/channel/local"
 	_ "github.com/nexus/levee/internal/channel/ssh"
 	_ "github.com/nexus/levee/internal/channel/winrm"
 )
@@ -159,6 +160,13 @@ func WithMaxParallelRuns(n int) Option {
 // materialisation instead of silently passing.
 func WithGatePrometheusURL(url string) Option {
 	return func(e *Engine) { e.gatePrometheusURL = url }
+}
+
+// WithSnapshotDir roots the pre-apply snapshot store (design §4.4.4.2).
+// Empty (the default) keeps snapshot capture disabled — the pre-wiring
+// no-op behaviour. The directory is created lazily on first capture.
+func WithSnapshotDir(dir string) Option {
+	return func(e *Engine) { e.snapshotDir = dir }
 }
 
 // WithExecutionGuard attaches the cluster-mode execution lease guard

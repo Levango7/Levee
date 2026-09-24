@@ -75,6 +75,43 @@ rollback:
   verify_after: true
 `
 
+// snapshotPathsYAML exercises the step-level snapshot_paths declaration
+// (rollback strategy snapshot): the paths flow through the parser into
+// the RollbackSpec the engine's snapshot hook consumes.
+const snapshotPathsYAML = `
+name: snapshot-paths-demo
+version: "1.0"
+targets:
+  - name: web
+    hosts: ["web1"]
+steps:
+  - name: push-conf
+    action: file.copy
+    args:
+      src: /srv/app.conf
+      dst: /etc/app.conf
+    rollback:
+      strategy: snapshot
+      snapshot_paths:
+        - /etc/app.conf
+        - /etc/app.d/override.conf
+`
+
+func TestParseRollbackSnapshotPaths(t *testing.T) {
+	p := NewParser()
+	wf, err := p.ParseBytes([]byte(snapshotPathsYAML))
+	require.NoError(t, err)
+	require.NotNil(t, wf)
+
+	require.Len(t, wf.Steps, 1)
+	rb := wf.Steps[0].Rollback
+	require.NotNil(t, rb)
+	assert.Equal(t, "snapshot", rb.Strategy)
+	require.Len(t, rb.SnapshotPaths, 2)
+	assert.Equal(t, "/etc/app.conf", rb.SnapshotPaths[0])
+	assert.Equal(t, "/etc/app.d/override.conf", rb.SnapshotPaths[1])
+}
+
 // TestParseFullWorkflow verifies that a complete workflow with all supported
 // fields is parsed correctly into the AST.
 func TestParseFullWorkflow(t *testing.T) {

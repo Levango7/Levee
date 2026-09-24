@@ -104,6 +104,16 @@ type RollbackSpec struct {
 	Strategy    string
 	OnFailure   string
 	VerifyAfter bool
+
+	// SnapshotPaths declares the target-machine paths that must be
+	// captured into a snapshot before apply when Strategy is "snapshot".
+	// The snapshot is the rollback basis: restore writes the captured
+	// contents back over these paths (spec 4.4.6.3 "白名单 + 快照 +
+	// 按批逆序" — the snapshot half of the protocol). Empty means the
+	// step snapshot carries no file payloads (an audit-only record);
+	// restore is then a no-op. Only meaningful with Strategy ==
+	// "snapshot"; ignored for undo-action / config-revert.
+	SnapshotPaths []string
 }
 
 // ApprovalSpec declares the approval requirement. Level is one of

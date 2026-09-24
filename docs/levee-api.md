@@ -800,7 +800,7 @@ RESTful 风格，支持两套路径：
 
 资源命名用复数名词，子资源用路径嵌套（`/changes/:id/approve`）。HTTP 方法语义：GET 查询、POST 创建 / 动作、DELETE 删除。
 
-成功响应体为 proto 消息直接序列化的 JSON（不带 12.2 的 `data`/`meta`/`error` 外层包装，字段约定见 13.5）；错误响应体为 `{"error": "<message>"}`。HTTP 状态码与 gRPC 状态码对齐：200 成功、400 验证失败（InvalidArgument）、401 认证失败（Unauthenticated）、403 权限不足（PermissionDenied）、404 不存在（NotFound）、409 冲突（AlreadyExists，如目标机互斥锁占用）、412 前置条件不满足（FailedPrecondition）、429 限流（ResourceExhausted）、501 未实现（Unimplemented）、503 连接失败 / 服务不可用（Unavailable）、504 超时（DeadlineExceeded）、500 一般错误（其余）。
+成功响应体为 proto 消息直接序列化的 JSON（不带 12.2 的 `data`/`meta`/`error` 外层包装，字段约定见 13.6）；错误响应体为 `{"error": "<message>"}`。HTTP 状态码与 gRPC 状态码对齐：200 成功、400 验证失败（InvalidArgument）、401 认证失败（Unauthenticated）、403 权限不足（PermissionDenied）、404 不存在（NotFound）、409 冲突（AlreadyExists，如目标机互斥锁占用）、412 前置条件不满足（FailedPrecondition）、429 限流（ResourceExhausted）、501 未实现（Unimplemented）、503 连接失败 / 服务不可用（Unavailable）、504 超时（DeadlineExceeded）、500 一般错误（其余）。
 
 ### 13.2 端点清单
 
@@ -825,6 +825,7 @@ RESTful 风格，支持两套路径：
 | GET | `/changes/:id/trace` | `/api/v1/ChangeService/GetTrace` | 查看 trace | `levee trace` |
 | POST | `/changes/deeplink/approve` | — | 一键审批（移动端，一次性 token 认证，见 13.3） | — |
 | POST | `/changes/deeplink/reject` | — | 一键驳回（移动端，一次性 token 认证，见 13.3） | — |
+| POST | `/gates/verify` | — | 按需单步验证（cmd/probe/slo，见 13.4） | — |
 | POST | `/templates` | `/api/v1/TemplateService/CreateTemplate` | 创建模板 | `levee template create` |
 | GET | `/templates` | `/api/v1/TemplateService/ListTemplates` | 列出模板 | `levee template list` |
 | GET | `/templates/:name` | `/api/v1/TemplateService/GetTemplate` | 查看模板 | `levee template show` |
@@ -853,6 +854,34 @@ Token-based 认证，三种模式：
 - 门户（Web UI）：同源嵌入在二进制中，无需额外认证；外部调用需携带 Bearer token。
 - 移动端一键审批（deeplink）：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 不要求 Bearer 头，改以请求体中的一次性 token 作为认证凭据（`{"token": "<one-time-token>"}`）。token 由审批通知下发时生成：32 字节随机数、默认 30 分钟 TTL、单次消费、绑定 (run-id, 用户, 动作)；消费或过期后即失效。无效 / 过期 token 返回 401。该豁免仅覆盖这两个端点，其余端点仍强制 Bearer。
 
+### 13.4 单步验证门（POST /gates/verify）
+
+按需执行一条验证检查——操作员预检、流水线 pre-check、ChatOps 即席健康检查，无需为一次检查规划整个变更。检查语义与引擎计划内门禁**同源**（同一 `verify` 构造器，零漂移）：
+
+```jsonc
+// 请求体
+{
+  "type": "cmd",              // cmd | probe | slo（human 归审批链，显式拒绝）
+  "name": "nginx-alive",     // 可选标签，默认 "ad-hoc"
+  "target": "web-1",         // cmd 必填（经引擎通道拨号远程执行）；probe/slo 忽略
+  "run_id": "run-abc",       // 可选：审计关联
+  "params": {
+    // cmd:   {"cmd": "systemctl is-active nginx", "expect_exit": 0,
+    //         "expect_stdout": "active", "timeout_seconds": 5}
+    // probe: {"kind": "http", "url": "http://web-1:8080/health", ...}（自描述）
+    // slo:   {"query": "rate(errors[5m])", "threshold": 0.01,
+    //         "comparison": "lte", "timeout_seconds": 5}
+    "cmd": "systemctl is-active nginx", "expect_exit": 0
+  }
+}
+// 200 响应：{ "gate": "...", "passed": true/false, "message": "...",
+//            "details": {...}, "latency_ms": 42, "ran_at": "..." }
+// 400：描述了系统无法诚实执行的检查（未知 type / 缺参 / cmd 无 target /
+//      slo 无 Prometheus URL）；服务未配置（无引擎）时 404。
+```
+
+要点：cmd 检查对 inventory 中未知 / retired 目标前置拒绝；每次执行落审计（`gate_verify`）；`--engine-enabled` 才挂载本端点。
+
 静态令牌之外还支持第四种凭据 —— **SSO（可选，`auth.oidc` 或 `auth.github` 开启）**：
 
 - 解析顺序：请求携带的 Bearer 令牌先与静态令牌集（constant-time 比较）比对，未命中再依次尝试 LEVEE 会话令牌（SSO 登录产物，本地 HMAC 校验）与三段式 JWT 形态的 OIDC 验证。开启任一 SSO 不影响既有静态令牌。
@@ -874,7 +903,7 @@ Token-based 认证，三种模式：
 
 > **安全提示**：默认情况下（不传 `--token` 且未启用 OIDC）鉴权处于关闭状态，所有 API 请求无需认证即可访问。生产环境必须通过 `--token <secret>` 设置 Bearer token 或启用 `auth.oidc`。gRPC 和 REST 网关共享同一凭据校验逻辑；`--insecure` 可显式接受无鉴权风险（本地开发）。
 
-### 13.4 分页与过滤
+### 13.5 分页与过滤
 
 标准分页参数：
 
@@ -889,7 +918,7 @@ Token-based 认证，三种模式：
 
 过滤参数按资源域不同，如 `/changes` 支持 `status`、`template`、`initiator`、`from`、`to`，`/audit` 支持 `who`、`action`、`change`。过滤参数均为可选，多参数间为 AND 关系。
 
-### 13.5 JSON 字段约定（protojson）
+### 13.6 JSON 字段约定（protojson）
 
 REST 网关的成功响应由 protojson（proto3 JSON 规范，默认选项）序列化，客户端集成时必须遵循以下约定：
 
