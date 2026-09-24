@@ -19,7 +19,10 @@ const approver = ref('operator')
 async function loadPending(): Promise<void> {
   loading.value = true
   try {
-    const res = await changesApi.list({ status: ['pending_approval'], pageSize: 100 })
+    // The backend run status for "awaiting approval" is `pending`; querying
+    // `pending_approval` (a value the server never emits) returned an empty
+    // list, so this tab could never show anything to approve.
+    const res = await changesApi.list({ status: ['pending'], pageSize: 100 })
     pending.value = res.items || []
   } catch (err) {
     ElMessage.error((err as { message?: string })?.message || '加载待审批列表失败')

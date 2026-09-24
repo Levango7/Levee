@@ -221,7 +221,7 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
     <!-- Action buttons. On mobile they are sticky at the bottom; on larger
          screens they appear inline. -->
     <section
-      v-if="change && change.status === 'pending_approval'"
+      v-if="change && change.status === 'pending'"
       class="mobile-approval__actions"
     >
       <el-button

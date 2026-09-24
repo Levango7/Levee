@@ -69,6 +69,30 @@ describe('label/color tables', () => {
     expect(STATUS_LABEL.cancelled).toBe('已取消')
   })
 
+  it('covers the D-2 v2 rollback verdicts, which are not a clean rollback', () => {
+    // A partial/incomplete rollback must read differently from rolled_back:
+    // the state was NOT restored, so presenting it as 已回滚 would repeat the
+    // very misreport D-2 was built to stop.
+    expect(STATUS_LABEL.rolled_back_partial).toBe('部分回滚')
+    expect(STATUS_LABEL.rollback_incomplete).toBe('回滚未完成')
+    expect(STATUS_LABEL.rolled_back_partial).not.toBe(STATUS_LABEL.rolled_back)
+    expect(STATUS_LABEL.rollback_incomplete).not.toBe(STATUS_LABEL.rolled_back)
+    expect(STATUS_COLOR.rollback_incomplete).toBe('danger')
+  })
+
+  it('carries no status the backend never emits', () => {
+    // `pending_approval` used to sit in this table as a second 待审批 key
+    // beside `pending`. The server never returned it, so the approval list
+    // query and the mobile approve button keyed on it matched nothing. If a
+    // value comes back, the vocabulary has drifted from the backend again.
+    expect(Object.keys(STATUS_LABEL)).not.toContain('pending_approval')
+    expect(Object.keys(STATUS_LABEL)).toContain('pending')
+  })
+
+  it('the label and color tables agree on the key set', () => {
+    expect(Object.keys(STATUS_LABEL).sort()).toEqual(Object.keys(STATUS_COLOR).sort())
+  })
+
   it('priority tables agree on keys and normal has the empty (default) color', () => {
     expect(Object.keys(PRIORITY_LABEL).sort()).toEqual(Object.keys(PRIORITY_COLOR).sort())
     expect(PRIORITY_COLOR.normal).toBe('')
@@ -78,18 +102,25 @@ describe('label/color tables', () => {
 
 describe('isRetryableStatus', () => {
   // Mirrors the backend RetryChange admission set (change_service.go):
-  // failed / rolled_back / interrupted. interrupted is the cluster
-  // takeover terminal — retry is its only machine re-drive entry point.
+  // failed / rolled_back / interrupted, plus the D-2 v2 rollback verdicts
+  // (failure-family terminals whose re-drive entry point is also retry).
   it('admits the retryable terminals', () => {
     expect(isRetryableStatus('failed')).toBe(true)
     expect(isRetryableStatus('rolled_back')).toBe(true)
+    expect(isRetryableStatus('rolled_back_partial')).toBe(true)
+    expect(isRetryableStatus('rollback_incomplete')).toBe(true)
     expect(isRetryableStatus('interrupted')).toBe(true)
   })
 
   it('refuses every non-retryable state', () => {
-    const others = Object.keys(STATUS_LABEL).filter(
-      (s) => s !== 'failed' && s !== 'rolled_back' && s !== 'interrupted',
-    )
+    const retryable = [
+      'failed',
+      'rolled_back',
+      'rolled_back_partial',
+      'rollback_incomplete',
+      'interrupted',
+    ]
+    const others = Object.keys(STATUS_LABEL).filter((s) => !retryable.includes(s))
     // Guard against vocabulary drift: the non-retryable set must be
     // exactly the complement, so a newly added status cannot silently
     // default into retryable (it must explicitly join one set).
