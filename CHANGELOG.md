@@ -94,6 +94,12 @@
 
 - **CVE-2026-84445（CRITICAL/HIGH）修复**：builder 阶段基础镜像 alpine 包升级。runtime 阶段已有 `apk upgrade --no-cache`（上次 CVE-2026-14456 openssl 的同模式修复），但 builder 阶段（`golang:1.26-alpine`）缺失该步骤，导致该基础镜像新发布的 CVE 在 trivy 门禁被检出阻断。builder 阶段补上 `apk upgrade --no-cache`，与 runtime 阶段同模式，消除 builder 层已修复基础 CVE。
 
+### 文档
+
+- **`docs/levee-api.md` 第 12 章输出格式与实现全面不符（按真实运行逐项订正）**：原文描述的 `levee list` 输出基本是想象的——`PrintHuman` 走 `text/tabwriter`，**完全不含 ANSI 颜色**（着色只存在于 `levee audit` 导出的 HTML 报告 `.status-*`），列集合是 `ID / WORKFLOW_NAME / TEMPLATE_NAME / STATUS / APPROVAL_STATUS / CREATOR / CREATED_AT`，**没有**原文写的 `PROGRESS` 列（也没有 `INITIATOR` / `UPDATED`，实际叫 `CREATOR` / `CREATED_AT`）。JSON 示例同样失真：真实行字段是 `id` / `workflow_name` / `template_name` / `status` / `approval_status` / `creator` / `created_at`（原文的 `change_id` / `template` / `progress` / `initiator` / `plan_hash` / `updated_at` 均不存在），`meta` 是 `count` / `limit` / `offset`（原文的 `total` / `elapsed_ms` 不存在），`created_at` 是 `2006-01-02 15:04:05` 字符串而非 RFC3339，错误信封实测为 `{code, message}`（原文的 `detail` 对象未见于实际输出）。本次改动用编译出的 `levee` 二进制 + 临时 SQLite 库实跑 `template create` → `new` → `list` / `list --json` / `show <不存在 id> --json`，把三处示例换成真实输出并标注取自实跑；`--status` 过滤项补齐为权威词表（原文漏掉 `draft` / `planned` / `cancelled` / `interrupted` 与 D-2 v2 的两个回滚判定），同时写明「精确匹配 + CLI 不做白名单校验」。示例命令同步改为可复现的 `levee list`（原文写 `--status running` 却展示非 running 行）。
+- **`docs/cli-reference.md` apply 终态词表补齐**：引擎路径回写的终态补上 D-2 v2 的 `rolled_back_partial` / `rollback_incomplete`，并注明「回滚未完全收敛不得报告为干净的 `rolled_back`」。
+- **`docs/design-cluster-dispatch.md` 标注 assignment `result` 词表是刻意冻结的**：run 状态新增两个回滚判定后，`run_assignment.result` 仍只认 `completed | failed | rolled_back`；映射点在 `cmd/levee/grpc_change_executor.go`（`retry()` 显式归为 `failed`，`apply()` 经 default 分支落到 `failed`），run 行保留精确状态。补这条是为了防止后来者把「看起来漏了」的词表当 bug「修掉」，反而动到 assignment 终态识别与「是否已分派/已终结」的判定。
+
 ## [v1.13.0] - 2026-09-08 — 执行引擎接线 + 集群故障接管
 
 本版落地两大设计（`docs/design-engine-wiring.md` / `docs/design-cluster-failover.md`）：**A —— 执行引擎接入 serve**，计划→审批→执行自此真实闭环（计划持久化 + plan_hash 绑定、显式 `--engine-enabled`、CLI plan/apply 引擎路径、批次/步骤证据落库）；**B —— 集群在途变更故障接管**，执行节点崩溃后其运行中变更由租约围栏与 leader 接管循环收敛至新终态 `interrupted`（审计留痕、永不重跑副作用、`RetryChange` 显式重驱动）。另含双 SSO（OIDC/GitHub）、多令牌认证、REST 方法校验等安全加固与全链测试战役。详细说明见 [docs/release-notes/v1.13.0.md](docs/release-notes/v1.13.0.md)。以下为逐条明细。

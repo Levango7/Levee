@@ -297,7 +297,7 @@ levee apply <run-id> [--force] [--engine-enabled] [--max-concurrency N]
 - 不加 `--force` 时，仅 `approved` 状态的 run 可执行；加 `--force` 时 `pending`/`draft` 也可执行
 - 默认路径（不加 `--engine-enabled`）为 status-only：只做状态流转，不真实执行
 - `--engine-enabled` 与 serve 走同一 ChangeService 路径（审批、冻结、计划门完全一致）：run 必须先经 `levee plan`（或 gRPC PlanChange）持久化计划，否则拒绝执行且状态不变（exit=4）
-- 引擎路径同步执行到终态并回写状态（`completed` / `rolled_back` / `failed`），批次与步骤证据落库；执行失败时 JSON 输出先行打印、随后以 exit=1 退出
+- 引擎路径同步执行到终态并回写状态（`completed` / `rolled_back` / `rolled_back_partial` / `rollback_incomplete` / `failed`——后两个是 D-2 v2 的回滚判定：**回滚未完全收敛**时不得报告为干净的 `rolled_back`），批次与步骤证据落库；执行失败时 JSON 输出先行打印、随后以 exit=1 退出
 
 **示例**
 

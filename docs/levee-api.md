@@ -109,7 +109,7 @@ levee list --status running,approved --target group=web --limit 20
 
 | 选项 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `--status <s1,s2,...>` | enum list | 否 | 按状态过滤：pending / approved / rejected / running / paused / completed / failed / rolled_back / archived |
+| `--status <s1,s2,...>` | enum list | 否 | 按状态过滤（逗号分隔，**精确匹配** `run.status`）：draft / planned / pending / approved / rejected / running / paused / completed / failed / cancelled / rolled_back / rolled_back_partial / rollback_incomplete / interrupted / archived。权威定义见 `internal/grpc/change_service.go`（`isValidTransition` / `terminalRunStatuses`）；CLI 不做白名单校验，未列出的值会被原样透传给 store 过滤 |
 | `--target <label=val>` | label | 否 | 按目标标签过滤，如 `group=web`、`az=a` |
 | `--template <name>` | string | 否 | 按模板名过滤 |
 | `--initiator <user>` | string | 否 | 按发起人过滤 |
@@ -715,23 +715,22 @@ esac
 
 ### 12.1 人类可读格式（默认）
 
-默认输出表格 + 彩色状态，适合终端交互。
+输出为制表符对齐的表格（`PrintHuman` → `printHumanTable`，`text/tabwriter`）。**不含 ANSI 颜色**——状态以原文呈现，着色只存在于 `levee audit` 导出的 HTML 报告（`.status-*`）。
 
 命令示例：人类可读输出示例
 
 ```bash
-$ levee list --status running
+$ levee list
 ```
 
-输出示例：
+输出示例（取自真实运行）：
 
 ```
-CHANGE ID            TEMPLATE      STATUS    PROGRESS    INITIATOR    UPDATED
-run-20260815-001     db-migrate    running   2/3 batches user-a       2026-08-15 02:14
-run-20260815-002     os-patch      running   1/5 batches user-b       2026-08-15 02:18
+ID                    WORKFLOW_NAME  TEMPLATE_NAME  STATUS  APPROVAL_STATUS  CREATOR   CREATED_AT
+run-9880784947509147  db-migrate     db-migrate     draft   pending          cli-user  2026-09-24 23:51:54
 ```
 
-状态颜色：running 黄、completed 绿、failed 红、paused 灰、rolled_back 红。
+列集合固定为 `ID / WORKFLOW_NAME / TEMPLATE_NAME / STATUS / APPROVAL_STATUS / CREATOR / CREATED_AT`（`CREATED_AT` 格式 `2006-01-02 15:04:05`）。注意：**没有** `PROGRESS` 列——批次进度要用 `levee show <run-id>` 或 `levee logs`；`--quiet` 只逐行输出 run id。
 
 ### 12.2 JSON 格式（--json）
 
@@ -740,49 +739,44 @@ run-20260815-002     os-patch      running   1/5 batches user-b       2026-08-15
 命令示例：JSON 输出结构
 
 ```bash
-$ levee list --status running --json
+$ levee list --json
 ```
 
-输出示例：
+输出示例（取自真实运行）：
 
 ```json
 {
   "data": [
     {
-      "change_id": "run-20260815-001",
-      "template": "db-migrate",
-      "status": "running",
-      "progress": { "batch_done": 2, "batch_total": 3 },
-      "initiator": "user-a",
-      "plan_hash": "v2:9f4b...",
-      "created_at": "2026-08-15T02:10:00+08:00",
-      "updated_at": "2026-08-15T02:14:32+08:00"
+      "approval_status": "pending",
+      "created_at": "2026-09-24 23:51:54",
+      "creator": "cli-user",
+      "id": "run-9880784947509147",
+      "status": "draft",
+      "template_name": "db-migrate",
+      "workflow_name": "db-migrate"
     }
   ],
   "meta": {
-    "total": 2,
+    "count": 1,
     "limit": 20,
-    "offset": 0,
-    "elapsed_ms": 38
+    "offset": 0
   },
   "error": null
 }
 ```
 
-错误时结构：
+行字段与 12.1 表格列一一对应（`id` / `workflow_name` / `template_name` / `status` / `approval_status` / `creator` / `created_at`）；`meta` 为 `count` / `limit` / `offset`（**没有** `total` / `elapsed_ms`）；`created_at` 为 `2006-01-02 15:04:05` 字符串，不是 RFC3339。
+
+错误时结构（`levee show <不存在的 id> --json` 实测）：
 
 ```json
 {
   "data": null,
   "meta": null,
   "error": {
-    "code": 7,
-    "message": "target unreachable: web-03.example.com",
-    "detail": {
-      "host": "web-03.example.com",
-      "channel": "ssh",
-      "reason": "connection refused"
-    }
+    "code": 1,
+    "message": "run \"run-does-not-exist\" not found"
   }
 }
 ```

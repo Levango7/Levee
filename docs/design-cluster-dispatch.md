@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS run_assignment (
     owner_node  TEXT NOT NULL,           -- 被分派的 worker node id
     epoch       BIGINT NOT NULL,         -- 单调递增；易主/重调度时 +1
     state       TEXT NOT NULL,           -- pending | executing | done | interrupted
-    result      TEXT NOT NULL DEFAULT '',-- 终态：completed | failed | rolled_back | ''
+    result      TEXT NOT NULL DEFAULT '',-- 终态：completed | failed | rolled_back | ''（词表冻结，见下）
     assigned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(run_id, epoch)                -- 允许同一 run 的历史 epoch 留存（审计）
@@ -53,6 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
 - `run_id` 做 PK 而非 `(run_id, epoch)`：当前 run-level 语义下每个 run 只有一个活跃 assignment。未来若进 batch-level，PK 改为 `(run_id, batch_no)` 即可——`epoch` 列已预留，`UNIQUE(run_id, epoch)` 已支持多 epoch 历史。
 - `state` 用 free-text（与 `run.status`、`run_execution.status` 同口径，无 CHECK）：vocab 由代码层约束。
 - `result` 列冗余终态：避免调度循环频繁 JOIN run 表；`state=done` 时 `result` 必填。
+- `result` 词表**刻意不随 run 状态扩展**（D-2 v2 设计裁定）：run 增加了 `rolled_back_partial` / `rollback_incomplete` 两个回滚判定，但 assignment 侧仍只认 `completed | failed | rolled_back`——映射点在 `cmd/levee/grpc_change_executor.go`：`retry()` 显式把两个新判定归为 `failed`，`apply()` 也经 default 分支落到 `failed`；run 行保留精确状态，需要区分时查 run 表。**扩这个词表会动到 assignment 终态识别与「是否已分派/已终结」的判定，改之前先读这条。**
 
 **不用旧表 `run_execution` 的原因**：该表语义是"执行租约/围栏"（owner + epoch + lease_expires），混入调度分派语义会让 lease 续约逻辑与调度重调度逻辑耦合，债越积越多。新表隔离关注点。
 
