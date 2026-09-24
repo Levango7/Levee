@@ -6,9 +6,10 @@
 // plan → approve → apply cycle crosses real request boundaries. It proves
 // the §4 acceptance bullets end-to-end: real steps settle the run to
 // "completed" with batch/step evidence rows and a verifiable audit hash
-// chain; a forced step failure auto-rolls-back and reaches "rolled_back"
-// via serve; an unplanned (or plan-tampered) change is refused before any
-// dispatch. The engine-level closure paths are covered by
+// chain; a forced step failure auto-rolls-back and reports the D-2 v2
+// partial verdict because the dispatched failed step has no compensation;
+// an unplanned (or plan-tampered) change is refused before any dispatch.
+// The engine-level closure paths are covered by
 // internal/wiring/exec_run_test.go; this file pins that the serve/gRPC
 // layer wires and exposes them faithfully.
 
@@ -323,11 +324,11 @@ func TestEngineServe_CompletesWithEvidenceAndChain(t *testing.T) {
 	assert.True(t, verifyResp.GetValid(), "audit hash chain must verify after real execution")
 }
 
-// TestEngineServe_AutoRollbackReachesRolledBack pins §4 "rollback reaches
-// rolled_back via serve": a forced step failure auto-rolls-back inside the
-// closure, and the gRPC ApplyResponse carries the distinguishing
-// rolled_back status plus the undo evidence rows.
-func TestEngineServe_AutoRollbackReachesRolledBack(t *testing.T) {
+// TestEngineServe_AutoRollbackReportsPartial pins §4 rollback through serve:
+// a forced step failure auto-rolls-back inside the closure. The dispatched
+// failed step has no rollback declaration, so D-2 v2 correctly surfaces the
+// distinguishing rolled_back_partial verdict while persisting undo evidence.
+func TestEngineServe_AutoRollbackReportsPartial(t *testing.T) {
 	ctx := context.Background()
 	rec := &loopRecorder{failCmd: map[string]bool{"fail-command": true}}
 	client, store := serveEngine(t, rec, "web-1")
@@ -342,7 +343,7 @@ func TestEngineServe_AutoRollbackReachesRolledBack(t *testing.T) {
 	})
 	require.NoError(t, err, "a rolled-back apply is an outcome, not an RPC error")
 	assert.False(t, applyResp.GetSuccess())
-	assert.Equal(t, "rolled_back", applyResp.GetChange().GetStatus())
+	assert.Equal(t, "rolled_back_partial", applyResp.GetChange().GetStatus())
 
 	steps, err := store.ListSteps(ctx, state.StepFilter{RunID: changeID, Limit: 200})
 	require.NoError(t, err)
