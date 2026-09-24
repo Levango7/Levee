@@ -25,7 +25,7 @@ describe('conversationApi', () => {
 		expect(result.user_id).toBe('op-1')
 	})
 
-	it('sendMessage issues POST /conversation/sessions/{id}/messages', async () => {
+	it('sendMessage issues POST /conversation/sessions/{id}/messages and unwraps {reply}', async () => {
 		vi.resetModules()
 		const mod = await import('./index')
 		const client = await import('./client')
@@ -35,7 +35,9 @@ describe('conversationApi', () => {
 			seen.url = config.url
 			seen.body = typeof config.data === 'string' ? config.data : undefined
 			return {
-				data: { text: '建议摘要: test', action_type: 'none', session_id: 's-1' },
+				// Real backend wire shape: envelope {reply} with the engine's
+				// nested action object ({type, payload}).
+				data: { reply: { text: '建议摘要: test', action: { type: 'approve', payload: { recommendation_id: 'rec-1' } } } },
 				status: 200, statusText: 'OK', headers: {}, config,
 			}
 		}
@@ -44,6 +46,9 @@ describe('conversationApi', () => {
 		expect(seen.url).toBe('/conversation/sessions/s-1/messages')
 		expect(seen.body).toContain('/help')
 		expect(result.text).toBe('建议摘要: test')
+		expect(result.action_type).toBe('approve')
+		expect(result.action_payload).toEqual({ recommendation_id: 'rec-1' })
+		expect(result.session_id).toBe('s-1')
 	})
 
 	it('listSessions issues GET /conversation/sessions?user_id= and unwraps {sessions}', async () => {
@@ -65,7 +70,7 @@ describe('conversationApi', () => {
 		expect(result?.[0]?.id).toBe('s-1')
 	})
 
-	it('getSession issues GET /conversation/sessions/{id}', async () => {
+	it('getSession issues GET /conversation/sessions/{id} and unwraps {session}', async () => {
 		vi.resetModules()
 		const mod = await import('./index')
 		const client = await import('./client')
@@ -73,17 +78,18 @@ describe('conversationApi', () => {
 		client.axiosClient.defaults.adapter = async (config) => {
 			expect(config.url).toBe('/conversation/sessions/s-xyz')
 			expect(config.method).toBe('get')
+			expect(config.params).toEqual({ user_id: 'op-1' })
 			return {
-				data: { id: 's-xyz', user_id: 'op-1', state: 'reviewing', messages: [], created_at: '', updated_at: '' },
+				data: { session: { id: 's-xyz', user_id: 'op-1', state: 'reviewing', messages: [], created_at: '', updated_at: '' } },
 				status: 200, statusText: 'OK', headers: {}, config,
 			}
 		}
 
-		const result = await mod.conversationApi.getSession('s-xyz')
+		const result = await mod.conversationApi.getSession('s-xyz', 'op-1')
 		expect(result.state).toBe('reviewing')
 	})
 
-	it('closeSession issues DELETE /conversation/sessions/{id}', async () => {
+	it('closeSession issues DELETE /conversation/sessions/{id} with user_id param', async () => {
 		vi.resetModules()
 		const mod = await import('./index')
 		const client = await import('./client')
@@ -91,9 +97,10 @@ describe('conversationApi', () => {
 		client.axiosClient.defaults.adapter = async (config) => {
 			expect(config.url).toBe('/conversation/sessions/s-xyz')
 			expect(config.method).toBe('delete')
+			expect(config.params).toEqual({ user_id: 'op-1' })
 			return { data: null, status: 204, statusText: 'No Content', headers: {}, config }
 		}
 
-		await mod.conversationApi.closeSession('s-xyz')
+		await mod.conversationApi.closeSession('s-xyz', 'op-1')
 	})
 })

@@ -48,6 +48,8 @@ var (
 	// ErrInvalidState is returned when a state transition is not allowed
 	// from the current state.
 	ErrInvalidState = errors.New("conversation: invalid state transition")
+	// ErrNotOwner is returned when the caller does not own the session.
+	ErrNotOwner = errors.New("conversation: not the session owner")
 )
 
 // --- Defaults ---------------------------------------------------------------
@@ -243,7 +245,7 @@ func (e *ConversationEngine) HandleMessage(_ctx context.Context, sessionID, user
 
 	// Authorisation check: the caller must own the session.
 	if userID != "" && sess.UserID != userID {
-		return nil, fmt.Errorf("conversation: user %q is not the owner of session %q", userID, sessionID)
+		return nil, fmt.Errorf("conversation: user %q is not the owner of session %q: %w", userID, sessionID, ErrNotOwner)
 	}
 
 	state := sess.GetState()
@@ -322,13 +324,16 @@ func (e *ConversationEngine) handleReviewing(_ctx context.Context, sess *Session
 	lower := strings.ToLower(msg)
 	switch lower {
 	case "执行", "approve", "yes", "y":
-		sess.SetState(StateExecuting)
+		// 确认 ≠ 执行：执行链尚未接通，此前这里直接置 StateExecuting
+		// 并回复“开始执行”，但没有任何执行器接管，会话会烂在
+		// executing 态（P2-3）。现在保持 StateReviewing 并如实告知；
+		// 真正接通执行链后再恢复 executing 流转。
 		action := &Action{Type: ActionApprove, Payload: map[string]string{}}
 		if rec := sess.GetRecommendation(); rec != nil {
 			action.Payload["recommendation_id"] = rec.ID
 		}
 		sess.AddMessageWithAction(RoleSystem, "user approved", action)
-		return &Reply{Text: "已批准，开始执行", Action: action}, nil
+		return &Reply{Text: "建议已确认，尚未启动执行。回复「拒绝」终止建议，或继续提问。", Action: action}, nil
 	case "拒绝", "reject", "no", "n":
 		sess.SetState(StateFailed)
 		action := &Action{Type: ActionReject}
@@ -348,6 +353,10 @@ func (e *ConversationEngine) handleReviewing(_ctx context.Context, sess *Session
 }
 
 // handleExecuting handles messages while the fix workflow is running.
+// Defensive path only: no message flow transitions into StateExecuting
+// until the execution chain is wired (P2-3); sessions already in this
+// state (e.g. restored or set by a future executor) can still be
+// cancelled out of it.
 func (e *ConversationEngine) handleExecuting(_ctx context.Context, sess *Session, text string) (*Reply, error) {
 	msg := normalizeText(text)
 	sess.AddMessage(RoleUser, msg)
@@ -470,7 +479,7 @@ func helpText() string {
 		"  /help               — 显示此帮助",
 		"  /restart            — 重置会话（仅在终态可用）",
 		"  /cancel             — 取消进行中的诊断/执行",
-		"在审核阶段回复: 执行 / 拒绝 / 修改",
+		"在审核阶段回复: 执行(确认建议，暂不启动执行) / 拒绝 / 修改",
 	}, "\n")
 }
 

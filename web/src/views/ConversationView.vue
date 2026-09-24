@@ -42,7 +42,7 @@ async function openSession(id: string) {
 async function refreshActiveSession() {
 	if (!activeSessionID.value) return
 	try {
-		const sess = await conversationApi.getSession(activeSessionID.value)
+		const sess = await conversationApi.getSession(activeSessionID.value, currentUserID.value)
 		messages.value = [...sess.messages]
 		// Update the session entry in the list (state may have changed).
 		const idx = sessions.value.findIndex(s => s.id === sess.id)
@@ -81,7 +81,7 @@ async function send() {
 
 async function closeSession(id: string) {
 	try {
-		await conversationApi.closeSession(id)
+		await conversationApi.closeSession(id, currentUserID.value)
 		sessions.value = sessions.value.filter(s => s.id !== id)
 		if (activeSessionID.value === id) {
 			activeSessionID.value = ''

@@ -361,6 +361,16 @@ export interface ConversationReplyDTO {
   session_id?: string
 }
 
+// The conversation REST endpoints wrap every payload in an envelope
+// ({session} / {sessions} / {reply}), and the message reply uses the
+// engine's wire shape ({text, action?: {type, payload}}) rather than the
+// flat ConversationReplyDTO the views consume. Unwrap and normalise here —
+// the backend envelope is the established API, so the frontend adapts.
+interface ConversationReplyWire {
+  text: string
+  action?: { type: string; payload?: Record<string, string> }
+}
+
 export const conversationApi = {
   newSession: (userID: string, alertID?: string): Promise<ConversationSessionDTO> =>
     post<{ session: ConversationSessionDTO }>('/conversation/sessions', { user_id: userID, alert_id: alertID })
@@ -370,14 +380,21 @@ export const conversationApi = {
     get<{ sessions: ConversationSessionDTO[] }>('/conversation/sessions', { params: { user_id: userID } })
       .then(r => r.sessions),
 
-  getSession: (sessionID: string): Promise<ConversationSessionDTO> =>
-    get<ConversationSessionDTO>(`/conversation/sessions/${sessionID}`),
+  getSession: (sessionID: string, userID?: string): Promise<ConversationSessionDTO> =>
+    get<{ session: ConversationSessionDTO }>(`/conversation/sessions/${sessionID}`, { params: { user_id: userID } })
+      .then(r => r.session),
 
   sendMessage: (sessionID: string, userID: string, text: string): Promise<ConversationReplyDTO> =>
-    post<ConversationReplyDTO>(`/conversation/sessions/${sessionID}/messages`, { user_id: userID, text }),
+    post<{ reply: ConversationReplyWire }>(`/conversation/sessions/${sessionID}/messages`, { user_id: userID, text })
+      .then(r => ({
+        text: r.reply.text,
+        action_type: r.reply.action?.type,
+        action_payload: r.reply.action?.payload,
+        session_id: sessionID,
+      })),
 
-  closeSession: (sessionID: string): Promise<void> =>
-    del(`/conversation/sessions/${sessionID}`),
+  closeSession: (sessionID: string, userID?: string): Promise<void> =>
+    del(`/conversation/sessions/${sessionID}`, { params: { user_id: userID } }),
 }
 
 // Re-export primitive helpers for views that need ad-hoc calls.

@@ -927,7 +927,15 @@ REST 网关的成功响应由 protojson（proto3 JSON 规范，默认选项）�
 3. **int64 字段**：int64 字段（如 `createdAt` / `updatedAt` Unix 秒时间戳、`durationMs`）按 proto3 JSON 规范输出为 **JSON 字符串**（避免 64 位精度丢失），客户端应按字符串接收后再解析为数值。
 4. **错误响应**：非 2xx 响应体统一为 `{"error": "<message>"}`（见 13.1 状态码映射）。
 
-所有端点（含 AlertService / DiagnosisService / ConversationService）统一遵循上述约定，无例外。
+所有走 protojson 的端点（含 AlertService / DiagnosisService / ConversationService 的 gRPC 兼容端点）统一遵循上述约定。REST-only 的对话会话端点例外见 13.7。
+
+### 13.7 对话会话端点（REST-only）
+
+`/conversation/sessions*` 一组端点不经过 gRPC（会话管理不在 ConversationService 的 proto 面内），由 REST 网关直接驱动会话引擎，因此**不遵循** 13.6 的 protojson 约定：字段为 snake_case，成功响应统一带信封——`POST /conversation/sessions` 与 `GET /conversation/sessions/{id}` 返回 `{"session": {...}}`，`GET /conversation/sessions` 返回 `{"sessions": [...]}`，`POST /conversation/sessions/{id}/messages` 返回 `{"reply": {"text": ..., "action"?: {"type", "payload"}}}`，`DELETE /conversation/sessions/{id}` 返回 204。前端在 `web/src/api/index.ts` 的 `conversationApi` 内统一拆封并摊平 reply，视图层只见扁平 DTO。
+
+所有权（P2-2）：命名令牌 / OIDC / SSO 会话的**认证主体**是会话归属的唯一依据，请求体或 query 里的 `user_id` 仅在无认证（开发模式）或旧式静态令牌（无已验证主体）时作为回退；详情 / 发消息 / 关闭对他人会话一律 403。
+
+执行语义（P2-3）：审核阶段回复「执行 / approve / yes」仅表示**确认建议**——会话保持 `reviewing`，回复文案为「建议已确认，尚未启动执行」，不会进入 `executing`（执行链接通前该状态不可达）；「拒绝 / reject / no」终止建议（`failed`），「修改 / modify」继续留在 `reviewing`。
 
 ---
 

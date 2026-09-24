@@ -2272,6 +2272,30 @@ func (gw *Gateway) dispatchConversation(w http.ResponseWriter, r *http.Request, 
 	writeJSONError(w, http.StatusNotFound, "not found: "+path)
 }
 
+// conversationPrincipal resolves the user identity that owns conversation
+// sessions (P2-2). An authenticated subject — named token / OIDC / web
+// session, injected by authMiddleware under actorKey — always wins over any
+// client-asserted user_id. The asserted value is the fallback for
+// development mode and legacy static-token callers, which carry no verified
+// subject (same trust model as actorFromCtx).
+func conversationPrincipal(r *http.Request, asserted string) string {
+	if v, ok := r.Context().Value(actorKey{}).(string); ok && v != "" {
+		return v
+	}
+	return strings.TrimSpace(asserted)
+}
+
+// requireConversationOwner writes a 403 and returns false when principal is
+// known and does not own sess. An empty principal (development mode with no
+// client assertion) is allowed through, preserving --insecure usability.
+func requireConversationOwner(w http.ResponseWriter, sess *conversation.Session, principal string) bool {
+	if principal != "" && sess.UserID != principal {
+		writeJSONError(w, http.StatusForbidden, "session belongs to another user")
+		return false
+	}
+	return true
+}
+
 // handleConversationNewSession creates a new conversation session.
 func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -2282,16 +2306,17 @@ func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(req.UserID) == "" {
+	principal := conversationPrincipal(r, req.UserID)
+	if principal == "" {
 		writeJSONError(w, http.StatusBadRequest, "user_id is required")
 		return
 	}
 	var sess *conversation.Session
 	var err error
 	if req.AlertID != "" {
-		sess, err = gw.convEngine.NewSessionFromAlert(req.UserID, req.AlertID)
+		sess, err = gw.convEngine.NewSessionFromAlert(principal, req.AlertID)
 	} else {
-		sess, err = gw.convEngine.NewSession(req.UserID)
+		sess, err = gw.convEngine.NewSession(principal)
 	}
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -2302,12 +2327,12 @@ func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.R
 
 // handleConversationListSessions lists sessions for a user.
 func (gw *Gateway) handleConversationListSessions(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if strings.TrimSpace(userID) == "" {
+	principal := conversationPrincipal(r, r.URL.Query().Get("user_id"))
+	if principal == "" {
 		writeJSONError(w, http.StatusBadRequest, "user_id query parameter is required")
 		return
 	}
-	sessions := gw.convEngine.ListSessions(userID)
+	sessions := gw.convEngine.ListSessions(principal)
 	dtos := make([]map[string]any, 0, len(sessions))
 	for _, s := range sessions {
 		dtos = append(dtos, sessToDTO(s))
@@ -2316,10 +2341,13 @@ func (gw *Gateway) handleConversationListSessions(w http.ResponseWriter, r *http
 }
 
 // handleConversationGetSession returns a single session with its history.
-func (gw *Gateway) handleConversationGetSession(w http.ResponseWriter, _ *http.Request, sessionID string) {
+func (gw *Gateway) handleConversationGetSession(w http.ResponseWriter, r *http.Request, sessionID string) {
 	sess, err := gw.convEngine.GetSession(sessionID)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !requireConversationOwner(w, sess, conversationPrincipal(r, r.URL.Query().Get("user_id"))) {
 		return
 	}
 	writeJSON(w, map[string]any{"session": sessToDTO(sess)})
@@ -2336,13 +2364,18 @@ func (gw *Gateway) handleConversationPostMessage(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	reply, err := gw.convEngine.HandleMessage(r.Context(), sessionID, req.UserID, req.Text)
+	// Ownership (P2-2): the resolved principal (authenticated subject, or
+	// the client-asserted fallback in development mode) must own the
+	// session; the engine re-checks inside HandleMessage via ErrNotOwner.
+	reply, err := gw.convEngine.HandleMessage(r.Context(), sessionID, conversationPrincipal(r, req.UserID), req.Text)
 	if err != nil {
 		switch {
 		case errors.Is(err, conversation.ErrEmptyMessage):
 			writeJSONError(w, http.StatusBadRequest, "text is required")
 		case errors.Is(err, conversation.ErrSessionNotFound):
 			writeJSONError(w, http.StatusNotFound, "session not found")
+		case errors.Is(err, conversation.ErrNotOwner):
+			writeJSONError(w, http.StatusForbidden, "session belongs to another user")
 		default:
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 		}
@@ -2352,7 +2385,18 @@ func (gw *Gateway) handleConversationPostMessage(w http.ResponseWriter, r *http.
 }
 
 // handleConversationCloseSession closes (removes) a session.
-func (gw *Gateway) handleConversationCloseSession(w http.ResponseWriter, _ *http.Request, sessionID string) {
+func (gw *Gateway) handleConversationCloseSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	principal := conversationPrincipal(r, r.URL.Query().Get("user_id"))
+	if principal != "" {
+		sess, err := gw.convEngine.GetSession(sessionID)
+		if err != nil {
+			writeJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if !requireConversationOwner(w, sess, principal) {
+			return
+		}
+	}
 	if err := gw.convEngine.CloseSession(sessionID); err != nil {
 		writeJSONError(w, http.StatusNotFound, "session not found")
 		return
