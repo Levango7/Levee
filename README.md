@@ -156,6 +156,9 @@ levee/
 | 文档 | 说明 |
 |---|---|
 | [docs/quickstart.md](docs/quickstart.md) | 快速上手指南 |
+| [docs/product-positioning.md](docs/product-positioning.md) | 产品定位（它是什么 / 不是什么 / 边界） |
+| [docs/ui-blueprint.md](docs/ui-blueprint.md) | UI 蓝图（导航、线框、关键交互） |
+| [docs/product-roadmap.md](docs/product-roadmap.md) | 产品路线图（代码 / 可视化 / 交互 / 运营四层） |
 | [docs/levee-design.md](docs/levee-design.md) | 完整设计文档 |
 | [docs/leveelang-spec.md](docs/leveelang-spec.md) | LEVEELang DSL 规范 |
 | [docs/levee-api.md](docs/levee-api.md) | CLI 命令与 API 设计 |
