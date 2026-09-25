@@ -218,6 +218,33 @@ jobs:
         run: go build ./...
 
   # ---------------------------------------------------------------------------
+  # docs: regenerate the reference tables in docs/leveelang-spec.md from the Go
+  # packages that own each vocabulary, and verify the checked-in document is
+  # byte-identical to a fresh generation (no drift).
+  #
+  # Hand-maintained vocabulary tables rot silently — the approval-level table
+  # shipped three columns that disagreed with the code (a 15min timeout that is
+  # really 30min, and two tiers that "reject on timeout" when one notifies and
+  # one escalates), and the batch-strategy table listed three strategies the plan
+  # generator never implemented. Generating from code removes the copy.
+  # ---------------------------------------------------------------------------
+  docs:
+    name: docs regenerate check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: regenerate spec tables
+        run: go run ./internal/docgen -root .
+      - name: drift check (checked-in spec must match regeneration)
+        run: git diff --exit-code -- docs/leveelang-spec.md
+      - name: verify the check mode agrees
+        run: go run ./internal/docgen -check -root .
+
+  # ---------------------------------------------------------------------------
   # build: cross-platform binary build matrix. Produces artifacts for
   # Linux, macOS and Windows on amd64 + arm64.
   # ---------------------------------------------------------------------------
@@ -391,7 +418,7 @@ jobs:
   check:
     name: check (all jobs passed)
     runs-on: ubuntu-latest
-    needs: [release-gate, vet, lint, frontend, test, integration, proto, build, gosec, trivy]
+    needs: [release-gate, vet, lint, frontend, test, integration, proto, docs, build, gosec, trivy]
     if: always()
     steps:
       - name: aggregate

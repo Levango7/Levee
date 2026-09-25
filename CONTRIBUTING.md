@@ -261,6 +261,26 @@ make lint-fix # golangci-lint 自动修复
 make fmt      # gofmt + goimports
 ```
 
+### 6.5 生成物：改了词表要重跑生成器
+
+仓库里有两类**生成物**，CI 都会用 `git diff --exit-code` 校验漂移。手改它们不会生效，只会让 CI 变红。
+
+```命令示例：重生成并校验
+bash scripts/gen-proto.sh              # proto → internal/grpc/pb/
+go run ./internal/docgen               # 代码词表 → docs/leveelang-spec.md 的参考表
+go run ./internal/docgen -check        # 只校验不重写（CI 用这个）
+```
+
+**什么时候必须重跑 `internal/docgen`**：改动以下任一内容时——
+
+- `internal/runstatus`（增删 run 状态或调整准入集合）
+- `internal/dsl.BatchStrategies`（增删批次策略）
+- `internal/approval` 的层级默认值（超时时长、审批人数、超时处理策略）
+
+若新增了状态或策略但没在 `internal/docgen` 的 `statusMeaning` / `batchSemantics` 里补释义，生成器会渲染出一个占位符，**并且 `go test ./internal/docgen/` 会直接失败**——这是有意的：一张有行没说明的表比没有表更糟。
+
+参考表由代码生成，而**散文的正确性仍靠人**。`docs/leveelang-spec.md` 中 `BEGIN/END GENERATED` 标记之外的内容不受生成器管辖。
+
 ## 第7章 构建与验证
 
 ### 7.1 常用命令

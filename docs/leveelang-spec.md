@@ -38,29 +38,30 @@
 
 ### 0.3 run 状态词表
 
-> **权威来源**：`internal/runstatus`（Go 包）。Web UI 的 TypeScript 联合类型、CLI 终态矩阵、proto 注释、metrics 标签、REST 过滤都必须与它一致；`TestWebStatusMirrorMatchesGo` 与 `TestSpecStatusTableMatchesGo` 在 CI 钉住本表与前端镜像。
+> **权威来源**：`internal/runstatus`（Go 包）。本表由 `internal/docgen` 生成，CI 以 `go run ./internal/docgen -check` 校验（漂移即红）。Web UI 的 TypeScript 联合类型、CLI 终态矩阵、proto 注释、metrics 标签、REST 过滤都必须与它一致；`TestWebStatusMirrorMatchesGo` 另行钉住前端镜像。
 
-| 状态 | 含义 | 产生时机 |
-| --- | --- | --- |
-| `draft` | 草稿，未审批 | `CreateChange` / `CloneChange` |
-| `pending` | 待审批 | `InstantiateTemplate`（常规路径） |
-| `planned` | 仅预览（dry-run），未派发 | `InstantiateTemplate`（dry-run） |
-| `approved` | 审批已结算，计划版本已绑定 | 审批 quorum 达成 |
-| `running` | 执行中 | `ApplyChange` |
-| `paused` | 已挂起，可恢复 | `PauseChange` |
-| `completed` | 全部批次成功 | 执行收敛 |
-| `failed` | 执行失败（回滚结论由下列三个判定承载） | 执行收敛 |
-| `cancelled` | 操作者放弃 | `CancelChange` |
-| `rolled_back` | **干净回滚**：必要补偿全部完成，状态已恢复 | 回滚收敛 |
-| `rolled_back_partial` | **部分回滚**：部分必要补偿未完成，状态**未完全恢复** | 回滚收敛（D-2 v2） |
-| `rollback_incomplete` | **回滚未完成**：无必要补偿完成 | 回滚收敛（D-2 v2） |
-| `rejected` | 审批否决 | `RejectChange` |
-| `archived` | 历史封存（所有终态均可归档） | `ArchiveChange` |
-| `interrupted` | 执行节点中途死亡，集群接管已裁定（仅集群模式）；须显式 `RetryChange` 再驱动 | 集群接管 |
+<!-- BEGIN GENERATED: run-status -->
+<!-- 本表由 internal/docgen 从 internal/runstatus 生成，请勿手工编辑。 -->
+| 状态 | 含义 | 生命周期终态 | 可 RetryChange 再驱动 | 可 RollbackChange 撤销 |
+| --- | --- | --- | --- | --- |
+| `draft` | 草稿，未审批 | 否 | 否 | 否 |
+| `pending` | 待审批 | 否 | 否 | 否 |
+| `planned` | 仅预览（dry-run），未派发 | 否 | 否 | 否 |
+| `approved` | 审批已结算，计划版本已绑定 | 否 | 否 | 否 |
+| `running` | 执行中 | 否 | 否 | 否 |
+| `paused` | 已挂起，可恢复 | 否 | 否 | 否 |
+| `completed` | 全部批次成功 | 是 | 否 | 是 |
+| `failed` | 执行失败（回滚结论由三个回滚判定承载） | 是 | 是 | 是 |
+| `cancelled` | 操作者放弃 | 是 | 否 | 否 |
+| `rolled_back` | **干净回滚**：必要补偿全部完成，状态已恢复 | 是 | 是 | 否 |
+| `rolled_back_partial` | **部分回滚**：部分必要补偿未完成，状态**未完全恢复** | 是 | 是 | 是 |
+| `rollback_incomplete` | **回滚未完成**：无必要补偿完成 | 是 | 是 | 是 |
+| `rejected` | 审批否决 | 是 | 否 | 否 |
+| `archived` | 历史封存 | 是 | 否 | 否 |
+| `interrupted` | 执行节点中途死亡，集群接管已裁定（仅集群模式） | 是 | 是 | 否 |
+<!-- END GENERATED: run-status -->
 
 **只有 `rolled_back` 表示"状态已恢复"**。`rolled_back_partial` / `rollback_incomplete` 在 API、UI、CLI 上一律不得呈现为已回滚——这正是 D-2 建立它们的目的。
-
-**再驱动入口**：`RetryChange` 准入 `failed` / `rolled_back` / `rolled_back_partial` / `rollback_incomplete` / `interrupted`；`RollbackChange` 准入 `completed` / `failed` / `rolled_back_partial` / `rollback_incomplete`（**不含** `rolled_back`——已恢复的变更再撤一次就是双重撤销）。
 
 > **已废弃**：`pending_approval` 从不存在于状态机（待审批是 `pending`）。Web UI 曾把它当作第二个待审批键，因 REST 过滤精确匹配而无任何报错地查空列表——待审批页签与移动端批准按钮因此长期静默失效。
 
@@ -405,11 +406,16 @@ batches {
 
 表：审批级别枚举
 
-| 枚举值 | 触发条件 | 审批人要求 | 超时 | 超时处理 |
+> 本表由 `internal/docgen` 从 `internal/approval.NewLevelManager` 生成，请勿手工编辑。生成前该表有三列与代码不符：emergency 超时写作 15min（实为 30min）、standard 与 high 的超时处理都写作"超时驳回"（实为 standard 通知并保持 pending、high 升级到 emergency）。`SetConfig` 无生产调用者，故默认值即实际行为——按旧表操作的运维会等一个永远不会来的驳回。
+
+<!-- BEGIN GENERATED: approval-level -->
+<!-- 本表由 internal/docgen 从 internal/approval.NewLevelManager 生成，请勿手工编辑。 -->
+| 枚举值 | 触发条件 | 最少审批人 | 超时 | 超时处理 |
 | --- | --- | --- | --- | --- |
-| standard | 默认级别 | 任一有权限审批人 | 24h | 超时驳回 |
-| high | 命中高危规则（删库、主从切换、防火墙全量变更等） | 至少 2 人审批，且不能是发起人 | 4h | 超时驳回 |
-| emergency | 紧急通道（线上故障恢复） | 1 人审批 + 事后补审 | 15min | 超时自动驳回并升级告警 oncall |
+| `standard` | default tier for reversible operations | 1 | 1d | 通知审批人，保持 pending（**不会自动驳回**） |
+| `high` | irreversible or destructive operations (explicit mark or whitelist match) | 2 | 4h | 升级到 `emergency` 并重新计时 |
+| `emergency` | emergency change channel, fast turnaround, single approver | 1 | 30m | 自动驳回 |
+<!-- END GENERATED: approval-level -->
 
 枚举值在编译期校验合法性，非三类之一报错 LE041。
 
@@ -513,16 +519,19 @@ batches 字段声明批次划分策略，是 workflow 的可选块，缺省表�
 
 表：批次策略清单
 
-> **权威来源**：`dsl.BatchStrategies`（`internal/dsl/ast.go`）。本表、`dsl` 校验器与 `plan` 生成器必须一致——历史上解析器与生成器各持一份互不相容的列表，导致「能解析但规划即 Fatal」；现由 `TestBatchStrategyVocabulariesAgree` 在 CI 钉住。
+> **权威来源**：`dsl.BatchStrategies`（`internal/dsl/ast.go`）。本表由 `internal/docgen` 生成；`dsl` 校验器与 `plan` 生成器共用同一列表，一致性由 `TestBatchStrategyVocabulariesAgree` 钉住——历史上两者各持一份不相容的列表，导致「能解析但规划即 Fatal」。
 
-| 策略 | steps 类型 | 语义 | 示例 |
-| --- | --- | --- | --- |
-| percent | percent_array | 按累计百分比划分 | `steps: [1, 10, 50, 100]` |
-| fixed | int[] | 按固定数量分组，leftover 进尾部批次 | `steps: [2, 3]` |
-| serial | 无需 steps | 全部目标同批，批内串行（**缺省值**） | — |
-| one-per-target | 无需 steps | 每批一台目标机，批间严格串行 | 用于 DB 主库逐个切换 |
+<!-- BEGIN GENERATED: batch-strategy -->
+<!-- 本表由 internal/docgen 从 internal/dsl.BatchStrategies 生成，请勿手工编辑。 -->
+| 策略 | steps 类型 | 语义 |
+| --- | --- | --- |
+| `percent` | percent_array | 按累计百分比划分，如 `steps: [1, 10, 50, 100]` |
+| `fixed` | int[] | 按固定数量分组，leftover 进尾部批次，如 `steps: [2, 3]` |
+| `serial` | 无需 steps | 全部目标同批，批内串行（**缺省值**） |
+| `one-per-target` | 无需 steps | 每批一台目标机，批间严格串行（用于 DB 主库逐个切换） |
+<!-- END GENERATED: batch-strategy -->
 
-**未实现**：早期版本的本表还列有 `count` / `by-tag` / `by-group`。解析器一度接受它们，但 `plan` 生成器从未实现，规划这类 workflow 会以 Fatal `LE034` 失败——即"规范写了、解析器放行、生成器拒绝"。现已从词表移除；若将来实现，须同时补 `plan.splitBatches` 的分支与本表，并让上述一致性测试继续通过。
+**已移除的策略**：早期版本的规范还列有 `count` / `by-tag` / `by-group`。解析器一度放行，但 `plan` 生成器从未实现，规划这类 workflow 会以 Fatal `LE034` 失败——即"规范写了、解析器放行、生成器拒绝"。现已从词表移除；若将来实现，须同时补 `plan.splitBatches` 的分支与本表生成器的 `batchSemantics`，并让一致性测试继续通过。
 
 边界处理：
 
