@@ -444,10 +444,12 @@ func TestPlanE2E_NilWorkflowError(t *testing.T) {
 
 // TestPlanE2E_FixedStrategy_FromAST 验证 fixed 批次策略的划分。
 //
-// 注意：dsl.Parser 的内置 validate 不接受 "fixed" 策略（仅认 percent/
-// one-per-target/count/by-tag/by-group），但 plan.Generator 支持 fixed。
-// 此处手动构造 AST，走 dsl.Validator + plan.Generator 路径覆盖 fixed 划分，
-// 并验证 leftover 目标进入尾部批次。
+// 历史注记（2026-09-25）：本用例曾必须手搓 AST 绕开 dsl.Parser，因为解析器
+// 与 plan 生成器各持一份互不相容的 batches.strategy 词表（解析器认
+// one-per-target/count/by-tag/by-group，生成器实现 fixed/serial），fixed 过不了
+// 解析器。词表现已收进 dsl.BatchStrategies 单一来源并补齐
+// one-per-target 实现，一致性由 TestBatchStrategyVocabulariesAgree 钉住；下面
+// 仍直接构造 AST，因为这样可以把批次划分的断言与解析行为分开。
 func TestPlanE2E_FixedStrategy_FromAST(t *testing.T) {
 	targets := []string{"h1", "h2", "h3", "h4", "h5", "h6"}
 	wf := &dsl.Workflow{

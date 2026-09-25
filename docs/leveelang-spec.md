@@ -12,6 +12,60 @@
 
 ---
 
+## 第0章 术语（权威定义）
+
+> 本章是全项目术语的**唯一权威来源**。其余文档、代码注释、CLI 帮助、API 文档与 UI 文案都必须与本章一致；发现不一致时以本章为准，并修正那一处。
+>
+> **为什么需要它**：项目已从"workflow 引擎"长成一套独立系统——48 个 `internal` 包里，与编排直接相关的（dsl / plan / engine / wiring / executor / dispatch / batch / cluster）只占约三成，其余是诊断、推荐、身份、凭据、租户、审计、备份、集群故障转移、ChatOps 等平台能力。术语若不定，各包会各自造词，于是出现「同一个字段在两层各有一份词表」「UI 与状态机状态词不一致」这类缺陷（历史实例：`batches.strategy`、run 状态词表、`idempotent` 是否进 plan 哈希）。**新增概念时先在此定义，再写代码。**
+
+### 0.1 核心实体
+
+| 术语 | 英文 / 代码标识 | 定义 | 不是什么 |
+| --- | --- | --- | --- |
+| **变更** | `Change` | **系统的核心实体**：一次受治理的基础设施变更，从创建到归档的完整生命周期。对应 proto 的 `ChangeService`（23/40 个 RPC 都挂在它上面），数据库里的 `runs` 表存的是它的当前状态。 | 不是"工作流"。工作流只是变更的**声明式定义**。 |
+| **工作流** | `workflow` / `dsl.Workflow` | 变更的**声明式定义文档**（LEVEELang YAML），描述目标集、步骤、批次、审批、回滚。是变更的输入，不是变更本身。 | 不是执行实例，不持有运行状态。 |
+| **计划** | `Plan` / `plan.Plan` | 由工作流 + 具体目标主机**生成**的可执行制品：批次已切分、步骤已绑定目标、风险已评分、审批下限已推导。**被 plan_hash 绑定**，执行的就是被批准的那一份。 | 不是工作流的别名。同一工作流对不同目标集会生成不同的计划。 |
+| **执行** | `run` / `run_assignment` | 计划的一次实际执行尝试。`run` 行记录状态机位置，assignment 记录某批次在某主机上的派发。 | 不是工作流，也不是计划。 |
+| **步骤** | `Step` / `PlanStep` | 计划中一个带目标绑定的动作单元，及其回滚声明与门禁。 | 不是工作流里的"逻辑步骤"——后者尚未绑定目标。 |
+| **补偿** | compensation / undo | 回滚执行时对某个已执行步骤的撤销动作。与步骤一一归属（见 0.2）。 | 不是"再跑一遍计划"。 |
+
+### 0.2 命名约定
+
+- **产品面文案、API 语义、错误信息一律用「变更 / change」**，不用「工作流」描述一次运行中的事务。`workflow` 只在三种场合出现：LEVEELang 文档里的 DSL 关键字、`workflow_file` / `workflow_content` 这类**指向定义文件**的字段名、以及"这个 DSL 定义本身叫什么"。
+- **状态词表的唯一权威**是 `internal/grpc/change_service.go` 的状态机定义。UI、REST 过滤、proto 注释、CLI 终态矩阵、metrics 标签全部由它派生，不得各自维护副本。
+- **枚举词表的唯一权威是对应 Go 包**（如 `dsl.BatchStrategies`、`plan` 的状态集）。解析器与执行器必须引用同一份，跨层一致性由测试钉住。
+- **治理字段必须进 plan 哈希**。任何影响"会发生什么"的声明（审批、回滚命令、快照路径、门禁、幂等声明、不可逆标记）若不在 `canonicalPlanV2` 覆盖范围内，就等于批准后可被改写。
+
+### 0.3 run 状态词表
+
+> **权威来源**：`internal/runstatus`（Go 包）。Web UI 的 TypeScript 联合类型、CLI 终态矩阵、proto 注释、metrics 标签、REST 过滤都必须与它一致；`TestWebStatusMirrorMatchesGo` 与 `TestSpecStatusTableMatchesGo` 在 CI 钉住本表与前端镜像。
+
+| 状态 | 含义 | 产生时机 |
+| --- | --- | --- |
+| `draft` | 草稿，未审批 | `CreateChange` / `CloneChange` |
+| `pending` | 待审批 | `InstantiateTemplate`（常规路径） |
+| `planned` | 仅预览（dry-run），未派发 | `InstantiateTemplate`（dry-run） |
+| `approved` | 审批已结算，计划版本已绑定 | 审批 quorum 达成 |
+| `running` | 执行中 | `ApplyChange` |
+| `paused` | 已挂起，可恢复 | `PauseChange` |
+| `completed` | 全部批次成功 | 执行收敛 |
+| `failed` | 执行失败（回滚结论由下列三个判定承载） | 执行收敛 |
+| `cancelled` | 操作者放弃 | `CancelChange` |
+| `rolled_back` | **干净回滚**：必要补偿全部完成，状态已恢复 | 回滚收敛 |
+| `rolled_back_partial` | **部分回滚**：部分必要补偿未完成，状态**未完全恢复** | 回滚收敛（D-2 v2） |
+| `rollback_incomplete` | **回滚未完成**：无必要补偿完成 | 回滚收敛（D-2 v2） |
+| `rejected` | 审批否决 | `RejectChange` |
+| `archived` | 历史封存（所有终态均可归档） | `ArchiveChange` |
+| `interrupted` | 执行节点中途死亡，集群接管已裁定（仅集群模式）；须显式 `RetryChange` 再驱动 | 集群接管 |
+
+**只有 `rolled_back` 表示"状态已恢复"**。`rolled_back_partial` / `rollback_incomplete` 在 API、UI、CLI 上一律不得呈现为已回滚——这正是 D-2 建立它们的目的。
+
+**再驱动入口**：`RetryChange` 准入 `failed` / `rolled_back` / `rolled_back_partial` / `rollback_incomplete` / `interrupted`；`RollbackChange` 准入 `completed` / `failed` / `rolled_back_partial` / `rollback_incomplete`（**不含** `rolled_back`——已恢复的变更再撤一次就是双重撤销）。
+
+> **已废弃**：`pending_approval` 从不存在于状态机（待审批是 `pending`）。Web UI 曾把它当作第二个待审批键，因 REST 过滤精确匹配而无任何报错地查空列表——待审批页签与移动端批准按钮因此长期静默失效。
+
+---
+
 ## 第1章 概述
 
 ### 1.1 LEVEELang 是什么
@@ -459,13 +513,16 @@ batches 字段声明批次划分策略，是 workflow 的可选块，缺省表�
 
 表：批次策略清单
 
+> **权威来源**：`dsl.BatchStrategies`（`internal/dsl/ast.go`）。本表、`dsl` 校验器与 `plan` 生成器必须一致——历史上解析器与生成器各持一份互不相容的列表，导致「能解析但规划即 Fatal」；现由 `TestBatchStrategyVocabulariesAgree` 在 CI 钉住。
+
 | 策略 | steps 类型 | 语义 | 示例 |
 | --- | --- | --- | --- |
 | percent | percent_array | 按累计百分比划分 | `steps: [1, 10, 50, 100]` |
-| count | int[] | 按数量划分 | `steps: [3, 10, rest]` |
-| one-per-target | 无需 steps | 每批一台目标机，串行 | 用于 DB 主库逐个切换 |
-| by-tag | batch[] | 按标签分组划分 | `steps: [{tags:[canary]}, {tags:[primary]}]` |
-| by-group | batch[] | 按主机组划分 | `steps: [{group:az-a}, {group:az-b}]` |
+| fixed | int[] | 按固定数量分组，leftover 进尾部批次 | `steps: [2, 3]` |
+| serial | 无需 steps | 全部目标同批，批内串行（**缺省值**） | — |
+| one-per-target | 无需 steps | 每批一台目标机，批间严格串行 | 用于 DB 主库逐个切换 |
+
+**未实现**：早期版本的本表还列有 `count` / `by-tag` / `by-group`。解析器一度接受它们，但 `plan` 生成器从未实现，规划这类 workflow 会以 Fatal `LE034` 失败——即"规范写了、解析器放行、生成器拒绝"。现已从词表移除；若将来实现，须同时补 `plan.splitBatches` 的分支与本表，并让上述一致性测试继续通过。
 
 边界处理：
 
@@ -1734,7 +1791,7 @@ MVP 阶段 YAML 子集支持以下字段，对应本文档的目标语义但语�
 | window.start | window.start | 是 |  |
 | window.end | window.end | 是 |  |
 | window.timezone | window.timezone | 是 | 缺省 UTC |
-| batches.strategy | batches.strategy | 是 | 仅 percent / one-per-target |
+| batches.strategy | batches.strategy | 是 | percent / fixed / serial / one-per-target（见 4.x 批次策略清单） |
 | batches.steps | batches.steps | 是 | 仅百分比数组 |
 | approval.level | approval.level | 是 | standard / high / emergency |
 | approval.min_approvers | approval.min_approvers | 是 |  |

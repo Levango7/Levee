@@ -654,14 +654,18 @@ func validate(wf *Workflow) error {
 		}
 	}
 	if wf.Batches.Strategy != "" {
-		switch wf.Batches.Strategy {
-		case "percent", "one-per-target", "count", "by-tag", "by-group":
-			// valid
-		default:
+		// Single source of truth: dsl.BatchStrategies. internal/plan's
+		// splitBatches switches on the same vocabulary, and this list used to
+		// be a second, incompatible copy (percent/one-per-target/count/
+		// by-tag/by-group) — the parser accepted documents the generator
+		// then rejected with a Fatal LE034. TestBatchStrategyVocabulariesAgree
+		// pins the agreement.
+		if !IsBatchStrategy(wf.Batches.Strategy) {
 			return newError("LE034", "batches.strategy",
-				fmt.Sprintf("unknown batch strategy %q", wf.Batches.Strategy))
+				fmt.Sprintf("unknown batch strategy %q (allowed: %s)",
+					wf.Batches.Strategy, strings.Join(BatchStrategies, ", ")))
 		}
-		if wf.Batches.Strategy == "percent" && len(wf.Batches.Steps) > 0 {
+		if wf.Batches.Strategy == BatchStrategyPercent && len(wf.Batches.Steps) > 0 {
 			if err := validatePercentSteps(wf.Batches.Steps); err != nil {
 				return err
 			}

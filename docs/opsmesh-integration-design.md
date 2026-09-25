@@ -297,7 +297,6 @@ type ConversationEngine struct {
     chatops    *chatops.Bot           // 复用 F09 ChatOps
     webHub     *WebHub                // Web UI WebSocket
     recommend  *recommend.RecommendEngine
-    autoplanner *autoplanner.AutoPlanner
     engine     *engine.Engine         // LEVEE 执行引擎
 }
 
@@ -355,32 +354,18 @@ type Reply struct {
 
 ---
 
-### 2.5 自动任务拆分 (internal/autoplanner/)
+### 2.5 修复建议 → 可执行变更（internal/recommend/，原 internal/autoplanner/ 已删除）
 
-**职责**：将修复方案自动转换为 LEVEELang workflow，影响面分析，批次划分，风险评估。
+**职责**：把修复建议转成**真正可解析的 LEVEELang 草稿**，交给既有治理链（`PlanChange → plan.NewGenerator → plan_hash → 审批 → apply`）。影响面分析、批次划分、风险评估**全部由 plan / risk 包负责**，本层不重复实现。
+
+> **历史说明（2026-09-25）**：本节原描述的 `internal/autoplanner`（`AutoPlanner` + `AutoExecutor` + 影子 `Workflow`/`Step`/`Batch` 模型，2,766 LOC）已整包删除。它从未被任何生产代码引用，且存在两处根本问题：① 它读取的 `recommend.WorkflowDraft` 是一套**私有方言**，连 `dsl.NewParser()` 都解析不了，所谓"自动任务拆分"实际是在给一个坏生产者打补丁；② 它的 `AutoExecutor` 是一条**绕过 plan_hash、审批与执行账本的平行执行路径**（`ModeForce` 注释声称调用方须持有高权限，包内却无任何权限检查）——把它接线等于安装一个 P0 后门。桥的正确修法在生产者侧：`WorkflowGenerator` 现在直接产出合法 LEVEELang，由 `TestGenerate_ProducesParseableWorkflow` 钉住"草稿必须可解析"这条不变量。风险评估同样不重复：`recommend.RiskLevel` 仅作为生成草稿时的提示，真正决定审批级别的是 `plan` 层算出的 `risk.Assessor` 结果与 `ApprovalFloor`。
 
 ```go
-// internal/autoplanner/planner.go
+// internal/recommend/workflow_gen.go
 
-type AutoPlanner struct {
-    planGen    *plan.Generator        // 复用现有计划生成器
-    impactAna  *plan.ImpactAnalyzer   // 复用现有影响面分析
-    riskAssess *RiskAssessor          // 风险评估器
-}
-
-// Plan 输入修复建议，输出可执行的 LEVEE workflow
-func (p *AutoPlanner) Plan(ctx context.Context, rec *recommend.Recommendation) (*Workflow, error)
-
-// Workflow 输出的 workflow（LEVEELang 格式）
-type Workflow struct {
-    ID       string
-    Name     string
-    YAML     string              // LEVEELang YAML
-    Batches  []Batch             // 批次划分
-    RiskLevel RiskLevel          // 风险等级
-    ApprovalLevel approval.Level // 审批级别
-    EstimatedTime time.Duration  // 预估耗时
-}
+// Generate 把修复步骤转成 LEVEELang 草稿。产出的文档必须能被
+// dsl.NewParser().ParseBytes 解析——那是进入治理链的唯一入口。
+func (g *WorkflowGenerator) Generate(target string, steps []FixStep) (string, error)
 ```
 
 ---
@@ -440,20 +425,17 @@ service ConversationService {
 ## 第3章 模块依赖关系
 
 ```
-告警 ──→ 诊断 ──→ 建议 ──→ 对话 ──→ 自动拆分 ──→ 闭环执行 ──→ 结果回传
+告警 ──→ 诊断 ──→ 建议 ──→ 对话 ──→ LEVEELang 草稿 ──→ 治理链 ──→ 结果回传
  │         │         │         │          │           │          │
  │         │         │         │          │           │          ▼
  │         │         │         │          │           │      OpsMesh
  │         │         │         │          │           │      Client
  │         │         │         │          │           ▼
  │         │         │         │          │      LEVEE Engine
- │         │         │         │          │     (现有闭环)
+ │         │         │         │          │     (计划→审批→执行)
  │         │         │         │          ▼
- │         │         │         │      AutoPlanner
- │         │         │         │     (→ LEVEELang)
- │         │         │         ▼
- │         │         │    Conversation
- │         │         │    Engine
+ │         │         │         │     Conversation
+ │         │         │         │     Engine
  │         │         ▼
  │         │    Recommend
  │         │    Engine
@@ -478,9 +460,8 @@ service ConversationService {
 |--------|------|-----------|
 | `internal/alert/` | 告警网关 + 多源适配器 | 8 |
 | `internal/diagnosis/` | 诊断引擎（日志/健康/拓扑） | 10 |
-| `internal/recommend/` | AI 建议引擎 + 知识库 + LLM | 8 |
+| `internal/recommend/` | AI 建议引擎 + 知识库 + LLM + LEVEELang 草稿生成 | 8 |
 | `internal/conversation/` | 对话引擎 + 会话管理 | 6 |
-| `internal/autoplanner/` | 自动任务拆分 | 4 |
 | `internal/opsmesh/` | OpsMesh 集成客户端 | 4 |
 | `cmd/levee/cmd_alert.go` | 告警 CLI | 1 |
 | `cmd/levee/cmd_diagnose.go` | 诊断 CLI | 1 |

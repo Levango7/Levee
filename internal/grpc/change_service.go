@@ -48,6 +48,7 @@ import (
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/risk"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 
 	grpcpkg "google.golang.org/grpc"
@@ -759,17 +760,21 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 			Message: err.Error(),
 		}, status.Errorf(codes.Internal, "engine: %v", err)
 	}
-	finalStatus := "failed"
+	finalStatus := runstatus.StatusFailed
 	switch {
-	case phase == "rolled_back", phase == "rolled_back_partial", phase == "rollback_incomplete":
+	case runstatus.IsRollbackVerdict(phase):
 		// The engine ran its rollback flow. D-2 v2 design item 4: the
 		// three-way verdict surfaces as its own run status so a clean
 		// rollback ("rolled_back") is never conflated with a partial or
 		// incomplete one — clients and UIs that do not know the new
 		// values render them as text (design: 增量，不删旧值).
+		//
+		// Membership comes from runstatus.IsRollbackVerdict so this cannot
+		// drift from the vocabulary; the three-way mapping itself is pinned
+		// by TestClosurePhasesMapToRunStatuses in internal/engine.
 		finalStatus = phase
 	case success:
-		finalStatus = "completed"
+		finalStatus = runstatus.StatusCompleted
 	}
 	// Terminal write via CAS from "running": the run must still be ours
 	// to settle. A failed CAS means a failover takeover (or any other
@@ -990,10 +995,15 @@ func isValidTransition(from, to string) bool {
 	// rollback verdicts (rolled_back_partial / rollback_incomplete) — an
 	// operator must be able to seal the history of a partially-rolled-back
 	// change exactly like a clean one.
-	case "archived":
-		return from == "completed" || from == "failed" || from == "cancelled" || from == "rolled_back" ||
-			from == "rolled_back_partial" || from == "rollback_incomplete" ||
-			from == "interrupted" || from == "draft" || from == "planned"
+	case runstatus.StatusArchived:
+		// Every terminal outcome is archivable, including the D-2 v2
+		// rollback verdicts — an operator must be able to seal the history
+		// of a partially-rolled-back change exactly like a clean one.
+		return from == runstatus.StatusCompleted || from == runstatus.StatusFailed ||
+			from == runstatus.StatusCancelled || from == runstatus.StatusRolledBack ||
+			from == runstatus.StatusRolledBackPartial || from == runstatus.StatusRollbackIncomplete ||
+			from == runstatus.StatusInterrupted || from == runstatus.StatusDraft ||
+			from == runstatus.StatusPlanned
 	default:
 		return false
 	}
@@ -1189,9 +1199,14 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 	// the rollback did not fully settle the state), and without a retry
 	// entry they would be dead-end statuses the apply path refuses
 	// (status guard: approved only).
-	if run.Status != "failed" && run.Status != "rolled_back" && run.Status != "interrupted" &&
-		run.Status != "rolled_back_partial" && run.Status != "rollback_incomplete" {
-		return nil, status.Errorf(codes.FailedPrecondition, "can only retry failed, rolled_back, rolled_back_partial, rollback_incomplete or interrupted changes; current status: %q", run.Status)
+	// Admission set lives in runstatus.RetryAdmitted — the single source of
+	// truth for the run status vocabulary (see internal/runstatus). Both the
+	// guard and the message are derived from that one list, so the operator
+	// text cannot drift from the behaviour either.
+	if !runstatus.InRetryAdmitted(run.Status) {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"can only retry %s changes; current status: %q",
+			runstatus.JoinRetryAdmitted(), run.Status)
 	}
 
 	oldStatus := run.Status
@@ -1334,9 +1349,12 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 	// compensation left a gap, and finishing it must not require a
 	// re-apply first. A clean rolled_back stays excluded: there is
 	// nothing left to undo (double-undo protection).
-	if run.Status != "completed" && run.Status != "failed" &&
-		run.Status != "rolled_back_partial" && run.Status != "rollback_incomplete" {
-		return nil, status.Errorf(codes.FailedPrecondition, "can only rollback completed, failed, rolled_back_partial or rollback_incomplete changes; current status: %q", run.Status)
+	// Admission set lives in runstatus.RollbackAdmitted (see internal/runstatus);
+	// the message is derived from the same list.
+	if !runstatus.InRollbackAdmitted(run.Status) {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"can only rollback %s changes; current status: %q",
+			runstatus.JoinRollbackAdmitted(), run.Status)
 	}
 
 	now := time.Now().UTC()
@@ -1459,12 +1477,19 @@ const (
 // after the run moved on (expired silently, decided by a stale approver
 // path) must not resurrect or demote the run.
 var terminalRunStatuses = map[string]bool{
-	"approved": true, "rejected": true, "running": true,
-	"completed": true, "failed": true, "rolled_back": true,
+	runstatus.StatusApproved:  true,
+	runstatus.StatusRejected:  true,
+	runstatus.StatusRunning:   true,
+	runstatus.StatusCompleted: true,
+	runstatus.StatusFailed:    true,
 	// D-2 v2 rollback verdicts: terminal like rolled_back — a late
 	// settlement must not resurrect or demote them either.
-	"rolled_back_partial": true, "rollback_incomplete": true,
-	"cancelled": true, "archived": true, "interrupted": true,
+	runstatus.StatusRolledBack:         true,
+	runstatus.StatusRolledBackPartial:  true,
+	runstatus.StatusRollbackIncomplete: true,
+	runstatus.StatusCancelled:          true,
+	runstatus.StatusArchived:           true,
+	runstatus.StatusInterrupted:        true,
 }
 
 // SettleApproval is the SINGLE settlement point that mirrors approval
@@ -2353,17 +2378,14 @@ func (s *ChangeService) WatchChange(req *pb.WatchChangeRequest, stream grpcpkg.S
 
 	// Pump events to the stream until the context is cancelled or
 	// the change reaches a terminal state.
-	terminalStates := map[string]bool{
-		"completed":   true,
-		"failed":      true,
-		"cancelled":   true,
-		"archived":    true,
-		"rolled_back": true,
-		// D-2 v2 rollback verdicts: terminal — the stream must end.
-		"rolled_back_partial": true,
-		"rollback_incomplete": true,
-		"rejected":            true,
-		"interrupted":         true, // takeover terminal (cluster mode)
+	//
+	// The set is runstatus.Terminal — the single source of truth. This used
+	// to be a fifth hand-maintained copy of the vocabulary, which is how a
+	// status could become terminal in the state machine while the watch
+	// stream kept it open forever.
+	terminalStates := map[string]bool{}
+	for _, s := range runstatus.Terminal {
+		terminalStates[s] = true
 	}
 
 	for {

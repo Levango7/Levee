@@ -79,6 +79,12 @@ const (
 	// and the rollback fully restored what had been applied: every executed
 	// step that needed compensation got it, and no step's side effects were
 	// left undetermined (D-2 v2 verdict).
+	//
+	// The three rollback phases deliberately carry the SAME string values as
+	// the corresponding run statuses (runstatus.StatusRolledBack etc.):
+	// ClosureResult.Phase is what settleRun maps into run.status, so a
+	// divergence here would silently produce a status the UI has no label for.
+	// runClosurePhases (below) pins the correspondence in a test.
 	PhaseRolledBack ClosurePhase = "rolled_back"
 
 	// PhasePartialRollback indicates the rollback ran but did NOT fully

@@ -9,6 +9,26 @@
 计划 -> 审批 -> 分批执行 -> 验证门禁 -> 自动回滚 -> 审计留痕 的完整闭环，
 默认无代理、CLI 优先。
 
+### LEVEE 是一套系统，不只是一个 workflow 引擎
+
+核心实体是**变更（Change）**，不是工作流：40 个 gRPC RPC 里 23 个挂在
+`ChangeService` 上。工作流（LEVEELang 文档）只是变更的**声明式定义**，
+计划（Plan）才是被 `plan_hash` 绑定、被审批、被执行的那份制品。
+
+按 `internal/` 的实际构成，与编排直接相关的包（dsl / plan / engine / wiring /
+executor / dispatch / batch / cluster）约占三成，其余是支撑一套系统所需的
+平台能力：身份与授权（auth / permission ABAC / credential 加密 / tenant）、
+生命周期（scheduler / calendar / backup / cluster 故障转移 / takeover）、
+运维面（metrics / tracing / audit / notify / push / chatops）、
+诊断与建议（diagnosis / recommend / autoplanner 已并入 recommend / drift）、
+以及对外集成（itsm / opsmesh）。这些不是 workflow 引擎的组成部分——
+workflow 引擎不拥有身份、不拥有数据生命周期、也不做集群故障接管。
+
+术语由此确立：**产品面一律说「变更 / change」**，`workflow` 只在指代
+LEVEELang 定义本身时出现。完整定义见
+[`docs/leveelang-spec.md` 第 0 章](docs/leveelang-spec.md)（术语与状态词表的
+权威来源，由 `internal/runstatus` 与跨语言一致性测试在 CI 中钉住）。
+
 LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 
 - 变更影响生产、动作不可逆、合规要求审批留痕 -> LEVEE
@@ -121,8 +141,7 @@ levee/
 │   ├── agent/              # agent
 │   ├── alert/              # 告警网关 (Zabbix/Nagios 适配)
 │   ├── diagnosis/          # 诊断引擎 (拓扑分析/LLM 推理)
-│   ├── recommend/          # AI 推荐 (RAG/反馈学习)
-│   ├── autoplanner/        # 自动规划与执行
+│   ├── recommend/          # AI 推荐 (RAG/反馈学习) — 产出 LEVEELang 草稿
 │   ├── opsmesh/            # OpsMesh 平台集成
 │   └── conversation/       # 对话引擎
 ├── configs/                # 配置文件示例

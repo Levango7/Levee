@@ -14,6 +14,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nexus/levee/internal/dsl"
@@ -222,25 +223,53 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 }
 
 // splitBatches divides targets into batches according to the batch
-// config strategy. An empty strategy defaults to "serial" (all targets
-// in a single batch), matching the LEVEELang spec default.
+// config strategy. An empty strategy defaults to dsl.BatchStrategySerial (all
+// targets in a single batch), matching the LEVEELang spec default.
+//
+// The accepted vocabulary is dsl.BatchStrategies — the parser validates
+// against the same list, so the two layers cannot disagree. The error message
+// is built from that list rather than a hand-copied literal so it cannot fall
+// out of date either.
 func splitBatches(targets []string, cfg dsl.BatchConfig) ([][]string, error) {
 	strategy := cfg.Strategy
 	if strategy == "" {
-		strategy = "serial"
+		strategy = dsl.BatchStrategySerial
 	}
 	switch strategy {
-	case "percent":
+	case dsl.BatchStrategyPercent:
 		return splitPercent(targets, cfg.Steps), nil
-	case "fixed":
+	case dsl.BatchStrategyFixed:
 		return splitFixed(targets, cfg.Steps), nil
-	case "serial":
+	case dsl.BatchStrategySerial:
 		return [][]string{targets}, nil
+	case dsl.BatchStrategyOnePerTarget:
+		return splitOnePerTarget(targets), nil
 	default:
 		return nil, errors.New(errors.LE034,
-			fmt.Sprintf("unknown batch strategy %q (allowed: percent, fixed, serial)", strategy),
+			fmt.Sprintf("unknown batch strategy %q (allowed: %s)",
+				strategy, strings.Join(dsl.BatchStrategies, ", ")),
 			errors.Fatal)
 	}
+}
+
+// splitOnePerTarget puts exactly one target in each batch, so the executor
+// walks the target list strictly serially. It is the documented strategy for
+// rolling database primaries over one at a time, where concurrent batches
+// would mean two simultaneous DDL windows on the same cluster.
+//
+// The parser has always accepted this strategy (and examples/gate-templates/
+// mysql.yaml uses it) but the generator had no case for it, so planning such a
+// workflow died with a Fatal LE034. batches.steps is unused here by design —
+// the spec says one-per-target needs no steps.
+func splitOnePerTarget(targets []string) [][]string {
+	if len(targets) == 0 {
+		return [][]string{targets}
+	}
+	batches := make([][]string, len(targets))
+	for i, t := range targets {
+		batches[i] = []string{t}
+	}
+	return batches
 }
 
 // splitPercent divides targets into batches by percentage milestones.

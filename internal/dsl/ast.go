@@ -9,6 +9,59 @@
 // so that the parser is forward-compatible with V1.
 package dsl
 
+// BatchStrategy values accepted in a workflow's `batches.strategy` field.
+//
+// This is the SINGLE source of truth for the vocabulary. internal/plan
+// (splitBatches) switches on the same set, and dsl validation and plan
+// generation MUST agree: a document the parser accepts but the generator
+// rejects is a workflow that dies with a Fatal error one layer later, which is
+// exactly how the two lists drifted apart (the parser carried a second,
+// incompatible copy).
+//
+// Keep internal/plan's switch in sync — TestBatchStrategyVocabulariesAgree
+// pins the agreement, so a one-sided edit fails CI rather than production.
+const (
+	// BatchStrategyPercent divides targets by percentage milestones
+	// (batches.steps, e.g. [1, 10, 50, 100]).
+	BatchStrategyPercent = "percent"
+	// BatchStrategyFixed divides targets into fixed-size groups
+	// (batches.steps as group sizes).
+	BatchStrategyFixed = "fixed"
+	// BatchStrategySerial runs every target in a single batch, one after
+	// another. This is the conservative default for generated fixes.
+	BatchStrategySerial = "serial"
+	// BatchStrategyOnePerTarget puts exactly one target in each batch, so
+	// batches run strictly one after another. This is the documented
+	// strategy for rolling database primaries over one at a time
+	// (docs/leveelang-spec.md: "用于 DB 主库逐个切换") and is what
+	// examples/gate-templates/mysql.yaml uses.
+	BatchStrategyOnePerTarget = "one-per-target"
+)
+
+// BatchStrategies lists every accepted batch strategy.
+//
+// Every entry here MUST have a matching case in internal/plan's splitBatches.
+// A strategy the parser accepts but the generator rejects fails as a Fatal
+// LE034 one layer later — which is exactly the defect this list was
+// introduced to end (the parser and the generator each carried their own
+// incompatible copy).
+var BatchStrategies = []string{
+	BatchStrategyPercent,
+	BatchStrategyFixed,
+	BatchStrategySerial,
+	BatchStrategyOnePerTarget,
+}
+
+// IsBatchStrategy reports whether s is an accepted batch strategy.
+func IsBatchStrategy(s string) bool {
+	for _, known := range BatchStrategies {
+		if s == known {
+			return true
+		}
+	}
+	return false
+}
+
 // Workflow is the root AST node representing a complete LEVEE change workflow.
 // It aggregates all top-level declarations: metadata, inputs, targets, change
 // window, batch strategy, steps, rollback plan, approval requirements and
