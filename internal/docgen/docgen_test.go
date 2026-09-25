@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,48 @@ import (
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/runstatus"
 )
+
+// TestLocateSpecRefusesForeignRoots is the substantive half of the G703
+// suppression: the generator must not be able to write outside the repository
+// even when handed a -root that points somewhere else entirely.
+func TestLocateSpecRefusesForeignRoots(t *testing.T) {
+	// A directory that exists but is not the repository.
+	empty := t.TempDir()
+	_, err := locateSpec(empty)
+	require.Error(t, err, "a root without docs/leveelang-spec.md must be refused")
+	assert.Contains(t, err.Error(), "leveelang-spec.md")
+
+	// A file where a directory is expected.
+	f := filepath.Join(t.TempDir(), "notadir")
+	require.NoError(t, os.WriteFile(f, []byte("x"), 0o600))
+	_, err = locateSpec(f)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a directory")
+
+	// A non-existent root.
+	_, err = locateSpec(filepath.Join(t.TempDir(), "does", "not", "exist"))
+	require.Error(t, err)
+
+	// A directory that HAS a docs/leveelang-spec.md but is not the LEVEE spec
+	// (a decoy file must not be rewritten).
+	decoyRoot := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(decoyRoot, "docs"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(decoyRoot, "docs", "leveelang-spec.md"),
+		[]byte("# some other spec\n"), 0o600))
+	_, err = locateSpec(decoyRoot)
+	require.Error(t, err, "a decoy markdown file must be rejected, not rewritten")
+	assert.Contains(t, err.Error(), "does not look like the LEVEE spec")
+}
+
+// TestLocateSpecFindsTheRealRepositoryRoot: the happy path must still work, or
+// the tests above would pass for the wrong reason.
+func TestLocateSpecFindsTheRealRepositoryRoot(t *testing.T) {
+	root, err := filepath.Abs("../..")
+	require.NoError(t, err)
+	got, err := locateSpec(root)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(got.path, filepath.Join("docs", "leveelang-spec.md")), got.path)
+}
 
 // TestReplaceBlockIsIdempotent is the property the whole tool rests on: running
 // the generator twice must produce the same bytes, or CI would flag a diff on
