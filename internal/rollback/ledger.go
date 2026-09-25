@@ -43,6 +43,7 @@ type ExecutionLedger struct {
 	ran         map[string]map[string]bool
 	unknown     map[string]map[string]bool
 	compensated map[string]map[string]bool
+	uncertain   map[string]map[string]bool
 }
 
 // NewExecutionLedger returns an empty ledger ready to be populated.
@@ -51,6 +52,7 @@ func NewExecutionLedger() *ExecutionLedger {
 		ran:         make(map[string]map[string]bool),
 		unknown:     make(map[string]map[string]bool),
 		compensated: make(map[string]map[string]bool),
+		uncertain:   make(map[string]map[string]bool),
 	}
 }
 
@@ -95,6 +97,34 @@ func (l *ExecutionLedger) AlreadyCompensated(target, step string) bool {
 		return false
 	}
 	return l.compensated[target][step]
+}
+
+// MarkCompensationUncertain records that a prior successful compensation for
+// this step EXISTS on record but the evidence cannot be ordered against the
+// forward execution — typically because the forward row carries no completion
+// timestamp. It is not a licence to re-run: the caller uses it to decide
+// between re-running (safe for an undo that declares itself idempotent) and
+// refusing (for one that does not), instead of guessing.
+func (l *ExecutionLedger) MarkCompensationUncertain(target, step string) {
+	if l == nil || target == "" || step == "" {
+		return
+	}
+	if l.uncertain == nil {
+		l.uncertain = make(map[string]map[string]bool)
+	}
+	if l.uncertain[target] == nil {
+		l.uncertain[target] = make(map[string]bool)
+	}
+	l.uncertain[target][step] = true
+}
+
+// CompensationUncertain reports whether a prior successful compensation is on
+// record for this step but cannot be ordered against the forward execution.
+func (l *ExecutionLedger) CompensationUncertain(target, step string) bool {
+	if l == nil || l.uncertain == nil {
+		return false
+	}
+	return l.uncertain[target][step]
 }
 
 // MarkUnknown records that step ran on target but failed, leaving its side

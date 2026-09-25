@@ -169,6 +169,14 @@ type canonicalRollbackStep struct {
 	Module string         `json:"module"`
 	Action string         `json:"action"`
 	Args   map[string]any `json:"args"`
+	// Idempotent is the author's declaration that re-running this undo is
+	// safe. It is a GOVERNANCE field, not documentation: the compensation
+	// gate refuses to repeat an undeclared one when it cannot prove the
+	// previous compensation covered the current forward execution. Leaving
+	// it out of the canonical form would let that declaration be flipped
+	// after approval without changing the hash — exactly the class of drift
+	// v2 exists to close. omitempty keeps every existing hash stable.
+	Idempotent bool `json:"idempotent,omitempty"`
 }
 
 type canonicalApproval struct {
@@ -312,6 +320,7 @@ func canonicalRollbackV2(spec *dsl.RollbackSpec) *canonicalRollback {
 	for i, step := range spec.Steps {
 		steps[i] = canonicalRollbackStep{
 			Name: step.Name, Module: step.Module, Action: step.Action, Args: canonicalArgs(step.Args),
+			Idempotent: step.Idempotent,
 		}
 	}
 	return &canonicalRollback{

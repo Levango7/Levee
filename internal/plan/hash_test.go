@@ -372,6 +372,9 @@ func TestComputeHashGovernanceFieldsAffectV2(t *testing.T) {
 		{"workflow gate", func(p *Plan) { p.Gate.Pre[0].Command = "false" }},
 		{"batch gate", func(p *Plan) { p.Batches[0].Gate.Batch[0].Command = "false" }},
 		{"rollback strategy", func(p *Plan) { p.Batches[0].Steps[0].Rollback.Strategy = "undo-action" }},
+		{"undo step idempotency", func(p *Plan) {
+			p.Batches[0].Steps[0].Rollback.Steps = []dsl.Step{{Name: "undo", Module: "svc", Action: "stop", Idempotent: true}}
+		}},
 		{"snapshot path", func(p *Plan) { p.Batches[0].Steps[0].Rollback.SnapshotPaths[0] = "/etc/c" }},
 		{"approval", func(p *Plan) { p.Batches[0].Steps[0].Approval.MinApprovers = 3 }},
 		{"gate", func(p *Plan) { p.Batches[0].Steps[0].Gate.Post[0].Command = "false" }},

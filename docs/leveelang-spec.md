@@ -120,6 +120,7 @@ workflow <name> {
     args { ... }
     requires_reboot: <bool>
     irreversible: <bool>
+    idempotent: <bool>                # 声明该步骤可安全重复执行（治理字段）
   }
 
   gate <position> { ... }            # pre_apply / post_apply 门禁
@@ -186,6 +187,7 @@ workflow <name> {
 | wait | duration | 等待时长（grace period） |
 | requires_reboot | bool | 该步是否需要目标机重启 |
 | irreversible | bool | 该步是否不可逆 |
+| idempotent | bool | 该步是否可安全重复执行；回滚补偿在证据无法定序时据此决定重跑还是拒绝 |
 | on_failure | string | 回滚触发策略：auto / manual |
 | verify_after | bool | 回滚后是否验证 |
 
@@ -576,6 +578,7 @@ step 块声明一个变更步骤，是 workflow 的必需块，可声明多个�
 | verify | 块 | 否 | 步骤级验证（post_step） |
 | requires_reboot | bool | 否 | 是否需要目标机重启，缺省 false |
 | irreversible | bool | 否 | 是否不可逆，缺省 false |
+| idempotent | bool | 否 | 是否可安全重复执行，缺省 false；**该声明进入 plan 哈希**（v2 治理字段），批准后不可改写；回滚补偿仅在证据无法定序且未声明时拒绝重跑 |
 | depends_on | string[] | 否 | 显式依赖的前置 step |
 | output | 块 | 否 | 输出声明，供后续 step 引用 |
 

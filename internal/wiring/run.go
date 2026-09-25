@@ -641,12 +641,41 @@ func (e *Engine) ledgerFromStoredSteps(ctx context.Context, changeID string, p *
 	// flag, so the flag has to be set last.
 	for host, steps := range forward {
 		for step := range steps {
-			if compensatedAfter(latestForward[host][step], latestUndo[host], undoNames[step]) && ledger.Ran(host, step) {
-				ledger.MarkCompensated(host, step)
+			if !ledger.Ran(host, step) {
+				continue
+			}
+			fwdAt, ok := latestForward[host][step]
+			if !ok {
+				// No completion timestamp on the forward evidence, so a prior
+				// compensation cannot be ordered against it. If one IS on
+				// record, this is a genuine repeat-or-not question — hand it to
+				// the manager, which refuses when the undo does not declare
+				// itself idempotent, instead of guessing here.
+				if undoSucceeded(latestUndo[host], undoNames[step]) {
+					ledger.MarkCompensationUncertain(host, step)
+				}
+				continue
+			}
+			for undo := range undoNames[step] {
+				if undoAt, ok := latestUndo[host][undo]; ok && undoAt.After(fwdAt) {
+					ledger.MarkCompensated(host, step)
+					break
+				}
 			}
 		}
 	}
 	return ledger, nil
+}
+
+// undoSucceeded reports whether any of the step's compensation names has a
+// successful completion recorded for this host.
+func undoSucceeded(undoAt map[string]time.Time, undoNames map[string]bool) bool {
+	for undo := range undoNames {
+		if _, ok := undoAt[undo]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // indexPlanSteps returns the forward step names per host plus, per forward
@@ -739,22 +768,6 @@ func readStepEvidence(rows []*state.Step, forward map[string]map[string]bool) (
 		}
 	}
 	return ledger, latestForward, latestUndo
-}
-
-// compensatedAfter reports whether one of the step's compensation names has a
-// successful completion strictly after the forward evidence. An unordered
-// (missing) forward timestamp yields false: compensate again rather than
-// silently assume the state was restored.
-func compensatedAfter(fwdAt time.Time, undoAt map[string]time.Time, undoNames map[string]bool) bool {
-	if fwdAt.IsZero() {
-		return false
-	}
-	for undo := range undoNames {
-		if at, ok := undoAt[undo]; ok && at.After(fwdAt) {
-			return true
-		}
-	}
-	return false
 }
 
 // collidesWithForward reports whether name is also used as a forward step name

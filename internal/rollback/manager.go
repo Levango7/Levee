@@ -580,6 +580,23 @@ func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []pla
 			})
 			continue
 		}
+		if ledger != nil && ledger.CompensationUncertain(target, ps.Name) && !compensationRepeatable(ps) {
+			// A prior successful compensation is on record but the evidence
+			// cannot be ordered against the forward execution, so this may
+			// well be a SECOND run of a non-idempotent undo. The author did
+			// not declare the undo repeatable, so refuse rather than guess.
+			// NotExecuted stays false: unlike a benign skip, we genuinely do
+			// not know whether this step is restored, and the verdict must
+			// say so.
+			tr.StepResults = append(tr.StepResults, StepRollbackResult{
+				OrigStepName: ps.Name,
+				Skipped:      true,
+				SkipReason: "refusing to re-run: a prior compensation is on record " +
+					"but cannot be ordered against this execution, and the rollback step " +
+					"does not declare idempotent: true",
+			})
+			continue
+		}
 
 		unknown := ledger != nil && ledger.SideEffectsUnknown(target, ps.Name)
 
@@ -621,6 +638,35 @@ func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []pla
 		}
 	}
 	return tr
+}
+
+// compensationRepeatable reports whether re-running this step's compensation
+// is declared safe. The dsl has always carried the author's
+// `idempotent: true` declaration (parsed from the workflow YAML, and now
+// covered by the v2 plan hash); this gate is what finally READS it.
+//
+//   - A step with no RollbackSpec has no undo command to repeat — the
+//     existing "no rollback spec" gap path handles it.
+//   - The snapshot strategy writes the captured content back over the
+//     declared paths, so running it again is repeatable by construction. (The
+//     separate concern of restoring over later edits is a pre-existing
+//     property of snapshot rollback, not a repeat hazard.)
+//   - Otherwise EVERY declared undo step must say `idempotent: true`. One
+//     undeclared step makes the whole compensation non-repeatable: a
+//     partially repeated compensation is worse than none.
+func compensationRepeatable(ps plan.PlanStep) bool {
+	if ps.Rollback == nil {
+		return true
+	}
+	if ps.Rollback.Strategy == "snapshot" {
+		return true
+	}
+	for _, rb := range ps.Rollback.Steps {
+		if !rb.Idempotent {
+			return false
+		}
+	}
+	return true
 }
 
 // restoreSnapshotStep rolls back one strategy-"snapshot" step on one

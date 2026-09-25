@@ -89,6 +89,24 @@ func seedEvidenceStep(t *testing.T, store state.Store, runID, host, name, status
 	seedEvidenceStepAt(t, store, runID, host, name, status, at)
 }
 
+// seedEvidenceStepUntimed writes a row with NO completion timestamp — the
+// shape older or hand-written evidence can have, and the case the derivation
+// cannot order against a prior compensation.
+func seedEvidenceStepUntimed(t *testing.T, store state.Store, runID, host, name, status string) {
+	t.Helper()
+	batchID := "bat-" + runID
+	seedFailedBatch(t, store, runID, batchID)
+	require.NoError(t, store.CreateStep(context.Background(), &state.Step{
+		ID:       newID("stp-"),
+		RunID:    runID,
+		BatchID:  batchID,
+		Host:     host,
+		StepName: name,
+		Action:   "shell.exec",
+		Status:   status,
+	}))
+}
+
 // TestLedgerFromStoredSteps_MarksAlreadyCompensated covers the derivation
 // itself: a forward success row plus a SUCCESSFUL undo row means the step is
 // already restored and must not be compensated again.
@@ -266,4 +284,56 @@ func TestRollbackChange_ReappliedStepIsCompensatedAgain(t *testing.T) {
 	assert.True(t, l.Ran("web-1", "work"))
 	assert.False(t, l.AlreadyCompensated("web-1", "work"),
 		"a re-applied step has fresh side effects and must be compensated again")
+}
+
+// TestLedgerFromStoredSteps_MarksUncertainWhenUnorderable covers the residual
+// case the timestamp ordering cannot settle: the forward row carries no
+// completion time, so a prior successful compensation on record can neither
+// be ruled in nor ruled out. The derivation must hand that to the manager as
+// uncertainty rather than silently assume "not compensated".
+func TestLedgerFromStoredSteps_MarksUncertainWhenUnorderable(t *testing.T) {
+	rec := &loopRecorder{}
+	e, store := newLoopEngine(t, rec)
+	seedLocalTargets(t, store, "web-1")
+	seedRun(t, store, "run-unc", rbWorkflowYAML)
+	planAndPersist(t, e, store, "run-unc", []string{"web-1"})
+
+	ctx := context.Background()
+	// Forward row WITHOUT a completion time, but a successful undo row on
+	// record: nothing can order the two.
+	seedEvidenceStepUntimed(t, store, "run-unc", "web-1", "work", "success")
+	seedEvidenceStep(t, store, "run-unc", "web-1", "undo-work", "success")
+
+	p, err := e.loadStoredPlan(ctx, "run-unc")
+	require.NoError(t, err)
+	l, err := e.ledgerFromStoredSteps(ctx, "run-unc", p)
+	require.NoError(t, err)
+
+	assert.True(t, l.Ran("web-1", "work"), "forward evidence must still mark it ran")
+	assert.False(t, l.AlreadyCompensated("web-1", "work"),
+		"an unorderable prior compensation must not be treated as proof")
+	assert.True(t, l.CompensationUncertain("web-1", "work"),
+		"it must be surfaced as uncertainty for the manager to gate")
+}
+
+// TestLedgerFromStoredSteps_NoUndoNoUncertainty is the other side: an untimed
+// forward row with NO prior compensation on record is simply a first
+// compensation — there is no repeat question to ask.
+func TestLedgerFromStoredSteps_NoUndoNoUncertainty(t *testing.T) {
+	rec := &loopRecorder{}
+	e, store := newLoopEngine(t, rec)
+	seedLocalTargets(t, store, "web-1")
+	seedRun(t, store, "run-unc2", rbWorkflowYAML)
+	planAndPersist(t, e, store, "run-unc2", []string{"web-1"})
+
+	ctx := context.Background()
+	seedEvidenceStepUntimed(t, store, "run-unc2", "web-1", "work", "success")
+
+	p, err := e.loadStoredPlan(ctx, "run-unc2")
+	require.NoError(t, err)
+	l, err := e.ledgerFromStoredSteps(ctx, "run-unc2", p)
+	require.NoError(t, err)
+
+	assert.True(t, l.Ran("web-1", "work"))
+	assert.False(t, l.CompensationUncertain("web-1", "work"))
 }
