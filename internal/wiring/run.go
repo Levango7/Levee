@@ -593,28 +593,85 @@ func (e *Engine) checkSnapshotCapability(p *plan.Plan) error {
 }
 
 // ledgerFromStoredSteps derives the manual-rollback execution ledger from
-// persisted forward step evidence (D-2 v2 design item 1). Only rows that
-// match a FORWARD plan step of p on its declaring batch/target count:
+// persisted step evidence (D-2 v2 design item 1). Only rows that match a
+// FORWARD plan step of p on its declaring batch/target count:
 //   - status "success" → ran (MarkRan)
 //   - status "failed"  → dispatched and failed (MarkUnknown: it still needs
 //     its declared compensation; residue undetermined)
 //   - status "skipped" → resume marker, not a dispatch — ignored (the
 //     original success row exists alongside it)
 //
-// Undo rows written by a previous rollback do not match forward step names
-// in the normal case and are ignored; a workflow that names an undo step
-// identically to a forward step is the documented ambiguity left to the
-// future compensation-idempotency extension point. With no forward evidence
-// at all the ledger is empty and nothing is compensated — pre-engine runs
-// cannot reach this path (loadStoredPlan refuses runs without a stored
-// artifact).
+// Compensation idempotency: a forward step whose declared compensation
+// ALREADY completed successfully on that host is marked Compensated, so a
+// later rollback skips it instead of running its undo a second time (a
+// non-idempotent undo — append a line, bump a counter, open a ticket — would
+// land twice). Only SUCCESSFUL prior compensations count: a compensation that
+// failed is exactly what the partial/incomplete remedy path exists to retry,
+// and suppressing it would block the remedy. MarkRan/MarkUnknown clear the
+// flag, so a re-applied step needs compensating again.
+//
+// The undo step names come from the plan, which is hash-bound and immutable
+// (P1-1), so they are a reliable join key. A workflow that names an undo
+// step identically to a forward step is the documented ambiguity left to the
+// future compensation-idempotency extension point: such a run is REFUSED
+// here rather than guessed at, because its undo rows are indistinguishable
+// from forward evidence.
+//
+// With no forward evidence at all the ledger is empty and nothing is
+// compensated — pre-engine runs cannot reach this path (loadStoredPlan
+// refuses runs without a stored artifact).
 func (e *Engine) ledgerFromStoredSteps(ctx context.Context, changeID string, p *plan.Plan) (*rollback.ExecutionLedger, error) {
 	rows, err := e.store.ListSteps(ctx, state.StepFilter{RunID: changeID})
 	if err != nil {
 		return nil, fmt.Errorf("wiring: list steps for rollback ledger: %w", err)
 	}
-	forward := make(map[string]map[string]bool)
+	forward, undoNames := indexPlanSteps(p)
+	if err := refuseUndoNameCollisions(changeID, forward, undoNames); err != nil {
+		return nil, err
+	}
+	// Evidence ordering. A compensation only counts if it completed AFTER the
+	// most recent forward execution of the same step on that host: a retry
+	// re-runs the stored plan and appends a NEW forward row, so an older undo
+	// row must not be read as having restored the newer side effect. Rows
+	// without a completion timestamp cannot be ordered, and the safe reading
+	// of "cannot tell" is to compensate again (a repeated compensation is
+	// visible; a wrongly-skipped one silently hides a gap).
+	ledger, latestForward, latestUndo := readStepEvidence(rows, forward)
+	// Applied after every MarkRan/MarkUnknown: MarkRan clears the compensated
+	// flag, so the flag has to be set last.
+	for host, steps := range forward {
+		for step := range steps {
+			if compensatedAfter(latestForward[host][step], latestUndo[host], undoNames[step]) && ledger.Ran(host, step) {
+				ledger.MarkCompensated(host, step)
+			}
+		}
+	}
+	return ledger, nil
+}
+
+// indexPlanSteps returns the forward step names per host plus, per forward
+// step, the step names its compensation writes to the evidence table. The
+// snapshot strategy records a synthetic "snapshot:<step>" name (rollback
+// Manager.restoreSnapshotStep), so a prior restore is recognisable the same way
+// an executed undo command is.
+func indexPlanSteps(p *plan.Plan) (forward, undoNames map[string]map[string]bool) {
+	forward = make(map[string]map[string]bool)
+	undoNames = make(map[string]map[string]bool)
 	for _, b := range p.Batches {
+		for _, s := range b.Steps {
+			if undoNames[s.Name] == nil {
+				undoNames[s.Name] = make(map[string]bool)
+			}
+			switch {
+			case s.Rollback == nil:
+			case s.Rollback.Strategy == "snapshot":
+				undoNames[s.Name]["snapshot:"+s.Name] = true
+			default:
+				for _, rb := range s.Rollback.Steps {
+					undoNames[s.Name][rb.Name] = true
+				}
+			}
+		}
 		for _, t := range b.Targets {
 			if forward[t] == nil {
 				forward[t] = make(map[string]bool)
@@ -624,19 +681,91 @@ func (e *Engine) ledgerFromStoredSteps(ctx context.Context, changeID string, p *
 			}
 		}
 	}
+	return forward, undoNames
+}
+
+// refuseUndoNameCollisions fails closed when an undo step name is also a
+// forward step name: their evidence rows are then unseparable, and
+// compensating would be a guess.
+func refuseUndoNameCollisions(changeID string, forward, undoNames map[string]map[string]bool) error {
+	for _, names := range undoNames {
+		for name := range names {
+			if collidesWithForward(name, forward) {
+				return fmt.Errorf(
+					"wiring: change %q declares rollback step %q whose name is also a forward step name: its undo evidence cannot be told apart from forward evidence; rename the rollback step (or declare it idempotent) before rolling back",
+					changeID, name)
+			}
+		}
+	}
+	return nil
+}
+
+// readStepEvidence folds the persisted rows into an execution ledger and the
+// two completion-time indexes the compensation check needs.
+func readStepEvidence(rows []*state.Step, forward map[string]map[string]bool) (
+	*rollback.ExecutionLedger, map[string]map[string]time.Time, map[string]map[string]time.Time) {
 	ledger := rollback.NewExecutionLedger()
+	latestForward := make(map[string]map[string]time.Time)
+	latestUndo := make(map[string]map[string]time.Time)
+	note := func(m map[string]map[string]time.Time, host, name string, at *time.Time) {
+		if at == nil || at.IsZero() {
+			return
+		}
+		if m[host] == nil {
+			m[host] = make(map[string]time.Time)
+		}
+		if cur, ok := m[host][name]; !ok || at.After(cur) {
+			m[host][name] = *at
+		}
+	}
 	for _, row := range rows {
-		if row == nil || !forward[row.Host][row.StepName] {
+		if row == nil {
+			continue
+		}
+		if !forward[row.Host][row.StepName] {
+			// Undo evidence: only a SUCCESSFUL compensation counts.
+			if row.Status == "success" {
+				note(latestUndo, row.Host, row.StepName, row.CompletedAt)
+			}
 			continue
 		}
 		switch row.Status {
 		case "success":
+			note(latestForward, row.Host, row.StepName, row.CompletedAt)
 			ledger.MarkRan(row.Host, row.StepName)
 		case "failed":
+			note(latestForward, row.Host, row.StepName, row.CompletedAt)
 			ledger.MarkUnknown(row.Host, row.StepName)
 		}
 	}
-	return ledger, nil
+	return ledger, latestForward, latestUndo
+}
+
+// compensatedAfter reports whether one of the step's compensation names has a
+// successful completion strictly after the forward evidence. An unordered
+// (missing) forward timestamp yields false: compensate again rather than
+// silently assume the state was restored.
+func compensatedAfter(fwdAt time.Time, undoAt map[string]time.Time, undoNames map[string]bool) bool {
+	if fwdAt.IsZero() {
+		return false
+	}
+	for undo := range undoNames {
+		if at, ok := undoAt[undo]; ok && at.After(fwdAt) {
+			return true
+		}
+	}
+	return false
+}
+
+// collidesWithForward reports whether name is also used as a forward step name
+// on any host declared by the plan.
+func collidesWithForward(name string, forward map[string]map[string]bool) bool {
+	for _, steps := range forward {
+		if steps[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // --- stored plan helpers ----------------------------------------------------

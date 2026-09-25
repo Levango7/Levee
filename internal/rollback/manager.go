@@ -165,6 +165,17 @@ type StepRollbackResult struct {
 	// makes Success false.
 	NotExecuted bool
 
+	// AlreadyCompensated marks a skip whose cause is "an earlier rollback
+	// already completed this step's compensation successfully" (ledger state
+	// Compensated). Like NotExecuted it is benign for the verdict — the target
+	// state for this step is already restored, and re-running the compensation
+	// would apply its side effects a second time. It is kept as its OWN flag
+	// rather than folded into NotExecuted because the two skips mean opposite
+	// things to an operator: "nothing was ever changed here" vs "this was
+	// already undone". The SkipReason carries the same distinction into the
+	// persisted evidence row.
+	AlreadyCompensated bool
+
 	// SideEffectsUnknown marks a step that was dispatched but failed during
 	// the forward apply, so whether it left a partial side effect is
 	// undetermined. Its declared compensation is still attempted here, but
@@ -429,12 +440,15 @@ func (m *Manager) RollbackWithLedger(ctx context.Context, p *plan.Plan, execFn E
 				// Benign skips, excluded from the verdict:
 				//   - NotExecuted (evidence says the forward step never
 				//     ran — nothing to account for);
+				//   - AlreadyCompensated (an earlier rollback already
+				//     restored this step — compensating again would
+				//     apply the undo's side effects twice);
 				//   - any skip under a NIL ledger: without evidence every
 				//     step is only ASSUMED run (design item 2: nil =
 				//     旧行为), so policy/wiring/dry-run skips keep their
 				//     pre-D-2 benign reading. Gap counting engages only
 				//     once real evidence (a ledger) is supplied.
-				if sr.NotExecuted || (ledger == nil && sr.Skipped) {
+				if sr.NotExecuted || sr.AlreadyCompensated || (ledger == nil && sr.Skipped) {
 					continue
 				}
 				result.RequiredCompensations++
@@ -542,6 +556,21 @@ func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []pla
 		// Evidence gate (D-2 v2): a step the ledger does not mark as run was
 		// never dispatched to this target, so compensating it would touch a
 		// host state that was never changed. Recorded as a benign skip.
+		if ledger != nil && ledger.AlreadyCompensated(target, ps.Name) {
+			// Compensation-idempotency gate: an earlier rollback already
+			// completed this step's declared compensation. Running it again
+			// would apply its side effects a second time, so record the
+			// skip with its own reason — the evidence row is what an
+			// operator reads later, and "already undone" must not be
+			// mistaken for "never changed" (NotExecuted) or for a gap.
+			tr.StepResults = append(tr.StepResults, StepRollbackResult{
+				OrigStepName:       ps.Name,
+				Skipped:            true,
+				AlreadyCompensated: true,
+				SkipReason:         "already compensated by an earlier rollback",
+			})
+			continue
+		}
 		if ledger != nil && !ledger.Ran(target, ps.Name) {
 			tr.StepResults = append(tr.StepResults, StepRollbackResult{
 				OrigStepName: ps.Name,
