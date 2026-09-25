@@ -1,6 +1,6 @@
 // Package errors defines LEVEE's structured error model. Every error
 // produced inside the engine is a *LEVEEError carrying a stable machine-readable
-// code (LE001-LE096, see LEVEELang spec appendix C), a human-readable message,
+// code (LE001-LE097, see LEVEELang spec appendix C), a human-readable message,
 // a runtime failure-severity tier (the five-tier model from design doc 4.4.9)
 // and an optional wrapped cause.
 //
@@ -254,7 +254,7 @@ func CodeOf(err error) string {
 	return ""
 }
 
-// --- Compile-time error codes (LE001-LE096) ---------------------------------
+// --- Compile-time error codes (LE001-LE097) ---------------------------------
 //
 // These constants are the stable identifiers defined in LEVEELang spec
 // appendix C. They are grouped by category for readability.
@@ -303,13 +303,14 @@ const (
 	LE082 = "LE082" // irreversible action not in allow_irreversible
 	LE083 = "LE083" // irreversible action present but approval level < high
 
-	// Structure errors (LE091-LE096)
+	// Structure errors (LE091-LE097)
 	LE091 = "LE091" // missing rollback block
 	LE092 = "LE092" // missing target block
 	LE093 = "LE093" // missing step block
 	LE094 = "LE094" // missing approval block (uses default standard) [warning]
 	LE095 = "LE095" // missing window block (no window constraint) [warning]
 	LE096 = "LE096" // missing batches block (single batch full) [warning]
+	LE097 = "LE097" // workflow-level rollback carries unattributable compensation content (strategy / steps / snapshot_paths) — declare it on the step
 )
 
 // CompileSeverity is the compile-time severity of an error code: either "error"
@@ -369,6 +370,7 @@ var codeCatalogue = []CodeInfo{
 	{LE094, "structure", "missing approval block (uses default standard)", CompileWarning},
 	{LE095, "structure", "missing window block (no window constraint)", CompileWarning},
 	{LE096, "structure", "missing batches block (single batch full)", CompileWarning},
+	{LE097, "structure", "workflow-level rollback carries unattributable compensation content (strategy / steps / snapshot_paths)", CompileError},
 }
 
 // Lookup returns the CodeInfo for the given code, or false if the code is not

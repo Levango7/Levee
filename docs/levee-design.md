@@ -758,21 +758,26 @@ workflow db-migrate-orders {
     }
     requires_reboot: false
     irreversible: false
-  }
-
-  rollback {
-    # 白名单回滚：pt-online-schema-change 自带 --reverse 语义
-    strategy: "snapshot"
-    on_failure: "auto"
-    verify_after: true
-    step undo_migrate {
-      action: "mysql.pt-online-schema-change"
-      args {
-        host: "{{target.host}}"
-        table: "{{input.table}}"
-        alter: "DROP COLUMN status"
+    # 补偿契约声明在被补偿的 step 内（spec §7.1）：workflow 级 rollback
+    # 只承载运行态策略，声明补偿内容会被编译期拒绝（LE097）。
+    rollback {
+      # 白名单回滚：pt-online-schema-change 自带 --reverse 语义
+      strategy: "undo-action"
+      step undo_migrate {
+        action: "mysql.pt-online-schema-change"
+        args {
+          host: "{{target.host}}"
+          table: "{{input.table}}"
+          alter: "DROP COLUMN status"
+        }
       }
     }
+  }
+
+  # 运行态策略：失败即自动回滚，回滚后验证
+  rollback {
+    on_failure: "auto"
+    verify_after: true
   }
 
   gate post_apply {
@@ -793,7 +798,7 @@ workflow db-migrate-orders {
 - 按主库分批 + 批次间 SLO 与命令门禁。
 - 高危审批（2 人审批，排除发起人）。
 - migrate 步骤。
-- 白名单回滚（带回滚后验证）。
+- migrate 步骤内的白名单回滚补偿契约（带回滚后验证）。
 - post_apply SLO 门禁含 grace period。
 
 ---

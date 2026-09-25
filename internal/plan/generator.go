@@ -65,9 +65,14 @@ type Plan struct {
 
 	// Approval, Rollback and Gate preserve workflow-level governance
 	// declarations in the approved artifact. ChangeService consumes
-	// Approval directly for kickoff routing; the remaining declarations
-	// are audit/hash identity even where execution still consumes their
-	// step-level overrides.
+	// Approval directly for kickoff routing.
+	//
+	// Rollback is run-level policy only (spec §7.1, LE097): on_failure and
+	// verify_after describe what happens when the whole run fails. The
+	// compensation contract — strategy, undo steps, snapshot_paths — lives
+	// on the step (PlanStep.Rollback), because the compensation ledger
+	// attributes every compensation to a (host, forward step) pair and the
+	// generator refuses plan-level compensation content outright.
 	Approval *dsl.ApprovalSpec `json:"approval,omitempty"`
 	Rollback *dsl.RollbackSpec `json:"rollback,omitempty"`
 	Gate     *dsl.GateSpec     `json:"gate,omitempty"`
@@ -180,6 +185,19 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 	}
 	if len(resolvedTargets) == 0 {
 		return nil, errors.New(errors.LE092, "resolved targets is empty", errors.Fatal)
+	}
+
+	// Workflow-level rollback is run-level policy only (spec §7.1): strategy,
+	// undo steps and snapshot_paths there are unattributable — the
+	// compensation ledger keys on (host, forward step) — so this boundary
+	// refuses them (LE097) instead of persisting governance that no
+	// execution path can honour. dsl.Validator reports the same violation
+	// for the `levee compile` path; this gate is what protects the server
+	// path, because wiring.GeneratePlan parses the workflow document and
+	// calls the generator directly, without the validator in between.
+	if verrs := dsl.ValidateRunLevelRollback(wf.Rollback, "rollback"); len(verrs) > 0 {
+		return nil, errors.New(verrs[0].Code,
+			fmt.Sprintf("workflow %q: %s", wf.Meta.Name, verrs[0].Message), errors.Fatal)
 	}
 
 	// Divide targets into batches according to the strategy.

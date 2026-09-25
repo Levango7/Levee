@@ -70,7 +70,6 @@ gates:
       query: "rate(node_load1[5m]) < 4"
       source: prometheus
 rollback:
-  strategy: snapshot
   on_failure: auto
   verify_after: true
 `
@@ -189,9 +188,12 @@ func TestParseFullWorkflow(t *testing.T) {
 	assert.Equal(t, "rate(node_load1[5m]) < 4", wf.Gate.Post[1].Command)
 	assert.Equal(t, "prometheus", wf.Gate.Post[1].Source)
 
-	// Rollback
+	// Rollback: the workflow level carries run-level policy only (spec
+	// §7.1). The compensation contract lives on the step — the validator
+	// rejects strategy / steps / snapshot_paths here as LE097.
 	require.NotNil(t, wf.Rollback)
-	assert.Equal(t, "snapshot", wf.Rollback.Strategy)
+	assert.Empty(t, wf.Rollback.Strategy)
+	assert.Empty(t, wf.Rollback.Steps)
 	assert.Equal(t, "auto", wf.Rollback.OnFailure)
 	assert.True(t, wf.Rollback.VerifyAfter)
 }
@@ -397,6 +399,13 @@ steps:
 
 // TestParseRollbackNested verifies parsing of a rollback block with nested
 // undo steps.
+//
+// NOTE: the parser is deliberately permissive here — it is the syntax layer
+// and stays forward-compatible with the V1 grammar. The scope rule is the
+// validator's: strategy / steps / snapshot_paths at workflow level are
+// rejected as LE097 (TestValidateWorkflowRejectsWorkflowLevelCompensation),
+// because the compensation contract belongs on the step it compensates
+// (steps[].rollback).
 func TestParseRollbackNested(t *testing.T) {
 	p := NewParser()
 	yaml := `

@@ -10,6 +10,8 @@ package dsl
 //   - 批次声明合法性：percent steps ∈ [1,100]；fixed steps > 0；serial 无需 steps
 //   - step：name 与 action 非空；action 必须是 module.action 形式
 //   - target：静态 target 必须有 hosts 或 query 至少一个
+//   - rollback 归属：workflow 级回滚声明只允许运行态策略（on_failure /
+//     verify_after）；strategy / steps / snapshot_paths 必须声明在 step 内（LE097）
 //
 // Validate 返回所有错误（不短路）；ValidateStrict 遇到第一个错误即返回。
 //
@@ -142,6 +144,11 @@ func (v *Validator) Validate(wf *Workflow) []ValidationError {
 
 	// 8. batches 校验：strategy 枚举 + steps 合法性。
 	errs = append(errs, v.validateBatches(wf.Batches)...)
+
+	// 9. rollback 归属校验：workflow 级是运行态策略，不是补偿契约。
+	// 补偿账本按 (host, 前向步骤) 归属，工作流级补偿无法归因、没有执行
+	// 路径，因此 fail-closed 拒绝（LE097，见 rollback_scope.go）。
+	errs = append(errs, ValidateRunLevelRollback(wf.Rollback, "rollback")...)
 
 	return errs
 }

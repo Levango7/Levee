@@ -18,9 +18,12 @@
 //  4. Post-apply verification (verify.PhasePostApply). A failure triggers
 //     rollback of the whole run.
 //  5. Rollback path. When any verification fails, rollback.Manager
-//     reverses the executed batches. When a PostRollbackVerifier (T037)
-//     is configured, post-rollback verification runs and the result is
-//     recorded on the ClosureResult.
+//     reverses the executed batches — unless the run-level policy
+//     (plan.Rollback.OnFailure) is "manual", in which case the automatic
+//     rollback is suppressed and the failed run waits for an operator
+//     (ClosureResult.ManualRollbackRequired). When a PostRollbackVerifier
+//     (T037) is configured, post-rollback verification runs and the result
+//     is recorded on the ClosureResult.
 //  6. Lock release. Regardless of outcome, every acquired lock is
 //     released before the ClosureRunner returns.
 //
@@ -134,8 +137,18 @@ type ClosureResult struct {
 
 	// RollbackResult is the outcome of the rollback flow. It is non-nil
 	// only when rollback was triggered (Phase == PhaseRolledBack or a
-	// failed rollback with Phase == PhaseFailed).
+	// failed rollback with Phase == PhaseFailed). It stays nil when the
+	// run-level policy suppressed the rollback
+	// (ManualRollbackRequired == true).
 	RollbackResult *rollback.RollbackResult
+
+	// ManualRollbackRequired is true when the run-level rollback policy
+	// (plan.Rollback.OnFailure == "manual", spec §7.1) suppressed the
+	// automatic rollback: the run failed with its applied batches left in
+	// place and waits for an operator to trigger the rollback
+	// (RollbackChange / `levee rollback`). False on every other path,
+	// including a rollback that ran and failed.
+	ManualRollbackRequired bool
 
 	// PostVerifyResult is the outcome of the post-rollback verification
 	// (T037). It is non-nil only when a PostRollbackVerifier is
@@ -242,6 +255,17 @@ func NewClosureRunner(
 		opt(cr)
 	}
 	return cr
+}
+
+// rollbackPolicyOf resolves the plan's run-level failure policy
+// (plan.Rollback.OnFailure, spec §7.1). A nil plan or an absent/unknown
+// value resolves to auto — see dsl.ResolveRollbackOnFailure for why unknown
+// values keep the historical behaviour.
+func rollbackPolicyOf(p *plan.Plan) string {
+	if p == nil {
+		return dsl.RollbackOnFailureAuto
+	}
+	return dsl.ResolveRollbackOnFailure(p.Rollback)
 }
 
 // --- Run --------------------------------------------------------------------
@@ -474,6 +498,19 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		return result, result.Error
 	}
 	if triggerRollback {
+		// Run-level policy (plan.Rollback.OnFailure, spec §7.1). "manual"
+		// suppresses the automatic compensation: the failed run keeps its
+		// applied batches and waits for an operator-triggered rollback
+		// (RollbackChange / `levee rollback`). on_failure is one of only
+		// two fields a workflow-level rollback block may carry — LE097
+		// rejects compensation content there, because the ledger attributes
+		// compensations per (host, forward step).
+		if rollbackPolicyOf(p) == dsl.RollbackOnFailureManual {
+			result.Phase = PhaseFailed
+			result.ManualRollbackRequired = true
+			result.Error = fmt.Errorf("closure: %s; on_failure=manual: automatic rollback suppressed, operator-triggered rollback required (applied batches kept)", rollbackReason)
+			return result, result.Error
+		}
 		// Build a sub-plan containing only the batches that were actually
 		// executed, so rollback does not try to undo work that never
 		// started.

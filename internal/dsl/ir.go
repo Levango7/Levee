@@ -193,6 +193,12 @@ func GenerateIR(ast *Workflow, registry *TypeRegistry) (*IR, error) {
 		// Map every workflow step to the rollback step names. When the
 		// rollback spec carries its own steps, they apply to every workflow
 		// step; otherwise the map is empty.
+		//
+		// This projection is compile-artifact only: no execution path reads
+		// IRRollback.StepMap, and the scope rule (LE097) rejects
+		// workflow-level undo steps outright, so a document reaching this
+		// branch through the normal pipeline cannot happen. It stays for
+		// hand-built ASTs and lenient-mode compiles.
 		if len(ast.Rollback.Steps) > 0 {
 			names := make([]string, 0, len(ast.Rollback.Steps))
 			for _, rs := range ast.Rollback.Steps {

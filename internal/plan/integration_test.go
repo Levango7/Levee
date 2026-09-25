@@ -18,7 +18,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // yamlSerialRollback：serial 批次（strategy 缺省 → generator 视作 serial）+
-// 步骤级 rollback + workflow 级 approval + workflow 级 rollback 的完整 fixture。
+// 步骤级 rollback（补偿契约）+ workflow 级 approval + workflow 级 rollback
+// 运行态策略（on_failure，spec §7.1）的完整 fixture。
 const yamlSerialRollback = `
 name: serial-rollback-demo
 version: "1.0"
@@ -68,13 +69,7 @@ steps:
       unit: "{{ input.package_name }}"
     requires_reboot: false
 rollback:
-  strategy: undo-action
-  on_failure: abort
-  steps:
-    - name: restore-pkg
-      action: pkg.restore
-      args:
-        backup: "/var/backup/pkg"
+  on_failure: auto
 `
 
 // yamlPercentMultiBatch：percent 批次策略，10 个目标按 [10,50,100] 划分。
@@ -234,6 +229,15 @@ func TestPlanE2E_SerialSingleBatch(t *testing.T) {
 	assert.Equal(t, "downgrade-pkg", batch.Steps[0].Rollback.Steps[0].Name)
 	assert.Equal(t, "pkg", batch.Steps[0].Rollback.Steps[0].Module)
 	assert.Equal(t, "downgrade", batch.Steps[0].Rollback.Steps[0].Action)
+
+	// workflow 级 rollback 只承载运行态策略（spec §7.1）：on_failure 透传到
+	// plan（供执行器解析失败策略），补偿内容一律为空——它在 plan 生成时就被
+	// LE097 拒绝。
+	require.NotNil(t, p.Rollback)
+	assert.Equal(t, "auto", p.Rollback.OnFailure)
+	assert.Empty(t, p.Rollback.Strategy)
+	assert.Empty(t, p.Rollback.Steps)
+	assert.Empty(t, p.Rollback.SnapshotPaths)
 
 	// 影响面：direct = 全部目标，无 indirect。
 	report := NewImpactAnalyzer().Analyze(p)

@@ -415,7 +415,12 @@ func TestGenerateStepOverrides(t *testing.T) {
 
 func TestGeneratePreservesWorkflowGovernance(t *testing.T) {
 	approval := &dsl.ApprovalSpec{Level: "high", Approvers: []string{"alice", "bob"}, MinApprovers: 2}
-	rollback := &dsl.RollbackSpec{Strategy: "snapshot", SnapshotPaths: []string{"/etc/app.conf"}}
+	// Workflow-level rollback is run-level policy only (spec §7.1): the
+	// generator preserves on_failure / verify_after in the approved artifact
+	// and rejects compensation content (LE097, see
+	// TestGenerateRejectsWorkflowLevelRollbackCompensation). The
+	// compensation contract is a step-level declaration.
+	rollback := &dsl.RollbackSpec{OnFailure: dsl.RollbackOnFailureManual, VerifyAfter: true}
 	gate := &dsl.GateSpec{Pre: []dsl.GateCheck{{Type: "cmd", Command: "true"}}}
 	batchGate := &dsl.GateSpec{Post: []dsl.GateCheck{{Type: "cmd", Command: "false"}}}
 	wf := makeWorkflow("wf-governance", dsl.BatchConfig{Strategy: "serial", Gate: batchGate},

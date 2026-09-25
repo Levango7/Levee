@@ -434,7 +434,13 @@ func (p *DryRunPreview) detectConflicts(plan *Plan) []PotentialConflict {
 func (p *DryRunPreview) generateWarnings(wf *dsl.Workflow, plan *Plan) []string {
 	var warnings []string
 
-	if wf.Rollback == nil {
+	// A rollback plan is a step-level declaration: only those are
+	// attributable to a (host, forward step) pair and executable. A
+	// workflow-level rollback block is run-level policy only (spec §7.1,
+	// LE097), so its presence must NOT silence this warning — a workflow
+	// whose steps declare no compensation has no rollback plan, however
+	// many policy fields its header carries.
+	if !hasStepRollback(wf) {
 		warnings = append(warnings, "workflow has no rollback plan")
 	}
 
@@ -445,4 +451,19 @@ func (p *DryRunPreview) generateWarnings(wf *dsl.Workflow, plan *Plan) []string 
 	}
 
 	return warnings
+}
+
+// hasStepRollback reports whether any step of wf declares a step-level
+// rollback spec — the only declaration the compensation manager can attribute
+// to a (host, forward step) pair and execute.
+func hasStepRollback(wf *dsl.Workflow) bool {
+	if wf == nil {
+		return false
+	}
+	for _, s := range wf.Steps {
+		if s.Rollback != nil {
+			return true
+		}
+	}
+	return false
 }

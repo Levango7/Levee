@@ -23,7 +23,9 @@
 
 | 优先级 | 项 | 理由 | 依赖 |
 | --- | --- | --- | --- |
-| P0 | `workflow.Rollback`（工作流级回滚声明）是否落 `PlanStep` | 快照门禁只看 `PlanStep.Rollback`，工作流级声明当前在门禁上不可见；这是一个明确的设计决策，需要正式拍板，不能继续悬着 | 无（`2c97899` 已完成本系列） |
+| P0 | ~~`workflow.Rollback`（工作流级回滚声明）是否落 `PlanStep`~~ **已定案（2026-09-26）** | **不落 `PlanStep`**：补偿账本按 `(host, 前向步骤)` 归属，工作流级补偿无法归因（全局 undo 复制到每步会重复撤销或整份漏掉；全局 snapshot 逐 step 采集会拿到中间态）。改为分层治理：workflow 级只承载运行态策略（`on_failure` 已接入执行器 / `verify_after` 待装配），补偿内容由 **LE097** 在 `dsl.Validator` 与 plan 生成器两处 fail-closed 拒绝 | 无（已实现） |
+| P1 | 回滚后验证的生产装配：把 `rollback.PostRollbackVerifier` 注入 `wiring` 的闭包执行器（`NewClosureRunner(..., nil)` 目前恒为 nil） | 验证器与 `Grader`（T037）都已实现，只差装配——否则 `verify_after` 仍是"声明了但没人做" | 无 |
+| P2 | run 级快照原语（显式 `scope: run` 或独立顶层 `snapshot {}`）：首批发前**一次性**采集、回滚时恢复 | 方案 B 明确拒绝把 workflow 级 `snapshot_paths` 投影到每个 step（语义错误）；若确实需要"整次运行基线"，应作为独立原语设计，而不是伪装成 step 补偿 | 无 |
 | P0 | 完成 D-3 遗漏的链接：CLI 终态矩阵 / proto 注释 / metrics 标签引用 `runstatus` | runstatus 已建立，遗留三处仍各持一份词表副本 | 无 |
 | P0 | `recommend` → `Change` 的正式桥（新建 `CreateChangeFromRecommendation` 或在 conversation 引一条调用既有 CreateChange 的路径） | AI 对话闭环目前停在"确认"文字状态，没有变成变更。这是用户期待的最终形态 | 无 |
 | P1 | `idempotent: true` 的存量 Lint：检出未声明幂等的 undo 步骤并引导作者补齐 | 方案 C 留下的最后一步：从被动门禁变主动信息 | D-3 |
