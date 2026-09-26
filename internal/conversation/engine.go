@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -97,6 +98,7 @@ type ConversationEngine struct {
 	recommend     *recommend.RecommendEngine
 	diagnose      *diagnosis.DiagEngine
 	changeCreator ChangeCreator
+	closers       []io.Closer
 	log           *slog.Logger
 	timeout       time.Duration
 	mu            sync.RWMutex
@@ -130,13 +132,38 @@ func NewConversationEngine(cfg ConversationEngineConfig) *ConversationEngine {
 	}
 }
 
-// Close releases all sessions and frees resources. It is idempotent.
-func (e *ConversationEngine) Close() error {
+// AddCloser registers a resource whose lifetime is tied to the engine: Close
+// closes it. It exists for resources that cannot be handed to the constructor
+// because they do not exist yet — the CLI's change bridge opens its store
+// lazily, on the first confirmed recommendation, and must not leak that store
+// while an engine built for a read-only command must not open one at all.
+func (e *ConversationEngine) AddCloser(c io.Closer) {
+	if c == nil {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.closers = append(e.closers, c)
+}
 
+// Close releases all sessions and closes every registered resource, newest
+// first. It is idempotent: a second call closes nothing and returns nil.
+func (e *ConversationEngine) Close() error {
+	e.mu.Lock()
+	closers := e.closers
+	e.closers = nil
 	e.sessions = make(map[string]*Session)
-	return nil
+	e.mu.Unlock()
+
+	// Close outside the lock: a closer may block (a database flush) and
+	// nothing here needs the engine's own state held.
+	var errs []error
+	for i := len(closers) - 1; i >= 0; i-- {
+		if err := closers[i].Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // --- Session management -----------------------------------------------------
