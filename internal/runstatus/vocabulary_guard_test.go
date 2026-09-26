@@ -256,7 +256,7 @@ func TestProtoStatusCommentMatchesGo(t *testing.T) {
 	// Go identifiers mentioned in the prose all act as separators.
 	seen := map[string]bool{}
 	for _, tok := range strings.FieldsFunc(block.String(), func(r rune) bool {
-		return !(r == '_' || (r >= 'a' && r <= 'z'))
+		return r != '_' && (r < 'a' || r > 'z')
 	}) {
 		seen[tok] = true
 	}
