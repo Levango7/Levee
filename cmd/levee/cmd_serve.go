@@ -290,13 +290,23 @@ func newServeDiagEngine() (*diagnosis.DiagEngine, error) {
 // newServeConvEngine builds the conversation engine for serve mode with the
 // built-in recommend engine wired, mirroring the `levee converse` defaults so
 // /recommend works out of the box over the API.
-func newServeConvEngine() *conversation.ConversationEngine {
+// newServeConvEngine builds the conversation engine for the serve command.
+// changeSvc is wired as the recommendation→change bridge, so a confirmed
+// recommendation in the REST / IM / web conversation becomes a draft change in
+// the standard governance chain instead of a dead end. A nil changeSvc
+// (tests) degrades to the honest "nothing submitted" reply.
+func newServeConvEngine(changeSvc *grpc.ChangeService) *conversation.ConversationEngine {
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
 		Timeout: 30 * time.Second,
 	})
+	var changeCreator conversation.ChangeCreator
+	if changeSvc != nil {
+		changeCreator = conversationChangeCreator{svc: changeSvc}
+	}
 	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
-		Recommend: recEngine,
-		Timeout:   60 * time.Second,
+		Recommend:     recEngine,
+		ChangeCreator: changeCreator,
+		Timeout:       60 * time.Second,
 	})
 }
 
@@ -756,7 +766,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
 	}
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
-	convEngine := newServeConvEngine()
+	convEngine := newServeConvEngine(changeSvc)
 	convSvc := grpc.NewConversationService(convEngine, slog.Default())
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the

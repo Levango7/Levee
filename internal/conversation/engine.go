@@ -73,6 +73,13 @@ type ConversationEngineConfig struct {
 	// NewSessionFromAlert. May be nil; in that case diagnose commands
 	// return an error.
 	Diagnose *diagnosis.DiagEngine
+	// ChangeCreator turns a confirmed recommendation into a draft Change
+	// (change_bridge.go). Nil keeps the pre-bridge behaviour: the approval
+	// is recorded and the reply says plainly that nothing was submitted.
+	// The serve path wires the real change service, so REST / IM / web
+	// users get the closed loop; the bare CLI converse engine stays
+	// local-only and never silently claims to have created anything.
+	ChangeCreator ChangeCreator
 	// Timeout is the wall-clock budget for a single HandleMessage call.
 	// Zero defaults to DefaultConversationTimeout.
 	Timeout time.Duration
@@ -86,12 +93,13 @@ type ConversationEngineConfig struct {
 // ConversationEngine owns the set of live Sessions and dispatches incoming
 // messages. It is safe for concurrent use by any number of goroutines.
 type ConversationEngine struct {
-	sessions  map[string]*Session
-	recommend *recommend.RecommendEngine
-	diagnose  *diagnosis.DiagEngine
-	log       *slog.Logger
-	timeout   time.Duration
-	mu        sync.RWMutex
+	sessions      map[string]*Session
+	recommend     *recommend.RecommendEngine
+	diagnose      *diagnosis.DiagEngine
+	changeCreator ChangeCreator
+	log           *slog.Logger
+	timeout       time.Duration
+	mu            sync.RWMutex
 }
 
 // NewConversationEngine creates a ConversationEngine from the given config.
@@ -113,11 +121,12 @@ func NewConversationEngine(cfg ConversationEngineConfig) *ConversationEngine {
 		lg = log.With("component", "conversation_engine")
 	}
 	return &ConversationEngine{
-		sessions:  make(map[string]*Session),
-		recommend: cfg.Recommend,
-		diagnose:  cfg.Diagnose,
-		log:       lg,
-		timeout:   timeout,
+		sessions:      make(map[string]*Session),
+		recommend:     cfg.Recommend,
+		diagnose:      cfg.Diagnose,
+		changeCreator: cfg.ChangeCreator,
+		log:           lg,
+		timeout:       timeout,
 	}
 }
 
@@ -324,15 +333,22 @@ func (e *ConversationEngine) handleReviewing(_ctx context.Context, sess *Session
 	lower := strings.ToLower(msg)
 	switch lower {
 	case "执行", "approve", "yes", "y":
-		// 确认 ≠ 执行：执行链尚未接通，此前这里直接置 StateExecuting
-		// 并回复“开始执行”，但没有任何执行器接管，会话会烂在
-		// executing 态（P2-3）。现在保持 StateReviewing 并如实告知；
-		// 真正接通执行链后再恢复 executing 流转。
+		rec := sess.GetRecommendation()
 		action := &Action{Type: ActionApprove, Payload: map[string]string{}}
-		if rec := sess.GetRecommendation(); rec != nil {
+		if rec != nil {
 			action.Payload["recommendation_id"] = rec.ID
 		}
 		sess.AddMessageWithAction(RoleSystem, "user approved", action)
+		// 闭环：装配了 ChangeCreator 时，确认即把建议草案提交为草稿变更，
+		// 进入标准治理链（计划 → 审批 → 应用）；桥自身不执行任何工作流，
+		// 草案不通过解析/校验则 fail-closed，一个变更记录都不建。
+		if e.changeCreator != nil {
+			if rec == nil {
+				return &Reply{Text: "暂无建议可提交，请先执行 /recommend。", Action: action}, nil
+			}
+			return e.promoteRecommendation(_ctx, sess, rec)
+		}
+		// 未装配桥：如实告知"尚未提交"，不假装已执行。
 		return &Reply{Text: "建议已确认，尚未启动执行。回复「拒绝」终止建议，或继续提问。", Action: action}, nil
 	case "拒绝", "reject", "no", "n":
 		sess.SetState(StateFailed)
