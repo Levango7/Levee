@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -61,17 +62,22 @@ func (e *grpcChangeExecutor) retry(ctx context.Context, runID string) (string, e
 		return "", err
 	}
 	switch resp.GetStatus() {
-	case "rolled_back":
+	// Case labels are run statuses, taken from runstatus so this mapping
+	// cannot drift from the vocabulary the server writes. The returned
+	// strings are the *assignment result* vocabulary
+	// (completed | failed | rolled_back — design-cluster-dispatch.md), a
+	// deliberately smaller, frozen set — not run statuses.
+	case runstatus.StatusRolledBack:
 		return "rolled_back", nil
-	case "rolled_back_partial", "rollback_incomplete":
+	case runstatus.StatusRolledBackPartial, runstatus.StatusRollbackIncomplete:
 		// D-2 v2: the run row keeps the precise verdict; the assignment
 		// result vocabulary (completed | failed | rolled_back) records
 		// anything that is not a clean outcome as "failed" so dispatch
 		// and operators treat it as needing attention.
 		return "failed", nil
-	case "completed", "done":
+	case runstatus.StatusCompleted, "done": // "done" is legacy, not a run status
 		return "completed", nil
-	case "failed":
+	case runstatus.StatusFailed:
 		return "failed", nil
 	default:
 		// interrupted again or still running: surface as status for the

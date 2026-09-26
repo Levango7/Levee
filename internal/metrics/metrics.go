@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nexus/levee/internal/runstatus"
 )
 
 // Label values exported alongside the metric families below. Call
@@ -27,24 +29,32 @@ import (
 // strings.
 const (
 	// Change lifecycle statuses for levee_changes_total.
+	//
+	// Every label that is also a run status ALIASES runstatus: the
+	// vocabulary has one home, and the runstatus guard
+	// (TestNoBareRunStatusLiteralsOutsideRunstatus) now scans this package
+	// rather than exempting it — it used to keep its own spelling of
+	// rolled_back_partial / rollback_incomplete. created / succeeded are the
+	// two labels with no run counterpart: a creation is counted before a run
+	// exists, and "succeeded" is the historical label dashboards alert on.
 	StatusCreated    = "created"
-	StatusApproved   = "approved"
-	StatusRunning    = "running"
+	StatusApproved   = runstatus.StatusApproved
+	StatusRunning    = runstatus.StatusRunning
 	StatusSucceeded  = "succeeded"
-	StatusFailed     = "failed"
-	StatusRolledBack = "rolled_back"
+	StatusFailed     = runstatus.StatusFailed
+	StatusRolledBack = runstatus.StatusRolledBack
 	// StatusInterrupted is the cluster failover-takeover terminal: the
 	// executor node died mid-flight and the takeover loop settled the
 	// run (design-cluster-failover.md). Single-node deployments never
 	// produce it, but the counter family pre-registers the label so
 	// dashboards see a stable series.
-	StatusInterrupted = "interrupted"
+	StatusInterrupted = runstatus.StatusInterrupted
 	// StatusRolledBackPartial / StatusRollbackIncomplete are the D-2 v2
 	// rollback verdicts: some required compensation was missing / none
 	// completed. Pre-registered like interrupted so the label set stays
 	// stable for dashboards.
-	StatusRolledBackPartial  = "rolled_back_partial"
-	StatusRollbackIncomplete = "rollback_incomplete"
+	StatusRolledBackPartial  = runstatus.StatusRolledBackPartial
+	StatusRollbackIncomplete = runstatus.StatusRollbackIncomplete
 
 	// Gate results for levee_gates_total.
 	GateResultPass = "pass"

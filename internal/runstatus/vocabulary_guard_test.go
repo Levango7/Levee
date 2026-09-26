@@ -146,14 +146,21 @@ func TestSpecStatusTableMatchesGo(t *testing.T) {
 // re-spelling a status, because a re-spelled literal is a new copy.
 //
 // The scan is intentionally narrow: it looks for the distinctive multi-word /
-// underscore statuses in non-test Go files under internal/, and skips this
-// package plus files that legitimately define their OWN vocabulary:
+// underscore statuses in non-test Go files under internal/ AND cmd/, and skips
+// this package plus packages that legitimately define their OWN vocabulary:
 //
 //   - internal/engine (ClosurePhase) — the closure execution phase, which is
 //     then MAPPED into a run status; TestClosurePhasesMapToRunStatuses in
 //     internal/engine pins that mapping.
-//   - internal/metrics — counter label values, a deliberately different
-//     vocabulary (it has created/succeeded, which are not run statuses).
+//
+// internal/metrics used to be exempt here and no longer is: its label
+// constants now ALIAS runstatus (the two labels it keeps its own spelling
+// for — created / succeeded — are counter-lifecycle names, not run statuses,
+// and are not scanned). cmd/ joined the scan for the same reason: the D-3
+// note's third leftover copy was the CLI, whose predicates
+// (isRollbackableStatus, isTerminalStatus) and mappings (the change executor,
+// the audit report) now reference runstatus constants, so a re-spelled
+// literal anywhere in the CLI fails here instead of becoming a sixth fork.
 //
 // Only the two distinctive rollback verdicts are grepped: short names like
 // "draft" or "running" appear in unrelated contexts and would be noise.
@@ -163,46 +170,107 @@ func TestNoBareRunStatusLiteralsOutsideRunstatus(t *testing.T) {
 	// Packages that own a distinct vocabulary and are covered by their own
 	// correspondence tests instead.
 	exempt := map[string]string{
-		filepath.Join("internal", "engine"):  "ClosurePhase — see TestClosurePhasesMapToRunStatuses",
-		filepath.Join("internal", "metrics"): "counter labels — a separate vocabulary by design",
+		filepath.Join("internal", "engine"): "ClosurePhase — see TestClosurePhasesMapToRunStatuses",
 	}
 
-	root := repoFile(t, "internal")
-	repoRoot := filepath.Dir(root)
-
+	repoRoot := filepath.Dir(repoFile(t, "internal"))
 	var offenders []string
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		if strings.HasSuffix(path, "_test.go") || strings.Contains(path, "runstatus") {
-			return nil
-		}
-		rel, rerr := filepath.Rel(repoRoot, filepath.Dir(path))
-		if rerr == nil {
-			if _, ok := exempt[rel]; ok {
+	for _, root := range []string{
+		filepath.Join(repoRoot, "internal"),
+		filepath.Join(repoRoot, "cmd"),
+	} {
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") {
 				return nil
 			}
-		}
-		b, rerr := os.ReadFile(path)
-		if rerr != nil {
-			return nil
-		}
-		for _, line := range strings.Split(string(b), "\n") {
-			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "//") {
-				continue
+			if strings.HasSuffix(path, "_test.go") || strings.Contains(path, "runstatus") {
+				return nil
 			}
-			for _, status := range distinctive {
-				if strings.Contains(line, `"`+status+`"`) {
-					offenders = append(offenders, path+" :: "+trimmed)
+			rel, rerr := filepath.Rel(repoRoot, filepath.Dir(path))
+			if rerr == nil {
+				if _, ok := exempt[rel]; ok {
+					return nil
 				}
 			}
-		}
-		return nil
-	})
+			b, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return nil
+			}
+			for _, line := range strings.Split(string(b), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "//") {
+					continue
+				}
+				for _, status := range distinctive {
+					if strings.Contains(line, `"`+status+`"`) {
+						offenders = append(offenders, path+" :: "+trimmed)
+					}
+				}
+			}
+			return nil
+		})
+	}
 
 	assert.Empty(t, offenders,
 		"bare run-status literals found; use runstatus constants so the vocabulary has one home:\n"+
 			strings.Join(offenders, "\n"))
+}
+
+// TestProtoStatusCommentMatchesGo pins the Change.status comment in
+// proto/levee.proto to runstatus.All. proto is a copy that cannot import Go,
+// and it had already drifted once: the comment cited
+// internal/grpc/change_service.go as its source while the vocabulary itself
+// had moved to this package, so an integrator reading the contract followed a
+// two-hop reference to a state machine that was no longer the authority.
+// A new or retired status now has to be reflected in the contract, not
+// discovered by whoever reads the comment next.
+func TestProtoStatusCommentMatchesGo(t *testing.T) {
+	src, err := os.ReadFile(repoFile(t, filepath.Join("proto", "levee.proto")))
+	require.NoError(t, err)
+
+	lines := strings.Split(string(src), "\n")
+	idx := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(strings.TrimSpace(ln), "string status = 3;") {
+			idx = i
+			break
+		}
+	}
+	require.Greater(t, idx, 0, "`string status = 3;` not found in proto/levee.proto")
+
+	// Collect the contiguous comment block directly above the field.
+	var block strings.Builder
+	for j := idx - 1; j >= 0; j-- {
+		trimmed := strings.TrimSpace(lines[j])
+		if !strings.HasPrefix(trimmed, "//") {
+			break
+		}
+		block.WriteString(strings.TrimPrefix(trimmed, "//"))
+		block.WriteString(" ")
+	}
+	require.NotEmpty(t, strings.TrimSpace(block.String()),
+		"proto/levee.proto documents no status set above `string status = 3;`")
+
+	// Tokenise on anything that is not a lowercase letter or an underscore:
+	// the set is spelled slash-separated, so slashes, dots and the capitals of
+	// Go identifiers mentioned in the prose all act as separators.
+	seen := map[string]bool{}
+	for _, tok := range strings.FieldsFunc(block.String(), func(r rune) bool {
+		return !(r == '_' || (r >= 'a' && r <= 'z'))
+	}) {
+		seen[tok] = true
+	}
+	require.NotEmpty(t, seen, "no status tokens parsed from the proto status comment")
+
+	for _, s := range runstatus.All {
+		assert.Truef(t, seen[s], "proto Change.status comment is missing run status %q", s)
+	}
+	// Nothing that looks like a status may be listed unless it is one — this
+	// is what catches a retired value creeping back into the contract.
+	for tok := range seen {
+		if strings.Contains(tok, "_") {
+			assert.Containsf(t, runstatus.All, tok,
+				"proto Change.status comment carries unknown status-like token %q", tok)
+		}
+	}
 }

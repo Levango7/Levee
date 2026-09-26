@@ -27,8 +27,9 @@ type Change struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Label string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
-	// Run lifecycle status. Mirrors the state machine in
-	// internal/grpc/change_service.go (isValidTransition / terminalRunStatuses):
+	// Run lifecycle status. Authoritative vocabulary: internal/runstatus
+	// (runstatus.All); this comment is a copy of that set, pinned to it by
+	// runstatus.TestProtoStatusCommentMatchesGo. Values, transient states excluded:
 	// draft/planned/pending/approved/rejected/running/paused/completed/failed/
 	// cancelled/rolled_back/interrupted/archived, plus the D-2 v2 rollback
 	// verdicts rolled_back_partial and rollback_incomplete (a rollback that did

@@ -15,8 +15,9 @@ import "google/protobuf/empty.proto";
 message Change {
   string id = 1;
   string label = 2;
-  // Run lifecycle status. Mirrors the state machine in
-  // internal/grpc/change_service.go (isValidTransition / terminalRunStatuses):
+  // Run lifecycle status. Authoritative vocabulary: internal/runstatus
+  // (runstatus.All); this comment is a copy of that set, pinned to it by
+  // runstatus.TestProtoStatusCommentMatchesGo. Values, transient states excluded:
   // draft/planned/pending/approved/rejected/running/paused/completed/failed/
   // cancelled/rolled_back/interrupted/archived, plus the D-2 v2 rollback
   // verdicts rolled_back_partial and rollback_incomplete (a rollback that did

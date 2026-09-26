@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -218,9 +219,10 @@ func printTraceRecord(w io.Writer, t *state.Trace) {
 }
 
 // isTerminalStatus reports whether the run status is terminal (no further
-// changes expected).
+// changes expected). It delegates to runstatus so the CLI's follow-mode exit
+// condition is literally the same vocabulary the backend writes — rejected,
+// archived and interrupted are terminal too, and this copy omitted them, which
+// kept `levee logs -f` waiting on a run that could never change again.
 func isTerminalStatus(status string) bool {
-	return status == "completed" || status == "failed" || status == "cancelled" || status == "rolled_back" ||
-		// D-2 v2 rollback verdicts are terminal too.
-		status == "rolled_back_partial" || status == "rollback_incomplete"
+	return runstatus.IsTerminal(status)
 }

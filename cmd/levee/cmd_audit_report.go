@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -173,18 +174,20 @@ func collectAuditReport(ctx context.Context, store state.Store, runs []*state.Ru
 
 func countAuditReportStatus(data *auditReportData, status string) {
 	data.TotalRuns++
+	// Labels come from runstatus so a report never silently stops counting
+	// a status because the string was retyped here.
 	switch status {
-	case "completed":
+	case runstatus.StatusCompleted:
 		data.CompletedRuns++
-	case "failed", "rollback_incomplete":
+	case runstatus.StatusFailed, runstatus.StatusRollbackIncomplete:
 		data.FailedRuns++
-	case "rolled_back", "rolled_back_partial":
+	case runstatus.StatusRolledBack, runstatus.StatusRolledBackPartial:
 		data.RolledBack++
-	case "cancelled":
+	case runstatus.StatusCancelled:
 		data.Cancelled++
-	case "interrupted":
+	case runstatus.StatusInterrupted:
 		data.Interrupted++
-	case "running", "paused":
+	case runstatus.StatusRunning, runstatus.StatusPaused:
 		data.Running++
 	}
 }

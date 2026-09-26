@@ -46,15 +46,20 @@ func TestRollbackCmdTooManyArgs(t *testing.T) {
 }
 
 func TestIsRollbackableStatus(t *testing.T) {
+	// The CLI admits exactly what ChangeService.RollbackChange admits. It used
+	// to allow "running" as well, which the server has never accepted: the
+	// command passed the local check, transitioned the run to rolling_back
+	// locally, and only then came back with FailedPrecondition — a local
+	// predicate that disagrees with the guard it fronts is worse than none.
 	cases := []struct {
 		status string
 		want   bool
 	}{
-		{"running", true},
 		{"completed", true},
 		{"failed", true},
 		{"rolled_back_partial", true},
 		{"rollback_incomplete", true},
+		{"running", false},
 		{"pending", false},
 		{"draft", false},
 		{"approved", false},

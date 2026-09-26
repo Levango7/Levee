@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -30,8 +31,11 @@ func newRollbackCmd() *cobra.Command {
 			"invokes the rollback steps declared on each plan step. " +
 			"After rollback completes, post-rollback verification is run " +
 			"to confirm the target is in a healthy state. " +
-			"Only runs in \"running\", \"completed\", \"failed\", " +
-			"\"rolled_back_partial\", or \"rollback_incomplete\" status " +
+			// The admitted set is rendered from runstatus so this help text
+			// cannot contradict the server guard (ChangeService.RollbackChange
+			// admits exactly these). It used to list "running" as well, which
+			// the server has never accepted.
+			"Only runs in " + runstatus.JoinRollbackAdmitted() + " status " +
 			"can be rolled back. Use --force to override status checks.",
 		Args: cobra.ExactArgs(1),
 		RunE: runRollback,
@@ -65,7 +69,8 @@ func runRollback(cmd *cobra.Command, args []string) error {
 
 	// 3. Check whether the run is roll-backable.
 	if !rollbackOptForce && !isRollbackableStatus(run.Status) {
-		return fmt.Errorf("run %q is in %q state, cannot rollback [exit=4]", rollbackOptRunID, run.Status)
+		return fmt.Errorf("run %q is in %q state, cannot rollback [exit=4] (rollback admits: %s)",
+			rollbackOptRunID, run.Status, runstatus.JoinRollbackAdmitted())
 	}
 
 	// 4. Transition the run to "rolling_back".
@@ -126,12 +131,15 @@ func runRollback(cmd *cobra.Command, args []string) error {
 }
 
 // isRollbackableStatus reports whether a run in the given status can be
-// rolled back. The D-2 v2 rollback verdicts are included: a partial or
-// incomplete rollback is precisely the state a manual rollback completes.
-// A clean rolled_back is excluded — nothing left to undo.
+// rolled back. It delegates to runstatus.InRollbackAdmitted — the same set the
+// server's RollbackChange guard enforces, including the D-2 v2 verdicts: a
+// partial or incomplete rollback is precisely the state a manual rollback
+// completes, and a clean rolled_back is excluded (nothing left to undo). This
+// copy used to admit "running" as well, so `levee rollback` against a running
+// run round-tripped a FailedPrecondition from the server instead of failing
+// fast here.
 func isRollbackableStatus(status string) bool {
-	return status == "running" || status == "completed" || status == "failed" ||
-		status == "rolled_back_partial" || status == "rollback_incomplete"
+	return runstatus.InRollbackAdmitted(status)
 }
 
 // newRollbackAuditID generates a unique audit identifier for rollback actions.

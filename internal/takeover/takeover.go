@@ -278,7 +278,7 @@ func (l *Loop) settleOne(ctx context.Context, runID string) (bool, error) {
 		log.Warn("takeover: delete execution row failed", "run_id", runID, "error", derr)
 	}
 
-	metrics.Default.IncChange("interrupted")
+	metrics.Default.IncChange(metrics.StatusInterrupted)
 	log.Info("takeover: run interrupted",
 		"run_id", runID, "previous_owner", execOwner(ctx, l.guard, runID))
 	return true, nil
