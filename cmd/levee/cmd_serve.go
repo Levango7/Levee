@@ -299,13 +299,9 @@ func newServeConvEngine(changeSvc *grpc.ChangeService) *conversation.Conversatio
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
 		Timeout: 30 * time.Second,
 	})
-	var changeCreator conversation.ChangeCreator
-	if changeSvc != nil {
-		changeCreator = conversationChangeCreator{svc: changeSvc}
-	}
 	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
 		Recommend:     recEngine,
-		ChangeCreator: changeCreator,
+		ChangeCreator: grpc.NewConversationChangeCreator(changeSvc),
 		Timeout:       60 * time.Second,
 	})
 }
