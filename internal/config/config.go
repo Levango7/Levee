@@ -277,6 +277,14 @@ type JiraConfig struct {
 type PermissionConfig struct {
 	DefaultTeam string `json:"default_team" mapstructure:"default_team"`
 	DefaultEnv  string `json:"default_env"  mapstructure:"default_env"`
+	// BulkGrants authorises the fleet-wide pause-all / resume-all API
+	// actions: actor -> granted permission names ("pause:all",
+	// "resume:all"), the same vocabulary `levee pause all` honours. Empty
+	// (the default) leaves those actions unauthorised-by-absence-of-policy
+	// and `serve` logs that posture at startup, so bulk pause keeps working
+	// as an incident mitigation instead of depending on a grant list that
+	// was never written.
+	BulkGrants map[string][]string `json:"bulk_grants,omitempty" mapstructure:"bulk_grants"`
 }
 
 // VerifyConfig holds settings for future verification / SLO gates.
