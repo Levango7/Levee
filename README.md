@@ -100,6 +100,12 @@ make build
 ```
 
 无 token 且未传 `--insecure` 时服务拒绝启动；无 TLS 时输出明文传输警告。
+
+**提交审批需要能识别到人的凭据**：`approve` / `reject` 的投票人取自已认证主体，不接受
+请求里自报的名字——共享 `--token` 只证明"部署内部有人"，不足以支撑一条审批记录。需要
+审批请配置命名令牌（`server.auth_tokens`，每个令牌绑定一个身份）或 SSO / OIDC；
+`--insecure` 开发模式与 CLI 本地模式（进程内即权威）仍按当前操作者记录。
+
 健康探针：标准 gRPC health service（`grpc.health.v1`）；REST 网关（默认监听
 `:8080`，可用 `--http-addr` 调整）提供 `/healthz`——在服务注册完成前返回
 503 `{"status":"unavailable"}`，`serve` 启动流程会自动注册服务，正常运行时为 200。
