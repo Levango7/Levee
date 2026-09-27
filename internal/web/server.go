@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -34,6 +35,17 @@ type ServerConfig struct {
 	DevServerURL string
 	// ReadHeaderTimeout is forwarded to the http.Server. Defaults to 10s.
 	ReadHeaderTimeout time.Duration
+	// Listener, when set, is served directly instead of binding Addr.
+	// Addr is then only a display value.
+	//
+	// This exists because binding is not an atomic act: a caller that
+	// reserves a port with net.Listen(":0"), closes it, and then asks the
+	// server to bind that same address opens a window in which any other
+	// process can take the port — the rebind then fails with EADDRINUSE.
+	// Handing over the already-bound listener closes that window instead of
+	// retrying around it. It is also the correct shape for socket-activated
+	// launches (systemd fd passing), where the supervisor owns the socket.
+	Listener net.Listener
 }
 
 // WebUIServer serves the LEVEE frontend and (optionally) proxies API calls
@@ -45,7 +57,7 @@ type WebUIServer struct {
 
 // NewServer constructs a WebUIServer. The server is not started; call Start.
 func NewServer(cfg ServerConfig) (*WebUIServer, error) {
-	if cfg.Addr == "" {
+	if cfg.Addr == "" && cfg.Listener == nil {
 		return nil, errors.New("web: addr is required")
 	}
 	if cfg.DevMode && cfg.DevServerURL == "" {
@@ -104,23 +116,40 @@ func (s *WebUIServer) buildMux() (http.Handler, error) {
 	return mux, nil
 }
 
-// Start binds the listener and blocks until the server stops. The context,
+// Start serves the frontend and blocks until the server stops. The context,
 // if cancelled, triggers a graceful shutdown with a 5s drain deadline.
+//
+// With cfg.Listener set it serves that listener; otherwise it binds
+// cfg.Addr. Callers that must know the listening address before accepting
+// traffic should bind a listener themselves and pass it in — the alternative
+// (reserve a port with :0, close it, then hand the address over) releases the
+// port for exactly the window in which someone else can take it, so the
+// rebind fails intermittently with "address already in use" under load.
 func (s *WebUIServer) Start(ctx context.Context) error {
 	handler, err := s.buildMux()
 	if err != nil {
 		return err
 	}
+	addr := s.cfg.Addr
+	if s.cfg.Listener != nil && addr == "" {
+		addr = s.cfg.Listener.Addr().String()
+	}
 	s.server = &http.Server{
-		Addr:              s.cfg.Addr,
+		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: s.cfg.ReadHeaderTimeout,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
+		var serr error
+		if s.cfg.Listener != nil {
+			serr = s.server.Serve(s.cfg.Listener)
+		} else {
+			serr = s.server.ListenAndServe()
+		}
+		if serr != nil && serr != http.ErrServerClosed {
+			errCh <- serr
 			return
 		}
 		errCh <- nil

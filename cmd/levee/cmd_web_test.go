@@ -76,14 +76,18 @@ func TestWebCmd_HelpOutput(t *testing.T) {
 // port and verifies the embedded placeholder shell is served. It exercises
 // the same configuration path the cobra command would use.
 func TestWebCmd_ServesSpa(t *testing.T) {
+	// Bind once and hand the listener to the server. The previous shape
+	// reserved a port with net.Listen(":0"), closed it, then let Start bind
+	// that same address again — releasing the port for exactly the window in
+	// which another process can take it, so the rebind failed intermittently
+	// ("only listener can..." / address already in use) on loaded machines.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
-	_ = ln.Close()
 
-	cfg := web.ServerConfig{Addr: addr}
+	cfg := web.ServerConfig{Addr: addr, Listener: ln}
 	srv, err := web.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -94,17 +98,32 @@ func TestWebCmd_ServesSpa(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- srv.Start(ctx) }()
 
-	time.Sleep(100 * time.Millisecond)
-	resp, err := http.Get("http://" + addr + "/")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
+	// Wait until the server actually accepts instead of guessing how long
+	// start-up takes: a fixed sleep is a second load-sensitive deadline that
+	// buys nothing over polling with a bound.
+	resp := waitForHTTP(t, "http://"+addr+"/")
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 	cancel()
 	<-done
+}
+
+// waitForHTTP polls url until it answers, failing the test after 5s.
+func waitForHTTP(t *testing.T, url string) *http.Response {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := http.Get(url)
+		if err == nil {
+			return resp
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET %s: %v (server never accepted within 5s)", url, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // TestWebCmd_DevMode exercises the dev-mode proxy path through the command
@@ -115,11 +134,13 @@ func TestWebCmd_DevMode(t *testing.T) {
 	}))
 	defer dev.Close()
 
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
 	addr := ln.Addr().String()
-	_ = ln.Close()
 
-	cfg := web.ServerConfig{Addr: addr, DevMode: true, DevServerURL: dev.URL}
+	cfg := web.ServerConfig{Addr: addr, DevMode: true, DevServerURL: dev.URL, Listener: ln}
 	srv, err := web.NewServer(cfg)
 	if err != nil {
 		t.Fatalf("new server: %v", err)
@@ -130,11 +151,9 @@ func TestWebCmd_DevMode(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- srv.Start(ctx) }()
 
-	time.Sleep(100 * time.Millisecond)
-	resp, err := http.Get("http://" + addr + "/")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
+	// Same readiness poll as the SPA case: a fixed sleep is just a second
+	// load-sensitive deadline, and it does not prove anything when it passes.
+	resp := waitForHTTP(t, "http://"+addr+"/")
 	defer resp.Body.Close()
 	if !strings.Contains(resp.Status, "200") {
 		t.Errorf("expected 200, got %s", resp.Status)
