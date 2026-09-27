@@ -175,7 +175,7 @@ func TestApproveChange_RefusesMissingPlanWithEngine(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "approve-noplan"})
 	require.NoError(t, err)
 
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "alice"), &pb.ApproveRequest{
 		ChangeId: created.GetId(),
 		Approver: "alice",
 	})
@@ -191,7 +191,7 @@ func TestApproveChange_LegacyFlowUnchangedWithoutEngine(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "approve-legacy"})
 	require.NoError(t, err)
 
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "alice"), &pb.ApproveRequest{
 		ChangeId: created.GetId(),
 		Approver: "alice",
 	})

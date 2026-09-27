@@ -109,6 +109,14 @@ type Approval struct {
 	// "legacy record" (created before D-1 v2): it still settles regardless
 	// of plan, preserving behaviour for pre-migration rows.
 	PlanHash string `json:"plan_hash"`
+	// Initiator is the identity that authored/triggered the change being
+	// approved. It is recorded so ExcludeInitiator can be evaluated at
+	// decision time; empty means unknown (exclusion then cannot apply).
+	Initiator string `json:"initiator,omitempty"`
+	// ExcludeInitiator forbids Initiator from casting a decision. The
+	// LEVEELang spec forces it true at the high tier, and kickoff forces
+	// it for every tier that demands independent review.
+	ExcludeInitiator bool `json:"exclude_initiator,omitempty"`
 	// Revision is the optimistic-lock version used by the concurrent decision
 	// CAS. It is carried by the store round-trip so the CAS compares the exact
 	// record the caller read.
@@ -128,6 +136,12 @@ type CreateRequest struct {
 	// PlanHash is the plan artifact the new approval attests to. Leave empty
 	// to create a legacy (plan-agnostic) approval record.
 	PlanHash string
+	// Initiator and ExcludeInitiator carry the independence requirement
+	// into the durable record. Without Initiator the exclusion has
+	// nothing to match, so the workflow author's identity must be passed
+	// in for exclude_initiator to mean anything.
+	Initiator        string
+	ExcludeInitiator bool
 }
 
 // --- Store ------------------------------------------------------------------
@@ -165,6 +179,13 @@ var (
 	ErrInvalidTransition    = errors.New("approval: invalid status transition")
 	ErrDuplicateDecision    = errors.New("approval: approver already decided")
 	ErrUnauthorizedApprover = errors.New("approval: approver not in approvers list")
+	// ErrInitiatorExcluded is returned when the change's own initiator
+	// tries to decide an approval that requires independent review
+	// (exclude_initiator). It is distinct from ErrUnauthorizedApprover so
+	// callers can tell "not on the list" apart from "on the list, but not
+	// independent enough" — the latter is a governance violation, not a
+	// misconfiguration.
+	ErrInitiatorExcluded    = errors.New("approval: initiator may not approve this change")
 	ErrInvalidLevel         = errors.New("approval: invalid level")
 	ErrEmptyRunID           = errors.New("approval: empty run id")
 	ErrMinApproversTooLarge = errors.New("approval: min_approvers exceeds approvers")
@@ -272,16 +293,18 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Approval, err
 		return nil, err
 	}
 	a := &Approval{
-		ID:           id,
-		RunID:        req.RunID,
-		Level:        req.Level,
-		Status:       StatusPending,
-		Approvers:    req.Approvers,
-		MinApprovers: req.MinApprovers,
-		Decisions:    nil,
-		CreatedAt:    now,
-		ExpiresAt:    req.ExpiresAt,
-		PlanHash:     req.PlanHash,
+		ID:               id,
+		RunID:            req.RunID,
+		Level:            req.Level,
+		Status:           StatusPending,
+		Approvers:        req.Approvers,
+		MinApprovers:     req.MinApprovers,
+		Decisions:        nil,
+		CreatedAt:        now,
+		ExpiresAt:        req.ExpiresAt,
+		PlanHash:         req.PlanHash,
+		Initiator:        req.Initiator,
+		ExcludeInitiator: req.ExcludeInitiator,
 	}
 	if err := s.store.Create(ctx, a); err != nil {
 		return nil, fmt.Errorf("approval: create: %w", err)
@@ -353,6 +376,14 @@ func (s *Service) decide(ctx context.Context, id string, approver string, action
 		}
 		if !isAuthorized(a.Approvers, approver) {
 			return fmt.Errorf("%w: %s", ErrUnauthorizedApprover, approver)
+		}
+		// Independence gate: exclude_initiator is a property of the
+		// durable record, so it holds for every decision path (gRPC,
+		// REST, CLI, ChatOps, mobile deep link) rather than only the one
+		// that happens to check it.
+		if a.ExcludeInitiator && a.Initiator != "" && approver == a.Initiator {
+			return fmt.Errorf("%w: %s is the initiator and %s-level approvals require independent review",
+				ErrInitiatorExcluded, approver, a.Level)
 		}
 		if hasDecided(a.Decisions, approver) {
 			return fmt.Errorf("%w: %s", ErrDuplicateDecision, approver)

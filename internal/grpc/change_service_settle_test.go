@@ -46,7 +46,7 @@ func TestApproveChange_PartialQuorumLeavesRunDraft(t *testing.T) {
 	require.NotEmpty(t, ap.ID)
 
 	// First vote: the decision is recorded, the run stays draft.
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{ChangeId: "run-q", Approver: "alice"})
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "alice"), &pb.ApproveRequest{ChangeId: "run-q", Approver: "alice"})
 	require.NoError(t, err)
 	got, err := store.GetRun(context.Background(), "run-q")
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ func TestApproveChange_PartialQuorumLeavesRunDraft(t *testing.T) {
 	assert.NotEqual(t, "approved", got.ApprovalStatus)
 
 	// Second vote: the quorum completes, the run settles.
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{ChangeId: "run-q", Approver: "bob"})
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "bob"), &pb.ApproveRequest{ChangeId: "run-q", Approver: "bob"})
 	require.NoError(t, err)
 	got, err = store.GetRun(context.Background(), "run-q")
 	require.NoError(t, err)
@@ -78,7 +78,7 @@ func TestApproveChange_RejectMirrorsImmediately(t *testing.T) {
 	require.NotEmpty(t, ap.ID)
 
 	// One-vote veto: even mid-quorum a single reject settles the run.
-	_, err = svc.RejectChange(context.Background(), &pb.RejectRequest{ChangeId: "run-v", Rejecter: "bob", Reason: "bad timing"})
+	_, err = svc.RejectChange(ContextWithActor(context.Background(), "bob"), &pb.RejectRequest{ChangeId: "run-v", Rejecter: "bob", Reason: "bad timing"})
 	require.NoError(t, err)
 	got, err := store.GetRun(context.Background(), "run-v")
 	require.NoError(t, err)

@@ -38,17 +38,21 @@ type kickoffStoreAdapter struct {
 // Comment. ALL fields must survive (Decisions included) or decide()'s
 // read-modify-write loses votes between decisions.
 type kickoffMeta struct {
-	Approvers    []string            `json:"approvers,omitempty"`
-	MinApprovers int                 `json:"min_approvers,omitempty"`
-	Decisions    []approval.Decision `json:"decisions,omitempty"`
+	Approvers        []string            `json:"approvers,omitempty"`
+	MinApprovers     int                 `json:"min_approvers,omitempty"`
+	Decisions        []approval.Decision `json:"decisions,omitempty"`
+	Initiator        string              `json:"initiator,omitempty"`
+	ExcludeInitiator bool                `json:"exclude_initiator,omitempty"`
 }
 
 // encodeKickoffMeta serialises ap's chain state into the Comment blob.
 func encodeKickoffMeta(ap *approval.Approval) string {
 	raw, _ := json.Marshal(kickoffMeta{
-		Approvers:    ap.Approvers,
-		MinApprovers: ap.MinApprovers,
-		Decisions:    ap.Decisions,
+		Approvers:        ap.Approvers,
+		MinApprovers:     ap.MinApprovers,
+		Decisions:        ap.Decisions,
+		Initiator:        ap.Initiator,
+		ExcludeInitiator: ap.ExcludeInitiator,
 	})
 	return string(raw)
 }
@@ -87,6 +91,8 @@ func (a *kickoffStoreAdapter) Get(ctx context.Context, id string) (*approval.App
 			out.Approvers = meta.Approvers
 			out.MinApprovers = meta.MinApprovers
 			out.Decisions = meta.Decisions
+			out.Initiator = meta.Initiator
+			out.ExcludeInitiator = meta.ExcludeInitiator
 		}
 	}
 	if out.MinApprovers == 0 {
@@ -104,6 +110,7 @@ func (a *kickoffStoreAdapter) Update(ctx context.Context, ap *approval.Approval)
 		Status:    string(ap.Status),
 		Comment:   encodeKickoffMeta(ap),
 		TimeoutAt: &acted,
+		PlanHash:  ap.PlanHash,
 	})
 }
 
@@ -123,6 +130,7 @@ func (a *kickoffStoreAdapter) UpdateIfPending(ctx context.Context, ap *approval.
 		Status:    string(ap.Status),
 		Comment:   encodeKickoffMeta(ap),
 		TimeoutAt: &acted,
+		PlanHash:  ap.PlanHash,
 	})
 }
 
@@ -170,7 +178,12 @@ func planWithGovernance(t *testing.T, floor string, approvalSpec *dsl.ApprovalSp
 }
 
 func TestPlanChange_KicksOffApprovalChain(t *testing.T) {
-	sp := planWithFloor(t, "high")
+	// Two reviewers who are not the creator: a high-tier chain cannot be
+	// satisfied by the author alone (that refusal is pinned by
+	// TestPlanChange_RefusesHighTierWithoutIndependentApprovers).
+	sp := planWithGovernance(t, "high", &dsl.ApprovalSpec{
+		Approvers: []string{"bob", "carol"}, MinApprovers: 2,
+	})
 	engine := &recordingEngine{plan: &pb.Plan{ChangeId: "x"}, stored: sp}
 	svc, store := newKickoffService(t, engine.adapter())
 	created, err := svc.CreateChange(ContextWithActor(context.Background(), "alice"), &pb.CreateChangeRequest{
@@ -255,7 +268,9 @@ func TestApprovalRouting_LegacyInlineFallback(t *testing.T) {
 }
 
 func TestApprovalRouting_RePlanSupersedesPending(t *testing.T) {
-	sp := planWithFloor(t, "high")
+	sp := planWithGovernance(t, "high", &dsl.ApprovalSpec{
+		Approvers: []string{"bob", "carol"}, MinApprovers: 2,
+	})
 	engine := &recordingEngine{plan: &pb.Plan{ChangeId: "x"}, stored: sp}
 	svc, store := newKickoffService(t, engine.adapter())
 	created, err := svc.CreateChange(ContextWithActor(context.Background(), "alice"), &pb.CreateChangeRequest{
