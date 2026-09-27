@@ -684,6 +684,26 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
 	}
 
+	// Spec-mandated risk-level enforcement (leveelang-spec.md §8.1):
+	// high / emergency changes MUST NOT be auto-approved. autoApprove is a
+	// CLIENT-SUPPLIED request field, so without this gate any caller could
+	// bypass the approval chain outright by setting it — it must therefore
+	// stay ahead of the plan/approval binding below, which autoApprove
+	// would otherwise skip.
+	//
+	// It sits after the plan-presence and plan-integrity refusals because
+	// run.ApprovalLevel only carries a tier once a plan exists: CreateChange
+	// stores the client-supplied PRIORITY (low/normal/high/urgent, and the
+	// impact table's "medium") in that same column until kickoffApproval
+	// overwrites it with the derived tier. Refusing an unplanned run for
+	// "medium-risk auto-approval" buries the actionable answer — call
+	// PlanChange — so the ordering is load-bearing, not cosmetic.
+	if risk.AutoApproveForbidden(run.ApprovalLevel) && req.GetAutoApprove() {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"change %q is a %s-risk change: auto_approve is not permitted (the spec forces auto_approve=false for high/emergency); approve the plan through the approval chain instead",
+			req.GetChangeId(), run.ApprovalLevel)
+	}
+
 	// Approval/plan binding (D-1 v2): with an execution engine and an
 	// approval service wired, the run may only be applied when an approval
 	// row that ATTESTs TO THE CURRENT plan revision is actually approved.
@@ -1382,6 +1402,16 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"can only rollback %s changes; current status: %q",
 			runstatus.JoinRollbackAdmitted(), run.Status)
+	}
+
+	// Spec-mandated risk-level enforcement (leveelang-spec.md §8.1):
+	// high / emergency changes MUST NOT be auto-approved. Rollback is
+	// itself a destructive production action, so the same rule that guards
+	// apply guards it here.
+	if risk.AutoApproveForbidden(run.ApprovalLevel) && req.GetAutoApprove() {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"change %q is a %s-risk change: auto_approve is not permitted on rollback (the spec forces auto_approve=false for high/emergency)",
+			req.GetChangeId(), run.ApprovalLevel)
 	}
 
 	now := time.Now().UTC()
