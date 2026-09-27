@@ -2628,7 +2628,12 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !tokens.Enabled() {
-			// Auth disabled: let the request through.
+			// Auth disabled: let the request through. With no credential
+			// configured the deployment has declared it has no identity
+			// model, so the asserted X-Acting-As name is admitted as the
+			// governance subject (see admitAssertedIdentity).
+			r = r.WithContext(admitAssertedIdentity(
+				r.Context(), sanitizeHeaderValue(r.Header.Get(actingAsHeaderName))))
 			h.ServeHTTP(w, r)
 			return
 		}

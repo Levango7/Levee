@@ -209,10 +209,12 @@ func actorFromCtx(ctx context.Context) string {
 // ContextWithActor returns a context carrying the actor name used for
 // audit attribution by service-layer calls. It exists for in-process
 // callers (the CLI's local mode calls services directly, bypassing the
-// gRPC/REST interceptors that normally set the actor). The same
-// trust caveat as actorFromCtx applies: the name is an assertion.
+// gRPC/REST interceptors that normally set the actor). Being in-process,
+// the caller IS the trust boundary, so the name also becomes the verified
+// subject for governance decisions — see subject.go. Remote callers get
+// their subject from the auth layer and cannot reach this function.
 func ContextWithActor(ctx context.Context, actor string) context.Context {
-	return context.WithValue(ctx, actorKey{}, actor)
+	return ContextWithSubject(ctx, actor)
 }
 
 // actorKey is the context key type for the actor identity.
@@ -237,6 +239,21 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 		priority = "normal"
 	}
 
+	// The creator recorded for audit and governance must be the VERIFIED
+	// subject when one exists, not the client-supplied actor label.
+	// run.Creator feeds the approval chain's Initiator (kickoffApproval →
+	// approval.CreateRequest.Initiator), and that field drives
+	// exclude_initiator — the independence rule that stops an author from
+	// approving their own high-tier change. Sourcing it from actorFromCtx
+	// would let a caller name someone else in the "x-actor" header and
+	// then vote their own change through. Unverifiable credentials (legacy
+	// shared token, development mode) keep the label: there is no subject
+	// to prefer.
+	creator := actorFromCtx(ctx)
+	if subj := SubjectFromContext(ctx); subj != "" {
+		creator = subj
+	}
+
 	run := &state.Run{
 		ID:             runID,
 		WorkflowName:   req.GetWorkflowFile(),
@@ -244,11 +261,21 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 		Params:         pbToRunParams(req.GetParams()),
 		Status:         "draft",
 		ApprovalStatus: "pending",
-		ApprovalLevel:  priority,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		Creator:        actorFromCtx(ctx),
-		IncidentID:     req.GetEnvironment(),
+		// NOTE: ApprovalLevel doubles as the change's PRIORITY here, and
+		// the two are NOT the same vocabulary. priority is
+		// low/normal/high/urgent (client-supplied, mirrored back out at
+		// runToPB:169), while the approval tier is
+		// standard/high/emergency (derived server-side in kickoffApproval,
+		// which overwrites this value once a plan exists). The vocabularies
+		// overlap only at "high". Anything reading this field as a tier must
+		// therefore fail closed on unrecognised values — see
+		// risk.AutoApproveForbidden. Splitting them into separate columns is
+		// the real fix.
+		ApprovalLevel: priority,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Creator:       creator,
+		IncidentID:    req.GetEnvironment(),
 	}
 	if err := s.store.CreateRun(ctx, run); err != nil {
 		return nil, status.Errorf(codes.Internal, "create run: %v", err)
