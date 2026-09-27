@@ -22,6 +22,9 @@ package grpc
 
 import (
 	"context"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // subjectKey carries a verified identity. It is deliberately a distinct
@@ -79,4 +82,17 @@ func admitAssertedIdentity(ctx context.Context, asserted string) context.Context
 		return ctx
 	}
 	return ContextWithSubject(ctx, asserted)
+}
+
+// requireSubject returns the verified identity, or an Unauthenticated
+// status telling the caller exactly which credential kinds LEVEE accepts
+// for this operation. Governance writes use it before any state change.
+func requireSubject(ctx context.Context, op string) (string, error) {
+	if s := SubjectFromContext(ctx); s != "" {
+		return s, nil
+	}
+	return "", status.Errorf(codes.Unauthenticated,
+		"%s requires a verifiable identity: approve/reject votes are bound to the authenticated "+
+			"subject, and this credential carries none. Use a named token (server.auth_tokens), an "+
+			"SSO session, or OIDC; a shared --token authenticates the deployment, not a person.", op)
 }

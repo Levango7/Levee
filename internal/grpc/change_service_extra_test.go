@@ -200,14 +200,20 @@ func TestChangeServiceNilStoreReturnsInternal(t *testing.T) {
 		"RetryChange":    func() error { _, err := svc.RetryChange(ctx, &pb.RetryRequest{}); return err },
 		"RetryHost":      func() error { _, err := svc.RetryHost(ctx, &pb.RetryHostRequest{}); return err },
 		"RollbackChange": func() error { _, err := svc.RollbackChange(ctx, &pb.RollbackRequest{}); return err },
-		"ApproveChange":  func() error { _, err := svc.ApproveChange(ctx, &pb.ApproveRequest{}); return err },
-		"RejectChange":   func() error { _, err := svc.RejectChange(ctx, &pb.RejectRequest{}); return err },
-		"GetChange":      func() error { _, err := svc.GetChange(ctx, &pb.GetChangeRequest{}); return err },
-		"ListChanges":    func() error { _, err := svc.ListChanges(ctx, &pb.ListChangesRequest{}); return err },
-		"ArchiveChange":  func() error { _, err := svc.ArchiveChange(ctx, &pb.ArchiveRequest{}); return err },
-		"GetLogs":        func() error { _, err := svc.GetLogs(ctx, &pb.GetLogsRequest{}); return err },
-		"GetDiff":        func() error { _, err := svc.GetDiff(ctx, &pb.GetDiffRequest{}); return err },
-		"GetTrace":       func() error { _, err := svc.GetTrace(ctx, &pb.GetTraceRequest{}); return err },
+		"ApproveChange": func() error {
+			_, err := svc.ApproveChange(ContextWithActor(ctx, "e2e-tester"), &pb.ApproveRequest{})
+			return err
+		},
+		"RejectChange": func() error {
+			_, err := svc.RejectChange(ContextWithActor(ctx, "e2e-tester"), &pb.RejectRequest{})
+			return err
+		},
+		"GetChange":     func() error { _, err := svc.GetChange(ctx, &pb.GetChangeRequest{}); return err },
+		"ListChanges":   func() error { _, err := svc.ListChanges(ctx, &pb.ListChangesRequest{}); return err },
+		"ArchiveChange": func() error { _, err := svc.ArchiveChange(ctx, &pb.ArchiveRequest{}); return err },
+		"GetLogs":       func() error { _, err := svc.GetLogs(ctx, &pb.GetLogsRequest{}); return err },
+		"GetDiff":       func() error { _, err := svc.GetDiff(ctx, &pb.GetDiffRequest{}); return err },
+		"GetTrace":      func() error { _, err := svc.GetTrace(ctx, &pb.GetTraceRequest{}); return err },
 	}
 	for name, fn := range unary {
 		t.Run(name, func(t *testing.T) {
@@ -977,7 +983,7 @@ func TestApproveChange_NoPendingApprovalFailsPrecondition(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "appr-none"})
 	require.NoError(t, err)
 
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "alice"})
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "alice"), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "alice"})
 	require.Error(t, err)
 	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
@@ -995,7 +1001,7 @@ func TestApproveChange_ListApprovalsErrorMapped(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "appr-err2"})
 	require.NoError(t, err)
 
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "a"})
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "a"), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "a"})
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
 }
@@ -1005,7 +1011,7 @@ func TestRejectChange_TransitionsToRejected(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "reject-me"})
 	require.NoError(t, err)
 
-	resp, err := svc.RejectChange(context.Background(), &pb.RejectRequest{
+	resp, err := svc.RejectChange(ContextWithActor(context.Background(), "bob"), &pb.RejectRequest{
 		ChangeId: created.GetId(),
 		Rejecter: "bob",
 		Reason:   "risky",
@@ -1042,7 +1048,7 @@ func TestRejectChange_StoreErrorMapsToInternal(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "reject-err"})
 	require.NoError(t, err)
 
-	_, err = svc.RejectChange(context.Background(), &pb.RejectRequest{ChangeId: created.GetId(), Rejecter: "bob"})
+	_, err = svc.RejectChange(ContextWithActor(context.Background(), "bob"), &pb.RejectRequest{ChangeId: created.GetId(), Rejecter: "bob"})
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
 }

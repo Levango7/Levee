@@ -418,6 +418,25 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 			run.PlanJSON = stored.JSON
 			run.PlanHash = stored.Hash
 			run.UpdatedAt = now
+			// Record the derived tier even when no approval chain is going
+			// to be created. kickoffApproval writes the tier as a side
+			// effect of creating the chain, but a deployment with an engine
+			// and no approval service never reaches that code — leaving the
+			// column holding whatever PRIORITY the client sent at
+			// CreateChange, since the two share one column. Anything that
+			// then reads it as a tier is wrong in both directions: a plan
+			// whose floor is high (irreversible) reads as auto-approvable,
+			// while an unrelated "high" priority reads as a high-tier
+			// change. Failing here is deliberate: a change whose tier
+			// cannot be recorded cannot be gated correctly either.
+			if s.approval == nil {
+				if tier := derivedApprovalTier(run); tier != "" && run.ApprovalLevel != tier {
+					run.ApprovalLevel = tier
+					if err := s.store.UpdateRun(ctx, run); err != nil {
+						return nil, status.Errorf(codes.Internal, "record approval tier: %v", err)
+					}
+				}
+			}
 			// Approval binding (D-1 v2): an approval attests to a specific
 			// plan (PlanHash). When a NEW plan (different hash) is persisted
 			// on a run that was already approved, that approval is no longer
@@ -444,7 +463,12 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 			// ApproveChange could only ever find manually-seeded
 			// records. The tier is max(workflow declaration, plan floor):
 			// the floor can RAISE but never LOWER the declared level.
-			s.kickoffApproval(ctx, run)
+			// A chain that cannot meet its own tier aborts the plan:
+			// handing back a plan whose approval is pre-satisfied by its
+			// author is worse than refusing to plan.
+			if kerr := s.kickoffApproval(ctx, run); kerr != nil {
+				return nil, status.Errorf(codes.FailedPrecondition, "%v", kerr)
+			}
 		}
 		return planMsg, nil
 	}
@@ -457,6 +481,28 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 		Batches:       []*pb.Batch{},
 		ImpactSummary: "no engine configured; empty plan",
 	}, nil
+}
+
+// ErrApprovalUnderprovisioned is returned by PlanChange when the change's
+// approval tier demands more independent reviewers than the workflow can
+// supply. It is a governance refusal, not a transient failure: the plan
+// is not persisted and the change must be re-declared with approvers.
+var ErrApprovalUnderprovisioned = errors.New("approval under-provisioned")
+
+// withoutIdentity drops one name from an approver set (used to apply the
+// exclude_initiator rule). Order is preserved so the audit trail lists
+// approvers as the author declared them.
+func withoutIdentity(approvers []string, identity string) []string {
+	if identity == "" {
+		return approvers
+	}
+	out := make([]string, 0, len(approvers))
+	for _, a := range approvers {
+		if a != identity {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // kickoffApproval starts the approval chain for a freshly planned run
@@ -479,20 +525,23 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 // Failures are logged, never fatal: planning must succeed even when the
 // approval subsystem is degraded (the apply gate re-checks approval
 // anyway, so a missing kickoff cannot let an unapproved change run).
-func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) {
+// The exception is a governance refusal — a chain that cannot satisfy its
+// own tier returns ErrApprovalUnderprovisioned, because letting the plan
+// through would hand the caller a rubber stamp.
+func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) error {
 	if s.approval == nil || run == nil || run.PlanJSON == "" {
-		return
+		return nil
 	}
 
 	// The approval floor ships inside the persisted artifact.
 	var p plan.Plan
 	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
 		log.Warn("approval kickoff: plan artifact unparsable; skipping", "run_id", run.ID, "error", err)
-		return
+		return nil
 	}
 	if !plan.VerifyHash(&p, run.PlanHash) {
 		log.Warn("approval kickoff: plan artifact hash mismatch; skipping", "run_id", run.ID)
-		return
+		return nil
 	}
 
 	// Workflow approval is persisted in the artifact and covered by the
@@ -507,27 +556,60 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) {
 		declared = spec.Level
 	}
 
-	tier := risk.MaxLevel(declared, p.ApprovalFloor)
+	// One definition of the routing rule, shared with PlanChange's tier
+	// recording (see derivedApprovalTier).
+	tier := derivedApprovalTier(run)
 	if tier == "" {
-		tier = "standard"
+		tier = approval.LevelStandard
 	}
 
-	// Approver set: declared approvers win; otherwise the creator (the
-	// least-privilege default that still leaves a record the chain can
-	// resolve; deployments wanting stricter separation declare
-	// approvers explicitly).
+	// Quorum comes from the TIER, not from what the workflow happened to
+	// write: routing a change to high is the statement that two humans
+	// must review it. A workflow that declares nothing used to fall back
+	// to "the creator, alone, one vote" — which silently turned every
+	// undeclared high-tier change (including anything the risk floor
+	// raised, i.e. any irreversible step) into a self-approval.
+	minApprovers, err := approval.MinApproversFor(tier)
+	if err != nil {
+		return fmt.Errorf("approval kickoff: %w", err)
+	}
 	approvers := []string{}
-	minApprovers := 0
 	if spec != nil {
 		approvers = spec.Approvers
-		minApprovers = spec.MinApprovers
+		// A workflow may tighten its own quorum, never loosen the tier's.
+		if spec.MinApprovers > minApprovers {
+			minApprovers = spec.MinApprovers
+		}
 	}
-	if len(approvers) == 0 {
+
+	// exclude_initiator: forced for the high tier (spec 605), otherwise
+	// whatever the author declared. Emergency keeps its single fast
+	// approver — see approval.ForcesInitiatorExclusion.
+	excludeInitiator := approval.ForcesInitiatorExclusion(tier)
+	if !excludeInitiator && spec != nil {
+		excludeInitiator = spec.ExcludeInitiator
+	}
+
+	if len(approvers) == 0 && !excludeInitiator && minApprovers <= 1 {
+		// Standard tier, no declaration: keep the fail-safe record that
+		// names the creator, so an unreviewed workflow still leaves a
+		// real approval trail. Higher tiers cannot take this shortcut.
 		approvers = []string{run.Creator}
-		minApprovers = 1
 	}
-	if minApprovers > len(approvers) {
-		minApprovers = len(approvers)
+
+	// The set that can actually reach the quorum, after independence is
+	// applied. Checking this at plan time rather than at decision time
+	// means an unsatisfiable chain is refused before anyone is told to go
+	// approve it.
+	votable := approvers
+	if excludeInitiator {
+		votable = withoutIdentity(approvers, run.Creator)
+	}
+	if len(votable) < minApprovers {
+		return fmt.Errorf(
+			"%w: %s-level change needs %d independent approver(s) but the workflow declares %d votable (%v); "+
+				"declare approval.approvers with people other than the change creator",
+			ErrApprovalUnderprovisioned, tier, minApprovers, len(votable), approvers)
 	}
 
 	// Supersede any pending approval from an earlier plan of this run.
@@ -551,16 +633,18 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) {
 	}
 
 	created, err := s.approval.Create(ctx, approval.CreateRequest{
-		RunID:        run.ID,
-		Level:        tier,
-		Approvers:    approvers,
-		MinApprovers: minApprovers,
-		ExpiresAt:    time.Now().UTC().Add(24 * time.Hour),
-		PlanHash:     run.PlanHash,
+		RunID:            run.ID,
+		Level:            tier,
+		Approvers:        approvers,
+		MinApprovers:     minApprovers,
+		ExpiresAt:        time.Now().UTC().Add(24 * time.Hour),
+		PlanHash:         run.PlanHash,
+		Initiator:        run.Creator,
+		ExcludeInitiator: excludeInitiator,
 	})
 	if err != nil {
 		log.Warn("approval kickoff: create failed; apply gate still enforces approval", "run_id", run.ID, "level", tier, "error", err)
-		return
+		return nil
 	}
 
 	// Record the effective tier on the run so the UI/CLI surface it.
@@ -594,6 +678,7 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) {
 	if s.onApprovalCreate != nil {
 		s.onApprovalCreate(created)
 	}
+	return nil
 }
 
 // parseInlineApprovalSpec extracts the approval declaration from an
@@ -616,6 +701,36 @@ func parseInlineApprovalSpec(src string) *dsl.ApprovalSpec {
 		return nil
 	}
 	return wf.Approval
+}
+
+// derivedApprovalTier computes a change's approval tier from its
+// persisted plan artifact: max(workflow declaration, plan floor). It is
+// the single definition of that rule — kickoffApproval routes the chain
+// with it, and PlanChange records it so no governance gate has to guess.
+//
+// Returns "" when the artifact is missing or unparsable, which callers
+// must NOT read as "standard": an unplanned run has no tier at all.
+func derivedApprovalTier(run *state.Run) string {
+	if run == nil || run.PlanJSON == "" {
+		return ""
+	}
+	var p plan.Plan
+	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
+		return ""
+	}
+	spec := p.Approval
+	if spec == nil {
+		spec = parseInlineApprovalSpec(run.WorkflowName)
+	}
+	declared := ""
+	if spec != nil {
+		declared = spec.Level
+	}
+	tier := risk.MaxLevel(declared, p.ApprovalFloor)
+	if tier == "" {
+		tier = approval.LevelStandard
+	}
+	return tier
 }
 
 // verifyStoredPlanHash recomputes the canonical hash of the plan JSON
@@ -1712,6 +1827,21 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
+	// A vote is attributed to the authenticated subject, never to the
+	// name in the request: an approver list checked against a
+	// self-reported string authenticates nobody (see subject.go). A
+	// claimed approver that disagrees with the credential is refused
+	// outright rather than silently overridden, so a client cannot
+	// mistake "it used my identity" for "my identity was ignored".
+	approver, aerr := requireSubject(ctx, "approve")
+	if aerr != nil {
+		return nil, aerr
+	}
+	if claimed := req.GetApprover(); claimed != "" && claimed != approver {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"approver %q does not match the authenticated subject %q", claimed, approver)
+	}
+
 	// An approval attests to a concrete plan. With an execution engine
 	// wired, approving a run that has no persisted plan would bless a
 	// change whose executable content can only be re-derived at apply
@@ -1737,7 +1867,7 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 		if len(approvals) == 0 {
 			return nil, status.Errorf(codes.FailedPrecondition, "no pending approval for change %q", req.GetChangeId())
 		}
-		if err := s.approval.Approve(ctx, approvals[0].ID, req.GetApprover()); err != nil {
+		if err := s.approval.Approve(ctx, approvals[0].ID, approver); err != nil {
 			return nil, mapApprovalError(err)
 		}
 
@@ -1762,7 +1892,7 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 				ID:        newID("aud-"),
 				RunID:     run.ID,
 				Action:    "approve",
-				Actor:     req.GetApprover(),
+				Actor:     approver,
 				Target:    run.ID,
 				Result:    "recorded; quorum pending",
 				Timestamp: now,
@@ -1793,7 +1923,7 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "approve",
-		Actor:     req.GetApprover(),
+		Actor:     approver,
 		Target:    run.ID,
 		Result:    "approved",
 		Timestamp: now,
@@ -1826,6 +1956,18 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
+	// Rejections are attributed the same way approvals are: a veto is
+	// governance evidence, and a name typed into the body would forge it
+	// exactly as well as it would forge an approval.
+	rejecter, rerr := requireSubject(ctx, "reject")
+	if rerr != nil {
+		return nil, rerr
+	}
+	if claimed := req.GetRejecter(); claimed != "" && claimed != rejecter {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"rejecter %q does not match the authenticated subject %q", claimed, rejecter)
+	}
+
 	now := time.Now().UTC()
 	oldStatus := run.Status
 
@@ -1837,7 +1979,7 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 		if len(approvals) == 0 {
 			return nil, status.Errorf(codes.FailedPrecondition, "no pending approval for change %q", req.GetChangeId())
 		}
-		if err := s.approval.Reject(ctx, approvals[0].ID, req.GetRejecter(), req.GetReason()); err != nil {
+		if err := s.approval.Reject(ctx, approvals[0].ID, rejecter, req.GetReason()); err != nil {
 			return nil, mapApprovalError(err)
 		}
 		// One-vote veto: the rejection is durable, settle the run from
@@ -1862,7 +2004,7 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    "reject",
-		Actor:     req.GetRejecter(),
+		Actor:     rejecter,
 		Target:    run.ID,
 		Result:    "rejected",
 		Timestamp: now,
@@ -1893,6 +2035,8 @@ func mapApprovalError(err error) error {
 		return status.Errorf(codes.FailedPrecondition, "invalid approval transition: %v", err)
 	case errors.Is(err, approval.ErrUnauthorizedApprover):
 		return status.Errorf(codes.PermissionDenied, "unauthorized approver: %v", err)
+	case errors.Is(err, approval.ErrInitiatorExcluded):
+		return status.Errorf(codes.PermissionDenied, "independent review required: %v", err)
 	case errors.Is(err, approval.ErrDuplicateDecision):
 		return status.Errorf(codes.AlreadyExists, "approver already decided: %v", err)
 	default:

@@ -26,6 +26,7 @@ import (
 	ggrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/nexus/levee/internal/audit"
@@ -239,9 +240,15 @@ steps:
 // planApproveChange drives the client through PlanChange and
 // ApproveChange, asserting the run carries the hash-bound artifact the
 // apply gate demands.
+const engineApprover = "integration-engineer"
+
 func planApproveChange(t *testing.T, client pb.ChangeServiceClient, store state.Store, changeID string, hosts []string) {
 	t.Helper()
-	ctx := context.Background()
+	// The approval is attributed to the authenticated subject, so the
+	// caller must present one; this server runs with no credential
+	// configured, where the asserted x-actor is admitted.
+	ctx := metadata.NewOutgoingContext(context.Background(),
+		metadata.Pairs("x-actor", engineApprover))
 	_, err := client.PlanChange(ctx, &pb.PlanChangeRequest{ChangeId: changeID, TargetHosts: hosts})
 	require.NoError(t, err)
 	run, err := store.GetRun(ctx, changeID)
@@ -251,6 +258,7 @@ func planApproveChange(t *testing.T, client pb.ChangeServiceClient, store state.
 
 	_, err = client.ApproveChange(ctx, &pb.ApproveRequest{
 		ChangeId: changeID,
+		Approver: engineApprover,
 		Comment:  "engine exec acceptance",
 	})
 	require.NoError(t, err)

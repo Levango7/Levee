@@ -157,16 +157,24 @@ type approvalExtra struct {
 	Decisions    []approval.Decision `json:"decisions,omitempty"`
 	CreatedAt    time.Time           `json:"created_at"`
 	ExpiresAt    time.Time           `json:"expires_at"`
+	// Initiator/ExcludeInitiator carry the independence requirement. A
+	// record written before these fields existed decodes to "no
+	// exclusion", which is the only safe reading of an absent value: the
+	// alternative would retroactively void historical approvals.
+	Initiator        string `json:"initiator,omitempty"`
+	ExcludeInitiator bool   `json:"exclude_initiator,omitempty"`
 }
 
 // approvalToState converts an approval.Approval to a state.Approval.
 func approvalToState(ap *approval.Approval) (*state.Approval, error) {
 	extra := approvalExtra{
-		Approvers:    ap.Approvers,
-		MinApprovers: ap.MinApprovers,
-		Decisions:    ap.Decisions,
-		CreatedAt:    ap.CreatedAt,
-		ExpiresAt:    ap.ExpiresAt,
+		Approvers:        ap.Approvers,
+		MinApprovers:     ap.MinApprovers,
+		Decisions:        ap.Decisions,
+		CreatedAt:        ap.CreatedAt,
+		ExpiresAt:        ap.ExpiresAt,
+		Initiator:        ap.Initiator,
+		ExcludeInitiator: ap.ExcludeInitiator,
 	}
 	extraJSON, err := json.Marshal(extra)
 	if err != nil {
@@ -225,6 +233,8 @@ func stateToApproval(sa *state.Approval) (*approval.Approval, error) {
 		ap.Decisions = extra.Decisions
 		ap.CreatedAt = extra.CreatedAt
 		ap.ExpiresAt = extra.ExpiresAt
+		ap.Initiator = extra.Initiator
+		ap.ExcludeInitiator = extra.ExcludeInitiator
 	}
 
 	if sa.TimeoutAt != nil && ap.ExpiresAt.IsZero() {
