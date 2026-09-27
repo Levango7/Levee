@@ -358,3 +358,67 @@ func MaxLevel(a, b string) string {
 	}
 	return b
 }
+
+// AutoApproveForbidden reports whether the given approval level forbids
+// auto-approval. leveelang-spec.md §8.1 pins this contract: high and
+// emergency changes MUST NOT be auto-approved — the spec writes
+// auto_approve as "强制 false" for both tiers.
+//
+// autoApprove reaches ApplyChange / RollbackChange as a CLIENT-SUPPLIED
+// request field (proto ApplyChangeRequest.auto_approve). Without this
+// gate that field is a complete bypass of the approval chain: a caller
+// sets it true and skips both the status guard and the plan/approval
+// binding check. The spec reserves auto-approval for low-risk flows
+// (CI / bootstrapping); this predicate is what separates those from
+// production-risk changes.
+//
+// Only the EMPTY level (a run that predates risk scoring) returns false:
+// the documented CI bypass must keep working for changes that were never
+// scored, and such a run still needs a persisted plan to reach
+// ApplyChange at all. Every non-empty value is classified by its actual
+// vocabulary — see below — and nothing is admitted by default.
+//
+// # Two vocabularies share this field
+//
+// CreateChange writes the client-supplied `priority` straight into
+// Run.ApprovalLevel (change_service.go: "Default priority to normal" →
+// ApprovalLevel: priority), and the frontend's Priority vocabulary is
+// low/normal/high/urgent — sharing only "high" with the approval tiers.
+// When no approval service is wired, kickoffApproval returns early and
+// never overwrites that value, so a run genuinely carries "normal" or
+// "urgent" in ApprovalLevel. This is the P1-3 word-list mismatch; the
+// real fix is splitting the two columns.
+//
+// Because the value's provenance is a priority but its name is
+// "ApprovalLevel", the two lists must be interpreted BY THEIR OWN
+// semantics rather than by a single fail-closed rule:
+//
+//   - Approval tiers (standard / high / emergency) — authoritative when
+//     present. high and emergency are forbidden (§8.1); standard is not.
+//   - Priority vocabulary (low / normal / urgent) — not a tier, so no
+//     tier rule applies. These must stay allowed, or every ordinary
+//     change (the "normal" default) would be unable to auto-approve —
+//     which is precisely the regression an indiscriminate fail-closed
+//     reading caused. The residual risk is accepted and bounded: a
+//     priority-vocabulary run only reaches this point with a persisted,
+//     hash-verified plan, and "urgent" carries no tier semantics here.
+//   - Anything else (unknown, future, corrupted) — fail closed: refused.
+func AutoApproveForbidden(level string) bool {
+	switch level {
+	case "":
+		// Unscored run: the documented CI / bootstrapping bypass.
+		return false
+	case LevelStandard:
+		return false
+	case LevelHigh, LevelEmergency:
+		return true
+	case "low", "normal", "urgent":
+		// Priority vocabulary: not a tier. Reading these as forbidden
+		// would block the default "normal" change outright.
+		return false
+	default:
+		// Unknown value: fail closed. A future or corrupted level must
+		// never be the reason an approval chain is skipped.
+		return true
+	}
+}
