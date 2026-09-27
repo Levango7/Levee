@@ -56,6 +56,7 @@ import (
 	"github.com/nexus/levee/internal/itsm/jira"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
+	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/state"
@@ -738,6 +739,23 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	changeSvc := grpc.NewChangeService(store, engine, approvalSvc, nil)
 	if jiraBridge != nil {
 		changeSvc.WithApprovalCreateObserver(jiraBridge.OnApprovalCreated)
+	}
+	// Bulk pause/resume authorization. The API used to bypass whatever
+	// grant list `levee pause all` honours, so configuring permissions
+	// changed nothing over the wire. With no grants configured the actions
+	// stay open on purpose — bulk pause is an incident mitigation, and
+	// losing it to a config key nobody ever wrote would trade a governance
+	// gap for an outage — but the posture is announced, because a silent
+	// gap is exactly what made this a finding.
+	if len(cfg.Permission.BulkGrants) > 0 {
+		bulkAuth := pause.NewSimplePermissionChecker(cfg.Permission.BulkGrants)
+		bulkAuth.SetDenyRecorder(pause.NewDenialAuditRecorder(store))
+		changeSvc.WithBulkPauseAuthorizer(bulkAuth)
+		log.Info("bulk pause/resume authorization enabled",
+			"granted_actors", len(cfg.Permission.BulkGrants))
+	} else {
+		log.Warn("bulk pause/resume authorization is NOT configured: every authenticated caller may pause or resume ALL changes; set permission.bulk_grants to restrict",
+			"permissions", pause.PermissionPauseAll+"/"+pause.PermissionResumeAll)
 	}
 	templateSvc := grpc.NewTemplateService(store, nil)
 	targetSvc := grpc.NewTargetService(store, nil)

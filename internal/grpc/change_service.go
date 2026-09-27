@@ -74,6 +74,13 @@ type ChangeService struct {
 	// approval chain itself. Nil is a no-op.
 	onApprovalCreate func(a *approval.Approval)
 
+	// bulkAuth authorises the fleet-wide pause-all / resume-all actions,
+	// using the SAME checker the CLI honours (pause.PermissionChecker,
+	// keyed on the acting actor with the pause:all / resume:all
+	// permissions). Nil means "no grant list configured", which is
+	// deliberately NOT a denial — see WithBulkPauseAuthorizer.
+	bulkAuth pause.PermissionChecker
+
 	// eventBus distributes change events to WatchChange subscribers.
 	// It is lazily initialised on first subscription.
 	eventMu  sync.Mutex
@@ -107,6 +114,25 @@ func NewChangeService(
 // the system of record. Pass nil to remove.
 func (s *ChangeService) WithApprovalCreateObserver(fn func(a *approval.Approval)) *ChangeService {
 	s.onApprovalCreate = fn
+	return s
+}
+
+// WithBulkPauseAuthorizer installs the checker that decides whether the
+// acting caller may pause or resume EVERY change at once. It closes the
+// divergence where `levee pause all` enforced a grant list but the
+// equivalent API call did not, so an operator's configured permission set
+// changed nothing over the wire.
+//
+// Pass nil to leave the actions unauthorised-by-absence-of-policy: bulk
+// pause stays available to every authenticated caller. That is a
+// deliberate difference from pause.PauseManager, which treats a nil
+// checker as "deny everything": pause-all is the mitigation an operator
+// reaches for DURING an incident, and removing it because a grant list
+// was never written converts a configuration gap into an outage. The
+// trade is only honest if the posture is visible, so the server logs it
+// at startup (cmd_serve) rather than deciding silently per request.
+func (s *ChangeService) WithBulkPauseAuthorizer(a pause.PermissionChecker) *ChangeService {
+	s.bulkAuth = a
 	return s
 }
 
@@ -1190,6 +1216,24 @@ func (s *ChangeService) ResumeAll(ctx context.Context, req *pb.PauseAllRequest) 
 func (s *ChangeService) bulkTransition(ctx context.Context, targetStatus, action string, teams, envs []string, reason string) (*pb.PauseAllResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
+	}
+
+	// Authorise the fleet-wide action before a single run is read or
+	// touched. The key and permission names are exactly the ones the CLI
+	// path uses (the acting actor, pause:all / resume:all), so a grant
+	// list cannot be sidestepped by calling the API instead of
+	// `levee pause all`. Denial auditing lives on the injected checker
+	// (pause.SimplePermissionChecker.SetDenyRecorder), so this code
+	// decides and never reports.
+	if s.bulkAuth != nil {
+		permission := pause.PermissionPauseAll
+		if targetStatus == "running" {
+			permission = pause.PermissionResumeAll
+		}
+		if actor := actorFromCtx(ctx); !s.bulkAuth.HasPermission(actor, permission) {
+			return nil, status.Errorf(codes.PermissionDenied,
+				"%s requires the %q permission, which actor %q does not hold", action, permission, actor)
+		}
 	}
 
 	// Candidate filter applied before isValidTransition. ResumeAll may
