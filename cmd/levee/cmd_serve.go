@@ -379,6 +379,12 @@ func startDispatchAndWorkerLoops(dispatchLoop **dispatch.Loop, workerLoop **disp
 	if !engineEnabled {
 		return nil
 	}
+	// The sweep is leader-only and dereferences clusterMgr; in single-node mode
+	// it is nil, so starting the loop here nil-panics on the first tick.
+	if clusterMgr == nil {
+		log.Info("cross-node dispatch loops not started: single-node mode (run with --cluster to enable)")
+		return nil
+	}
 	if interval > 0 {
 		*dispatchLoop = dispatch.NewLoop(clusterMgr, store, nodeID, interval, capacity, claimTimeout)
 		if err := (*dispatchLoop).Start(ctx); err != nil {
