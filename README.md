@@ -106,6 +106,13 @@ make build
 审批请配置命名令牌（`server.auth_tokens`，每个令牌绑定一个身份）或 SSO / OIDC；
 `--insecure` 开发模式与 CLI 本地模式（进程内即权威）仍按当前操作者记录。
 
+**治理动作会按策略准入**：配了权限矩阵（`permissions.yaml`，用 `levee team add` /
+`rbac grant` 维护）的部署，`apply` / `rollback` / `approve` / `reject` 还会再问一次
+策略——矩阵决定"这个队能在哪些环境活动"，角色树（`roles.yaml`，`levee user add`
+里的 role）决定"在这些环境里能做什么"。没有矩阵的部署不受影响（启动会 WARN 明示
+未启用）。排查一次拒绝用 `levee authz explain --subject <你> --env <环境> --action apply`，
+它会打印解析到的队/角色、命中的判定轴与拒绝原因。
+
 健康探针：标准 gRPC health service（`grpc.health.v1`）；REST 网关（默认监听
 `:8080`，可用 `--http-addr` 调整）提供 `/healthz`——在服务注册完成前返回
 503 `{"status":"unavailable"}`，`serve` 启动流程会自动注册服务，正常运行时为 200。
