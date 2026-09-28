@@ -144,6 +144,21 @@ func (a *Authorizer) Registered() []string {
 	return a.registry.Names()
 }
 
+// Knows reports whether the registry has an entry for subject. The serving
+// process uses it at startup to reconcile configured credentials against the
+// registry: a named token whose subject is not registered can never be
+// authorised once a matrix exists, and discovering that on the first denied
+// request is too late. The reverse direction (a registered subject no
+// credential can authenticate) is not checkable at startup — SSO identities
+// are not enumerable there.
+func (a *Authorizer) Knows(subject string) bool {
+	if a == nil || subject == "" {
+		return false
+	}
+	_, ok := a.registry.Lookup(subject)
+	return ok
+}
+
 // Decide answers whether subject may perform action in env.
 //
 // env is the change's environment; when empty the configured default is used,

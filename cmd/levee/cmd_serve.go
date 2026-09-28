@@ -43,6 +43,7 @@ import (
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/auth"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/cluster"
@@ -503,6 +504,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
 
+	reconcileCredentialsWithRegistry(svcs.authzSvc, namedTokens)
+
 	// 3b. Cross-node dispatch (design-cluster-dispatch.md). In cluster mode
 	// the leader periodically assigns approved runs to idle workers and
 	// every node (including the leader) runs a worker loop that executes
@@ -642,6 +645,10 @@ type serveServices struct {
 	// gateSvc is the ad-hoc gate verification service (POST
 	// /gates/verify); nil when the execution engine is not wired.
 	gateSvc *grpc.GateService
+	// authzSvc is the loaded policy authorizer, handed back so runServe can
+	// reconcile configured credentials against the registry (it is the only
+	// place that sees both).
+	authzSvc *authz.Authorizer
 }
 
 // buildServeServices constructs the in-process service implementations,
@@ -757,6 +764,23 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Warn("bulk pause/resume authorization is NOT configured: every authenticated caller may pause or resume ALL changes; set permission.bulk_grants to restrict",
 			"permissions", pause.PermissionPauseAll+"/"+pause.PermissionResumeAll)
 	}
+	// Change-scoped policy authorisation (apply / rollback / approve /
+	// reject). Different posture from the bulk grant list above: a policy that
+	// exists but cannot be parsed stops startup, because silently degrading to
+	// "not enforced" would leave an operator believing a policy is active. An
+	// absent policy is not an error — it is announced instead.
+	authzSvc, err := authz.Load(cfg.Server.DataDir, cfg.Permission.DefaultEnv)
+	if err != nil {
+		return serveServices{}, fmt.Errorf("load authorization policy: %w", err)
+	}
+	changeSvc.WithAuthorizer(authzSvc)
+	if authzSvc.Enforced() {
+		log.Info("authorization enabled: change-scoped RPCs enforce the permission matrix",
+			"registered_subjects", len(authzSvc.Registered()))
+	} else {
+		log.Warn("authorization is NOT configured: apply/rollback/approve/reject are limited to authentication alone; write permissions.yaml (see `levee team add`) to enforce policy")
+	}
+
 	templateSvc := grpc.NewTemplateService(store, nil)
 	targetSvc := grpc.NewTargetService(store, nil)
 	if credResolver != nil {
@@ -804,8 +828,29 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
 		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
-		gateSvc: gateSvc,
+		gateSvc: gateSvc, authzSvc: authzSvc,
 	}, nil
+}
+
+// reconcileCredentialsWithRegistry reports configured credentials whose subject
+// the registry does not know. Split out of runServe (which sits at the gocyclo
+// threshold) and kept next to the other composition-root helpers.
+//
+// The check exists because such a caller is silently unusable once a matrix is
+// configured: every governance action it attempts will be denied, and finding
+// that out from the first ticket is too late. The reverse direction — a
+// registered subject no credential can authenticate — is not checkable at
+// startup, because SSO identities are not enumerable there.
+func reconcileCredentialsWithRegistry(a *authz.Authorizer, namedTokens []grpc.TokenIdentity) {
+	if a == nil || !a.Enforced() {
+		return
+	}
+	for _, ti := range namedTokens {
+		if !a.Knows(ti.Subject) {
+			log.Warn("named token authenticates a subject the registry does not know: governance actions by this caller will be denied until `levee user add` registers it",
+				"subject", ti.Subject)
+		}
+	}
 }
 
 // buildServeServerOpts assembles the gRPC server options (services, auth,

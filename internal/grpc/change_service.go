@@ -41,11 +41,13 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/pause"
+	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/risk"
 	"github.com/nexus/levee/internal/runstatus"
@@ -73,6 +75,12 @@ type ChangeService struct {
 	// failing side channel (ChatOps / Jira mirrors) can never fail the
 	// approval chain itself. Nil is a no-op.
 	onApprovalCreate func(a *approval.Approval)
+
+	// authz decides change-scoped governance actions against the deployment's
+	// permission matrix and role tree. Nil means the deployment declared no
+	// policy: admission then rests on authentication alone, which the serving
+	// process announces at startup rather than deciding silently per request.
+	authz *authz.Authorizer
 
 	// bulkAuth authorises the fleet-wide pause-all / resume-all actions,
 	// using the SAME checker the CLI honours (pause.PermissionChecker,
@@ -114,6 +122,15 @@ func NewChangeService(
 // the system of record. Pass nil to remove.
 func (s *ChangeService) WithApprovalCreateObserver(fn func(a *approval.Approval)) *ChangeService {
 	s.onApprovalCreate = fn
+	return s
+}
+
+// WithAuthorizer installs the policy authorizer consulted by the
+// change-scoped governance actions (apply / rollback / approve / reject).
+// Nil disables policy enforcement, which is the state of every deployment
+// that never wrote a permission matrix.
+func (s *ChangeService) WithAuthorizer(a *authz.Authorizer) *ChangeService {
+	s.authz = a
 	return s
 }
 
@@ -230,6 +247,38 @@ func actorFromCtx(ctx context.Context) string {
 		return v
 	}
 	return "grpc-user"
+}
+
+// envOf returns the environment a change belongs to. The column is
+// IncidentID — CreateChange stores the requested environment there, and the
+// approval/risk layers already read it as the environment marker.
+func envOf(run *state.Run) string {
+	if run == nil {
+		return ""
+	}
+	return run.IncidentID
+}
+
+// authorize answers whether the caller may perform a governance action on this
+// change. A nil authorizer short-circuits: no policy configured, nothing to
+// decide. Every refusal names the scope it judged, because "permission denied"
+// without the team/env/action triple is the kind of message operators cannot
+// act on — and `levee authz explain` takes exactly those three.
+func (s *ChangeService) authorize(ctx context.Context, run *state.Run, action, rpc string) error {
+	if s.authz == nil {
+		return nil
+	}
+	d := s.authz.Decide(SubjectFromContext(ctx), envOf(run), action)
+	if d.Allowed {
+		return nil
+	}
+	if d.Subject == "" {
+		return status.Errorf(codes.Unauthenticated,
+			"%s requires an identity the policy can judge: %s", rpc, d.Reason)
+	}
+	return status.Errorf(codes.PermissionDenied,
+		"%s denied for subject %q on env %q action %q: %s (see `levee authz explain --subject %s --env %s --action %s`)",
+		rpc, d.Subject, d.Env, action, d.Reason, d.Subject, d.Env, action)
 }
 
 // ContextWithActor returns a context carrying the actor name used for
@@ -791,6 +840,13 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	}
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+
+	// Policy authorisation precedes every other judgement: whether the caller
+	// may touch this change at all is a different question from whether the
+	// change is in a state that permits the action.
+	if err := s.authorize(ctx, run, permission.ActionApply, "apply"); err != nil {
+		return nil, err
 	}
 
 	// State guard: without auto-approve only approved runs may be applied.
@@ -1550,6 +1606,10 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
+	if err := s.authorize(ctx, run, permission.ActionRollback, "rollback"); err != nil {
+		return nil, err
+	}
+
 	// D-2 v2: rolled_back_partial / rollback_incomplete are exactly the
 	// states a manual rollback exists to remediate — the automatic
 	// compensation left a gap, and finishing it must not require a
@@ -1886,6 +1946,13 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 			"approver %q does not match the authenticated subject %q", claimed, approver)
 	}
 
+	// Authorisation is a separate question from "is this name on the
+	// approval list": the matrix decides whether the subject may approve
+	// changes in this environment at all.
+	if err := s.authorize(ctx, run, permission.ActionApprove, "approve"); err != nil {
+		return nil, err
+	}
+
 	// An approval attests to a concrete plan. With an execution engine
 	// wired, approving a run that has no persisted plan would bless a
 	// change whose executable content can only be re-derived at apply
@@ -2010,6 +2077,13 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 	if claimed := req.GetRejecter(); claimed != "" && claimed != rejecter {
 		return nil, status.Errorf(codes.PermissionDenied,
 			"rejecter %q does not match the authenticated subject %q", claimed, rejecter)
+	}
+
+	// A rejection is a decision on the approval, and the matrix has no
+	// separate verb for it: gating it under approve means a caller cannot
+	// veto changes it would not be allowed to approve either.
+	if err := s.authorize(ctx, run, permission.ActionApprove, "reject"); err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()
