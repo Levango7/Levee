@@ -139,6 +139,16 @@ func (s *mockServer) handleSession(ch ssh.Channel, requests <-chan *ssh.Request)
 			s.mu.Unlock()
 			_ = req.Reply(true, nil)
 
+			// `mock-stream` keeps writing output for ~1s so a test can cancel
+			// mid-stream. That is the only way to put Exec's cancellation read
+			// and the library's stdout copy goroutine in play at once — the
+			// pre-cancelled test can skip that branch entirely.
+			if strings.TrimSpace(execCmd) == "mock-stream" {
+				streamOutput(ch)
+				_ = ch.Close()
+				return
+			}
+
 			// Read all stdin data from the channel. Channel.Read returns
 			// io.EOF when the client closes stdin (sends SSH EOF). We use
 			// a short read loop with a timeout so commands that never
@@ -447,6 +457,17 @@ func TestSSHChannelExecNotConnected(t *testing.T) {
 	assert.Contains(t, err.Error(), "not connected")
 }
 
+// streamOutput writes output in chunks for roughly a second, stopping as soon
+// as the client closes the channel. It backs the `mock-stream` command.
+func streamOutput(ch ssh.Channel) {
+	for i := 0; i < 200; i++ {
+		if _, err := ch.Write([]byte("chunk\n")); err != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestSSHChannelExecCancelled(t *testing.T) {
 	srv := newMockServer(t, "u", "p")
 	defer srv.Close()
@@ -473,6 +494,80 @@ func TestSSHChannelExecCancelled(t *testing.T) {
 	if err != nil {
 		assert.Contains(t, err.Error(), "context canceled")
 	}
+}
+
+// TestSSHChannelExecCancelledMidStream is the regression guard for the data
+// race between x/crypto's stdout copy goroutine and Exec's cancellation branch
+// reading the capture buffer. The pre-cancelled test above can skip that branch
+// altogether, which is why the race surfaced in CI only intermittently; here the
+// server is still streaming when we cancel, so the read and the concurrent write
+// are always in play for `-race`.
+func TestSSHChannelExecCancelledMidStream(t *testing.T) {
+	srv := newMockServer(t, "u", "p")
+	defer srv.Close()
+
+	host, port := splitHostPort(t, srv.Addr())
+	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
+	cfg := NewConfig()
+	cfg.StrictHostCheck = false
+
+	ch, err := NewChannel(tgt, cfg)
+	require.NoError(t, err)
+	defer ch.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, ch.Connect(ctx))
+
+	execCtx, cancelExec := context.WithCancel(context.Background())
+	defer cancelExec()
+	// streamOutput runs for ~1s; cancelling at ~120ms lands squarely mid-stream.
+	go func() {
+		time.Sleep(120 * time.Millisecond)
+		cancelExec()
+	}()
+
+	start := time.Now()
+	res, err := ch.Exec(execCtx, "mock-stream")
+
+	// The cancellation branch must be the one that returned: an error carrying
+	// context.Canceled, well before the stream would have finished on its own.
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, time.Since(start), 900*time.Millisecond, "should not have waited for the stream to end")
+
+	require.NotNil(t, res)
+	assert.Contains(t, res.Stdout, "chunk", "output captured before cancellation should be returned")
+	assert.Equal(t, -1, res.ExitCode)
+}
+
+// TestSyncBufferConcurrentAccess pins the guard itself: a writer goroutine
+// (what x/crypto installs for Session.Stdout) and a reader (Exec's return
+// paths) touch the same buffer. An unguarded bytes.Buffer fails this under
+// -race; the mutex makes both the access and the resulting content well-defined.
+func TestSyncBufferConcurrentAccess(t *testing.T) {
+	var b syncBuffer
+	const writers = 8
+	const perWriter = 500
+
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				_, _ = b.Write([]byte("chunk\n"))
+			}
+		}()
+	}
+	// Read while the writers are still running — that is the racing pair.
+	for i := 0; i < 200; i++ {
+		_ = b.String()
+	}
+	wg.Wait()
+
+	want := strings.Repeat("chunk\n", writers*perWriter)
+	assert.Equal(t, want, b.String(), "every write must be captured, none interleaved")
 }
 
 func TestSSHChannelUploadDownload(t *testing.T) {
