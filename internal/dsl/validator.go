@@ -43,6 +43,11 @@ const (
 	codeActionFormat = "LE101"
 	// codeFixedStepNonPositive 扩展码：fixed strategy 的 step 非正。
 	codeFixedStepNonPositive = "LE102"
+	// codeWindowClock 复用 LE020：窗口时钟非法（HH:MM 格式、start==end、
+	// 只写了一半边界）。含义由 internal/errors 的目录表钉住。
+	codeWindowClock = "LE020"
+	// codeWindowZone 复用 LE021：时区不是合法 IANA 名。
+	codeWindowZone = "LE021"
 )
 
 // allowedInputTypes 列出 input 参数允许的类型集合。
@@ -149,6 +154,12 @@ func (v *Validator) Validate(wf *Workflow) []ValidationError {
 	// 补偿账本按 (host, 前向步骤) 归属，工作流级补偿无法归因、没有执行
 	// 路径，因此 fail-closed 拒绝（LE097，见 rollback_scope.go）。
 	errs = append(errs, ValidateRunLevelRollback(wf.Rollback, "rollback")...)
+
+	// 10. window 校验（V19）：时钟、时区、星期。plan 阶段的窗外阻断依赖
+	// 这份声明可用——坏声明在这里挡住，比在 plan 时才说"判不了"更早、也更便宜。
+	// 未声明窗口合法（§4.2 缺省无约束）；LE095 那类 warning 本函数不产出，
+	// 原因见 docs/product-roadmap.md 的 "CompileWarning 一档没有产生点"。
+	errs = append(errs, wf.Window.Check()...)
 
 	return errs
 }

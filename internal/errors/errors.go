@@ -271,7 +271,7 @@ const (
 	LE012 = "LE012" // asset type not in whitelist
 
 	// Window errors (LE020-LE021)
-	LE020 = "LE020" // time format illegal or start >= end
+	LE020 = "LE020" // time format illegal or window empty (start == end)
 	LE021 = "LE021" // timezone not a valid IANA name
 
 	// Batch errors (LE031-LE034)
@@ -347,7 +347,7 @@ var codeCatalogue = []CodeInfo{
 	{LE010, "label", "label expression syntax error", CompileError},
 	{LE011, "label", "label key name violates naming convention", CompileError},
 	{LE012, "label", "asset type not in whitelist", CompileError},
-	{LE020, "window", "time format illegal or start >= end", CompileError},
+	{LE020, "window", "time format illegal or window empty (start == end)", CompileError},
 	{LE021, "window", "timezone not a valid IANA name", CompileError},
 	{LE031, "batch", "percentage array not non-decreasing", CompileError},
 	{LE032, "batch", "percentage array does not end at 100", CompileError},

@@ -36,8 +36,8 @@ target:
     - host-b
     - host-c
 window:
-  start: "2024-01-01T00:00:00Z"
-  end: "2024-01-01T08:00:00Z"
+  start: "00:00"
+  end: "08:00"
   timezone: UTC
   max_concurrency: 2
 batches:
