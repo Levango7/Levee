@@ -175,7 +175,7 @@ func pgMigrate(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("state: begin pg schema transaction: %w", err)
 		}
-		if err := pgExecMultiStatement(ctx, tx, pgSchemaSQL); err != nil {
+		if err := pgExecMultiStatement(ctx, tx, pgSchemaFull); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("state: apply pg schema: %w", err)
 		}

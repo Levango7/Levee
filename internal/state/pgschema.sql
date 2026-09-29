@@ -200,21 +200,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_action    ON audit (action);
 CREATE INDEX IF NOT EXISTS idx_audit_actor     ON audit (actor);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit (timestamp);
 
--- cluster_nodes: registered cluster members (master + workers).
+-- cluster_nodes: registered cluster members (master + workers) is NOT defined
+-- here. It lives in internal/dbschema.ClusterNodesDDL because the cluster
+-- package creates it too; this file's content is concatenated with that one
+-- definition at apply time (see pgSchemaFull in pgstore.go).
 -- Only used in cluster mode (PostgreSQL backend).
-CREATE TABLE IF NOT EXISTS cluster_nodes (
-    id              TEXT    PRIMARY KEY,
-    address         TEXT    NOT NULL,
-    status          TEXT    NOT NULL,                -- active|leaving|offline
-    role            TEXT    NOT NULL,                -- master|worker
-    last_heartbeat  TIMESTAMPTZ NOT NULL,
-    capabilities    TEXT    NOT NULL DEFAULT '{}',   -- JSON encoded
-    joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (address)
-);
-
-CREATE INDEX IF NOT EXISTS idx_cluster_nodes_status ON cluster_nodes (status);
-CREATE INDEX IF NOT EXISTS idx_cluster_nodes_role   ON cluster_nodes (role);
 
 -- ---------------------------------------------------------------------------
 -- Inventory: managed target hosts and hierarchical groups (v1.11)
