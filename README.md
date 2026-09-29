@@ -93,7 +93,11 @@ make build
 
 # 执行引擎（默认关闭）：开启后 PlanChange 生成并持久化真实计划、
 # ApplyChange 经 SSH/WinRM 通道真正执行被批准的计划（失败自动回滚）。
-# 关闭时 apply 明确拒绝（FailedPrecondition），不会假装执行。
+# 关闭时两个入口行为不同，别按同一个心智模型写脚本：
+#   · ApplyChange RPC 明确拒绝（FailedPrecondition "no engine wired"），不碰状态机；
+#   · CLI `levee apply` 不拒绝——它把 run 置为 running 后 exit 0，并打印
+#     "apply is status-only (no batches executed)"、JSON 里带 engine_wired:false。
+#     所以 CLI 的 exit 0 只代表"没有报错"，不代表"执行过任何批次"。
 # 并发执行上限 --engine-max-parallel-runs（默认 4，超出的 apply 快速失败）；
 # slo 验证门禁需 --engine-gate-prometheus 提供 Prometheus 地址，缺省则 slo 门禁 fail-closed。
 # 目标凭据解析依赖 LEVEE_MASTER_PASSWORD 环境变量（未设置时通道匿名拨号并输出警告）。

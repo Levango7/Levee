@@ -831,10 +831,12 @@ func verifyStoredPlanHash(run *state.Run) error {
 
 // --- ApplyChange -----------------------------------------------------------
 
-// ApplyChange triggers execution of a planned change. It transitions
-// the run to "running" and delegates to the EngineAdapter for the
-// actual execution. When the engine is nil, it performs a minimal
-// status transition (the same MVP behaviour as the CLI).
+// ApplyChange triggers execution of a planned change: it transitions the run
+// to "running" and delegates to the EngineAdapter. With no engine wired it
+// REFUSES with FailedPrecondition instead of performing the transition —
+// unlike the CLI's `levee apply`, which stays status-only and exits 0 with a
+// warning. Callers that script both entry points must not read exit 0 as
+// "batches executed".
 func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
