@@ -52,7 +52,7 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **单步验证门 API**：`POST /gates/verify` 按需执行一条 cmd/probe/slo 验证（与引擎门禁同源构造器，零语义漂移）——操作员预检、流水线 pre-check、ChatOps 即席健康检查无需规划整个变更；human 检查点显式排除（归审批链）；每次执行留审计
 - **ITSM Jira 审批镜像**：`notify.jira.*` 配置启用后审批链开始建 Jira issue、决策自动评论（纯出站镜像，LEVEE store 仍是唯一事实来源；禁用时零外发零装配）
 - **双协议 API**：gRPC（9 个业务服务 + 标准 `grpc.health.v1`）+ REST 网关（`/api/v1/`），共享同一服务实例
-- **AI 辅助运维**：告警接入 → 拓扑诊断 → LLM 对话式定位 → RAG 知识增强推荐 → 自动执行 → 效果学习
+- **AI 辅助（部分能力仅库就绪，见下方"能力可达性"）**：`internal/diagnosis`（日志采集+分析、健康探测）已接入 `serve` 与 `levee diagnose`；`levee converse` / REST 对话闭环已接入，确认的建议会变成 draft 变更进治理链（不执行、不跳审批）。**LLM 与 RAG 尚无生产调用方**：`recommend.NewLLMClient`（OpenAI / Ollama 客户端）只被测试调用，`serve` 与 `converse` 构造推荐引擎时不传 `LLMClient`（`recommend/engine.go:130` 注释即"nil = pure knowledge-base mode"），建议来自内置静态知识库；`internal/config` 也没有 llm/rag 相关配置项，运维无法开启。
 - **多通道执行**：SSH / WinRM 无代理通道 + local 沙箱通道（CI/单机自测，程序白名单+参数策略+沙箱根三重门禁，fail-closed 默认），插件注册表开放第三方通道接入（见 `docs/channel-plugins.md`）
 - **快照回滚**：`rollback: {strategy: snapshot, snapshot_paths: [...]}` 声明式文件级备份——apply 前经通道采集目标机文件（base64 传输），回滚时原样恢复（与 undo-action 显式互斥）；快照按 change id 键存，手动回滚路径可达；`--engine-snapshot-dir` 一旗标启用
 - **数据库动作模块**：`mysql.query`（幂等 DDL/DML，SQL 经 base64 管道防注入）、`mysql.pt_osc`（pt-online-schema-change 在线大表变更，白名单校验 alter 子句）、`mysql.replica_switch`（主从切换编排，强制确认门）；不可逆动作（含 replica_switch/pt_osc）在 plan 生成时自动标记并路由到高危审批（R2/R4 全链路接线）
@@ -61,6 +61,36 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **合规交付**：`levee audit report` 一键生成时间窗合规报告（HTML 自包含：变更清单+审批链+哈希链验证结论+回滚记录），监管/审计离线可读
 - **ChatOps 审批桥**：`internal/notify/chatopsbridge` 提供 approval 创建/决策到 BotManager 事件的组合接点，可将请求与 1/2 决策进度投影到钉钉/飞书/Slack；具体 bot 进程与 manager 生命周期仍由部署侧组合
 - **安全默认**：auth 启动门禁、CORS 默认拒绝、限流、请求 ID 追踪、TLS 支持
+
+### 能力可达性
+
+上面的特性列表混着两种状态：**已接入 `levee` 二进制**，和**包已实现、包内测试完备、
+但没有任何生产调用方**。这两件事对用户完全不同，所以单列。判定口径是可复现的：
+
+```bash
+# 二进制真实链入了哪些包（非测试构建）：
+go list -deps ./cmd/levee | grep '^github.com/nexus/levee/internal'
+# 某个包有没有生产调用方（去掉包自身的测试；结果为 0 即只有包内自测）：
+grep -rl 'nexus/levee/internal/compat"' --include='*.go' . \
+  | grep -v _test.go | grep -v '^./internal/compat/'
+```
+
+当前未链入 `cmd/levee` 的 `internal` 包（除 `docgen` 是 CI 工具外，共 8 个，约 4.7k 行非测试代码）：
+
+| 包 | 它本来要承担什么 | 现状 |
+| --- | --- | --- |
+| `diagnosis/llm_diag` | LLM 推理定位 | 无生产调用方；`NewLLMClient` 仅测试调用 |
+| `diagnosis/topology` | 拓扑诊断 | 无生产调用方 |
+| `recommend/rag` | RAG 知识增强 | 无生产调用方 |
+| `recommend/feedback` | 效果学习 | 无生产调用方 |
+| `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 全仓零引用，CLI 无对应命令 |
+| `scheduler` | 计划触发/调度 | 无生产调用方 |
+| `opsmesh` | OpsMesh 平台集成 | 无生产调用方 |
+| `notify/chatopsbridge` | ChatOps 审批桥接点 | 无生产调用方（上文那条已注明"由部署侧组合"） |
+
+这些包**没坏**——包内测试覆盖实测在 90%~96%（90.4%~95.4%），问题是"覆盖"的是没人调用的代码。
+把它们接进 `serve` 前，请按"库已就绪、产品不可用"对待；`docs/security-audit.md`
+"已知限制"一节对多租户用的是同一套写法。
 
 ## 快速开始
 
