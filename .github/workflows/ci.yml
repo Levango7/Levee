@@ -454,6 +454,16 @@ jobs:
           # result to bash as a literal name:value pair instead and check
           # them there.
           status="release-gate:${{ needs.release-gate.result }} vet:${{ needs.vet.result }} lint:${{ needs.lint.result }} frontend:${{ needs.frontend.result }} test:${{ needs.test.result }} integration:${{ needs.integration.result }} proto:${{ needs.proto.result }} docs:${{ needs.docs.result }} smoke:${{ needs.smoke.result }} build:${{ needs.build.result }} gosec:${{ needs.gosec.result }} trivy:${{ needs.trivy.result }}"
+          # Drift guard: hand-enumerating the pairs above is required by the
+          # interpolation semantics, and it rots — `docs` sat in needs() but not
+          # in this list, so a docs-regeneration failure could never redden the
+          # aggregate. Compare the two lists instead of trusting discipline.
+          expected=$(echo '${{ toJSON(needs) }}' | jq -r 'keys[]' | tr -d '\r' | sort | tr '\n' ' ')
+          listed=$(for pair in $status; do echo "${pair%%:*}"; done | tr -d '\r' | sort | tr '\n' ' ')
+          if [ "$expected" != "$listed" ]; then
+            echo "::error::the aggregate list drifted from needs(): needs=[$expected] checked=[$listed]"
+            exit 1
+          fi
           rc=0
           for pair in $status; do
             job=${pair%%:*}
