@@ -84,7 +84,7 @@ grep -rl 'nexus/levee/internal/compat"' --include='*.go' . \
 | `recommend/rag` | RAG 知识增强 | 无生产调用方 |
 | `recommend/feedback` | 效果学习 | 无生产调用方 |
 | `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 全仓零引用，CLI 无对应命令 |
-| `scheduler` | 计划触发/调度 | 无生产调用方 |
+| `scheduler` | agent 任务派发（`Schedule([]agent.Task)` + 负载均衡），不是变更时间窗触发 | 无生产调用方；跨节点派发现在由已接入的 `internal/dispatch` 承担 |
 | `opsmesh` | OpsMesh 平台集成 | 无生产调用方 |
 | `notify/chatopsbridge` | ChatOps 审批桥接点 | 无生产调用方（上文那条已注明"由部署侧组合"） |
 
@@ -206,7 +206,7 @@ levee/
 │   ├── drift/              # 漂移检测
 │   ├── calendar/           # 变更日历
 │   ├── chatops/            # ChatOps 集成
-│   ├── scheduler/          # 调度
+│   ├── scheduler/          # agent 任务派发（未接入二进制，见"能力可达性"）
 │   ├── agent/              # agent
 │   ├── alert/              # 告警网关 (Zabbix/Nagios 适配)
 │   ├── diagnosis/          # 诊断引擎 (拓扑分析/LLM 推理)
