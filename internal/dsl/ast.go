@@ -9,6 +9,8 @@
 // so that the parser is forward-compatible with V1.
 package dsl
 
+import "slices"
+
 // BatchStrategy values accepted in a workflow's `batches.strategy` field.
 //
 // This is the SINGLE source of truth for the vocabulary. internal/plan
@@ -54,12 +56,30 @@ var BatchStrategies = []string{
 
 // IsBatchStrategy reports whether s is an accepted batch strategy.
 func IsBatchStrategy(s string) bool {
-	for _, known := range BatchStrategies {
-		if s == known {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(BatchStrategies, s)
+}
+
+// Approval levels — the same vocabulary discipline as BatchStrategies above.
+// This set used to be re-typed in three places inside this package (the
+// parser's switch, the validator's map, the type checker's enum); they agreed
+// by luck. internal/approval carries further copies (service.go's switch,
+// levels.go's error text) that are NOT yet sourced from here.
+const (
+	ApprovalLevelStandard  = "standard"
+	ApprovalLevelHigh      = "high"
+	ApprovalLevelEmergency = "emergency"
+)
+
+// ApprovalLevels lists every accepted approval level, in declaration order.
+var ApprovalLevels = []string{
+	ApprovalLevelStandard,
+	ApprovalLevelHigh,
+	ApprovalLevelEmergency,
+}
+
+// IsApprovalLevel reports whether s is an accepted approval level.
+func IsApprovalLevel(s string) bool {
+	return slices.Contains(ApprovalLevels, s)
 }
 
 // Workflow is the root AST node representing a complete LEVEE change workflow.

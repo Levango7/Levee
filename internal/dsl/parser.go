@@ -645,10 +645,9 @@ func validate(wf *Workflow) error {
 		}
 	}
 	if wf.Approval != nil {
-		switch wf.Approval.Level {
-		case "", "standard", "high", "emergency":
-			// valid
-		default:
+		// Single source of truth: dsl.ApprovalLevels (see BatchStrategies
+		// below for why that matters).
+		if wf.Approval.Level != "" && !IsApprovalLevel(wf.Approval.Level) {
 			return newError("LE044", "approval.level",
 				fmt.Sprintf("invalid approval level %q", wf.Approval.Level))
 		}
