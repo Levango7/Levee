@@ -83,7 +83,7 @@ grep -rl 'nexus/levee/internal/compat"' --include='*.go' . \
 | `diagnosis/topology` | 拓扑诊断 | 无生产调用方 |
 | `recommend/rag` | RAG 知识增强 | 无生产调用方 |
 | `recommend/feedback` | 效果学习 | 无生产调用方 |
-| `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 全仓零引用，CLI 无对应命令 |
+| `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 全仓零引用，CLI 无对应命令；且其执行器自述**不强制审批与门禁**（`compat/executor.go:4-7`），动作表还映射了 4 个执行器不存在的动作（`compat.go:48-55`）——接线前必须先解决这两点 |
 | `scheduler` | agent 任务派发（`Schedule([]agent.Task)` + 负载均衡），不是变更时间窗触发 | 无生产调用方；跨节点派发现在由已接入的 `internal/dispatch` 承担 |
 | `opsmesh` | OpsMesh 平台集成 | 无生产调用方 |
 | `notify/chatopsbridge` | ChatOps 审批桥接点 | 无生产调用方（上文那条已注明"由部署侧组合"） |
