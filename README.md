@@ -101,13 +101,34 @@ make build
 # 运行
 ./levee --help
 
-# 创建变更（从模板实例化；可用模板用 ./levee template list 查看）
-./levee new nginx-reload --params target=web01.prod
+# 模板库初始是空的（`template list` 返回 "No templates found."），
+# 所以先建模板；参数要用 --params 以 JSON 显式声明：
+./levee template create --name nginx-reload \
+  --content 'name: nginx-reload
+steps:
+  - name: reload-nginx
+    action: shell
+    command: systemctl reload {{.service}}' \
+  --params '[{"name":"service","type":"string","required":true}]'
+
+# 从模板实例化一个变更（产出 draft，等计划与审批）
+./levee new nginx-reload --params service=nginx
 
 # 查看变更
 ./levee list
 ./levee show <run-id>
 ```
+
+以上四条在本仓库实测通过：`template create` 与 `new` 均 exit 0，`new` 输出
+`params: map[service:nginx]`、`status: draft`，`list` / `show` 能看到并展开那条 run。
+
+**`template create` 不会解析 `--content` 里的 `params:` 块**——参数必须经 `--params`
+以 JSON 数组显式传入。实测拿仓库自带的 `examples/templates/patch-rolling.yaml`（它在
+content 里声明了 `params: [package, target_group]`）建模板，`template show` 显示
+`Parameters: (none)`，随后 `new patch-rolling --params package=nginx` 报
+`unknown parameter: package`（实例化按记录里的 `tmpl.Parameters` 校验，
+`internal/template/instantiate.go:120-127`）。所以照抄该示例文件建模板时，
+参数要另写一遍 `--params '[{"name":"package","type":"string","required":true}]'`。
 
 ### 启动 API 服务
 
