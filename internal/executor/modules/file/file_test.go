@@ -477,8 +477,12 @@ func TestModuleRegistered(t *testing.T) {
 // --- helpers sanity -------------------------------------------------------
 
 func TestSha256Sum(t *testing.T) {
-	// Sanity check that our helper matches the standard library.
-	assert.Equal(t, sha256Hex("abc"), sha256Hex("abc"))
+	// The first assertion used to compare sha256Hex against itself, so it
+	// could never fail. These are published SHA-256 vectors (verified against
+	// an independent implementation), which do pin the helper's encoding.
+	assert.Equal(t, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", sha256Hex("abc"))
+	assert.Equal(t, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", sha256Hex(""))
+	assert.Equal(t, "a52d159f262b2c6ddb724a61840befc36eb30c88877a4030b65cbe86298449c9", sha256Hex("abd"))
 	assert.NotEqual(t, sha256Hex("abc"), sha256Hex("abd"))
 }
 
