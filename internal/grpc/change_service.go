@@ -466,6 +466,12 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 	if s.engine != nil && s.engine.Plan != nil {
 		planMsg, stored, err := s.engine.Plan(ctx, req.GetChangeId(), req.GetTargetHosts())
 		if err != nil {
+			// A closed change window is a refusal the operator can act on,
+			// not a server fault: report it like the approval-quorum refusal
+			// below instead of burying it in Internal.
+			if errors.Is(err, dsl.ErrWindowClosed) {
+				return nil, status.Error(codes.FailedPrecondition, err.Error())
+			}
 			return nil, status.Errorf(codes.Internal, "plan: %v", err)
 		}
 		// Persist the canonical plan artifact on the run (A1). Apply

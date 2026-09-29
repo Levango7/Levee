@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc"
@@ -40,6 +41,21 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 	wf, err := resolveWorkflow(run)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// Change-window gate (spec §4.2: "plan 时刻不在窗口内则阻断，不进审批").
+	// It sits here rather than in the RPC layer because this is the one path
+	// every plan takes — gRPC PlanChange, `levee plan --local`, and the
+	// re-plan inside apply — so no entry point can produce an artifact outside
+	// a closed window. Rollback never comes through here, which is what keeps
+	// "回滚不受窗口约束" true: a failed change must always be recoverable.
+	// An unusable declaration refuses too; "cannot judge" is not "allowed".
+	if open, werr := wf.Window.OpenAt(time.Now()); !open {
+		if werr == nil {
+			werr = fmt.Errorf("now is %s, outside %s",
+				time.Now().UTC().Format(time.RFC3339), wf.Window.Describe())
+		}
+		return nil, nil, fmt.Errorf("%w: %v", dsl.ErrWindowClosed, werr)
 	}
 
 	targets, err := e.validateTargets(ctx, targetHosts)
