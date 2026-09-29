@@ -483,16 +483,26 @@ window 字段声明变更时间窗口，是 workflow 的可选块，缺省表示
 | 字段 | 类型 | 必需 | 语义 | 约束 |
 | --- | --- | --- | --- | --- |
 | start | string | 是 | 窗口起始时间 | HH:MM 格式，24 小时制 |
-| end | string | 是 | 窗口结束时间 | HH:MM 格式，必须晚于 start |
+| end | string | 是 | 窗口结束时间 | HH:MM 格式；等于 start 非法（LE020） |
 | timezone | string | 否 | 时区 | IANA 时区名，缺省 UTC |
 | days | string[] | 否 | 允许的星期 | ["Mon","Tue",...]，缺省每天 |
 
 时间格式为 24 小时制 `HH:MM`，如 `"02:00"`、`"23:30"`。
 
+窗口边界语义：
+
+- 区间为 `[start, end)`：start 时刻含入，end 时刻排除。
+- `start > end` 表示跨零点窗口（如工作日夜间 `"23:00"`–`"02:00"`）。`days`
+  标注的是**开窗的那一天**：周五列在 `days` 内，则周五 23:00 到周六 02:00 属于该窗口。
+- `start == end` 非法（LE020）：零长度窗口与全天窗口在声明上无法区分。
+  需要全天窗口写 `"00:00"`–`"23:59"`。
+
 时区处理：
 
 - timezone 用 IANA 时区名，如 `"Asia/Shanghai"`、`"America/New_York"`、`"UTC"`。
 - 窗口校验在 plan 阶段做：plan 时刻不在窗口内则阻断，不进审批。
+- 声明不可判定同样阻断 plan（失败关闭）：把"判不了"默认放行，等于让一个
+  写坏的窗口重新变成没有窗口。
 - 跨时区团队建议显式声明 timezone，避免隐式 UTC 导致误判。
 - 回滚不受窗口约束（对应设计文档 4.4.6.2），即使窗口已关闭回滚仍可执行。
 
@@ -1226,7 +1236,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | V16 | rollback 补偿声明 | 治理红线 R2：变更必须可回滚。当前实现不阻断编译——未声明补偿的 workflow 在 dry-run 预览中告警，强制落地见 docs/product-roadmap.md | LE091（规划） |
 | V17 | target 必需 | workflow 必须声明 target 块 | LE092 |
 | V18 | step 必需 | workflow 至少声明一个 step | LE093 |
-| V19 | window 时间合法 | start < end，HH:MM 格式合法 | LE020 |
+| V19 | window 时间合法 | start / end 均为合法 HH:MM 且 start != end；timezone 可解析；days 属于 Mon..Sun | LE020 / LE021 / LE003 |
 | V20 | timezone 合法 | timezone 为合法 IANA 时区名 | LE021 |
 | V21 | 资产类型白名单 | target.type 在资产类型白名单内 | LE012 |
 | V22 | approval 约束 | high 级别 exclude_initiator 强制 true | LE043 |
