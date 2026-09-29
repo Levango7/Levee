@@ -61,10 +61,15 @@ func TestClusterNodes_PGListsNodes(t *testing.T) {
 	// membership tests own it and run concurrently against this same database),
 	// so we key on unique IDs and assert presence rather than total count.
 	idA, idB := "cs-node-a", "cs-node-b"
-	_, err := store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status) VALUES ($1,$2,$3,$4)`,
+	_, err := store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat) VALUES ($1,$2,$3,$4,NOW())`,
 		idA, "10.0.0.1:9090", "master", "active")
 	require.NoError(t, err)
-	_, err = store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status) VALUES ($1,$2,$3,$4)`,
+	// last_heartbeat is written explicitly: cluster_nodes is the one table whose
+	// DDL exists twice (state/pgschema.sql:210 has no DEFAULT, cluster/pg_registry.go:31
+	// has DEFAULT NOW()), and both create it with IF NOT EXISTS — so whichever
+	// package initialises the database first decides whether the column may be
+	// omitted. Naming it makes this test independent of that order.
+	_, err = store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat) VALUES ($1,$2,$3,$4,NOW())`,
 		idB, "10.0.0.2:9090", "worker", "active")
 	require.NoError(t, err)
 
