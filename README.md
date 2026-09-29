@@ -11,8 +11,9 @@
 
 ### LEVEE 是一套系统，不只是一个 workflow 引擎
 
-核心实体是**变更（Change）**，不是工作流：40 个 gRPC RPC 里 23 个挂在
-`ChangeService` 上。工作流（LEVEELang 文档）只是变更的**声明式定义**，
+核心实体是**变更（Change）**，不是工作流：53 个 gRPC RPC（`proto/levee.proto`
+40 个 + `proto/levee_extra.proto` 13 个）里 22 个挂在 `ChangeService` 上，
+是九个已注册服务中最大的一个。工作流（LEVEELang 文档）只是变更的**声明式定义**，
 计划（Plan）才是被 `plan_hash` 绑定、被审批、被执行的那份制品。
 
 按 `internal/` 的实际构成，与编排直接相关的包（dsl / plan / engine / wiring /
@@ -50,7 +51,7 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **危险度评分与审批分级路由**：plan 生成时自动评分（不可逆步骤/破坏性动作/影响面/回滚覆盖/批次扇出五因子，明细可解释），分数+红线推导审批下限（任一不可逆步骤 ⇒ 至少 high），**tier = max(workflow 声明, 计划下限) 只升不降**；PlanChange 自动启动审批链（补齐"声明了但没人创建 pending 记录"断链），评分与下限随 plan_json 落盘
 - **单步验证门 API**：`POST /gates/verify` 按需执行一条 cmd/probe/slo 验证（与引擎门禁同源构造器，零语义漂移）——操作员预检、流水线 pre-check、ChatOps 即席健康检查无需规划整个变更；human 检查点显式排除（归审批链）；每次执行留审计
 - **ITSM Jira 审批镜像**：`notify.jira.*` 配置启用后审批链开始建 Jira issue、决策自动评论（纯出站镜像，LEVEE store 仍是唯一事实来源；禁用时零外发零装配）
-- **双协议 API**：gRPC（5+ 服务）+ REST 网关（`/api/v1/`），共享同一服务实例
+- **双协议 API**：gRPC（9 个业务服务 + 标准 `grpc.health.v1`）+ REST 网关（`/api/v1/`），共享同一服务实例
 - **AI 辅助运维**：告警接入 → 拓扑诊断 → LLM 对话式定位 → RAG 知识增强推荐 → 自动执行 → 效果学习
 - **多通道执行**：SSH / WinRM 无代理通道 + local 沙箱通道（CI/单机自测，程序白名单+参数策略+沙箱根三重门禁，fail-closed 默认），插件注册表开放第三方通道接入（见 `docs/channel-plugins.md`）
 - **快照回滚**：`rollback: {strategy: snapshot, snapshot_paths: [...]}` 声明式文件级备份——apply 前经通道采集目标机文件（base64 传输），回滚时原样恢复（与 undo-action 显式互斥）；快照按 change id 键存，手动回滚路径可达；`--engine-snapshot-dir` 一旗标启用
