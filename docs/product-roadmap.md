@@ -31,6 +31,8 @@
 | P0 | ~~`recommend` → `Change` 的正式桥~~ **已定案并落地（2026-09-26）** | `internal/conversation/change_bridge.go` 在确认后把 `WorkflowDraft` 交给既有 `ChangeService.CreateChange`，产出 `draft` 变更进入标准治理链；草案先过与 `levee compile` 严格模式相同的解析 + 校验两道门（含 LE097），fail-closed：不通过则一条变更记录都不建，会话留在 `reviewing`。**桥不执行工作流、不跳过审批**。两个入口都接上了：serve 路径用进程内 change 服务，**CLI `levee converse` 用懒打开的本地 store**（只在第一次确认建议时才开，生命周期挂到引擎 `AddCloser` 上，只读命令不碰数据库） | 无（已实现） |
 | P1 | `idempotent: true` 的存量 Lint：检出未声明幂等的 undo 步骤并引导作者补齐 | 方案 C 留下的最后一步：从被动门禁变主动信息 | D-3 |
 | P2 | `internal/docgen` 的多语言实现（把 `web/src/types/levee.ts` 那张表也生成为 TS） | 现在 `TestWebStatusMirrorMatchesGo` 还是手工比对——它本身也不过是"另一份手写词表"在 Go 里的验证镜 | D-3 |
+| P0（已落地 2026-09-29，日历侧一半待接） | **变更窗口强制：`window` 声明此前全链路不生效** | 规范 §4.2 承诺"变更只允许在该窗口内执行"，但 `ChangeWindow` 零读取点（只有 `parser.go:313` 一处赋值），`plan.Plan` 不携带窗口，`calendar.CheckWindowForPlan` 生产零调用；实测 `start: "25:99"` / `timezone: "Mars/Olympus_Mons"` / `days: ["funday"]` 编译通过，声明周日 03:00-04:00 的变更在周二 22:05 走完 plan→approve→apply。已补：`internal/dsl/window.go` 文法+判定、validator 的 V19（LE020/LE021/LE003）、`GeneratePlan` 的窗外阻断（规范口径：plan 阶段阻断、不进审批；回滚按规范豁免，由结构不变量测试钉住）。**剩下的另一半**：组织级变更日历（`calendar` 的窗口/冻结期 + `CheckWindowForPlan`）仍未被 plan 路径调用，`Window.MaxConcurrency` 也仍无人读取（规范 §4.2 字段表里没有这个字段，属实现私有扩展） | D-3 / F08 |
+| P1 | **`CompileWarning` 一档没有产生点**：LE033 / LE052 / LE094 / LE095 / LE096 五个警告码在目录表登记，但没有任何代码发出 | `Validator.Validate` 返回的是扁平 `[]ValidationError`，两个消费者（`cmd_compile.go:87` 严格模式、`conversation/change_bridge.go:86` 的 fail-closed 门）都把非空当成致命。因此"缺窗口/缺审批/缺批次"这类**应当只警告**的规则一旦塞进 `Validate`，会让所有未声明的既有工作流在编译期与会话桥同时被拒——是行为破坏而不是补门禁。要做的是先给 `ValidationError` 加 severity 并在两个消费者处按 severity 过滤，再逐条发出警告 | 与 D-3 词表收尾同族 |
 
 ## 可视化层（UI / Web / ChatOps）
 
