@@ -6,8 +6,8 @@ package dsl
 //   - input parameter type resolution against the TypeRegistry
 //   - workflow variable type inference from assignments
 //   - step argument type checking against per-module/action signatures
-//   - batch.strategy enum membership ({percent, fixed, serial})
-//   - approval.level enum membership ({standard, high, emergency})
+//   - batch.strategy enum membership (dsl.BatchStrategies)
+//   - approval.level enum membership (dsl.ApprovalLevels)
 //   - template parameter type matching
 //
 // Two modes are supported:
@@ -230,8 +230,9 @@ func (c *TypeChecker) checkStepArgs(base string, s Step) []TypeError {
 	return errs
 }
 
-// checkBatches validates batch.strategy against the {percent, fixed, serial}
-// enum and checks that batch.steps values match the strategy's expected type.
+// checkBatches validates batch.strategy against the batchStrategyEnum (which
+// is derived from BatchStrategies, not re-listed here) and checks that
+// batch.steps values match the strategy's expected type.
 func (c *TypeChecker) checkBatches(b BatchConfig) []TypeError {
 	if b.Strategy == "" {
 		return nil
@@ -384,18 +385,47 @@ var actionSignatures = map[string]map[string]Type{
 		"name":    TypeString{},
 		"version": TypeString{},
 	},
+	"mysql.query": {
+		"sql":      TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+		"password": TypeString{},
+	},
+	"mysql.pt_osc": {
+		"database": TypeString{},
+		"table":    TypeString{},
+		"alter":    TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+		"password": TypeString{},
+	},
+	"mysql.replica_switch": {
+		"new_primary": TypeString{},
+		"confirm":     TypeString{},
+		"host":        TypeString{},
+		"port":        TypeString{},
+		"user":        TypeString{},
+		"password":    TypeString{},
+	},
 }
 
-// batchStrategyEnum is the enum of allowed batch strategies.
+// batchStrategyEnum is the enum of allowed batch strategies. It mirrors
+// BatchStrategies instead of re-listing it: this enum was the copy that kept
+// rejecting one-per-target after the parser and the generator had agreed on
+// it, so the strategy failed type-checking while `levee compile` was the only
+// entry point that noticed.
 var batchStrategyEnum = &TypeEnum{
 	Name:   "batch_strategy",
-	Values: []string{"percent", "fixed", "serial"},
+	Values: append([]string(nil), BatchStrategies...),
 }
 
-// approvalLevelEnum is the enum of allowed approval levels.
+// approvalLevelEnum is the enum of allowed approval levels, same sourcing.
 var approvalLevelEnum = &TypeEnum{
 	Name:   "approval_level",
-	Values: []string{"standard", "high", "emergency"},
+	Values: append([]string(nil), ApprovalLevels...),
 }
 
 // Ensure the sentinel enums satisfy the Type interface at compile time.

@@ -37,18 +37,23 @@ const total = ref(0)
 const nextPageToken = ref('')
 const selected = ref<Change[]>([])
 
+// Mirrors the backend status vocabulary (change_service.go). `pending_approval`
+// was listed here as a second 待审批 option that the server never returns, so
+// picking it always yielded an empty table.
 const statusOptions: Array<{ value: ChangeStatus; label: string }> = [
   { value: 'draft', label: '草稿' },
   { value: 'planned', label: '已计划' },
   { value: 'pending', label: '待审批' },
-  { value: 'pending_approval', label: '待审批' },
   { value: 'approved', label: '已审批' },
+  { value: 'rejected', label: '已拒绝' },
   { value: 'running', label: '执行中' },
   { value: 'paused', label: '已暂停' },
   { value: 'completed', label: '已完成' },
   { value: 'failed', label: '失败' },
   { value: 'cancelled', label: '已取消' },
   { value: 'rolled_back', label: '已回滚' },
+  { value: 'rolled_back_partial', label: '部分回滚' },
+  { value: 'rollback_incomplete', label: '回滚未完成' },
   { value: 'interrupted', label: '已中断' },
   { value: 'archived', label: '已归档' },
 ]

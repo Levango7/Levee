@@ -226,6 +226,38 @@ func (m *LevelManager) All() []LevelConfig {
 	return []LevelConfig{m.configs[LevelStandard], m.configs[LevelHigh], m.configs[LevelEmergency]}
 }
 
+// defaultLevels is the package-level tier table used by callers that have
+// no LevelManager of their own (the approval-kickoff path in the service
+// layer, for one).
+var defaultLevels = sync.OnceValue(NewLevelManager)
+
+// MinApproversFor reports how many independent approvals the tier
+// demands. The high tier's answer is 2 — routing a change to high is what
+// makes "two humans" true, so a caller may not substitute a smaller
+// number just because the workflow left `approvers` undeclared.
+func MinApproversFor(level string) (int, error) {
+	cfg, err := defaultLevels().Get(level)
+	if err != nil {
+		return 0, err
+	}
+	return cfg.MinApprovers, nil
+}
+
+// ForcesInitiatorExclusion reports whether the tier forbids the change
+// initiator from supplying one of its votes.
+//
+// Read the spec's two forced constraints separately, because they cover
+// different tiers: `high` forces BOTH exclude_initiator and
+// auto_approve=false, while `emergency` forces only auto_approve=false
+// and is explicitly the "single approver, reviewed after the fact"
+// channel (leveelang-spec.md 审批级别表). Auto-approval is a third
+// question with its own predicate — risk.AutoApproveForbidden, which does
+// cover emergency. Conflating them would deny emergency changes their
+// one fast approver, which is the opposite of why the tier exists.
+func ForcesInitiatorExclusion(level string) bool {
+	return level == LevelHigh
+}
+
 // SetConfig replaces the config for a tier. The Level field of cfg must
 // be one of the three legal tiers; otherwise SetConfig returns an error
 // wrapping ErrInvalidLevel. This is the supported way to override the

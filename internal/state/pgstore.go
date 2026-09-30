@@ -23,21 +23,29 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-
+	"strconv"
+	"strings"
 	"time"
 
 	_ "embed" // required for go:embed
 
 	"github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/nexus/levee/internal/dbschema"
 	"github.com/nexus/levee/internal/log"
 )
 
-// pgSchemaSQL holds the embedded pgschema.sql content. It is applied verbatim
-// the first time a PostgreSQL store is opened.
+// pgSchemaSQL holds the embedded pgschema.sql content.
 //
 //go:embed pgschema.sql
 var pgSchemaSQL string
+
+// pgSchemaFull is what a PostgreSQL store actually applies: the embedded file
+// plus the shared cluster-membership DDL. cluster_nodes lives in
+// internal/dbschema rather than in this file because internal/cluster creates
+// it too, and two IF-NOT-EXISTS copies had already drifted apart — whichever
+// package initialised a database first decided its shape.
+var pgSchemaFull = pgSchemaSQL + "\n" + dbschema.ClusterNodesDDL
 
 // pgBaseSchemaVersion is the version that pgschema.sql alone describes,
 // mirroring baseSchemaVersion for the PostgreSQL migration path.
@@ -46,7 +54,7 @@ const pgBaseSchemaVersion = 1
 // pgCurrentSchemaVersion mirrors currentSchemaVersion for the PostgreSQL
 // migration path. Bump whenever a forward PostgreSQL migration step is added
 // to pgMigrations; pgschema.sql must gain the same change.
-const pgCurrentSchemaVersion = 3
+const pgCurrentSchemaVersion = 4
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
@@ -194,6 +202,43 @@ func (s *PGStore) UpdateRunStatusIf(ctx context.Context, id string, from string,
 		return false, fmt.Errorf("state: update run status %q: rows affected: %w", id, err)
 	}
 	return n > 0, nil
+}
+
+// UpdateRunApprovalStatusIf atomically transitions a run's status and
+// approval_status in one compare-and-set (WHERE status = from). See the Store
+// interface for the rationale: approval settlement writes both columns as one
+// CAS so a settled outcome cannot clobber a concurrent state transition.
+func (s *PGStore) UpdateRunApprovalStatusIf(ctx context.Context, id string, from string, to string, approvalStatus string, updatedAt time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status=$1, approval_status=$2, updated_at=$3 WHERE id=$4 AND status=$5`,
+		to, approvalStatus, updatedAt, id, from,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q %s->%s: %w", id, from, to, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q: rows affected: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateRunPlan overwrites only the plan artifact and updated_at. See the
+// Store interface for why it avoids touching status/approval_status.
+func (s *PGStore) UpdateRunPlan(ctx context.Context, id string, planJSON string, planHash string, updatedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET plan_json=$1, plan_hash=$2, updated_at=$3 WHERE id=$4`,
+		planJSON, planHash, updatedAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("state: update run plan %q: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("state: update run plan %q: rows affected: %w", id, err)
+	} else if n == 0 {
+		return fmt.Errorf("state: update run plan %q: not found", id)
+	}
+	return nil
 }
 
 // MarkNonTerminalSteps flips the run's non-terminal step rows
@@ -697,10 +742,10 @@ func (s *PGStore) CreateApproval(ctx context.Context, approval *Approval) error 
 		return fmt.Errorf("state: create approval: nil approval")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals
-		(id, run_id, level, approver, status, comment, timeout_at, acted_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		(id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		approval.ID, approval.RunID, approval.Level, approval.Approver, approval.Status,
-		approval.Comment, approval.TimeoutAt, approval.ActedAt,
+		approval.Comment, approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.Revision,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create approval: %w", err)
@@ -711,10 +756,10 @@ func (s *PGStore) CreateApproval(ctx context.Context, approval *Approval) error 
 // GetApproval returns the approval with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, level, approver, status, comment, timeout_at, acted_at
+		id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision
 		FROM approvals WHERE id = $1`, id)
 	a := &Approval{}
-	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt)
+	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -724,16 +769,18 @@ func (s *PGStore) GetApproval(ctx context.Context, id string) (*Approval, error)
 	return a, nil
 }
 
-// UpdateApproval overwrites all mutable columns of an existing approval.
+// UpdateApproval overwrites all mutable columns of an existing approval and
+// bumps its revision so any in-flight decision CAS (UpdateApprovalIfPending)
+// that read the old revision loses and must re-read.
 func (s *PGStore) UpdateApproval(ctx context.Context, approval *Approval) error {
 	if approval == nil {
 		return fmt.Errorf("state: update approval: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7
-		WHERE id=$8`,
+		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1
+		WHERE id=$9`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update approval %q: %w", approval.ID, err)
@@ -746,18 +793,20 @@ func (s *PGStore) UpdateApproval(ctx context.Context, approval *Approval) error 
 
 // UpdateApprovalIfPending is the compare-and-set variant of UpdateApproval:
 // it applies the update only when the stored row is still in status
-// "pending". It returns true when the update was applied and false when the
-// row was concurrently decided (or does not exist), so callers never
-// overwrite a terminal decision.
+// "pending" AND its revision is the one the caller read. The revision check
+// is what prevents two concurrent partial votes (both leaving the row
+// pending) from silently overwriting each other: the second writer carries
+// a stale revision, so it loses the CAS and the caller re-reads and retries.
+// It returns true when the update was applied and false otherwise.
 func (s *PGStore) UpdateApprovalIfPending(ctx context.Context, approval *Approval) (bool, error) {
 	if approval == nil {
 		return false, fmt.Errorf("state: update approval if pending: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7
-		WHERE id=$8 AND status='pending'`,
+		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1
+		WHERE id=$9 AND status='pending' AND revision=$10`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID, approval.Revision,
 	)
 	if err != nil {
 		return false, fmt.Errorf("state: update approval %q if pending: %w", approval.ID, err)
@@ -785,7 +834,7 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 		args = append(args, filter.Status)
 	}
 
-	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at FROM approvals`
+	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision FROM approvals`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
 	}
@@ -804,7 +853,7 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 	var out []*Approval
 	for rows.Next() {
 		a := &Approval{}
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision); err != nil {
 			return nil, fmt.Errorf("state: list approvals scan: %w", err)
 		}
 		out = append(out, a)
@@ -1076,6 +1125,281 @@ func (s *PGStore) DeleteCredential(ctx context.Context, id string) error {
 		return fmt.Errorf("state: delete credential %q: %w", id, err)
 	}
 	return nil
+}
+
+// =========================================================================
+// Dispatch assignment CRUD
+// =========================================================================
+
+// CreateAssignment inserts a new run_assignment row.
+func (s *PGStore) CreateAssignment(ctx context.Context, a *Assignment) error {
+	if a == nil {
+		return fmt.Errorf("state: create assignment: nil assignment")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO run_assignment
+		(run_id, owner_node, epoch, state, result, assigned_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,NOW(),NOW())`,
+		a.RunID, a.OwnerNode, a.Epoch, a.State, a.Result,
+	)
+	if err != nil {
+		return fmt.Errorf("state: create assignment for %q: %w", a.RunID, err)
+	}
+	return nil
+}
+
+// GetAssignment returns the assignment for runID, or (nil, nil) if none.
+func (s *PGStore) GetAssignment(ctx context.Context, runID string) (*Assignment, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT
+		run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment WHERE run_id = $1`, runID)
+	a := &Assignment{}
+	if err := row.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: get assignment %q: %w", runID, err)
+	}
+	return a, nil
+}
+
+// UpdateAssignmentStateIf is a compare-and-set on (run_id, epoch, state).
+func (s *PGStore) UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=$1, result=CASE WHEN $2='done' THEN COALESCE(NULLIF(result,''), $3) ELSE result END, updated_at=NOW()
+		WHERE run_id=$4 AND epoch=$5 AND state=$6`,
+		next, next, next, runID, epoch, expected,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateAssignmentState transitions an assignment to next if its current
+// state is pending or executing. It is the takeover loop's tool for
+// reflecting an interrupted run onto its dispatch assignment row: dispatch
+// may later reclaim that row (Reassign), so a fixed expected-state CAS
+// would race — instead we only touch active rows and stand down when the
+// row is already terminal (done/interrupted).
+func (s *PGStore) UpdateAssignmentState(ctx context.Context, runID, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=$1, updated_at=NOW()
+		WHERE run_id=$2 AND state IN ($3, $4)`,
+		next, runID, AssignStatePending, AssignmentStateExecuting)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// Reassign bumps the epoch and resets state to pending for a run.
+func (s *PGStore) Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET owner_node=$1, epoch=epoch+1, state=$2, result='', updated_at=NOW()
+		WHERE run_id=$3 AND epoch=$4`,
+		newNode, AssignStatePending, runID, prevEpoch,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// ReclaimAssignment bumps the epoch and re-points a stale pending assignment
+// at newNode. Unlike Reassign it also CASes on state=pending, so a worker that
+// claimed the row in the meantime (pending→executing, same epoch) beats the
+// reclaim instead of being overwritten.
+func (s *PGStore) ReclaimAssignment(ctx context.Context, runID string, epoch int64, newNode string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET owner_node=$1, epoch=epoch+1, state=$2, result='', updated_at=NOW()
+		WHERE run_id=$3 AND epoch=$4 AND state=$2`,
+		newNode, AssignStatePending, runID, epoch,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: reclaim assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: reclaim assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// ListAssignments returns assignments matching the filter, ordered by
+// assigned_at ascending.
+func (s *PGStore) ListAssignments(ctx context.Context, filter AssignmentFilter) ([]*Assignment, error) {
+	var (
+		clauses []string
+		args    []any
+		idx     int
+	)
+	next := func() int {
+		idx++
+		return idx
+	}
+	if filter.RunID != "" {
+		clauses = append(clauses, fmt.Sprintf("run_id = $%d", next()))
+		args = append(args, filter.RunID)
+	}
+	if filter.OwnerNode != "" {
+		clauses = append(clauses, fmt.Sprintf("owner_node = $%d", next()))
+		args = append(args, filter.OwnerNode)
+	}
+	if filter.State != "" {
+		clauses = append(clauses, fmt.Sprintf("state = $%d", next()))
+		args = append(args, filter.State)
+	}
+	if len(filter.ExcludeStates) > 0 {
+		placeholders := make([]string, len(filter.ExcludeStates))
+		for i := range filter.ExcludeStates {
+			placeholders[i] = fmt.Sprintf("$%d", next())
+			args = append(args, filter.ExcludeStates[i])
+		}
+		clauses = append(clauses, "state NOT IN ("+strings.Join(placeholders, ",")+")") // #nosec G202 -- fragments static, values bound
+	}
+
+	q := `SELECT run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment`
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
+	}
+	q += " ORDER BY assigned_at ASC"
+	if filter.Limit > 0 {
+		q += " LIMIT $" + strconv.Itoa(next()) // #nosec G202 -- static fragment; value bound via placeholder
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("state: list assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Assignment
+	for rows.Next() {
+		a := &Assignment{}
+		if err := rows.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("state: list assignments scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list assignments rows: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteAssignment removes the assignment for a run. Idempotent.
+func (s *PGStore) DeleteAssignment(ctx context.Context, runID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM run_assignment WHERE run_id = $1`, runID); err != nil {
+		return fmt.Errorf("state: delete assignment %q: %w", runID, err)
+	}
+	return nil
+}
+
+// SetAssignmentResult writes the terminal result onto an assignment row.
+func (s *PGStore) SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE run_assignment SET result=$1, updated_at=NOW() WHERE run_id=$2 AND epoch=$3`,
+		result, runID, epoch)
+	if err != nil {
+		return fmt.Errorf("state: set result for %q: %w", runID, err)
+	}
+	return nil
+}
+
+// ListClusterNodes returns every registered cluster node, ordered by id.
+func (s *PGStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, address, role, status, last_heartbeat, joined_at FROM cluster_nodes ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("state: list cluster nodes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var nodes []ClusterNode
+	for rows.Next() {
+		var n ClusterNode
+		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt); err != nil {
+			return nil, fmt.Errorf("state: list cluster nodes scan: %w", err)
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list cluster nodes rows: %w", err)
+	}
+	return nodes, nil
+}
+
+// AssignmentSummary aggregates run_assignment rows for the cluster status view.
+func (s *PGStore) AssignmentSummary(ctx context.Context) (*AssignmentSummary, error) {
+	summary := &AssignmentSummary{Counts: map[string]int{}, NodeLoad: map[string]int{}}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT state, owner_node, COUNT(*) FROM run_assignment GROUP BY state, owner_node`)
+	if err != nil {
+		return nil, fmt.Errorf("state: assignment summary: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var state, node string
+		var count int
+		if err := rows.Scan(&state, &node, &count); err != nil {
+			return nil, fmt.Errorf("state: assignment summary scan: %w", err)
+		}
+		summary.Counts[state] += count
+		if state == AssignStatePending || state == AssignmentStateExecuting {
+			summary.NodeLoad[node] += count
+			summary.TotalActive += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: assignment summary rows: %w", err)
+	}
+	return summary, nil
+}
+
+// BatchSummary returns the per-batch progress of a run. The current batch is
+// the first non-terminal one (the executor resumes there); 0 means all done.
+func (s *PGStore) BatchSummary(ctx context.Context, runID string) (*BatchSummary, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT batch_no, status, total_hosts, succeeded, failed
+		 FROM batches WHERE run_id = $1 ORDER BY batch_no`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("state: batch summary %q: %w", runID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	summary := &BatchSummary{Batches: []BatchProgress{}}
+	for rows.Next() {
+		var bp BatchProgress
+		if err := rows.Scan(&bp.BatchNo, &bp.Status, &bp.TotalHosts, &bp.Succeeded, &bp.Failed); err != nil {
+			return nil, fmt.Errorf("state: batch summary scan: %w", err)
+		}
+		if summary.CurrentBatchNo == 0 && !batchDoneStates[bp.Status] {
+			summary.CurrentBatchNo = bp.BatchNo
+		}
+		if batchDoneStates[bp.Status] {
+			summary.DoneBatches++
+		}
+		summary.Batches = append(summary.Batches, bp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: batch summary rows: %w", err)
+	}
+	summary.TotalBatches = len(summary.Batches)
+	return summary, nil
 }
 
 // =========================================================================
