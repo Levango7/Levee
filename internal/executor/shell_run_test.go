@@ -131,7 +131,12 @@ func TestShellRunner_RunEmptyCommand(t *testing.T) {
 // --- Run duration ---------------------------------------------------------
 
 func TestShellRunner_RunDuration(t *testing.T) {
-	r := NewShellRunner().WithTimeout(5 * time.Second)
+	// No bespoke timeout here: this case asserts that a duration is recorded,
+	// not that the budget holds. A hand-picked 5s turned a trivial `echo` into
+	// a load-sensitive deadline — observed failing at exactly 5.02s while the
+	// same case ran in 1.8s quietly. Timeout behaviour itself is pinned by
+	// TestShellRunner_RunTimeout.
+	r := NewShellRunner()
 	res, err := r.Run(context.Background(), "echo anything")
 	require.NoError(t, err)
 	require.NotNil(t, res)
@@ -207,7 +212,9 @@ func TestShellRunner_RunContextCancel(t *testing.T) {
 // --- Multi-line output ----------------------------------------------------
 
 func TestShellRunner_RunMultiLineOutput(t *testing.T) {
-	r := NewShellRunner().WithTimeout(5 * time.Second)
+	// Same reasoning as TestShellRunner_RunDuration: the contract is stdout
+	// content. Failed at 5.01s under parallel load, passed in 1.3s alone.
+	r := NewShellRunner()
 	// `echo a && echo b` is portable across cmd and sh.
 	res, err := r.Run(context.Background(), "echo line1 && echo line2")
 	require.NoError(t, err)

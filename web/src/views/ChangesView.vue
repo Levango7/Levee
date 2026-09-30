@@ -8,7 +8,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi } from '@/api'
 import type { Change, ChangeStatus } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
-import { formatTimestamp } from '@/utils/format'
+import { formatTimestamp, isRetryableStatus } from '@/utils/format'
 
 const router = useRouter()
 
@@ -37,20 +37,48 @@ const total = ref(0)
 const nextPageToken = ref('')
 const selected = ref<Change[]>([])
 
+// Mirrors the backend status vocabulary (change_service.go). `pending_approval`
+// was listed here as a second 待审批 option that the server never returns, so
+// picking it always yielded an empty table.
 const statusOptions: Array<{ value: ChangeStatus; label: string }> = [
   { value: 'draft', label: '草稿' },
   { value: 'planned', label: '已计划' },
   { value: 'pending', label: '待审批' },
-  { value: 'pending_approval', label: '待审批' },
   { value: 'approved', label: '已审批' },
+  { value: 'rejected', label: '已拒绝' },
   { value: 'running', label: '执行中' },
   { value: 'paused', label: '已暂停' },
   { value: 'completed', label: '已完成' },
   { value: 'failed', label: '失败' },
   { value: 'cancelled', label: '已取消' },
   { value: 'rolled_back', label: '已回滚' },
+  { value: 'rolled_back_partial', label: '部分回滚' },
+  { value: 'rollback_incomplete', label: '回滚未完成' },
+  { value: 'interrupted', label: '已中断' },
   { value: 'archived', label: '已归档' },
 ]
+
+// Retryable statuses live in utils/format (isRetryableStatus) so they can
+// be unit-tested alongside the other status vocabularies and stay in one
+// place; the button below gates on it.
+async function retryChange(row: Change): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确认重试变更「${row.label}」？将按已存储计划重新执行。`,
+      '重试变更',
+      { confirmButtonText: '重试', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return // cancelled
+  }
+  try {
+    await changesApi.retry(row.id, {})
+    ElMessage.success(`重试已提交：${row.label}`)
+    load()
+  } catch (err) {
+    ElMessage.error(`重试 ${row.label} 失败：${(err as { message?: string })?.message}`)
+  }
+}
 
 // Status summary cards. Computed from the current page; for a true total the
 // backend would need a dedicated summary endpoint, but this is enough to give
@@ -267,10 +295,16 @@ onMounted(load)
         <el-table-column label="创建时间" width="180">
           <template #default="{ row }">{{ formatTimestamp(row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" @click.stop="router.push(`/monitor/${row.id}`)">监控</el-button>
             <el-button text type="primary" @click.stop="viewDetail(row)">详情</el-button>
+            <el-button
+              v-if="isRetryableStatus(row.status)"
+              text
+              type="warning"
+              @click.stop="retryChange(row)"
+            >重试</el-button>
           </template>
         </el-table-column>
       </el-table>

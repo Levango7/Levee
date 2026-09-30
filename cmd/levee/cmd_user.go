@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/identity"
 	"github.com/nexus/levee/internal/permission"
 )
 
@@ -77,58 +77,20 @@ func newUserAddCmd() *cobra.Command {
 
 // --- User registry types ----------------------------------------------------
 
-// userRegistry is the on-disk representation of the user list. It is stored
-// as a YAML file alongside the permission matrix configuration.
-type userRegistry struct {
-	Users []userEntry `yaml:"users"`
-}
+// The registry implementation lives in internal/identity, because the
+// serving process has to resolve a caller's team from the same file the CLI
+// writes. These aliases keep the CLI's call sites, error text and tests
+// unchanged across the move.
+type (
+	userRegistry = identity.Registry
+	userEntry    = identity.User
+)
 
-// userEntry represents a single user in the registry.
-type userEntry struct {
-	Name string `yaml:"name" json:"name"`
-	Team string `yaml:"team" json:"team"`
-	Role string `yaml:"role" json:"role"`
-}
+func usersFilePath(dataDir string) string { return identity.FilePath(dataDir) }
 
-// usersFilePath returns the path to the user registry YAML file. It is
-// derived from the LEVEE data directory: <dataDir>/users.yaml.
-func usersFilePath(dataDir string) string {
-	return filepath.Join(dataDir, "users.yaml")
-}
+func loadUserRegistry(path string) (*userRegistry, error) { return identity.Load(path) }
 
-// loadUserRegistry reads the user registry from the YAML file at path.
-// If the file does not exist, an empty registry is returned.
-func loadUserRegistry(path string) (*userRegistry, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &userRegistry{}, nil
-		}
-		return nil, fmt.Errorf("read user registry: %w", err)
-	}
-	var reg userRegistry
-	if err := yaml.Unmarshal(data, &reg); err != nil {
-		return nil, fmt.Errorf("unmarshal user registry: %w", err)
-	}
-	return &reg, nil
-}
-
-// saveUserRegistry writes the user registry to the YAML file at path.
-// The parent directory is created if it does not exist.
-func saveUserRegistry(path string, reg *userRegistry) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create user registry dir: %w", err)
-	}
-	data, err := yaml.Marshal(reg)
-	if err != nil {
-		return fmt.Errorf("marshal user registry: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write user registry: %w", err)
-	}
-	return nil
-}
+func saveUserRegistry(path string, reg *userRegistry) error { return identity.Save(path, reg) }
 
 // --- Command runners ---------------------------------------------------------
 

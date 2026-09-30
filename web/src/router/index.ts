@@ -52,8 +52,20 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/MonitorView.vue'),
     meta: { title: '执行监控' },
   },
-  {
-    path: '/templates',
+	{
+		path: '/cluster',
+		name: 'cluster',
+		component: () => import('@/views/ClusterView.vue'),
+		meta: { title: '集群状态' },
+	},
+	{
+		path: '/conversation',
+		name: 'conversation',
+		component: () => import('@/views/ConversationView.vue'),
+		meta: { title: 'AI 对话' },
+	},
+	{
+		path: '/templates',
     name: 'templates',
     component: () => import('@/views/TemplatesView.vue'),
     meta: { title: '模板管理' },

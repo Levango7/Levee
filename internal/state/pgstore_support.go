@@ -77,6 +77,35 @@ var pgMigrations = []migrationStep{
 			`ALTER TABLE credentials ADD COLUMN tags TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// A1 (engine wiring): runs.plan_json (see migrations on the
+		// SQLite side). Statement is dialect-compatible.
+		version: 3,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		// D-1 v2 (approval/plan binding + concurrent-vote CAS): approvals
+		// gains plan_hash and revision (see migrations on the SQLite side).
+		// Both statements are dialect-compatible; fresh databases get them
+		// from pgschema.sql directly.
+		version: 4,
+		stmts: []string{
+			`ALTER TABLE approvals ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE approvals ADD COLUMN revision BIGINT NOT NULL DEFAULT 0`,
+		},
+	},
+}
+
+// MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and
+// any pending forward migrations to db. It is the exported entry point of
+// pgMigrate for packages outside state that must guarantee the LEVEE schema
+// before touching data — currently the backup package, whose restore path
+// replays migrations onto the target database before inserting dumped rows.
+// Idempotent; see pgMigrate for the full semantics.
+func MigratePostgres(ctx context.Context, db *sql.DB) error {
+	return pgMigrate(ctx, db)
 }
 
 // pgSchemaDDLAdvisoryLockKey is the key of the session-level advisory lock
@@ -146,7 +175,7 @@ func pgMigrate(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("state: begin pg schema transaction: %w", err)
 		}
-		if err := pgExecMultiStatement(ctx, tx, pgSchemaSQL); err != nil {
+		if err := pgExecMultiStatement(ctx, tx, pgSchemaFull); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("state: apply pg schema: %w", err)
 		}
@@ -246,10 +275,16 @@ func pgExecMultiStatement(ctx context.Context, db dbExecutor, script string) err
 // respecting:
 //  1. Dollar-quoted function bodies ($$ ... $$ or $tag$ ... $tag$).
 //  2. BEGIN...END blocks inside CREATE FUNCTION / CREATE TRIGGER.
+//  3. Single-quoted string literals (” is an escaped quote, per PG rules) —
+//     ";" and "--" inside a literal are data, not structure.
+//  4. Inline -- comments trailing code: their text may contain ";" (e.g. a
+//     column-comment vocabulary list), which must not split the statement.
+//     This class of breakage actually happened: a fresh-database runs-table
+//     DDL was cut mid-comment by an inline "…; …" annotation.
 //
-// A naive split on ";" would break both, so we walk the script character by
-// character and only treat ";" as a separator when not inside a dollar-quote
-// or BEGIN...END block.
+// A naive split on ";" would break all of the above, so we walk the script
+// character by character and only treat ";" as a separator when outside a
+// dollar-quote, string literal, or BEGIN...END block.
 func pgSplitSQLStatements(script string) []string {
 	var statements []string
 	var current strings.Builder
@@ -257,6 +292,7 @@ func pgSplitSQLStatements(script string) []string {
 	inDollarQuote := false
 	dollarTag := "" // empty means $$ ... $$
 	inBeginEnd := 0 // nesting depth of BEGIN...END
+	inString := false
 
 	i := 0
 	for i < len(script) {
@@ -264,8 +300,9 @@ func pgSplitSQLStatements(script string) []string {
 
 		// Detect start/end of dollar quote. A dollar quote is $tag$ ... $tag$
 		// where tag is optional (e.g. $$). We scan forward to find the
-		// matching closing tag.
-		if ch == '$' {
+		// matching closing tag. Guarded by inString: a dollar inside a
+		// string literal is data.
+		if ch == '$' && !inString {
 			end := indexDollarQuoteEnd(script, i)
 			if end > i {
 				tag := script[i : end+1]
@@ -288,6 +325,37 @@ func pgSplitSQLStatements(script string) []string {
 		if inDollarQuote {
 			current.WriteByte(ch)
 			i++
+			continue
+		}
+
+		// Single-quoted string literal: ";" and "--" inside it are data.
+		// Two adjacent quotes inside a literal are PG's escaped quote.
+		if ch == '\'' {
+			if !inString {
+				inString = true
+			} else if i+1 < len(script) && script[i+1] == '\'' {
+				current.WriteString("''")
+				i += 2
+				continue
+			} else {
+				inString = false
+			}
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+		if inString {
+			current.WriteByte(ch)
+			i++
+			continue
+		}
+
+		// Inline -- comment: skip to end of line (kept out of the statement;
+		// its text may contain ";" without ending the statement).
+		if ch == '-' && i+1 < len(script) && script[i+1] == '-' {
+			for i < len(script) && script[i] != '\n' {
+				i++
+			}
 			continue
 		}
 

@@ -440,17 +440,6 @@ func runRBACTree(cmd *cobra.Command, args []string) error {
 
 // --- RBAC state persistence helpers -----------------------------------------
 
-// rbacRoleTreeConfig is the YAML representation of the role tree.
-type rbacRoleTreeConfig struct {
-	Roles []rbacRoleConfig `yaml:"roles"`
-}
-
-type rbacRoleConfig struct {
-	Name        string   `yaml:"name"`
-	Parent      string   `yaml:"parent,omitempty"`
-	Permissions []string `yaml:"permissions,omitempty"`
-}
-
 // loadRBACState loads the role tree and policy set from the data
 // directory. Missing files yield empty structures. The paths to the
 // role tree and policy files are returned so callers can save updates.
@@ -476,72 +465,23 @@ func loadRBACState() (*permission.RoleTree, *permission.PolicySet, string, strin
 // loadRBACRoleTree reads the role tree from a YAML file. A missing file
 // yields an empty tree.
 func loadRBACRoleTree(path string) (*permission.RoleTree, error) {
+	// The parsing lives on the type itself now: the serving process loads the
+	// same roles.yaml, and a loader stranded in package main is how the tree
+	// stayed runtime-unused. Behaviour here (missing file => empty tree) is
+	// unchanged.
 	tree := permission.NewRoleTree()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return tree, nil
-		}
-		return nil, fmt.Errorf("read role tree: %w", err)
-	}
-	var cfg rbacRoleTreeConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("unmarshal role tree: %w", err)
-	}
-	// First pass: add roles so parents exist before children reference them.
-	// We add parent-less roles first, then iterate until all are added.
-	added := make(map[string]bool)
-	for pass := 0; pass < len(cfg.Roles)+1; pass++ {
-		progress := false
-		for _, r := range cfg.Roles {
-			if added[r.Name] {
-				continue
-			}
-			if r.Parent != "" && !added[r.Parent] {
-				continue
-			}
-			if err := tree.AddRole(r.Name, r.Parent); err != nil {
-				return nil, fmt.Errorf("add role %q: %w", r.Name, err)
-			}
-			if len(r.Permissions) > 0 {
-				if err := tree.GrantPermission(r.Name, r.Permissions...); err != nil {
-					return nil, fmt.Errorf("grant permissions for %q: %w", r.Name, err)
-				}
-			}
-			added[r.Name] = true
-			progress = true
-		}
-		if !progress {
-			break
-		}
+	if err := tree.LoadFromYAML(path); err != nil {
+		return nil, err
 	}
 	return tree, nil
 }
 
 // saveRBACRoleTree writes the role tree to a YAML file.
 func saveRBACRoleTree(path string, tree *permission.RoleTree) error {
-	roles := tree.Roles()
-	cfg := rbacRoleTreeConfig{Roles: make([]rbacRoleConfig, 0, len(roles))}
-	for _, r := range roles {
-		parent, _ := tree.Parent(r)
-		direct, _ := tree.DirectPermissions(r)
-		cfg.Roles = append(cfg.Roles, rbacRoleConfig{
-			Name:        r,
-			Parent:      parent,
-			Permissions: direct,
-		})
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return fmt.Errorf("create role tree dir: %w", err)
-	}
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal role tree: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return fmt.Errorf("write role tree: %w", err)
-	}
-	return nil
+	// Serialisation lives on the type now, next to the loader: one schema for
+	// one file. The previous CLI-side copy could drift from the reader without
+	// any test noticing.
+	return tree.SaveToYAML(path)
 }
 
 // loadRBACPolicySet reads the policy set from a YAML file. A missing file

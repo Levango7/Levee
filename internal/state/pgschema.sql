@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at      TIMESTAMPTZ NOT NULL,
     updated_at      TIMESTAMPTZ NOT NULL,
     creator         TEXT    NOT NULL,
-    incident_id     TEXT    NOT NULL DEFAULT ''
+    incident_id     TEXT    NOT NULL DEFAULT '',
+    plan_json       TEXT    NOT NULL DEFAULT ''      -- canonical plan.Plan JSON ('' = not planned; v3, last: mirrors ALTER append order)
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);
@@ -144,6 +145,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     comment    TEXT    NOT NULL DEFAULT '',
     timeout_at TIMESTAMPTZ,
     acted_at   TIMESTAMPTZ,
+    plan_hash  TEXT    NOT NULL DEFAULT '',          -- D-1 v2: plan the approval attests to ('' = legacy, any plan)
+    revision   BIGINT  NOT NULL DEFAULT 0,           -- D-1 v2: optimistic-lock version for concurrent decisions
     FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
 );
 
@@ -197,21 +200,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_action    ON audit (action);
 CREATE INDEX IF NOT EXISTS idx_audit_actor     ON audit (actor);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit (timestamp);
 
--- cluster_nodes: registered cluster members (master + workers).
+-- cluster_nodes: registered cluster members (master + workers) is NOT defined
+-- here. It lives in internal/dbschema.ClusterNodesDDL because the cluster
+-- package creates it too; this file's content is concatenated with that one
+-- definition at apply time (see pgSchemaFull in pgstore.go).
 -- Only used in cluster mode (PostgreSQL backend).
-CREATE TABLE IF NOT EXISTS cluster_nodes (
-    id              TEXT    PRIMARY KEY,
-    address         TEXT    NOT NULL,
-    status          TEXT    NOT NULL,                -- active|leaving|offline
-    role            TEXT    NOT NULL,                -- master|worker
-    last_heartbeat  TIMESTAMPTZ NOT NULL,
-    capabilities    TEXT    NOT NULL DEFAULT '{}',   -- JSON encoded
-    joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (address)
-);
-
-CREATE INDEX IF NOT EXISTS idx_cluster_nodes_status ON cluster_nodes (status);
-CREATE INDEX IF NOT EXISTS idx_cluster_nodes_role   ON cluster_nodes (role);
 
 -- ---------------------------------------------------------------------------
 -- Inventory: managed target hosts and hierarchical groups (v1.11)
@@ -241,3 +234,20 @@ CREATE TABLE IF NOT EXISTS targets (
 
 CREATE INDEX IF NOT EXISTS idx_targets_group  ON targets (group_id);
 CREATE INDEX IF NOT EXISTS idx_targets_status ON targets (status);
+
+-- ---------------------------------------------------------------------------
+-- run_assignment: cross-node dispatch assignments (design-cluster-dispatch.md).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS run_assignment (
+    run_id      TEXT PRIMARY KEY,
+    owner_node  TEXT NOT NULL,
+    epoch       BIGINT NOT NULL,
+    state       TEXT NOT NULL,
+    result      TEXT NOT NULL DEFAULT '',
+    assigned_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_id, epoch)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state);
+CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
