@@ -99,13 +99,13 @@ func TestIntegration_ApproveFlow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, StateReviewing, sess.GetState())
 
-	// Operator approves.
+	// Operator confirms.
 	reply, err := e.HandleMessage(ctx, sess.ID, "operator-1", "执行")
 	require.NoError(t, err)
 	require.NotNil(t, reply)
-	assert.Equal(t, StateExecuting, sess.GetState(),
-		"approving the recommendation should transition to executing")
-	assert.Contains(t, reply.Text, "开始执行")
+	assert.Equal(t, StateReviewing, sess.GetState(),
+		"confirming the recommendation must not start execution before the execution chain is wired (P2-3)")
+	assert.Contains(t, reply.Text, "尚未启动执行")
 }
 
 // TestIntegration_RejectFlow verifies the review → failed transition when the

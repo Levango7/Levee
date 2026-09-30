@@ -17,21 +17,20 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/nexus/levee/internal/dbschema"
 )
 
 // clusterSchemaSQL creates the coordination tables. It is idempotent and is
 // applied by the ClusterManager before the first database operation, so the
 // cluster package does not depend on the state package's schema migration.
-const clusterSchemaSQL = `
-CREATE TABLE IF NOT EXISTS cluster_nodes (
-	id             TEXT PRIMARY KEY,
-	address        TEXT NOT NULL,
-	role           TEXT NOT NULL DEFAULT 'worker',
-	status         TEXT NOT NULL DEFAULT 'active',
-	last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	joined_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
+//
+// cluster_nodes is prepended from internal/dbschema — the state package
+// creates the same table for its cluster-status view, and the two
+// IF-NOT-EXISTS copies had drifted (capabilities column, UNIQUE (address),
+// NOT NULL defaults). One definition, applied from whichever side gets there
+// first, now means the same thing either way.
+const clusterSchemaSQL = dbschema.ClusterNodesDDL + `
 CREATE TABLE IF NOT EXISTS cluster_locks (
 	key           TEXT PRIMARY KEY,
 	owner         TEXT NOT NULL,

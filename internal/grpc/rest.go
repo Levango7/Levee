@@ -122,6 +122,9 @@ type Gateway struct {
 	// mobileApproval is optional; non-nil when the mobile approval service
 	// is configured. Used by the /changes/deeplink/approve REST endpoint.
 	mobileApproval mobileApprovalHandler
+	// gateService is optional; non-nil when ad-hoc gate verification is
+	// configured. Used by the POST /gates/verify endpoint (rest_gate.go).
+	gateService gateServiceHandler
 
 	// limiterOnce lazily initialises the gateway-wide rate limiter so
 	// that BOTH route trees (RESTful "/" and legacy "/api/v1/") share a
@@ -149,9 +152,12 @@ type extraRoute struct {
 
 // mobileApprovalHandler wraps the MobileApprovalService for REST routing.
 // It is an interface so we can avoid importing the approval package here.
+// The deep-link methods return the runID the token was bound to so the
+// gateway can settle the run from the approval chain state (the
+// settlement itself lives on ChangeService — this layer only routes).
 type mobileApprovalHandler interface {
-	ApproveViaDeepLink(ctx context.Context, token string) error
-	RejectViaDeepLink(ctx context.Context, token string) error
+	ApproveViaDeepLink(ctx context.Context, token string) (string, error)
+	RejectViaDeepLink(ctx context.Context, token string) (string, error)
 }
 
 // GatewayServices bundles the service implementations for NewGateway.
@@ -355,52 +361,69 @@ func (gw *Gateway) restRoute() http.Handler {
 		switch first {
 		case "changes":
 			gw.dispatchChange(w, r, method, path)
+		case "gates":
+			if path == "/gates/verify" && method == "POST" {
+				gw.handleGateVerify(w, r)
+				return
+			}
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		case "templates":
 			gw.dispatchTemplate(w, r, method, path)
 		case "targets":
 			gw.dispatchTarget(w, r, method, path)
-		case "audit":
-			switch {
-			case path == "/audit/log" && method == "GET":
-				gw.handleAuditLog(w, r)
-			case path == "/audit/traces" && method == "GET":
-				gw.handleAuditTraces(w, r)
-			case path == "/audit/verify" && method == "GET":
-				gw.handleAuditVerify(w, r)
-			default:
-				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-			}
-		case "auth":
-			if path == "/auth/github" && method == "POST" {
-				gw.handleGitHubLogin(w, r)
-				return
-			}
-			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-		case "system":
-			switch {
-			case path == "/system/auth-info" && method == "GET":
-				gw.handleSystemAuthInfo(w, r)
-			case path == "/system/version" && method == "GET":
-				gw.handleSystemVersion(w, r)
-			case path == "/system/status" && method == "GET":
-				gw.handleSystemStatus(w, r)
-			case path == "/system/cluster-status" && method == "GET":
-				gw.handleClusterStatus(w, r)
-			case path == "/system/batch-status" && method == "GET":
-				gw.handleBatchStatus(w, r)
-			case path == "/system/config" && method == "GET":
-				gw.handleSystemConfig(w, r)
-			case path == "/system/doctor" && method == "POST":
-				gw.handleSystemDoctor(w, r)
-			default:
-				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-			}
+		case "audit", "auth", "system":
+			gw.dispatchOperationalRest(w, r, first, method, path)
 		case "conversation":
 			gw.dispatchConversation(w, r, method, path)
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		}
 	})
+}
+
+// dispatchOperationalRest handles the audit, authentication, and system
+// route families. Keeping these exact path switches out of restRoute prevents
+// the top-level dispatcher from growing past the project's complexity gate
+// whenever a new operational endpoint is added.
+func (gw *Gateway) dispatchOperationalRest(w http.ResponseWriter, r *http.Request, family, method, path string) {
+	switch family {
+	case "audit":
+		switch {
+		case path == "/audit/log" && method == "GET":
+			gw.handleAuditLog(w, r)
+		case path == "/audit/traces" && method == "GET":
+			gw.handleAuditTraces(w, r)
+		case path == "/audit/verify" && method == "GET":
+			gw.handleAuditVerify(w, r)
+		default:
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+		}
+	case "auth":
+		if path == "/auth/github" && method == "POST" {
+			gw.handleGitHubLogin(w, r)
+			return
+		}
+		writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+	case "system":
+		switch {
+		case path == "/system/auth-info" && method == "GET":
+			gw.handleSystemAuthInfo(w, r)
+		case path == "/system/version" && method == "GET":
+			gw.handleSystemVersion(w, r)
+		case path == "/system/status" && method == "GET":
+			gw.handleSystemStatus(w, r)
+		case path == "/system/cluster-status" && method == "GET":
+			gw.handleClusterStatus(w, r)
+		case path == "/system/batch-status" && method == "GET":
+			gw.handleBatchStatus(w, r)
+		case path == "/system/config" && method == "GET":
+			gw.handleSystemConfig(w, r)
+		case path == "/system/doctor" && method == "POST":
+			gw.handleSystemDoctor(w, r)
+		default:
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+		}
+	}
 }
 
 func (gw *Gateway) dispatchChange(w http.ResponseWriter, r *http.Request, method, path string) {
@@ -888,11 +911,25 @@ func (gw *Gateway) handleDeeplinkApprove(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
-	if err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token); err != nil {
+	runID, err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token)
+	if err != nil {
 		writeDeeplinkError(w, err)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "approved"})
+	// Settle the run from the chain state: a completed quorum moves the
+	// run to approved; a partial one (min_approvers > 1) leaves it
+	// untouched and the response says so.
+	out := map[string]string{"status": "approved"}
+	if gw.change != nil {
+		settled, serr := gw.change.SettleApproval(ctx, runID)
+		if serr != nil {
+			slog.Default().Warn("deeplink approve: settle failed (decision is durable; run state not mirrored)",
+				"run_id", runID, "error", serr)
+		} else if settled == SettlePending {
+			out["status"] = "recorded; quorum pending"
+		}
+	}
+	writeJSON(w, out)
 }
 
 func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) {
@@ -908,9 +945,17 @@ func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
-	if err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token); err != nil {
+	runID, err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token)
+	if err != nil {
 		writeDeeplinkError(w, err)
 		return
+	}
+	// One-vote veto: settle the rejection onto the run.
+	if gw.change != nil {
+		if _, serr := gw.change.SettleApproval(ctx, runID); serr != nil {
+			slog.Default().Warn("deeplink reject: settle failed (decision is durable; run state not mirrored)",
+				"run_id", runID, "error", serr)
+		}
 	}
 	writeJSON(w, map[string]string{"status": "rejected"})
 }
@@ -2227,6 +2272,30 @@ func (gw *Gateway) dispatchConversation(w http.ResponseWriter, r *http.Request, 
 	writeJSONError(w, http.StatusNotFound, "not found: "+path)
 }
 
+// conversationPrincipal resolves the user identity that owns conversation
+// sessions (P2-2). An authenticated subject — named token / OIDC / web
+// session, injected by authMiddleware under actorKey — always wins over any
+// client-asserted user_id. The asserted value is the fallback for
+// development mode and legacy static-token callers, which carry no verified
+// subject (same trust model as actorFromCtx).
+func conversationPrincipal(r *http.Request, asserted string) string {
+	if v, ok := r.Context().Value(actorKey{}).(string); ok && v != "" {
+		return v
+	}
+	return strings.TrimSpace(asserted)
+}
+
+// requireConversationOwner writes a 403 and returns false when principal is
+// known and does not own sess. An empty principal (development mode with no
+// client assertion) is allowed through, preserving --insecure usability.
+func requireConversationOwner(w http.ResponseWriter, sess *conversation.Session, principal string) bool {
+	if principal != "" && sess.UserID != principal {
+		writeJSONError(w, http.StatusForbidden, "session belongs to another user")
+		return false
+	}
+	return true
+}
+
 // handleConversationNewSession creates a new conversation session.
 func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -2237,16 +2306,17 @@ func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.R
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(req.UserID) == "" {
+	principal := conversationPrincipal(r, req.UserID)
+	if principal == "" {
 		writeJSONError(w, http.StatusBadRequest, "user_id is required")
 		return
 	}
 	var sess *conversation.Session
 	var err error
 	if req.AlertID != "" {
-		sess, err = gw.convEngine.NewSessionFromAlert(req.UserID, req.AlertID)
+		sess, err = gw.convEngine.NewSessionFromAlert(principal, req.AlertID)
 	} else {
-		sess, err = gw.convEngine.NewSession(req.UserID)
+		sess, err = gw.convEngine.NewSession(principal)
 	}
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
@@ -2257,12 +2327,12 @@ func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.R
 
 // handleConversationListSessions lists sessions for a user.
 func (gw *Gateway) handleConversationListSessions(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("user_id")
-	if strings.TrimSpace(userID) == "" {
+	principal := conversationPrincipal(r, r.URL.Query().Get("user_id"))
+	if principal == "" {
 		writeJSONError(w, http.StatusBadRequest, "user_id query parameter is required")
 		return
 	}
-	sessions := gw.convEngine.ListSessions(userID)
+	sessions := gw.convEngine.ListSessions(principal)
 	dtos := make([]map[string]any, 0, len(sessions))
 	for _, s := range sessions {
 		dtos = append(dtos, sessToDTO(s))
@@ -2271,10 +2341,13 @@ func (gw *Gateway) handleConversationListSessions(w http.ResponseWriter, r *http
 }
 
 // handleConversationGetSession returns a single session with its history.
-func (gw *Gateway) handleConversationGetSession(w http.ResponseWriter, _ *http.Request, sessionID string) {
+func (gw *Gateway) handleConversationGetSession(w http.ResponseWriter, r *http.Request, sessionID string) {
 	sess, err := gw.convEngine.GetSession(sessionID)
 	if err != nil {
 		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !requireConversationOwner(w, sess, conversationPrincipal(r, r.URL.Query().Get("user_id"))) {
 		return
 	}
 	writeJSON(w, map[string]any{"session": sessToDTO(sess)})
@@ -2291,13 +2364,18 @@ func (gw *Gateway) handleConversationPostMessage(w http.ResponseWriter, r *http.
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	reply, err := gw.convEngine.HandleMessage(r.Context(), sessionID, req.UserID, req.Text)
+	// Ownership (P2-2): the resolved principal (authenticated subject, or
+	// the client-asserted fallback in development mode) must own the
+	// session; the engine re-checks inside HandleMessage via ErrNotOwner.
+	reply, err := gw.convEngine.HandleMessage(r.Context(), sessionID, conversationPrincipal(r, req.UserID), req.Text)
 	if err != nil {
 		switch {
 		case errors.Is(err, conversation.ErrEmptyMessage):
 			writeJSONError(w, http.StatusBadRequest, "text is required")
 		case errors.Is(err, conversation.ErrSessionNotFound):
 			writeJSONError(w, http.StatusNotFound, "session not found")
+		case errors.Is(err, conversation.ErrNotOwner):
+			writeJSONError(w, http.StatusForbidden, "session belongs to another user")
 		default:
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
 		}
@@ -2307,7 +2385,18 @@ func (gw *Gateway) handleConversationPostMessage(w http.ResponseWriter, r *http.
 }
 
 // handleConversationCloseSession closes (removes) a session.
-func (gw *Gateway) handleConversationCloseSession(w http.ResponseWriter, _ *http.Request, sessionID string) {
+func (gw *Gateway) handleConversationCloseSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	principal := conversationPrincipal(r, r.URL.Query().Get("user_id"))
+	if principal != "" {
+		sess, err := gw.convEngine.GetSession(sessionID)
+		if err != nil {
+			writeJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if !requireConversationOwner(w, sess, principal) {
+			return
+		}
+	}
 	if err := gw.convEngine.CloseSession(sessionID); err != nil {
 		writeJSONError(w, http.StatusNotFound, "session not found")
 		return
@@ -2539,7 +2628,12 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !tokens.Enabled() {
-			// Auth disabled: let the request through.
+			// Auth disabled: let the request through. With no credential
+			// configured the deployment has declared it has no identity
+			// model, so the asserted X-Acting-As name is admitted as the
+			// governance subject (see admitAssertedIdentity).
+			r = r.WithContext(admitAssertedIdentity(
+				r.Context(), sanitizeHeaderValue(r.Header.Get(actingAsHeaderName))))
 			h.ServeHTTP(w, r)
 			return
 		}

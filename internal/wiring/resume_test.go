@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/executor"
 	_ "github.com/nexus/levee/internal/executor/modules/file"
 	_ "github.com/nexus/levee/internal/executor/modules/pkg"
@@ -204,9 +205,31 @@ func TestCompletedIdempotentBatches_NoEvidenceReturnsNothing(t *testing.T) {
 	assert.Empty(t, skip, "no evidence => nothing skippable")
 }
 
+func TestNarrowPlanPreservesGovernance(t *testing.T) {
+	p := &plan.Plan{
+		ID: "p", RiskScore: 50, ApprovalFloor: "high",
+		Approval: &dsl.ApprovalSpec{Level: "high"},
+		Rollback: &dsl.RollbackSpec{Strategy: "snapshot"},
+		Gate:     &dsl.GateSpec{}, Batches: []plan.Batch{{
+			Index: 0, Targets: []string{"web-1", "web-2"}, Gate: &dsl.GateSpec{Batch: []dsl.GateCheck{{Type: "cmd", Command: "true"}}},
+		}},
+	}
+	got := narrowPlan(p, []string{"web-2"})
+	assert.Equal(t, p.RiskScore, got.RiskScore)
+	assert.Equal(t, p.ApprovalFloor, got.ApprovalFloor)
+	assert.Equal(t, p.Approval, got.Approval)
+	assert.Equal(t, p.Rollback, got.Rollback)
+	assert.Equal(t, p.Gate, got.Gate)
+	require.Len(t, got.Batches, 1)
+	assert.Equal(t, p.Batches[0].Gate, got.Batches[0].Gate)
+}
+
 func TestBuildResumePlan_RemovesSkippedBatchesAndRenumbers(t *testing.T) {
 	p := &plan.Plan{
 		ID: "plan-6", CreatedAt: utcNow(),
+		RiskScore: 73, RiskFactors: []plan.RiskFactor{{Rule: "r", Points: 73}},
+		ApprovalFloor: "high", Approval: &dsl.ApprovalSpec{Level: "high"},
+		Rollback: &dsl.RollbackSpec{Strategy: "snapshot"}, Gate: &dsl.GateSpec{},
 		Batches: []plan.Batch{
 			{Index: 0, Targets: []string{"web-1"}, Steps: []plan.PlanStep{
 				{Name: "install", Module: "pkg", Action: "install"},
@@ -229,6 +252,12 @@ func TestBuildResumePlan_RemovesSkippedBatchesAndRenumbers(t *testing.T) {
 	assert.Equal(t, "shell", resume.Batches[0].Steps[0].Module) // was batch 1
 	assert.Equal(t, 1, resume.Batches[1].Index)
 	assert.Equal(t, "svc", resume.Batches[1].Steps[0].Module) // was batch 2
+	assert.Equal(t, 73, resume.RiskScore)
+	assert.Equal(t, "high", resume.ApprovalFloor)
+	assert.Equal(t, p.Approval, resume.Approval)
+	assert.Equal(t, p.Rollback, resume.Rollback)
+	assert.Equal(t, p.Gate, resume.Gate)
+	assert.Equal(t, p.RiskFactors, resume.RiskFactors)
 
 	// Skipped evidence covers the one removed batch.
 	require.Len(t, skipped, 1)

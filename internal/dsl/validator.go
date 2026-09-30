@@ -6,10 +6,14 @@ package dsl
 //   - 必填字段：name 非空、至少一个 target、至少一个 step
 //   - 类型基础：input.type ∈ {string,int,duration,bool}；
 //     approval.level ∈ {standard,high,emergency}；
-//     batches.strategy ∈ {percent,fixed,serial}
-//   - 批次声明合法性：percent steps ∈ [1,100]；fixed steps > 0；serial 无需 steps
+//     batches.strategy ∈ dsl.BatchStrategies
+//   - 批次声明合法性：percent steps ∈ [1,100]；fixed steps > 0；serial /
+//     one-per-target 无需 steps。strategy 枚举一律引用 dsl.BatchStrategies，
+//     本文件不再自带副本。
 //   - step：name 与 action 非空；action 必须是 module.action 形式
 //   - target：静态 target 必须有 hosts 或 query 至少一个
+//   - rollback 归属：workflow 级回滚声明只允许运行态策略（on_failure /
+//     verify_after）；strategy / steps / snapshot_paths 必须声明在 step 内（LE097）
 //
 // Validate 返回所有错误（不短路）；ValidateStrict 遇到第一个错误即返回。
 //
@@ -18,6 +22,7 @@ package dsl
 
 import (
 	"fmt"
+	"strings"
 )
 
 // 自定义校验错误码。当 internal/errors 中已有合适码时优先复用，
@@ -41,6 +46,11 @@ const (
 	codeActionFormat = "LE101"
 	// codeFixedStepNonPositive 扩展码：fixed strategy 的 step 非正。
 	codeFixedStepNonPositive = "LE102"
+	// codeWindowClock 复用 LE020：窗口时钟非法（HH:MM 格式、start==end、
+	// 只写了一半边界）。含义由 internal/errors 的目录表钉住。
+	codeWindowClock = "LE020"
+	// codeWindowZone 复用 LE021：时区不是合法 IANA 名。
+	codeWindowZone = "LE021"
 )
 
 // allowedInputTypes 列出 input 参数允许的类型集合。
@@ -49,21 +59,6 @@ var allowedInputTypes = map[string]struct{}{
 	"int":      {},
 	"duration": {},
 	"bool":     {},
-}
-
-// allowedApprovalLevels 列出 approval.level 允许的取值。
-var allowedApprovalLevels = map[string]struct{}{
-	"standard":  {},
-	"high":      {},
-	"emergency": {},
-}
-
-// allowedBatchStrategies 列出 batches.strategy 允许的取值。
-// 任务要求 percent/fixed/serial 三种。
-var allowedBatchStrategies = map[string]struct{}{
-	"percent": {},
-	"fixed":   {},
-	"serial":  {},
 }
 
 // ValidationError 描述一条校验失败。Code 是稳定错误码（如 LE002），
@@ -142,6 +137,17 @@ func (v *Validator) Validate(wf *Workflow) []ValidationError {
 
 	// 8. batches 校验：strategy 枚举 + steps 合法性。
 	errs = append(errs, v.validateBatches(wf.Batches)...)
+
+	// 9. rollback 归属校验：workflow 级是运行态策略，不是补偿契约。
+	// 补偿账本按 (host, 前向步骤) 归属，工作流级补偿无法归因、没有执行
+	// 路径，因此 fail-closed 拒绝（LE097，见 rollback_scope.go）。
+	errs = append(errs, ValidateRunLevelRollback(wf.Rollback, "rollback")...)
+
+	// 10. window 校验（V19）：时钟、时区、星期。plan 阶段的窗外阻断依赖
+	// 这份声明可用——坏声明在这里挡住，比在 plan 时才说"判不了"更早、也更便宜。
+	// 未声明窗口合法（§4.2 缺省无约束）；LE095 那类 warning 本函数不产出，
+	// 原因见 docs/product-roadmap.md 的 "CompileWarning 一档没有产生点"。
+	errs = append(errs, wf.Window.Check()...)
 
 	return errs
 }
@@ -240,11 +246,12 @@ func (v *Validator) validateApproval(a *ApprovalSpec) []ValidationError {
 		return nil
 	}
 	var errs []ValidationError
-	if _, ok := allowedApprovalLevels[a.Level]; !ok {
+	if !IsApprovalLevel(a.Level) {
 		errs = append(errs, ValidationError{
-			Code:    codeApprovalLevel,
-			Field:   "approval.level",
-			Message: fmt.Sprintf("invalid approval level %q (allowed: standard, high, emergency)", a.Level),
+			Code:  codeApprovalLevel,
+			Field: "approval.level",
+			Message: fmt.Sprintf("invalid approval level %q (allowed: %s)",
+				a.Level, strings.Join(ApprovalLevels, ", ")),
 		})
 	}
 	return errs
@@ -258,12 +265,16 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 	}
 	var errs []ValidationError
 
-	// strategy 枚举校验。
-	if _, ok := allowedBatchStrategies[b.Strategy]; !ok {
+	// strategy 枚举校验。词表只有 dsl.BatchStrategies 一份：这里曾有自己的
+	// 副本，于是 `levee compile` 与 serve 的 plan 路径对同一份文档给出相反
+	// 判定（one-per-target 被这里拒、被生成器实现）。报错文案同样由词表拼装，
+	// 不可能再和判定脱节。
+	if !IsBatchStrategy(b.Strategy) {
 		errs = append(errs, ValidationError{
-			Code:    codeBatchStrategy,
-			Field:   "batches.strategy",
-			Message: fmt.Sprintf("invalid batch strategy %q (allowed: percent, fixed, serial)", b.Strategy),
+			Code:  codeBatchStrategy,
+			Field: "batches.strategy",
+			Message: fmt.Sprintf("invalid batch strategy %q (allowed: %s)",
+				b.Strategy, strings.Join(BatchStrategies, ", ")),
 		})
 		// strategy 非法时不再校验 steps 语义，避免误报。
 		return errs
@@ -271,7 +282,7 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 
 	// 按 strategy 校验 steps 合法性。
 	switch b.Strategy {
-	case "percent":
+	case BatchStrategyPercent:
 		for i, step := range b.Steps {
 			field := fmt.Sprintf("batches.steps[%d]", i)
 			if step < 1 || step > 100 {
@@ -282,7 +293,7 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 				})
 			}
 		}
-	case "fixed":
+	case BatchStrategyFixed:
 		for i, step := range b.Steps {
 			field := fmt.Sprintf("batches.steps[%d]", i)
 			if step <= 0 {
@@ -293,8 +304,8 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 				})
 			}
 		}
-	case "serial":
-		// serial strategy 不需要 steps，不校验。
+	case BatchStrategySerial, BatchStrategyOnePerTarget:
+		// 两者都不需要 steps，不校验。
 	}
 
 	return errs

@@ -30,6 +30,7 @@ import (
 	"github.com/nexus/levee/internal/state"
 
 	// Register the built-in transports on channel.DefaultRegistry().
+	_ "github.com/nexus/levee/internal/channel/local"
 	_ "github.com/nexus/levee/internal/channel/ssh"
 	_ "github.com/nexus/levee/internal/channel/winrm"
 )
@@ -104,6 +105,13 @@ type Engine struct {
 	rollbackConcurrency int
 	gatePrometheusURL   string
 
+	// snapshotDir roots the pre-apply snapshot store. Empty (the default)
+	// disables snapshot capture/restore: workflows declaring
+	// strategy "snapshot" run with capture skipped (the pre-wiring
+	// behaviour) rather than failing — an operator opting in later only
+	// needs the flag, not a workflow rewrite.
+	snapshotDir string
+
 	// guard issues execution leases in cluster mode; nil = fencing
 	// disabled (single-node). execLeaseTTL is the lease lifetime the
 	// guard issues/renews with; heartbeats run at TTL/3.
@@ -152,6 +160,13 @@ func WithMaxParallelRuns(n int) Option {
 // materialisation instead of silently passing.
 func WithGatePrometheusURL(url string) Option {
 	return func(e *Engine) { e.gatePrometheusURL = url }
+}
+
+// WithSnapshotDir roots the pre-apply snapshot store (design §4.4.4.2).
+// Empty (the default) keeps snapshot capture disabled — the pre-wiring
+// no-op behaviour. The directory is created lazily on first capture.
+func WithSnapshotDir(dir string) Option {
+	return func(e *Engine) { e.snapshotDir = dir }
 }
 
 // WithExecutionGuard attaches the cluster-mode execution lease guard

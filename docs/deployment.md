@@ -230,6 +230,8 @@ levee backup --output /backup/levee-2026-08-28.db --verify-only
 
 建议用 cron 周期备份并把产物异地留存。恢复见第 11 节升级流程与 cli-reference。
 
+> PostgreSQL 恢复语义（v1.13+）：恢复到**空库**是主路径——恢复前自动重放迁移建齐 schema，再按外键依赖拓扑序回放，旧版本备份同样可用；目标库**仍有数据**时恢复会被拒绝并列出持数表，仅灾难恢复场景可加 `--allow-destructive-restore`（单事务内临时挂起 WORM 触发器、提交前校验恢复）。CI 对 PG 备份/恢复做全链路演练门禁（建库→造数→dump→恢复→逐表指纹对比）。
+
 ## 11. 升级流程
 
 LEVEE 为单二进制，升级即“备份 → 替换 → 验证”。推荐流程：

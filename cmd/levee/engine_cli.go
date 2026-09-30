@@ -8,6 +8,7 @@ package main
 import (
 	"os"
 
+	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/state"
@@ -32,12 +33,16 @@ func cliCredentialResolver(store state.Store) wiring.CredentialResolver {
 
 // newCLIChangeService builds the in-process ChangeService with a real
 // engine adapter attached: PlanChange persists plan artifacts and
-// ApplyChange executes them through the closure machinery. Command code
-// must inject the actor via grpc.ContextWithActor so audits attribute to
-// the CLI user rather than the "grpc-user" fallback.
+// ApplyChange executes them through the closure machinery. The approval
+// service rides the same store so `levee plan` kicks off the approval
+// chain (risk-tiered routing) exactly like serve does — otherwise the
+// CLI would produce plans whose pending approvals never exist and
+// `levee approve` would find nothing to decide on. Command code must
+// inject the actor via grpc.ContextWithActor so audits attribute to the
+// CLI user rather than the "grpc-user" fallback.
 func newCLIChangeService(store state.Store) *grpc.ChangeService {
 	engine := wiring.NewEngine(store,
 		wiring.WithCredentialResolver(cliCredentialResolver(store)),
 	).Adapter()
-	return grpc.NewChangeService(store, engine, nil, nil)
+	return grpc.NewChangeService(store, engine, approval.NewService(newApprovalStoreAdapter(store)), nil)
 }

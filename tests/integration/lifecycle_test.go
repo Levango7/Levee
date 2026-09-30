@@ -159,7 +159,7 @@ func TestChangeLifecycle_CreatePlanApproveApplyCancel(t *testing.T) {
 	assert.NotEmpty(t, planResp.GetChangeId())
 
 	// 3. Approve the change (status: approved).
-	approveResp, err := changeSvc.ApproveChange(ctx, &pb.ApproveRequest{
+	approveResp, err := changeSvc.ApproveChange(grpc.ContextWithActor(ctx, "integration-approver"), &pb.ApproveRequest{
 		ChangeId: changeID,
 		Comment:  "auto-approved for integration test",
 	})
@@ -235,7 +235,7 @@ func TestApplyChange_NoEngineRefused(t *testing.T) {
 	require.NoError(t, err)
 	changeID := createResp.GetId()
 
-	_, err = changeSvc.ApproveChange(ctx, &pb.ApproveRequest{ChangeId: changeID})
+	_, err = changeSvc.ApproveChange(grpc.ContextWithActor(ctx, "integration-approver"), &pb.ApproveRequest{ChangeId: changeID})
 	require.NoError(t, err)
 
 	applyResp, err := changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{
@@ -270,7 +270,7 @@ func TestCrossService_AuditOnEveryTransition(t *testing.T) {
 	changeID := createResp.GetId()
 	planForTest(t, changeSvc, changeID)
 
-	_, err = changeSvc.ApproveChange(ctx, &pb.ApproveRequest{
+	_, err = changeSvc.ApproveChange(grpc.ContextWithActor(ctx, "integration-approver"), &pb.ApproveRequest{
 		ChangeId: changeID,
 	})
 	require.NoError(t, err)
@@ -436,7 +436,7 @@ func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 	changeID := createResp.GetId()
 
 	planForTest(t, changeSvc, changeID)
-	_, err = changeSvc.ApproveChange(ctx, &pb.ApproveRequest{ChangeId: changeID})
+	_, err = changeSvc.ApproveChange(grpc.ContextWithActor(ctx, "integration-approver"), &pb.ApproveRequest{ChangeId: changeID})
 	require.NoError(t, err)
 
 	applyResp, err := changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{
