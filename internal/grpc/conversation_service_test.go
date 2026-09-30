@@ -123,6 +123,45 @@ func TestSendMessage_AutoCreateSession(t *testing.T) {
 	assert.NotEmpty(t, resp.GetText())
 }
 
+// TestSendMessage_AuthenticatedSubjectOverridesUserID verifies (P2-2) that
+// a verified subject in the context wins over the client-asserted user_id.
+func TestSendMessage_AuthenticatedSubjectOverridesUserID(t *testing.T) {
+	engine := newTestConversationEngine()
+	svc := NewConversationService(engine, nil)
+
+	ctx := context.WithValue(context.Background(), actorKey{}, "alice")
+	resp, err := svc.SendMessage(ctx, &pb.SendMessageRequest{
+		UserId: "mallory", // ignored: the authenticated subject wins
+		Text:   "/help",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resp.GetSessionId())
+
+	sess, err := engine.GetSession(resp.GetSessionId())
+	require.NoError(t, err)
+	assert.Equal(t, "alice", sess.UserID)
+}
+
+// TestSendMessage_CrossUserDenied verifies that messaging another user's
+// session is rejected with PermissionDenied when the caller is
+// authenticated as a different subject.
+func TestSendMessage_CrossUserDenied(t *testing.T) {
+	engine := newTestConversationEngine()
+	svc := NewConversationService(engine, nil)
+
+	sess, err := engine.NewSession("alice")
+	require.NoError(t, err)
+
+	ctx := context.WithValue(context.Background(), actorKey{}, "bob")
+	_, err = svc.SendMessage(ctx, &pb.SendMessageRequest{
+		SessionId: sess.ID,
+		UserId:    "alice", // asserted; overridden by the verified subject
+		Text:      "/help",
+	})
+	require.Error(t, err)
+	assert.Equal(t, codes.PermissionDenied, status.Code(err))
+}
+
 // =========================================================================
 // SubscribeConversation (streaming)
 // =========================================================================

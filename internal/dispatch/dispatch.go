@@ -31,6 +31,20 @@ const DefaultInterval = 10 * time.Second
 // worker node may execute before the dispatcher considers it saturated.
 const DefaultWorkerCapacity = 4
 
+// DefaultClaimTimeout is how long a pending assignment may sit unclaimed
+// before the leader treats its owner as failed and reclaims it. Ten minutes
+// is far above the CAS→Begin critical section (milliseconds) and the worker
+// poll interval, so it never fires for a healthy cluster; it only bounds how
+// long a run can rot when the assigned worker died (or stopped polling)
+// between the assignment and the claim.
+const DefaultClaimTimeout = 10 * time.Minute
+
+// terminalAssignStates are the assignment states that hold no work any more.
+// Everything else (pending, executing) counts as live load: a pending
+// assignment is a commitment — the worker will claim it — so counting only
+// executing rows lets the leader oversubscribe a node.
+var terminalAssignStates = []string{state.AssignmentStateDone, state.AssignmentStateInterrupted}
+
 // workerLoad is the dispatch-internal view of a worker node: its identity
 // and how many active assignments it currently holds.
 type workerLoad struct {
@@ -47,6 +61,9 @@ type Loop struct {
 	nodeID   string
 	interval time.Duration
 	capacity int
+	// claimTimeout bounds how long a pending assignment may wait unclaimed
+	// before the leader reclaims it (see DefaultClaimTimeout).
+	claimTimeout time.Duration
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -56,20 +73,25 @@ type Loop struct {
 
 // NewLoop returns a dispatch loop driven by the cluster manager, the state
 // store and the local node ID. interval <= 0 falls back to DefaultInterval;
-// capacity <= 0 falls back to DefaultWorkerCapacity.
-func NewLoop(mgr *cluster.ClusterManager, store state.Store, nodeID string, interval time.Duration, capacity int) *Loop {
+// capacity <= 0 falls back to DefaultWorkerCapacity; claimTimeout <= 0 falls
+// back to DefaultClaimTimeout.
+func NewLoop(mgr *cluster.ClusterManager, store state.Store, nodeID string, interval time.Duration, capacity int, claimTimeout time.Duration) *Loop {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
 	if capacity <= 0 {
 		capacity = DefaultWorkerCapacity
 	}
+	if claimTimeout <= 0 {
+		claimTimeout = DefaultClaimTimeout
+	}
 	return &Loop{
-		mgr:      mgr,
-		store:    store,
-		nodeID:   nodeID,
-		interval: interval,
-		capacity: capacity,
+		mgr:          mgr,
+		store:        store,
+		nodeID:       nodeID,
+		interval:     interval,
+		capacity:     capacity,
+		claimTimeout: claimTimeout,
 	}
 }
 
@@ -135,17 +157,25 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
+	workers, err := l.workerLoads(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("dispatch: list worker loads: %w", err)
+	}
+
+	// Reclaim stale pending assignments BEFORE looking for new candidates: a
+	// run whose pending assignment was never claimed still counts as having
+	// an active assignment, so the candidate filter below cannot see it and
+	// it would otherwise rot until a human intervened.
+	if _, err := l.reclaimStale(ctx, workers); err != nil {
+		return 0, fmt.Errorf("dispatch: reclaim stale: %w", err)
+	}
+
 	candidates, err := l.candidates(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("dispatch: list candidates: %w", err)
 	}
 	if len(candidates) == 0 {
 		return 0, nil
-	}
-
-	workers, err := l.workerLoads(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("dispatch: list worker loads: %w", err)
 	}
 
 	claimed := 0
@@ -174,11 +204,107 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 	return claimed, nil
 }
 
+// runStatusApproved is the run status that is waiting for dispatch.
+const runStatusApproved = "approved"
+
+// ReclaimOnce runs one stale-assignment reclaim sweep and is the seam tests
+// drive. It is leader-only for the same reason DispatchOnce is; the epoch+state
+// CAS inside the store remains the real correctness guard.
+func (l *Loop) ReclaimOnce(ctx context.Context) (int, error) {
+	if leader, ok := l.mgr.GetLeader(); !ok || leader.ID != l.nodeID {
+		return 0, nil
+	}
+	workers, err := l.workerLoads(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("dispatch: list worker loads: %w", err)
+	}
+	return l.reclaimStale(ctx, workers)
+}
+
+// reclaimStale re-points pending assignments whose owner has not claimed them
+// within claimTimeout at the least-loaded active worker, bumping the epoch.
+// The bump is the fencing half of the fix: the stale owner's late claim
+// (UpdateAssignmentStateIf against its old epoch) fails instead of executing
+// a run that now belongs to another node.
+//
+// A stale assignment whose run is no longer waiting for dispatch (paused,
+// re-planned back to draft, already terminal) is terminalised rather than
+// handed out: there is nothing to execute, and the row must stop counting as
+// load. Re-approval later creates a fresh epoch through the normal claim path,
+// so a terminal row never resurrects a stale epoch.
+//
+// workers is the caller's live-load view; the function keeps it sorted as it
+// hands out reclaimed work so the caller's capacity accounting stays honest.
+func (l *Loop) reclaimStale(ctx context.Context, workers []workerLoad) (int, error) {
+	pending, err := l.store.ListAssignments(ctx, state.AssignmentFilter{
+		State: state.AssignStatePending,
+		Limit: 10000,
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	now := time.Now().UTC()
+	reclaimed := 0
+	for _, a := range pending {
+		since := a.UpdatedAt
+		if since.IsZero() {
+			since = a.AssignedAt
+		}
+		age := now.Sub(since)
+		if age < l.claimTimeout {
+			continue
+		}
+
+		run, err := l.store.GetRun(ctx, a.RunID)
+		if err != nil {
+			log.Warn("dispatch: stale assignment run lookup failed", "run_id", a.RunID, "error", err)
+			continue
+		}
+		if run == nil || run.Status != runStatusApproved {
+			ok, err := l.store.UpdateAssignmentStateIf(ctx, a.RunID, a.Epoch,
+				state.AssignStatePending, state.AssignmentStateInterrupted)
+			if err != nil {
+				log.Warn("dispatch: terminalise orphan assignment failed", "run_id", a.RunID, "error", err)
+			} else if ok {
+				log.Info("dispatch: orphan pending assignment terminalised",
+					"run_id", a.RunID, "epoch", a.Epoch,
+					"stale_owner", a.OwnerNode, "age", age.String())
+			}
+			continue
+		}
+
+		if len(workers) == 0 {
+			log.Warn("dispatch: stale assignment left pending (no active worker)", "run_id", a.RunID)
+			continue
+		}
+		target := workers[0] // least loaded (workerLoads sorted; kept sorted below)
+		ok, err := l.store.ReclaimAssignment(ctx, a.RunID, a.Epoch, target.id)
+		if err != nil {
+			log.Warn("dispatch: reclaim failed", "run_id", a.RunID, "error", err)
+			continue
+		}
+		if !ok {
+			// A concurrent claim (pending→executing) or another leader's
+			// reclaim won the row: that attempt is authoritative, stand down.
+			continue
+		}
+		workers[0].active++
+		sortByLoad(workers)
+		reclaimed++
+		metrics.Default.IncDispatch(metrics.DispatchResultReclaimed)
+		log.Info("dispatch: stale pending assignment reclaimed",
+			"run_id", a.RunID, "epoch", a.Epoch+1, "new_owner", target.id,
+			"stale_owner", a.OwnerNode, "age", age.String())
+	}
+	return reclaimed, nil
+}
+
 // candidates returns the run IDs that are approved and have no active
 // assignment (state pending/executing).
 func (l *Loop) candidates(ctx context.Context) ([]string, error) {
 	runs, err := l.store.ListRuns(ctx, state.RunFilter{
-		Status: "approved",
+		Status: runStatusApproved,
 		Limit:  1000,
 	})
 	if err != nil {
@@ -210,8 +336,11 @@ func (l *Loop) hasActiveAssignment(ctx context.Context, runID string) (bool, err
 	return existing.State == state.AssignStatePending || existing.State == state.AssignmentStateExecuting, nil
 }
 
-// workerLoads returns the active-assignment count per active worker node,
+// workerLoads returns the live-assignment count per active worker node,
 // sorted ascending (least-loaded first) so the loop spreads work evenly.
+// Live means pending + executing: a pending row is a commitment the owner
+// will claim, so counting only executing rows would let the leader hand a
+// node more runs than its capacity while its queue is still full.
 func (l *Loop) workerLoads(ctx context.Context) ([]workerLoad, error) {
 	nodes := l.mgr.ActiveMastersAndWorkers()
 	if len(nodes) == 0 {
@@ -220,8 +349,8 @@ func (l *Loop) workerLoads(ctx context.Context) ([]workerLoad, error) {
 		nodes = []cluster.Node{{ID: l.nodeID, Status: cluster.StatusActive}}
 	}
 	all, err := l.store.ListAssignments(ctx, state.AssignmentFilter{
-		State: state.AssignmentStateExecuting,
-		Limit: 10000,
+		ExcludeStates: terminalAssignStates,
+		Limit:         10000,
 	})
 	if err != nil {
 		return nil, err
@@ -237,13 +366,19 @@ func (l *Loop) workerLoads(ctx context.Context) ([]workerLoad, error) {
 		}
 		out = append(out, workerLoad{id: n.ID, active: counts[n.ID]})
 	}
-	// Sort ascending by active count (insertion sort; n is tiny).
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j-1].active > out[j].active; j-- {
-			out[j-1], out[j] = out[j], out[j-1]
+	sortByLoad(out)
+	return out, nil
+}
+
+// sortByLoad orders workers ascending by live load (insertion sort; n is
+// tiny). Reclaim and the assignment loop both keep the slice ordered as they
+// hand out work, so the next pick is always the least-loaded node.
+func sortByLoad(workers []workerLoad) {
+	for i := 1; i < len(workers); i++ {
+		for j := i; j > 0 && workers[j-1].active > workers[j].active; j-- {
+			workers[j-1], workers[j] = workers[j], workers[j-1]
 		}
 	}
-	return out, nil
 }
 
 // claim attempts to assign runID to worker. It succeeds only when the run has

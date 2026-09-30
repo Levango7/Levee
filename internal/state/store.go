@@ -83,6 +83,38 @@ type Approval struct {
 	Comment   string     `json:"comment"`
 	TimeoutAt *time.Time `json:"timeout_at,omitempty"`
 	ActedAt   *time.Time `json:"acted_at,omitempty"`
+	// PlanHash is the plan artifact the approval attests to. Empty means
+	// "legacy record": it still settles/authorises runs regardless of plan,
+	// preserving behaviour for rows created before D-1 v2.
+	PlanHash string `json:"plan_hash"`
+	// Revision is the optimistic-lock version used by the concurrent decision
+	// CAS (UpdateApprovalIfPending). It guards against a stale writer
+	// overwriting a partial vote that another actor just recorded.
+	Revision int64 `json:"revision"`
+}
+
+// MatchesPlan reports whether this approval row authorises the plan version
+// identified by planHash, and whether it matched only through the legacy
+// (empty PlanHash) rule.
+//
+// It lives here, next to the struct, because THREE gates depend on it and
+// they must never disagree about which approval authorises which revision:
+// settlement, the apply gate, and the retry re-plan gate. When a fourth gate
+// appears it must call this too rather than re-implement the rule.
+//
+//   - a row with an empty PlanHash is a pre-binding (legacy) record: it
+//     matches any plan, preserving behaviour for databases written before
+//     plan binding existed;
+//   - a row bound to a revision matches only that exact revision, and never
+//     a run whose plan hash is itself empty.
+func (a *Approval) MatchesPlan(planHash string) (matched, legacy bool) {
+	if a == nil {
+		return false, false
+	}
+	if a.PlanHash == "" {
+		return true, true
+	}
+	return planHash != "" && a.PlanHash == planHash, false
 }
 
 // Lock is a mutex lock with a TTL. Locks are scoped (e.g. host:<name>) and
@@ -272,6 +304,20 @@ type Store interface {
 	// guard state-machine transitions (e.g. only "approved" runs may
 	// become "running") against concurrent racers.
 	UpdateRunStatusIf(ctx context.Context, id string, from string, to string, updatedAt time.Time) (bool, error)
+	// UpdateRunApprovalStatusIf atomically transitions a run's status from
+	// `from` to `to` AND sets approval_status, stamping updated_at. It
+	// returns (true, nil) when the row matched and was updated, (false, nil)
+	// when the run does not exist or its current status is not `from`. It is
+	// the single-CAS write behind approval settlement so a settled outcome
+	// (status + approval status) is written atomically instead of a read-then
+	// full-row UpdateRun that could clobber a concurrent state transition.
+	UpdateRunApprovalStatusIf(ctx context.Context, id string, from string, to string, approvalStatus string, updatedAt time.Time) (bool, error)
+	// UpdateRunPlan overwrites only the plan artifact (plan_json, plan_hash)
+	// on an existing run, touching updated_at. Unlike a full-row UpdateRun it
+	// never writes status/approval_status, so persisting a plan can never
+	// clobber a concurrent state transition (e.g. settlement or apply that
+	// runs between a caller's GetRun and this write).
+	UpdateRunPlan(ctx context.Context, id string, planJSON string, planHash string, updatedAt time.Time) error
 	// MarkNonTerminalSteps flips every step row of the run whose status
 	// is a non-terminal vocabulary (running/pending) to the given
 	// terminal marker, and returns the number of rows flipped. It is the
@@ -383,7 +429,22 @@ type Store interface {
 	// the dispatch loop when a worker dies and the run must be given to a
 	// fresh node. It returns (true, nil) when the existing row matched
 	// (runID, prevEpoch) and was bumped.
+	//
+	// Callers must only reassign a row whose transition is already over
+	// (terminal) or whose owner is known dead: the CAS compares the epoch
+	// alone, so an executing row keeps its epoch and would be dragged back to
+	// pending. Stale-pending reclaim uses ReclaimAssignment instead.
 	Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error)
+	// ReclaimAssignment is the stale-assignment counterpart of Reassign: it
+	// bumps the epoch and re-points a PENDING assignment at newNode, CASing on
+	// (runID, epoch, state=pending). The state guard is what makes reclaim
+	// safe where Reassign is not — a worker that claimed the row in the
+	// meantime (pending→executing keeps the epoch) wins the race and the
+	// reclaim stands down, so a claimed assignment is never dragged back to
+	// pending (which would let two nodes execute the same run). The epoch bump
+	// is the fencing half: the previous owner's late claim CAS still compares
+	// its stale epoch and fails. Returns (true, nil) when the reclaim applied.
+	ReclaimAssignment(ctx context.Context, runID string, epoch int64, newNode string) (bool, error)
 	// SetAssignmentResult writes the terminal result onto an assignment row
 	// identified by (runID, epoch). Best-evidence: a store failure is logged
 	// by the caller but never aborts the run's terminal transition.
