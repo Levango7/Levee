@@ -11,8 +11,9 @@
 
 ### LEVEE 是一套系统，不只是一个 workflow 引擎
 
-核心实体是**变更（Change）**，不是工作流：40 个 gRPC RPC 里 23 个挂在
-`ChangeService` 上。工作流（LEVEELang 文档）只是变更的**声明式定义**，
+核心实体是**变更（Change）**，不是工作流：53 个 gRPC RPC（`proto/levee.proto`
+40 个 + `proto/levee_extra.proto` 13 个）里 22 个挂在 `ChangeService` 上，
+是九个已注册服务中最大的一个。工作流（LEVEELang 文档）只是变更的**声明式定义**，
 计划（Plan）才是被 `plan_hash` 绑定、被审批、被执行的那份制品。
 
 按 `internal/` 的实际构成，与编排直接相关的包（dsl / plan / engine / wiring /
@@ -50,8 +51,8 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **危险度评分与审批分级路由**：plan 生成时自动评分（不可逆步骤/破坏性动作/影响面/回滚覆盖/批次扇出五因子，明细可解释），分数+红线推导审批下限（任一不可逆步骤 ⇒ 至少 high），**tier = max(workflow 声明, 计划下限) 只升不降**；PlanChange 自动启动审批链（补齐"声明了但没人创建 pending 记录"断链），评分与下限随 plan_json 落盘
 - **单步验证门 API**：`POST /gates/verify` 按需执行一条 cmd/probe/slo 验证（与引擎门禁同源构造器，零语义漂移）——操作员预检、流水线 pre-check、ChatOps 即席健康检查无需规划整个变更；human 检查点显式排除（归审批链）；每次执行留审计
 - **ITSM Jira 审批镜像**：`notify.jira.*` 配置启用后审批链开始建 Jira issue、决策自动评论（纯出站镜像，LEVEE store 仍是唯一事实来源；禁用时零外发零装配）
-- **双协议 API**：gRPC（5+ 服务）+ REST 网关（`/api/v1/`），共享同一服务实例
-- **AI 辅助运维**：告警接入 → 拓扑诊断 → LLM 对话式定位 → RAG 知识增强推荐 → 自动执行 → 效果学习
+- **双协议 API**：gRPC（9 个业务服务 + 标准 `grpc.health.v1`）+ REST 网关（`/api/v1/`），共享同一服务实例
+- **AI 辅助（部分能力仅库就绪，见下方"能力可达性"）**：`internal/diagnosis`（日志采集+分析、健康探测）已接入 `serve` 与 `levee diagnose`；`levee converse` / REST 对话闭环已接入，确认的建议会变成 draft 变更进治理链（不执行、不跳审批）。**LLM 与 RAG 尚无生产调用方**：`recommend.NewLLMClient`（OpenAI / Ollama 客户端）只被测试调用，`serve` 与 `converse` 构造推荐引擎时不传 `LLMClient`（`recommend/engine.go:130` 注释即"nil = pure knowledge-base mode"），建议来自内置静态知识库；`internal/config` 也没有 llm/rag 相关配置项，运维无法开启。
 - **多通道执行**：SSH / WinRM 无代理通道 + local 沙箱通道（CI/单机自测，程序白名单+参数策略+沙箱根三重门禁，fail-closed 默认），插件注册表开放第三方通道接入（见 `docs/channel-plugins.md`）
 - **快照回滚**：`rollback: {strategy: snapshot, snapshot_paths: [...]}` 声明式文件级备份——apply 前经通道采集目标机文件（base64 传输），回滚时原样恢复（与 undo-action 显式互斥）；快照按 change id 键存，手动回滚路径可达；`--engine-snapshot-dir` 一旗标启用
 - **数据库动作模块**：`mysql.query`（幂等 DDL/DML，SQL 经 base64 管道防注入）、`mysql.pt_osc`（pt-online-schema-change 在线大表变更，白名单校验 alter 子句）、`mysql.replica_switch`（主从切换编排，强制确认门）；不可逆动作（含 replica_switch/pt_osc）在 plan 生成时自动标记并路由到高危审批（R2/R4 全链路接线）
@@ -60,6 +61,36 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **合规交付**：`levee audit report` 一键生成时间窗合规报告（HTML 自包含：变更清单+审批链+哈希链验证结论+回滚记录），监管/审计离线可读
 - **ChatOps 审批桥**：`internal/notify/chatopsbridge` 提供 approval 创建/决策到 BotManager 事件的组合接点，可将请求与 1/2 决策进度投影到钉钉/飞书/Slack；具体 bot 进程与 manager 生命周期仍由部署侧组合
 - **安全默认**：auth 启动门禁、CORS 默认拒绝、限流、请求 ID 追踪、TLS 支持
+
+### 能力可达性
+
+上面的特性列表混着两种状态：**已接入 `levee` 二进制**，和**包已实现、包内测试完备、
+但没有任何生产调用方**。这两件事对用户完全不同，所以单列。判定口径是可复现的：
+
+```bash
+# 二进制真实链入了哪些包（非测试构建）：
+go list -deps ./cmd/levee | grep '^github.com/nexus/levee/internal'
+# 某个包有没有生产调用方（去掉包自身的测试；结果为 0 即只有包内自测）：
+grep -rl 'nexus/levee/internal/compat"' --include='*.go' . \
+  | grep -v _test.go | grep -v '^./internal/compat/'
+```
+
+当前未链入 `cmd/levee` 的 `internal` 包（除 `docgen` 是 CI 工具外，共 8 个，约 4.7k 行非测试代码）：
+
+| 包 | 它本来要承担什么 | 现状 |
+| --- | --- | --- |
+| `diagnosis/llm_diag` | LLM 推理定位 | 无生产调用方；`NewLLMClient` 仅测试调用 |
+| `diagnosis/topology` | 拓扑诊断 | 无生产调用方 |
+| `recommend/rag` | RAG 知识增强 | 无生产调用方 |
+| `recommend/feedback` | 效果学习 | 无生产调用方 |
+| `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 全仓零引用，CLI 无对应命令；且其执行器自述**不强制审批与门禁**（`compat/executor.go:4-7`），动作表还映射了 4 个执行器不存在的动作（`compat.go:48-55`）——接线前必须先解决这两点 |
+| `scheduler` | agent 任务派发（`Schedule([]agent.Task)` + 负载均衡），不是变更时间窗触发 | 无生产调用方；跨节点派发现在由已接入的 `internal/dispatch` 承担 |
+| `opsmesh` | OpsMesh 平台集成 | 无生产调用方 |
+| `notify/chatopsbridge` | ChatOps 审批桥接点 | 无生产调用方（上文那条已注明"由部署侧组合"） |
+
+这些包**没坏**——包内测试覆盖实测在 90%~96%（90.4%~95.4%），问题是"覆盖"的是没人调用的代码。
+把它们接进 `serve` 前，请按"库已就绪、产品不可用"对待；`docs/security-audit.md`
+"已知限制"一节对多租户用的是同一套写法。
 
 ## 快速开始
 
@@ -70,13 +101,34 @@ make build
 # 运行
 ./levee --help
 
-# 创建变更（从模板实例化；可用模板用 ./levee template list 查看）
-./levee new nginx-reload --params target=web01.prod
+# 模板库初始是空的（`template list` 返回 "No templates found."），
+# 所以先建模板；参数要用 --params 以 JSON 显式声明：
+./levee template create --name nginx-reload \
+  --content 'name: nginx-reload
+steps:
+  - name: reload-nginx
+    action: shell
+    command: systemctl reload {{.service}}' \
+  --params '[{"name":"service","type":"string","required":true}]'
+
+# 从模板实例化一个变更（产出 draft，等计划与审批）
+./levee new nginx-reload --params service=nginx
 
 # 查看变更
 ./levee list
 ./levee show <run-id>
 ```
+
+以上四条在本仓库实测通过：`template create` 与 `new` 均 exit 0，`new` 输出
+`params: map[service:nginx]`、`status: draft`，`list` / `show` 能看到并展开那条 run。
+
+**`template create` 不会解析 `--content` 里的 `params:` 块**——参数必须经 `--params`
+以 JSON 数组显式传入。实测拿仓库自带的 `examples/templates/patch-rolling.yaml`（它在
+content 里声明了 `params: [package, target_group]`）建模板，`template show` 显示
+`Parameters: (none)`，随后 `new patch-rolling --params package=nginx` 报
+`unknown parameter: package`（实例化按记录里的 `tmpl.Parameters` 校验，
+`internal/template/instantiate.go:120-127`）。所以照抄该示例文件建模板时，
+参数要另写一遍 `--params '[{"name":"package","type":"string","required":true}]'`。
 
 ### 启动 API 服务
 
@@ -92,7 +144,11 @@ make build
 
 # 执行引擎（默认关闭）：开启后 PlanChange 生成并持久化真实计划、
 # ApplyChange 经 SSH/WinRM 通道真正执行被批准的计划（失败自动回滚）。
-# 关闭时 apply 明确拒绝（FailedPrecondition），不会假装执行。
+# 关闭时两个入口行为不同，别按同一个心智模型写脚本：
+#   · ApplyChange RPC 明确拒绝（FailedPrecondition "no engine wired"），不碰状态机；
+#   · CLI `levee apply` 不拒绝——它把 run 置为 running 后 exit 0，并打印
+#     "apply is status-only (no batches executed)"、JSON 里带 engine_wired:false。
+#     所以 CLI 的 exit 0 只代表"没有报错"，不代表"执行过任何批次"。
 # 并发执行上限 --engine-max-parallel-runs（默认 4，超出的 apply 快速失败）；
 # slo 验证门禁需 --engine-gate-prometheus 提供 Prometheus 地址，缺省则 slo 门禁 fail-closed。
 # 目标凭据解析依赖 LEVEE_MASTER_PASSWORD 环境变量（未设置时通道匿名拨号并输出警告）。
@@ -150,7 +206,7 @@ levee/
 │   ├── drift/              # 漂移检测
 │   ├── calendar/           # 变更日历
 │   ├── chatops/            # ChatOps 集成
-│   ├── scheduler/          # 调度
+│   ├── scheduler/          # agent 任务派发（未接入二进制，见"能力可达性"）
 │   ├── agent/              # agent
 │   ├── alert/              # 告警网关 (Zabbix/Nagios 适配)
 │   ├── diagnosis/          # 诊断引擎 (拓扑分析/LLM 推理)

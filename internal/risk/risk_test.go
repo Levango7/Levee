@@ -179,3 +179,51 @@ func TestDestructiveActionMatching(t *testing.T) {
 	// Substring containment is intentional (drop_all contains drop).
 	assert.True(t, isDestructiveAction("drop_all"))
 }
+
+// TestAutoApproveForbidden pins the tier gate ApplyChange / RollbackChange
+// consult before honouring --force. The predicate had no test in its own
+// package: the invariant was guarded only from the consumer side
+// (internal/grpc/change_service.go:844, :1572), so a branch edit here turned
+// no test in this package red.
+func TestAutoApproveForbidden(t *testing.T) {
+	cases := []struct {
+		name  string
+		level string
+		want  bool
+	}{
+		{"empty is the unscored bootstrap path", "", false},
+		{"standard may auto-approve", LevelStandard, false},
+		{"high may not", LevelHigh, true},
+		{"emergency may not", LevelEmergency, true},
+		// Priority vocabulary: a run whose approval service never started
+		// carries these in ApprovalLevel (see the P1-3 note on the func).
+		// Reading them as tiers would deny auto-approve to every ordinary
+		// "normal" change — the regression one fail-closed sweep caused once.
+		{"priority low is not a tier", "low", false},
+		{"priority normal is not a tier", "normal", false},
+		{"priority urgent is not a tier", "urgent", false},
+		// Fail-closed for anything unrecognised, including case variants and
+		// vocabulary a future release might add.
+		{"uppercase HIGH fails closed", "HIGH", true},
+		{"capitalised Emergency fails closed", "Emergency", true},
+		{"unknown tier fails closed", "critical", true},
+		{"leading space fails closed", " high", true},
+		{"blank string fails closed", " ", true},
+		{"arbitrary string fails closed", "god-mode", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, AutoApproveForbidden(tc.level))
+		})
+	}
+}
+
+// TestAutoApproveForbiddenCoversMaxLevelOutput: whatever MaxLevel can return
+// must be gated consistently — the two tiers above standard are always
+// forbidden, standard never is. Pairs the two functions so a new tier added to
+// one without the other shows up here.
+func TestAutoApproveForbiddenCoversMaxLevelOutput(t *testing.T) {
+	assert.False(t, AutoApproveForbidden(MaxLevel(LevelStandard, LevelStandard)))
+	assert.True(t, AutoApproveForbidden(MaxLevel(LevelStandard, LevelHigh)))
+	assert.True(t, AutoApproveForbidden(MaxLevel(LevelHigh, LevelEmergency)))
+}

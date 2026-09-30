@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/calendar"
 )
 
 // =========================================================================
@@ -161,15 +163,38 @@ func TestGenerateCalendarID(t *testing.T) {
 }
 
 func TestWindowToMap(t *testing.T) {
-	// We can't import calendar.Window here without a circular dependency
-	// concern, but windowToMap takes *calendar.Window. Use a minimal stub.
-	// Actually we can import it — cmd_calendar.go already does.
-	// To keep this test self-contained, verify the shape via the public
-	// helper using a real Window constructed via the package.
-	// Since windowToMap is unexported and lives in the same package, we
-	// can call it directly with a constructed Window. But we don't have a
-	// Window constructor here; skip and rely on integration via commands.
-	t.Skip("windowToMap covered via command integration tests")
+	// windowToMap defines the JSON field names `levee calendar ... --json`
+	// emits, so a rename here breaks external consumers without failing any
+	// other test. This replaces an unconditional t.Skip that could never run.
+	start := time.Date(2026, 9, 1, 2, 0, 0, 0, time.UTC)
+	end := start.Add(2 * time.Hour)
+	w := &calendar.Window{
+		ID:           "win-1",
+		Name:         "nightly",
+		StartTime:    start,
+		EndTime:      end,
+		TargetLabels: []string{"group:web", "env:prod"},
+		IsFrozen:     true,
+		RepeatRule:   "weekly",
+		CronExpr:     "0 2 * * *",
+		CreatedAt:    start,
+		UpdatedAt:    end,
+	}
+
+	m := windowToMap(w)
+
+	assert.Equal(t, "win-1", m["id"])
+	assert.Equal(t, "nightly", m["name"])
+	assert.Equal(t, start.Format(time.RFC3339), m["start_time"])
+	assert.Equal(t, end.Format(time.RFC3339), m["end_time"])
+	assert.Equal(t, w.TargetLabels, m["target_labels"])
+	assert.Equal(t, true, m["is_frozen"])
+	assert.Equal(t, "weekly", m["repeat_rule"])
+	assert.Equal(t, "0 2 * * *", m["cron_expr"])
+	assert.Equal(t, start.Format(time.RFC3339), m["created_at"])
+	assert.Equal(t, end.Format(time.RFC3339), m["updated_at"])
+	// Ten keys, no extras: the shape is the contract.
+	assert.Len(t, m, 10)
 }
 
 // =========================================================================

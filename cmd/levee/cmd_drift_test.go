@@ -183,14 +183,28 @@ func TestLoadBaselineYAML_EmptyItems(t *testing.T) {
 // --- driftDataDir ----------------------------------------------------------
 
 func TestDriftDataDir(t *testing.T) {
-	// This test verifies that driftDataDir creates the directory structure.
-	// It depends on the config being loadable; skip if config is not available.
+	// The previous version did `if err != nil { t.Skipf(...) }` — it skipped on
+	// exactly the failure it was written to catch, so a broken config path
+	// produced a green run. Both outcomes are asserted now.
+	prevConfig := optConfigPath
+	t.Cleanup(func() { optConfigPath = prevConfig })
+
+	dataDir := t.TempDir()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("server:\n  data_dir: "+dataDir+"\n"), 0o644))
+	optConfigPath = cfgPath
+
 	dir, err := driftDataDir()
-	if err != nil {
-		t.Skipf("config not available: %v", err)
-	}
-	assert.NotEmpty(t, dir)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dataDir, "drift"), dir)
 	assert.DirExists(t, dir)
+
+	// An unparsable config must surface as an error, not a skip.
+	badPath := filepath.Join(t.TempDir(), "bad.yaml")
+	require.NoError(t, os.WriteFile(badPath, []byte("server: [unclosed\n"), 0o644))
+	optConfigPath = badPath
+	_, err = driftDataDir()
+	assert.Error(t, err)
 }
 
 // --- Output helpers --------------------------------------------------------

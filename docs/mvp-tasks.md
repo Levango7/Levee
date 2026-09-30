@@ -30,7 +30,7 @@ MVP 周期 3 个月，单二进制零依赖部署，覆盖从计划到归档的�
 | D-05 | 回滚协议 | D4.4.6 | 白名单 + 快照 + 按批逆序 + 回滚后验证 |
 | D-06 | dry-run 预览 | D2.2.4 | 产出执行计划不真正执行 |
 | D-07 | 审计（哈希链） | D7.1 | trace + 哈希链 + WORM 存储 |
-| D-08 | playbook 兼容层最小子集 | D8.2 | 导入并执行现有 Ansible playbook |
+| D-08 | playbook 兼容层最小子集 | D8.2 | 导入并执行现有 Ansible playbook —— **未交付（2026-09-29 按代码核查）**：`internal/compat` 全仓零生产引用（`go list -deps ./cmd/levee` 未链入该包，非测试导入数为 0），CLI 也没有任何 ansible/playbook 命令；`CompatExecutor` 自述"simulates execution (MVP stage — no real target connection)… Approval and gate requirements are recorded but **not enforced**"（`internal/compat/executor.go:4-7`）；动作映射表还把 4 个执行器并不存在的动作当作目标输出（`compat.go:48-55` 的 `file.manage` / `svc.manage` / `user.manage` / `user.group`；`file` 模块只实现 copy/template，`svc` 只 start/stop/restart/reload/enable/disable，`user` 只 add/remove/modify）。原行文按"包已存在"记为交付项，与"能力可用"不是一回事。 |
 | D-09 | YAML 子集表达工作流 | D2.2.2 | LEVEELang 基础语法（batch / gate / approval / rollback） |
 | D-10 | LEVEELang 基础 | D2.2.2 | 类型化 input / target / window / batches / step / rollback |
 | D-11 | 变更克隆 / 模板实例化 | D2.2.3 | clone 历史变更 + 模板参数填充 |
