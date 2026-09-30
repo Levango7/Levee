@@ -64,7 +64,9 @@ func (e *Engine) acquire(changeID string) (func(), error) {
 //     gates the engine cannot execute (unknown type, missing runtime for
 //     slo/human checks) fail the run rather than silently passing;
 //   - the host guard re-validates frozen targets between lock acquisition
-//     and mutation (planning-time check alone is stale).
+//     and mutation (planning-time check alone is stale);
+//   - post-rollback verification is wired, but stays inert unless the plan
+//     opts in with rollback.verify_after (spec §7.1).
 func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunner {
 	lockMgr := lock.NewLockManager(lock.NewLockStore(e.store), e.store)
 	lockMgr.SetTTL(e.lockTTL)
@@ -104,7 +106,21 @@ func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunne
 	)
 
 	store := e.store
-	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, nil,
+	// Post-rollback verification (T037) is wired per run and reuses the same
+	// gate manager that enforced this plan's declared gates. The verifier runs
+	// in phase mode (nil gate list), so it re-runs exactly the post-apply
+	// gates this plan declared — never a separate set. It only fires for plans
+	// that opt in with rollback.verify_after: true (spec §7.1); for every
+	// other plan this argument being non-nil changes nothing versus the nil it
+	// used to be.
+	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr)
+	if err != nil {
+		// Reachable only with a nil gate manager, which gateMgr never is
+		// here. Fail soft rather than refuse the run: what is lost is an
+		// advisory record, not a safety property.
+		log.Error("post-rollback verifier init failed; post-rollback verification disabled", "error", err)
+	}
+	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, postVerifier,
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			return inventory.ValidateNotFrozen(ctx, store, hosts)
 		}),

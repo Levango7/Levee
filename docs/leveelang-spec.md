@@ -1094,7 +1094,7 @@ grace_period 配置：
 | 字段 | 类型 | 必需 | 语义 |
 | --- | --- | --- | --- |
 | on_failure | string | 否 | 失败触发策略：auto（缺省，失败即自动回滚）/ manual（抑制自动回滚，保留已应用批次，等待操作员手动回滚） |
-| verify_after | bool | 否 | 回滚后是否验证，缺省 true。当前状态：回滚后验证器（internal/rollback.PostRollbackVerifier）已实现，但生产装配尚未注入，该字段暂不改变执行行为（接入计划见 docs/product-roadmap.md） |
+| verify_after | bool | 否 | 回滚后是否验证，**缺省 false（opt-in）**：只有显式 `verify_after: true` 才在回滚完成后重跑验证，其余情形（未写 / `false`）不跑。装配已完成——`wiring` 为每次 run 注入 `rollback.PostRollbackVerifier`，且与执行本 plan 门禁的是同一个 `GateManager`，phase 模式（不指定门禁名）重跑的正是本 plan 声明的 post-apply 门禁。**为什么不是缺省 true**：本表从前写「缺省 true」而没有任何代码实现它（verifier 造好了却没人装配，该字段两种取值都不改变行为）；真按缺省 true 装配，会让所有在该能力之前写好的存量计划于升级后突然向目标机派发门禁命令，这是回滚路径上的新增副作用，与 `on_failure` 对遗留值一律保持历史行为的取舍相矛盾（理由见 `engine.postRollbackVerifyRequested`）。已知限制：由取消触发的回滚，其回滚后验证以 ctx 已取消告终而记为失败——该结果不进入 run 状态映射（`PostVerifyResult` 在 engine 之外无消费者），属咨询性记录，实现上有意不脱离 ctx 以免调用方已放弃后继续向目标机派发命令 |
 
 回滚策略：
 
