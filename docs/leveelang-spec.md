@@ -1184,13 +1184,13 @@ snapshot:
 | 恢复时机 | 补偿走到该 step 时 | 补偿全部完成之后一次 |
 | 恢复顺序 | 按补偿逆序 | 最后写入，因此 run 的前状态对它覆盖的路径有最终发言权 |
 | 缺采集器时 | no-op（未接线即不做） | **fail-closed**：拒绝本次 run（见下） |
-| 与 `on_failure: manual` 同用 | 允许 | 拒绝（LE102）：手动回滚路径今天不恢复 run 基线，采了没人用 |
+| 与 `on_failure: manual` 同用 | 允许 | 允许：自动路径不做它不会执行的恢复，操作员触发回滚时由 `RollbackChange` 恢复（基线按 change id 存储） |
 
 执行路径：`wiring` 在装配了 `--engine-snapshot-dir` 时把 `engine.RunSnapshotter` 注入执行器（与 step 级快照共用同一个 store 与通道缓存，一个配置项决定两者）；`engine` 在**所有锁已持有、任何目标尚未被改动**时采集一次，回滚路径在补偿走完之后恢复一次。
 
 **为什么缺采集器时 fail-closed**：step 级快照没装就是 no-op，那是"未接线"的历史行为；而 run 级基线是**声明**——运维读到 `scope: run` 的语义就是"回滚会把这些路径还原"。若声明了却无处记录还照常执行，就会改掉一批从未留下前镜像的目标机，同时让运维相信回滚能还原。宁可拒绝这次 run。
 
-**当前限制（如实记录）**：手动回滚路径（`RollbackChange` / `levee rollback`）今天不恢复 run 基线，因此与 `on_failure: manual` 的组合被 LE102 拒绝，而不是留一个"采了没人恢复"的承诺。基线按 change id 存储，接上手动路径只是恢复侧的一次调用，但那是另一件事。
+**手动回滚路径**：`RollbackChange` / `levee rollback` 与闭包路径共用同一个快照 store 与同一个 `runRemoteSnapshotter`，因此在补偿走完之后同样恢复一次 run 基线；这正是 `on_failure: manual` 与本原语**可以同时声明**的原因（早期版本用 LE102 拒绝该组合，因为那时手动路径不恢复——采了没人用的基线比没有基线更糟）。恢复失败会被 `errors.Join` 合并进回滚结论，不会把"补偿成功"这一事实吞掉。
 
 ---
 
@@ -1327,7 +1327,6 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | LE099 | 快照 | run 级 snapshot 未声明 paths（无可采集对象） | error |
 | LE100 | 快照 | run 级 snapshot 的 type 非法（允许：file / config） | error |
 | LE101 | 快照 | run 级 snapshot 的 path 必须是绝对路径 | error |
-| LE102 | 快照 | run 级 snapshot 与 `on_failure: manual` 同用（手动回滚路径不恢复 run 基线） | error |
 
 严重度语义：
 
@@ -2085,4 +2084,3 @@ rollback:
 | LE099 | error | run 级 snapshot 未声明 paths |
 | LE100 | error | run 级 snapshot 的 type 非法 |
 | LE101 | error | run 级 snapshot 的 path 必须是绝对路径 |
-| LE102 | error | run 级 snapshot 与 on_failure: manual 同用 |

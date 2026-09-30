@@ -127,10 +127,11 @@ func TestValidateRunSnapshot(t *testing.T) {
 			wantCode: codeRunSnapshotType,
 		},
 		{
-			name:     "declared alongside on_failure: manual is rejected",
+			name:     "declared alongside on_failure: manual is now ALLOWED",
 			spec:     &RunSnapshotSpec{Scope: "run", Paths: []string{"/etc/a.conf"}},
 			rollback: manual,
-			wantCode: codeRunSnapshotNoUndo,
+			// The manual rollback path restores the baseline, so there is no
+			// "captured but never restored" case left to reject.
 		},
 	}
 

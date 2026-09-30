@@ -37,6 +37,7 @@ type loopRecorder struct {
 	failCmd map[string]bool // exact command → force exit 1
 	release chan struct{}   // non-nil → Exec blocks until closed
 	entered chan string     // non-nil → Exec signals the host once blocked
+	uploads []loopUpload    // writes back to targets (snapshot restore)
 }
 
 func (r *loopRecorder) recordDial(host string) {
@@ -67,6 +68,32 @@ func (r *loopRecorder) snapshotDials() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.dials...)
+}
+
+// loopUpload is one recorded write back to a target.
+type loopUpload struct {
+	host string
+	path string
+	size int64
+}
+
+func (r *loopRecorder) recordUpload(host, path string, size int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.uploads = append(r.uploads, loopUpload{host: host, path: path, size: size})
+}
+
+// uploadsTo returns the recorded writes for one host+path.
+func (r *loopRecorder) uploadsTo(host, path string) []loopUpload {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []loopUpload
+	for _, u := range r.uploads {
+		if u.host == host && u.path == path {
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 func (r *loopRecorder) closeCount() int {
@@ -112,8 +139,17 @@ func (c *loopChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult
 	return &channel.ExecResult{ExitCode: 0, Stdout: "loopback ok"}, nil
 }
 
-func (c *loopChannel) Upload(context.Context, string, io.Reader) error {
-	return fmt.Errorf("loopback: Upload not supported")
+// Upload records the write instead of failing. Snapshot restore (step-level
+// and run-level) writes back through Upload, and a double that refuses it
+// cannot express "the baseline actually landed on the target" — only "we got
+// as far as trying". The payload is drained so the content is consumable.
+func (c *loopChannel) Upload(_ context.Context, path string, r io.Reader) error {
+	var n int64
+	if r != nil {
+		n, _ = io.Copy(io.Discard, r)
+	}
+	c.rec.recordUpload(c.host, path, n)
+	return nil
 }
 
 func (c *loopChannel) Download(context.Context, string) (io.Reader, error) {
