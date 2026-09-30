@@ -22,8 +22,9 @@
 //     (plan.Rollback.OnFailure) is "manual", in which case the automatic
 //     rollback is suppressed and the failed run waits for an operator
 //     (ClosureResult.ManualRollbackRequired). When a PostRollbackVerifier
-//     (T037) is configured, post-rollback verification runs and the result
-//     is recorded on the ClosureResult.
+//     (T037) is configured AND the plan opts in (plan.Rollback.VerifyAfter,
+//     spec §7.1), post-rollback verification runs and the result is
+//     recorded on the ClosureResult.
 //  6. Lock release. Regardless of outcome, every acquired lock is
 //     released before the ClosureRunner returns.
 //
@@ -152,7 +153,9 @@ type ClosureResult struct {
 
 	// PostVerifyResult is the outcome of the post-rollback verification
 	// (T037). It is non-nil only when a PostRollbackVerifier is
-	// configured and rollback was triggered.
+	// configured, rollback was triggered, and the plan opted in with
+	// rollback.verify_after (see postRollbackVerifyRequested). A run that
+	// never reached the rollback path leaves it nil.
 	PostVerifyResult *rollback.PostVerifyResult
 
 	// Error is the first error encountered during the closure, or nil
@@ -232,6 +235,11 @@ func WithHostGuard(guard func(ctx context.Context, hosts []string) error) Closur
 // runtime dependencies for parameterised verification gates (see
 // WithGateRuntime).
 //
+// Configuring a postVerifier does not by itself verify anything: each plan
+// decides for itself through rollback.verify_after (spec §7.1, opt-in — see
+// postRollbackVerifyRequested). Wiring a verifier into a deployment therefore
+// changes nothing for plans that do not ask for it.
+//
 // The returned runner uses the lock manager's configured default TTL for
 // target locks. Override it via lockManager.SetTTL before calling Run.
 func NewClosureRunner(
@@ -266,6 +274,27 @@ func rollbackPolicyOf(p *plan.Plan) string {
 		return dsl.RollbackOnFailureAuto
 	}
 	return dsl.ResolveRollbackOnFailure(p.Rollback)
+}
+
+// postRollbackVerifyRequested resolves the plan's run-level "verify after
+// rollback" policy (plan.Rollback.VerifyAfter, spec §7.1).
+//
+// The policy is opt-in: absent — a nil plan, a nil spec, or the false the
+// parser yields for an omitted verify_after — means "do not verify", and only
+// an explicit verify_after: true turns it on. Spec §7.1 formerly stated the
+// opposite default ("缺省 true"), which no code ever implemented: the verifier
+// existed but nothing was wired to it, so the field changed nothing either
+// way. Opt-in is the same call rollbackPolicyOf makes for pre-gate legacy
+// values — activating post-rollback gates for every plan written before the
+// feature existed would start dispatching gate commands at targets on
+// upgrade, and that is a new side effect on the compensation path rather than
+// a bug fix. Plans that want the check declare it; spec §7.1 and
+// docs/product-roadmap.md record the decision.
+func postRollbackVerifyRequested(p *plan.Plan) bool {
+	if p == nil || p.Rollback == nil {
+		return false
+	}
+	return p.Rollback.VerifyAfter
 }
 
 // --- Run --------------------------------------------------------------------
@@ -550,8 +579,20 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		rbResult := cr.rollback.RollbackWithLedger(context.Background(), executedPlan, execFn, ledger)
 		result.RollbackResult = rbResult
 
-		// Post-rollback verification (T037), when configured.
-		if cr.postVerifier != nil {
+		// Post-rollback verification (T037): needs both a configured
+		// verifier and a plan that asked for it. verify_after is opt-in
+		// (postRollbackVerifyRequested explains why the default is off), so
+		// wiring a verifier into a deployment does not change what plans
+		// that never declared it execute.
+		//
+		// Known limitation: this runs on the caller's ctx, so a rollback
+		// triggered by cancellation records a ctx-cancelled verification
+		// failure instead of a real check. Deliberate: the rollback dispatch
+		// above is detached from ctx because interrupting it would leave
+		// applied batches unwound, whereas this check is advisory — detaching
+		// it as well would keep dispatching gates at targets after the caller
+		// gave up, with no timeout knob to bound that work.
+		if cr.postVerifier != nil && postRollbackVerifyRequested(p) {
 			pvInput := verify.GateInput{
 				RunID:     result.RunID,
 				TargetIDs: targets,
