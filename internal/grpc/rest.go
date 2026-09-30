@@ -34,8 +34,10 @@ import (
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/nexus/levee/internal/auth"
+	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/push"
+	"github.com/nexus/levee/internal/state"
 )
 
 // Default gateway rate-limit values. The limiter is a global token
@@ -103,6 +105,7 @@ func ServeGateway(ctx context.Context, cfg ServeGatewayConfig) error {
 // be started with Serve or manually via start().
 type Gateway struct {
 	cfg        ServeGatewayConfig
+	store      state.Store // backend store for direct queries (cluster status)
 	httpServer *http.Server
 	change     *ChangeService
 	template   *TemplateService
@@ -112,9 +115,16 @@ type Gateway struct {
 	alert      pb.AlertServiceServer
 	diag       pb.DiagnosisServiceServer
 	conv       pb.ConversationServiceServer
+	// convEngine is the underlying ConversationEngine, used by the REST
+	// session-management endpoints (NewSession/ListSessions/etc.) that do
+	// not map to a gRPC method. nil when conversation is not configured.
+	convEngine *conversation.ConversationEngine
 	// mobileApproval is optional; non-nil when the mobile approval service
 	// is configured. Used by the /changes/deeplink/approve REST endpoint.
 	mobileApproval mobileApprovalHandler
+	// gateService is optional; non-nil when ad-hoc gate verification is
+	// configured. Used by the POST /gates/verify endpoint (rest_gate.go).
+	gateService gateServiceHandler
 
 	// limiterOnce lazily initialises the gateway-wide rate limiter so
 	// that BOTH route trees (RESTful "/" and legacy "/api/v1/") share a
@@ -142,9 +152,12 @@ type extraRoute struct {
 
 // mobileApprovalHandler wraps the MobileApprovalService for REST routing.
 // It is an interface so we can avoid importing the approval package here.
+// The deep-link methods return the runID the token was bound to so the
+// gateway can settle the run from the approval chain state (the
+// settlement itself lives on ChangeService — this layer only routes).
 type mobileApprovalHandler interface {
-	ApproveViaDeepLink(ctx context.Context, token string) error
-	RejectViaDeepLink(ctx context.Context, token string) error
+	ApproveViaDeepLink(ctx context.Context, token string) (string, error)
+	RejectViaDeepLink(ctx context.Context, token string) (string, error)
 }
 
 // GatewayServices bundles the service implementations for NewGateway.
@@ -190,6 +203,18 @@ func (gw *Gateway) SetServices(change *ChangeService, template *TemplateService,
 // POST /changes/deeplink/reject.
 func (gw *Gateway) SetMobileApproval(m mobileApprovalHandler) {
 	gw.mobileApproval = m
+}
+
+// SetStore sets the backend store the gateway queries directly for endpoints
+// that do not map to a gRPC service (e.g. cluster status).
+func (gw *Gateway) SetStore(s state.Store) { gw.store = s }
+
+// SetConversationEngine registers the ConversationEngine the gateway calls
+// directly for the session-management REST endpoints (NewSession/ListSessions
+// /GetSession/CloseSession), which do not map to a gRPC method. The engine
+// must be set in addition to the gRPC ConversationService.
+func (gw *Gateway) SetConversationEngine(e *conversation.ConversationEngine) {
+	gw.convEngine = e
 }
 
 // SetExtraRoute registers an additional route on the gateway's mux, e.g. an
@@ -336,46 +361,69 @@ func (gw *Gateway) restRoute() http.Handler {
 		switch first {
 		case "changes":
 			gw.dispatchChange(w, r, method, path)
+		case "gates":
+			if path == "/gates/verify" && method == "POST" {
+				gw.handleGateVerify(w, r)
+				return
+			}
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		case "templates":
 			gw.dispatchTemplate(w, r, method, path)
 		case "targets":
 			gw.dispatchTarget(w, r, method, path)
-		case "audit":
-			switch {
-			case path == "/audit/log" && method == "GET":
-				gw.handleAuditLog(w, r)
-			case path == "/audit/traces" && method == "GET":
-				gw.handleAuditTraces(w, r)
-			case path == "/audit/verify" && method == "GET":
-				gw.handleAuditVerify(w, r)
-			default:
-				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-			}
-		case "auth":
-			if path == "/auth/github" && method == "POST" {
-				gw.handleGitHubLogin(w, r)
-				return
-			}
-			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-		case "system":
-			switch {
-			case path == "/system/auth-info" && method == "GET":
-				gw.handleSystemAuthInfo(w, r)
-			case path == "/system/version" && method == "GET":
-				gw.handleSystemVersion(w, r)
-			case path == "/system/status" && method == "GET":
-				gw.handleSystemStatus(w, r)
-			case path == "/system/config" && method == "GET":
-				gw.handleSystemConfig(w, r)
-			case path == "/system/doctor" && method == "POST":
-				gw.handleSystemDoctor(w, r)
-			default:
-				writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-			}
+		case "audit", "auth", "system":
+			gw.dispatchOperationalRest(w, r, first, method, path)
+		case "conversation":
+			gw.dispatchConversation(w, r, method, path)
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		}
 	})
+}
+
+// dispatchOperationalRest handles the audit, authentication, and system
+// route families. Keeping these exact path switches out of restRoute prevents
+// the top-level dispatcher from growing past the project's complexity gate
+// whenever a new operational endpoint is added.
+func (gw *Gateway) dispatchOperationalRest(w http.ResponseWriter, r *http.Request, family, method, path string) {
+	switch family {
+	case "audit":
+		switch {
+		case path == "/audit/log" && method == "GET":
+			gw.handleAuditLog(w, r)
+		case path == "/audit/traces" && method == "GET":
+			gw.handleAuditTraces(w, r)
+		case path == "/audit/verify" && method == "GET":
+			gw.handleAuditVerify(w, r)
+		default:
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+		}
+	case "auth":
+		if path == "/auth/github" && method == "POST" {
+			gw.handleGitHubLogin(w, r)
+			return
+		}
+		writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+	case "system":
+		switch {
+		case path == "/system/auth-info" && method == "GET":
+			gw.handleSystemAuthInfo(w, r)
+		case path == "/system/version" && method == "GET":
+			gw.handleSystemVersion(w, r)
+		case path == "/system/status" && method == "GET":
+			gw.handleSystemStatus(w, r)
+		case path == "/system/cluster-status" && method == "GET":
+			gw.handleClusterStatus(w, r)
+		case path == "/system/batch-status" && method == "GET":
+			gw.handleBatchStatus(w, r)
+		case path == "/system/config" && method == "GET":
+			gw.handleSystemConfig(w, r)
+		case path == "/system/doctor" && method == "POST":
+			gw.handleSystemDoctor(w, r)
+		default:
+			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+		}
+	}
 }
 
 func (gw *Gateway) dispatchChange(w http.ResponseWriter, r *http.Request, method, path string) {
@@ -863,11 +911,25 @@ func (gw *Gateway) handleDeeplinkApprove(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
-	if err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token); err != nil {
+	runID, err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token)
+	if err != nil {
 		writeDeeplinkError(w, err)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "approved"})
+	// Settle the run from the chain state: a completed quorum moves the
+	// run to approved; a partial one (min_approvers > 1) leaves it
+	// untouched and the response says so.
+	out := map[string]string{"status": "approved"}
+	if gw.change != nil {
+		settled, serr := gw.change.SettleApproval(ctx, runID)
+		if serr != nil {
+			slog.Default().Warn("deeplink approve: settle failed (decision is durable; run state not mirrored)",
+				"run_id", runID, "error", serr)
+		} else if settled == SettlePending {
+			out["status"] = "recorded; quorum pending"
+		}
+	}
+	writeJSON(w, out)
 }
 
 func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) {
@@ -883,9 +945,17 @@ func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
-	if err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token); err != nil {
+	runID, err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token)
+	if err != nil {
 		writeDeeplinkError(w, err)
 		return
+	}
+	// One-vote veto: settle the rejection onto the run.
+	if gw.change != nil {
+		if _, serr := gw.change.SettleApproval(ctx, runID); serr != nil {
+			slog.Default().Warn("deeplink reject: settle failed (decision is durable; run state not mirrored)",
+				"run_id", runID, "error", serr)
+		}
 	}
 	writeJSON(w, map[string]string{"status": "rejected"})
 }
@@ -1381,6 +1451,76 @@ func (gw *Gateway) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeProto(w, resp)
+}
+
+// handleClusterStatus serves a read-only view of the cluster's dispatch
+// state: registered nodes and assignment summary (counts per state and
+// per-node active load). It queries the store directly rather than going
+// through a gRPC service, because the data lives in the state layer that
+// the gateway already holds.
+func (gw *Gateway) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if gw.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "no store configured")
+		return
+	}
+
+	nodes, err := gw.store.ListClusterNodes(ctx)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("list nodes: %v", err))
+		return
+	}
+	summary, err := gw.store.AssignmentSummary(ctx)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("assignment summary: %v", err))
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"nodes":   nodes,
+		"summary": summary,
+		"backend": backendLabel(gw.store),
+	})
+}
+
+// handleBatchStatus serves the per-batch progress of a run (cluster v2
+// observability). Read-only; queries the batches table directly.
+func (gw *Gateway) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if gw.store == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "no store configured")
+		return
+	}
+
+	runID := r.URL.Query().Get("run_id")
+	if strings.TrimSpace(runID) == "" {
+		writeJSONError(w, http.StatusBadRequest, "run_id query parameter is required")
+		return
+	}
+
+	summary, err := gw.store.BatchSummary(ctx, runID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("batch summary: %v", err))
+		return
+	}
+	if summary == nil {
+		// No batches (or missing table): return an empty summary rather than 404
+		// so the frontend can render "no batch data" uniformly.
+		summary = &state.BatchSummary{Batches: []state.BatchProgress{}}
+	}
+	writeJSON(w, summary)
+}
+
+// backendLabel returns a human-readable backend name for the store.
+func backendLabel(s state.Store) string {
+	switch s.(type) {
+	case *state.PGStore:
+		return "postgres"
+	case *state.SQLiteStore:
+		return "sqlite"
+	default:
+		return "unknown"
+	}
 }
 
 func (gw *Gateway) handleSystemConfig(w http.ResponseWriter, r *http.Request) {
@@ -2084,6 +2224,201 @@ func (gw *Gateway) handleConversation(w http.ResponseWriter, r *http.Request, me
 }
 
 // -----------------------------------------------------------------------
+// Conversation session management (REST-only: not gRPC methods)
+// -----------------------------------------------------------------------
+
+// dispatchConversation routes /conversation/* paths to the appropriate
+// session-management handler. These endpoints call the ConversationEngine
+// directly rather than going through gRPC, because NewSession/ListSessions/
+// GetSession/CloseSession are not part of the ConversationService gRPC API.
+func (gw *Gateway) dispatchConversation(w http.ResponseWriter, r *http.Request, method, path string) {
+	if gw.convEngine == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "conversation engine not configured")
+		return
+	}
+	// /conversation/sessions
+	if path == "/conversation/sessions" || path == "/conversation/sessions/" {
+		switch method {
+		case http.MethodPost:
+			gw.handleConversationNewSession(w, r)
+		case http.MethodGet:
+			gw.handleConversationListSessions(w, r)
+		default:
+			writeJSONError(w, http.StatusMethodNotAllowed, method+" not allowed")
+		}
+		return
+	}
+	// /conversation/sessions/{id} and /conversation/sessions/{id}/messages
+	rest := strings.TrimPrefix(path, "/conversation/sessions/")
+	if idx := strings.Index(rest, "/"); idx > 0 {
+		sid := rest[:idx]
+		suffix := rest[idx:]
+		if suffix == "/messages" {
+			gw.handleConversationPostMessage(w, r, sid)
+			return
+		}
+	}
+	if rest != "" && !strings.Contains(rest, "/") {
+		switch method {
+		case http.MethodGet:
+			gw.handleConversationGetSession(w, r, rest)
+		case http.MethodDelete:
+			gw.handleConversationCloseSession(w, r, rest)
+		default:
+			writeJSONError(w, http.StatusMethodNotAllowed, method+" not allowed")
+		}
+		return
+	}
+	writeJSONError(w, http.StatusNotFound, "not found: "+path)
+}
+
+// conversationPrincipal resolves the user identity that owns conversation
+// sessions (P2-2). An authenticated subject — named token / OIDC / web
+// session, injected by authMiddleware under actorKey — always wins over any
+// client-asserted user_id. The asserted value is the fallback for
+// development mode and legacy static-token callers, which carry no verified
+// subject (same trust model as actorFromCtx).
+func conversationPrincipal(r *http.Request, asserted string) string {
+	if v, ok := r.Context().Value(actorKey{}).(string); ok && v != "" {
+		return v
+	}
+	return strings.TrimSpace(asserted)
+}
+
+// requireConversationOwner writes a 403 and returns false when principal is
+// known and does not own sess. An empty principal (development mode with no
+// client assertion) is allowed through, preserving --insecure usability.
+func requireConversationOwner(w http.ResponseWriter, sess *conversation.Session, principal string) bool {
+	if principal != "" && sess.UserID != principal {
+		writeJSONError(w, http.StatusForbidden, "session belongs to another user")
+		return false
+	}
+	return true
+}
+
+// handleConversationNewSession creates a new conversation session.
+func (gw *Gateway) handleConversationNewSession(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UserID  string `json:"user_id"`
+		AlertID string `json:"alert_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	principal := conversationPrincipal(r, req.UserID)
+	if principal == "" {
+		writeJSONError(w, http.StatusBadRequest, "user_id is required")
+		return
+	}
+	var sess *conversation.Session
+	var err error
+	if req.AlertID != "" {
+		sess, err = gw.convEngine.NewSessionFromAlert(principal, req.AlertID)
+	} else {
+		sess, err = gw.convEngine.NewSession(principal)
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"session": sessToDTO(sess)})
+}
+
+// handleConversationListSessions lists sessions for a user.
+func (gw *Gateway) handleConversationListSessions(w http.ResponseWriter, r *http.Request) {
+	principal := conversationPrincipal(r, r.URL.Query().Get("user_id"))
+	if principal == "" {
+		writeJSONError(w, http.StatusBadRequest, "user_id query parameter is required")
+		return
+	}
+	sessions := gw.convEngine.ListSessions(principal)
+	dtos := make([]map[string]any, 0, len(sessions))
+	for _, s := range sessions {
+		dtos = append(dtos, sessToDTO(s))
+	}
+	writeJSON(w, map[string]any{"sessions": dtos})
+}
+
+// handleConversationGetSession returns a single session with its history.
+func (gw *Gateway) handleConversationGetSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	sess, err := gw.convEngine.GetSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if !requireConversationOwner(w, sess, conversationPrincipal(r, r.URL.Query().Get("user_id"))) {
+		return
+	}
+	writeJSON(w, map[string]any{"session": sessToDTO(sess)})
+}
+
+// handleConversationPostMessage sends a message to a session and returns
+// the engine's reply.
+func (gw *Gateway) handleConversationPostMessage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	var req struct {
+		UserID string `json:"user_id"`
+		Text   string `json:"text"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	// Ownership (P2-2): the resolved principal (authenticated subject, or
+	// the client-asserted fallback in development mode) must own the
+	// session; the engine re-checks inside HandleMessage via ErrNotOwner.
+	reply, err := gw.convEngine.HandleMessage(r.Context(), sessionID, conversationPrincipal(r, req.UserID), req.Text)
+	if err != nil {
+		switch {
+		case errors.Is(err, conversation.ErrEmptyMessage):
+			writeJSONError(w, http.StatusBadRequest, "text is required")
+		case errors.Is(err, conversation.ErrSessionNotFound):
+			writeJSONError(w, http.StatusNotFound, "session not found")
+		case errors.Is(err, conversation.ErrNotOwner):
+			writeJSONError(w, http.StatusForbidden, "session belongs to another user")
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	writeJSON(w, map[string]any{"reply": reply})
+}
+
+// handleConversationCloseSession closes (removes) a session.
+func (gw *Gateway) handleConversationCloseSession(w http.ResponseWriter, r *http.Request, sessionID string) {
+	principal := conversationPrincipal(r, r.URL.Query().Get("user_id"))
+	if principal != "" {
+		sess, err := gw.convEngine.GetSession(sessionID)
+		if err != nil {
+			writeJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if !requireConversationOwner(w, sess, principal) {
+			return
+		}
+	}
+	if err := gw.convEngine.CloseSession(sessionID); err != nil {
+		writeJSONError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// sessToDTO builds a JSON-safe view of a conversation.Session (locks the
+// session only long enough to copy the needed fields).
+func sessToDTO(s *conversation.Session) map[string]any {
+	return map[string]any{
+		"id":         s.ID,
+		"user_id":    s.UserID,
+		"alert_id":   s.AlertID,
+		"state":      s.GetState().String(),
+		"messages":   s.History(),
+		"created_at": s.CreatedAt,
+		"updated_at": s.UpdatedAt,
+	}
+}
+
+// -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
 
@@ -2293,7 +2628,12 @@ func (gw *Gateway) authMiddleware(h http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !tokens.Enabled() {
-			// Auth disabled: let the request through.
+			// Auth disabled: let the request through. With no credential
+			// configured the deployment has declared it has no identity
+			// model, so the asserted X-Acting-As name is admitted as the
+			// governance subject (see admitAssertedIdentity).
+			r = r.WithContext(admitAssertedIdentity(
+				r.Context(), sanitizeHeaderValue(r.Header.Get(actingAsHeaderName))))
 			h.ServeHTTP(w, r)
 			return
 		}

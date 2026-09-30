@@ -12,6 +12,61 @@
 
 ---
 
+## 第0章 术语（权威定义）
+
+> 本章是全项目术语的**唯一权威来源**。其余文档、代码注释、CLI 帮助、API 文档与 UI 文案都必须与本章一致；发现不一致时以本章为准，并修正那一处。
+>
+> **为什么需要它**：项目已从"workflow 引擎"长成一套独立系统——48 个 `internal` 包里，与编排直接相关的（dsl / plan / engine / wiring / executor / dispatch / batch / cluster）只占约三成，其余是诊断、推荐、身份、凭据、租户、审计、备份、集群故障转移、ChatOps 等平台能力。术语若不定，各包会各自造词，于是出现「同一个字段在两层各有一份词表」「UI 与状态机状态词不一致」这类缺陷（历史实例：`batches.strategy`、run 状态词表、`idempotent` 是否进 plan 哈希）。**新增概念时先在此定义，再写代码。**
+
+### 0.1 核心实体
+
+| 术语 | 英文 / 代码标识 | 定义 | 不是什么 |
+| --- | --- | --- | --- |
+| **变更** | `Change` | **系统的核心实体**：一次受治理的基础设施变更，从创建到归档的完整生命周期。对应 proto 的 `ChangeService`（23/40 个 RPC 都挂在它上面），数据库里的 `runs` 表存的是它的当前状态。 | 不是"工作流"。工作流只是变更的**声明式定义**。 |
+| **工作流** | `workflow` / `dsl.Workflow` | 变更的**声明式定义文档**（LEVEELang YAML），描述目标集、步骤、批次、审批、回滚。是变更的输入，不是变更本身。 | 不是执行实例，不持有运行状态。 |
+| **计划** | `Plan` / `plan.Plan` | 由工作流 + 具体目标主机**生成**的可执行制品：批次已切分、步骤已绑定目标、风险已评分、审批下限已推导。**被 plan_hash 绑定**，执行的就是被批准的那一份。 | 不是工作流的别名。同一工作流对不同目标集会生成不同的计划。 |
+| **执行** | `run` / `run_assignment` | 计划的一次实际执行尝试。`run` 行记录状态机位置，assignment 记录某批次在某主机上的派发。 | 不是工作流，也不是计划。 |
+| **步骤** | `Step` / `PlanStep` | 计划中一个带目标绑定的动作单元，及其回滚声明与门禁。 | 不是工作流里的"逻辑步骤"——后者尚未绑定目标。 |
+| **补偿** | compensation / undo | 回滚执行时对某个已执行步骤的撤销动作。与步骤一一归属（见 0.2）。 | 不是"再跑一遍计划"。 |
+
+### 0.2 命名约定
+
+- **产品面文案、API 语义、错误信息一律用「变更 / change」**，不用「工作流」描述一次运行中的事务。`workflow` 只在三种场合出现：LEVEELang 文档里的 DSL 关键字、`workflow_file` / `workflow_content` 这类**指向定义文件**的字段名、以及"这个 DSL 定义本身叫什么"。
+- **状态词表的唯一权威**是 `internal/grpc/change_service.go` 的状态机定义。UI、REST 过滤、proto 注释、CLI 终态矩阵、metrics 标签全部由它派生，不得各自维护副本。
+- **枚举词表的唯一权威是对应 Go 包**（如 `dsl.BatchStrategies`、`plan` 的状态集）。解析器与执行器必须引用同一份，跨层一致性由测试钉住。
+- **治理字段必须进 plan 哈希**。任何影响"会发生什么"的声明（审批、回滚命令、快照路径、门禁、幂等声明、不可逆标记）若不在 `canonicalPlanV2` 覆盖范围内，就等于批准后可被改写。
+
+### 0.3 run 状态词表
+
+> **权威来源**：`internal/runstatus`（Go 包）。本表由 `internal/docgen` 生成，CI 以 `go run ./internal/docgen -check` 校验（漂移即红）。Web UI 的 TypeScript 联合类型、CLI 终态矩阵、proto 注释、metrics 标签、REST 过滤都必须与它一致；`TestWebStatusMirrorMatchesGo` 另行钉住前端镜像。
+
+<!-- BEGIN GENERATED: run-status -->
+<!-- 本表由 internal/docgen 从 internal/runstatus 生成，请勿手工编辑。 -->
+| 状态 | 含义 | 生命周期终态 | 可 RetryChange 再驱动 | 可 RollbackChange 撤销 |
+| --- | --- | --- | --- | --- |
+| `draft` | 草稿，未审批 | 否 | 否 | 否 |
+| `pending` | 待审批 | 否 | 否 | 否 |
+| `planned` | 仅预览（dry-run），未派发 | 否 | 否 | 否 |
+| `approved` | 审批已结算，计划版本已绑定 | 否 | 否 | 否 |
+| `running` | 执行中 | 否 | 否 | 否 |
+| `paused` | 已挂起，可恢复 | 否 | 否 | 否 |
+| `completed` | 全部批次成功 | 是 | 否 | 是 |
+| `failed` | 执行失败（回滚结论由三个回滚判定承载） | 是 | 是 | 是 |
+| `cancelled` | 操作者放弃 | 是 | 否 | 否 |
+| `rolled_back` | **干净回滚**：必要补偿全部完成，状态已恢复 | 是 | 是 | 否 |
+| `rolled_back_partial` | **部分回滚**：部分必要补偿未完成，状态**未完全恢复** | 是 | 是 | 是 |
+| `rollback_incomplete` | **回滚未完成**：无必要补偿完成 | 是 | 是 | 是 |
+| `rejected` | 审批否决 | 是 | 否 | 否 |
+| `archived` | 历史封存 | 是 | 否 | 否 |
+| `interrupted` | 执行节点中途死亡，集群接管已裁定（仅集群模式） | 是 | 是 | 否 |
+<!-- END GENERATED: run-status -->
+
+**只有 `rolled_back` 表示"状态已恢复"**。`rolled_back_partial` / `rollback_incomplete` 在 API、UI、CLI 上一律不得呈现为已回滚——这正是 D-2 建立它们的目的。
+
+> **已废弃**：`pending_approval` 从不存在于状态机（待审批是 `pending`）。Web UI 曾把它当作第二个待审批键，因 REST 过滤精确匹配而无任何报错地查空列表——待审批页签与移动端批准按钮因此长期静默失效。
+
+---
+
 ## 第1章 概述
 
 ### 1.1 LEVEELang 是什么
@@ -81,7 +136,7 @@ workflow 声明块包含以下子块，顺序建议但不强制：
 5. `approval`：审批声明块（可选，缺省 standard）。
 6. `step`：步骤声明块（必需，可多个）。
 7. `gate`：门禁声明块（可选，可多个）。
-8. `rollback`：回滚声明块（必需，对应设计红线 R2）。
+8. `rollback`：回滚声明块。默认声明在 `step` 内（补偿契约，对应设计红线 R2）；workflow 级只承载运行态策略（失败触发方式，见第 7 章）。
 
 代码示例：完整 workflow 顶层结构
 
@@ -120,15 +175,20 @@ workflow <name> {
     args { ... }
     requires_reboot: <bool>
     irreversible: <bool>
+    idempotent: <bool>                # 声明该步骤可安全重复执行（治理字段）
+
+    rollback {                        # 补偿契约：声明"这一步做完之后怎么撤销"
+      strategy: "<rollback-strategy>"
+      snapshot_paths: [ ... ]         # strategy = snapshot 时
+      step <undo-step> { ... }        # strategy = undo-action / config-revert 时
+    }
   }
 
   gate <position> { ... }            # pre_apply / post_apply 门禁
 
-  rollback {
-    strategy: "<rollback-strategy>"
+  rollback {                          # workflow 级：运行态策略，不含补偿内容
     on_failure: "auto" | "manual"
     verify_after: <bool>
-    step <undo-step> { ... }
   }
 }
 ```
@@ -149,7 +209,7 @@ workflow <name> {
 | approval | 声明审批要求 | 否 | `approval { level: high }` |
 | step | 声明一个步骤，后接 step-name | 是 | `step migrate { }` |
 | gate | 声明验证门禁，后接 position | 否 | `gate post_batch { }` |
-| rollback | 声明回滚计划 | 是 | `rollback { strategy: "snapshot" }` |
+| rollback | 声明回滚。step 内是补偿契约（必需于被补偿的 step），workflow 级是运行态策略 | 是（step 内，对应设计红线 R2） | `rollback { on_failure: "manual" }`（workflow 级）；`rollback { strategy: "snapshot" }`（step 内） |
 | action | 引用动作模块 | 是（step 内） | `action: "mysql.pt-osc"` |
 | args | 声明动作参数 | 否 | `args { host: "{{target.host}}" }` |
 | verify | 声明验证动作 | 否 | `verify { cmd { ... } }` |
@@ -186,8 +246,9 @@ workflow <name> {
 | wait | duration | 等待时长（grace period） |
 | requires_reboot | bool | 该步是否需要目标机重启 |
 | irreversible | bool | 该步是否不可逆 |
-| on_failure | string | 回滚触发策略：auto / manual |
-| verify_after | bool | 回滚后是否验证 |
+| idempotent | bool | 该步是否可安全重复执行；回滚补偿在证据无法定序时据此决定重跑还是拒绝 |
+| on_failure | string | workflow 级回滚触发策略：auto / manual（见 §7.1） |
+| verify_after | bool | workflow 级运行态策略：回滚后是否验证 |
 
 表：修饰关键字清单
 
@@ -349,11 +410,16 @@ batches {
 
 表：审批级别枚举
 
-| 枚举值 | 触发条件 | 审批人要求 | 超时 | 超时处理 |
+> 本表由 `internal/docgen` 从 `internal/approval.NewLevelManager` 生成，请勿手工编辑。生成前该表有三列与代码不符：emergency 超时写作 15min（实为 30min）、standard 与 high 的超时处理都写作"超时驳回"（实为 standard 通知并保持 pending、high 升级到 emergency）。`SetConfig` 无生产调用者，故默认值即实际行为——按旧表操作的运维会等一个永远不会来的驳回。
+
+<!-- BEGIN GENERATED: approval-level -->
+<!-- 本表由 internal/docgen 从 internal/approval.NewLevelManager 生成，请勿手工编辑。 -->
+| 枚举值 | 触发条件 | 最少审批人 | 超时 | 超时处理 |
 | --- | --- | --- | --- | --- |
-| standard | 默认级别 | 任一有权限审批人 | 24h | 超时驳回 |
-| high | 命中高危规则（删库、主从切换、防火墙全量变更等） | 至少 2 人审批，且不能是发起人 | 4h | 超时驳回 |
-| emergency | 紧急通道（线上故障恢复） | 1 人审批 + 事后补审 | 15min | 超时自动驳回并升级告警 oncall |
+| `standard` | default tier for reversible operations | 1 | 1d | 通知审批人，保持 pending（**不会自动驳回**） |
+| `high` | irreversible or destructive operations (explicit mark or whitelist match) | 2 | 4h | 升级到 `emergency` 并重新计时 |
+| `emergency` | emergency change channel, fast turnaround, single approver | 1 | 30m | 自动驳回 |
+<!-- END GENERATED: approval-level -->
 
 枚举值在编译期校验合法性，非三类之一报错 LE041。
 
@@ -417,16 +483,26 @@ window 字段声明变更时间窗口，是 workflow 的可选块，缺省表示
 | 字段 | 类型 | 必需 | 语义 | 约束 |
 | --- | --- | --- | --- | --- |
 | start | string | 是 | 窗口起始时间 | HH:MM 格式，24 小时制 |
-| end | string | 是 | 窗口结束时间 | HH:MM 格式，必须晚于 start |
+| end | string | 是 | 窗口结束时间 | HH:MM 格式；等于 start 非法（LE020） |
 | timezone | string | 否 | 时区 | IANA 时区名，缺省 UTC |
 | days | string[] | 否 | 允许的星期 | ["Mon","Tue",...]，缺省每天 |
 
 时间格式为 24 小时制 `HH:MM`，如 `"02:00"`、`"23:30"`。
 
+窗口边界语义：
+
+- 区间为 `[start, end)`：start 时刻含入，end 时刻排除。
+- `start > end` 表示跨零点窗口（如工作日夜间 `"23:00"`–`"02:00"`）。`days`
+  标注的是**开窗的那一天**：周五列在 `days` 内，则周五 23:00 到周六 02:00 属于该窗口。
+- `start == end` 非法（LE020）：零长度窗口与全天窗口在声明上无法区分。
+  需要全天窗口写 `"00:00"`–`"23:59"`。
+
 时区处理：
 
 - timezone 用 IANA 时区名，如 `"Asia/Shanghai"`、`"America/New_York"`、`"UTC"`。
 - 窗口校验在 plan 阶段做：plan 时刻不在窗口内则阻断，不进审批。
+- 声明不可判定同样阻断 plan（失败关闭）：把"判不了"默认放行，等于让一个
+  写坏的窗口重新变成没有窗口。
 - 跨时区团队建议显式声明 timezone，避免隐式 UTC 导致误判。
 - 回滚不受窗口约束（对应设计文档 4.4.6.2），即使窗口已关闭回滚仍可执行。
 
@@ -457,13 +533,19 @@ batches 字段声明批次划分策略，是 workflow 的可选块，缺省表�
 
 表：批次策略清单
 
-| 策略 | steps 类型 | 语义 | 示例 |
-| --- | --- | --- | --- |
-| percent | percent_array | 按累计百分比划分 | `steps: [1, 10, 50, 100]` |
-| count | int[] | 按数量划分 | `steps: [3, 10, rest]` |
-| one-per-target | 无需 steps | 每批一台目标机，串行 | 用于 DB 主库逐个切换 |
-| by-tag | batch[] | 按标签分组划分 | `steps: [{tags:[canary]}, {tags:[primary]}]` |
-| by-group | batch[] | 按主机组划分 | `steps: [{group:az-a}, {group:az-b}]` |
+> **权威来源**：`dsl.BatchStrategies`（`internal/dsl/ast.go`）。本表由 `internal/docgen` 生成；`dsl` 校验器与 `plan` 生成器共用同一列表，一致性由 `TestBatchStrategyVocabulariesAgree` 钉住——历史上两者各持一份不相容的列表，导致「能解析但规划即 Fatal」。
+
+<!-- BEGIN GENERATED: batch-strategy -->
+<!-- 本表由 internal/docgen 从 internal/dsl.BatchStrategies 生成，请勿手工编辑。 -->
+| 策略 | steps 类型 | 语义 |
+| --- | --- | --- |
+| `percent` | percent_array | 按累计百分比划分，如 `steps: [1, 10, 50, 100]` |
+| `fixed` | int[] | 按固定数量分组，leftover 进尾部批次，如 `steps: [2, 3]` |
+| `serial` | 无需 steps | 全部目标同批，批内串行（**缺省值**） |
+| `one-per-target` | 无需 steps | 每批一台目标机，批间严格串行（用于 DB 主库逐个切换） |
+<!-- END GENERATED: batch-strategy -->
+
+**已移除的策略**：早期版本的规范还列有 `count` / `by-tag` / `by-group`。解析器一度放行，但 `plan` 生成器从未实现，规划这类 workflow 会以 Fatal `LE034` 失败——即"规范写了、解析器放行、生成器拒绝"。现已从词表移除；若将来实现，须同时补 `plan.splitBatches` 的分支与本表生成器的 `batchSemantics`，并让一致性测试继续通过。
 
 边界处理：
 
@@ -576,6 +658,7 @@ step 块声明一个变更步骤，是 workflow 的必需块，可声明多个�
 | verify | 块 | 否 | 步骤级验证（post_step） |
 | requires_reboot | bool | 否 | 是否需要目标机重启，缺省 false |
 | irreversible | bool | 否 | 是否不可逆，缺省 false |
+| idempotent | bool | 否 | 是否可安全重复执行，缺省 false；**该声明进入 plan 哈希**（v2 治理字段），批准后不可改写；回滚补偿仅在证据无法定序且未声明时拒绝重跑 |
 | depends_on | string[] | 否 | 显式依赖的前置 step |
 | output | 块 | 否 | 输出声明，供后续 step 引用 |
 
@@ -983,18 +1066,35 @@ grace_period 配置：
 
 ## 第7章 回滚声明
 
-### 7.1 rollback 字段
+### 7.1 回滚声明的两层归属
 
-rollback 字段声明回滚计划，是 workflow 的必需块（对应设计红线 R2：变更必须可回滚）。
+回滚声明分两层，语义严格区分（对应设计红线 R2：变更必须可回滚）。
 
-表：rollback 字段定义
+表：回滚声明的两层归属
+
+| 声明位置 | 定位 | 允许字段 | 执行路径 |
+| --- | --- | --- | --- |
+| `step` 内 `rollback` | **补偿契约**：这一步做完之后怎么撤销 | strategy / step / steps / snapshot_paths | rollback.Manager 按 (host, 前向步骤) 归因执行；snapshot 策略由 apply 前采集、回滚时恢复 |
+| workflow 级 `rollback` | **运行态策略**：整次运行失败时怎么办 | on_failure / verify_after | 执行器在触发回滚前读取 plan 级策略 |
+
+补偿契约必须声明在 step 内的原因：补偿账本按 `(host, 前向步骤)` 归属。workflow 级的撤销步骤无法归属到任何前向步骤——执行器只能要么对每个前向步骤重放整份全局撤销清单（同一效果被撤销多次），要么整份跳过（漏撤销）；workflow 级的 snapshot_paths 同样没有补偿基线可挂，逐 step 复制会在后续步骤改写之后再次采集，恢复出的不是 apply 前的原始基线。
+
+编译期强制：workflow 级声明 strategy / step / steps / snapshot_paths 一律拒绝（错误码 LE097）。`dsl.Validator`（`levee compile` 路径）与 plan 生成（服务端 plan 路径）两处 fail-closed；规则落地前，这类声明会被解析、写入 plan、计入 plan_hash，却没有任何执行路径读取。
+
+表：step 级 rollback 字段定义（补偿契约）
 
 | 字段 | 类型 | 必需 | 语义 |
 | --- | --- | --- | --- |
 | strategy | string | 是 | 回滚策略：snapshot / undo-action / config-revert |
-| on_failure | string | 是 | 触发策略：auto / manual |
-| verify_after | bool | 否 | 回滚后是否验证，缺省 true |
-| step | 块 | 否 | 回滚步骤声明（undo-action 策略时必需） |
+| step / steps | 块 | 否 | 撤销步骤声明（undo-action / config-revert 策略时必需） |
+| snapshot_paths | list | 否 | snapshot 策略时要备份的目标机路径列表（apply 前采集，回滚时原样恢复） |
+
+表：workflow 级 rollback 字段定义（运行态策略）
+
+| 字段 | 类型 | 必需 | 语义 |
+| --- | --- | --- | --- |
+| on_failure | string | 否 | 失败触发策略：auto（缺省，失败即自动回滚）/ manual（抑制自动回滚，保留已应用批次，等待操作员手动回滚） |
+| verify_after | bool | 否 | 回滚后是否验证，缺省 true。当前状态：回滚后验证器（internal/rollback.PostRollbackVerifier）已实现，但生产装配尚未注入，该字段暂不改变执行行为（接入计划见 docs/product-roadmap.md） |
 
 回滚策略：
 
@@ -1006,40 +1106,51 @@ rollback 字段声明回滚计划，是 workflow 的必需块（对应设计红�
 | undo-action | 执行逆操作动作 | schema 变更（pt-osc reverse）、包降级 |
 | config-revert | 回退到上一版本配置 | Nginx 配置、防火墙规则 |
 
-代码示例：snapshot 回滚
+代码示例：step 级 snapshot 回滚（补偿契约）
 
-```leveelang
-rollback {
-  strategy: "snapshot"
-  on_failure: "auto"
-  verify_after: true
-}
+```yaml
+steps:
+  - name: reload-nginx
+    action: shell.exec
+    args:
+      cmd: "systemctl reload nginx"
+    rollback:
+      strategy: snapshot
+      snapshot_paths: ["/etc/nginx/nginx.conf", "/etc/nginx/conf.d/"]
 ```
 
-代码示例：undo-action 回滚
+代码示例：step 级 undo-action 回滚
 
-```leveelang
-rollback {
-  strategy: "undo-action"
-  on_failure: "auto"
+```yaml
+steps:
+  - name: migrate
+    action: mysql.pt-online-schema-change
+    args:
+      table: "{{ input.table }}"
+    rollback:
+      strategy: undo-action
+      step:
+        name: undo_migrate
+        action: mysql.pt-online-schema-change
+        args:
+          alter: "DROP COLUMN status"
+```
+
+代码示例：workflow 级运行态策略
+
+```yaml
+rollback:
+  on_failure: "manual"    # 失败不自动回滚，等待人工决策
   verify_after: true
-  step undo_migrate {
-    action: "mysql.pt-online-schema-change"
-    args {
-      host: "{{target.host}}"
-      table: "{{input.table}}"
-      alter: "DROP COLUMN status"
-    }
-  }
-}
 ```
 
 回滚执行策略（对应设计文档 4.4.6.3）：
 
-1. 白名单：只有声明了 rollback 的 workflow 才可自动回滚。
+1. 白名单：只有 step 声明了补偿契约的 workflow 才可自动回滚；workflow 级策略块本身不构成回滚计划。
 2. 快照：按 apply 前创建的快照恢复。
 3. 按批逆序：从最后一批向前逐批回滚，每批回滚后做回滚后验证。
 4. 回滚不受窗口约束（对应设计文档 4.4.6.2）。
+5. 运行态策略：`on_failure: manual` 时执行器不派发任何补偿指令，失败运行保留已应用批次并标记待人工回滚；其余取值（含缺省与历史遗留值）均为自动回滚。
 
 ### 7.2 不可逆操作
 
@@ -1063,11 +1174,14 @@ step drop_temp_table {
     sql: "DROP TABLE temp_orders_2024"
   }
   irreversible: true    # 显式标记不可逆
+  rollback {
+    strategy: "snapshot"    # 不可逆操作强制 snapshot 回滚
+    snapshot_paths: ["/var/lib/mysql/temp_orders_2024.ibd"]
+  }
 }
 
 rollback {
-  strategy: "snapshot"    # 不可逆操作强制 snapshot 回滚
-  on_failure: "manual"    # 不可逆操作建议 manual 回滚
+  on_failure: "manual"    # 不可逆操作建议 manual 回滚（失败不自动回滚）
   verify_after: true
 }
 ```
@@ -1083,8 +1197,12 @@ workflow cleanup-temp-tables {
     action: "mysql.exec"
     args { ... }
     irreversible: true
+    rollback {
+      strategy: "snapshot"
+      snapshot_paths: ["/var/lib/mysql/temp_orders_2024.ibd"]
+    }
   }
-  rollback { strategy: "snapshot", on_failure: "manual" }
+  rollback { on_failure: "manual" }    # 运行态策略：失败不自动回滚
 }
 ```
 
@@ -1115,14 +1233,15 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | V13 | rollback action 白名单 | rollback 引用的 action 在白名单内 | LE081 |
 | V14 | 不可逆动作白名单 | irreversible: true 的 action 在 allow_irreversible 内 | LE082 |
 | V15 | 不可逆动作审批级别 | 含不可逆动作的 workflow approval level ≥ high | LE083 |
-| V16 | rollback 必需 | workflow 必须声明 rollback 块 | LE091 |
+| V16 | rollback 补偿声明 | 治理红线 R2：变更必须可回滚。当前实现不阻断编译——未声明补偿的 workflow 在 dry-run 预览中告警，强制落地见 docs/product-roadmap.md | LE091（规划） |
 | V17 | target 必需 | workflow 必须声明 target 块 | LE092 |
 | V18 | step 必需 | workflow 至少声明一个 step | LE093 |
-| V19 | window 时间合法 | start < end，HH:MM 格式合法 | LE020 |
+| V19 | window 时间合法 | start / end 均为合法 HH:MM 且 start != end；timezone 可解析；days 属于 Mon..Sun | LE020 / LE021 / LE003 |
 | V20 | timezone 合法 | timezone 为合法 IANA 时区名 | LE021 |
 | V21 | 资产类型白名单 | target.type 在资产类型白名单内 | LE012 |
 | V22 | approval 约束 | high 级别 exclude_initiator 强制 true | LE043 |
 | V23 | 命名唯一性 | step 名称、input 参数名在 workflow 内唯一 | LE002 |
+| V24 | rollback 归属分层 | workflow 级 rollback 仅允许 on_failure / verify_after；strategy / step / steps / snapshot_paths 必须声明在被补偿的 step 内 | LE097 |
 
 ### 8.2 错误码定义
 
@@ -1161,6 +1280,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | LE094 | 结构 | 缺少 approval 块（将用缺省 standard，仅 warning） | warning |
 | LE095 | 结构 | 缺少 window 块（无窗口约束，仅 warning） | warning |
 | LE096 | 结构 | 缺少 batches 块（单批全量，仅 warning） | warning |
+| LE097 | 结构 | workflow 级 rollback 声明了无法归属的补偿内容（strategy / step / steps / snapshot_paths）——必须声明在被补偿的 step 内 | error |
 
 严重度语义：
 
@@ -1263,6 +1383,19 @@ workflow patch-rolling {
     }
     requires_reboot: true     # 内核补丁需重启
     depends_on: ["scan"]
+
+    # 补偿契约：包降级到原版本（声明在被补偿的 step 内，见 §7.1）
+    rollback {
+      strategy: "undo-action"
+      step downgrade {
+        action: "pkg.downgrade"
+        args {
+          host: "{{target.host}}"
+          name: "{{input.pkg_name}}"
+          version: "{{step.scan.output.current_version}}"
+        }
+      }
+    }
   }
 
   # 步骤 3：重启后健康检查
@@ -1281,19 +1414,10 @@ workflow patch-rolling {
     depends_on: ["upgrade"]
   }
 
-  # 回滚：包降级到原版本
+  # 回滚运行态策略：失败即自动回滚（补偿契约已声明在被补偿的 step 内，见 §7.1）
   rollback {
-    strategy: "undo-action"
     on_failure: "auto"
     verify_after: true
-    step downgrade {
-      action: "pkg.downgrade"
-      args {
-        host: "{{target.host}}"
-        name: "{{input.pkg_name}}"
-        version: "{{step.scan.output.current_version}}"
-      }
-    }
   }
 
   # 变更后 grace period SLO 门禁
@@ -1316,7 +1440,7 @@ workflow patch-rolling {
 - approval 高危审批，2 人审批且排除发起人。
 - step scan 扫描漏洞并输出当前版本，step upgrade 升级并声明需重启，step health_check 重启后验证内核版本。
 - step 间通过 output 传递 current_version，回滚时降级到该版本。
-- rollback 用 undo-action 策略，执行 pkg.downgrade 降级。
+- step upgrade 内的补偿契约用 undo-action 策略，执行 pkg.downgrade 降级；workflow 级 rollback 只声明运行态策略（on_failure），不含补偿内容（§7.1）。
 - post_apply 门禁等待 grace period 后查 SLO。
 
 ### 9.2 示例：数据库 schema 变更
@@ -1383,21 +1507,25 @@ workflow db-migrate-orders {
     }
     requires_reboot: false
     irreversible: false
-  }
 
-  # 回滚：pt-osc reverse（白名单逆操作）
-  rollback {
-    strategy: "undo-action"
-    on_failure: "auto"
-    verify_after: true
-    step undo_migrate {
-      action: "mysql.pt-online-schema-change"
-      args {
-        host: "{{target.host}}"
-        table: "{{input.table}}"
-        alter: "DROP COLUMN status"
+    # 补偿契约：pt-osc reverse（白名单逆操作，声明在被补偿的 step 内，见 §7.1）
+    rollback {
+      strategy: "undo-action"
+      step undo_migrate {
+        action: "mysql.pt-online-schema-change"
+        args {
+          host: "{{target.host}}"
+          table: "{{input.table}}"
+          alter: "DROP COLUMN status"
+        }
       }
     }
+  }
+
+  # 回滚运行态策略：失败即自动回滚（补偿契约已声明在被补偿的 step 内，见 §7.1）
+  rollback {
+    on_failure: "auto"
+    verify_after: true
   }
 
   # 变更后 grace period SLO 门禁
@@ -1420,7 +1548,7 @@ workflow db-migrate-orders {
 - 批次间 SLO 门禁（错误率）与命令门禁（mysqladmin ping）。
 - approval 高危审批，schema 变更属高危。
 - step migrate 调用 pt-osc 在线变更，不可逆性 false。
-- rollback 用 undo-action，执行 pt-osc reverse 删除新列。
+- step migrate 内的补偿契约用 undo-action，执行 pt-osc reverse 删除新列；workflow 级 rollback 只声明运行态策略（§7.1）。
 - post_apply 门禁等待 grace period 后查错误率。
 
 ### 9.3 示例：网络设备配置变更
@@ -1511,20 +1639,24 @@ workflow firewall-acl-update {
       host: "{{target.host}}"
     }
     depends_on: ["update_acl"]
-  }
 
-  # 回滚：回退到备份配置
-  rollback {
-    strategy: "config-revert"
-    on_failure: "auto"
-    verify_after: true
-    step revert {
-      action: "net.config-restore"
-      args {
-        host: "{{target.host}}"
-        from: "{{step.backup.output.backup_path}}"
+    # 补偿契约：回退到备份配置（声明在被补偿的 step 内，见 §7.1）
+    rollback {
+      strategy: "config-revert"
+      step revert {
+        action: "net.config-restore"
+        args {
+          host: "{{target.host}}"
+          from: "{{step.backup.output.backup_path}}"
+        }
       }
     }
+  }
+
+  # 回滚运行态策略：失败即自动回滚（补偿契约已声明在被补偿的 step 内，见 §7.1）
+  rollback {
+    on_failure: "auto"
+    verify_after: true
   }
 
   # 变更后探针门禁
@@ -1548,7 +1680,7 @@ workflow firewall-acl-update {
 - approval 高危审批，防火墙全量变更属高危。
 - step backup 备份当前配置并输出备份路径，step update_acl 下发新 ACL，step commit 提交配置。
 - step 间通过 output 传递 backup_path，回滚时从该路径恢复。
-- rollback 用 config-revert 策略，执行 net.config-restore 从备份恢复。
+- step commit 内的补偿契约用 config-revert 策略，执行 net.config-restore 从备份恢复；workflow 级 rollback 只声明运行态策略（§7.1）。
 - post_apply 探针门禁验证业务连通性。
 
 ### 9.4 示例：批量文件分发
@@ -1635,6 +1767,27 @@ workflow distribute-config {
       host: "{{target.host}}"
     }
     depends_on: ["backup"]
+
+    # 补偿契约：恢复备份文件后 reload 使恢复的配置生效（两个回滚步骤
+    # 属于同一个补偿单元，声明在被补偿的 step 内，见 §7.1）
+    rollback {
+      strategy: "undo-action"
+      step restore {
+        action: "file.copy"
+        args {
+          src: "{{step.backup.output.backup_path}}"
+          dest: "{{input.dest_path}}"
+          host: "{{target.host}}"
+        }
+      }
+      step reload_after_rollback {
+        action: "svc.reload"
+        args {
+          name: "nginx"
+          host: "{{target.host}}"
+        }
+      }
+    }
   }
 
   # 步骤 3：reload 服务使配置生效
@@ -1653,26 +1806,10 @@ workflow distribute-config {
     depends_on: ["distribute"]
   }
 
-  # 回滚：恢复备份文件
+  # 回滚运行态策略：失败即自动回滚（补偿契约已声明在被补偿的 step 内，见 §7.1）
   rollback {
-    strategy: "undo-action"
     on_failure: "auto"
     verify_after: true
-    step restore {
-      action: "file.copy"
-      args {
-        src: "{{step.backup.output.backup_path}}"
-        dest: "{{input.dest_path}}"
-        host: "{{target.host}}"
-      }
-    }
-    step reload_after_rollback {
-      action: "svc.reload"
-      args {
-        name: "nginx"
-        host: "{{target.host}}"
-      }
-    }
   }
 }
 ```
@@ -1686,8 +1823,8 @@ workflow distribute-config {
 - 批次间命令门禁（校验和匹配）与探针门禁（Nginx 状态）。
 - approval 标准审批，配置文件分发属低风险。
 - step backup 备份现有文件并输出备份路径，step distribute 分发新文件，step reload reload Nginx 并内联 verify 检查配置语法。
-- rollback 用 undo-action 策略，恢复备份文件后 reload，含两个回滚步骤。
-- 回滚后 verify_after: true 强制验证。
+- step distribute 内的补偿契约用 undo-action 策略，恢复备份文件后 reload，含两个回滚步骤。
+- workflow 级 rollback 只声明运行态策略：失败即自动回滚（on_failure: auto）。verify_after: true 表示回滚后应验证（回滚后验证器已实现，生产装配接管后生效，见 §7.1）。
 
 ---
 
@@ -1709,7 +1846,7 @@ MVP 阶段（3 个月）不实现完整 LEVEELang 语法与编译器，而是用
 V1 阶段引入完整 LEVEELang：
 
 - 完整语法解析器（本文档定义的全部关键字与类型）。
-- 编译期类型检查（第 8 章 V1-V23 全部校验项）。
+- 编译期类型检查（第 8 章 V1-V24 全部校验项）。
 - IR（中间表示）与 plan 哈希锁定。
 - 错误码 LE001-LE099 全部实现。
 - IDE 插件（语法高亮、补全、错误提示）。
@@ -1729,7 +1866,7 @@ MVP 阶段 YAML 子集支持以下字段，对应本文档的目标语义但语�
 | window.start | window.start | 是 |  |
 | window.end | window.end | 是 |  |
 | window.timezone | window.timezone | 是 | 缺省 UTC |
-| batches.strategy | batches.strategy | 是 | 仅 percent / one-per-target |
+| batches.strategy | batches.strategy | 是 | percent / fixed / serial / one-per-target（见 4.x 批次策略清单） |
 | batches.steps | batches.steps | 是 | 仅百分比数组 |
 | approval.level | approval.level | 是 | standard / high / emergency |
 | approval.min_approvers | approval.min_approvers | 是 |  |
@@ -1741,8 +1878,10 @@ MVP 阶段 YAML 子集支持以下字段，对应本文档的目标语义但语�
 | gates[].position | gate position | 是 | 仅 post_batch / post_apply |
 | gates[].cmd | gate.cmd | 是 |  |
 | gates[].slo | gate.slo | 是 | 仅 PromQL 查询 |
-| rollback.strategy | rollback.strategy | 是 | 仅 snapshot |
-| rollback.on_failure | rollback.on_failure | 是 |  |
+| steps[].rollback.strategy | step 级 rollback.strategy | 是（被补偿的 step） | snapshot / undo-action |
+| steps[].rollback.step | step 级撤销步骤 | 是（undo-action / config-revert 时） |  |
+| steps[].rollback.snapshot_paths | snapshot 采集路径 | 否 | snapshot 策略时 |
+| rollback.on_failure | workflow 级运行态策略 | 否 | auto / manual（缺省 auto） |
 
 MVP 不支持（V1 引入）：
 
@@ -1894,3 +2033,4 @@ rollback:
 | LE094 | warning | 缺少 approval 块 |
 | LE095 | warning | 缺少 window 块 |
 | LE096 | warning | 缺少 batches 块 |
+| LE097 | error | workflow 级 rollback 声明了无法归属的补偿内容（须声明在 step 内） |

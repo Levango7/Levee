@@ -22,8 +22,8 @@ target:
     - web2.example.com
     - web3.example.com
 window:
-  start: "2024-01-01T02:00:00Z"
-  end: "2024-01-01T06:00:00Z"
+  start: "02:00"
+  end: "06:00"
   timezone: UTC
   max_concurrency: 5
 batches:

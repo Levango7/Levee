@@ -83,6 +83,38 @@ type Approval struct {
 	Comment   string     `json:"comment"`
 	TimeoutAt *time.Time `json:"timeout_at,omitempty"`
 	ActedAt   *time.Time `json:"acted_at,omitempty"`
+	// PlanHash is the plan artifact the approval attests to. Empty means
+	// "legacy record": it still settles/authorises runs regardless of plan,
+	// preserving behaviour for rows created before D-1 v2.
+	PlanHash string `json:"plan_hash"`
+	// Revision is the optimistic-lock version used by the concurrent decision
+	// CAS (UpdateApprovalIfPending). It guards against a stale writer
+	// overwriting a partial vote that another actor just recorded.
+	Revision int64 `json:"revision"`
+}
+
+// MatchesPlan reports whether this approval row authorises the plan version
+// identified by planHash, and whether it matched only through the legacy
+// (empty PlanHash) rule.
+//
+// It lives here, next to the struct, because THREE gates depend on it and
+// they must never disagree about which approval authorises which revision:
+// settlement, the apply gate, and the retry re-plan gate. When a fourth gate
+// appears it must call this too rather than re-implement the rule.
+//
+//   - a row with an empty PlanHash is a pre-binding (legacy) record: it
+//     matches any plan, preserving behaviour for databases written before
+//     plan binding existed;
+//   - a row bound to a revision matches only that exact revision, and never
+//     a run whose plan hash is itself empty.
+func (a *Approval) MatchesPlan(planHash string) (matched, legacy bool) {
+	if a == nil {
+		return false, false
+	}
+	if a.PlanHash == "" {
+		return true, true
+	}
+	return planHash != "" && a.PlanHash == planHash, false
 }
 
 // Lock is a mutex lock with a TTL. Locks are scoped (e.g. host:<name>) and
@@ -272,6 +304,20 @@ type Store interface {
 	// guard state-machine transitions (e.g. only "approved" runs may
 	// become "running") against concurrent racers.
 	UpdateRunStatusIf(ctx context.Context, id string, from string, to string, updatedAt time.Time) (bool, error)
+	// UpdateRunApprovalStatusIf atomically transitions a run's status from
+	// `from` to `to` AND sets approval_status, stamping updated_at. It
+	// returns (true, nil) when the row matched and was updated, (false, nil)
+	// when the run does not exist or its current status is not `from`. It is
+	// the single-CAS write behind approval settlement so a settled outcome
+	// (status + approval status) is written atomically instead of a read-then
+	// full-row UpdateRun that could clobber a concurrent state transition.
+	UpdateRunApprovalStatusIf(ctx context.Context, id string, from string, to string, approvalStatus string, updatedAt time.Time) (bool, error)
+	// UpdateRunPlan overwrites only the plan artifact (plan_json, plan_hash)
+	// on an existing run, touching updated_at. Unlike a full-row UpdateRun it
+	// never writes status/approval_status, so persisting a plan can never
+	// clobber a concurrent state transition (e.g. settlement or apply that
+	// runs between a caller's GetRun and this write).
+	UpdateRunPlan(ctx context.Context, id string, planJSON string, planHash string, updatedAt time.Time) error
 	// MarkNonTerminalSteps flips every step row of the run whose status
 	// is a non-terminal vocabulary (running/pending) to the given
 	// terminal marker, and returns the number of rows flipped. It is the
@@ -362,6 +408,66 @@ type Store interface {
 	GetAudit(ctx context.Context, id string) (*Audit, error)
 	ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit, error)
 
+	// Dispatch assignment CRUD (design-cluster-dispatch.md).
+	CreateAssignment(ctx context.Context, a *Assignment) error
+	GetAssignment(ctx context.Context, runID string) (*Assignment, error)
+	// UpdateAssignmentStateIf is a compare-and-set on (run_id, epoch, state):
+	// it applies expected→next only when the row's current state is expected.
+	// It reports (true, nil) when the transition was applied and (false, nil)
+	// when the row does not exist or its state/epoch no longer matches (a
+	// concurrent actor won the race). Callers use it to serialise assignment
+	// state transitions without a distributed lock.
+	UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error)
+	// UpdateAssignmentState transitions an assignment to next if its current
+	// state is one of the active states (pending, executing). It is a
+	// takeover-path helper: dispatch's Reassign can reclaim interrupted rows,
+	// so the takeover must not CAS against a fixed expected state — instead
+	// it stands down when the row is already terminal (done/interrupted).
+	// Returns (true, nil) when the transition was applied.
+	UpdateAssignmentState(ctx context.Context, runID, next string) (bool, error)
+	// Reassign bumps the epoch and resets state to pending for a run, used by
+	// the dispatch loop when a worker dies and the run must be given to a
+	// fresh node. It returns (true, nil) when the existing row matched
+	// (runID, prevEpoch) and was bumped.
+	//
+	// Callers must only reassign a row whose transition is already over
+	// (terminal) or whose owner is known dead: the CAS compares the epoch
+	// alone, so an executing row keeps its epoch and would be dragged back to
+	// pending. Stale-pending reclaim uses ReclaimAssignment instead.
+	Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error)
+	// ReclaimAssignment is the stale-assignment counterpart of Reassign: it
+	// bumps the epoch and re-points a PENDING assignment at newNode, CASing on
+	// (runID, epoch, state=pending). The state guard is what makes reclaim
+	// safe where Reassign is not — a worker that claimed the row in the
+	// meantime (pending→executing keeps the epoch) wins the race and the
+	// reclaim stands down, so a claimed assignment is never dragged back to
+	// pending (which would let two nodes execute the same run). The epoch bump
+	// is the fencing half: the previous owner's late claim CAS still compares
+	// its stale epoch and fails. Returns (true, nil) when the reclaim applied.
+	ReclaimAssignment(ctx context.Context, runID string, epoch int64, newNode string) (bool, error)
+	// SetAssignmentResult writes the terminal result onto an assignment row
+	// identified by (runID, epoch). Best-evidence: a store failure is logged
+	// by the caller but never aborts the run's terminal transition.
+	SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error
+	ListAssignments(ctx context.Context, filter AssignmentFilter) ([]*Assignment, error)
+	// DeleteAssignment removes the assignment for a run. Idempotent.
+	DeleteAssignment(ctx context.Context, runID string) error
+
+	// ListClusterNodes returns every registered cluster node, ordered by ID.
+	// Single-node (SQLite) deployments have no cluster_nodes table and
+	// simply return (nil, nil).
+	ListClusterNodes(ctx context.Context) ([]ClusterNode, error)
+
+	// AssignmentSummary aggregates the run_assignment rows for the cluster
+	// status view: counts per state and per-node active load.
+	AssignmentSummary(ctx context.Context) (*AssignmentSummary, error)
+
+	// BatchSummary returns the per-batch progress of a run: the batch
+	// list (ordered by batch_no) and the batch_no of the first non-terminal
+	// batch (the one the executor should resume from, or 0 when all are
+	// terminal). Returns (nil, nil, nil) when the run has no batches.
+	BatchSummary(ctx context.Context, runID string) (*BatchSummary, error)
+
 	// Inventory: managed target hosts and hierarchical groups.
 	UpsertInventoryGroup(ctx context.Context, group *InventoryGroup) error
 	GetInventoryGroup(ctx context.Context, id string) (*InventoryGroup, error)
@@ -384,3 +490,95 @@ type Store interface {
 	// Close releases all underlying resources.
 	Close() error
 }
+
+// Assignment is the cross-node dispatch assignment for a run
+// (design-cluster-dispatch.md). One active assignment per run (run_id PK).
+// The epoch increases on every reassignment so a stale scheduler can detect
+// that it no longer owns the assignment it is about to write.
+type Assignment struct {
+	RunID      string
+	OwnerNode  string
+	Epoch      int64
+	State      string // pending | executing | done | interrupted
+	Result     string // completed | failed | rolled_back | '' (while not done)
+	AssignedAt time.Time
+	UpdatedAt  time.Time
+}
+
+// AssignmentFilter narrows ListAssignments results. Empty fields are ignored;
+// non-empty fields combine with AND.
+type AssignmentFilter struct {
+	RunID     string
+	OwnerNode string
+	State     string
+	// States is the inverse of State: list assignments whose state is NOT in
+	// this set. Used to find "active" assignments (state NOT IN (done,
+	// interrupted)). Ignored when empty.
+	ExcludeStates []string
+	Limit         int
+}
+
+// ClusterNode is the persisted view of a cluster member
+// (design-cluster-dispatch.md). Single-node (SQLite) deployments have no
+// cluster_nodes table; callers get (nil, nil) from ListClusterNodes.
+type ClusterNode struct {
+	ID            string
+	Address       string
+	Role          string // master | worker
+	Status        string // active | offline
+	LastHeartbeat time.Time
+	JoinedAt      time.Time
+}
+
+// AssignmentSummary aggregates run_assignment rows for the cluster status view.
+type AssignmentSummary struct {
+	Counts      map[string]int // state -> count
+	NodeLoad    map[string]int // owner_node -> active count
+	TotalActive int
+}
+
+// BatchSummary is the per-batch progress of a run (cluster v2 observability).
+type BatchSummary struct {
+	Batches        []BatchProgress // ordered by batch_no
+	CurrentBatchNo int             // first non-terminal batch_no, or 0 when all terminal
+	TotalBatches   int
+	DoneBatches    int
+}
+
+// BatchProgress is a single batch's execution status.
+type BatchProgress struct {
+	BatchNo    int    // 1-based sequence number
+	Status     string // pending | running | done | failed | interrupted
+	TotalHosts int
+	Succeeded  int
+	Failed     int
+}
+
+// batchDoneStates are the batch statuses that count as fully completed for
+// the cluster v2 observability view. Note: "failed" and "interrupted" are
+// NOT terminal in the execution sense — they need re-execution/resumption, so
+// they are excluded here. CurrentBatchNo points at the first batch NOT in
+// this set, i.e. the one the executor should resume from.
+var batchDoneStates = map[string]bool{
+	BatchStateDone: true,
+}
+
+const (
+	// Batch states (run-level batches within a run).
+	BatchStatePending     = "pending"
+	BatchStateRunning     = "running"
+	BatchStateDone        = "done"
+	BatchStateFailed      = "failed"
+	BatchStateInterrupted = "interrupted"
+
+	// Assignment states.
+	AssignStatePending         = "pending"
+	AssignmentStateExecuting   = "executing"
+	AssignmentStateDone        = "done"
+	AssignmentStateInterrupted = "interrupted"
+
+	// Assignment results (mirrors the run status vocabulary).
+	AssignResultCompleted  = "completed"
+	AssignResultFailed     = "failed"
+	AssignResultRolledBack = "rolled_back"
+)

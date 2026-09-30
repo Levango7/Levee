@@ -194,6 +194,20 @@ func (m *ClusterManager) GetNodes() []Node {
 	return m.registry.List()
 }
 
+// ActiveMastersAndWorkers returns every node whose membership status is
+// active — both masters (eligible to lead) and workers. Used by the dispatch
+// loop to enumerate the pool of nodes that can be assigned work.
+func (m *ClusterManager) ActiveMastersAndWorkers() []Node {
+	all := m.registry.List()
+	out := make([]Node, 0, len(all))
+	for _, n := range all {
+		if n.Status == StatusActive {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // GetLeader returns the current leader node, or (nil, false).
 func (m *ClusterManager) GetLeader() (*Node, bool) {
 	return m.registry.GetLeader()

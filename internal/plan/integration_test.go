@@ -18,7 +18,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // yamlSerialRollback：serial 批次（strategy 缺省 → generator 视作 serial）+
-// 步骤级 rollback + workflow 级 approval + workflow 级 rollback 的完整 fixture。
+// 步骤级 rollback（补偿契约）+ workflow 级 approval + workflow 级 rollback
+// 运行态策略（on_failure，spec §7.1）的完整 fixture。
 const yamlSerialRollback = `
 name: serial-rollback-demo
 version: "1.0"
@@ -35,8 +36,8 @@ target:
     - host-b
     - host-c
 window:
-  start: "2024-01-01T00:00:00Z"
-  end: "2024-01-01T08:00:00Z"
+  start: "00:00"
+  end: "08:00"
   timezone: UTC
   max_concurrency: 2
 batches:
@@ -68,13 +69,7 @@ steps:
       unit: "{{ input.package_name }}"
     requires_reboot: false
 rollback:
-  strategy: undo-action
-  on_failure: abort
-  steps:
-    - name: restore-pkg
-      action: pkg.restore
-      args:
-        backup: "/var/backup/pkg"
+  on_failure: auto
 `
 
 // yamlPercentMultiBatch：percent 批次策略，10 个目标按 [10,50,100] 划分。
@@ -235,6 +230,15 @@ func TestPlanE2E_SerialSingleBatch(t *testing.T) {
 	assert.Equal(t, "pkg", batch.Steps[0].Rollback.Steps[0].Module)
 	assert.Equal(t, "downgrade", batch.Steps[0].Rollback.Steps[0].Action)
 
+	// workflow 级 rollback 只承载运行态策略（spec §7.1）：on_failure 透传到
+	// plan（供执行器解析失败策略），补偿内容一律为空——它在 plan 生成时就被
+	// LE097 拒绝。
+	require.NotNil(t, p.Rollback)
+	assert.Equal(t, "auto", p.Rollback.OnFailure)
+	assert.Empty(t, p.Rollback.Strategy)
+	assert.Empty(t, p.Rollback.Steps)
+	assert.Empty(t, p.Rollback.SnapshotPaths)
+
 	// 影响面：direct = 全部目标，无 indirect。
 	report := NewImpactAnalyzer().Analyze(p)
 	require.NotNil(t, report)
@@ -243,9 +247,9 @@ func TestPlanE2E_SerialSingleBatch(t *testing.T) {
 	assert.Equal(t, 3, report.TotalAffected)
 	assert.Equal(t, RiskLevelLow, report.RiskLevel)
 
-	// 哈希：64 字符 hex（SHA-256），且可自校验。
+	// 哈希：带 v2 版本前缀的 SHA-256，且可自校验。
 	hash := ComputeHash(p)
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -294,7 +298,7 @@ func TestPlanE2E_PercentMultiBatch(t *testing.T) {
 
 	// 哈希稳定且可校验。
 	hash := ComputeHash(p)
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -317,7 +321,7 @@ func TestPlanE2E_SingleTargetSingleBatch(t *testing.T) {
 	assert.Equal(t, 1, report.TotalAffected)
 	assert.Equal(t, RiskLevelLow, report.RiskLevel)
 
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -334,7 +338,7 @@ func TestPlanE2E_ImpactAnalysis_WithIndirect(t *testing.T) {
 	assert.Equal(t, RiskLevelLow, report.RiskLevel)
 
 	// 哈希可计算且可校验（哈希 canonical 包含影响面，锁定 blast radius）。
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 
@@ -353,7 +357,7 @@ func TestPlanE2E_HashDeterminism(t *testing.T) {
 	h1 := ComputeHash(p1)
 	h2 := ComputeHash(p2)
 	assert.Equal(t, h1, h2, "相同输入应产生确定性哈希")
-	assert.Len(t, h1, 64)
+	assertV2Hash(t, h1)
 
 	// 哈希确定性来自 canonical 排除了 ID/CreatedAt（hash.go 的 canonicalPlan
 	// 不含这两个字段）。此处不断言 ID/CreatedAt 必然不同：两次 time.Now 在
@@ -444,10 +448,12 @@ func TestPlanE2E_NilWorkflowError(t *testing.T) {
 
 // TestPlanE2E_FixedStrategy_FromAST 验证 fixed 批次策略的划分。
 //
-// 注意：dsl.Parser 的内置 validate 不接受 "fixed" 策略（仅认 percent/
-// one-per-target/count/by-tag/by-group），但 plan.Generator 支持 fixed。
-// 此处手动构造 AST，走 dsl.Validator + plan.Generator 路径覆盖 fixed 划分，
-// 并验证 leftover 目标进入尾部批次。
+// 历史注记（2026-09-25）：本用例曾必须手搓 AST 绕开 dsl.Parser，因为解析器
+// 与 plan 生成器各持一份互不相容的 batches.strategy 词表（解析器认
+// one-per-target/count/by-tag/by-group，生成器实现 fixed/serial），fixed 过不了
+// 解析器。词表现已收进 dsl.BatchStrategies 单一来源并补齐
+// one-per-target 实现，一致性由 TestBatchStrategyVocabulariesAgree 钉住；下面
+// 仍直接构造 AST，因为这样可以把批次划分的断言与解析行为分开。
 func TestPlanE2E_FixedStrategy_FromAST(t *testing.T) {
 	targets := []string{"h1", "h2", "h3", "h4", "h5", "h6"}
 	wf := &dsl.Workflow{
@@ -495,7 +501,7 @@ func TestPlanE2E_FixedStrategy_FromAST(t *testing.T) {
 
 	// 哈希可计算且可校验。
 	hash := ComputeHash(p)
-	assert.Len(t, hash, 64)
+	assertV2Hash(t, hash)
 	assert.True(t, VerifyHash(p, hash))
 }
 

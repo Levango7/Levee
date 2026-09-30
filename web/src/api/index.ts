@@ -286,6 +286,115 @@ export const systemApi = {
     checks: Array<{ name: string; status: string; message: string; remediation: string }>
     checkedAt: number
   }> => post('/system/doctor', {}),
+  clusterStatus: (): Promise<ClusterStatus> => get<ClusterStatus>('/system/cluster-status'),
+}
+
+// --- Cluster status types (mirror internal/state/backend) ---
+
+export interface ClusterNodeDTO {
+  id: string
+  address: string
+  role: string
+  status: string
+  lastHeartbeat: string
+  joinedAt: string
+}
+
+export interface AssignmentSummaryDTO {
+  counts: Record<string, number>
+  nodeLoad: Record<string, number>
+  totalActive: number
+}
+
+export interface ClusterStatus {
+  nodes: ClusterNodeDTO[]
+  summary: AssignmentSummaryDTO
+  backend: string
+}
+
+export interface BatchProgressDTO {
+  batch_no: number
+  status: string
+  total_hosts: number
+  succeeded: number
+  failed: number
+}
+
+export interface BatchSummaryDTO {
+  batches: BatchProgressDTO[]
+  current_batch_no: number
+  total_batches: number
+  done_batches: number
+}
+
+export const batchApi = {
+  batchStatus: (runID: string): Promise<BatchSummaryDTO> =>
+    get<BatchSummaryDTO>('/system/batch-status', { params: { run_id: runID } }),
+}
+
+// ---------------------------------------------------------------------------
+// ConversationService
+// ---------------------------------------------------------------------------
+
+export interface ConversationMessageDTO {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  timestamp: string
+  action?: { type: string; payload?: Record<string, string> }
+}
+
+export interface ConversationSessionDTO {
+  id: string
+  user_id: string
+  alert_id?: string
+  state: string
+  messages: ConversationMessageDTO[]
+  created_at: string
+  updated_at: string
+}
+
+export interface ConversationReplyDTO {
+  text: string
+  action_type?: string
+  action_payload?: Record<string, string>
+  session_id?: string
+}
+
+// The conversation REST endpoints wrap every payload in an envelope
+// ({session} / {sessions} / {reply}), and the message reply uses the
+// engine's wire shape ({text, action?: {type, payload}}) rather than the
+// flat ConversationReplyDTO the views consume. Unwrap and normalise here —
+// the backend envelope is the established API, so the frontend adapts.
+interface ConversationReplyWire {
+  text: string
+  action?: { type: string; payload?: Record<string, string> }
+}
+
+export const conversationApi = {
+  newSession: (userID: string, alertID?: string): Promise<ConversationSessionDTO> =>
+    post<{ session: ConversationSessionDTO }>('/conversation/sessions', { user_id: userID, alert_id: alertID })
+      .then(r => r.session),
+
+  listSessions: (userID: string): Promise<ConversationSessionDTO[]> =>
+    get<{ sessions: ConversationSessionDTO[] }>('/conversation/sessions', { params: { user_id: userID } })
+      .then(r => r.sessions),
+
+  getSession: (sessionID: string, userID?: string): Promise<ConversationSessionDTO> =>
+    get<{ session: ConversationSessionDTO }>(`/conversation/sessions/${sessionID}`, { params: { user_id: userID } })
+      .then(r => r.session),
+
+  sendMessage: (sessionID: string, userID: string, text: string): Promise<ConversationReplyDTO> =>
+    post<{ reply: ConversationReplyWire }>(`/conversation/sessions/${sessionID}/messages`, { user_id: userID, text })
+      .then(r => ({
+        text: r.reply.text,
+        action_type: r.reply.action?.type,
+        action_payload: r.reply.action?.payload,
+        session_id: sessionID,
+      })),
+
+  closeSession: (sessionID: string, userID?: string): Promise<void> =>
+    del(`/conversation/sessions/${sessionID}`, { params: { user_id: userID } }),
 }
 
 // Re-export primitive helpers for views that need ad-hoc calls.

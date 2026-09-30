@@ -318,6 +318,23 @@ func (m *PermissionMatrix) lookup(rules map[string]map[string]map[string]bool, t
 	return false
 }
 
+// Revoked reports whether the action was explicitly revoked for the team in
+// the environment (directly or via wildcards).
+//
+// Allow already honours revokes internally — "explicit revoke takes precedence
+// over everything", including the admin super-set. This exists for layers that
+// COMPOSE the matrix with another grant source (see internal/authz): without
+// it, a role-based grant could silently re-authorise an action an operator had
+// explicitly revoked, which is the one thing the matrix promises cannot happen.
+func (m *PermissionMatrix) Revoked(team, env, action string) bool {
+	if team == "" || env == "" || action == "" {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lookup(m.revokes, team, env, action)
+}
+
 // AllowAny reports whether the team is allowed to perform at least one of
 // the given actions on the environment. Returns false if no actions are
 // provided.

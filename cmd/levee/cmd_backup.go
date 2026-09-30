@@ -23,9 +23,10 @@ var (
 	backupOptVerifyOnly bool
 	backupOptPGDSN      string
 
-	restoreOptInput string
-	restoreOptYes   bool
-	restoreOptPGDSN string
+	restoreOptInput            string
+	restoreOptYes              bool
+	restoreOptPGDSN            string
+	restoreOptAllowDestructive bool
 )
 
 // preRestoreSuffix marks the safety snapshot taken automatically before a
@@ -80,6 +81,8 @@ func newRestoreCmd() *cobra.Command {
 		"跳过交互确认（脚本 / 非交互模式必须提供）")
 	cmd.Flags().StringVar(&restoreOptPGDSN, "pg-dsn", "",
 		"PostgreSQL DSN；提供时恢复到 PostgreSQL（默认 SQLite，可用 LEVEE_PG_DSN 环境变量代替）")
+	cmd.Flags().BoolVar(&restoreOptAllowDestructive, "allow-destructive-restore", false,
+		"允许恢复到非空 PostgreSQL 数据库（回放期间临时挂起 WORM 触发器并在提交前校验恢复；仅用于灾难恢复）")
 	_ = cmd.MarkFlagRequired("input")
 	return cmd
 }
@@ -183,8 +186,19 @@ func runRestore(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if err := mgr.Restore(ctx, restoreOptInput); err != nil {
-		return fmt.Errorf("restore failed: %w", err)
+	var restoreErr error
+	if restoreOptAllowDestructive {
+		// Opt-in disaster recovery into a database that still holds data.
+		// Meaningful only for PostgreSQL (SQLite restore replaces the file).
+		if mgr.Driver() != backup.DriverPostgres {
+			return fmt.Errorf("--allow-destructive-restore only applies to PostgreSQL restores")
+		}
+		restoreErr = mgr.RestorePostgreSQLOpt(ctx, restoreOptInput, backup.RestoreOptions{AllowDestructive: true})
+	} else {
+		restoreErr = mgr.Restore(ctx, restoreOptInput)
+	}
+	if restoreErr != nil {
+		return fmt.Errorf("restore failed: %w", restoreErr)
 	}
 
 	payload := backupPayload("restore", mgr, restoreOptInput)
