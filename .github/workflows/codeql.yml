@@ -35,7 +35,7 @@ jobs:
         language: [go]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Setup Go explicitly so autobuild runs against the pinned toolchain
       # used by the CI job matrix, not the runner's default version.
       - uses: actions/setup-go@v5
