@@ -41,6 +41,7 @@ func newAuditCmd() *cobra.Command {
 	cmd.AddCommand(newAuditExportCmd())
 	cmd.AddCommand(newAuditListCmd())
 	cmd.AddCommand(newAuditShowCmd())
+	cmd.AddCommand(newAuditReportCmd())
 
 	return cmd
 }

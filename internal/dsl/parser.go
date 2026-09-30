@@ -272,11 +272,12 @@ type yamlHumanRaw struct {
 }
 
 type yamlRollbackRaw struct {
-	Strategy    string        `yaml:"strategy"`
-	OnFailure   string        `yaml:"on_failure"`
-	VerifyAfter bool          `yaml:"verify_after"`
-	Step        *yamlStepRaw  `yaml:"step"`
-	Steps       []yamlStepRaw `yaml:"steps"`
+	Strategy      string        `yaml:"strategy"`
+	OnFailure     string        `yaml:"on_failure"`
+	VerifyAfter   bool          `yaml:"verify_after"`
+	Step          *yamlStepRaw  `yaml:"step"`
+	Steps         []yamlStepRaw `yaml:"steps"`
+	SnapshotPaths []string      `yaml:"snapshot_paths"`
 }
 
 // ---------------------------------------------------------------------------
@@ -539,9 +540,10 @@ func splitAction(action string) (module, name string) {
 // singular "step" and plural "steps" forms.
 func convertRollback(r *yamlRollbackRaw) (*RollbackSpec, error) {
 	spec := &RollbackSpec{
-		Strategy:    r.Strategy,
-		OnFailure:   r.OnFailure,
-		VerifyAfter: r.VerifyAfter,
+		Strategy:      r.Strategy,
+		OnFailure:     r.OnFailure,
+		VerifyAfter:   r.VerifyAfter,
+		SnapshotPaths: r.SnapshotPaths,
 	}
 	if r.Step != nil {
 		s, err := convertStep(r.Step)
@@ -643,23 +645,26 @@ func validate(wf *Workflow) error {
 		}
 	}
 	if wf.Approval != nil {
-		switch wf.Approval.Level {
-		case "", "standard", "high", "emergency":
-			// valid
-		default:
+		// Single source of truth: dsl.ApprovalLevels (see BatchStrategies
+		// below for why that matters).
+		if wf.Approval.Level != "" && !IsApprovalLevel(wf.Approval.Level) {
 			return newError("LE044", "approval.level",
 				fmt.Sprintf("invalid approval level %q", wf.Approval.Level))
 		}
 	}
 	if wf.Batches.Strategy != "" {
-		switch wf.Batches.Strategy {
-		case "percent", "one-per-target", "count", "by-tag", "by-group":
-			// valid
-		default:
+		// Single source of truth: dsl.BatchStrategies. internal/plan's
+		// splitBatches switches on the same vocabulary, and this list used to
+		// be a second, incompatible copy (percent/one-per-target/count/
+		// by-tag/by-group) — the parser accepted documents the generator
+		// then rejected with a Fatal LE034. TestBatchStrategyVocabulariesAgree
+		// pins the agreement.
+		if !IsBatchStrategy(wf.Batches.Strategy) {
 			return newError("LE034", "batches.strategy",
-				fmt.Sprintf("unknown batch strategy %q", wf.Batches.Strategy))
+				fmt.Sprintf("unknown batch strategy %q (allowed: %s)",
+					wf.Batches.Strategy, strings.Join(BatchStrategies, ", ")))
 		}
-		if wf.Batches.Strategy == "percent" && len(wf.Batches.Steps) > 0 {
+		if wf.Batches.Strategy == BatchStrategyPercent && len(wf.Batches.Steps) > 0 {
 			if err := validatePercentSteps(wf.Batches.Steps); err != nil {
 				return err
 			}

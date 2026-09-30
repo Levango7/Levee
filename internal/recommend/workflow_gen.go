@@ -92,77 +92,109 @@ func (g *WorkflowGenerator) Generate(target string, steps []FixStep) (string, er
 }
 
 // generate builds the YAML string. The caller has already validated inputs.
+//
+// The emitted document must satisfy dsl.NewParser().ParseBytes — that parser
+// is the ONLY way a workflow can reach the governed path (PlanChange ->
+// plan.NewGenerator -> plan_hash -> approval), so a draft that does not
+// parse here is a draft that can never be applied. The shapes below are
+// pinned by TestGenerate_ProducesParseableWorkflow.
+//
+//   - `batches` is a MAP (strategy / steps / max_concurrency), not a list of
+//     named batch objects. Batch division is the generator's job, not the
+//     document's.
+//   - `rollback` is declared PER STEP (yamlStepRaw.rollback), because that is
+//     what the compensation ledger attributes compensations to. A top-level
+//     rollback list has nowhere to attach.
+//   - `target` uses `type` + `hosts`. Note that `target.query` is validated
+//     for non-emptiness but has NO resolver behind it: the executed target
+//     set comes from PlanChangeRequest.target_hosts, not from this document.
+//
+// An earlier version emitted a private dialect (named batch objects, a
+// top-level rollback list, an approval key under window) that no workflow in
+// the tree accepts; internal/autoplanner existed to hand-parse that broken
+// output and has since been removed. Do not reintroduce a private dialect
+// here — if the schema needs a new field, add it to internal/dsl and
+// regenerate the spec.
 func (g *WorkflowGenerator) generate(target string, steps []FixStep) string {
 	var b strings.Builder
 	name := fmt.Sprintf("auto-fix-%s-%d", sanitizeName(target), time.Now().Unix())
 	fmt.Fprintf(&b, "name: %s\n", name)
-	fmt.Fprintf(&b, "description: Auto-generated fix workflow for %s\n", target)
+	fmt.Fprintf(&b, "description: %s\n", yamlScalar(fmt.Sprintf("Auto-generated fix workflow for %s", target)))
 	fmt.Fprintf(&b, "target:\n")
+	fmt.Fprintf(&b, "  type: host\n")
 	fmt.Fprintf(&b, "  hosts:\n")
-	fmt.Fprintf(&b, "    - %s\n", target)
-	fmt.Fprintf(&b, "window:\n")
-	fmt.Fprintf(&b, "  duration: 30m\n")
-	fmt.Fprintf(&b, "  approval: standard\n")
+	fmt.Fprintf(&b, "    - %s\n", yamlScalar(target))
 	fmt.Fprintf(&b, "batches:\n")
-	fmt.Fprintf(&b, "  - name: batch-1\n")
-	fmt.Fprintf(&b, "    targets: all\n")
-	fmt.Fprintf(&b, "    steps:\n")
+	fmt.Fprintf(&b, "  strategy: serial\n")
+	fmt.Fprintf(&b, "steps:\n")
 	for _, s := range steps {
 		writeStep(&b, s)
-	}
-	fmt.Fprintf(&b, "rollback:\n")
-	for _, s := range steps {
-		writeRollback(&b, s)
 	}
 	return b.String()
 }
 
-// writeStep writes a single step entry to the builder.
+// writeStep writes a single step entry, including its rollback declaration.
+//
+// A step with no derivable reverse action gets NO rollback block at all,
+// rather than a "noop" one. A noop rollback is the worst of both worlds: the
+// plan looks covered (rollback != nil, so the compensation-gap check passes)
+// while reversing nothing. Omitting it makes the step an honest compensation
+// gap, which the verdict reports — see internal/rollback: "no rollback spec".
 func writeStep(b *strings.Builder, s FixStep) {
-	fmt.Fprintf(b, "      - name: %s\n", orDefault(s.Name, "unnamed-step"))
-	fmt.Fprintf(b, "        module: %s\n", orDefault(s.Module, "shell"))
-	fmt.Fprintf(b, "        action: %s\n", orDefault(s.Action, "run"))
+	name := orDefault(s.Name, "unnamed-step")
+	fmt.Fprintf(b, "  - name: %s\n", yamlScalar(name))
+	fmt.Fprintf(b, "    module: %s\n", yamlScalar(orDefault(s.Module, "shell")))
+	fmt.Fprintf(b, "    action: %s\n", yamlScalar(orDefault(s.Action, "run")))
 	if s.Description != "" {
-		fmt.Fprintf(b, "        description: %s\n", yamlScalar(s.Description))
+		fmt.Fprintf(b, "    description: %s\n", yamlScalar(s.Description))
 	}
 	if len(s.Args) > 0 {
-		fmt.Fprintf(b, "        args:\n")
+		fmt.Fprintf(b, "    args:\n")
 		for _, k := range sortedKeys(s.Args) {
-			fmt.Fprintf(b, "          %s: %s\n", k, yamlScalar(s.Args[k]))
+			fmt.Fprintf(b, "      %s: %s\n", k, yamlScalar(s.Args[k]))
 		}
 	} else {
-		fmt.Fprintf(b, "        args: {}\n")
+		fmt.Fprintf(b, "    args: {}\n")
 	}
+	writeRollback(b, s)
 }
 
-// writeRollback writes a rollback entry for a step.
+// writeRollback writes the step's rollback block, or nothing when no reverse
+// action is derivable. See writeStep for why a noop is never emitted.
 func writeRollback(b *strings.Builder, s FixStep) {
-	rev := reverseAction(s.Action)
-	fmt.Fprintf(b, "  - name: rollback-%s\n", orDefault(s.Name, "unnamed-step"))
-	fmt.Fprintf(b, "    module: %s\n", orDefault(s.Module, "shell"))
-	fmt.Fprintf(b, "    action: %s\n", rev)
+	rev, ok := reverseAction(s.Action)
+	if !ok {
+		return
+	}
+	fmt.Fprintf(b, "    rollback:\n")
+	fmt.Fprintf(b, "      strategy: undo-action\n")
+	fmt.Fprintf(b, "      steps:\n")
+	fmt.Fprintf(b, "        - name: %s\n", yamlScalar("rollback-"+orDefault(s.Name, "unnamed-step")))
+	fmt.Fprintf(b, "          module: %s\n", yamlScalar(orDefault(s.Module, "shell")))
+	fmt.Fprintf(b, "          action: %s\n", yamlScalar(rev))
 }
 
-// reverseAction returns the reverse action for a given action. Unknown
-// actions map to "noop".
-func reverseAction(action string) string {
+// reverseAction returns the reverse action for a given action and whether one
+// could be derived at all. An unknown action returns ok=false: inventing a
+// noop would mask a missing compensation as a present one.
+func reverseAction(action string) (string, bool) {
 	switch strings.ToLower(action) {
 	case "restart":
-		return "restart"
+		return "restart", true
 	case "stop":
-		return "start"
+		return "start", true
 	case "start":
-		return "stop"
+		return "stop", true
 	case "remove", "delete":
-		return "restore"
+		return "restore", true
 	case "copy", "write":
-		return "restore"
+		return "restore", true
 	case "install":
-		return "uninstall"
+		return "uninstall", true
 	case "uninstall":
-		return "install"
+		return "install", true
 	default:
-		return "noop"
+		return "", false
 	}
 }
 
