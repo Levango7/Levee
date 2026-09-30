@@ -1152,6 +1152,48 @@ rollback:
 4. 回滚不受窗口约束（对应设计文档 4.4.6.2）。
 5. 运行态策略：`on_failure: manual` 时执行器不派发任何补偿指令，失败运行保留已应用批次并标记待人工回滚；其余取值（含缺省与历史遗留值）均为自动回滚。
 
+### 7.2 run 级快照基线（独立原语）
+
+§7.1 拒绝 workflow 级 `rollback.snapshot_paths`（LE097），理由是它没有补偿基线可挂。但"整次运行的前状态"是一个真实需求——比如一批 step 分别改了 `/etc/app.conf` 与 `/etc/app.d/`，step 级快照要为每一步各存一份前镜像，而运维真正想要的是**这次 run 开始前的那一份**。把它投影到每个 step 是语义错误（同一效果被撤销多次，且恢复出的是最后采集的那份，不是 run 的基线），所以本规范给它一个**独立原语**，而不是放宽 §7.1。
+
+代码示例：run 级基线声明
+
+```yaml
+snapshot:
+  scope: run
+  paths:
+    - /etc/app.conf
+    - /etc/app.d/limits.conf
+  type: file          # 可选，缺省 file
+```
+
+表：run 级 snapshot 字段定义
+
+| 字段 | 类型 | 必需 | 语义 |
+| --- | --- | --- | --- |
+| scope | string | 是 | 只能是 `run`。`step` / `batch` 一律拒绝（LE098）——那正是 §7.1 拒绝的语义，放到下一层只会把同一个洞重新打开 |
+| paths | list | 是 | 目标机上要采集的**绝对**路径；相对路径拒绝（LE101），因为相对路径在采集时与恢复时解析到的工作目录不同 |
+| type | string | 否 | 采集语义：`file`（逐字节复制，缺省）/ `config`（按配置读取）；其他值拒绝（LE100） |
+
+表：与 step 级 snapshot 的区别
+
+| | step 级 `rollback.strategy: snapshot` | run 级 `snapshot` |
+| --- | --- | --- |
+| 采集时机 | 每个 (target, step) 执行前 | 首个 batch 之前，**整次 run 一次** |
+| 记录数 | target × snapshot step | target（与 step 数、batch 数无关） |
+| 恢复时机 | 补偿走到该 step 时 | 补偿全部完成之后一次 |
+| 恢复顺序 | 按补偿逆序 | 最后写入，因此 run 的前状态对它覆盖的路径有最终发言权 |
+| 缺采集器时 | no-op（未接线即不做） | **fail-closed**：拒绝本次 run（见下） |
+| 与 `on_failure: manual` 同用 | 允许 | 拒绝（LE102）：手动回滚路径今天不恢复 run 基线，采了没人用 |
+
+执行路径：`wiring` 在装配了 `--engine-snapshot-dir` 时把 `engine.RunSnapshotter` 注入执行器（与 step 级快照共用同一个 store 与通道缓存，一个配置项决定两者）；`engine` 在**所有锁已持有、任何目标尚未被改动**时采集一次，回滚路径在补偿走完之后恢复一次。
+
+**为什么缺采集器时 fail-closed**：step 级快照没装就是 no-op，那是"未接线"的历史行为；而 run 级基线是**声明**——运维读到 `scope: run` 的语义就是"回滚会把这些路径还原"。若声明了却无处记录还照常执行，就会改掉一批从未留下前镜像的目标机，同时让运维相信回滚能还原。宁可拒绝这次 run。
+
+**当前限制（如实记录）**：手动回滚路径（`RollbackChange` / `levee rollback`）今天不恢复 run 基线，因此与 `on_failure: manual` 的组合被 LE102 拒绝，而不是留一个"采了没人恢复"的承诺。基线按 change id 存储，接上手动路径只是恢复侧的一次调用，但那是另一件事。
+
+---
+
 ### 7.2 不可逆操作
 
 部分动作天然不可逆（如 `DROP TABLE`、`DELETE FROM`、Kafka partition 增加），在模块声明 `irreversible: true`。
@@ -1281,6 +1323,11 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | LE095 | 结构 | 缺少 window 块（无窗口约束，仅 warning） | warning |
 | LE096 | 结构 | 缺少 batches 块（单批全量，仅 warning） | warning |
 | LE097 | 结构 | workflow 级 rollback 声明了无法归属的补偿内容（strategy / step / steps / snapshot_paths）——必须声明在被补偿的 step 内 | error |
+| LE098 | 快照 | run 级 snapshot 的 scope 必须是 `run`（step / batch 级没有补偿基线，见 §7.2） | error |
+| LE099 | 快照 | run 级 snapshot 未声明 paths（无可采集对象） | error |
+| LE100 | 快照 | run 级 snapshot 的 type 非法（允许：file / config） | error |
+| LE101 | 快照 | run 级 snapshot 的 path 必须是绝对路径 | error |
+| LE102 | 快照 | run 级 snapshot 与 `on_failure: manual` 同用（手动回滚路径不恢复 run 基线） | error |
 
 严重度语义：
 
@@ -2034,3 +2081,8 @@ rollback:
 | LE095 | warning | 缺少 window 块 |
 | LE096 | warning | 缺少 batches 块 |
 | LE097 | error | workflow 级 rollback 声明了无法归属的补偿内容（须声明在 step 内） |
+| LE098 | error | run 级 snapshot 的 scope 必须是 run |
+| LE099 | error | run 级 snapshot 未声明 paths |
+| LE100 | error | run 级 snapshot 的 type 非法 |
+| LE101 | error | run 级 snapshot 的 path 必须是绝对路径 |
+| LE102 | error | run 级 snapshot 与 on_failure: manual 同用 |

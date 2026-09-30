@@ -79,6 +79,7 @@ func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunne
 	// the closure then skips capture entirely (its nil check) and the
 	// restore side records "not wired" skips.
 	var snapHook engine.Snapshotter
+	var runSnapHook engine.RunSnapshotter
 	snapOpts := make([]rollback.ManagerOption, 0, 5)
 	if rx != nil && e.snapshotDir != "" {
 		if store, err := rollback.NewFileSnapshotStore(e.snapshotDir); err != nil {
@@ -88,6 +89,9 @@ func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunne
 		} else {
 			snapshotter := newRemoteSnapshotter(rx, mgr, changeID)
 			snapHook = snapshotter
+			// Same store, same channel cache, same condition — only the
+			// cardinality differs (once per run, not once per step).
+			runSnapHook = newRunRemoteSnapshotter(snapshotter)
 			snapOpts = append(snapOpts,
 				rollback.WithSnapshotRestore(snapshotter.RestoreForStep),
 				rollback.WithRunID(changeID))
@@ -113,7 +117,14 @@ func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunne
 	// that opt in with rollback.verify_after: true (spec §7.1); for every
 	// other plan this argument being non-nil changes nothing versus the nil it
 	// used to be.
-	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr)
+	//
+	// The Grader goes on at the same time (WithGrader): the engine calls
+	// VerifyAndGrade, so a verifier without one would classify the outcome
+	// and throw the grade away, leaving PostVerifyResult.Grade empty and
+	// notify / escalate / audit unreachable. rollback_grade.go documents what
+	// each action does today and what is not wired yet.
+	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr,
+		rollback.WithGrader(newRollbackGrader(nil)))
 	if err != nil {
 		// Reachable only with a nil gate manager, which gateMgr never is
 		// here. Fail soft rather than refuse the run: what is lost is an
@@ -133,6 +144,13 @@ func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunne
 		// The WithSnapshotter option is applied post-construction via a
 		// dedicated setter to keep the constructor signature stable.
 		cr.SetSnapshotter(snapHook)
+		// The run-level baseline rides on the same store and the same
+		// channel cache, so it is installed (or not) under exactly the same
+		// condition as the step-level one — one --engine-snapshot-dir
+		// decides both. It is a separate hook because its failure semantics
+		// differ: a plan that declares a baseline and finds nothing installed
+		// is refused before any mutation rather than silently skipped.
+		cr.SetRunSnapshotter(runSnapHook)
 	}
 	return cr
 }

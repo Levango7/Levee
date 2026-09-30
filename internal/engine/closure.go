@@ -46,6 +46,7 @@ import (
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/lock"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
@@ -163,6 +164,18 @@ type ClosureResult struct {
 	// per-phase errors so that callers can use errors.Is / errors.As on
 	// the top-level result.
 	Error error
+
+	// RunSnapshotRestoreError is non-nil when the run-level baseline could
+	// not be written back during a rollback.
+	//
+	// It is a separate field rather than an append to Error on purpose. Error
+	// carries the run's verdict, and the verdict here is already decided by
+	// the compensation ledger: a run whose compensations all completed was
+	// rolled back, and appending "and also the baseline restore failed" would
+	// blur two different facts into one string that callers string-match on.
+	// This one is the operator's "your files may not be back" signal, so it
+	// gets its own field and is logged at error level.
+	RunSnapshotRestoreError error
 }
 
 // --- ClosureRunner ----------------------------------------------------------
@@ -202,6 +215,14 @@ type ClosureRunner struct {
 	// execution; a capture failure aborts the run (no mutation). Nil means
 	// snapshot capture/restore is disabled (the pre-wiring no-op).
 	snapshotter Snapshotter
+
+	// runSnapshotter is the run-level baseline coordinator (see
+	// snapshot_hook.go). Kept as a separate field from snapshotter on
+	// purpose: the step-level hook is a no-op when absent, this one is
+	// fail-closed, because a declared baseline with nothing to record it
+	// would leave the operator believing rollback can restore a pre-state
+	// that was never captured.
+	runSnapshotter RunSnapshotter
 }
 
 // ClosureOption configures optional ClosureRunner behaviour at construction
@@ -411,16 +432,17 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	// that a cancelled ctx does not prevent lock cleanup.
 	defer cr.releaseLocks(context.Background(), result.RunID, acquired)
 
-	// 2.5 Pre-apply snapshot capture (design §4.4.4.2). Runs after all
-	// locks are held and before the first mutation; a capture failure
-	// aborts the run with the locks released (defer above) and zero side
-	// effects on any target. Disabled when no snapshotter is installed.
-	if err := cr.captureSnapshots(ctx, result.RunID, p); err != nil {
+	// 2.5 Pre-apply snapshot capture. Both halves live in one helper: the
+	// step-level capture (per target/step, no-op when not installed) and the
+	// run-level baseline (once per run, fail-closed). They belong together —
+	// same position in the flow (all locks held, zero mutations yet), same
+	// abort semantics — and folding them into one call keeps Run's
+	// complexity budget for the branches that actually differ.
+	if err := cr.captureSnapshotsAndBaseline(ctx, result.RunID, p, targets); err != nil {
 		result.Phase = PhaseFailed
-		result.Error = fmt.Errorf("closure: pre-apply snapshot: %w", err)
-		return result, result.Error
+		result.Error = err
+		return result, err
 	}
-
 	// 3. Batch execution. Batches run sequentially; after each batch we
 	// run the post-batch gates. A batch error or gate failure stops
 	// further batches and triggers rollback — EXCEPT when the failure is
@@ -579,25 +601,49 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		rbResult := cr.rollback.RollbackWithLedger(context.Background(), executedPlan, execFn, ledger)
 		result.RollbackResult = rbResult
 
+		// Run-level baseline restore. Placed AFTER the compensation walk so
+		// that the run's pre-state wins for the paths it covers: step
+		// compensations and step snapshot restores handle their own paths
+		// first, and the baseline — captured before the first batch — is the
+		// last word on the run-level ones.
+		cr.restoreRunBaseline(result, p, targets)
+
 		// Post-rollback verification (T037): needs both a configured
 		// verifier and a plan that asked for it. verify_after is opt-in
 		// (postRollbackVerifyRequested explains why the default is off), so
 		// wiring a verifier into a deployment does not change what plans
 		// that never declared it execute.
 		//
-		// Known limitation: this runs on the caller's ctx, so a rollback
-		// triggered by cancellation records a ctx-cancelled verification
-		// failure instead of a real check. Deliberate: the rollback dispatch
-		// above is detached from ctx because interrupting it would leave
-		// applied batches unwound, whereas this check is advisory — detaching
-		// it as well would keep dispatching gates at targets after the caller
-		// gave up, with no timeout knob to bound that work.
+		// Cancellation is handled inside the verifier, not here: the gates
+		// and the grade-action dispatch run on a context detached from ctx
+		// but bounded by WithVerifyTimeout. Cancellation is one of the three
+		// ways a rollback gets triggered, so inheriting it here would mean
+		// the most interesting case — "operator hit Ctrl-C, did the undo
+		// leave the system healthy?" — is the one case that never gets
+		// answered. The bound is what makes continuing safe.
 		if cr.postVerifier != nil && postRollbackVerifyRequested(p) {
 			pvInput := verify.GateInput{
 				RunID:     result.RunID,
 				TargetIDs: targets,
 			}
-			result.PostVerifyResult = cr.postVerifier.Verify(ctx, rbResult, nil, pvInput)
+			// VerifyAndGrade, not Verify: identical verification, plus the
+			// grade classification and the notify / escalate / audit
+			// dispatch that the wiring-attached Grader prescribes. With a
+			// nil Grader the two are equivalent, so this costs nothing for
+			// deployments that have not wired one.
+			//
+			// A dispatch failure is logged, never fatal. The run's fate was
+			// already decided by the rollback above; a webhook that refuses
+			// the payload must not rewrite a completed rollback into a
+			// failed one, and PostVerifyResult is not part of any run-status
+			// mapping.
+			pv, dispatchErr := cr.postVerifier.VerifyAndGrade(ctx, rbResult, nil, pvInput)
+			result.PostVerifyResult = pv
+			if dispatchErr != nil {
+				log.Warn("post-rollback verify: grade action dispatch failed",
+					"run_id", result.RunID,
+					"error", dispatchErr)
+			}
 		}
 
 		if rbResult.Success {

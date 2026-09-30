@@ -131,6 +131,22 @@ type canonicalPlanV2 struct {
 	Approval      *canonicalApproval    `json:"approval,omitempty"`
 	Rollback      *canonicalRollback    `json:"rollback,omitempty"`
 	Gate          *canonicalGate        `json:"gate,omitempty"`
+	// RunSnapshot is the run-level baseline. It is inside the hash because
+	// it changes what a rollback restores: two plans that differ only in
+	// their baseline are NOT the same plan, and an approved artifact whose
+	// hash does not cover this field could be replayed against a different
+	// restore surface.
+	RunSnapshot *canonicalRunSnapshot `json:"run_snapshot,omitempty"`
+}
+
+// canonicalRunSnapshot is the hashed projection of dsl.RunSnapshotSpec.
+// Paths are sorted: capture order is an implementation detail of the
+// snapshotter, while the SET of paths is the declaration. Sorting keeps the
+// hash stable under a cosmetic reordering, exactly like batch targets.
+type canonicalRunSnapshot struct {
+	Scope string   `json:"scope"`
+	Paths []string `json:"paths"`
+	Type  string   `json:"type"`
 }
 
 type canonicalBatchV2 struct {
@@ -278,8 +294,29 @@ func buildCanonicalV2(plan *Plan) canonicalPlanV2 {
 		Batches: batches, Impact: v1.Impact, RiskScore: plan.RiskScore,
 		RiskFactors: canonicalRiskFactors(plan.RiskFactors), ApprovalFloor: plan.ApprovalFloor,
 		Approval: canonicalApprovalV2(plan.Approval), Rollback: canonicalRollbackV2(plan.Rollback),
-		Gate: canonicalGateV2(plan.Gate),
+		Gate:        canonicalGateV2(plan.Gate),
+		RunSnapshot: canonicalRunSnapshotV2(plan.RunSnapshot),
 	}
+}
+
+// canonicalRunSnapshotV2 projects the baseline into the hashed form, or nil
+// when no baseline is declared. An omitted type is materialised to "file"
+// HERE rather than at capture time so that the hash of a document that omits
+// the type matches the hash of one that spells it out — the two declare the
+// same thing and must not be two different plans.
+func canonicalRunSnapshotV2(spec *dsl.RunSnapshotSpec) *canonicalRunSnapshot {
+	if spec == nil {
+		return nil
+	}
+	paths := make([]string, len(spec.Paths))
+	copy(paths, spec.Paths)
+	sort.Strings(paths)
+
+	typ := spec.Type
+	if typ == "" {
+		typ = "file"
+	}
+	return &canonicalRunSnapshot{Scope: spec.Scope, Paths: paths, Type: typ}
 }
 
 func canonicalRiskFactors(in []RiskFactor) []canonicalRiskFactor {

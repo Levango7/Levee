@@ -76,6 +76,14 @@ type Plan struct {
 	Approval *dsl.ApprovalSpec `json:"approval,omitempty"`
 	Rollback *dsl.RollbackSpec `json:"rollback,omitempty"`
 	Gate     *dsl.GateSpec     `json:"gate,omitempty"`
+
+	// RunSnapshot carries the run-level baseline into the approved artifact
+	// (dsl.Workflow.Snapshot, validated by LE098–LE102). It lives on the plan
+	// rather than on any step because it is captured once for the whole run:
+	// the engine reads it before the first batch and restores it after the
+	// compensations, and a plan that does not carry it would lose the
+	// declaration between approval and execution.
+	RunSnapshot *dsl.RunSnapshotSpec `json:"run_snapshot,omitempty"`
 }
 
 // RiskFactor mirrors risk.Factor (rule / points / detail) as a plan
@@ -236,6 +244,12 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		Approval:     wf.Approval,
 		Rollback:     wf.Rollback,
 		Gate:         wf.Gate,
+		// The run-level baseline rides along into the approved artifact.
+		// It MUST be here rather than re-read from the workflow at execute
+		// time: the artifact is what gets approved and hashed, and a plan
+		// that dropped the declaration would run (and be re-planned) against
+		// a different restore surface than the one that was approved.
+		RunSnapshot: wf.Snapshot,
 	}
 	return plan, nil
 }
