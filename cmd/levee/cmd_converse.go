@@ -144,6 +144,12 @@ func runConverse(cmd *cobra.Command, args []string) error {
 // base so /recommend works out of the box; the Diagnose engine is left nil
 // (the engine returns an explanatory error for /diagnose in that case).
 //
+// The change bridge IS wired, so `levee converse` closes the same loop the
+// serve path does: a confirmed recommendation becomes a draft change in the
+// operator's own state database, ready for `levee plan` / `approve` / `apply`.
+// The store behind it is opened lazily (see conversation_change_bridge.go), so
+// an invocation that never confirms a recommendation never touches a database.
+//
 // It is exposed as a package-level variable so tests can substitute a
 // pre-populated engine (e.g. one that already contains a session) without
 // touching the production call site.
@@ -153,10 +159,15 @@ func defaultNewConversationEngineForCLI() (*conversation.ConversationEngine, err
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
 		Timeout: 30 * time.Second,
 	})
-	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
-		Recommend: recEngine,
-		Timeout:   60 * time.Second,
-	}), nil
+	bridge := newLazyLocalChangeCreator(openStore)
+	engine := conversation.NewConversationEngine(conversation.ConversationEngineConfig{
+		Recommend:     recEngine,
+		ChangeCreator: bridge,
+		Timeout:       60 * time.Second,
+	})
+	// The store may not exist yet; whoever closes the engine releases it.
+	engine.AddCloser(bridge)
+	return engine, nil
 }
 
 // --- Single-shot mode -------------------------------------------------------

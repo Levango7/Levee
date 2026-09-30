@@ -85,6 +85,27 @@ var pgMigrations = []migrationStep{
 			`ALTER TABLE runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// D-1 v2 (approval/plan binding + concurrent-vote CAS): approvals
+		// gains plan_hash and revision (see migrations on the SQLite side).
+		// Both statements are dialect-compatible; fresh databases get them
+		// from pgschema.sql directly.
+		version: 4,
+		stmts: []string{
+			`ALTER TABLE approvals ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE approvals ADD COLUMN revision BIGINT NOT NULL DEFAULT 0`,
+		},
+	},
+}
+
+// MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and
+// any pending forward migrations to db. It is the exported entry point of
+// pgMigrate for packages outside state that must guarantee the LEVEE schema
+// before touching data — currently the backup package, whose restore path
+// replays migrations onto the target database before inserting dumped rows.
+// Idempotent; see pgMigrate for the full semantics.
+func MigratePostgres(ctx context.Context, db *sql.DB) error {
+	return pgMigrate(ctx, db)
 }
 
 // pgSchemaDDLAdvisoryLockKey is the key of the session-level advisory lock
@@ -154,7 +175,7 @@ func pgMigrate(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("state: begin pg schema transaction: %w", err)
 		}
-		if err := pgExecMultiStatement(ctx, tx, pgSchemaSQL); err != nil {
+		if err := pgExecMultiStatement(ctx, tx, pgSchemaFull); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("state: apply pg schema: %w", err)
 		}

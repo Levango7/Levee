@@ -326,10 +326,11 @@ func TestPgSplitSQLStatements(t *testing.T) {
 
 	// The real embedded schema must split into well-formed statements: the
 	// failure mode above shipped inside pgschema.sql itself, so pin the
-	// artifact, not just the scanner.
+	// artifact, not just the scanner. pgSchemaFull — the text actually applied,
+	// pgschema.sql plus the shared cluster_nodes DDL — is the thing under test.
 	t.Run("embedded pgschema splits into paren-balanced statements", func(t *testing.T) {
 		// Mirror the pre-pass pgExecMultiStatement applies before splitting.
-		lines := strings.Split(pgSchemaSQL, "\n")
+		lines := strings.Split(pgSchemaFull, "\n")
 		for i, line := range lines {
 			if strings.HasPrefix(strings.TrimSpace(line), "--") {
 				lines[i] = ""

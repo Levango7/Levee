@@ -14,10 +14,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/errors"
+	"github.com/nexus/levee/internal/executor"
 )
 
 // Plan is the executable plan structure produced by the Generator. It
@@ -42,6 +44,47 @@ type Plan struct {
 
 	// CreatedAt is the plan creation timestamp (UTC).
 	CreatedAt time.Time
+
+	// RiskScore is the plan's danger score (0-100) computed at plan
+	// time. It ships inside the plan artifact so the approved change's
+	// score is exactly the executed one (the plan_hash binds them).
+	RiskScore int `json:"risk_score,omitempty"`
+
+	// RiskFactors is the explainable breakdown behind RiskScore (one
+	// entry per contributing rule). Serialised into the artifact for
+	// the CLI / audit report. The assessor (internal/risk) produces the
+	// values; the plan package mirrors the entry shape so it can live
+	// in the artifact without an import cycle.
+	RiskFactors []RiskFactor `json:"risk_factors,omitempty"`
+
+	// ApprovalFloor is the minimum approval tier the plan demands
+	// (R4: any irreversible step ⇒ at least high). The approval
+	// routing takes max(workflow declaration, ApprovalFloor) — the
+	// floor can raise but never lower the tier.
+	ApprovalFloor string `json:"approval_floor,omitempty"`
+
+	// Approval, Rollback and Gate preserve workflow-level governance
+	// declarations in the approved artifact. ChangeService consumes
+	// Approval directly for kickoff routing.
+	//
+	// Rollback is run-level policy only (spec §7.1, LE097): on_failure and
+	// verify_after describe what happens when the whole run fails. The
+	// compensation contract — strategy, undo steps, snapshot_paths — lives
+	// on the step (PlanStep.Rollback), because the compensation ledger
+	// attributes every compensation to a (host, forward step) pair and the
+	// generator refuses plan-level compensation content outright.
+	Approval *dsl.ApprovalSpec `json:"approval,omitempty"`
+	Rollback *dsl.RollbackSpec `json:"rollback,omitempty"`
+	Gate     *dsl.GateSpec     `json:"gate,omitempty"`
+}
+
+// RiskFactor mirrors risk.Factor (rule / points / detail) as a plan
+// artifact type. Kept structurally identical so the wiring layer can
+// copy entries over field by field without reflection.
+type RiskFactor struct {
+	Rule   string `json:"rule"`
+	Points int    `json:"points"`
+	Detail string `json:"detail"`
 }
 
 // Batch is a single execution batch. It contains a subset of the
@@ -62,30 +105,66 @@ type Batch struct {
 	// MaxConcurrency caps the in-batch parallelism. Zero means
 	// unlimited (the apply phase decides its own default).
 	MaxConcurrency int
+
+	// Gate preserves the workflow's post_batch gate declaration. Current
+	// execution still consumes gates from PlanStep; persisting this keeps
+	// declared batch-boundary governance inside the approved hash.
+	Gate *dsl.GateSpec `json:"gate,omitempty"`
 }
 
 // PlanStep is a single step in a plan, derived from a dsl.Step. It
-// carries the module/action to invoke, the action arguments and the
-// optional rollback / approval / gate overrides. Step-level overrides
-// take precedence over workflow-level defaults during execution.
+// carries the module/action to invoke, the action arguments and optional
+// step-level rollback / approval / gate declarations. Execution consumes
+// these step declarations directly; workflow-level declarations are retained
+// at the Plan level for approval routing and hash identity.
+//
+// Irreversible / IrreversibleReason record the verdict of the executor's
+// IrreversibleChecker at plan time (explicit author declaration or
+// whitelist match). Downstream consumers (approval tier routing per R4,
+// automatic-rollback gating per R2) read these fields instead of
+// re-deriving the verdict, so the plan artifact is the single source of
+// truth for what was judged irreversible when the plan was approved.
 type PlanStep struct {
-	Name     string
-	Module   string
-	Action   string
-	Args     map[string]any
-	Rollback *dsl.RollbackSpec
-	Approval *dsl.ApprovalSpec
-	Gate     *dsl.GateSpec
+	Name               string
+	Module             string
+	Action             string
+	Args               map[string]any
+	Rollback           *dsl.RollbackSpec
+	Approval           *dsl.ApprovalSpec
+	Gate               *dsl.GateSpec
+	Irreversible       bool
+	IrreversibleReason string
 }
 
 // Generator transforms a parsed Workflow AST into an executable Plan.
 // The zero value is not ready — use NewGenerator. A Generator is
 // stateless and safe for concurrent use.
-type Generator struct{}
+type Generator struct {
+	// irreversible judges each step's reversibility at plan time. The
+	// verdict is persisted onto PlanStep so approval tier routing (R4)
+	// and rollback gating (R2) consume the plan artifact rather than
+	// re-deriving the verdict.
+	irreversible *executor.IrreversibleChecker
+}
 
-// NewGenerator returns a ready-to-use Generator.
+// NewGenerator returns a ready-to-use Generator with an IrreversibleChecker
+// populated with the engine's default destructive-action whitelist. The
+// whitelist registers the actions that are irreversible by nature so that
+// workflow authors do not have to repeat irreversible: true on every such
+// step; an explicit author declaration still takes priority (checked
+// first).
 func NewGenerator() *Generator {
-	return &Generator{}
+	c := executor.NewIrreversibleChecker()
+	for _, pair := range [][2]string{
+		{"pkg", "remove"},
+		{"file", "delete"},
+		{"user", "remove"},
+		{"mysql", "replica_switch"},
+		{"mysql", "pt_osc"},
+	} {
+		c.RegisterWhitelist(pair[0], pair[1])
+	}
+	return &Generator{irreversible: c}
 }
 
 // Generate builds a Plan from the given Workflow and resolved target
@@ -108,6 +187,19 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		return nil, errors.New(errors.LE092, "resolved targets is empty", errors.Fatal)
 	}
 
+	// Workflow-level rollback is run-level policy only (spec §7.1): strategy,
+	// undo steps and snapshot_paths there are unattributable — the
+	// compensation ledger keys on (host, forward step) — so this boundary
+	// refuses them (LE097) instead of persisting governance that no
+	// execution path can honour. dsl.Validator reports the same violation
+	// for the `levee compile` path; this gate is what protects the server
+	// path, because wiring.GeneratePlan parses the workflow document and
+	// calls the generator directly, without the validator in between.
+	if verrs := dsl.ValidateRunLevelRollback(wf.Rollback, "rollback"); len(verrs) > 0 {
+		return nil, errors.New(verrs[0].Code,
+			fmt.Sprintf("workflow %q: %s", wf.Meta.Name, verrs[0].Message), errors.Fatal)
+	}
+
 	// Divide targets into batches according to the strategy.
 	batchTargets, err := splitBatches(resolvedTargets, wf.Batches)
 	if err != nil {
@@ -115,8 +207,9 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 	}
 
 	// Convert workflow steps to plan steps once; every batch shares
-	// the same step sequence.
-	planSteps := convertSteps(wf.Steps)
+	// the same step sequence. The conversion also stamps the
+	// irreversible verdict onto each step.
+	planSteps := g.convertSteps(wf.Steps)
 
 	// Build batches with consecutive 0-based indices.
 	batches := make([]Batch, 0, len(batchTargets))
@@ -126,6 +219,7 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 			Targets:        targets,
 			Steps:          planSteps,
 			MaxConcurrency: wf.Batches.MaxConcurrency,
+			Gate:           wf.Batches.Gate,
 		})
 	}
 
@@ -139,30 +233,61 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		Batches:      batches,
 		TotalTargets: len(resolvedTargets),
 		CreatedAt:    time.Now().UTC(),
+		Approval:     wf.Approval,
+		Rollback:     wf.Rollback,
+		Gate:         wf.Gate,
 	}
 	return plan, nil
 }
 
 // splitBatches divides targets into batches according to the batch
-// config strategy. An empty strategy defaults to "serial" (all targets
-// in a single batch), matching the LEVEELang spec default.
+// config strategy. An empty strategy defaults to dsl.BatchStrategySerial (all
+// targets in a single batch), matching the LEVEELang spec default.
+//
+// The accepted vocabulary is dsl.BatchStrategies — the parser validates
+// against the same list, so the two layers cannot disagree. The error message
+// is built from that list rather than a hand-copied literal so it cannot fall
+// out of date either.
 func splitBatches(targets []string, cfg dsl.BatchConfig) ([][]string, error) {
 	strategy := cfg.Strategy
 	if strategy == "" {
-		strategy = "serial"
+		strategy = dsl.BatchStrategySerial
 	}
 	switch strategy {
-	case "percent":
+	case dsl.BatchStrategyPercent:
 		return splitPercent(targets, cfg.Steps), nil
-	case "fixed":
+	case dsl.BatchStrategyFixed:
 		return splitFixed(targets, cfg.Steps), nil
-	case "serial":
+	case dsl.BatchStrategySerial:
 		return [][]string{targets}, nil
+	case dsl.BatchStrategyOnePerTarget:
+		return splitOnePerTarget(targets), nil
 	default:
 		return nil, errors.New(errors.LE034,
-			fmt.Sprintf("unknown batch strategy %q (allowed: percent, fixed, serial)", strategy),
+			fmt.Sprintf("unknown batch strategy %q (allowed: %s)",
+				strategy, strings.Join(dsl.BatchStrategies, ", ")),
 			errors.Fatal)
 	}
+}
+
+// splitOnePerTarget puts exactly one target in each batch, so the executor
+// walks the target list strictly serially. It is the documented strategy for
+// rolling database primaries over one at a time, where concurrent batches
+// would mean two simultaneous DDL windows on the same cluster.
+//
+// The parser has always accepted this strategy (and examples/gate-templates/
+// mysql.yaml uses it) but the generator had no case for it, so planning such a
+// workflow died with a Fatal LE034. batches.steps is unused here by design —
+// the spec says one-per-target needs no steps.
+func splitOnePerTarget(targets []string) [][]string {
+	if len(targets) == 0 {
+		return [][]string{targets}
+	}
+	batches := make([][]string, len(targets))
+	for i, t := range targets {
+		batches[i] = []string{t}
+	}
+	return batches
 }
 
 // splitPercent divides targets into batches by percentage milestones.
@@ -268,17 +393,28 @@ func splitFixed(targets []string, steps []int) [][]string {
 // approval / gate overrides. The output slice is always non-nil when
 // the input is non-nil, so that batches carry an explicit (possibly
 // empty) step sequence.
-func convertSteps(steps []dsl.Step) []PlanStep {
+// convertSteps converts dsl steps to plan steps, stamping each with the
+// IrreversibleChecker verdict. An explicit author declaration
+// (irreversible: true) wins over the whitelist; both routes record a
+// human-readable reason on the step for the audit trail.
+func (g *Generator) convertSteps(steps []dsl.Step) []PlanStep {
 	out := make([]PlanStep, len(steps))
 	for i, s := range steps {
+		verdict := g.irreversible.Check(executor.Step{
+			Module:       s.Module,
+			Action:       s.Action,
+			Irreversible: s.Irreversible,
+		})
 		out[i] = PlanStep{
-			Name:     s.Name,
-			Module:   s.Module,
-			Action:   s.Action,
-			Args:     s.Args,
-			Rollback: s.Rollback,
-			Approval: s.Approval,
-			Gate:     s.Gate,
+			Name:               s.Name,
+			Module:             s.Module,
+			Action:             s.Action,
+			Args:               s.Args,
+			Rollback:           s.Rollback,
+			Approval:           s.Approval,
+			Gate:               s.Gate,
+			Irreversible:       verdict.Irreversible,
+			IrreversibleReason: verdict.Reason,
 		}
 	}
 	return out

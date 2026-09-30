@@ -188,6 +188,13 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 		_ = mgrA.SyncOnceForTest(ctx)
 		_ = mgrB.SyncOnceForTest(ctx)
 	}
+	// syncA folds the shared table into A's registry alone. After B is stopped
+	// it must NOT be driven any more: a sync round heartbeats the caller's own
+	// SelfID (syncWithPG -> heartbeatNode(m.cfg.SelfID)), so syncing the
+	// crashed node would keep its cluster_nodes row refreshed and the offline
+	// transition could never fire. The peer is meant to observe silence, not
+	// to help the dead node stay alive.
+	syncA := func() { _ = mgrA.SyncOnceForTest(ctx) }
 
 	// A must discover B through the shared table.
 	assert.Eventually(t, func() bool {
@@ -217,9 +224,10 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	defer stopCancel()
 	require.NoError(t, mgrB.Stop(stopCtx))
 
-	// A must mark B offline once the heartbeat ages past the timeout.
+	// A must mark B offline once the heartbeat ages past the timeout. Only A
+	// syncs here — B is down, and syncing it would refresh its own heartbeat.
 	assert.Eventually(t, func() bool {
-		syncBoth()
+		syncA()
 		n, ok := mgrA.Registry().Get("node-b")
 		return ok && n.Status == StatusOffline
 	}, 10*time.Second, 100*time.Millisecond, "node-a never marked node-b offline")
@@ -227,12 +235,18 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	// Graceful leave removes the row entirely.
 	require.NoError(t, mgrA.Leave("node-b"))
 	assert.Eventually(t, func() bool {
-		syncBoth()
+		syncA()
 		_, ok := mgrA.Registry().Get("node-b")
 		return !ok
 	}, 10*time.Second, 100*time.Millisecond, "node-b row still visible after leave")
 
-	require.NoError(t, mgrA.Stop(stopCtx))
+	// Fresh deadline for A: the offline wait above legitimately burns one
+	// full heartbeat timeout plus detection slack, which already exceeds the
+	// 2s budget allocated for stopping B — reusing that context would make
+	// Stop fail with "health check did not drain" on every run.
+	stopACtx, stopACancel := context.WithTimeout(ctx, 5*time.Second)
+	defer stopACancel()
+	require.NoError(t, mgrA.Stop(stopACtx))
 }
 
 // TestClusterPGConcurrentEnsureSchemaSerialisesDDL is the regression test
