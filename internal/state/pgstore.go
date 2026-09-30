@@ -31,14 +31,21 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/nexus/levee/internal/dbschema"
 	"github.com/nexus/levee/internal/log"
 )
 
-// pgSchemaSQL holds the embedded pgschema.sql content. It is applied verbatim
-// the first time a PostgreSQL store is opened.
+// pgSchemaSQL holds the embedded pgschema.sql content.
 //
 //go:embed pgschema.sql
 var pgSchemaSQL string
+
+// pgSchemaFull is what a PostgreSQL store actually applies: the embedded file
+// plus the shared cluster-membership DDL. cluster_nodes lives in
+// internal/dbschema rather than in this file because internal/cluster creates
+// it too, and two IF-NOT-EXISTS copies had already drifted apart — whichever
+// package initialised a database first decided its shape.
+var pgSchemaFull = pgSchemaSQL + "\n" + dbschema.ClusterNodesDDL
 
 // pgBaseSchemaVersion is the version that pgschema.sql alone describes,
 // mirroring baseSchemaVersion for the PostgreSQL migration path.

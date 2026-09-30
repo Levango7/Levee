@@ -6,8 +6,10 @@ package dsl
 //   - 必填字段：name 非空、至少一个 target、至少一个 step
 //   - 类型基础：input.type ∈ {string,int,duration,bool}；
 //     approval.level ∈ {standard,high,emergency}；
-//     batches.strategy ∈ {percent,fixed,serial}
-//   - 批次声明合法性：percent steps ∈ [1,100]；fixed steps > 0；serial 无需 steps
+//     batches.strategy ∈ dsl.BatchStrategies
+//   - 批次声明合法性：percent steps ∈ [1,100]；fixed steps > 0；serial /
+//     one-per-target 无需 steps。strategy 枚举一律引用 dsl.BatchStrategies，
+//     本文件不再自带副本。
 //   - step：name 与 action 非空；action 必须是 module.action 形式
 //   - target：静态 target 必须有 hosts 或 query 至少一个
 //   - rollback 归属：workflow 级回滚声明只允许运行态策略（on_failure /
@@ -20,6 +22,7 @@ package dsl
 
 import (
 	"fmt"
+	"strings"
 )
 
 // 自定义校验错误码。当 internal/errors 中已有合适码时优先复用，
@@ -56,21 +59,6 @@ var allowedInputTypes = map[string]struct{}{
 	"int":      {},
 	"duration": {},
 	"bool":     {},
-}
-
-// allowedApprovalLevels 列出 approval.level 允许的取值。
-var allowedApprovalLevels = map[string]struct{}{
-	"standard":  {},
-	"high":      {},
-	"emergency": {},
-}
-
-// allowedBatchStrategies 列出 batches.strategy 允许的取值。
-// 任务要求 percent/fixed/serial 三种。
-var allowedBatchStrategies = map[string]struct{}{
-	"percent": {},
-	"fixed":   {},
-	"serial":  {},
 }
 
 // ValidationError 描述一条校验失败。Code 是稳定错误码（如 LE002），
@@ -258,11 +246,12 @@ func (v *Validator) validateApproval(a *ApprovalSpec) []ValidationError {
 		return nil
 	}
 	var errs []ValidationError
-	if _, ok := allowedApprovalLevels[a.Level]; !ok {
+	if !IsApprovalLevel(a.Level) {
 		errs = append(errs, ValidationError{
-			Code:    codeApprovalLevel,
-			Field:   "approval.level",
-			Message: fmt.Sprintf("invalid approval level %q (allowed: standard, high, emergency)", a.Level),
+			Code:  codeApprovalLevel,
+			Field: "approval.level",
+			Message: fmt.Sprintf("invalid approval level %q (allowed: %s)",
+				a.Level, strings.Join(ApprovalLevels, ", ")),
 		})
 	}
 	return errs
@@ -276,12 +265,16 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 	}
 	var errs []ValidationError
 
-	// strategy 枚举校验。
-	if _, ok := allowedBatchStrategies[b.Strategy]; !ok {
+	// strategy 枚举校验。词表只有 dsl.BatchStrategies 一份：这里曾有自己的
+	// 副本，于是 `levee compile` 与 serve 的 plan 路径对同一份文档给出相反
+	// 判定（one-per-target 被这里拒、被生成器实现）。报错文案同样由词表拼装，
+	// 不可能再和判定脱节。
+	if !IsBatchStrategy(b.Strategy) {
 		errs = append(errs, ValidationError{
-			Code:    codeBatchStrategy,
-			Field:   "batches.strategy",
-			Message: fmt.Sprintf("invalid batch strategy %q (allowed: percent, fixed, serial)", b.Strategy),
+			Code:  codeBatchStrategy,
+			Field: "batches.strategy",
+			Message: fmt.Sprintf("invalid batch strategy %q (allowed: %s)",
+				b.Strategy, strings.Join(BatchStrategies, ", ")),
 		})
 		// strategy 非法时不再校验 steps 语义，避免误报。
 		return errs
@@ -289,7 +282,7 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 
 	// 按 strategy 校验 steps 合法性。
 	switch b.Strategy {
-	case "percent":
+	case BatchStrategyPercent:
 		for i, step := range b.Steps {
 			field := fmt.Sprintf("batches.steps[%d]", i)
 			if step < 1 || step > 100 {
@@ -300,7 +293,7 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 				})
 			}
 		}
-	case "fixed":
+	case BatchStrategyFixed:
 		for i, step := range b.Steps {
 			field := fmt.Sprintf("batches.steps[%d]", i)
 			if step <= 0 {
@@ -311,8 +304,8 @@ func (v *Validator) validateBatches(b BatchConfig) []ValidationError {
 				})
 			}
 		}
-	case "serial":
-		// serial strategy 不需要 steps，不校验。
+	case BatchStrategySerial, BatchStrategyOnePerTarget:
+		// 两者都不需要 steps，不校验。
 	}
 
 	return errs
