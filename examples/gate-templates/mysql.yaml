@@ -33,7 +33,7 @@ steps:
   # Post-change command gate: mysqld must answer a ping and print the
   # canonical "mysqld is alive" line.
   - name: flush-binlog
-    action: shell
+    action: shell.exec
     args:
       cmd: "mysql -e 'FLUSH BINARY LOGS'"
     idempotent: true
@@ -47,7 +47,7 @@ steps:
   # Post-change probe gate: from inside the target (mode: remote), open a
   # TCP connection to 127.0.0.1:3306 via bash's virtual /dev/tcp.
   - name: verify-listener
-    action: shell
+    action: shell.exec
     args:
       cmd: "echo tcp-probe placeholder"
     idempotent: true

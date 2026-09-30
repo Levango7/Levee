@@ -62,22 +62,48 @@ type RollbackResult struct {
 	// when Rollback returns a non-nil result.
 	BatchResults []BatchRollbackResult
 
-	// Success reports whether every executed rollback step succeeded. A
-	// rollback with only skipped steps (no RollbackSpec anywhere) is
-	// considered successful: there was nothing to undo and no failure.
+	// Success reports whether the rollback fully restored the targets that
+	// were actually changed. D-2 v2 verdict (design item 3):
+	//   Success = Error == nil && RequiredCompensations == CompletedCompensations
+	// i.e. no required compensation went missing (skipped: no spec, not
+	// whitelisted, snapshot wiring absent) and no compensation command
+	// failed. A rollback where nothing needed compensating is success
+	// (Required 0). UnknownSideEffects does NOT affect this verdict — it is
+	// the recorded extension point for the future side-effect-unknown state
+	// (design D-2 v2 可持续性), surfaced for operator inspection instead.
+	// With a NIL ledger the pre-D-2 compatibility reading holds (design
+	// item 2): skips are benign, only command errors fail the verdict.
 	Success bool
 
-	// PartialRollback reports whether some rollback steps succeeded and
-	// some failed. It is true only when the run was not fully successful
-	// and at least one step completed without error. It lets the CLI
-	// distinguish "rollback failed completely" from "rollback partially
-	// applied" — the latter typically requires human inspection.
+	// RequiredCompensations counts the original steps the execution ledger
+	// records as run on their targets — each requires compensation. Steps
+	// skipped as NotExecuted (forward step never dispatched) are excluded.
+	RequiredCompensations int
+
+	// CompletedCompensations counts those required compensations that ran to
+	// completion without error.
+	CompletedCompensations int
+
+	// UnknownSideEffects counts steps that were dispatched but failed, so
+	// whether they left residue is undetermined. Their declared compensation
+	// is still attempted. Per the D-2 v2 design this count does not flip the
+	// verdict: it is the deliberately-wired extension point for a future
+	// side-effect-unknown state, carried here so callers (closure phases,
+	// operator tooling) can surface it for inspection.
+	UnknownSideEffects int
+
+	// PartialRollback reports whether some compensation completed while the
+	// verdict is still incomplete (Required > Completed: a required
+	// compensation is missing or failed while others landed). Callers use it
+	// to distinguish "rollback went half-way" from "nothing could be undone
+	// at all".
 	PartialRollback bool
 
-	// Error is the first error encountered during rollback, or nil when
-	// Success is true. It is preserved separately from the per-step errors
-	// so that callers can use errors.Is / errors.As on the top-level result
-	// without walking the batch tree.
+	// Error is the first compensation error encountered, or nil when none
+	// failed. NOTE: a nil Error with Success false means the gap was not a
+	// failed command but missing compensation (no declared rollback, snapshot
+	// restore not wired, whitelist denial) — callers must branch on Success,
+	// not on Error.
 	Error error
 
 	// Duration is the wall-clock time spent inside Rollback, measured from
@@ -127,9 +153,35 @@ type StepRollbackResult struct {
 	Action string
 
 	// Skipped reports whether the rollback step was not executed. When
-	// true, SkipReason explains why (no RollbackSpec, not in whitelist,
-	// ...). Skipped steps are never errors.
+	// true, SkipReason explains why and NotExecuted says whether the skip
+	// is benign (the forward step never ran) or a gap (it ran but no
+	// compensation could be applied). Skipped steps are never errors.
 	Skipped bool
+
+	// NotExecuted marks a skip whose cause is "the forward step never ran on
+	// this target" (D-2 v2). Such skips are benign: there was nothing to undo,
+	// so they do not count against the rollback verdict. A skip with
+	// NotExecuted=false for a step that DID run is a compensation gap and
+	// makes Success false.
+	NotExecuted bool
+
+	// AlreadyCompensated marks a skip whose cause is "an earlier rollback
+	// already completed this step's compensation successfully" (ledger state
+	// Compensated). Like NotExecuted it is benign for the verdict — the target
+	// state for this step is already restored, and re-running the compensation
+	// would apply its side effects a second time. It is kept as its OWN flag
+	// rather than folded into NotExecuted because the two skips mean opposite
+	// things to an operator: "nothing was ever changed here" vs "this was
+	// already undone". The SkipReason carries the same distinction into the
+	// persisted evidence row.
+	AlreadyCompensated bool
+
+	// SideEffectsUnknown marks a step that was dispatched but failed during
+	// the forward apply, so whether it left a partial side effect is
+	// undetermined. Its declared compensation is still attempted here, but
+	// the flag propagates into RollbackResult.UnknownSideEffects so the run is
+	// reported as not-fully-rolled-back and needs operator inspection.
+	SideEffectsUnknown bool
 
 	// SkipReason is a human-readable explanation when Skipped is true. It
 	// is empty for executed steps.
@@ -155,6 +207,13 @@ type Manager struct {
 	whitelistAll bool            // escape hatch: allow every module.action
 	concurrency  int             // per-batch target parallelism; >= 1
 	stopOnError  bool            // stop at first step error
+
+	// snapshotRestore is the optional strategy-"snapshot" restore callback
+	// (see WithSnapshotRestore). runID keys the snapshot lookup (see
+	// WithRunID). Both are supplied by the wiring layer; the engine passes
+	// its closure run id when assembling the rollback manager.
+	snapshotRestore SnapshotRestoreFunc
+	runID           string
 }
 
 // ManagerOption configures a Manager at construction time.
@@ -212,6 +271,41 @@ func WithStopOnError(b bool) ManagerOption {
 	}
 }
 
+// SnapshotRestoreFunc restores the pre-apply snapshot of a single plan step
+// on a single target. It is supplied by the wiring layer (which owns the
+// channel transport and the snapshot store); the rollback package stays
+// transport-agnostic exactly like ExecuteFunc. runID is the closure run id
+// under which the snapshot was captured.
+type SnapshotRestoreFunc func(ctx context.Context, runID, target string, step plan.PlanStep) error
+
+// WithSnapshotRestore installs the snapshot-restore callback used when a
+// step's RollbackSpec.Strategy is "snapshot". Without it, a snapshot
+// rollback step is recorded as skipped ("snapshot restore not wired") —
+// never silently executed as an undo action. With it, the callback
+// restores the captured files; a callback error marks the step failed.
+func WithSnapshotRestore(fn SnapshotRestoreFunc) ManagerOption {
+	return func(m *Manager) {
+		m.snapshotRestore = fn
+	}
+}
+
+// WithRunID records the closure run id the rollback belongs to. Snapshot
+// lookup (strategy "snapshot") is keyed by this id; without it the
+// restore callback receives an empty run id and fails closed.
+func WithRunID(runID string) ManagerOption {
+	return func(m *Manager) {
+		m.runID = runID
+	}
+}
+
+// SetRunID records the closure run id for the next Rollback invocation.
+// The closure runner calls it right before triggering the rollback flow
+// (the run id is minted per Run, after the Manager was constructed and
+// injected). ClosureRunner is single-flight, so the write needs no lock.
+func (m *Manager) SetRunID(runID string) {
+	m.runID = runID
+}
+
 // NewManager returns a Manager configured by opts. The zero-value defaults
 // are: empty whitelist (DENY every rollback step — use WithWhitelist to allow
 // specific actions or WithWhitelistAll for an explicit allow-all),
@@ -252,10 +346,45 @@ func (m *Manager) Whitelist() []string {
 
 // --- Rollback --------------------------------------------------------------
 
-// Rollback executes the rollback plan in reverse batch order. It walks
-// p.Batches from last to first; within each batch it walks Steps from last to
-// first; for each step with a non-nil RollbackSpec it executes the spec's
-// Steps via execFn. Steps without a RollbackSpec are recorded as skipped.
+// Rollback executes the rollback plan in reverse batch order WITHOUT execution
+// evidence: every step of p is treated as having run (the pre-D-2 contract,
+// kept for direct/manual callers that hold no apply result). Prefer
+// RollbackWithLedger when the apply outcome is available.
+func (m *Manager) Rollback(ctx context.Context, p *plan.Plan, execFn ExecuteFunc) *RollbackResult {
+	return m.RollbackWithLedger(ctx, p, execFn, nil)
+}
+
+// RollbackWithLedger executes the rollback plan in reverse batch order,
+// compensating exactly what the ledger says actually ran (D-2 v2).
+//
+// It walks p.Batches from last to first; within each batch it walks Steps from
+// last to first; for each step with a non-nil RollbackSpec it executes the
+// spec's Steps via execFn.
+//
+// Ledger semantics:
+//
+//   - ledger == nil: no evidence — every step is treated as run (legacy
+//     behaviour for direct callers).
+//   - ledger != nil: a step the ledger does not mark as run is skipped as
+//     NotExecuted (benign: the forward action never happened, so there is
+//     nothing to undo) and does not count against the verdict.
+//   - a step the ledger marks as run but failing is still compensated, yet it
+//     is flagged SideEffectsUnknown and counted in UnknownSideEffects —
+//     informational per design (the extension point for a future
+//     side-effect-unknown state); it does not flip the verdict on its own.
+//
+// Verdict (design D-2 v2 item 3):
+//
+//	RequiredCompensations = every executed (per the ledger) original step
+//	                        — whether or not it declared compensation
+//	CompletedCompensations = those whose compensation ran without error
+//	Success = Error == nil && Required == Completed
+//
+// Compatibility (design item 2: nil = 旧行为): with a NIL ledger the
+// pre-D-2 reading is preserved — skips (no spec, whitelist denial,
+// snapshot not wired, nil execFn dry-run) are benign and only command
+// errors fail the verdict. Evidence-backed gap counting engages as soon
+// as a non-nil ledger is supplied.
 //
 // Behaviour:
 //
@@ -270,10 +399,8 @@ func (m *Manager) Whitelist() []string {
 //     returns; remaining batches are not rolled back.
 //   - stopOnError false: the Manager continues and records all errors.
 //
-// The returned *RollbackResult is always non-nil. Success is true when no
-// executed step returned an error. PartialRollback is true when at least one
-// step succeeded and at least one failed.
-func (m *Manager) Rollback(ctx context.Context, p *plan.Plan, execFn ExecuteFunc) *RollbackResult {
+// The returned *RollbackResult is always non-nil.
+func (m *Manager) RollbackWithLedger(ctx context.Context, p *plan.Plan, execFn ExecuteFunc, ledger *ExecutionLedger) *RollbackResult {
 	start := time.Now()
 	result := &RollbackResult{}
 
@@ -291,8 +418,6 @@ func (m *Manager) Rollback(ctx context.Context, p *plan.Plan, execFn ExecuteFunc
 	// verdict at the end.
 	var (
 		firstErr      error
-		anySucceeded  bool
-		anyFailed     bool
 		stopRequested bool
 	)
 
@@ -301,49 +426,75 @@ func (m *Manager) Rollback(ctx context.Context, p *plan.Plan, execFn ExecuteFunc
 			break
 		}
 		batch := p.Batches[i]
-		br := m.rollbackBatch(ctx, batch, execFn)
+		br := m.rollbackBatch(ctx, batch, execFn, ledger)
 
-		// Inspect the batch result to update aggregate state.
+		// Compensation bookkeeping (D-2 v2): every step that RAN must be
+		// accounted for — whether it declared a rollback, was refused by
+		// policy, or failed. Skips for steps the ledger says never ran are
+		// benign and excluded from the verdict.
 		for _, tr := range br.TargetResults {
 			for _, sr := range tr.StepResults {
-				if sr.Skipped {
+				if sr.SideEffectsUnknown {
+					result.UnknownSideEffects++
+				}
+				// Benign skips, excluded from the verdict:
+				//   - NotExecuted (evidence says the forward step never
+				//     ran — nothing to account for);
+				//   - AlreadyCompensated (an earlier rollback already
+				//     restored this step — compensating again would
+				//     apply the undo's side effects twice);
+				//   - any skip under a NIL ledger: without evidence every
+				//     step is only ASSUMED run (design item 2: nil =
+				//     旧行为), so policy/wiring/dry-run skips keep their
+				//     pre-D-2 benign reading. Gap counting engages only
+				//     once real evidence (a ledger) is supplied.
+				if sr.NotExecuted || sr.AlreadyCompensated || (ledger == nil && sr.Skipped) {
 					continue
 				}
-				if sr.Error != nil {
-					anyFailed = true
+				result.RequiredCompensations++
+				switch {
+				case sr.Skipped:
+					// Evidence-backed gap: the step ran but no
+					// compensation was applied (no rollback spec, not
+					// whitelisted, snapshot restore wiring absent).
+					// Counted as required-but-not-completed.
+				case sr.Error != nil:
 					if firstErr == nil {
 						firstErr = sr.Error
 					}
-				} else {
-					anySucceeded = true
+				default:
+					result.CompletedCompensations++
 				}
 			}
 		}
 		result.BatchResults = append(result.BatchResults, br)
 
-		if anyFailed && m.stopOnError {
+		if firstErr != nil && m.stopOnError {
 			stopRequested = true
 		}
 	}
 
 	result.Duration = time.Since(start)
 	result.Error = firstErr
-	if anyFailed {
-		result.Success = false
-		result.PartialRollback = anySucceeded
-	} else {
-		// No failures: success regardless of how many steps were skipped.
-		result.Success = true
-		result.PartialRollback = false
-	}
+	// D-2 v2 verdict (design item 3): Success = no required compensation
+	// missing AND no compensation command errored. The verdict reflects
+	// RESTORED STATE, not merely "the flow ran to the end": a step that ran
+	// forward but could not be compensated (no spec, whitelist denial,
+	// snapshot wiring absent) keeps Success false. UnknownSideEffects stays
+	// informational — the recorded extension point for the future
+	// side-effect-unknown state.
+	result.Success = result.Error == nil &&
+		result.RequiredCompensations == result.CompletedCompensations
+	result.PartialRollback = !result.Success && result.CompletedCompensations > 0
 	return result
 }
 
 // rollbackBatch rolls back a single batch. Targets within the batch are
 // rolled back concurrently up to m.concurrency. The returned BatchRollbackResult
 // has TargetResults populated in completion order (non-deterministic under
-// concurrency > 1).
-func (m *Manager) rollbackBatch(ctx context.Context, batch plan.Batch, execFn ExecuteFunc) BatchRollbackResult {
+// concurrency > 1). ledger carries the forward-execution evidence (nil = treat
+// every step as run).
+func (m *Manager) rollbackBatch(ctx context.Context, batch plan.Batch, execFn ExecuteFunc, ledger *ExecutionLedger) BatchRollbackResult {
 	br := BatchRollbackResult{BatchIndex: batch.Index}
 
 	targetCount := len(batch.Targets)
@@ -355,7 +506,7 @@ func (m *Manager) rollbackBatch(ctx context.Context, batch plan.Batch, execFn Ex
 	if m.concurrency <= 1 {
 		br.TargetResults = make([]TargetRollbackResult, 0, targetCount)
 		for _, target := range batch.Targets {
-			tr := m.rollbackTarget(ctx, target, batch.Steps, execFn)
+			tr := m.rollbackTarget(ctx, target, batch.Steps, execFn, ledger)
 			br.TargetResults = append(br.TargetResults, tr)
 		}
 		return br
@@ -376,7 +527,7 @@ func (m *Manager) rollbackBatch(ctx context.Context, batch plan.Batch, execFn Ex
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			tr := m.rollbackTarget(ctx, target, batch.Steps, execFn)
+			tr := m.rollbackTarget(ctx, target, batch.Steps, execFn, ledger)
 			mu.Lock()
 			br.TargetResults[idx] = tr
 			mu.Unlock()
@@ -392,7 +543,7 @@ func (m *Manager) rollbackBatch(ctx context.Context, batch plan.Batch, execFn Ex
 //   - no RollbackSpec: record skipped "no rollback spec".
 //   - RollbackSpec present: execute each of its Steps (in declared order)
 //     via execFn, after whitelist validation.
-func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []plan.PlanStep, execFn ExecuteFunc) TargetRollbackResult {
+func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []plan.PlanStep, execFn ExecuteFunc, ledger *ExecutionLedger) TargetRollbackResult {
 	tr := TargetRollbackResult{
 		Target:      target,
 		StepResults: make([]StepRollbackResult, 0, len(steps)),
@@ -402,13 +553,77 @@ func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []pla
 	for i := len(steps) - 1; i >= 0; i-- {
 		ps := steps[i]
 
-		// No RollbackSpec: nothing to undo for this step.
-		if ps.Rollback == nil {
+		// Evidence gate (D-2 v2): a step the ledger does not mark as run was
+		// never dispatched to this target, so compensating it would touch a
+		// host state that was never changed. Recorded as a benign skip.
+		if ledger != nil && ledger.AlreadyCompensated(target, ps.Name) {
+			// Compensation-idempotency gate: an earlier rollback already
+			// completed this step's declared compensation. Running it again
+			// would apply its side effects a second time, so record the
+			// skip with its own reason — the evidence row is what an
+			// operator reads later, and "already undone" must not be
+			// mistaken for "never changed" (NotExecuted) or for a gap.
+			tr.StepResults = append(tr.StepResults, StepRollbackResult{
+				OrigStepName:       ps.Name,
+				Skipped:            true,
+				AlreadyCompensated: true,
+				SkipReason:         "already compensated by an earlier rollback",
+			})
+			continue
+		}
+		if ledger != nil && !ledger.Ran(target, ps.Name) {
 			tr.StepResults = append(tr.StepResults, StepRollbackResult{
 				OrigStepName: ps.Name,
 				Skipped:      true,
-				SkipReason:   "no rollback spec",
+				NotExecuted:  true,
+				SkipReason:   "forward step not executed on this target",
 			})
+			continue
+		}
+		if ledger != nil && ledger.CompensationUncertain(target, ps.Name) && !compensationRepeatable(ps) {
+			// A prior successful compensation is on record but the evidence
+			// cannot be ordered against the forward execution, so this may
+			// well be a SECOND run of a non-idempotent undo. The author did
+			// not declare the undo repeatable, so refuse rather than guess.
+			// NotExecuted stays false: unlike a benign skip, we genuinely do
+			// not know whether this step is restored, and the verdict must
+			// say so.
+			tr.StepResults = append(tr.StepResults, StepRollbackResult{
+				OrigStepName: ps.Name,
+				Skipped:      true,
+				SkipReason: "refusing to re-run: a prior compensation is on record " +
+					"but cannot be ordered against this execution, and the rollback step " +
+					"does not declare idempotent: true",
+			})
+			continue
+		}
+
+		unknown := ledger != nil && ledger.SideEffectsUnknown(target, ps.Name)
+
+		// No RollbackSpec: nothing to undo for this step. Because the step DID
+		// run, this is a compensation gap (not a benign skip): the verdict must
+		// not claim a clean rollback.
+		if ps.Rollback == nil {
+			tr.StepResults = append(tr.StepResults, StepRollbackResult{
+				OrigStepName:       ps.Name,
+				Skipped:            true,
+				SkipReason:         "no rollback spec",
+				SideEffectsUnknown: unknown,
+			})
+			continue
+		}
+
+		// Snapshot strategy: restore the pre-apply snapshot instead of
+		// running undo steps (design 4.4.6.3 — the snapshot half of the
+		// rollback protocol). The declared undo Steps are NOT executed:
+		// a snapshot step declares its rollback basis as the captured
+		// state, and mixing both would double-undo. Without a wired
+		// restore callback the step is skipped with an explicit reason —
+		// never silently executed as an undo action.
+		if ps.Rollback.Strategy == "snapshot" {
+			sr := m.restoreSnapshotStep(ctx, target, ps)
+			sr.SideEffectsUnknown = unknown
+			tr.StepResults = append(tr.StepResults, sr)
 			continue
 		}
 
@@ -418,10 +633,79 @@ func (m *Manager) rollbackTarget(ctx context.Context, target string, steps []pla
 		// reversed.
 		for _, rbStep := range ps.Rollback.Steps {
 			sr := m.executeRollbackStep(ctx, target, ps.Name, rbStep, execFn)
+			sr.SideEffectsUnknown = unknown
 			tr.StepResults = append(tr.StepResults, sr)
 		}
 	}
 	return tr
+}
+
+// compensationRepeatable reports whether re-running this step's compensation
+// is declared safe. The dsl has always carried the author's
+// `idempotent: true` declaration (parsed from the workflow YAML, and now
+// covered by the v2 plan hash); this gate is what finally READS it.
+//
+//   - A step with no RollbackSpec has no undo command to repeat — the
+//     existing "no rollback spec" gap path handles it.
+//   - The snapshot strategy writes the captured content back over the
+//     declared paths, so running it again is repeatable by construction. (The
+//     separate concern of restoring over later edits is a pre-existing
+//     property of snapshot rollback, not a repeat hazard.)
+//   - Otherwise EVERY declared undo step must say `idempotent: true`. One
+//     undeclared step makes the whole compensation non-repeatable: a
+//     partially repeated compensation is worse than none.
+func compensationRepeatable(ps plan.PlanStep) bool {
+	if ps.Rollback == nil {
+		return true
+	}
+	if ps.Rollback.Strategy == "snapshot" {
+		return true
+	}
+	for _, rb := range ps.Rollback.Steps {
+		if !rb.Idempotent {
+			return false
+		}
+	}
+	return true
+}
+
+// restoreSnapshotStep rolls back one strategy-"snapshot" step on one
+// target: it invokes the wired SnapshotRestoreFunc (which locates the
+// pre-apply capture for m.runID/target/step and writes it back over the
+// declared paths). Fail-closed paths:
+//
+//   - no restore callback wired: skipped, "snapshot restore not wired"
+//     (the step never silently degrades into an undo action);
+//   - no run id recorded: skipped, "snapshot restore without run id";
+//   - callback error: the step is failed (not skipped) — a partial or
+//     missing restore is operator-visible.
+//
+// The result carries the original step's module/action so audit output
+// shows what was undone.
+func (m *Manager) restoreSnapshotStep(ctx context.Context, target string, ps plan.PlanStep) StepRollbackResult {
+	sr := StepRollbackResult{
+		OrigStepName:     ps.Name,
+		RollbackStepName: "snapshot:" + ps.Name,
+		Module:           ps.Module,
+		Action:           ps.Action,
+	}
+	if m.snapshotRestore == nil {
+		sr.Skipped = true
+		sr.SkipReason = "snapshot restore not wired"
+		return sr
+	}
+	if m.runID == "" {
+		sr.Skipped = true
+		sr.SkipReason = "snapshot restore without run id"
+		return sr
+	}
+	start := time.Now()
+	err := m.snapshotRestore(ctx, m.runID, target, ps)
+	sr.Duration = time.Since(start)
+	if err != nil {
+		sr.Error = fmt.Errorf("rollback snapshot of %s.%s on %s: %w", ps.Module, ps.Action, target, err)
+	}
+	return sr
 }
 
 // executeRollbackStep runs a single rollback step (from a RollbackSpec.Steps

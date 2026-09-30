@@ -4,6 +4,17 @@
 // plan when replan is requested); Rollback reverses the stored plan via
 // rollback.Manager. All three honour the process-wide parallel-run cap and
 // re-verify the plan artifact before touching any target.
+//
+// Snapshot wiring (design §4.4.4.2 / §4.4.6.3): when a snapshot store is
+// configured (--engine-snapshot-dir / WithSnapshotDir), every execution
+// installs a channel-aware remoteSnapshotter on the closure (capture
+// before the first batch) and the matching SnapshotRestoreFunc on the
+// rollback manager (restore instead of undo steps for strategy
+// "snapshot"). Without a store both halves are disabled: capture is
+// skipped (pre-wiring behaviour) and snapshot steps restore as "not
+// wired" skips — never silent undo actions. Snapshots are keyed by the
+// CHANGE id so the manual RollbackChange path (which knows no closure
+// run id) finds them too.
 
 package wiring
 
@@ -18,8 +29,10 @@ import (
 
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/engine"
+	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/lock"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
@@ -52,17 +65,38 @@ func (e *Engine) acquire(changeID string) (func(), error) {
 //     slo/human checks) fail the run rather than silently passing;
 //   - the host guard re-validates frozen targets between lock acquisition
 //     and mutation (planning-time check alone is stale).
-func (e *Engine) newRunRunner() *engine.ClosureRunner {
+func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunner {
 	lockMgr := lock.NewLockManager(lock.NewLockStore(e.store), e.store)
 	lockMgr.SetTTL(e.lockTTL)
 
 	gateMgr := verify.NewGateManager()
 
-	rollbackMgr := rollback.NewManager(
+	// Snapshot halves: the capture hook (engine.WithSnapshotter) and the
+	// restore callback (rollback.WithSnapshotRestore) share one manager
+	// over one store. Both stay nil when no snapshot dir is configured —
+	// the closure then skips capture entirely (its nil check) and the
+	// restore side records "not wired" skips.
+	var snapHook engine.Snapshotter
+	snapOpts := make([]rollback.ManagerOption, 0, 5)
+	if rx != nil && e.snapshotDir != "" {
+		if store, err := rollback.NewFileSnapshotStore(e.snapshotDir); err != nil {
+			log.Error("snapshot store init failed; snapshot capture disabled", "error", err)
+		} else if mgr, err := rollback.NewSnapshotManager(store); err != nil {
+			log.Error("snapshot manager init failed; snapshot capture disabled", "error", err)
+		} else {
+			snapshotter := newRemoteSnapshotter(rx, mgr, changeID)
+			snapHook = snapshotter
+			snapOpts = append(snapOpts,
+				rollback.WithSnapshotRestore(snapshotter.RestoreForStep),
+				rollback.WithRunID(changeID))
+		}
+	}
+
+	rollbackMgr := rollback.NewManager(append([]rollback.ManagerOption{
 		rollback.WithWhitelistAll(),
 		rollback.WithConcurrency(e.rollbackConcurrency),
 		rollback.WithStopOnError(false),
-	)
+	}, snapOpts...)...)
 
 	batchCtrl := batch.NewController(
 		batch.WithBatchErrorPolicy(batch.PolicyAbort),
@@ -70,7 +104,7 @@ func (e *Engine) newRunRunner() *engine.ClosureRunner {
 	)
 
 	store := e.store
-	return engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, nil,
+	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, nil,
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			return inventory.ValidateNotFrozen(ctx, store, hosts)
 		}),
@@ -79,6 +113,12 @@ func (e *Engine) newRunRunner() *engine.ClosureRunner {
 		// fails closed exactly as it would with no runtime attached.
 		engine.WithGateRuntime(engine.GateRuntime{PrometheusURL: e.gatePrometheusURL}),
 	)
+	if snapHook != nil {
+		// The WithSnapshotter option is applied post-construction via a
+		// dedicated setter to keep the constructor signature stable.
+		cr.SetSnapshotter(snapHook)
+	}
+	return cr
 }
 
 // runChange is the EngineAdapter.Run closure. ChangeService has already
@@ -150,14 +190,25 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan,
 		}
 	}
 
+	// D-2 v2 design item 5 (fail-closed): a plan that declares
+	// snapshot-based rollback requires a wired snapshot store — without
+	// one, capture never happens and the rollback would discover
+	// mid-unwind that its restore basis does not exist. Refuse BEFORE
+	// any dispatch instead of skipping afterwards.
+	if err := e.checkSnapshotCapability(p); err != nil {
+		return "", false, "", err
+	}
+
 	rx, err := newRunExec(ctx, e, lease)
 	if err != nil {
 		return "", false, "", err
 	}
 	defer rx.close()
 
-	// Fresh subsystem instances per execution (see newRunRunner).
-	runner := e.newRunRunner()
+	// Fresh subsystem instances per execution (see newRunRunner). The
+	// runner needs rx (the snapshotter captures over its channel cache),
+	// so it is assembled AFTER the runExec exists.
+	runner := e.newRunRunner(rx, changeID)
 
 	res, runErr := runner.Run(ctx, p, rx.executeFunc())
 	if res == nil {
@@ -232,8 +283,14 @@ func (e *Engine) startLeaseHeartbeat(lease ExecutionLease) (stop func()) {
 // RetryHost path passes it; deriving "failed hosts" from step rows cannot
 // tell a still-failing host from one a previous retry already fixed).
 // With replan=true a fresh plan is generated and persisted (for the request
-// hosts or the stored plan's hosts) and re-executed whole — the operator
-// re-approved by invoking retry with replan.
+// hosts or the stored plan's hosts). It is re-executed whole ONLY when an
+// approved approval attests to that new plan version (legacy unbound rows
+// included, via the same rule the apply gate uses). Otherwise the new plan
+// is persisted but NOT executed: the run goes back to draft/pending with
+// its pending approval rows superseded — exactly what PlanChange does for a
+// re-planned run — and RetryChange reports FailedPrecondition. Invoking
+// retry with replan is therefore a re-plan request, never a way to execute a
+// fresh plan under the approval that covered the previous one.
 func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, targetHosts []string) error {
 	release, err := e.acquire(changeID)
 	if err != nil {
@@ -255,6 +312,18 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		if err != nil {
 			return fmt.Errorf("wiring: replan: %w", err)
 		}
+		// D-1 v2 gate — this path used to skip approval entirely. A
+		// re-plan mints a NEW plan version, and the approval that
+		// authorised the previous one says nothing about this one;
+		// executing the fresh plan under it is precisely the
+		// "approve v1, execute v2" drift the apply gate refuses. Ask the
+		// store whether any APPROVED row attests to the new hash, using
+		// the same predicate settlement and apply use
+		// (state.Approval.MatchesPlan) so the three gates cannot drift.
+		authorised, legacy, err := e.planAuthorised(ctx, changeID, stored.Hash)
+		if err != nil {
+			return fmt.Errorf("wiring: replan approval check: %w", err)
+		}
 		run, err := e.store.GetRun(ctx, changeID)
 		if err != nil || run == nil {
 			return fmt.Errorf("wiring: get run for replan: %w", err)
@@ -264,6 +333,21 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		run.UpdatedAt = utcNow()
 		if err := e.store.UpdateRun(ctx, run); err != nil {
 			return fmt.Errorf("wiring: persist replan: %w", err)
+		}
+		if !authorised {
+			// Fail closed. The new plan is durable (the operator asked
+			// for it and may want to inspect it), but it is NOT executed:
+			// hand the run back to the approval flow the way PlanChange
+			// does for a re-planned run, so the next step is
+			// approve -> apply instead of retry.
+			if err := e.reenterApprovalFlow(ctx, run); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: change %q was re-planned to plan %s but no approved approval attests to that version; approve it, then apply the change",
+				grpc.ErrReplanNeedsApproval, changeID, stored.Hash)
+		}
+		if legacy {
+			log.Warn("retry replan: authorising via legacy (empty plan_hash) approval; no plan binding", "change_id", changeID)
 		}
 		p, err = e.loadStoredPlan(ctx, changeID)
 		if err != nil {
@@ -301,8 +385,13 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 	execRunID, _, phase, err := e.executePlan(ctx, changeID, p, old == "interrupted")
 	final := "failed"
 	switch {
-	case phase == string(engine.PhaseRolledBack):
-		final = "rolled_back"
+	case phase == string(engine.PhaseRolledBack),
+		phase == string(engine.PhasePartialRollback),
+		phase == string(engine.PhaseRollbackIncomplete):
+		// D-2 v2 design item 4: each rollback verdict keeps its own run
+		// status; a partial or incomplete rollback must not read as a
+		// clean "rolled_back" (or as a plain failure).
+		final = phase
 	case err == nil && phase == string(engine.PhaseCompleted):
 		final = "completed"
 	}
@@ -327,6 +416,63 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		return err
 	}
 	_ = execRunID
+	return nil
+}
+
+// planAuthorised reports whether any APPROVED approval row for this change
+// attests to planHash, and whether the match came from a legacy (unbound) row.
+// It deliberately filters on status="approved": pending, rejected and
+// superseded rows authorise nothing, and letting a pending row through would
+// reintroduce the very drift this gate closes.
+func (e *Engine) planAuthorised(ctx context.Context, changeID, planHash string) (matched, legacy bool, err error) {
+	approvals, err := e.store.ListApprovals(ctx, state.ApprovalFilter{RunID: changeID, Status: "approved"})
+	if err != nil {
+		return false, false, err
+	}
+	for _, a := range approvals {
+		if ok, lg := a.MatchesPlan(planHash); ok {
+			return true, lg, nil
+		}
+	}
+	return false, false, nil
+}
+
+// reenterApprovalFlow puts a re-planned run back into the approval flow:
+// status draft, approval_status pending, and every still-pending approval row
+// of the PREVIOUS plan version marked expired. This mirrors the supersede
+// step kickoffApproval performs on a re-plan, for the same reason: an
+// approval decision collected against the old plan says nothing about the
+// new one, and leaving it pending would let a late vote settle the run.
+//
+// Rows are expired, never deleted — the audit trail keeps both versions. A
+// failure to expire an individual row is logged and swallowed (the apply
+// gate re-checks approvals anyway), but a failure to write the run itself is
+// fatal: returning success with a run still in a failure terminal would
+// misrepresent the change as re-planned.
+func (e *Engine) reenterApprovalFlow(ctx context.Context, run *state.Run) error {
+	now := utcNow()
+	run.Status = "draft"
+	run.ApprovalStatus = "pending"
+	run.UpdatedAt = now
+	if err := e.store.UpdateRun(ctx, run); err != nil {
+		return fmt.Errorf("wiring: re-enter approval flow for %q: %w", run.ID, err)
+	}
+	approvals, err := e.store.ListApprovals(ctx, state.ApprovalFilter{RunID: run.ID, Status: "pending"})
+	if err != nil {
+		return fmt.Errorf("wiring: list pending approvals for %q: %w", run.ID, err)
+	}
+	for _, old := range approvals {
+		actedAt := now
+		old.Status = "expired"
+		old.ActedAt = &actedAt
+		if old.Comment == "" {
+			old.Comment = "superseded by retry re-plan"
+		}
+		if err := e.store.UpdateApproval(ctx, old); err != nil {
+			log.Warn("retry replan: superseding old pending approval failed",
+				"change_id", run.ID, "approval_id", old.ID, "error", err)
+		}
+	}
 	return nil
 }
 
@@ -358,12 +504,38 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 	}
 	defer rx.close()
 
-	mgr := rollback.NewManager(
+	mgrOpts := []rollback.ManagerOption{
 		rollback.WithWhitelistAll(),
 		rollback.WithConcurrency(e.rollbackConcurrency),
 		rollback.WithStopOnError(false),
-	)
-	res := mgr.Rollback(ctx, p, rx.executeFunc())
+	}
+	// Manual rollback shares the snapshot store: strategy-"snapshot"
+	// steps restore their pre-apply capture (keyed by the CHANGE id, so
+	// this path finds them without knowing any closure run id).
+	if e.snapshotDir != "" {
+		if store, err := rollback.NewFileSnapshotStore(e.snapshotDir); err != nil {
+			log.Error("snapshot store init failed; manual rollback runs without snapshot restore", "error", err)
+		} else if snapMgr, err := rollback.NewSnapshotManager(store); err != nil {
+			log.Error("snapshot manager init failed; manual rollback runs without snapshot restore", "error", err)
+		} else {
+			snapshotter := newRemoteSnapshotter(rx, snapMgr, changeID)
+			mgrOpts = append(mgrOpts,
+				rollback.WithSnapshotRestore(snapshotter.RestoreForStep),
+				rollback.WithRunID(changeID))
+		}
+	}
+	mgr := rollback.NewManager(mgrOpts...)
+
+	// D-2 v2 design item 1: the manual path holds no BatchResults, so
+	// its execution ledger derives from the persisted forward step
+	// evidence (the steps table) — compensate what provably ran, and
+	// nothing else. An unreadable evidence set fails closed: falling
+	// back to the whole plan would restore the pre-D-2 over-broad undo.
+	ledger, lerr := e.ledgerFromStoredSteps(ctx, changeID, p)
+	if lerr != nil {
+		return "", nil, lerr
+	}
+	res := mgr.RollbackWithLedger(ctx, p, rx.executeFunc(), ledger)
 
 	rbID := newID("rb-")
 	persistErr := e.persistRollbackResults(ctx, changeID, res, rx.snapshotOutputs())
@@ -383,6 +555,230 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		return rbID, hosts, fmt.Errorf("wiring: rollback succeeded but persisting evidence failed: %w", persistErr)
 	}
 	return rbID, hosts, nil
+}
+
+// planNeedsSnapshot reports whether any step of p declares the
+// strategy-"snapshot" rollback basis (D-2 v2 design item 5).
+func planNeedsSnapshot(p *plan.Plan) bool {
+	for _, b := range p.Batches {
+		for _, s := range b.Steps {
+			if s.Rollback != nil && s.Rollback.Strategy == "snapshot" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkSnapshotCapability fails closed when p declares snapshot-based
+// rollback but this engine cannot capture/restore (no
+// --engine-snapshot-dir, or the store/manager cannot be constructed).
+// Called before any dispatch so the gap surfaces as a refusal, never as
+// a mid-rollback "restore not wired" skip (D-2 v2 design item 5).
+func (e *Engine) checkSnapshotCapability(p *plan.Plan) error {
+	if !planNeedsSnapshot(p) {
+		return nil
+	}
+	if e.snapshotDir == "" {
+		return fmt.Errorf("wiring: plan %q declares snapshot rollback but no snapshot store is configured (--engine-snapshot-dir); refusing to execute (fail-closed, D-2 v2)", p.ID)
+	}
+	snapStore, err := rollback.NewFileSnapshotStore(e.snapshotDir)
+	if err != nil {
+		return fmt.Errorf("wiring: plan %q declares snapshot rollback but the snapshot store at %q is unusable: %w (fail-closed, D-2 v2)", p.ID, e.snapshotDir, err)
+	}
+	if _, err := rollback.NewSnapshotManager(snapStore); err != nil {
+		return fmt.Errorf("wiring: plan %q declares snapshot rollback but the snapshot manager is unusable: %w (fail-closed, D-2 v2)", p.ID, err)
+	}
+	return nil
+}
+
+// ledgerFromStoredSteps derives the manual-rollback execution ledger from
+// persisted step evidence (D-2 v2 design item 1). Only rows that match a
+// FORWARD plan step of p on its declaring batch/target count:
+//   - status "success" → ran (MarkRan)
+//   - status "failed"  → dispatched and failed (MarkUnknown: it still needs
+//     its declared compensation; residue undetermined)
+//   - status "skipped" → resume marker, not a dispatch — ignored (the
+//     original success row exists alongside it)
+//
+// Compensation idempotency: a forward step whose declared compensation
+// ALREADY completed successfully on that host is marked Compensated, so a
+// later rollback skips it instead of running its undo a second time (a
+// non-idempotent undo — append a line, bump a counter, open a ticket — would
+// land twice). Only SUCCESSFUL prior compensations count: a compensation that
+// failed is exactly what the partial/incomplete remedy path exists to retry,
+// and suppressing it would block the remedy. MarkRan/MarkUnknown clear the
+// flag, so a re-applied step needs compensating again.
+//
+// The undo step names come from the plan, which is hash-bound and immutable
+// (P1-1), so they are a reliable join key. A workflow that names an undo
+// step identically to a forward step is the documented ambiguity left to the
+// future compensation-idempotency extension point: such a run is REFUSED
+// here rather than guessed at, because its undo rows are indistinguishable
+// from forward evidence.
+//
+// With no forward evidence at all the ledger is empty and nothing is
+// compensated — pre-engine runs cannot reach this path (loadStoredPlan
+// refuses runs without a stored artifact).
+func (e *Engine) ledgerFromStoredSteps(ctx context.Context, changeID string, p *plan.Plan) (*rollback.ExecutionLedger, error) {
+	rows, err := e.store.ListSteps(ctx, state.StepFilter{RunID: changeID})
+	if err != nil {
+		return nil, fmt.Errorf("wiring: list steps for rollback ledger: %w", err)
+	}
+	forward, undoNames := indexPlanSteps(p)
+	if err := refuseUndoNameCollisions(changeID, forward, undoNames); err != nil {
+		return nil, err
+	}
+	// Evidence ordering. A compensation only counts if it completed AFTER the
+	// most recent forward execution of the same step on that host: a retry
+	// re-runs the stored plan and appends a NEW forward row, so an older undo
+	// row must not be read as having restored the newer side effect. Rows
+	// without a completion timestamp cannot be ordered, and the safe reading
+	// of "cannot tell" is to compensate again (a repeated compensation is
+	// visible; a wrongly-skipped one silently hides a gap).
+	ledger, latestForward, latestUndo := readStepEvidence(rows, forward)
+	// Applied after every MarkRan/MarkUnknown: MarkRan clears the compensated
+	// flag, so the flag has to be set last.
+	for host, steps := range forward {
+		for step := range steps {
+			if !ledger.Ran(host, step) {
+				continue
+			}
+			fwdAt, ok := latestForward[host][step]
+			if !ok {
+				// No completion timestamp on the forward evidence, so a prior
+				// compensation cannot be ordered against it. If one IS on
+				// record, this is a genuine repeat-or-not question — hand it to
+				// the manager, which refuses when the undo does not declare
+				// itself idempotent, instead of guessing here.
+				if undoSucceeded(latestUndo[host], undoNames[step]) {
+					ledger.MarkCompensationUncertain(host, step)
+				}
+				continue
+			}
+			for undo := range undoNames[step] {
+				if undoAt, ok := latestUndo[host][undo]; ok && undoAt.After(fwdAt) {
+					ledger.MarkCompensated(host, step)
+					break
+				}
+			}
+		}
+	}
+	return ledger, nil
+}
+
+// undoSucceeded reports whether any of the step's compensation names has a
+// successful completion recorded for this host.
+func undoSucceeded(undoAt map[string]time.Time, undoNames map[string]bool) bool {
+	for undo := range undoNames {
+		if _, ok := undoAt[undo]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// indexPlanSteps returns the forward step names per host plus, per forward
+// step, the step names its compensation writes to the evidence table. The
+// snapshot strategy records a synthetic "snapshot:<step>" name (rollback
+// Manager.restoreSnapshotStep), so a prior restore is recognisable the same way
+// an executed undo command is.
+func indexPlanSteps(p *plan.Plan) (forward, undoNames map[string]map[string]bool) {
+	forward = make(map[string]map[string]bool)
+	undoNames = make(map[string]map[string]bool)
+	for _, b := range p.Batches {
+		for _, s := range b.Steps {
+			if undoNames[s.Name] == nil {
+				undoNames[s.Name] = make(map[string]bool)
+			}
+			switch {
+			case s.Rollback == nil:
+			case s.Rollback.Strategy == "snapshot":
+				undoNames[s.Name]["snapshot:"+s.Name] = true
+			default:
+				for _, rb := range s.Rollback.Steps {
+					undoNames[s.Name][rb.Name] = true
+				}
+			}
+		}
+		for _, t := range b.Targets {
+			if forward[t] == nil {
+				forward[t] = make(map[string]bool)
+			}
+			for _, s := range b.Steps {
+				forward[t][s.Name] = true
+			}
+		}
+	}
+	return forward, undoNames
+}
+
+// refuseUndoNameCollisions fails closed when an undo step name is also a
+// forward step name: their evidence rows are then unseparable, and
+// compensating would be a guess.
+func refuseUndoNameCollisions(changeID string, forward, undoNames map[string]map[string]bool) error {
+	for _, names := range undoNames {
+		for name := range names {
+			if collidesWithForward(name, forward) {
+				return fmt.Errorf(
+					"wiring: change %q declares rollback step %q whose name is also a forward step name: its undo evidence cannot be told apart from forward evidence; rename the rollback step (or declare it idempotent) before rolling back",
+					changeID, name)
+			}
+		}
+	}
+	return nil
+}
+
+// readStepEvidence folds the persisted rows into an execution ledger and the
+// two completion-time indexes the compensation check needs.
+func readStepEvidence(rows []*state.Step, forward map[string]map[string]bool) (
+	*rollback.ExecutionLedger, map[string]map[string]time.Time, map[string]map[string]time.Time) {
+	ledger := rollback.NewExecutionLedger()
+	latestForward := make(map[string]map[string]time.Time)
+	latestUndo := make(map[string]map[string]time.Time)
+	note := func(m map[string]map[string]time.Time, host, name string, at *time.Time) {
+		if at == nil || at.IsZero() {
+			return
+		}
+		if m[host] == nil {
+			m[host] = make(map[string]time.Time)
+		}
+		if cur, ok := m[host][name]; !ok || at.After(cur) {
+			m[host][name] = *at
+		}
+	}
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		if !forward[row.Host][row.StepName] {
+			// Undo evidence: only a SUCCESSFUL compensation counts.
+			if row.Status == "success" {
+				note(latestUndo, row.Host, row.StepName, row.CompletedAt)
+			}
+			continue
+		}
+		switch row.Status {
+		case "success":
+			note(latestForward, row.Host, row.StepName, row.CompletedAt)
+			ledger.MarkRan(row.Host, row.StepName)
+		case "failed":
+			note(latestForward, row.Host, row.StepName, row.CompletedAt)
+			ledger.MarkUnknown(row.Host, row.StepName)
+		}
+	}
+	return ledger, latestForward, latestUndo
+}
+
+// collidesWithForward reports whether name is also used as a forward step name
+// on any host declared by the plan.
+func collidesWithForward(name string, forward map[string]map[string]bool) bool {
+	for _, steps := range forward {
+		if steps[name] {
+			return true
+		}
+	}
+	return false
 }
 
 // --- stored plan helpers ----------------------------------------------------
@@ -405,8 +801,7 @@ func (e *Engine) loadStoredPlan(ctx context.Context, changeID string) (*plan.Pla
 	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
 		return nil, fmt.Errorf("wiring: stored plan for %q is corrupt: %w", changeID, err)
 	}
-	hash := plan.ComputeHash(&p)
-	if hash == "" || hash != run.PlanHash {
+	if !plan.VerifyHash(&p, run.PlanHash) {
 		return nil, fmt.Errorf("wiring: stored plan for %q does not match its plan hash (drift or corruption); re-plan required", changeID)
 	}
 	return &p, nil
@@ -421,9 +816,15 @@ func narrowPlan(p *plan.Plan, hosts []string) *plan.Plan {
 		want[h] = true
 	}
 	out := &plan.Plan{
-		ID:           p.ID,
-		WorkflowName: p.WorkflowName,
-		CreatedAt:    p.CreatedAt,
+		ID:            p.ID,
+		WorkflowName:  p.WorkflowName,
+		CreatedAt:     p.CreatedAt,
+		RiskScore:     p.RiskScore,
+		RiskFactors:   p.RiskFactors,
+		ApprovalFloor: p.ApprovalFloor,
+		Approval:      p.Approval,
+		Rollback:      p.Rollback,
+		Gate:          p.Gate,
 	}
 	for _, b := range p.Batches {
 		var keep []string
@@ -440,6 +841,7 @@ func narrowPlan(p *plan.Plan, hosts []string) *plan.Plan {
 			Targets:        keep,
 			Steps:          b.Steps,
 			MaxConcurrency: b.MaxConcurrency,
+			Gate:           b.Gate,
 		}
 		out.Batches = append(out.Batches, nb)
 	}

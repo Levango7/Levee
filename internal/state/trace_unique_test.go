@@ -7,6 +7,7 @@ package state
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newDedicatedTraceTestStore returns a file-backed SQLite store for concurrent
+// trace tests. It deliberately avoids the shared-cache in-memory store used by
+// newTestStore: with cache=shared + MaxOpenConns=1 the pool hands a single
+// connection to both racing goroutines, and modernc.org/sqlite on macOS then
+// surfaces a "database is locked" error before the unique constraint can be
+// checked (flaky "loser must map to ErrTraceExists" red). A dedicated
+// file-backed pool gives each goroutine its own connection so the lock resolves
+// into the deterministic duplicate-detection outcome the test asserts.
+func newDedicatedTraceTestStore(t *testing.T) *SQLiteStore {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "trace-concurrent.db")
+	store, err := NewSQLiteStore(context.Background(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
 
 func seedRunForTrace(t *testing.T, store Store, id string, now time.Time) {
 	t.Helper()
@@ -105,7 +123,7 @@ func TestCreateTrace_DuplicateID_ErrTraceExists(t *testing.T) {
 }
 
 func TestCreateTrace_ConcurrentSameID_SQLite(t *testing.T) {
-	writeOnceDoubleWrite(t, newTestStore(t), "sqlite")
+	writeOnceDoubleWrite(t, newDedicatedTraceTestStore(t), "sqlite")
 }
 
 func TestPGStore_CreateTrace_DuplicateID_ErrTraceExists(t *testing.T) {

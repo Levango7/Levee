@@ -20,6 +20,7 @@ import (
 
 	// Register the built-in executor modules on executor.DefaultExecutor().
 	_ "github.com/nexus/levee/internal/executor/modules/file"
+	_ "github.com/nexus/levee/internal/executor/modules/mysql"
 	_ "github.com/nexus/levee/internal/executor/modules/pkg"
 	_ "github.com/nexus/levee/internal/executor/modules/shell"
 	_ "github.com/nexus/levee/internal/executor/modules/svc"

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
@@ -309,7 +311,13 @@ func TestRunChange_FailureRollsBackAndPersistsUndo(t *testing.T) {
 	// failure cause lives in the persisted step rows.
 	require.NoError(t, err)
 	assert.False(t, success)
-	assert.Equal(t, "rolled_back", phase, "forced failure must trigger automatic rollback")
+	// D-2 v2 verdict: the failed "boom" step has NO declared
+	// compensation, so its (undetermined) side effects were never
+	// undone — the run must NOT claim a clean "rolled_back". "work"
+	// WAS compensated (evidence below), so this is a partial rollback,
+	// not an incomplete one.
+	assert.Equal(t, "rolled_back_partial", phase,
+		"forced failure must trigger automatic rollback; missing compensation for the failed step must not read as a clean rollback")
 
 	steps := stepsOf(t, store, "run-rb")
 	fwd := stepByNameHost(steps, "work", "web-1")
@@ -483,19 +491,132 @@ func TestRollbackChange_ManualUndo(t *testing.T) {
 	seedRun(t, store, "run-manual-rb", rbWorkflowYAML)
 	planAndPersist(t, e, store, "run-manual-rb", []string{"web-1"})
 
+	// D-2 v2 design item 1: the manual rollback compensates exactly what
+	// the steps-table evidence says ran. This run was NEVER applied — no
+	// forward rows exist — so nothing may be dispatched: undoing state
+	// that was never changed is the P0-3 bug this ledger exists to stop.
 	rbID, hosts, err := e.rollbackChange(context.Background(), "run-manual-rb", "", true)
-	require.NoError(t, err)
+	require.NoError(t, err, "a no-evidence rollback is a clean no-op, not an error")
 	assert.Contains(t, rbID, "rb-")
-	assert.Equal(t, []string{"web-1"}, hosts)
+	assert.Empty(t, hosts, "never-applied run: nothing to compensate")
 
-	// The undo ran for real and is evidenced; the forward rows were never
-	// written (this run was never applied) but the batch placeholder exists.
 	cmds := rec.snapshotCmds()
-	assert.Contains(t, cmds, "web-1\x00undo-command")
+	assert.NotContains(t, cmds, "web-1\x00undo-command",
+		"without forward evidence no undo may be dispatched")
 	assert.NotContains(t, cmds, "web-1\x00work-command")
 
 	steps := stepsOf(t, store, "run-manual-rb")
 	undo := stepByNameHost(steps, "undo-work", "web-1")
-	require.NotNil(t, undo)
+	assert.Nil(t, undo, "no undo evidence may be written when nothing was undone")
+}
+
+const snapWorkflowYAML = `name: snap-gate
+target:
+  type: host
+  query: "env=test"
+steps:
+  - name: snap-step
+    action: shell.exec
+    args:
+      cmd: snap-command
+    rollback:
+      strategy: snapshot
+`
+
+// TestRunChange_SnapshotPlanWithoutStoreFailsClosed pins D-2 v2 design
+// item 5: a plan declaring snapshot-based rollback must be refused BEFORE
+// any dispatch when no snapshot store is configured — the gap used to
+// surface only mid-rollback as a "restore not wired" skip, after the
+// forward state had already changed.
+func TestRunChange_SnapshotPlanWithoutStoreFailsClosed(t *testing.T) {
+	rec := &loopRecorder{}
+	e, store := newLoopEngine(t, rec) // no WithSnapshotDir on purpose
+	seedLocalTargets(t, store, "web-1")
+	seedRun(t, store, "run-snap-gate", snapWorkflowYAML)
+	planAndPersist(t, e, store, "run-snap-gate", []string{"web-1"})
+	setRunStatus(t, store, "run-snap-gate", "running")
+
+	_, _, _, err := e.runChange(context.Background(), "run-snap-gate", false, 1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares snapshot rollback")
+	assert.Contains(t, err.Error(), "fail-closed")
+	assert.Empty(t, rec.snapshotCmds(), "nothing may be dispatched for a refused snapshot plan")
+}
+
+// TestPlanNeedsSnapshot unit-covers the gate predicate across rollback
+// strategies: only strategy-"snapshot" declarations demand a snapshot store.
+func TestPlanNeedsSnapshot(t *testing.T) {
+	snap := newD2WiringPlan("snapshot")
+	undo := newD2WiringPlan("undo-action")
+	none := newD2WiringPlan("")
+
+	assert.True(t, planNeedsSnapshot(snap))
+	assert.False(t, planNeedsSnapshot(undo))
+	assert.False(t, planNeedsSnapshot(none))
+}
+
+// newD2WiringPlan builds a one-batch plan whose step declares a rollback
+// with the given strategy ("" = no rollback spec at all).
+func newD2WiringPlan(strategy string) *plan.Plan {
+	ps := plan.PlanStep{Name: "s1", Module: "m", Action: "a"}
+	if strategy != "" {
+		ps.Rollback = &dsl.RollbackSpec{Strategy: strategy}
+	}
+	return &plan.Plan{
+		ID:      "plan-snap-unit",
+		Batches: []plan.Batch{{Index: 0, Targets: []string{"h1"}, Steps: []plan.PlanStep{ps}}},
+	}
+}
+
+// TestRollbackChange_ManualLedgerFromPartialEvidence is the D-2 v2 design
+// test («用手工构造部分执行覆盖»): two hosts in the plan, forward evidence
+// for web-1 ONLY — the manual rollback must compensate web-1 alone and
+// never touch web-2, whose state was never changed.
+func TestRollbackChange_ManualLedgerFromPartialEvidence(t *testing.T) {
+	rec := &loopRecorder{}
+	e, store := newLoopEngine(t, rec)
+	seedLocalTargets(t, store, "web-1", "web-2")
+	seedRun(t, store, "run-partial-ev", rbWorkflowYAML)
+	planAndPersist(t, e, store, "run-partial-ev", []string{"web-1", "web-2"})
+
+	// 手工构造部分执行: a batch row plus forward step evidence for web-1 only.
+	ctx := context.Background()
+	now := utcNowStub()
+	require.NoError(t, store.CreateBatch(ctx, &state.Batch{
+		ID:          "bat-partial-ev",
+		RunID:       "run-partial-ev",
+		BatchNo:     1,
+		Status:      "failed",
+		TotalHosts:  2,
+		Succeeded:   1,
+		Failed:      0,
+		StartedAt:   &now,
+		CompletedAt: &now,
+	}))
+	require.NoError(t, store.CreateStep(ctx, &state.Step{
+		ID:       "stp-ev-1",
+		RunID:    "run-partial-ev",
+		BatchID:  "bat-partial-ev",
+		Host:     "web-1",
+		StepName: "work",
+		Action:   "shell.exec",
+		Status:   "success",
+	}))
+
+	rbID, hosts, err := e.rollbackChange(context.Background(), "run-partial-ev", "", true)
+	require.NoError(t, err, "the evidenced compensation completes cleanly")
+	assert.Contains(t, rbID, "rb-")
+	assert.Equal(t, []string{"web-1"}, hosts, "only the evidenced host may be reported rolled back")
+
+	cmds := rec.snapshotCmds()
+	assert.Contains(t, cmds, "web-1\x00undo-command", "web-1's evidenced step must be compensated")
+	assert.NotContains(t, cmds, "web-2\x00undo-command",
+		"web-2 has no forward evidence: compensating it would touch unchanged state")
+
+	// Undo evidence lands for web-1 only.
+	steps := stepsOf(t, store, "run-partial-ev")
+	undo := stepByNameHost(steps, "undo-work", "web-1")
+	require.NotNil(t, undo, "rollback evidence must be persisted")
 	assert.Equal(t, "success", undo.Status)
+	assert.Nil(t, stepByNameHost(steps, "undo-work", "web-2"))
 }

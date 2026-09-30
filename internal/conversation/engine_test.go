@@ -336,7 +336,9 @@ func TestHandleMessage_Reviewing_Approve(t *testing.T) {
 	reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
 	require.NoError(t, err)
 	require.NotNil(t, reply)
-	assert.Equal(t, StateExecuting, sess.GetState())
+	// P2-3: confirming stays in reviewing; nothing executes yet.
+	assert.Equal(t, StateReviewing, sess.GetState())
+	assert.Contains(t, reply.Text, "尚未启动执行")
 	require.NotNil(t, reply.Action)
 	assert.Equal(t, ActionApprove, reply.Action.Type)
 }
@@ -349,7 +351,7 @@ func TestHandleMessage_Reviewing_ApproveEnglish(t *testing.T) {
 
 	reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", "approve")
 	require.NoError(t, err)
-	assert.Equal(t, StateExecuting, sess.GetState())
+	assert.Equal(t, StateReviewing, sess.GetState())
 	assert.Equal(t, ActionApprove, reply.Action.Type)
 }
 
@@ -361,8 +363,32 @@ func TestHandleMessage_Reviewing_ApproveYes(t *testing.T) {
 
 	reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", "yes")
 	require.NoError(t, err)
-	assert.Equal(t, StateExecuting, sess.GetState())
+	assert.Equal(t, StateReviewing, sess.GetState())
 	assert.Equal(t, ActionApprove, reply.Action.Type)
+}
+
+func TestHandleMessage_Reviewing_ApproveKeepsReviewing(t *testing.T) {
+	e := newTestEngine()
+	sess := makeSession(t, e, "u1")
+	_, err := e.HandleMessage(context.Background(), sess.ID, "u1", "/diagnose localhost")
+	require.NoError(t, err)
+	require.Equal(t, StateReviewing, sess.GetState())
+
+	// Confirming keeps the session in reviewing (P2-3) and can be repeated.
+	for _, text := range []string{"执行", "approve"} {
+		reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", text)
+		require.NoError(t, err)
+		assert.Equal(t, StateReviewing, sess.GetState())
+		assert.Contains(t, reply.Text, "尚未启动执行")
+		require.NotNil(t, reply.Action)
+		assert.Equal(t, ActionApprove, reply.Action.Type)
+		assert.NotEmpty(t, reply.Action.Payload["recommendation_id"])
+	}
+
+	// Reject is still available after confirming.
+	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "拒绝")
+	require.NoError(t, err)
+	assert.Equal(t, StateFailed, sess.GetState())
 }
 
 func TestHandleMessage_Reviewing_Reject(t *testing.T) {
@@ -455,12 +481,9 @@ func TestHandleMessage_Reviewing_OtherTextNoRecommendation(t *testing.T) {
 func TestHandleMessage_Executing_Cancel(t *testing.T) {
 	e := newTestEngine()
 	sess := makeSession(t, e, "u1")
-	// Drive to Executing via /diagnose + approve.
-	_, err := e.HandleMessage(context.Background(), sess.ID, "u1", "/diagnose localhost")
-	require.NoError(t, err)
-	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
-	require.NoError(t, err)
-	require.Equal(t, StateExecuting, sess.GetState())
+	// StateExecuting is unreachable via messages until the execution chain
+	// is wired (P2-3); set it directly to exercise the defensive handler.
+	sess.SetState(StateExecuting)
 
 	reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", "取消")
 	require.NoError(t, err)
@@ -472,10 +495,7 @@ func TestHandleMessage_Executing_Cancel(t *testing.T) {
 func TestHandleMessage_Executing_CancelEnglish(t *testing.T) {
 	e := newTestEngine()
 	sess := makeSession(t, e, "u1")
-	_, err := e.HandleMessage(context.Background(), sess.ID, "u1", "/diagnose localhost")
-	require.NoError(t, err)
-	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
-	require.NoError(t, err)
+	sess.SetState(StateExecuting)
 
 	reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", "cancel")
 	require.NoError(t, err)
@@ -486,10 +506,7 @@ func TestHandleMessage_Executing_CancelEnglish(t *testing.T) {
 func TestHandleMessage_Executing_CancelCommand(t *testing.T) {
 	e := newTestEngine()
 	sess := makeSession(t, e, "u1")
-	_, err := e.HandleMessage(context.Background(), sess.ID, "u1", "/diagnose localhost")
-	require.NoError(t, err)
-	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
-	require.NoError(t, err)
+	sess.SetState(StateExecuting)
 
 	reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", "/cancel")
 	require.NoError(t, err)
@@ -500,10 +517,7 @@ func TestHandleMessage_Executing_CancelCommand(t *testing.T) {
 func TestHandleMessage_Executing_OtherText(t *testing.T) {
 	e := newTestEngine()
 	sess := makeSession(t, e, "u1")
-	_, err := e.HandleMessage(context.Background(), sess.ID, "u1", "/diagnose localhost")
-	require.NoError(t, err)
-	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
-	require.NoError(t, err)
+	sess.SetState(StateExecuting)
 
 	reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", "进度如何？")
 	require.NoError(t, err)
@@ -796,10 +810,10 @@ func TestHandleMessage_ReviewingReplies_TableDriven(t *testing.T) {
 		wantState  SessionState
 		wantAction ActionType
 	}{
-		{"approve_cn", "执行", StateExecuting, ActionApprove},
-		{"approve_en", "approve", StateExecuting, ActionApprove},
-		{"yes", "yes", StateExecuting, ActionApprove},
-		{"y", "y", StateExecuting, ActionApprove},
+		{"approve_cn", "执行", StateReviewing, ActionApprove},
+		{"approve_en", "approve", StateReviewing, ActionApprove},
+		{"yes", "yes", StateReviewing, ActionApprove},
+		{"y", "y", StateReviewing, ActionApprove},
 		{"reject_cn", "拒绝", StateFailed, ActionReject},
 		{"reject_en", "reject", StateFailed, ActionReject},
 		{"no", "no", StateFailed, ActionReject},
@@ -846,11 +860,9 @@ func TestHandleMessage_ExecutingReplies_TableDriven(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			e := newTestEngine()
 			sess := makeSession(t, e, "u1")
-			_, err := e.HandleMessage(context.Background(), sess.ID, "u1", "/diagnose localhost")
-			require.NoError(t, err)
-			_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
-			require.NoError(t, err)
-			require.Equal(t, StateExecuting, sess.GetState())
+			// StateExecuting is unreachable via messages (P2-3); set it
+			// directly to exercise the defensive handler.
+			sess.SetState(StateExecuting)
 
 			reply, err := e.HandleMessage(context.Background(), sess.ID, "u1", c.text)
 			require.NoError(t, err)
@@ -994,13 +1006,13 @@ func TestHandleMessage_FullFlow(t *testing.T) {
 	require.NotNil(t, reply)
 	require.Equal(t, StateReviewing, sess.GetState())
 
-	// 2. approve -> executing
+	// 2. confirm -> stays reviewing (execution chain not wired, P2-3)
 	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "执行")
 	require.NoError(t, err)
-	require.Equal(t, StateExecuting, sess.GetState())
+	require.Equal(t, StateReviewing, sess.GetState())
 
-	// 3. cancel -> failed
-	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "取消")
+	// 3. reject -> failed
+	_, err = e.HandleMessage(context.Background(), sess.ID, "u1", "拒绝")
 	require.NoError(t, err)
 	require.Equal(t, StateFailed, sess.GetState())
 
