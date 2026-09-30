@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/rollback"
 )
 
@@ -98,4 +99,50 @@ func TestRunIDOfNilResultIsEmpty(t *testing.T) {
 	assert.Zero(t, compensationsOf(nil, true))
 	assert.Zero(t, compensationsOf(nil, false))
 	assert.Zero(t, unknownOf(nil))
+}
+
+// recordingNotifier captures what a NotificationManager actually delivers.
+type recordingNotifier struct {
+	msgs []notify.Message
+}
+
+func (r *recordingNotifier) Name() string { return "recording" }
+
+func (r *recordingNotifier) Send(_ context.Context, msg notify.Message) error {
+	r.msgs = append(r.msgs, msg)
+	return nil
+}
+
+// TestNotifyRollbackSinkDeliversToNotifier is why the adapter exists in the
+// tree at all: it is the difference between "notify is wired" and "notify is
+// one line away from being wired". It is exercised here against a real
+// NotificationManager so that the grade→entry-point mapping, the run id and
+// the severity are pinned while nothing depends on an actual transport.
+func TestNotifyRollbackSinkDeliversToNotifier(t *testing.T) {
+	mgr := notify.NewNotificationManager()
+	rec := &recordingNotifier{}
+	require.NoError(t, mgr.Register(rec))
+
+	sink := &notifyRollbackSink{
+		notifier:  notify.NewRollbackNotifier(mgr),
+		initiator: "alice",
+		approver:  "bob",
+		oncall:    "carol",
+	}
+
+	require.NoError(t, sink.NotifyGrade(context.Background(), rollback.GradeFailure, "run-9", "3/1 compensated"))
+	require.Len(t, rec.msgs, 1, "a failure grade must produce exactly one notification")
+	assert.Equal(t, "run-9", rec.msgs[0].RunID, "the message must name the run it is about")
+	assert.Equal(t, notify.LevelCritical, rec.msgs[0].Level,
+		"a failed rollback is the critical tier, not a warning")
+	assert.Contains(t, rec.msgs[0].Body, "3/1 compensated")
+	assert.Len(t, rec.msgs[0].Recipients, 3, "initiator + approver + oncall")
+
+	require.NoError(t, sink.NotifyGrade(context.Background(), rollback.GradePartial, "run-9", "partial"))
+	require.Len(t, rec.msgs, 2)
+	assert.Equal(t, notify.LevelWarning, rec.msgs[1].Level)
+
+	// Success has no notification by design: the sink must not invent one.
+	require.NoError(t, sink.NotifyGrade(context.Background(), rollback.GradeSuccess, "run-9", "all good"))
+	assert.Len(t, rec.msgs, 2, "success must not notify")
 }

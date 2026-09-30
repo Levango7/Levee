@@ -311,6 +311,14 @@ const (
 	LE095 = "LE095" // missing window block (no window constraint) [warning]
 	LE096 = "LE096" // missing batches block (single batch full) [warning]
 	LE097 = "LE097" // workflow-level rollback carries unattributable compensation content (strategy / steps / snapshot_paths) — declare it on the step
+	// Run-level snapshot baseline (see dsl/run_snapshot.go). These are a
+	// separate primitive from the step-level strategy, not a looser form of
+	// it: one capture for the whole run, one restore.
+	LE098 = "LE098" // run snapshot scope must be "run"
+	LE099 = "LE099" // run snapshot declares no paths
+	LE100 = "LE100" // invalid run snapshot type
+	LE101 = "LE101" // run snapshot path must be absolute
+	LE102 = "LE102" // run snapshot declared with on_failure: manual (nothing would restore the baseline)
 )
 
 // CompileSeverity is the compile-time severity of an error code: either "error"
@@ -371,6 +379,11 @@ var codeCatalogue = []CodeInfo{
 	{LE095, "structure", "missing window block (no window constraint)", CompileWarning},
 	{LE096, "structure", "missing batches block (single batch full)", CompileWarning},
 	{LE097, "structure", "workflow-level rollback carries unattributable compensation content (strategy / steps / snapshot_paths)", CompileError},
+	{LE098, "snapshot", "run snapshot scope must be \"run\" (per-step / per-batch scopes have no compensation basis)", CompileError},
+	{LE099, "snapshot", "run snapshot declares no paths (nothing to capture)", CompileError},
+	{LE100, "snapshot", "invalid run snapshot type (allowed: file, config)", CompileError},
+	{LE101, "snapshot", "run snapshot path must be absolute", CompileError},
+	{LE102, "snapshot", "run snapshot declared with on_failure: manual, whose rollback path does not restore the baseline", CompileError},
 }
 
 // Lookup returns the CodeInfo for the given code, or false if the code is not

@@ -149,6 +149,11 @@ func (v *Validator) Validate(wf *Workflow) []ValidationError {
 	// 原因见 docs/product-roadmap.md 的 "CompileWarning 一档没有产生点"。
 	errs = append(errs, wf.Window.Check()...)
 
+	// 11. run 级快照基线校验（V20）：scope/paths/type/绝对路径，以及
+	// 「声明了却没人恢复」的组合（on_failure: manual）。坏声明在这里挡住，
+	// 比在首批发前才发现基线无处可存要早、也要便宜。
+	errs = append(errs, ValidateRunSnapshot(wf.Snapshot, wf.Rollback, "snapshot")...)
+
 	return errs
 }
 

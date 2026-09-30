@@ -98,6 +98,40 @@ type Workflow struct {
 	// Gate holds workflow-level verification gates keyed by timing
 	// (pre_apply / post_apply). post_batch gates live on Batches.Gate.
 	Gate *GateSpec
+
+	// Snapshot is the RUN-LEVEL baseline: one capture of the declared paths
+	// on every target, taken once before the first batch, restored once if
+	// the run rolls back.
+	//
+	// It is deliberately a separate primitive, not a workflow-level
+	// `rollback.snapshot_paths`. That form is rejected outright (LE097): a
+	// workflow-level path list has no compensation basis to hang on, because
+	// the ledger attributes compensations per (host, forward step).
+	// Projecting those paths onto every step would be a semantic lie — it
+	// would claim N pre-images for one run and restore whichever one ran
+	// last. What a run-level baseline actually wants is a single pre-image
+	// of the whole run, which is what this field declares.
+	Snapshot *RunSnapshotSpec
+}
+
+// RunSnapshotSpec declares the run-level baseline.
+//
+// Scope exists to make the blast radius explicit at the declaration site.
+// "run" is the only accepted value today (validator LE098): a per-step or
+// per-batch scope is exactly the semantic that LE097 forbids, and letting it
+// be spelled here would reopen the same hole one level down.
+type RunSnapshotSpec struct {
+	// Scope must be "run".
+	Scope string
+
+	// Paths are the absolute target paths to capture, per target, before the
+	// first batch. Must be non-empty (LE099).
+	Paths []string
+
+	// Type selects the capture semantics: "file" (verbatim copy, the
+	// default) or "config" (read as configuration). Mirrors
+	// rollback.SnapshotType; unknown values are rejected (LE100).
+	Type string
 }
 
 // WorkflowMeta carries workflow identification metadata.

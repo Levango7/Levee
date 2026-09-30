@@ -19,6 +19,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 )
 
@@ -94,4 +96,113 @@ func (cr *ClosureRunner) captureSnapshots(ctx context.Context, runID string, p *
 // uses the undo-step machinery in manager.go, not snapshots.
 func isSnapshotStep(step plan.PlanStep) bool {
 	return step.Rollback != nil && step.Rollback.Strategy == "snapshot"
+}
+
+// --- run-level baseline -----------------------------------------------------
+
+// RunSnapshotter captures and restores the RUN-level baseline: one capture of
+// the declared paths on every target before the first batch, one restore if
+// the run rolls back.
+//
+// It is a separate interface from Snapshotter on purpose. The two have
+// different cardinality (once per (target, step) vs once per run), different
+// cardinality of restore (per step, inside the manager's compensation walk vs
+// once, after it), and — most importantly — different failure semantics. A
+// missing step snapshotter is a no-op by design, because that is the
+// pre-wiring behaviour. A missing run snapshotter is NOT: the plan declared a
+// baseline, so running without it would mutate targets whose pre-state was
+// never recorded and leave the operator believing rollback can restore them.
+// Declared-but-unwired therefore aborts the run before any mutation.
+type RunSnapshotter interface {
+	// CaptureRun records the baseline on every target under runID, before
+	// the first batch executes. A non-nil error aborts the run.
+	CaptureRun(ctx context.Context, runID string, targets []string, spec *dsl.RunSnapshotSpec) error
+
+	// RestoreRun writes the baseline back over every target. It is called
+	// once, after the step compensations have run, so that the run's
+	// pre-state wins for the paths it covers.
+	RestoreRun(ctx context.Context, runID string, targets []string, spec *dsl.RunSnapshotSpec) error
+}
+
+// WithRunSnapshotter installs the run-level baseline coordinator.
+func WithRunSnapshotter(s RunSnapshotter) ClosureOption {
+	return func(cr *ClosureRunner) { cr.runSnapshotter = s }
+}
+
+// SetRunSnapshotter attaches (or detaches, with nil) the run-level baseline
+// coordinator after construction, mirroring SetSnapshotter: the wiring layer
+// builds the transport after the runner exists.
+func (cr *ClosureRunner) SetRunSnapshotter(s RunSnapshotter) {
+	cr.runSnapshotter = s
+}
+
+// captureSnapshotsAndBaseline runs both pre-apply capture halves and returns
+// a closure-ready error. The step-level capture comes first: a plan that
+// declares per-step snapshots has the narrower baseline, and recording the
+// run-level one first would mean a step-level capture failure leaves an
+// orphan run record behind.
+func (cr *ClosureRunner) captureSnapshotsAndBaseline(ctx context.Context, runID string, p *plan.Plan, targets []string) error {
+	if err := cr.captureSnapshots(ctx, runID, p); err != nil {
+		return fmt.Errorf("closure: pre-apply snapshot: %w", err)
+	}
+	if err := cr.captureRunSnapshot(ctx, runID, p, targets); err != nil {
+		return fmt.Errorf("closure: run-level snapshot: %w", err)
+	}
+	return nil
+}
+
+// captureRunSnapshot takes the run-level baseline. It is a no-op for plans
+// that declare none, and a hard failure for plans that declare one while no
+// RunSnapshotter is installed — see the interface comment for why this is
+// the opposite of the step-level hook.
+func (cr *ClosureRunner) captureRunSnapshot(ctx context.Context, runID string, p *plan.Plan, targets []string) error {
+	if p == nil || p.RunSnapshot == nil {
+		return nil
+	}
+	if cr.runSnapshotter == nil {
+		return fmt.Errorf("plan declares a run-level snapshot baseline (%d path(s), scope %q) "+
+			"but no run snapshotter is installed: the baseline cannot be recorded, so the run "+
+			"is refused before any target is touched rather than executed with an unrecorded "+
+			"pre-state (configure --engine-snapshot-dir)",
+			len(p.RunSnapshot.Paths), p.RunSnapshot.Scope)
+	}
+	if err := cr.runSnapshotter.CaptureRun(ctx, runID, targets, p.RunSnapshot); err != nil {
+		return fmt.Errorf("run-level snapshot capture: %w", err)
+	}
+	return nil
+}
+
+// restoreRunBaseline writes the run-level baseline back after the
+// compensations ran, recording any failure on the result instead of
+// returning it. Two deliberate choices:
+//
+//   - It does NOT change the run's verdict. The compensation ledger owns that
+//     (PhaseRolledBack / PhasePartialRollback), and a failed baseline restore
+//     must not rewrite a completed rollback into a failed run. The operator
+//     gets a dedicated field plus an error log instead.
+//   - It runs on a background context, exactly like the rollback dispatch in
+//     Run: cancellation is one of the ways rollback gets triggered, and
+//     stopping mid-restore would leave the baseline half-written, which is
+//     worse than not restoring at all.
+func (cr *ClosureRunner) restoreRunBaseline(result *ClosureResult, p *plan.Plan, targets []string) {
+	if result == nil {
+		return
+	}
+	if err := cr.restoreRunSnapshot(context.Background(), result.RunID, p, targets); err != nil {
+		result.RunSnapshotRestoreError = err
+		log.Error("run-level snapshot restore failed; baseline may not be back on the targets",
+			"run_id", result.RunID,
+			"error", err)
+	}
+}
+
+// restoreRunSnapshot writes the baseline back after the compensations ran.
+// A restore failure is reported to the caller so it can be surfaced in the
+// run result; it never rewrites the rollback verdict, which belongs to the
+// compensation ledger.
+func (cr *ClosureRunner) restoreRunSnapshot(ctx context.Context, runID string, p *plan.Plan, targets []string) error {
+	if p == nil || p.RunSnapshot == nil || cr.runSnapshotter == nil {
+		return nil
+	}
+	return cr.runSnapshotter.RestoreRun(ctx, runID, targets, p.RunSnapshot)
 }

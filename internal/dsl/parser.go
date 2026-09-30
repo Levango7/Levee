@@ -184,6 +184,18 @@ type yamlWorkflowRaw struct {
 	Steps       []yamlStepRaw    `yaml:"steps"`
 	Gates       []yamlGateRaw    `yaml:"gates"`
 	Rollback    *yamlRollbackRaw `yaml:"rollback"`
+	// Snapshot is the run-level baseline block. It is NOT part of
+	// yamlRollbackRaw on purpose: keeping it a sibling key is what stops
+	// anyone from quietly re-folding it back into workflow-level
+	// rollback.snapshot_paths, which LE097 rejects on purpose.
+	Snapshot *yamlRunSnapshotRaw `yaml:"snapshot"`
+}
+
+// yamlRunSnapshotRaw is the wire form of the run-level baseline.
+type yamlRunSnapshotRaw struct {
+	Scope string   `yaml:"scope"`
+	Paths []string `yaml:"paths"`
+	Type  string   `yaml:"type"`
 }
 
 type yamlTargetRaw struct {
@@ -353,6 +365,16 @@ func convertWorkflow(raw *yamlWorkflowRaw) (*Workflow, error) {
 			return nil, err
 		}
 		wf.Rollback = rb
+	}
+
+	// Run-level snapshot baseline. Kept separate from the rollback block
+	// above for the reason given on yamlWorkflowRaw.Snapshot.
+	if raw.Snapshot != nil {
+		wf.Snapshot = &RunSnapshotSpec{
+			Scope: raw.Snapshot.Scope,
+			Paths: raw.Snapshot.Paths,
+			Type:  raw.Snapshot.Type,
+		}
 	}
 
 	// Workflow-level gates: distribute by position.

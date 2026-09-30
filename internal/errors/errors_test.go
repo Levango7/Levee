@@ -232,7 +232,11 @@ func TestLookup_Unknown(t *testing.T) {
 
 func TestAllCodes_CountAndImmutable(t *testing.T) {
 	all := AllCodes()
-	assert.Equal(t, 30, len(all))
+	// Count, not a range: this is the guard that a new code cannot be added
+	// to the constants block without also being registered in the catalogue
+	// (a constant that never reaches Lookup is a code the CLI cannot print
+	// and the docs cannot describe). Adding LE098-LE102 took it 30 → 35.
+	assert.Equal(t, 35, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}

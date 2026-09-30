@@ -35,8 +35,8 @@ type ctxProbeGate struct {
 	block chan struct{}
 }
 
-func (g *ctxProbeGate) Name() string                    { return "probe" }
-func (g *ctxProbeGate) Phase() verify.GatePhase        { return verify.PhasePostApply }
+func (g *ctxProbeGate) Name() string            { return "probe" }
+func (g *ctxProbeGate) Phase() verify.GatePhase { return verify.PhasePostApply }
 func (g *ctxProbeGate) Check(ctx context.Context, _ verify.GateInput) (verify.GateResult, error) {
 	g.ran.Add(1)
 	if ctx.Err() != nil {
