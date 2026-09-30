@@ -113,7 +113,14 @@ func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunne
 	// that opt in with rollback.verify_after: true (spec §7.1); for every
 	// other plan this argument being non-nil changes nothing versus the nil it
 	// used to be.
-	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr)
+	//
+	// The Grader goes on at the same time (WithGrader): the engine calls
+	// VerifyAndGrade, so a verifier without one would classify the outcome
+	// and throw the grade away, leaving PostVerifyResult.Grade empty and
+	// notify / escalate / audit unreachable. rollback_grade.go documents what
+	// each action does today and what is not wired yet.
+	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr,
+		rollback.WithGrader(newRollbackGrader(nil)))
 	if err != nil {
 		// Reachable only with a nil gate manager, which gateMgr never is
 		// here. Fail soft rather than refuse the run: what is lost is an

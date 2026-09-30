@@ -2,6 +2,14 @@
 
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+- **回滚后验证的两条「已知限制」清零：分级真正落地，且不再被调用方取消污染**。上一条把两件事如实记成了限制而不是悄悄绕过，这里逐条兑现，并且**其中一条是推翻自己上一次的定案**。
+  **① `Grade` 恒空 → 真的分级**。上一条的判断（「挂 grader 牵涉通知与升级链路，是另一件事」）只对了一半：`rollback.Grader`（T038）与 `PostRollbackVerifier` 的 `WithGrader` 选项**早就都写好了**，缺的只是装配，而真正的堵点在 engine 调的是 `Verify` 而不是 `VerifyAndGrade`——即使把 grader 装上，分级算完也会被直接丢掉。现改 engine 调 `VerifyAndGrade`，并新增 `internal/wiring/rollback_grade.go` 构造 grader 注入每次 run 的 verifier。engine 侧派发失败只记 warn 不致命：run 的结局早已由回滚本身决定，一个拒绝投递的 webhook 不该把一次已完成的回滚改写成失败的 run（`PostVerifyResult` 不进任何 run 状态映射）。
+  **传输层的真实状态，不含糊**：分级机制现已可达，但三个动作今天的落地形态不同，且都不是「假装已接通」——`audit` 写结构化日志（`internal/audit` 有哈希链 `TraceRecorder`，但 engine 路径今天不记任何 trace、state 里也没有回滚 trace 所需的身份，谎称已落审计是编造）；`escalate` 是 error 级日志（文案按凌晨三点被叫醒的人写，明确指出目标可能处于未知状态）；`notify` 走一个窄接口 `rollbackNotifySink`，**当前传 nil**，原因是缺一个事实而非缺代码——state 不记录变更发起人，而同样零调用者的 `notify.RollbackNotifier` 没有 initiator 会拒发，编一个收件人比不发更糟。`notifyRollbackSink` 适配器已备好，谁接上 `NotificationManager` 都是一行的事。**没有往 `Engine` 上加永远没人设置的配置项**：那正是本会话一直在清理的「建了没人用」。
+  **② 取消不再伪造结论（推翻上一条的定案）**。上一条写「刻意不脱离 ctx——调用方已经放弃之后不应继续向目标机派发命令」，理由是「没有超时旋钮来约束这项工作」。复核后这个理由不成立：**旋钮根本不存在**（上一条误以为 `WithVerifyTimeout` 已有，实为不存在），所以「有旋钮才安全」的推理当时无据；而它要避免的后果是真的——取消是触发回滚的三个原因之一（Ctrl-C、fencing、上游 deadline），而等到验证跑的时候目标**已经被改回去了**，唯一没被回答的问题正是「改回去了吗」，旧行为保证这个问题的答案永远是 `context canceled`：一个关于请求的结论被当成了关于系统的结论。故改为 `context.WithoutCancel(ctx)` + `WithTimeout(上界)`，并新增 `WithVerifyTimeout` / `DefaultVerifyTimeout`（2 分钟，刻意大于单个门禁自身的 30s，因为上界覆盖整个 phase）与 `VerifyTimeout()`。调用方自带的更早 deadline 仍然生效（`WithoutCancel` 只丢 `Done`、保留 `Deadline`）。回滚派发本身仍是无上界的脱离 ctx（中断会留下未撤销的已应用批次），两者理由不同、边界不同。
+  **旧测试被改写而非删除**：`TestVerifyCancelledContext` 钉的正是「取消即失败」这条旧契约，失败后把它改写成 `TestVerifyCancelledContextUsedToFail` 并注明这是刻意反转——契约反转必须留痕，否则下一个读到它的人会以为实现退化了。
+  **`RollbackResult.RunID` 新增**：分级之后的一切（验证、notify、escalate、audit）只拿到一个 `*RollbackResult`，别处无处说明这是哪一次运行，没有它，「你的回滚失败了」这条消息无法与任何东西对应。落戳点在 `RollbackWithLedger` 入口，因此包括「连计划都拿不到」那种失败也会带上 run id。
+  测试：① `internal/rollback/post_verify_context_test.go` 四组——调用方已取消时门禁仍执行且拿到的不是死 ctx（旧实现在这里会得到 `sawCancelled=true`）、脱离但有界（40ms 上界 + 阻塞门禁，断言被 deadline 掐断而非被调用方掐断）、上界默认与非正值回落（`WithVerifyTimeout(0)` 不能悄悄变成无界）、分级派发同样不受调用方取消影响；② `internal/engine/rollback_verify_after_test.go` 新增 `TestClosureRunner_PostVerifyIsGraded` 钉住两件事：门禁失败**压过**回滚成功（系统不健康就是失败，不管 undo 多干净），以及分级结果**绝不改写 run 的 phase**；③ `internal/wiring/rollback_grade_test.go` 钉住动作只在正确 grade 上派发（success 一个都不发）、无传输层降级为记日志而不是报错、投递失败要能冒出来给 engine 决定、以及 `Grader.Grade(nil)` 这种合法输入不会让通知路径空指针（否则「回滚失败」会变成「回滚失败且进程挂了」）。本地：`go build ./...` ✅ · `go test ./... -count=1` 全量 ✅ · `golangci-lint` ✅ · `docgen -check` ✅。
+
 ## [Unreleased]
 
 ### 修复

@@ -369,7 +369,17 @@ func TestVerifyAndGradeNotifyErrorPropagates(t *testing.T) {
 
 // --- context cancellation --------------------------------------------------
 
-func TestVerifyCancelledContext(t *testing.T) {
+// TestVerifyCancelledContextUsedToFail — 这条断言在 2026-10 被刻意反转。
+//
+// 旧契约：调用方 ctx 一取消，门禁就拿到一个已死的 ctx，noop gate 返回
+// Passed=false，于是「取消触发的回滚」被记成一次验证失败。那是一个关于请求的
+// 结论被当成了关于系统的结论：回滚已经把目标改回去了，唯一没被回答的问题正是
+// 「改回去了吗」，而旧行为保证这个问题的答案永远是 context canceled。
+//
+// 新契约：门禁跑在 context.WithoutCancel(ctx) + WithTimeout(上界) 上。取消的
+// 调用方不再中止检查；能结束这次检查的只有上界本身，由
+// TestVerifyTimeoutBoundsDetachedWork 钉住。
+func TestVerifyCancelledContextUsedToFail(t *testing.T) {
 	gm := verify.NewGateManager()
 	gm.Register(verify.NewNoopGate("health", verify.PhasePostApply, true))
 	v, err := NewPostRollbackVerifier(gm)
@@ -380,8 +390,11 @@ func TestVerifyCancelledContext(t *testing.T) {
 
 	res := v.Verify(ctx, &RollbackResult{Success: true}, nil, mkInput())
 	require.NotNil(t, res)
-	// A cancelled context causes the noop gate to return Passed == false.
-	assert.False(t, res.Success)
+	// A cancelled caller no longer poisons the verdict: the gate runs and
+	// its real result (pass) is what gets recorded.
+	assert.True(t, res.Success, "caller cancellation must not decide the system's health")
+	assert.NoError(t, res.Error)
+	assert.Empty(t, res.FailedGates)
 }
 
 // --- nil rollback result ---------------------------------------------------

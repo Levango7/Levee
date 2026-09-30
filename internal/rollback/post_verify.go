@@ -84,7 +84,22 @@ type PostVerifyResult struct {
 type PostRollbackVerifier struct {
 	gateMgr *verify.GateManager
 	grader  *Grader
+
+	// verifyTimeout bounds one Verify / VerifyAndGrade call. It exists
+	// because the verification deliberately runs DETACHED from the
+	// caller's cancellation (see Verify), and an unbounded detached
+	// context is exactly as unsafe as it sounds: a gate that blocks
+	// forever would wedge the run with no way out. Zero means
+	// DefaultVerifyTimeout.
+	verifyTimeout time.Duration
 }
+
+// DefaultVerifyTimeout is the bound applied to one post-rollback
+// verification when WithVerifyTimeout is not used. It is deliberately
+// larger than a single gate's own timeout (verify.CommandGate defaults
+// to 30s per attempt) because the bound covers the whole phase — several
+// gates, possibly with retries — not one gate.
+const DefaultVerifyTimeout = 2 * time.Minute
 
 // PostRollbackVerifierOption configures a PostRollbackVerifier at
 // construction time.
@@ -95,6 +110,24 @@ type PostRollbackVerifierOption func(*PostRollbackVerifier)
 // populates PostVerifyResult.Grade. When not set, Grade is left empty.
 func WithGrader(g *Grader) PostRollbackVerifierOption {
 	return func(v *PostRollbackVerifier) { v.grader = g }
+}
+
+// WithVerifyTimeout bounds a single verification. d <= 0 selects
+// DefaultVerifyTimeout.
+func WithVerifyTimeout(d time.Duration) PostRollbackVerifierOption {
+	return func(v *PostRollbackVerifier) {
+		if d > 0 {
+			v.verifyTimeout = d
+		}
+	}
+}
+
+// VerifyTimeout returns the effective bound (never zero).
+func (v *PostRollbackVerifier) VerifyTimeout() time.Duration {
+	if v.verifyTimeout <= 0 {
+		return DefaultVerifyTimeout
+	}
+	return v.verifyTimeout
 }
 
 // NewPostRollbackVerifier returns a PostRollbackVerifier backed by gateMgr.
@@ -120,7 +153,10 @@ func (v *PostRollbackVerifier) GateManager() *verify.GateManager { return v.gate
 //
 // Parameters:
 //
-//   - ctx: context for cancellation and timeouts; propagated to gates.
+//   - ctx: the caller's context. It supplies values (trace ids, tenant)
+//     and the caller's deadline is honoured as an UPPER bound, but
+//     cancellation is deliberately NOT propagated to the gates — see the
+//     "Cancellation" section below.
 //   - rollbackResult: the outcome of the rollback run. It is used for
 //     grading when a Grader is attached. It may be nil (the verifier
 //     will still run the gates, but grading will treat nil as
@@ -143,20 +179,53 @@ func (v *PostRollbackVerifier) GateManager() *verify.GateManager { return v.gate
 //     regardless of rollbackResult.Success; otherwise the grade reflects
 //     rollbackResult alone.
 //
+// Cancellation:
+//
+// The gates run on a context that carries the caller's values but NOT the
+// caller's cancellation: it is context.WithoutCancel(ctx) plus
+// WithTimeout(VerifyTimeout()). A caller that goes away does not abort the
+// check. The bound is what makes that safe, and it is the reason the knob
+// exists at all.
+//
+// Rationale: a cancelled caller is one of the three ways a rollback gets
+// triggered (Ctrl-C, fencing, an upstream deadline), and by the time
+// post-rollback verification runs the target has ALREADY been mutated
+// back. "Did that land somewhere healthy?" is precisely the question the
+// operator needs answered, and inheriting the cancellation guarantees the
+// answer is always "context canceled" — a verdict about the request, not
+// about the system. Note that the rollback dispatch immediately above is
+// already detached for the same reason (interrupting it would leave
+// applied batches unwound); verification inherits that reasoning one step
+// later. What it does not inherit is the absence of a bound: a detached
+// context with no deadline is an unbounded fan-out of gate commands at
+// production targets, so WithVerifyTimeout caps it.
+//
+// Consequences callers can rely on: the caller's own earlier deadline
+// still shortens the work (WithoutCancel drops Done but keeps Deadline),
+// and a verification that outlives the bound returns with
+// Success=false and Error wrapping context.DeadlineExceeded, detectable
+// with errors.Is.
+//
 // The returned *PostVerifyResult is always non-nil.
 func (v *PostRollbackVerifier) Verify(ctx context.Context, rollbackResult *RollbackResult, verifyGates []string, input verify.GateInput) *PostVerifyResult {
 	start := time.Now()
 	result := &PostVerifyResult{Success: true}
+
+	// Detached from the caller's cancellation, bounded by the configured
+	// timeout. See the "Cancellation" section on the doc comment above for
+	// why this is the right trade for an advisory post-mortem check.
+	verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), v.VerifyTimeout())
+	defer cancel()
 
 	var gateResults []verify.GateResult
 	var failedNames, skippedNames []string
 
 	if len(verifyGates) == 0 {
 		// Phase mode: run all gates registered for PhasePostApply.
-		gateResults = v.gateMgr.RunPhase(ctx, verify.PhasePostApply, input)
+		gateResults = v.gateMgr.RunPhase(verifyCtx, verify.PhasePostApply, input)
 	} else {
 		// Named mode: run only the named gates.
-		gateResults = v.runNamedGates(ctx, verifyGates, input, &skippedNames)
+		gateResults = v.runNamedGates(verifyCtx, verifyGates, input, &skippedNames)
 	}
 
 	// Inspect the results to build failed / skipped lists. GateResults
@@ -317,18 +386,27 @@ func (v *PostRollbackVerifier) VerifyAndGrade(ctx context.Context, rollbackResul
 	grade := result.Grade
 	action := v.grader.GetAction(grade)
 
+	// Dispatch on a detached, bounded context too, for the same reason the
+	// gates do: the common case for reaching here is a rollback triggered
+	// BY cancellation, so dispatching notify/escalate on the caller's
+	// already-cancelled context would fail exactly when the notification
+	// matters most. Notify and escalate are best-effort by design, so a
+	// failure here is reported, not fatal.
+	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), v.VerifyTimeout())
+	defer cancel()
+
 	if action.Notify != nil {
-		if err := action.Notify(ctx, grade, rollbackResult); err != nil {
+		if err := action.Notify(dispatchCtx, grade, rollbackResult); err != nil {
 			return result, fmt.Errorf("post-verify grade notify: %w", err)
 		}
 	}
 	if action.Escalate != nil {
-		if err := action.Escalate(ctx, grade, rollbackResult); err != nil {
+		if err := action.Escalate(dispatchCtx, grade, rollbackResult); err != nil {
 			return result, fmt.Errorf("post-verify grade escalate: %w", err)
 		}
 	}
 	if action.Audit != nil {
-		if err := action.Audit(ctx, grade, rollbackResult); err != nil {
+		if err := action.Audit(dispatchCtx, grade, rollbackResult); err != nil {
 			return result, fmt.Errorf("post-verify grade audit: %w", err)
 		}
 	}

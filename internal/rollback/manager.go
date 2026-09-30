@@ -57,6 +57,21 @@ type ExecuteFunc func(ctx context.Context, target string, step dsl.Step) error
 // RollbackResult is the outcome of a full Manager.Rollback call. It aggregates
 // per-batch results and a top-level success / partial-rollback verdict.
 type RollbackResult struct {
+	// RunID identifies the closure run this rollback belongs to. It is
+	// stamped from the Manager's runID (WithRunID / SetRunID), which the
+	// engine sets immediately before rolling back.
+	//
+	// Why it lives on the result: everything downstream of the rollback —
+	// post-rollback verification, grading, notify / escalate / audit — is
+	// handed a *RollbackResult and nothing else. Without the id on the
+	// result, a notification could not name the run it is about, and the
+	// recipients of a "your rollback failed" message could not correlate it
+	// with anything. Empty means the Manager had no run id set (a direct
+	// Rollback call outside a closure run); such results are still valid,
+	// they are just unattributable, and notify adapters must treat an empty
+	// RunID as "cannot address this".
+	RunID string
+
 	// BatchResults is the per-batch outcome slice, in the order the batches
 	// were rolled back (reverse of execution order). It is always non-nil
 	// when Rollback returns a non-nil result.
@@ -402,7 +417,10 @@ func (m *Manager) Rollback(ctx context.Context, p *plan.Plan, execFn ExecuteFunc
 // The returned *RollbackResult is always non-nil.
 func (m *Manager) RollbackWithLedger(ctx context.Context, p *plan.Plan, execFn ExecuteFunc, ledger *ExecutionLedger) *RollbackResult {
 	start := time.Now()
-	result := &RollbackResult{}
+	// Stamp the run id up front, on every exit path including the nil-plan
+	// one: a rollback that failed to even start is exactly the case an
+	// operator needs to be able to correlate with a run.
+	result := &RollbackResult{RunID: m.runID}
 
 	if p == nil {
 		result.Error = fmt.Errorf("rollback: plan is nil")

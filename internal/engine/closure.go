@@ -46,6 +46,7 @@ import (
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/lock"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
@@ -585,19 +586,36 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// wiring a verifier into a deployment does not change what plans
 		// that never declared it execute.
 		//
-		// Known limitation: this runs on the caller's ctx, so a rollback
-		// triggered by cancellation records a ctx-cancelled verification
-		// failure instead of a real check. Deliberate: the rollback dispatch
-		// above is detached from ctx because interrupting it would leave
-		// applied batches unwound, whereas this check is advisory — detaching
-		// it as well would keep dispatching gates at targets after the caller
-		// gave up, with no timeout knob to bound that work.
+		// Cancellation is handled inside the verifier, not here: the gates
+		// and the grade-action dispatch run on a context detached from ctx
+		// but bounded by WithVerifyTimeout. Cancellation is one of the three
+		// ways a rollback gets triggered, so inheriting it here would mean
+		// the most interesting case — "operator hit Ctrl-C, did the undo
+		// leave the system healthy?" — is the one case that never gets
+		// answered. The bound is what makes continuing safe.
 		if cr.postVerifier != nil && postRollbackVerifyRequested(p) {
 			pvInput := verify.GateInput{
 				RunID:     result.RunID,
 				TargetIDs: targets,
 			}
-			result.PostVerifyResult = cr.postVerifier.Verify(ctx, rbResult, nil, pvInput)
+			// VerifyAndGrade, not Verify: identical verification, plus the
+			// grade classification and the notify / escalate / audit
+			// dispatch that the wiring-attached Grader prescribes. With a
+			// nil Grader the two are equivalent, so this costs nothing for
+			// deployments that have not wired one.
+			//
+			// A dispatch failure is logged, never fatal. The run's fate was
+			// already decided by the rollback above; a webhook that refuses
+			// the payload must not rewrite a completed rollback into a
+			// failed one, and PostVerifyResult is not part of any run-status
+			// mapping.
+			pv, dispatchErr := cr.postVerifier.VerifyAndGrade(ctx, rbResult, nil, pvInput)
+			result.PostVerifyResult = pv
+			if dispatchErr != nil {
+				log.Warn("post-rollback verify: grade action dispatch failed",
+					"run_id", result.RunID,
+					"error", dispatchErr)
+			}
 		}
 
 		if rbResult.Success {
