@@ -107,6 +107,20 @@ func TestMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 		incident_id TEXT NOT NULL DEFAULT ''
 	)`)
 	require.NoError(t, err)
+	// The v5 step (approvals.plan_hash/revision) also replays against this
+	// legacy file, so the fixture must carry the v1-era approvals DDL.
+	_, err = db.ExecContext(ctx, `CREATE TABLE approvals (
+		id TEXT PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		level TEXT NOT NULL,
+		approver TEXT NOT NULL,
+		status TEXT NOT NULL,
+		comment TEXT NOT NULL DEFAULT '',
+		timeout_at DATETIME,
+		acted_at DATETIME,
+		FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
+	)`)
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
 	// Opening the store runs the pending v2 step against the legacy file.
@@ -171,6 +185,20 @@ func TestMigrate_FreshAndUpgraded_SchemaShapesMatch(t *testing.T) {
 		incident_id TEXT NOT NULL DEFAULT ''
 	)`)
 	require.NoError(t, err)
+	// The replayed v5 step alters approvals, so the fixture carries the
+	// v1-era approvals DDL (no plan_hash/revision columns yet).
+	_, err = db.ExecContext(ctx, `CREATE TABLE approvals (
+		id TEXT PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		level TEXT NOT NULL,
+		approver TEXT NOT NULL,
+		status TEXT NOT NULL,
+		comment TEXT NOT NULL DEFAULT '',
+		timeout_at DATETIME,
+		acted_at DATETIME,
+		FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
+	)`)
+	require.NoError(t, err)
 	require.NoError(t, db.Close())
 	upgraded, err := NewSQLiteStore(ctx, legacyPath)
 	require.NoError(t, err)
@@ -191,7 +219,7 @@ func TestMigrate_FreshAndUpgraded_SchemaShapesMatch(t *testing.T) {
 		require.NoError(t, rows.Err())
 		return out
 	}
-	for _, table := range []string{"credentials", "runs"} {
+	for _, table := range []string{"credentials", "runs", "approvals"} {
 		assert.Equal(t, cols(fresh, table), cols(upgraded, table),
 			"schema.sql and the migration steps must produce the same %s shape", table)
 	}
@@ -225,16 +253,20 @@ func TestPGMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	// Re-create the v1 shape on the shared test database: drop the column and
-	// rewrite the version ledger as exactly {1} (applied = MAX over rows).
-	// Leaving the ledger empty would read back applied=0 and send pgMigrate
-	// down the fresh-build path (CREATE IF NOT EXISTS no-ops), skipping step
-	// replay entirely. IF EXISTS keeps the simulation robust when a previous
-	// run left the column already gone. One statement per Exec: the extended
-	// protocol rejects multi-command.
+	// Re-create the v1 shape on the shared test database: drop every column
+	// added by v2-v4 and rewrite the version ledger as exactly {1} (applied
+	// = MAX over rows). Leaving the ledger empty would read back applied=0
+	// and send pgMigrate down the fresh-build path (CREATE IF NOT EXISTS
+	// no-ops), skipping step replay entirely. IF EXISTS keeps the simulation
+	// robust when a previous failed run left a column already gone. One
+	// statement per Exec: the extended protocol rejects multi-command.
 	_, err := store.DB().ExecContext(ctx, `ALTER TABLE credentials DROP COLUMN IF EXISTS tags`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS plan_json`)
+	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS plan_hash`)
+	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS revision`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `DELETE FROM schema_version`)
 	require.NoError(t, err)

@@ -247,35 +247,74 @@ func TestClosureRunner_PostApplyFailure(t *testing.T) {
 	assertLocksReleased(t, store, "host-a", "host-b")
 }
 
-//  5. Rollback failure: apply fails → rollback also fails → failed with
-//     PartialRollback marker.
-func TestClosureRunner_RollbackFailure(t *testing.T) {
+//  5. Mid-batch failure compensates only what was dispatched (D-2 v2,
+//     design item 1 / P0-3): within a single target, step "first-step"
+//     fails under PolicyAbort so "second-step" is NEVER dispatched
+//     (controller contract, see controller_test). Rollback must
+//     compensate "first-step" ONLY — "second-step"'s state was never
+//     touched. "first-step"'s compensation succeeds → all required
+//     compensations completed → clean rolled_back. The failed forward
+//     step is counted in UnknownSideEffects (informational per design
+//     item 3) without flipping the verdict.
+func TestClosureRunner_MidBatchFailureCompensatesOnlyDispatched(t *testing.T) {
 	store := newTestStore(t)
 	cr := newTestClosureRunner(t, store)
 
-	// Two targets in one batch. Apply fails on both (serial, so host-a
-	// fails first and host-b is skipped under PolicyAbort). Rollback
-	// succeeds on host-a but fails on host-b → PartialRollback.
-	p := newTestPlan([][]string{{"host-a", "host-b"}})
+	// One batch, one target, TWO steps — the deterministic mid-batch
+	// shape: PolicyAbort stops the target after the first failure.
+	p := &plan.Plan{
+		ID:           "plan-midbatch",
+		WorkflowName: "midbatch",
+		Batches: []plan.Batch{{
+			Index:   0,
+			Targets: []string{"host-a"},
+			Steps: []plan.PlanStep{
+				{
+					Name:   "first-step",
+					Module: "pkg",
+					Action: "upgrade",
+					Rollback: &dsl.RollbackSpec{Steps: []dsl.Step{{
+						Name: "undo-first", Module: "pkg", Action: "downgrade",
+					}}},
+				},
+				{
+					Name:   "second-step",
+					Module: "pkg",
+					Action: "configure",
+					Rollback: &dsl.RollbackSpec{Steps: []dsl.Step{{
+						Name: "undo-second", Module: "pkg", Action: "revert",
+					}}},
+				},
+			},
+			MaxConcurrency: 1,
+		}},
+		TotalTargets: 1,
+		CreatedAt:    time.Now().UTC(),
+	}
 	exec := &mockExecutor{}
 	exec.failOn = func(target, action string) error {
 		if action == "upgrade" {
 			return fmt.Errorf("apply failed on %s", target)
 		}
-		if action == "downgrade" && target == "host-b" {
-			return fmt.Errorf("rollback failed on %s", target)
-		}
 		return nil
 	}
 
 	result, err := cr.Run(context.Background(), p, exec.exec)
-	require.NoError(t, err) // Run itself does not return error for rollback failure
-	assert.Equal(t, PhaseFailed, result.Phase)
+	require.NoError(t, err)
+	assert.Equal(t, PhaseRolledBack, result.Phase)
 	require.NotNil(t, result.RollbackResult)
-	assert.False(t, result.RollbackResult.Success)
-	assert.True(t, result.RollbackResult.PartialRollback,
-		"expected PartialRollback when some rollback steps succeed and some fail")
-	assertLocksReleased(t, store, "host-a", "host-b")
+	rr := result.RollbackResult
+	assert.True(t, rr.Success)
+	assert.Equal(t, 1, rr.RequiredCompensations, "only the dispatched step requires compensation")
+	assert.Equal(t, 1, rr.CompletedCompensations)
+	assert.Equal(t, 1, rr.UnknownSideEffects,
+		"the failed forward step must be surfaced as unknown side effects")
+	// The P0-3 guarantee: never-started work is never compensated.
+	assert.Equal(t, 1, exec.callsFor("upgrade"), "PolicyAbort: second-step must never be dispatched")
+	assert.Equal(t, 1, exec.callsFor("downgrade"), "only first-step may be compensated")
+	assert.Equal(t, 0, exec.callsFor("revert"),
+		"second-step never ran: its compensation must not run")
+	assertLocksReleased(t, store, "host-a")
 }
 
 //  6. Lock conflict: target already locked by another owner → abort with
@@ -327,6 +366,12 @@ func TestClosureRunner_MultiBatchPartialFailure(t *testing.T) {
 	assert.Equal(t, PhaseRolledBack, result.Phase)
 	require.NotNil(t, result.RollbackResult)
 	assert.True(t, result.RollbackResult.Success)
+	// host-c's apply failed: counted as unknown side effects but
+	// informational per design item 3 — every required compensation
+	// completed, so the verdict stays a clean rolled_back.
+	assert.Equal(t, 3, result.RollbackResult.RequiredCompensations)
+	assert.Equal(t, 3, result.RollbackResult.CompletedCompensations)
+	assert.Equal(t, 1, result.RollbackResult.UnknownSideEffects)
 	// Batches 0, 1, 2 were all attempted (batch 2 failed).
 	assert.Len(t, result.BatchResults, 3)
 	// 3 apply calls (host-a, host-b, host-c).
@@ -494,26 +539,60 @@ func TestClosureRunner_GatesPass(t *testing.T) {
 	}
 }
 
-// Multiple targets in a single batch all fail apply → rollback attempted
-// on all → all rollback steps fail → PhaseFailed, no PartialRollback
-// (nothing succeeded).
-func TestClosureRunner_AllRollbackStepsFail(t *testing.T) {
+// Forward apply fails and the only required compensation also fails →
+// nothing was restored: Success false with PartialRollback false (no
+// compensation completed) → PhaseRollbackIncomplete (D-2 v2 design item 4:
+// 必要补偿缺失 → rollback_incomplete, distinct from both rolled_back and
+// rolled_back_partial).
+func TestClosureRunner_CompensationFailsIncompleteRollback(t *testing.T) {
 	store := newTestStore(t)
 	cr := newTestClosureRunner(t, store)
 
 	p := newTestPlan([][]string{{"host-a", "host-b"}})
 	exec := &mockExecutor{}
-	// Everything fails.
+	// Everything fails: the forward apply AND every compensation.
 	exec.failOn = func(target, action string) error {
 		return errors.New("everything fails")
 	}
 
 	result, err := cr.Run(context.Background(), p, exec.exec)
 	require.NoError(t, err)
-	assert.Equal(t, PhaseFailed, result.Phase)
+	assert.Equal(t, PhaseRollbackIncomplete, result.Phase)
 	require.NotNil(t, result.RollbackResult)
 	assert.False(t, result.RollbackResult.Success)
-	// When all rollback steps fail, PartialRollback is false (nothing
-	// succeeded).
+	assert.Error(t, result.RollbackResult.Error)
+	// When no compensation completed, PartialRollback is false (nothing
+	// succeeded) — the incomplete verdict covers it.
 	assert.False(t, result.RollbackResult.PartialRollback)
+}
+
+// D-2 v2 design item 4: some required compensations complete, one fails →
+// PhasePartialRollback (rolled_back_partial) — "went half-way", distinct
+// from clean rolled_back and from rollback_incomplete.
+func TestClosureRunner_PartialCompensationPartialRollback(t *testing.T) {
+	store := newTestStore(t)
+	postApply := verify.NewNoopGate("post-apply-fail", verify.PhasePostApply, false)
+	cr := newTestClosureRunner(t, store, postApply)
+
+	// Two batches, both apply cleanly; post-apply gate fails → rollback.
+	// Reverse order: batch 1 (host-b) compensates first and succeeds,
+	// then batch 0 (host-a) compensation fails → 1 of 2 completed.
+	p := newTestPlan([][]string{{"host-a"}, {"host-b"}})
+	exec := &mockExecutor{}
+	exec.failOn = func(target, action string) error {
+		if action == "downgrade" && target == "host-a" {
+			return fmt.Errorf("compensation failed on %s", target)
+		}
+		return nil
+	}
+
+	result, err := cr.Run(context.Background(), p, exec.exec)
+	require.NoError(t, err)
+	assert.Equal(t, PhasePartialRollback, result.Phase)
+	require.NotNil(t, result.RollbackResult)
+	assert.False(t, result.RollbackResult.Success)
+	assert.True(t, result.RollbackResult.PartialRollback)
+	assert.Equal(t, 2, result.RollbackResult.RequiredCompensations)
+	assert.Equal(t, 1, result.RollbackResult.CompletedCompensations)
+	assertLocksReleased(t, store, "host-a", "host-b")
 }

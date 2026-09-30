@@ -163,6 +163,14 @@ func AuthInterceptorFor(tokens AuthTokens) grpc.UnaryServerInterceptor {
 		if info != nil && skipAuthMethods[info.FullMethod] {
 			return handler(ctx, req)
 		}
+		if !tokens.Enabled() {
+			// Development mode: this deployment configured no credential
+			// at all, so it has no identity model to enforce. Admit the
+			// asserted actor as the subject; see admitAssertedIdentity for
+			// why that differs from a legacy shared token.
+			ctx = admitAssertedIdentity(ctx, ensureActor(ctx))
+			return handler(ctx, req)
+		}
 		subject, err := checkAuthTokens(ctx, tokens)
 		if err != nil {
 			return nil, err
@@ -213,7 +221,11 @@ func AuthStreamInterceptorFor(tokens AuthTokens) grpc.StreamServerInterceptor {
 // fallback in place.
 func withResolvedIdentity(ctx context.Context, id ResolvedIdentity) context.Context {
 	if id.Subject != "" {
+		// actorKey: audit label. subjectKey: the identity governance
+		// decisions may be attributed to. Both, because a verified
+		// subject outranks any client assertion in either role.
 		ctx = context.WithValue(ctx, actorKey{}, id.Subject)
+		ctx = context.WithValue(ctx, subjectKey{}, id.Subject)
 	}
 	if len(id.Roles) > 0 {
 		ctx = context.WithValue(ctx, rolesKey{}, id.Roles)

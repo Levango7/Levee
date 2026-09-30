@@ -200,14 +200,14 @@ func TestErrorCodes_Distinct(t *testing.T) {
 		LE061,
 		LE071,
 		LE081, LE082, LE083,
-		LE091, LE092, LE093, LE094, LE095, LE096,
+		LE091, LE092, LE093, LE094, LE095, LE096, LE097,
 	}
 	seen := make(map[string]bool, len(codes))
 	for _, c := range codes {
 		assert.False(t, seen[c], "duplicate error code: %s", c)
 		seen[c] = true
 	}
-	assert.Equal(t, 29, len(codes), "expected 29 error codes")
+	assert.Equal(t, 30, len(codes), "expected 30 error codes")
 }
 
 func TestLookup_Registered(t *testing.T) {
@@ -232,7 +232,7 @@ func TestLookup_Unknown(t *testing.T) {
 
 func TestAllCodes_CountAndImmutable(t *testing.T) {
 	all := AllCodes()
-	assert.Equal(t, 29, len(all))
+	assert.Equal(t, 30, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}

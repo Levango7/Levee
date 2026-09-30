@@ -17,6 +17,11 @@
 //  3. status CAS: UpdateRunStatusIf(running → interrupted) — if
 //     anything else moved the run first (a late executor's terminal
 //     write, a pause), the takeover stands down for that run.
+//  4. assignment reflection: a still-active run_assignment row (pending
+//     or executing) is transitioned to interrupted so the cluster status
+//     view reports the true state. A terminal row (done/interrupted) is
+//     left untouched — dispatch may have settled the run first, or a prior
+//     takeover sweep already reflected it.
 //
 // Resumption is a human decision by design: interrupted runs re-enter
 // the lifecycle through RetryChange (Q1), never through the loop.
@@ -231,6 +236,19 @@ func (l *Loop) settleOne(ctx context.Context, runID string) (bool, error) {
 		return false, nil
 	}
 
+	// Reflect the interruption onto the dispatch assignment row so the
+	// cluster status view reports the true state. Only active rows are
+	// touched: a terminal row (done/interrupted) means dispatch or a prior
+	// sweep already owns it. Failure is non-fatal — the run is settled and
+	// audited regardless.
+	if a, err := l.store.GetAssignment(ctx, runID); err == nil && a != nil {
+		if a.State == state.AssignStatePending || a.State == state.AssignmentStateExecuting {
+			if _, err := l.store.UpdateAssignmentState(ctx, runID, state.AssignmentStateInterrupted); err != nil {
+				log.Warn("takeover: reflect interrupted onto assignment failed", "run_id", runID, "error", err)
+			}
+		}
+	}
+
 	// Defensive terminal marking of any non-terminal step rows. With the
 	// current "persist once after the closure" evidence model this matches
 	// 0 rows by construction (step rows only ever land with terminal
@@ -260,7 +278,7 @@ func (l *Loop) settleOne(ctx context.Context, runID string) (bool, error) {
 		log.Warn("takeover: delete execution row failed", "run_id", runID, "error", derr)
 	}
 
-	metrics.Default.IncChange("interrupted")
+	metrics.Default.IncChange(metrics.StatusInterrupted)
 	log.Info("takeover: run interrupted",
 		"run_id", runID, "previous_owner", execOwner(ctx, l.guard, runID))
 	return true, nil

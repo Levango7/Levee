@@ -181,10 +181,18 @@ func TestExecutionGuard_ExpiredExecutionsScan(t *testing.T) {
 	assert.NotContains(t, ids, live)
 }
 
-// TestExecutionGuard_OwnsRenewsLease documents the renewal-in-check
-// contract with an observable assertion: after Owns, the lease must not
-// appear in the expired scan even though its original TTL window has
-// been forced into the past.
+// TestExecutionGuard_OwnsRenewsLease documents the renewal-in-check contract
+// with an observable assertion: after Owns, the lease sits a full ttl past NOW()
+// and does not appear in the expired scan.
+//
+// The window the lease is pushed into before the call is deliberately wide (2s,
+// not milliseconds). This test used to set NOW() + 10ms and require Owns to
+// succeed, which encodes a race rather than a contract: Owns renews only while
+// lease_expires >= NOW() — an already-expired lease is fenced out on purpose —
+// so on a loaded host (a CI runner routinely needs more than 10ms for one
+// postgres round trip) the test failed by correctly refusing to resurrect an
+// expired lease. The assertion is now on the renewed value itself, which is
+// what "Owns renews" actually means, and it cannot flake.
 func TestExecutionGuard_OwnsRenewsLease(t *testing.T) {
 	g, db := newTestExecGuard(t)
 	ctx := context.Background()
@@ -194,15 +202,60 @@ func TestExecutionGuard_OwnsRenewsLease(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = g.End(ctx, lease) }()
 
-	// Force the lease to the edge of expiry, then Owns-renew.
+	// Push the lease to the edge of its window, then Owns-renew. 2s is far
+	// beyond any plausible round trip yet far below the 30s ttl, so the
+	// renewal is observable without being a race.
 	_, err = db.ExecContext(ctx,
-		`UPDATE run_execution SET lease_expires = NOW() + INTERVAL '10 milliseconds' WHERE run_id = $1`, runID)
+		`UPDATE run_execution SET lease_expires = NOW() + INTERVAL '2 seconds' WHERE run_id = $1`, runID)
 	require.NoError(t, err)
+
+	before := leaseExpiry(t, db, runID)
 	require.NoError(t, g.Owns(ctx, lease, 30*time.Second))
+	after := leaseExpiry(t, db, runID)
+
+	// Compared against `before` rather than the wall clock: both values come
+	// from the database's clock, so this stays true whatever the skew between
+	// the runner and the postgres service.
+	assert.GreaterOrEqual(t, after.Sub(before), 25*time.Second,
+		"Owns must push the lease to a full ttl ahead, not merely leave it valid")
 
 	ids, err := g.ExpiredExecutions(ctx)
 	require.NoError(t, err)
-	assert.NotContains(t, ids, runID, "Owns must have renewed the lease past NOW()+ttl")
+	assert.NotContains(t, ids, runID, "a renewed lease must not appear in the expired scan")
+}
+
+// TestExecutionGuard_OwnsFencesExpiredLease pins the other half of the same
+// contract, which the test above used to violate by accident: a lease that has
+// already expired must NOT be renewable by its previous holder. Renewing it
+// would let a node that overran its deadline resurrect the row and keep
+// writing after a takeover had already become legal — the double-execution the
+// whole primitive exists to prevent.
+func TestExecutionGuard_OwnsFencesExpiredLease(t *testing.T) {
+	g, db := newTestExecGuard(t)
+	ctx := context.Background()
+	const runID = "run-guard-fenced"
+
+	lease, err := g.Register(ctx, runID, "node-a", 30*time.Second)
+	require.NoError(t, err)
+
+	_, err = db.ExecContext(ctx,
+		`UPDATE run_execution SET lease_expires = NOW() - INTERVAL '1 second' WHERE run_id = $1`, runID)
+	require.NoError(t, err)
+
+	err = g.Owns(ctx, lease, 30*time.Second)
+	require.ErrorIs(t, err, ErrFencedOut,
+		"an expired lease must never be resurrectable by its old holder")
+	assert.True(t, leaseExpiry(t, db, runID).Before(time.Now().Add(29*time.Second)),
+		"and the row must stay expired, not silently extended by the refused renewal")
+}
+
+// leaseExpiry reads the persisted lease deadline for runID.
+func leaseExpiry(t *testing.T, db *sql.DB, runID string) time.Time {
+	t.Helper()
+	var expires time.Time
+	require.NoError(t, db.QueryRowContext(context.Background(),
+		`SELECT lease_expires FROM run_execution WHERE run_id = $1`, runID).Scan(&expires))
+	return expires
 }
 
 // Compile-time sentinel documentation: ErrFencedOut is the vocabulary

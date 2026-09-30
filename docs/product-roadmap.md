@@ -1,0 +1,75 @@
+# LEVEE 产品路线图（2026-09-25 起）
+| 元信息项 | 内容 |
+| --- | --- |
+| 文档标题 | LEVEE 产品路线图 |
+| 文档类型 | 产品路线图 |
+| 版本 | v1.0 |
+| 日期 | 2026-09-25 |
+| 上游文档 | [`product-positioning.md`](product-positioning.md)、[`ui-blueprint.md`](ui-blueprint.md) |
+| 范围 | 现在起，按"系统而非 workflow"的定位推进的产品工作清单 |
+
+---
+
+## 怎么读这份文档
+
+四层分法：
+
+- **代码层**：引擎/治理链自身的正确性和能力。这是所有 UI 的地基，除非说明，否则先修这里。
+- **可视化层**：把已有能力用 UI 暴露给不同角色。任何一层都必须先被**代码层**证实可用，`ui-blueprint.md` 中的界面不能编造 API。
+- **交互层**：操作路径的闭环，包括向导、空状态、错误恢复。
+- **运营层**：面向未开发者（controller、值班），不是写给开源用户。
+
+## 代码层（平台正确性）
+
+| 优先级 | 项 | 理由 | 依赖 |
+| --- | --- | --- | --- |
+| P0 | ~~`workflow.Rollback`（工作流级回滚声明）是否落 `PlanStep`~~ **已定案（2026-09-26）** | **不落 `PlanStep`**：补偿账本按 `(host, 前向步骤)` 归属，工作流级补偿无法归因（全局 undo 复制到每步会重复撤销或整份漏掉；全局 snapshot 逐 step 采集会拿到中间态）。改为分层治理：workflow 级只承载运行态策略（`on_failure` 已接入执行器 / `verify_after` 待装配），补偿内容由 **LE097** 在 `dsl.Validator` 与 plan 生成器两处 fail-closed 拒绝 | 无（已实现） |
+| P0（阶段 0–2 已完成，阶段 3+ 待做） | **ABAC 服务层准入：把注册表接进 `serve`** | `permission.Checker` 按 `team × env × action` 判定且**拒绝空 team**。数据其实已经有了——`<dataDir>/users.yaml` 的 `userEntry{name, team, role}` 就是 actor→团队映射，`levee user add` 一直在写——问题是四份 RBAC 资产（`permissions.yaml` 矩阵 / `users.yaml` 注册表 / `roles.yaml` 角色树 / `policies.yaml` 策略）**只有 CLI 读写，`serve` 一次都不加载**；且 `users.role` 至今无消费者，而 `RoleTree.EffectivePermissions(role)` 恰好提供了本该接它的 API（`users.role → 角色树` 与 `users.team → 矩阵` 是两套并行、互不知情的授权模型，合并规则待产品定）。**阶段 0–2 已落地（2026-09-28）**：注册表提为 `internal/identity`；`roles.yaml` 读写归位到 `permission`；`internal/authz` 组合矩阵（环境可达性）与角色树（环境内动作能力），`apply`/`rollback`/`approve`/`reject` 已按策略准入，并配 `levee authz status|explain` 诊断。**待做**：读操作（`Get*`/`List*`）与 `pause*` 的接入、`policies.yaml` 条件式 ABAC、`/system/status` 暴露授权姿态。设计提案见审查报告附档（含分阶段与"先对账再启用"的迁移要求） | 无 |
+| P1 | 回滚后验证的生产装配：把 `rollback.PostRollbackVerifier` 注入 `wiring` 的闭包执行器（`NewClosureRunner(..., nil)` 目前恒为 nil） | 验证器与 `Grader`（T037）都已实现，只差装配——否则 `verify_after` 仍是"声明了但没人做" | 无 |
+| P2 | run 级快照原语（显式 `scope: run` 或独立顶层 `snapshot {}`）：首批发前**一次性**采集、回滚时恢复 | 方案 B 明确拒绝把 workflow 级 `snapshot_paths` 投影到每个 step（语义错误）；若确实需要"整次运行基线"，应作为独立原语设计，而不是伪装成 step 补偿 | 无 |
+| P0 | ~~完成 D-3 遗漏的链接：CLI 终态矩阵 / proto 注释 / metrics 标签引用 `runstatus`~~ **已定案并落地（2026-09-26）** | 三处副本全部换成引用：CLI 的 `isRollbackableStatus` / `isTerminalStatus` 改调 `runstatus`（前者此前比服务端门禁多放行 `running`，后者漏掉三个终态），帮助文本与报错由 `JoinRollbackAdmitted()` 拼装；`metrics` 标签常量改为别名（只保留非 run 状态的 `created` / `succeeded`）；proto 注释改指 `runstatus` 并由 `TestProtoStatusCommentMatchesGo` 钉定。守门测试去掉 `metrics` 豁免、扫描范围扩到 `cmd/` | 无（已实现） |
+| P0 | ~~`recommend` → `Change` 的正式桥~~ **已定案并落地（2026-09-26）** | `internal/conversation/change_bridge.go` 在确认后把 `WorkflowDraft` 交给既有 `ChangeService.CreateChange`，产出 `draft` 变更进入标准治理链；草案先过与 `levee compile` 严格模式相同的解析 + 校验两道门（含 LE097），fail-closed：不通过则一条变更记录都不建，会话留在 `reviewing`。**桥不执行工作流、不跳过审批**。两个入口都接上了：serve 路径用进程内 change 服务，**CLI `levee converse` 用懒打开的本地 store**（只在第一次确认建议时才开，生命周期挂到引擎 `AddCloser` 上，只读命令不碰数据库） | 无（已实现） |
+| P1 | `idempotent: true` 的存量 Lint：检出未声明幂等的 undo 步骤并引导作者补齐 | 方案 C 留下的最后一步：从被动门禁变主动信息 | D-3 |
+| P2 | `internal/docgen` 的多语言实现（把 `web/src/types/levee.ts` 那张表也生成为 TS） | 现在 `TestWebStatusMirrorMatchesGo` 还是手工比对——它本身也不过是"另一份手写词表"在 Go 里的验证镜 | D-3 |
+| P0（已落地 2026-09-29，日历侧一半待接） | **变更窗口强制：`window` 声明此前全链路不生效** | 规范 §4.2 承诺"变更只允许在该窗口内执行"，但 `ChangeWindow` 零读取点（只有 `parser.go:313` 一处赋值），`plan.Plan` 不携带窗口，`calendar.CheckWindowForPlan` 生产零调用；实测 `start: "25:99"` / `timezone: "Mars/Olympus_Mons"` / `days: ["funday"]` 编译通过，声明周日 03:00-04:00 的变更在周二 22:05 走完 plan→approve→apply。已补：`internal/dsl/window.go` 文法+判定、validator 的 V19（LE020/LE021/LE003）、`GeneratePlan` 的窗外阻断（规范口径：plan 阶段阻断、不进审批；回滚按规范豁免，由结构不变量测试钉住）。**剩下的另一半**：组织级变更日历（`calendar` 的窗口/冻结期 + `CheckWindowForPlan`）仍未被 plan 路径调用，`Window.MaxConcurrency` 也仍无人读取（规范 §4.2 字段表里没有这个字段，属实现私有扩展） | D-3 / F08 |
+| P1 | **`CompileWarning` 一档没有产生点**：LE033 / LE052 / LE094 / LE095 / LE096 五个警告码在目录表登记，但没有任何代码发出 | `Validator.Validate` 返回的是扁平 `[]ValidationError`，两个消费者（`cmd_compile.go:87` 严格模式、`conversation/change_bridge.go:86` 的 fail-closed 门）都把非空当成致命。因此"缺窗口/缺审批/缺批次"这类**应当只警告**的规则一旦塞进 `Validate`，会让所有未声明的既有工作流在编译期与会话桥同时被拒——是行为破坏而不是补门禁。要做的是先给 `ValidationError` 加 severity 并在两个消费者处按 severity 过滤，再逐条发出警告 | 与 D-3 词表收尾同族 |
+| P0 | **`levee new <模板>` 产出的 run 无法 plan：渲染后的工作流没有落库** | 实测（本机临时 store + CLI）：`levee new` 只把 `result.TemplateName` 写进 `run.WorkflowName`，**渲染出的 `result.Content` 只出现在命令输出里、从不持久化**；随后 `levee plan <run>` 报 `wiring: parse inline workflow for change "...": LE001: cannot unmarshal !!str 'outwin' into dsl.yamlWorkflowRaw`——即 plan 阶段拿模板名当工作流解析。`internal/wiring/resolveWorkflow` 同时接受内联 YAML 与文件路径，`CreateChange` 走的是内联，所以会话桥路径是好的，坏的只有模板路径。要么把 Content 写进 run（新增/复用一列，需 store 迁移），要么让模板实例化落一个工作流文件并把路径写进 run；顺带说明：`examples/templates/patch-rolling.yaml` 仍是旧方言（`workflow:` 信封 + `window: "02:00-04:00"` 字符串 + `approval: high` 字符串），修好链路后它照样编不过 | D-2.2.3 / 模板库 |
+| P1 | **`approval.level` 词表在 `internal/approval` 侧仍有手写副本** | 本仓已把 DSL 侧三处副本（parser / validator / typechecker）收成 `dsl.ApprovalLevels`；`internal/approval` 里 `service.go:221` 的 switch 与 `levels.go:216,270` 的报错文案还是各自手抄的 `standard, high, emergency`。今天值相同所以没出事，但"审批档位改名"这类改动会在其中一处留下不一致的判定或文案——`runstatus` 那轮的教训（词表收成引用，报错由词表拼装）在这里同样适用 | D-3 同族 |
+| P1（**需要定夺**） | 给"state 先初始化"的现网库补一条迁移：`ALTER TABLE cluster_nodes DROP CONSTRAINT IF EXISTS cluster_nodes_address_key` | `cluster_nodes` 的 DDL 已收成 `internal/dbschema` 唯一一份，并按集群路径实际生效的形状去掉了 `UNIQUE (address)`；但 `CREATE TABLE IF NOT EXISTS` 不会改动已存在的表，所以历史上由 `pgschema.sql` 先建库的部署**仍带着这条约束**。它不是闲置：节点身份是 `id`，同一监听地址以新 `id` 重新注册是 failover/takeover 的正常动作，实测含该约束时 `internal/takeover` 有 10 个用例报 `SQLSTATE 23505`。是否现在动现网 schema（以及是否顺带给缺 `capabilities` 的 cluster-first 库补列）是迁移决策，不放在本 PR 里 | 集群 / 迁移链 |
+| P1 | `cluster_nodes.capabilities` 列仍无人读写 | 合并 DDL 时保留它（否则 cluster-first 环境永久少一列），但写侧与读侧都没用到——节点能力上报要么用起来（配一条 `ADD COLUMN IF NOT EXISTS` 迁移照顾 cluster-first 旧库），要么明确退役；`TestClusterNodesDDLCoversEveryReaderAndWriter` 已把列集合钉成显式清单，加/删列都会强制同步该测试 | D-3 / 集群 |
+
+## 可视化层（UI / Web / ChatOps）
+
+| 优先级 | 项 | 产出 | 依赖 |
+| --- | --- | --- | --- |
+| P0 | **变更详情页**（`/changes/:id`）：生命周期时间线 + 批次/目标矩阵 + 回滚证据 + 一键补救 | 对一个变更的所有关键指纹做卡片化拼装：计划哈希+审批+门禁+证据，且把"补救"做成显式按钮 | 代码层 P0（Rollback 补偿幂等、D-3） |
+| P0 | **审批中心卡片化**：把准入门控的中间态（批准人、是否过 threshold、历史 plan 版本）清楚地并排显示 | 避免"看上去能批，实际被拒"的 entrap | 代码层状态机一致性（`change_service.go`） |
+| P0 | **/monitor 的三视图联动**：批次进度条 + 目标地图 + 实时日志流（已有 `WatchChange` / `StreamLogs`） | 现有接口已经能给出，需要补 UI | 无 |
+| P1 | **审计视图**：时间线 + hash 链校验按钮 + 证据片段卡 | 合规性证据的现场可视化 | P0 详情页（复用时间线组件） |
+| P1 | **集群拓扑** + 接管事件时间线 | cluster 现有接口已经足够（`GetStatus` 等） | 无 |
+| P1 | **ChatOps 卡片**：同 web 审批卡片的迷你版（文字 + 两个按钮） | 审批人不必打开页面 | 审批卡片已经存在 |
+| P2 | **深色模式**、密度档位、可配置列 | 长期值守场景 | 视觉规范先定稿 |
+
+## 交互层（操作路径闭环）
+
+| 优先级 | 项 | 定义 | 依赖 |
+| --- | --- | --- | --- |
+| P0 | **模板实例化向导**（`/templates` → 参数表单 → 预览 plan → 提交审批） | 从"select template + textbox"走向操作者不会犯错的多步向导 | 可视化层 P0（详情页） |
+| P0 | **部分回滚补救向导**：`rolled_back_partial` / `rollback_incomplete` 后的一键向导 | 里侧展示证据链，外侧只问"现在补吗" | 代码层已具备（RollbackChange 幂等） |
+| P1 | **空状态及错误状态统一**：所有列表/详情/日志区必须有明确的空 / 失败 / 权限不足 三档 | 不再出现 pending_approval 那种"什么都没有也不报错" | 视觉规范（状态色板） |
+| P1 | **键盘导航 + 全键盘路径** | 审批 + 详情页的操作链应能在不开鼠标的情况下完成 | 视觉规范 |
+| P2 | **移动审批卡的深链验证** | approve 深链回落时带上已有证据，能告诉用户"这个已批准以免重复点击" | 移动/深链页面 |
+
+## 运营层（产品运营使用）
+
+| 项 | 目标 |
+| --- | --- |
+| 产品 demo 库：MySQL 主从切换、nginx 灰度、web 配置回滚、集群接管录像 | 现场讲不等于文档 |
+| 角色视频：审批人 90 秒、发起人 120 秒、补救 90 秒 | 把入口变成情境演练 |
+| 品牌资产：堤坝符号 + 状态色板 + 关键交互 GIF | 不只是一张 README 截图 |
+
+## 明确的**不做**
+
+- 不做通用 workflow 编辑器（拖拽画 DAG）——超出定位。
+- 不引入 RBAC 编辑器 UI——`permission` 已供 ABAC 接口，让 API 满足需求即可，不在 UI 开编辑器。
+- 不做自由查询编辑器（"搜索任何状态的任何字段"）——REST 列表已经为状态过滤服务。

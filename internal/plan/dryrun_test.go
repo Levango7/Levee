@@ -454,7 +454,9 @@ func TestPreviewWarningsUnlimitedConcurrency(t *testing.T) {
 		dsl.BatchConfig{Strategy: "serial"}, // MaxConcurrency=0
 		dsl.Step{Name: "exec", Module: "shell", Action: "exec"},
 	)
-	wf.Rollback = &dsl.RollbackSpec{Strategy: "snapshot"}
+	// A rollback plan is a step-level declaration; the run-level policy
+	// block alone is not a plan (see TestPreviewWarningsWorkflowLevelPolicyOnly).
+	wf.Steps[0].Rollback = &dsl.RollbackSpec{Strategy: "snapshot", SnapshotPaths: []string{"/etc/app.conf"}}
 
 	p := newTestDryRunPreview()
 	report, err := p.Preview(context.Background(), wf)
@@ -472,7 +474,7 @@ func TestPreviewWarningsNone(t *testing.T) {
 		dsl.BatchConfig{Strategy: "serial", MaxConcurrency: 1},
 		dsl.Step{Name: "exec", Module: "shell", Action: "exec"},
 	)
-	wf.Rollback = &dsl.RollbackSpec{Strategy: "snapshot"}
+	wf.Steps[0].Rollback = &dsl.RollbackSpec{Strategy: "snapshot", SnapshotPaths: []string{"/etc/app.conf"}}
 
 	p := newTestDryRunPreview()
 	report, err := p.Preview(context.Background(), wf)
@@ -480,6 +482,25 @@ func TestPreviewWarningsNone(t *testing.T) {
 	require.NotNil(t, report)
 
 	assert.Empty(t, report.Warnings)
+}
+
+// TestPreviewWarningsWorkflowLevelPolicyOnly pins the honest reading of the
+// rollback declaration: a workflow-level rollback block carries run-level
+// policy only (spec §7.1, LE097), so it must NOT silence the "no rollback
+// plan" warning — none of its steps declares compensable state.
+func TestPreviewWarningsWorkflowLevelPolicyOnly(t *testing.T) {
+	wf := makeDryRunWorkflow("wf-policy-only", []string{"host-a"},
+		dsl.BatchConfig{Strategy: "serial", MaxConcurrency: 1},
+		dsl.Step{Name: "exec", Module: "shell", Action: "exec"},
+	)
+	wf.Rollback = &dsl.RollbackSpec{OnFailure: dsl.RollbackOnFailureManual}
+
+	p := newTestDryRunPreview()
+	report, err := p.Preview(context.Background(), wf)
+	require.NoError(t, err)
+	require.NotNil(t, report)
+	require.NotEmpty(t, report.Warnings)
+	assert.Contains(t, report.Warnings[0], "rollback")
 }
 
 // TestPreviewFixedStrategy verifies that the fixed batch strategy

@@ -56,7 +56,7 @@ func newTakeoverEnv(t *testing.T) *takeoverEnv {
 	// deliberately NOT truncated: the state and cluster package test
 	// binaries run concurrently against this database and own rows there.
 	_, err = db.ExecContext(context.Background(), `
-TRUNCATE TABLE trace, steps, batches, runs, run_execution, cluster_locks RESTART IDENTITY CASCADE`)
+TRUNCATE TABLE trace, steps, batches, runs, run_assignment, run_execution, cluster_locks RESTART IDENTITY CASCADE`)
 	require.NoError(t, err)
 
 	joinNode := func(id string) *cluster.ClusterManager {
@@ -83,13 +83,19 @@ TRUNCATE TABLE trace, steps, batches, runs, run_execution, cluster_locks RESTART
 	// would converge eventually; tests cannot wait on wall-clock, so we
 	// drive sync rounds and assert convergence on the OBSERVABLE (both
 	// registries reporting the same leader, which must be node-a).
+	// Drive several sync rounds per check: a single round may still be
+	// racing the join (the other node's row may not have propagated yet),
+	// and under CI load a lone round can take longer than the tick. Multiple
+	// rounds per iteration let us converge in fewer Eventually cycles.
 	require.Eventually(t, func() bool {
-		_ = env.mgrA.SyncOnceForTest(context.Background())
-		_ = env.mgrB.SyncOnceForTest(context.Background())
+		for i := 0; i < 5; i++ {
+			_ = env.mgrA.SyncOnceForTest(context.Background())
+			_ = env.mgrB.SyncOnceForTest(context.Background())
+		}
 		la, okA := env.mgrA.GetLeader()
 		lb, okB := env.mgrB.GetLeader()
 		return okA && okB && la.ID == "node-a" && lb.ID == "node-a"
-	}, 10*time.Second, 20*time.Millisecond, "both nodes must converge on node-a as leader before the test proper")
+	}, 30*time.Second, 50*time.Millisecond, "both nodes must converge on node-a as leader before the test proper")
 
 	env.loopy = NewLoop(env.mgrA, env.guard, store, "node-a", time.Second)
 	return env

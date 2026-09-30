@@ -68,11 +68,32 @@ func NewSQLiteStore(ctx context.Context, dbPath string, opts ...SQLiteOption) (*
 		dsn = "file::memory:?cache=shared"
 	}
 
+	prefix := "?"
+	if strings.Contains(dsn, "?") {
+		prefix = "&"
+	}
+	// DSN-level pragmas so EVERY pooled connection inherits them. Applying
+	// them via db.ExecContext below only hits one connection, so when the
+	// pool opens more connections under concurrent load (e.g. several
+	// approvers deciding at once) those new connections would miss
+	// busy_timeout and fail with SQLITE_BUSY instead of waiting — exactly the
+	// concurrent-vote path D-1 v2 guards. The values here must match the
+	// ExecContext loop beneath (kept for idempotency on the first connection).
+	dsn += prefix + "_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=synchronous(" + strings.ToUpper(syn) + ")" +
+		"&_pragma=recursive_triggers(1)"
+
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("state: open sqlite: %w", err)
 	}
 
+	// :memory: databases must keep a single connection alive for the
+	// lifetime of the store, otherwise each pool connection sees a fresh
+	// in-memory database. We achieve this by setting max open/inactive conns
+	// to 1.
 	if dbPath == ":memory:" {
 		db.SetMaxOpenConns(1)
 		db.SetMaxIdleConns(1)
@@ -201,6 +222,43 @@ func (s *SQLiteStore) UpdateRunStatusIf(ctx context.Context, id string, from str
 		return false, fmt.Errorf("state: update run status %q: rows affected: %w", id, err)
 	}
 	return n > 0, nil
+}
+
+// UpdateRunApprovalStatusIf atomically transitions a run's status and
+// approval_status in one compare-and-set (WHERE status = from). See the Store
+// interface for the rationale: approval settlement writes both columns as one
+// CAS so a settled outcome cannot clobber a concurrent state transition.
+func (s *SQLiteStore) UpdateRunApprovalStatusIf(ctx context.Context, id string, from string, to string, approvalStatus string, updatedAt time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET status=?, approval_status=?, updated_at=? WHERE id=? AND status=?`,
+		to, approvalStatus, updatedAt, id, from,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q %s->%s: %w", id, from, to, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update run approval status %q: rows affected: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateRunPlan overwrites only the plan artifact and updated_at. See the
+// Store interface for why it avoids touching status/approval_status.
+func (s *SQLiteStore) UpdateRunPlan(ctx context.Context, id string, planJSON string, planHash string, updatedAt time.Time) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE runs SET plan_json=?, plan_hash=?, updated_at=? WHERE id=?`,
+		planJSON, planHash, updatedAt, id,
+	)
+	if err != nil {
+		return fmt.Errorf("state: update run plan %q: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("state: update run plan %q: rows affected: %w", id, err)
+	} else if n == 0 {
+		return fmt.Errorf("state: update run plan %q: not found", id)
+	}
+	return nil
 }
 
 // MarkNonTerminalSteps flips the run's non-terminal step rows
@@ -706,25 +764,26 @@ func (s *SQLiteStore) CreateApproval(ctx context.Context, approval *Approval) er
 	if approval == nil {
 		return fmt.Errorf("state: create approval: nil approval")
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals
-		(id, run_id, level, approver, status, comment, timeout_at, acted_at)
-		VALUES (?,?,?,?,?,?,?,?)`,
+	res, err := s.db.ExecContext(ctx, `INSERT INTO approvals
+		(id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision)
+		VALUES (?,?,?,?,?,?,?,?,?,?)`,
 		approval.ID, approval.RunID, approval.Level, approval.Approver, approval.Status,
-		approval.Comment, approval.TimeoutAt, approval.ActedAt,
+		approval.Comment, approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.Revision,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create approval: %w", err)
 	}
+	_ = res
 	return nil
 }
 
 // GetApproval returns the approval with the given id, or (nil, nil) if not found.
 func (s *SQLiteStore) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, level, approver, status, comment, timeout_at, acted_at
+		id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision
 		FROM approvals WHERE id = ?`, id)
 	a := &Approval{}
-	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt)
+	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -734,16 +793,18 @@ func (s *SQLiteStore) GetApproval(ctx context.Context, id string) (*Approval, er
 	return a, nil
 }
 
-// UpdateApproval overwrites all mutable columns of an existing approval.
+// UpdateApproval overwrites all mutable columns of an existing approval and
+// bumps its revision so any in-flight decision CAS (UpdateApprovalIfPending)
+// that read the old revision loses and must re-read.
 func (s *SQLiteStore) UpdateApproval(ctx context.Context, approval *Approval) error {
 	if approval == nil {
 		return fmt.Errorf("state: update approval: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?
+		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?, plan_hash=?, revision=revision+1
 		WHERE id=?`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update approval %q: %w", approval.ID, err)
@@ -756,18 +817,20 @@ func (s *SQLiteStore) UpdateApproval(ctx context.Context, approval *Approval) er
 
 // UpdateApprovalIfPending is the compare-and-set variant of UpdateApproval:
 // it applies the update only when the stored row is still in status
-// "pending". It returns true when the update was applied and false when the
-// row was concurrently decided (or does not exist), so callers never
-// overwrite a terminal decision.
+// "pending" AND its revision is the one the caller read. The revision check
+// is what prevents two concurrent partial votes (both leaving the row
+// pending) from silently overwriting each other: the second writer carries
+// a stale revision, so it loses the CAS and the caller re-reads and retries.
+// It returns true when the update was applied and false otherwise.
 func (s *SQLiteStore) UpdateApprovalIfPending(ctx context.Context, approval *Approval) (bool, error) {
 	if approval == nil {
 		return false, fmt.Errorf("state: update approval if pending: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?
-		WHERE id=? AND status='pending'`,
+		run_id=?, level=?, approver=?, status=?, comment=?, timeout_at=?, acted_at=?, plan_hash=?, revision=revision+1
+		WHERE id=? AND status='pending' AND revision=?`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID, approval.Revision,
 	)
 	if err != nil {
 		return false, fmt.Errorf("state: update approval %q if pending: %w", approval.ID, err)
@@ -795,7 +858,7 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, filter ApprovalFilter) 
 		args = append(args, filter.Status)
 	}
 
-	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at FROM approvals`
+	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision FROM approvals`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
 	}
@@ -814,7 +877,7 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, filter ApprovalFilter) 
 	var out []*Approval
 	for rows.Next() {
 		a := &Approval{}
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision); err != nil {
 			return nil, fmt.Errorf("state: list approvals scan: %w", err)
 		}
 		out = append(out, a)
@@ -1087,6 +1150,303 @@ func (s *SQLiteStore) DeleteCredential(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+// =========================================================================
+// Dispatch assignment CRUD
+// =========================================================================
+
+// CreateAssignment inserts a new run_assignment row.
+func (s *SQLiteStore) CreateAssignment(ctx context.Context, a *Assignment) error {
+	if a == nil {
+		return fmt.Errorf("state: create assignment: nil assignment")
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `INSERT INTO run_assignment
+		(run_id, owner_node, epoch, state, result, assigned_at, updated_at)
+		VALUES (?,?,?,?,?,?,?)`,
+		a.RunID, a.OwnerNode, a.Epoch, a.State, a.Result, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("state: create assignment for %q: %w", a.RunID, err)
+	}
+	return nil
+}
+
+// GetAssignment returns the assignment for runID, or (nil, nil) if none.
+func (s *SQLiteStore) GetAssignment(ctx context.Context, runID string) (*Assignment, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT
+		run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment WHERE run_id = ?`, runID)
+	a := &Assignment{}
+	if err := row.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: get assignment %q: %w", runID, err)
+	}
+	return a, nil
+}
+
+// UpdateAssignmentStateIf is a compare-and-set on (run_id, epoch, state): it
+// advances expected→next only while the row still matches (runID, epoch,
+// expected). It reports (true, nil) when applied and (false, nil) when the row
+// is missing or no longer matches (a concurrent actor won the race).
+func (s *SQLiteStore) UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=?, result=CASE WHEN ?='done' THEN COALESCE(NULLIF(result,''), ?) ELSE result END, updated_at=?
+		WHERE run_id=? AND epoch=? AND state=?`,
+		next, next, next, time.Now().UTC(), runID, epoch, expected,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateAssignmentState transitions an assignment to next if its current
+// state is pending or executing (see PGStore.UpdateAssignmentState for the
+// rationale). SQLite path mirrors the PG semantics for interface parity.
+func (s *SQLiteStore) UpdateAssignmentState(ctx context.Context, runID, next string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET state=?, updated_at=?
+		WHERE run_id=? AND state IN (?, ?)`,
+		next, time.Now().UTC(), runID, AssignStatePending, AssignmentStateExecuting)
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: update assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// Reassign bumps the epoch and resets state to pending for a run, giving it to
+// a fresh worker. It succeeds only when the existing row matches (runID,
+// prevEpoch) — a stale scheduler that no longer owns the assignment is ignored.
+func (s *SQLiteStore) Reassign(ctx context.Context, runID string, prevEpoch int64, newNode string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET owner_node=?, epoch=epoch+1, state=?, result='', updated_at=?
+		WHERE run_id=? AND epoch=?`,
+		newNode, AssignStatePending, time.Now().UTC(), runID, prevEpoch,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: reassign %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// ReclaimAssignment bumps the epoch and re-points a stale pending assignment
+// at newNode. Unlike Reassign it also CASes on state=pending, so a worker that
+// claimed the row in the meantime (pending→executing, same epoch) beats the
+// reclaim instead of being overwritten.
+func (s *SQLiteStore) ReclaimAssignment(ctx context.Context, runID string, epoch int64, newNode string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
+		SET owner_node=?, epoch=epoch+1, state=?, result='', updated_at=?
+		WHERE run_id=? AND epoch=? AND state=?`,
+		newNode, AssignStatePending, time.Now().UTC(), runID, epoch, AssignStatePending,
+	)
+	if err != nil {
+		return false, fmt.Errorf("state: reclaim assignment %q: %w", runID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("state: reclaim assignment %q rows: %w", runID, err)
+	}
+	return n > 0, nil
+}
+
+// ListAssignments returns assignments matching the filter, ordered by
+// assigned_at ascending. The ExcludeStates clause lists assignments whose
+// state is NOT in the given set (i.e. "active" assignments).
+func (s *SQLiteStore) ListAssignments(ctx context.Context, filter AssignmentFilter) ([]*Assignment, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	if filter.RunID != "" {
+		clauses = append(clauses, "run_id = ?")
+		args = append(args, filter.RunID)
+	}
+	if filter.OwnerNode != "" {
+		clauses = append(clauses, "owner_node = ?")
+		args = append(args, filter.OwnerNode)
+	}
+	if filter.State != "" {
+		clauses = append(clauses, "state = ?")
+		args = append(args, filter.State)
+	}
+	if len(filter.ExcludeStates) > 0 {
+		placeholders := make([]string, len(filter.ExcludeStates))
+		for i := range filter.ExcludeStates {
+			placeholders[i] = "?"
+			args = append(args, filter.ExcludeStates[i])
+		}
+		clauses = append(clauses, "state NOT IN ("+strings.Join(placeholders, ",")+")") // #nosec G202 -- fragments static, values bound
+	}
+
+	q := `SELECT run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		FROM run_assignment`
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
+	}
+	q += " ORDER BY assigned_at ASC"
+	if filter.Limit > 0 {
+		q += " LIMIT ?"
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("state: list assignments: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Assignment
+	for rows.Next() {
+		a := &Assignment{}
+		if err := rows.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("state: list assignments scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list assignments rows: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteAssignment removes the assignment for a run. Idempotent.
+func (s *SQLiteStore) DeleteAssignment(ctx context.Context, runID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM run_assignment WHERE run_id = ?`, runID); err != nil {
+		return fmt.Errorf("state: delete assignment %q: %w", runID, err)
+	}
+	return nil
+}
+
+// SetAssignmentResult writes the terminal result onto an assignment row.
+func (s *SQLiteStore) SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE run_assignment SET result=?, updated_at=? WHERE run_id=? AND epoch=?`,
+		result, time.Now().UTC(), runID, epoch)
+	if err != nil {
+		return fmt.Errorf("state: set result for %q: %w", runID, err)
+	}
+	return nil
+}
+
+// isMissingTableError reports whether err is a "no such table" failure from
+// the SQLite driver. The cluster_nodes and run_assignment tables exist only
+// in PostgreSQL; single-node SQLite must treat their absence as empty.
+func isMissingTableError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "no such table")
+}
+
+// ListClusterNodes returns every registered cluster node, ordered by ID.
+// Single-node (SQLite) deployments have no cluster_nodes table — return
+// (nil, nil) so callers uniformly treat "no rows" as an empty cluster.
+func (s *SQLiteStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, address, role, status, last_heartbeat, joined_at FROM cluster_nodes ORDER BY id`)
+	if err != nil {
+		// The cluster_nodes table is PostgreSQL-only. Treat a missing table
+		// as an empty cluster rather than an error so the same Store
+		// interface works for both backends.
+		if isMissingTableError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: list cluster nodes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var nodes []ClusterNode
+	for rows.Next() {
+		var n ClusterNode
+		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt); err != nil {
+			return nil, fmt.Errorf("state: list cluster nodes scan: %w", err)
+		}
+		nodes = append(nodes, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list cluster nodes rows: %w", err)
+	}
+	return nodes, nil
+}
+
+// AssignmentSummary aggregates run_assignment rows across both backends.
+func (s *SQLiteStore) AssignmentSummary(ctx context.Context) (*AssignmentSummary, error) {
+	summary := &AssignmentSummary{Counts: map[string]int{}, NodeLoad: map[string]int{}}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT state, owner_node, COUNT(*) FROM run_assignment GROUP BY state, owner_node`)
+	if err != nil {
+		if isMissingTableError(err) {
+			return summary, nil
+		}
+		return nil, fmt.Errorf("state: assignment summary: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var state, node string
+		var count int
+		if err := rows.Scan(&state, &node, &count); err != nil {
+			return nil, fmt.Errorf("state: assignment summary scan: %w", err)
+		}
+		summary.Counts[state] += count
+		if state == AssignStatePending || state == AssignmentStateExecuting {
+			summary.NodeLoad[node] += count
+			summary.TotalActive += count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: assignment summary rows: %w", err)
+	}
+	return summary, nil
+}
+
+// BatchSummary returns the per-batch progress of a run. SQLite path mirrors
+// the PG semantics; returns (nil, nil) when the batches table is missing
+// (single-node deployments that never created batches).
+func (s *SQLiteStore) BatchSummary(ctx context.Context, runID string) (*BatchSummary, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT batch_no, status, total_hosts, succeeded, failed
+		 FROM batches WHERE run_id = ? ORDER BY batch_no`, runID)
+	if err != nil {
+		if isMissingTableError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: batch summary %q: %w", runID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	summary := &BatchSummary{Batches: []BatchProgress{}}
+	for rows.Next() {
+		var bp BatchProgress
+		if err := rows.Scan(&bp.BatchNo, &bp.Status, &bp.TotalHosts, &bp.Succeeded, &bp.Failed); err != nil {
+			return nil, fmt.Errorf("state: batch summary scan: %w", err)
+		}
+		if summary.CurrentBatchNo == 0 && !batchDoneStates[bp.Status] {
+			summary.CurrentBatchNo = bp.BatchNo
+		}
+		if batchDoneStates[bp.Status] {
+			summary.DoneBatches++
+		}
+		summary.Batches = append(summary.Batches, bp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: batch summary rows: %w", err)
+	}
+	summary.TotalBatches = len(summary.Batches)
+	return summary, nil
+}
+
+// =========================================================================
 
 // =========================================================================
 // Audit CRUD
