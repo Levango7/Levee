@@ -522,6 +522,38 @@ func scanTarget(hostname string, remote net.Addr) string {
 	return strings.Trim(candidate, "[]")
 }
 
+// syncBuffer guards a bytes.Buffer that the SSH library fills from its own
+// goroutine while Exec reads it.
+//
+// x/crypto/ssh turns Session.Stdout/Stderr into copy funcs (io.Copy from the
+// channel) and only joins them inside Session.Wait — which Session.Run calls.
+// Exec's ctx-cancellation branch never reaches that Wait: it closes the session
+// and reads the captured output while the copy goroutine may still be writing.
+// bytes.Buffer is explicitly not safe for concurrent use, so that read/write
+// pair is a data race (it is what `-race` reports on the cancel path).
+//
+// The mutex makes the access well-defined. It does not make the result
+// complete: output captured after cancellation is whatever had already
+// arrived, which is the best available without blocking a cancelled call.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+// Write satisfies the io.Writer that x/crypto/ssh hands to io.Copy.
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// String returns the bytes captured so far.
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // Exec runs cmd on the target and returns its full result. Exec blocks until
 // the command terminates or ctx is cancelled. When ctx is cancelled after the
 // session has started the remote process is sent SIGKILL via Close.
@@ -559,7 +591,11 @@ func (c *SSHChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult,
 	// Capture stdout and stderr separately so we can populate ExecResult
 	// faithfully. We use pipes rather than CombinedOutput to keep the two
 	// streams distinct for audit.
-	var stdout, stderr bytes.Buffer
+	//
+	// syncBuffer rather than bytes.Buffer: the library's copy goroutine can
+	// still be writing when the cancellation branch below reads, and that path
+	// never joins the goroutine. See syncBuffer.
+	var stdout, stderr syncBuffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 

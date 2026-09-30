@@ -196,6 +196,24 @@ permission:
   default_team: default
   # 默认环境（必填）。 默认: dev
   default_env: dev
+  # bulk_grants —— 批量暂停/恢复（pause-all / resume-all）的授权名单：
+  # 调用者身份 → 已授予的权限名。权限名与 `levee pause all` 遵守的是同一套
+  # （pause:all / resume:all），因此配好的名单在 CLI 与 API 两条路径上生效
+  # 一致，不能靠改走 API 绕过。被拒的调用会写入审计（action=permission.denied）。
+  #
+  # 留空（默认）＝ **不拦**：批量暂停是事故处置手段，不能因为没人写过这份
+  # 名单就在最需要它的时候失效；作为交换，`serve` 启动时会 WARN 明示
+  # "authorization is NOT configured"，让缺口可见而不是静默。
+  # 注意：完整的 ABAC（团队 × 环境 × 动作矩阵，见 cmd_rbac / cmd_user）目前
+  # 仍不能用于服务层准入。原因不是缺数据——`<dataDir>/users.yaml` 里
+  # `name → team, role` 一直在写——而是 (1) 这份注册表只有 CLI 读，`serve`
+  # 从不加载 permissions.yaml / users.yaml / roles.yaml；(2) team→矩阵 与
+  # role→角色树 是两套并行模型，没有合并规则。接入方案见
+  # docs/product-roadmap.md 代码层 P0（含"先对账再启用"的迁移要求）。
+  bulk_grants: {}
+  #  bulk_grants:
+  #    alice: ["pause:all", "resume:all"]
+  #    sre-oncall: ["pause:all"]        # 只给刹车，不给重启
   # ⚠ 权限矩阵文件（teams × environments × actions，见 cmd_user 加载的
   # matrix YAML）风险须知：给某团队授予 `admin` 且环境为通配 `*` 意味着
   # 该团队对当前与未来所有环境全权（admin 超集规则）。这是 LEVEE 启动/加载

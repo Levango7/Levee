@@ -28,6 +28,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +43,7 @@ import (
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/auth"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/cluster"
@@ -49,14 +51,19 @@ import (
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/diagnosis"
+	"github.com/nexus/levee/internal/dispatch"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/itsm/jira"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
+	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/takeover"
 	"github.com/nexus/levee/internal/tracing"
+	"github.com/nexus/levee/internal/wiring"
 
 	"github.com/spf13/cobra"
 )
@@ -92,12 +99,45 @@ var (
 	serveOptNodeID   string
 	serveOptNodeAddr string
 	serveOptNodeRole string
+	// serveOptClusterTakeoverInterval is the failover-takeover sweep
+	// period (cluster mode). <= 0 disables the LOOP only — execution
+	// fencing (leases) stays active whenever the engine is enabled.
+	serveOptClusterTakeoverInterval time.Duration
+	// serveOptClusterExecLeaseTTL bounds an execution lease. Renewals run
+	// at TTL/3; the TTL bounds post-crash detection latency, not
+	// execution duration.
+	serveOptClusterExecLeaseTTL time.Duration
+	// serveOptClusterDispatchInterval is the cross-node dispatch sweep period
+	// (cluster mode). <= 0 disables the dispatch loop; takeover and fencing
+	// are unaffected.
+	serveOptClusterDispatchInterval time.Duration
+	// serveOptClusterDispatchWorkerCapacity bounds how many runs a single
+	// worker executes concurrently before the dispatcher treats it saturated.
+	serveOptClusterDispatchWorkerCapacity int
+	// serveOptClusterDispatchClaimTimeout bounds how long a pending
+	// assignment may sit unclaimed before the leader reclaims it (re-points
+	// it at a live worker with a bumped epoch, fencing the stale owner out).
+	serveOptClusterDispatchClaimTimeout time.Duration
 
 	// serveOptAuthTokens holds repeatable --auth-token name=secret pairs that
 	// map each named bearer token to the subject it authenticates as.
 	serveOptAuthTokens []string
 	// serveOptMetricsPublic opts out of authenticating the /metrics route.
 	serveOptMetricsPublic bool
+	// serveOptEngineEnabled wires the execution engine (plan generation +
+	// apply execution) into the ChangeService. Off by default: a deployment
+	// stays status-only unless the operator explicitly opts in.
+	serveOptEngineEnabled bool
+	// serveOptEngineMaxParallel caps concurrently executing runs inside
+	// this process; applies beyond the cap fast-fail.
+	serveOptEngineMaxParallel int
+	// serveOptEngineGatePrometheus is the Prometheus HTTP base URL consumed
+	// by declared slo verification gates (empty = slo gates fail closed).
+	serveOptEngineGatePrometheus string
+	// serveOptEngineSnapshotDir roots the pre-apply snapshot store for
+	// strategy-"snapshot" rollback. Empty keeps capture disabled; plans
+	// declaring snapshot strategy are then rejected before apply.
+	serveOptEngineSnapshotDir string
 )
 
 // serveGracefulShutdownTimeout is the deadline the server waits for in-flight
@@ -139,8 +179,17 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeAddr, "node-addr", "", "Cluster node address (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
+	cmd.Flags().DurationVar(&serveOptClusterTakeoverInterval, "cluster-takeover-interval", takeover.DefaultInterval, "Failover takeover sweep period; <=0 disables the takeover loop (fencing stays active) (cluster mode)")
+	cmd.Flags().DurationVar(&serveOptClusterExecLeaseTTL, "cluster-exec-lease-ttl", cluster.DefaultExecLeaseTTL, "Execution-lease TTL: bounds post-crash takeover detection latency; renewals run at TTL/3 (cluster mode)")
+	cmd.Flags().DurationVar(&serveOptClusterDispatchInterval, "cluster-dispatch-interval", dispatch.DefaultInterval, "Cross-node dispatch sweep period; <=0 disables the dispatch loop (cluster mode)")
+	cmd.Flags().IntVar(&serveOptClusterDispatchWorkerCapacity, "cluster-dispatch-capacity", dispatch.DefaultWorkerCapacity, "Max concurrent runs per worker node; the dispatcher treats a node at capacity as saturated (cluster mode)")
+	cmd.Flags().DurationVar(&serveOptClusterDispatchClaimTimeout, "cluster-dispatch-claim-timeout", dispatch.DefaultClaimTimeout, "How long a pending assignment may wait unclaimed before the leader reclaims it (re-points it at a live worker with a bumped epoch, fencing the stale owner out) (cluster mode)")
 	cmd.Flags().StringArrayVar(&serveOptAuthTokens, "auth-token", nil, "Named bearer token name=secret (repeatable); the name becomes the authenticated actor")
 	cmd.Flags().BoolVar(&serveOptMetricsPublic, "metrics-public", false, "Expose /metrics without authentication (default: requires a token when auth is enabled)")
+	cmd.Flags().BoolVar(&serveOptEngineEnabled, "engine-enabled", false, "Wire the execution engine: PlanChange generates and persists real plans and ApplyChange executes approved changes (targets must be registered in the inventory; set LEVEE_MASTER_PASSWORD for credentialed channels)")
+	cmd.Flags().IntVar(&serveOptEngineMaxParallel, "engine-max-parallel-runs", wiring.DefaultMaxParallelRuns, "Concurrently executing runs allowed by the engine; additional applies fast-fail (requires --engine-enabled)")
+	cmd.Flags().StringVar(&serveOptEngineGatePrometheus, "engine-gate-prometheus", "", "Prometheus HTTP base URL used by slo verification gates; empty means slo gates fail closed (requires --engine-enabled)")
+	cmd.Flags().StringVar(&serveOptEngineSnapshotDir, "engine-snapshot-dir", "", "Root directory for pre-apply rollback snapshots (design 4.4.4.2); workflow steps declaring strategy \"snapshot\" capture their target files here before apply and restore them on rollback (empty = snapshot capture disabled; requires --engine-enabled)")
 	return cmd
 }
 
@@ -243,13 +292,19 @@ func newServeDiagEngine() (*diagnosis.DiagEngine, error) {
 // newServeConvEngine builds the conversation engine for serve mode with the
 // built-in recommend engine wired, mirroring the `levee converse` defaults so
 // /recommend works out of the box over the API.
-func newServeConvEngine() *conversation.ConversationEngine {
+// newServeConvEngine builds the conversation engine for the serve command.
+// changeSvc is wired as the recommendation→change bridge, so a confirmed
+// recommendation in the REST / IM / web conversation becomes a draft change in
+// the standard governance chain instead of a dead end. A nil changeSvc
+// (tests) degrades to the honest "nothing submitted" reply.
+func newServeConvEngine(changeSvc *grpc.ChangeService) *conversation.ConversationEngine {
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
 		Timeout: 30 * time.Second,
 	})
 	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
-		Recommend: recEngine,
-		Timeout:   60 * time.Second,
+		Recommend:     recEngine,
+		ChangeCreator: grpc.NewConversationChangeCreator(changeSvc),
+		Timeout:       60 * time.Second,
 	})
 }
 
@@ -282,6 +337,71 @@ func setupServeTracing(cfg *config.Config) func() {
 		}
 		tracing.SetDefault(nil)
 	}
+}
+
+// startTakeoverAndFencing sets up the execution-fencing guard and the
+// failover-takeover loop (design-cluster-failover.md) in cluster mode.
+// Both are nil in single-node mode. Returns a started takeover loop (or nil
+// when the interval disables it) and the execGuard the engine assembly needs.
+func startTakeoverAndFencing(takeoverLoop **takeover.Loop, execGuard **cluster.ExecutionGuard,
+	clusterMgr *cluster.ClusterManager, store state.Store, nodeID string,
+	engineEnabled bool, interval time.Duration, ctx context.Context) error {
+
+	*execGuard = cluster.NewExecutionGuard(pgStoreDB(store))
+	if engineEnabled {
+		log.Info("execution fencing enabled", "lease_ttl", serveOptClusterExecLeaseTTL)
+	}
+	if interval > 0 {
+		*takeoverLoop = takeover.NewLoop(clusterMgr, *execGuard, store, nodeID, interval)
+		if err := (*takeoverLoop).Start(ctx); err != nil {
+			return fmt.Errorf("start takeover loop: %w", err)
+		}
+		log.Info("failover takeover loop enabled (leader-only)",
+			"interval", interval, "lease_ttl", serveOptClusterExecLeaseTTL)
+	} else {
+		log.Info("failover takeover loop disabled (--cluster-takeover-interval<=0); execution fencing remains active")
+	}
+	return nil
+}
+
+// startDispatchAndWorkerLoops wires up the two cluster-dispatch loops
+// (design-cluster-dispatch.md): the leader-only dispatch loop that assigns
+// approved runs to idle workers, and the per-node worker loop that executes
+// the runs assigned to this node. Both require cluster mode and the
+// execution engine; when either is disabled the loops are simply not started
+// and the single-node apply path is untouched.
+func startDispatchAndWorkerLoops(dispatchLoop **dispatch.Loop, workerLoop **dispatch.WorkerLoop,
+	clusterMgr *cluster.ClusterManager, store state.Store, changeSvc interface {
+		ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error)
+		RetryChange(ctx context.Context, req *pb.RetryRequest) (*pb.Change, error)
+	}, nodeID string, engineEnabled bool, interval time.Duration, capacity int, claimTimeout time.Duration, ctx context.Context) error {
+
+	if !engineEnabled {
+		return nil
+	}
+	// The sweep is leader-only and dereferences clusterMgr; in single-node mode
+	// it is nil, so starting the loop here nil-panics on the first tick.
+	if clusterMgr == nil {
+		log.Info("cross-node dispatch loops not started: single-node mode (run with --cluster to enable)")
+		return nil
+	}
+	if interval > 0 {
+		*dispatchLoop = dispatch.NewLoop(clusterMgr, store, nodeID, interval, capacity, claimTimeout)
+		if err := (*dispatchLoop).Start(ctx); err != nil {
+			return fmt.Errorf("start dispatch loop: %w", err)
+		}
+		log.Info("cross-node dispatch loop enabled (leader-only)",
+			"interval", interval, "worker_capacity", capacity, "claim_timeout", claimTimeout)
+	} else {
+		log.Info("cross-node dispatch loop disabled (--cluster-dispatch-interval<=0)")
+	}
+
+	*workerLoop = dispatch.NewWorkerLoop(store, &grpcChangeExecutor{svc: changeSvc, store: store}, nodeID, 2*time.Second)
+	if err := (*workerLoop).Start(ctx); err != nil {
+		return fmt.Errorf("start dispatch worker loop: %w", err)
+	}
+	log.Info("dispatch worker loop enabled", "node_id", nodeID, "interval", 2*time.Second)
+	return nil
 }
 
 // runServe executes the `levee serve` command. The assembly is split into
@@ -367,14 +487,43 @@ func runServe(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
+	// In-cluster coordination handles (created lazily; may be nil in
+	// single-node mode). Both loops are cluster-only.
+	var dispatchLoop *dispatch.Loop
+	var dispatchWorkerLoop *dispatch.WorkerLoop
+	var execGuard *cluster.ExecutionGuard
+	var takeoverLoop *takeover.Loop
+	if clusterMgr != nil {
+		if err := startTakeoverAndFencing(&takeoverLoop, &execGuard, clusterMgr, store,
+			serveOptNodeID, serveOptEngineEnabled, serveOptClusterTakeoverInterval, ctx); err != nil {
+			return err
+		}
+	}
+
 	// 3. Build the service implementations. We reuse the in-process
 	//    implementations so the daemon and CLI share one code path.
-	svcs := buildServeServices(store, cfg)
+	svcs, err := buildServeServices(store, cfg, execGuard)
+	if err != nil {
+		return err
+	}
 	changeSvc, templateSvc, targetSvc := svcs.changeSvc, svcs.templateSvc, svcs.targetSvc
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
 
-	// 3. Build server options.
+	reconcileCredentialsWithRegistry(svcs.authzSvc, namedTokens)
+
+	// 3b. Cross-node dispatch (design-cluster-dispatch.md). In cluster mode
+	// the leader periodically assigns approved runs to idle workers and
+	// every node (including the leader) runs a worker loop that executes
+	// the runs assigned to it. Independent of the takeover loop: both run
+	// concurrently in cluster mode.
+	if err := startDispatchAndWorkerLoops(&dispatchLoop, &dispatchWorkerLoop, clusterMgr, store,
+		changeSvc, serveOptNodeID, serveOptEngineEnabled, serveOptClusterDispatchInterval,
+		serveOptClusterDispatchWorkerCapacity, serveOptClusterDispatchClaimTimeout, ctx); err != nil {
+		return err
+	}
+
+	// 3c. Build server options.
 	serverOpts, tlsCfg, err := buildServeServerOpts(svcs, token, namedTokens, oidcVerifier)
 	if err != nil {
 		return err
@@ -425,6 +574,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetMobileApproval(mobileSvc)
+	gw.SetStore(store)
+	gw.SetConversationEngine(svcs.convEngine)
+
+	// Ad-hoc gate verification (POST /gates/verify): expose the engine's
+	// channel dialing + Prometheus URL through the GateService. Only
+	// when the execution engine is wired — without it there is no
+	// honest way to dial targets, and the endpoint answers 404 instead
+	// of failing closed on every call.
+	if svcs.gateSvc != nil {
+		gw.SetGateService(svcs.gateSvc)
+		log.Info("ad-hoc gate verification enabled (POST /gates/verify)")
+	}
 
 	// 5e. Self-observability: expose the process-wide metrics collector as
 	//     Prometheus text format on the gateway mux. The route is gated
@@ -485,39 +646,153 @@ type serveServices struct {
 	alertSvc    *grpc.AlertService
 	diagSvc     *grpc.DiagnosisService
 	convSvc     *grpc.ConversationService
+	convEngine  *conversation.ConversationEngine
 	mobileSvc   *approval.MobileApprovalService
+	// gateSvc is the ad-hoc gate verification service (POST
+	// /gates/verify); nil when the execution engine is not wired.
+	gateSvc *grpc.GateService
+	// authzSvc is the loaded policy authorizer, handed back so runServe can
+	// reconcile configured credentials against the registry (it is the only
+	// place that sees both).
+	authzSvc *authz.Authorizer
 }
 
 // buildServeServices constructs the in-process service implementations,
 // mirroring the CLI code paths. Split out of runServe; behaviour unchanged.
-func buildServeServices(store state.Store, cfg *config.Config) serveServices {
-	changeSvc := grpc.NewChangeService(store, nil, nil, nil)
-	// The execution engine (ClosureRunner) is not wired into serve yet:
-	// ApplyChange reports FailedPrecondition ("status-only mode") rather
-	// than pretending to execute. Plan/approve/status tracking remain
-	// fully functional.
-	log.Warn("serve: no execution engine wired; ApplyChange RPC will return FailedPrecondition (status-only mode)")
-	templateSvc := grpc.NewTemplateService(store, nil)
-	targetSvc := grpc.NewTargetService(store, nil)
-	// Credential-aware probing: when a master password is available, attach a
-	// resolver backed by the same encrypted credential store the secret CLI
-	// commands use, so CheckTarget probes targets with their stored
-	// credentials instead of unauthenticated. Without LEVEE_MASTER_PASSWORD
-	// the resolver stays nil (disabled): CheckTarget then falls back to an
-	// unauthenticated probe and reports a warning on the response. Documented
-	// limitation: serve mode has no other master-password source today — there
-	// is no --master-password flag or keyfile mechanism to wire instead.
+// execGuard is non-nil only in cluster mode: it attaches the execution
+// fencing to the engine so cluster-mode executions register leases and
+// every write is epoch-checked.
+func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
+	// Credential store first: the engine (when enabled) and target probing
+	// share the encrypted store backed by LEVEE_MASTER_PASSWORD. Without it
+	// the resolver stays nil (disabled): CheckTarget probes unauthenticated
+	// and engine channels dial targets without credentials. Documented
+	// limitation: serve mode has no other master-password source today —
+	// there is no --master-password flag or keyfile mechanism to wire instead.
+	var credResolver *serveCredentialResolver
 	if mp := os.Getenv("LEVEE_MASTER_PASSWORD"); mp != "" {
 		if credStore, err := credential.NewCredentialStore(store, mp); err != nil {
 			log.Warn("credential store unavailable; target checks will probe without credentials",
 				"error", err)
 		} else {
-			targetSvc.WithCredentialResolver(&serveCredentialResolver{store: credStore})
+			credResolver = &serveCredentialResolver{store: credStore}
 			log.Info("target checks will resolve stored credentials for probes")
 		}
 	} else {
 		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
 			"(no resolver configured)")
+	}
+
+	// Execution engine (--engine-enabled, off by default). When wired, the
+	// ChangeService gains real plan generation (persisted plan artifacts)
+	// and apply execution via internal/wiring; when nil, ApplyChange keeps
+	// refusing with FailedPrecondition ("status-only mode") instead of
+	// pretending to execute.
+	var engine *grpc.EngineAdapter
+	var eng *wiring.Engine
+	if serveOptEngineEnabled {
+		var opts []wiring.Option
+		if credResolver != nil {
+			opts = append(opts, wiring.WithCredentialResolver(credResolver))
+			log.Info("execution engine enabled with credential resolution for target channels")
+		} else {
+			log.Warn("execution engine enabled WITHOUT LEVEE_MASTER_PASSWORD: channels will dial targets without credentials")
+		}
+		if serveOptEngineMaxParallel > 0 {
+			opts = append(opts, wiring.WithMaxParallelRuns(serveOptEngineMaxParallel))
+		}
+		if serveOptEngineGatePrometheus != "" {
+			opts = append(opts, wiring.WithGatePrometheusURL(serveOptEngineGatePrometheus))
+			log.Info("execution engine slo gates will query Prometheus", "url", serveOptEngineGatePrometheus)
+		} else {
+			log.Info("execution engine slo gates have no Prometheus URL: declared slo gates fail closed")
+		}
+		if serveOptEngineSnapshotDir != "" {
+			opts = append(opts, wiring.WithSnapshotDir(serveOptEngineSnapshotDir))
+			log.Info("execution engine snapshot capture enabled; strategy-snapshot steps capture target files pre-apply and restore on rollback", "dir", serveOptEngineSnapshotDir)
+		} else {
+			log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
+		}
+		if execGuard != nil {
+			// Cluster mode: executions are fenced by run_execution leases.
+			// Begin failure refuses the run outright (no invisible
+			// takeover candidates) and losing the lease mid-flight stops
+			// the executor without rolling back.
+			opts = append(opts,
+				wiring.WithExecutionGuard(clusterExecGuardAdapter{g: execGuard}, serveOptNodeID),
+				wiring.WithExecLeaseTTL(serveOptClusterExecLeaseTTL))
+		}
+		eng = wiring.NewEngine(store, opts...)
+		engine = eng.Adapter()
+		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
+	} else {
+		log.Info("serve: execution engine not wired (--engine-enabled=false); ApplyChange RPC returns FailedPrecondition (status-only mode). Plan/approve/status tracking remain fully functional.")
+	}
+	// Approval service over the same store: PlanChange kicks off the
+	// approval chain (R4 risk-tiered routing; see ChangeService.
+	// kickoffApproval) and ApproveChange/RejectChange then find real
+	// pending records. Before this wiring those RPCs only ever saw
+	// manually seeded rows.
+	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
+
+	// Outbound ITSM Jira mirror (notify.jira.*): decision comments and
+	// kickoff issues keep the org's change record where ITSM lives.
+	// Disabled (the default) keeps everything a no-op; enabled requires
+	// url/project/token, else wiring fails loudly.
+	jiraBridge := jira.NewApprovalBridge(cfg.Notify.Jira)
+	if cfg.Notify.Jira.Enabled {
+		if cfg.Notify.Jira.URL == "" || cfg.Notify.Jira.ProjectKey == "" || cfg.Notify.Jira.APIToken == "" {
+			return serveServices{}, fmt.Errorf("notify.jira.enabled=true requires url, project_key and api_token (or LEVEE_NOTIFY_JIRA_API_TOKEN)")
+		}
+		approvalSvc.WithDecisionObserver(jiraBridge.OnDecision)
+		log.Info("jira approval mirror enabled",
+			"url", cfg.Notify.Jira.URL, "project", cfg.Notify.Jira.ProjectKey)
+	}
+
+	changeSvc := grpc.NewChangeService(store, engine, approvalSvc, nil)
+	if jiraBridge != nil {
+		changeSvc.WithApprovalCreateObserver(jiraBridge.OnApprovalCreated)
+	}
+	// Bulk pause/resume authorization. The API used to bypass whatever
+	// grant list `levee pause all` honours, so configuring permissions
+	// changed nothing over the wire. With no grants configured the actions
+	// stay open on purpose — bulk pause is an incident mitigation, and
+	// losing it to a config key nobody ever wrote would trade a governance
+	// gap for an outage — but the posture is announced, because a silent
+	// gap is exactly what made this a finding.
+	if len(cfg.Permission.BulkGrants) > 0 {
+		bulkAuth := pause.NewSimplePermissionChecker(cfg.Permission.BulkGrants)
+		bulkAuth.SetDenyRecorder(pause.NewDenialAuditRecorder(store))
+		changeSvc.WithBulkPauseAuthorizer(bulkAuth)
+		log.Info("bulk pause/resume authorization enabled",
+			"granted_actors", len(cfg.Permission.BulkGrants))
+	} else {
+		log.Warn("bulk pause/resume authorization is NOT configured: every authenticated caller may pause or resume ALL changes; set permission.bulk_grants to restrict",
+			"permissions", pause.PermissionPauseAll+"/"+pause.PermissionResumeAll)
+	}
+	// Change-scoped policy authorisation (apply / rollback / approve /
+	// reject). Different posture from the bulk grant list above: a policy that
+	// exists but cannot be parsed stops startup, because silently degrading to
+	// "not enforced" would leave an operator believing a policy is active. An
+	// absent policy is not an error — it is announced instead.
+	authzSvc, err := authz.Load(cfg.Server.DataDir, cfg.Permission.DefaultEnv)
+	if err != nil {
+		return serveServices{}, fmt.Errorf("load authorization policy: %w", err)
+	}
+	changeSvc.WithAuthorizer(authzSvc)
+	if authzSvc.Enforced() {
+		log.Info("authorization enabled: change-scoped RPCs enforce the permission matrix",
+			"registered_subjects", len(authzSvc.Registered()))
+	} else {
+		log.Warn("authorization is NOT configured: apply/rollback/approve/reject are limited to authentication alone; write permissions.yaml (see `levee team add`) to enforce policy")
+	}
+
+	templateSvc := grpc.NewTemplateService(store, nil)
+	targetSvc := grpc.NewTargetService(store, nil)
+	if credResolver != nil {
+		// Credential-aware probing: CheckTarget probes targets with their
+		// stored credentials instead of unauthenticated.
+		targetSvc.WithCredentialResolver(credResolver)
 	}
 	auditSvc := grpc.NewAuditService(store)
 	systemSvc := grpc.NewSystemService(
@@ -535,7 +810,8 @@ func buildServeServices(store state.Store, cfg *config.Config) serveServices {
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
 	}
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
-	convSvc := grpc.NewConversationService(newServeConvEngine(), slog.Default())
+	convEngine := newServeConvEngine(changeSvc)
+	convSvc := grpc.NewConversationService(convEngine, slog.Default())
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the
 	// REST gateway's /changes/deeplink/* routes work out of the box. Push
@@ -545,10 +821,41 @@ func buildServeServices(store state.Store, cfg *config.Config) serveServices {
 		nil,
 		push.NewDeepLinkGenerator("levee", "https://levee.local"),
 	)
+
+	// Ad-hoc gate verification (POST /gates/verify): only meaningful
+	// with a live engine (channel dialing + Prometheus URL). Without
+	// the engine the gateway leaves the route unmounted (404) — cmd
+	// checks against remote targets would have no honest transport.
+	var gateSvc *grpc.GateService
+	if eng != nil {
+		gateSvc = grpc.NewGateService(store, eng.Dial, serveOptEngineGatePrometheus)
+	}
 	return serveServices{
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
-		diagSvc: diagSvc, convSvc: convSvc, mobileSvc: mobileSvc,
+		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
+		gateSvc: gateSvc, authzSvc: authzSvc,
+	}, nil
+}
+
+// reconcileCredentialsWithRegistry reports configured credentials whose subject
+// the registry does not know. Split out of runServe (which sits at the gocyclo
+// threshold) and kept next to the other composition-root helpers.
+//
+// The check exists because such a caller is silently unusable once a matrix is
+// configured: every governance action it attempts will be denied, and finding
+// that out from the first ticket is too late. The reverse direction — a
+// registered subject no credential can authenticate — is not checkable at
+// startup, because SSO identities are not enumerable there.
+func reconcileCredentialsWithRegistry(a *authz.Authorizer, namedTokens []grpc.TokenIdentity) {
+	if a == nil || !a.Enforced() {
+		return
+	}
+	for _, ti := range namedTokens {
+		if !a.Knows(ti.Subject) {
+			log.Warn("named token authenticates a subject the registry does not know: governance actions by this caller will be denied until `levee user add` registers it",
+				"subject", ti.Subject)
+		}
 	}
 }
 
@@ -581,6 +888,32 @@ func buildServeServerOpts(svcs serveServices, token string, namedTokens []grpc.T
 		serverOpts = append(serverOpts, grpc.WithTLS(tlsCfg))
 	}
 	return serverOpts, tlsCfg, nil
+}
+
+// clusterExecGuardAdapter bridges the cluster package's concrete
+// ExecutionGuard to the wiring layer's interface. The wiring layer
+// cannot import internal/cluster (it sits below the composition root),
+// so the bridge lives here where both sides are already imported. The
+// lease it returns re-exposes Owns/Heartbeat/End; the wiring layer's
+// SentinelAdapter (applied inside WithExecutionGuard) maps the cluster
+// fence errors onto the engine sentinel chain.
+type clusterExecGuardAdapter struct{ g *cluster.ExecutionGuard }
+
+func (a clusterExecGuardAdapter) Begin(ctx context.Context, runID string) (wiring.ExecutionLease, error) {
+	lease, err := a.g.Register(ctx, runID, serveOptNodeID, serveOptClusterExecLeaseTTL)
+	if err != nil {
+		return nil, err
+	}
+	return a.g.LeaseGuard(lease, serveOptClusterExecLeaseTTL), nil
+}
+
+// pgStoreDB extracts the *sql.DB from the cluster-mode store. Returns
+// nil for the single-node SQLite store (fencing is cluster-only).
+func pgStoreDB(store state.Store) *sql.DB {
+	if pg, ok := store.(*state.PGStore); ok {
+		return pg.DB()
+	}
+	return nil
 }
 
 // openServeStore opens the backend store for serve mode. In cluster mode it
@@ -630,9 +963,7 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 		return nil, nil, fmt.Errorf("start cluster manager: %w", err)
 	}
 	log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
-	log.Warn("cluster coordination covers shared storage, membership and locking only",
-		"detail", "nodes register and heartbeat via PostgreSQL; stale peers are marked offline and expired lock leases are reclaimed automatically. "+
-			"Automated failover of in-flight changes and cross-node scheduling are not yet implemented — do not rely on HA guarantees")
+	log.Info("cluster coordination: shared storage, membership, locking; in-flight changes are fenced (run_execution leases) and the takeover loop settles crashed executors' runs to interrupted")
 	return store, clusterMgr, nil
 }
 

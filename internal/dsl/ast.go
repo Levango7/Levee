@@ -9,6 +9,79 @@
 // so that the parser is forward-compatible with V1.
 package dsl
 
+import "slices"
+
+// BatchStrategy values accepted in a workflow's `batches.strategy` field.
+//
+// This is the SINGLE source of truth for the vocabulary. internal/plan
+// (splitBatches) switches on the same set, and dsl validation and plan
+// generation MUST agree: a document the parser accepts but the generator
+// rejects is a workflow that dies with a Fatal error one layer later, which is
+// exactly how the two lists drifted apart (the parser carried a second,
+// incompatible copy).
+//
+// Keep internal/plan's switch in sync — TestBatchStrategyVocabulariesAgree
+// pins the agreement, so a one-sided edit fails CI rather than production.
+const (
+	// BatchStrategyPercent divides targets by percentage milestones
+	// (batches.steps, e.g. [1, 10, 50, 100]).
+	BatchStrategyPercent = "percent"
+	// BatchStrategyFixed divides targets into fixed-size groups
+	// (batches.steps as group sizes).
+	BatchStrategyFixed = "fixed"
+	// BatchStrategySerial runs every target in a single batch, one after
+	// another. This is the conservative default for generated fixes.
+	BatchStrategySerial = "serial"
+	// BatchStrategyOnePerTarget puts exactly one target in each batch, so
+	// batches run strictly one after another. This is the documented
+	// strategy for rolling database primaries over one at a time
+	// (docs/leveelang-spec.md: "用于 DB 主库逐个切换") and is what
+	// examples/gate-templates/mysql.yaml uses.
+	BatchStrategyOnePerTarget = "one-per-target"
+)
+
+// BatchStrategies lists every accepted batch strategy.
+//
+// Every entry here MUST have a matching case in internal/plan's splitBatches.
+// A strategy the parser accepts but the generator rejects fails as a Fatal
+// LE034 one layer later — which is exactly the defect this list was
+// introduced to end (the parser and the generator each carried their own
+// incompatible copy).
+var BatchStrategies = []string{
+	BatchStrategyPercent,
+	BatchStrategyFixed,
+	BatchStrategySerial,
+	BatchStrategyOnePerTarget,
+}
+
+// IsBatchStrategy reports whether s is an accepted batch strategy.
+func IsBatchStrategy(s string) bool {
+	return slices.Contains(BatchStrategies, s)
+}
+
+// Approval levels — the same vocabulary discipline as BatchStrategies above.
+// This set used to be re-typed in three places inside this package (the
+// parser's switch, the validator's map, the type checker's enum); they agreed
+// by luck. internal/approval carries further copies (service.go's switch,
+// levels.go's error text) that are NOT yet sourced from here.
+const (
+	ApprovalLevelStandard  = "standard"
+	ApprovalLevelHigh      = "high"
+	ApprovalLevelEmergency = "emergency"
+)
+
+// ApprovalLevels lists every accepted approval level, in declaration order.
+var ApprovalLevels = []string{
+	ApprovalLevelStandard,
+	ApprovalLevelHigh,
+	ApprovalLevelEmergency,
+}
+
+// IsApprovalLevel reports whether s is an accepted approval level.
+func IsApprovalLevel(s string) bool {
+	return slices.Contains(ApprovalLevels, s)
+}
+
 // Workflow is the root AST node representing a complete LEVEE change workflow.
 // It aggregates all top-level declarations: metadata, inputs, targets, change
 // window, batch strategy, steps, rollback plan, approval requirements and
@@ -104,6 +177,16 @@ type RollbackSpec struct {
 	Strategy    string
 	OnFailure   string
 	VerifyAfter bool
+
+	// SnapshotPaths declares the target-machine paths that must be
+	// captured into a snapshot before apply when Strategy is "snapshot".
+	// The snapshot is the rollback basis: restore writes the captured
+	// contents back over these paths (spec 4.4.6.3 "白名单 + 快照 +
+	// 按批逆序" — the snapshot half of the protocol). Empty means the
+	// step snapshot carries no file payloads (an audit-only record);
+	// restore is then a no-op. Only meaningful with Strategy ==
+	// "snapshot"; ignored for undo-action / config-revert.
+	SnapshotPaths []string
 }
 
 // ApprovalSpec declares the approval requirement. Level is one of

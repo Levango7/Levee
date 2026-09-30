@@ -17,21 +17,20 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/nexus/levee/internal/dbschema"
 )
 
 // clusterSchemaSQL creates the coordination tables. It is idempotent and is
 // applied by the ClusterManager before the first database operation, so the
 // cluster package does not depend on the state package's schema migration.
-const clusterSchemaSQL = `
-CREATE TABLE IF NOT EXISTS cluster_nodes (
-	id             TEXT PRIMARY KEY,
-	address        TEXT NOT NULL,
-	role           TEXT NOT NULL DEFAULT 'worker',
-	status         TEXT NOT NULL DEFAULT 'active',
-	last_heartbeat TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-	joined_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
+//
+// cluster_nodes is prepended from internal/dbschema — the state package
+// creates the same table for its cluster-status view, and the two
+// IF-NOT-EXISTS copies had drifted (capabilities column, UNIQUE (address),
+// NOT NULL defaults). One definition, applied from whichever side gets there
+// first, now means the same thing either way.
+const clusterSchemaSQL = dbschema.ClusterNodesDDL + `
 CREATE TABLE IF NOT EXISTS cluster_locks (
 	key           TEXT PRIMARY KEY,
 	owner         TEXT NOT NULL,
@@ -41,6 +40,23 @@ CREATE TABLE IF NOT EXISTS cluster_locks (
 );
 
 CREATE SEQUENCE IF NOT EXISTS cluster_locks_fence_seq;
+
+-- run_execution: execution lease / fencing rows for in-flight changes
+-- (failover takeover, design-cluster-failover.md §7.2-B2). One row per
+-- executing run; epoch is a fencing token that increases on every owner
+-- change, so writes by a superseded owner match 0 rows and fail closed.
+-- Kept out of the state package's pgschema.sql deliberately: only
+-- cluster deployments need it and this file's advisory-lock-serialised
+-- path guarantees creation before any guard use.
+CREATE TABLE IF NOT EXISTS run_execution (
+    run_id         TEXT PRIMARY KEY,
+    owner          TEXT NOT NULL,
+    epoch          BIGINT NOT NULL,
+    registered_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    lease_expires  TIMESTAMPTZ NOT NULL
+);
+
+CREATE SEQUENCE IF NOT EXISTS run_execution_epoch_seq;
 `
 
 // clusterSchemaDDLAdvisoryLockKey is the key of the session-level advisory
@@ -78,6 +94,13 @@ func ensureClusterSchema(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("cluster: ensure schema: %w", err)
 	}
 	return nil
+}
+
+// EnsureClusterSchemaForTest applies the cluster schema on the given
+// handle. Exported for cross-package tests (internal/takeover) that boot
+// their own stack; production callers reach it through ClusterManager.
+func EnsureClusterSchemaForTest(ctx context.Context, db *sql.DB) error {
+	return ensureClusterSchema(ctx, db)
 }
 
 // upsertNode inserts or refreshes a node row. On conflict the mutable fields
