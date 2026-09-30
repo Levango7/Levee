@@ -22,7 +22,14 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at      DATETIME NOT NULL,
     updated_at      DATETIME NOT NULL,
     creator         TEXT    NOT NULL,
-    incident_id     TEXT    NOT NULL DEFAULT ''
+    incident_id     TEXT    NOT NULL DEFAULT '',
+    -- SPLITTER HAZARD (see store_edge_test.go "sqlite schema" tests): the
+    -- SQLite splitter ends a statement when a LINE ends with ';'. A column
+    -- line with a trailing inline comment may contain ';' inside the
+    -- comment, but must never END with ';' — keep the closing ');' on its
+    -- own line. The PG splitter learned this the hard way (inline
+    -- comment with ';' cut a CREATE TABLE in half, SQLSTATE 42601).
+    plan_json       TEXT    NOT NULL DEFAULT ''      -- canonical plan.Plan JSON ('' = not planned; v3, last: mirrors ALTER append order)
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);
@@ -126,6 +133,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     comment    TEXT    NOT NULL DEFAULT '',
     timeout_at DATETIME,
     acted_at   DATETIME,
+    plan_hash  TEXT    NOT NULL DEFAULT '',          -- D-1 v2: plan the approval attests to ('' = legacy, any plan)
+    revision   INTEGER NOT NULL DEFAULT 0,           -- D-1 v2: optimistic-lock version for concurrent decisions
     FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
 );
 
@@ -207,3 +216,23 @@ CREATE TABLE IF NOT EXISTS targets (
 
 CREATE INDEX IF NOT EXISTS idx_targets_group  ON targets (group_id);
 CREATE INDEX IF NOT EXISTS idx_targets_status ON targets (status);
+
+-- run_assignment: cross-node dispatch assignments (design-cluster-dispatch.md).
+-- One active assignment per run (run_id PK). Records which worker node was
+-- dispatched to execute an approved run, the monotonic epoch that changes on
+-- every reassignment, and the terminal outcome. Forward-compatible with a
+-- future batch-level model: the UNIQUE(run_id, epoch) constraint keeps history,
+-- and the PK can be widened to (run_id, batch_no) without touching existing rows.
+CREATE TABLE IF NOT EXISTS run_assignment (
+    run_id      TEXT    PRIMARY KEY,
+    owner_node  TEXT    NOT NULL,
+    epoch       BIGINT  NOT NULL,
+    state       TEXT    NOT NULL,               -- pending | executing | done | interrupted
+    result      TEXT    NOT NULL DEFAULT '',    -- completed | failed | rolled_back | ''
+    assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_id, epoch)
+);
+
+CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state);
+CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);

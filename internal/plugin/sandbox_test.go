@@ -96,9 +96,15 @@ func TestSandboxStartAndStop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping sub-process test in short mode")
 	}
-	bin := writeExitScript(t, 0)
+	// The script must STAY alive: asserting IsRunning right after Start on an
+	// instantly-exiting script races the monitor goroutine reaping the
+	// process (observed as a rare "Should be true" red on a loaded -race
+	// runner). The clean-exit / crash-restart semantics an exiting script
+	// exercises are covered by TestSandboxCrash* below; this test is purely
+	// Start -> running -> Stop -> stopped, so a 5s sleep is the right probe.
+	bin := writeScript(t, "sleep 5")
 	cfg := DefaultSandboxConfig()
-	cfg.MaxRestarts = 0 // do not restart on clean exit
+	cfg.MaxRestarts = 0 // moot for Stop (it sets the stopped flag), keeps intent explicit
 
 	sb := NewSandbox("test", bin, nil, nil, cfg, nil)
 	ctx := context.Background()

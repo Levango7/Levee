@@ -83,6 +83,19 @@ func doReq(t *testing.T, method, url, body string) *http.Response {
 	return resp
 }
 
+// doReqAs is doReq with an asserted acting identity, the dev-mode
+// equivalent of authenticating with a named token. Governance calls
+// (approve/reject) attribute the decision to the authenticated subject,
+// so a test that wants one must present that identity.
+func doReqAs(t *testing.T, method, url, body, actor string) *http.Response {
+	t.Helper()
+	req := mustRequest(t, method, url, body)
+	req.Header.Set(actingAsHeaderName, actor)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
 func mustRequest(t *testing.T, method, url string, body ...string) *http.Request {
 	t.Helper()
 	var rdr io.Reader
@@ -147,8 +160,8 @@ func TestRESTChangeSubResourceEndpoints(t *testing.T) {
 	assert.Equal(t, "running", resumed.Status)
 
 	// reject → 200.
-	resp5 := doReq(t, http.MethodPost, srv.URL+"/changes/"+id+"/reject",
-		`{"rejecter":"bob","reason":"too risky"}`)
+	resp5 := doReqAs(t, http.MethodPost, srv.URL+"/changes/"+id+"/reject",
+		`{"rejecter":"bob","reason":"too risky"}`, "bob")
 	defer resp5.Body.Close()
 	require.Equal(t, http.StatusOK, resp5.StatusCode)
 	var rejected struct {

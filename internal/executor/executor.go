@@ -162,6 +162,20 @@ func (e *Executor) Module(name string) (Module, bool) {
 	return m, ok
 }
 
+// IsIdempotent reports whether the module registered under name declares
+// itself idempotent. An unknown module is conservatively reported as
+// non-idempotent — resumable retry must never assume idempotency that was
+// not explicitly declared by the module. Safe for concurrent use.
+func (e *Executor) IsIdempotent(name string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	m, ok := e.modules[name]
+	if !ok {
+		return false
+	}
+	return m.Idempotent()
+}
+
 // Modules returns the registered module names in sorted order. It is intended
 // for diagnostics (e.g. `levee version --verbose` listing available modules).
 func (e *Executor) Modules() []string {

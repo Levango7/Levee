@@ -109,7 +109,7 @@ levee list --status running,approved --target group=web --limit 20
 
 | 选项 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `--status <s1,s2,...>` | enum list | 否 | 按状态过滤：pending / approved / rejected / running / paused / completed / failed / rolled_back / archived |
+| `--status <s1,s2,...>` | enum list | 否 | 按状态过滤（逗号分隔，**精确匹配** `run.status`）：draft / planned / pending / approved / rejected / running / paused / completed / failed / cancelled / rolled_back / rolled_back_partial / rollback_incomplete / interrupted / archived。权威定义见 `internal/grpc/change_service.go`（`isValidTransition` / `terminalRunStatuses`）；CLI 不做白名单校验，未列出的值会被原样透传给 store 过滤 |
 | `--target <label=val>` | label | 否 | 按目标标签过滤，如 `group=web`、`az=a` |
 | `--template <name>` | string | 否 | 按模板名过滤 |
 | `--initiator <user>` | string | 否 | 按发起人过滤 |
@@ -715,23 +715,22 @@ esac
 
 ### 12.1 人类可读格式（默认）
 
-默认输出表格 + 彩色状态，适合终端交互。
+输出为制表符对齐的表格（`PrintHuman` → `printHumanTable`，`text/tabwriter`）。**不含 ANSI 颜色**——状态以原文呈现，着色只存在于 `levee audit` 导出的 HTML 报告（`.status-*`）。
 
 命令示例：人类可读输出示例
 
 ```bash
-$ levee list --status running
+$ levee list
 ```
 
-输出示例：
+输出示例（取自真实运行）：
 
 ```
-CHANGE ID            TEMPLATE      STATUS    PROGRESS    INITIATOR    UPDATED
-run-20260815-001     db-migrate    running   2/3 batches user-a       2026-08-15 02:14
-run-20260815-002     os-patch      running   1/5 batches user-b       2026-08-15 02:18
+ID                    WORKFLOW_NAME  TEMPLATE_NAME  STATUS  APPROVAL_STATUS  CREATOR   CREATED_AT
+run-9880784947509147  db-migrate     db-migrate     draft   pending          cli-user  2026-09-24 23:51:54
 ```
 
-状态颜色：running 黄、completed 绿、failed 红、paused 灰、rolled_back 红。
+列集合固定为 `ID / WORKFLOW_NAME / TEMPLATE_NAME / STATUS / APPROVAL_STATUS / CREATOR / CREATED_AT`（`CREATED_AT` 格式 `2006-01-02 15:04:05`）。注意：**没有** `PROGRESS` 列——批次进度要用 `levee show <run-id>` 或 `levee logs`；`--quiet` 只逐行输出 run id。
 
 ### 12.2 JSON 格式（--json）
 
@@ -740,49 +739,44 @@ run-20260815-002     os-patch      running   1/5 batches user-b       2026-08-15
 命令示例：JSON 输出结构
 
 ```bash
-$ levee list --status running --json
+$ levee list --json
 ```
 
-输出示例：
+输出示例（取自真实运行）：
 
 ```json
 {
   "data": [
     {
-      "change_id": "run-20260815-001",
-      "template": "db-migrate",
-      "status": "running",
-      "progress": { "batch_done": 2, "batch_total": 3 },
-      "initiator": "user-a",
-      "plan_hash": "sha256:9f4b...",
-      "created_at": "2026-08-15T02:10:00+08:00",
-      "updated_at": "2026-08-15T02:14:32+08:00"
+      "approval_status": "pending",
+      "created_at": "2026-09-24 23:51:54",
+      "creator": "cli-user",
+      "id": "run-9880784947509147",
+      "status": "draft",
+      "template_name": "db-migrate",
+      "workflow_name": "db-migrate"
     }
   ],
   "meta": {
-    "total": 2,
+    "count": 1,
     "limit": 20,
-    "offset": 0,
-    "elapsed_ms": 38
+    "offset": 0
   },
   "error": null
 }
 ```
 
-错误时结构：
+行字段与 12.1 表格列一一对应（`id` / `workflow_name` / `template_name` / `status` / `approval_status` / `creator` / `created_at`）；`meta` 为 `count` / `limit` / `offset`（**没有** `total` / `elapsed_ms`）；`created_at` 为 `2006-01-02 15:04:05` 字符串，不是 RFC3339。
+
+错误时结构（`levee show <不存在的 id> --json` 实测）：
 
 ```json
 {
   "data": null,
   "meta": null,
   "error": {
-    "code": 7,
-    "message": "target unreachable: web-03.example.com",
-    "detail": {
-      "host": "web-03.example.com",
-      "channel": "ssh",
-      "reason": "connection refused"
-    }
+    "code": 1,
+    "message": "run \"run-does-not-exist\" not found"
   }
 }
 ```
@@ -800,7 +794,7 @@ RESTful 风格，支持两套路径：
 
 资源命名用复数名词，子资源用路径嵌套（`/changes/:id/approve`）。HTTP 方法语义：GET 查询、POST 创建 / 动作、DELETE 删除。
 
-成功响应体为 proto 消息直接序列化的 JSON（不带 12.2 的 `data`/`meta`/`error` 外层包装，字段约定见 13.5）；错误响应体为 `{"error": "<message>"}`。HTTP 状态码与 gRPC 状态码对齐：200 成功、400 验证失败（InvalidArgument）、401 认证失败（Unauthenticated）、403 权限不足（PermissionDenied）、404 不存在（NotFound）、409 冲突（AlreadyExists，如目标机互斥锁占用）、412 前置条件不满足（FailedPrecondition）、429 限流（ResourceExhausted）、501 未实现（Unimplemented）、503 连接失败 / 服务不可用（Unavailable）、504 超时（DeadlineExceeded）、500 一般错误（其余）。
+成功响应体为 proto 消息直接序列化的 JSON（不带 12.2 的 `data`/`meta`/`error` 外层包装，字段约定见 13.6）；错误响应体为 `{"error": "<message>"}`。HTTP 状态码与 gRPC 状态码对齐：200 成功、400 验证失败（InvalidArgument）、401 认证失败（Unauthenticated）、403 权限不足（PermissionDenied）、404 不存在（NotFound）、409 冲突（AlreadyExists，如目标机互斥锁占用）、412 前置条件不满足（FailedPrecondition）、429 限流（ResourceExhausted）、501 未实现（Unimplemented）、503 连接失败 / 服务不可用（Unavailable）、504 超时（DeadlineExceeded）、500 一般错误（其余）。
 
 ### 13.2 端点清单
 
@@ -825,6 +819,7 @@ RESTful 风格，支持两套路径：
 | GET | `/changes/:id/trace` | `/api/v1/ChangeService/GetTrace` | 查看 trace | `levee trace` |
 | POST | `/changes/deeplink/approve` | — | 一键审批（移动端，一次性 token 认证，见 13.3） | — |
 | POST | `/changes/deeplink/reject` | — | 一键驳回（移动端，一次性 token 认证，见 13.3） | — |
+| POST | `/gates/verify` | — | 按需单步验证（cmd/probe/slo，见 13.4） | — |
 | POST | `/templates` | `/api/v1/TemplateService/CreateTemplate` | 创建模板 | `levee template create` |
 | GET | `/templates` | `/api/v1/TemplateService/ListTemplates` | 列出模板 | `levee template list` |
 | GET | `/templates/:name` | `/api/v1/TemplateService/GetTemplate` | 查看模板 | `levee template show` |
@@ -853,6 +848,34 @@ Token-based 认证，三种模式：
 - 门户（Web UI）：同源嵌入在二进制中，无需额外认证；外部调用需携带 Bearer token。
 - 移动端一键审批（deeplink）：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 不要求 Bearer 头，改以请求体中的一次性 token 作为认证凭据（`{"token": "<one-time-token>"}`）。token 由审批通知下发时生成：32 字节随机数、默认 30 分钟 TTL、单次消费、绑定 (run-id, 用户, 动作)；消费或过期后即失效。无效 / 过期 token 返回 401。该豁免仅覆盖这两个端点，其余端点仍强制 Bearer。
 
+### 13.4 单步验证门（POST /gates/verify）
+
+按需执行一条验证检查——操作员预检、流水线 pre-check、ChatOps 即席健康检查，无需为一次检查规划整个变更。检查语义与引擎计划内门禁**同源**（同一 `verify` 构造器，零漂移）：
+
+```jsonc
+// 请求体
+{
+  "type": "cmd",              // cmd | probe | slo（human 归审批链，显式拒绝）
+  "name": "nginx-alive",     // 可选标签，默认 "ad-hoc"
+  "target": "web-1",         // cmd 必填（经引擎通道拨号远程执行）；probe/slo 忽略
+  "run_id": "run-abc",       // 可选：审计关联
+  "params": {
+    // cmd:   {"cmd": "systemctl is-active nginx", "expect_exit": 0,
+    //         "expect_stdout": "active", "timeout_seconds": 5}
+    // probe: {"kind": "http", "url": "http://web-1:8080/health", ...}（自描述）
+    // slo:   {"query": "rate(errors[5m])", "threshold": 0.01,
+    //         "comparison": "lte", "timeout_seconds": 5}
+    "cmd": "systemctl is-active nginx", "expect_exit": 0
+  }
+}
+// 200 响应：{ "gate": "...", "passed": true/false, "message": "...",
+//            "details": {...}, "latency_ms": 42, "ran_at": "..." }
+// 400：描述了系统无法诚实执行的检查（未知 type / 缺参 / cmd 无 target /
+//      slo 无 Prometheus URL）；服务未配置（无引擎）时 404。
+```
+
+要点：cmd 检查对 inventory 中未知 / retired 目标前置拒绝；每次执行落审计（`gate_verify`）；`--engine-enabled` 才挂载本端点。
+
 静态令牌之外还支持第四种凭据 —— **SSO（可选，`auth.oidc` 或 `auth.github` 开启）**：
 
 - 解析顺序：请求携带的 Bearer 令牌先与静态令牌集（constant-time 比较）比对，未命中再依次尝试 LEVEE 会话令牌（SSO 登录产物，本地 HMAC 校验）与三段式 JWT 形态的 OIDC 验证。开启任一 SSO 不影响既有静态令牌。
@@ -874,22 +897,28 @@ Token-based 认证，三种模式：
 
 > **安全提示**：默认情况下（不传 `--token` 且未启用 OIDC）鉴权处于关闭状态，所有 API 请求无需认证即可访问。生产环境必须通过 `--token <secret>` 设置 Bearer token 或启用 `auth.oidc`。gRPC 和 REST 网关共享同一凭据校验逻辑；`--insecure` 可显式接受无鉴权风险（本地开发）。
 
-### 13.4 分页与过滤
+### 13.5 分页与过滤
 
-标准分页参数：
+网关解析哪些 query 参数**因端点而异**，且**不校验未知参数**：传了不存在的参数会被静默忽略。`rest.go` 对此有明确注释——历史上曾「假装支持」若干参数，导致客户端以为它们生效，故一律不解析。下面的表与 `internal/grpc/rest.go` 逐 handler 对应：
 
-表：分页与过滤参数说明表
+| 端点（handler） | 实际解析的 query 参数 |
+| --- | --- |
+| `GET /changes`（`handleChangeList`） | `status`（逗号分隔，**精确匹配** `run.status`）、`labelContains`、`pageSize`、`pageToken` |
+| 变更日志（`handleChangeLogs`） | `runId`、`levels`、`limit`、`since`、`until` |
+| 变更 trace（`handleChangeTrace`） | `runId`、`verify` |
+| `GET /audit/log`（`handleAuditLog`） | `changeId`、`runId`、`action`、`actor`、`since`、`until`、`pageSize`、`pageToken` |
+| `GET /audit/traces`（`handleAuditTraces`） | `changeId`、`runIds`、`since`、`until`、`pageSize`、`pageToken` |
+| `GET /audit/verify`（`handleAuditVerify`） | `changeId`、`runId` |
+| `GET /targets`（`handleTargetList`） | `labelSelector`、`channelType`、`reachableOnly`、`pageSize`、`pageToken` |
+| 目标探测（`handleTargetCheck`） | `fresh`、`timeoutSeconds` |
+| `GET /templates`（`handleTemplateList`） | `nameContains`、`pageSize`、`pageToken` |
+| `GET /system/config`（`handleSystemConfig`） | `section`、`redactSecrets` |
 
-| 参数 | 类型 | 默认 | 说明 |
-| --- | --- | --- | --- |
-| `limit` | int | 20 | 返回条数，上限 100 |
-| `offset` | int | 0 | 偏移量 |
-| `sort` | string | 按 created_at desc | 排序字段，如 `updated_at asc` |
-| `fields` | string list | 全部字段 | 投影字段，逗号分隔，减少传输 |
+**刻意不支持**（旧版文档曾错误宣称支持）：`/changes` 的 `template`、`initiator`、`from`、`to`；`/audit/log` 的 `who`（实际参数名是 `actor`）与 `change`（实际是 `changeId`）；以及全局的 `offset`、`sort` / `sortBy` / `sortOrder`、`fields`、`team`、`environment`。
 
-过滤参数按资源域不同，如 `/changes` 支持 `status`、`template`、`initiator`、`from`、`to`，`/audit` 支持 `who`、`action`、`change`。过滤参数均为可选，多参数间为 AND 关系。
+分页参数是 `pageSize` + `pageToken`，**没有 `offset` 参数**——`pageToken` 是"下一页起始偏移"的十进制字符串（`helpers.go` 的 `parsePageToken` / `buildPageToken`），空串表示从头开始，畸形或负值返回 `InvalidArgument`（刻意不静默回到第 0 页）。默认 `pageSize` 是 **50**；`maxPageSize = 1000` 的上限只在审计类服务里生效（`audit_service.go`），`ListChanges` 侧**没有**上限钳制。**没有字段投影**（`fields` 不被解析）。`limit` 仅在变更日志端点存在，含义是返回条数而非分页游标。
 
-### 13.5 JSON 字段约定（protojson）
+### 13.6 JSON 字段约定（protojson）
 
 REST 网关的成功响应由 protojson（proto3 JSON 规范，默认选项）序列化，客户端集成时必须遵循以下约定：
 
@@ -898,7 +927,15 @@ REST 网关的成功响应由 protojson（proto3 JSON 规范，默认选项）�
 3. **int64 字段**：int64 字段（如 `createdAt` / `updatedAt` Unix 秒时间戳、`durationMs`）按 proto3 JSON 规范输出为 **JSON 字符串**（避免 64 位精度丢失），客户端应按字符串接收后再解析为数值。
 4. **错误响应**：非 2xx 响应体统一为 `{"error": "<message>"}`（见 13.1 状态码映射）。
 
-所有端点（含 AlertService / DiagnosisService / ConversationService）统一遵循上述约定，无例外。
+所有走 protojson 的端点（含 AlertService / DiagnosisService / ConversationService 的 gRPC 兼容端点）统一遵循上述约定。REST-only 的对话会话端点例外见 13.7。
+
+### 13.7 对话会话端点（REST-only）
+
+`/conversation/sessions*` 一组端点不经过 gRPC（会话管理不在 ConversationService 的 proto 面内），由 REST 网关直接驱动会话引擎，因此**不遵循** 13.6 的 protojson 约定：字段为 snake_case，成功响应统一带信封——`POST /conversation/sessions` 与 `GET /conversation/sessions/{id}` 返回 `{"session": {...}}`，`GET /conversation/sessions` 返回 `{"sessions": [...]}`，`POST /conversation/sessions/{id}/messages` 返回 `{"reply": {"text": ..., "action"?: {"type", "payload"}}}`，`DELETE /conversation/sessions/{id}` 返回 204。前端在 `web/src/api/index.ts` 的 `conversationApi` 内统一拆封并摊平 reply，视图层只见扁平 DTO。
+
+所有权（P2-2）：命名令牌 / OIDC / SSO 会话的**认证主体**是会话归属的唯一依据，请求体或 query 里的 `user_id` 仅在无认证（开发模式）或旧式静态令牌（无已验证主体）时作为回退；详情 / 发消息 / 关闭对他人会话一律 403。
+
+执行语义（P2-3）：审核阶段回复「执行 / approve / yes」仅表示**确认建议**——会话保持 `reviewing`，回复文案为「建议已确认，尚未启动执行」，不会进入 `executing`（执行链接通前该状态不可达）；「拒绝 / reject / no」终止建议（`failed`），「修改 / modify」继续留在 `reviewing`。
 
 ---
 

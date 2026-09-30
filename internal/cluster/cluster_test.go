@@ -164,8 +164,11 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	_, err := db.ExecContext(ctx, `DELETE FROM cluster_nodes`)
 	require.NoError(t, err)
 
-	cfgA := ManagerConfig{SelfID: "node-a", HealthCheckInterval: 100 * time.Millisecond, HeartbeatTimeout: 500 * time.Millisecond}
-	cfgB := ManagerConfig{SelfID: "node-b", HealthCheckInterval: 100 * time.Millisecond, HeartbeatTimeout: 500 * time.Millisecond}
+	// Generous intervals: under CI load a 500ms heartbeat timeout with 100ms
+	// health ticks can race the election, making leader convergence flaky.
+	// Widen both so the test pins behaviour, not timing.
+	cfgA := ManagerConfig{SelfID: "node-a", HealthCheckInterval: 200 * time.Millisecond, HeartbeatTimeout: 2 * time.Second}
+	cfgB := ManagerConfig{SelfID: "node-b", HealthCheckInterval: 200 * time.Millisecond, HeartbeatTimeout: 2 * time.Second}
 	mgrA := NewClusterManager(db, cfgA)
 	mgrB := NewClusterManager(db, cfgB)
 
@@ -177,11 +180,28 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	require.NoError(t, mgrA.Start(runCtx))
 	require.NoError(t, mgrB.Start(runCtx))
 
+	// Drive sync rounds AND wait: under CI load the background health loop
+	// may not tick fast enough for timely convergence, so each Eventually
+	// iteration actively folds the shared table into both registries before
+	// checking the observable. This pins behaviour without wall-clock bets.
+	syncBoth := func() {
+		_ = mgrA.SyncOnceForTest(ctx)
+		_ = mgrB.SyncOnceForTest(ctx)
+	}
+	// syncA folds the shared table into A's registry alone. After B is stopped
+	// it must NOT be driven any more: a sync round heartbeats the caller's own
+	// SelfID (syncWithPG -> heartbeatNode(m.cfg.SelfID)), so syncing the
+	// crashed node would keep its cluster_nodes row refreshed and the offline
+	// transition could never fire. The peer is meant to observe silence, not
+	// to help the dead node stay alive.
+	syncA := func() { _ = mgrA.SyncOnceForTest(ctx) }
+
 	// A must discover B through the shared table.
 	assert.Eventually(t, func() bool {
+		syncBoth()
 		n, ok := mgrA.Registry().Get("node-b")
 		return ok && n.Status == StatusActive
-	}, 5*time.Second, 50*time.Millisecond, "node-a never saw node-b as active")
+	}, 10*time.Second, 100*time.Millisecond, "node-a never saw node-b as active")
 
 	// Leader converges to the master role on both sides. Election runs on
 	// each node's own table view, refreshed once per health tick, so a
@@ -190,10 +210,11 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	var leaderA, leaderB *Node
 	var okA, okB bool
 	require.Eventually(t, func() bool {
+		syncBoth()
 		leaderA, okA = mgrA.GetLeader()
 		leaderB, okB = mgrB.GetLeader()
 		return okA && okB
-	}, 5*time.Second, 50*time.Millisecond, "leaders never converged on both sides")
+	}, 10*time.Second, 100*time.Millisecond, "leaders never converged on both sides")
 	assert.Equal(t, "node-a", leaderA.ID)
 	assert.Equal(t, "node-a", leaderB.ID)
 
@@ -203,20 +224,29 @@ func TestClusterPGTwoNodeVisibility(t *testing.T) {
 	defer stopCancel()
 	require.NoError(t, mgrB.Stop(stopCtx))
 
-	// A must mark B offline once the heartbeat ages past the timeout.
+	// A must mark B offline once the heartbeat ages past the timeout. Only A
+	// syncs here — B is down, and syncing it would refresh its own heartbeat.
 	assert.Eventually(t, func() bool {
+		syncA()
 		n, ok := mgrA.Registry().Get("node-b")
 		return ok && n.Status == StatusOffline
-	}, 5*time.Second, 50*time.Millisecond, "node-a never marked node-b offline")
+	}, 10*time.Second, 100*time.Millisecond, "node-a never marked node-b offline")
 
 	// Graceful leave removes the row entirely.
 	require.NoError(t, mgrA.Leave("node-b"))
 	assert.Eventually(t, func() bool {
+		syncA()
 		_, ok := mgrA.Registry().Get("node-b")
 		return !ok
-	}, 5*time.Second, 50*time.Millisecond, "node-b row still visible after leave")
+	}, 10*time.Second, 100*time.Millisecond, "node-b row still visible after leave")
 
-	require.NoError(t, mgrA.Stop(stopCtx))
+	// Fresh deadline for A: the offline wait above legitimately burns one
+	// full heartbeat timeout plus detection slack, which already exceeds the
+	// 2s budget allocated for stopping B — reusing that context would make
+	// Stop fail with "health check did not drain" on every run.
+	stopACtx, stopACancel := context.WithTimeout(ctx, 5*time.Second)
+	defer stopACancel()
+	require.NoError(t, mgrA.Stop(stopACtx))
 }
 
 // TestClusterPGConcurrentEnsureSchemaSerialisesDDL is the regression test

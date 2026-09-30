@@ -70,10 +70,46 @@ gates:
       query: "rate(node_load1[5m]) < 4"
       source: prometheus
 rollback:
-  strategy: snapshot
   on_failure: auto
   verify_after: true
 `
+
+// snapshotPathsYAML exercises the step-level snapshot_paths declaration
+// (rollback strategy snapshot): the paths flow through the parser into
+// the RollbackSpec the engine's snapshot hook consumes.
+const snapshotPathsYAML = `
+name: snapshot-paths-demo
+version: "1.0"
+targets:
+  - name: web
+    hosts: ["web1"]
+steps:
+  - name: push-conf
+    action: file.copy
+    args:
+      src: /srv/app.conf
+      dst: /etc/app.conf
+    rollback:
+      strategy: snapshot
+      snapshot_paths:
+        - /etc/app.conf
+        - /etc/app.d/override.conf
+`
+
+func TestParseRollbackSnapshotPaths(t *testing.T) {
+	p := NewParser()
+	wf, err := p.ParseBytes([]byte(snapshotPathsYAML))
+	require.NoError(t, err)
+	require.NotNil(t, wf)
+
+	require.Len(t, wf.Steps, 1)
+	rb := wf.Steps[0].Rollback
+	require.NotNil(t, rb)
+	assert.Equal(t, "snapshot", rb.Strategy)
+	require.Len(t, rb.SnapshotPaths, 2)
+	assert.Equal(t, "/etc/app.conf", rb.SnapshotPaths[0])
+	assert.Equal(t, "/etc/app.d/override.conf", rb.SnapshotPaths[1])
+}
 
 // TestParseFullWorkflow verifies that a complete workflow with all supported
 // fields is parsed correctly into the AST.
@@ -152,9 +188,12 @@ func TestParseFullWorkflow(t *testing.T) {
 	assert.Equal(t, "rate(node_load1[5m]) < 4", wf.Gate.Post[1].Command)
 	assert.Equal(t, "prometheus", wf.Gate.Post[1].Source)
 
-	// Rollback
+	// Rollback: the workflow level carries run-level policy only (spec
+	// §7.1). The compensation contract lives on the step — the validator
+	// rejects strategy / steps / snapshot_paths here as LE097.
 	require.NotNil(t, wf.Rollback)
-	assert.Equal(t, "snapshot", wf.Rollback.Strategy)
+	assert.Empty(t, wf.Rollback.Strategy)
+	assert.Empty(t, wf.Rollback.Steps)
 	assert.Equal(t, "auto", wf.Rollback.OnFailure)
 	assert.True(t, wf.Rollback.VerifyAfter)
 }
@@ -360,6 +399,13 @@ steps:
 
 // TestParseRollbackNested verifies parsing of a rollback block with nested
 // undo steps.
+//
+// NOTE: the parser is deliberately permissive here — it is the syntax layer
+// and stays forward-compatible with the V1 grammar. The scope rule is the
+// validator's: strategy / steps / snapshot_paths at workflow level are
+// rejected as LE097 (TestValidateWorkflowRejectsWorkflowLevelCompensation),
+// because the compensation contract belongs on the step it compensates
+// (steps[].rollback).
 func TestParseRollbackNested(t *testing.T) {
 	p := NewParser()
 	yaml := `

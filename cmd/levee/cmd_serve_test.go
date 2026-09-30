@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/dispatch"
 )
 
 // resetServeFlags restores the serve command's package-level flags to their
@@ -94,4 +98,25 @@ func TestRunServeErrorMessageShape(t *testing.T) {
 	msg := err.Error()
 	assert.True(t, strings.Contains(msg, "--token"), "message should mention --token")
 	assert.True(t, strings.Contains(msg, "--insecure"), "message should mention --insecure")
+}
+
+// TestStartDispatchLoopsRefusedInSingleNode pins the contract stated in
+// startDispatchAndWorkerLoops' own doc comment ("Both require cluster mode and
+// the execution engine"). Without --cluster the manager is nil, and the
+// leader-only sweep dereferences it on its first tick — so `serve
+// --engine-enabled` on a single node panicked ~10s after startup. The
+// assertions are on the out-params rather than on a waited-for tick, so the
+// test is deterministic: a removed guard leaves a live loop and fails at once.
+func TestStartDispatchLoopsRefusedInSingleNode(t *testing.T) {
+	var loop *dispatch.Loop
+	var worker *dispatch.WorkerLoop
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	err := startDispatchAndWorkerLoops(&loop, &worker, nil, nil, nil, "node-single",
+		true, time.Millisecond, 4, time.Minute, ctx)
+
+	require.NoError(t, err)
+	assert.Nil(t, loop, "no dispatch loop may be started outside cluster mode")
+	assert.Nil(t, worker, "no dispatch worker loop may be started outside cluster mode")
 }
