@@ -13,9 +13,13 @@ package permission
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Sentinel errors returned by the role tree.
@@ -408,4 +412,106 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// --- YAML loading -----------------------------------------------------------
+
+// roleTreeYAML is the on-disk shape of roles.yaml. It lives here rather than in
+// the CLI because the serving process must load the same file the CLI writes:
+// a loader in package main is unreachable from internal/*, which is exactly how
+// the role tree ended up unused at runtime.
+type roleTreeYAML struct {
+	Roles []roleYAMLEntry `yaml:"roles"`
+}
+
+type roleYAMLEntry struct {
+	Name        string   `yaml:"name"`
+	Parent      string   `yaml:"parent,omitempty"`
+	Permissions []string `yaml:"permissions,omitempty"`
+}
+
+// SaveToYAML writes the tree to path with 0600, creating the parent
+// directory. Direct permissions only — inheritance is expressed by Parent, so
+// a round-trip does not flatten the hierarchy into duplicated grants.
+func (t *RoleTree) SaveToYAML(path string) error {
+	t.mu.RLock()
+	roles := make([]string, 0, len(t.perms))
+	for r := range t.perms {
+		roles = append(roles, r)
+	}
+	t.mu.RUnlock()
+	sort.Strings(roles)
+
+	cfg := roleTreeYAML{Roles: make([]roleYAMLEntry, 0, len(roles))}
+	for _, r := range roles {
+		parent, _ := t.Parent(r)
+		direct, _ := t.DirectPermissions(r)
+		cfg.Roles = append(cfg.Roles, roleYAMLEntry{Name: r, Parent: parent, Permissions: direct})
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("create role tree dir: %w", err)
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal role tree: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write role tree: %w", err)
+	}
+	return nil
+}
+
+// LoadFromYAML replaces the tree with the roles declared in the file at path.
+// A missing file leaves the tree empty and returns no error, so callers can
+// treat "never configured" as a normal state.
+//
+// Roles are added in dependency order (a parent before any child that names
+// it) rather than file order, so authors may list children first. Entries that
+// still cannot be added after a full pass — a parent that never appears —
+// surface as an error instead of a silently truncated tree.
+func (t *RoleTree) LoadFromYAML(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read role tree: %w", err)
+	}
+	var cfg roleTreeYAML
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("unmarshal role tree: %w", err)
+	}
+
+	added := make(map[string]bool)
+	for pass := 0; pass < len(cfg.Roles)+1; pass++ {
+		progress := false
+		for _, r := range cfg.Roles {
+			if added[r.Name] {
+				continue
+			}
+			if r.Parent != "" && !added[r.Parent] {
+				continue
+			}
+			if err := t.AddRole(r.Name, r.Parent); err != nil {
+				return fmt.Errorf("add role %q: %w", r.Name, err)
+			}
+			if len(r.Permissions) > 0 {
+				if err := t.GrantPermission(r.Name, r.Permissions...); err != nil {
+					return fmt.Errorf("grant permissions for %q: %w", r.Name, err)
+				}
+			}
+			added[r.Name] = true
+			progress = true
+		}
+		if !progress {
+			break
+		}
+	}
+	for _, r := range cfg.Roles {
+		if !added[r.Name] {
+			return fmt.Errorf("role %q names parent %q, which is not declared", r.Name, r.Parent)
+		}
+	}
+	return nil
 }

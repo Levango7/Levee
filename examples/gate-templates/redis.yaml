@@ -49,7 +49,7 @@ approval:
 
 steps:
   - name: upgrade-redis
-    action: shell
+    action: shell.exec
     args:
       cmd: "yum update -y redis && systemctl restart redis"
     irreversible: true

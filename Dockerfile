@@ -42,7 +42,12 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 FROM golang:${GO_VERSION}-alpine AS builder
 
-RUN apk add --no-cache git ca-certificates
+# Mirror the runtime stage: upgrade every alpine package in the golang base
+# image to the current repo release so already-fixed base CVEs (openssl,
+# libcrypto, ca-certificates, ...) do not land in the scanned image. The
+# golang:<ver>-alpine alias is a point-in-time snapshot otherwise.
+RUN apk add --no-cache git ca-certificates && \
+    apk upgrade --no-cache
 
 WORKDIR /src
 
