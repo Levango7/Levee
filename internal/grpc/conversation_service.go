@@ -80,7 +80,16 @@ func (s *ConversationService) SendMessage(ctx context.Context, req *pb.SendMessa
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
 	}
-	if strings.TrimSpace(req.GetUserId()) == "" {
+	// Ownership (P2-2): an authenticated subject (named token / OIDC /
+	// session, injected by the auth interceptor under actorKey) always
+	// wins over the client-asserted user_id. The asserted value is the
+	// fallback for --insecure development mode and legacy static-token
+	// callers, which carry no verified subject.
+	userID := req.GetUserId()
+	if subj, ok := ctx.Value(actorKey{}).(string); ok && subj != "" {
+		userID = subj
+	}
+	if strings.TrimSpace(userID) == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
 	if strings.TrimSpace(req.GetText()) == "" {
@@ -95,14 +104,14 @@ func (s *ConversationService) SendMessage(ctx context.Context, req *pb.SendMessa
 		// Create a new session on the fly. This makes SendMessage usable
 		// without a prior CreateSession RPC (which the engine does not
 		// expose via this service).
-		sess, err := s.engine.NewSession(req.GetUserId())
+		sess, err := s.engine.NewSession(userID)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "new session: %v", err)
 		}
 		sessionID = sess.ID
 	}
 
-	reply, err := s.engine.HandleMessage(ctx, sessionID, req.GetUserId(), req.GetText())
+	reply, err := s.engine.HandleMessage(ctx, sessionID, userID, req.GetText())
 	if err != nil {
 		return nil, convErrToGRPC(err)
 	}
@@ -196,6 +205,8 @@ func convErrToGRPC(err error) error {
 		return status.Errorf(codes.InvalidArgument, "%v", err)
 	case errors.Is(err, conversation.ErrInvalidState):
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
+	case errors.Is(err, conversation.ErrNotOwner):
+		return status.Errorf(codes.PermissionDenied, "%v", err)
 	case errors.Is(err, conversation.ErrNilRecommend):
 		return status.Errorf(codes.Unimplemented, "%v", err)
 	default:

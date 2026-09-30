@@ -189,7 +189,18 @@ func resetAllCmdFlags() {
 	resetChatopsFlags()
 	resetSystemFlags()
 	resetPushOpts()
+	resetPlanApplyFlags()
 	resetFlagChangedMarkers()
+}
+
+// resetPlanApplyFlags restores the apply/plan option globals (engine-mode
+// flags included) to their registration defaults.
+func resetPlanApplyFlags() {
+	applyOptForce = false
+	applyOptEngineEnabled = false
+	applyOptMaxConcurrency = 0
+	planOptTargets = nil
+	planOptDryRun = false
 }
 
 // resetFlagChangedMarkers clears pflag's Changed bit on every flag of the

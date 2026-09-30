@@ -103,6 +103,9 @@ func TestRESTChangeLifecycle(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/changes/"+created.ID+"/approve", strings.NewReader(approveBody))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
+	// The vote is attributed to the acting identity, not to the name in
+	// the body, so the test must present one.
+	req.Header.Set(actingAsHeaderName, "alice")
 	approveResp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer approveResp.Body.Close()
@@ -409,16 +412,16 @@ type stubMobileApproval struct {
 	err        error
 }
 
-func (s *stubMobileApproval) ApproveViaDeepLink(_ context.Context, token string) error {
+func (s *stubMobileApproval) ApproveViaDeepLink(_ context.Context, token string) (string, error) {
 	s.lastAction = "approve"
 	s.lastToken = token
-	return s.err
+	return "run-1", s.err
 }
 
-func (s *stubMobileApproval) RejectViaDeepLink(_ context.Context, token string) error {
+func (s *stubMobileApproval) RejectViaDeepLink(_ context.Context, token string) (string, error) {
 	s.lastAction = "reject"
 	s.lastToken = token
-	return s.err
+	return "run-1", s.err
 }
 
 func TestDeeplinkApproveWithoutServiceIs503(t *testing.T) {

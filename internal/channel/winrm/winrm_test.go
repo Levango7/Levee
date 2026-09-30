@@ -3,6 +3,7 @@ package winrm
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/masterzen/winrm"
 
 	"github.com/nexus/levee/internal/channel"
 )
@@ -627,6 +630,400 @@ func TestWinRMRegisteredInDefaultRegistry(t *testing.T) {
 	}
 	if _, ok := f.(*WinRMFactory); !ok {
 		t.Errorf("registered factory is %T, want *WinRMFactory", f)
+	}
+}
+
+// --- stub winrm client -------------------------------------------------------
+
+// stubClient is a test double for the winRMClient seam. It records every
+// call and returns preset results, so Exec / Upload / Download can be
+// exercised without a real Windows target.
+type stubClient struct {
+	mu sync.Mutex
+
+	// Preset results for RunWithContext (used by Exec).
+	execOut   string
+	execErr   string
+	execCode  int
+	execErrs  error
+	execCalls int
+
+	// Preset results for RunPSWithContext (used by Upload / Download).
+	psOut   string
+	psErr   string
+	psCode  int
+	psErrs  error
+	psCalls int
+	// psByInput lets a test vary the result by PowerShell input substring.
+	psByInput map[string]struct {
+		out  string
+		err  string
+		code int
+	}
+}
+
+func (s *stubClient) RunWithContext(ctx context.Context, command string, stdout, stderr io.Writer) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.execCalls++
+	if s.execOut != "" {
+		_, _ = io.WriteString(stdout, s.execOut)
+	}
+	if s.execErr != "" {
+		_, _ = io.WriteString(stderr, s.execErr)
+	}
+	return s.execCode, s.execErrs
+}
+
+func (s *stubClient) RunPSWithContext(ctx context.Context, command string) (string, string, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.psCalls++
+	if s.psByInput != nil {
+		for sub, r := range s.psByInput {
+			if contains(command, sub) {
+				return r.out, r.err, r.code, nil
+			}
+		}
+	}
+	return s.psOut, s.psErr, s.psCode, s.psErrs
+}
+
+// newStubChannel returns a connected WinRMChannel whose clientFactory yields
+// the given stub. The channel is ready for Exec / Upload / Download tests.
+func newStubChannel(t *testing.T, tgt channel.Target, stub *stubClient) *WinRMChannel {
+	t.Helper()
+	ch, err := newChannel(tgt, Config{})
+	if err != nil {
+		t.Fatalf("newChannel: %v", err)
+	}
+	ch.clientFactory = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+		return stub, nil
+	}
+	if err := ch.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	return ch
+}
+
+// --- pure-function tests ----------------------------------------------------
+
+func TestBuildEndpoint(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        Config
+		targetPort int
+		wantPort   int
+		wantHTTPS  bool
+	}{
+		{"http default", Config{}, 0, DefaultHTTPPort, false},
+		{"https default", Config{HTTPS: true}, 0, DefaultHTTPSPort, true},
+		{"cfg port", Config{Port: 5999}, 0, 5999, false},
+		{"target port wins", Config{Port: 5999}, 5985, 5985, false},
+		{"https + target port", Config{HTTPS: true, Port: 5999}, 5986, 5986, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ch, err := newChannel(fakeTarget{host: "h1", port: tt.targetPort, typ: "winrm", cred: channel.CredentialRef{Username: "u"}}, tt.cfg)
+			if err != nil {
+				t.Fatalf("newChannel: %v", err)
+			}
+			ep := ch.buildEndpoint()
+			if ep.Port != tt.wantPort {
+				t.Errorf("Port = %d, want %d", ep.Port, tt.wantPort)
+			}
+			if ep.HTTPS != tt.wantHTTPS {
+				t.Errorf("HTTPS = %v, want %v", ep.HTTPS, tt.wantHTTPS)
+			}
+			if ep.Host != "h1" {
+				t.Errorf("Host = %q, want h1", ep.Host)
+			}
+		})
+	}
+}
+
+func TestPsQuote(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"", ""},
+		{"plain", "plain"},
+		{"it's", "it''s"},
+		{"a'b'c", "a''b''c"},
+		{"'", "''"},
+	}
+	for _, tt := range tests {
+		if got := psQuote(tt.in); got != tt.want {
+			t.Errorf("psQuote(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// --- protocol-behavior tests via the clientFactory seam --------------------
+
+func TestConnectUsesFactory(t *testing.T) {
+	called := false
+	ch, err := newChannel(newFakeTarget("h1"), Config{})
+	if err != nil {
+		t.Fatalf("newChannel: %v", err)
+	}
+	ch.clientFactory = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+		called = true
+		return &stubClient{}, nil
+	}
+	if err := ch.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if !called {
+		t.Error("Connect did not invoke clientFactory")
+	}
+	if !ch.IsConnected() {
+		t.Error("channel should be connected after Connect")
+	}
+}
+
+func TestConnectIdempotent(t *testing.T) {
+	calls := 0
+	ch, err := newChannel(newFakeTarget("h1"), Config{})
+	if err != nil {
+		t.Fatalf("newChannel: %v", err)
+	}
+	ch.clientFactory = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+		calls++
+		return &stubClient{}, nil
+	}
+	if err := ch.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect 1: %v", err)
+	}
+	if err := ch.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect 2: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("clientFactory called %d times, want 1 (idempotent Connect)", calls)
+	}
+}
+
+func TestConnectRespectsCancelledContext(t *testing.T) {
+	ch, err := newChannel(newFakeTarget("h1"), Config{})
+	if err != nil {
+		t.Fatalf("newChannel: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ch.Connect(ctx); err == nil {
+		t.Fatal("Connect on cancelled ctx returned nil error")
+	}
+	if ch.IsConnected() {
+		t.Error("channel should not be connected after cancelled Connect")
+	}
+}
+
+func TestExecSuccess(t *testing.T) {
+	stub := &stubClient{execOut: "hello world\n", execCode: 0}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	res, err := ch.Exec(context.Background(), "echo hello")
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", res.ExitCode)
+	}
+	if res.Stdout != "hello world\n" {
+		t.Errorf("Stdout = %q, want %q", res.Stdout, "hello world\n")
+	}
+	if res.Duration < 0 {
+		t.Errorf("Duration = %v, want >= 0", res.Duration)
+	}
+	if stub.execCalls != 1 {
+		t.Errorf("execCalls = %d, want 1", stub.execCalls)
+	}
+}
+
+func TestExecPropagatesNonZeroExit(t *testing.T) {
+	stub := &stubClient{execOut: "", execErr: "boom\n", execCode: 2}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	res, err := ch.Exec(context.Background(), "bad")
+	// A non-zero exit is a valid command result, NOT a transport error:
+	// Exec returns nil error and surfaces the code via ExitCode. Only a
+	// client/transport failure returns a non-nil error.
+	if err != nil {
+		t.Fatalf("Exec returned error for non-zero exit: %v (want nil)", err)
+	}
+	if res.ExitCode != 2 {
+		t.Errorf("ExitCode = %d, want 2", res.ExitCode)
+	}
+	if res.Stderr != "boom\n" {
+		t.Errorf("Stderr = %q, want %q", res.Stderr, "boom\n")
+	}
+}
+
+func TestExecPropagatesClientError(t *testing.T) {
+	stub := &stubClient{execErrs: errors.New("connection reset")}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	_, err := ch.Exec(context.Background(), "cmd")
+	if err == nil {
+		t.Fatal("Exec returned nil error for client failure")
+	}
+	if !contains(err.Error(), "connection reset") {
+		t.Errorf("error = %q, want wrapped client error", err.Error())
+	}
+}
+
+func TestExecRespectsCancelledContext(t *testing.T) {
+	stub := &stubClient{}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ch.Exec(ctx, "cmd"); err == nil {
+		t.Fatal("Exec on cancelled ctx returned nil error")
+	}
+	if stub.execCalls != 0 {
+		t.Errorf("execCalls = %d, want 0 (ctx cancelled before Run)", stub.execCalls)
+	}
+}
+
+func TestUploadSingleChunk(t *testing.T) {
+	stub := &stubClient{psCode: 0}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	content := []byte("hello upload")
+	if err := ch.Upload(context.Background(), "C:\\tmp\\f.txt", bytes.NewReader(content)); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if stub.psCalls != 1 {
+		t.Errorf("psCalls = %d, want 1 (single chunk)", stub.psCalls)
+	}
+}
+
+func TestUploadMultipleChunks(t *testing.T) {
+	// 60 KiB payload with 24 KiB chunks => 3 chunks.
+	stub := &stubClient{psCode: 0}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	content := bytes.Repeat([]byte("x"), 60*1024)
+	if err := ch.Upload(context.Background(), "C:\\tmp\\big.bin", bytes.NewReader(content)); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if stub.psCalls != 3 {
+		t.Errorf("psCalls = %d, want 3 (60KiB / 24KiB chunks)", stub.psCalls)
+	}
+}
+
+func TestUploadFailsOnNonZeroExit(t *testing.T) {
+	stub := &stubClient{psCode: 1, psErr: "access denied"}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	err := ch.Upload(context.Background(), "C:\\tmp\\f.txt", bytes.NewReader([]byte("data")))
+	if err == nil {
+		t.Fatal("Upload returned nil error for non-zero exit")
+	}
+	if !contains(err.Error(), "access denied") {
+		t.Errorf("error = %q, want stderr propagated", err.Error())
+	}
+}
+
+func TestUploadFailsOnClientError(t *testing.T) {
+	stub := &stubClient{psErrs: errors.New("rpc fault")}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	err := ch.Upload(context.Background(), "C:\\tmp\\f.txt", bytes.NewReader([]byte("data")))
+	if err == nil {
+		t.Fatal("Upload returned nil error for client failure")
+	}
+	if !contains(err.Error(), "rpc fault") {
+		t.Errorf("error = %q, want wrapped client error", err.Error())
+	}
+}
+
+func TestDownloadSuccess(t *testing.T) {
+	// PowerShell emits base64 of "download me" (with BOM + trailing CRLF to
+	// exercise the stripping path).
+	raw := []byte("download me")
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	stub := &stubClient{psOut: "\uFEFF" + encoded + "\r\n", psCode: 0}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	rdr, err := ch.Download(context.Background(), "C:\\tmp\\f.txt")
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	got, err := io.ReadAll(rdr)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Errorf("Downloaded = %q, want %q", got, raw)
+	}
+}
+
+func TestDownloadFailsOnNonZeroExit(t *testing.T) {
+	stub := &stubClient{psCode: 1, psErr: "file not found"}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	_, err := ch.Download(context.Background(), "C:\\tmp\\missing.txt")
+	if err == nil {
+		t.Fatal("Download returned nil error for non-zero exit")
+	}
+	if !contains(err.Error(), "file not found") {
+		t.Errorf("error = %q, want stderr propagated", err.Error())
+	}
+}
+
+func TestDownloadFailsOnClientError(t *testing.T) {
+	stub := &stubClient{psErrs: errors.New("timeout")}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	_, err := ch.Download(context.Background(), "C:\\tmp\\f.txt")
+	if err == nil {
+		t.Fatal("Download returned nil error for client failure")
+	}
+	if !contains(err.Error(), "timeout") {
+		t.Errorf("error = %q, want wrapped client error", err.Error())
+	}
+}
+
+func TestDownloadFailsOnInvalidBase64(t *testing.T) {
+	stub := &stubClient{psOut: "not-valid-base64!!!", psCode: 0}
+	ch := newStubChannel(t, newFakeTarget("h1"), stub)
+	_, err := ch.Download(context.Background(), "C:\\tmp\\f.txt")
+	if err == nil {
+		t.Fatal("Download returned nil error for undecodable base64")
+	}
+	if !contains(err.Error(), "decode") {
+		t.Errorf("error = %q, want decode error", err.Error())
+	}
+}
+
+// --- pool boundary tests ----------------------------------------------------
+
+func TestPutIdleQueueFullClosesChannel(t *testing.T) {
+	// With MaxConcurrentPerTarget=1, the idle queue has capacity 1. Put two
+	// channels for the same target (without a matching Get to drain): the
+	// second Put finds the queue full and must close the channel rather than
+	// block.
+	stub := &stubClient{}
+	tgt := newFakeTarget("h1")
+
+	ch1, err := newChannel(tgt, Config{})
+	if err != nil {
+		t.Fatalf("newChannel 1: %v", err)
+	}
+	ch1.clientFactory = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+		return stub, nil
+	}
+	if err := ch1.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect 1: %v", err)
+	}
+
+	ch2, err := newChannel(tgt, Config{})
+	if err != nil {
+		t.Fatalf("newChannel 2: %v", err)
+	}
+	ch2.clientFactory = func(endpoint *winrm.Endpoint, user, password string, params *winrm.Parameters) (winRMClient, error) {
+		return stub, nil
+	}
+	if err := ch2.Connect(context.Background()); err != nil {
+		t.Fatalf("Connect 2: %v", err)
+	}
+
+	p := NewPool(nil, PoolConfig{MaxConcurrentPerTarget: 1})
+	p.Put(ch1)
+	p.Put(ch2) // queue full => ch2 closed
+	p.Close()
+
+	if ch2.IsConnected() {
+		t.Error("ch2 should have been closed when the idle queue was full")
 	}
 }
 

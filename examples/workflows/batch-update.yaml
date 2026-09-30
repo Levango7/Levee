@@ -1,30 +1,72 @@
-workflow: batch-update
+# LEVEE workflow example — batched package update across the web fleet.
+#
+# Demonstrates the shapes an author needs most often:
+#   * dynamic target selection by label query, with a fleet floor
+#   * a maintenance window in the spec's HH:MM form (§4.2)
+#   * percentage batching with a canary first batch
+#   * a high approval tier (two approvers, initiator excluded)
+#   * a step-level verify gate and a step-level compensation (LE097:
+#     compensation belongs to the step it undoes; the workflow-level block
+#     only carries runtime policy such as on_failure)
+#   * an input declaration for the templated argument
+name: batch-update
+version: "1.0"
+description: >
+  Rolling yum update of {{.package}} over the production web fleet, 1% canary
+  first, inside the 02:00-04:00 UTC maintenance window.
+
+input:
+  - name: package
+    type: string
+    required: true
+    description: package to update, e.g. nginx
+
 target:
-  labels:
-    group: web
-    env: prod
-window: "02:00-04:00"
-batches: [1, 10, 50, 100]
-approval: high
+  name: web-prod
+  type: host
+  query: "group=web AND env=prod"
+  min_count: 1
+  max_count: 200
+
+window:
+  start: "02:00"
+  end: "04:00"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [1, 10, 50, 100]
+
+approval:
+  level: high
+
 steps:
   - name: pre-check
-    action: shell
+    action: shell.exec
     args:
       cmd: "uptime && df -h"
+
   - name: update
-    action: shell
+    action: shell.exec
     args:
       cmd: "yum update -y {{.package}}"
+    depends_on: ["pre-check"]
     verify:
-      - type: cmd
+      cmd:
         run: "systemctl is-active nginx"
         expect_exit: 0
     rollback:
-      action: shell
+      action: shell.exec
       args:
         cmd: "yum downgrade -y {{.package}}"
     irreversible: false
+
   - name: report
-    action: shell
+    action: shell.exec
     args:
       cmd: "echo 'update complete' >> /var/log/levee.log"
+    depends_on: ["update"]
+
+rollback:
+  on_failure: auto
+  verify_after: true

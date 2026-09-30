@@ -366,7 +366,7 @@ plan → 审批 → apply → verify → (回滚 | 归档)
 
 ##### 4.4.2.5 plan 哈希锁定
 
-plan 阶段产出 `plan_hash = hash(workflow + 目标集 + 参数 + 批次划分 + 影响面)`。审批基于此哈希，apply 前校验哈希一致，不一致则阻断（防止审批后偷偷改参数）。
+plan 阶段产出 `plan_hash = v2:sha256(workflow + 目标集 + 参数 + 批次划分 + 影响面 + 审批/回滚/门禁/不可逆/风险语义)`。审批基于此版本化哈希，apply 前按 hash 版本校验一致，不一致阻断（防止审批后偷偷改参数或治理要求）。存量裸 64 位 v1 hash 按旧 canonical 继续验证；重新 plan/re-approve 后升级为 v2。
 
 #### 4.4.3 审批阶段
 
@@ -758,21 +758,26 @@ workflow db-migrate-orders {
     }
     requires_reboot: false
     irreversible: false
-  }
-
-  rollback {
-    # 白名单回滚：pt-online-schema-change 自带 --reverse 语义
-    strategy: "snapshot"
-    on_failure: "auto"
-    verify_after: true
-    step undo_migrate {
-      action: "mysql.pt-online-schema-change"
-      args {
-        host: "{{target.host}}"
-        table: "{{input.table}}"
-        alter: "DROP COLUMN status"
+    # 补偿契约声明在被补偿的 step 内（spec §7.1）：workflow 级 rollback
+    # 只承载运行态策略，声明补偿内容会被编译期拒绝（LE097）。
+    rollback {
+      # 白名单回滚：pt-online-schema-change 自带 --reverse 语义
+      strategy: "undo-action"
+      step undo_migrate {
+        action: "mysql.pt-online-schema-change"
+        args {
+          host: "{{target.host}}"
+          table: "{{input.table}}"
+          alter: "DROP COLUMN status"
+        }
       }
     }
+  }
+
+  # 运行态策略：失败即自动回滚，回滚后验证
+  rollback {
+    on_failure: "auto"
+    verify_after: true
   }
 
   gate post_apply {
@@ -793,7 +798,7 @@ workflow db-migrate-orders {
 - 按主库分批 + 批次间 SLO 与命令门禁。
 - 高危审批（2 人审批，排除发起人）。
 - migrate 步骤。
-- 白名单回滚（带回滚后验证）。
+- migrate 步骤内的白名单回滚补偿契约（带回滚后验证）。
 - post_apply SLO 门禁含 grace period。
 
 ---

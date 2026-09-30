@@ -297,10 +297,15 @@ func TestServerWithAuth(t *testing.T) {
 // client: CreateChange → GetChange → ListChanges → ApproveChange →
 // CancelChange.
 func TestChangeServiceE2E(t *testing.T) {
-	srv, _ := startTestServerWithAllServices(t)
+	// A NAMED token: step 4's approval must be attributed to an identity
+	// the server verified, not to whatever string the client put in
+	// ApproveRequest.approver.
+	const e2eToken = "e2e-named-token"
+	srv, _ := startTestServerWithAllServices(t,
+		WithAuthTokens([]TokenIdentity{{Token: e2eToken, Subject: "e2e-approver"}}))
 	conn := newInsecureClient(t, srv.Addr())
 	client := pb.NewChangeServiceClient(conn)
-	ctx := context.Background()
+	ctx := withAuthCtx(context.Background(), e2eToken)
 
 	// 1. CreateChange.
 	created, err := client.CreateChange(ctx, &pb.CreateChangeRequest{

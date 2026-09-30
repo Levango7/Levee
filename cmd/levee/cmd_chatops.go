@@ -233,6 +233,13 @@ func runChatopsApprove(_cmd *cobra.Command, args []string) error {
 		return mapApprovalError(err)
 	}
 
+	// Settle the run from the chain state so a ChatOps approval actually
+	// moves the run (previously the decision landed on the approval row
+	// alone and the run stayed in draft, refusing every later apply).
+	if err := settleApprovalFromCLI(ctx, store, changeID, "approve"); err != nil {
+		return err
+	}
+
 	out := map[string]any{
 		"change_id":   changeID,
 		"approval_id": approvalID,
@@ -284,6 +291,11 @@ func runChatopsReject(_cmd *cobra.Command, args []string) error {
 	svc := approval.NewService(newApprovalStoreAdapter(store))
 	if err := svc.Reject(ctx, approvalID, approver, chatopsOptReason); err != nil {
 		return mapApprovalError(err)
+	}
+
+	// Settle the run (one-vote veto mirrored onto the run).
+	if err := settleApprovalFromCLI(ctx, store, changeID, "reject"); err != nil {
+		return err
 	}
 
 	out := map[string]any{

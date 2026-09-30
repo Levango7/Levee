@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -410,6 +411,37 @@ func TestGenerateStepOverrides(t *testing.T) {
 	assert.Equal(t, "cmd", ps.Gate.Post[0].Type)
 	assert.Equal(t, "uname -r", ps.Gate.Post[0].Command)
 	assert.Equal(t, 0, ps.Gate.Post[0].ExpectExit)
+}
+
+func TestGeneratePreservesWorkflowGovernance(t *testing.T) {
+	approval := &dsl.ApprovalSpec{Level: "high", Approvers: []string{"alice", "bob"}, MinApprovers: 2}
+	// Workflow-level rollback is run-level policy only (spec §7.1): the
+	// generator preserves on_failure / verify_after in the approved artifact
+	// and rejects compensation content (LE097, see
+	// TestGenerateRejectsWorkflowLevelRollbackCompensation). The
+	// compensation contract is a step-level declaration.
+	rollback := &dsl.RollbackSpec{OnFailure: dsl.RollbackOnFailureManual, VerifyAfter: true}
+	gate := &dsl.GateSpec{Pre: []dsl.GateCheck{{Type: "cmd", Command: "true"}}}
+	batchGate := &dsl.GateSpec{Post: []dsl.GateCheck{{Type: "cmd", Command: "false"}}}
+	wf := makeWorkflow("wf-governance", dsl.BatchConfig{Strategy: "serial", Gate: batchGate},
+		dsl.Step{Name: "restart", Module: "svc", Action: "restart"})
+	wf.Approval = approval
+	wf.Rollback = rollback
+	wf.Gate = gate
+
+	p, err := NewGenerator().Generate(wf, []string{"host-a"})
+	require.NoError(t, err)
+	assert.Equal(t, approval, p.Approval)
+	assert.Equal(t, rollback, p.Rollback)
+	assert.Equal(t, gate, p.Gate)
+	require.Len(t, p.Batches, 1)
+	assert.Equal(t, batchGate, p.Batches[0].Gate)
+
+	raw, err := json.Marshal(p)
+	require.NoError(t, err)
+	var roundTrip Plan
+	require.NoError(t, json.Unmarshal(raw, &roundTrip))
+	assert.True(t, VerifyHash(&roundTrip, ComputeHash(p)))
 }
 
 // TestGenerateStepOverridesNil verifies that steps without overrides

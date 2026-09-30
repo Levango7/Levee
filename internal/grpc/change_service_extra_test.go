@@ -9,6 +9,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/pause"
+	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
@@ -36,6 +38,7 @@ type recordingEngine struct {
 	runPhase   string
 	runErr     error
 	plan       *pb.Plan
+	stored     *StoredPlan
 	planErr    error
 	rollbackID string
 	rbHosts    []string
@@ -58,13 +61,13 @@ func (e *recordingEngine) adapter() *EngineAdapter {
 			e.lastAutoApprove = autoApprove
 			return e.runID, e.runSuccess, e.runPhase, e.runErr
 		},
-		Plan: func(_ context.Context, _ string, hosts []string) (*pb.Plan, error) {
+		Plan: func(_ context.Context, _ string, hosts []string) (*pb.Plan, *StoredPlan, error) {
 			atomic.AddInt32(&e.planCalled, 1)
 			e.lastHosts = hosts
 			if e.planErr != nil {
-				return nil, e.planErr
+				return nil, nil, e.planErr
 			}
-			return e.plan, nil
+			return e.plan, e.stored, nil
 		},
 		Rollback: func(_ context.Context, _, _ string, _ bool) (string, []string, error) {
 			atomic.AddInt32(&e.rollbackCalled, 1)
@@ -79,6 +82,47 @@ func (e *recordingEngine) adapter() *EngineAdapter {
 			return e.retryErr
 		},
 	}
+}
+
+// testPlan is the canonical single-batch plan used to seed runs for
+// apply-path tests: ApplyChange requires a persisted plan whose hash
+// verifies (A1), so stub-engine tests must plant one.
+func testPlan() *plan.Plan {
+	return &plan.Plan{
+		ID:           "plan-test-1",
+		WorkflowName: "test-workflow",
+		Batches: []plan.Batch{{
+			Index:   0,
+			Targets: []string{"web-1"},
+			Steps: []plan.PlanStep{{
+				Name:   "restart",
+				Module: "svc",
+				Action: "restart",
+				Args:   map[string]any{"name": "nginx"},
+			}},
+			MaxConcurrency: 1,
+		}},
+		TotalTargets: 1,
+		CreatedAt:    time.Now().UTC(),
+	}
+}
+
+// persistPlanOnRun writes the canonical plan artifact (JSON + matching
+// plan.ComputeHash) onto the run, mirroring what PlanChange persists when
+// the engine is wired.
+func persistPlanOnRun(t *testing.T, store state.Store, runID string) *plan.Plan {
+	t.Helper()
+	ctx := context.Background()
+	p := testPlan()
+	raw, err := json.Marshal(p)
+	require.NoError(t, err)
+	run, err := store.GetRun(ctx, runID)
+	require.NoError(t, err)
+	run.PlanJSON = string(raw)
+	run.PlanHash = plan.ComputeHash(p)
+	run.UpdatedAt = time.Now().UTC()
+	require.NoError(t, store.UpdateRun(ctx, run))
+	return p
 }
 
 // setRunStatus moves a run to an arbitrary status directly in the store.
@@ -156,14 +200,20 @@ func TestChangeServiceNilStoreReturnsInternal(t *testing.T) {
 		"RetryChange":    func() error { _, err := svc.RetryChange(ctx, &pb.RetryRequest{}); return err },
 		"RetryHost":      func() error { _, err := svc.RetryHost(ctx, &pb.RetryHostRequest{}); return err },
 		"RollbackChange": func() error { _, err := svc.RollbackChange(ctx, &pb.RollbackRequest{}); return err },
-		"ApproveChange":  func() error { _, err := svc.ApproveChange(ctx, &pb.ApproveRequest{}); return err },
-		"RejectChange":   func() error { _, err := svc.RejectChange(ctx, &pb.RejectRequest{}); return err },
-		"GetChange":      func() error { _, err := svc.GetChange(ctx, &pb.GetChangeRequest{}); return err },
-		"ListChanges":    func() error { _, err := svc.ListChanges(ctx, &pb.ListChangesRequest{}); return err },
-		"ArchiveChange":  func() error { _, err := svc.ArchiveChange(ctx, &pb.ArchiveRequest{}); return err },
-		"GetLogs":        func() error { _, err := svc.GetLogs(ctx, &pb.GetLogsRequest{}); return err },
-		"GetDiff":        func() error { _, err := svc.GetDiff(ctx, &pb.GetDiffRequest{}); return err },
-		"GetTrace":       func() error { _, err := svc.GetTrace(ctx, &pb.GetTraceRequest{}); return err },
+		"ApproveChange": func() error {
+			_, err := svc.ApproveChange(ContextWithActor(ctx, "e2e-tester"), &pb.ApproveRequest{})
+			return err
+		},
+		"RejectChange": func() error {
+			_, err := svc.RejectChange(ContextWithActor(ctx, "e2e-tester"), &pb.RejectRequest{})
+			return err
+		},
+		"GetChange":     func() error { _, err := svc.GetChange(ctx, &pb.GetChangeRequest{}); return err },
+		"ListChanges":   func() error { _, err := svc.ListChanges(ctx, &pb.ListChangesRequest{}); return err },
+		"ArchiveChange": func() error { _, err := svc.ArchiveChange(ctx, &pb.ArchiveRequest{}); return err },
+		"GetLogs":       func() error { _, err := svc.GetLogs(ctx, &pb.GetLogsRequest{}); return err },
+		"GetDiff":       func() error { _, err := svc.GetDiff(ctx, &pb.GetDiffRequest{}); return err },
+		"GetTrace":      func() error { _, err := svc.GetTrace(ctx, &pb.GetTraceRequest{}); return err },
 	}
 	for name, fn := range unary {
 		t.Run(name, func(t *testing.T) {
@@ -309,6 +359,7 @@ func TestApplyChange_EngineSuccessCompletes(t *testing.T) {
 	svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-eng"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 
 	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
 		ChangeId:       created.GetId(),
@@ -332,6 +383,7 @@ func TestApplyChange_EngineFailureMarksFailedAndReturnsInternal(t *testing.T) {
 	svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-fail"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 
 	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
 		ChangeId:    created.GetId(),
@@ -353,9 +405,10 @@ func TestApplyChange_EngineFailureMarksFailedAndReturnsInternal(t *testing.T) {
 func TestApplyChange_EnginePathPublishesTerminalEvent(t *testing.T) {
 	t.Run("completed publishes terminal event", func(t *testing.T) {
 		engine := &recordingEngine{runID: "exec-3", runSuccess: true}
-		svc, _ := newTestChangeServiceWithEngine(t, engine.adapter())
+		svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-term"})
 		require.NoError(t, err)
+		persistPlanOnRun(t, store, created.GetId())
 
 		// Subscribe under the real change id before applying.
 		bus := svc.getEventBus()
@@ -389,9 +442,10 @@ func TestApplyChange_EnginePathPublishesTerminalEvent(t *testing.T) {
 
 	t.Run("engine error publishes failed event", func(t *testing.T) {
 		engine := &recordingEngine{runID: "exec-4", runErr: errors.New("boom")}
-		svc, _ := newTestChangeServiceWithEngine(t, engine.adapter())
+		svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-term-fail"})
 		require.NoError(t, err)
+		persistPlanOnRun(t, store, created.GetId())
 
 		bus := svc.getEventBus()
 		ch := bus.subscribe(created.GetId())
@@ -632,7 +686,8 @@ func TestArchiveChange_RejectsRunningAndPaused(t *testing.T) {
 	}
 
 	t.Run("terminal states still archiveable", func(t *testing.T) {
-		for _, st := range []string{"completed", "failed", "cancelled", "rejected", "rolled_back"} {
+		for _, st := range []string{"completed", "failed", "cancelled", "rejected", "rolled_back",
+			"rolled_back_partial", "rollback_incomplete"} {
 			svc, store := newTestChangeService(t)
 			created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "arch-ok"})
 			require.NoError(t, err)
@@ -708,9 +763,13 @@ func TestRetryChange(t *testing.T) {
 			TargetHosts: []string{"h1"},
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "running", resp.GetStatus())
 		assert.Equal(t, int32(1), atomic.LoadInt32(&engine.retryCalled))
 		assert.Equal(t, []string{"h1"}, engine.lastHosts)
+		// The handler re-reads the run after the synchronous engine retry
+		// (the retry closure owns the status lifecycle). This stub leaves
+		// the run untouched, so the response must reflect the run's real
+		// status and must not blindly claim "running".
+		assert.Equal(t, "failed", resp.GetStatus())
 	})
 
 	t.Run("engine error maps to internal", func(t *testing.T) {
@@ -719,6 +778,36 @@ func TestRetryChange(t *testing.T) {
 		_, err := svc.RetryChange(context.Background(), &pb.RetryRequest{ChangeId: id})
 		require.Error(t, err)
 		assert.Equal(t, codes.Internal, status.Code(err))
+	})
+
+	t.Run("re-plan needing approval maps to precondition", func(t *testing.T) {
+		// The engine re-planned and handed the run back to the approval
+		// flow without executing. That is a governance outcome the
+		// operator must act on, not an engine fault: 412, not 500.
+		engine := &recordingEngine{retryErr: errors.Join(
+			ErrReplanNeedsApproval, errors.New(`change "x" was re-planned`))}
+		svc, _, id := makeSvc(t, engine)
+		_, err := svc.RetryChange(context.Background(), &pb.RetryRequest{ChangeId: id, Replan: true})
+		require.Error(t, err)
+		assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+		assert.Contains(t, status.Convert(err).Message(), "approval")
+	})
+
+	t.Run("guard admits D-2 rollback verdicts", func(t *testing.T) {
+		// D-2 v2: rolled_back_partial / rollback_incomplete are
+		// failure-family terminals — RetryChange is their re-drive
+		// entry, so the guard must admit them.
+		for _, st := range []string{"rolled_back_partial", "rollback_incomplete"} {
+			engine := &recordingEngine{}
+			svc, store, id := makeSvc(t, engine)
+			setRunStatus(t, store, id, st)
+			resp, err := svc.RetryChange(context.Background(), &pb.RetryRequest{ChangeId: id})
+			require.NoError(t, err, "status %q must admit retry", st)
+			assert.Equal(t, int32(1), atomic.LoadInt32(&engine.retryCalled))
+			// The stub engine leaves the run untouched; the response
+			// reflects the run's real status.
+			assert.Equal(t, st, resp.GetStatus())
+		}
 	})
 }
 
@@ -894,7 +983,7 @@ func TestApproveChange_NoPendingApprovalFailsPrecondition(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "appr-none"})
 	require.NoError(t, err)
 
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "alice"})
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "alice"), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "alice"})
 	require.Error(t, err)
 	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
@@ -912,7 +1001,7 @@ func TestApproveChange_ListApprovalsErrorMapped(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "appr-err2"})
 	require.NoError(t, err)
 
-	_, err = svc.ApproveChange(context.Background(), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "a"})
+	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "a"), &pb.ApproveRequest{ChangeId: created.GetId(), Approver: "a"})
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
 }
@@ -922,7 +1011,7 @@ func TestRejectChange_TransitionsToRejected(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "reject-me"})
 	require.NoError(t, err)
 
-	resp, err := svc.RejectChange(context.Background(), &pb.RejectRequest{
+	resp, err := svc.RejectChange(ContextWithActor(context.Background(), "bob"), &pb.RejectRequest{
 		ChangeId: created.GetId(),
 		Rejecter: "bob",
 		Reason:   "risky",
@@ -959,7 +1048,7 @@ func TestRejectChange_StoreErrorMapsToInternal(t *testing.T) {
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "reject-err"})
 	require.NoError(t, err)
 
-	_, err = svc.RejectChange(context.Background(), &pb.RejectRequest{ChangeId: created.GetId(), Rejecter: "bob"})
+	_, err = svc.RejectChange(ContextWithActor(context.Background(), "bob"), &pb.RejectRequest{ChangeId: created.GetId(), Rejecter: "bob"})
 	require.Error(t, err)
 	assert.Equal(t, codes.Internal, status.Code(err))
 }
@@ -1511,6 +1600,7 @@ func TestApplyChange_EngineRolledBackPersistsStatus(t *testing.T) {
 	svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-rb"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 
 	resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
 		ChangeId:    created.GetId(),
@@ -1524,6 +1614,75 @@ func TestApplyChange_EngineRolledBackPersistsStatus(t *testing.T) {
 	run, err := store.GetRun(context.Background(), created.GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "rolled_back", run.Status)
+}
+
+// TestApplyChange_RollbackVerdictPhasesPersistDistinctStatuses pins the
+// D-2 v2 design item 4 mapping: each engine rollback verdict becomes its
+// own run status — never collapsing into "failed" and never conflated with
+// a clean "rolled_back".
+func TestApplyChange_RollbackVerdictPhasesPersistDistinctStatuses(t *testing.T) {
+	for _, phase := range []string{"rolled_back_partial", "rollback_incomplete"} {
+		t.Run(phase, func(t *testing.T) {
+			engine := &recordingEngine{runID: "exec-" + phase, runSuccess: false, runPhase: phase}
+			svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
+			created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-" + phase})
+			require.NoError(t, err)
+			persistPlanOnRun(t, store, created.GetId())
+
+			resp, err := svc.ApplyChange(context.Background(), &pb.ApplyChangeRequest{
+				ChangeId:    created.GetId(),
+				AutoApprove: true,
+			})
+			require.NoError(t, err)
+			assert.False(t, resp.GetSuccess())
+			assert.Equal(t, phase, resp.GetMessage())
+			assert.Equal(t, phase, resp.GetChange().GetStatus())
+
+			run, err := store.GetRun(context.Background(), created.GetId())
+			require.NoError(t, err)
+			assert.Equal(t, phase, run.Status)
+		})
+	}
+}
+
+// TestRollbackChange_GuardAdmitsPartialVerdicts: D-2 v2 — the manual
+// rollback is the remediation entry for a partial/incomplete automatic
+// rollback, so the status guard must admit both verdicts while a clean
+// rolled_back stays refused (nothing left to undo).
+func TestRollbackChange_GuardAdmitsPartialVerdicts(t *testing.T) {
+	newSvc := func(t *testing.T, st string) (*ChangeService, state.Store, *recordingEngine, string) {
+		engine := &recordingEngine{rollbackID: "rb-d2", rbHosts: []string{"web-1"}}
+		svc, store := newTestChangeServiceWithEngine(t, engine.adapter())
+		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "rb-d2"})
+		require.NoError(t, err)
+		setRunStatus(t, store, created.GetId(), st)
+		return svc, store, engine, created.GetId()
+	}
+
+	for _, st := range []string{"rolled_back_partial", "rollback_incomplete"} {
+		t.Run(st+" is rollbackable", func(t *testing.T) {
+			svc, store, engine, id := newSvc(t, st)
+			resp, err := svc.RollbackChange(context.Background(), &pb.RollbackRequest{ChangeId: id})
+			require.NoError(t, err, "status %q must admit manual rollback", st)
+			assert.Equal(t, int32(1), atomic.LoadInt32(&engine.rollbackCalled))
+			assert.Equal(t, "rb-d2", resp.GetRollbackRunId())
+			// The successful manual rollback settles the run on rolled_back.
+			run, getErr := store.GetRun(context.Background(), id)
+			require.NoError(t, getErr)
+			assert.Equal(t, "rolled_back", run.Status)
+		})
+	}
+
+	t.Run("clean rolled_back stays refused", func(t *testing.T) {
+		svc, store, engine, id := newSvc(t, "rolled_back")
+		_, err := svc.RollbackChange(context.Background(), &pb.RollbackRequest{ChangeId: id})
+		require.Error(t, err)
+		assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+		assert.Zero(t, atomic.LoadInt32(&engine.rollbackCalled), "refused rollback must not reach the engine")
+		run, getErr := store.GetRun(context.Background(), id)
+		require.NoError(t, getErr)
+		assert.Equal(t, "rolled_back", run.Status, "refused rollback must not mutate the run")
+	})
 }
 
 // TestApplyChange_ConcurrentDoubleApplyIsSerialised verifies the CAS guard:
@@ -1544,6 +1703,7 @@ func TestApplyChange_ConcurrentDoubleApplyIsSerialised(t *testing.T) {
 
 	created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "apply-race"})
 	require.NoError(t, err)
+	persistPlanOnRun(t, store, created.GetId())
 	// Approve the run so both goroutines take the non-auto-approve path and
 	// both see status "approved" before the CAS decides the winner.
 	run, err := store.GetRun(context.Background(), created.GetId())

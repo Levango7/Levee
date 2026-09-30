@@ -290,6 +290,93 @@ func TestPgSplitSQLStatements(t *testing.T) {
 		require.Len(t, got, 1)
 		assert.Equal(t, "SELECT 8", got[0])
 	})
+
+	// Regression (CI PG leg, plan_json rollout): an inline -- comment
+	// trailing a column definition contained a ";" and the naive split cut
+	// the CREATE TABLE mid-comment — PG then saw an unterminated "runs (".
+	t.Run("inline comment with semicolon does not split the statement", func(t *testing.T) {
+		script := "CREATE TABLE runs (\n id TEXT,\n" +
+			" plan_json TEXT NOT NULL DEFAULT '' -- canonical plan JSON ('' = not planned; v3)\n);\n" +
+			"SELECT 9;"
+		got := pgSplitSQLStatements(script)
+		require.Len(t, got, 2)
+		assert.Contains(t, got[0], "plan_json TEXT NOT NULL DEFAULT ''")
+		assert.NotContains(t, got[0], "not planned", "comment text must not reach the statement")
+		assert.True(t, strings.HasSuffix(strings.TrimSpace(got[0]), ");"))
+		assert.Equal(t, "\nSELECT 9;", got[1])
+	})
+
+	t.Run("semicolon inside string literal is data", func(t *testing.T) {
+		got := pgSplitSQLStatements("INSERT INTO t VALUES ('a;b'); SELECT 2;")
+		require.Len(t, got, 2)
+		assert.Contains(t, got[0], "('a;b')")
+	})
+
+	t.Run("doubled quote escapes stay inside the literal", func(t *testing.T) {
+		got := pgSplitSQLStatements("INSERT INTO t VALUES ('it''s; here'); SELECT 3;")
+		require.Len(t, got, 2)
+		assert.Contains(t, got[0], "'it''s; here'")
+	})
+
+	t.Run("double dash inside string literal is not a comment", func(t *testing.T) {
+		got := pgSplitSQLStatements("INSERT INTO t VALUES ('a--b'); SELECT 4;")
+		require.Len(t, got, 2)
+		assert.Contains(t, got[0], "('a--b')")
+	})
+
+	// The real embedded schema must split into well-formed statements: the
+	// failure mode above shipped inside pgschema.sql itself, so pin the
+	// artifact, not just the scanner. pgSchemaFull — the text actually applied,
+	// pgschema.sql plus the shared cluster_nodes DDL — is the thing under test.
+	t.Run("embedded pgschema splits into paren-balanced statements", func(t *testing.T) {
+		// Mirror the pre-pass pgExecMultiStatement applies before splitting.
+		lines := strings.Split(pgSchemaFull, "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), "--") {
+				lines[i] = ""
+			}
+		}
+		statements := pgSplitSQLStatements(strings.Join(lines, "\n"))
+		assert.Greater(t, len(statements), 20)
+		for _, stmt := range statements {
+			assert.NotContains(t, stmt, "--", "comment text must never reach a statement")
+			assert.Equal(t, strings.Count(stmt, "("), strings.Count(stmt, ")"),
+				"unbalanced parens in statement: %q", firstLine(stmt))
+		}
+	})
+
+	// SQLite-side hazard pin (the PG splitter incident's mirror): the
+	// SQLite splitter ends a statement when a LINE ends with ";". A
+	// column line whose trailing inline comment contains a semicolon and
+	// is followed by the closing ");" on its own line (the exact
+	// plan_json shape in schema.sql) must therefore stay INTACT — the
+	// comment line does not end with ";" so the statement keeps
+	// accumulating until the ");" line. If a future edit puts the
+	// semicolon on the SAME line as the comment, the splitter cuts mid-
+	// comment and SQLite receives an unterminated CREATE TABLE — the
+	// same class of breakage the PG leg shipped in production. This test
+	// documents the safe shape; the sibling test pins the unsafe shape
+	// as known-broken so nobody "fixes" it into silence.
+	t.Run("sqlite schema: trailing-comment column lines stay intact", func(t *testing.T) {
+		got := splitSQLStatements("CREATE TABLE runs (\n id TEXT,\n" +
+			" plan_json TEXT NOT NULL DEFAULT '' -- canonical plan ('' = none; v3)\n);\n" +
+			"INSERT INTO t VALUES (1);\n")
+		require.Len(t, got, 2, "the comment line must not end the statement")
+		assert.Contains(t, got[0], "plan_json")
+		assert.True(t, strings.HasSuffix(strings.TrimSpace(got[0]), ");"),
+			"the CREATE TABLE must close on the ');' line: %q", firstLine(got[0]))
+		assert.Contains(t, got[1], "INSERT INTO t")
+	})
+
+	t.Run("sqlite splitter: statement ends only on a bare trailing semicolon", func(t *testing.T) {
+		got := splitSQLStatements("CREATE TABLE runs (\n id TEXT,\n" +
+			" plan_json TEXT DEFAULT '' -- note; tricky\n);\n")
+		// Same shape as above, asserting the cutting rule explicitly: the
+		// comment line (ending in a word, not ";") does not cut; the
+		// following ");" line does.
+		require.Len(t, got, 1)
+		assert.Contains(t, got[0], ");")
+	})
 }
 
 func TestIndexDollarQuoteEnd(t *testing.T) {

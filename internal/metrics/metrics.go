@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nexus/levee/internal/runstatus"
 )
 
 // Label values exported alongside the metric families below. Call
@@ -27,12 +29,32 @@ import (
 // strings.
 const (
 	// Change lifecycle statuses for levee_changes_total.
+	//
+	// Every label that is also a run status ALIASES runstatus: the
+	// vocabulary has one home, and the runstatus guard
+	// (TestNoBareRunStatusLiteralsOutsideRunstatus) now scans this package
+	// rather than exempting it — it used to keep its own spelling of
+	// rolled_back_partial / rollback_incomplete. created / succeeded are the
+	// two labels with no run counterpart: a creation is counted before a run
+	// exists, and "succeeded" is the historical label dashboards alert on.
 	StatusCreated    = "created"
-	StatusApproved   = "approved"
-	StatusRunning    = "running"
+	StatusApproved   = runstatus.StatusApproved
+	StatusRunning    = runstatus.StatusRunning
 	StatusSucceeded  = "succeeded"
-	StatusFailed     = "failed"
-	StatusRolledBack = "rolled_back"
+	StatusFailed     = runstatus.StatusFailed
+	StatusRolledBack = runstatus.StatusRolledBack
+	// StatusInterrupted is the cluster failover-takeover terminal: the
+	// executor node died mid-flight and the takeover loop settled the
+	// run (design-cluster-failover.md). Single-node deployments never
+	// produce it, but the counter family pre-registers the label so
+	// dashboards see a stable series.
+	StatusInterrupted = runstatus.StatusInterrupted
+	// StatusRolledBackPartial / StatusRollbackIncomplete are the D-2 v2
+	// rollback verdicts: some required compensation was missing / none
+	// completed. Pre-registered like interrupted so the label set stays
+	// stable for dashboards.
+	StatusRolledBackPartial  = runstatus.StatusRolledBackPartial
+	StatusRollbackIncomplete = runstatus.StatusRollbackIncomplete
 
 	// Gate results for levee_gates_total.
 	GateResultPass = "pass"
@@ -69,6 +91,31 @@ const (
 	familyRollbacks       = "levee_rollbacks_total"
 	familyBackups         = "levee_backup_total"
 	familyAlertsProcessed = "levee_alerts_processed_total"
+	familyTakeovers       = "levee_takeover_events_total"
+	familyDispatch        = "levee_dispatched_runs_total"
+)
+
+// Dispatch results for levee_dispatched_runs_total.
+const (
+	// DispatchResultClaimed: the sweep assigned the run to a worker.
+	DispatchResultClaimed = "claimed"
+	// DispatchResultSkippedBusy: no worker had spare capacity.
+	DispatchResultSkippedBusy = "skipped_busy"
+	// DispatchResultReclaimed: a pending assignment whose owner never claimed
+	// it within the claim timeout was re-pointed at a live worker (epoch
+	// bumped, so the stale owner's late claim is fenced out).
+	DispatchResultReclaimed = "reclaimed"
+)
+
+// Takeover sweep results for levee_takeover_events_total.
+const (
+	// TakeoverResultSetled: the sweep interrupted the run (running →
+	// interrupted under the per-run lock and status CAS).
+	TakeoverResultSettled = "settled"
+	// TakeoverResultSkipped: the run was a candidate but stood down —
+	// not in a takeable state anymore (settled elsewhere, paused) or
+	// another node held the per-run takeover lock.
+	TakeoverResultSkipped = "skipped"
 )
 
 // changeStatuses lists the lifecycle statuses always exported for
@@ -77,6 +124,8 @@ const (
 var changeStatuses = []string{
 	StatusCreated, StatusApproved, StatusRunning,
 	StatusSucceeded, StatusFailed, StatusRolledBack,
+	StatusRolledBackPartial, StatusRollbackIncomplete,
+	StatusInterrupted,
 }
 
 // Default is the process-wide collector instance. LEVEE subsystems
@@ -233,6 +282,8 @@ type Metrics struct {
 	approvals      *labeledCounters
 	backups        *labeledCounters
 	alerts         *labeledCounters
+	takeovers      *labeledCounters
+	dispatch       *labeledCounters
 	channelAcquire *matrixCounters
 
 	// Batch duration is a simplified histogram: only sum and count are
@@ -253,6 +304,8 @@ func New() *Metrics {
 		approvals:      newLabeledCounters(ApprovalActionApprove, ApprovalActionReject, ApprovalActionTimeout),
 		backups:        newLabeledCounters(BackupResultOK, BackupResultFail),
 		alerts:         newLabeledCounters(),
+		takeovers:      newLabeledCounters(TakeoverResultSettled, TakeoverResultSkipped),
+		dispatch:       newLabeledCounters(DispatchResultClaimed, DispatchResultSkippedBusy, DispatchResultReclaimed),
 		channelAcquire: newMatrixCounters(),
 	}
 }
@@ -344,6 +397,21 @@ func (m *Metrics) BackupsTotal(result string) int64 { return m.backups.value(res
 // AlertsProcessedTotal returns the counter value for one alert source.
 func (m *Metrics) AlertsProcessedTotal(source string) int64 { return m.alerts.value(source) }
 
+// IncTakeoverEvent records one failover-takeover sweep outcome for a
+// candidate run; result should be TakeoverResultSettled or
+// TakeoverResultSkipped (design-cluster-failover.md §3-5: the takeover
+// is observable without scraping logs).
+func (m *Metrics) IncTakeoverEvent(result string) { m.takeovers.inc(result) }
+
+// TakeoverEventsTotal returns the counter value for one takeover result.
+func (m *Metrics) TakeoverEventsTotal(result string) int64 { return m.takeovers.value(result) }
+
+// IncDispatch records one cross-node dispatch outcome.
+func (m *Metrics) IncDispatch(result string) { m.dispatch.inc(result) }
+
+// DispatchEventsTotal returns the counter value for one dispatch result.
+func (m *Metrics) DispatchEventsTotal(result string) int64 { return m.dispatch.value(result) }
+
 // Handler returns an http.Handler that serves all collected metrics in
 // the Prometheus text exposition format (version 0.0.4), including
 // # HELP and # TYPE annotation lines. Register it on the serve
@@ -412,6 +480,14 @@ func (m *Metrics) render(b *strings.Builder) {
 	writeCounterFamily(b, familyAlertsProcessed,
 		"Total number of alerts processed by LEVEE, partitioned by source.",
 		"source", m.alerts.snapshot())
+
+	writeCounterFamily(b, familyTakeovers,
+		"Total number of failover-takeover sweep outcomes for candidate runs, partitioned by result.",
+		"result", m.takeovers.snapshot())
+
+	writeCounterFamily(b, familyDispatch,
+		"Total number of cross-node dispatch outcomes for approved runs, partitioned by result.",
+		"result", m.dispatch.snapshot())
 }
 
 // writeCounterFamily renders one single-label counter family with its

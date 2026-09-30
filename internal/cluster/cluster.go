@@ -194,6 +194,20 @@ func (m *ClusterManager) GetNodes() []Node {
 	return m.registry.List()
 }
 
+// ActiveMastersAndWorkers returns every node whose membership status is
+// active — both masters (eligible to lead) and workers. Used by the dispatch
+// loop to enumerate the pool of nodes that can be assigned work.
+func (m *ClusterManager) ActiveMastersAndWorkers() []Node {
+	all := m.registry.List()
+	out := make([]Node, 0, len(all))
+	for _, n := range all {
+		if n.Status == StatusActive {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // GetLeader returns the current leader node, or (nil, false).
 func (m *ClusterManager) GetLeader() (*Node, bool) {
 	return m.registry.GetLeader()
@@ -207,6 +221,19 @@ func (m *ClusterManager) SelfHeartbeat() error {
 		return errors.New("cluster: self heartbeat: SelfID not configured")
 	}
 	return m.registry.Heartbeat(m.cfg.SelfID, time.Now().UTC())
+}
+
+// SyncOnceForTest performs one synchronous round of the shared-state
+// synchronisation (heartbeat, stale marks, registry fold, lock sweep).
+// Exported for cross-package tests that need a converged leadership
+// view without waiting for the background ticker; the background loop
+// calls the same private method every tick.
+func (m *ClusterManager) SyncOnceForTest(ctx context.Context) error {
+	if m.db == nil {
+		return errors.New("cluster: sync once: nil db")
+	}
+	m.syncWithPG(ctx)
+	return nil
 }
 
 // healthCheckLoop is the background goroutine started by Start. It refreshes

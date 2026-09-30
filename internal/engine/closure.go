@@ -18,9 +18,12 @@
 //  4. Post-apply verification (verify.PhasePostApply). A failure triggers
 //     rollback of the whole run.
 //  5. Rollback path. When any verification fails, rollback.Manager
-//     reverses the executed batches. When a PostRollbackVerifier (T037)
-//     is configured, post-rollback verification runs and the result is
-//     recorded on the ClosureResult.
+//     reverses the executed batches — unless the run-level policy
+//     (plan.Rollback.OnFailure) is "manual", in which case the automatic
+//     rollback is suppressed and the failed run waits for an operator
+//     (ClosureResult.ManualRollbackRequired). When a PostRollbackVerifier
+//     (T037) is configured, post-rollback verification runs and the result
+//     is recorded on the ClosureResult.
 //  6. Lock release. Regardless of outcome, every acquired lock is
 //     released before the ClosureRunner returns.
 //
@@ -37,6 +40,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	stderrors "errors"
+
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/lock"
@@ -48,6 +53,22 @@ import (
 
 // --- Phase identifiers ------------------------------------------------------
 
+// ErrFencedOut is the sentinel an execution-layer step callback returns
+// when it has lost ownership of the run (execution lease invalidated by a
+// failover takeover, see docs/design-cluster-failover.md §7.3-3). It is
+// deliberately NOT context cancellation and NOT a plain step error:
+// once the closure has entered batch execution, every failure path —
+// including ctx cancellation — triggers the rollback flow, and that flow
+// deliberately runs detached to completion (see the rollback section of
+// Run). A fenced-out executor must therefore fail WITHOUT rolling back:
+// its undo commands are exactly the remote double-write fencing exists
+// to prevent. The engine package defines its own sentinel (rather than
+// importing cluster's) so the closure stays dependency-free; the wiring
+// layer wraps cluster.ErrFencedOut into this one and Run recognises it
+// via errors.Is, including through the fmt.Errorf("%…w") wrappers the
+// batch controller produces.
+var ErrFencedOut = stderrors.New("engine: execution fenced out")
+
 // ClosurePhase identifies the outcome phase of a closure run. It is the
 // stable string carried in ClosureResult.Phase.
 type ClosurePhase string
@@ -58,13 +79,33 @@ const (
 	PhaseCompleted ClosurePhase = "completed"
 
 	// PhaseRolledBack indicates a verification failure triggered rollback
-	// and the rollback succeeded (every rollback step completed without
-	// error).
+	// and the rollback fully restored what had been applied: every executed
+	// step that needed compensation got it, and no step's side effects were
+	// left undetermined (D-2 v2 verdict).
+	//
+	// The three rollback phases deliberately carry the SAME string values as
+	// the corresponding run statuses (runstatus.StatusRolledBack etc.):
+	// ClosureResult.Phase is what settleRun maps into run.status, so a
+	// divergence here would silently produce a status the UI has no label for.
+	// runClosurePhases (below) pins the correspondence in a test.
 	PhaseRolledBack ClosurePhase = "rolled_back"
 
+	// PhasePartialRollback indicates the rollback ran but did NOT fully
+	// restore the run: some required compensations were skipped or failed
+	// while others completed (D-2 v2). Deliberately NOT reported as
+	// rolled_back — claiming a clean rollback would be a statement the
+	// evidence does not support. Operators must inspect the host state.
+	PhasePartialRollback ClosurePhase = "rolled_back_partial"
+
+	// PhaseRollbackIncomplete indicates executed work needed compensation but
+	// nothing could be restored (no compensation completed), or the executed
+	// steps left undetermined side effects (D-2 v2). Treat as an incident
+	// requiring human remediation, not as a settled rollback.
+	PhaseRollbackIncomplete ClosurePhase = "rollback_incomplete"
+
 	// PhaseFailed indicates the closure could not complete cleanly. This
-	// covers pre-apply gate failure, lock conflict, batch execution error
-	// without rollback, and rollback failure (partial or total).
+	// covers pre-apply gate failure, lock conflict, and batch execution error
+	// without rollback.
 	PhaseFailed ClosurePhase = "failed"
 )
 
@@ -96,8 +137,18 @@ type ClosureResult struct {
 
 	// RollbackResult is the outcome of the rollback flow. It is non-nil
 	// only when rollback was triggered (Phase == PhaseRolledBack or a
-	// failed rollback with Phase == PhaseFailed).
+	// failed rollback with Phase == PhaseFailed). It stays nil when the
+	// run-level policy suppressed the rollback
+	// (ManualRollbackRequired == true).
 	RollbackResult *rollback.RollbackResult
+
+	// ManualRollbackRequired is true when the run-level rollback policy
+	// (plan.Rollback.OnFailure == "manual", spec §7.1) suppressed the
+	// automatic rollback: the run failed with its applied batches left in
+	// place and waits for an operator to trigger the rollback
+	// (RollbackChange / `levee rollback`). False on every other path,
+	// including a rollback that ran and failed.
+	ManualRollbackRequired bool
 
 	// PostVerifyResult is the outcome of the post-rollback verification
 	// (T037). It is non-nil only when a PostRollbackVerifier is
@@ -142,6 +193,12 @@ type ClosureRunner struct {
 	// WithHostGuard. It runs after target collection and before any lock is
 	// acquired; a non-nil error aborts the run with PhaseFailed.
 	hostGuard func(ctx context.Context, hosts []string) error
+
+	// snapshotter is the optional pre-apply snapshot coordinator installed
+	// via WithSnapshotter. It runs after lock acquisition and before batch
+	// execution; a capture failure aborts the run (no mutation). Nil means
+	// snapshot capture/restore is disabled (the pre-wiring no-op).
+	snapshotter Snapshotter
 }
 
 // ClosureOption configures optional ClosureRunner behaviour at construction
@@ -198,6 +255,17 @@ func NewClosureRunner(
 		opt(cr)
 	}
 	return cr
+}
+
+// rollbackPolicyOf resolves the plan's run-level failure policy
+// (plan.Rollback.OnFailure, spec §7.1). A nil plan or an absent/unknown
+// value resolves to auto — see dsl.ResolveRollbackOnFailure for why unknown
+// values keep the historical behaviour.
+func rollbackPolicyOf(p *plan.Plan) string {
+	if p == nil {
+		return dsl.RollbackOnFailureAuto
+	}
+	return dsl.ResolveRollbackOnFailure(p.Rollback)
 }
 
 // --- Run --------------------------------------------------------------------
@@ -314,13 +382,28 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	// that a cancelled ctx does not prevent lock cleanup.
 	defer cr.releaseLocks(context.Background(), result.RunID, acquired)
 
+	// 2.5 Pre-apply snapshot capture (design §4.4.4.2). Runs after all
+	// locks are held and before the first mutation; a capture failure
+	// aborts the run with the locks released (defer above) and zero side
+	// effects on any target. Disabled when no snapshotter is installed.
+	if err := cr.captureSnapshots(ctx, result.RunID, p); err != nil {
+		result.Phase = PhaseFailed
+		result.Error = fmt.Errorf("closure: pre-apply snapshot: %w", err)
+		return result, result.Error
+	}
+
 	// 3. Batch execution. Batches run sequentially; after each batch we
-	//    run the post-batch gates. A batch error or gate failure stops
-	//    further batches and triggers rollback. We track which batches
-	//    were actually executed so rollback only reverses applied work.
+	// run the post-batch gates. A batch error or gate failure stops
+	// further batches and triggers rollback — EXCEPT when the failure is
+	// ErrFencedOut: losing ownership of the run (failover takeover) is
+	// not a change failure, and rolling back would dispatch undo commands
+	// from an executor the cluster just invalidated — the exact remote
+	// double-write fencing exists to prevent. We track which batches
+	// were actually executed so rollback only reverses applied work.
 	batchExecFn := adaptExecFunc(execFn)
 	var triggerRollback bool
 	var rollbackReason string
+	var fencedOut bool
 	executedBatches := make([]plan.Batch, 0, len(p.Batches))
 
 	for i, b := range p.Batches {
@@ -334,20 +417,33 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// the batch.Controller's concurrency and error-policy logic
 		// while giving us a clean boundary to insert post-batch gates.
 		subPlan := &plan.Plan{
-			ID:           p.ID,
-			WorkflowName: p.WorkflowName,
-			Batches:      []plan.Batch{b},
-			TotalTargets: len(b.Targets),
-			CreatedAt:    p.CreatedAt,
+			ID:            p.ID,
+			WorkflowName:  p.WorkflowName,
+			Batches:       []plan.Batch{b},
+			TotalTargets:  len(b.Targets),
+			CreatedAt:     p.CreatedAt,
+			RiskScore:     p.RiskScore,
+			RiskFactors:   p.RiskFactors,
+			ApprovalFloor: p.ApprovalFloor,
+			Approval:      p.Approval,
+			Rollback:      p.Rollback,
+			Gate:          p.Gate,
 		}
 		brs := cr.batchCtrl.Execute(ctx, subPlan, batchExecFn)
 		result.BatchResults = append(result.BatchResults, brs...)
 		executedBatches = append(executedBatches, b)
 
-		// A batch error aborts further batches and triggers rollback.
+		// A batch error aborts further batches and triggers rollback —
+		// unless the error is the fencing sentinel (skip-rollback above).
 		if len(brs) > 0 && brs[len(brs)-1].Error != nil {
+			lastErr := brs[len(brs)-1].Error
+			if stderrors.Is(lastErr, ErrFencedOut) {
+				fencedOut = true
+				rollbackReason = fmt.Sprintf("execution fenced out during batch %d", b.Index)
+				break
+			}
 			triggerRollback = true
-			rollbackReason = fmt.Sprintf("batch %d execution failed: %v", b.Index, brs[len(brs)-1].Error)
+			rollbackReason = fmt.Sprintf("batch %d execution failed: %v", b.Index, lastErr)
 			break
 		}
 
@@ -388,19 +484,48 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	}
 
 	// 5. Rollback path. When a verification or batch failure triggered
-	//    rollback, reverse only the executed batches via rollback.Manager.
-	//    Then, when a PostRollbackVerifier is configured, run the
-	//    post-rollback verification (T037).
+	// rollback, reverse only the executed batches via rollback.Manager.
+	// Then, when a PostRollbackVerifier is configured, run the
+	// post-rollback verification (T037).
+	//
+	// Fenced-out executions never reach here: they fail fast below
+	// without rolling back (see the batch-loop comment) — the undo
+	// dispatches of a superseded executor are the double-write the
+	// fencing design prohibits.
+	if fencedOut {
+		result.Phase = PhaseFailed
+		result.Error = fmt.Errorf("closure: %s; not rolling back: %w", rollbackReason, ErrFencedOut)
+		return result, result.Error
+	}
 	if triggerRollback {
+		// Run-level policy (plan.Rollback.OnFailure, spec §7.1). "manual"
+		// suppresses the automatic compensation: the failed run keeps its
+		// applied batches and waits for an operator-triggered rollback
+		// (RollbackChange / `levee rollback`). on_failure is one of only
+		// two fields a workflow-level rollback block may carry — LE097
+		// rejects compensation content there, because the ledger attributes
+		// compensations per (host, forward step).
+		if rollbackPolicyOf(p) == dsl.RollbackOnFailureManual {
+			result.Phase = PhaseFailed
+			result.ManualRollbackRequired = true
+			result.Error = fmt.Errorf("closure: %s; on_failure=manual: automatic rollback suppressed, operator-triggered rollback required (applied batches kept)", rollbackReason)
+			return result, result.Error
+		}
 		// Build a sub-plan containing only the batches that were actually
 		// executed, so rollback does not try to undo work that never
 		// started.
 		executedPlan := &plan.Plan{
-			ID:           p.ID,
-			WorkflowName: p.WorkflowName,
-			Batches:      executedBatches,
-			TotalTargets: countTargets(executedBatches),
-			CreatedAt:    p.CreatedAt,
+			ID:            p.ID,
+			WorkflowName:  p.WorkflowName,
+			Batches:       executedBatches,
+			TotalTargets:  countTargets(executedBatches),
+			CreatedAt:     p.CreatedAt,
+			RiskScore:     p.RiskScore,
+			RiskFactors:   p.RiskFactors,
+			ApprovalFloor: p.ApprovalFloor,
+			Approval:      p.Approval,
+			Rollback:      p.Rollback,
+			Gate:          p.Gate,
 		}
 		// Deliberately detached from ctx: cancellation is itself one of
 		// the rollback triggers, so a rollback must run to completion
@@ -409,7 +534,20 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// applied batches unwound. Trade-off: rollback cannot be
 		// cancelled once triggered; it relies on per-step execution
 		// timeouts for bounded runtime.
-		rbResult := cr.rollback.Rollback(context.Background(), executedPlan, execFn)
+		//
+		// The run id keys snapshot lookup for strategy-"snapshot" steps
+		// (SetRunID right before the flow — the Manager was constructed
+		// before the run id existed).
+		cr.rollback.SetRunID(result.RunID)
+		// D-2 v2: compensate exactly what the apply evidence says actually
+		// ran. result.BatchResults accumulates every batch outcome
+		// (including the failed batch's partial results), so steps never
+		// dispatched are not compensated; steps whose forward execution
+		// failed are compensated and counted in UnknownSideEffects —
+		// surfaced below for operator inspection, informational per
+		// design item 3.
+		ledger := rollback.LedgerFromBatchResults(result.BatchResults)
+		rbResult := cr.rollback.RollbackWithLedger(context.Background(), executedPlan, execFn, ledger)
 		result.RollbackResult = rbResult
 
 		// Post-rollback verification (T037), when configured.
@@ -429,12 +567,23 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			result.Error = fmt.Errorf("closure: %s", rollbackReason)
 			return result, nil
 		}
-		// Rollback failed (partial or total).
-		result.Phase = PhaseFailed
-		if rbResult.Error != nil {
-			result.Error = fmt.Errorf("closure: %s; rollback failed: %w", rollbackReason, rbResult.Error)
+		// Not a clean rollback (D-2 v2): distinguish "some state restored,
+		// some not" from "nothing restored" so operators and status
+		// mapping never mistake an uncompensated gap for a settled
+		// rollback. The counts come from the compensation bookkeeping,
+		// not from whether individual commands happened to error;
+		// undetermined forward side effects are reported alongside.
+		verdict := fmt.Sprintf("compensations %d/%d completed, %d forward steps with undetermined side effects",
+			rbResult.CompletedCompensations, rbResult.RequiredCompensations, rbResult.UnknownSideEffects)
+		if rbResult.PartialRollback {
+			result.Phase = PhasePartialRollback
 		} else {
-			result.Error = fmt.Errorf("closure: %s; rollback failed", rollbackReason)
+			result.Phase = PhaseRollbackIncomplete
+		}
+		if rbResult.Error != nil {
+			result.Error = fmt.Errorf("closure: %s; rollback incomplete (%s): %w", rollbackReason, verdict, rbResult.Error)
+		} else {
+			result.Error = fmt.Errorf("closure: %s; rollback incomplete (%s)", rollbackReason, verdict)
 		}
 		return result, nil
 	}
