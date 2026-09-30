@@ -939,6 +939,7 @@ func TestWorkflowGenerator_GenerateFromLLM_DefaultsModuleAction(t *testing.T) {
 // --- reverseAction ---------------------------------------------------------
 
 func TestReverseAction(t *testing.T) {
+	// Known reversible pairs.
 	cases := map[string]string{
 		"restart":   "restart",
 		"stop":      "start",
@@ -949,11 +950,20 @@ func TestReverseAction(t *testing.T) {
 		"write":     "restore",
 		"install":   "uninstall",
 		"uninstall": "install",
-		"unknown":   "noop",
 	}
 	for in, want := range cases {
-		if got := reverseAction(in); got != want {
-			t.Errorf("reverseAction(%q) = %q, want %q", in, got, want)
+		got, ok := reverseAction(in)
+		if !ok || got != want {
+			t.Errorf("reverseAction(%q) = (%q, %v), want (%q, true)", in, got, ok, want)
+		}
+	}
+
+	// An action with no known reverse must report ok=false rather than
+	// inventing one. It previously returned "noop", which produced a plan
+	// that looked compensated while reversing nothing.
+	for _, in := range []string{"unknown", "", "frobnicate"} {
+		if got, ok := reverseAction(in); ok {
+			t.Errorf("reverseAction(%q) = (%q, true), want ok=false", in, got)
 		}
 	}
 }

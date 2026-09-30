@@ -12,6 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMigratePostgresNilDB guards the exported restore-support entry point's
+// nil check; the real migration path is exercised by the PG suites (and the
+// backup restore drill) under LEVEE_PG_TEST_DSN.
+func TestMigratePostgresNilDB(t *testing.T) {
+	err := MigratePostgres(context.Background(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil db handle")
+}
+
 // TestMigrationsTable_Shape enforces the convention that both step tables are
 // sorted ascending, start at base+1, are gapless, and top out at the current
 // version constant. schema.sql/pgschema.sql parity is covered by the v1→v2

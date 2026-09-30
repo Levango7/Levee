@@ -3,18 +3,25 @@
 import dayjs from 'dayjs'
 import type { ChangeStatus, Priority } from '@/types/levee'
 
+// Status vocabulary mirrors the backend state machine in
+// internal/grpc/change_service.go (isValidTransition / terminalRunStatuses),
+// which is also what proto/levee.proto documents. `pending_approval` used to
+// live here as a second "待审批" key: the backend never emitted it, so every
+// query and v-if keyed on it silently matched nothing.
 export const STATUS_LABEL: Record<ChangeStatus, string> = {
   draft: '草稿',
   planned: '已计划',
   pending: '待审批',
-  pending_approval: '待审批',
   approved: '已审批',
+  rejected: '已拒绝',
   running: '执行中',
   paused: '已暂停',
   completed: '已完成',
   failed: '失败',
   cancelled: '已取消',
   rolled_back: '已回滚',
+  rolled_back_partial: '部分回滚',
+  rollback_incomplete: '回滚未完成',
   interrupted: '已中断',
   archived: '已归档',
 }
@@ -23,14 +30,16 @@ export const STATUS_COLOR: Record<ChangeStatus, string> = {
   draft: 'info',
   planned: 'info',
   pending: 'warning',
-  pending_approval: 'warning',
   approved: 'primary',
+  rejected: 'danger',
   running: 'primary',
   paused: 'warning',
   completed: 'success',
   failed: 'danger',
   cancelled: 'info',
   rolled_back: 'info',
+  rolled_back_partial: 'warning',
+  rollback_incomplete: 'danger',
   interrupted: 'danger',
   archived: 'info',
 }
@@ -50,12 +59,16 @@ export const PRIORITY_COLOR: Record<Priority, string> = {
 }
 
 // Retryable statuses mirror the backend RetryChange admission set
-// (change_service.go): failed, rolled_back, and interrupted — the cluster
-// takeover terminal whose machine re-drive entry point IS retry. Keep in
-// sync with the gRPC guard when the admission set changes.
+// (change_service.go): failed, rolled_back, interrupted — plus the two D-2 v2
+// rollback verdicts, which are failure-family terminals whose re-drive entry
+// point is also RetryChange. interrupted is the cluster takeover terminal
+// whose machine re-drive entry point IS retry. Keep in sync with the gRPC
+// guard when the admission set changes.
 const RETRYABLE_STATUSES: ReadonlySet<ChangeStatus> = new Set([
   'failed',
   'rolled_back',
+  'rolled_back_partial',
+  'rollback_incomplete',
   'interrupted',
 ])
 

@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
+	"github.com/nexus/levee/internal/risk"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -41,6 +43,21 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 		return nil, nil, err
 	}
 
+	// Change-window gate (spec §4.2: "plan 时刻不在窗口内则阻断，不进审批").
+	// It sits here rather than in the RPC layer because this is the one path
+	// every plan takes — gRPC PlanChange, `levee plan --local`, and the
+	// re-plan inside apply — so no entry point can produce an artifact outside
+	// a closed window. Rollback never comes through here, which is what keeps
+	// "回滚不受窗口约束" true: a failed change must always be recoverable.
+	// An unusable declaration refuses too; "cannot judge" is not "allowed".
+	if open, werr := wf.Window.OpenAt(time.Now()); !open {
+		if werr == nil {
+			werr = fmt.Errorf("now is %s, outside %s",
+				time.Now().UTC().Format(time.RFC3339), wf.Window.Describe())
+		}
+		return nil, nil, fmt.Errorf("%w: %v", dsl.ErrWindowClosed, werr)
+	}
+
 	targets, err := e.validateTargets(ctx, targetHosts)
 	if err != nil {
 		return nil, nil, err
@@ -51,6 +68,13 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 		return nil, nil, fmt.Errorf("wiring: generate plan: %w", err)
 	}
 
+	// Risk scoring (R4): score the generated plan and stamp the verdict
+	// onto the artifact — the approved change's score is exactly the
+	// executed one (plan_hash binds them). The floor feeds the approval
+	// tier routing on the PlanChange side (max of the workflow's own
+	// declaration and this floor).
+	assessPlanRisk(p)
+
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wiring: marshal plan: %w", err)
@@ -60,6 +84,43 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 		return nil, nil, fmt.Errorf("wiring: plan hash computation failed")
 	}
 	return planToPB(changeID, p), &grpc.StoredPlan{JSON: string(raw), Hash: hash}, nil
+}
+
+// assessPlanRisk scores the plan with risk.Assessor and stamps the
+// verdict (score, explainable factors, approval floor) onto the plan
+// artifact. The blast-radius band comes from the plan package's own
+// ImpactAnalyzer so the risk package stays plan-free (cycle avoidance).
+func assessPlanRisk(p *plan.Plan) {
+	if p == nil {
+		return
+	}
+	in := risk.Input{BatchCount: len(p.Batches)}
+	for _, b := range p.Batches {
+		for _, s := range b.Steps {
+			in.Steps = append(in.Steps, risk.Step{
+				Name:         s.Name,
+				Action:       s.Action,
+				Irreversible: s.Irreversible,
+				HasRollback:  s.Rollback != nil,
+			})
+		}
+	}
+	if report := plan.NewImpactAnalyzer().Analyze(p); report != nil {
+		in.DirectTargets = len(report.DirectTargets)
+		in.IndirectTargets = len(report.IndirectTargets)
+		in.BlastHigh = report.RiskLevel == plan.RiskLevelHigh
+	}
+	assessment := risk.NewAssessor().Assess(in)
+	p.RiskScore = assessment.Score
+	p.ApprovalFloor = assessment.ApprovalFloor
+	if len(assessment.Factors) > 0 {
+		p.RiskFactors = make([]plan.RiskFactor, 0, len(assessment.Factors))
+		for _, f := range assessment.Factors {
+			p.RiskFactors = append(p.RiskFactors, plan.RiskFactor{
+				Rule: f.Rule, Points: f.Points, Detail: f.Detail,
+			})
+		}
+	}
 }
 
 // resolveWorkflow parses the run's workflow source. WorkflowName holds the
