@@ -35,23 +35,23 @@ jobs:
         language: [go]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       # Setup Go explicitly so autobuild runs against the pinned toolchain
       # used by the CI job matrix, not the runner's default version.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
           go-version: '1.25'
           cache: true
       - name: initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@1190a975f95ce23525efb6a3fc21ea29567c1b52  # v3
         with:
           languages: ${{ matrix.language }}
       # autobuild compiles the Go module the same way `go build` would;
       # CodeQL needs a compiled database to run its queries against.
       - name: autobuild
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@1190a975f95ce23525efb6a3fc21ea29567c1b52  # v3
       - name: analyze
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@1190a975f95ce23525efb6a3fc21ea29567c1b52  # v3
         with:
           # Tag results per language so multi-language matrices later do not
           # overwrite each other in Code Scanning.
