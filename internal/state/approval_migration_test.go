@@ -22,29 +22,12 @@ func TestMigrate_LegacyApprovalRowSurvivesUpgrade(t *testing.T) {
 	db, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
 
-	// v1-era schema_version + the tables the replayed steps touch
-	// (runs for v3, approvals for v5, credentials for v2), plus the parent
-	// row the approval references.
+	// A complete v1-era database (see legacy_v1_test.go): opening the store
+	// replays every pending step, and v6 alters all ten tenant-owned tables,
+	// so a partial fixture cannot exercise this path.
+	createLegacyV1DB(t, ctx, db)
+
 	for _, ddl := range []string{
-		`CREATE TABLE schema_version (
-			version INTEGER PRIMARY KEY,
-			applied_at DATETIME NOT NULL DEFAULT (datetime('now')))`,
-		`INSERT INTO schema_version (version) VALUES (1)`,
-		`CREATE TABLE runs (
-			id TEXT PRIMARY KEY, workflow_name TEXT NOT NULL, template_name TEXT NOT NULL,
-			params TEXT NOT NULL DEFAULT '{}', plan_hash TEXT NOT NULL, status TEXT NOT NULL,
-			approval_status TEXT NOT NULL DEFAULT 'pending', approval_level TEXT NOT NULL DEFAULT '',
-			created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, creator TEXT NOT NULL,
-			incident_id TEXT NOT NULL DEFAULT '')`,
-		`CREATE TABLE approvals (
-			id TEXT PRIMARY KEY, run_id TEXT NOT NULL, level TEXT NOT NULL, approver TEXT NOT NULL,
-			status TEXT NOT NULL, comment TEXT NOT NULL DEFAULT '', timeout_at DATETIME,
-			acted_at DATETIME, FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE)`,
-		// v1-era credentials table (for v2 migration that adds tags column)
-		`CREATE TABLE credentials (
-			id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL,
-			encrypted_data BLOB NOT NULL, created_at DATETIME NOT NULL,
-			rotated_at DATETIME, UNIQUE (name))`,
 		`INSERT INTO runs (id, workflow_name, template_name, plan_hash, status, created_at, updated_at, creator)
 			VALUES ('r-legacy', 'wf', 'tpl', 'h', 'draft', '2026-01-01 00:00:00', '2026-01-01 00:00:00', 'alice')`,
 		// A pre-upgrade PENDING approval — the in-flight chain that must survive.
@@ -56,7 +39,7 @@ func TestMigrate_LegacyApprovalRowSurvivesUpgrade(t *testing.T) {
 	}
 	require.NoError(t, db.Close())
 
-	// Opening the store replays the pending steps (v2..v5) over the legacy file.
+	// Opening the store replays the pending steps (v2..v6) over the legacy file.
 	store, err := NewSQLiteStore(ctx, path)
 	require.NoError(t, err)
 	defer func() { _ = store.Close() }()

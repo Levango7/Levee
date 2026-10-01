@@ -62,6 +62,7 @@ import (
 	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/takeover"
+	"github.com/nexus/levee/internal/tenant"
 	"github.com/nexus/levee/internal/tracing"
 	"github.com/nexus/levee/internal/wiring"
 
@@ -202,18 +203,109 @@ func resolveServeToken() string {
 	return os.Getenv("LEVEE_TOKEN")
 }
 
+// newServeGateway builds the REST gateway and attaches the in-process
+// services plus the tenant-scoped store.
+//
+// The store passed here MUST be the same tenant-wrapped store the services
+// were built with. The gateway performs its own store reads (ad-hoc gate
+// verification, system views); handing it the raw store would leave those
+// paths unisolated while the service methods beside them were isolated, which
+// is the kind of half-covered boundary that is impossible to spot in review.
+func newServeGateway(gwCfg grpc.ServeGatewayConfig, svcStore state.Store, gateSvc *grpc.GateService) *grpc.Gateway {
+	gw := grpc.NewGateway(gwCfg)
+	// SetServices/SetMobileApproval/SetConversationEngine are attached by the
+	// caller immediately after this returns, because they need locals that
+	// are assembled step by step; the store is attached here so it cannot be
+	// forgotten.
+	gw.SetStore(svcStore)
+	// Ad-hoc gate verification (POST /gates/verify). Only wired when the
+	// execution engine is present: without it there is no honest way to dial
+	// targets, and the endpoint answers 404 instead of failing closed.
+	if gateSvc != nil {
+		gw.SetGateService(gateSvc)
+		log.Info("ad-hoc gate verification enabled (POST /gates/verify)")
+	}
+	return gw
+}
+
+// wrapStoreForTenancy returns the store the request-serving services should
+// use. With multi-tenancy off it is the store unchanged, so an existing
+// single-tenant deployment behaves exactly as before.
+//
+// It is a separate function rather than an inline block so that runServe
+// stays readable and so the fail-closed startup check has one obvious home.
+func wrapStoreForTenancy(store state.Store, cfg *config.Config,
+	named []grpc.TokenIdentity, verifier *auth.Verifier,
+) (state.Store, error) {
+	if !cfg.Tenant.Enabled {
+		return store, nil
+	}
+	if err := validateTenantCredentials(named, verifier); err != nil {
+		return nil, err
+	}
+	log.Info("multi-tenancy enabled: every request is resolved to the tenant bound to its credential")
+	return tenant.NewTenantStore(store, tenant.NewResolver(true), nil), nil
+}
+
+// validateTenantCredentials refuses to start a deployment that enabled
+// multi-tenancy but bound no tenant to any credential.
+//
+// The failure this prevents is specific and bad: with isolation ON and every
+// credential unbound, the resolver rejects every request (it fails closed, so
+// nothing leaks) — but an operator who "turned on tenants" and then quietly
+// changed nothing else gets a server that serves nobody, with the cause buried
+// in per-request logs. Failing at startup with a precise message turns that
+// into an obvious misconfiguration.
+//
+// It also names the two things that must be set, because the tenant has to
+// come from the credential and there is no safe default to fall back to.
+func validateTenantCredentials(named []grpc.TokenIdentity, verifier *auth.Verifier) error {
+	for _, t := range named {
+		if t.Tenant != "" {
+			return nil
+		}
+	}
+	if verifier != nil && verifier.Enabled() {
+		log.Warn("OIDC is enabled and multi-tenancy is on; set auth.oidc.tenant_claim " +
+			"so the tenant is read from the verified token")
+		return nil
+	}
+	return errors.New(
+		"tenant.enabled is true but no credential is bound to a tenant: " +
+			"give at least one --auth-token name=secret,tenant, " +
+			"or set auth.oidc.tenant_claim when OIDC is the identity source. " +
+			"Refusing to start: with isolation on and no tenant bound, every request would be rejected")
+}
+
 // parseNamedTokens converts --auth-token name=secret pairs into
 // grpc.TokenIdentity values. Malformed entries (missing '=' or an empty
 // name/secret) are rejected so a typo cannot silently drop an identity.
+//
+// The optional third field binds the token to a tenant:
+//
+//	--auth-token alice=s3cret,acme
+//
+// The tenant is part of the CREDENTIAL, not a request field, so a holder of
+// this token cannot act for any other tenant by changing what it sends. It
+// may be omitted for a single-tenant deployment; when multi-tenancy is on, a
+// token without a tenant is refused at request time rather than defaulted.
 func parseNamedTokens(pairs []string) ([]grpc.TokenIdentity, error) {
 	out := make([]grpc.TokenIdentity, 0, len(pairs))
 	for _, p := range pairs {
-		name, secret, ok := strings.Cut(p, "=")
+		parts := strings.Split(p, ",")
+		name, secret, ok := strings.Cut(strings.TrimSpace(parts[0]), "=")
 		name = strings.TrimSpace(name)
 		if !ok || name == "" || secret == "" {
-			return nil, fmt.Errorf("--auth-token expects name=secret, got %q", p)
+			return nil, fmt.Errorf("--auth-token expects name=secret[,tenant], got %q", p)
 		}
-		out = append(out, grpc.TokenIdentity{Token: secret, Subject: name})
+		id := grpc.TokenIdentity{Token: secret, Subject: name}
+		if len(parts) > 1 {
+			id.Tenant = strings.TrimSpace(parts[1])
+		}
+		if len(parts) > 2 {
+			return nil, fmt.Errorf("--auth-token %q has more than the optional tenant field", name)
+		}
+		out = append(out, id)
 	}
 	return out, nil
 }
@@ -234,6 +326,7 @@ func buildOIDCVerifier(ctx context.Context, cfg *config.Config) (*auth.Verifier,
 		Audience:      oc.Audience,
 		UsernameClaim: oc.UsernameClaim,
 		RoleClaim:     oc.RoleClaim,
+		TenantClaim:   oc.TenantClaim,
 		RoleMap:       oc.RoleMap,
 	}
 	vctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -502,7 +595,20 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 3. Build the service implementations. We reuse the in-process
 	//    implementations so the daemon and CLI share one code path.
-	svcs, err := buildServeServices(store, cfg, execGuard)
+	//
+	//    Multi-tenancy wraps the store HERE, between opening it and handing it
+	//    to the request-serving services. That position is deliberate: the
+	//    services are exactly the code that untrusted requests reach, so this
+	//    is where isolation has to be enforced. The internal background loops
+	//    above (takeover, dispatch, fencing) keep the raw store — they are
+	//    trusted in-process code operating on specific run ids, and they carry
+	//    no request context, so wrapping them would only make them fail closed
+	//    against themselves.
+	svcStore, err := wrapStoreForTenancy(store, cfg, namedTokens, oidcVerifier)
+	if err != nil {
+		return err
+	}
+	svcs, err := buildServeServices(svcStore, cfg, execGuard)
 	if err != nil {
 		return err
 	}
@@ -529,8 +635,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 4. Construct and start the server.
-	srv := grpc.NewServer(store, serverOpts...)
+	// 4. Construct and start the server. It receives the tenant-scoped store:
+	// it retains it and would otherwise build its own ChangeService from it if
+	// the caller supplied none.
+	srv := grpc.NewServer(svcStore, serverOpts...)
 
 	// 5. Register extra services (Alert, Diagnosis, Conversation) on the
 	//    gRPC server and construct the REST gateway that shares the same
@@ -542,7 +650,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 
 	// 5b. Inventory service: persistent target groups/import/status/history.
-	pb.RegisterInventoryServiceServer(srv.GrpcServer(), grpc.NewInventoryService(store))
+	// It is given svcStore, not the raw store: inventory reads and writes are
+	// request-driven and tenant-owned, so handing it the unscoped store would
+	// leave /targets readable across tenants.
+	pb.RegisterInventoryServiceServer(srv.GrpcServer(), grpc.NewInventoryService(svcStore))
 
 	// 5c. Apply the loaded SSH channel configuration (host-key policy +
 	// privilege escalation) to the channel factory defaults. Without this
@@ -560,7 +671,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		log.Info("reachability patrol enabled", "interval_seconds", interval)
 	}
 
-	gw := grpc.NewGateway(grpc.ServeGatewayConfig{
+	gw := newServeGateway(grpc.ServeGatewayConfig{
 		Addr:          serveOptHTTPAddr,
 		CORSOrigins:   serveOptCORSOrigins,
 		AuthToken:     token,
@@ -571,21 +682,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MetricsPublic: serveOptMetricsPublic,
 		RatePerSec:    serveOptRateLimit,
 		RateBurst:     serveOptRateBurst,
-	})
+	}, svcStore, svcs.gateSvc)
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetMobileApproval(mobileSvc)
-	gw.SetStore(store)
 	gw.SetConversationEngine(svcs.convEngine)
-
-	// Ad-hoc gate verification (POST /gates/verify): expose the engine's
-	// channel dialing + Prometheus URL through the GateService. Only
-	// when the execution engine is wired — without it there is no
-	// honest way to dial targets, and the endpoint answers 404 instead
-	// of failing closed on every call.
-	if svcs.gateSvc != nil {
-		gw.SetGateService(svcs.gateSvc)
-		log.Info("ad-hoc gate verification enabled (POST /gates/verify)")
-	}
 
 	// 5e. Self-observability: expose the process-wide metrics collector as
 	//     Prometheus text format on the gateway mux. The route is gated

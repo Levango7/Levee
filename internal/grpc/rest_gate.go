@@ -34,6 +34,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/verify"
@@ -203,7 +204,7 @@ func (s *GateService) Verify(ctx context.Context, req *GateVerifyRequest) (*Gate
 		if len(msg) > 200 {
 			msg = msg[:200]
 		}
-		_ = s.store.CreateAudit(ctx, &state.Audit{
+		_ = audit.Record(ctx, s.store, &state.Audit{
 			ID:        newID("aud-"),
 			RunID:     req.RunID,
 			Action:    "gate_verify",

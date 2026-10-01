@@ -17,7 +17,8 @@
 计划（Plan）才是被 `plan_hash` 绑定、被审批、被执行的那份制品。
 
 按 `internal/` 的实际构成，与编排直接相关的包（dsl / plan / engine / wiring /
-executor / dispatch / batch / cluster）约占三成，其余是支撑一套系统所需的
+executor / dispatch / batch / cluster）约占 **16%**（实测：8 个包共 15,256 行非测试
+代码 / `internal/` 非测试代码 96,358 行 = 15.8%），其余是支撑一套系统所需的
 平台能力：身份与授权（auth / permission ABAC / credential 加密 / tenant）、
 生命周期（scheduler / calendar / backup / cluster 故障转移 / takeover）、
 运维面（metrics / tracing / audit / notify / push / chatops）、
@@ -202,7 +203,7 @@ levee/
 │   ├── grpc/               # gRPC 服务 + REST 网关
 │   ├── web/                # Web UI
 │   ├── cluster/            # 集群模式
-│   ├── tenant/             # 多租户隔离
+│   ├── tenant/             # 多租户隔离（默认关闭，见 config.example.yaml 的 tenant 段）
 │   ├── drift/              # 漂移检测
 │   ├── calendar/           # 变更日历
 │   ├── chatops/            # ChatOps 集成

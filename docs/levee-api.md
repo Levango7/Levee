@@ -832,7 +832,7 @@ RESTful 风格，支持两套路径：
 | POST | `/targets/:id/check` | `/api/v1/TargetService/CheckTarget` | 连通性检查 | `levee target check` |
 | GET | `/audit/log` | `/api/v1/AuditService/GetAuditLog` | 列出审计记录 | `levee audit list` |
 | GET | `/audit/traces` | `/api/v1/AuditService/ListAuditTraces` | 审计 trace | — |
-| GET | `/audit/verify` | `/api/v1/AuditService/VerifyHashChain` | 哈希链校验 | `levee audit verify` |
+| GET | `/audit/verify` | `/api/v1/AuditService/VerifyHashChain` | 哈希链校验（按 run 的 trace 链 + 全局 audit 链） | `levee audit verify` |
 | GET | `/system/version` | `/api/v1/SystemService/GetVersion` | 系统版本 | — |
 | GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee status` |
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | — |
@@ -908,11 +908,32 @@ Token-based 认证，三种模式：
 | 变更 trace（`handleChangeTrace`） | `runId`、`verify` |
 | `GET /audit/log`（`handleAuditLog`） | `changeId`、`runId`、`action`、`actor`、`since`、`until`、`pageSize`、`pageToken` |
 | `GET /audit/traces`（`handleAuditTraces`） | `changeId`、`runIds`、`since`、`until`、`pageSize`、`pageToken` |
-| `GET /audit/verify`（`handleAuditVerify`） | `changeId`、`runId` |
+| `GET /audit/verify`（`handleAuditVerify`） | `changeId`、`runId`（二者只影响返回的 `runs` 段；`auditChain` 段始终校验全局 audit 链） |
 | `GET /targets`（`handleTargetList`） | `labelSelector`、`channelType`、`reachableOnly`、`pageSize`、`pageToken` |
 | 目标探测（`handleTargetCheck`） | `fresh`、`timeoutSeconds` |
 | `GET /templates`（`handleTemplateList`） | `nameContains`、`pageSize`、`pageToken` |
 | `GET /system/config`（`handleSystemConfig`） | `section`、`redactSecrets` |
+
+**`GET /audit/verify` 的响应**：顶层字段来自 `VerifyHashChainResponse`（`valid`、`entriesVerified`、`brokenEntryId`、`brokenReason`、`runs`），描述的是**按 run 的 trace 链**。响应额外携带一个 `auditChain` 成员，描述**全局 audit 链**：
+
+```json
+{
+  "valid": true,
+  "entriesVerified": 12,
+  "runs": [ { "runId": "run-1", "valid": true, "entriesVerified": 5 } ],
+  "auditChain": {
+    "valid": true,
+    "entriesVerified": 40,
+    "unsealed": 0,
+    "failures": []
+  }
+}
+```
+
+- `auditChain.failures[].type` 取值：`hash_mismatch`（内容被改）、`prev_hash_mismatch`（行被插入/删除/重连）、`empty_hash`（该行从未封链）。
+- 顶层 `valid` 是 `runs` 全部有效 **且** `auditChain.valid` 的合取；`brokenReason` 在来源是 audit 链时带 `audit_chain:` 前缀，便于区分是哪一条链报的。
+- `unsealed` 单独计数：从未封链的行与被篡改的行需要不同的处置，不应混为一谈。
+- gRPC 的 `/api/v1/AuditService/VerifyHashChain` **不含** `auditChain`——proto 未改动（其字段均为 run 维度，且本机无 `protoc` 无法重新生成）。需要 audit 链结果请用 REST 路径。
 
 **刻意不支持**（旧版文档曾错误宣称支持）：`/changes` 的 `template`、`initiator`、`from`、`to`；`/audit/log` 的 `who`（实际参数名是 `actor`）与 `change`（实际是 `changeId`）；以及全局的 `offset`、`sort` / `sortBy` / `sortOrder`、`fields`、`team`、`environment`。
 

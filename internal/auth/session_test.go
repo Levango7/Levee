@@ -33,7 +33,7 @@ func TestSessionIssueVerify_RoundTrip(t *testing.T) {
 	m, err := NewSessionManager(strings.Repeat("k", 32))
 	require.NoError(t, err)
 
-	raw, err := m.Issue("octocat", []string{"operator"}, "github")
+	raw, err := m.Issue("octocat", []string{"operator"}, "github", "")
 	require.NoError(t, err)
 
 	claims, err := m.VerifySession(raw)
@@ -49,7 +49,7 @@ func TestSessionVerify_Expired(t *testing.T) {
 	require.NoError(t, err)
 
 	// Mint a token whose TTL started 13h ago: beyond SessionTTL.
-	raw, err := m.issueAt("octocat", nil, "github", time.Now().Add(-13*time.Hour))
+	raw, err := m.issueAt("octocat", nil, "github", "", time.Now().Add(-13*time.Hour))
 	require.NoError(t, err)
 	_, err = m.VerifySession(raw)
 	require.Error(t, err)
@@ -59,7 +59,7 @@ func TestSessionVerify_Expired(t *testing.T) {
 func TestSessionVerify_Tampered(t *testing.T) {
 	m, err := NewSessionManager(strings.Repeat("k", 32))
 	require.NoError(t, err)
-	raw, err := m.Issue("octocat", nil, "github")
+	raw, err := m.Issue("octocat", nil, "github", "")
 	require.NoError(t, err)
 
 	// Flip a payload byte (middle segment) — signature must fail.
@@ -81,7 +81,7 @@ func TestSessionVerify_WrongKey(t *testing.T) {
 	m2, err := NewSessionManager(strings.Repeat("j", 32))
 	require.NoError(t, err)
 
-	raw, err := m1.Issue("octocat", nil, "github")
+	raw, err := m1.Issue("octocat", nil, "github", "")
 	require.NoError(t, err)
 	_, err = m2.VerifySession(raw)
 	require.Error(t, err, "a token signed by another secret must not verify")
@@ -89,7 +89,7 @@ func TestSessionVerify_WrongKey(t *testing.T) {
 
 func TestSessionManager_NilSafe(t *testing.T) {
 	var m *SessionManager
-	_, err := m.Issue("x", nil, "github")
+	_, err := m.Issue("x", nil, "github", "")
 	require.Error(t, err)
 	_, err = m.VerifySession("a.b.c")
 	require.Error(t, err)

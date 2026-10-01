@@ -1,0 +1,70 @@
+# .dockerignore — keep the build context small and free of host state.
+#
+# The Dockerfile does `COPY . .` in its builder stage, so without this file the
+# entire working tree is sent to the daemon on every build. That includes
+# ~53 MB of locally built Windows binaries (levee.exe, docgen.exe) which are
+# not in .gitignore's *tracked* set but do exist in a developer's checkout and
+# would be shipped into the build context — slowing every build and risking a
+# stale binary ending up in a layer.
+
+# VCS & CI
+.git
+.github
+.gitattributes
+.gitignore
+
+# Build artifacts
+/levee
+/dist/
+*.exe
+*.exe~
+*.test
+*.out
+coverage*
+coverfunc.txt
+docgen.exe
+test_*.log
+
+# Local data — runtime state must never be baked into an image
+*.db
+*.db-wal
+*.db-shm
+*.log
+levee-data/
+configs/config.local.yaml
+
+# Secrets
+.env
+.env.*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Agent tooling state
+.zcode/
+.workbuddy/
+# protoc scratch dirs (gen-proto.sh cleans these, but just in case)
+.protoc-out.*.tmp/
+
+# Docs & tests are not needed to compile the binary.
+docs/
+tests/
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+CHANGELOG.md
+
+# Frontend build inputs are EXCLUDED, not the whole web/ directory — the image
+# builds the UI from source. These two are load-bearing, not tidiness:
+#   web/node_modules — the Dockerfile runs `npm ci` and then `COPY web/ .`, so
+#     without this the host's node_modules is copied OVER the fresh install,
+#     shipping a Windows/linux-mismatched dependency tree into a Linux image
+#     and silently invalidating the layer cache.
+#   web/dist — likewise rebuilt inside the image; the committed copy is
+#     internal/web/dist, which the builder stage overwrites after `npm run
+#     build` anyway.
+web/node_modules/
+web/dist/

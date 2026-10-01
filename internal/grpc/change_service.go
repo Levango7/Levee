@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -177,17 +178,21 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(b)
 }
 
-// recordAudit persists an audit entry, downgrading failures to a logged
-// warning instead of silently discarding them. Audit writes are
-// deliberately non-fatal for the RPC that triggered them (the primary
-// state change has already been committed to the store), but the old
-// `_ = s.store.CreateAudit(...)` pattern made the loss invisible.
-func (s *ChangeService) recordAudit(ctx context.Context, audit *state.Audit) {
-	if err := s.store.CreateAudit(ctx, audit); err != nil {
+// recordAudit persists an audit entry and seals the audit hash chain over it
+// (audit.Record), downgrading failures to a logged warning instead of silently
+// discarding them. Audit writes are deliberately non-fatal for the RPC that
+// triggered them (the primary state change has already been committed to the
+// store), but the old `_ = s.store.CreateAudit(...)` pattern made the loss
+// invisible.
+//
+// The parameter is named entry rather than audit so it does not shadow the
+// internal/audit package this function now calls into.
+func (s *ChangeService) recordAudit(ctx context.Context, entry *state.Audit) {
+	if err := audit.Record(ctx, s.store, entry); err != nil {
 		log.Warn("audit write failed",
-			"run_id", audit.RunID,
-			"action", audit.Action,
-			"audit_id", audit.ID,
+			"run_id", entry.RunID,
+			"action", entry.Action,
+			"audit_id", entry.ID,
 			"error", err)
 	}
 }

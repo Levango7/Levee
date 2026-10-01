@@ -22,14 +22,15 @@ import (
 // ErrDuplicateTarget.
 const sqliteUpsertTarget = `INSERT INTO targets
 	(id, hostname, port, channel_type, credential_ref, labels, group_id,
-	 status, reachable, last_checked_at, created_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	 status, reachable, last_checked_at, created_at, tenant_id)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		hostname=excluded.hostname, port=excluded.port,
 		channel_type=excluded.channel_type, credential_ref=excluded.credential_ref,
 		labels=excluded.labels, group_id=excluded.group_id,
 		status=excluded.status, reachable=excluded.reachable,
-		last_checked_at=excluded.last_checked_at`
+		last_checked_at=excluded.last_checked_at,
+		tenant_id=excluded.tenant_id`
 
 func encodeLabels(labels map[string]string) (string, error) {
 	if labels == nil {
@@ -58,9 +59,9 @@ func (s *SQLiteStore) UpsertInventoryGroup(ctx context.Context, g *InventoryGrou
 		g.CreatedAt = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO inventory_groups (id, name, parent_id, created_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent_id=excluded.parent_id`,
-		g.ID, g.Name, g.ParentID, g.CreatedAt)
+		`INSERT INTO inventory_groups (id, name, parent_id, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent_id=excluded.parent_id, tenant_id=excluded.tenant_id`,
+		g.ID, g.Name, g.ParentID, g.CreatedAt, g.TenantID)
 	if err != nil {
 		return fmt.Errorf("state: upsert inventory group: %w", err)
 	}
@@ -69,10 +70,10 @@ func (s *SQLiteStore) UpsertInventoryGroup(ctx context.Context, g *InventoryGrou
 
 func (s *SQLiteStore) GetInventoryGroup(ctx context.Context, id string) (*InventoryGroup, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, parent_id, created_at FROM inventory_groups WHERE id = ?`, id)
+		`SELECT id, name, parent_id, created_at, tenant_id FROM inventory_groups WHERE id = ?`, id)
 	g := &InventoryGroup{}
 	var parent sql.NullString
-	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt); err != nil {
+	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt, &g.TenantID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -84,10 +85,10 @@ func (s *SQLiteStore) GetInventoryGroup(ctx context.Context, id string) (*Invent
 
 func (s *SQLiteStore) GetInventoryGroupByName(ctx context.Context, name string) (*InventoryGroup, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, parent_id, created_at FROM inventory_groups WHERE name = ?`, name)
+		`SELECT id, name, parent_id, created_at, tenant_id FROM inventory_groups WHERE name = ?`, name)
 	g := &InventoryGroup{}
 	var parent sql.NullString
-	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt); err != nil {
+	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt, &g.TenantID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -99,7 +100,7 @@ func (s *SQLiteStore) GetInventoryGroupByName(ctx context.Context, name string) 
 
 func (s *SQLiteStore) ListInventoryGroups(ctx context.Context) ([]*InventoryGroup, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, parent_id, created_at FROM inventory_groups ORDER BY name`)
+		`SELECT id, name, parent_id, created_at, tenant_id FROM inventory_groups ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("state: list inventory groups: %w", err)
 	}
@@ -109,7 +110,7 @@ func (s *SQLiteStore) ListInventoryGroups(ctx context.Context) ([]*InventoryGrou
 	for rows.Next() {
 		g := &InventoryGroup{}
 		var parent sql.NullString
-		if err := rows.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt, &g.TenantID); err != nil {
 			return nil, fmt.Errorf("state: list inventory groups scan: %w", err)
 		}
 		g.ParentID = parent.String
@@ -146,7 +147,7 @@ func (s *SQLiteStore) UpsertTarget(ctx context.Context, t *Target) error {
 	}
 	_, err = s.db.ExecContext(ctx, sqliteUpsertTarget,
 		t.ID, t.Hostname, t.Port, t.ChannelType, t.CredentialRef, labels,
-		groupID, t.Status, t.Reachable, lastChecked, t.CreatedAt)
+		groupID, t.Status, t.Reachable, lastChecked, t.CreatedAt, t.TenantID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: targets.hostname") {
 			return fmt.Errorf("state: upsert target %q: %w (%s:%d)", t.ID, ErrDuplicateTarget, t.Hostname, t.Port)
@@ -162,7 +163,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var groupID sql.NullString
 	var lastChecked sql.NullTime
 	if err := row.Scan(&t.ID, &t.Hostname, &t.Port, &t.ChannelType, &t.CredentialRef,
-		&labels, &groupID, &t.Status, &t.Reachable, &lastChecked, &t.CreatedAt); err != nil {
+		&labels, &groupID, &t.Status, &t.Reachable, &lastChecked, &t.CreatedAt, &t.TenantID); err != nil {
 		return nil, err
 	}
 	var derr error
@@ -178,7 +179,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 }
 
 const sqliteTargetColumns = `id, hostname, port, channel_type, credential_ref,
-	labels, group_id, status, reachable, last_checked_at, created_at`
+	labels, group_id, status, reachable, last_checked_at, created_at, tenant_id`
 
 func (s *SQLiteStore) GetTarget(ctx context.Context, id string) (*Target, error) {
 	row := s.db.QueryRowContext(ctx,
@@ -220,6 +221,12 @@ func (s *SQLiteStore) ListTargets(ctx context.Context, filter TargetFilter) ([]*
 	for k, v := range filter.Labels {
 		clauses = append(clauses, fmt.Sprintf("json_extract(labels, '$.%s') = ?", k))
 		args = append(args, v)
+	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = ?")
+		args = append(args, filter.TenantID)
 	}
 
 	q := `SELECT ` + sqliteTargetColumns + ` FROM targets`

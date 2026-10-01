@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -82,7 +83,7 @@ func runCancel(cmd *cobra.Command, args []string) error {
 	}
 
 	// 5. Record an audit entry.
-	audit := &state.Audit{
+	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     cancelOptRunID,
 		Action:    "cancel",
@@ -91,7 +92,7 @@ func runCancel(cmd *cobra.Command, args []string) error {
 		Result:    "success",
 		Timestamp: now,
 	}
-	if err := store.CreateAudit(ctx, audit); err != nil {
+	if err := audit.Record(ctx, store, entry); err != nil {
 		// Audit write failure is observability-only: the state transition
 		// has already been persisted, so we log and continue.
 		fmt.Fprintf(os.Stderr, "warning: failed to write cancel audit: %v\n", err)

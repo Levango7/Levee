@@ -22,7 +22,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1039,8 +1038,8 @@ func execDestructiveRestore(ctx context.Context, db *sql.DB, stmts, tables []str
 			return fmt.Errorf("backup: re-enable triggers on %q: %w", t, err)
 		}
 	}
-	if slices.Contains(tables, "trace") {
-		if err := verifyWormTriggers(ctx, tx); err != nil {
+	for _, t := range tables {
+		if err := verifyWormTriggers(ctx, tx, t); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -1051,21 +1050,34 @@ func execDestructiveRestore(ctx context.Context, db *sql.DB, stmts, tables []str
 	return nil
 }
 
-// wormTriggerNames are the append-only guards the destructive restore path
-// must provably leave in place before committing.
-var wormTriggerNames = []string{"worm_prevent_trace_update", "worm_prevent_trace_delete"}
+// wormTriggersByTable lists the append-only guards the destructive restore
+// path must provably leave in place before committing, keyed by table. trace
+// has chained WORM records; audit joined it at schema v7 with its own global
+// chain, so a restore that reinstates one but not the other would silently
+// downgrade the newer control back to no control at all.
+var wormTriggersByTable = map[string][]string{
+	"trace": {"worm_prevent_trace_update", "worm_prevent_trace_delete"},
+	"audit": {"worm_prevent_audit_update", "worm_prevent_audit_delete"},
+}
 
-// verifyWormTriggers fails unless every WORM trigger is present on the
-// public.trace table. Called inside the restore transaction, so a failure
-// rolls the whole restore back.
-func verifyWormTriggers(ctx context.Context, q pgQuerier) error {
+// verifyWormTriggers fails unless every WORM trigger guarding the named table
+// is present. Called inside the restore transaction, so a failure rolls the
+// whole restore back rather than committing a database whose append-only
+// evidence is unprotected.
+func verifyWormTriggers(ctx context.Context, q pgQuerier, table string) error {
+	want, guarded := wormTriggersByTable[table]
+	if !guarded {
+		return nil
+	}
+	// #nosec G201 -- table comes from the catalog-driven restore list, never
+	// from user input, and is bound as a parameter rather than interpolated.
 	rows, err := q.QueryContext(ctx, `SELECT t.tgname
 FROM pg_trigger t
 JOIN pg_class c ON c.oid = t.tgrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'public' AND c.relname = 'trace' AND NOT t.tgisinternal`)
+WHERE n.nspname = 'public' AND c.relname = $1 AND NOT t.tgisinternal`, table)
 	if err != nil {
-		return fmt.Errorf("backup: list trace triggers: %w", err)
+		return fmt.Errorf("backup: list %s triggers: %w", table, err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -1078,11 +1090,11 @@ WHERE n.nspname = 'public' AND c.relname = 'trace' AND NOT t.tgisinternal`)
 		found[name] = true
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("backup: list trace triggers: %w", err)
+		return fmt.Errorf("backup: list %s triggers: %w", table, err)
 	}
-	for _, want := range wormTriggerNames {
-		if !found[want] {
-			return fmt.Errorf("backup: WORM trigger %q missing on trace after restore; refusing to commit", want)
+	for _, name := range want {
+		if !found[name] {
+			return fmt.Errorf("backup: WORM trigger %q missing on %s after restore; refusing to commit", name, table)
 		}
 	}
 	return nil

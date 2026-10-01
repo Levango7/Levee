@@ -25,6 +25,7 @@ import (
 type Config struct {
 	Server     ServerConfig     `json:"server"     mapstructure:"server"`
 	Auth       AuthConfig       `json:"auth"       mapstructure:"auth"`
+	Tenant     TenantConfig     `json:"tenant"     mapstructure:"tenant"`
 	Database   DatabaseConfig   `json:"database"   mapstructure:"database"`
 	Log        LogConfig        `json:"log"        mapstructure:"log"`
 	Executor   ExecutorConfig   `json:"executor"   mapstructure:"executor"`
@@ -66,6 +67,24 @@ type DatabaseConfig struct {
 type AuthConfig struct {
 	OIDC   AuthOIDCConfig   `json:"oidc"   mapstructure:"oidc"`
 	GitHub AuthGitHubConfig `json:"github" mapstructure:"github"`
+}
+
+// TenantConfig controls multi-tenant isolation.
+//
+// DEFAULT IS OFF, and that default is load-bearing: with it off the gateway
+// performs no tenant resolution at all and every row belongs to
+// state.DefaultTenantID, so an existing single-tenant deployment behaves
+// exactly as it did before tenant_id existed.
+//
+// Turning it on is a deliberate, reviewed act. When enabled, a request whose
+// credential carries no tenant is REFUSED rather than defaulted — a
+// configuration mistake surfaces as a failed login, not as a silent collapse
+// of every tenant into one. Startup also refuses to enable isolation unless at
+// least one credential is bound to a tenant, so a half-configured deployment
+// fails to boot rather than serving an unisolated API.
+type TenantConfig struct {
+	// Enabled turns on per-request tenant resolution and isolation.
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
 }
 
 // AuthGitHubConfig configures the GitHub OAuth login flow. GitHub is not an
@@ -120,6 +139,11 @@ type AuthOIDCConfig struct {
 	// RoleClaim names the token claim holding the user's roles. Empty
 	// disables role extraction (roles pass as empty).
 	RoleClaim string `json:"role_claim" mapstructure:"role_claim"`
+	// TenantClaim names the token claim holding the tenant the caller acts
+	// for. It is read from the VERIFIED token. Required in practice when
+	// tenant.enabled is true and OIDC is the identity source: a token with no
+	// value for this claim carries no tenant and is refused.
+	TenantClaim string `json:"tenant_claim" mapstructure:"tenant_claim"`
 	// RoleMap translates claim roles into LEVEE roles.
 	RoleMap map[string]string `json:"role_map" mapstructure:"role_map"`
 }
@@ -674,6 +698,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.oidc.audience", "")
 	v.SetDefault("auth.oidc.username_claim", "preferred_username")
 	v.SetDefault("auth.oidc.role_claim", "")
+	v.SetDefault("auth.oidc.tenant_claim", "")
+	// Multi-tenancy is OFF by default. See TenantConfig: the default keeps an
+	// existing single-tenant deployment byte-for-byte unaffected.
+	v.SetDefault("tenant.enabled", false)
 	v.SetDefault("auth.oidc.role_map", map[string]string{})
 
 	// Auth.GitHub (disabled by default)
@@ -778,9 +806,10 @@ func allKeys() []string {
 		"tracing.enabled", "tracing.exporter", "tracing.endpoint",
 		"auth.oidc.enabled", "auth.oidc.issuer_url", "auth.oidc.client_id",
 		"auth.oidc.audience", "auth.oidc.username_claim", "auth.oidc.role_claim",
-		"auth.oidc.role_map",
+		"auth.oidc.role_map", "auth.oidc.tenant_claim",
 		"auth.github.enabled", "auth.github.client_id", "auth.github.client_secret",
 		"auth.github.org", "auth.github.session_secret", "auth.github.team_role_map",
+		"tenant.enabled",
 	}
 }
 

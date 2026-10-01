@@ -15,9 +15,19 @@ LEVEE 是单二进制程序，按角色拆分为三类常驻进程，可按需�
 | 告警网关 | `levee alert serve` | 接收 Prometheus / 自定义 webhook 告警，去重/聚合/静默 | `:9095` |
 
 - **单机部署**：一个 `levee serve`（SQLite 存储）+ 一个 `levee web` 即可满足大多数场景；需要告警接入时再加 `levee alert serve`。
-- **集群部署**：多个 `levee serve` 节点共享一个 PostgreSQL 存储后端（`--cluster`）。**当前集群协同仅限共享存储层**：数据一致性 + 咨询锁（advisory lock）已具备；节点成员注册为进程内状态，**尚无自动故障转移与跨节点调度**。`--cluster` 启动时会输出告警提示，请据此评估是否满足你的可用性要求。
+- **集群部署**：多个 `levee serve` 节点共享一个 PostgreSQL 存储后端（`--cluster`）。集群协同分四层，均已接线：
+  - **持久化成员注册**：节点心跳写入 PG `cluster_nodes` 表（含 stale 检测），**不是进程内状态**（`internal/cluster/pg_registry.go`）。
+  - **leader 选举 + 租约式分布式锁**：选举规则为「优先 `role=master` 且 `status=active` 的最小 ID，否则回退到最小 ID 的 active worker」（`internal/cluster/node.go` 的 `ElectLeader`）；锁带租约、过期可抢占。
+  - **执行围栏与故障接管**：运行中的变更持执行租约（`--cluster-exec-lease-ttl`），执行节点崩溃后由 leader 接管循环（`--cluster-takeover-interval`）把其运行中变更收敛到 `interrupted` 终态，**不重跑副作用**（审计留痕，需再驱动用 `RetryChange`）。
+  - **跨节点调度**：leader 把已批准 run 分派给空闲 worker 节点（`--cluster-dispatch-interval` / `--cluster-dispatch-worker-capacity` / `--cluster-dispatch-claim-timeout`），worker 节点在本机执行。
+  后两层是 **leader-only 循环且需要 `--engine-enabled`**；把对应间隔设为 `<= 0` 可单独关闭该循环（关闭接管循环时**执行围栏仍然生效**）。`--cluster` 启动时会在日志中打印一行协同能力摘要（`cluster coordination: shared storage, membership, locking; ...`）。
 
 分布式执行 Agent（`levee agent start`）为独立常驻进程，注册到 master 节点承担任务执行，见 [cli-reference.md 第20章](cli-reference.md)。
+
+> **告警摄入有两条路径，不要混用。** `levee serve` 内部也注册了 gRPC `AlertService`，但它以
+> **nil gateway** 构造（`cmd_serve.go` 的 `grpc.NewAlertService(nil, ...)`）：`ReceiveAlert` 仍会接受告警，
+> 但只写入**内存 ring** 并广播给订阅者——**不落库、不套用静默规则、进程重启即丢**。
+> 需要持久化、去重、聚合与静默，请部署 `levee alert serve`（`:9095`），它构造的是完整的 `AlertGateway`。
 
 ## 2. 前置要求
 

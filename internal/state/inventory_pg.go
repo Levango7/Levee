@@ -20,9 +20,9 @@ func (s *PGStore) UpsertInventoryGroup(ctx context.Context, g *InventoryGroup) e
 		g.CreatedAt = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO inventory_groups (id, name, parent_id, created_at) VALUES ($1, $2, $3, $4)
-		 ON CONFLICT(id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id`,
-		g.ID, g.Name, g.ParentID, g.CreatedAt)
+		`INSERT INTO inventory_groups (id, name, parent_id, created_at, tenant_id) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT(id) DO UPDATE SET name = EXCLUDED.name, parent_id = EXCLUDED.parent_id, tenant_id = EXCLUDED.tenant_id`,
+		g.ID, g.Name, g.ParentID, g.CreatedAt, g.TenantID)
 	if err != nil {
 		return fmt.Errorf("state: upsert inventory group: %w", err)
 	}
@@ -31,10 +31,10 @@ func (s *PGStore) UpsertInventoryGroup(ctx context.Context, g *InventoryGroup) e
 
 func (s *PGStore) GetInventoryGroup(ctx context.Context, id string) (*InventoryGroup, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, parent_id, created_at FROM inventory_groups WHERE id = $1`, id)
+		`SELECT id, name, parent_id, created_at, tenant_id FROM inventory_groups WHERE id = $1`, id)
 	g := &InventoryGroup{}
 	var parent sql.NullString
-	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt); err != nil {
+	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt, &g.TenantID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -46,10 +46,10 @@ func (s *PGStore) GetInventoryGroup(ctx context.Context, id string) (*InventoryG
 
 func (s *PGStore) GetInventoryGroupByName(ctx context.Context, name string) (*InventoryGroup, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, parent_id, created_at FROM inventory_groups WHERE name = $1`, name)
+		`SELECT id, name, parent_id, created_at, tenant_id FROM inventory_groups WHERE name = $1`, name)
 	g := &InventoryGroup{}
 	var parent sql.NullString
-	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt); err != nil {
+	if err := row.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt, &g.TenantID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -61,7 +61,7 @@ func (s *PGStore) GetInventoryGroupByName(ctx context.Context, name string) (*In
 
 func (s *PGStore) ListInventoryGroups(ctx context.Context) ([]*InventoryGroup, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, parent_id, created_at FROM inventory_groups ORDER BY name`)
+		`SELECT id, name, parent_id, created_at, tenant_id FROM inventory_groups ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("state: list inventory groups: %w", err)
 	}
@@ -71,7 +71,7 @@ func (s *PGStore) ListInventoryGroups(ctx context.Context) ([]*InventoryGroup, e
 	for rows.Next() {
 		g := &InventoryGroup{}
 		var parent sql.NullString
-		if err := rows.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &parent, &g.CreatedAt, &g.TenantID); err != nil {
 			return nil, fmt.Errorf("state: list inventory groups scan: %w", err)
 		}
 		g.ParentID = parent.String
@@ -90,14 +90,14 @@ func (s *PGStore) DeleteInventoryGroup(ctx context.Context, id string) error {
 
 const pgUpsertTarget = `INSERT INTO targets
 	(id, hostname, port, channel_type, credential_ref, labels, group_id,
-	 status, reachable, last_checked_at, created_at)
-	VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+	 status, reachable, last_checked_at, created_at, tenant_id)
+	VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)
 	ON CONFLICT(id) DO UPDATE SET
 		hostname = EXCLUDED.hostname, port = EXCLUDED.port,
 		channel_type = EXCLUDED.channel_type, credential_ref = EXCLUDED.credential_ref,
 		labels = EXCLUDED.labels, group_id = EXCLUDED.group_id,
 		status = EXCLUDED.status, reachable = EXCLUDED.reachable,
-		last_checked_at = EXCLUDED.last_checked_at`
+		last_checked_at = EXCLUDED.last_checked_at, tenant_id = EXCLUDED.tenant_id`
 
 func (s *PGStore) UpsertTarget(ctx context.Context, t *Target) error {
 	if t.CreatedAt.IsZero() {
@@ -118,7 +118,7 @@ func (s *PGStore) UpsertTarget(ctx context.Context, t *Target) error {
 	}
 	_, err = s.db.ExecContext(ctx, pgUpsertTarget,
 		t.ID, t.Hostname, t.Port, t.ChannelType, t.CredentialRef, labels,
-		groupID, t.Status, t.Reachable, lastChecked, t.CreatedAt)
+		groupID, t.Status, t.Reachable, lastChecked, t.CreatedAt, t.TenantID)
 	if err != nil {
 		if strings.Contains(err.Error(), "targets_hostname_port_key") ||
 			strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
@@ -135,7 +135,7 @@ func scanTargetPG(row interface{ Scan(...any) error }) (*Target, error) {
 	var groupID sql.NullString
 	var lastChecked sql.NullTime
 	if err := row.Scan(&t.ID, &t.Hostname, &t.Port, &t.ChannelType, &t.CredentialRef,
-		&labels, &groupID, &t.Status, &t.Reachable, &lastChecked, &t.CreatedAt); err != nil {
+		&labels, &groupID, &t.Status, &t.Reachable, &lastChecked, &t.CreatedAt, &t.TenantID); err != nil {
 		return nil, err
 	}
 	var derr error
@@ -151,7 +151,7 @@ func scanTargetPG(row interface{ Scan(...any) error }) (*Target, error) {
 }
 
 const pgTargetColumns = `id, hostname, port, channel_type, credential_ref,
-	labels::text, group_id, status, reachable, last_checked_at, created_at`
+	labels::text, group_id, status, reachable, last_checked_at, created_at, tenant_id`
 
 func (s *PGStore) GetTarget(ctx context.Context, id string) (*Target, error) {
 	row := s.db.QueryRowContext(ctx,
@@ -197,6 +197,11 @@ func (s *PGStore) ListTargets(ctx context.Context, filter TargetFilter) ([]*Targ
 	for k, v := range filter.Labels {
 		pair, _ := json.Marshal(map[string]string{k: v})
 		clauses = append(clauses, "labels @> "+nextArg(string(pair))+"::jsonb")
+	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = "+nextArg(filter.TenantID))
 	}
 
 	q := `SELECT ` + pgTargetColumns + ` FROM targets`

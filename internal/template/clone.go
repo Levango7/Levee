@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
@@ -249,7 +250,7 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 		log.WarnCtx(ctx, "clone audit id generation failed; audit entry skipped",
 			"original_run_id", runID, "cloned_run_id", clonedRunID, "actor", actor, "err", auditErr)
 	} else {
-		audit := &state.Audit{
+		entry := &state.Audit{
 			ID:        auditID,
 			RunID:     clonedRunID,
 			Action:    ActionClone,
@@ -258,7 +259,7 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 			Result:    ResultSuccess,
 			Timestamp: now,
 		}
-		if err := c.store.CreateAudit(ctx, audit); err != nil {
+		if err := audit.Record(ctx, c.store, entry); err != nil {
 			// Audit write failure is observability-only: the clone has already
 			// been persisted, so we log and continue rather than undoing it.
 			log.WarnCtx(ctx, "clone audit write failed",

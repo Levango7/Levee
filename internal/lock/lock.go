@@ -38,6 +38,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
@@ -575,7 +576,7 @@ func (m *LockManager) recordAudit(ctx context.Context, target, oldOwner, newOwne
 			"target", target, "old_owner", oldOwner, "new_owner", newOwner, "err", err)
 		return
 	}
-	audit := &state.Audit{
+	entry := &state.Audit{
 		ID:        id,
 		RunID:     newOwner,
 		Action:    "lock",
@@ -584,7 +585,7 @@ func (m *LockManager) recordAudit(ctx context.Context, target, oldOwner, newOwne
 		Result:    "success",
 		Timestamp: time.Now().UTC(),
 	}
-	if err := m.state.CreateAudit(ctx, audit); err != nil {
+	if err := audit.Record(ctx, m.state, entry); err != nil {
 		log.WarnCtx(ctx, "lock audit write failed",
 			"target", target, "old_owner", oldOwner, "new_owner", newOwner, "err", err)
 		return

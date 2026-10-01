@@ -40,6 +40,14 @@ type OIDCConfig struct {
 	// RoleClaim optionally names a claim carrying the caller's roles or
 	// groups (string, []string, or comma-separated string).
 	RoleClaim string
+	// TenantClaim optionally names a claim carrying the tenant the token acts
+	// for. It is read from the VERIFIED token, so it is exactly as
+	// trustworthy as the subject — which is what distinguishes it from a
+	// client-set header. Leave empty for a single-tenant deployment. In a
+	// multi-tenant deployment, a token with no value for this claim carries
+	// no tenant and is refused downstream by the tenant resolver rather than
+	// being guessed at.
+	TenantClaim string
 	// RoleMap optionally maps IdP role values to LEVEE role names. Roles
 	// not present in the map pass through unchanged.
 	RoleMap map[string]string
@@ -55,6 +63,9 @@ type Identity struct {
 	Subject string
 	// Roles carries the (optionally mapped) role values, possibly empty.
 	Roles []string
+	// Tenant is the tenant the verified token acts for, or "" when no tenant
+	// claim is configured or the token carries none.
+	Tenant string
 	// Issuer is the token's iss claim, as verified against the provider.
 	Issuer string
 	// Expiry is the token's exp claim.
@@ -173,6 +184,7 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (*Identity, error) {
 	return &Identity{
 		Subject: subject,
 		Roles:   mapRoles(extractRoles(claims, v.cfg.RoleClaim), v.cfg.RoleMap),
+		Tenant:  claimString(claims, v.cfg.TenantClaim),
 		Issuer:  tok.Issuer,
 		Expiry:  tok.Expiry,
 	}, nil

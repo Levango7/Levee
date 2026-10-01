@@ -33,6 +33,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -1289,6 +1290,20 @@ func (gw *Gateway) handleAuditTraces(w http.ResponseWriter, r *http.Request) {
 	writeProto(w, resp)
 }
 
+// handleAuditVerify serves GET /audit/verify (the RESTful path; the
+// /api/v1/AuditService/VerifyHashChain form still returns the proto shape
+// alone).
+//
+// It returns the per-run TRACE chain result exactly as the gRPC method produces
+// it, plus the GLOBAL audit chain under "auditChain". The two are merged into a
+// single top-level "valid" because an operator asking "is the audit log
+// trustworthy" wants one answer, not two they have to combine by hand.
+//
+// The audit chain is not part of VerifyHashChainResponse because that message
+// is generated from levee.proto, which cannot be regenerated in this
+// environment (protoc is unavailable) and whose fields are all run-scoped —
+// forcing a single global chain into the per-run RunVerification list would
+// misreport what it covers.
 func (gw *Gateway) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
 	svc := gw.audit
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
@@ -1305,7 +1320,120 @@ func (gw *Gateway) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
 		writeGRPCError(w, err)
 		return
 	}
-	writeProto(w, resp)
+
+	// Marshal the proto first, then splice the audit chain in as raw JSON, so
+	// no protojson field is re-encoded (int64 counts would round-trip through
+	// float64 otherwise).
+	out, err := protojson.Marshal(resp)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
+		return
+	}
+	body := map[string]json.RawMessage{}
+	if err := json.Unmarshal(out, &body); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "decode error: "+err.Error())
+		return
+	}
+
+	if svc.store == nil {
+		writeJSONError(w, http.StatusInternalServerError, "store not configured")
+		return
+	}
+	builder, err := audit.NewAuditChainBuilder(svc.store)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "create audit chain builder: "+err.Error())
+		return
+	}
+	result, err := builder.Verify(ctx)
+	if err != nil {
+		writeGRPCError(w, status.Errorf(grpccodes.Internal, "verify audit chain: %v", err))
+		return
+	}
+
+	chain, err := json.Marshal(auditChainResultBody(result))
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
+		return
+	}
+	body["auditChain"] = chain
+
+	// Fold the audit chain into the top-level verdict. The trace-chain
+	// fields are left untouched: a broken trace chain is a fact about a run,
+	// and overwriting it with an audit-chain id would lose that.
+	if !result.Valid {
+		if resp.Valid {
+			body["valid"] = json.RawMessage("false")
+		}
+		if len(result.Failures) > 0 && resp.BrokenEntryId == "" {
+			f := result.Failures[0]
+			body["brokenEntryId"] = mustMarshalJSON(f.AuditID)
+			body["brokenReason"] = mustMarshalJSON("audit_chain:" + f.Type.String())
+		}
+	}
+
+	merged, err := json.Marshal(body)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(merged)
+}
+
+// auditChainFailureBody is the JSON shape of one broken audit row.
+type auditChainFailureBody struct {
+	AuditID      string `json:"auditId"`
+	Index        int    `json:"index"`
+	Type         string `json:"type"`
+	Expected     string `json:"expected"`
+	Actual       string `json:"actual"`
+	PrevExpected string `json:"prevExpected"`
+	PrevActual   string `json:"prevActual"`
+}
+
+// auditChainBody is the JSON shape of the "auditChain" member of the verify
+// response. Failures is always a non-nil array so clients can iterate it
+// without a null check.
+type auditChainBody struct {
+	Valid            bool                    `json:"valid"`
+	EntriesVerified  int                     `json:"entriesVerified"`
+	Unsealed         int                     `json:"unsealed"`
+	FirstFailureType string                  `json:"firstFailureType,omitempty"`
+	Failures         []auditChainFailureBody `json:"failures"`
+}
+
+// auditChainResultBody converts a verification result into its JSON shape.
+func auditChainResultBody(r *audit.AuditChainResult) auditChainBody {
+	out := auditChainBody{
+		Valid:           r.Valid,
+		EntriesVerified: r.Count,
+		Unsealed:        r.Unsealed,
+		Failures:        []auditChainFailureBody{},
+	}
+	for _, f := range r.Failures {
+		if out.FirstFailureType == "" {
+			out.FirstFailureType = f.Type.String()
+		}
+		out.Failures = append(out.Failures, auditChainFailureBody{
+			AuditID:      f.AuditID,
+			Index:        f.Index,
+			Type:         f.Type.String(),
+			Expected:     f.Expected,
+			Actual:       f.Actual,
+			PrevExpected: f.PrevExpected,
+			PrevActual:   f.PrevActual,
+		})
+	}
+	return out
+}
+
+func mustMarshalJSON(v string) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return b
 }
 
 // -----------------------------------------------------------------------
@@ -1392,7 +1520,17 @@ func (gw *Gateway) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-	token, err := gw.cfg.Sessions.Issue(id.Login, id.Roles, "github")
+	// GitHub is an identity provider, not a tenancy provider: an OAuth
+	// exchange proves WHO signed in and nothing about which tenant they belong
+	// to. Letting the browser name its own tenant here would make isolation
+	// self-asserted, so the session is minted unbound and the tenant resolver
+	// refuses it while multi-tenancy is enabled.
+	//
+	// A multi-tenant deployment that wants GitHub logins must either
+	// front them with a tenant-aware IdP (configure auth.oidc.tenant_claim)
+	// or use named bearer tokens with auth_tokens[].tenant. Silently guessing
+	// a tenant here would be the exact failure this design exists to prevent.
+	token, err := gw.cfg.Sessions.Issue(id.Login, id.Roles, "github", "")
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "issue session token")
 		return
