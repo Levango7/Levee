@@ -243,7 +243,12 @@ type Service struct {
 	// return quickly; errors are the observer's to handle (they are
 	// ignored by the service so a failing side channel can never fail the
 	// decision itself).
-	onDecision func(a *Approval, action string)
+	//
+	// A SLICE, not a single slot: the slot used to be last-write-wins, and
+	// serve gives it to the Jira mirror — wiring a second mirror (ChatOps
+	// approval bridge) would have SILENTLY DISPLACED Jira. Wiring happens
+	// at construction time (single-threaded), so the slice needs no lock.
+	onDecision []DecisionObserver
 }
 
 // DecisionObserver is the signature of the optional decision hook
@@ -251,11 +256,17 @@ type Service struct {
 type DecisionObserver func(a *Approval, action string)
 
 // WithDecisionObserver installs a post-decision observer on the service.
-// Pass nil to remove a previously installed observer. The observer fires
-// only after the decision has been durably recorded (UpdateIfPending
-// succeeded), never on speculative reads or failed attempts.
+// Observers are FAN-OUT — every install is kept, none displaces a
+// previously installed one. Pass nil to remove every installed observer.
+// The observers fire only after the decision has been durably recorded
+// (UpdateIfPending succeeded), never on speculative reads or failed
+// attempts.
 func (s *Service) WithDecisionObserver(fn DecisionObserver) *Service {
-	s.onDecision = fn
+	if fn == nil {
+		s.onDecision = nil
+		return s
+	}
+	s.onDecision = append(s.onDecision, fn)
 	return s
 }
 
@@ -412,8 +423,13 @@ func (s *Service) decide(ctx context.Context, id string, approver string, action
 			log.InfoCtx(ctx, "approval decision recorded",
 				"id", id, "approver", approver, "action", action, "status", a.Status,
 				"attempt", attempt+1)
-			if s.onDecision != nil {
-				s.onDecision(a, action)
+			if len(s.onDecision) > 0 {
+				for _, fn := range s.onDecision {
+					func() {
+						defer func() { _ = recover() }()
+						fn(a, action)
+					}()
+				}
 			}
 			return nil
 		}

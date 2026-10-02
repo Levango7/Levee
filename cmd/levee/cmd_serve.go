@@ -382,17 +382,36 @@ func newServeDiagEngine() (*diagnosis.DiagEngine, error) {
 	return diagnosis.NewDiagEngine(cfg), nil
 }
 
-// newServeConvEngine builds the conversation engine for serve mode with the
-// built-in recommend engine wired, mirroring the `levee converse` defaults so
-// /recommend works out of the box over the API.
 // newServeConvEngine builds the conversation engine for the serve command.
 // changeSvc is wired as the recommendation→change bridge, so a confirmed
 // recommendation in the REST / IM / web conversation becomes a draft change in
 // the standard governance chain instead of a dead end. A nil changeSvc
-// (tests) degrades to the honest "nothing submitted" reply.
-func newServeConvEngine(changeSvc *grpc.ChangeService) *conversation.ConversationEngine {
+// (tests) degrades to the honest "nothing submitted" reply. The ai.llm
+// config section turns on the recommend engine's hybrid LLM mode; disabled
+// (default) the engine runs pure knowledge-base mode, and a construction
+// error degrades the same way with a loud warning (the same contract as
+// setupServeTracing).
+func newServeConvEngine(cfg *config.Config, changeSvc *grpc.ChangeService) *conversation.ConversationEngine {
+	var llmClient recommend.LLMClient
+	if cfg != nil && cfg.AI.LLM.Enabled {
+		client, err := recommend.NewLLMClient(recommend.LLMConfig{
+			Provider:    cfg.AI.LLM.Provider,
+			APIKey:      cfg.AI.LLM.APIKey,
+			Model:       cfg.AI.LLM.Model,
+			BaseURL:     cfg.AI.LLM.BaseURL,
+			MaxTokens:   cfg.AI.LLM.MaxTokens,
+			Temperature: cfg.AI.LLM.Temperature,
+			Timeout:     cfg.AI.LLM.Timeout,
+		})
+		if err != nil {
+			log.Warn("ai.llm client unavailable; recommend engine stays in knowledge-base mode", "error", err)
+		} else {
+			llmClient = client
+		}
+	}
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
-		Timeout: 30 * time.Second,
+		LLMClient: llmClient,
+		Timeout:   30 * time.Second,
 	})
 	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
 		Recommend:     recEngine,
@@ -910,7 +929,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
 	}
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
-	convEngine := newServeConvEngine(changeSvc)
+	convEngine := newServeConvEngine(cfg, changeSvc)
 	convSvc := grpc.NewConversationService(convEngine, slog.Default())
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the

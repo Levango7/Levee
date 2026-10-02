@@ -170,6 +170,15 @@ jobs:
         with:
           files: ./coverage.out
           fail_ci_if_error: false
+      # Benchmark smoke: every benchmark executes exactly once (no PG DSN
+      # here, so PG-backed ones skip like they do in the unit matrix). 121
+      # benchmarks existed with zero CI runs and a report pinned at v1.3.0 —
+      # a rotting benchmark (compile drift, a regression to a panic) failed
+      # nothing. `-run ^$` skips tests; `-benchtime=1x` bounds the run so it
+      # stays a liveness gate, not a measurement (numbers are a local job).
+      - name: benchmark smoke (each benchmark runs once)
+        if: matrix.os == 'ubuntu-latest'
+        run: go test -bench=. -benchtime=1x -run '^$' ./... -timeout 300s
 
   # ---------------------------------------------------------------------------
   # integration: tagged integration suite + e2e rollback drills + PostgreSQL-
