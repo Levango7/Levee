@@ -23,6 +23,12 @@
 *.vue text eol=lf
 *.css text eol=lf
 *.html text eol=lf
+# Every file type the frontend build consumes must be pinned too, or a
+# Windows checkout feeds the vite build CRLF bytes, its output hashes differ
+# from CI's, and the dist-freshness gate below fails for reasons that look
+# like nondeterminism. .svg was the live offender (public/favicon.svg is
+# copied verbatim into the bundle).
+*.svg text eol=lf
 
 # Windows batch scripts genuinely need CRLF.
 *.bat text eol=crlf

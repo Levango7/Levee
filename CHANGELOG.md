@@ -23,6 +23,7 @@
 
 ### 修复
 - **前端嵌入产物漂移：CI 第一次要求已提交的 `internal/web/dist` 与源码字节一致，并刷新了已经陈旧的产物**。Go 二进制内嵌的是**已提交**的 dist——它停在最后一次手工 `make web` 时的样子，实测 33 个产物中 19 个（18 个哈希名 + index.html）与同一份源码的全新构建对不上，生产二进制里的 UI 落后于仓库里的源码；而 CI 的 frontend 作业此前只构建不比对，漂移静默积累。修法两层：frontend 作业在构建后把 `web/dist` 拷入 `internal/web/dist` 并要求工作树零 diff、零未跟踪新文件（照抄 proto/docs regenerate check 的门禁形状）；同时随本 PR 提交刷新后的产物（node:20 构建——与 CI 的 node 版本一致，且实测 vite 对 node 20/26 输出逐字节相同，产物不随构建机漂移）。
+  **门禁第一次运行就抓到第二层问题：同一份源码，Windows 工作副本的构建产物与 CI 不同**——本机 `core.autocrlf=true` 且 `.gitattributes` 没覆盖 `.svg`（`public/favicon.svg` 被原样拷进 bundle），检出早于规则落地的源文件还带着 CRLF，view chunk 内容随行尾变化、哈希名全变；vendor chunk 来自 node_modules、不受检出影响，名字保持一致——这正好解释了漂移只发生在 view 层。处置：本 PR 的产物改用 `git archive`（导出恒为 LF）后在 node:20 容器内构建，与 CI 的检出形态对齐；`.gitattributes` 补上 `*.svg text eol=lf`，让 Windows 上的 `make web` 从此也能产出与 CI 字节一致的产物。
 - **CI 供应链加固：全部 action 按 commit SHA 固定 + 顶层最小权限 + 每个 job 显式超时**。此前 workflow 引用的是可移动的 major tag（`actions/checkout@v7`、`codecov/codecov-action@v7` 等），而 tag 可以被上游重指——一次上游账号失陷即可把任意代码塞进我们的 CI 并拿到仓库默认令牌。现在每个 action 都钉到 40 位 commit SHA 并保留可读的版本注释（`@3d3c42e5…  # v7`），使「升级」变成一次显式提交而非静默滑动。
   顶层加 `permissions: contents: read`：不写这一段时 workflow 继承仓库默认权限（通常是全 scope 读写），于是任何一个被投毒的第三方 action 步骤能拿到远超所需的权限；需要更多权限的作业（trivy 上传 SARIF）在 **job 级**单独放宽，权限面因此逐 job 可审。
   同时给每个 job 补 `timeout-minutes`（此前缺省为 GitHub 的 6 小时上限，一次挂死的作业会长时间占住 runner 并掩盖真实失败）。**未改任何门禁语义**——本次只收紧信任边界与资源边界。
