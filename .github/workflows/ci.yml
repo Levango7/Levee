@@ -74,9 +74,10 @@ jobs:
           args: --timeout 5m
 
   # ---------------------------------------------------------------------------
-  # frontend: type-check and build the Vue 3 web UI. The Go binary embeds the
-  # committed internal/web/dist assets, so this job guards the source that
-  # generates them even though the Go build itself does not run node.
+  # frontend: type-check and build the Vue 3 web UI, then require the committed
+  # internal/web/dist assets (embedded into the Go binary) to be byte-fresh
+  # against this exact source — same gate shape as the proto/docs regenerate
+  # checks.
   # ---------------------------------------------------------------------------
   frontend:
     name: frontend (vitest + vue-tsc + vite build)
@@ -98,6 +99,28 @@ jobs:
         run: npm run test
       - name: type-check + build
         run: npm run build
+      # The Go binary embeds the COMMITTED internal/web/dist, so a stale copy
+      # ships whatever the UI looked like at the last manual `make web` —
+      # found out the hard way: 19 of 34 committed assets no longer matched a
+      # fresh build of the same source. Rebuild the copy here and require the
+      # working tree to stay clean; a diff means "run make web and commit".
+      # Same gate shape as the proto/docs regenerate checks.
+      - name: verify committed dist is fresh
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -e
+          find internal/web/dist -mindepth 1 ! -name '.gitignore' -exec rm -rf {} +
+          cp -r web/dist/. internal/web/dist/
+          if ! git diff --exit-code -- internal/web/dist; then
+            echo "::error::internal/web/dist is stale against web/ — run 'make web' and commit the refreshed assets"
+            exit 1
+          fi
+          stale=$(git ls-files --others --exclude-standard -- internal/web/dist)
+          if [ -n "$stale" ]; then
+            echo "::error::internal/web/dist is missing committed files the fresh build produces (stale commit):"
+            echo "$stale"
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # test: race detector + coverage, uploads coverage to Codecov when
