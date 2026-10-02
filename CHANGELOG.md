@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [v1.14.0] - 2026-10-03 — 治理闭环收口 + 安全/新鲜度门禁 + AI 配置面
+
+本版把 v1.13.0 之后的 15 个 PR 一次收口：**治理闭环端到端为真**（审批绑定认证主体与配额、变更窗口真正强制、多租户从已验签凭据接线、两张审计表都带上生产路径真的会封的防篡改链）；**CI 补齐安全与新鲜度门禁**（action 按 SHA 固定、govulncheck 必过、gosec 改固定版本直跑、121 个 benchmark 冒烟、前端产物要求字节一致）；**"建了没人用"的面要么接上配置、要么按定位退役**（`ai.llm` 配置面默认关、rag/scheduler 退役、compat 去莠、观察者槽位扇出）；REST 网关双 URL 形状路由修复（前端带前缀的读不再全部 400）。无已知未闭缺陷；逐条明细见下方各节，策展版见 [docs/release-notes/v1.14.0.md](docs/release-notes/v1.14.0.md)。
+
 ### 新增
 
 - **`ai.llm` 配置面：推荐引擎的混合 LLM 模式第一次可由运维开启（README「运维无法开启」的缺口关闭）**。`recommend.NewLLMClient` 的 22 个调用点全在测试里，serve 与 converse 构造推荐引擎时都不传 `LLMClient`，`internal/config` 没有任何 llm 配置键——库完整且可达，产品不可用。新增 `internal/config` 的 `AI/LLM` 节（enabled/provider/api_key/model/base_url/max_tokens/temperature/timeout），`newServeConvEngine` 与 CLI 工厂都读它。**默认关且该默认承重**：不构造客户端，引擎走纯知识库路径，与引入本节之前逐字节一致；开启是显式动作，客户端构造失败降级回知识库模式并打 warn（与 `setupServeTracing` 同一契约），不挡守护进程启动；config 加载失败按普通错误返回（converse 拒绝启动而不是半配置运行）。CLI 工厂签名不变（测试的 var 替换点零改动），配置加载在工厂内、与其他命令同一 `loadConfigForCmd` 入口。`config.example.yaml` 同步示例段。
