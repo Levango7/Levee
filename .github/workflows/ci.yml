@@ -339,23 +339,32 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+      # gosec runs as a pinned-version Go program on the runner, not as the
+      # project's docker action. The docker image bundles the Go toolchain
+      # from its build day (golang:${GO_VERSION}-alpine at release time), so
+      # a go.mod whose `go` directive outgrows it (this PR: 1.26.0 → 1.26.6)
+      # sends go/packages' `go list` into a toolchain switch the container
+      # does not survive — observed as a silent kill mid-scan, twice, while
+      # `go run` of the same scanner version against the same tree completes
+      # with 0 issues. Here the scanner version stays pinned below while the
+      # toolchain floats with go-version above, exactly like govulncheck.
+      - name: install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
       - name: run gosec
-        uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3  # v2.28.0
-        with:
-          # G104 (unhandled errors) and G307 (defer file.Close) are noisy
-          # low-signal classes here; G501/G505/G601 have no hits today but
-          # guard future dependency drift. G402 is NOT excluded: TLS verify
-          # skips must stay visible (the single vault opt-in carries #nosec).
-          # G304 (file inclusion via variable): loading user/CLI-specified
-          # configs, templates, plugins and baselines is the product's shape
-          # — every hit is a legitimate loader; path-escape hardening is
-          # enforced where it matters (e.g. drift syncJSONDir rejects
-          # separator-bearing names). G115 (integer overflow conversion):
-          # hits are protobuf pagination/count casts (int<->int32 on bounded
-          # page values). Both classes carry 2026-09 full-triage evidence:
-          # all remaining findings are fixed (0o750/0o600 tightening) or
-          # individually annotated with justified #nosec reasons.
-          args: -exclude=G104,G115,G304,G307,G501,G505,G601 -exclude-dir=internal/grpc/pb -fmt=json -out=gosec-report.json ./...
+        # G104 (unhandled errors) and G307 (defer file.Close) are noisy
+        # low-signal classes here; G501/G505/G601 have no hits today but
+        # guard future dependency drift. G402 is NOT excluded: TLS verify
+        # skips must stay visible (the single vault opt-in carries #nosec).
+        # G304 (file inclusion via variable): loading user/CLI-specified
+        # configs, templates, plugins and baselines is the product's shape
+        # — every hit is a legitimate loader; path-escape hardening is
+        # enforced where it matters (e.g. drift syncJSONDir rejects
+        # separator-bearing names). G115 (integer overflow conversion):
+        # hits are protobuf pagination/count casts (int<->int32 on bounded
+        # page values). Both classes carry 2026-09 full-triage evidence:
+        # all remaining findings are fixed (0o750/0o600 tightening) or
+        # individually annotated with justified #nosec reasons.
+        run: $(go env GOPATH)/bin/gosec -exclude=G104,G115,G304,G307,G501,G505,G601 -exclude-dir=internal/grpc/pb -fmt=json -out=gosec-report.json ./...
       - name: upload report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
         with:
