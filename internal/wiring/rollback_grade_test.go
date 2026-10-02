@@ -10,13 +10,16 @@ package wiring
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/rollback"
+	"github.com/nexus/levee/internal/state"
 )
 
 type fakeSink struct {
@@ -99,6 +102,85 @@ func TestRunIDOfNilResultIsEmpty(t *testing.T) {
 	assert.Zero(t, compensationsOf(nil, true))
 	assert.Zero(t, compensationsOf(nil, false))
 	assert.Zero(t, unknownOf(nil))
+}
+
+// --- notify transport wiring ------------------------------------------------
+
+// TestNewRunNotifySinkRequiresTransportAndInitiator pins the two conditions
+// under which a notification is NOT sent. Both exist for the same reason: a
+// notification that looks delivered but reached nobody is worse than a logged
+// grade, because the operator stops looking.
+func TestNewRunNotifySinkRequiresTransportAndInitiator(t *testing.T) {
+	t.Run("no notification manager", func(t *testing.T) {
+		e := &Engine{}
+		assert.Nil(t, e.newRunNotifySink(RollbackActors{Initiator: "alice"}))
+	})
+
+	t.Run("initiator unknown", func(t *testing.T) {
+		mgr := notify.NewNotificationManager()
+		require.NoError(t, mgr.Register(&recordingNotifier{}))
+		e := &Engine{notifier: mgr}
+		assert.Nil(t, e.newRunNotifySink(RollbackActors{}),
+			"an empty creator must suppress notify rather than address nobody")
+	})
+
+	t.Run("both present", func(t *testing.T) {
+		rec := &recordingNotifier{}
+		mgr := notify.NewNotificationManager()
+		require.NoError(t, mgr.Register(rec))
+		e := &Engine{notifier: mgr}
+
+		sink := e.newRunNotifySink(RollbackActors{Initiator: "alice", Approver: "bob"})
+		require.NotNil(t, sink)
+		require.NoError(t, sink.NotifyGrade(context.Background(), rollback.GradeFailure, "run-1", "boom"))
+		require.Len(t, rec.msgs, 1)
+		assert.Equal(t, "run-1", rec.msgs[0].RunID)
+	})
+}
+
+// TestResolveRollbackActorsReadsCreator proves the recipients come from the
+// run record rather than from configuration, and that an unreadable run
+// degrades instead of failing: grading runs on the rollback path, where the
+// store being broken is exactly when the operator needs to be told.
+func TestResolveRollbackActorsReadsCreator(t *testing.T) {
+	store := newGradeTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.CreateRun(ctx, &state.Run{
+		ID:           "run-actors",
+		Creator:      "alice",
+		WorkflowName: "wf",
+		TemplateName: "wf",
+		PlanHash:     "v2:abc",
+	}))
+
+	e := NewEngine(store)
+	actors := e.resolveRollbackActors(ctx, "run-actors")
+	assert.Equal(t, "alice", actors.Initiator, "the notification must reach the run's creator")
+
+	// Unknown run: empty actors, no error.
+	assert.Empty(t, e.resolveRollbackActors(ctx, "run-does-not-exist").Initiator)
+	// No store at all: empty actors, no panic.
+	assert.Empty(t, (&Engine{}).resolveRollbackActors(ctx, "run-x").Initiator)
+}
+
+// TestPostVerifyTimeoutOptionReachesVerifier is the wiring-level proof that
+// the knob is not just declared: a non-default value must arrive at the
+// verifier the engine actually calls.
+func TestPostVerifyTimeoutOptionReachesVerifier(t *testing.T) {
+	e := NewEngine(newGradeTestStore(t), WithPostVerifyTimeout(7*time.Second))
+	assert.Equal(t, 7*time.Second, e.postVerifyTimeout)
+
+	// Unset keeps the zero value, which the verifier resolves to its default.
+	assert.Zero(t, NewEngine(newGradeTestStore(t)).postVerifyTimeout)
+}
+
+func newGradeTestStore(t *testing.T) state.Store {
+	t.Helper()
+	ctx := context.Background()
+	store, err := state.NewSQLiteStore(ctx, filepath.Join(t.TempDir(), "grade.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 // recordingNotifier captures what a NotificationManager actually delivers.

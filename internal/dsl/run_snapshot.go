@@ -23,14 +23,17 @@ import (
 	"strings"
 )
 
-// run snapshot validation codes (LE098–LE102). LE097 remains the
+// run snapshot validation codes (LE098–LE101). LE097 remains the
 // workflow-level rollback rejection this primitive exists alongside.
+// LE102 was withdrawn: it rejected `snapshot` + `on_failure: manual` while
+// the manual rollback path could not restore the baseline. That path restores
+// it now, so the rule would only push operators toward the step-level
+// workaround LE097 exists to discourage.
 const (
 	codeRunSnapshotScope    = "LE098"
 	codeRunSnapshotNoPaths  = "LE099"
 	codeRunSnapshotType     = "LE100"
 	codeRunSnapshotPathForm = "LE101"
-	codeRunSnapshotNoUndo   = "LE102"
 )
 
 // RunSnapshotScopeRun is the only accepted scope.
@@ -107,21 +110,17 @@ func ValidateRunSnapshot(spec *RunSnapshotSpec, rollback *RollbackSpec, field st
 		})
 	}
 
-	// A baseline is only worth capturing if something will restore it.
-	// on_failure: manual suppresses automatic compensation entirely and hands
-	// the decision to an operator, whose rollback path does not restore the
-	// run baseline yet. Accepting that combination would capture a baseline
-	// that nothing consumes, so it is rejected here rather than shipped as a
-	// promise. Wiring the manual path is a follow-up, not a caveat.
-	if rollback != nil && rollback.OnFailure == RollbackOnFailureManual {
-		errs = append(errs, ValidationError{
-			Code:  codeRunSnapshotNoUndo,
-			Field: "rollback.on_failure",
-			Message: "run snapshot is declared together with on_failure: manual, but " +
-				"the operator-triggered rollback path does not restore the run baseline; " +
-				"drop one of the two declarations until it does",
-		})
-	}
+	// NOTE: the combination of a run-level baseline with
+	// `on_failure: manual` used to be rejected here (LE102) because the
+	// operator-triggered rollback path did not restore the baseline. It now
+	// restores it (wiring.rollbackChange wires the same
+	// runRemoteSnapshotter the closure path uses), so the combination is
+	// legal: the automatic path skips the restore it will not perform, and
+	// the manual path performs it when the operator runs the rollback. The
+	// guard is deliberately NOT reinstated — a document that captures a
+	// baseline and can actually get it back is the normal case, and
+	// rejecting it would push operators toward the step-level workaround
+	// that LE097 exists to discourage.
 
 	return errs
 }

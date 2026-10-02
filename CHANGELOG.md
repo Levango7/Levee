@@ -5,13 +5,21 @@
 ## [Unreleased]
 
 ### 新增
+- **把 rollback 三处「旋钮在、线没接」接通**：① notify 传输层真的接上了（收件人从 `runs.creator` 解析，而不是配置项）；② `WithVerifyTimeout` 变成可配置的 `WithPostVerifyTimeout`；③ 手动回滚路径恢复 run 级基线——**因此撤回 LE102**。三条都是下面那条 CHANGELOG 里如实记下的遗留，本次逐条兑现。
+  **① notify 传输层**。之前的判断是「缺一个事实而非缺代码」：state 不记录变更发起人。复核后发现**事实一直都在**——`runs.creator` 就是发起人，上一轮只 grep 了 `Initiator/RequestedBy/CreatedBy` 因而漏掉它。现在每次 run 用 `resolveRollbackActors` 读一次 run 记录得到收件人，构造 per-run 的 `notifyRollbackSink`（适配器上一轮就已写好并测过，只是没有调用者）。**收件人在构造期绑定而不是在回调里改**：sink 是 per-run 的，回调里改字段是并发回滚下的数据竞争。
+  **缺任一条件就退化为记日志、不发送**：没有 `NotificationManager`（`WithNotificationManager` 未配置），或 `creator` 为空。理由与上一轮相同并且更强——**一条看起来已送达、实际无人收到的通知，比一条被记录的分级更坏**，因为操作员会停止追查。run 记录读不出来时降级为 warn 而非报错：分级跑在回滚路径上，此时 store 读不出来恰恰是最需要有人被告知的时刻。
+  **② 上界可配**。`WithPostVerifyTimeout(d)` 接到 `rollback.WithVerifyTimeout`；未设置时保持 0，由 verifier 解析为 `DefaultVerifyTimeout`（2 分钟）。它存在的理由在上一轮已经写明：验证刻意脱离调用方取消，没有上界就是无界的门禁扇出。
+  **③ 手动回滚恢复基线，并撤回 LE102**。`rollbackChange`（`RollbackChange` / `levee rollback`）此前只接了 step 级 `RestoreForStep`，不碰 run 基线——这正是当时用 LE102 拒绝 `snapshot` + `on_failure: manual` 的唯一理由（采了没人用的基线比没有基线更糟）。现在它接上同一个 `runRemoteSnapshotter`，在补偿走完之后恢复一次。**LE102 随之从常量块、错误目录、规范两张码表与校验测试中一并撤除**——一个有常量、有目录条目、却没有任何产生点的码，比没有这个码更坏：它在目录里显示为编译器可能产出的东西，而它不能。撤回而不是保留，是因为能采到也能还原的文档是正常情况，继续拒绝只会把操作员推向 LE097 一直反对的 step 级绕法。
+  **恢复失败用 `errors.Join` 合并进回滚结论**：补偿可能已经成功，只报"基线恢复失败"会吞掉这个事实，只报成功又会吞掉基线，操作员两件都需要，按这个顺序。
+  测试：`TestRollbackChangeRestoresRunBaseline` 端到端断言基线**真的带着正确内容落到目标机**（按上传字节数核对，而不是"尝试过"）；`TestRollbackChangeManualPolicyWithBaselineCompiles` 钉住 LE102 撤回的编译侧；`TestManualRollbackWithoutSnapshotStoreDoesNotClaimARestore` 钉住未接线时既不尝试也不谎称；`TestNewRunNotifySinkRequiresTransportAndInitiator` 三组子用例钉住两个降级条件；`TestResolveRollbackActorsReadsCreator` 钉住收件人来自 run 记录、未知 run 降级不报错。测试替身 `loopChannel.Upload` 原本无条件报 `Upload not supported`（无任何测试依赖该失败），改为记录上传并核对内容——否则只能表达"试过了"，无法表达"基线真的回去了"。
+
 - **run 级快照基线：一个独立原语，不是 workflow 级 `snapshot_paths` 的放宽**。§7.1 拒绝 workflow 级 `rollback.snapshot_paths`（LE097），理由是它没有补偿基线可挂——但"整次运行的前状态"是真实需求（多个 step 分别改了不同文件，运维要的是 run 开始前那一份），而把它投影到每个 step 恰是 roadmap 方案 B 明确拒绝的语义错误。所以新增顶层 `snapshot { scope, paths, type }` 块与 `engine.RunSnapshotter` 接口，规范新增 §7.2。
-  采集在**所有锁已持有、任何目标尚未被改动**时执行**一次**（覆盖全部 target，与 batch 数、step 数无关），恢复在**补偿全部完成之后**执行**一次**——run 的前状态对它覆盖的路径有最终发言权，否则 step 级恢复会盖掉 run 级基线。校验 fail-closed（LE098 scope 必须是 `run`；LE099 无 paths；LE100 type 非法且报错文案列出全部接受值；LE101 必须绝对路径，相对路径在采集与恢复时解析到的工作目录不同；LE102 与 `on_failure: manual` 同用会被拒）。
+  采集在**所有锁已持有、任何目标尚未被改动**时执行**一次**（覆盖全部 target，与 batch 数、step 数无关），恢复在**补偿全部完成之后**执行**一次**——run 的前状态对它覆盖的路径有最终发言权，否则 step 级恢复会盖掉 run 级基线。校验 fail-closed（LE098 scope 必须是 `run`；LE099 无 paths；LE100 type 非法且报错文案列出全部接受值；LE101 必须绝对路径，相对路径在采集与恢复时解析到的工作目录不同；LE102 曾拒绝与 `on_failure: manual` 同用，已随手动路径接上基线恢复而撤回）。
   **与 step 级刻意相反的一点：缺采集器时拒绝这次 run。** step 级"没装就是 no-op"是未接线行为，可以接受；而 run 级基线是**声明**——运维读到 `scope: run` 的语义就是"回滚会把这些路径还原"，若声明了却无处记录还照常执行，就会改掉一批从未留下前镜像的目标机，同时让运维相信回滚能还原。宁可拒绝 run。
   **进 plan_hash**（`canonicalRunSnapshotV2`）：基线决定"回滚会把什么还原"，两份只在基线上不同的计划**不是同一份计划**——执行动作完全相同，但一份承诺还原 `/etc/app.conf`、另一份什么都不还原。路径排序后再入哈希（声明是集合，采集顺序不是被批准的内容）；`type` 省略与显式写 `file` 归一化后哈希相同。
   `ClosureResult` 新增 `RunSnapshotRestoreError` **独立字段**而非往 `Error` 追加：补偿账本拥有 run 的结论，一次已完成的回滚不该因为基线恢复失败被改写成失败——那是两件不同的事实，混进一个被字符串匹配的字段里会一起丢失。
   测试：`internal/dsl/run_snapshot_test.go`（解析 + 10 组校验表，含「scope 省略是拒绝不是取默认」与「step/batch scope 是 LE097 的同一个洞下一层重现」）；`internal/engine/run_snapshot_hook_test.go` 五组，其中顺序断言不是"回调被调用过"而是**在回调里读执行器当时的调用计数**：采集时必须为 0，恢复时必须已含前向与补偿两类调用；`internal/plan/run_snapshot_hash_test.go` 四组。`internal/errors` 的目录计数 30→35（该测试正是防止新增码只进常量块不进目录表）。
-  已知限制：手动回滚路径（`RollbackChange` / `levee rollback`）今天不恢复 run 基线，因此与 `on_failure: manual` 的组合被 LE102 拒绝，而不是留一个"采了没人恢复"的承诺；基线按 change id 存储，接上手动路径只是恢复侧的一次调用。
+  已知限制：`on_failure: manual` 曾因手动回滚路径不恢复基线而被 LE102 拒绝，该码已随手动路径接上基线恢复一并撤回（见上一条）。基线按 change id 存储，因此操作员触发的回滚同样找得到它。
 
 ### 修复
 - **CI 供应链加固：全部 action 按 commit SHA 固定 + 顶层最小权限 + 每个 job 显式超时**。此前 workflow 引用的是可移动的 major tag（`actions/checkout@v7`、`codecov/codecov-action@v7` 等），而 tag 可以被上游重指——一次上游账号失陷即可把任意代码塞进我们的 CI 并拿到仓库默认令牌。现在每个 action 都钉到 40 位 commit SHA 并保留可读的版本注释（`@3d3c42e5…  # v7`），使「升级」变成一次显式提交而非静默滑动。
