@@ -29,7 +29,6 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/channel"
 	leveegrpc "github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -321,11 +320,11 @@ func TestEngineServe_CompletesWithEvidenceAndChain(t *testing.T) {
 	// Every dialled channel was closed at run teardown.
 	assert.Equal(t, rec.closeCount(), len(rec.snapshotDials()))
 
-	// Audit chain: build and verify through the audit service surface.
-	builder, err := audit.NewHashChainBuilder(store)
-	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, changeID)
-	require.NoError(t, err)
+	// Audit chain: the production path (ApplyChange's terminal settle) now
+	// seals the per-run trace chain itself — until that wiring existed this
+	// test had to build the chain by hand, and a manual Build here now
+	// correctly hits ErrChainAlreadyBuilt, which is the seal doing its job.
+	// Verify directly through the audit service surface.
 	auditSvc := leveegrpc.NewAuditService(store)
 	verifyResp, err := auditSvc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{ChangeId: changeID})
 	require.NoError(t, err)

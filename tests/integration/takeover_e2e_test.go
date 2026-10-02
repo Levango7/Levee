@@ -28,7 +28,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/cluster"
 	leveegrpc "github.com/nexus/levee/internal/grpc"
@@ -250,11 +249,9 @@ func TestTakeoverE2E_CrashedExecutorConvergesToInterrupted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "interrupted", run.Status, "§4-1: crashed executor converges to interrupted")
 
-	// Audit chain integrity through the takeover.
-	builder, err := audit.NewHashChainBuilder(h.store)
-	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, runID)
-	require.NoError(t, err)
+	// Audit chain integrity through the takeover. The takeover's trace is
+	// the run's last, so the sweep itself now seals the chain (until that
+	// wiring existed this test built it by hand); verify directly.
 	verify := leveegrpc.NewAuditService(h.store)
 	vr, err := verify.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{ChangeId: runID})
 	require.NoError(t, err)

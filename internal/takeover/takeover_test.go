@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/metrics"
 	"github.com/nexus/levee/internal/state"
@@ -161,6 +162,31 @@ func TestTakeover_LeaderSettlesExpiredRun(t *testing.T) {
 	lease, err := env.guard.GetExecution(ctx, runID)
 	require.NoError(t, err)
 	assert.Nil(t, lease, "the execution row must die with the settlement")
+}
+
+// TestTakeover_SettledRunTraceChainIsSealed: the takeover's trace is the
+// run's last (interrupted is terminal), so the sweep itself must seal the
+// per-run trace chain. Until the seal was wired no chain was ever built by
+// any production code; removing the seal site turns this test red.
+func TestTakeover_SettledRunTraceChainIsSealed(t *testing.T) {
+	env := newTakeoverEnv(t)
+	ctx := context.Background()
+	const runID = "run-tk-chain"
+
+	env.seedRunningRun(t, runID)
+	_, err := env.guard.Register(ctx, runID, "node-b", 10*time.Second)
+	require.NoError(t, err)
+	env.expireLease(t, runID)
+
+	res, err := env.loopy.TakeoverOnce(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, res.Settled, runID)
+
+	b, err := audit.NewHashChainBuilder(env.store)
+	require.NoError(t, err)
+	count, err := b.Verify(ctx, runID)
+	require.NoError(t, err, "the settled run's trace chain must verify")
+	assert.GreaterOrEqual(t, count, 1, "the takeover's trace must be in the sealed chain")
 }
 
 // TestTakeover_NonRunningRunSkipped: an expired lease whose run already

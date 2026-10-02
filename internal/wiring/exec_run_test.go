@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/plan"
@@ -452,6 +453,15 @@ func TestRetryChange_HostSubsetReusesBatchRows(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "retry_finished trace must be recorded")
+
+	// The retry closure seals the per-run trace chain once the run settled
+	// and retry_finished landed: /audit/verify's trace half must have a
+	// real chain for this run, not an unbuilt one.
+	b, err := audit.NewHashChainBuilder(store)
+	require.NoError(t, err)
+	sealed, err := b.Verify(context.Background(), "run-retry")
+	require.NoError(t, err, "the settled run's trace chain must verify")
+	assert.GreaterOrEqual(t, sealed, 1, "the chain must cover the retry's trace records")
 }
 
 func TestRetryChange_WithoutHostsOrReplanRefused(t *testing.T) {
