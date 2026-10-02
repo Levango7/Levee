@@ -1,6 +1,6 @@
 module github.com/nexus/levee
 
-go 1.26.0
+go 1.26.6
 
 require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.4
