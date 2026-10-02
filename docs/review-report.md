@@ -295,4 +295,51 @@ P2 级问题可在评审后迭代修复，不影响评审通过。
 
 ---
 
+## 第6章 复核追踪（2026-10-03）
+
+2026-09 以来代码与文档经历了大量修复（词表单一来源 `internal/runstatus`、审批绑定 `plan_hash`、错误码目录 `internal/errors`、`internal/docgen` 生成规范表格、变更窗口 LE020/LE021、LE097 等）。本章对本报告第 4 章的 21 个问题逐条复核，判定**已修复/已过时**或**仍有效**，全部给出当前证据。原始判定保留在第 4 章不动；本章是追加的追踪，不是改写。
+
+### 6.1 逐条复核结果
+
+| 编号 | 严重度 | 一句话问题 | 复核判定 | 证据（当前文件:行号） |
+| --- | --- | --- | --- | --- |
+| P0-01 | P0 | emergency 审批级别：DSL 规范 10.3 与 MVP T032 硬矛盾 | **已修复/已过时** | leveelang-spec.md:1917（approval.level 支持列表含 emergency）、:1932-1942（不支持清单已无 emergency）；代码 internal/dsl/ast.go:70、internal/approval/levels.go:41、internal/dsl/validator.go:8 |
+| P1-01 | P1 | 第4章跳过 D10/D11 无说明 | **已修复/已过时** | levee-design.md:192（编号说明：D10 自愈/D11 多集群联邦移除）、:1001-1002（附录B 第 24/25 项） |
+| P1-02 | P1 | 模板实例化 `--set` vs `--params` 不一致 | **已修复/已过时** | levee-design.md:277、levee-api.md:58/66、mvp-tasks.md:269/280 统一为 `--params key=val,...`；代码 cmd/levee/cmd_new.go:35 |
+| P1-03 | P1 | 单台重跑 `retry --target` vs `retry-host` 不一致 | **已修复/已过时** | levee-design.md:417/506、levee-api.md:236/1087 统一为 `retry-host`；代码 cmd/levee/cmd_retry.go |
+| P1-04 | P1 | API 第4章缺 remove/unmanage 命令 | **已修复/已过时**（文档已补；代码侧现状：cmd_target.go 子命令为 list/import/freeze/unfreeze/retire/history/check，无 remove/unmanage，与 T081 "remove 延后 V1" 一致） | levee-api.md:429-449（4.4 target remove）、:451-470（4.5 target unmanage）；cmd/levee/cmd_target.go:56-140 |
+| P1-05 | P1 | MVP 估时 196 人天超可用 180 人天 | **已修复/已过时**（已选方案 B：16 周/240 人天；残留：附录B 周次表仍只列 W1-W12 未反映 16 周） | mvp-tasks.md 附录A.1 估时方案对照表及"方案选定：采用方案 B" |
+| P1-06 | P1 | MVP T080-T085 命令名与 API 文档系统性偏离（6 组） | **已修复/已过时** | mvp-tasks.md:296-301（全部标注"对齐 API"）；代码 cmd_template.go:52-95、cmd_secret.go:51-108、cmd_user/cmd_team.go、cmd_system.go:49-130、cmd_audit.go、cmd_target.go |
+| P1-07 | P1 | DSL 第9章示例引用未定义动作模块 | **已修复/已过时** | leveelang-spec.md:787（svc.reload 入 MVP 表）、:807（patch.scan）、:811-813（net.config-backup/commit/restore 入 V1 扩展表） |
+| P1-08 | P1 | MVP 缺 file/pkg/svc/user 模块实现任务 | **已修复/已过时** | mvp-tasks.md:185-188（T017.1-T017.4）；代码 internal/executor/modules/{file,pkg,svc,user} 均存在 |
+| P1-09 | P1 | API 第7章凭据代理描述与 MVP 本地加密矛盾 | **已修复/已过时** | levee-api.md:553（阶段说明：MVP 本地 AES-GCM/T047，凭据代理 V1 引入，本章覆盖两模式） |
+| P1-10 | P1 | design 4.4.8 标题"操作全集"与内容不符 | **已修复/已过时** | levee-design.md:498（标题已改"补充操作"）、:500-511 |
+| P2-01 | P2 | schedule 命令 API 文档缺失 | **仍有效** | levee-api.md 全文无 "schedule"；design:557 仍定义；代码仅 `levee drift schedule`（cmd_drift.go:420），变更级 cron 触发命令不存在（与变更日历的接线待定夺同源） |
+| P2-02 | P2 | `-o json` vs `--json` 不一致 | **仍有效（本复核当场修掉）** | 代码以 `--json` 为准（root.go:66，短 `-j`）；levee-design.md 与 mvp-tasks.md 的 `-o json` 已随本次复核改为 `--json` |
+| P2-03 | P2 | design 4.4.3.1 审批分级表未注明英文枚举名 | **仍有效（本复核当场修掉）** | 表已补枚举列（standard/high/emergency），并顺带修正"紧急超时 15min"——代码实际是 30min（见 CHANGELOG「规范三张词表与代码不一致」条目的勘误）；新生成表见 internal/docgen 的 docs 门禁 |
+| P2-04 | P2 | spec 2.2 关键字清单缺 all/any 块与 allow_irreversible | **仍有效** | leveelang-spec.md:219-227（块关键字仍仅 slo/cmd/probe/human；6.2.2 :981-1005 用 any/all）；:228-252（字段表无 allow_irreversible，但 :1235/:1276/:2021 在用） |
+| P2-05 | P2 | 13.2 REST 端点缺 secret/user/team 等资源端点 | **仍有效（部分缓解）** | 已补 /system/config、/audit/*、/targets/*；secrets/users/teams 端点仍缺，表后无"仅列核心端点"注记（levee-api.md:799-843） |
+| P2-06 | P2 | 日志目标参数 `--target` vs `--host` 不一致 | **仍有效（本复核当场修掉）** | 代码实际用 `--target`（cmd/levee/cmd_logs.go:38）——API 文档 2.9 的 `--host` 是 stale，已随本次复核改为 `--target`（与代码及 design/mvp 一致） |
+| P2-07 | P2 | `levee run --shell` API 文档未定义 | **仍有效** | levee-api.md 无 "levee run"；internal/executor/shell_run.go 实现了 ShellRunner 但命令未注册（NewShellRunner 无生产调用者）——是处置决策不是文档遗漏 |
+| P2-08 | P2 | spec 10.3 target.type 含 mysql 但 MVP 无 mysql 模块 | **仍有效（部分缓解）** | internal/executor/modules/mysql 已实现 query/pt_osc/replica_switch；leveelang-spec.md:1909 限制列仍无说明（:769/:803 mysql 仍归 V1 扩展） |
+| P2-09 | P2 | design 5.2 示例用 V1+ 动作模块未注明 | **仍有效** | levee-design.md:753/:767 用 mysql.pt-online-schema-change，前后无 V1+/MVP 注记 |
+| P2-10 | P2 | T100 与 G-01 均含"10 分钟测试"命名易混淆 | **仍有效（本复核当场修掉）** | mvp-tasks.md T100 已改名"10 分钟上手门禁"，与 G-01"10 分钟测试门禁"区分 |
+
+### 6.2 总体结论
+
+21 项中 **11 项已修复/已过时**（P0-01 与全部 10 个 P1），证据链完整；**10 项仍有效**（全部 P2，无一无法核实），其中 4 项（P2-02/03/06/10）已随本次复核当场修掉，剩余 6 项（P2-01/04/05/07/08/09）为文档迭代或处置决策项。原报告"有条件通过"的 P0 前提已消除。
+
+### 6.3 剩余 6 项的处置建议
+
+| 编号 | 处置 | 归属 |
+| --- | --- | --- |
+| P2-01（schedule 命令缺失） | 随组织级变更日历的接线一起定案（roadmap「日历侧一半待接」行） | roadmap |
+| P2-04（spec 关键字清单缺漏） | 文档迭代：2.2 块关键字表补 all/any、字段表补 allow_irreversible | docs |
+| P2-05（REST 端点覆盖） | 表后补"仅列核心端点"注记；secrets/users/teams 端点随对应管理面定案 | docs / roadmap |
+| P2-07（levee run --shell 未注册） | 处置决策：注册为内部调试命令或退役 ShellRunner | roadmap |
+| P2-08（spec 10.3 mysql 限制无说明） | 文档迭代：限制列注明 mysql 模块现状 | docs |
+| P2-09（design 5.2 示例无注记） | 文档迭代：示例注明目标态归属 | docs |
+
+---
+
 （审核报告结束）

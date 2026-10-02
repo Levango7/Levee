@@ -162,7 +162,7 @@ MVP 拆分为 12 周开发任务，任务编号 T001-T0NN，按周次排期。�
 | T004 | SQLite CRUD 封装 | internal/state | 3 | T003 | Store 接口定义 + SQLite 实现，单元测试覆盖 CRUD，WAL 模式开启 | W1-W2 |
 | T005 | 配置管理 | internal/config | 2 | T001 | config.yaml 加载 + 环境变量覆盖 + 校验，viper 集成 | W1 |
 | T006 | 日志系统 | internal/ | 1 | T001 | slog 结构化日志，级别可配，JSON / text 双格式 | W1 |
-| T007 | CLI 框架基础 | cmd/levee | 2 | T001 | cobra 根命令 + version / help，子命令注册框架，`-o json` 输出切换 | W2 |
+| T007 | CLI 框架基础 | cmd/levee | 2 | T001 | cobra 根命令 + version / help，子命令注册框架，`--json` 输出切换 | W2 |
 | T008 | 错误码体系 | internal/ | 1 | T001 | 错误码定义 + 结构化错误包装，对应失败语义五档 | W2 |
 | T009 | 单元测试基础设施 | internal/ | 1 | T001 | testify 集成 + mock target 框架 + 测试夹具 | W2 |
 
@@ -299,7 +299,7 @@ MVP 拆分为 12 周开发任务，任务编号 T001-T0NN，按周次排期。�
 | T083 | 凭据命令 | cmd/levee | 2 | T047 | `levee secret list / add / rotate / revoke / show` 凭据管理，不回显明文（对齐 API secret 命名） | W10 |
 | T084 | 权限命令 | cmd/levee | 2 | T049 | `levee user list / add` + `levee team list / add` 权限矩阵管理（对齐 API user/team 维度） | W10 |
 | T085 | 系统命令 | cmd/levee | 2 | T005 | `levee version / status / config get / config set / doctor` 系统初始化 + 状态 + 配置（对齐 API 独立命令） | W10 |
-| T086 | CLI 集成测试 | cmd/levee | 2 | T064-T085 | 全套命令端到端测试，`-o json` 输出校验，补全提示 | W10 |
+| T086 | CLI 集成测试 | cmd/levee | 2 | T064-T085 | 全套命令端到端测试，`--json` 输出校验，补全提示 | W10 |
 
 ### 3.8 第 10-11 周：集成与演练
 
@@ -331,7 +331,7 @@ MVP 拆分为 12 周开发任务，任务编号 T001-T0NN，按周次排期。�
 | T097 | 快速开始文档 | docs/ | 2 | T086 | 5 分钟快速开始：安装 + 配置 + 第一个 workflow + apply | W12 |
 | T098 | CLI 参考文档 | docs/ | 2 | T086 | 全套命令参考 + 参数说明 + 示例，自动生成 + 人工补充 | W12 |
 | T099 | LEVEELang 语法文档 | docs/ | 2 | T020 | YAML 子集语法 + 字段说明 + 示例 workflow | W12 |
-| T100 | 10 分钟测试找新手 | tests/ | 2 | T093 | 找 2-3 名新手盲写 workflow + apply，10 分钟内完成 | W12 |
+| T100 | 10 分钟上手门禁 | tests/ | 2 | T093 | 找 2-3 名新手盲写 workflow + apply，10 分钟内完成 | W12 |
 | T101 | 发布门禁检查 | scripts/ | 1 | T088-T094, T100 | G-01 至 G-07 全部门禁通过，产出门禁报告 | W12 |
 | T102 | 发布候选构建 | build/ | 1 | T095, T101 | RC 构建 + 签名 + 发布到 artifact 存储 | W12 |
 | T103 | 发布说明 | docs/ | 1 | T102 | RELEASE.md 含交付清单 + 已知限制 + 升级路径 | W12 |
@@ -427,7 +427,7 @@ MVP 阶段识别 6 项主要风险，每项给出影响与缓解措施。风险�
 | M-K2 | WinRM 兼容性风险 | masterzen/winrm 对 Windows Server 版本 / 认证方式兼容性差异 | 中 | T013 仅验证 Windows Server 2016+ + Negotiate 认证；Kerberos / NTLM 在 V1；备选 github.com/bhoriuchi/go-winrm | internal/channel/winrm |
 | M-K3 | SQLite 并发性能 | SQLite WAL 模式下写并发上限，批量 100 台 trace 写入可能瓶颈 | 中 | T043 trace 写批量提交 + 单写锁；T089 压测验证；若瓶颈备选 PRAGMA journal_mode + synchronous 调优；万级目标机明确不在 MVP | internal/state, internal/audit |
 | M-K4 | 回滚演练环境搭建 | mock 目标机回滚语义模拟难度，部分动作回滚难复现 | 高 | T087 用 docker-compose + 文件系统快照模拟；不可逆动作（DROP TABLE）用白名单跳过 + 人工确认；演练用例覆盖 8 场景但允许部分标记"仅校验不回滚" | tests/e2e |
-| M-K5 | 10 分钟测试找人 | 新手盲写 workflow 可能在 10 分钟内无法完成，门禁无法通过 | 高 | T100 提前准备 2-3 名新手 + 快速开始文档；若失败则迭代文档而非放宽门禁；文档先行（T097 在 T100 前完成） | docs/, tests/ |
+| M-K5 | 10 分钟上手门禁 | 新手盲写 workflow 可能在 10 分钟内无法完成，门禁无法通过 | 高 | T100 提前准备 2-3 名新手 + 快速开始文档；若失败则迭代文档而非放宽门禁；文档先行（T097 在 T100 前完成） | docs/, tests/ |
 | M-K6 | 对照数据基线采集 | Ansible 同场景基线 2h 依赖真实环境，mock 环境可能不真实 | 中 | T091 在真实或半真实环境采集；若无法获取真实基线，用 Ansible 官方 benchmark 数据 + 合理外推；对照报告标注数据来源 | tests/benchmark |
 
 风险监控：每周例会回顾风险状态，概率 / 影响变化及时更新缓解措施。M-K4 / M-K5 为高概率风险，需在 W10 前启动缓解。
