@@ -33,7 +33,12 @@
 
 - **121 个 benchmark 第一次进 CI（冒烟门禁）**。benchmark 报告停在 v1.3.0、3 组回归悬空 10 个版本——一个烂掉的 benchmark（编译漂移、回归成 panic）什么都不报。test 作业（ubuntu 腿）新增 `go test -bench=. -benchtime=1x -run '^$' ./...`：每个 benchmark 执行一次，`-run ^$` 跳过测试、`-benchtime=1x` 把它钉在**活性门禁**而不是测量（数字是本地作业的事）；本机实测 121 个全过零 panic。
 
+
  d8439b2 (docs: 记录看板读 400 的实测证据与"测试复刻生产接线"这一成因)
+
+- **review-report 的 21 项文档问题逐条复核完毕（2026-10-03），4 项当场修掉**。2026-08-15 的审核报告登记 1 P0 + 10 P1 + 10 P2，逐条复核判定：**11 项已修复/已过时**（P0-01 与全部 10 个 P1——emergency 三级已进 spec 支持列表、命令名 `--params`/`retry-host`/T080-T085 对齐、模块任务 T017.1-T017.4 补齐、凭据阶段说明、估时方案 B、4.4.8 改名，证据链完整）；**10 项仍有效**（全部 P2，无一无法核实），其中四项当场修掉：P2-02（`-o json`→`--json`，代码 root.go 为准）、P2-03（分级表补枚举列并修正「紧急 15min」——代码实为 30min，docgen 生成表为权威）、P2-06（API 文档 logs 的 `--host` 是 stale，代码实为 `--target`）、P2-10（T100 改名「10 分钟上手门禁」区分 G-01）；剩余 6 项（P2-01/04/05/07/08/09）在新增第 6 章逐条登记处置建议（文档迭代或处置决策）。复核表见 `docs/review-report.md` 第 6 章，原始判定保留在第 4 章不动；「有条件通过」的 P0 前提已消除。
+ f79b7d7 (docs: recheck the 21 review-report findings; fix four doc drifts on the spot)
+ ff2591f (docs: recheck the 21 review-report findings; fix four doc drifts on the spot)
 - **前端嵌入产物漂移：CI 第一次要求已提交的 `internal/web/dist` 与源码字节一致，并刷新了已经陈旧的产物**。Go 二进制内嵌的是**已提交**的 dist——它停在最后一次手工 `make web` 时的样子，实测 33 个产物中 19 个（18 个哈希名 + index.html）与同一份源码的全新构建对不上，生产二进制里的 UI 落后于仓库里的源码；而 CI 的 frontend 作业此前只构建不比对，漂移静默积累。修法两层：frontend 作业在构建后把 `web/dist` 拷入 `internal/web/dist` 并要求工作树零 diff、零未跟踪新文件（照抄 proto/docs regenerate check 的门禁形状）；同时随本 PR 提交刷新后的产物（node:20 构建——与 CI 的 node 版本一致，且实测 vite 对 node 20/26 输出逐字节相同，产物不随构建机漂移）。
   **门禁第一次运行就抓到第二层问题：同一份源码，Windows 工作副本的构建产物与 CI 不同**——本机 `core.autocrlf=true` 且 `.gitattributes` 没覆盖 `.svg`（`web/public/assets/favicon.svg` 被原样拷进 bundle），检出早于规则落地的源文件还带着 CRLF，view chunk 内容随行尾变化、哈希名全变；vendor chunk 来自 node_modules、不受检出影响，名字保持一致——这正好解释了漂移只发生在 view 层。处置：`.gitattributes` 补上 `*.svg text eol=lf`（git 的行尾转换——含 `git archive` 导出——从此对构建输入的全部类型都是 LF），产物用 `git archive` 导出后在 node:20 容器内构建，与 CI 的检出形态字节对齐。门禁的两轮红灯各有实证成因：第一轮抓到 view chunk 批量漂移，第二轮抓到 favicon.svg 的行尾残差——不是假阳性。
 - **CI 供应链加固：全部 action 按 commit SHA 固定 + 顶层最小权限 + 每个 job 显式超时**。此前 workflow 引用的是可移动的 major tag（`actions/checkout@v7`、`codecov/codecov-action@v7` 等），而 tag 可以被上游重指——一次上游账号失陷即可把任意代码塞进我们的 CI 并拿到仓库默认令牌。现在每个 action 都钉到 40 位 commit SHA 并保留可读的版本注释（`@3d3c42e5…  # v7`），使「升级」变成一次显式提交而非静默滑动。

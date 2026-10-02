@@ -273,7 +273,7 @@ levee rollback-all run-20260815-001
 命令示例：查看变更日志
 
 ```bash
-levee logs run-20260815-001 -f --host web-03.example.com --step migrate
+levee logs run-20260815-001 -f --target web-03.example.com --step migrate
 ```
 
 表：logs 命令选项参数说明表
@@ -282,7 +282,7 @@ levee logs run-20260815-001 -f --host web-03.example.com --step migrate
 | --- | --- | --- | --- |
 | `<change-id>` | string | 是 | 变更 run-id |
 | `-f, --follow` | bool | 否 | 实时跟随日志输出 |
-| `--host <host>` | string | 否 | 仅显示指定目标机日志 |
+| `--target <host>` | string | 否 | 仅显示指定目标机日志 |
 | `--step <step>` | string | 否 | 仅显示指定步骤日志 |
 | `--batch <n>` | int | 否 | 仅显示指定批次日志 |
 | `--since <time>` | duration | 否 | 仅显示指定时间后日志 |
