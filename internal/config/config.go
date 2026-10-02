@@ -25,6 +25,7 @@ import (
 type Config struct {
 	Server     ServerConfig     `json:"server"     mapstructure:"server"`
 	Auth       AuthConfig       `json:"auth"       mapstructure:"auth"`
+	AI         AIConfig         `json:"ai"         mapstructure:"ai"`
 	Tenant     TenantConfig     `json:"tenant"     mapstructure:"tenant"`
 	Database   DatabaseConfig   `json:"database"   mapstructure:"database"`
 	Log        LogConfig        `json:"log"        mapstructure:"log"`
@@ -67,6 +68,31 @@ type DatabaseConfig struct {
 type AuthConfig struct {
 	OIDC   AuthOIDCConfig   `json:"oidc"   mapstructure:"oidc"`
 	GitHub AuthGitHubConfig `json:"github" mapstructure:"github"`
+}
+
+// AIConfig groups AI-assist settings. The LLM subsection is the config face
+// of the recommend engine's hybrid mode; disabled (default) the engine runs
+// pure knowledge-base mode exactly as before this section existed.
+type AIConfig struct {
+	LLM LLMConfig `json:"llm" mapstructure:"llm"`
+}
+
+// LLMConfig configures the LLM client behind the recommend engine's hybrid
+// mode. Enabled defaults to false — no client is constructed and the engine
+// takes its knowledge-base path — so an existing deployment behaves exactly
+// as before; enabling is a deliberate act. The client itself comes from
+// internal/recommend (provider openai / ollama); construction errors degrade
+// to knowledge-base mode with a loud warning rather than keeping the daemon
+// from starting (the same contract as setupServeTracing).
+type LLMConfig struct {
+	Enabled     bool          `json:"enabled"      mapstructure:"enabled"`
+	Provider    string        `json:"provider"     mapstructure:"provider"` // openai | ollama ("mock" is tests only)
+	APIKey      string        `json:"api_key"      mapstructure:"api_key"`  // falls back to OPENAI_API_KEY env
+	Model       string        `json:"model"        mapstructure:"model"`
+	BaseURL     string        `json:"base_url"     mapstructure:"base_url"` // empty = provider default
+	MaxTokens   int           `json:"max_tokens"   mapstructure:"max_tokens"`
+	Temperature float64       `json:"temperature"  mapstructure:"temperature"`
+	Timeout     time.Duration `json:"timeout"      mapstructure:"timeout"`
 }
 
 // TenantConfig controls multi-tenant isolation.

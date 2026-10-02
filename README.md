@@ -20,7 +20,7 @@
 executor / dispatch / batch / cluster）约占 **16%**（实测：8 个包共 15,256 行非测试
 代码 / `internal/` 非测试代码 96,358 行 = 15.8%），其余是支撑一套系统所需的
 平台能力：身份与授权（auth / permission ABAC / credential 加密 / tenant）、
-生命周期（scheduler / calendar / backup / cluster 故障转移 / takeover）、
+生命周期（calendar / backup / cluster 故障转移 / takeover）、
 运维面（metrics / tracing / audit / notify / push / chatops）、
 诊断与建议（diagnosis / recommend / autoplanner 已并入 recommend / drift）、
 以及对外集成（itsm / opsmesh）。这些不是 workflow 引擎的组成部分——
@@ -53,7 +53,7 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **单步验证门 API**：`POST /gates/verify` 按需执行一条 cmd/probe/slo 验证（与引擎门禁同源构造器，零语义漂移）——操作员预检、流水线 pre-check、ChatOps 即席健康检查无需规划整个变更；human 检查点显式排除（归审批链）；每次执行留审计
 - **ITSM Jira 审批镜像**：`notify.jira.*` 配置启用后审批链开始建 Jira issue、决策自动评论（纯出站镜像，LEVEE store 仍是唯一事实来源；禁用时零外发零装配）
 - **双协议 API**：gRPC（9 个业务服务 + 标准 `grpc.health.v1`）+ REST 网关（`/api/v1/`），共享同一服务实例
-- **AI 辅助（部分能力仅库就绪，见下方"能力可达性"）**：`internal/diagnosis`（日志采集+分析、健康探测）已接入 `serve` 与 `levee diagnose`；`levee converse` / REST 对话闭环已接入，确认的建议会变成 draft 变更进治理链（不执行、不跳审批）。**LLM 与 RAG 尚无生产调用方**：`recommend.NewLLMClient`（OpenAI / Ollama 客户端）只被测试调用，`serve` 与 `converse` 构造推荐引擎时不传 `LLMClient`（`recommend/engine.go:130` 注释即"nil = pure knowledge-base mode"），建议来自内置静态知识库；`internal/config` 也没有 llm/rag 相关配置项，运维无法开启。
+- **AI 辅助（部分能力仅库就绪，见下方"能力可达性"）**：`internal/diagnosis`（日志采集+分析、健康探测）已接入 `serve` 与 `levee diagnose`；`levee converse` / REST 对话闭环已接入，确认的建议会变成 draft 变更进治理链（不执行、不跳审批）。**LLM 混合模式已有配置面并接线**：`ai.llm` 配置节（`enabled/provider/api_key/model/base_url`）控制 `recommend` 引擎的 hybrid 模式，`serve` 与 `levee converse` 都读它；**默认关闭**——不构造客户端，建议来自内置静态知识库（与引入本节之前逐字节一致），构造失败降级回知识库并打 warn。RAG（伪向量 embedding）已按定位退役删除。
 - **多通道执行**：SSH / WinRM 无代理通道 + local 沙箱通道（CI/单机自测，程序白名单+参数策略+沙箱根三重门禁，fail-closed 默认），插件注册表开放第三方通道接入（见 `docs/channel-plugins.md`）
 - **快照回滚**：`rollback: {strategy: snapshot, snapshot_paths: [...]}` 声明式文件级备份——apply 前经通道采集目标机文件（base64 传输），回滚时原样恢复（与 undo-action 显式互斥）；快照按 change id 键存，手动回滚路径可达；`--engine-snapshot-dir` 一旗标启用
 - **数据库动作模块**：`mysql.query`（幂等 DDL/DML，SQL 经 base64 管道防注入）、`mysql.pt_osc`（pt-online-schema-change 在线大表变更，白名单校验 alter 子句）、`mysql.replica_switch`（主从切换编排，强制确认门）；不可逆动作（含 replica_switch/pt_osc）在 plan 生成时自动标记并路由到高危审批（R2/R4 全链路接线）
@@ -76,20 +76,18 @@ grep -rl 'nexus/levee/internal/compat"' --include='*.go' . \
   | grep -v _test.go | grep -v '^./internal/compat/'
 ```
 
-当前未链入 `cmd/levee` 的 `internal` 包（除 `docgen` 是 CI 工具外，共 8 个，约 4.7k 行非测试代码）：
+当前未链入 `cmd/levee` 的 `internal` 包（除 `docgen` 是 CI 工具外，共 6 个，约 2.5k 行非测试代码）：
 
 | 包 | 它本来要承担什么 | 现状 |
 | --- | --- | --- |
-| `diagnosis/llm_diag` | LLM 推理定位 | 无生产调用方；`NewLLMClient` 仅测试调用 |
+| `diagnosis/llm_diag` | LLM 推理定位 | 无生产调用方；收敛判据取自模型自报的 `Confidence`，接线前须先定案它到审批档位的映射 |
 | `diagnosis/topology` | 拓扑诊断 | 无生产调用方 |
-| `recommend/rag` | RAG 知识增强 | 无生产调用方 |
-| `recommend/feedback` | 效果学习 | 无生产调用方 |
-| `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 全仓零引用，CLI 无对应命令；且其执行器自述**不强制审批与门禁**（`compat/executor.go:4-7`），动作表还映射了 4 个执行器不存在的动作（`compat.go:48-55`）——接线前必须先解决这两点 |
-| `scheduler` | agent 任务派发（`Schedule([]agent.Task)` + 负载均衡），不是变更时间窗触发 | 无生产调用方；跨节点派发现在由已接入的 `internal/dispatch` 承担 |
+| `recommend/feedback` | 效果学习 | 无生产调用方；全内存、进程重启即失忆，且其写入的知识库在生产侧没有持久化入口 |
+| `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 按定位去莠：自述"不强制审批与门禁"的模拟执行器与重复的风险评估器**已删除**；导入层（`compat.go`）保留但其映射仍含 4 个执行器不存在的动作（`compat.go:48-55`）——D-08 的重定义（含 `yum: state=absent` 的状态盲映射）待产品定夺 |
 | `opsmesh` | OpsMesh 平台集成 | 无生产调用方 |
-| `notify/chatopsbridge` | ChatOps 审批桥接点 | 无生产调用方（上文那条已注明"由部署侧组合"） |
+| `notify/chatopsbridge` | ChatOps 审批桥接点 | 无生产调用方；两个观察者槽位已改成**扇出**（接线不再挤掉 Jira 镜像），接线动作本身随 bot 渠道配置面一起做 |
 
-这些包**没坏**——包内测试覆盖实测在 90%~96%（90.4%~95.4%），问题是"覆盖"的是没人调用的代码。
+这些包**没坏**——包内测试覆盖实测在 88%~95%（88.0%~95.0%），问题是"覆盖"的是没人调用的代码。
 把它们接进 `serve` 前，请按"库已就绪、产品不可用"对待；`docs/security-audit.md`
 "已知限制"一节对多租户用的是同一套写法。
 
@@ -194,7 +192,7 @@ levee/
 │   ├── lock/               # 互斥锁
 │   ├── credential/         # 凭据管理
 │   ├── template/           # 模板库
-│   ├── compat/             # playbook 兼容层
+│   ├── compat/             # playbook 导入层（执行器已去莠删除，见"能力可达性"）
 │   ├── dsl/                # YAML 子集解析 (LEVEELang)
 │   ├── notify/             # 通知
 │   ├── config/             # 配置管理
@@ -207,11 +205,10 @@ levee/
 │   ├── drift/              # 漂移检测
 │   ├── calendar/           # 变更日历
 │   ├── chatops/            # ChatOps 集成
-│   ├── scheduler/          # agent 任务派发（未接入二进制，见"能力可达性"）
 │   ├── agent/              # agent
 │   ├── alert/              # 告警网关 (Zabbix/Nagios 适配)
 │   ├── diagnosis/          # 诊断引擎 (拓扑分析/LLM 推理)
-│   ├── recommend/          # AI 推荐 (RAG/反馈学习) — 产出 LEVEELang 草稿
+│   ├── recommend/          # AI 推荐 (LLM 混合模式/反馈学习) — 产出 LEVEELang 草稿
 │   ├── opsmesh/            # OpsMesh 平台集成
 │   └── conversation/       # 对话引擎
 ├── configs/                # 配置文件示例

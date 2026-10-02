@@ -75,7 +75,12 @@ type ChangeService struct {
 	// DecisionObserver contract: observer errors are ignored so a
 	// failing side channel (ChatOps / Jira mirrors) can never fail the
 	// approval chain itself. Nil is a no-op.
-	onApprovalCreate func(a *approval.Approval)
+	//
+	// A SLICE, not a single slot: the slot used to be last-write-wins, and
+	// serve gives it to the Jira mirror — wiring a second mirror (ChatOps
+	// approval bridge) would have SILENTLY DISPLACED Jira. Wiring order is
+	// construction-time (single-threaded), so the slice needs no lock.
+	onApprovalCreate []func(a *approval.Approval)
 
 	// authz decides change-scoped governance actions against the deployment's
 	// permission matrix and role tree. Nil means the deployment declared no
@@ -118,11 +123,17 @@ func NewChangeService(
 // WithApprovalCreateObserver installs a post-create observer on the
 // service. It fires after kickoffApproval durably created the pending
 // approval (the same moment the ChatOps / Jira mirrors want to react
-// to). Observer panics are recovered per-call; observer failures are
+// to). Observers are FAN-OUT — every install is kept, none displaces a
+// previously installed one — and each call is panic-recovered, so one
+// misbehaving mirror cannot take the service down. Observer failures are
 // logged by the bridge, never by this service — the local chain stays
-// the system of record. Pass nil to remove.
+// the system of record. Pass nil to remove every installed observer.
 func (s *ChangeService) WithApprovalCreateObserver(fn func(a *approval.Approval)) *ChangeService {
-	s.onApprovalCreate = fn
+	if fn == nil {
+		s.onApprovalCreate = nil
+		return s
+	}
+	s.onApprovalCreate = append(s.onApprovalCreate, fn)
 	return s
 }
 
@@ -760,9 +771,14 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) err
 
 	// Post-create observer (ChatOps card, Jira mirror, ...): the record
 	// is durable, so mirror failures can only lose visibility, never
-	// correctness.
-	if s.onApprovalCreate != nil {
-		s.onApprovalCreate(created)
+	// correctness. Fan-out over every installed observer, each panic-
+	// recovered: one misbehaving mirror must not kill the chain or the
+	// other mirrors' delivery.
+	for _, fn := range s.onApprovalCreate {
+		func() {
+			defer func() { _ = recover() }()
+			fn(created)
+		}()
 	}
 	return nil
 }

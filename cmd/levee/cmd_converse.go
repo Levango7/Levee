@@ -31,6 +31,7 @@ import (
 
 	"github.com/nexus/levee/internal/chatops"
 	"github.com/nexus/levee/internal/conversation"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/recommend"
 )
 
@@ -141,7 +142,11 @@ func runConverse(cmd *cobra.Command, args []string) error {
 
 // newConversationEngineForCLI builds a ConversationEngine using sensible CLI
 // defaults. The RecommendEngine is always wired with the built-in knowledge
-// base so /recommend works out of the box; the Diagnose engine is left nil
+// base so /recommend works out of the box; the ai.llm config section (loaded
+// the same way every other command loads its config — defaults when no
+// --config file exists) turns on the hybrid LLM mode, and a client
+// construction error degrades to knowledge-base mode with a loud warning
+// (the same contract as the serve path). The Diagnose engine is left nil
 // (the engine returns an explanatory error for /diagnose in that case).
 //
 // The change bridge IS wired, so `levee converse` closes the same loop the
@@ -156,8 +161,30 @@ func runConverse(cmd *cobra.Command, args []string) error {
 var newConversationEngineForCLI = defaultNewConversationEngineForCLI
 
 func defaultNewConversationEngineForCLI() (*conversation.ConversationEngine, error) {
+	cfg, err := loadConfigForCmd()
+	if err != nil {
+		return nil, fmt.Errorf("converse: load config: %w", err)
+	}
+	var llmClient recommend.LLMClient
+	if cfg.AI.LLM.Enabled {
+		client, llmErr := recommend.NewLLMClient(recommend.LLMConfig{
+			Provider:    cfg.AI.LLM.Provider,
+			APIKey:      cfg.AI.LLM.APIKey,
+			Model:       cfg.AI.LLM.Model,
+			BaseURL:     cfg.AI.LLM.BaseURL,
+			MaxTokens:   cfg.AI.LLM.MaxTokens,
+			Temperature: cfg.AI.LLM.Temperature,
+			Timeout:     cfg.AI.LLM.Timeout,
+		})
+		if llmErr != nil {
+			log.Warn("ai.llm client unavailable; recommend engine stays in knowledge-base mode", "error", llmErr)
+		} else {
+			llmClient = client
+		}
+	}
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
-		Timeout: 30 * time.Second,
+		LLMClient: llmClient,
+		Timeout:   30 * time.Second,
 	})
 	bridge := newLazyLocalChangeCreator(openStore)
 	engine := conversation.NewConversationEngine(conversation.ConversationEngineConfig{
