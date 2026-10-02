@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/grpc"
@@ -459,6 +460,12 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		Actor:     "engine",
 		Timestamp: utcNow(),
 	})
+	// The run settled and retry_finished is its last trace, so the per-run
+	// trace chain can close — same best-effort-but-loud contract as the
+	// Apply funnel's seal in internal/grpc.
+	if serr := audit.SealRunTraceChain(ctx, e.store, changeID); serr != nil {
+		log.Warn("trace chain seal failed", "run_id", changeID, "error", serr)
+	}
 	if err != nil {
 		return err
 	}

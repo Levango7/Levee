@@ -1026,6 +1026,14 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 			Message:   err.Error(),
 			Timestamp: run.UpdatedAt.Unix(),
 		})
+		// The run settled and its trace set is final (apply_started, plus
+		// anything the executor recorded), so the per-run trace chain can
+		// close. Best-effort like audit.Record — the verdict is already
+		// durably written — but loud on failure: unsealed rows surface as
+		// empty_hash at the next verification.
+		if serr := audit.SealRunTraceChain(ctx, s.store, run.ID); serr != nil {
+			log.Warn("trace chain seal failed", "run_id", run.ID, "status", "failed", "error", serr)
+		}
 		return &pb.ApplyResponse{
 			Change:  runToPB(run),
 			RunId:   execRunID,
@@ -1072,6 +1080,11 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		Message:   finalStatus,
 		Timestamp: run.UpdatedAt.Unix(),
 	})
+	// Seal the per-run trace chain now that the run settled — same
+	// best-effort-but-loud contract as the engine-error branch above.
+	if serr := audit.SealRunTraceChain(ctx, s.store, run.ID); serr != nil {
+		log.Warn("trace chain seal failed", "run_id", run.ID, "status", finalStatus, "error", serr)
+	}
 	return &pb.ApplyResponse{
 		Change:  runToPB(run),
 		RunId:   execRunID,
@@ -1202,6 +1215,19 @@ func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, 
 		Message:   reason,
 		Timestamp: now.Unix(),
 	})
+
+	// Both direct-transition paths land here: pause/resume (via
+	// transitionStatus) and cancel (via transitionStatusWithForce). A
+	// TERMINAL transition closes the run's trace set, so its per-run trace
+	// chain can seal; mid-run transitions (paused/running) must not seal —
+	// every trace written afterwards would land outside the chain and
+	// surface as empty_hash at verification. Same best-effort-but-loud
+	// contract as the Apply funnel's seal.
+	if runstatus.IsTerminal(newStatus) {
+		if serr := audit.SealRunTraceChain(ctx, s.store, runID); serr != nil {
+			log.Warn("trace chain seal failed", "run_id", runID, "status", newStatus, "error", serr)
+		}
+	}
 
 	return runToPB(run), nil
 }
@@ -1456,6 +1482,19 @@ func (s *ChangeService) transitionStatusWithForce(ctx context.Context, runID, ne
 		Message:   reason,
 		Timestamp: now.Unix(),
 	})
+
+	// Both direct-transition paths land here: pause/resume (via
+	// transitionStatus) and cancel (via transitionStatusWithForce). A
+	// TERMINAL transition closes the run's trace set, so its per-run trace
+	// chain can seal; mid-run transitions (paused/running) must not seal —
+	// every trace written afterwards would land outside the chain and
+	// surface as empty_hash at verification. Same best-effort-but-loud
+	// contract as the Apply funnel's seal.
+	if runstatus.IsTerminal(newStatus) {
+		if serr := audit.SealRunTraceChain(ctx, s.store, runID); serr != nil {
+			log.Warn("trace chain seal failed", "run_id", runID, "status", newStatus, "error", serr)
+		}
+	}
 
 	return runToPB(run), nil
 }

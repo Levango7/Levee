@@ -34,6 +34,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
@@ -270,6 +271,13 @@ func (l *Loop) settleOne(ctx context.Context, runID string) (bool, error) {
 		Actor:     "cluster-takeover",
 		Timestamp: time.Now().UTC(),
 	})
+	// This trace is the run's last (interrupted is terminal), so the chain
+	// can close here — which is what makes the comment above true: until
+	// this seal existed the chain was never built by anyone. Best-effort
+	// and loud on failure, like every other seal site.
+	if serr := audit.SealRunTraceChain(ctx, l.store, runID); serr != nil {
+		log.Warn("takeover: trace chain seal failed", "run_id", runID, "error", serr)
+	}
 
 	// The lease row dies with the settlement: a resuming executor (Retry)
 	// registers fresh and the old owner's writes are fenced out by the
