@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 5
+const currentSchemaVersion = 7
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -96,6 +96,133 @@ var migrations = []migrationStep{
 		stmts: []string{
 			`ALTER TABLE approvals ADD COLUMN plan_hash TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE approvals ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
+	{
+		// Multi-tenancy: a first-class tenant_id column on every tenant-owned
+		// table, so a read is a plain indexed predicate instead of a join or
+		// an in-memory filter over an unfiltered result set.
+		//
+		// locks is deliberately absent — see the note in schema.sql. Host
+		// exclusion must stay global or two tenants could hold the same host.
+		//
+		// Backfill (three rules, applied in order):
+		//   1. runs: a pre-existing "tenant:<id>|..." IncidentID tag already
+		//      encodes real ownership, so preserve it rather than dumping
+		//      those rows into default.
+		//   2. every run-scoped child row copies its parent run's tenant.
+		//   3. everything with no run parent (credentials, targets, groups,
+		//      run-less audit rows) lands in DefaultTenantID.
+		//
+		// The trace WORM trigger is dropped and recreated so tenant_id joins
+		// the immutable column set: without that, an UPDATE could move a
+		// trace row into another tenant's scope. Dropping first is required
+		// because SQLite has no CREATE OR REPLACE TRIGGER.
+		version: 6,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE batches ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE steps ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE trace ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE approvals ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE audit ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE credentials ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE inventory_groups ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE targets ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE run_assignment ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+
+			`CREATE INDEX IF NOT EXISTS idx_runs_tenant     ON runs (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_batches_tenant ON batches (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_steps_tenant   ON steps (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_trace_tenant   ON trace (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_approvals_tenant ON approvals (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_audit_tenant   ON audit (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_credentials_tenant ON credentials (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_inventory_groups_tenant ON inventory_groups (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_targets_tenant ON targets (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_assignment_tenant ON run_assignment (tenant_id)`,
+
+			// Rule 1: runs whose IncidentID carries a legacy tenant tag.
+			`UPDATE runs SET tenant_id = substr(incident_id, 8, instr(substr(incident_id, 8), '|') - 1)` +
+				` WHERE incident_id LIKE 'tenant:%'` +
+				` AND instr(substr(incident_id, 8), '|') > 0`,
+			// ...and the same tag with no incident part after the separator.
+			`UPDATE runs SET tenant_id = substr(incident_id, 8)` +
+				` WHERE incident_id LIKE 'tenant:%'` +
+				` AND instr(substr(incident_id, 8), '|') = 0`,
+			// Rule 1 remainder: everything else on runs.
+			`UPDATE runs SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+
+			// Rule 2: run-scoped children inherit the parent run's tenant.
+			`UPDATE batches SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = batches.run_id) WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE steps   SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = steps.run_id)   WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE trace   SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = trace.run_id)   WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE approvals SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = approvals.run_id) WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE audit   SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = audit.run_id)   WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE run_assignment SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = run_assignment.run_id) WHERE run_id IN (SELECT id FROM runs)`,
+
+			// Rule 3: no run parent to inherit from.
+			`UPDATE credentials     SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+			`UPDATE inventory_groups SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+			`UPDATE targets          SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+			`UPDATE audit            SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+
+			// Recreate the WORM trigger with tenant_id in the immutable set.
+			`DROP TRIGGER IF EXISTS worm_prevent_trace_update`,
+			`CREATE TRIGGER worm_prevent_trace_update
+BEFORE UPDATE ON trace
+WHEN NEW.id != OLD.id
+  OR NEW.run_id != OLD.run_id
+  OR NEW.event != OLD.event
+  OR NEW.actor != OLD.actor
+  OR NEW.detail != OLD.detail
+  OR NEW.tenant_id != OLD.tenant_id
+  OR NEW.timestamp != OLD.timestamp
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: trace content fields cannot be updated');
+END`,
+		},
+	},
+	{
+		// v7: the audit action log joins the tamper-evident set.
+		//
+		// Until now only `trace` was chained. `audit` — the high-level "who did
+		// what to which target" log that GET /audit/log actually serves — had
+		// neither a chain nor a WORM guard; it was append-only only by the
+		// absence of an update method on the Store interface, which a DBA is
+		// not obliged to respect.
+		//
+		// The chain is GLOBAL rather than per-run: audit rows with an empty
+		// run_id are the login / config / credential actions, and a per-run
+		// chain structurally cannot cover them.
+		version: 7,
+		stmts: []string{
+			`ALTER TABLE audit ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE audit ADD COLUMN curr_hash TEXT NOT NULL DEFAULT ''`,
+			// The chain is walked in (timestamp, id) order; this makes that
+			// walk an index scan rather than a sort.
+			`CREATE INDEX IF NOT EXISTS idx_audit_chain ON audit (timestamp, id)`,
+			// The chain detects edits; the trigger prevents edits AND deletes.
+			// Both are needed — without the trigger a tampered row could simply
+			// be deleted and the chain would verify on the shortened sequence.
+			`CREATE TRIGGER worm_prevent_audit_update
+BEFORE UPDATE ON audit
+WHEN NEW.id != OLD.id
+  OR NEW.run_id != OLD.run_id
+  OR NEW.action != OLD.action
+  OR NEW.actor != OLD.actor
+  OR NEW.target != OLD.target
+  OR NEW.result != OLD.result
+  OR NEW.tenant_id != OLD.tenant_id
+  OR NEW.timestamp != OLD.timestamp
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: audit content fields cannot be updated');
+END`,
+			`CREATE TRIGGER worm_prevent_audit_delete
+BEFORE DELETE ON audit
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: audit records cannot be deleted');
+END`,
 		},
 	},
 }

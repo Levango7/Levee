@@ -244,28 +244,10 @@ func TestNewTenantIDUniqueness(t *testing.T) {
 	}
 }
 
-func TestEncodeDecodeTenantTag(t *testing.T) {
-	cases := []struct {
-		tenantID string
-		incident string
-	}{
-		{"t1", ""},
-		{"t1", "inc-123"},
-		{"t1", "inc-with|pipe"},
-	}
-	for _, c := range cases {
-		encoded := EncodeTenantTag(c.tenantID, c.incident)
-		assert.True(t, strings.HasPrefix(encoded, "tenant:"+c.tenantID))
-		tid, inc := DecodeTenantTag(encoded)
-		assert.Equal(t, c.tenantID, tid)
-		assert.Equal(t, c.incident, inc)
-	}
-}
-
-func TestDecodeTenantTagLegacy(t *testing.T) {
-	// A legacy incident id without the tenant: prefix should round-trip
-	// as ("", original).
-	tid, inc := DecodeTenantTag("inc-legacy")
-	assert.Empty(t, tid)
-	assert.Equal(t, "inc-legacy", inc)
-}
+// The IncidentID "tenant:<id>|<incident>" encoding that used to carry tenant
+// ownership has been removed along with the IsolatedStore that introduced it.
+// Ownership now lives in the dedicated tenant_id column, and the only code
+// that still understands the legacy prefix is the schema v5/v6 migration that
+// backfills it — see the MigrationBackfillsFromIncidentIDTag test in
+// internal/state/tenant_isolation_test.go, which is where that knowledge
+// belongs and where it is actually exercised.

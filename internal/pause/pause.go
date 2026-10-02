@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
@@ -194,7 +195,7 @@ func NewDenialAuditRecorder(store state.Store) func(actor, permission string) {
 				"actor", actor, "permission", permission, "err", err)
 			return
 		}
-		audit := &state.Audit{
+		entry := &state.Audit{
 			ID:        id,
 			Action:    ActionPermissionDenied,
 			Actor:     actor,
@@ -202,7 +203,7 @@ func NewDenialAuditRecorder(store state.Store) func(actor, permission string) {
 			Result:    ResultDenied,
 			Timestamp: time.Now().UTC(),
 		}
-		if err := store.CreateAudit(context.Background(), audit); err != nil {
+		if err := audit.Record(context.Background(), store, entry); err != nil {
 			log.Warn("pause: permission-denied audit write failed",
 				"actor", actor, "permission", permission, "err", err)
 		}
@@ -421,7 +422,7 @@ func (m *PauseManager) writeAudit(ctx context.Context, action, actor, target, re
 	if err != nil {
 		return err
 	}
-	audit := &state.Audit{
+	entry := &state.Audit{
 		ID:        id,
 		RunID:     runIDForAudit,
 		Action:    action,
@@ -430,7 +431,7 @@ func (m *PauseManager) writeAudit(ctx context.Context, action, actor, target, re
 		Result:    result,
 		Timestamp: time.Now().UTC(),
 	}
-	return m.store.CreateAudit(ctx, audit)
+	return audit.Record(ctx, m.store, entry)
 }
 
 // newID generates a unique audit identifier using crypto/rand. The ID has

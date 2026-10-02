@@ -8,7 +8,7 @@
 |------|------|------|------|
 | `internal/credential/` | `store.go`, `provider.go` | 637 | AES-GCM 加密存储 + argon2id 密钥派生 + 按需获取 |
 | `internal/permission/` | `matrix.go`, `checker.go` | 677 | 团队×环境权限矩阵 + 权限校验 |
-| `internal/audit/` | `trace.go`, `hashchain.go`, `worm.go`, `verify.go` | 908 | 审计 trace + SHA-256 哈希链 + WORM 存储 + 校验 |
+| `internal/audit/` | `trace.go`, `hashchain.go`, `worm.go`, `verify.go`, `auditchain.go`, `record.go` | 1119 | 审计 trace + SHA-256 哈希链（trace 按 run、audit 全局）+ WORM 存储 + 校验 |
 
 同时审查了支撑层：`internal/state/`（SQLite 持久化）、`internal/log/`（日志）。
 
@@ -422,6 +422,29 @@
 
 ---
 
+#### [SA-027] audit 动作日志无防篡改——既无 WORM 触发器也无哈希链 [已修复 v1.14.0]
+
+**位置**：`internal/state/schema.sql:251-269`（WORM 触发器），`internal/state/migrate.go:186-227`（v7 迁移步），`internal/audit/auditchain.go`（链构建与校验），`internal/audit/record.go`（写入即封链），`internal/grpc/rest.go:1307-1431`（`/audit/verify`）
+
+**描述**：`trace` 表自 v1.0.0 起即受 WORM 触发器与按 run 哈希链保护（SA-001 / SA-002），但 `audit` 表——即 `GET /audit/log` 实际服务的"谁对哪个目标做了什么"高层动作日志——两者皆无。它此前只是**因为 Store 接口上恰好没有 update 方法**才表现为 append-only，而 DBA 没有义务尊重一个 Go 接口。
+
+**修复要点**：
+
+1. schema v7（PG v6）为 `audit` 增加 `prev_hash` / `curr_hash` 与 `idx_audit_chain (timestamp, id)`，并加 UPDATE / DELETE 触发器。`tenant_id` 纳入不可变列——否则一次 UPDATE 就能把审计记录搬进别的租户而链毫无反应。
+2. 链是**全局**而非按 run：`run_id` 为空的 audit 行恰是 login / config / credential 这类安全相关性最高的记录，按 run 建链结构上覆盖不到。多租户开启时链的范围即 Store 暴露的范围（`TenantStore` 注入租户谓词），表现为每租户一条链——范围收窄，不是漏洞。
+3. 链按存储的 `(timestamp, id)` 升序**重算**，而非写入时向链尾追加。原因是 audit id 为 8 字节随机 hex（`internal/grpc/change_service.go:169`），同毫秒写入的两行按 id 排序本质随机；追加式封链会把后插入的行挂到先插入的行上，直到验证时才以"顺序相反"暴露。重算式封链是幂等的：两个并发 `Seal` 对重叠行必然导出相同哈希，因此不会分叉（`TestAuditChain_ConcurrentSealIsSafe` 覆盖）。
+4. **写入路径真正封链**：`audit.Record` 在 `CreateAudit` 之后立即 `Seal`，10 处生产调用点全部改走它（`change_service` / `rest_gate` / `lock` / `pause`×2 / `template` / `cmd`×4）；非测试代码中的裸 `store.CreateAudit` 已清零。这一步是必需的：只加列和触发器而不封链，验证会永远报 `empty_hash`，或者更糟——被改成"忽略空哈希"，那恰恰是留给 DBA 的盲区。
+5. `GET /audit/verify` 响应新增 `auditChain` 成员并折叠进顶层 `valid`。**未改 proto**：`levee.proto` 的 `VerifyHashChainResponse` 字段全是 run 维度的，且本机无 `protoc` 无法重新生成，硬塞进 `RunVerification` 会误报其覆盖范围。
+
+**已知边界**：
+
+- 链能检出篡改，**挡不住删除**——删掉中间一行后，后一行指向的哈希已无来源。所以 WORM 触发器是配套而非冗余（`TestAuditChain_DetectsDeletion` 先摘触发器再删，验证必须报 `prev_hash_mismatch`）。
+- `Seal` 每次全量读取可见的 audit 行（无 LIMIT），稳态下只写新增行，但读成本随日志增长。超大审计库需要改成分批封链。
+- **trace 链的构建器在生产中仍然零接线**：`HashChainBuilder` 的全部调用点都在 `tests/integration/*` 与 `*_test.go` 内，生产代码从未调用 `Build` / `BuildBatch` / `BuildForce`——即按 run 的 trace 哈希链至今没有在生产中构建过任何一条。这与 SA-007 同属"机制存在但生产零接线"，本轮**未修**（改动会触及 trace 写入路径，超出本次范围），登记为已知限制而非宣称已闭环。
+- PG 侧（plpgsql 版触发器、占位符编号、v6 迁移步）本机无实例，**未执行验证**，仅经编译期检查与逐行比对。
+
+---
+
 ## 总结
 
 | 严重级别 | 数量 | 编号 |
@@ -473,8 +496,9 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 | SA-024 | INFO | 无需修复 | trace Input/Output 自动脱敏，实现正确（覆盖面已由 SA-009/010 增强） |
 | SA-025 | INFO | 无需修复 | WORM checksum 覆盖全部内容字段，实现正确 |
 | SA-026 | INFO | 无需修复 | ChainVerifier 三类篡改检出，实现正确 |
+| SA-027 | LOW | 已修复（v1.14.0） | audit 表补 WORM 触发器 + 全局哈希链（schema v7 / PG v6）；链按存储 `(timestamp, id)` 重算封链（audit id 为随机 hex，追加式封链在同毫秒下顺序不可靠），`audit.Record` 写入即封链并覆盖全部 10 处生产调用点；`GET /audit/verify` 增 `auditChain`。**残留**：trace 链构建器生产零接线（仅测试调用）、`Seal` 全量扫描、PG 侧未实测 |
 
-统计（2026-09-06 终态）：26 项中 已修复 17（v1.0.0 ×3、v1.11.0 ×5、v1.13.0 ×9）、部分修复+边界 2（SA-007、SA-011）、无需修复 7（SA-020~026）、未闭环 0。
+统计（2026-09-06 终态，2026-10-02 增补 SA-027）：26 项中 已修复 17（v1.0.0 ×3、v1.11.0 ×5、v1.13.0 ×9）、部分修复+边界 2（SA-007、SA-011）、无需修复 7（SA-020~026）、未闭环 0；另新增 SA-027（v1.14.0，已修复+残留边界）。
 
 ### 2026-09-06 核查记录
 
@@ -507,7 +531,10 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 
 ### 已知限制
 
-- **多租户隔离未接线**：`internal/tenant.IsolatedStore` 已实现且测试完备，但 daemon 服务路径（`levee serve`）当前为单租户运行，未按请求接入租户上下文。多租户部署前必须完成 per-request 租户传播的架构改造；在此之前请勿将 `--tenant` 相关能力视为生产可用。
+- **多租户隔离：已接线，默认关闭**：请求级租户传播已落地——租户取自**已验签的凭据**（命名令牌 `--auth-token name=secret,tenant`、OIDC `auth.oidc.tenant_claim`），经认证拦截器注入上下文，`internal/tenant.TenantStore` 对 10 张租户表施加 SQL 级谓词，76 个 Store 方法全部覆盖（`var _ state.Store` 编译期断言；方法数可用 `awk '/^type Store interface/,/^}/' internal/state/store.go | grep -cE '^\s+[A-Z][A-Za-z0-9]*\('` 复核）。`config.example.yaml` 的 `tenant.enabled` **默认为 false**，关闭时行为与引入该功能前逐字节一致。
+  开启前必须知道的三件事：① **fail-closed**——上下文无租户的请求被拒绝而非回落到 default，因此**所有**凭据都必须绑定租户，否则 serve 拒绝启动；② **GitHub SSO 拿不到租户**（OAuth 只证明身份不证明归属），多租户部署须改用命名令牌或 OIDC；③ 后台接管/派发循环（takeover / dispatch）刻意使用未包裹的 store——它们无可用请求上下文，其写操作目前全是**不写 tenant_id** 的窄状态更新；将来若在这些循环中新增 `Create*` 调用，会写出空租户行，需要配套守护测试。
+  未覆盖的边角：`ListCredentials` 与 `ListInventoryGroups` 的基础方法签名不带 filter，无法在 SQL 层加谓词，由 `TenantStore` 在内存中按租户过滤（凭据密文为 AES-GCM，过滤发生在任何调用方拿到指针之前）。
+- **trace 哈希链在生产中从未构建**：`HashChainBuilder`（`internal/audit/hashchain.go`）的 `Build` / `BuildBatch` / `BuildForce` 全部调用点都位于 `tests/integration/*` 与 `*_test.go`，生产代码零调用——即 SA-002 声称修复的"按 run 哈希链"至今没有在生产中封过一条。`/audit/verify` 校验的 trace 部分因此恒为"无链可验"。与 SA-007 同属"机制存在但生产零接线"，**本轮未修**（改动会触及 trace 写入路径）。相比之下 audit 表的链已真正接线（见 SA-027），因为 audit 的写入是分散在十处的独立调用，链的封口点可以收敛到一个 `audit.Record` 助手，而 trace 的写入走的是 `TraceRecorder` 且涉及 checksum 与链两套字段的先后顺序，需要单独设计。
 - **沙箱内存限制**：Unix 平台子进程内存不受限（`setrlimit` 仅作用于宿主进程，见 `internal/plugin/sandbox_unix.go`）；依赖墙钟超时兜底。需要强隔离时请在容器/cgroup 层面限制。
 - **速率限制**：REST 网关内置全局限流（令牌桶，`--rate-limit` / `--rate-burst`，429 + `Retry-After`）；**gRPC 原生端口无内置限流**，请在 LB/网关侧实施。
 - **审计 Actor 为声明式身份（单令牌模式）/可证明身份（命名令牌或 SSO）**：审计记录中的 Actor 在共享单 token（`--token`/`LEVEE_TOKEN`）模式下来自客户端自报（CLI 端取 `LEVEE_ACTOR` 环境变量，缺省 `cli-user`；服务端从请求元数据读取，缺省 `grpc-user`），是**断言（asserted）而非可证明（proven）**——任何持有 token 的调用方都可自称任意身份。启用命名多令牌（`--auth-token name=secret`）、OIDC 或 GitHub SSO 后，认证主体注入请求上下文并**优先于**自报的 `X-Acting-As`，Actor 成为可证明身份。需要不可抵赖性时须启用上述凭据源之一或 mTLS。
@@ -516,4 +543,4 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 - **执行引擎凭据面（v1.13.0）**：`serve --engine-enabled` 的目标通道凭据解析依赖 `LEVEE_MASTER_PASSWORD`（未设置时匿名拨号并输出警告，与目标探测同口径）。SA-011 的已知残留在此路径上同样成立：解析结果经 `CredentialRef.Password`（string）传递、不可清零。执行日志中的命令输出可能包含目标主机回显的敏感内容——审计侧有 `security.sensitive_fields` 脱敏兜底，但目标侧回显的治理（如命令模板避免打印机密）属使用方责任。
 
 
-**风险评级**（2026-09-08 修订）：3 个 CRITICAL 已在 v1.0.0 修复；5 个 HIGH 中 SA-004/005/006/008 已修复（v1.11.0），SA-007 机制与 CLI 拒绝路径已接线、剩余边界见修复摘要。26 项台账全部终态、无未闭环 HIGH 及以上项（原 Unreleased 批次的 9 项修复已随 **v1.13.0** 发布）。生产准入决策改以上方"已知限制"为约束清单（重点：多租户未接线、gRPC 原生端口无限流、单令牌模式 Actor 不可证明、执行引擎凭据面依赖 `LEVEE_MASTER_PASSWORD`）。
+**风险评级**（2026-09-08 修订）：3 个 CRITICAL 已在 v1.0.0 修复；5 个 HIGH 中 SA-004/005/006/008 已修复（v1.11.0），SA-007 机制与 CLI 拒绝路径已接线、剩余边界见修复摘要。26 项台账全部终态、无未闭环 HIGH 及以上项（原 Unreleased 批次的 9 项修复已随 **v1.13.0** 发布）。生产准入决策改以上方"已知限制"为约束清单（重点：gRPC 原生端口无限流、单令牌模式 Actor 不可证明、执行引擎凭据面依赖 `LEVEE_MASTER_PASSWORD`）。多租户隔离已接线但默认关闭，开启前的约束见上方对应条目。

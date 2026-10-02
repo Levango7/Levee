@@ -26,6 +26,10 @@ import (
 type SessionClaims struct {
 	Subject string   `json:"sub"`
 	Roles   []string `json:"roles,omitempty"`
+	// Tenant is the tenant the SSO session acts for. It is minted into the
+	// signed token so the tenant cannot be changed after login by the browser
+	// holding it. Empty for a single-tenant deployment.
+	Tenant string `json:"tenant,omitempty"`
 	// Login is the SSO provider that authenticated the subject ("github");
 	// recorded for audit trail clarity.
 	Login string `json:"login,omitempty"`
@@ -67,23 +71,25 @@ func NewSessionManager(secret string) (*SessionManager, error) {
 // random secret (true) or a configured one (false).
 func (m *SessionManager) Ephemeral() bool { return m != nil && m.ephemeral }
 
-// Issue mints a session token for the given identity.
-func (m *SessionManager) Issue(subject string, roles []string, login string) (string, error) {
+// Issue mints a session token for the given identity. tenant is the tenant the
+// session acts for; empty means single-tenant.
+func (m *SessionManager) Issue(subject string, roles []string, login string, tenant string) (string, error) {
 	if m == nil {
 		return "", errors.New("session: manager not configured")
 	}
-	return m.issueAt(subject, roles, login, time.Now())
+	return m.issueAt(subject, roles, login, tenant, time.Now())
 }
 
 // issueAt is split out so tests can mint tokens anchored at an arbitrary
 // time (expired-token fixtures) without exposing the hook publicly.
-func (m *SessionManager) issueAt(subject string, roles []string, login string, now time.Time) (string, error) {
+func (m *SessionManager) issueAt(subject string, roles []string, login string, tenant string, now time.Time) (string, error) {
 	if m == nil {
 		return "", errors.New("session: manager not configured")
 	}
 	claims := SessionClaims{
 		Subject:  subject,
 		Roles:    roles,
+		Tenant:   tenant,
 		Login:    login,
 		IssuedAt: now.Unix(),
 		Expiry:   now.Add(SessionTTL).Unix(),

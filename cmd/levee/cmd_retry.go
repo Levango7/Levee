@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -104,7 +105,7 @@ func runRetry(cmd *cobra.Command, args []string) error {
 	}
 
 	// 6. Record an audit entry.
-	audit := &state.Audit{
+	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     retryOptRunID,
 		Action:    "retry",
@@ -113,7 +114,7 @@ func runRetry(cmd *cobra.Command, args []string) error {
 		Result:    "success",
 		Timestamp: now,
 	}
-	if err := store.CreateAudit(ctx, audit); err != nil {
+	if err := audit.Record(ctx, store, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write retry audit: %v\n", err)
 	}
 
@@ -189,7 +190,7 @@ func runRetryHost(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	audit := &state.Audit{
+	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     retryHostOptRunID,
 		Action:    "retry_host",
@@ -198,7 +199,7 @@ func runRetryHost(cmd *cobra.Command, args []string) error {
 		Result:    "success",
 		Timestamp: now,
 	}
-	if err := store.CreateAudit(ctx, audit); err != nil {
+	if err := audit.Record(ctx, store, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write retry-host audit: %v\n", err)
 	}
 

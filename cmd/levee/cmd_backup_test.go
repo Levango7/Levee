@@ -192,7 +192,15 @@ func TestBackupRestoreEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 
 	// 2. Tamper with the live database after the snapshot.
+	//
+	// The audit WORM triggers refuse an UPDATE of a content column, which is
+	// the control working as designed — so the tamper has to model an
+	// operator who dropped the guard first. Everything below then also
+	// demonstrates the other half: restore still rewrites the audit table,
+	// because it replaces the database file wholesale.
 	db, err := sql.Open("sqlite", dbPath)
+	require.NoError(t, err)
+	_, err = db.Exec(`DROP TRIGGER worm_prevent_audit_update`)
 	require.NoError(t, err)
 	_, err = db.Exec(`UPDATE audit SET action = 'TAMPERED' WHERE id = 'audit-backup-1'`)
 	require.NoError(t, err)
@@ -226,6 +234,17 @@ func TestBackupRestoreEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, audit)
 	assert.Equal(t, "backup-test", audit.Action)
+
+	// The restored file must also carry the WORM guard again. Restore copies
+	// the backup over the live database, so a trigger dropped before the
+	// snapshot would be reinstated by the restore rather than surviving in
+	// the tampered file.
+	var guard int
+	err = store.DB().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'worm_prevent_audit_update'`,
+	).Scan(&guard)
+	require.NoError(t, err)
+	assert.Equal(t, 1, guard, "the audit WORM trigger must be back after restore")
 }
 
 func TestBackupCmdExplicitOutputAndVerifyOnly(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
@@ -88,7 +89,7 @@ func runRollback(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("update run: %w", err)
 	}
 
-	audit := &state.Audit{
+	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     rollbackOptRunID,
 		Action:    "rollback",
@@ -97,7 +98,7 @@ func runRollback(cmd *cobra.Command, args []string) error {
 		Result:    "triggered",
 		Timestamp: now,
 	}
-	if err := store.CreateAudit(ctx, audit); err != nil {
+	if err := audit.Record(ctx, store, entry); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write rollback audit: %v\n", err)
 	}
 

@@ -16,6 +16,9 @@ coverage.txt
 coverage_*
 coverage
 zn_cov
+# Ad-hoc coverage profiles named after the package they cover. Root-anchored
+# on purpose: a bare `audit` pattern would also ignore internal/audit/.
+/audit
 
 # IDE
 .idea/

@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// DefaultTenantID is the owning tenant assigned to rows that predate
+// multi-tenancy (or that have no tenant context when it is enabled). It is
+// also the tenant a deployment runs as in single-tenant mode, so an
+// unconfigured LEVEE behaves exactly as it did before tenant_id existed:
+// every row carries this value and the isolation predicate always matches.
+const DefaultTenantID = "default"
+
 // Run is a top-level change execution unit. One Run owns multiple Batches
 // executed serially; each Batch owns multiple Steps executed concurrently
 // across hosts.
@@ -26,6 +33,17 @@ type Run struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 	Creator        string    `json:"creator"`
 	IncidentID     string    `json:"incident_id"`
+	// TenantID is the owning tenant. It is denormalised onto every
+	// tenant-owned table (rather than derived through runs) so that every
+	// read is a plain indexed `AND tenant_id = ?` with no join or subquery —
+	// a single missed predicate would be a cross-tenant read, so the cheap
+	// shape is the safe one. internal/state/tenant_consistency_test.go
+	// asserts a child row's tenant_id always equals its parent run's.
+	//
+	// Empty means "unowned/legacy" and is only ever written by the migration
+	// backfill; once multi-tenancy is enabled every create path stamps it
+	// from the request context. See internal/tenant for the enforcement.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // Batch is a single batch within a run. Batches are numbered sequentially
@@ -40,6 +58,7 @@ type Batch struct {
 	Failed      int        `json:"failed"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	TenantID    string     `json:"tenant_id,omitempty"`
 }
 
 // Step is a per-host step execution record. One Step corresponds to one
@@ -58,6 +77,7 @@ type Step struct {
 	DurationMs  int        `json:"duration_ms"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	TenantID    string     `json:"tenant_id,omitempty"`
 }
 
 // Trace is an audit trace record. Traces form a hash chain per run: each
@@ -71,6 +91,7 @@ type Trace struct {
 	PrevHash  string    `json:"prev_hash"`
 	CurrHash  string    `json:"curr_hash"`
 	Timestamp time.Time `json:"timestamp"`
+	TenantID  string    `json:"tenant_id,omitempty"`
 }
 
 // Approval is a single approval record within a multi-level approval chain.
@@ -91,6 +112,8 @@ type Approval struct {
 	// CAS (UpdateApprovalIfPending). It guards against a stale writer
 	// overwriting a partial vote that another actor just recorded.
 	Revision int64 `json:"revision"`
+	// TenantID mirrors the owning run's tenant (see Run.TenantID).
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // MatchesPlan reports whether this approval row authorises the plan version
@@ -142,17 +165,34 @@ type Credential struct {
 	CreatedAt     time.Time  `json:"created_at"`
 	RotatedAt     *time.Time `json:"rotated_at,omitempty"`
 	Tags          string     `json:"tags,omitempty"`
+	// TenantID owns the credential. Credentials are tenant-scoped: a secret
+	// readable by one tenant must never be resolvable by another.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // Audit is a high-level audit log entry. Audit entries describe who did what
 // to which target and when; they complement the fine-grained Trace chain.
 type Audit struct {
-	ID        string    `json:"id"`
-	RunID     string    `json:"run_id"`
-	Action    string    `json:"action"`
-	Actor     string    `json:"actor"`
-	Target    string    `json:"target"`
-	Result    string    `json:"result"`
+	ID     string `json:"id"`
+	RunID  string `json:"run_id"`
+	Action string `json:"action"`
+	Actor  string `json:"actor"`
+	Target string `json:"target"`
+	Result string `json:"result"`
+	// TenantID is carried on the row rather than derived from RunID because
+	// audit entries exist without a run (login, config, credential actions —
+	// RunID is '' for those), so there is no parent to derive from.
+	TenantID string `json:"tenant_id,omitempty"`
+	// PrevHash / CurrHash form a GLOBAL chain over the audit log, in
+	// (Timestamp, ID) order. Global rather than per-run because a run-less
+	// entry is exactly the security-relevant kind and a per-run chain cannot
+	// reach it. Empty means "not yet chained"; internal/audit's chain builder
+	// fills them, after which the WORM triggers make every other column
+	// immutable.
+	PrevHash string `json:"prev_hash,omitempty"`
+	CurrHash string `json:"curr_hash,omitempty"`
+	// Timestamp participates in the chain ORDER, so it is part of the hashed
+	// content, not just a sort key.
 	Timestamp time.Time `json:"timestamp"`
 }
 
@@ -170,37 +210,46 @@ type RunFilter struct {
 	// Offset skips the first Offset matching rows (for keyset-free
 	// pagination). Negative values are treated as 0.
 	Offset int
+	// TenantID restricts results to one owning tenant. Empty means "no
+	// tenant predicate" — that is the single-tenant / migration path and is
+	// only reachable when multi-tenancy is disabled. internal/tenant always
+	// sets it.
+	TenantID string
 }
 
 // BatchFilter narrows ListBatches results within a run.
 type BatchFilter struct {
-	RunID  string
-	Status string
-	Limit  int
+	RunID    string
+	Status   string
+	Limit    int
+	TenantID string
 }
 
 // StepFilter narrows ListSteps results.
 type StepFilter struct {
-	RunID   string
-	BatchID string
-	Host    string
-	Status  string
-	Limit   int
+	RunID    string
+	BatchID  string
+	Host     string
+	Status   string
+	Limit    int
+	TenantID string
 }
 
 // TraceFilter narrows ListTraces results.
 type TraceFilter struct {
-	RunID string
-	Event string
-	Limit int
+	RunID    string
+	Event    string
+	Limit    int
+	TenantID string
 }
 
 // ApprovalFilter narrows ListApprovals results.
 type ApprovalFilter struct {
-	RunID  string
-	Level  string
-	Status string
-	Limit  int
+	RunID    string
+	Level    string
+	Status   string
+	Limit    int
+	TenantID string
 }
 
 // AuditFilter narrows ListAudits results.
@@ -212,6 +261,8 @@ type AuditFilter struct {
 	// Offset skips the first Offset matching rows (timestamp DESC order).
 	// Negative values are treated as 0. Use with Limit for pagination.
 	Offset int
+	// TenantID restricts results to one owning tenant (see RunFilter).
+	TenantID string
 }
 
 // Target is a managed inventory host. It persists across daemon restarts,
@@ -228,6 +279,10 @@ type Target struct {
 	Reachable     bool              `json:"reachable"`
 	LastCheckedAt *time.Time        `json:"last_checked_at,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
+	// TenantID owns the target host. Host inventory is tenant-scoped, but
+	// deliberately NOT the lock that guards it: `locks` stays global so two
+	// tenants changing the same physical host still mutually exclude.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // InventoryGroup is a hierarchical grouping of targets. Names are unique
@@ -237,6 +292,10 @@ type InventoryGroup struct {
 	Name      string    `json:"name"`
 	ParentID  string    `json:"parent_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+	// TenantID owns the group. Group names are UNIQUE table-wide, which is
+	// intentional: two tenants may not both claim "prod/db" even though
+	// neither can see the other's row.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 // ErrDuplicateTarget is wrapped by UpsertTarget when the (hostname, port)
@@ -260,6 +319,8 @@ type TargetFilter struct {
 	Labels map[string]string
 	Limit  int
 	Offset int
+	// TenantID restricts results to one owning tenant (see RunFilter).
+	TenantID string
 }
 
 // WORMStore is a restricted subset of Store that only allows append-only
@@ -406,6 +467,15 @@ type Store interface {
 	// Audit CRUD.
 	CreateAudit(ctx context.Context, audit *Audit) error
 	GetAudit(ctx context.Context, id string) (*Audit, error)
+	// UpdateAuditChain stamps the chain hashes onto an audit row. It is the
+	// ONLY update the audit WORM triggers permit (they compare every content
+	// column and ignore these two), and it exists for the same reason as
+	// UpdateTraceChecksum: the row is inserted before its position in the
+	// chain is known, so the builder has to write the hashes afterwards.
+	//
+	// It writes nothing else, and it returns an error when no row matched —
+	// a silent no-op here would produce a chain with a hole in it.
+	UpdateAuditChain(ctx context.Context, id string, prevHash string, currHash string) error
 	ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit, error)
 
 	// Dispatch assignment CRUD (design-cluster-dispatch.md).
@@ -503,6 +573,9 @@ type Assignment struct {
 	Result     string // completed | failed | rolled_back | '' (while not done)
 	AssignedAt time.Time
 	UpdatedAt  time.Time
+	// TenantID mirrors the dispatched run's tenant (see Run.TenantID), so a
+	// leader's cross-node dispatch view can be scoped per tenant.
+	TenantID string
 }
 
 // AssignmentFilter narrows ListAssignments results. Empty fields are ignored;
@@ -516,6 +589,8 @@ type AssignmentFilter struct {
 	// interrupted)). Ignored when empty.
 	ExcludeStates []string
 	Limit         int
+	// TenantID restricts results to one owning tenant (see RunFilter).
+	TenantID string
 }
 
 // ClusterNode is the persisted view of a cluster member

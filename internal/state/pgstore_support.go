@@ -96,6 +96,124 @@ var pgMigrations = []migrationStep{
 			`ALTER TABLE approvals ADD COLUMN revision BIGINT NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		// Multi-tenancy: tenant_id on every tenant-owned table (see the v6
+		// step in migrations for the full rationale and the three backfill
+		// rules). locks is deliberately absent — host exclusion stays global.
+		//
+		// Only the parts that genuinely differ from SQLite live here: the
+		// backfill uses PostgreSQL string functions (split_part instead of
+		// instr/substr) and the WORM trigger is a plpgsql function that must
+		// be replaced to pick up tenant_id.
+		version: 5,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE batches ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE steps ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE trace ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE approvals ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE audit ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE credentials ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE inventory_groups ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE targets ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE run_assignment ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`,
+
+			`CREATE INDEX IF NOT EXISTS idx_runs_tenant     ON runs (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_batches_tenant ON batches (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_steps_tenant   ON steps (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_trace_tenant   ON trace (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_approvals_tenant ON approvals (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_audit_tenant   ON audit (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_credentials_tenant ON credentials (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_inventory_groups_tenant ON inventory_groups (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_targets_tenant ON targets (tenant_id)`,
+			`CREATE INDEX IF NOT EXISTS idx_assignment_tenant ON run_assignment (tenant_id)`,
+
+			// Rule 1: runs carrying a legacy "tenant:<id>|..." IncidentID tag.
+			`UPDATE runs SET tenant_id = split_part(incident_id, '|', 1)` +
+				` WHERE incident_id LIKE 'tenant:%' AND position('|' in incident_id) > 0`,
+			`UPDATE runs SET tenant_id = substr(incident_id, 8)` +
+				` WHERE incident_id LIKE 'tenant:%' AND position('|' in incident_id) = 0`,
+			// Rule 1 remainder.
+			`UPDATE runs SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+
+			// Rule 2: run-scoped children inherit the parent run's tenant.
+			`UPDATE batches SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = batches.run_id) WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE steps   SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = steps.run_id)   WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE trace   SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = trace.run_id)   WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE approvals SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = approvals.run_id) WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE audit   SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = audit.run_id)   WHERE run_id IN (SELECT id FROM runs)`,
+			`UPDATE run_assignment SET tenant_id = (SELECT r.tenant_id FROM runs r WHERE r.id = run_assignment.run_id) WHERE run_id IN (SELECT id FROM runs)`,
+
+			// Rule 3: no run parent to inherit from.
+			`UPDATE credentials      SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+			`UPDATE inventory_groups SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+			`UPDATE targets          SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+			`UPDATE audit            SET tenant_id = '` + DefaultTenantID + `' WHERE tenant_id = ''`,
+
+			// Replace the WORM function so tenant_id joins the immutable set
+			// (CREATE OR REPLACE FUNCTION is atomic in PostgreSQL).
+			`CREATE OR REPLACE FUNCTION levee_worm_prevent_trace_update() RETURNS TRIGGER AS $fn$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.run_id IS DISTINCT FROM OLD.run_id
+       OR NEW.event IS DISTINCT FROM OLD.event
+       OR NEW.actor IS DISTINCT FROM OLD.actor
+       OR NEW.detail IS DISTINCT FROM OLD.detail
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.timestamp IS DISTINCT FROM OLD.timestamp THEN
+        RAISE EXCEPTION 'WORM violation: trace content fields cannot be updated';
+    END IF;
+    RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql`,
+		},
+	},
+	{
+		// v6 (PostgreSQL): the audit action log joins the tamper-evident set.
+		// See the SQLite v7 step in migrate.go for the full rationale; only
+		// the trigger syntax differs here.
+		//
+		// The chain is GLOBAL rather than per-run: audit rows with an empty
+		// run_id are the login / config / credential actions, and a per-run
+		// chain structurally cannot cover them.
+		version: 6,
+		stmts: []string{
+			`ALTER TABLE audit ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE audit ADD COLUMN curr_hash TEXT NOT NULL DEFAULT ''`,
+			`CREATE INDEX IF NOT EXISTS idx_audit_chain ON audit (timestamp, id)`,
+			`CREATE OR REPLACE FUNCTION levee_worm_prevent_audit_update() RETURNS TRIGGER AS $fn$
+BEGIN
+    IF NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.run_id IS DISTINCT FROM OLD.run_id
+       OR NEW.action IS DISTINCT FROM OLD.action
+       OR NEW.actor IS DISTINCT FROM OLD.actor
+       OR NEW.target IS DISTINCT FROM OLD.target
+       OR NEW.result IS DISTINCT FROM OLD.result
+       OR NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.timestamp IS DISTINCT FROM OLD.timestamp THEN
+        RAISE EXCEPTION 'WORM violation: audit content fields cannot be updated';
+    END IF;
+    RETURN NEW;
+END;
+$fn$ LANGUAGE plpgsql`,
+			`CREATE OR REPLACE FUNCTION levee_worm_prevent_audit_delete() RETURNS TRIGGER AS $fn$
+BEGIN
+    RAISE EXCEPTION 'WORM violation: audit records cannot be deleted';
+END;
+$fn$ LANGUAGE plpgsql`,
+			`DROP TRIGGER IF EXISTS worm_prevent_audit_update ON audit`,
+			`CREATE TRIGGER worm_prevent_audit_update
+    BEFORE UPDATE ON audit
+    FOR EACH ROW
+    EXECUTE FUNCTION levee_worm_prevent_audit_update()`,
+			`DROP TRIGGER IF EXISTS worm_prevent_audit_delete ON audit`,
+			`CREATE TRIGGER worm_prevent_audit_delete
+    BEFORE DELETE ON audit
+    FOR EACH ROW
+    EXECUTE FUNCTION levee_worm_prevent_audit_delete()`,
+		},
+	},
 }
 
 // MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and

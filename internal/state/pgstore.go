@@ -54,7 +54,13 @@ const pgBaseSchemaVersion = 1
 // pgCurrentSchemaVersion mirrors currentSchemaVersion for the PostgreSQL
 // migration path. Bump whenever a forward PostgreSQL migration step is added
 // to pgMigrations; pgschema.sql must gain the same change.
-const pgCurrentSchemaVersion = 4
+//
+// It is intentionally NOT equal to currentSchemaVersion: the two ladders
+// version independently (SQLite 6 / PostgreSQL 5 today) because a step can be
+// dialect-specific. What must hold is that each ladder is internally gapless
+// and ends at its own current value — both are asserted by
+// TestMigrationsTable_Shape.
+const pgCurrentSchemaVersion = 6
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
@@ -133,10 +139,11 @@ func (s *PGStore) CreateRun(ctx context.Context, run *Run) error {
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO runs
 		(id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		 approval_status, approval_level, created_at, updated_at, creator, incident_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		 approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		run.ID, run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.CreatedAt, run.UpdatedAt, run.Creator, run.IncidentID,
+		run.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create run: %w", err)
@@ -148,12 +155,13 @@ func (s *PGStore) CreateRun(ctx context.Context, run *Run) error {
 func (s *PGStore) GetRun(ctx context.Context, id string) (*Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
 		id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		approval_status, approval_level, created_at, updated_at, creator, incident_id
+		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id
 		FROM runs WHERE id = $1`, id)
 	r := &Run{}
 	err := row.Scan(
 		&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 		&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
+		&r.TenantID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -171,10 +179,11 @@ func (s *PGStore) UpdateRun(ctx context.Context, run *Run) error {
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE runs SET
 		workflow_name=$1, template_name=$2, params=$3, plan_hash=$4, plan_json=$5, status=$6,
-		approval_status=$7, approval_level=$8, updated_at=$9, creator=$10, incident_id=$11
-		WHERE id=$12`,
+		approval_status=$7, approval_level=$8, updated_at=$9, creator=$10, incident_id=$11, tenant_id=$12
+		WHERE id=$13`,
 		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
+		run.TenantID,
 		run.ID,
 	)
 	if err != nil {
@@ -285,9 +294,15 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 		clauses = append(clauses, "incident_id = $%d")
 		args = append(args, filter.IncidentID)
 	}
+	// Tenant predicate. Appended LAST so the placeholder index matches the arg
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = $%d")
+		args = append(args, filter.TenantID)
+	}
 
 	q := `SELECT id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		approval_status, approval_level, created_at, updated_at, creator, incident_id
+		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id
 		FROM runs`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
@@ -314,6 +329,7 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 		if err := rows.Scan(
 			&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 			&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
+			&r.TenantID,
 		); err != nil {
 			return nil, fmt.Errorf("state: list runs scan: %w", err)
 		}
@@ -348,10 +364,11 @@ func (s *PGStore) CreateBatch(ctx context.Context, batch *Batch) error {
 		return fmt.Errorf("state: create batch: nil batch")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO batches
-		(id, run_id, batch_no, status, total_hosts, succeeded, failed, started_at, completed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		(id, run_id, batch_no, status, total_hosts, succeeded, failed, started_at, completed_at, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		batch.ID, batch.RunID, batch.BatchNo, batch.Status, batch.TotalHosts, batch.Succeeded, batch.Failed,
 		batch.StartedAt, batch.CompletedAt,
+		batch.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create batch: %w", err)
@@ -362,12 +379,12 @@ func (s *PGStore) CreateBatch(ctx context.Context, batch *Batch) error {
 // GetBatch returns the batch with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetBatch(ctx context.Context, id string) (*Batch, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, batch_no, status, total_hosts, succeeded, failed, started_at, completed_at
+		id, run_id, batch_no, status, total_hosts, succeeded, failed, started_at, completed_at, tenant_id
 		FROM batches WHERE id = $1`, id)
 	b := &Batch{}
 	err := row.Scan(
 		&b.ID, &b.RunID, &b.BatchNo, &b.Status, &b.TotalHosts, &b.Succeeded, &b.Failed,
-		&b.StartedAt, &b.CompletedAt,
+		&b.StartedAt, &b.CompletedAt, &b.TenantID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -385,10 +402,10 @@ func (s *PGStore) UpdateBatch(ctx context.Context, batch *Batch) error {
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE batches SET
 		run_id=$1, batch_no=$2, status=$3, total_hosts=$4, succeeded=$5, failed=$6,
-		started_at=$7, completed_at=$8
-		WHERE id=$9`,
+		started_at=$7, completed_at=$8, tenant_id=$9
+		WHERE id=$10`,
 		batch.RunID, batch.BatchNo, batch.Status, batch.TotalHosts, batch.Succeeded, batch.Failed,
-		batch.StartedAt, batch.CompletedAt, batch.ID,
+		batch.StartedAt, batch.CompletedAt, batch.TenantID, batch.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update batch %q: %w", batch.ID, err)
@@ -413,8 +430,14 @@ func (s *PGStore) ListBatches(ctx context.Context, filter BatchFilter) ([]*Batch
 		clauses = append(clauses, "status = $%d")
 		args = append(args, filter.Status)
 	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = $%d")
+		args = append(args, filter.TenantID)
+	}
 
-	q := `SELECT id, run_id, batch_no, status, total_hosts, succeeded, failed, started_at, completed_at
+	q := `SELECT id, run_id, batch_no, status, total_hosts, succeeded, failed, started_at, completed_at, tenant_id
 		FROM batches`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
@@ -436,7 +459,7 @@ func (s *PGStore) ListBatches(ctx context.Context, filter BatchFilter) ([]*Batch
 		b := &Batch{}
 		if err := rows.Scan(
 			&b.ID, &b.RunID, &b.BatchNo, &b.Status, &b.TotalHosts, &b.Succeeded, &b.Failed,
-			&b.StartedAt, &b.CompletedAt,
+			&b.StartedAt, &b.CompletedAt, &b.TenantID,
 		); err != nil {
 			return nil, fmt.Errorf("state: list batches scan: %w", err)
 		}
@@ -468,10 +491,11 @@ func (s *PGStore) CreateStep(ctx context.Context, step *Step) error {
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO steps
 		(id, run_id, batch_id, host, step_name, action, status, exit_code,
-		 stdout, stderr, duration_ms, started_at, completed_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		 stdout, stderr, duration_ms, started_at, completed_at, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		step.ID, step.RunID, step.BatchID, step.Host, step.StepName, step.Action, step.Status, step.ExitCode,
 		step.Stdout, step.Stderr, step.DurationMs, step.StartedAt, step.CompletedAt,
+		step.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create step: %w", err)
@@ -483,12 +507,12 @@ func (s *PGStore) CreateStep(ctx context.Context, step *Step) error {
 func (s *PGStore) GetStep(ctx context.Context, id string) (*Step, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
 		id, run_id, batch_id, host, step_name, action, status, exit_code,
-		stdout, stderr, duration_ms, started_at, completed_at
+		stdout, stderr, duration_ms, started_at, completed_at, tenant_id
 		FROM steps WHERE id = $1`, id)
 	st := &Step{}
 	err := row.Scan(
 		&st.ID, &st.RunID, &st.BatchID, &st.Host, &st.StepName, &st.Action, &st.Status, &st.ExitCode,
-		&st.Stdout, &st.Stderr, &st.DurationMs, &st.StartedAt, &st.CompletedAt,
+		&st.Stdout, &st.Stderr, &st.DurationMs, &st.StartedAt, &st.CompletedAt, &st.TenantID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -506,10 +530,10 @@ func (s *PGStore) UpdateStep(ctx context.Context, step *Step) error {
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE steps SET
 		run_id=$1, batch_id=$2, host=$3, step_name=$4, action=$5, status=$6, exit_code=$7,
-		stdout=$8, stderr=$9, duration_ms=$10, started_at=$11, completed_at=$12
-		WHERE id=$13`,
+		stdout=$8, stderr=$9, duration_ms=$10, started_at=$11, completed_at=$12, tenant_id=$13
+		WHERE id=$14`,
 		step.RunID, step.BatchID, step.Host, step.StepName, step.Action, step.Status, step.ExitCode,
-		step.Stdout, step.Stderr, step.DurationMs, step.StartedAt, step.CompletedAt, step.ID,
+		step.Stdout, step.Stderr, step.DurationMs, step.StartedAt, step.CompletedAt, step.TenantID, step.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update step %q: %w", step.ID, err)
@@ -542,9 +566,15 @@ func (s *PGStore) ListSteps(ctx context.Context, filter StepFilter) ([]*Step, er
 		clauses = append(clauses, "status = $%d")
 		args = append(args, filter.Status)
 	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = $%d")
+		args = append(args, filter.TenantID)
+	}
 
 	q := `SELECT id, run_id, batch_id, host, step_name, action, status, exit_code,
-		stdout, stderr, duration_ms, started_at, completed_at
+		stdout, stderr, duration_ms, started_at, completed_at, tenant_id
 		FROM steps`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
@@ -566,7 +596,7 @@ func (s *PGStore) ListSteps(ctx context.Context, filter StepFilter) ([]*Step, er
 		st := &Step{}
 		if err := rows.Scan(
 			&st.ID, &st.RunID, &st.BatchID, &st.Host, &st.StepName, &st.Action, &st.Status, &st.ExitCode,
-			&st.Stdout, &st.Stderr, &st.DurationMs, &st.StartedAt, &st.CompletedAt,
+			&st.Stdout, &st.Stderr, &st.DurationMs, &st.StartedAt, &st.CompletedAt, &st.TenantID,
 		); err != nil {
 			return nil, fmt.Errorf("state: list steps scan: %w", err)
 		}
@@ -597,9 +627,10 @@ func (s *PGStore) CreateTrace(ctx context.Context, trace *Trace) error {
 		return fmt.Errorf("state: create trace: nil trace")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO trace
-		(id, run_id, event, actor, detail, prev_hash, curr_hash, timestamp)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		(id, run_id, event, actor, detail, prev_hash, curr_hash, timestamp, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		trace.ID, trace.RunID, trace.Event, trace.Actor, trace.Detail, trace.PrevHash, trace.CurrHash, trace.Timestamp,
+		trace.TenantID,
 	)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -613,10 +644,10 @@ func (s *PGStore) CreateTrace(ctx context.Context, trace *Trace) error {
 // GetTrace returns the trace with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetTrace(ctx context.Context, id string) (*Trace, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, event, actor, detail, prev_hash, curr_hash, timestamp
+		id, run_id, event, actor, detail, prev_hash, curr_hash, timestamp, tenant_id
 		FROM trace WHERE id = $1`, id)
 	t := &Trace{}
-	err := row.Scan(&t.ID, &t.RunID, &t.Event, &t.Actor, &t.Detail, &t.PrevHash, &t.CurrHash, &t.Timestamp)
+	err := row.Scan(&t.ID, &t.RunID, &t.Event, &t.Actor, &t.Detail, &t.PrevHash, &t.CurrHash, &t.Timestamp, &t.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -636,9 +667,10 @@ func (s *PGStore) UpdateTrace(ctx context.Context, trace *Trace) error {
 		return fmt.Errorf("state: update trace: nil trace")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE trace SET
-		run_id=$1, event=$2, actor=$3, detail=$4, prev_hash=$5, curr_hash=$6, timestamp=$7
-		WHERE id=$8`,
-		trace.RunID, trace.Event, trace.Actor, trace.Detail, trace.PrevHash, trace.CurrHash, trace.Timestamp, trace.ID,
+		run_id=$1, event=$2, actor=$3, detail=$4, prev_hash=$5, curr_hash=$6, timestamp=$7, tenant_id=$8
+		WHERE id=$9`,
+		trace.RunID, trace.Event, trace.Actor, trace.Detail, trace.PrevHash, trace.CurrHash, trace.Timestamp,
+		trace.TenantID, trace.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update trace %q: %w", trace.ID, err)
@@ -690,8 +722,14 @@ func (s *PGStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace,
 		clauses = append(clauses, "event = $%d")
 		args = append(args, filter.Event)
 	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = $%d")
+		args = append(args, filter.TenantID)
+	}
 
-	q := `SELECT id, run_id, event, actor, detail, prev_hash, curr_hash, timestamp FROM trace`
+	q := `SELECT id, run_id, event, actor, detail, prev_hash, curr_hash, timestamp, tenant_id FROM trace`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
 	}
@@ -710,7 +748,7 @@ func (s *PGStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace,
 	var out []*Trace
 	for rows.Next() {
 		t := &Trace{}
-		if err := rows.Scan(&t.ID, &t.RunID, &t.Event, &t.Actor, &t.Detail, &t.PrevHash, &t.CurrHash, &t.Timestamp); err != nil {
+		if err := rows.Scan(&t.ID, &t.RunID, &t.Event, &t.Actor, &t.Detail, &t.PrevHash, &t.CurrHash, &t.Timestamp, &t.TenantID); err != nil {
 			return nil, fmt.Errorf("state: list traces scan: %w", err)
 		}
 		out = append(out, t)
@@ -742,10 +780,11 @@ func (s *PGStore) CreateApproval(ctx context.Context, approval *Approval) error 
 		return fmt.Errorf("state: create approval: nil approval")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals
-		(id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		(id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		approval.ID, approval.RunID, approval.Level, approval.Approver, approval.Status,
 		approval.Comment, approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.Revision,
+		approval.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create approval: %w", err)
@@ -756,10 +795,10 @@ func (s *PGStore) CreateApproval(ctx context.Context, approval *Approval) error 
 // GetApproval returns the approval with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetApproval(ctx context.Context, id string) (*Approval, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision
+		id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision, tenant_id
 		FROM approvals WHERE id = $1`, id)
 	a := &Approval{}
-	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision)
+	err := row.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision, &a.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -777,10 +816,10 @@ func (s *PGStore) UpdateApproval(ctx context.Context, approval *Approval) error 
 		return fmt.Errorf("state: update approval: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1
-		WHERE id=$9`,
+		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1, tenant_id=$9
+		WHERE id=$10`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.TenantID, approval.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update approval %q: %w", approval.ID, err)
@@ -803,10 +842,10 @@ func (s *PGStore) UpdateApprovalIfPending(ctx context.Context, approval *Approva
 		return false, fmt.Errorf("state: update approval if pending: nil approval")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET
-		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1
-		WHERE id=$9 AND status='pending' AND revision=$10`,
+		run_id=$1, level=$2, approver=$3, status=$4, comment=$5, timeout_at=$6, acted_at=$7, plan_hash=$8, revision=revision+1, tenant_id=$9
+		WHERE id=$10 AND status='pending' AND revision=$11`,
 		approval.RunID, approval.Level, approval.Approver, approval.Status, approval.Comment,
-		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.ID, approval.Revision,
+		approval.TimeoutAt, approval.ActedAt, approval.PlanHash, approval.TenantID, approval.ID, approval.Revision,
 	)
 	if err != nil {
 		return false, fmt.Errorf("state: update approval %q if pending: %w", approval.ID, err)
@@ -833,8 +872,14 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 		clauses = append(clauses, "status = $%d")
 		args = append(args, filter.Status)
 	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = $%d")
+		args = append(args, filter.TenantID)
+	}
 
-	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision FROM approvals`
+	q := `SELECT id, run_id, level, approver, status, comment, timeout_at, acted_at, plan_hash, revision, tenant_id FROM approvals`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
 	}
@@ -853,7 +898,7 @@ func (s *PGStore) ListApprovals(ctx context.Context, filter ApprovalFilter) ([]*
 	var out []*Approval
 	for rows.Next() {
 		a := &Approval{}
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Level, &a.Approver, &a.Status, &a.Comment, &a.TimeoutAt, &a.ActedAt, &a.PlanHash, &a.Revision, &a.TenantID); err != nil {
 			return nil, fmt.Errorf("state: list approvals scan: %w", err)
 		}
 		out = append(out, a)
@@ -1033,9 +1078,10 @@ func (s *PGStore) CreateCredential(ctx context.Context, cred *Credential) error 
 		return fmt.Errorf("state: create credential: nil credential")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO credentials
-		(id, name, type, encrypted_data, created_at, rotated_at, tags)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		(id, name, type, encrypted_data, created_at, rotated_at, tags, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		cred.ID, cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.Tags,
+		cred.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create credential: %w", err)
@@ -1046,10 +1092,10 @@ func (s *PGStore) CreateCredential(ctx context.Context, cred *Credential) error 
 // GetCredential returns the credential with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetCredential(ctx context.Context, id string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at, tags
+		id, name, type, encrypted_data, created_at, rotated_at, tags, tenant_id
 		FROM credentials WHERE id = $1`, id)
 	c := &Credential{}
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags)
+	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags, &c.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1062,10 +1108,10 @@ func (s *PGStore) GetCredential(ctx context.Context, id string) (*Credential, er
 // GetCredentialByName returns the credential with the given unique name, or (nil, nil).
 func (s *PGStore) GetCredentialByName(ctx context.Context, name string) (*Credential, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at, tags
+		id, name, type, encrypted_data, created_at, rotated_at, tags, tenant_id
 		FROM credentials WHERE name = $1`, name)
 	c := &Credential{}
-	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags)
+	err := row.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags, &c.TenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1081,9 +1127,9 @@ func (s *PGStore) UpdateCredential(ctx context.Context, cred *Credential) error 
 		return fmt.Errorf("state: update credential: nil credential")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE credentials SET
-		name=$1, type=$2, encrypted_data=$3, created_at=$4, rotated_at=$5, tags=$6
-		WHERE id=$7`,
-		cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.Tags, cred.ID,
+		name=$1, type=$2, encrypted_data=$3, created_at=$4, rotated_at=$5, tags=$6, tenant_id=$7
+		WHERE id=$8`,
+		cred.Name, cred.Type, cred.EncryptedData, cred.CreatedAt, cred.RotatedAt, cred.Tags, cred.TenantID, cred.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: update credential %q: %w", cred.ID, err)
@@ -1097,7 +1143,7 @@ func (s *PGStore) UpdateCredential(ctx context.Context, cred *Credential) error 
 // ListCredentials returns all credentials, ordered by name ascending.
 func (s *PGStore) ListCredentials(ctx context.Context) ([]*Credential, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT
-		id, name, type, encrypted_data, created_at, rotated_at, tags
+		id, name, type, encrypted_data, created_at, rotated_at, tags, tenant_id
 		FROM credentials ORDER BY name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("state: list credentials: %w", err)
@@ -1107,7 +1153,7 @@ func (s *PGStore) ListCredentials(ctx context.Context) ([]*Credential, error) {
 	var out []*Credential
 	for rows.Next() {
 		c := &Credential{}
-		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.EncryptedData, &c.CreatedAt, &c.RotatedAt, &c.Tags, &c.TenantID); err != nil {
 			return nil, fmt.Errorf("state: list credentials scan: %w", err)
 		}
 		out = append(out, c)
@@ -1137,9 +1183,10 @@ func (s *PGStore) CreateAssignment(ctx context.Context, a *Assignment) error {
 		return fmt.Errorf("state: create assignment: nil assignment")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO run_assignment
-		(run_id, owner_node, epoch, state, result, assigned_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,NOW(),NOW())`,
+		(run_id, owner_node, epoch, state, result, assigned_at, updated_at, tenant_id)
+		VALUES ($1,$2,$3,$4,$5,NOW(),NOW(),$6)`,
 		a.RunID, a.OwnerNode, a.Epoch, a.State, a.Result,
+		a.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create assignment for %q: %w", a.RunID, err)
@@ -1150,10 +1197,10 @@ func (s *PGStore) CreateAssignment(ctx context.Context, a *Assignment) error {
 // GetAssignment returns the assignment for runID, or (nil, nil) if none.
 func (s *PGStore) GetAssignment(ctx context.Context, runID string) (*Assignment, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		run_id, owner_node, epoch, state, result, assigned_at, updated_at
+		run_id, owner_node, epoch, state, result, assigned_at, updated_at, tenant_id
 		FROM run_assignment WHERE run_id = $1`, runID)
 	a := &Assignment{}
-	if err := row.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+	if err := row.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt, &a.TenantID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -1269,8 +1316,14 @@ func (s *PGStore) ListAssignments(ctx context.Context, filter AssignmentFilter) 
 		}
 		clauses = append(clauses, "state NOT IN ("+strings.Join(placeholders, ",")+")") // #nosec G202 -- fragments static, values bound
 	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, fmt.Sprintf("tenant_id = $%d", next()))
+		args = append(args, filter.TenantID)
+	}
 
-	q := `SELECT run_id, owner_node, epoch, state, result, assigned_at, updated_at
+	q := `SELECT run_id, owner_node, epoch, state, result, assigned_at, updated_at, tenant_id
 		FROM run_assignment`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
@@ -1290,7 +1343,7 @@ func (s *PGStore) ListAssignments(ctx context.Context, filter AssignmentFilter) 
 	var out []*Assignment
 	for rows.Next() {
 		a := &Assignment{}
-		if err := rows.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.RunID, &a.OwnerNode, &a.Epoch, &a.State, &a.Result, &a.AssignedAt, &a.UpdatedAt, &a.TenantID); err != nil {
 			return nil, fmt.Errorf("state: list assignments scan: %w", err)
 		}
 		out = append(out, a)
@@ -1412,9 +1465,10 @@ func (s *PGStore) CreateAudit(ctx context.Context, audit *Audit) error {
 		return fmt.Errorf("state: create audit: nil audit")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO audit
-		(id, run_id, action, actor, target, result, timestamp)
-		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		(id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		audit.ID, audit.RunID, audit.Action, audit.Actor, audit.Target, audit.Result, audit.Timestamp,
+		audit.TenantID, audit.PrevHash, audit.CurrHash,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create audit: %w", err)
@@ -1422,13 +1476,36 @@ func (s *PGStore) CreateAudit(ctx context.Context, audit *Audit) error {
 	return nil
 }
 
+// UpdateAuditChain stamps the chain hashes onto an audit row. The audit WORM
+// triggers compare every content column and deliberately ignore prev_hash and
+// curr_hash, so this is the one update they permit — the chain builder has to
+// write the hashes after insert, because a row's position in the chain is not
+// known until the row before it exists.
+func (s *PGStore) UpdateAuditChain(ctx context.Context, id string, prevHash string, currHash string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE audit SET prev_hash=$1, curr_hash=$2 WHERE id=$3`,
+		prevHash, currHash, id,
+	)
+	if err != nil {
+		return fmt.Errorf("state: update audit chain %q: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("state: update audit chain %q: rows affected: %w", id, err)
+	} else if n == 0 {
+		// Silently succeeding here would leave a gap in the chain that only
+		// surfaces much later, at verification time.
+		return fmt.Errorf("state: update audit chain %q: not found", id)
+	}
+	return nil
+}
+
 // GetAudit returns the audit entry with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetAudit(ctx context.Context, id string) (*Audit, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, run_id, action, actor, target, result, timestamp
+		id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash
 		FROM audit WHERE id = $1`, id)
 	a := &Audit{}
-	err := row.Scan(&a.ID, &a.RunID, &a.Action, &a.Actor, &a.Target, &a.Result, &a.Timestamp)
+	err := row.Scan(&a.ID, &a.RunID, &a.Action, &a.Actor, &a.Target, &a.Result, &a.Timestamp, &a.TenantID, &a.PrevHash, &a.CurrHash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1456,8 +1533,14 @@ func (s *PGStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit,
 		clauses = append(clauses, "actor = $%d")
 		args = append(args, filter.Actor)
 	}
+	// Tenant predicate. Appended LAST so the placeholder numbering matches the
+	// append order regardless of which optional filters were set.
+	if filter.TenantID != "" {
+		clauses = append(clauses, "tenant_id = $%d")
+		args = append(args, filter.TenantID)
+	}
 
-	q := `SELECT id, run_id, action, actor, target, result, timestamp FROM audit`
+	q := `SELECT id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash FROM audit`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
 	}
@@ -1480,7 +1563,7 @@ func (s *PGStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit,
 	var out []*Audit
 	for rows.Next() {
 		a := &Audit{}
-		if err := rows.Scan(&a.ID, &a.RunID, &a.Action, &a.Actor, &a.Target, &a.Result, &a.Timestamp); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Action, &a.Actor, &a.Target, &a.Result, &a.Timestamp, &a.TenantID, &a.PrevHash, &a.CurrHash); err != nil {
 			return nil, fmt.Errorf("state: list audits scan: %w", err)
 		}
 		out = append(out, a)

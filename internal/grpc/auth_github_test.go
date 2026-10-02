@@ -144,7 +144,7 @@ func TestGitHubLoginEndpoint_Disabled(t *testing.T) {
 func TestAuthTokens_Resolve_SessionSource(t *testing.T) {
 	sessions, err := auth.NewSessionManager(strings.Repeat("s", 32))
 	require.NoError(t, err)
-	tok, err := sessions.Issue("octocat", []string{"operator"}, "github")
+	tok, err := sessions.Issue("octocat", []string{"operator"}, "github", "")
 	require.NoError(t, err)
 
 	tokens := AuthTokens{Sessions: sessions}

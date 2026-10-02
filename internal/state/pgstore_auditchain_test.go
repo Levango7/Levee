@@ -1,0 +1,126 @@
+package state_test
+
+// The audit WORM triggers and the global audit hash chain were only exercised
+// against SQLite (internal/audit's auditchain_test.go). The PostgreSQL plpgsql
+// triggers shipped in schema v6 had zero coverage — nothing on the PG path
+// would notice a dropped trigger or a drifted column list. This file pins the
+// real trigger behavior against a live PostgreSQL, mirroring
+// TestPGStore_TraceHashChainAndWORM for the audit table.
+//
+// It lives in package state_test (not state) because building the chain needs
+// internal/audit, which imports state — an internal test package would create
+// an import cycle. It runs only when LEVEE_PG_TEST_DSN is set; the CI postgres
+// job runs ./internal/state/... with that variable configured.
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/state"
+)
+
+func TestPGStore_AuditChainSealAndWORM(t *testing.T) {
+	dsn := os.Getenv("LEVEE_PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("LEVEE_PG_TEST_DSN not set; skipping PostgreSQL audit chain test")
+	}
+	ctx := context.Background()
+	store, err := state.NewPGStore(ctx, dsn, state.PGPoolConfig{
+		MaxOpenConns: 5,
+		MaxIdleConns: 2,
+	})
+	require.NoError(t, err)
+	defer store.Close()
+
+	for _, tbl := range []string{"audit", "runs", "targets"} {
+		_, err := store.DB().ExecContext(ctx, "TRUNCATE TABLE "+tbl+" RESTART IDENTITY CASCADE")
+		require.NoError(t, err, tbl)
+	}
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+
+	// Two of the three rows are run-less — exactly the login/config/credential
+	// kind a per-run chain structurally cannot reach, so the global chain must
+	// seal them too. The shared timestamp with opposite-sorting ids exercises
+	// the (timestamp, id) tie-breaker on real PG.
+	audits := []*state.Audit{
+		{ID: "pg-az-zz", Action: "login", Actor: "alice", Result: "success",
+			Timestamp: base.Add(time.Second)},
+		{ID: "pg-az-aa", Action: "config", Actor: "bob", Target: "server", Result: "success",
+			Timestamp: base.Add(time.Second)},
+		{ID: "pg-az-run", RunID: "pg-az-run-1", Action: "apply", Actor: "system",
+			Target: "host:h1", Result: "success", Timestamp: base},
+	}
+	for _, a := range audits {
+		require.NoError(t, store.CreateAudit(ctx, a))
+	}
+
+	b, err := audit.NewAuditChainBuilder(store)
+	require.NoError(t, err)
+
+	// Sealing fills every hash column. Those UPDATEs pass through the WORM
+	// trigger's allow-path: only chain columns change, so it must not reject.
+	sealed, err := b.Seal(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, sealed, "all rows are unsealed on the first seal")
+
+	// Sealing is idempotent — a second pass over sealed rows changes nothing.
+	sealed, err = b.Seal(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, sealed)
+
+	result, err := b.Verify(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Valid)
+	assert.Equal(t, 3, result.Count)
+	assert.Equal(t, 0, result.Unsealed)
+	assert.Empty(t, result.Failures)
+
+	// Every content column is immutable once chained — including tenant_id
+	// (or one UPDATE would move an audit row into another tenant) and
+	// timestamp (it participates in the chain order).
+	for name, stmt := range map[string]string{
+		"action":    `UPDATE audit SET action = 'TAMPERED' WHERE id = 'pg-az-zz'`,
+		"actor":     `UPDATE audit SET actor = 'mallory' WHERE id = 'pg-az-zz'`,
+		"result":    `UPDATE audit SET result = 'failure' WHERE id = 'pg-az-zz'`,
+		"target":    `UPDATE audit SET target = 'host:evil' WHERE id = 'pg-az-run'`,
+		"run_id":    `UPDATE audit SET run_id = 'pg-az-other' WHERE id = 'pg-az-run'`,
+		"tenant_id": `UPDATE audit SET tenant_id = 'tenant-evil' WHERE id = 'pg-az-zz'`,
+		"timestamp": `UPDATE audit SET "timestamp" = "timestamp" + interval '1 hour' WHERE id = 'pg-az-zz'`,
+	} {
+		_, err := store.DB().ExecContext(ctx, stmt)
+		require.Error(t, err, "content column %s must be WORM-protected", name)
+		assert.Contains(t, err.Error(), "WORM violation", name)
+	}
+
+	// Deletion is refused outright.
+	_, err = store.DB().ExecContext(ctx, `DELETE FROM audit WHERE id = 'pg-az-zz'`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WORM violation")
+
+	// The refusals actually refused: the row content is what was written.
+	var action string
+	require.NoError(t, store.DB().QueryRowContext(ctx,
+		`SELECT action FROM audit WHERE id = 'pg-az-zz'`).Scan(&action))
+	assert.Equal(t, "login", action)
+
+	// Chain columns stay writable — that is the seal path — and Verify flags
+	// a relinked hash immediately; Seal then re-establishes the chain.
+	_, err = store.DB().ExecContext(ctx, `UPDATE audit SET curr_hash = 'evil' WHERE id = 'pg-az-aa'`)
+	require.NoError(t, err, "the chain columns must remain updatable")
+	result, err = b.Verify(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Valid, "a rewritten curr_hash must not verify")
+	sealed, err = b.Seal(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, sealed, "only the tampered row needs resealing")
+	result, err = b.Verify(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Valid)
+}

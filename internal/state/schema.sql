@@ -29,7 +29,12 @@ CREATE TABLE IF NOT EXISTS runs (
     -- comment, but must never END with ';' — keep the closing ');' on its
     -- own line. The PG splitter learned this the hard way (inline
     -- comment with ';' cut a CREATE TABLE in half, SQLSTATE 42601).
-    plan_json       TEXT    NOT NULL DEFAULT ''      -- canonical plan.Plan JSON ('' = not planned; v3, last: mirrors ALTER append order)
+    plan_json       TEXT    NOT NULL DEFAULT '',     -- canonical plan.Plan JSON ('' = not planned; v3, last: mirrors ALTER append order)
+    -- Multi-tenancy (v6). Denormalised onto every tenant-owned table so each
+    -- read is a plain indexed predicate; see Run.TenantID in store.go. NOT NULL
+    -- DEFAULT '' keeps the pre-multi-tenant rows readable as "unowned", which
+    -- is what the v6 migration leaves behind for tables with no run parent.
+    tenant_id       TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);
@@ -38,6 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_template     ON runs (template_name);
 CREATE INDEX IF NOT EXISTS idx_runs_creator      ON runs (creator);
 CREATE INDEX IF NOT EXISTS idx_runs_incident     ON runs (incident_id);
 CREATE INDEX IF NOT EXISTS idx_runs_created_at   ON runs (created_at);
+CREATE INDEX IF NOT EXISTS idx_runs_tenant       ON runs (tenant_id);
 
 -- batches: batch records (one run has N batches executed serially).
 CREATE TABLE IF NOT EXISTS batches (
@@ -50,12 +56,14 @@ CREATE TABLE IF NOT EXISTS batches (
     failed        INTEGER NOT NULL DEFAULT 0,
     started_at    DATETIME,
     completed_at  DATETIME,
+    tenant_id     TEXT    NOT NULL DEFAULT '',     -- v6: mirrors runs.tenant_id
     FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE,
     UNIQUE (run_id, batch_no)
 );
 
 CREATE INDEX IF NOT EXISTS idx_batches_run_id   ON batches (run_id);
 CREATE INDEX IF NOT EXISTS idx_batches_status   ON batches (status);
+CREATE INDEX IF NOT EXISTS idx_batches_tenant   ON batches (tenant_id);
 
 -- steps: per-host step execution records.
 CREATE TABLE IF NOT EXISTS steps (
@@ -72,6 +80,7 @@ CREATE TABLE IF NOT EXISTS steps (
     duration_ms   INTEGER NOT NULL DEFAULT 0,
     started_at    DATETIME,
     completed_at  DATETIME,
+    tenant_id     TEXT    NOT NULL DEFAULT '',      -- v6: mirrors runs.tenant_id
     FOREIGN KEY (run_id)   REFERENCES runs    (id) ON DELETE CASCADE,
     FOREIGN KEY (batch_id) REFERENCES batches (id) ON DELETE CASCADE
 );
@@ -80,6 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_steps_run_id    ON steps (run_id);
 CREATE INDEX IF NOT EXISTS idx_steps_batch_id  ON steps (batch_id);
 CREATE INDEX IF NOT EXISTS idx_steps_host      ON steps (host);
 CREATE INDEX IF NOT EXISTS idx_steps_status    ON steps (status);
+CREATE INDEX IF NOT EXISTS idx_steps_tenant    ON steps (tenant_id);
 
 -- trace: audit trace records forming a hash chain per run.
 CREATE TABLE IF NOT EXISTS trace (
@@ -91,25 +101,36 @@ CREATE TABLE IF NOT EXISTS trace (
     prev_hash  TEXT    NOT NULL DEFAULT '',
     curr_hash  TEXT    NOT NULL,
     timestamp  DATETIME NOT NULL,
+    -- tenant_id is declared LAST on purpose: the v6 step adds it with ALTER
+    -- TABLE ... ADD COLUMN, which always appends, so a fresh database and an
+    -- upgraded one only agree on column order if the column sits at the end.
+    -- TestMigrate_FreshAndUpgraded_SchemaShapesMatch enforces this.
+    tenant_id  TEXT    NOT NULL DEFAULT '',           -- v6: mirrors runs.tenant_id; WORM-protected below
     FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_trace_run_id    ON trace (run_id);
 CREATE INDEX IF NOT EXISTS idx_trace_event     ON trace (event);
 CREATE INDEX IF NOT EXISTS idx_trace_timestamp ON trace (timestamp);
+CREATE INDEX IF NOT EXISTS idx_trace_tenant    ON trace (tenant_id);
 
 -- WORM protection: prevent UPDATE on trace content fields. The trigger only
 -- fires when one of the immutable content columns (id, run_id, event, actor,
 -- detail, timestamp) is changed. Updating prev_hash and curr_hash is allowed
 -- because the hash-chain builder (HashChainBuilder.Build) needs to write these
 -- values after the record has been inserted.
+--
+-- tenant_id is in this list on purpose: without it an UPDATE could move a
+-- trace row into another tenant's scope (or out of one), which is exactly the
+-- tamper the chain exists to make detectable. It is immutable from insert.
 CREATE TRIGGER IF NOT EXISTS worm_prevent_trace_update
 BEFORE UPDATE ON trace
-WHEN NEW.id != OLD.id 
+WHEN NEW.id != OLD.id
   OR NEW.run_id != OLD.run_id
   OR NEW.event != OLD.event
   OR NEW.actor != OLD.actor
   OR NEW.detail != OLD.detail
+  OR NEW.tenant_id != OLD.tenant_id
   OR NEW.timestamp != OLD.timestamp
 BEGIN
     SELECT RAISE(ABORT, 'WORM violation: trace content fields cannot be updated');
@@ -135,14 +156,24 @@ CREATE TABLE IF NOT EXISTS approvals (
     acted_at   DATETIME,
     plan_hash  TEXT    NOT NULL DEFAULT '',          -- D-1 v2: plan the approval attests to ('' = legacy, any plan)
     revision   INTEGER NOT NULL DEFAULT 0,           -- D-1 v2: optimistic-lock version for concurrent decisions
+    tenant_id  TEXT    NOT NULL DEFAULT '',           -- v6: mirrors runs.tenant_id
     FOREIGN KEY (run_id) REFERENCES runs (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_approvals_run_id    ON approvals (run_id);
 CREATE INDEX IF NOT EXISTS idx_approvals_status    ON approvals (status);
 CREATE INDEX IF NOT EXISTS idx_approvals_approver  ON approvals (approver);
+CREATE INDEX IF NOT EXISTS idx_approvals_tenant    ON approvals (tenant_id);
 
 -- locks: mutex locks with TTL (target-host level).
+--
+-- DELIBERATELY NOT TENANT-SCOPED (v6). Every other tenant-owned table carries
+-- tenant_id; this one must not. A lock guards a physical host, and a host is
+-- one machine no matter which tenant may change it: if locks were scoped per
+-- tenant, tenant A holding host:db-1 and tenant B holding host:db-1 would be
+-- two different rows and both would be admitted, which is precisely the
+-- concurrent-change collision the lock exists to prevent. Host exclusion is
+-- therefore global by design — an isolation bug in the safe direction.
 CREATE TABLE IF NOT EXISTS locks (
     id           TEXT    PRIMARY KEY,
     scope        TEXT    NOT NULL,                   -- e.g. host:<hostname> or run:<run_id>
@@ -166,13 +197,22 @@ CREATE TABLE IF NOT EXISTS credentials (
     created_at     DATETIME NOT NULL,
     rotated_at     DATETIME,
     tags           TEXT    NOT NULL DEFAULT '',      -- v2: JSON map[string]string, '' = none
+    tenant_id      TEXT    NOT NULL DEFAULT '',      -- v6: owning tenant (secrets must not cross tenants)
     UNIQUE (name)
 );
 
 CREATE INDEX IF NOT EXISTS idx_credentials_name ON credentials (name);
 CREATE INDEX IF NOT EXISTS idx_credentials_type ON credentials (type);
+CREATE INDEX IF NOT EXISTS idx_credentials_tenant ON credentials (tenant_id);
 
 -- audit: audit log entries (separate from trace; high-level actions).
+--
+-- The hash chain is GLOBAL, not per-run like trace. An audit row with an empty
+-- run_id is exactly the security-relevant kind — a login, a config change, a
+-- credential read — and a per-run chain could not cover it, leaving the most
+-- sensitive records unprotected. Ordering is (timestamp, id): timestamp alone
+-- ties when several entries land in the same clock tick, and a chain that
+-- depends on tie-breaking is not reproducible.
 CREATE TABLE IF NOT EXISTS audit (
     id         TEXT    PRIMARY KEY,
     run_id     TEXT    NOT NULL DEFAULT '',
@@ -180,13 +220,53 @@ CREATE TABLE IF NOT EXISTS audit (
     actor      TEXT    NOT NULL,
     target     TEXT    NOT NULL DEFAULT '',
     result     TEXT    NOT NULL,                     -- success|failure|denied|error
-    timestamp  DATETIME NOT NULL
+    timestamp  DATETIME NOT NULL,
+    tenant_id  TEXT    NOT NULL DEFAULT '',          -- v6: owning tenant (NOT derivable — run_id may be ''); declared last, see the note on trace.tenant_id
+    -- v7: the chain. Same shape as trace: each row's curr_hash covers the
+    -- previous row's hash, so removing or editing any row breaks every hash
+    -- after it. Empty means "not yet chained" (the row was just inserted);
+    -- the builder fills them, and the WORM trigger below then makes them
+    -- immutable.
+    prev_hash  TEXT    NOT NULL DEFAULT '',
+    curr_hash  TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_run_id    ON audit (run_id);
 CREATE INDEX IF NOT EXISTS idx_audit_action    ON audit (action);
 CREATE INDEX IF NOT EXISTS idx_audit_actor     ON audit (actor);
 CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit (timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_tenant    ON audit (tenant_id);
+-- The chain is verified by walking (timestamp, id) in order; this index makes
+-- that walk an index scan instead of a sort.
+CREATE INDEX IF NOT EXISTS idx_audit_chain     ON audit (timestamp, id);
+
+-- WORM protection for audit. This closes the gap the hash chain alone leaves:
+-- without a database-level guard, a DBA can delete the tampered row outright
+-- and the chain would verify on the shortened sequence. (The chain detects
+-- edits; the trigger prevents both edits and deletes.)
+--
+-- prev_hash/curr_hash ARE updatable, exactly as on trace, because the chain
+-- builder has to write them after the row is inserted. Everything else is
+-- immutable.
+CREATE TRIGGER IF NOT EXISTS worm_prevent_audit_update
+BEFORE UPDATE ON audit
+WHEN NEW.id != OLD.id
+  OR NEW.run_id != OLD.run_id
+  OR NEW.action != OLD.action
+  OR NEW.actor != OLD.actor
+  OR NEW.target != OLD.target
+  OR NEW.result != OLD.result
+  OR NEW.tenant_id != OLD.tenant_id
+  OR NEW.timestamp != OLD.timestamp
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: audit content fields cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS worm_prevent_audit_delete
+BEFORE DELETE ON audit
+BEGIN
+    SELECT RAISE(ABORT, 'WORM violation: audit records cannot be deleted');
+END;
 
 -- ---------------------------------------------------------------------------
 -- Inventory: managed target hosts and hierarchical groups (v1.11)
@@ -195,8 +275,11 @@ CREATE TABLE IF NOT EXISTS inventory_groups (
     id         TEXT    PRIMARY KEY,
     name       TEXT    NOT NULL UNIQUE,          -- path-style name, e.g. "prod/db"
     parent_id  TEXT,
-    created_at TIMESTAMP NOT NULL
+    created_at TIMESTAMP NOT NULL,
+    tenant_id  TEXT    NOT NULL DEFAULT ''      -- v6: owning tenant
 );
+
+CREATE INDEX IF NOT EXISTS idx_inventory_groups_tenant ON inventory_groups (tenant_id);
 
 CREATE TABLE IF NOT EXISTS targets (
     id              TEXT    PRIMARY KEY,
@@ -210,12 +293,17 @@ CREATE TABLE IF NOT EXISTS targets (
     reachable       INTEGER NOT NULL DEFAULT 0,
     last_checked_at TIMESTAMP,
     created_at      TIMESTAMP NOT NULL,
+    tenant_id       TEXT    NOT NULL DEFAULT '',      -- v6: owning tenant
+    -- UNIQUE stays table-wide: two tenants may not both register the same
+    -- host address, because a host is one physical machine regardless of
+    -- which tenant is allowed to change it.
     UNIQUE (hostname, port),
     FOREIGN KEY (group_id) REFERENCES inventory_groups (id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_targets_group  ON targets (group_id);
 CREATE INDEX IF NOT EXISTS idx_targets_status ON targets (status);
+CREATE INDEX IF NOT EXISTS idx_targets_tenant ON targets (tenant_id);
 
 -- run_assignment: cross-node dispatch assignments (design-cluster-dispatch.md).
 -- One active assignment per run (run_id PK). Records which worker node was
@@ -231,8 +319,10 @@ CREATE TABLE IF NOT EXISTS run_assignment (
     result      TEXT    NOT NULL DEFAULT '',    -- completed | failed | rolled_back | ''
     assigned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    tenant_id   TEXT    NOT NULL DEFAULT '',    -- v6: mirrors runs.tenant_id
     UNIQUE (run_id, epoch)
 );
 
 CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state);
 CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
+CREATE INDEX IF NOT EXISTS idx_assignment_tenant ON run_assignment (tenant_id);

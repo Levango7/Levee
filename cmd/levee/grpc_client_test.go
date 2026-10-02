@@ -19,6 +19,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -254,6 +256,14 @@ func TestServiceFactoryRemote_BadTokenRejected(t *testing.T) {
 	ss := f.GetSystemService()
 	_, err = ss.GetVersion(ctx, &emptypb.Empty{})
 	require.Error(t, err)
+	// Assert the CAUSE, not merely that something failed. `require.Error`
+	// alone is satisfied by a transport failure too, so this test used to
+	// pass without ever exercising token rejection: when the connection
+	// could not be established it still "passed", just for the wrong
+	// reason (observed taking as long as the connect-timeout cases).
+	// Pinning the code is what makes it a test of authorization.
+	assert.Equal(t, codes.Unauthenticated, status.Code(err),
+		"a wrong token must be rejected by the auth interceptor, not merely fail to connect")
 }
 
 func TestServiceFactoryRemote_EmptyAddr(t *testing.T) {

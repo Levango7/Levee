@@ -35,6 +35,7 @@ import (
 	"strings"
 
 	"github.com/nexus/levee/internal/auth"
+	"github.com/nexus/levee/internal/tenant"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -57,6 +58,13 @@ type TokenIdentity struct {
 	// Subject is the authenticated identity recorded for audit attribution.
 	// It is sanitized before being placed in the request context.
 	Subject string
+	// Tenant is the tenant this token acts for. It is the ONLY trustworthy
+	// source of tenant identity: it is bound to the secret in the operator's
+	// configuration, so a caller cannot select its own tenant by sending a
+	// header or a request field. Empty means the token is not tenant-bound,
+	// which is correct for a single-tenant deployment and means the request
+	// carries no tenant when multi-tenancy is enabled (and is refused).
+	Tenant string
 }
 
 // AuthTokens is the set of credentials the server accepts. Either Legacy
@@ -87,11 +95,15 @@ func (a AuthTokens) Enabled() bool {
 }
 
 // ResolvedIdentity is the outcome of authenticating a presented bearer
-// token: the audit subject and, for SSO-authenticated callers, the roles
-// verified at login time. Static-token callers carry no roles.
+// token: the audit subject, the tenant the caller acts for, and, for
+// SSO-authenticated callers, the roles verified at login time. Static-token
+// callers carry no roles.
 type ResolvedIdentity struct {
 	Subject string
 	Roles   []string
+	// Tenant is bound to the credential, never asserted by the client. See
+	// TokenIdentity.Tenant.
+	Tenant string
 }
 
 // Resolve authenticates a presented bearer token and returns the resolved
@@ -117,18 +129,18 @@ func (a AuthTokens) Resolve(ctx context.Context, token string) (ResolvedIdentity
 	}
 	for _, ti := range a.Named {
 		if ti.Token != "" && subtle.ConstantTimeCompare([]byte(token), []byte(ti.Token)) == 1 {
-			return ResolvedIdentity{Subject: ti.Subject}, true
+			return ResolvedIdentity{Subject: ti.Subject, Tenant: ti.Tenant}, true
 		}
 	}
 	if a.Sessions != nil {
 		if claims, err := a.Sessions.VerifySession(token); err == nil {
-			return ResolvedIdentity{Subject: claims.Subject, Roles: claims.Roles}, true
+			return ResolvedIdentity{Subject: claims.Subject, Roles: claims.Roles, Tenant: claims.Tenant}, true
 		}
 	}
 	if a.OIDC.Enabled() && auth.LooksLikeJWT(token) {
 		id, err := a.OIDC.Verify(ctx, token)
 		if err == nil {
-			return ResolvedIdentity{Subject: id.Subject, Roles: id.Roles}, true
+			return ResolvedIdentity{Subject: id.Subject, Roles: id.Roles, Tenant: id.Tenant}, true
 		}
 	}
 	return ResolvedIdentity{}, false
@@ -229,6 +241,18 @@ func withResolvedIdentity(ctx context.Context, id ResolvedIdentity) context.Cont
 	}
 	if len(id.Roles) > 0 {
 		ctx = context.WithValue(ctx, rolesKey{}, id.Roles)
+	}
+	// The tenant rides in on the same context the interceptor already
+	// populates, so both the gRPC and the REST entry points get it from this
+	// one place. Injecting it here rather than per-handler is what makes it
+	// impossible for a new RPC to be added with isolation silently missing.
+	//
+	// An empty Tenant is not injected: a credential with no tenant binding is
+	// a single-tenant credential, and a multi-tenant deployment must refuse
+	// such a request rather than guess which tenant it meant. See
+	// tenant.Resolver.Resolve.
+	if id.Tenant != "" {
+		ctx = tenant.ContextWithTenant(ctx, id.Tenant)
 	}
 	return ctx
 }
