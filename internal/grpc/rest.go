@@ -252,13 +252,15 @@ func (gw *Gateway) Start(ctx context.Context) error {
 
 func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 	mux := http.NewServeMux()
-	// RESTful routes take priority over /api/v1/ so the frontend can call
-	// /changes, /templates, etc. without the gRPC-style prefix. Both route
-	// trees share ONE rate limiter: separate buckets would let a client
-	// double its effective request budget by switching path styles.
-	lim := gw.sharedRateLimiter()
-	mux.Handle("/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(wrapWithLimiter(lim, gw.restRoute())))))
-	mux.Handle("/api/v1/", corsMiddleware(gw.cfg.CORSOrigins, gw.authMiddleware(gw.requestIDMiddleware(wrapWithLimiter(lim, gw.route())))))
+	// ONE router serves both URL shapes, behind one rate limiter (separate
+	// buckets would let a client double its budget by switching path styles):
+	//   RESTful    /changes, /templates/:id, /audit/verify, ...
+	//   gRPC-style /ChangeService/ListChanges, ...
+	// Both also accept the /api/v1 prefix, which is what the SPA sends — its
+	// axios client is built with baseURL "/api/v1" and resource paths, e.g.
+	// GET /api/v1/changes. The prefix is stripped before auth so the
+	// public-path predicates below (which compare bare paths) keep working.
+	mux.Handle("/", gw.dataHandler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if gw.change == nil {
@@ -311,74 +313,195 @@ func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 	}
 }
 
-// route dispatches /api/v1/<Service>/<Method> to the right handler.
-func (gw *Gateway) route() http.Handler {
+// dataHandler is THE data-plane pipeline: prefix compat → CORS → bearer auth →
+// request id → shared rate limiter → one router for both URL shapes.
+//
+// Both serveOn and the tests mount this, because the previous arrangement had
+// the test harness hand-copying the two mounts instead of calling production's
+// wiring — so the harness kept passing while every prefixed frontend request 400
+// in the real server. One builder for both is the point.
+func (gw *Gateway) dataHandler() http.Handler {
+	lim := gw.sharedRateLimiter()
+	return apiCompatPrefix(corsMiddleware(gw.cfg.CORSOrigins,
+		gw.authMiddleware(gw.requestIDMiddleware(wrapWithLimiter(lim, gw.dispatch())))))
+}
+
+// apiCompatPrefix drops the optional /api/v1 prefix so one set of handlers and
+// one set of path predicates see bare resource paths.
+//
+// This is not cosmetic. The SPA builds every URL as
+// baseURL("/api/v1") + "/changes", and the gateway used to mount that prefix
+// on a router that only accepted /api/v1/<Service>/<Method>, so every
+// dashboard read answered 400 ("invalid path… / unknown service: changes") —
+// and because the strip happens ahead of the auth layer, the public-path
+// predicates (/system/auth-info, /auth/github, /changes/deeplink/*) never
+// matched either, so the login bootstrap demanded a credential the browser
+// cannot hold yet.
+func apiCompatPrefix(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
-		path = strings.TrimRight(path, "/")
+		p := r.URL.Path
+		if p == apiPrefix || strings.HasPrefix(p, apiPrefix+"/") {
+			stripped := strings.TrimPrefix(p, apiPrefix)
+			if stripped == "" {
+				stripped = "/"
+			}
+			r.URL.Path = stripped
+			// RawPath only exists when the escaped form differs; keeping a
+			// stale copy would hand handlers two answers for one path.
+			if r.URL.RawPath != "" {
+				if rp := strings.TrimPrefix(r.URL.RawPath, apiPrefix); rp != "" {
+					r.URL.RawPath = rp
+				} else {
+					r.URL.RawPath = ""
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// apiPrefix is the versioned prefix the frontend and the documented HTTP API
+// both use. It is optional at the router: /changes and /api/v1/changes reach
+// the same handler.
+const apiPrefix = "/api/v1"
+
+// apiRelativePath returns the gateway path with the optional /api/v1 prefix
+// removed and no surrounding slashes: "ChangeService/ListChanges" or
+// "changes/run-1/logs". Routers use it so they behave the same whether they
+// are reached through apiCompatPrefix or mounted directly.
+//
+// The prefix is only recognized at a path boundary: without that rule
+// /api/v1x/changes would be stripped to x/changes, disagreeing with
+// apiCompatPrefix (which demands the slash) and misrouting the request.
+func apiRelativePath(p string) string {
+	if p == apiPrefix {
+		return ""
+	}
+	if strings.HasPrefix(p, apiPrefix+"/") {
+		p = p[len(apiPrefix):]
+	}
+	return strings.Trim(p, "/")
+}
+
+// dispatch is the gateway's single router: gRPC-style when the first segment
+// names a registered service, RESTful otherwise.
+func (gw *Gateway) dispatch() http.Handler {
+	grpcRouter := gw.route()
+	restRouter := gw.restRoute()
+	services := gw.grpcServiceHandlers()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rel := apiRelativePath(r.URL.Path)
+		first := rel
+		if i := strings.Index(rel, "/"); i >= 0 {
+			first = rel[:i]
+		}
+		if _, ok := services[first]; ok {
+			grpcRouter.ServeHTTP(w, r)
+			return
+		}
+		// A segment that LOOKS like a service but isn't registered is a bad API
+		// path, not a missing resource: answer 400 with the real reason rather
+		// than letting the resource tree report an unhelpful 404.
+		if strings.HasSuffix(first, "Service") {
+			writeJSONError(w, http.StatusBadRequest, "unknown service: "+first)
+			return
+		}
+		restRouter.ServeHTTP(w, r)
+	})
+}
+
+// grpcServiceHandlers maps a gRPC-style service name to the handler that takes
+// its <Method> path tail.
+//
+// This table is the single answer to "is this first segment a service?":
+// route() dispatches through it, dispatch() routes through it, and the
+// frontend-URL guard test reads it. The gateway used to keep the service names
+// in a switch AND in a second list, which is how a router and a test can
+// disagree while both look correct.
+func (gw *Gateway) grpcServiceHandlers() map[string]func(http.ResponseWriter, *http.Request, string) {
+	return map[string]func(http.ResponseWriter, *http.Request, string){
+		"ChangeService":       gw.handleChange,
+		"TemplateService":     gw.handleTemplate,
+		"TargetService":       gw.handleTarget,
+		"AuditService":        gw.handleAudit,
+		"SystemService":       gw.handleSystem,
+		"AlertService":        gw.handleAlert,
+		"DiagnosisService":    gw.handleDiagnosis,
+		"ConversationService": gw.handleConversation,
+	}
+}
+
+// restResourceHandlers maps the first segment of a RESTful route to its
+// dispatcher. The signature is (w, r, method, absolutePath).
+func (gw *Gateway) restResourceHandlers() map[string]func(http.ResponseWriter, *http.Request, string, string) {
+	return map[string]func(http.ResponseWriter, *http.Request, string, string){
+		"changes":      gw.dispatchChange,
+		"templates":    gw.dispatchTemplate,
+		"targets":      gw.dispatchTarget,
+		"conversation": gw.dispatchConversation,
+		"audit": func(w http.ResponseWriter, r *http.Request, method, path string) {
+			gw.dispatchOperationalRest(w, r, "audit", method, path)
+		},
+		"auth": func(w http.ResponseWriter, r *http.Request, method, path string) {
+			gw.dispatchOperationalRest(w, r, "auth", method, path)
+		},
+		"system": func(w http.ResponseWriter, r *http.Request, method, path string) {
+			gw.dispatchOperationalRest(w, r, "system", method, path)
+		},
+		"gates": func(w http.ResponseWriter, r *http.Request, method, path string) {
+			if path == "/gates/verify" && method == http.MethodPost {
+				gw.handleGateVerify(w, r)
+				return
+			}
+			writeJSONError(w, http.StatusNotFound, "not found: "+path)
+		},
+	}
+}
+
+// route dispatches <Service>/<Method> (with or without the /api/v1 prefix) to
+// the right handler.
+func (gw *Gateway) route() http.Handler {
+	handlers := gw.grpcServiceHandlers()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := apiRelativePath(r.URL.Path)
 
 		parts := strings.SplitN(path, "/", 2)
 		if len(parts) != 2 {
 			writeJSONError(w, http.StatusBadRequest, "invalid path: expected /api/v1/<Service>/<Method>")
 			return
 		}
-
-		switch parts[0] {
-		case "ChangeService":
-			gw.handleChange(w, r, parts[1])
-		case "TemplateService":
-			gw.handleTemplate(w, r, parts[1])
-		case "TargetService":
-			gw.handleTarget(w, r, parts[1])
-		case "AuditService":
-			gw.handleAudit(w, r, parts[1])
-		case "SystemService":
-			gw.handleSystem(w, r, parts[1])
-		case "AlertService":
-			gw.handleAlert(w, r, parts[1])
-		case "DiagnosisService":
-			gw.handleDiagnosis(w, r, parts[1])
-		case "ConversationService":
-			gw.handleConversation(w, r, parts[1])
-		default:
+		handler, ok := handlers[parts[0]]
+		if !ok {
 			writeJSONError(w, http.StatusBadRequest, "unknown service: "+parts[0])
+			return
 		}
+		handler(w, r, parts[1])
 	})
 }
 
-// restRoute dispatches RESTful HTTP paths (e.g. /changes, /templates/:id)
-// to the corresponding gRPC handlers. It runs BEFORE /api/v1/ so the
-// frontend's Axios calls hit this layer first.
+// restRoute dispatches RESTful HTTP paths (e.g. /changes, /templates/:id) to
+// the corresponding gRPC handlers.
 //
 // Routing matches the FIRST path segment EXACTLY. The previous
 // strings.HasPrefix(path, "/changes") test made look-alike paths such as
 // "/changesfoo" dispatch into the change handlers instead of 404ing.
 func (gw *Gateway) restRoute() http.Handler {
+	handlers := gw.restResourceHandlers()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimRight(r.URL.Path, "/")
-		method := r.Method
-
-		first := strings.Split(strings.TrimPrefix(path, "/"), "/")[0]
-		switch first {
-		case "changes":
-			gw.dispatchChange(w, r, method, path)
-		case "gates":
-			if path == "/gates/verify" && method == "POST" {
-				gw.handleGateVerify(w, r)
-				return
-			}
-			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-		case "templates":
-			gw.dispatchTemplate(w, r, method, path)
-		case "targets":
-			gw.dispatchTarget(w, r, method, path)
-		case "audit", "auth", "system":
-			gw.dispatchOperationalRest(w, r, first, method, path)
-		case "conversation":
-			gw.dispatchConversation(w, r, method, path)
-		default:
-			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
+		// The routers accept the path with or without the /api/v1 prefix; the
+		// dispatchers below compare absolute paths, so rebuild one.
+		rel := apiRelativePath(r.URL.Path)
+		path := "/" + rel
+		first := rel
+		if i := strings.Index(rel, "/"); i >= 0 {
+			first = rel[:i]
 		}
+		handler, ok := handlers[first]
+		if !ok {
+			writeJSONError(w, http.StatusNotFound, "not found: "+path)
+			return
+		}
+		handler(w, r, r.Method, path)
 	})
 }
 

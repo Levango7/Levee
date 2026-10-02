@@ -45,8 +45,10 @@ func startTestGateway(t *testing.T, cfg ServeGatewayConfig) (*Gateway, *httptest
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, nil, nil, nil)
 
 	mux := http.NewServeMux()
-	mux.Handle("/", corsMiddleware(cfg.CORSOrigins, gw.authMiddleware(gw.restRoute())))
-	mux.Handle("/api/v1/", corsMiddleware(cfg.CORSOrigins, gw.authMiddleware(gw.route())))
+	// Mount production's pipeline, not a hand-copy of it: the two-_trees mount
+	// this replaces is what let /api/v1/<resource> 400 in the real server while
+	// the harness stayed green.
+	mux.Handle("/", gw.dataHandler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
