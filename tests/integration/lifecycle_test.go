@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
@@ -180,13 +179,11 @@ func TestChangeLifecycle_CreatePlanApproveApplyCancel(t *testing.T) {
 	assert.True(t, applyResp.GetSuccess())
 	assert.NotEmpty(t, applyResp.GetRunId(), "apply must surface the engine run id")
 
-	// Build the hash chain so verification can pass.
-	// In production this is done by the audit service; here we do it explicitly
-	// because the stub engine creates traces with empty hashes (MVP behavior).
-	builder, err := audit.NewHashChainBuilder(store)
-	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, changeID)
-	require.NoError(t, err)
+	// The hash chain is sealed by the production path itself (ApplyChange's
+	// terminal settle seals the per-run trace chain). Until that wiring
+	// existed this test built the chain by hand because the stub engine
+	// wrote empty hashes (MVP behavior); a manual Build now correctly hits
+	// ErrChainAlreadyBuilt, which is the seal doing its job.
 
 	// 5. Cancel the completed change — must be refused. Terminal states
 	// protect completed runs from being rewritten to cancelled.
@@ -258,7 +255,7 @@ func TestApplyChange_NoEngineRefused(t *testing.T) {
 
 func TestCrossService_AuditOnEveryTransition(t *testing.T) {
 	ctx := context.Background()
-	changeSvc, auditSvc, store := newServicesWithEngine(t)
+	changeSvc, auditSvc, _ := newServicesWithEngine(t)
 
 	// Create and apply a change (apply creates a trace entry).
 	createResp, err := changeSvc.CreateChange(ctx, &pb.CreateChangeRequest{
@@ -282,9 +279,9 @@ func TestCrossService_AuditOnEveryTransition(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "completed", applyResp.GetChange().GetStatus())
 
-	// Build the hash chain after apply so trace verification works.
-	builder, _ := audit.NewHashChainBuilder(store)
-	_, _, _ = builder.Build(ctx, changeID)
+	// The hash chain is sealed by the production path (ApplyChange's
+	// terminal settle); this test previously built it by hand here (the
+	// stub engine wrote empty hashes before the wiring existed).
 
 	// After apply, there should be at least one trace entry.
 	tracesBefore, err := auditSvc.ListAuditTraces(ctx, &pb.ListAuditTracesRequest{
@@ -424,7 +421,7 @@ done:
 
 func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 	ctx := context.Background()
-	changeSvc, auditSvc, store := newServicesWithEngine(t)
+	changeSvc, auditSvc, _ := newServicesWithEngine(t)
 
 	// Create, plan, approve, and apply (creates the trace that forms the hash chain).
 	createResp, err := changeSvc.CreateChange(ctx, &pb.CreateChangeRequest{
@@ -446,9 +443,8 @@ func TestAudit_HashChainIntegrityAfterMultipleOps(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "completed", applyResp.GetChange().GetStatus())
 
-	// Build the hash chain after apply so verification works.
-	builder, _ := audit.NewHashChainBuilder(store)
-	_, _, _ = builder.Build(ctx, changeID)
+	// The hash chain is sealed by the production path (ApplyChange's
+	// terminal settle); this test previously built it by hand here.
 
 	// Attempt transitions after completion. The state machine refuses pause
 	// on a completed run; a refused op must not corrupt the chain.
