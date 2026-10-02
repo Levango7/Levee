@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS audit (
     target     TEXT    NOT NULL DEFAULT '',
     result     TEXT    NOT NULL,                     -- success|failure|denied|error
     timestamp  TIMESTAMPTZ NOT NULL,
-    tenant_id  TEXT    NOT NULL DEFAULT ''           -- v6: owning tenant (NOT derivable — run_id may be ''); declared last, see the note on trace.tenant_id
+    tenant_id  TEXT    NOT NULL DEFAULT '',          -- v6: owning tenant (NOT derivable — run_id may be ''); declared last, see the note on trace.tenant_id
     -- v7: the chain. GLOBAL, not per-run like trace: an audit row with an
     -- empty run_id is exactly the security-relevant kind (login, config,
     -- credential), and a per-run chain cannot cover it. Ordering for both
