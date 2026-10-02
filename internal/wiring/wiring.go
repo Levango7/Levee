@@ -27,6 +27,7 @@ import (
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/engine"
+	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/state"
 
 	// Register the built-in transports on channel.DefaultRegistry().
@@ -112,6 +113,18 @@ type Engine struct {
 	// needs the flag, not a workflow rewrite.
 	snapshotDir string
 
+	// notifier is the transport rollback grade actions deliver through
+	// (notify / escalate / audit callbacks). Nil (the default) means grades
+	// are still classified and logged, just not delivered: a deployment
+	// without a message bus must not fail a rollback over a missing
+	// notification channel, and the alternative — pretending it was
+	// delivered — would be worse than saying so in a log line.
+	notifier *notify.NotificationManager
+
+	// postVerifyTimeout bounds one post-rollback verification. Zero means
+	// rollback.DefaultVerifyTimeout. See WithPostVerifyTimeout.
+	postVerifyTimeout time.Duration
+
 	// guard issues execution leases in cluster mode; nil = fencing
 	// disabled (single-node). execLeaseTTL is the lease lifetime the
 	// guard issues/renews with; heartbeats run at TTL/3.
@@ -167,6 +180,28 @@ func WithGatePrometheusURL(url string) Option {
 // no-op behaviour. The directory is created lazily on first capture.
 func WithSnapshotDir(dir string) Option {
 	return func(e *Engine) { e.snapshotDir = dir }
+}
+
+// WithNotificationManager attaches the transport that rollback grade actions
+// deliver through. Nil (the default) means grades are classified and logged
+// but not delivered — see newRunNotifySink for why that is a safe default
+// rather than a silent gap.
+func WithNotificationManager(m *notify.NotificationManager) Option {
+	return func(e *Engine) { e.notifier = m }
+}
+
+// WithPostVerifyTimeout bounds one post-rollback verification
+// (rollback.WithVerifyTimeout). Non-positive values select
+// rollback.DefaultVerifyTimeout.
+//
+// It exists because the verification deliberately runs DETACHED from the
+// caller's cancellation: without a bound that would be an unbounded fan-out
+// of gate commands at production targets. The default (2 min) suits most
+// deployments, but a target with slow health endpoints or a phase with many
+// gates needs to raise it — and a deployment that would rather fail fast can
+// lower it. Leaving it unset keeps the default.
+func WithPostVerifyTimeout(d time.Duration) Option {
+	return func(e *Engine) { e.postVerifyTimeout = d }
 }
 
 // WithExecutionGuard attaches the cluster-mode execution lease guard

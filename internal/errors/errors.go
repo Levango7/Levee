@@ -318,7 +318,10 @@ const (
 	LE099 = "LE099" // run snapshot declares no paths
 	LE100 = "LE100" // invalid run snapshot type
 	LE101 = "LE101" // run snapshot path must be absolute
-	LE102 = "LE102" // run snapshot declared with on_failure: manual (nothing would restore the baseline)
+	// LE102 (run snapshot + on_failure: manual) was removed in the same
+	// change that taught the manual rollback path to restore the baseline.
+	// A registered code with no producer is worse than no code: it shows up
+	// in the catalogue as something the compiler can emit, and it cannot.
 )
 
 // CompileSeverity is the compile-time severity of an error code: either "error"
@@ -383,7 +386,6 @@ var codeCatalogue = []CodeInfo{
 	{LE099, "snapshot", "run snapshot declares no paths (nothing to capture)", CompileError},
 	{LE100, "snapshot", "invalid run snapshot type (allowed: file, config)", CompileError},
 	{LE101, "snapshot", "run snapshot path must be absolute", CompileError},
-	{LE102, "snapshot", "run snapshot declared with on_failure: manual, whose rollback path does not restore the baseline", CompileError},
 }
 
 // Lookup returns the CodeInfo for the given code, or false if the code is not

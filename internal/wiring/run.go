@@ -67,7 +67,14 @@ func (e *Engine) acquire(changeID string) (func(), error) {
 //     and mutation (planning-time check alone is stale);
 //   - post-rollback verification is wired, but stays inert unless the plan
 //     opts in with rollback.verify_after (spec §7.1).
-func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunner {
+//
+// newRunRunner builds a FRESH set of per-run subsystems. ClosureRunner is
+// single-flight and its subsystems carry per-run state (locks keyed by run,
+// materialised gates), so nothing here may be shared across runs.
+//
+// ctx is used only for the synchronous run-record read that resolves the
+// rollback notification recipients; it is not retained.
+func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string) *engine.ClosureRunner {
 	lockMgr := lock.NewLockManager(lock.NewLockStore(e.store), e.store)
 	lockMgr.SetTTL(e.lockTTL)
 
@@ -123,8 +130,14 @@ func (e *Engine) newRunRunner(rx *runExec, changeID string) *engine.ClosureRunne
 	// and throw the grade away, leaving PostVerifyResult.Grade empty and
 	// notify / escalate / audit unreachable. rollback_grade.go documents what
 	// each action does today and what is not wired yet.
+	//
+	// The timeout is passed rather than left at the default so a deployment
+	// with slow gates can bound the detached verification (see
+	// WithPostVerifyTimeout); zero keeps rollback.DefaultVerifyTimeout.
+	actors := e.resolveRollbackActors(ctx, changeID)
 	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr,
-		rollback.WithGrader(newRollbackGrader(nil)))
+		rollback.WithGrader(newRollbackGrader(e.newRunNotifySink(actors))),
+		rollback.WithVerifyTimeout(e.postVerifyTimeout))
 	if err != nil {
 		// Reachable only with a nil gate manager, which gateMgr never is
 		// here. Fail soft rather than refuse the run: what is lost is an
@@ -242,7 +255,7 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan,
 	// Fresh subsystem instances per execution (see newRunRunner). The
 	// runner needs rx (the snapshotter captures over its channel cache),
 	// so it is assembled AFTER the runExec exists.
-	runner := e.newRunRunner(rx, changeID)
+	runner := e.newRunRunner(ctx, rx, changeID)
 
 	res, runErr := runner.Run(ctx, p, rx.executeFunc())
 	if res == nil {
@@ -546,6 +559,7 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 	// Manual rollback shares the snapshot store: strategy-"snapshot"
 	// steps restore their pre-apply capture (keyed by the CHANGE id, so
 	// this path finds them without knowing any closure run id).
+	var runSnap engine.RunSnapshotter
 	if e.snapshotDir != "" {
 		if store, err := rollback.NewFileSnapshotStore(e.snapshotDir); err != nil {
 			log.Error("snapshot store init failed; manual rollback runs without snapshot restore", "error", err)
@@ -556,6 +570,13 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 			mgrOpts = append(mgrOpts,
 				rollback.WithSnapshotRestore(snapshotter.RestoreForStep),
 				rollback.WithRunID(changeID))
+			// The run-level baseline (spec §7.2) is restored here too, after
+			// the compensations. This is what makes `on_failure: manual`
+			// compatible with a declared baseline: LE102 used to reject that
+			// combination precisely because this path did not restore it, and
+			// a baseline captured for a manual rollback to ignore is worse than
+			// no baseline at all.
+			runSnap = newRunRemoteSnapshotter(snapshotter)
 		}
 	}
 	mgr := rollback.NewManager(mgrOpts...)
@@ -570,6 +591,24 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		return "", nil, lerr
 	}
 	res := mgr.RollbackWithLedger(ctx, p, rx.executeFunc(), ledger)
+
+	// Run-level baseline restore, after the compensations for the same
+	// reason as on the closure path: the run's pre-state is the last word on
+	// the paths it covers.
+	//
+	// A failure here is JOINED onto the outcome rather than returned alone.
+	// The compensations may well have succeeded, and reporting only "baseline
+	// restore failed" would hide that — while reporting only success would
+	// hide the baseline. The operator needs both facts, in that order.
+	if runSnap != nil && p.RunSnapshot != nil {
+		if rsErr := runSnap.RestoreRun(ctx, changeID, rolledBackHosts(res), p.RunSnapshot); rsErr != nil {
+			log.Error("manual rollback: run baseline restore failed; baseline may not be back on the targets",
+				"change_id", changeID, "error", rsErr)
+			res.Error = errors.Join(res.Error,
+				fmt.Errorf("wiring: manual rollback restored compensations but not the run baseline: %w", rsErr))
+			res.Success = false
+		}
+	}
 
 	rbID := newID("rb-")
 	persistErr := e.persistRollbackResults(ctx, changeID, res, rx.snapshotOutputs())
