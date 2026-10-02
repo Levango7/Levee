@@ -205,12 +205,21 @@ func TestPGMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 	ctx := context.Background()
 
 	// Re-create the v1 shape on the shared test database: drop every column
-	// added by v2-v4 and rewrite the version ledger as exactly {1} (applied
+	// added by v2-v6 and rewrite the version ledger as exactly {1} (applied
 	// = MAX over rows). Leaving the ledger empty would read back applied=0
 	// and send pgMigrate down the fresh-build path (CREATE IF NOT EXISTS
 	// no-ops), skipping step replay entirely. IF EXISTS keeps the simulation
 	// robust when a previous failed run left a column already gone. One
 	// statement per Exec: the extended protocol rejects multi-command.
+	//
+	// The v5/v6 columns must be dropped too, not just v2-v4: pgschema.sql is
+	// maintained at the CURRENT shape, so a database built from it already
+	// carries tenant_id and the audit chain columns. Leaving them in place
+	// while claiming the ledger is at v1 replays v5 against a table that
+	// already has the column, which fails with 42701 (duplicate_column) and
+	// leaves the ledger at 1 for every later NewPGStore call in this package.
+	// A fixture that is not a real v1 database cannot exercise a real v1->v6
+	// upgrade -- the same reason legacy_v1_test.go builds a complete fixture.
 	_, err := store.DB().ExecContext(ctx, `ALTER TABLE credentials DROP COLUMN IF EXISTS tags`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS plan_json`)
@@ -218,6 +227,21 @@ func TestPGMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS plan_hash`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS revision`)
+	require.NoError(t, err)
+	// v5: tenant_id on every tenant-owned table (locks is deliberately
+	// absent -- host exclusion stays global, so v5 never adds it there).
+	for _, table := range []string{
+		"runs", "batches", "steps", "trace", "approvals",
+		"audit", "credentials", "inventory_groups", "targets", "run_assignment",
+	} {
+		_, err = store.DB().ExecContext(ctx,
+			`ALTER TABLE `+table+` DROP COLUMN IF EXISTS tenant_id`)
+		require.NoError(t, err)
+	}
+	// v6: the audit hash chain.
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE audit DROP COLUMN IF EXISTS prev_hash`)
+	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE audit DROP COLUMN IF EXISTS curr_hash`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `DELETE FROM schema_version`)
 	require.NoError(t, err)
