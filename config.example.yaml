@@ -372,27 +372,36 @@ tenant:
 # =============================================================================
 # diagnosis —— 诊断管线扩展（对应 DiagnosisConfig）
 # =============================================================================
-# topology —— 诊断的"影响半径"阶段：从 APM 拉取服务调用图，对目标所在服务
-# 分析上下游依赖与不健康边，作为 Findings 进入诊断报告。provider 留空（默认）
-# 关闭本阶段；配了 provider 却没配 endpoint、或 provider 不认识，都会打 warn
-# 降级（诊断不能因为可选证据源缺失而停摆）。
+# topology —— 诊断的"影响半径"阶段：从 APM / OpsMesh 拉取服务调用图，对目标
+# 所在服务分析上下游依赖与不健康边（APM 源还有错误率；OpsMesh 目录图带节点
+# status），作为 Findings 进入诊断报告。provider 留空（默认）关闭本阶段；
+# skywalking/pinpoint 需要 endpoint，opsmesh 走平台目录图（需 opsmesh.enabled +
+# base_url）；配缺了或不认识的 provider 都打 warn 降级（诊断不能因为可选证据源
+# 缺失而停摆）。
 diagnosis:
   topology:
-    # APM 后端: skywalking | pinpoint。 默认: ""（关闭）
+    # 后端: skywalking | pinpoint | opsmesh。 默认: ""（关闭）
     provider: ""
-    # APM API 基址。 例: http://skywalking:12800
+    # APM API 基址（opsmesh 忽略此项，用 opsmesh.base_url）。 例: http://skywalking:12800
     endpoint: ""
+    # opsmesh 的租户范围（空 = 平台默认租户）。 默认: ""
+    tenant_id: ""
     # 采集 HTTP 超时。 默认: 10s
     timeout: 10s
 
 # =============================================================================
 # opsmesh —— OpsMesh 平台集成（对应 OpsMeshConfig，见 docs/opsmesh-integration-design.md）
 # =============================================================================
-# 只接线"结果回传"方向：带 alert_id 的告警驱动修复在 run 终态时把结果
-# POST 到 /api/v1/alerts/{id}/resolution，供平台关单与训练推荐引擎。
 # 默认关闭；启用时 base_url 必填（缺失拒绝启动）。
-# 边界：拓扑/指标拉取方向待 OpsMesh 平台侧的服务寻址语义定案（API 收服务名、
-# 诊断持有 host 目标），不在本仓单方面猜测。
+# 两个方向都已接线（2026-10-03，按平台源码核实的真实契约）：
+#  - 结果回传：POST /api/v1/alerts/{id}/resolution（设计 §6.2）。**平台现状**：
+#    只实现了 {id}/ack 与 {id}/silence，尚无 resolution 端点——对着这样的部署
+#    上报会得到 404（记 warn、非致命）；改用 ack 的方案被否决：ack 不带结果载荷
+#    且会压制平台自身的升级语义，自动化静默确认告警属于平台侧策略，不由本仓单方面决定。
+#  - 拉取：GET /api/v1/catalog/topology?tenantID=（目录图，节点带 status/metadata）
+#    与 POST /api/v1/prometheus/query（PromQL 透传）。诊断影响半径阶段可配
+#    provider: opsmesh；操作员也可直接用 `levee opsmesh topology|metrics` 查询。
+# api_key 需是平台侧有效的凭据（devicesvc 网关对其端点有租户鉴权中间件）。
 opsmesh:
   enabled: false
   base_url: ""                    # 例: https://opsmesh.example.com

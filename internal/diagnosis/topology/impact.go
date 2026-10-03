@@ -141,7 +141,9 @@ func ImpactRadius(t *Topology, service string, threshold float64) *ImpactReport 
 }
 
 // NodeNames renders up to max node names for a report line, appending "…"
-// when the list is longer.
+// when the list is longer. A node's Metadata["status"] (set by the OpsMesh
+// catalog adapter; absent for APM collectors) is rendered as name[status] so
+// health information reaches the operator in the same line.
 func NodeNames(nodes []Node, max int) string {
 	if len(nodes) == 0 {
 		return "(none)"
@@ -151,7 +153,11 @@ func NodeNames(nodes []Node, max int) string {
 	}
 	names := make([]string, 0, max)
 	for _, n := range nodes[:max] {
-		names = append(names, n.Name)
+		name := n.Name
+		if st := n.Metadata["status"]; st != "" {
+			name = fmt.Sprintf("%s[%s]", name, st)
+		}
+		names = append(names, name)
 	}
 	out := strings.Join(names, ", ")
 	if len(nodes) > max {

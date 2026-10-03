@@ -48,6 +48,10 @@ func (s topologyCollectorSource) CollectTopology(ctx context.Context, _ string, 
 	return s.collector.Collect(ctx, tr)
 }
 
+// Name forwards the collector's name ("skywalking" / "pinpoint") so engine
+// error lines identify the backend.
+func (s topologyCollectorSource) Name() string { return s.collector.Name() }
+
 // runTopologyStage collects the graph for the engine's look-back window and
 // analyses the impact radius around the target. A nil report with nil error
 // means "target not present in the topology" — a benign skip.
@@ -64,11 +68,12 @@ func (e *DiagEngine) runTopologyStage(ctx context.Context, target string) (*topo
 	return topology.ImpactRadius(graph, target, 0), nil
 }
 
-// topologyName names the configured source for error messages. The adapter
-// knows its collector's name; anything else is reported generically.
+// topologyName names the configured source for error messages. Sources that
+// expose Name() (the collector adapter, the OpsMesh catalog source) are named
+// precisely; anything else is reported generically.
 func (e *DiagEngine) topologyName() string {
-	if s, ok := e.topology.(topologyCollectorSource); ok {
-		return "topology/" + s.collector.Name()
+	if n, ok := e.topology.(interface{ Name() string }); ok {
+		return "topology/" + n.Name()
 	}
 	return "topology"
 }
@@ -104,14 +109,20 @@ func topologyFindings(impact *topology.ImpactReport) []Finding {
 				u.Edge.Source, u.Edge.Target, u.ErrorRate*100, u.Edge.Metric.ErrorCount, u.Edge.Metric.CallCount),
 		})
 	}
+	pivotDesc := fmt.Sprintf("service %q", impact.Pivot.Name)
+	if st := impact.Pivot.Metadata["status"]; st != "" {
+		// The OpsMesh catalog graph carries no traffic metrics; its health
+		// signal is the node status — surface it where the operator reads.
+		pivotDesc += fmt.Sprintf(" [%s]", st)
+	}
 	out = append(out, Finding{
 		ID:       "TOPO-RADIUS",
 		Category: "service",
 		Severity: "info",
 		Title:    "service impact radius",
 		Description: fmt.Sprintf(
-			"service %q: %d upstream caller(s) (%s), %d downstream callee(s) (%s); graph:%d nodes/%d edges.",
-			impact.Pivot.Name,
+			"%s: %d upstream caller(s) (%s), %d downstream callee(s) (%s); graph:%d nodes/%d edges.",
+			pivotDesc,
 			len(impact.Upstream), topology.NodeNames(impact.Upstream, 5),
 			len(impact.Downstream), topology.NodeNames(impact.Downstream, 5),
 			impact.TotalNodes, impact.TotalEdges),

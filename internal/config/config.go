@@ -59,10 +59,16 @@ type DiagnosisConfig struct {
 // rather than keeping the daemon from starting (the setupServeTracing
 // contract: an optional evidence source must not block diagnosis).
 type TopologySourceConfig struct {
-	// Provider selects the APM backend: "skywalking" | "pinpoint".
+	// Provider selects the topology backend: "skywalking" | "pinpoint" |
+	// "opsmesh". The opsmesh provider needs opsmesh.enabled + base_url and
+	// pulls the platform's catalog graph through /api/v1/catalog/topology.
 	Provider string `json:"provider" mapstructure:"provider"`
 	// Endpoint is the APM API base URL (e.g. http://skywalking:12800).
+	// Ignored by the opsmesh provider, which uses opsmesh.base_url.
 	Endpoint string `json:"endpoint" mapstructure:"endpoint"`
+	// TenantID is the opsmesh provider's tenant scope. Empty lets the
+	// platform apply its default tenant. Ignored by APM providers.
+	TenantID string `json:"tenant_id" mapstructure:"tenant_id"`
 	// Timeout is the per-collect HTTP timeout. Zero defaults to 10s.
 	Timeout time.Duration `json:"timeout" mapstructure:"timeout"`
 }

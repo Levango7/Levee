@@ -82,7 +82,7 @@ grep -rl 'nexus/levee/internal/compat"' --include='*.go' . \
 
 - **`diagnosis/topology`（APM 拓扑）**：SkyWalking / Pinpoint 采集器接到诊断管线的**影响半径阶段**（`diagnosis.topology.*`，默认关）——拉取服务调用图、对目标所在服务分析上下游与不健康边（`ImpactRadius`），以 `service` 类 Findings 进入诊断报告；图谱里没有该目标是静默跳过而非报错。
 - **`compat`（Ansible 导入）**：`levee import ansible <playbook> [--out f]` 做**纯翻译**——状态感知映射、无忠实动作 fail-closed 拒绝、产出经 `MarshalWorkflow` 发出并**先过 compile 严格模式的两道门**（parse + validate）再落盘，保证输出可编译；不执行、不建变更。
-- **`opsmesh`**：只接线**结果回传**方向（`opsmesh.*`，默认关）：带 `alert_id` 的告警驱动修复在终态把结果 POST 到平台关单。**拓扑/指标拉取方向待 OpsMesh 平台侧的服务寻址语义定案**（平台 API 收服务名、诊断持有 host 目标），不在本仓单方面猜测。
+- **`opsmesh`（平台集成，两个方向都接线）**：按平台源码核实的真实契约（设计文档 §6.3 的 `service` 寻址只是草案）。**结果回传**（`opsmesh.*`，默认关）：带 `alert_id` 的告警驱动修复在终态 POST `/api/v1/alerts/{id}/resolution`——如实登记的平台缺口：平台目前只有 `ack`/`silence`，尚无 `resolution` 端点，上报会 404（记 warn、非致命）；改用 `ack` 被否决（不带结果载荷且会压制平台升级语义，属平台侧策略）。**拉取**：`GET /api/v1/catalog/topology`（目录图，节点带 status/metadata）与 `POST /api/v1/prometheus/query`（PromQL 透传）——诊断影响半径阶段可配 `provider: opsmesh`（host→节点的匹配在客户端经 name/metadata 值包含完成，无需平台侧寻址），操作员也可直接 `levee opsmesh topology|metrics` 查询。
 
 ## 快速开始
 
