@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+## [v1.17.0] - 2026-10-03 — OpsMesh 拉取方向接线（按平台源码核实契约）
+
+v1.16.0 留下的最后一个跨系统问题——「OpsMesh 平台侧的服务寻址语义待定案」——被**直接读平台源码解决**（F:\Nexus\OpsMesh）：设计文档 §6.3 的 service 寻址只是草案，真实端点是目录图 `/api/v1/catalog/topology?tenantID=` 与 PromQL 代理 `/api/v1/prometheus/query`；host→服务的匹配在客户端经 name/metadata 值包含完成，无需平台侧改动。客户端三处与真实契约不符的方法（GetTopology/GetMetrics/Ping）全部修正——旧实现会对着真实部署 404。拉取方向完整接线：诊断影响半径阶段 `provider: opsmesh` + `levee opsmesh topology|metrics` CLI；结果回传的 `resolution` 端点平台尚未实现（只有 ack/silence），404-降级与「不用 ack 顶替」的理由如实写进代码注释与配置说明。
+
+### 修复
+
+- **OpsMesh 集成收口：拉取方向接成真线 + 三处与平台真实契约不符的旧实现修正**。
+  **① 契约核实（读平台源码，不再靠设计草案猜）**：`GET /api/v1/topology?service=` 在平台上不存在；真实端点是 `GET /api/v1/catalog/topology?tenantID=`（目录图：节点带 type/status/metadata/children，边带 relationType）、`POST /api/v1/prometheus/query {"query"}`（PromQL 透传、即时求值）、健康探针 `/healthz`。客户端三种拉取全部改到真实契约（types.go 重写为 CatalogGraph/PrometheusResponse 形状）。
+  **② host→服务寻址**：目录图返回整租户的图，匹配在客户端完成——`topology.FindNode` 按 ID/Name/Endpoint/metadata 值包含匹配，主机名或 IP 都能命中；适配器刻意不猜 metadata 键名（值包含天然覆盖）。
+  **③ 接线面**：诊断影响半径阶段新增 `provider: opsmesh`（`diagnosis.topology.tenant_id`；与 `opsmesh.*` 连接设置共用）；新增只读命令 `levee opsmesh topology [--tenant] [--service]`（含影响半径分析）与 `levee opsmesh metrics --query`（human + --json）。
+  **④ 平台缺口的诚实记录**：结果回传的 `/resolution` 端点平台未实现（只有 `{id}/ack`/`{id}/silence`）——上报 404 记 warn、非致命；改用 ack 顶替被**否决**（不带结果载荷、压制平台升级语义，属平台侧策略），理由写进 client 注释与 config 说明。
+  **⑤ status 进 finding**：OpsMesh 目录图没有流量指标，节点 status 是它唯一的健康信号——以 `name[status]` 渲染进影响半径 finding（上游/下游列表与 pivot 都带）。
+  测试：客户端真实契约（三端点路径/方法/查询参数与形状）、目录图→统一拓扑转换与跨键匹配、影响半径端到端（IP 值匹配）、CLI 两子命令渲染与配置缺失指名、不健康边对无指标图正确为空。
+
 ## [v1.16.0] - 2026-10-03 — 未链入包清零 + OpsMesh 反馈闭环
 
 本版把最后三个库就绪、产品不可用的包一次收口，未链入包 8→0：**APM 拓扑分析**接入诊断管线的影响半径阶段（SkyWalking/Pinpoint，`diagnosis.topology.*`，默认关）；**Ansible 导入**成为 CLI 命令 `levee import ansible`（纯翻译，产物先过 parse+validate 两道门，输出保证可编译）；**OpsMesh 结果回传**接线（`opsmesh.*`，告警驱动修复终态上报，拓扑/指标拉取待平台侧寻址语义定案）。逐条明细见下方「新增」。

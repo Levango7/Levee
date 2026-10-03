@@ -193,45 +193,66 @@ func TestReportResult_ContextCancel(t *testing.T) {
 
 // --- GetTopology -----------------------------------------------------------
 
-// TestGetTopology_Success verifies a happy-path GET and JSON decode.
+// TestGetTopology_Success verifies the REAL platform contract: the catalog
+// graph endpoint (/api/v1/catalog/topology?tenantID=) with the CatalogGraph
+// shape — the previous revision of this test pinned an invented
+// /api/v1/topology?service= endpoint that the platform never implemented.
 func TestGetTopology_Success(t *testing.T) {
 	var (
-		gotMethod string
-		gotPath   string
-		gotQuery  string
+		gotMethod   string
+		gotPath     string
+		gotTenantID string
 	)
-	payload := Topology{
-		Service: "svc-a",
-		Nodes: []TopologyNode{
-			{ID: "n1", Name: "node-1", Type: "host", IP: "10.0.0.1", Metadata: map[string]string{"az": "a"}},
+	payload := CatalogGraph{
+		TenantID: "t-1",
+		Nodes: []CatalogNode{
+			{ID: "host-001", Name: "web-server-01", Type: "host", Status: "online",
+				Metadata: map[string]string{"tenantID": "t-1"}},
+			{ID: "svc-001", Name: "auth-service", Type: "service", Status: "running",
+				Children: []string{"host-001"}},
 		},
-		Edges:     []TopologyEdge{{From: "n1", To: "n2", Type: "connects"}},
-		UpdatedAt: time.Now().UTC(),
+		Edges: []CatalogEdge{{From: "svc-001", To: "host-001", RelationType: "depends"}},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
-		gotQuery = r.URL.Query().Get("service")
+		gotTenantID = r.URL.Query().Get("tenantID")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(payload)
 	}))
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	topo, err := c.GetTopology(context.Background(), "svc-a")
+	graph, err := c.GetTopology(context.Background(), "t-1")
 	require.NoError(t, err)
-	require.NotNil(t, topo)
+	require.NotNil(t, graph)
 
 	assert.Equal(t, http.MethodGet, gotMethod)
-	assert.Equal(t, "/api/v1/topology", gotPath)
-	assert.Equal(t, "svc-a", gotQuery)
-	assert.Equal(t, payload.Service, topo.Service)
-	require.Len(t, topo.Nodes, 1)
-	assert.Equal(t, payload.Nodes[0].ID, topo.Nodes[0].ID)
-	assert.Equal(t, payload.Nodes[0].Metadata["az"], topo.Nodes[0].Metadata["az"])
-	require.Len(t, topo.Edges, 1)
-	assert.Equal(t, payload.Edges[0].From, topo.Edges[0].From)
+	assert.Equal(t, "/api/v1/catalog/topology", gotPath)
+	assert.Equal(t, "t-1", gotTenantID)
+	assert.Equal(t, payload.TenantID, graph.TenantID)
+	require.Len(t, graph.Nodes, 2)
+	assert.Equal(t, "web-server-01", graph.Nodes[0].Name)
+	assert.Equal(t, "online", graph.Nodes[0].Status)
+	assert.Equal(t, []string{"host-001"}, graph.Nodes[1].Children)
+	require.Len(t, graph.Edges, 1)
+	assert.Equal(t, "depends", graph.Edges[0].RelationType)
+}
+
+// TestGetTopology_EmptyTenantOmitsParam verifies the default-tenant path.
+func TestGetTopology_EmptyTenantOmitsParam(t *testing.T) {
+	var rawQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawQuery = r.URL.RawQuery
+		_ = json.NewEncoder(w).Encode(CatalogGraph{})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	_, err := c.GetTopology(context.Background(), "")
+	require.NoError(t, err)
+	assert.Empty(t, rawQuery, "an empty tenant must omit the parameter (platform default)")
 }
 
 // TestGetTopology_HTTPError verifies that a 5xx response is surfaced.
@@ -243,55 +264,100 @@ func TestGetTopology_HTTPError(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	topo, err := c.GetTopology(context.Background(), "svc-a")
+	graph, err := c.GetTopology(context.Background(), "t-1")
 	require.Error(t, err)
-	assert.Nil(t, topo)
+	assert.Nil(t, graph)
 	assert.Contains(t, err.Error(), "status 500")
 	assert.Contains(t, err.Error(), "internal")
 }
 
 // --- GetMetrics ------------------------------------------------------------
 
-// TestGetMetrics_Success verifies a happy-path GET with query and time range
-// parameters and JSON decode.
+// TestGetMetrics_Success verifies the REAL platform contract: POST
+// /api/v1/prometheus/query {"query": ...} answered with a Prometheus
+// instant-vector envelope, normalized into Metrics.
 func TestGetMetrics_Success(t *testing.T) {
 	var (
-		gotQuery string
-		gotStart string
-		gotEnd   string
+		gotMethod string
+		gotPath   string
+		gotBody   map[string]string
 	)
-	now := time.Now().UTC().Truncate(time.Second)
-	payload := Metrics{
-		Query: "cpu_usage",
-		Series: []MetricSeries{
-			{Labels: map[string]string{"host": "h1"}, Points: []MetricPoint{{Timestamp: now, Value: 0.42}}},
+	ts := float64(time.Now().Unix())
+	envelope := map[string]any{
+		"status": "success",
+		"data": map[string]any{
+			"resultType": "vector",
+			"result": []any{
+				map[string]any{
+					"metric": map[string]string{"host": "h1"},
+					"value":  []any{ts, "0.42"},
+				},
+			},
 		},
-		TimeRange: TimeRange{Start: now, End: now.Add(5 * time.Minute)},
 	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.Query().Get("query")
-		gotStart = r.URL.Query().Get("start")
-		gotEnd = r.URL.Query().Get("end")
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(payload)
+		_ = json.NewEncoder(w).Encode(envelope)
 	}))
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	tr := TimeRange{Start: now, End: now.Add(5 * time.Minute)}
-	metrics, err := c.GetMetrics(context.Background(), "cpu_usage", tr)
+	metrics, err := c.GetMetrics(context.Background(), `up{job="node"}`)
 	require.NoError(t, err)
 	require.NotNil(t, metrics)
 
-	assert.Equal(t, "cpu_usage", gotQuery)
-	assert.Equal(t, now.Format(time.RFC3339Nano), gotStart)
-	assert.Equal(t, now.Add(5*time.Minute).Format(time.RFC3339Nano), gotEnd)
-	assert.Equal(t, payload.Query, metrics.Query)
+	assert.Equal(t, http.MethodPost, gotMethod)
+	assert.Equal(t, "/api/v1/prometheus/query", gotPath)
+	assert.Equal(t, `up{job="node"}`, gotBody["query"])
+	assert.Equal(t, `up{job="node"}`, metrics.Query)
 	require.Len(t, metrics.Series, 1)
-	assert.Equal(t, payload.Series[0].Labels["host"], metrics.Series[0].Labels["host"])
-	require.Len(t, metrics.Series[0].Points, 1)
-	assert.InDelta(t, 0.42, metrics.Series[0].Points[0].Value, 1e-9)
+	assert.Equal(t, "h1", metrics.Series[0].Labels["host"])
+	assert.InDelta(t, 0.42, metrics.Series[0].Value, 1e-9)
+	assert.Equal(t, time.Unix(int64(ts), 0).UTC(), metrics.Series[0].Timestamp)
+}
+
+// TestGetMetrics_QueryFailed surfaces a non-success envelope as ErrQueryFailed.
+func TestGetMetrics_QueryFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "error", "error": "parse error"})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	metrics, err := c.GetMetrics(context.Background(), "bad{")
+	require.Error(t, err)
+	assert.Nil(t, metrics)
+	assert.True(t, errors.Is(err, ErrQueryFailed), "want ErrQueryFailed, got %v", err)
+}
+
+// TestGetMetrics_SkipsMalformedSeries pins the degrade contract: one odd
+// series must not blank out the rest of the evidence.
+func TestGetMetrics_SkipsMalformedSeries(t *testing.T) {
+	envelope := map[string]any{
+		"status": "success",
+		"data": map[string]any{
+			"resultType": "vector",
+			"result": []any{
+				map[string]any{"metric": map[string]string{"host": "bad1"}, "value": []any{}},
+				map[string]any{"metric": map[string]string{"host": "bad2"}, "value": []any{1.0, "NaNx"}},
+				map[string]any{"metric": map[string]string{"host": "good"}, "value": []any{1.0, "7"}},
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(envelope)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	metrics, err := c.GetMetrics(context.Background(), "q")
+	require.NoError(t, err)
+	require.Len(t, metrics.Series, 1, "malformed series must be skipped, not fatal")
+	assert.Equal(t, "good", metrics.Series[0].Labels["host"])
 }
 
 // TestGetMetrics_EmptyQuery verifies that an empty query is rejected with
@@ -303,42 +369,16 @@ func TestGetMetrics_EmptyQuery(t *testing.T) {
 	defer srv.Close()
 
 	c := newTestClient(t, srv)
-	tr := TimeRange{Start: time.Now(), End: time.Now().Add(time.Minute)}
-	metrics, err := c.GetMetrics(context.Background(), "", tr)
+	metrics, err := c.GetMetrics(context.Background(), "")
 	require.Error(t, err)
 	assert.Nil(t, metrics)
 	assert.True(t, errors.Is(err, ErrEmptyQuery), "want ErrEmptyQuery, got %v", err)
 }
 
-// TestGetMetrics_InvalidTimeRange verifies that a time range whose End is not
-// strictly after Start is rejected with ErrInvalidTimeRange.
-func TestGetMetrics_InvalidTimeRange(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("server should not be called for invalid time range")
-	}))
-	defer srv.Close()
-
-	c := newTestClient(t, srv)
-	now := time.Now()
-
-	// End == Start is invalid.
-	tr := TimeRange{Start: now, End: now}
-	metrics, err := c.GetMetrics(context.Background(), "q", tr)
-	require.Error(t, err)
-	assert.Nil(t, metrics)
-	assert.True(t, errors.Is(err, ErrInvalidTimeRange), "want ErrInvalidTimeRange, got %v", err)
-
-	// End < Start is invalid.
-	tr = TimeRange{Start: now, End: now.Add(-time.Second)}
-	metrics, err = c.GetMetrics(context.Background(), "q", tr)
-	require.Error(t, err)
-	assert.Nil(t, metrics)
-	assert.True(t, errors.Is(err, ErrInvalidTimeRange), "want ErrInvalidTimeRange, got %v", err)
-}
-
 // --- Ping ------------------------------------------------------------------
 
-// TestPing_Success verifies that a 2xx response yields nil.
+// TestPing_Success verifies that a 2xx response yields nil, at the platform's
+// real probe path (/healthz — the former /api/v1/health never existed).
 func TestPing_Success(t *testing.T) {
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +389,7 @@ func TestPing_Success(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	require.NoError(t, c.Ping(context.Background()))
-	assert.Equal(t, "/api/v1/health", gotPath)
+	assert.Equal(t, "/healthz", gotPath)
 }
 
 // TestPing_Failure verifies that a non-2xx response is surfaced as an error.
@@ -396,8 +436,7 @@ func TestUnauthorized(t *testing.T) {
 	assert.Contains(t, err.Error(), "status 401")
 
 	// GetMetrics
-	tr := TimeRange{Start: time.Now(), End: time.Now().Add(time.Minute)}
-	_, err = c.GetMetrics(context.Background(), "q", tr)
+	_, err = c.GetMetrics(context.Background(), "q")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 401")
 
@@ -479,5 +518,5 @@ func TestBaseURL_TrailingSlash(t *testing.T) {
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 	})
 	require.NoError(t, c.Ping(context.Background()))
-	assert.Equal(t, "/api/v1/health", gotPath)
+	assert.Equal(t, "/healthz", gotPath)
 }

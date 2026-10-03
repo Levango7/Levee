@@ -406,6 +406,20 @@ func buildServeTopologySource(cfg *config.Config) diagnosis.TopologySource {
 	if p.Provider == "" {
 		return nil
 	}
+	if p.Provider == "opsmesh" {
+		// The OpsMesh provider pulls the platform's catalog graph instead of
+		// an APM API; it rides the opsmesh.* connection settings.
+		if !cfg.OpsMesh.Enabled || cfg.OpsMesh.BaseURL == "" {
+			log.Warn("diagnosis.topology.provider=opsmesh requires opsmesh.enabled=true and base_url; topology stage disabled")
+			return nil
+		}
+		client := opsmesh.NewOpsMeshClient(opsmesh.OpsMeshClientConfig{
+			BaseURL: cfg.OpsMesh.BaseURL,
+			APIKey:  cfg.OpsMesh.APIKey,
+		})
+		log.Info("diagnosis topology stage enabled (opsmesh catalog)", "tenant", p.TenantID)
+		return opsmesh.NewTopologySource(client, p.TenantID)
+	}
 	if p.Endpoint == "" {
 		log.Warn("diagnosis.topology.provider set without endpoint; topology stage disabled",
 			"provider", p.Provider)
@@ -424,7 +438,7 @@ func buildServeTopologySource(cfg *config.Config) diagnosis.TopologySource {
 		collector = topology.NewPinpointCollector(p.Endpoint, client)
 	default:
 		log.Warn("diagnosis.topology: unknown provider; topology stage disabled",
-			"provider", p.Provider, "supported", "skywalking, pinpoint")
+			"provider", p.Provider, "supported", "skywalking, pinpoint, opsmesh")
 		return nil
 	}
 	log.Info("diagnosis topology stage enabled", "provider", p.Provider, "endpoint", p.Endpoint)

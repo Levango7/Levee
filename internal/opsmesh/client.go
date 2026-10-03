@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -36,9 +37,9 @@ var (
 	// ErrEmptyQuery is returned when GetMetrics is called with an empty query
 	// string.
 	ErrEmptyQuery = errors.New("opsmesh: empty query")
-	// ErrInvalidTimeRange is returned when GetMetrics is called with a time
-	// range whose End is not strictly after its Start.
-	ErrInvalidTimeRange = errors.New("opsmesh: invalid time range")
+	// ErrQueryFailed is returned when the platform's Prometheus proxy reports
+	// a non-success status for the query.
+	ErrQueryFailed = errors.New("opsmesh: query failed")
 )
 
 // --- Constants --------------------------------------------------------------
@@ -104,7 +105,20 @@ func NewOpsMeshClient(cfg OpsMeshClientConfig) *OpsMeshClient {
 
 // ReportResult posts a remediation outcome back to OpsMesh for the given alert.
 // The result is JSON-encoded and sent to
-// POST /api/v1/alerts/{alertID}/resolution.
+// POST /api/v1/alerts/{alertID}/resolution (docs/opsmesh-integration-design.md
+// §6.2).
+//
+// PLATFORM GAP, stated rather than guessed: the OpsMesh platform today
+// implements POST /api/v1/alerts/{id}/ack and /silence — there is no
+// /resolution endpoint (verified against the platform source). Reporting
+// against such a deployment returns a 404 which callers log and treat as
+// non-fatal; the alert still exists platform-side, unresolved. Routing this
+// report at /ack instead was considered and rejected: ack carries no outcome
+// payload and it suppresses the platform's own escalation semantics — an
+// automation silently acknowledging alerts is a platform-side policy decision
+// that must not be made unilaterally from this client. Until the platform
+// grows the endpoint per the design, this method is the correct client for
+// the agreed contract.
 //
 // ReportResult returns an error wrapping one of the sentinel errors
 // ErrEmptyAlertID or ErrNilResult when the inputs are invalid, and a wrapped
@@ -121,55 +135,92 @@ func (c *OpsMeshClient) ReportResult(ctx context.Context, alertID string, result
 	return c.doPost(ctx, path, result)
 }
 
-// GetTopology fetches the service topology from OpsMesh for the given service
-// name. It issues GET /api/v1/topology?service={service} and decodes the JSON
-// response into a Topology. The returned Topology is non-nil on a nil error.
-func (c *OpsMeshClient) GetTopology(ctx context.Context, service string) (*Topology, error) {
-	q := url.Values{}
-	q.Set("service", service)
-	path := fmt.Sprintf("%s/topology?%s", apiPrefix, q.Encode())
+// GetTopology fetches the platform's asset/service catalog graph for a
+// tenant: GET /api/v1/catalog/topology?tenantID={tenantID} (the platform's
+// real endpoint — the `service`-keyed sketch in the integration design was
+// never implemented; see this package's types.go). The whole graph is
+// returned; callers match their own pivot (the diagnosis topology stage does
+// this through topology.FindNode). The returned CatalogGraph is non-nil on a
+// nil error.
+//
+// An empty tenantID omits the parameter, which the platform treats as its
+// default tenant.
+func (c *OpsMeshClient) GetTopology(ctx context.Context, tenantID string) (*CatalogGraph, error) {
+	path := apiPrefix + "/catalog/topology"
+	if tenantID != "" {
+		q := url.Values{}
+		q.Set("tenantID", tenantID)
+		path += "?" + q.Encode()
+	}
 
-	var topo Topology
-	if err := c.doGet(ctx, path, &topo); err != nil {
+	var graph CatalogGraph
+	if err := c.doGet(ctx, path, &graph); err != nil {
 		return nil, err
 	}
-	return &topo, nil
+	return &graph, nil
 }
 
-// GetMetrics fetches monitoring metrics from OpsMesh for the given query and
-// time range. It issues GET /api/v1/metrics?query={query}&start={start}&end={end}
-// and decodes the JSON response into a Metrics. The returned Metrics is non-nil
-// on a nil error.
+// GetMetrics runs a PromQL query through the platform's Prometheus proxy:
+// POST /api/v1/prometheus/query {"query": "..."} (aio-svc's real endpoint).
+// The platform evaluates at the instant of the call — that is its contract,
+// so this client carries no time range. The Prometheus envelope is decoded
+// and normalized into Metrics (one MetricSample per series, value parsed,
+// timestamp decoded).
 //
-// GetMetrics rejects an empty query with ErrEmptyQuery and a time range whose
-// End is not strictly after Start with ErrInvalidTimeRange before any network
-// activity.
-func (c *OpsMeshClient) GetMetrics(ctx context.Context, query string, timeRange TimeRange) (*Metrics, error) {
+// An empty query is rejected with ErrEmptyQuery; a non-"success" envelope
+// status is rejected with ErrQueryFailed.
+func (c *OpsMeshClient) GetMetrics(ctx context.Context, query string) (*Metrics, error) {
 	if query == "" {
 		return nil, fmt.Errorf("opsmesh: get metrics: %w", ErrEmptyQuery)
 	}
-	if !timeRange.End.After(timeRange.Start) {
-		return nil, fmt.Errorf("opsmesh: get metrics: %w", ErrInvalidTimeRange)
-	}
 
-	q := url.Values{}
-	q.Set("query", query)
-	q.Set("start", timeRange.Start.UTC().Format(time.RFC3339Nano))
-	q.Set("end", timeRange.End.UTC().Format(time.RFC3339Nano))
-	path := fmt.Sprintf("%s/metrics?%s", apiPrefix, q.Encode())
-
-	var metrics Metrics
-	if err := c.doGet(ctx, path, &metrics); err != nil {
+	var resp PrometheusResponse
+	if err := c.doPostDecoding(ctx, apiPrefix+"/prometheus/query", map[string]string{"query": query}, &resp); err != nil {
 		return nil, err
 	}
-	return &metrics, nil
+	return normalizeMetrics(query, &resp)
 }
 
-// Ping issues GET /api/v1/health against OpsMesh and returns nil when the
-// platform reports a 2xx status. It is the lightweight liveness probe used by
-// the levee health subsystem.
+// Ping issues GET /healthz against the platform root and returns nil when it
+// reports a 2xx status. It is the lightweight liveness probe used by the
+// levee health subsystem (`/healthz` is the platform's registered probe —
+// verified against its source; the former /api/v1/health path never existed).
 func (c *OpsMeshClient) Ping(ctx context.Context) error {
-	return c.doGet(ctx, apiPrefix+"/health", nil)
+	return c.doGet(ctx, "/healthz", nil)
+}
+
+// normalizeMetrics converts a Prometheus instant-vector envelope into the
+// normalized Metrics view. Malformed series (a value pair that is not
+// [timestamp, "value"]) are skipped rather than failing the whole query —
+// one odd series must not blank out the evidence.
+func normalizeMetrics(query string, resp *PrometheusResponse) (*Metrics, error) {
+	if resp.Status != "success" {
+		return nil, fmt.Errorf("opsmesh: get metrics: %w: platform status %q", ErrQueryFailed, resp.Status)
+	}
+	out := &Metrics{Query: query, Series: make([]MetricSample, 0, len(resp.Data.Result))}
+	for _, s := range resp.Data.Result {
+		if len(s.Value) != 2 {
+			continue
+		}
+		ts, ok := s.Value[0].(float64)
+		if !ok {
+			continue
+		}
+		valStr, ok := s.Value[1].(string)
+		if !ok {
+			continue
+		}
+		val, err := strconv.ParseFloat(valStr, 64)
+		if err != nil {
+			continue
+		}
+		out.Series = append(out.Series, MetricSample{
+			Labels:    s.Metric,
+			Value:     val,
+			Timestamp: time.Unix(int64(ts), int64((ts-float64(int64(ts)))*1e9)).UTC(),
+		})
+	}
+	return out, nil
 }
 
 // --- Internal helpers -------------------------------------------------------
@@ -194,6 +245,21 @@ func (c *OpsMeshClient) doPost(ctx context.Context, path string, body any) error
 // non-nil, decodes the JSON body into out. It returns nil on a 2xx response.
 func (c *OpsMeshClient) doGet(ctx context.Context, path string, out any) error {
 	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return err
+	}
+	return c.send(req, path, out)
+}
+
+// doPostDecoding is the shared POST helper for endpoints that return a JSON
+// body (the Prometheus proxy). It marshals body, performs the request and
+// decodes the response into out on a 2xx.
+func (c *OpsMeshClient) doPostDecoding(ctx context.Context, path string, body any, out any) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("opsmesh: marshal: %w", err)
+	}
+	req, err := c.newRequest(ctx, http.MethodPost, path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
