@@ -223,7 +223,9 @@ levee/
 | [docs/leveelang-spec.md](docs/leveelang-spec.md) | LEVEELang DSL 规范 |
 | [docs/levee-api.md](docs/levee-api.md) | CLI 命令与 API 设计 |
 | [docs/cli-reference.md](docs/cli-reference.md) | CLI 参考手册 |
-| [docs/deployment.md](docs/deployment.md) | 生产部署与升级手册 |
+| [docs/deployment.md](docs/deployment.md) | 生产部署与升级手册（含 §14 Helm、§15 交付检查单） |
+| [deploy/README.md](deploy/README.md) | 交付物索引：裸金属一键安装 / systemd 单元 / Helm chart / 镜像来源 |
+| [docs/scenario-cross-region-ops.md](docs/scenario-cross-region-ops.md) | 场景方案：中大型集团跨区域数据同步与运维的变更治理 |
 | [docs/security-audit.md](docs/security-audit.md) | 安全审计与部署安全声明 |
 | [docs/opsmesh-integration-design.md](docs/opsmesh-integration-design.md) | OpsMesh 集成设计 |
 | [docs/release-notes/](docs/release-notes/) | 各版本发布说明 |

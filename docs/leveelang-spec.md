@@ -248,7 +248,7 @@ workflow <name> {
 | wait | duration | 等待时长（grace period） |
 | requires_reboot | bool | 该步是否需要目标机重启 |
 | irreversible | bool | 该步是否不可逆 |
-| allow_irreversible | list | workflow 级字段：允许执行的不可逆动作模块白名单（未列入则 LE082 拒绝） |
+| allow_irreversible | list | workflow 级字段（**规范目标，尚未接线**）：不可逆动作白名单。当前解析器无此字段、LE082 无产生点；不可逆保护由两层真实机制承担——模块内 `confirm=yes` 硬门（运行时拒绝）与计划侧 `irreversible: true` 的高危审批路由。接线项见 `docs/product-roadmap.md` |
 | idempotent | bool | 该步是否可安全重复执行；回滚补偿在证据无法定序时据此决定重跑还是拒绝 |
 | on_failure | string | workflow 级回滚触发策略：auto / manual（见 §7.1） |
 | verify_after | bool | workflow 级运行态策略：回滚后是否验证 |

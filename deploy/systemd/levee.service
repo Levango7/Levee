@@ -1,0 +1,38 @@
+[Unit]
+Description=LEVEE change governance engine (serve: gRPC + REST + Web UI)
+Documentation=https://github.com/Levango7/Levee/blob/master/docs/deployment.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=levee
+Group=levee
+
+# 凭据与运行参数。文件权限 0600 root:levee，内容形如：
+#   LEVEE_TOKEN=<单令牌>            （或不用单令牌，改在 EXTRA 里用 --auth-token）
+#   LEVEE_MASTER_PASSWORD=<32+ 字符> （执行引擎凭据面）
+#   LEVEE_SERVE_EXTRA=--cluster --pg-dsn postgres://... --node-id node-1 --node-addr 10.0.0.11 --node-role master
+# EXTRA 在下方 ExecStart 末尾按空格拆分展开（systemd 变量展开语义）。
+EnvironmentFile=/etc/levee/levee.env
+
+ExecStart=/usr/local/bin/levee serve \
+    -c /etc/levee/config.yaml \
+    --addr :9090 \
+    --http-addr :8080 \
+    --engine-enabled \
+    $LEVEE_SERVE_EXTRA
+
+Restart=on-failure
+RestartSec=3
+
+# 加固：最小权限、只读系统盘、仅数据目录可写
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/levee
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

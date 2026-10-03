@@ -50,6 +50,12 @@ make cross-build
 
 > 若修改了 `web/` 前端源码，需先 `make web` 重新构建并更新 `internal/web/dist`，再 `make build`，否则内嵌 UI 仍是旧版。
 
+**发行版与镜像**：
+
+- Release 页提供六平台归档（`levee_<版本>_{linux,darwin,windows}_{amd64,arm64}`）；
+- 每个 `v*` tag 同时构建多架构容器镜像 `ghcr.io/levango7/levee:<版本>`（默认私有，拉取需凭据）；
+- 仓库自带交付物见 [deploy/README.md](../deploy/README.md)：裸金属一键安装脚本（`deploy/baremetal/install.sh`，幂等）、可直接安装的 systemd 单元（`deploy/systemd/levee.service`）、Helm chart（`deploy/helm/levee`，见 §14）。
+
 ## 4. 配置
 
 配置文件查找顺序：
@@ -185,6 +191,12 @@ systemctl enable --now levee
 systemctl status levee
 ```
 
+**仓库自带可直接使用的版本**：`deploy/systemd/levee.service`（含最小权限加固：`ProtectSystem=strict`、`ReadWritePaths` 限定数据目录、`$LEVEE_SERVE_EXTRA` 展开集群参数）与 `deploy/baremetal/install.sh`——幂等安装（建用户/装二进制/渲染单元/生成 0600 凭据模板），容器实测可直接重复执行。用法：
+
+```bash
+sudo ./deploy/baremetal/install.sh --binary ./levee --start
+```
+
 ## 7. Web UI
 
 `levee web` 服务内嵌 SPA，并可把 `/api/*` 代理到 API 服务：
@@ -300,6 +312,36 @@ levee serve --cluster \
 - **REST 接口返回 405 method not allowed**：本版本起变更类操作强制 POST、`logs`/`trace` 强制 GET；请校正客户端请求方法。
 - **Web UI 打开但无数据**：确认 `levee web --api` 指向的网关地址可达，且浏览器请求携带了有效 token（同源代理时由网关鉴权）。
 - **SSH 目标机连接失败**：检查 `channel.ssh` 配置（端口/密钥/known_hosts）；`strict_host_check` 开启时首次连接需先建立 known_hosts 记录。
+
+## 14. Kubernetes（Helm）部署
+
+客户有 K8s 时用仓库自带的 chart（`deploy/helm/levee`），现场只需填 `values.yaml`：
+
+```bash
+helm lint deploy/helm/levee                                   # 先校验
+helm install levee deploy/helm/levee -f your-values.yaml      # 单机（SQLite+PVC）
+helm install levee deploy/helm/levee -f your-values.yaml \
+  --set mode=cluster --set postgres.dsn='postgres://...?sslmode=require'   # 集群
+helm test levee                                               # 校验 /healthz
+```
+
+- 两种形态：`mode=single`（SQLite + PVC）与 `mode=cluster`（master 1 副本 + worker N 副本，共享 PG；`--node-id/--node-addr/--node-role` 由 Downward API 注入）。
+- 认证、主密码、PG DSN 全部走 Secret（`auth.existingSecret` 可完全接管）；探针用网关 `/healthz`（就绪）与 TCP（存活）。
+- 边界如实写在模板注释里：**Service 只指向 master 副本**——`WatchChange` 事件总线是进程内的，多副本前置会让订阅者漏事件；内嵌 PG 仅供演示（单副本无 HA），生产用客户既有 PG/RDS；集群 worker 的快照目录默认 emptyDir，需要跨 Pod 重建保留就配 `cluster.snapshotClaimName` 指向共享 RWX 卷。
+- 镜像：`ghcr.io/levango7/levee:<版本>`（多架构；默认私有，配 `imagePullSecrets` 或同步到客户镜像库）。
+
+## 15. 交付检查单（上线前逐项核对）
+
+| # | 检查项 | 判据 |
+| --- | --- | --- |
+| 1 | 认证为**命名令牌或 OIDC**（非单令牌） | 审计报告里每个审批/执行都有可证明的主体；单令牌模式仅限试用（`docs/security-audit.md` 生产准入清单） |
+| 2 | gRPC 端口（默认 9090）**不直接暴露** | 网络策略/防火墙只放行 REST（:8080）或全部置于内网；网关限流覆盖不到 gRPC |
+| 3 | `LEVEE_MASTER_PASSWORD` 经 secret 注入 | 环境文件/Secret 0600、不落盘、不进镜像；`install.sh`/Helm 默认即如此 |
+| 4 | `levee doctor` 全绿 | 配置合法性、存储连通、通道插件、数据目录可写 |
+| 5 | 试点演练完成（见 `docs/scenario-cross-region-ops.md` §5） | 逐台切换演练、故意失败走收敛、窗外 plan 被拒、杀 worker 走接管、审计报告可离线阅读 |
+| 6 | 备份/恢复演练跑过一次 | `levee backup` → 空库恢复（PG 主路径；破坏性恢复需显式 opt-in）——见 §10 |
+| 7 | 升级路径确认 | §11 的滚动升级步骤在测试环境走过一遍；回滚到上一版本已验证 |
+| 8 | 审计链校验通过 | `levee audit verify` 全绿（audit 全局链 + 每 run 的 trace 链） |
 
 ## 附录：本地覆盖率联合口径（state sqlite+PG）
 

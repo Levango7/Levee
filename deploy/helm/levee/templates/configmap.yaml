@@ -1,0 +1,18 @@
+{{/*
+  任意配置：values.config 按 config.example.yaml 的键名原样透传为 config.yaml。
+  serve 以 -c /etc/levee/config.yaml 读取；环境变量 LEVEE_* 仍可覆盖。
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "levee.fullname" . }}-config
+  labels:
+    {{- include "levee.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    # 由 Helm 从 values.config 渲染；格式见仓库 config.example.yaml。
+    {{- if .Values.config }}
+    {{- toYaml .Values.config | nindent 4 }}
+    {{- else }}
+    {}
+    {{- end }}

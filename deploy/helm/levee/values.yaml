@@ -1,0 +1,167 @@
+# =============================================================================
+# LEVEE Helm values —— 客户现场按本文件填写即可一键部署
+#
+# 两条最少配置路径：
+#   单机（试用/小规模）：
+#     mode=single + auth.token（或 existingSecret）+ 可选 ingress
+#   集群（生产，多节点共享 PostgreSQL）：
+#     mode=cluster + postgres.dsn（或 postgres.enabled=true 的演示实例）+ auth.namedTokens
+#
+# 所有端口/旗标与 `levee serve --help` 一一对应（deploy/README.md 有核对方法）。
+# =============================================================================
+
+# --- 运行形态 ---------------------------------------------------------------
+# single  : 单进程 + SQLite（内嵌）+ 持久卷；满足大多数中小规模场景
+# cluster : 多个 levee serve 共享一个 PostgreSQL（成员注册/选主/执行围栏/
+#           故障接管/跨节点派发四层协同），master 1 副本 + worker N 副本
+mode: single
+
+image:
+  repository: ghcr.io/levango7/levee
+  # 现场无法拉 ghcr 时改推送到客户镜像库后覆盖此值
+  tag: "1.18.0"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# --- 认证（生产必须配置；单令牌模式无法证明操作者身份，见 docs/security-audit.md）--
+auth:
+  # 单令牌模式（试用）：所有调用方共享一个 token，Actor 记为令牌本身。
+  token: ""
+  # 命名令牌（推荐）：name 即认证主体，进入审批/审计/授权判定。
+  # 治理型部署必须用命名令牌或 OIDC，否则审计里"谁做的"不可信。
+  # namedTokens:
+  #   - name: ops-alice
+  #     secret: "<随机长串>"
+  #   - name: ops-bob
+  #     secret: "<随机长串>"
+  namedTokens: []
+  # 已有 Secret（键：token / master-password / named-tokens）。设置后上面的
+  # token/namedTokens/masterPassword 都被忽略——凭据不落 values 文件。
+  existingSecret: ""
+
+# 执行引擎凭据面主密码（LEVEE_MASTER_PASSWORD）：以 Secret 环境变量注入，
+# 建议 32+ 字符。启用 engine.enabled 时必填（凭据型通道依赖它）。
+masterPassword: ""
+
+# --- 执行引擎 ---------------------------------------------------------------
+engine:
+  # 接线执行引擎：PlanChange 生成并持久化真实计划、ApplyChange 执行已批准变更。
+  # 目标机必须先在库存（inventory）中登记。
+  enabled: true
+  # 并发执行的 run 上限
+  maxParallelRuns: 4
+  # 快照回滚的捕获根目录（声明 strategy: snapshot 的步骤在 apply 前采集到此处）
+  snapshotDir: /var/lib/levee/snapshots
+  # slo 门禁使用的 Prometheus 基址；留空则 slo 门禁失败关闭（fail-closed）
+  gatePrometheus: ""
+
+# --- 网络 -------------------------------------------------------------------
+service:
+  type: ClusterIP
+  grpcPort: 9090
+  httpPort: 8080
+  # 集群模式下 Service 只指向 master 副本：WatchChange 的事件总线是进程内的，
+  # 任何节点都会正确服务命令型 API，但事件流只在本节点可见——前置负载均衡到
+  # 多副本会让订阅者漏事件。多副本只读/命令型访问可按需另建 Service。
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: levee.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# 网关安全（与 levee serve 旗标对应）
+gateway:
+  # REST 网关限流（req/s）；负数禁用
+  rateLimit: 100
+  rateBurst: 200
+  # 允许的 CORS 来源（留空 = 同源；--insecure 未开时不允许通配）
+  corsOrigins: []
+  # /metrics 是否需要认证（默认需要）
+  metricsPublic: false
+
+# 直接透传给 config.yaml 的任意配置（mapstructure 键名，见 config.example.yaml）。
+# 例：把 log 级别调成 debug、开启多租户（开启前请读 security-audit 约束）：
+# config:
+#   log:
+#     level: debug
+config: {}
+
+# --- 存储 -------------------------------------------------------------------
+persistence:
+  # single 模式的 SQLite 数据库与审计数据的落盘卷
+  enabled: true
+  size: 5Gi
+  storageClass: ""
+  dataDir: /var/lib/levee
+
+# --- 集群（mode=cluster 时生效）---------------------------------------------
+cluster:
+  # worker 副本数；master 固定 1 副本（运行 leader-only 的接管与派发循环）
+  workers: 2
+  # 执行租约 TTL：决定崩溃后接管的检出延迟（续期按 TTL/3）
+  execLeaseTTL: 30s
+  # 接管巡检周期；<=0 关闭接管循环（执行围栏仍生效）
+  takeoverInterval: 10s
+  # 跨节点派发巡检周期与单 worker 容量；<=0 关闭派发循环
+  dispatchInterval: 10s
+  dispatchWorkerCapacity: 4
+  # pending 派发未被领取多久后由 leader 回收重派（epoch 递增围栏旧属主）
+  dispatchClaimTimeout: 10m
+  # 节点地址取值：podIP 使用 Downward API（K8s 推荐）；hostname 使用节点名
+  nodeAddressFrom: podIP
+  # worker 快照目录的共享卷（需 RWX，如 NFS/CephFS PVC 名称）；留空则用
+  # emptyDir——Pod 重建即丢，只在回滚窗口内 Pod 不重建的约定下够用
+  snapshotClaimName: ""
+
+postgres:
+  # 外部 PostgreSQL（生产推荐）：填写 dsn 或 externalSecretName
+  dsn: ""
+  # 已有 Secret（键：dsn）
+  externalSecretName: ""
+  # 内嵌单副本 PostgreSQL（仅试用/演示！无 HA、无备份、无调优；
+  # 生产请用客户既有 PG 或云 RDS）
+  enabled: false
+  image: postgres:16-alpine
+  auth:
+    username: levee
+    password: levee-demo-password-change-me
+    database: levee
+  storage:
+    size: 5Gi
+    storageClass: ""
+  imagePullSecrets: []
+
+# --- 调度与资源 -------------------------------------------------------------
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+# Pod 反亲和的开关：集群模式下建议开启，避免 master/worker 挤在同一节点
+antiAffinity: false
+
+# 探针：readiness 用网关 /healthz（服务未注册时返回 503——不会把流量导到坏实例）；
+# liveness 用 TCP（配置错误导致的持续 503 不应触发重启风暴）。
+probes:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3

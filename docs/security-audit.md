@@ -440,8 +440,8 @@
 
 - 链能检出篡改，**挡不住删除**——删掉中间一行后，后一行指向的哈希已无来源。所以 WORM 触发器是配套而非冗余（`TestAuditChain_DetectsDeletion` 先摘触发器再删，验证必须报 `prev_hash_mismatch`）。
 - `Seal` 每次全量读取可见的 audit 行（无 LIMIT），稳态下只写新增行，但读成本随日志增长。超大审计库需要改成分批封链。
-- **trace 链的构建器在生产中仍然零接线**：`HashChainBuilder` 的全部调用点都在 `tests/integration/*` 与 `*_test.go` 内，生产代码从未调用 `Build` / `BuildBatch` / `BuildForce`——即按 run 的 trace 哈希链至今没有在生产中构建过任何一条。这与 SA-007 同属"机制存在但生产零接线"，本轮**未修**（改动会触及 trace 写入路径，超出本次范围），登记为已知限制而非宣称已闭环。
-- PG 侧（plpgsql 版触发器、占位符编号、v6 迁移步）本机无实例，**未执行验证**，仅经编译期检查与逐行比对。
+- **trace 链的构建器在生产中仍然零接线**：`HashChainBuilder` 的全部调用点都在 `tests/integration/*` 与 `*_test.go` 内，生产代码从未调用 `Build` / `BuildBatch` / `BuildForce`——即按 run 的 trace 哈希链至今没有在生产中构建过任何一条。这与 SA-007 同属"机制存在但生产零接线"，本轮**未修**（改动会触及 trace 写入路径，超出本次范围），登记为已知限制而非宣称已闭环。**——2026-10-03 订正：已在 v1.14.0（PR #29）接线**：`audit.SealRunTraceChain` 在五个终态收口点封链（Apply 成功 / 引擎错误、Pause·Resume·Cancel 直迁块的 `IsTerminal` 守卫、wiring retry、takeover 接管），集成测试不再手工建链、改为断言生产路径已封链并可验证。本条目保留为当时的边界记录。
+- PG 侧（plpgsql 版触发器、占位符编号、v6 迁移步）本机无实例，**未执行验证**，仅经编译期检查与逐行比对。**——2026-10-03 订正：`internal/state/pgstore_auditchain_test.go`（外部测试包 `state_test`）已在 CI 的 postgres 腿对 plpgsql 触发器实跑**：七个内容列 + DELETE 拒绝、链列放行、重封幂等、篡改可检、Seal 复原。本条目保留为当时的边界记录。
 
 ---
 
@@ -534,7 +534,7 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 - **多租户隔离：已接线，默认关闭**：请求级租户传播已落地——租户取自**已验签的凭据**（命名令牌 `--auth-token name=secret,tenant`、OIDC `auth.oidc.tenant_claim`），经认证拦截器注入上下文，`internal/tenant.TenantStore` 对 10 张租户表施加 SQL 级谓词，76 个 Store 方法全部覆盖（`var _ state.Store` 编译期断言；方法数可用 `awk '/^type Store interface/,/^}/' internal/state/store.go | grep -cE '^\s+[A-Z][A-Za-z0-9]*\('` 复核）。`config.example.yaml` 的 `tenant.enabled` **默认为 false**，关闭时行为与引入该功能前逐字节一致。
   开启前必须知道的三件事：① **fail-closed**——上下文无租户的请求被拒绝而非回落到 default，因此**所有**凭据都必须绑定租户，否则 serve 拒绝启动；② **GitHub SSO 拿不到租户**（OAuth 只证明身份不证明归属），多租户部署须改用命名令牌或 OIDC；③ 后台接管/派发循环（takeover / dispatch）刻意使用未包裹的 store——它们无可用请求上下文，其写操作目前全是**不写 tenant_id** 的窄状态更新；将来若在这些循环中新增 `Create*` 调用，会写出空租户行，需要配套守护测试。
   未覆盖的边角：`ListCredentials` 与 `ListInventoryGroups` 的基础方法签名不带 filter，无法在 SQL 层加谓词，由 `TenantStore` 在内存中按租户过滤（凭据密文为 AES-GCM，过滤发生在任何调用方拿到指针之前）。
-- **trace 哈希链在生产中从未构建**：`HashChainBuilder`（`internal/audit/hashchain.go`）的 `Build` / `BuildBatch` / `BuildForce` 全部调用点都位于 `tests/integration/*` 与 `*_test.go`，生产代码零调用——即 SA-002 声称修复的"按 run 哈希链"至今没有在生产中封过一条。`/audit/verify` 校验的 trace 部分因此恒为"无链可验"。与 SA-007 同属"机制存在但生产零接线"，**本轮未修**（改动会触及 trace 写入路径）。相比之下 audit 表的链已真正接线（见 SA-027），因为 audit 的写入是分散在十处的独立调用，链的封口点可以收敛到一个 `audit.Record` 助手，而 trace 的写入走的是 `TraceRecorder` 且涉及 checksum 与链两套字段的先后顺序，需要单独设计。
+- **（2026-10-03 已关闭）trace 哈希链的接线**：曾登记为「`HashChainBuilder` 生产零调用、按 run 的 trace 链从未封过一条」。已在 v1.14.0（PR #29）接线：`audit.SealRunTraceChain` 在五个终态收口点封链（Apply 成功 / 引擎错误、Pause·Resume·Cancel 直迁块的 `IsTerminal` 守卫、wiring retry、takeover），集成测试断言生产路径封链并可验证；PG 侧 plpgsql 触发器另有 `pgstore_auditchain_test.go` 在 CI postgres 腿实跑（2026-10-03）。下方历史条目保留为当时的边界记录。
 - **沙箱内存限制**：Unix 平台子进程内存不受限（`setrlimit` 仅作用于宿主进程，见 `internal/plugin/sandbox_unix.go`）；依赖墙钟超时兜底。需要强隔离时请在容器/cgroup 层面限制。
 - **速率限制**：REST 网关内置全局限流（令牌桶，`--rate-limit` / `--rate-burst`，429 + `Retry-After`）；**gRPC 原生端口无内置限流**，请在 LB/网关侧实施。
 - **审计 Actor 为声明式身份（单令牌模式）/可证明身份（命名令牌或 SSO）**：审计记录中的 Actor 在共享单 token（`--token`/`LEVEE_TOKEN`）模式下来自客户端自报（CLI 端取 `LEVEE_ACTOR` 环境变量，缺省 `cli-user`；服务端从请求元数据读取，缺省 `grpc-user`），是**断言（asserted）而非可证明（proven）**——任何持有 token 的调用方都可自称任意身份。启用命名多令牌（`--auth-token name=secret`）、OIDC 或 GitHub SSO 后，认证主体注入请求上下文并**优先于**自报的 `X-Acting-As`，Actor 成为可证明身份。需要不可抵赖性时须启用上述凭据源之一或 mTLS。
@@ -543,4 +543,4 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 - **执行引擎凭据面（v1.13.0）**：`serve --engine-enabled` 的目标通道凭据解析依赖 `LEVEE_MASTER_PASSWORD`（未设置时匿名拨号并输出警告，与目标探测同口径）。SA-011 的已知残留在此路径上同样成立：解析结果经 `CredentialRef.Password`（string）传递、不可清零。执行日志中的命令输出可能包含目标主机回显的敏感内容——审计侧有 `security.sensitive_fields` 脱敏兜底，但目标侧回显的治理（如命令模板避免打印机密）属使用方责任。
 
 
-**风险评级**（2026-09-08 修订）：3 个 CRITICAL 已在 v1.0.0 修复；5 个 HIGH 中 SA-004/005/006/008 已修复（v1.11.0），SA-007 机制与 CLI 拒绝路径已接线、剩余边界见修复摘要。26 项台账全部终态、无未闭环 HIGH 及以上项（原 Unreleased 批次的 9 项修复已随 **v1.13.0** 发布）。生产准入决策改以上方"已知限制"为约束清单（重点：gRPC 原生端口无限流、单令牌模式 Actor 不可证明、执行引擎凭据面依赖 `LEVEE_MASTER_PASSWORD`）。多租户隔离已接线但默认关闭，开启前的约束见上方对应条目。
+**风险评级**（2026-09-08 修订；**2026-10-03 更新**）：3 个 CRITICAL 已在 v1.0.0 修复；5 个 HIGH 中 SA-004/005/006/008 已修复（v1.11.0），SA-007 机制与 CLI 拒绝路径已接线、剩余边界见修复摘要。26 项台账全部终态、无未闭环 HIGH 及以上项（原 Unreleased 批次的 9 项修复已随 **v1.13.0** 发布）。本次更新：trace 链生产接线已落地（v1.14.0，见上方已关闭条目）、PG 侧触发器已有 CI 实跑回归、CI 新增 govulncheck/gosec/trivy/CodeQL/benchmark 冒烟等安全与新鲜度门禁（v1.14.0~v1.16.0）。生产准入决策仍以上方"已知限制"为约束清单（重点：gRPC 原生端口无限流、单令牌模式 Actor 不可证明、执行引擎凭据面依赖 `LEVEE_MASTER_PASSWORD`）——这四条已写入 `deploy/README.md` 与 `docs/deployment.md` 第 15 节交付检查单。多租户隔离已接线但默认关闭，开启前的约束见上方对应条目。

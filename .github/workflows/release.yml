@@ -51,3 +51,54 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Container image for Kubernetes (Helm chart) and containerized deployments.
+  # A SEPARATE job on purpose: a registry outage or buildx failure must not
+  # block the binary/archive release — the run still goes red so the missing
+  # image is visible, but the GitHub release stays published.
+  #
+  # The image is the repo Dockerfile (node -> go -> scratch assets -> alpine
+  # runtime, non-root user, /healthz HEALTHCHECK). Built multi-arch via QEMU
+  # and pushed to GHCR; the version args feed the same ldflags as goreleaser
+  # so `levee version` inside the image reports the tag.
+  #
+  # Note: GHCR packages start PRIVATE — customers pull with credentials
+  # (imagePullSecrets, see deploy/helm/levee/values.yaml).
+  image:
+    timeout-minutes: 60
+    name: container image (ghcr.io)
+    needs: ci-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/levango7/levee:${{ github.ref_name }}
+            ghcr.io/levango7/levee:latest
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/Levango7/Levee
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}

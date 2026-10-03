@@ -1,0 +1,27 @@
+{{/*
+  统一入口 Service：指向 master 组件（single 模式的唯一 Deployment 也带
+  master 标签）。事件流（WatchChange）是进程内的，多副本前置会让订阅者漏
+  事件——需要多副本命令型访问的现场请另行建 Service（见 values 注释）。
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "levee.fullname" . }}
+  labels:
+    {{- include "levee.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "levee.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+  ports:
+    - name: grpc
+      port: {{ .Values.service.grpcPort }}
+      targetPort: grpc
+    - name: http
+      port: {{ .Values.service.httpPort }}
+      targetPort: http
