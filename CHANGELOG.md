@@ -4,9 +4,9 @@
 
 ## [Unreleased]
 
-## [v1.14.0] - 2026-10-03 — 治理闭环收口 + 安全/新鲜度门禁 + AI 配置面
+## [v1.15.0] - 2026-10-03 — 剩余处置项收口 + AI 闭环闭合 + 兼容层重定义
 
-本版把 v1.13.0 之后的 15 个 PR 一次收口：**治理闭环端到端为真**（审批绑定认证主体与配额、变更窗口真正强制、多租户从已验签凭据接线、两张审计表都带上生产路径真的会封的防篡改链）；**CI 补齐安全与新鲜度门禁**（action 按 SHA 固定、govulncheck 必过、gosec 改固定版本直跑、121 个 benchmark 冒烟、前端产物要求字节一致）；**"建了没人用"的面要么接上配置、要么按定位退役**（`ai.llm` 配置面默认关、rag/scheduler 退役、compat 去莠、观察者槽位扇出）；REST 网关双 URL 形状路由修复（前端带前缀的读不再全部 400）。无已知未闭缺陷；逐条明细见下方各节，策展版见 [docs/release-notes/v1.14.0.md](docs/release-notes/v1.14.0.md)。
+本版把 v1.14.0 之后登记的剩余处置清单一次清零（PR #33）：**ChatOps 审批镜像接线**（`notify.chatops.*`，slack/dingtalk/feishu webhook bot，与 Jira 镜像扇出并存，默认关）；**llm_diag 接线并反转收敛判据**（跨两轮同假设确认才收敛、`ConfidenceSource=model_self_report`、死状态撤除、`ai.llm` 开启时富化诊断报告）；**feedback 闭环闭合**（PatternID 缺陷修复 + JSON 快照持久化 + 与推荐引擎共享同一 KB + Apply 结论喂入）；**compat D-08 映射重定义 + 外部 oracle 守卫**（状态感知、无忠实动作 fail-closed、幻影动作清零）；**`levee run --shell` 注册为显式标注的本地调试命令**（不经治理链）；**review-report 21 项全部闭环**（6 项 P2 收口）。未链入包 8→3。逐条明细见下方「新增」，策展版见 [docs/release-notes/v1.15.0.md](docs/release-notes/v1.15.0.md)。
 
 ### 新增
 
@@ -18,6 +18,13 @@
   **⑤ `levee run --shell` 注册为显式标注的本地调试命令**：平台 shell、超时、结构化输出（`--json`）、子进程退出码经 `[exit=N]` 透传（超时 8）；帮助文本与 `levee-api.md` 第 9 章明说"不经 plan/审批/审计链"，是调试逃生口而非变更执行路径。
   **⑥ 文档 P2 收口**：spec §2.2 补 `any`/`all` 与 `allow_irreversible`、§10.3 注明 mysql 模块现状、api §13.2 补"仅列核心端点"注记、附录 A 补 `levee run` 与 `levee schedule`(V1)、design §5.2 加目标态注记、mvp-tasks T058 同步；`docs/review-report.md` 第 6 章记录 21 项全部闭环。
   未链入包 8→3（剩 `diagnosis/topology`、`compat` 导入层、`opsmesh`，覆盖率 88%~93% 实测），README 能力可达性表与 roadmap 处置行同步。
+
+## [v1.14.0] - 2026-10-03 — 治理闭环收口 + 安全/新鲜度门禁 + AI 配置面
+
+本版把 v1.13.0 之后的 15 个 PR 一次收口：**治理闭环端到端为真**（审批绑定认证主体与配额、变更窗口真正强制、多租户从已验签凭据接线、两张审计表都带上生产路径真的会封的防篡改链）；**CI 补齐安全与新鲜度门禁**（action 按 SHA 固定、govulncheck 必过、gosec 改固定版本直跑、121 个 benchmark 冒烟、前端产物要求字节一致）；**"建了没人用"的面要么接上配置、要么按定位退役**（`ai.llm` 配置面默认关、rag/scheduler 退役、compat 去莠、观察者槽位扇出）；REST 网关双 URL 形状路由修复（前端带前缀的读不再全部 400）。无已知未闭缺陷；逐条明细见下方各节，策展版见 [docs/release-notes/v1.14.0.md](docs/release-notes/v1.14.0.md)。
+
+### 新增
+
 - **`ai.llm` 配置面：推荐引擎的混合 LLM 模式第一次可由运维开启（README「运维无法开启」的缺口关闭）**。`recommend.NewLLMClient` 的 22 个调用点全在测试里，serve 与 converse 构造推荐引擎时都不传 `LLMClient`，`internal/config` 没有任何 llm 配置键——库完整且可达，产品不可用。新增 `internal/config` 的 `AI/LLM` 节（enabled/provider/api_key/model/base_url/max_tokens/temperature/timeout），`newServeConvEngine` 与 CLI 工厂都读它。**默认关且该默认承重**：不构造客户端，引擎走纯知识库路径，与引入本节之前逐字节一致；开启是显式动作，客户端构造失败降级回知识库模式并打 warn（与 `setupServeTracing` 同一契约），不挡守护进程启动；config 加载失败按普通错误返回（converse 拒绝启动而不是半配置运行）。CLI 工厂签名不变（测试的 var 替换点零改动），配置加载在工厂内、与其他命令同一 `loadConfigForCmd` 入口。`config.example.yaml` 同步示例段。
   同批按 roadmap 已登记的定位处置未链入包（8→6 个）：**退役删除** `internal/recommend/rag`（FNV-1a 伪向量 embedding，接上等于把检索退化成噪声）与 `internal/scheduler`（agent 任务派发，与已接入的 `internal/dispatch` 职责重叠，零生产调用）；**去莠** `internal/compat`——自述「不强制审批与门禁」的模拟执行器（直接建 running run 行、逐目标模拟"执行成功"、完全绕开审批/plan 门禁/ClosureRunner 的影子路径）与重复的风险评估器删除，导入层与 D-08 映射保留待产品定夺（映射仍含 4 个幻影动作，oracle 守卫测试随 D-08 重定义一起加）；`chatopsbridge` 的两个观察者槽位（`approval.Service.WithDecisionObserver` / `ChangeService.WithApprovalCreateObserver`）从单槽改**扇出**——单槽是 last-write-wins 而 serve 已把两槽都给了 Jira 镜像，直接接线会静默挤掉 Jira；现在每次安装都保留、nil 清空、逐调用 panic 恢复（approval 与 grpc 两包守卫测试钉住），桥的接线动作随 bot 渠道配置面一起做。README 能力可达性表与 roadmap 处置行同步（未链入 6 包约 2.5k 行，覆盖率 88%~95% 实测）。
 
