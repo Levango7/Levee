@@ -11,10 +11,13 @@ import (
 
 // irreversibleFixture builds a workflow with one step using the given
 // module/action/irreversible declaration, plus a fixed single batch so
-// Generate never fails on target division.
+// Generate never fails on target division. The step's module.action is
+// pre-authorized in the V14 whitelist — these tests pin verdict stamping,
+// not the gate (TestGeneratorRejectsUnwhitelistedIrreversible pins that).
 func irreversibleFixture(module, action string, declared bool) *dsl.Workflow {
 	return &dsl.Workflow{
-		Meta: dsl.WorkflowMeta{Name: "irr-fixture"},
+		Meta:              dsl.WorkflowMeta{Name: "irr-fixture"},
+		AllowIrreversible: []string{module + "." + action},
 		Steps: []dsl.Step{{
 			Name:         "s1",
 			Module:       module,
@@ -83,4 +86,28 @@ func TestGeneratorCustomCheckerWiring(t *testing.T) {
 	assert.Contains(t, wl, "mysql.replica_switch")
 	assert.Contains(t, wl, "mysql.pt_osc")
 	assert.Contains(t, wl, "pkg.remove")
+}
+
+// TestGeneratorRejectsUnwhitelistedIrreversible pins the V14/LE082 plan-time
+// gate: a workflow whose irreversible step is not authorized in the
+// workflow-level allow_irreversible whitelist is refused at Generate. This
+// is the server path's line of defense — wiring.GeneratePlan parses the
+// document and calls the generator directly, without the dsl validator in
+// between — so an absent list must authorize nothing, not everything.
+func TestGeneratorRejectsUnwhitelistedIrreversible(t *testing.T) {
+	g := NewGenerator()
+
+	wf := irreversibleFixture("pkg", "remove", false)
+	wf.AllowIrreversible = nil
+	_, err := g.Generate(wf, []string{"h1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LE082")
+	assert.Contains(t, err.Error(), "pkg.remove")
+
+	// A whitelist naming a DIFFERENT action does not authorize this one.
+	wf = irreversibleFixture("pkg", "remove", false)
+	wf.AllowIrreversible = []string{"file.delete"}
+	_, err = g.Generate(wf, []string{"h1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LE082")
 }

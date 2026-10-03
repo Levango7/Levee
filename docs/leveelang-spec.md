@@ -248,7 +248,7 @@ workflow <name> {
 | wait | duration | 等待时长（grace period） |
 | requires_reboot | bool | 该步是否需要目标机重启 |
 | irreversible | bool | 该步是否不可逆 |
-| allow_irreversible | list | workflow 级字段（**规范目标，尚未接线**）：不可逆动作白名单。当前解析器无此字段、LE082 无产生点；不可逆保护由两层真实机制承担——模块内 `confirm=yes` 硬门（运行时拒绝）与计划侧 `irreversible: true` 的高危审批路由。接线项见 `docs/product-roadmap.md` |
+| allow_irreversible | list | workflow 级字段（V14，已接线）：不可逆动作白名单。判定为不可逆的步骤——显式 `irreversible: true` 或引擎固有破坏性词表（pkg.remove / file.delete / user.remove / mysql.replica_switch / mysql.pt_osc）——必须列名于此，否则编译期 LE082 拒绝；**白名单缺席 = 什么都没授权**。条目要求 `module.action` 形式（LE101）。运行时两层机制保持原位：模块内 `confirm=yes` 硬门与计划侧高危审批路由。迁移说明见 CHANGELOG v1.19.0 |
 | idempotent | bool | 该步是否可安全重复执行；回滚补偿在证据无法定序时据此决定重跑还是拒绝 |
 | on_failure | string | workflow 级回滚触发策略：auto / manual（见 §7.1） |
 | verify_after | bool | workflow 级运行态策略：回滚后是否验证 |
@@ -1276,7 +1276,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | V11 | action 参数契约 | args 满足动作声明的参数契约 | LE042 |
 | V12 | verify 表达式语法 | cmd / slo / probe 表达式语法合法 | LE051 |
 | V13 | rollback action 白名单 | rollback 引用的 action 在白名单内 | LE081 |
-| V14 | 不可逆动作白名单 | irreversible: true 的 action 在 allow_irreversible 内 | LE082 |
+| V14 | 不可逆动作白名单 | 判定为不可逆的 action（显式 irreversible: true 或引擎固有词表命中）在 workflow 级 allow_irreversible 内；缺席的名单 = 什么都没授权 | LE082 |
 | V15 | 不可逆动作审批级别 | 含不可逆动作的 workflow approval level ≥ high | LE083 |
 | V16 | rollback 补偿声明 | 治理红线 R2：变更必须可回滚。当前实现不阻断编译——未声明补偿的 workflow 在 dry-run 预览中告警，强制落地见 docs/product-roadmap.md | LE091（规划） |
 | V17 | target 必需 | workflow 必须声明 target 块 | LE092 |

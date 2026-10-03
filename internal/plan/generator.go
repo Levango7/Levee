@@ -163,14 +163,13 @@ type Generator struct {
 // first).
 func NewGenerator() *Generator {
 	c := executor.NewIrreversibleChecker()
-	for _, pair := range [][2]string{
-		{"pkg", "remove"},
-		{"file", "delete"},
-		{"user", "remove"},
-		{"mysql", "replica_switch"},
-		{"mysql", "pt_osc"},
-	} {
-		c.RegisterWhitelist(pair[0], pair[1])
+	// The inherently destructive vocabulary has one home
+	// (executor.DefaultIrreversibleActions). The dsl compile gate (V14/LE082)
+	// judges steps against the same list, so compile time and plan time
+	// cannot disagree about what is irreversible by nature.
+	for _, key := range executor.DefaultIrreversibleActions() {
+		module, action, _ := strings.Cut(key, ".")
+		c.RegisterWhitelist(module, action)
 	}
 	return &Generator{irreversible: c}
 }
@@ -206,6 +205,29 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 	if verrs := dsl.ValidateRunLevelRollback(wf.Rollback, "rollback"); len(verrs) > 0 {
 		return nil, errors.New(verrs[0].Code,
 			fmt.Sprintf("workflow %q: %s", wf.Meta.Name, verrs[0].Message), errors.Fatal)
+	}
+
+	// V14/LE082 plan-time enforcement — the same defense-in-depth shape as
+	// the LE097 gate above: `levee compile` refuses workflows whose
+	// irreversible steps are not whitelisted in allow_irreversible, but the
+	// server path (wiring.GeneratePlan) parses the workflow document and
+	// calls this generator directly, without the validator in between. An
+	// absent whitelist authorizes nothing, not everything.
+	allowed := make(map[string]struct{}, len(wf.AllowIrreversible))
+	for _, key := range wf.AllowIrreversible {
+		allowed[key] = struct{}{}
+	}
+	for _, s := range wf.Steps {
+		if !s.Irreversible && !executor.IsDefaultIrreversible(s.Module, s.Action) {
+			continue
+		}
+		key := s.Module + "." + s.Action
+		if _, ok := allowed[key]; !ok {
+			return nil, errors.New(errors.LE082,
+				fmt.Sprintf("workflow %q: step %q runs irreversible action %s which is not listed in the workflow-level allow_irreversible whitelist",
+					wf.Meta.Name, s.Name, key),
+				errors.Fatal)
+		}
 	}
 
 	// Divide targets into batches according to the strategy.

@@ -4,6 +4,30 @@
 
 ## [Unreleased]
 
+## [v1.19.0] - 2026-10-04 — `allow_irreversible` 白名单接线（V14/LE082 编译期门禁）
+
+规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。
+
+### 变更（含迁移说明）
+
+- **缺省拒绝（breaking）**：升级到本版后，凡步骤判定为不可逆而未列名 `allow_irreversible` 的工作流，`levee compile`、`levee import` 与 serve 的 plan 路径都会以 LE082 拒绝。受影响动作 = 显式声明 `irreversible: true` 的任意 action，以及引擎固有破坏性词表：`pkg.remove`、`file.delete`、`user.remove`、`mysql.replica_switch`、`mysql.pt_osc`。**迁移**：在 workflow 顶层加一段白名单，逐个列名确要执行的不可逆动作——
+
+  ```yaml
+  allow_irreversible:
+    - mysql.replica_switch
+  ```
+
+  白名单条目同样要求 `module.action` 形式（LE101）。无法列名即不应执行——这正是这条门禁的语义。仓库内 2 个示例文档（`dr-switch-orders-db.yaml`、`gate-templates/redis.yaml`）已同步迁移；既有库里**已审批过的 plan 不受影响**（门禁作用在编译/生成期，不追溯已批准的产物）。
+
+### 新增
+
+- **解析器与 AST**：workflow 级 `allow_irreversible` 字段（`yamlWorkflowRaw` → `Workflow.AllowIrreversible`）；IR 产物（`levee compile --ir`）携带 `workflow.allow_irreversible`，作为"本次编译授权了什么"的凭证；发射器按排序输出保证字节稳定，并可回环解析。
+- **validator V14 规则（`validateIrreversibleWhitelist`）**：判定优先级与 `executor.IrreversibleChecker.Check` 一致（显式声明 > 固有词表）；白名单条目格式按 LE101 校验；多步骤混合只报未列名者，不误伤已列名步骤。
+- **固有词表单一来源**：`executor.DefaultIrreversibleActions()` / `IsDefaultIrreversible()` 成为"天生不可逆"的唯一词表——plan 生成器的 checker 注册与 dsl 编译门禁消费同一份，两个层面不可能对判定分叉（原内联在 `plan.NewGenerator` 的清单迁入）。
+- **plan 期纵深防御**：`plan.Generator.Generate` 对服务器路径（wiring.GeneratePlan 直连、不经 validator）执行同一 V14 判定，LE082 拒绝——与 LE097 的 plan 期门禁同型。
+- **测试**：新增 `internal/dsl/allow_irreversible_test.go`（解析/门禁/条目格式/混合步骤/发射回环/IR 携带）与 `internal/executor/irreversible_default_test.go`（词表钉住）；plan 生成器新增未授权拒绝用例；e2e 回滚演练夹具补授权；两个示例进 `TestShippedExamplesCompile` 守护。实测：`levee compile` 对带白名单示例 ok、对未列名 `pkg.remove` 以 LE082 退出 1。
+- **文档一致性**：spec 字段表与 V14 行改为已接线口径；roadmap P1 项闭环；`docs/scenario-cross-region-ops.md` §7 边界更新为三层保护（编译期白名单 + `confirm=yes` 硬门 + 高危审批路由）；Chart appVersion → 1.19.0。
+
 ## [v1.18.0] - 2026-10-03 — 交付物齐备：Helm chart + 裸金属一键安装 + 跨区域场景方案 + 镜像发布
 
 本版把"能上线、能交付"所需的**交付物**补齐：K8s 客户有了一配置即部署的 Helm chart（单机/集群两形态，`helm lint`/双形态 `template` 全文档 YAML 校验通过）；裸金属客户有了幂等一键安装脚本与自带 systemd 单元（容器实测）；每个 `v*` tag 现在还发布多架构容器镜像到 GHCR（独立 job，镜像失败不阻塞二进制发布）；跨区域数据同步与运维的**场景方案文档**及其配套示例 workflow 落库（示例进 `TestShippedExamplesCompile`，实测编译通过）；部署手册新增 Helm 与交付检查单两节。同时做了一致性订正：spec 的 `allow_irreversible` 字段如实标注"规范目标未接线"（LE082 零产生点登记 roadmap），security-audit 的三处历史边界留痕订正（trace 链接线关闭、PG 触发器 CI 实跑）。

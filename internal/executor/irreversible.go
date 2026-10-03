@@ -186,3 +186,47 @@ func (c *IrreversibleChecker) Check(step Step) IrreversibleResult {
 // matches the three-tier approval vocabulary (standard / high / emergency)
 // defined in dsl.ApprovalSpec and the LEVEELang spec.
 const ApprovalLevelHigh = "high"
+
+// --- default irreversible vocabulary ----------------------------------------
+//
+// defaultIrreversibleActions is the single source of truth for the
+// module.action pairs that are irreversible BY NATURE — destructive even when
+// the workflow author did not mark them. Two layers in different packages
+// consume this one list and must never disagree:
+//
+//   - plan.NewGenerator registers them on its IrreversibleChecker so plan
+//     artifacts carry the verdict (approval escalation, rollback gating);
+//   - the dsl validator's V14 compile gate (LE082) refuses any step whose
+//     verdict is irreversible unless the workflow's allow_irreversible
+//     whitelist lists it.
+//
+// The set lives here because the executor package owns reversibility
+// semantics and imports nothing that could import it back — both dsl and
+// plan can depend on it without a cycle.
+var defaultIrreversibleActions = map[string]struct{}{
+	"pkg.remove":           {},
+	"file.delete":          {},
+	"user.remove":          {},
+	"mysql.replica_switch": {},
+	"mysql.pt_osc":         {},
+}
+
+// DefaultIrreversibleActions returns the inherently irreversible
+// module.action pairs in sorted order.
+func DefaultIrreversibleActions() []string {
+	out := make([]string, 0, len(defaultIrreversibleActions))
+	for key := range defaultIrreversibleActions {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// IsDefaultIrreversible reports whether the module.action pair is
+// irreversible by nature (a member of the default vocabulary above). The
+// explicit step.Irreversible declaration is a separate, author-controlled
+// signal that Check weighs first.
+func IsDefaultIrreversible(module, action string) bool {
+	_, ok := defaultIrreversibleActions[module+"."+action]
+	return ok
+}

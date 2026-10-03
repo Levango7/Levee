@@ -7,9 +7,10 @@
 #     （规范为"DB 主库逐个切换"而写——并发切换意味着两个 DDL 窗口）
 #   * 维护窗口 in HH:MM 形式（§4.2；跨零点与区域时区见 window.timezone）
 #   * 高危审批（两人、排除发起人）
-#   * 不可逆动作：mysql.replica_switch 运行时强制 confirm=yes（R2 确认门），
-#     计划侧自动标记并路由高危审批；失败不自动回滚（on_failure: manual），
-#     由操作员按演练手册决定前滚或人工恢复
+#   * 不可逆动作：mysql.replica_switch 列入 workflow 级 allow_irreversible
+#     白名单（V14/LE082 编译期门禁——缺省拒绝一切未列名的不可逆动作），
+#     运行时强制 confirm=yes（R2 确认门），计划侧自动标记并路由高危审批；
+#     失败不自动回滚（on_failure: manual），由操作员按演练手册决定前滚或人工恢复
 #   * 每台切换后用 verify 门禁核对复制状态，再进入下一台
 name: dr-switch-orders-db
 version: "1.0"
@@ -40,6 +41,11 @@ batches:
 
 approval:
   level: high
+
+# V14 白名单：本工作流授权的不可逆动作。未列名的不可逆动作（显式声明或
+# 引擎固有能力）会在编译期被 LE082 拒绝——白名单缺席等于什么都没授权。
+allow_irreversible:
+  - mysql.replica_switch
 
 steps:
   - name: precheck-replication
