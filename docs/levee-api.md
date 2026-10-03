@@ -656,6 +656,14 @@ levee doctor
 
 检查运行环境：配置文件合法性、store 连通性、凭据代理可达性、通道插件加载、网络隔离区跳板机配置、WORM 存储可写性。用于安装后自检与故障排查。
 
+命令示例：本地直跑一条命令（调试逃生口）
+
+```bash
+levee run --shell "systemctl status nginx" --command-timeout 10s
+```
+
+在**本机**通过平台 shell（Windows `cmd /c`、其他 `sh -c`）执行一条命令行并输出结构化结果（命令、退出码、耗时、stdout/stderr；`--json` 输出 JSON）。**这是调试逃生口，不是变更执行路径**：不经 plan / 审批 / 批次，也不写审计或 trace 链；需要治理的操作请走变更流水线（`levee new` → `approve` → `apply`）。子进程退出码经 `[exit=N]` 约定透传为本命令退出码（超时为 8）；`--command-timeout` 是子命令预算，区别于全局 `--timeout`。
+
 ---
 
 ## 第10章 全局选项
@@ -839,6 +847,8 @@ RESTful 风格，支持两套路径：
 | POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | — |
 | GET | `/system/auth-info` | — | 公开认证描述符（SSO 探测，见 13.3，免 Bearer） | — |
 | POST | `/auth/github` | — | GitHub OAuth code 交换（服务端，见 13.3，免 Bearer） | — |
+
+> 说明：本节**仅列核心变更生命周期与服务端点**；凭据（secret）、用户/团队/权限、通知渠道等管理面资源未全部投影为 REST 端点，管理操作走对应 CLI 章节（第 7–9 章）。
 
 ### 13.3 认证
 
@@ -1108,6 +1118,8 @@ airgap:
 | `levee config get/set` | 读写配置 | 9 |
 | `levee status` | 系统状态 | 9 |
 | `levee doctor` | 环境检查 | 9 |
+| `levee run --shell <cmd>` | 本地直跑一条命令（调试逃生口，不经治理链） | 9 |
+| `levee schedule` | 按 cron 定时触发变更（**V1**，尚未实现；当前定时能力仅为 `levee drift schedule` 的漂移巡检） | V1 |
 
 ---
 

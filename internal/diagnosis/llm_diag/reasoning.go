@@ -143,6 +143,13 @@ func NewReasoningEngine(cfg ReasoningEngineConfig) (*ReasoningEngine, error) {
 
 // --- ReasoningResult --------------------------------------------------------
 
+// ConfidenceSourceModelSelfReport names the provenance of
+// ReasoningResult.Confidence: it is the model's own estimate. The stability
+// gate corroborates it across turns, but it is never verified against
+// evidence, so callers mapping it toward approval tiers must treat it as a
+// hint.
+const ConfidenceSourceModelSelfReport = "model_self_report"
+
 // ReasoningResult is the outcome of a single Diagnose call. It wraps the final
 // ReasoningContext and surfaces the key fields (hypothesis, confidence, root
 // cause, suggestions, turn count, status, duration) for quick inspection.
@@ -156,6 +163,12 @@ type ReasoningResult struct {
 
 	// Confidence is the engine's confidence in Hypothesis, in [0, 1].
 	Confidence float64 `json:"confidence"`
+
+	// ConfidenceSource names where Confidence came from. Always
+	// ConfidenceSourceModelSelfReport today — stated explicitly so a value
+	// that is a model's own estimate can never silently read as a verified
+	// measurement downstream.
+	ConfidenceSource string `json:"confidence_source"`
 
 	// RootCause is the final root cause. For the reasoning engine the root
 	// cause is the converged hypothesis; when the loop did not converge it
@@ -204,6 +217,7 @@ func (e *ReasoningEngine) Diagnose(ctx context.Context, target string, report *d
 
 	var suggestions []string
 	turns := 0
+	lastHypothesis := ""
 
 	for turn := 1; turn <= e.maxTurns; turn++ {
 		// 1. Build the user prompt for this turn and record it.
@@ -246,11 +260,22 @@ func (e *ReasoningEngine) Diagnose(ctx context.Context, target string, report *d
 			"converged", parsed.Converged,
 		)
 
-		// 7. Check for convergence.
-		if parsed.Converged || parsed.Confidence >= e.convergenceThreshold {
+		// 7. Convergence is CORROBORATED, not self-reported. The model's
+		//    `converged` flag and confidence alone must not end the loop: a
+		//    single overconfident answer is exactly the failure mode that
+		//    makes the self-report untrustworthy, and this result feeds
+		//    approval-tier decisions (the roadmap names the rule: the
+		//    model's self-report cannot be taken at face value). The
+		//    hypothesis must REPEAT across two consecutive turns (modulo
+		//    whitespace/case) before the self-report is honoured — the
+		//    first turn can therefore never converge, and an oscillating
+		//    model exhausts its turns instead of converging on noise.
+		stable := turn > 1 && normalizeHypothesis(parsed.Hypothesis) == normalizeHypothesis(lastHypothesis)
+		if (parsed.Converged || parsed.Confidence >= e.convergenceThreshold) && stable {
 			rctx.Status = StatusConverged
 			break
 		}
+		lastHypothesis = parsed.Hypothesis
 	}
 
 	// If we exited the loop without converging, the turn cap was hit.
@@ -259,6 +284,14 @@ func (e *ReasoningEngine) Diagnose(ctx context.Context, target string, report *d
 	}
 
 	return e.buildResult(rctx, suggestions, turns, start), nil
+}
+
+// normalizeHypothesis collapses an LLM hypothesis for the stability
+// comparison: case-insensitive, whitespace-normalized. Anything stricter
+// (exact bytes) would let trivial rewording defeat corroboration; anything
+// looser (token overlap) would converge on noise.
+func normalizeHypothesis(s string) string {
+	return strings.Join(strings.Fields(strings.ToLower(s)), " ")
 }
 
 // buildResult assembles a ReasoningResult from the final context.
@@ -272,6 +305,11 @@ func (e *ReasoningEngine) buildResult(rctx *ReasoningContext, suggestions []stri
 		Turns:       turns,
 		Status:      rctx.Status,
 		Duration:    time.Since(start),
+		// Provenance is stated, not implied: Confidence is the MODEL'S OWN
+		// estimate, corroborated across turns by the stability gate but
+		// never verified against evidence. Callers that map confidence
+		// toward approval tiers must treat it as a hint, never as a fact.
+		ConfidenceSource: ConfidenceSourceModelSelfReport,
 	}
 }
 

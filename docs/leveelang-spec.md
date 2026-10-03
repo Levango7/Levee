@@ -224,6 +224,8 @@ workflow <name> {
 | cmd | 命令门禁块 | gate / verify 内 |
 | probe | 探针门禁块 | gate 内 |
 | human | 人工门禁块 | gate 内 |
+| any | OR 逻辑门禁组合：任一通过即通过（见 §6.2.2） | gate 内 |
+| all | AND 逻辑门禁组合：全部通过才通过；可嵌套于 any，最多 2 层（见 §6.2.2） | gate / any 内 |
 
 表：字段关键字清单
 
@@ -246,6 +248,7 @@ workflow <name> {
 | wait | duration | 等待时长（grace period） |
 | requires_reboot | bool | 该步是否需要目标机重启 |
 | irreversible | bool | 该步是否不可逆 |
+| allow_irreversible | list | workflow 级字段：允许执行的不可逆动作模块白名单（未列入则 LE082 拒绝） |
 | idempotent | bool | 该步是否可安全重复执行；回滚补偿在证据无法定序时据此决定重跑还是拒绝 |
 | on_failure | string | workflow 级回滚触发策略：auto / manual（见 §7.1） |
 | verify_after | bool | workflow 级运行态策略：回滚后是否验证 |
@@ -1906,7 +1909,7 @@ MVP 阶段 YAML 子集支持以下字段，对应本文档的目标语义但语�
 | YAML 字段 | 对应 LEVEELang 字段 | MVP 支持 | 限制 |
 | --- | --- | --- | --- |
 | name | workflow name | 是 |  |
-| target.type | target.type | 是 | 仅 host / mysql |
+| target.type | target.type | 是 | 仅 host / mysql；mysql target 的动作模块（`mysql.query` / `mysql.pt_osc` / `mysql.replica_switch`）已实现并通过 CI（见 `internal/executor/modules/mysql`），§5.2 的模块表把 mysql 归入 V1 扩展是历史口径 |
 | target.query | target.query | 是 | 仅 key=value 简单表达式 |
 | target.hosts | target（静态） | 是 | 静态主机列表 |
 | window.start | window.start | 是 |  |

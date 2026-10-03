@@ -175,7 +175,8 @@ credential:
   key_derivation: argon2id
 
 # -----------------------------------------------------------------------------
-# notify —— 出站通知（对应 NotifyConfig），当前仅支持 webhook
+# notify —— 出站通知与镜像（对应 NotifyConfig）：通用 webhook、ITSM Jira 审批镜像、
+# ChatOps 审批镜像（Slack / 钉钉 / 飞书 webhook bot）
 # -----------------------------------------------------------------------------
 notify:
   webhook:
@@ -187,6 +188,36 @@ notify:
     timeout: 10s
     # 失败重试次数（>= 0）。 默认: 3
     retry: 3
+
+  # jira —— 出站 ITSM 审批镜像：审批启动建 issue、决策自动评论。
+  # 默认关闭（零外发）；启用时 url / project_key / api_token 必填，
+  # 缺失会拒绝启动并指名缺哪个键。
+  jira:
+    enabled: false
+    url: ""                       # 例: https://jira.example.com
+    project_key: ""               # 例: OPS
+    api_token: "<jira-api-token>" # 亦可经 LEVEE_NOTIFY_JIRA_API_TOKEN 注入
+    email: ""                     # Jira Cloud 用邮箱作为 basic auth 用户
+    issue_type: "Task"            # 默认: Task
+    timeout: 10s
+
+  # chatops —— ChatOps 审批镜像：审批创建/决策事件投影到聊天群 webhook bot。
+  # 默认关闭（零装配）；启用时至少一个 bot，且每个 bot 的 name 与 webhook_url
+  # 必填（缺失会拒绝启动并指名 bot）。观察者槽位是扇出，与 jira 镜像并存不互斥。
+  chatops:
+    enabled: false
+    bots: []                      # 例（三平台各一）：
+    # - platform: slack           # slack | dingtalk | feishu
+    #   name: ops-alerts
+    #   webhook_url: "<slack-incoming-webhook-url>"
+    #   timeout: 10s
+    # - platform: dingtalk
+    #   name: dingtalk-approvals
+    #   webhook_url: "<dingtalk-robot-webhook-url>"
+    #   secret: "<signing-secret>"  # 钉钉加签密钥（可选）
+    # - platform: feishu
+    #   name: feishu-approvals
+    #   webhook_url: "<feishu-bot-webhook-url>"
 
 # -----------------------------------------------------------------------------
 # permission —— 权限命名空间默认值（对应 PermissionConfig）

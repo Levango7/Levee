@@ -50,6 +50,7 @@ import (
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/plan"
+	"github.com/nexus/levee/internal/recommend/feedback"
 	"github.com/nexus/levee/internal/risk"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
@@ -81,6 +82,11 @@ type ChangeService struct {
 	// approval bridge) would have SILENTLY DISPLACED Jira. Wiring order is
 	// construction-time (single-threaded), so the slice needs no lock.
 	onApprovalCreate []func(a *approval.Approval)
+
+	// feedback is the optional effect-learning loop. When set, every apply
+	// verdict is recorded as a FixOutcome (see recordFixOutcome). Nil is a
+	// no-op.
+	feedback *feedback.FeedbackLearner
 
 	// authz decides change-scoped governance actions against the deployment's
 	// permission matrix and role tree. Nil means the deployment declared no
@@ -1032,6 +1038,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		// durably written — but loud on failure: unsealed rows surface as
 		// empty_hash at the next verification.
 		s.sealTraceChain(ctx, run.ID, "failed")
+		s.recordFixOutcome(run, "failed")
 		return &pb.ApplyResponse{
 			Change:  runToPB(run),
 			RunId:   execRunID,
@@ -1081,6 +1088,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	// Seal the per-run trace chain now that the run settled — same
 	// best-effort-but-loud contract as the engine-error branch above.
 	s.sealTraceChain(ctx, run.ID, finalStatus)
+	s.recordFixOutcome(run, finalStatus)
 	return &pb.ApplyResponse{
 		Change:  runToPB(run),
 		RunId:   execRunID,
@@ -1096,6 +1104,62 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 func (s *ChangeService) sealTraceChain(ctx context.Context, runID, status string) {
 	if serr := audit.SealRunTraceChain(ctx, s.store, runID); serr != nil {
 		log.Warn("trace chain seal failed", "run_id", runID, "status", status, "error", serr)
+	}
+}
+
+// SetFeedbackLearner attaches the effect-learning loop: every apply verdict
+// is fed to the learner as a FixOutcome (the applied workflow WAS the fix;
+// its verdict is the outcome). Nil disables outcome recording.
+func (s *ChangeService) SetFeedbackLearner(l *feedback.FeedbackLearner) *ChangeService {
+	s.feedback = l
+	return s
+}
+
+// recordFixOutcome feeds an apply verdict into the effect-learning loop.
+// Successes synthesise new knowledge-base patterns; failures count against
+// known patterns. Best-effort: a learner error is logged, never propagated —
+// learning is auxiliary, the verdict is already durably settled.
+//
+// Precision note (honest by construction): at this layer the outcome's
+// symptom / root-cause text is the workflow name, and the target comes from
+// the run's params (the recommendation bridge stamps "target" and
+// "recommendation_id" there). The richer incident→fix correlation belongs to
+// the conversation flow and can stamp more precise fields later without
+// changing this contract. Cancellations are deliberately NOT recorded —
+// abandoning a change is not an outcome of a fix.
+func (s *ChangeService) recordFixOutcome(run *state.Run, status string) {
+	if s.feedback == nil || run == nil {
+		return
+	}
+	target := ""
+	recommendationID := ""
+	if run.Params != "" {
+		var params map[string]any
+		if err := json.Unmarshal([]byte(run.Params), &params); err == nil {
+			if t, ok := params["target"].(string); ok {
+				target = t
+			}
+			if r, ok := params["recommendation_id"].(string); ok {
+				recommendationID = r
+			}
+		}
+	}
+	if target == "" {
+		target = run.ID
+	}
+	outcome := feedback.FixOutcome{
+		IncidentID:   run.ID,
+		AlertID:      recommendationID,
+		Target:       target,
+		Symptoms:     run.WorkflowName,
+		RootCause:    run.WorkflowName,
+		FixAction:    run.WorkflowName,
+		Success:      status == runstatus.StatusCompleted,
+		RollbackUsed: runstatus.IsRollbackVerdict(status),
+		Timestamp:    time.Now().UTC(),
+	}
+	if _, err := s.feedback.RecordAndLearn(outcome); err != nil {
+		log.Warn("feedback: record run outcome failed", "run_id", run.ID, "error", err)
 	}
 }
 

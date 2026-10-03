@@ -262,7 +262,7 @@ MVP 拆分为 12 周开发任务，任务编号 T001-T0NN，按周次排期。�
 | T055 | playbook 兼容层框架 | internal/compat | 2 | T016 | CompatLayer 接口 + playbook 导入解析，独立模块不引入核心依赖（R8） | W6 |
 | T056 | playbook 最小子集执行 | internal/compat | 3 | T055, T017, T017.1 | 支持 shell / command / file / copy / template 模块，包审批 / 门禁 / 审计 | W7 |
 | T057 | 兼容层风险评估 | internal/compat | 2 | T055 | 静态分析 shell / command 非幂等 + ignore_errors + 无 rollback，命中标记高危 | W7 |
-| T058 | 裸 shell 直跑 | internal/executor | 1 | T017 | `levee run --shell "cmd"` 单命令直跑，不走 workflow，最小可用 | W7 |
+| T058 | 裸 shell 直跑 | internal/executor | 1 | T017 | `levee run --shell "cmd"` 单命令直跑，不走 workflow，最小可用（**已注册为显式标注的本地调试命令**——不经 plan/审批/审计链，见 levee-api.md 第 9 章；子进程退出码经 `[exit=N]` 透传） | W7 |
 | T059 | dry-run 预览 | internal/plan | 2 | T022, T023 | `levee plan --dry-run` 产出目标集 / 批次 / 影响面 / 预估耗时 / 潜在冲突，不执行 | W7 |
 | T060 | 变更克隆 | internal/template | 2 | T004 | `levee clone <run-id>` 生成可编辑副本，保留原参数与批次结构 | W8 |
 | T061 | 模板库管理 | internal/template | 2 | T060 | 模板存储 + 列表 + show，模板带参数占位 | W8 |

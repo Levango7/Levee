@@ -38,21 +38,125 @@ var (
 
 // --- module mapping --------------------------------------------------------
 
-// ansibleModuleMap translates Ansible module names to LEVEE dotted action
-// references of the form "module.action". Modules not present in this map are
-// rejected with ErrUnsupportedModule during import. The mapping covers the
-// minimal Ansible subset supported by the MVP compatibility layer.
-var ansibleModuleMap = map[string]string{
-	"shell":    "shell.exec",
-	"command":  "shell.exec",
-	"file":     "file.manage",
-	"copy":     "file.copy",
-	"template": "file.template",
-	"apt":      "pkg.install",
-	"yum":      "pkg.install",
-	"service":  "svc.manage",
-	"user":     "user.manage",
-	"group":    "user.group",
+// ansibleModules is the RECOGNITION set: keys that name an Ansible module
+// this layer knows about. Recognition is deliberately separate from
+// RESOLUTION — a recognized module whose arguments cannot be translated
+// faithfully is refused with an actionable error (see resolveAnsibleAction),
+// never silently mapped to an action with different semantics.
+var ansibleModules = map[string]bool{
+	"shell":    true,
+	"command":  true,
+	"file":     true,
+	"copy":     true,
+	"template": true,
+	"apt":      true,
+	"yum":      true,
+	"service":  true,
+	"user":     true,
+	"group":    true,
+}
+
+// resolveAnsibleAction translates a recognized module and its parsed
+// arguments into a real LEVEE (module, action) pair.
+//
+// Fail-closed by construction: every branch either returns a pair that
+// exists in the executor registry — pinned by
+// TestMappingResolvesToRealExecutorActions against
+// executor.DefaultExecutor() — or an error naming the unmappable construct.
+// The previous flat table violated both halves: four modules mapped to
+// actions that do not exist anywhere (file.manage / svc.manage / user.manage
+// / user.group — a playbook importing fine and then failing at plan/execute
+// time), and the mapping was state-blind (apt state=absent became
+// pkg.install, the opposite of the declared intent).
+func resolveAnsibleAction(module string, args map[string]any) (mod, action string, err error) {
+	state, _ := args["state"].(string)
+	switch module {
+	case "shell", "command":
+		return "shell", "exec", nil
+	case "copy":
+		return "file", "copy", nil
+	case "template":
+		return "file", "template", nil
+	case "apt", "yum":
+		switch state {
+		case "", "present":
+			return "pkg", "install", nil
+		case "absent":
+			return "pkg", "remove", nil
+		case "latest":
+			return "pkg", "upgrade", nil
+		default:
+			return "", "", fmt.Errorf("%w: %s state=%q (supported: present, absent, latest)",
+				ErrUnsupportedModule, module, state)
+		}
+	case "service":
+		enabled, hasEnabled := args["enabled"]
+		if state != "" && hasEnabled {
+			return "", "", fmt.Errorf("%w: service declares both state and enabled — LEVEE svc actions are single-purpose; split the task in two",
+				ErrUnsupportedModule)
+		}
+		if state == "" {
+			if !hasEnabled {
+				return "", "", fmt.Errorf("%w: service requires state (started/stopped/restarted/reloaded) or enabled",
+					ErrUnsupportedModule)
+			}
+			on, err := boolArgValue(enabled)
+			if err != nil {
+				return "", "", fmt.Errorf("%w: service enabled=%v", ErrUnsupportedModule, enabled)
+			}
+			if on {
+				return "svc", "enable", nil
+			}
+			return "svc", "disable", nil
+		}
+		switch state {
+		case "started":
+			return "svc", "start", nil
+		case "stopped":
+			return "svc", "stop", nil
+		case "restarted":
+			return "svc", "restart", nil
+		case "reloaded":
+			return "svc", "reload", nil
+		default:
+			return "", "", fmt.Errorf("%w: service state=%q (supported: started, stopped, restarted, reloaded; or enabled)",
+				ErrUnsupportedModule, state)
+		}
+	case "user":
+		switch state {
+		case "", "present":
+			// user.add is idempotent (checks existence before creating), so
+			// ansible's create-or-ensure semantics map faithfully.
+			return "user", "add", nil
+		case "absent":
+			return "user", "remove", nil
+		default:
+			return "", "", fmt.Errorf("%w: user state=%q (supported: present, absent)",
+				ErrUnsupportedModule, state)
+		}
+	case "file":
+		return "", "", fmt.Errorf("%w: the ansible `file` module (state=touch/directory/absent/...) has no faithful LEVEE action; use `copy`/`template` for content or a `shell` task for the rest", ErrUnsupportedModule)
+	case "group":
+		return "", "", fmt.Errorf("%w: the ansible `group` module has no LEVEE executor action; LEVEE's user module covers users only", ErrUnsupportedModule)
+	}
+	return "", "", fmt.Errorf("%w: %q", ErrUnsupportedModule, module)
+}
+
+// boolArgValue normalizes an ansible boolean argument: both the YAML form
+// (true/false) and the legacy key=value string form (yes/no/true/false).
+func boolArgValue(v any) (bool, error) {
+	switch t := v.(type) {
+	case bool:
+		return t, nil
+	case string:
+		switch strings.ToLower(t) {
+		case "yes", "true":
+			return true, nil
+		case "no", "false":
+			return false, nil
+		}
+	}
+	return false, fmt.Errorf("not a boolean: %v", v)
 }
 
 // ansibleReservedKeys lists Ansible task-level directives that are not
@@ -299,7 +403,7 @@ func convertTask(task map[string]any, playIndex, taskIndex int) (dsl.Step, error
 		if ansibleReservedKeys[key] {
 			continue
 		}
-		if _, supported := ansibleModuleMap[key]; supported {
+		if ansibleModules[key] {
 			moduleName = key
 			moduleValue = val
 			break
@@ -323,11 +427,18 @@ func convertTask(task map[string]any, playIndex, taskIndex int) (dsl.Step, error
 		return dsl.Step{}, fmt.Errorf("%w: task %q has no module", ErrInvalidPlaybook, label)
 	}
 
-	dotted := ansibleModuleMap[moduleName]
-	parts := strings.SplitN(dotted, ".", 2)
-	step.Module = parts[0]
-	step.Action = parts[1]
-	step.Args = parseModuleArgs(moduleName, moduleValue)
+	args := parseModuleArgs(moduleName, moduleValue)
+	mod, action, rerr := resolveAnsibleAction(moduleName, args)
+	if rerr != nil {
+		label := step.Name
+		if label == "" {
+			label = fmt.Sprintf("play-%d task-%d", playIndex, taskIndex)
+		}
+		return dsl.Step{}, fmt.Errorf("task %q: %w", label, rerr)
+	}
+	step.Module = mod
+	step.Action = action
+	step.Args = args
 	return step, nil
 }
 

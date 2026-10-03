@@ -709,6 +709,8 @@ LEVEELang 的设计理念：
 
 代码示例：数据库 schema 变更（LEVEELang）
 
+> **目标态示例（V1+）**：数据库动作模块**已实现**（`internal/executor/modules/mysql`：`mysql.query` / `mysql.pt_osc` / `mysql.replica_switch`，当前口径见 README「数据库动作模块」一节）；本示例按完整目标态书写，不在 MVP YAML 子集内。
+
 ```leveelang
 workflow db-migrate-orders {
   input {
