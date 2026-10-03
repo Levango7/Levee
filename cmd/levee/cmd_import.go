@@ -101,7 +101,9 @@ func runImportAnsible(cmd *cobra.Command, args []string) error {
 	}
 
 	if importOptOut != "" {
-		if werr := os.WriteFile(importOptOut, out, 0o644); werr != nil {
+		// 0o600: the emitted workflow carries hostnames, paths and parameters;
+		// the operator can relax it when committing the file to a repo.
+		if werr := os.WriteFile(importOptOut, out, 0o600); werr != nil {
 			return fmt.Errorf("import: write %s: %w", importOptOut, werr)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "wrote %s (%d target(s), %d step(s))\n",
