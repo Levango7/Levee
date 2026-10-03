@@ -29,6 +29,13 @@
 # like nondeterminism. .svg was the live offender (public/favicon.svg is
 # copied verbatim into the bundle).
 *.svg text eol=lf
+# Delivery artifacts processed by tools on any platform: keep them LF on
+# checkout too (a CRLF install.sh is a broken shebang on Linux; unit
+# files and Helm templates stay diff-clean across OSes).
+*.service text eol=lf
+*.tpl text eol=lf
+*.txt text eol=lf
+.helmignore text eol=lf
 
 # Windows batch scripts genuinely need CRLF.
 *.bat text eol=crlf
