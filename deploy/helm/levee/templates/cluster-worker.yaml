@@ -1,0 +1,188 @@
+{{/*
+  集群 worker Deployment（仅 mode=cluster）。
+  worker 承接 leader 派发的已批准 run 并在本机执行：
+  - 无本地 PVC（状态在共享 PG）；快照目录用 emptyDir 或现场提供的共享卷
+    （cluster.snapshotClaimName，需 RWX）——emptyDir 随 Pod 重建丢失，
+    只在"回滚窗口内 Pod 不重建"的约定下够用，生产建议挂共享存储。
+*/}}
+{{- if eq .Values.mode "cluster" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "levee.fullname" . }}-worker
+  labels:
+    {{- include "levee.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.cluster.workers }}
+  selector:
+    matchLabels:
+      {{- include "levee.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "levee.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ .Values.config | toYaml | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: levee
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - -c
+            - /etc/levee/config.yaml
+            - --addr
+            - ":{{ .Values.service.grpcPort }}"
+            - --http-addr
+            - ":{{ .Values.service.httpPort }}"
+            - --cluster
+            - --pg-dsn
+            - $(LEVEE_PG_DSN)
+            - --node-id
+            - $(POD_NAME)
+            - --node-addr
+            - $(LEVEE_NODE_ADDR)
+            - --node-role
+            - worker
+            - --cluster-exec-lease-ttl
+            - {{ .Values.cluster.execLeaseTTL | quote }}
+            {{- if .Values.auth.token }}
+            - --token
+            - $(LEVEE_TOKEN)
+            {{- end }}
+            {{- range $i, $t := .Values.auth.namedTokens }}
+            - --auth-token
+            - $(LEVEE_NAMED_TOKEN_{{ $i }})
+            {{- end }}
+            {{- if .Values.engine.enabled }}
+            - --engine-enabled
+            - --engine-max-parallel-runs
+            - {{ .Values.engine.maxParallelRuns | quote }}
+            {{- if .Values.engine.snapshotDir }}
+            - --engine-snapshot-dir
+            - {{ .Values.engine.snapshotDir | quote }}
+            {{- end }}
+            {{- if .Values.engine.gatePrometheus }}
+            - --engine-gate-prometheus
+            - {{ .Values.engine.gatePrometheus | quote }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: LEVEE_NODE_ADDR
+              value: {{ if eq .Values.cluster.nodeAddressFrom "hostname" }}$(POD_NAME){{ else }}$(POD_IP){{ end }}
+            - name: LEVEE_PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.pgSecretName" . }}
+                  key: dsn
+            {{- if .Values.auth.token }}
+            - name: LEVEE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.secretName" . }}
+                  key: token
+            {{- end }}
+            {{- range $i, $t := .Values.auth.namedTokens }}
+            - name: LEVEE_NAMED_TOKEN_{{ $i }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.secretName" $ }}
+                  key: named-token-{{ $i }}
+            {{- end }}
+            {{- if .Values.masterPassword }}
+            - name: LEVEE_MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.secretName" . }}
+                  key: master-password
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/levee
+              readOnly: true
+            {{- if .Values.engine.snapshotDir }}
+            - name: snapshots
+              mountPath: {{ .Values.engine.snapshotDir }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "levee.fullname" . }}-config
+        {{- if .Values.engine.snapshotDir }}
+        - name: snapshots
+          {{- if .Values.cluster.snapshotClaimName }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.cluster.snapshotClaimName }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- end }}
+      {{- if .Values.antiAffinity }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "levee.selectorLabels" . | nindent 20 }}
+      {{- else if .Values.affinity }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

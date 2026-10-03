@@ -1,0 +1,211 @@
+{{/*
+  API / 主节点 Deployment（单一权威 API 端点）。
+  - single  模式：SQLite 数据落在持久卷；这就是全部。
+  - cluster 模式：固定 1 副本；--node-role master 承担 leader-only 的接管与
+    派发循环。Service 只指向本 Deployment（见 values.service 注释：事件流
+    是进程内的）。
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "levee.fullname" . }}-master
+  labels:
+    {{- include "levee.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+spec:
+  replicas: 1
+  strategy:
+    # SQLite（single 模式）RWO 卷不允许滚动双挂，用 Recreate。
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "levee.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: master
+  template:
+    metadata:
+      labels:
+        {{- include "levee.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: master
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        # 配置变更后滚动重启
+        checksum/config: {{ .Values.config | toYaml | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: levee
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - -c
+            - /etc/levee/config.yaml
+            - --addr
+            - ":{{ .Values.service.grpcPort }}"
+            - --http-addr
+            - ":{{ .Values.service.httpPort }}"
+            - --rate-limit
+            - {{ .Values.gateway.rateLimit | quote }}
+            - --rate-burst
+            - {{ .Values.gateway.rateBurst | quote }}
+            {{- if .Values.gateway.metricsPublic }}
+            - --metrics-public
+            {{- end }}
+            {{- range .Values.gateway.corsOrigins }}
+            - --cors-origin
+            - {{ . | quote }}
+            {{- end }}
+            {{- if .Values.auth.token }}
+            - --token
+            - $(LEVEE_TOKEN)
+            {{- end }}
+            {{- range $i, $t := .Values.auth.namedTokens }}
+            - --auth-token
+            - $(LEVEE_NAMED_TOKEN_{{ $i }})
+            {{- end }}
+            {{- if .Values.engine.enabled }}
+            - --engine-enabled
+            - --engine-max-parallel-runs
+            - {{ .Values.engine.maxParallelRuns | quote }}
+            {{- if .Values.engine.snapshotDir }}
+            - --engine-snapshot-dir
+            - {{ .Values.engine.snapshotDir | quote }}
+            {{- end }}
+            {{- if .Values.engine.gatePrometheus }}
+            - --engine-gate-prometheus
+            - {{ .Values.engine.gatePrometheus | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if eq .Values.mode "cluster" }}
+            - --cluster
+            - --pg-dsn
+            - $(LEVEE_PG_DSN)
+            - --node-id
+            - $(POD_NAME)
+            - --node-addr
+            - $(LEVEE_NODE_ADDR)
+            - --node-role
+            - master
+            - --cluster-exec-lease-ttl
+            - {{ .Values.cluster.execLeaseTTL | quote }}
+            - --cluster-takeover-interval
+            - {{ .Values.cluster.takeoverInterval | quote }}
+            - --cluster-dispatch-interval
+            - {{ .Values.cluster.dispatchInterval | quote }}
+            - --cluster-dispatch-worker-capacity
+            - {{ .Values.cluster.dispatchWorkerCapacity | quote }}
+            - --cluster-dispatch-claim-timeout
+            - {{ .Values.cluster.dispatchClaimTimeout | quote }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: LEVEE_NODE_ADDR
+              value: {{ if eq .Values.cluster.nodeAddressFrom "hostname" }}$(POD_NAME){{ else }}$(POD_IP){{ end }}
+            {{- if .Values.auth.token }}
+            - name: LEVEE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.secretName" . }}
+                  key: token
+            {{- end }}
+            {{- range $i, $t := .Values.auth.namedTokens }}
+            - name: LEVEE_NAMED_TOKEN_{{ $i }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.secretName" $ }}
+                  key: named-token-{{ $i }}
+            {{- end }}
+            {{- if .Values.masterPassword }}
+            - name: LEVEE_MASTER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.secretName" . }}
+                  key: master-password
+            {{- end }}
+            {{- if eq .Values.mode "cluster" }}
+            - name: LEVEE_PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.pgSecretName" . }}
+                  key: dsn
+            {{- end }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          livenessProbe:
+            # TCP 探活：配置错误导致的持续 /healthz 503 不应触发重启风暴
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/levee
+              readOnly: true
+            {{- if eq .Values.mode "single" }}
+            - name: data
+              mountPath: {{ .Values.persistence.dataDir }}
+            {{- else if .Values.cluster.snapshotClaimName }}
+            - name: snapshots
+              mountPath: {{ .Values.engine.snapshotDir }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "levee.fullname" . }}-config
+        {{- if eq .Values.mode "single" }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "levee.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- else if .Values.cluster.snapshotClaimName }}
+        - name: snapshots
+          persistentVolumeClaim:
+            claimName: {{ .Values.cluster.snapshotClaimName }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

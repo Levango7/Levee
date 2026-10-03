@@ -1,0 +1,17 @@
+apiVersion: v2
+name: levee
+description: |
+  LEVEE 高危变更治理引擎：计划 → 审批 → 分批执行 → 验证门禁 → 回滚 → 审计留痕。
+  单二进制、无代理（SSH/WinRM）；本 Chart 覆盖单机（SQLite）与集群（PostgreSQL 共享存储）两种形态。
+type: application
+# appVersion 跟随二进制版本；version 是 Chart 自身的版本。
+appVersion: "1.18.0"
+version: 0.1.0
+home: https://github.com/Levango7/Levee
+sources:
+  - https://github.com/Levango7/Levee
+keywords:
+  - change-management
+  - governance
+  - audit
+  - ops

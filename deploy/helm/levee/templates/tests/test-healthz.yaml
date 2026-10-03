@@ -1,0 +1,16 @@
+# 由 `helm test` 执行：验证网关健康端点（服务未注册时返回 503，故 200 即"真在服务"）
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "levee.fullname" . }}-test-healthz
+  labels:
+    {{- include "levee.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: wget
+      image: busybox:1.37
+      command: ["wget"]
+      args: ["-qO-", "http://{{ include "levee.fullname" . }}:{{ .Values.service.httpPort }}/healthz"]

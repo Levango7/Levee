@@ -1,0 +1,64 @@
+# LEVEE workflow example — 跨区域订单库主从切换（场景方案配套示例）
+#
+# 场景：集团 N 个区域机房，每区若干 MySQL 副本；故障或演练时把副本逐个
+# 重指到新主库。本示例演示跨区域数据同步与运维场景的关键形状：
+#   * mysql 目标（type: mysql，标签选副本集）与 fleet 下限
+#   * batches.strategy = one-per-target：严格每批一台、串行推进
+#     （规范为"DB 主库逐个切换"而写——并发切换意味着两个 DDL 窗口）
+#   * 维护窗口 in HH:MM 形式（§4.2；跨零点与区域时区见 window.timezone）
+#   * 高危审批（两人、排除发起人）
+#   * 不可逆动作：mysql.replica_switch 运行时强制 confirm=yes（R2 确认门），
+#     计划侧自动标记并路由高危审批；失败不自动回滚（on_failure: manual），
+#     由操作员按演练手册决定前滚或人工恢复
+#   * 每台切换后用 verify 门禁核对复制状态，再进入下一台
+name: dr-switch-orders-db
+version: "1.0"
+description: >
+  把订单库的副本逐个重指到新主库：每批一台、串行、窗口内、高危审批；
+  每台切换后核对复制状态（IO/SQL 线程与延迟）才继续。
+
+input:
+  - name: new_primary
+    type: string
+    required: true
+    description: 新主库地址（host:port），如 db-primary-b.dc-sh:3306
+
+target:
+  name: orders-replicas
+  type: mysql
+  query: "role=replica AND cluster=orders-db"
+  min_count: 1
+  max_count: 8
+
+window:
+  start: "01:00"
+  end: "05:00"
+  timezone: Asia/Shanghai
+
+batches:
+  strategy: one-per-target
+
+approval:
+  level: high
+
+steps:
+  - name: precheck-replication
+    action: shell.exec
+    args:
+      cmd: "mysql -e \"SHOW SLAVE STATUS\\G\" | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'"
+
+  - name: switch-primary
+    action: mysql.replica_switch
+    args:
+      new_primary: "{{.new_primary}}"
+      confirm: "yes"
+    irreversible: true
+    depends_on: ["precheck-replication"]
+    verify:
+      cmd:
+        run: "mysql -e \"SHOW SLAVE STATUS\\G\" | grep -c 'Slave_IO_Running: Yes'"
+        expect_exit: 0
+
+rollback:
+  on_failure: manual
+  verify_after: true

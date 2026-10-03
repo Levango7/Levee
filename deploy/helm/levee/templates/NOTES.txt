@@ -1,0 +1,36 @@
+LEVEE 已部署。{{ if eq .Values.mode "single" }}（单机模式：SQLite 存储）{{ else }}（集群模式：{{ .Values.cluster.workers }} 个 worker + 1 个 master，共享 PostgreSQL）{{ end }}
+
+1. 核对健康状态与版本：
+
+   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "levee.fullname" . }} {{ .Values.service.httpPort }}:{{ .Values.service.httpPort }}
+   # 浏览器打开 http://127.0.0.1:{{ .Values.service.httpPort }} （Web UI）
+   curl -s http://127.0.0.1:{{ .Values.service.httpPort }}/healthz      # {"status":"ok"}
+
+2. 取认证令牌（若用 existingSecret 则按你们自己的 Secret 取）：
+
+   kubectl -n {{ .Release.Namespace }} get secret {{ include "levee.secretName" . }} -o jsonpath='{.data.named-token-0}' | base64 -d
+
+3. 首次使用（本机装好 CLI，或进容器执行）：
+
+   levee -c /etc/levee/config.yaml doctor                # 环境自检
+   levee template create --name <name> --content '...'   # 建模板
+   levee target import <hosts.yaml>                      # 登记目标机（引擎执行的前提）
+   # 然后：new → approve → apply，全程审计留痕
+
+{{- if not (or .Values.auth.token .Values.auth.namedTokens .Values.auth.existingSecret) }}
+
+⚠ 未配置任何认证：serve 默认拒绝启动。请在 values 配置 auth.token / auth.namedTokens
+  （推荐命名令牌，审计里才能证明"谁做的"）或 auth.existingSecret。
+{{- end }}
+{{- if and (eq .Values.mode "cluster") .Values.postgres.enabled }}
+
+⚠ 当前使用内嵌演示 PostgreSQL（单副本、无备份）。生产请改用客户既有 PG / RDS：
+  设 postgres.enabled=false 并配置 postgres.dsn 或 postgres.externalSecretName。
+{{- end }}
+{{- if eq .Values.mode "cluster" }}
+
+注意：集群 worker 的快照目录{{ if .Values.cluster.snapshotClaimName }}挂在共享卷（{{ .Values.cluster.snapshotClaimName }}）{{ else }}是 emptyDir——Pod 重建即丢，只在回滚窗口内不重建的约定下够用（生产建议 cluster.snapshotClaimName 指向共享 RWX 卷）{{ end }}。
+{{- end }}
+
+提醒：ghcr.io/levango7/levee 镜像默认私有，现场拉取需 imagePullSecrets。

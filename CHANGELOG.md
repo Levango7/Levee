@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [v1.18.0] - 2026-10-03 — 交付物齐备：Helm chart + 裸金属一键安装 + 跨区域场景方案 + 镜像发布
+
+本版把"能上线、能交付"所需的**交付物**补齐：K8s 客户有了一配置即部署的 Helm chart（单机/集群两形态，`helm lint`/双形态 `template` 全文档 YAML 校验通过）；裸金属客户有了幂等一键安装脚本与自带 systemd 单元（容器实测）；每个 `v*` tag 现在还发布多架构容器镜像到 GHCR（独立 job，镜像失败不阻塞二进制发布）；跨区域数据同步与运维的**场景方案文档**及其配套示例 workflow 落库（示例进 `TestShippedExamplesCompile`，实测编译通过）；部署手册新增 Helm 与交付检查单两节。同时做了一致性订正：spec 的 `allow_irreversible` 字段如实标注"规范目标未接线"（LE082 零产生点登记 roadmap），security-audit 的三处历史边界留痕订正（trace 链接线关闭、PG 触发器 CI 实跑）。
+
+### 新增
+
+- **Helm chart（`deploy/helm/levee`）**：`mode=single`（SQLite + PVC）与 `mode=cluster`（master 1 副本 + worker N 副本共享 PG；`--node-id/--node-addr/--node-role` 经 Downward API 注入，worker 快照目录可指共享 RWX 卷）两种形态；认证/主密码/PG DSN 全部走 Secret（`auth.existingSecret` 可完全接管）；探针用网关 `/healthz`（就绪——服务未注册返回 503）与 TCP（存活，避免配置错误触发重启风暴）；内嵌演示 PG 明确标注"非生产"；可选 ingress 与 `helm test`。**如实写进模板注释的边界**：Service 只指向 master 副本（`WatchChange` 事件总线是进程内的，多副本前置会让订阅者漏事件）；GHCR 镜像默认私有，需要 imagePullSecrets 或同步到客户镜像库。验证：`helm lint` 0 failed；集群全开（cluster+内嵌 PG+ingress+命名令牌+反亲和）渲染 12 份文档、单机 6 份，全部经 YAML 解析校验。
+- **裸金属一键安装（`deploy/baremetal/install.sh` + `deploy/systemd/levee.service`）**：安装脚本幂等（容器实测：两次执行均成功），建系统用户、装二进制、按 `--prefix/--data-dir` sed 渲染单元路径、生成 0600 root:levee 的凭据模板（不覆盖既有文件）；systemd 单元含最小权限加固（`ProtectSystem=strict`、`ProtectHome`、`ReadWritePaths` 限定数据目录、`$LEVEE_SERVE_EXTRA` 按空格展开集群参数，未设置时展开为空不报错）。
+- **容器镜像发布（release.yml 新增独立 `image` job）**：每个 `v*` tag 用 buildx（QEMU）构建 linux/amd64+arm64 并推送 `ghcr.io/levango7/levee:<版本>` 与 `:latest`；全部动作按 commit SHA 钉死；**与 goreleaser 解耦**——registry 故障或 buildx 失败不会阻塞二进制/归档发布（run 变红保持可见性）。镜像基于仓库 Dockerfile（node→go→scratch 资产→alpine 运行时、非 root、`/healthz` HEALTHCHECK）。
+- **场景方案与配套示例**：`docs/scenario-cross-region-ops.md`（中大型集团 1 核心机房 + 4~5 区域数据中心：痛点→已接线能力映射、参考部署形态、试点演练表、错位竞争定位、诚实边界——含数据搬运不是 LEVEE 的能力、`allow_irreversible` 未接线两点）；`examples/workflows/dr-switch-orders-db.yaml`（跨区域 MySQL 主从切换：`one-per-target` 严格逐台串行、区域时区窗口、高危审批、`confirm=yes` 强制确认门、切换后 verify 门禁；实测 `levee compile` 通过并纳入 `TestShippedExamplesCompile` 永久守护）。
+- **部署手册扩充（`docs/deployment.md`）**：§3 补发行版与镜像说明；§6 指向自带单元与安装脚本；新增 **§14 Kubernetes（Helm）部署**（两形态安装命令、Secret 边界、模板注释里的四条边界）与 **§15 交付检查单**（8 项：命名令牌/OIDC、gRPC 不进公网、主密码 secret 注入、doctor 全绿、试点演练、备份恢复演练、升级路径、审计链校验——前四条绑定 `security-audit.md` 的生产准入约束）。
+- **`deploy/README.md`**：三条交付路径索引（裸金属 / Helm / 容器）、镜像来源与离线同步、模板与真实旗标的一致性核对方法、部署前必读安全约束。
+
+### 修复
+
+- **一致性订正三处（文档 vs 实现）**：① `leveelang-spec.md` 的 `allow_irreversible` 字段行改为如实口径——解析器无此字段、LE082 全仓零产生点（仅错误目录与故障分类器引用）；今天的不可逆保护是两层真实机制（`mysql.replica_switch` 内 `confirm=yes` 运行时硬门 + 计划侧 `irreversible: true` 高危审批路由），接线项（编译期门禁会改变存量行为，需带迁移说明）登记为 roadmap P1；② `security-audit.md` 两处历史边界留痕订正——「trace 链生产零接线」于 v1.14.0（PR #29）关闭、「PG 触发器未执行验证」已由 `pgstore_auditchain_test.go` 在 CI postgres 腿实跑，原记录保留、更新以日期标注；③ 风险评级行补 2026-10-03 更新（并指向交付检查单）。
+
 ## [v1.17.0] - 2026-10-03 — OpsMesh 拉取方向接线（按平台源码核实契约）
 
 v1.16.0 留下的最后一个跨系统问题——「OpsMesh 平台侧的服务寻址语义待定案」——被**直接读平台源码解决**（F:\Nexus\OpsMesh）：设计文档 §6.3 的 service 寻址只是草案，真实端点是目录图 `/api/v1/catalog/topology?tenantID=` 与 PromQL 代理 `/api/v1/prometheus/query`；host→服务的匹配在客户端经 name/metadata 值包含完成，无需平台侧改动。客户端三处与真实契约不符的方法（GetTopology/GetMetrics/Ping）全部修正——旧实现会对着真实部署 404。拉取方向完整接线：诊断影响半径阶段 `provider: opsmesh` + `levee opsmesh topology|metrics` CLI；结果回传的 `resolution` 端点平台尚未实现（只有 ack/silence），404-降级与「不用 ack 顶替」的理由如实写进代码注释与配置说明。
