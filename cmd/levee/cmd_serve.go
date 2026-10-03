@@ -36,6 +36,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -46,20 +47,24 @@ import (
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
+	"github.com/nexus/levee/internal/chatops"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/diagnosis"
+	"github.com/nexus/levee/internal/diagnosis/llm_diag"
 	"github.com/nexus/levee/internal/dispatch"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/itsm/jira"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
+	"github.com/nexus/levee/internal/notify/chatopsbridge"
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
+	"github.com/nexus/levee/internal/recommend/feedback"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/takeover"
 	"github.com/nexus/levee/internal/tenant"
@@ -391,33 +396,65 @@ func newServeDiagEngine() (*diagnosis.DiagEngine, error) {
 // (default) the engine runs pure knowledge-base mode, and a construction
 // error degrades the same way with a loud warning (the same contract as
 // setupServeTracing).
-func newServeConvEngine(cfg *config.Config, changeSvc *grpc.ChangeService) *conversation.ConversationEngine {
-	var llmClient recommend.LLMClient
-	if cfg != nil && cfg.AI.LLM.Enabled {
-		client, err := recommend.NewLLMClient(recommend.LLMConfig{
-			Provider:    cfg.AI.LLM.Provider,
-			APIKey:      cfg.AI.LLM.APIKey,
-			Model:       cfg.AI.LLM.Model,
-			BaseURL:     cfg.AI.LLM.BaseURL,
-			MaxTokens:   cfg.AI.LLM.MaxTokens,
-			Temperature: cfg.AI.LLM.Temperature,
-			Timeout:     cfg.AI.LLM.Timeout,
-		})
-		if err != nil {
-			log.Warn("ai.llm client unavailable; recommend engine stays in knowledge-base mode", "error", err)
-		} else {
-			llmClient = client
-		}
-	}
+func newServeConvEngine(cfg *config.Config, changeSvc *grpc.ChangeService, kb *recommend.KnowledgeBase) *conversation.ConversationEngine {
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
-		LLMClient: llmClient,
-		Timeout:   30 * time.Second,
+		LLMClient:     buildServeLLMClient(cfg),
+		KnowledgeBase: kb,
+		Timeout:       30 * time.Second,
 	})
 	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
 		Recommend:     recEngine,
 		ChangeCreator: grpc.NewConversationChangeCreator(changeSvc),
 		Timeout:       60 * time.Second,
 	})
+}
+
+// buildServeKnowledgeBase constructs the shared knowledge base and attaches
+// the effect-learning learner over it. The recommend engine and the learner
+// must operate on the SAME catalogue: Learn used to add patterns to a KB the
+// engine never saw (serve passed no KnowledgeBase, the engine built a
+// private one), so the learning loop was silently open. The learner persists
+// under the data dir so learned patterns survive a restart.
+func buildServeKnowledgeBase(cfg *config.Config, changeSvc *grpc.ChangeService) *recommend.KnowledgeBase {
+	kb := recommend.NewKnowledgeBaseWithDefaults()
+	persistPath := ""
+	if cfg != nil {
+		persistPath = filepath.Join(cfg.Server.DataDir, "feedback.json")
+	}
+	learner := feedback.NewFeedbackLearner(feedback.FeedbackLearnerConfig{
+		KnowledgeBase: kb,
+		PersistPath:   persistPath,
+	})
+	if changeSvc != nil {
+		changeSvc.SetFeedbackLearner(learner)
+	}
+	return kb
+}
+
+// buildServeLLMClient constructs the LLM client from the ai.llm config
+// section, or nil when disabled (the default). A construction error is
+// logged and degrades to nil — the callers' AI paths fall back to their
+// knowledge-base / rule-based modes, the same contract as
+// setupServeTracing. One construction point for every AI consumer (recommend
+// hybrid mode, diagnosis reasoning) so they cannot drift apart.
+func buildServeLLMClient(cfg *config.Config) recommend.LLMClient {
+	if cfg == nil || !cfg.AI.LLM.Enabled {
+		return nil
+	}
+	client, err := recommend.NewLLMClient(recommend.LLMConfig{
+		Provider:    cfg.AI.LLM.Provider,
+		APIKey:      cfg.AI.LLM.APIKey,
+		Model:       cfg.AI.LLM.Model,
+		BaseURL:     cfg.AI.LLM.BaseURL,
+		MaxTokens:   cfg.AI.LLM.MaxTokens,
+		Temperature: cfg.AI.LLM.Temperature,
+		Timeout:     cfg.AI.LLM.Timeout,
+	})
+	if err != nil {
+		log.Warn("ai.llm client unavailable; AI paths stay in knowledge-base/rule-based mode", "error", err)
+		return nil
+	}
+	return client
 }
 
 // setupServeTracing builds the process-wide tracer from the tracing config
@@ -631,6 +668,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The ChatOps bots were started during wiring (their event channels
+	// drop events while unstarted). Stop them when the server exits so the
+	// bot goroutines are released.
+	defer func() {
+		if svcs.chatOpsMgr != nil {
+			svcs.chatOpsMgr.StopAll()
+		}
+	}()
 	changeSvc, templateSvc, targetSvc := svcs.changeSvc, svcs.templateSvc, svcs.targetSvc
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
@@ -754,6 +799,56 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// buildServeChatOpsBots constructs and starts the configured webhook bots.
+// Validation is fail-closed and names the offending bot: a bot silently
+// skipped at boot would look like a working mirror that never delivers.
+// Returns a manager with at least one registered, started bot.
+func buildServeChatOpsBots(cfg config.ChatOpsConfig) (*chatops.BotManager, error) {
+	if len(cfg.Bots) == 0 {
+		return nil, fmt.Errorf("notify.chatops.enabled=true requires at least one bot (platform + name + webhook_url)")
+	}
+	mgr := chatops.NewBotManager()
+	for i, b := range cfg.Bots {
+		label := b.Name
+		if label == "" {
+			label = fmt.Sprintf("bots[%d]", i)
+		}
+		if b.Name == "" || b.WebhookURL == "" {
+			return nil, fmt.Errorf("notify.chatops bot %q: name and webhook_url are required", label)
+		}
+		var (
+			bot chatops.Bot
+			err error
+		)
+		switch b.Platform {
+		case "slack":
+			bot, err = chatops.NewSlackBot(chatops.SlackConfig{
+				Name: b.Name, WebhookURL: b.WebhookURL, Timeout: b.Timeout,
+			}, mgr.Router())
+		case "dingtalk":
+			bot, err = chatops.NewDingtalkBot(chatops.DingtalkConfig{
+				Name: b.Name, WebhookURL: b.WebhookURL, Secret: b.Secret, Timeout: b.Timeout,
+			}, mgr.Router())
+		case "feishu":
+			bot, err = chatops.NewFeishuBot(chatops.FeishuConfig{
+				Name: b.Name, WebhookURL: b.WebhookURL, Secret: b.Secret, Timeout: b.Timeout,
+			}, mgr.Router())
+		default:
+			return nil, fmt.Errorf("notify.chatops bot %q: unknown platform %q (supported: slack, dingtalk, feishu)", label, b.Platform)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("notify.chatops bot %q: %w", label, err)
+		}
+		if err := mgr.Register(bot); err != nil {
+			return nil, fmt.Errorf("notify.chatops bot %q: %w", label, err)
+		}
+	}
+	if err := mgr.StartAll(context.Background()); err != nil {
+		return nil, fmt.Errorf("notify.chatops: start bots: %w", err)
+	}
+	return mgr, nil
+}
+
 // serveServices bundles the in-process service implementations the daemon
 // (gRPC server + REST gateway) shares.
 type serveServices struct {
@@ -774,6 +869,9 @@ type serveServices struct {
 	// reconcile configured credentials against the registry (it is the only
 	// place that sees both).
 	authzSvc *authz.Authorizer
+	// chatOpsMgr carries the started ChatOps bots (nil unless
+	// notify.chatops.enabled) so runServe's shutdown path can stop them.
+	chatOpsMgr *chatops.BotManager
 }
 
 // buildServeServices constructs the in-process service implementations,
@@ -872,6 +970,27 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	if jiraBridge != nil {
 		changeSvc.WithApprovalCreateObserver(jiraBridge.OnApprovalCreated)
 	}
+
+	// ChatOps approval mirror (notify.chatops.*): approval lifecycle events
+	// are projected onto Slack / DingTalk / Feishu webhook bots, so approvers
+	// see the ask where they already work. Disabled (the default) installs
+	// nothing. The observer slots are fan-out, so this composes with the
+	// Jira mirror instead of displacing it. Bots are started here (their
+	// event channels drop events while unstarted) and stopped by runServe's
+	// shutdown path via the manager carried back in serveServices.
+	var chatOpsMgr *chatops.BotManager
+	if cfg.Notify.ChatOps.Enabled {
+		var cerr error
+		chatOpsMgr, cerr = buildServeChatOpsBots(cfg.Notify.ChatOps)
+		if cerr != nil {
+			return serveServices{}, cerr
+		}
+		bridge := chatopsbridge.NewApprovalBridge(chatOpsMgr)
+		approvalSvc.WithDecisionObserver(bridge.OnDecision)
+		changeSvc.WithApprovalCreateObserver(bridge.OnApprovalCreated)
+		log.Info("chatops approval mirror enabled", "bots", chatOpsMgr.Names())
+	}
+
 	// Bulk pause/resume authorization. The API used to bypass whatever
 	// grant list `levee pause all` honours, so configuring permissions
 	// changed nothing over the wire. With no grants configured the actions
@@ -929,7 +1048,18 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
 	}
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
-	convEngine := newServeConvEngine(cfg, changeSvc)
+	// Multi-turn LLM reasoning on top of the rule-based diagnosis, when the
+	// ai.llm section is enabled. A CONVERGED (corroborated) reasoning result
+	// refines the report; anything else keeps the rule-based answer.
+	if llmClient := buildServeLLMClient(cfg); llmClient != nil {
+		if reasoner, rerr := llm_diag.NewReasoningEngine(llm_diag.ReasoningEngineConfig{LLM: llmClient}); rerr != nil {
+			log.Warn("llm_diag engine unavailable; diagnosis stays rule-based", "error", rerr)
+		} else {
+			diagSvc.WithReasoner(reasoner)
+			log.Info("diagnosis llm reasoning enabled")
+		}
+	}
+	convEngine := newServeConvEngine(cfg, changeSvc, buildServeKnowledgeBase(cfg, changeSvc))
 	convSvc := grpc.NewConversationService(convEngine, slog.Default())
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the
@@ -953,7 +1083,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
 		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
-		gateSvc: gateSvc, authzSvc: authzSvc,
+		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
 	}, nil
 }
 

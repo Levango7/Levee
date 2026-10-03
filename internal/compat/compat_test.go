@@ -123,15 +123,15 @@ func TestCommandModuleMapping(t *testing.T) {
 	assert.Equal(t, "ls -la /var/log", s.Args["cmd"])
 }
 
-// TestFileCopyTemplateModuleMapping verifies that the file, copy and template
-// modules map to file.manage, file.copy and file.template respectively
-// (req #5).
+// TestFileCopyTemplateModuleMapping verifies the redefined contract: copy and
+// template map to their real actions, while the ansible `file` module is
+// REFUSED with an actionable error — the old flat table mapped it to
+// file.manage, an action that does not exist in the executor registry (the
+// playbook imported fine and then failed at execution time).
 func TestFileCopyTemplateModuleMapping(t *testing.T) {
 	const pb = `---
 - hosts: all
   tasks:
-    - name: ensure dir
-      file: path=/srv/app state=directory
     - name: copy config
       copy:
         src: /local/app.conf
@@ -144,27 +144,32 @@ func TestFileCopyTemplateModuleMapping(t *testing.T) {
 	a := newImporter()
 	wf, err := a.ImportBytes([]byte(pb))
 	require.NoError(t, err)
-	require.Len(t, wf.Steps, 3)
-
-	// file -> file.manage
-	s0 := wf.Steps[0]
-	assert.Equal(t, "file", s0.Module)
-	assert.Equal(t, "manage", s0.Action)
-	assert.Equal(t, "/srv/app", s0.Args["path"])
-	assert.Equal(t, "directory", s0.Args["state"])
+	require.Len(t, wf.Steps, 2)
 
 	// copy -> file.copy
-	s1 := wf.Steps[1]
-	assert.Equal(t, "file", s1.Module)
-	assert.Equal(t, "copy", s1.Action)
-	assert.Equal(t, "/local/app.conf", s1.Args["src"])
-	assert.Equal(t, "/etc/app/app.conf", s1.Args["dest"])
+	s0 := wf.Steps[0]
+	assert.Equal(t, "file", s0.Module)
+	assert.Equal(t, "copy", s0.Action)
+	assert.Equal(t, "/local/app.conf", s0.Args["src"])
+	assert.Equal(t, "/etc/app/app.conf", s0.Args["dest"])
 
 	// template -> file.template
-	s2 := wf.Steps[2]
-	assert.Equal(t, "file", s2.Module)
-	assert.Equal(t, "template", s2.Action)
-	assert.Equal(t, "/local/app.j2", s2.Args["src"])
+	s1 := wf.Steps[1]
+	assert.Equal(t, "file", s1.Module)
+	assert.Equal(t, "template", s1.Action)
+	assert.Equal(t, "/local/app.j2", s1.Args["src"])
+
+	// file -> refused, with the reason and the alternatives in the message.
+	const pbFile = `---
+- hosts: all
+  tasks:
+    - name: ensure dir
+      file: path=/srv/app state=directory
+`
+	_, err = a.ImportBytes([]byte(pbFile))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrUnsupportedModule), "want ErrUnsupportedModule, got %v", err)
+	assert.Contains(t, err.Error(), "no faithful LEVEE action")
 }
 
 // TestPkgModuleMapping verifies that apt and yum both map to pkg.install
@@ -191,25 +196,31 @@ func TestPkgModuleMapping(t *testing.T) {
 	}
 }
 
-// TestServiceModuleMapping verifies that the service module maps to svc.manage
-// (req #7).
+// TestServiceModuleMapping verifies the state-aware service mapping: state
+// selects the real svc action instead of the old state-blind svc.manage.
 func TestServiceModuleMapping(t *testing.T) {
 	const pb = `---
 - hosts: all
   tasks:
     - name: start nginx
       service: name=nginx state=started
+    - name: enable nginx
+      service: name=nginx enabled=yes
+    - name: stop nginx
+      service: name=nginx state=stopped
 `
 	a := newImporter()
 	wf, err := a.ImportBytes([]byte(pb))
 	require.NoError(t, err)
-	require.Len(t, wf.Steps, 1)
+	require.Len(t, wf.Steps, 3)
 
-	s := wf.Steps[0]
-	assert.Equal(t, "svc", s.Module)
-	assert.Equal(t, "manage", s.Action)
-	assert.Equal(t, "nginx", s.Args["name"])
-	assert.Equal(t, "started", s.Args["state"])
+	assert.Equal(t, "svc", wf.Steps[0].Module)
+	assert.Equal(t, "start", wf.Steps[0].Action)
+	assert.Equal(t, "nginx", wf.Steps[0].Args["name"])
+	assert.Equal(t, "started", wf.Steps[0].Args["state"])
+
+	assert.Equal(t, "enable", wf.Steps[1].Action)
+	assert.Equal(t, "stop", wf.Steps[2].Action)
 }
 
 // TestMultipleTasks verifies that a playbook with several tasks imports all
@@ -358,18 +369,19 @@ func TestCompatLayerInterface(t *testing.T) {
 	var _ CompatLayer = NewAnsiblePlaybookImporter()
 }
 
-// TestUserGroupModuleMapping verifies that the user and group modules map to
-// user.manage and user.group respectively. These are part of the supported
-// subset but not explicitly listed in the 13 requirements; the test guards
-// the mapping table.
+// TestUserGroupModuleMapping verifies the redefined user/group contract:
+// user maps state-aware to user.add/user.remove (user.add is idempotent, so
+// ansible's present = create-or-ensure is faithful), while the ansible
+// `group` module is REFUSED — the old table's user.group action does not
+// exist anywhere in the executor registry.
 func TestUserGroupModuleMapping(t *testing.T) {
 	const pb = `---
 - hosts: all
   tasks:
     - name: create user
       user: name=appuser state=present
-    - name: create group
-      group: name=appgroup state=present
+    - name: remove stale user
+      user: name=olduser state=absent
 `
 	a := newImporter()
 	wf, err := a.ImportBytes([]byte(pb))
@@ -377,9 +389,20 @@ func TestUserGroupModuleMapping(t *testing.T) {
 	require.Len(t, wf.Steps, 2)
 
 	assert.Equal(t, "user", wf.Steps[0].Module)
-	assert.Equal(t, "manage", wf.Steps[0].Action)
+	assert.Equal(t, "add", wf.Steps[0].Action)
 	assert.Equal(t, "user", wf.Steps[1].Module)
-	assert.Equal(t, "group", wf.Steps[1].Action)
+	assert.Equal(t, "remove", wf.Steps[1].Action)
+
+	const pbGroup = `---
+- hosts: all
+  tasks:
+    - name: create group
+      group: name=appgroup state=present
+`
+	_, err = a.ImportBytes([]byte(pbGroup))
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrUnsupportedModule), "want ErrUnsupportedModule, got %v", err)
+	assert.Contains(t, err.Error(), "no LEVEE executor action")
 }
 
 // TestModernMappingArgs verifies that modern Ansible mapping-style arguments

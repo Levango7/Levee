@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/diagnosis"
+	"github.com/nexus/levee/internal/diagnosis/llm_diag"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
 
@@ -37,6 +38,12 @@ type DiagnosisService struct {
 
 	// engine is the diagnosis engine. May be nil.
 	engine *diagnosis.DiagEngine
+
+	// reasoner is the optional multi-turn LLM reasoning engine. Nil keeps
+	// the rule-based diagnosis only. When set, a CONVERGED reasoning result
+	// refines the report (root cause / confidence / recommendations); a
+	// non-converged or failed run leaves the rule-based report untouched.
+	reasoner *llm_diag.ReasoningEngine
 
 	// log is the structured logger. When nil the package-level singleton
 	// from internal/log is used.
@@ -59,6 +66,22 @@ func NewDiagnosisService(engine *diagnosis.DiagEngine, lg *slog.Logger) *Diagnos
 		log:     lg,
 		reports: make(map[string]diagnosis.DiagnosticReport),
 	}
+}
+
+// WithReasoner attaches an optional multi-turn LLM reasoning engine. When
+// set, Diagnose runs the rule-based engine first and then lets a CONVERGED
+// reasoning result refine the report: root cause, confidence and (when the
+// model provided any) recommendations. Convergence is corroborated across
+// turns by llm_diag's stability gate — a single self-reported answer is not
+// enough — and the written-back confidence is the model's own estimate
+// (provenance in ReasoningResult.ConfidenceSource), so callers mapping it
+// toward approval tiers must treat it as a hint, never as a verified fact.
+// Reasoner failures and non-convergence degrade to the rule-based report
+// with a log line: an LLM outage must not take the Diagnose RPC down, and
+// the rule engine's answer must not be lost to it.
+func (s *DiagnosisService) WithReasoner(r *llm_diag.ReasoningEngine) *DiagnosisService {
+	s.reasoner = r
+	return s
 }
 
 // --- Diagnose --------------------------------------------------------------
@@ -90,10 +113,42 @@ func (s *DiagnosisService) Diagnose(ctx context.Context, req *pb.DiagnoseRequest
 		// Override the trigger to indicate this run was alert-driven.
 		report.Trigger = diagnosis.TriggerAlert
 	}
+	// Optional LLM refinement (only when converged); graceful on any failure.
+	// Runs BEFORE the cache write so GetDiagnosis serves the enriched report.
+	s.enrichWithReasoning(ctx, &report)
 
 	s.cacheReport(report)
 
 	return diagnosisToPB(&report), nil
+}
+
+// enrichWithReasoning refines a report with the multi-turn reasoner when it
+// converges (hypothesis corroborated across turns — the stability gate in
+// llm_diag refuses single self-reported answers). Every other outcome is a
+// faithful no-op with a log line: non-convergence keeps the rule-based
+// values, and a reasoner error must not fail the RPC.
+func (s *DiagnosisService) enrichWithReasoning(ctx context.Context, report *diagnosis.DiagnosticReport) {
+	if s.reasoner == nil {
+		return
+	}
+	res, err := s.reasoner.Diagnose(ctx, report.Target, report)
+	if err != nil {
+		s.log.Warn("diagnosis: llm reasoning failed; keeping rule-based report",
+			"target", report.Target, "error", err)
+		return
+	}
+	if res.Status != llm_diag.StatusConverged {
+		s.log.Info("diagnosis: llm reasoning did not converge; keeping rule-based report",
+			"target", report.Target, "status", res.Status.String(), "turns", res.Turns)
+		return
+	}
+	report.RootCause = res.RootCause
+	report.Confidence = res.Confidence
+	if len(res.Suggestions) > 0 {
+		report.Recommendations = res.Suggestions
+	}
+	s.log.Info("diagnosis: refined by llm reasoning",
+		"target", report.Target, "turns", res.Turns, "confidence_source", res.ConfidenceSource)
 }
 
 // --- GetDiagnosis ----------------------------------------------------------

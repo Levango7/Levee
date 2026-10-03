@@ -283,10 +283,40 @@ type CredentialConfig struct {
 	KeyDerivation string `json:"key_derivation" mapstructure:"key_derivation"` // argon2id
 }
 
-// NotifyConfig configures outbound notifications. Today only webhook is supported.
+// NotifyConfig configures outbound notifications and mirrors: the generic
+// webhook notifier, the outbound ITSM Jira approval mirror and the ChatOps
+// approval mirror (Slack / DingTalk / Feishu webhook bots).
 type NotifyConfig struct {
 	Webhook WebhookConfig `json:"webhook" mapstructure:"webhook"`
 	Jira    JiraConfig    `json:"jira"    mapstructure:"jira"`
+	ChatOps ChatOpsConfig `json:"chatops" mapstructure:"chatops"`
+}
+
+// ChatOpsConfig configures the approval ChatOps mirror: approval lifecycle
+// events (requested / decided) are projected onto Slack / DingTalk / Feishu
+// webhook bots. Disabled (the default) installs nothing — no bot, no
+// outbound call, no observer. Enabled requires at least one bot with a
+// webhook URL; a bot missing one fails the boot loudly naming the bot
+// (silently skipping it would look like a working mirror that never
+// delivers). The observer slots are fan-out, so enabling this alongside the
+// Jira mirror delivers to both. LEVEE's store stays the system of record —
+// the mirror is one-way visibility.
+type ChatOpsConfig struct {
+	Enabled bool               `json:"enabled" mapstructure:"enabled"`
+	Bots    []ChatOpsBotConfig `json:"bots"    mapstructure:"bots"`
+}
+
+// ChatOpsBotConfig is one webhook bot. Platform selects the adapter
+// (slack | dingtalk | feishu); name is the registration key. Secret is the
+// per-platform signing secret where the adapter implements one (see
+// internal/chatops for which adapters currently sign) — declaring it where
+// unsupported is harmless.
+type ChatOpsBotConfig struct {
+	Platform   string        `json:"platform"    mapstructure:"platform"`
+	Name       string        `json:"name"        mapstructure:"name"`
+	WebhookURL string        `json:"webhook_url" mapstructure:"webhook_url"`
+	Secret     string        `json:"secret"      mapstructure:"secret"`
+	Timeout    time.Duration `json:"timeout"     mapstructure:"timeout"`
 }
 
 // WebhookConfig configures the webhook notifier.

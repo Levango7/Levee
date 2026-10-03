@@ -18,9 +18,11 @@
 package feedback
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -70,16 +72,29 @@ const (
 // A FeedbackLearner is safe for concurrent use by any number of goroutines.
 // The zero value is not usable; callers must use NewFeedbackLearner.
 type FeedbackLearner struct {
-	kb      *recommend.KnowledgeBase
-	records []FeedbackRecord
+	kb *recommend.KnowledgeBase
+	// records holds POINTERS: Learn stamps PatternID onto the stored record,
+	// so the record returned by Record must be the stored element itself.
+	// (It used to store a value copy and return a pointer to the local copy —
+	// Learn wrote the PatternID into a record nobody could read back, and
+	// GetRecord/ListRecords served records with a permanently empty
+	// PatternID.)
+	records []*FeedbackRecord
 	// stats aggregates per-pattern counters. The key is PatternID.
 	stats map[string]*PatternStat
 	// patterns stores the FixPattern values that the learner
 	// synthesised from successful outcomes, keyed by PatternID. It
 	// is the source for ExportPatterns.
 	patterns map[string]recommend.FixPattern
-	mu       sync.RWMutex
-	log      *slog.Logger
+	// incidents stores the HistoricalIncident values synthesised alongside
+	// the patterns — the other half of what Learn feeds the knowledge base,
+	// and without which a restart would lose the incident-side matches.
+	incidents map[string]recommend.HistoricalIncident
+	// persistPath is the JSON snapshot file. Empty disables persistence
+	// (the learner stays an in-memory object, useful for tests).
+	persistPath string
+	mu          sync.RWMutex
+	log         *slog.Logger
 }
 
 // FeedbackLearnerConfig is the configuration for NewFeedbackLearner.
@@ -91,23 +106,40 @@ type FeedbackLearnerConfig struct {
 	// Logger is the optional structured logger. When nil the
 	// package-level singleton logger is used.
 	Logger *slog.Logger
+
+	// PersistPath is the optional JSON snapshot path. When non-empty the
+	// learner loads existing state at construction (a missing file is a
+	// fresh start, not an error) and writes a snapshot after every
+	// successful Record / Learn, so a restart no longer forgets every
+	// learned pattern — the residual the roadmap called out
+	// ("全内存、进程重启即失忆"). A corrupt or unreadable file is logged
+	// and treated as a fresh start: the learner is best-effort learning
+	// state, never the system of record (runs and the audit chain are).
+	PersistPath string
 }
 
 // NewFeedbackLearner returns a learner ready to record outcomes. The
 // KnowledgeBase in cfg must be non-nil; a nil KnowledgeBase causes the
 // returned learner to return errors on every Record call (it does not
-// panic).
+// panic). When PersistPath is set the existing snapshot (if any) is loaded
+// best-effort — see FeedbackLearnerConfig.PersistPath.
 func NewFeedbackLearner(cfg FeedbackLearnerConfig) *FeedbackLearner {
 	l := cfg.Logger
 	if l == nil {
 		l = log.Logger()
 	}
-	return &FeedbackLearner{
-		kb:       cfg.KnowledgeBase,
-		stats:    make(map[string]*PatternStat),
-		patterns: make(map[string]recommend.FixPattern),
-		log:      l,
+	lrn := &FeedbackLearner{
+		kb:          cfg.KnowledgeBase,
+		stats:       make(map[string]*PatternStat),
+		patterns:    make(map[string]recommend.FixPattern),
+		incidents:   make(map[string]recommend.HistoricalIncident),
+		persistPath: cfg.PersistPath,
+		log:         l,
 	}
+	if lrn.persistPath != "" {
+		lrn.loadPersisted()
+	}
+	return lrn
 }
 
 // --- Record ------------------------------------------------------------------
@@ -141,18 +173,20 @@ func (l *FeedbackLearner) Record(outcome FixOutcome) (*FeedbackRecord, error) {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.records = append(l.records, rec)
+	l.records = append(l.records, &rec)
+	stored := l.records[len(l.records)-1]
 	// PatternID is not set by Record (it is assigned by Learn when a
 	// new pattern is synthesised), so there is nothing to aggregate
 	// here. Stats are updated in Learn once the pattern relationship
 	// is known.
 	l.log.Debug("feedback: record stored",
-		"id", rec.ID,
-		"target", rec.Outcome.Target,
-		"success", rec.Outcome.Success,
-		"pattern_id", rec.PatternID,
+		"id", stored.ID,
+		"target", stored.Outcome.Target,
+		"success", stored.Outcome.Success,
+		"pattern_id", stored.PatternID,
 	)
-	return &rec, nil
+	l.persistLocked()
+	return stored, nil
 }
 
 // bumpPatternStatLocked updates the per-pattern stats for the given pattern.
@@ -231,6 +265,7 @@ func (l *FeedbackLearner) Learn(record *FeedbackRecord) error {
 
 		record.PatternID = pid
 		l.patterns[pid] = pattern
+		l.incidents[incident.ID] = incident
 		// Record the first successful use of the new pattern in the
 		// per-pattern stats. pid is a fresh UUID so no prior stat
 		// exists; bumpPatternStatLocked creates one.
@@ -256,6 +291,7 @@ func (l *FeedbackLearner) Learn(record *FeedbackRecord) error {
 		l.log.Debug("feedback: failure without pattern; nothing to learn",
 			"target", outcome.Target)
 	}
+	l.persistLocked()
 	return nil
 }
 
@@ -359,7 +395,9 @@ func (l *FeedbackLearner) topPatternsLocked() []PatternStat {
 // CreatedAt. The caller must hold l.mu in read mode.
 func (l *FeedbackLearner) recentRecordsLocked() []FeedbackRecord {
 	out := make([]FeedbackRecord, len(l.records))
-	copy(out, l.records)
+	for i, rec := range l.records {
+		out[i] = *rec
+	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
@@ -376,10 +414,10 @@ func (l *FeedbackLearner) recentRecordsLocked() []FeedbackRecord {
 func (l *FeedbackLearner) GetRecord(id string) (*FeedbackRecord, error) {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
-	for i := range l.records {
-		if l.records[i].ID == id {
-			rec := l.records[i]
-			return &rec, nil
+	for _, rec := range l.records {
+		if rec.ID == id {
+			cp := *rec
+			return &cp, nil
 		}
 	}
 	return nil, fmt.Errorf("feedback: get record %s: %w", id, ErrRecordNotFound)
@@ -399,7 +437,9 @@ func (l *FeedbackLearner) ListRecords(limit int) []FeedbackRecord {
 	defer l.mu.RUnlock()
 
 	out := make([]FeedbackRecord, len(l.records))
-	copy(out, l.records)
+	for i, rec := range l.records {
+		out[i] = *rec
+	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].CreatedAt.After(out[j].CreatedAt)
 	})
@@ -427,6 +467,121 @@ func (l *FeedbackLearner) ExportPatterns() []recommend.FixPattern {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+// --- Persistence -------------------------------------------------------------
+
+// feedbackSnapshot is the on-disk shape of the learner's state. It carries
+// everything needed to rebuild the in-memory learner AND refill the shared
+// KnowledgeBase after a restart: the records (audit of what was learned
+// from), the per-pattern counters, and the synthesised patterns + incidents.
+type feedbackSnapshot struct {
+	Records   []*FeedbackRecord                       `json:"records"`
+	Stats     map[string]*PatternStat                 `json:"stats"`
+	Patterns  map[string]recommend.FixPattern         `json:"patterns"`
+	Incidents map[string]recommend.HistoricalIncident `json:"incidents"`
+}
+
+// loadPersisted reads the snapshot (best-effort) and rebuilds the learner
+// state, re-adding synthesised patterns and incidents to the shared
+// KnowledgeBase so learned matches survive a restart. A missing file is a
+// fresh start; a corrupt file is logged and treated as one — the learner is
+// auxiliary learning state, never the system of record, so a bad snapshot
+// must not keep the daemon from starting.
+func (l *FeedbackLearner) loadPersisted() {
+	raw, err := os.ReadFile(l.persistPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			l.log.Warn("feedback: cannot read snapshot; starting fresh",
+				"path", l.persistPath, "error", err)
+		}
+		return
+	}
+	var snap feedbackSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		l.log.Warn("feedback: snapshot unreadable; starting fresh",
+			"path", l.persistPath, "error", err)
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records = snap.Records
+	if snap.Stats != nil {
+		l.stats = snap.Stats
+	}
+	if snap.Patterns != nil {
+		l.patterns = snap.Patterns
+	}
+	if snap.Incidents != nil {
+		l.incidents = snap.Incidents
+	}
+	if l.kb != nil {
+		for _, p := range l.patterns {
+			if err := l.kb.AddPattern(p); err != nil {
+				l.log.Warn("feedback: re-add pattern failed", "pattern_id", p.ID, "error", err)
+			}
+		}
+		for _, inc := range l.incidents {
+			if err := l.kb.AddIncident(inc); err != nil {
+				l.log.Warn("feedback: re-add incident failed", "incident_id", inc.ID, "error", err)
+			}
+		}
+	}
+	l.log.Info("feedback: snapshot loaded",
+		"path", l.persistPath,
+		"records", len(l.records),
+		"patterns", len(l.patterns),
+		"incidents", len(l.incidents))
+}
+
+// persistLocked writes the snapshot atomically (temp file + rename). The
+// caller must hold l.mu. Failures are logged, never returned: persistence is
+// durability of LEARNING, and a failed write must not fail the run outcome
+// that produced it.
+func (l *FeedbackLearner) persistLocked() {
+	if l.persistPath == "" {
+		return
+	}
+	snap := feedbackSnapshot{
+		Records:   l.records,
+		Stats:     l.stats,
+		Patterns:  l.patterns,
+		Incidents: l.incidents,
+	}
+	raw, err := json.MarshalIndent(snap, "", "  ")
+	if err != nil {
+		l.log.Warn("feedback: marshal snapshot failed", "error", err)
+		return
+	}
+	tmp := l.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		l.log.Warn("feedback: write snapshot failed", "path", tmp, "error", err)
+		return
+	}
+	if err := os.Rename(tmp, l.persistPath); err != nil {
+		l.log.Warn("feedback: rename snapshot failed", "path", l.persistPath, "error", err)
+	}
+}
+
+// LoadInto restores a persisted snapshot into kb without constructing a
+// learner — for read-only consumers (the CLI) that want learned patterns in
+// their recommend engine but never record outcomes themselves (the serve
+// path owns the effect-learning loop). Empty path or a missing/corrupt file
+// is a no-op-with-log, same best-effort contract as the learner's own load.
+func LoadInto(kb *recommend.KnowledgeBase, path string) {
+	if kb == nil || path == "" {
+		return
+	}
+	l := &FeedbackLearner{
+		kb:          kb,
+		stats:       make(map[string]*PatternStat),
+		patterns:    make(map[string]recommend.FixPattern),
+		incidents:   make(map[string]recommend.HistoricalIncident),
+		persistPath: path,
+		log:         log.Logger(),
+	}
+	l.loadPersisted()
 }
 
 // --- Outcome -> KB entry helpers ---------------------------------------------

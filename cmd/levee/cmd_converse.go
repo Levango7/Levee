@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/recommend"
+	"github.com/nexus/levee/internal/recommend/feedback"
 )
 
 // --- Sentinel errors --------------------------------------------------------
@@ -182,9 +184,16 @@ func defaultNewConversationEngineForCLI() (*conversation.ConversationEngine, err
 			llmClient = client
 		}
 	}
+	// Share the serve-side learned patterns with the CLI's recommend engine:
+	// the CLI records no outcomes itself (the serve path owns the
+	// effect-learning loop), but it should BENEFIT from what serve learned.
+	// LoadInto is the read-only half of the loop.
+	kb := recommend.NewKnowledgeBaseWithDefaults()
+	feedback.LoadInto(kb, filepath.Join(cfg.Server.DataDir, "feedback.json"))
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
-		LLMClient: llmClient,
-		Timeout:   30 * time.Second,
+		LLMClient:     llmClient,
+		KnowledgeBase: kb,
+		Timeout:       30 * time.Second,
 	})
 	bridge := newLazyLocalChangeCreator(openStore)
 	engine := conversation.NewConversationEngine(conversation.ConversationEngineConfig{

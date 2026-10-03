@@ -340,6 +340,19 @@ P2 级问题可在评审后迭代修复，不影响评审通过。
 | P2-08（spec 10.3 mysql 限制无说明） | 文档迭代：限制列注明 mysql 模块现状 | docs |
 | P2-09（design 5.2 示例无注记） | 文档迭代：示例注明目标态归属 | docs |
 
+### 6.4 剩余项收口（2026-10-03 同日）
+
+上表 6 项**已全部落地**：
+
+- **P2-01**：`levee-api.md` 附录 A 补 `levee schedule`（cron 定时触发变更）行并标注 **V1 尚未实现**（当前定时能力仅为 `levee drift schedule` 的漂移巡检）；组织级变更日历接线仍由 roadmap「日历侧一半待接」行跟踪。
+- **P2-04**：`leveelang-spec.md` §2.2 块关键字表补 `any`（OR 组合）/ `all`（AND 组合，最多 2 层），字段关键字表补 `allow_irreversible`（workflow 级白名单，未列入则 LE082 拒绝）。
+- **P2-05**：§13.2 端点表后补「仅列核心端点」注记（管理面资源走第 7–9 章 CLI）。
+- **P2-07**：`levee run --shell <cmd>` **注册为显式标注的本地调试命令**（`cmd/levee/cmd_run.go`：平台 shell、超时、结构化输出、子进程退出码经 `[exit=N]` 透传、超时代码 8），帮助文本与 `levee-api.md` 第 9 章都明说「不经 plan/审批/审计链」；`mvp-tasks.md` T058 同步注记。
+- **P2-08**：§10.3 的 `target.type` 限制列注明 mysql 动作模块（`mysql.query` / `pt_osc` / `replica_switch`）已实现并通过 CI。
+- **P2-09**：`levee-design.md` §5.2 示例加「目标态示例（V1+）」注记。
+
+至此 21 项全部闭环（11 项复核确认已解决 + 10 项 P2 已处置/修复）。
+
 ---
 
 （审核报告结束）

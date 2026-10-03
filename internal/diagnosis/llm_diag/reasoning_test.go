@@ -142,18 +142,20 @@ func TestNewReasoningEngine_NilLLM(t *testing.T) {
 
 // --- Diagnose --------------------------------------------------------------
 
-// TestDiagnose_Success exercises a normal two-turn reasoning loop: the first
-// turn refines the hypothesis without converging, the second turn converges.
+// TestDiagnose_Success exercises a normal converged loop: the hypothesis is
+// refined on the first turn, then REPEATS with the model reporting
+// convergence — the repetition is what the stability gate requires.
 func TestDiagnose_Success(t *testing.T) {
 	report := newTestReport()
 	mock := recommend.NewMockLLMClient()
 
-	// Turn 1: refine without converging.
+	// Turn 1: refine with low confidence (cannot converge — no previous turn
+	// to corroborate against).
 	prompt1 := buildTurnPrompt(1, 5, report.RootCause, report.Confidence)
-	mock.SetResponse(prompt1, jsonResp("memory leak in cache layer", 0.5, false, "increase heap size"))
+	mock.SetResponse(prompt1, jsonResp("unbounded cache in OrderService", 0.5, false, "increase heap size"))
 
-	// Turn 2: converge with high confidence.
-	prompt2 := buildTurnPrompt(2, 5, "memory leak in cache layer", 0.5)
+	// Turn 2: the SAME hypothesis with the model reporting convergence.
+	prompt2 := buildTurnPrompt(2, 5, "unbounded cache in OrderService", 0.5)
 	mock.SetResponse(prompt2, jsonResp("unbounded cache in OrderService", 0.9, true, "add cache eviction", "restart service"))
 
 	e := newTestEngine(t, mock, 5)
@@ -172,6 +174,10 @@ func TestDiagnose_Success(t *testing.T) {
 	}
 	if result.Confidence != 0.9 {
 		t.Errorf("Confidence = %v, want 0.9", result.Confidence)
+	}
+	if result.ConfidenceSource != ConfidenceSourceModelSelfReport {
+		t.Errorf("ConfidenceSource = %q, want %q — provenance must be stated",
+			result.ConfidenceSource, ConfidenceSourceModelSelfReport)
 	}
 	if result.RootCause != result.Hypothesis {
 		t.Errorf("RootCause = %q, want %q", result.RootCause, result.Hypothesis)
@@ -194,22 +200,28 @@ func TestDiagnose_Success(t *testing.T) {
 	}
 }
 
-// TestDiagnose_Converge verifies that the engine stops after the first turn
-// when the LLM reports convergence.
+// TestDiagnose_Converge pins the CONTROLLED contract inversion: the engine
+// used to stop on the first turn whose reply claimed convergence. It no
+// longer does — a single self-reported "converged" is exactly the failure
+// mode that makes the self-report untrustworthy, so convergence now
+// requires the hypothesis to repeat across two consecutive turns. This test
+// previously asserted Turns == 1; it now asserts the corroborated floor.
 func TestDiagnose_Converge(t *testing.T) {
 	report := newTestReport()
 	mock := recommend.NewMockLLMClient()
 
 	prompt1 := buildTurnPrompt(1, 5, report.RootCause, report.Confidence)
 	mock.SetResponse(prompt1, jsonResp("memory leak confirmed", 0.95, true, "restart with larger heap"))
+	prompt2 := buildTurnPrompt(2, 5, "memory leak confirmed", 0.95)
+	mock.SetResponse(prompt2, jsonResp("memory leak confirmed", 0.95, true, "restart with larger heap"))
 
 	e := newTestEngine(t, mock, 5)
 	result, err := e.Diagnose(context.Background(), report.Target, report)
 	if err != nil {
 		t.Fatalf("Diagnose: %v", err)
 	}
-	if result.Turns != 1 {
-		t.Errorf("Turns = %d, want 1", result.Turns)
+	if result.Turns != 2 {
+		t.Errorf("Turns = %d, want 2 — the first turn's self-report must not converge (stability gate)", result.Turns)
 	}
 	if result.Status != StatusConverged {
 		t.Errorf("Status = %s, want converged", result.Status)
@@ -222,27 +234,114 @@ func TestDiagnose_Converge(t *testing.T) {
 	}
 }
 
-// TestDiagnose_ConvergeByThreshold verifies that the engine stops when the
-// confidence crosses the convergence threshold even if the LLM does not set
-// "converged": true.
-func TestDiagnose_ConvergeByThreshold(t *testing.T) {
+// TestDiagnose_SingleTurnConvergenceRefused is the direct negative of the
+// old contract: turn 1 claims full convergence, turn 2 presents a DIFFERENT
+// hypothesis (also claiming convergence) — the engine must not honour the
+// first claim, and converges only once a hypothesis repeats (turn 3).
+func TestDiagnose_SingleTurnConvergenceRefused(t *testing.T) {
 	report := newTestReport()
 	mock := recommend.NewMockLLMClient()
 
 	prompt1 := buildTurnPrompt(1, 5, report.RootCause, report.Confidence)
-	// converged=false but confidence=0.9 >= threshold 0.8.
-	mock.SetResponse(prompt1, jsonResp("disk full", 0.9, false, "clean up logs"))
+	mock.SetResponse(prompt1, jsonResp("first confident guess", 0.95, true))
+	prompt2 := buildTurnPrompt(2, 5, "first confident guess", 0.95)
+	mock.SetResponse(prompt2, jsonResp("second confident guess", 0.95, true))
+	prompt3 := buildTurnPrompt(3, 5, "second confident guess", 0.95)
+	mock.SetResponse(prompt3, jsonResp("second confident guess", 0.95, true))
 
 	e := newTestEngine(t, mock, 5)
 	result, err := e.Diagnose(context.Background(), report.Target, report)
 	if err != nil {
 		t.Fatalf("Diagnose: %v", err)
 	}
-	if result.Turns != 1 {
-		t.Errorf("Turns = %d, want 1", result.Turns)
+	if result.Turns != 3 {
+		t.Errorf("Turns = %d, want 3 — turn 1's self-report must be refused, turn 2's is the first candidate", result.Turns)
 	}
 	if result.Status != StatusConverged {
 		t.Errorf("Status = %s, want converged", result.Status)
+	}
+	if result.Hypothesis != "second confident guess" {
+		t.Errorf("Hypothesis = %q, want the corroborated one", result.Hypothesis)
+	}
+}
+
+// TestDiagnose_OscillationNeverConverges pins the other failure mode the
+// stability gate exists for: a model that claims convergence every turn
+// while oscillating between hypotheses exhausts its budget instead of
+// converging on noise.
+func TestDiagnose_OscillationNeverConverges(t *testing.T) {
+	report := newTestReport()
+	mock := recommend.NewMockLLMClient()
+
+	// Alternate H1 / H2 / H1 / H2 — never the same twice in a row.
+	prompt1 := buildTurnPrompt(1, 4, report.RootCause, report.Confidence)
+	mock.SetResponse(prompt1, jsonResp("H1", 0.95, true))
+	prompt2 := buildTurnPrompt(2, 4, "H1", 0.95)
+	mock.SetResponse(prompt2, jsonResp("H2", 0.95, true))
+	prompt3 := buildTurnPrompt(3, 4, "H2", 0.95)
+	mock.SetResponse(prompt3, jsonResp("H1", 0.95, true))
+	prompt4 := buildTurnPrompt(4, 4, "H1", 0.95)
+	mock.SetResponse(prompt4, jsonResp("H2", 0.95, true))
+
+	e := newTestEngine(t, mock, 4)
+	result, err := e.Diagnose(context.Background(), report.Target, report)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if result.Status != StatusMaxTurnsReached {
+		t.Errorf("Status = %s, want max_turns_reached — oscillating hypotheses must never converge", result.Status)
+	}
+	if result.Turns != 4 {
+		t.Errorf("Turns = %d, want 4", result.Turns)
+	}
+}
+
+// TestDiagnose_ConvergeByThreshold verifies that the confidence-threshold
+// path also requires corroboration: converged=false is fine, but the same
+// hypothesis must repeat before the threshold ends the loop.
+func TestDiagnose_ConvergeByThreshold(t *testing.T) {
+	report := newTestReport()
+	mock := recommend.NewMockLLMClient()
+
+	prompt1 := buildTurnPrompt(1, 5, report.RootCause, report.Confidence)
+	mock.SetResponse(prompt1, jsonResp("disk full", 0.9, false, "clean up logs"))
+	prompt2 := buildTurnPrompt(2, 5, "disk full", 0.9)
+	mock.SetResponse(prompt2, jsonResp("disk full", 0.9, false, "clean up logs"))
+
+	e := newTestEngine(t, mock, 5)
+	result, err := e.Diagnose(context.Background(), report.Target, report)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if result.Turns != 2 {
+		t.Errorf("Turns = %d, want 2 — confidence >= threshold alone does not converge", result.Turns)
+	}
+	if result.Status != StatusConverged {
+		t.Errorf("Status = %s, want converged", result.Status)
+	}
+}
+
+// TestDiagnose_StableButNoSelfReportDoesNotConverge pins that stability is
+// necessary but NOT sufficient: a stably repeated hypothesis below the
+// confidence threshold without the model claiming convergence keeps looping.
+func TestDiagnose_StableButNoSelfReportDoesNotConverge(t *testing.T) {
+	report := newTestReport()
+	mock := recommend.NewMockLLMClient()
+
+	prompt1 := buildTurnPrompt(1, 3, report.RootCause, report.Confidence)
+	mock.SetResponse(prompt1, jsonResp("stable guess", 0.5, false))
+	prompt2 := buildTurnPrompt(2, 3, "stable guess", 0.5)
+	mock.SetResponse(prompt2, jsonResp("stable guess", 0.5, false))
+	prompt3 := buildTurnPrompt(3, 3, "stable guess", 0.5)
+	mock.SetResponse(prompt3, jsonResp("stable guess", 0.5, false))
+
+	e := newTestEngine(t, mock, 3)
+	result, err := e.Diagnose(context.Background(), report.Target, report)
+	if err != nil {
+		t.Fatalf("Diagnose: %v", err)
+	}
+	if result.Status != StatusMaxTurnsReached {
+		t.Errorf("Status = %s, want max_turns_reached — stability without the self-report signal must not converge", result.Status)
 	}
 }
 
@@ -320,6 +419,8 @@ func TestDiagnose_NilContext(t *testing.T) {
 
 	prompt1 := buildTurnPrompt(1, 5, report.RootCause, report.Confidence)
 	mock.SetResponse(prompt1, jsonResp("converged hypothesis", 0.95, true))
+	prompt2 := buildTurnPrompt(2, 5, "converged hypothesis", 0.95)
+	mock.SetResponse(prompt2, jsonResp("converged hypothesis", 0.95, true))
 
 	e := newTestEngine(t, mock, 5)
 	//nolint:staticcheck // intentionally passing nil context to test tolerance
@@ -506,7 +607,6 @@ func TestReasoningStatus_String(t *testing.T) {
 	}{
 		{StatusReasoning, "reasoning"},
 		{StatusConverged, "converged"},
-		{StatusInconclusive, "inconclusive"},
 		{StatusMaxTurnsReached, "max_turns_reached"},
 		{StatusError, "error"},
 		{ReasoningStatus(99), "unknown"},

@@ -36,13 +36,15 @@ const (
 	// the initial state of a freshly constructed context.
 	StatusReasoning ReasoningStatus = iota
 	// StatusConverged means the LLM reported a converged hypothesis with
-	// confidence above the convergence threshold.
+	// confidence above the convergence threshold, CORROBORATED by the same
+	// hypothesis repeating across two consecutive turns (the stability gate
+	// in Diagnose — the self-report alone is never enough).
 	StatusConverged
-	// StatusInconclusive means the LLM could not reach a confident conclusion
-	// within the turn budget without explicitly converging.
-	StatusInconclusive
-	// StatusMaxTurnsReached means the engine hit the configured MaxTurns limit
-	// before the LLM converged.
+	// StatusMaxTurnsReached means the engine hit the configured MaxTurns
+	// limit before converging — the give-up state for every non-converged
+	// run. (The former StatusInconclusive was declared but never assigned:
+	// a dead value carrying a constant, a String case and a test row for a
+	// state the engine cannot produce, so it was removed.)
 	StatusMaxTurnsReached
 	// StatusError means the reasoning loop aborted because of an LLM or parse
 	// error.
@@ -57,8 +59,6 @@ func (s ReasoningStatus) String() string {
 		return "reasoning"
 	case StatusConverged:
 		return "converged"
-	case StatusInconclusive:
-		return "inconclusive"
 	case StatusMaxTurnsReached:
 		return "max_turns_reached"
 	case StatusError:
