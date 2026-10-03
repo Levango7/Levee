@@ -289,6 +289,15 @@ func (a *AnsiblePlaybookImporter) ImportBytes(data []byte) (*dsl.Workflow, error
 // applyPlay applies a single Ansible play to the workflow. The playIndex
 // argument is used for error attribution only.
 func applyPlay(wf *dsl.Workflow, play map[string]any, playIndex int) error {
+	// name -> workflow name. The FIRST named play wins; LEVEELang has one
+	// workflow name and Ansible names every play ("web bootstrap"). Without
+	// this mapping an imported workflow has no name, and the parser rejects
+	// it (LE002) — the importer must not produce output its own compiler
+	// refuses.
+	if name, ok := play["name"].(string); ok && wf.Meta.Name == "" {
+		wf.Meta.Name = name
+	}
+
 	// hosts -> targets. Ansible allows hosts to be a string (group name or
 	// comma-separated list) or a list of hostnames. We normalise both into
 	// a TargetGroup.Hosts slice.

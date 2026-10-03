@@ -40,8 +40,48 @@ type Config struct {
 	Verify     VerifyConfig     `json:"verify"     mapstructure:"verify"`
 	Inventory  InventoryConfig  `json:"inventory"  mapstructure:"inventory"`
 	Tracing    TracingConfig    `json:"tracing"    mapstructure:"tracing"`
+	Diagnosis  DiagnosisConfig  `json:"diagnosis"  mapstructure:"diagnosis"`
+	OpsMesh    OpsMeshConfig    `json:"opsmesh"    mapstructure:"opsmesh"`
 	Security   SecurityConfig   `json:"security"   mapstructure:"security"`
 	State      StateConfig      `json:"state"      mapstructure:"state"`
+}
+
+// DiagnosisConfig groups the optional diagnosis-pipeline extensions.
+type DiagnosisConfig struct {
+	Topology TopologySourceConfig `json:"topology" mapstructure:"topology"`
+}
+
+// TopologySourceConfig configures the APM topology source behind the
+// diagnosis impact-radius stage (flow step 3d of the OpsMesh integration
+// design). Provider empty (the default) disables the stage — a deployment
+// without an APM backend behaves exactly as before. A configured provider
+// without an endpoint, or an unknown provider, degrades with a warning
+// rather than keeping the daemon from starting (the setupServeTracing
+// contract: an optional evidence source must not block diagnosis).
+type TopologySourceConfig struct {
+	// Provider selects the APM backend: "skywalking" | "pinpoint".
+	Provider string `json:"provider" mapstructure:"provider"`
+	// Endpoint is the APM API base URL (e.g. http://skywalking:12800).
+	Endpoint string `json:"endpoint" mapstructure:"endpoint"`
+	// Timeout is the per-collect HTTP timeout. Zero defaults to 10s.
+	Timeout time.Duration `json:"timeout" mapstructure:"timeout"`
+}
+
+// OpsMeshConfig configures the OpsMesh platform integration client
+// (docs/opsmesh-integration-design.md §6.2): the outcome of alert-driven
+// fixes is reported back to the platform so it can close its alerts and
+// train its recommendation engine. Disabled (the default) installs nothing.
+// Enabled requires base_url, else the boot fails loudly.
+//
+// Boundary: only the RESULT-REPORT direction is wired today. The topology /
+// metrics PULL methods need OpsMesh-side addressing semantics (the API takes
+// a service name; diagnoses carry host targets) and are documented as
+// pending that cross-system decision rather than guessed at here.
+type OpsMeshConfig struct {
+	Enabled bool          `json:"enabled" mapstructure:"enabled"`
+	BaseURL string        `json:"base_url" mapstructure:"base_url"`
+	APIKey  string        `json:"api_key"  mapstructure:"api_key"`
+	Timeout time.Duration `json:"timeout"  mapstructure:"timeout"`
 }
 
 // ServerConfig holds server-mode runtime parameters.
