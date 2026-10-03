@@ -1,0 +1,44 @@
+# LEVEE 实验室工作流 —— 演练 2：分批重启 + 故意失败（deploy/lab/README.md §4）
+#
+# 观察：失败步骤触发 on_failure: auto 的回滚；回滚账本如实区分
+# 「未执行」（NotExecuted）与「已补偿」（Compensated）。
+# 故意失败的方法见 README（先在某一台 target 上停掉 lab-app 单元）。
+name: lab-batch-restart
+version: "1.0"
+description: >
+  按 50%/100% 两批重启 lab 应用机，第一批故意让一台失败，
+  验证 auto 回滚与补偿账本。
+
+target:
+  name: lab-apps
+  type: host
+  query: "env=lab AND role=app"
+  min_count: 2
+
+batches:
+  strategy: percent
+  steps: [50, 100]
+  max_concurrency: 1
+
+approval:
+  level: standard
+
+steps:
+  - name: restart-app
+    action: shell.exec
+    args:
+      cmd: "systemctl restart lab-app && systemctl is-active lab-app"
+    idempotent: true
+    # 补偿归属在本步（LE097：workflow 级只放运行态策略）
+    rollback:
+      strategy: undo-action
+      step:
+        name: restart-app-again
+        action: shell.exec
+        args:
+          cmd: "systemctl restart lab-app"
+        idempotent: true
+
+rollback:
+  on_failure: auto
+  verify_after: true
