@@ -108,6 +108,11 @@ func (e *ConversationEngine) promoteRecommendation(ctx context.Context, sess *Se
 			"risk_level":        string(rec.RiskLevel),
 			"source":            "conversation:recommend",
 			"requested_by":      sess.UserID,
+			// alert_id is set when this conversation was started from an
+			// alert; downstream consumers (OpsMesh result reporting, the
+			// effect-learning loop) key on it. Empty for manually started
+			// sessions.
+			"alert_id": sess.AlertID,
 		},
 	})
 	if err != nil {

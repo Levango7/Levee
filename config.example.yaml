@@ -370,6 +370,36 @@ tenant:
   enabled: false
 
 # =============================================================================
+# diagnosis —— 诊断管线扩展（对应 DiagnosisConfig）
+# =============================================================================
+# topology —— 诊断的"影响半径"阶段：从 APM 拉取服务调用图，对目标所在服务
+# 分析上下游依赖与不健康边，作为 Findings 进入诊断报告。provider 留空（默认）
+# 关闭本阶段；配了 provider 却没配 endpoint、或 provider 不认识，都会打 warn
+# 降级（诊断不能因为可选证据源缺失而停摆）。
+diagnosis:
+  topology:
+    # APM 后端: skywalking | pinpoint。 默认: ""（关闭）
+    provider: ""
+    # APM API 基址。 例: http://skywalking:12800
+    endpoint: ""
+    # 采集 HTTP 超时。 默认: 10s
+    timeout: 10s
+
+# =============================================================================
+# opsmesh —— OpsMesh 平台集成（对应 OpsMeshConfig，见 docs/opsmesh-integration-design.md）
+# =============================================================================
+# 只接线"结果回传"方向：带 alert_id 的告警驱动修复在 run 终态时把结果
+# POST 到 /api/v1/alerts/{id}/resolution，供平台关单与训练推荐引擎。
+# 默认关闭；启用时 base_url 必填（缺失拒绝启动）。
+# 边界：拓扑/指标拉取方向待 OpsMesh 平台侧的服务寻址语义定案（API 收服务名、
+# 诊断持有 host 目标），不在本仓单方面猜测。
+opsmesh:
+  enabled: false
+  base_url: ""                    # 例: https://opsmesh.example.com
+  api_key: "<opsmesh-api-key>"
+  timeout: 30s
+
+# =============================================================================
 # security —— 安全加固开关
 # =============================================================================
 security:

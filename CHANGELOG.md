@@ -4,11 +4,24 @@
 
 ## [Unreleased]
 
+## [v1.16.0] - 2026-10-03 — 未链入包清零 + OpsMesh 反馈闭环
+
+本版把最后三个库就绪、产品不可用的包一次收口，未链入包 8→0：**APM 拓扑分析**接入诊断管线的影响半径阶段（SkyWalking/Pinpoint，`diagnosis.topology.*`，默认关）；**Ansible 导入**成为 CLI 命令 `levee import ansible`（纯翻译，产物先过 parse+validate 两道门，输出保证可编译）；**OpsMesh 结果回传**接线（`opsmesh.*`，告警驱动修复终态上报，拓扑/指标拉取待平台侧寻址语义定案）。逐条明细见下方「新增」。
+
+### 新增
+
+- **最后三个未链入包清零：APM 拓扑分析接线、Ansible 导入成为 CLI 命令（带可编译保证）、OpsMesh 结果回传接线**。逐项：
+  **① `diagnosis/topology`（OpsMesh 集成设计的流程 3d）**：SkyWalking / Pinpoint 采集器接到诊断管线的**影响半径阶段**——`DiagEngineConfig.Topology`（可选 `TopologySource` 接口）作为第三个并行证据源，`ImpactRadius` 分析上下游依赖与不健康边（默认阈值 10%，≥50% 转 critical），以 `service` 类 Findings 参与严重度排序；**目标不在图谱中静默跳过**（不是每台主机都是 APM 纳管服务）、采集失败记 `report.Errors` 不致命；`diagnosis.topology.*` 配置（provider/endpoint/timeout），未知 provider 或缺 endpoint 降级 warn。
+  **② `compat` → `levee import ansible <playbook>`（`--out`/`--name`）**：纯翻译、不执行、不建变更。play `name:` 映射进 `Meta.Name`——否则产物过不了解析器的 LE002，**导入器不能产出自家编译器拒绝的东西**；新增 `dsl.MarshalWorkflow`（AST → LEVEELang YAML）且**fail-closed**：发不出的非空字段（inputs/审批/门禁/回滚/快照）一律报错指名，绝不静默丢弃；args 键排序保证字节稳定可 diff；产物**先过 parse + validate 两道门**（与 `levee compile` 严格模式相同）再落盘。往返测试钉住导入→发出→重解析→校验全链。
+  **③ `opsmesh` 结果回传接线**：`opsmesh.*` 配置（enabled/base_url/api_key/timeout）启用后，**告警驱动**的修复（run params 的 `alert_id`，桥接层从告警会话写入）在终态把结果 POST 到 `/api/v1/alerts/{id}/resolution`（alert_id/success/workflow_id/steps 计数/rollback_used）；**无 alert_id 不报**（平台没有可关的单，编一个会污染记录）、上报失败只记 warn。**顺带修正一处标识误用**：`recordFixOutcome` 曾把 recommendation_id 塞进 `FixOutcome.AlertID`（两个不同的标识），改为读 `alert_id`。拓扑/指标**拉取**方向待 OpsMesh 平台侧的服务寻址语义定案（平台 API 收服务名、诊断持有 host 目标），已写入配置注释与 README，不在本仓单方面猜测。
+  **未链入包 8→0**；README 能力表与 roadmap 处置行同步。
+
 ## [v1.15.0] - 2026-10-03 — 剩余处置项收口 + AI 闭环闭合 + 兼容层重定义
 
 本版把 v1.14.0 之后登记的剩余处置清单一次清零（PR #33）：**ChatOps 审批镜像接线**（`notify.chatops.*`，slack/dingtalk/feishu webhook bot，与 Jira 镜像扇出并存，默认关）；**llm_diag 接线并反转收敛判据**（跨两轮同假设确认才收敛、`ConfidenceSource=model_self_report`、死状态撤除、`ai.llm` 开启时富化诊断报告）；**feedback 闭环闭合**（PatternID 缺陷修复 + JSON 快照持久化 + 与推荐引擎共享同一 KB + Apply 结论喂入）；**compat D-08 映射重定义 + 外部 oracle 守卫**（状态感知、无忠实动作 fail-closed、幻影动作清零）；**`levee run --shell` 注册为显式标注的本地调试命令**（不经治理链）；**review-report 21 项全部闭环**（6 项 P2 收口）。未链入包 8→3。逐条明细见下方「新增」，策展版见 [docs/release-notes/v1.15.0.md](docs/release-notes/v1.15.0.md)。
 
 ### 新增
+
 
 - **剩余处置项一次收口：ChatOps 审批镜像接线、llm_diag 判据重定义并接线、feedback 闭环闭合、compat 映射重定义 + oracle 守卫、`levee run` 注册、全部 P2 文档项**。逐项：
   **① ChatOps 审批镜像（`notify.chatops.*`）**：slack / dingtalk / feishu webhook bot 在 serve 装配（StartAll 启动订阅、退出 StopAll），bridge 装入**扇出**观察者槽位与 Jira 镜像并存；默认关（零装配），bot 缺 name/webhook_url 或平台未知时**拒绝启动并指名 bot**（静默跳过会像"能送达的镜像永远不送达"）。config.example.yaml 补 notify 的 jira/chatops 两段（jira 段此前在示例里也缺失）。

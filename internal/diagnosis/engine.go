@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/nexus/levee/internal/alert"
+	"github.com/nexus/levee/internal/diagnosis/topology"
 	"github.com/nexus/levee/internal/log"
 )
 
@@ -57,10 +58,13 @@ type DiagEngine struct {
 	collector *LogCollector
 	analyzer  *LogAnalyzer
 	prober    *HealthProber
-	log       *slog.Logger
-	timeout   time.Duration
-	window    time.Duration
-	runtime   Runtime
+	// topology is the optional service-graph source; nil disables the
+	// impact-radius stage (see topology_stage.go).
+	topology TopologySource
+	log      *slog.Logger
+	timeout  time.Duration
+	window   time.Duration
+	runtime  Runtime
 }
 
 // DiagEngineConfig configures a DiagEngine. All fields are optional; zero
@@ -81,6 +85,11 @@ type DiagEngineConfig struct {
 	// Prober runs health probes against the target. When nil, the health
 	// probe is skipped and Health is left as the zero value.
 	Prober *HealthProber
+
+	// Topology is the optional service-graph source for the impact-radius
+	// stage (see topology_stage.go). When nil the stage is skipped and the
+	// engine behaves exactly as before it existed.
+	Topology TopologySource
 
 	// Timeout is the wall-clock budget for a single Diagnose call. Zero
 	// defaults to DefaultDiagTimeout. The engine derives a child context
@@ -107,6 +116,7 @@ func NewDiagEngine(cfg DiagEngineConfig) *DiagEngine {
 		collector: cfg.Collector,
 		analyzer:  cfg.Analyzer,
 		prober:    cfg.Prober,
+		topology:  cfg.Topology,
 		timeout:   cfg.Timeout,
 		window:    cfg.LogWindow,
 		runtime:   cfg.Runtime,
@@ -230,9 +240,14 @@ func (e *DiagEngine) diagnose(ctx context.Context, target string, trigger Trigge
 	type healthResult struct {
 		health HealthReport
 	}
+	type topologyResult struct {
+		impact *topology.ImpactReport
+		err    error
+	}
 
 	var lr logResult
 	var hr healthResult
+	var tr topologyResult
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -247,6 +262,16 @@ func (e *DiagEngine) diagnose(ctx context.Context, target string, trigger Trigge
 		hr.health = e.runHealthProbe(ctx, target)
 	}()
 
+	// The topology stage runs only when a source is configured; its
+	// failures degrade to a report error, never to a failed diagnosis.
+	if e.topology != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tr.impact, tr.err = e.runTopologyStage(ctx, target)
+		}()
+	}
+
 	wg.Wait()
 
 	// Merge log analysis.
@@ -260,9 +285,19 @@ func (e *DiagEngine) diagnose(ctx context.Context, target string, trigger Trigge
 	// Merge health (the probe degrades gracefully and never errors).
 	report.Health = hr.health
 
+	// Merge topology: a nil impact (target not in the graph) is a silent
+	// skip; a collect failure is recorded like the log pipeline's.
+	if tr.err != nil {
+		report.Errors = append(report.Errors, fmt.Sprintf("topology stage: %v", tr.err))
+	}
+
 	// Synthesise findings, root cause, confidence, recommendations, status
 	// and summary from the gathered evidence.
 	report.Findings = buildFindings(&report.Health, &report.LogAnalysis)
+	if tr.impact != nil {
+		report.Findings = append(report.Findings, topologyFindings(tr.impact)...)
+		sortFindings(report.Findings)
+	}
 	report.RootCause, report.Confidence = synthesiseRootCause(&report.LogAnalysis, &report.Health, report.Findings)
 	report.Recommendations = buildRecommendations(report.Findings)
 	report.Status = deriveStatus(&report.Health, &report.LogAnalysis, report.Findings)

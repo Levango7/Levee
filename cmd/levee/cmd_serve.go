@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -54,6 +55,7 @@ import (
 	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/diagnosis"
 	"github.com/nexus/levee/internal/diagnosis/llm_diag"
+	"github.com/nexus/levee/internal/diagnosis/topology"
 	"github.com/nexus/levee/internal/dispatch"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -61,6 +63,7 @@ import (
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
 	"github.com/nexus/levee/internal/notify/chatopsbridge"
+	"github.com/nexus/levee/internal/opsmesh"
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
@@ -368,13 +371,15 @@ func buildGitHubAuth(cfg *config.Config) (*auth.GitHubAuthorizer, *auth.SessionM
 	return gh, sessions, nil
 }
 
-// newServeDiagEngine builds the diagnosis engine for serve mode with both the
-// log pipeline and the health prober wired, using the in-process local
-// executor — the same self-diagnosis capability `levee diagnose` provides.
-func newServeDiagEngine() (*diagnosis.DiagEngine, error) {
+// newServeDiagEngine builds the diagnosis engine for serve mode with the log
+// pipeline, the health prober and (when diagnosis.topology.* is configured)
+// the APM topology impact-radius stage, using the in-process local executor —
+// the same self-diagnosis capability `levee diagnose` provides.
+func newServeDiagEngine(cfgIn *config.Config) (*diagnosis.DiagEngine, error) {
 	cfg := diagnosis.DiagEngineConfig{
 		LogWindow: 15 * time.Minute,
 		Timeout:   60 * time.Second,
+		Topology:  buildServeTopologySource(cfgIn),
 	}
 	executor := newLocalExecutor()
 	collector, err := diagnosis.NewLogCollector(executor)
@@ -385,6 +390,45 @@ func newServeDiagEngine() (*diagnosis.DiagEngine, error) {
 	cfg.Analyzer = diagnosis.NewDefaultLogAnalyzer()
 	cfg.Prober = diagnosis.NewHealthProber(diagnosis.HealthProberConfig{Executor: executor})
 	return diagnosis.NewDiagEngine(cfg), nil
+}
+
+// buildServeTopologySource constructs the configured APM topology collector
+// (diagnosis.topology.*) for the diagnosis impact-radius stage. Empty
+// provider (the default) disables the stage. A configured provider without
+// an endpoint, or an unknown provider, degrades with a warning — an optional
+// evidence source must not keep the daemon from starting (the
+// setupServeTracing contract).
+func buildServeTopologySource(cfg *config.Config) diagnosis.TopologySource {
+	if cfg == nil {
+		return nil
+	}
+	p := cfg.Diagnosis.Topology
+	if p.Provider == "" {
+		return nil
+	}
+	if p.Endpoint == "" {
+		log.Warn("diagnosis.topology.provider set without endpoint; topology stage disabled",
+			"provider", p.Provider)
+		return nil
+	}
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+	var collector topology.Collector
+	switch p.Provider {
+	case "skywalking":
+		collector = topology.NewSkyWalkingCollector(p.Endpoint, client)
+	case "pinpoint":
+		collector = topology.NewPinpointCollector(p.Endpoint, client)
+	default:
+		log.Warn("diagnosis.topology: unknown provider; topology stage disabled",
+			"provider", p.Provider, "supported", "skywalking, pinpoint")
+		return nil
+	}
+	log.Info("diagnosis topology stage enabled", "provider", p.Provider, "endpoint", p.Endpoint)
+	return diagnosis.NewTopologyCollectorSource(collector)
 }
 
 // newServeConvEngine builds the conversation engine for the serve command.
@@ -999,6 +1043,27 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Info("chatops approval mirror enabled", "bots", chatOpsMgr.Names())
 	}
 
+	// OpsMesh platform integration (opsmesh.*): the outcome of ALERT-DRIVEN
+	// fixes is reported back so the platform can close its alert and train
+	// its recommendation engine (docs/opsmesh-integration-design.md §6.2).
+	// Disabled (the default) installs nothing; enabled requires base_url,
+	// else the boot fails loudly.
+	if cfg.OpsMesh.Enabled {
+		if cfg.OpsMesh.BaseURL == "" {
+			return serveServices{}, fmt.Errorf("opsmesh.enabled=true requires base_url")
+		}
+		var httpClient *http.Client
+		if cfg.OpsMesh.Timeout > 0 {
+			httpClient = &http.Client{Timeout: cfg.OpsMesh.Timeout}
+		}
+		changeSvc.SetOpsMeshReporter(opsmesh.NewOpsMeshClient(opsmesh.OpsMeshClientConfig{
+			BaseURL:    cfg.OpsMesh.BaseURL,
+			APIKey:     cfg.OpsMesh.APIKey,
+			HTTPClient: httpClient,
+		}))
+		log.Info("opsmesh result reporting enabled", "base_url", cfg.OpsMesh.BaseURL)
+	}
+
 	// Bulk pause/resume authorization. The API used to bypass whatever
 	// grant list `levee pause all` honours, so configuring permissions
 	// changed nothing over the wire. With no grants configured the actions
@@ -1051,7 +1116,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	// so the corresponding RPCs are functional in serve mode instead of
 	// returning Unimplemented.
 	alertSvc := grpc.NewAlertService(nil, slog.Default())
-	diagEngine, diagErr := newServeDiagEngine()
+	diagEngine, diagErr := newServeDiagEngine(cfg)
 	if diagErr != nil {
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
 	}

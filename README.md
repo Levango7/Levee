@@ -76,17 +76,13 @@ grep -rl 'nexus/levee/internal/compat"' --include='*.go' . \
   | grep -v _test.go | grep -v '^./internal/compat/'
 ```
 
-当前未链入 `cmd/levee` 的 `internal` 包（除 `docgen` 是 CI 工具外，共 3 个，约 1.2k 行非测试代码）：
+**`internal` 包已全部链入 `cmd/levee`**（`docgen` 是 CI 工具，不算）：2026-10 的逐包处置把历史上"库就绪、产品不可用"的 8 个包全部收口——接线 4 个（`diagnosis/llm_diag`、`recommend/feedback`、`notify/chatopsbridge`、`diagnosis/topology`）、补 CLI 入口 1 个（`compat` → `levee import ansible`）、平台集成 1 个（`opsmesh` → 结果回传）、按定位退役 2 个（`recommend/rag`、`internal/scheduler`）。逐包去向与证据见 `docs/product-roadmap.md` 的「未链入包逐包处置」行与各 PR。
 
-| 包 | 它本来要承担什么 | 现状 |
-| --- | --- | --- |
-| `diagnosis/topology` | 拓扑诊断 | 无生产调用方 |
-| `compat` | Ansible playbook 兼容层（MVP 交付项 D-08） | 按定位去莠且**映射已重定义**：模拟执行器与重复风险评估器已删除；导入层不再产出幻影动作——`shell/command → shell.exec`、`copy/template → file.copy/template`、`apt/yum`（present/absent/latest）`→ pkg.install/remove/upgrade`、`service`（started/stopped/restarted/reloaded 或 enabled）`→ svc.start/stop/restart/reload/enable/disable`、`user`（present/absent）`→ user.add/remove`；无忠实动作的构造（`file` 模块、`group` 模块、未知 state、state+enabled 同用）**fail-closed 拒绝**并在报错里给出替代。每个可解析映射都由外部 oracle 测试对照真实执行器注册表（`TestMappingResolvesToRealExecutorActions`）——幻影动作这一类从此进不了门 |
-| `opsmesh` | OpsMesh 平台集成 | 无生产调用方 |
+其中三处值得单独说明：
 
-这些包**没坏**——包内测试覆盖实测在 88%~93%（88.0%~93.0%），问题是"覆盖"的是没人调用的代码。
-把它们接进 `serve` 前，请按"库已就绪、产品不可用"对待；`docs/security-audit.md`
-"已知限制"一节对多租户用的是同一套写法。
+- **`diagnosis/topology`（APM 拓扑）**：SkyWalking / Pinpoint 采集器接到诊断管线的**影响半径阶段**（`diagnosis.topology.*`，默认关）——拉取服务调用图、对目标所在服务分析上下游与不健康边（`ImpactRadius`），以 `service` 类 Findings 进入诊断报告；图谱里没有该目标是静默跳过而非报错。
+- **`compat`（Ansible 导入）**：`levee import ansible <playbook> [--out f]` 做**纯翻译**——状态感知映射、无忠实动作 fail-closed 拒绝、产出经 `MarshalWorkflow` 发出并**先过 compile 严格模式的两道门**（parse + validate）再落盘，保证输出可编译；不执行、不建变更。
+- **`opsmesh`**：只接线**结果回传**方向（`opsmesh.*`，默认关）：带 `alert_id` 的告警驱动修复在终态把结果 POST 到平台关单。**拓扑/指标拉取方向待 OpsMesh 平台侧的服务寻址语义定案**（平台 API 收服务名、诊断持有 host 目标），不在本仓单方面猜测。
 
 ## 快速开始
 

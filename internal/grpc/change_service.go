@@ -47,6 +47,7 @@ import (
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/opsmesh"
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/plan"
@@ -87,6 +88,11 @@ type ChangeService struct {
 	// verdict is recorded as a FixOutcome (see recordFixOutcome). Nil is a
 	// no-op.
 	feedback *feedback.FeedbackLearner
+
+	// opsMesh is the optional OpsMesh platform client. When set, alert-driven
+	// fix outcomes are reported back (see reportOpsMeshResult). Nil is a
+	// no-op.
+	opsMesh *opsmesh.OpsMeshClient
 
 	// authz decides change-scoped governance actions against the deployment's
 	// permission matrix and role tree. Nil means the deployment declared no
@@ -1039,6 +1045,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		// empty_hash at the next verification.
 		s.sealTraceChain(ctx, run.ID, "failed")
 		s.recordFixOutcome(run, "failed")
+		s.reportOpsMeshResult(ctx, run, "failed")
 		return &pb.ApplyResponse{
 			Change:  runToPB(run),
 			RunId:   execRunID,
@@ -1089,6 +1096,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	// best-effort-but-loud contract as the engine-error branch above.
 	s.sealTraceChain(ctx, run.ID, finalStatus)
 	s.recordFixOutcome(run, finalStatus)
+	s.reportOpsMeshResult(ctx, run, finalStatus)
 	return &pb.ApplyResponse{
 		Change:  runToPB(run),
 		RunId:   execRunID,
@@ -1115,6 +1123,29 @@ func (s *ChangeService) SetFeedbackLearner(l *feedback.FeedbackLearner) *ChangeS
 	return s
 }
 
+// SetOpsMeshReporter attaches the OpsMesh platform integration client: the
+// outcome of ALERT-DRIVEN fixes (runs whose params carry an alert_id) is
+// reported back so the platform can close its alert. Nil disables reporting.
+func (s *ChangeService) SetOpsMeshReporter(c *opsmesh.OpsMeshClient) *ChangeService {
+	s.opsMesh = c
+	return s
+}
+
+// runParam reads one string parameter from the run's params JSON. Missing
+// key, malformed JSON and non-string values all yield "" — callers treat
+// empty as absent.
+func runParam(run *state.Run, key string) string {
+	if run == nil || run.Params == "" {
+		return ""
+	}
+	var params map[string]any
+	if err := json.Unmarshal([]byte(run.Params), &params); err != nil {
+		return ""
+	}
+	v, _ := params[key].(string)
+	return v
+}
+
 // recordFixOutcome feeds an apply verdict into the effect-learning loop.
 // Successes synthesise new knowledge-base patterns; failures count against
 // known patterns. Best-effort: a learner error is logged, never propagated —
@@ -1122,34 +1153,25 @@ func (s *ChangeService) SetFeedbackLearner(l *feedback.FeedbackLearner) *ChangeS
 //
 // Precision note (honest by construction): at this layer the outcome's
 // symptom / root-cause text is the workflow name, and the target comes from
-// the run's params (the recommendation bridge stamps "target" and
-// "recommendation_id" there). The richer incident→fix correlation belongs to
-// the conversation flow and can stamp more precise fields later without
-// changing this contract. Cancellations are deliberately NOT recorded —
-// abandoning a change is not an outcome of a fix.
+// the run's params (the recommendation bridge stamps "target" there). The
+// richer incident→fix correlation belongs to the conversation flow and can
+// stamp more precise fields later without changing this contract.
+// Cancellations are deliberately NOT recorded — abandoning a change is not
+// an outcome of a fix.
 func (s *ChangeService) recordFixOutcome(run *state.Run, status string) {
 	if s.feedback == nil || run == nil {
 		return
 	}
-	target := ""
-	recommendationID := ""
-	if run.Params != "" {
-		var params map[string]any
-		if err := json.Unmarshal([]byte(run.Params), &params); err == nil {
-			if t, ok := params["target"].(string); ok {
-				target = t
-			}
-			if r, ok := params["recommendation_id"].(string); ok {
-				recommendationID = r
-			}
-		}
-	}
+	target := runParam(run, "target")
 	if target == "" {
 		target = run.ID
 	}
 	outcome := feedback.FixOutcome{
-		IncidentID:   run.ID,
-		AlertID:      recommendationID,
+		IncidentID: run.ID,
+		// AlertID is the ALERT's id (set for alert-driven fixes); the
+		// recommendation id is a different identifier and is deliberately
+		// not stuffed into this field.
+		AlertID:      runParam(run, "alert_id"),
 		Target:       target,
 		Symptoms:     run.WorkflowName,
 		RootCause:    run.WorkflowName,
@@ -1160,6 +1182,48 @@ func (s *ChangeService) recordFixOutcome(run *state.Run, status string) {
 	}
 	if _, err := s.feedback.RecordAndLearn(outcome); err != nil {
 		log.Warn("feedback: record run outcome failed", "run_id", run.ID, "error", err)
+	}
+}
+
+// reportOpsMeshResult reports an ALERT-DRIVEN fix's outcome back to the
+// OpsMesh platform (docs/opsmesh-integration-design.md §6.2) so it can close
+// its alert and train its recommendation engine. Runs without an alert_id
+// are skipped — there is no platform alert to resolve, and inventing one
+// would corrupt the platform's records. Best-effort: a report failure is
+// logged, never propagated — the run's verdict is already durably settled.
+func (s *ChangeService) reportOpsMeshResult(ctx context.Context, run *state.Run, status string) {
+	if s.opsMesh == nil || run == nil {
+		return
+	}
+	alertID := runParam(run, "alert_id")
+	if alertID == "" {
+		return
+	}
+	steps, err := s.store.ListSteps(ctx, state.StepFilter{RunID: run.ID, Limit: 1000})
+	if err != nil {
+		log.Warn("opsmesh: list steps for report failed; reporting with zero counts",
+			"run_id", run.ID, "error", err)
+	}
+	failed := 0
+	for _, st := range steps {
+		if st.Status == runstatus.StatusFailed {
+			failed++
+		}
+	}
+	result := &opsmesh.FixResult{
+		AlertID:      alertID,
+		Success:      status == runstatus.StatusCompleted,
+		Summary:      fmt.Sprintf("workflow %s settled as %s", run.WorkflowName, status),
+		WorkflowID:   run.ID,
+		Duration:     run.UpdatedAt.Sub(run.CreatedAt),
+		StepsTotal:   len(steps),
+		StepsFailed:  failed,
+		RollbackUsed: runstatus.IsRollbackVerdict(status),
+		Timestamp:    time.Now().UTC(),
+	}
+	if rerr := s.opsMesh.ReportResult(ctx, alertID, result); rerr != nil {
+		log.Warn("opsmesh: report result failed",
+			"run_id", run.ID, "alert_id", alertID, "error", rerr)
 	}
 }
 
