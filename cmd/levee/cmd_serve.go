@@ -409,6 +409,18 @@ func newServeConvEngine(cfg *config.Config, changeSvc *grpc.ChangeService, kb *r
 	})
 }
 
+// stopServeChatOps stops the started ChatOps bots on server exit; nil-safe
+// (no bots configured) and logged rather than propagated — a failed stop at
+// shutdown must not mask the shutdown itself.
+func stopServeChatOps(mgr *chatops.BotManager) {
+	if mgr == nil {
+		return
+	}
+	if err := mgr.StopAll(); err != nil {
+		log.Warn("chatops: stop bots failed", "error", err)
+	}
+}
+
 // buildServeKnowledgeBase constructs the shared knowledge base and attaches
 // the effect-learning learner over it. The recommend engine and the learner
 // must operate on the SAME catalogue: Learn used to add patterns to a KB the
@@ -671,11 +683,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// The ChatOps bots were started during wiring (their event channels
 	// drop events while unstarted). Stop them when the server exits so the
 	// bot goroutines are released.
-	defer func() {
-		if svcs.chatOpsMgr != nil {
-			svcs.chatOpsMgr.StopAll()
-		}
-	}()
+	defer stopServeChatOps(svcs.chatOpsMgr)
 	changeSvc, templateSvc, targetSvc := svcs.changeSvc, svcs.templateSvc, svcs.targetSvc
 	auditSvc, systemSvc, alertSvc := svcs.auditSvc, svcs.systemSvc, svcs.alertSvc
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
