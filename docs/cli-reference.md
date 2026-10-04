@@ -2011,6 +2011,8 @@ levee serve --insecure
 
 管理分布式执行 Agent 常驻进程，支持注册到 master 节点、心跳保活、任务执行与结果回传。
 
+> **实现边界（务必先读）**：本章的 registry 目前是**进程内**的——`levee agent start` 在自身进程里维护注册表，`agent list / show / remove` 读取的是**同一次进程调用内**的注册表，既未持久化到磁盘，也没有对应的 master 端 RPC。因此跨进程执行 `levee agent list` 恒返回空表，`show`/`remove` 恒报 not-found。下文示例展示的是同一进程内（如集成测试驱动）的形态。接入 master 端 Agent 服务是已登记事项，见 [product-roadmap.md](product-roadmap.md)。
+
 ### 20.1 agent start
 
 启动 Agent 常驻进程，注册到 master 节点并开始心跳。
@@ -2075,15 +2077,15 @@ levee agent list [--status STATUS]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--status` | | 按状态过滤：`active` / `inactive` / `lost` |
+| `--status` | | 按状态过滤：`registered` / `idle` / `busy` / `offline`；取值非法时报错并列出全部接受值，空值表示不过滤 |
 
 **示例**
 
 ```命令示例：列出所有已注册 Agent
 levee agent list
 
-命令示例：仅列出活跃 Agent
-levee agent list --status active
+命令示例：仅列出有空闲容量的 Agent
+levee agent list --status idle
 ```
 
 ### 20.4 agent show
@@ -2115,7 +2117,7 @@ levee agent show agent-web-01
 从 master 移除 Agent 注册记录。
 
 ```text
-levee agent remove <agent-id> [--force]
+levee agent remove <agent-id>
 ```
 
 **参数**
@@ -2124,19 +2126,15 @@ levee agent remove <agent-id> [--force]
 |------|------|------|
 | `<agent-id>` | 是 | Agent ID |
 
-**选项**
+**说明**
 
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `--force` | `false` | 强制移除，即使 Agent 仍有正在执行的任务 |
+- 移除只删注册记录，不等待也不中断在途任务：`Deregister` 本就不检查 `ActiveTasks`，所以这里没有 `--force` 可绕过的守卫。若确实需要"有在途任务时拒绝移除"，那是一个待实现的行为，不是旗标缺失。
+- Agent ID 不存在时返回 not-found 并非零退出。
 
 **示例**
 
 ```命令示例：移除 Agent
 levee agent remove agent-web-01
-
-命令示例：强制移除
-levee agent remove agent-web-01 --force
 ```
 
 ## 第21章 tenant — 租户管理
@@ -2180,7 +2178,7 @@ levee tenant list [--status STATUS]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--status` | | 按状态过滤：`active` / `suspended` |
+| `--status` | | 按状态过滤：`active` / `suspended` / `deleted`；空值表示不过滤（默认含软删除租户），取值非法时报错并列出全部接受值 |
 
 **示例**
 
@@ -2226,7 +2224,7 @@ levee tenant suspend <tenant-id> [--reason TEXT]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--reason` | | 暂停原因（记录在审计中） |
+| `--reason` | | 暂停原因，写入租户记录的 `suspend_reason`，`tenant show`/`--json` 可见；`resume` 时清空。重复 suspend 时给出新原因会更新记录，不给原因则保留原有原因 |
 
 **示例**
 
@@ -2256,10 +2254,10 @@ levee tenant resume t-001
 
 ### 21.6 tenant delete
 
-删除租户。仅当租户处于 `suspended` 状态且无活跃变更时可删除。
+删除租户（软删除）。`Delete` 只做两件事：状态置为 `deleted`、从配额管理器释放该租户占用的额度；租户记录本身保留，历史 run/审计仍关联到该身份。
 
 ```text
-levee tenant delete <tenant-id> [--force]
+levee tenant delete <tenant-id>
 ```
 
 **参数**
@@ -2268,11 +2266,11 @@ levee tenant delete <tenant-id> [--force]
 |------|------|------|
 | `<tenant-id>` | 是 | 租户 ID |
 
-**选项**
+**说明**
 
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `--force` | `false` | 强制删除，级联清理租户所有数据 |
+- 没有前置状态要求：`active` 或 `suspended` 的租户都可删除，`Delete` 不检查在途变更，也不要求先 suspend（早期文档写过"仅当 suspended 且无活跃变更时可删除"，实现中并无此守卫）。
+- 重复删除同一租户是幂等的（已 `deleted` 直接返回成功）。
+- 没有 `--force`：级联清理租户名下所有数据尚未实现，`TenantManager` 也不持有"该租户有哪些 target/run"的反查，所以没有任何东西可"强制"清理。
 
 **示例**
 
@@ -2379,7 +2377,7 @@ levee drift detect --host web-01 --baseline base-001
 手动设置漂移基线。
 
 ```text
-levee drift baseline set --host <host> --file <path> [--name <name>]
+levee drift baseline set --host <host> --file <path>
 ```
 
 **选项**
@@ -2387,13 +2385,16 @@ levee drift baseline set --host <host> --file <path> [--name <name>]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--host` | | 目标主机名（必填） |
-| `--file` | | 基线文件路径（必填，JSON 格式） |
-| `--name` | 自动生成 | 基线名称 |
+| `--file` | | 基线文件路径（必填，YAML 或 JSON） |
+
+**说明**
+
+- 基线以 **host 为主键**，一台主机同时只保留一份基线：再次 `set` 会覆盖该机现有基线。因此没有 `--name`——命名多版本基线需要改动存储主键（`BaselineManager` 按 host 索引），不是加个旗标就能得到的。
 
 **示例**
 
 ```命令示例：手动设置基线
-levee drift baseline set --host web-01 --file baseline.json --name "v1.0 基线"
+levee drift baseline set --host web-01 --file baseline.json
 ```
 
 ### 22.3 drift baseline auto
@@ -2401,7 +2402,7 @@ levee drift baseline set --host web-01 --file baseline.json --name "v1.0 基线"
 从目标机最近一次 apply 的预期状态自动生成基线。
 
 ```text
-levee drift baseline auto --host <host> [--name <name>]
+levee drift baseline auto --host <host> --run <run-id>
 ```
 
 **选项**
@@ -2409,7 +2410,11 @@ levee drift baseline auto --host <host> [--name <name>]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--host` | | 目标主机名（必填） |
-| `--name` | 自动生成 | 基线名称 |
+| `--run` | | 取该 run 的 apply 快照作为基线来源（必填） |
+
+**说明**
+
+- 与 `set` 一样按 host 覆盖既有基线；来源 run 记录在 `source_run_id` 字段，`list`/`show` 可见。
 
 **示例**
 
@@ -2419,17 +2424,17 @@ levee drift baseline auto --host web-01
 
 ### 22.4 drift baseline list
 
-列出目标机的所有基线。
+列出已存储的基线（默认列出全部）。
 
 ```text
-levee drift baseline list --host <host>
+levee drift baseline list [--host <host>]
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--host` | | 目标主机名（必填） |
+| `--host` | | 只列出该主机的基线；省略则列出全部。因一台主机至多一份基线，命中时最多一行 |
 
 **示例**
 
