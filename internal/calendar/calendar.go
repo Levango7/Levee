@@ -331,6 +331,8 @@ func (s *Store) ListWindows(ctx context.Context, filter WindowFilter) ([]*Window
 	}
 	q += " ORDER BY start_time ASC"
 	if filter.Limit > 0 {
+		// #nosec G202 -- next() emits a placeholder token ($n / ?) and appends the
+		// value to args; the limit never reaches the statement as SQL text.
 		q += " LIMIT " + next(filter.Limit)
 	}
 
