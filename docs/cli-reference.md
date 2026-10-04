@@ -62,6 +62,13 @@ levee new nginx-reload --params target=web01.prod,env=production
 
 创建的 run 状态为 `draft`，返回 `run_id`、模板名称、实例化内容和参数。
 
+渲染后的工作流写在该 run 的 workflow 源字段上（`run.WorkflowName`，与 gRPC 实例化
+路径同一个字段），`levee plan` 解析的就是它；模板名称另存于 `template_name`。落库前
+渲染结果要过 `levee compile --strict` 的两道门（解析、结构校验），且不允许残留
+`{{.参数}}` 占位符——任一条不过命令以 **exit 2** 拒绝，且**不创建 run**（实测：旧方言
+模板报 `template "x" renders a workflow that does not parse: LE002 ...`，漏传可选参数报
+`template "x" leaves parameter(s) unsubstituted: y`）。
+
 ### 1.2 clone
 
 克隆历史 run 为可编辑草稿。
