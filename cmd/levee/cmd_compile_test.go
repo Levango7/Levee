@@ -165,48 +165,57 @@ func TestCompileCheckOnly(t *testing.T) {
 
 // --- Compile --ir ----------------------------------------------------------
 
-func TestCompileEmitIR(t *testing.T) {
+// runCompileStreams executes `compile` with stdout and stderr kept apart. The
+// two commands that emit a *document* on stdout (the IR, and the JSON envelope)
+// can only be tested for "the document stays clean" if the streams are separate
+// — a single merged buffer accepts advisory prose and still parses nothing, so
+// it cannot distinguish the property from its violation.
+func runCompileStreams(t *testing.T, path string, setup func()) (stdout, stderr string, err error) {
+	t.Helper()
 	defer resetRootFlags()
 	defer resetCompileFlags()
-	compileOptIR = true
-
-	path := writeTempYAML(t, validCompileYAML)
+	if setup != nil {
+		setup()
+	}
 	cmd := findSub("compile")
 	require.NotNil(t, cmd)
 
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	err := cmd.RunE(cmd, []string{path})
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+	err = cmd.RunE(cmd, []string{path})
+	return outBuf.String(), errBuf.String(), err
+}
+
+func TestCompileEmitIR(t *testing.T) {
+	path := writeTempYAML(t, validCompileYAML)
+	stdout, stderr, err := runCompileStreams(t, path, func() { compileOptIR = true })
 	require.NoError(t, err)
 
 	// The output should be a JSON IR with ir_version "1.0".
 	var ir map[string]any
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &ir), "output should be valid JSON: %s", buf.String())
+	require.NoError(t, json.Unmarshal([]byte(stdout), &ir), "output should be valid JSON: %s", stdout)
 	assert.Equal(t, "1.0", ir["ir_version"])
 	wf, ok := ir["workflow"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, "compile-test", wf["name"])
+
+	// validCompileYAML declares no window, so it carries exactly one advisory —
+	// on stderr, never in front of the document.
+	assert.NotContains(t, stdout, "advisory:", "the IR document must not carry advisory prose")
+	assert.Contains(t, stderr, "advisory:")
 }
 
 func TestCompileEmitIRJSONEnvelope(t *testing.T) {
-	defer resetRootFlags()
-	defer resetCompileFlags()
-	compileOptIR = true
-	optJSON = true
-
 	path := writeTempYAML(t, validCompileYAML)
-	cmd := findSub("compile")
-	require.NotNil(t, cmd)
-
-	var buf bytes.Buffer
-	cmd.SetOut(&buf)
-	cmd.SetErr(&buf)
-	err := cmd.RunE(cmd, []string{path})
+	stdout, _, err := runCompileStreams(t, path, func() {
+		compileOptIR = true
+		optJSON = true
+	})
 	require.NoError(t, err)
 
 	var env outputEnvelope
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+	require.NoError(t, json.Unmarshal([]byte(stdout), &env))
 	require.NotNil(t, env.Data)
 }
 
