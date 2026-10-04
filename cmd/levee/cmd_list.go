@@ -72,7 +72,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	for _, r := range runs {
 		rows = append(rows, map[string]any{
 			"id":              r.ID,
-			"workflow_name":   r.WorkflowName,
+			"workflow_name":   workflowDisplay(r.WorkflowName),
 			"template_name":   r.TemplateName,
 			"status":          r.Status,
 			"approval_status": r.ApprovalStatus,

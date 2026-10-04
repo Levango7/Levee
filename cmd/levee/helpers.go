@@ -8,13 +8,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/state"
 )
+
+// workflowDisplay renders a run's stored workflow source for human-facing
+// output. run.WorkflowName holds the *source* — inline YAML for template and
+// gRPC-instantiated runs, a file path for `change create` — because that is
+// what wiring.resolveWorkflow parses; it is not something a one-line table
+// cell can show. The workflow's own declared name is the honest rendering.
+// Anything that does not parse (a path, or a corrupt document the operator
+// still has to recognise) is returned exactly as stored, never guessed at.
+func workflowDisplay(src string) string {
+	src = strings.TrimSpace(src)
+	if src == "" || !strings.ContainsAny(src, "\n\r") {
+		return src
+	}
+	wf, err := dsl.NewParser().ParseBytes([]byte(src))
+	if err != nil || wf == nil || wf.Meta.Name == "" {
+		return src
+	}
+	return wf.Meta.Name
+}
 
 // applySecurityConfig propagates security-related configuration into the
 // process-wide subsystem registries. Call it after every successful

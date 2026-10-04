@@ -299,7 +299,7 @@ func runTargetHistory(cmd *cobra.Command, args []string) error {
 		host, "RUN", "WORKFLOW", "STATUS", "CREATED")
 	for _, r := range entries {
 		fmt.Fprintf(os.Stdout, "%-22s %-20s %-10s %-12s\n",
-			r.ID, r.WorkflowName, r.Status, r.CreatedAt.Format("2006-01-02"))
+			r.ID, workflowDisplay(r.WorkflowName), r.Status, r.CreatedAt.Format("2006-01-02"))
 	}
 	return nil
 }
