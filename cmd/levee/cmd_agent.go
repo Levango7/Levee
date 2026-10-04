@@ -25,6 +25,8 @@ var (
 	agentStartOptMaxConc   int
 	agentStartOptHeartbeat time.Duration
 	agentStartOptID        string
+
+	agentListOptStatus string
 )
 
 func init() {
@@ -93,13 +95,16 @@ func newAgentStatusCmd() *cobra.Command {
 
 // newAgentListCmd builds the `levee agent list` sub-command.
 func newAgentListCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List registered agents",
 		Long:  "List all agents currently registered with the master.",
 		Args:  cobra.NoArgs,
 		RunE:  runAgentList,
 	}
+	cmd.Flags().StringVar(&agentListOptStatus, "status", "",
+		"Filter by status: "+strings.Join(agent.AgentStatusNames(), " | ")+" (empty = all)")
+	return cmd
 }
 
 // newAgentShowCmd builds the `levee agent show <agent-id>` sub-command.
@@ -198,7 +203,10 @@ func runAgentStatus(cmd *cobra.Command, args []string) error {
 // runAgentList executes the `levee agent list` command.
 func runAgentList(cmd *cobra.Command, args []string) error {
 	registry := getGlobalAgentRegistry()
-	agents := registry.List()
+	agents, err := filterAgentsByStatus(registry.List(), agentListOptStatus)
+	if err != nil {
+		return fmt.Errorf("agent list: %w", err)
+	}
 
 	rows := make([]map[string]any, 0, len(agents))
 	for _, a := range agents {
@@ -222,6 +230,26 @@ func runAgentList(cmd *cobra.Command, args []string) error {
 
 	printAgentListHuman(os.Stdout, rows)
 	return nil
+}
+
+// filterAgentsByStatus applies --status once, on the slice every output mode
+// reads. --quiet prints IDs from the agents slice rather than the rendered rows,
+// so filtering only the rows would make --quiet disagree with the other modes.
+func filterAgentsByStatus(all []agent.AgentInfo, status string) ([]agent.AgentInfo, error) {
+	if status == "" {
+		return all, nil
+	}
+	want, err := agent.ParseAgentStatus(status)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agent.AgentInfo, 0, len(all))
+	for _, a := range all {
+		if a.Status == want {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 // runAgentShow executes the `levee agent show <agent-id>` command.

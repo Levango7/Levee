@@ -22,6 +22,7 @@ var (
 	pushOptPlatform string
 	pushOptTitle    string
 	pushOptBody     string
+	pushOptDeepLink string
 
 	pushOptAPNsKeyFile    string
 	pushOptAPNsTeamID     string
@@ -161,6 +162,8 @@ func newPushSendCmd() *cobra.Command {
 	cmd.Flags().StringVar(&pushOptUser, "user", "", "User ID (required)")
 	cmd.Flags().StringVar(&pushOptTitle, "title", "", "Notification title (required)")
 	cmd.Flags().StringVar(&pushOptBody, "body", "", "Notification body")
+	cmd.Flags().StringVar(&pushOptDeepLink, "deep-link", "",
+		"URL the mobile client opens on tap, e.g. levee://approval/run-123")
 	_ = cmd.MarkFlagRequired("user")
 	_ = cmd.MarkFlagRequired("title")
 	return cmd
@@ -173,7 +176,7 @@ func runPushSend(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	if err := pm.SendToUser(ctx, pushOptUser, pushOptTitle, pushOptBody, nil); err != nil {
+	if err := pm.SendToUser(ctx, pushOptUser, pushOptTitle, pushOptBody, pushSendData(pushOptDeepLink)); err != nil {
 		return fmt.Errorf("send push: %w", err)
 	}
 	out := map[string]any{
@@ -181,6 +184,9 @@ func runPushSend(cmd *cobra.Command, args []string) error {
 		"title":  pushOptTitle,
 		"body":   pushOptBody,
 		"status": "sent",
+	}
+	if pushOptDeepLink != "" {
+		out["deep_link"] = pushOptDeepLink
 	}
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{"data": out, "meta": nil, "error": nil})
@@ -191,6 +197,19 @@ func runPushSend(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "Push sent to user %s: %s\n", pushOptUser, pushOptTitle)
 	return nil
+}
+
+// pushSendData builds the notification payload for `levee push send`. The key
+// is "deeplink" because that is what the approval service already puts on the
+// wire (internal/approval/mobile.go): a hand-sent deep link must be
+// indistinguishable from a system-sent one to the mobile client, and a second
+// spelling of the same field is exactly how a client-side contract gets lost.
+// An empty link yields a nil payload, preserving the pre-flag wire shape.
+func pushSendData(deepLink string) map[string]string {
+	if deepLink == "" {
+		return nil
+	}
+	return map[string]string{"deeplink": deepLink}
 }
 
 // --- devices ---------------------------------------------------------------

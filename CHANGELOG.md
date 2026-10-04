@@ -13,6 +13,26 @@
 
 验证：新增 13 例（`internal/grpc/change_service_readauthz_test.go`）——plan 的两种拒绝与 dev/prod 分界、6 个读 RPC 各自被拒且 `view` 出现在文案里、不可归因主体读放行而写仍拒、列表按环境收窄（含与多状态过滤组合的那条路径）、批量动作在"只有自报名字"时被拒且留下审计行、`GetConfig` 的裸调用/显式 false/nil 请求三种形态都拿不到凭据、开关打开后的明文路径。**变异验证 7 条全部被抓**（去掉 plan 授权、读门恒放行、把不可归因主体改成拒绝、列表过滤永不启用、批量判定退回 `actorFromCtx`、`GetConfig` 退回按请求决定、忽略部署开关）。`go build ./...` / `go vet ./...` / `go test ./...` / golangci-lint / docgen 与 proto 漂移门（pb 未改）见下条提交说明。
 
+### 修复
+
+- **Helm chart 向 `levee serve` 传了一个不存在的旗标**：`deploy/helm/levee/templates/deployment.yaml` 传 `--cluster-dispatch-worker-capacity`，二进制注册的是 `--cluster-dispatch-capacity`（`cmd/levee/cmd_serve.go:194`）。后果是**每次 `helm install --set mode=cluster` 起来的 Pod 都在启动时以 "unknown flag" 退出**（CrashLoopBackOff），而 `docs/deployment.md` 也照抄了同一个错名。v1.18.0 发布说明里写的"`helm lint`/双形态 `template` 校验通过"确实做过，但是**手工做的、且手工校验只到 YAML 能解析为止**——没有任何环节把渲染出的 args 与真实命令树比过。两处名字已订正，并补了下述两道持久门禁。
+- **租户 ID 每次调用都被重新铸造，所有按 ID 的租户子命令跨进程必失败**：注册表加载路径用 `tm.Create()` 重建每条记录（`Create` 会铸造新 ID），再调 `patchTenant()` 只改结构体字段——map 的键仍是新铸的 ID，磁盘上写的还是旧 ID。实测（`levee tenant create --name acme` 打印 `tenant-a2e96355ea3e35bf`，`tenants.yaml` 里也是这个 ID，随后 `levee tenant show tenant-a2e96355ea3e35bf` 回答 `tenant: not found: tenant-a2e96355ea3e35bf`，且在 show 过程中又铸出 `tenant-330522e0cf7879e6`）。受影响面是 `show/suspend/resume/delete/quota/usage` 全部按 ID 寻址的命令。修法：`internal/tenant` 新增 `TenantManager.Restore(t, quota)`（按记录自带 ID 入表、同名冲突仅在对方未软删除时拒绝、配额按同一 ID 注册——配额表同样以 ID 为键，改错键会让 `tenant show` 静默读回"无限制"），`registryToManager` 改用它并删除 `patchTenant`。重复 ID/活名冲突的记录现在**跳过并 WARN**而不是静默丢弃（保留原容错契约：一个坏行不该让全部租户命令不可用）。
+- **文档承诺了实现里不存在的旗标与前置条件（10 项实测，9 项为真）**：`levee push send --deep-link`、`agent list --status`、`agent remove --force`、`tenant list --status`、`tenant suspend --reason`、`tenant delete --force`、`drift baseline set/auto --name`、`drift baseline list --host` 逐条拿构建出的二进制对 `--server http://127.0.0.1:9` 实测，cobra 全部回答 `unknown flag`；`compile --lenient` 是唯一假阳性（旗标真实存在，是扫描器的 `|--lenient]` 分支没剥掉前导 `--`，已修扫描器并补 M1 变异证明该修复是承重的）。处置按"能不能诚实接线"分两类：**接线**——`push send --deep-link`（payload 键用 `deeplink`，与 `internal/approval/mobile.go:110` 既有移动端契约一致）、`tenant list --status`、`agent list --status`、`drift baseline list --host`（改为可选过滤）、`tenant suspend --reason`（`Tenant.SuspendReason` 落盘并在 `tenant show` 可见，`resume` 清除）；**删文档**——`agent remove --force`（`Deregister` 根本不检查 `ActiveTasks`，没有守卫可"强制"绕过）、`tenant delete --force`（`TenantManager` 不持有租户名下资源的反查，级联清理无从谈起）、`drift baseline --name`（基线以 host 为主键、一台至多一份，命名多版本要动存储主键）；`tenant delete` 那句"仅当 suspended 且无活跃变更时可删除"也一并订正——实现里没有这个前置检查。
+- **状态词表从三份副本收敛为一份**：`TenantStatus` 的字符串形态原本在 `String()` 与 `ParseTenantStatus()` 两个 switch 里各写一遍，`agent` 侧 `--status` 若照文档写会引入第三份。现 `tenant` 用 `tenantStatusNames` 表驱动（`TenantStatusValues()` 供报错文案与 CLI 帮助渲染），`agent` 用 `AgentStatusValues`/`AgentStatusNames()`/`ParseAgentStatus()`。CLI 过滤器遇到未知取值**报错并列出全部接受值**而不是返回空列表——`levee agent list --status active` 过去那种"看起来集群没有 agent"的静默失败正是运维最难发现的一类。顺带订正 `cli-reference.md` 里凭空捏造的 agent 状态词表（`active / inactive / lost` 三个值本包永远产不出来，真实是 `registered / idle / busy / offline`）。
+
+### 新增
+
+- **交付物旗标门禁 `TestDeliveryArtifactsPassRegisteredServeFlags`**：把 Helm 模板（`deploy/helm/levee/templates/**/*.yaml` 的 args 序列项）与 systemd 单元（只扫 `ExecStart=` 续行，避开注释里的 `$LEVEE_SERVE_EXTRA` 示例）中出现的每一个旗标，对着**活的 cobra 树**解析（含继承的持久旗标与单字短旗标 `ShorthandLookup`），未注册即红；`checked >= 15` 的下限断言防止正则失配把门禁变成空跑。
+- **CI `delivery` job（`scripts/validate_delivery.sh`）**：`helm lint --strict` + 6 个取值形态渲染（defaults / cluster / cluster 去掉 snapshotDir / ingress / 内嵌 PG / 3 worker）+ `helm package`。它覆盖文本扫描看不到的那一类：模板语法错误、`.Values` 路径失效、以及 helm 把无法解析的键渲染成字面量 `<no value>` 塞进容器 args。每个形态还断言"渲染出非零个 serve 旗标"（实测 defaults 7 / cluster 17），否则分支没被渲染到就等于没测。helm 按 SHA256 钉版（v3.18.4），本机与容器内均实测脚本全绿后才入库；`delivery` 同时进 `needs` 与聚合清单（后者有防漂移断言，漏一个就会红）。
+- **文档旗标守卫的可选值分支修复 + 行号定位**：`[--strict|--lenient]` 形式的每个备选都要剥前导 `--`；finding 现在带 `文件:行号`，一条文档写错不用在 2600 行里人肉找。当前交叉核对 **457** 个文档旗标引用（`cli-reference.md` + `quickstart.md`，含每处调用的选项与继承的持久旗标）。
+
+**两条门禁共做 13 项变异，逐条确认"红"来自断言失败而非编译失败**（先 `go build ./...` 通过才认定是语义变异）：chart 与 systemd 各改一个旗标名、`--status` 过滤被忽略、drift host 过滤反转、push payload 退回 nil、装载路径重新铸造 ID、`suspend_reason` 未写进注册表记录、resume 未清除原因、tenant/agent 两份词表各删一项、重复 suspend 不再更新原因、扫描器不剥备选值前导 `--`（这条复现的正是 `--lenient` 假阳性本身）。
+
+### 已知限制（本次实测确认，登记不修）
+
+- **`levee agent list/show/remove` 读的是进程内注册表**：`AgentRegistry` 既不落盘也没有对应的 master 端 RPC（`proto/` 内无任何 agent 服务定义），因此跨进程执行 `agent list` 恒返回空表、`show`/`remove` 恒 not-found。`cli-reference.md` 第 20 章已加醒目边界说明。接 master 端 Agent 服务需要改 proto，而 CI 用 protoc 27.0 钉住 `internal/grpc/pb/` 并 `git diff --exit-code` 校验，本机 protoc 是 36.2，无法在本地生成一致的产物。
+- **`--deep-link` 的移动端消费未验**：CLI 侧 payload 键与 `internal/approval/mobile.go` 一致，但没有真实移动客户端可验证点击行为，验证面到"发出的 APNs/FCM 报文含该键"为止。
+
 ## [v1.18.0] - 2026-10-03 — 交付物齐备：Helm chart + 裸金属一键安装 + 跨区域场景方案 + 镜像发布
 
 本版把"能上线、能交付"所需的**交付物**补齐：K8s 客户有了一配置即部署的 Helm chart（单机/集群两形态，`helm lint`/双形态 `template` 全文档 YAML 校验通过）；裸金属客户有了幂等一键安装脚本与自带 systemd 单元（容器实测）；每个 `v*` tag 现在还发布多架构容器镜像到 GHCR（独立 job，镜像失败不阻塞二进制发布）；跨区域数据同步与运维的**场景方案文档**及其配套示例 workflow 落库（示例进 `TestShippedExamplesCompile`，实测编译通过）；部署手册新增 Helm 与交付检查单两节。同时做了一致性订正：spec 的 `allow_irreversible` 字段如实标注"规范目标未接线"（LE082 零产生点登记 roadmap），security-audit 的三处历史边界留痕订正（trace 链接线关闭、PG 触发器 CI 实跑）。

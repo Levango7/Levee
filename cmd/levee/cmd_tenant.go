@@ -7,11 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/tenant"
 )
 
@@ -29,6 +31,9 @@ var (
 	tenantQuotaOptMaxChanges int
 	tenantQuotaOptMaxStorage int
 	tenantQuotaOptMaxAPIRate int
+
+	tenantListOptStatus    string
+	tenantSuspendOptReason string
 )
 
 func init() {
@@ -80,13 +85,17 @@ func newTenantCreateCmd() *cobra.Command {
 
 // newTenantListCmd builds the `levee tenant list` sub-command.
 func newTenantListCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all tenants",
-		Long:  "List all tenants registered in the LEVEE system, including soft-deleted ones.",
-		Args:  cobra.NoArgs,
-		RunE:  runTenantList,
+		Long: "List all tenants registered in the LEVEE system, including soft-deleted ones. " +
+			"Use --status to restrict the output to one lifecycle state.",
+		Args: cobra.NoArgs,
+		RunE: runTenantList,
 	}
+	cmd.Flags().StringVar(&tenantListOptStatus, "status", "",
+		"Filter by status: "+strings.Join(tenant.TenantStatusValues(), " | ")+" (empty = all)")
+	return cmd
 }
 
 // newTenantShowCmd builds the `levee tenant show <tenant-id>` sub-command.
@@ -102,13 +111,16 @@ func newTenantShowCmd() *cobra.Command {
 
 // newTenantSuspendCmd builds the `levee tenant suspend <tenant-id>` sub-command.
 func newTenantSuspendCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "suspend <tenant-id>",
 		Short: "Suspend a tenant",
 		Long:  "Suspend a tenant so that it cannot perform any actions. Use `resume` to reverse.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runTenantSuspend,
 	}
+	cmd.Flags().StringVar(&tenantSuspendOptReason, "reason", "",
+		"Why the tenant is being suspended; recorded on the tenant and cleared by resume")
+	return cmd
 }
 
 // newTenantResumeCmd builds the `levee tenant resume <tenant-id>` sub-command.
@@ -180,6 +192,7 @@ type tenantRecord struct {
 	DisplayName          string            `yaml:"display_name" json:"display_name"`
 	Namespace            string            `yaml:"namespace" json:"namespace"`
 	Status               string            `yaml:"status" json:"status"`
+	SuspendReason        string            `yaml:"suspend_reason,omitempty" json:"suspend_reason,omitempty"`
 	CreatedAt            time.Time         `yaml:"created_at" json:"created_at"`
 	UpdatedAt            time.Time         `yaml:"updated_at" json:"updated_at"`
 	Labels               map[string]string `yaml:"labels,omitempty" json:"labels,omitempty"`
@@ -234,38 +247,44 @@ func saveTenantRegistry(path string, reg *tenantRegistry) error {
 // deleted are still loaded so that historical lookups continue to work.
 func registryToManager(reg *tenantRegistry) (*tenant.TenantManager, error) {
 	tm := tenant.NewTenantManager()
-	ctx := context.Background()
 	for _, rec := range reg.Tenants {
 		status, err := tenant.ParseTenantStatus(rec.Status)
 		if err != nil {
 			return nil, fmt.Errorf("tenant %s: %w", rec.ID, err)
 		}
-		// Reconstruct the tenant via the manager so that the in-memory
-		// state (including the byName index) is consistent. We create
-		// with the original name then patch the id, timestamps and
-		// status to match the persisted record.
-		t, err := tm.Create(ctx, rec.Name, rec.DisplayName, tenant.Quota{
+		ns := rec.Namespace
+		if ns == "" {
+			ns = tenant.NamespaceFor(rec.Name)
+		}
+		t := &tenant.Tenant{
+			ID:            rec.ID,
+			Name:          rec.Name,
+			DisplayName:   rec.DisplayName,
+			Namespace:     ns,
+			Status:        status,
+			SuspendReason: rec.SuspendReason,
+			CreatedAt:     rec.CreatedAt,
+			UpdatedAt:     rec.UpdatedAt,
+			Labels:        rec.Labels,
+		}
+		// Restore, not Create: Create mints a new ID and registers the quota
+		// under it, so the printed ID would resolve to nothing on the next
+		// invocation and quotas would read back empty.
+		if err := tm.Restore(t, tenant.Quota{
 			MaxTargets:           rec.MaxTargets,
 			MaxConcurrentChanges: rec.MaxConcurrentChanges,
 			MaxStorageMB:         rec.MaxStorageMB,
 			MaxAPIRatePerMin:     rec.MaxAPIRatePerMin,
-		})
-		if err != nil {
-			// A duplicate name (e.g. from a stale deleted record) is
-			// tolerated: we skip the offending entry and continue.
+		}); err != nil {
+			// A record that cannot be restored means two entries claim the same
+			// ID or a live name — only possible in a hand-edited or corrupted
+			// registry. Skip it and say so: the previous load path dropped the
+			// record silently, and failing the whole load would take every
+			// tenant command down over one bad line.
+			log.Warn("tenant registry: skipping unrestorable record",
+				"tenant_id", rec.ID, "name", rec.Name, "err", err)
 			continue
 		}
-		// Patch the immutable fields to match the persisted record.
-		// This is safe because the tenant was just created and no other
-		// code has a reference to it yet.
-		patchTenant(tm, t.ID, func(tt *tenant.Tenant) {
-			tt.ID = rec.ID
-			tt.Namespace = rec.Namespace
-			tt.CreatedAt = rec.CreatedAt
-			tt.UpdatedAt = rec.UpdatedAt
-			tt.Labels = rec.Labels
-			tt.Status = status
-		})
 	}
 	return tm, nil
 }
@@ -286,6 +305,7 @@ func managerToRegistry(tm *tenant.TenantManager) *tenantRegistry {
 			DisplayName:          tt.DisplayName,
 			Namespace:            tt.Namespace,
 			Status:               tt.Status.String(),
+			SuspendReason:        tt.SuspendReason,
 			CreatedAt:            tt.CreatedAt,
 			UpdatedAt:            tt.UpdatedAt,
 			Labels:               tt.Labels,
@@ -296,31 +316,6 @@ func managerToRegistry(tm *tenant.TenantManager) *tenantRegistry {
 		})
 	}
 	return &tenantRegistry{Tenants: recs}
-}
-
-// patchTenant is a small helper that applies a mutator to the tenant
-// with the given id while holding the manager's internal lock. It is
-// used during registry load to restore immutable fields.
-func patchTenant(tm *tenant.TenantManager, id string, fn func(*tenant.Tenant)) {
-	// TenantManager does not expose a public mutator for the immutable
-	// fields; we work around this by deleting and re-creating the
-	// tenant with the patched values. Because this is only used during
-	// initial load, the tenant has no associated usage yet.
-	t, err := tm.Get(id)
-	if err != nil {
-		return
-	}
-	fn(t)
-	// We cannot re-insert directly, so we rely on the fact that the
-	// caller (registryToManager) has just created the tenant and no
-	// external code has a reference yet. The simplest safe approach is
-	// to leave the auto-generated id in place; the persisted id is
-	// restored by the caller via a second pass if needed.
-	//
-	// In practice the auto-generated id is sufficient for CLI use
-	// because the registry is the source of truth and is rewritten on
-	// every command. We therefore no-op here and keep the generated id.
-	_ = t
 }
 
 // loadTenantManager loads the tenant registry from the configured data
@@ -385,7 +380,11 @@ func runTenantList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	tenants := tm.List()
+	tenants, err := filterTenantsByStatus(tm.List(), tenantListOptStatus)
+	if err != nil {
+		return err
+	}
+
 	rows := make([]map[string]any, 0, len(tenants))
 	for _, tt := range tenants {
 		rows = append(rows, tenantToMap(tt))
@@ -408,6 +407,28 @@ func runTenantList(cmd *cobra.Command, args []string) error {
 
 	printTenantListHuman(os.Stdout, rows)
 	return nil
+}
+
+// filterTenantsByStatus applies --status once, on the slice every output mode
+// reads. The quiet path prints tenant IDs rather than the rendered rows, so a
+// filter applied only to the rows would make `--quiet --status` disagree with
+// the other two modes. An empty value means "no filter"; an unknown value is an
+// error naming the accepted vocabulary rather than a silent empty list.
+func filterTenantsByStatus(all []*tenant.Tenant, status string) ([]*tenant.Tenant, error) {
+	if status == "" {
+		return all, nil
+	}
+	want, err := tenant.ParseTenantStatus(status)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*tenant.Tenant, 0, len(all))
+	for _, tt := range all {
+		if tt.Status == want {
+			out = append(out, tt)
+		}
+	}
+	return out, nil
 }
 
 // runTenantShow executes the `levee tenant show <tenant-id>` command.
@@ -439,7 +460,7 @@ func runTenantSuspend(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if err := tm.Suspend(ctx, args[0]); err != nil {
+	if err := tm.Suspend(ctx, args[0], tenantSuspendOptReason); err != nil {
 		return err
 	}
 	if err := saveTenantManager(tm, regPath); err != nil {
@@ -560,13 +581,14 @@ func runTenantUsage(cmd *cobra.Command, args []string) error {
 // tenantToMap converts a Tenant to a map suitable for JSON output.
 func tenantToMap(tt *tenant.Tenant) map[string]any {
 	return map[string]any{
-		"id":           tt.ID,
-		"name":         tt.Name,
-		"display_name": tt.DisplayName,
-		"namespace":    tt.Namespace,
-		"status":       tt.Status.String(),
-		"created_at":   tt.CreatedAt,
-		"updated_at":   tt.UpdatedAt,
+		"id":             tt.ID,
+		"name":           tt.Name,
+		"display_name":   tt.DisplayName,
+		"namespace":      tt.Namespace,
+		"status":         tt.Status.String(),
+		"suspend_reason": tt.SuspendReason,
+		"created_at":     tt.CreatedAt,
+		"updated_at":     tt.UpdatedAt,
 	}
 }
 
@@ -738,6 +760,9 @@ func printTenantDetailHuman(w io.Writer, detail map[string]any) {
 	fmt.Fprintf(w, "  Display:     %s\n", tt["display_name"])
 	fmt.Fprintf(w, "  Namespace:   %s\n", tt["namespace"])
 	fmt.Fprintf(w, "  Status:      %s\n", tt["status"])
+	if r, _ := tt["suspend_reason"].(string); r != "" {
+		fmt.Fprintf(w, "  Reason:      %s\n", r)
+	}
 	fmt.Fprintf(w, "  Created:     %s\n", tt["created_at"])
 	fmt.Fprintf(w, "  Updated:     %s\n", tt["updated_at"])
 

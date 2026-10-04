@@ -45,34 +45,53 @@ const (
 	TenantDeleted
 )
 
+// tenantStatusNames is the single source of truth for the string form of each
+// lifecycle state. String(), ParseTenantStatus and TenantStatusValues all read
+// this table, so a new status is declared once. Before it existed the vocabulary
+// lived in two switches (and a CLI help string would have been a third), which is
+// how a documented-but-unparseable status value survives review.
+var tenantStatusNames = []struct {
+	status TenantStatus
+	name   string
+}{
+	{TenantActive, "active"},
+	{TenantSuspended, "suspended"},
+	{TenantDeleted, "deleted"},
+}
+
+// TenantStatusValues returns the string forms ParseTenantStatus accepts, in
+// lifecycle order. Error messages and CLI help must render this list instead of
+// writing their own.
+func TenantStatusValues() []string {
+	out := make([]string, 0, len(tenantStatusNames))
+	for _, n := range tenantStatusNames {
+		out = append(out, n.name)
+	}
+	return out
+}
+
 // String returns the human-readable name of the status. It is used in
 // serialisation, logging and CLI output.
 func (s TenantStatus) String() string {
-	switch s {
-	case TenantActive:
-		return "active"
-	case TenantSuspended:
-		return "suspended"
-	case TenantDeleted:
-		return "deleted"
-	default:
-		return fmt.Sprintf("unknown(%d)", int(s))
+	for _, n := range tenantStatusNames {
+		if n.status == s {
+			return n.name
+		}
 	}
+	return fmt.Sprintf("unknown(%d)", int(s))
 }
 
 // ParseTenantStatus converts a string to a TenantStatus. Unknown values
 // return an error so that callers cannot silently mistype a status.
 func ParseTenantStatus(s string) (TenantStatus, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "active":
-		return TenantActive, nil
-	case "suspended":
-		return TenantSuspended, nil
-	case "deleted":
-		return TenantDeleted, nil
-	default:
-		return 0, fmt.Errorf("tenant: unknown status %q", s)
+	target := strings.ToLower(strings.TrimSpace(s))
+	for _, n := range tenantStatusNames {
+		if n.name == target {
+			return n.status, nil
+		}
 	}
+	return 0, fmt.Errorf("tenant: unknown status %q (accepted: %s)",
+		s, strings.Join(TenantStatusValues(), ", "))
 }
 
 // Sentinel errors returned by tenant operations. Callers should test against
@@ -116,6 +135,11 @@ type Tenant struct {
 	Namespace string `json:"namespace"`
 	// Status is the current lifecycle state of the tenant.
 	Status TenantStatus `json:"status"`
+	// SuspendReason is the free-form operator text recorded when the tenant
+	// was suspended. It is empty while the tenant is active, and cleared by
+	// Resume. `omitempty` keeps registries written before this field existed
+	// byte-identical on reload.
+	SuspendReason string `json:"suspend_reason,omitempty"`
 	// CreatedAt is the time the tenant was created.
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt is the time the tenant was last modified.

@@ -20,7 +20,21 @@
 
 ## 模板与真实旗标的一致性
 
-Helm 模板里的每个参数都对应 `levee serve --help` 的真实旗标；改动模板前先核对：
+Helm 模板里的每个参数都对应 `levee serve --help` 的真实旗标。**这条一致性现在有两道机器门禁，改模板不必再靠人核对**：
+
+```bash
+# 1) 每个旗标对着活的 cobra 树解析（含 systemd 单元的 ExecStart）
+go test ./cmd/levee/ -run TestDeliveryArtifactsPassRegisteredServeFlags
+
+# 2) 渲染 + lint + 打包：模板语法、.Values 路径、<no value> 落进 args
+bash scripts/validate_delivery.sh
+```
+
+两者都在 CI 的 `test` 与 `delivery` job 里跑。为什么需要两道：第 1 道能发现"旗标名不存在"，但它只读模板文本，看不见模板渲染失败；第 2 道能发现渲染问题，但 helm 不知道 `levee` 有哪些旗标。
+
+历史上这里只写了"改模板前手工核对 `levee serve --help`"，而 chart 带着一个不存在的 `--cluster-dispatch-worker-capacity` 发了版——每次 `helm install --set mode=cluster` 起来的 Pod 都以 "unknown flag" 退出。手册式核对在无人复述流程时等于没有核对。
+
+留作备查的手工动作（例如临时排查某个旗标是否存在）：
 
 ```bash
 levee serve --help

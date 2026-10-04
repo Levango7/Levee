@@ -104,7 +104,7 @@ spec:
             - {{ .Values.cluster.takeoverInterval | quote }}
             - --cluster-dispatch-interval
             - {{ .Values.cluster.dispatchInterval | quote }}
-            - --cluster-dispatch-worker-capacity
+            - --cluster-dispatch-capacity
             - {{ .Values.cluster.dispatchWorkerCapacity | quote }}
             - --cluster-dispatch-claim-timeout
             - {{ .Values.cluster.dispatchClaimTimeout | quote }}
