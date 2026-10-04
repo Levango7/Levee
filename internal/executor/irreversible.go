@@ -22,20 +22,28 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // --- Irreversible operation marking (T034) ----------------------------------
 //
 // IrreversibleChecker decides whether a workflow step performs an action that
-// cannot be undone. The decision drives two safety mechanisms downstream:
+// cannot be undone. What the verdict really drives, measured rather than
+// assumed:
 //
-//   - Approval escalation: irreversible steps must be approved at the "high"
-//     level (design doc 4.4.6, LEVEELang spec LE083). The checker surfaces a
-//     SuggestLevel so the planner can raise the approval tier without parsing
-//     the reason itself.
-//   - Rollback gating: steps flagged irreversible are excluded from automatic
-//     rollback planning (design doc 4.5); a human must author an explicit
-//     rollback block for them.
+//   - Approval escalation happens, but not through this type's SuggestLevel:
+//     the plan stamps each step's Irreversible bool into the risk assessor
+//     (wiring/plan.go:119 → pointsIrreversibleStep), and the assessor derives
+//     the approval floor from the score (risk.go:278-283). max(workflow
+//     declaration, floor) is what raises a change to high.
+//   - Rollback: the plan carries whatever compensation the author declared on
+//     the step (generator.go:427). There is no "irreversible steps are excluded
+//     from automatic rollback" decision in the code — the exclusion is simply
+//     that an unauthorised step has no compensation to run.
+//
+// Both mechanisms are why the whitelist and the explicit author declaration
+// matter; SuggestLevel itself currently has no reader (see the note on Check).
 //
 // The verdict is derived from two signals, in priority order:
 //
@@ -141,8 +149,13 @@ func (c *IrreversibleChecker) Whitelist() []string {
 //  2. module.action in whitelist -> irreversible (whitelist match)
 //  3. otherwise                  -> reversible
 //
-// When the verdict is irreversible, SuggestLevel is set to "high" so the
-// planner can raise the approval tier without re-deriving the reason.
+// When the verdict is irreversible, SuggestLevel is set to the high tier.
+// Honest scope note (measured 2026-10-05): the plan generator reads
+// Irreversible and IrreversibleReason from this verdict, but nothing reads
+// SuggestLevel — the tier a change actually lands in comes from the risk
+// assessor's approval floor. The field is kept because the boundary test
+// (irreversible_level_test.go) pins that its suggestion is a tier the approval
+// service would accept, which is the prerequisite for wiring it up.
 func (c *IrreversibleChecker) Check(step Step) IrreversibleResult {
 	// Signal 1: explicit author declaration. This takes priority so that a
 	// workflow author can mark a custom module action as irreversible even
@@ -181,8 +194,7 @@ func (c *IrreversibleChecker) Check(step Step) IrreversibleResult {
 }
 
 // ApprovalLevelHigh is the approval tier the checker suggests for
-// irreversible operations. It is exported as a constant rather than a magic
-// string so that callers can compare against a stable identifier. The value
-// matches the three-tier approval vocabulary (standard / high / emergency)
-// defined in dsl.ApprovalSpec and the LEVEELang spec.
-const ApprovalLevelHigh = "high"
+// irreversible operations. It aliases the language vocabulary instead of
+// restating the string, so a tier rename cannot leave this suggestion
+// pointing at a name the approval service no longer accepts.
+const ApprovalLevelHigh = dsl.ApprovalLevelHigh

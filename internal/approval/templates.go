@@ -217,9 +217,9 @@ func (l *TemplateLibrary) RegisterTemplate(t Template) error {
 	if t.Name == "" {
 		return fmt.Errorf("approval: template name cannot be empty")
 	}
-	if !validLevel(t.RequiredLevel) {
-		return fmt.Errorf("%w: template %q has invalid required_level %q (allowed: standard, high, emergency)",
-			ErrInvalidLevel, t.Name, t.RequiredLevel)
+	if !IsLevel(t.RequiredLevel) {
+		return fmt.Errorf("%w: template %q has invalid required_level %q (allowed: %s)",
+			ErrInvalidLevel, t.Name, t.RequiredLevel, LevelNamesJoined())
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()

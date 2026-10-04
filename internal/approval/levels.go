@@ -1,10 +1,10 @@
 package approval
 
 // Package approval implements the approval service for LEVEE's change
-// pipeline. The levels.go file (T032) defines the three-tier approval
-// vocabulary — standard, high, emergency — together with a LevelManager
-// that decides which tier a workflow step requires based on its
-// attributes (irreversible / emergency markers).
+// pipeline. The levels.go file (T032) carries the three-tier approval
+// vocabulary — the names come from internal/dsl, this file owns the per-tier
+// behaviour — together with a LevelManager that decides which tier a workflow
+// step requires based on its attributes (irreversible / emergency markers).
 //
 // The three tiers map to the operational requirements in the design
 // document (section 4.4.6):
@@ -20,26 +20,54 @@ package approval
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // --- Level constants --------------------------------------------------------
 
-// The three approval tiers. These constants are exported so that callers
-// can compare against stable identifiers rather than magic strings. The
-// values match the LEVEELang spec (LE083) and the dsl.ApprovalSpec
-// vocabulary.
+// The three approval tiers, as aliases of the language vocabulary in
+// internal/dsl. They were re-typed here until 2026-10-05 — three constants, a
+// validity switch, an enumeration in All(), and four "(allowed: standard, high,
+// emergency)" error strings — which is the same definition-drift shape the
+// `runstatus` and batch-strategy collapses were: a tier rename leaves one of
+// them behind, and the copies agree only by luck.
 const (
 	// LevelStandard is the default tier for reversible operations.
-	LevelStandard = "standard"
+	LevelStandard = dsl.ApprovalLevelStandard
 
 	// LevelHigh is the tier for irreversible or destructive operations.
-	LevelHigh = "high"
+	LevelHigh = dsl.ApprovalLevelHigh
 
 	// LevelEmergency is the fast-track tier for emergency changes.
-	LevelEmergency = "emergency"
+	LevelEmergency = dsl.ApprovalLevelEmergency
 )
+
+// levelOrder is the tier enumeration in escalation order, sourced from the
+// language vocabulary rather than restated. Anything that needs the *set* of
+// tiers — the accepted-level predicate, the order All() returns, and the
+// "allowed: …" list in error text — reads it through LevelNames.
+var levelOrder = append([]string(nil), dsl.ApprovalLevels...)
+
+// LevelNames returns the legal approval tiers in escalation order. The
+// returned slice is a copy and may be safely modified.
+func LevelNames() []string {
+	return append([]string(nil), levelOrder...)
+}
+
+// LevelNamesJoined renders the tier vocabulary for error text and CLI help, so
+// a message can never promise something the code does not accept.
+func LevelNamesJoined() string {
+	return strings.Join(levelOrder, ", ")
+}
+
+// IsLevel reports whether level names one of the legal tiers.
+func IsLevel(level string) bool {
+	return dsl.IsApprovalLevel(level)
+}
 
 // --- Escalation policy ------------------------------------------------------
 
@@ -213,17 +241,21 @@ func (m *LevelManager) Get(level string) (LevelConfig, error) {
 	defer m.mu.RUnlock()
 	cfg, ok := m.configs[level]
 	if !ok {
-		return LevelConfig{}, fmt.Errorf("%w: %q (allowed: standard, high, emergency)", ErrInvalidLevel, level)
+		return LevelConfig{}, fmt.Errorf("%w: %q (allowed: %s)", ErrInvalidLevel, level, LevelNamesJoined())
 	}
 	return cfg, nil
 }
 
-// All returns the three level configs in a stable order: standard, high,
-// emergency. The returned slice is a copy and may be safely modified.
+// All returns the level configs in escalation order (levelOrder, which is the
+// language vocabulary). The returned slice is a copy and may be safely modified.
 func (m *LevelManager) All() []LevelConfig {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return []LevelConfig{m.configs[LevelStandard], m.configs[LevelHigh], m.configs[LevelEmergency]}
+	out := make([]LevelConfig, 0, len(levelOrder))
+	for _, name := range levelOrder {
+		out = append(out, m.configs[name])
+	}
+	return out
 }
 
 // defaultLevels is the package-level tier table used by callers that have
@@ -267,7 +299,7 @@ func (m *LevelManager) SetConfig(cfg LevelConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.configs[cfg.Level]; !ok {
-		return fmt.Errorf("%w: %q (allowed: standard, high, emergency)", ErrInvalidLevel, cfg.Level)
+		return fmt.Errorf("%w: %q (allowed: %s)", ErrInvalidLevel, cfg.Level, LevelNamesJoined())
 	}
 	m.configs[cfg.Level] = cfg
 	return nil
