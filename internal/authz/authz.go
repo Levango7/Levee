@@ -135,6 +135,47 @@ func (a *Authorizer) Enforced() bool {
 	return a != nil && len(a.matrix.Teams()) > 0
 }
 
+// AdmitsRead answers the read version of Decide, and the answer is deliberately
+// not "the same as writes".
+//
+// A write by an unattributable caller (shared --token: the actor name is
+// something the client asserts, so there is no principal to bind a decision to)
+// is refused, because refusing costs nothing the caller needed. A read is the
+// opposite: every holder of that token is the SAME principal, so denying them
+// buys no isolation at all — it only turns dashboards and status pages dark, and
+// does so in the one configuration (matrix + shared token) where an operator
+// believes they have policy. So an unattributable caller passes the read gate,
+// the serving process says so out loud at startup, and `/system/status` keeps
+// saying it; a deployment that wants per-team visibility enables named tokens,
+// SSO or OIDC, which is the same migration the approval path already requires.
+//
+// Once the caller IS attributable, reads are policed exactly like writes:
+// matrix grant, role grant bounded by reachability, explicit revoke honoured.
+func (a *Authorizer) AdmitsRead(subject, env string) (allowed bool, reason string) {
+	if !a.Enforced() {
+		return true, "no permission matrix configured (read visibility not filtered)"
+	}
+	if subject == "" {
+		return true, "caller has no provable identity: a shared token makes every " +
+			"client one principal, so filtering it would deny everyone equally"
+	}
+	d := a.Decide(subject, env, permission.ActionView)
+	if d.Allowed {
+		return true, fmt.Sprintf("granted via %s", d.Via)
+	}
+	return false, d.Reason
+}
+
+// ReadFilteringActive reports whether AdmitsRead can ever answer "no" for this
+// caller. List endpoints need it as a separate question, because filtering a
+// list means abandoning the store's offset paging and scanning with a cap — a
+// cost worth paying only when it can actually change the answer. It restates no
+// policy: the two facts are exactly the two AdmitsRead checks that admit
+// everything.
+func (a *Authorizer) ReadFilteringActive(subject string) bool {
+	return a.Enforced() && subject != ""
+}
+
 // Registered returns the subject names the registry knows, for startup
 // reconciliation against configured credentials.
 func (a *Authorizer) Registered() []string {

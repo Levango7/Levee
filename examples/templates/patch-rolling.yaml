@@ -1,36 +1,70 @@
-﻿name: patch-rolling
-description: 补丁灰度滚动更新模板
-params:
-  - name: package
-    type: string
-    required: true
-    description: 要更新的包名
-  - name: target_group
-    type: string
-    default: web
-    description: 目标主机组
-workflow:
-  target:
-    labels:
-      group: "{{.target_group}}"
-      env: prod
-  window: "02:00-04:00"
-  batches: [1, 10, 50, 100]
-  approval: high
-  steps:
-    - name: scan
-      action: shell
+# LEVEE template example — rolling patch update, parameterised.
+#
+# This file is the *content* of a template: a current-dialect LEVEELang
+# workflow with {{.placeholder}} slots. It is not itself a template record —
+# `internal/template` stores records as <name>.json and reads parameter
+# declarations from the record, not from this document, so register it with:
+#
+#   levee template create --name patch-rolling \
+#     --content "$(cat examples/templates/patch-rolling.yaml)" \
+#     --params '[{"name":"package","type":"string","required":true},
+#                {"name":"target_group","type":"string","default":"web"}]'
+#
+# then instantiate and plan it:
+#
+#   levee new patch-rolling --params package=nginx
+#   levee plan <run-id> --targets web-1
+#
+# Parameters are substituted as literal "{{.name}}" text, so they may sit inside
+# a value (the query below) rather than only replacing one. A parameter declared
+# optional with no default and left out of --params would survive in the
+# rendered workflow as "{{.name}}" — `levee new` now refuses that instead of
+# storing a run that would send template syntax to a target.
+name: patch-rolling
+version: "1.0"
+description: >
+  Rolling yum patch of {{.package}} over the {{.target_group}} fleet, 1% canary
+  first, inside the 02:00-04:00 UTC maintenance window.
+
+target:
+  name: patch-targets
+  type: host
+  query: "group={{.target_group}} AND env=prod"
+  min_count: 1
+  max_count: 200
+
+window:
+  start: "02:00"
+  end: "04:00"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [1, 10, 50, 100]
+
+approval:
+  level: high
+
+steps:
+  - name: scan
+    action: shell.exec
+    args:
+      cmd: "yum check-update {{.package}}"
+
+  - name: apply
+    action: shell.exec
+    args:
+      cmd: "yum update -y {{.package}}"
+    depends_on: ["scan"]
+    verify:
+      cmd:
+        run: "systemctl is-active nginx"
+        expect_exit: 0
+    rollback:
+      action: shell.exec
       args:
-        cmd: "yum check-update {{.package}}"
-    - name: apply
-      action: shell
-      args:
-        cmd: "yum update -y {{.package}}"
-      verify:
-        - type: cmd
-          run: "systemctl is-active nginx"
-          expect_exit: 0
-      rollback:
-        action: shell
-        args:
-          cmd: "yum downgrade -y {{.package}}"
+        cmd: "yum downgrade -y {{.package}}"
+
+rollback:
+  on_failure: auto
+  verify_after: true

@@ -99,6 +99,12 @@ func runImportAnsible(cmd *cobra.Command, args []string) error {
 	if verrs := dsl.NewValidator().Validate(reparsed); len(verrs) > 0 {
 		return fmt.Errorf("import: emitted workflow fails validation (internal bug): %v", verrs[0])
 	}
+	// A translated playbook carries the governance blocks the playbook never
+	// had, so this fires on essentially every import. It goes to stderr on
+	// purpose: the YAML on stdout is the command's deliverable, and "your new
+	// workflow has no window, no approval tier and one batch" is the one thing
+	// the operator must not have to discover at the first blocked rollout.
+	emitAdvisories(cmd.ErrOrStderr(), path, dsl.NewValidator().Advise(reparsed))
 
 	if importOptOut != "" {
 		// 0o600: the emitted workflow carries hostnames, paths and parameters;

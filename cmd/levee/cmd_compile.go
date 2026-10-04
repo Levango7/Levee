@@ -93,6 +93,14 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(errOut, formatValidationError(file, ve))
 	}
 
+	// 2a. Advisories: findings the error catalogue classifies as
+	// CompileWarning. They are printed in both modes and never affect the exit
+	// status — that separation is the point: an omitted window/approval/batches
+	// block is legal per spec, so refusing to compile it would have broken every
+	// existing workflow the moment the rule shipped.
+	advisories := validator.Advise(wf)
+	emitAdvisories(errOut, file, advisories)
+
 	// 3. Type checking.
 	registry := dsl.NewTypeRegistry()
 	checker := dsl.NewTypeChecker(registry, file)
@@ -107,7 +115,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 
 	// 4. --check-only stops here.
 	if compileOptCheckOnly {
-		emitCompileSummary(out, file, wf, len(verrs), len(terrs))
+		emitCompileSummary(out, file, wf, len(verrs), len(terrs), len(advisories))
 		return nil
 	}
 
@@ -121,7 +129,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return emitIRJSON(out, ir)
 	}
 
-	emitCompileSummary(out, file, wf, len(verrs), len(terrs))
+	emitCompileSummary(out, file, wf, len(verrs), len(terrs), len(advisories))
 	return nil
 }
 
@@ -144,8 +152,26 @@ func emitIRJSON(out io.Writer, ir *dsl.IR) error {
 	return nil
 }
 
+// emitAdvisories prints compile-time advisories for `source` on the
+// operator's error stream. One format for every command that reaches the
+// advisory channel — compile, new and import all call this, so "an advisory
+// never appears on the machine-readable stdout" is a property of one function
+// rather than three call sites that can drift.
+//
+// stderr, always: `levee import` and `levee compile --emit-ir` put a document on
+// stdout that operators pipe into files, and prefixing it with prose would
+// corrupt it.
+func emitAdvisories(errOut io.Writer, source string, advisories []dsl.ValidationError) {
+	for _, a := range advisories {
+		fmt.Fprintf(errOut, "advisory: %s: %s\n", source, a.Error())
+	}
+}
+
 // emitCompileSummary prints a human-readable summary of the compile result.
-func emitCompileSummary(out io.Writer, file string, wf *dsl.Workflow, valErrs, typeErrs int) {
+// `advisories` is reported but deliberately excluded from `ok` and from the
+// status word: advisories are catalogue-classified warnings, and a document
+// with none of the required blocks missing still compiles cleanly with them.
+func emitCompileSummary(out io.Writer, file string, wf *dsl.Workflow, valErrs, typeErrs, advisories int) {
 	if optJSON {
 		_ = PrintJSON(out, map[string]any{
 			"data": map[string]any{
@@ -154,6 +180,7 @@ func emitCompileSummary(out io.Writer, file string, wf *dsl.Workflow, valErrs, t
 				"version":         wf.Meta.Version,
 				"validation_errs": valErrs,
 				"type_errs":       typeErrs,
+				"advisories":      advisories,
 				"ok":              valErrs == 0 && typeErrs == 0,
 			},
 			"meta":  nil,
@@ -169,8 +196,8 @@ func emitCompileSummary(out io.Writer, file string, wf *dsl.Workflow, valErrs, t
 	if valErrs > 0 || typeErrs > 0 {
 		status = "warnings"
 	}
-	fmt.Fprintf(out, "compile %s: %s (workflow=%s, val_errs=%d, type_errs=%d)\n",
-		file, status, wf.Meta.Name, valErrs, typeErrs)
+	fmt.Fprintf(out, "compile %s: %s (workflow=%s, val_errs=%d, type_errs=%d, advisories=%d)\n",
+		file, status, wf.Meta.Name, valErrs, typeErrs, advisories)
 }
 
 // ---------------------------------------------------------------------------

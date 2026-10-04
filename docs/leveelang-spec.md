@@ -520,6 +520,48 @@ window {
 }
 ```
 
+### 4.2b 组织级冻结期（change calendar）执行契约
+
+`window` 是**单个 workflow 自带**的时间窗；冻结期（freeze）是**组织级**的日历条目，
+由 `levee calendar create --frozen` 建立，作用于命中的那批目标的所有变更。两者是两回事，
+错误信息里都会出现「窗口/frozen」字样，判读时按来源区分：
+
+| 概念 | 谁声明 | 判定时机 | 回滚是否豁免 |
+| --- | --- | --- | --- |
+| `window`（§4.2） | workflow 作者 | plan 阶段 | 豁免 |
+| 冻结期（本节） | 运维/发布经理（日历） | plan 阶段 + apply 执行前各一次 | 豁免 |
+| 清单主机 `status=frozen` | 资源清单 | plan 入口 + 执行前 host guard | 不属本节（另一套机制） |
+
+匹配规则（一次说清，因为文档里同时出现过两种写法）：某条冻结期命中这次变更，当且仅当
+它的 `--targets` 任一项等于本次目标主机词汇表里的一项，词汇表 = 主机名 ∪ 清单分组名 ∪
+每个标签的 `key=value` ∪ 每个标签的裸 `value`。**裸标签名（如 `env`）刻意不算**：每台主机
+都有 `env`，接受它等于一条 `--targets env` 冻结整个机群。
+
+其他契约事实：
+
+- 拒绝发生在**任何状态写入之前**，且不带产物：被拒的 plan 不会留下 `plan_json`/`plan_hash`。
+- 应急覆盖只认**作者在 workflow 里写的** `approval.level: emergency`；由 risk 分数抬上去的
+  派生档位不构成覆盖——否则一个高分变更就能自己解锁绕过冻结。
+- 日历**读不到**时按失败关闭处理（plan 被拒），而不是"判不了就放行"。
+- 重叠的普通变更窗口只告警（服务端 WARN 日志），不拒绝：只有冻结拒绝。
+- 存储形状：`calendar_windows` 表与 run 记录同库；SQLite 与 PostgreSQL 两种方言由
+  `calendar.Dialect` 显式声明（PostgreSQL 用 `TIMESTAMPTZ`，`DATETIME` 在该服务端不存在），
+  两条 DDL 的列集合由测试钉住不漂移。
+- 连哪个库只有一处决定：`database.driver`（`sqlite` / `postgres`）配 `database.path` 或
+  `database.dsn`。所有 CLI 命令、未加 `--cluster` 的 `serve`、`system status`/`doctor` 的探活
+  与本表的读写共用同一个取库函数，因此"冻结期写在 A 库、执行读 B 库"不可能由命令种类造成；
+  配对错误（`postgres` 缺 `dsn`、`sqlite` 多 `dsn`、未知驱动）是启动失败，而不是退回本机文件。
+  `serve --cluster` 仍用 `--pg-dsn`，且当 `database.dsn` 也存在时两者必须相等；只给 `--pg-dsn`
+  而不给 `--cluster` 同样启动失败——未启协调（无成员、无租约、无 fencing）的进程连集群共享库，
+  比它退回本机文件更危险。
+- `levee calendar create --frozen` 成功后在 stderr 打印这一行落在哪个库（驱动 + 位置），
+  `driver: sqlite` 时额外警告"本地文件，跑在 PostgreSQL 上的服务端读不到"；服务端启动时若该库
+  日历表为空会打 WARN。DSN 含凭据，故所有输出面（通知、`system status`、`system config get
+  database.dsn`、错误串、备份结果文档）一律打印 `postgres@host:port/db`，非 URL 形态的连接串
+  整体 withheld 而不回显。
+- 多租户（`tenant.enabled: true`）不改变以上判定：服务端持有的是 `tenant.TenantStore` 装饰器，
+  方言与后端名按底层真实库解析（`state.Underlying`），开启隔离不会让冻结门禁失效。
+
 ### 4.3 batches 字段
 
 batches 字段声明批次划分策略，是 workflow 的可选块，缺省表示单批全量执行（不推荐，告警 LE051 warning）。

@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/calendar"
+	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/state"
 )
 
 // Calendar command option variables. Kept as package-level vars to mirror
@@ -158,12 +160,11 @@ func openCalendarService(ctx context.Context) (*calendar.CalendarService, func()
 	if err != nil {
 		return nil, nil, fmt.Errorf("open store: %w", err)
 	}
-	calStore, err := calendar.NewSQLiteStore(ctx, store.DB())
-	if err != nil {
+	svc, cerr := calendarFor(ctx, store)
+	if cerr != nil {
 		_ = store.Close()
-		return nil, nil, fmt.Errorf("open calendar store: %w", err)
+		return nil, nil, cerr
 	}
-	svc := calendar.NewCalendarService(calStore)
 	cleanup := func() { _ = store.Close() }
 	return svc, cleanup, nil
 }
@@ -277,6 +278,24 @@ func runCalendarCreate(cmd *cobra.Command, args []string) error {
 	if err := svc.CreateWindow(ctx, w); err != nil {
 		return fmt.Errorf("create window: %w", err)
 	}
+	if calOptFrozen {
+		// A freeze only stops changes if the enforcing process reads the same
+		// database this row went into. Which database that is is now a property
+		// of the configuration (database.driver / database.dsn, resolved once by
+		// openStoreFromConfig) rather than of this command, so the notice names
+		// the database it wrote to and spells out what a local file means for a
+		// server running somewhere else.
+		if driver, where, ok := calendarStoreNotice(); ok {
+			suffix := ""
+			if driver == state.DriverSQLite {
+				suffix = " — a local file: a serve process on PostgreSQL will not see this freeze " +
+					"(set database.driver = postgres and database.dsn to the server's database to enforce it cluster-wide)"
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"notice: freeze %s recorded in %s %s; enforcement applies to a serve process reading this same database%s\n",
+				w.ID, driver, where, suffix)
+		}
+	}
 
 	row := windowToMap(w)
 	if optJSON {
@@ -293,6 +312,23 @@ func runCalendarCreate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "Created window %s\n", w.ID)
 	printCalendarShowHuman(os.Stdout, row)
 	return nil
+}
+
+// calendarStoreNotice reports which database this command writes calendar rows
+// into, in the form the notice above prints: the driver and a location safe to
+// show (a file path, or a credential-free PostgreSQL endpoint). ok=false when
+// the configuration cannot be read — the notice is diagnostics, and a broken
+// config already fails the command elsewhere.
+func calendarStoreNotice() (driver, location string, ok bool) {
+	cfg, err := config.Load(optConfigPath)
+	if err != nil {
+		return "", "", false
+	}
+	location = cfg.Database.StoreLocation()
+	if location == "" {
+		return "", "", false
+	}
+	return cfg.Database.Driver, location, true
 }
 
 // runCalendarUpdate executes `levee calendar update <id>`.

@@ -61,9 +61,11 @@ func IsBatchStrategy(s string) bool {
 
 // Approval levels — the same vocabulary discipline as BatchStrategies above.
 // This set used to be re-typed in three places inside this package (the
-// parser's switch, the validator's map, the type checker's enum); they agreed
-// by luck. internal/approval carries further copies (service.go's switch,
-// levels.go's error text) that are NOT yet sourced from here.
+// parser's switch, the validator's map, the type checker's enum) and in four
+// more inside internal/approval (a validity switch, the enumeration in
+// LevelManager.All, and two "(allowed: …)" error strings). Both halves now read
+// this list: internal/approval aliases its tier constants to these and builds
+// its accepted-level predicate and error text from them.
 const (
 	ApprovalLevelStandard  = "standard"
 	ApprovalLevelHigh      = "high"
@@ -117,7 +119,7 @@ type Workflow struct {
 	// module.action pairs this workflow authorizes for irreversible work.
 	// The compile gate (LE082) refuses any step whose reversibility verdict
 	// is irreversible — declared via irreversible: true or inherently
-	// destructive (executor.DefaultIrreversibleActions) — unless its
+	// destructive (DefaultIrreversibleActions) — unless its
 	// module.action is listed here. An absent list authorizes nothing.
 	AllowIrreversible []string
 }

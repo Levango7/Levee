@@ -62,6 +62,18 @@ levee new nginx-reload --params target=web01.prod,env=production
 
 创建的 run 状态为 `draft`，返回 `run_id`、模板名称、实例化内容和参数。
 
+渲染后的工作流写在该 run 的 workflow 源字段上（`run.WorkflowName`，与 gRPC 实例化
+路径同一个字段），`levee plan` 解析的就是它；模板名称另存于 `template_name`。落库前
+渲染结果要过 `levee compile --strict` 的两道门（解析、结构校验），且不允许残留
+`{{.参数}}` 占位符——任一条不过命令以 **exit 2** 拒绝，且**不创建 run**（实测：旧方言
+模板报 `template "x" renders a workflow that does not parse: LE002 ...`，漏传可选参数报
+`template "x" leaves parameter(s) unsubstituted: y`）。
+
+渲染结果同时走一遍编译期提示（见第 12 章）：模板没有声明 `window` / `approval` /
+`batches` 时逐条打 stderr 并冠以 `advisory: template <名>: …`，**run 照常创建、退出码
+不变**——提示说的是"这条 run 跑在哪些缺省上"，单条命令拒绝它并不会让那份草案变得合法。
+`--json` 的 stdout 信封不含提示文字。
+
 ### 1.2 clone
 
 克隆历史 run 为可编辑草稿。
@@ -1155,7 +1167,9 @@ levee system status
 
 **输出**
 
-包含版本号、配置文件路径、数据库连接状态和数据库路径。
+包含版本号、配置文件路径，以及**本机这一份配置所指向的那个数据库**的连接状态：`db_driver`（`sqlite` / `postgres`）、`db_location`（SQLite 是文件路径，PostgreSQL 是 `postgres@host:port/db` 的脱敏端点）、`db_status`（`ok` / `unreachable`），SQLite 形态下另附历史字段 `db_path`。
+
+`db_path` 在 PostgreSQL 部署下**不输出**：一个名叫 path 的键偶尔装着连接串，比少一个键更糟——探活打的是哪个库，运维必须能从字段名读出来，而不是靠猜当前驱动。同理 `db_location` 永不含凭据。
 
 **示例**
 
@@ -1184,8 +1198,9 @@ levee system config get <key>
 | `server.data_dir` | 数据目录 |
 | `server.log_level` | 日志级别 |
 | `server.log_format` | 日志格式 |
-| `database.driver` | 数据库驱动 |
-| `database.path` | 数据库路径 |
+| `database.driver` | 数据库驱动（`sqlite` / `postgres`） |
+| `database.path` | 数据库文件路径（sqlite） |
+| `database.dsn` | PostgreSQL 端点，**以 `postgres@host:port/db` 的脱敏形态返回** |
 | `database.max_open_conns` | 最大打开连接数 |
 | `database.max_idle_conns` | 最大空闲连接数 |
 | `log.level` | 日志级别 |
@@ -1193,6 +1208,10 @@ levee system config get <key>
 | `log.output` | 日志输出 |
 | `permission.default_team` | 默认团队 |
 | `permission.default_env` | 默认环境 |
+
+`database.dsn` 可以查询，但返回的是脱敏端点 `postgres@host:port/db` 而不是原始连接串：
+DSN 含口令，而本命令的输出会落在终端与滚动缓冲里。要问的是"这份 profile 指向哪台库"，
+脱敏形态已经回答；需要口令本身请直接看自己的配置文件。
 
 **示例**
 
@@ -1314,6 +1333,7 @@ levee compile <file> [--strict|--lenient] [--ir] [--check-only]
 - 执行流程：解析 YAML → 结构校验 → 类型检查 →（可选）IR 生成
 - `--lenient` 优先于 `--strict`：两者同时设置时按宽松模式处理
 - 所有错误附带源文件 + 行 + 列信息，多错误合并为单次报告
+- **编译期提示（advisory）不参与判定**：目录表里判为 `CompileWarning` 的条件（缺 `window` / 缺 `approval` / 缺 `batches`、percent 首批超过 5%）逐条打到 **stderr**，人类可读摘要与 `--json` 输出以 `advisories=N` 给出条数。它们是"这份文档跑在哪些缺省上"的告知，不是拒绝——严格模式下也不会因提示而失败，退出码只由校验与类型检查决定。stdout 上只有文档（IR / 摘要 / 信封），永远不会混进提示文字。
 
 **示例**
 
@@ -1399,6 +1419,25 @@ levee calendar create --name "发版窗口" --start 2026-08-16T10:00:00Z --end 2
 命令示例：创建冻结期并设置 cron 重复
 levee calendar create --name "月末冻结" --start 2026-08-31T00:00:00Z --end 2026-08-31T23:59:59Z --targets prod --frozen --cron "0 0 1 * *"
 ```
+
+**说明**
+
+- 冻结期是**执行期门禁**，不只是台账：`levee plan` 与 apply 执行前各判一次，命中即拒绝
+  （gRPC 侧为 `FailedPrecondition`），且被拒的 plan 不留任何产物。规范口径见
+  `leveelang-spec.md` §4.2b。
+- `--targets` 的匹配词汇表：主机名 / 清单分组名 / 标签 `key=value` / 标签裸 `value`
+  四种写法都能命中（示例里的 `web`、`prod` 属于裸 `value`）。裸标签名（如 `env`）
+  **不会**命中——每台主机都有 `env`，接受它等于一条命令冻结整个机群。
+- 绕过冻结的唯一途径是 workflow 自己声明 `approval.level: emergency`；risk 分数抬上来的
+  派生 emergency 档位不构成授权。回滚永不被冻结期阻断（失败的前向变更必须可撤销）。
+- `--frozen` 创建成功后，stderr 会打印一行 `notice: freeze <id> recorded in <driver> <库位置>`：
+  服务端必须读同一个数据库才会生效。库位置由配置决定且只有一处（`database.driver` +
+  `database.path`/`database.dsn`，见 `docs/deployment.md`），所有 CLI 命令、未加
+  `--cluster` 的 `serve`、`system status`/`doctor` 与本命令都走同一个取库函数，因此
+  "这条命令连本机、那条连服务端"不可能发生。`driver: sqlite` 时通知会额外警告
+  "这是本地文件，跑在 PostgreSQL 上的服务端看不到"——要把冻结期落到集群共享库，就把
+  运维侧的 `--config` 指到 `database.driver: postgres` 那份配置。PostgreSQL 端点一律以
+  `postgres@host:port/db` 的脱敏形态打印，不打印凭据。
 
 ### 13.4 calendar update
 
@@ -1972,7 +2011,7 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 | `--rate-limit` | `200` | REST 网关全局限流（req/s，令牌桶）；传负数关闭限流 |
 | `--rate-burst` | `400` | 令牌桶突发容量 |
 | `--cluster` | `false` | 启用集群模式（PostgreSQL 存储 + 集群协同，见下方说明） |
-| `--pg-dsn` | | PostgreSQL DSN（`--cluster` 时必填） |
+| `--pg-dsn` | | PostgreSQL DSN（`--cluster` 时必填；只给本旗标而不给 `--cluster` 会拒绝启动，见下方"单节点 PostgreSQL"） |
 | `--node-id` | | 集群节点 ID（`--cluster` 时必填） |
 | `--node-addr` | | 集群节点地址（`--cluster` 时必填） |
 | `--node-role` | `worker` | 集群节点角色：`master` / `worker` |
@@ -1986,6 +2025,7 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 - **/metrics 鉴权**：启用任一 token 后，`/metrics` 默认同样要求 Bearer 鉴权；无法携带凭据的采集器可用 `--metrics-public` 显式放开
 - **AI 引擎装配**：`serve` 启动时装配真实诊断引擎（日志采集/分析 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose` / `SendMessage` RPC 可直接使用；完整告警网关仍用独立的 `levee alert serve`
 - **集群模式**：集群协同覆盖共享 PostgreSQL 存储（数据一致性）、持久化成员注册（`cluster_nodes` 表心跳 + stale 检测，leader 按确定性策略收敛）与租约式分布式锁（`cluster_locks` 表，过期租约自动可被抢占，带单调 fence token）；在途变更的自动故障转移/跨节点调度尚未实现；`--cluster` 启动时会输出告警提示
+- **单节点 PostgreSQL**：不加 `--cluster` 时，服务端连哪个库由配置决定（`database.driver: postgres` + `database.dsn`），与所有 CLI 命令同一处取库决策，因此 `levee calendar freeze` 可以写进服务端真正读的那张表；口径与三条启动期硬约束见 `docs/deployment.md` 的变更日历一节。只给 `--pg-dsn` 而不给 `--cluster` 会拒绝启动而不是退回本机文件——未启协调（无成员、无租约、无 fencing）的进程连集群共享库，比连错库更危险
 - CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
 - 限流触发时返回 HTTP 429 并附带 `Retry-After`
 - 每个 REST 响应携带 `X-Request-Id`（可由客户端传入复用）；gRPC 日志含 `request_id` 字段，支持链路关联
@@ -2010,6 +2050,8 @@ levee serve --insecure
 ## 第20章 agent — 分布式执行 Agent 管理
 
 管理分布式执行 Agent 常驻进程，支持注册到 master 节点、心跳保活、任务执行与结果回传。
+
+> **实现边界（务必先读）**：本章的 registry 目前是**进程内**的——`levee agent start` 在自身进程里维护注册表，`agent list / show / remove` 读取的是**同一次进程调用内**的注册表，既未持久化到磁盘，也没有对应的 master 端 RPC。因此跨进程执行 `levee agent list` 恒返回空表，`show`/`remove` 恒报 not-found。下文示例展示的是同一进程内（如集成测试驱动）的形态。接入 master 端 Agent 服务是已登记事项，见 [product-roadmap.md](product-roadmap.md)。
 
 ### 20.1 agent start
 
@@ -2075,15 +2117,15 @@ levee agent list [--status STATUS]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--status` | | 按状态过滤：`active` / `inactive` / `lost` |
+| `--status` | | 按状态过滤：`registered` / `idle` / `busy` / `offline`；取值非法时报错并列出全部接受值，空值表示不过滤 |
 
 **示例**
 
 ```命令示例：列出所有已注册 Agent
 levee agent list
 
-命令示例：仅列出活跃 Agent
-levee agent list --status active
+命令示例：仅列出有空闲容量的 Agent
+levee agent list --status idle
 ```
 
 ### 20.4 agent show
@@ -2115,7 +2157,7 @@ levee agent show agent-web-01
 从 master 移除 Agent 注册记录。
 
 ```text
-levee agent remove <agent-id> [--force]
+levee agent remove <agent-id>
 ```
 
 **参数**
@@ -2124,19 +2166,15 @@ levee agent remove <agent-id> [--force]
 |------|------|------|
 | `<agent-id>` | 是 | Agent ID |
 
-**选项**
+**说明**
 
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `--force` | `false` | 强制移除，即使 Agent 仍有正在执行的任务 |
+- 移除只删注册记录，不等待也不中断在途任务：`Deregister` 本就不检查 `ActiveTasks`，所以这里没有 `--force` 可绕过的守卫。若确实需要"有在途任务时拒绝移除"，那是一个待实现的行为，不是旗标缺失。
+- Agent ID 不存在时返回 not-found 并非零退出。
 
 **示例**
 
 ```命令示例：移除 Agent
 levee agent remove agent-web-01
-
-命令示例：强制移除
-levee agent remove agent-web-01 --force
 ```
 
 ## 第21章 tenant — 租户管理
@@ -2180,7 +2218,7 @@ levee tenant list [--status STATUS]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--status` | | 按状态过滤：`active` / `suspended` |
+| `--status` | | 按状态过滤：`active` / `suspended` / `deleted`；空值表示不过滤（默认含软删除租户），取值非法时报错并列出全部接受值 |
 
 **示例**
 
@@ -2226,7 +2264,7 @@ levee tenant suspend <tenant-id> [--reason TEXT]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--reason` | | 暂停原因（记录在审计中） |
+| `--reason` | | 暂停原因，写入租户记录的 `suspend_reason`，`tenant show`/`--json` 可见；`resume` 时清空。重复 suspend 时给出新原因会更新记录，不给原因则保留原有原因 |
 
 **示例**
 
@@ -2256,10 +2294,10 @@ levee tenant resume t-001
 
 ### 21.6 tenant delete
 
-删除租户。仅当租户处于 `suspended` 状态且无活跃变更时可删除。
+删除租户（软删除）。`Delete` 只做两件事：状态置为 `deleted`、从配额管理器释放该租户占用的额度；租户记录本身保留，历史 run/审计仍关联到该身份。
 
 ```text
-levee tenant delete <tenant-id> [--force]
+levee tenant delete <tenant-id>
 ```
 
 **参数**
@@ -2268,11 +2306,11 @@ levee tenant delete <tenant-id> [--force]
 |------|------|------|
 | `<tenant-id>` | 是 | 租户 ID |
 
-**选项**
+**说明**
 
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `--force` | `false` | 强制删除，级联清理租户所有数据 |
+- 没有前置状态要求：`active` 或 `suspended` 的租户都可删除，`Delete` 不检查在途变更，也不要求先 suspend（早期文档写过"仅当 suspended 且无活跃变更时可删除"，实现中并无此守卫）。
+- 重复删除同一租户是幂等的（已 `deleted` 直接返回成功）。
+- 没有 `--force`：级联清理租户名下所有数据尚未实现，`TenantManager` 也不持有"该租户有哪些 target/run"的反查，所以没有任何东西可"强制"清理。
 
 **示例**
 
@@ -2379,7 +2417,7 @@ levee drift detect --host web-01 --baseline base-001
 手动设置漂移基线。
 
 ```text
-levee drift baseline set --host <host> --file <path> [--name <name>]
+levee drift baseline set --host <host> --file <path>
 ```
 
 **选项**
@@ -2387,13 +2425,16 @@ levee drift baseline set --host <host> --file <path> [--name <name>]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--host` | | 目标主机名（必填） |
-| `--file` | | 基线文件路径（必填，JSON 格式） |
-| `--name` | 自动生成 | 基线名称 |
+| `--file` | | 基线文件路径（必填，YAML 或 JSON） |
+
+**说明**
+
+- 基线以 **host 为主键**，一台主机同时只保留一份基线：再次 `set` 会覆盖该机现有基线。因此没有 `--name`——命名多版本基线需要改动存储主键（`BaselineManager` 按 host 索引），不是加个旗标就能得到的。
 
 **示例**
 
 ```命令示例：手动设置基线
-levee drift baseline set --host web-01 --file baseline.json --name "v1.0 基线"
+levee drift baseline set --host web-01 --file baseline.json
 ```
 
 ### 22.3 drift baseline auto
@@ -2401,7 +2442,7 @@ levee drift baseline set --host web-01 --file baseline.json --name "v1.0 基线"
 从目标机最近一次 apply 的预期状态自动生成基线。
 
 ```text
-levee drift baseline auto --host <host> [--name <name>]
+levee drift baseline auto --host <host> --run <run-id>
 ```
 
 **选项**
@@ -2409,7 +2450,11 @@ levee drift baseline auto --host <host> [--name <name>]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--host` | | 目标主机名（必填） |
-| `--name` | 自动生成 | 基线名称 |
+| `--run` | | 取该 run 的 apply 快照作为基线来源（必填） |
+
+**说明**
+
+- 与 `set` 一样按 host 覆盖既有基线；来源 run 记录在 `source_run_id` 字段，`list`/`show` 可见。
 
 **示例**
 
@@ -2419,17 +2464,17 @@ levee drift baseline auto --host web-01
 
 ### 22.4 drift baseline list
 
-列出目标机的所有基线。
+列出已存储的基线（默认列出全部）。
 
 ```text
-levee drift baseline list --host <host>
+levee drift baseline list [--host <host>]
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--host` | | 目标主机名（必填） |
+| `--host` | | 只列出该主机的基线；省略则列出全部。因一台主机至多一份基线，命中时最多一行 |
 
 **示例**
 

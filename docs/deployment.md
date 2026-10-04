@@ -19,7 +19,7 @@ LEVEE 是单二进制程序，按角色拆分为三类常驻进程，可按需�
   - **持久化成员注册**：节点心跳写入 PG `cluster_nodes` 表（含 stale 检测），**不是进程内状态**（`internal/cluster/pg_registry.go`）。
   - **leader 选举 + 租约式分布式锁**：选举规则为「优先 `role=master` 且 `status=active` 的最小 ID，否则回退到最小 ID 的 active worker」（`internal/cluster/node.go` 的 `ElectLeader`）；锁带租约、过期可抢占。
   - **执行围栏与故障接管**：运行中的变更持执行租约（`--cluster-exec-lease-ttl`），执行节点崩溃后由 leader 接管循环（`--cluster-takeover-interval`）把其运行中变更收敛到 `interrupted` 终态，**不重跑副作用**（审计留痕，需再驱动用 `RetryChange`）。
-  - **跨节点调度**：leader 把已批准 run 分派给空闲 worker 节点（`--cluster-dispatch-interval` / `--cluster-dispatch-worker-capacity` / `--cluster-dispatch-claim-timeout`），worker 节点在本机执行。
+  - **跨节点调度**：leader 把已批准 run 分派给空闲 worker 节点（`--cluster-dispatch-interval` / `--cluster-dispatch-capacity` / `--cluster-dispatch-claim-timeout`），worker 节点在本机执行。
   后两层是 **leader-only 循环且需要 `--engine-enabled`**；把对应间隔设为 `<= 0` 可单独关闭该循环（关闭接管循环时**执行围栏仍然生效**）。`--cluster` 启动时会在日志中打印一行协同能力摘要（`cluster coordination: shared storage, membership, locking; ...`）。
 
 分布式执行 Agent（`levee agent start`）为独立常驻进程，注册到 master 节点承担任务执行，见 [cli-reference.md 第20章](cli-reference.md)。
@@ -273,6 +273,14 @@ LEVEE 为单二进制，升级即“备份 → 替换 → 验证”。推荐流�
    - 抽查一条变更 `levee list --limit 1` 与审计 `levee audit verify <run-id>`。
 7. **恢复服务**：若第 1 步执行了全局暂停，`levee resume-all --reason "升级完成"`。
 
+**库结构（schema）自动迁移**：第 5 步重启时，`levee serve` 会把库结构前推到当前版本，无需人工执行 SQL。机制与边界：
+
+- 版本号记在 `schema_version` 表里，SQLite 与 PostgreSQL **各自独立递增**（两条梯子可以不同长，因为有的步骤是方言专属的）；
+- **只前进、不后退**：回退二进制不会回退库结构，因此升级前第 2 步的备份就是唯一的回退手段；
+- 每个迁移步骤跑在**自己的事务**里，失败即整体回滚且**不写版本号**，下次启动重试同一版本；
+- PostgreSQL 侧先取一把 advisory lock，多个节点同时升级不会互相踩 DDL；
+- 例：v7（PostgreSQL）把 `cluster_nodes` 收敛到统一 DDL——去掉早期 state 侧建表遗留的 `UNIQUE (address)`（节点身份是 `id`，同一监听地址换新 `id` 重注册是接管动作的正常形状，留着它会让接管失败于 `SQLSTATE 23505`），并给早期 cluster 侧建表补上 `capabilities` 列。两条语句都幂等。
+
 **回滚**：若新版本异常，用升级前备份恢复后回退二进制：
 
 ```bash
@@ -304,6 +312,17 @@ levee serve --cluster \
 - **尚未实现**：在途变更的自动故障转移（节点崩溃时其正在执行的变更不会自动由他端续跑）、跨节点任务调度。节点角色（`--node-role master|worker`）当前主要用于标识与 leader 收敛。
 
 因此多节点部署应视为“共享存储 + 共享成员/锁 + 多接入点”，可用性提升依赖外部负载均衡与健康检查（`/healthz`）摘除故障节点，而非内置的在途工作自动切换。启动时的告警日志会重申这一点，请在容量与 SLO 评估中纳入。
+
+**变更日历（冻结期）与"哪个数据库"的唯一口径**：`levee serve --cluster --pg-dsn …` 会在**它自己那个 PostgreSQL 库**上建 `calendar_windows`（PostgreSQL 形状：`TIMESTAMPTZ` 列 + `$n` 占位符）并据此强制冻结期——plan 与 apply 执行前各判一次，命中即 `FailedPrecondition` 且不留计划产物，回滚豁免（口径见 `leveelang-spec.md` §4.2b）。冻结期要拦得住，写它的进程和读它的进程必须落在同一个库，而这件事现在由**配置文件一处决定**：`database.driver` 取 `sqlite`（默认，`database.path` 那个文件）或 `postgres`（此时 `database.dsn` 必填）。所有 CLI 命令、未加 `--cluster` 的 `serve`、`system status`/`doctor` 的探活、以及 `levee calendar` 都走同一个决策函数（`cmd/levee/helpers.go` 的 `openStoreFromConfig`），不存在"这条命令连本机、那条连服务端"。因此集群部署的推荐做法是把服务端那份 `configs/config.yaml`（`driver: postgres` + `dsn`）交给运维侧使用；`calendar create --frozen` 成功后仍会在 stderr 打印它写到哪个库，`driver: sqlite` 时额外警告"这是本地文件、服务端读不到"。
+
+三条启动期硬约束，都是为了避免"看起来配置好了其实各连各的"：
+
+- `serve` 只给 `--pg-dsn` 而不给 `--cluster`：启动失败。该旗标是集群共享存储的入口，未启用协调（无成员、无租约、无 fencing）的进程连上集群库，比它退回本机文件更危险；真要单节点 PostgreSQL，请用 `database.driver: postgres`。
+- `--cluster` 时 `--pg-dsn` 与 `database.dsn` 同时出现且指向不同：启动失败，并打印两者的**脱敏端点**。同一部署里两个答案等于没有答案。
+- 多租户（`tenant.enabled: true`）下服务端持有的 store 是 `tenant.TenantStore` 装饰器；日历按底层真实库判定方言（`state.Underlying`），因此开启隔离不会让冻结门禁失效。
+- 用 `database.driver: postgres` 让 CLI 直连共享库时，**每条命令打开连接都会走一遍与 serve 相同的迁移路径**（`state.NewPGStore` 在建池后应用 `pgMigrations`，与 `internal/backup` 共用同一把 advisory lock）。这是"读同一个库"的必要条件，但意味着服务账号需要 DDL 权限；若只想让服务端读写共享库、CLI 不碰，请让 CLI 侧配置继续指向本机 SQLite——`calendar create --frozen` 会明确告诉你那一行落在哪个库，而 `serve` 在它的日历表为空时会 WARN 提示可能是两边 `--config` 不一致。
+
+DSN 里含凭据，所以它不会出现在任何输出面上：`system status`、`system config get database.dsn`、启动日志与错误串一律打印 `postgres@host:port/db`（`internal/state.RedactDSN`，非 URL 形态的连接串整体 withheld 而不回显），`levee backup` 的结果文档同此口径。
 
 ## 13. 常见问题
 

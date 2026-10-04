@@ -2,12 +2,15 @@ package approval
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // =========================================================================
@@ -15,19 +18,56 @@ import (
 // =========================================================================
 
 func TestLevelConstants(t *testing.T) {
-	// The three level constants must match the strings used in
-	// service.go's validLevel switch and in the LEVEELang spec.
+	// The three level constants must match the strings the LEVEELang spec
+	// puts on the wire. They are the pin against someone "fixing" the alias
+	// by editing the literal here instead of dsl.ApprovalLevels.
 	assert.Equal(t, "standard", LevelStandard)
 	assert.Equal(t, "high", LevelHigh)
 	assert.Equal(t, "emergency", LevelEmergency)
 }
 
 func TestLevelConstants_AreValidLevels(t *testing.T) {
-	// Each level constant must be accepted by validLevel (defined in
-	// service.go). This guards against a rename in one place but not
-	// the other.
+	// Each level constant must be accepted by IsLevel, which is the table
+	// derived from dsl.ApprovalLevels. This guards against a rename in one
+	// place but not the other.
 	for _, level := range []string{LevelStandard, LevelHigh, LevelEmergency} {
-		assert.True(t, validLevel(level), "level %q should be valid", level)
+		assert.True(t, IsLevel(level), "level %q should be valid", level)
+	}
+}
+
+func TestLevelVocabularyHasOneSource(t *testing.T) {
+	// The tier set, its order, and the per-tier defaults must stay in step.
+	// dsl owns the vocabulary; internal/approval owns behaviour per tier, so a
+	// fourth tier added at the language layer without a default config would
+	// otherwise surface as a silently zero-valued LevelConfig in All() and as
+	// ErrInvalidLevel from Get() at the first approval that needed it.
+	names := LevelNames()
+	require.Equal(t, dsl.ApprovalLevels, names, "the accepted tiers are dsl's, restated nowhere")
+	assert.Equal(t, strings.Join(dsl.ApprovalLevels, ", "), LevelNamesJoined(),
+		"error text is assembled from the same table it judges")
+
+	mutated := LevelNames()
+	mutated[0] = "handed-out-and-edited"
+	assert.Equal(t, names, LevelNames(),
+		"LevelNames hands out a copy: a caller editing it must not edit the vocabulary")
+
+	m := NewLevelManager()
+	require.Len(t, m.All(), len(names), "one config per declared tier")
+	for i, name := range names {
+		cfg, err := m.Get(name)
+		require.NoError(t, err, "tier %q must have a default configuration", name)
+		assert.Equal(t, name, cfg.Level, "All() order must follow the vocabulary")
+		assert.Equal(t, cfg, m.All()[i], "All()[i] must be the config for %s", name)
+		assert.Positive(t, cfg.MinApprovers, "a tier with 0 approvers can never be satisfied")
+	}
+
+	// Refusal half: a value outside the vocabulary is rejected by every layer
+	// that judges it, with the message naming the accepted set.
+	for _, bad := range []string{"", "STANDARD", "critical", "standard "} {
+		assert.False(t, IsLevel(bad), "%q must not be accepted", bad)
+		_, err := m.Get(bad)
+		require.ErrorIs(t, err, ErrInvalidLevel)
+		assert.Contains(t, err.Error(), LevelNamesJoined())
 	}
 }
 

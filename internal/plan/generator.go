@@ -164,10 +164,10 @@ type Generator struct {
 func NewGenerator() *Generator {
 	c := executor.NewIrreversibleChecker()
 	// The inherently destructive vocabulary has one home
-	// (executor.DefaultIrreversibleActions). The dsl compile gate (V14/LE082)
+	// (dsl.DefaultIrreversibleActions). The dsl compile gate (V14/LE082)
 	// judges steps against the same list, so compile time and plan time
 	// cannot disagree about what is irreversible by nature.
-	for _, key := range executor.DefaultIrreversibleActions() {
+	for _, key := range dsl.DefaultIrreversibleActions() {
 		module, action, _ := strings.Cut(key, ".")
 		c.RegisterWhitelist(module, action)
 	}
@@ -218,7 +218,7 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		allowed[key] = struct{}{}
 	}
 	for _, s := range wf.Steps {
-		if !s.Irreversible && !executor.IsDefaultIrreversible(s.Module, s.Action) {
+		if !s.Irreversible && !dsl.IsInherentIrreversible(s.Module, s.Action) {
 			continue
 		}
 		key := s.Module + "." + s.Action

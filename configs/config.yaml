@@ -7,6 +7,18 @@ server:
   log_level: info                   # debug | info | warn | error
   log_format: text                  # text | json
 
+# 数据库：所有 CLI 命令与 serve（未启用 --cluster 时）共用这一处选择，
+# 因此「冻结期写给哪个库」由配置文件决定，而不是由先运行了哪条命令决定。
+# 口径见 docs/deployment.md 的变更日历一节。
+database:
+  driver: sqlite                    # sqlite | postgres
+  path: ~/.levee/data/levee.db      # sqlite 使用；留空则由 server.data_dir 派生
+  # dsn: "postgres://levee:pass@db.internal:5432/levee?sslmode=require"
+                                    # postgres 使用；driver: postgres 时必填
+  max_open_conns: 50                # 连接池上限（postgres 生效）
+  max_idle_conns: 10                # 空闲连接上限（postgres 生效）
+  conn_max_lifetime: 30m            # 连接最长存活时间
+
 # 执行配置
 executor:
   default_concurrency: 50           # 默认并发数

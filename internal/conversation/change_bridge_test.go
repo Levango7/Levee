@@ -211,3 +211,99 @@ func TestReviewingConfirmWithoutBridgeKeepsHonestReply(t *testing.T) {
 	assert.NotContains(t, reply.Text, "已创建变更")
 	assert.Equal(t, StateReviewing, sess.GetState())
 }
+
+// bareBridgeDraft declares a target and steps and nothing else. Every omitted
+// block is legal per spec, so the bridge must create the change — and must still
+// tell the operator which defaults it carries, since the same person then
+// approves it without ever reading the draft.
+const bareBridgeDraft = `
+name: ai-bare
+target:
+  type: host
+  query: "os=linux"
+steps:
+  - name: restart
+    action: shell.exec
+    args:
+      cmd: "systemctl restart nginx"
+`
+
+// fullyDeclaredBridgeDraft declares window, approval and batches, so there is
+// nothing to advise about. It exists to keep the note from becoming boilerplate:
+// a reply that always said "另有 N 条提示" would train the operator to skip it.
+const fullyDeclaredBridgeDraft = `
+name: ai-declared
+target:
+  type: host
+  query: "os=linux"
+window:
+  start: "02:00"
+  end: "04:00"
+  timezone: UTC
+approval:
+  level: high
+batches:
+  strategy: percent
+  steps: [1, 10, 100]
+steps:
+  - name: restart
+    action: shell.exec
+    args:
+      cmd: "systemctl restart nginx"
+`
+
+func TestPromoteRecommendationAdvisesWithoutBlocking(t *testing.T) {
+	creator := &fakeChangeCreator{}
+	e := NewConversationEngine(ConversationEngineConfig{ChangeCreator: creator})
+	sess := newBridgeSession(bareBridgeDraft)
+
+	reply, err := e.promoteRecommendation(context.Background(), sess, sess.GetRecommendation())
+	require.NoError(t, err)
+	require.Len(t, creator.calls, 1, "an advisory may not refuse a handoff that Validate accepted")
+
+	assert.Contains(t, reply.Text, "3 条提示（不阻断创建）", "the note counts what it lists: %s", reply.Text)
+	for _, code := range []string{"LE095", "LE094", "LE096"} {
+		assert.Contains(t, reply.Text, code, "the approver is told which block is missing: %s", reply.Text)
+	}
+	assert.Equal(t, StateDone, sess.GetState(), "the handoff still completes")
+}
+
+func TestPromoteRecommendationNoteIsDerivedFromTheDraft(t *testing.T) {
+	cases := []struct {
+		name      string
+		draft     string
+		wantCodes []string
+	}{
+		{
+			name:      "everything declared",
+			draft:     fullyDeclaredBridgeDraft,
+			wantCodes: nil,
+		},
+		{
+			name:      "canary batch too large",
+			draft:     strings.Replace(fullyDeclaredBridgeDraft, "steps: [1, 10, 100]", "steps: [20, 60, 100]", 1),
+			wantCodes: []string{"LE033"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			creator := &fakeChangeCreator{}
+			e := NewConversationEngine(ConversationEngineConfig{ChangeCreator: creator})
+			sess := newBridgeSession(tc.draft)
+
+			reply, err := e.promoteRecommendation(context.Background(), sess, sess.GetRecommendation())
+			require.NoError(t, err)
+			require.Len(t, creator.calls, 1)
+
+			if len(tc.wantCodes) == 0 {
+				assert.NotContains(t, reply.Text, "条提示",
+					"a draft with nothing to advise about must not carry the note:\n%s", reply.Text)
+				return
+			}
+			for _, code := range tc.wantCodes {
+				assert.Contains(t, reply.Text, code, "reply: %s", reply.Text)
+			}
+			assert.Contains(t, reply.Text, "20%", "the canary advisory quotes the size it objects to")
+		})
+	}
+}

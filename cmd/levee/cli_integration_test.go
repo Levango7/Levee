@@ -67,6 +67,63 @@ func executeCommand(args ...string) (string, error) {
 	})
 }
 
+// captureStreams is captureStdout with the two streams kept apart: it returns
+// stdout, stderr and the command error.
+//
+// captureStdout deliberately merges cobra's stderr into the captured stdout,
+// which is convenient until the claim under test is exactly "the document on
+// stdout is not polluted by diagnostics" — advisory prose then breaks JSON
+// parsing in the *test* while production would be fine. Commands that emit a
+// document (compile --ir, the --json envelope, import's YAML) are tested here.
+func captureStreams(fn func() error) (string, string, error) {
+	resetRootFlags()
+
+	origOut, origErr := os.Stdout, os.Stderr
+	rOut, wOut, err := os.Pipe()
+	if err != nil {
+		return "", "", err
+	}
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		return "", "", err
+	}
+
+	os.Stdout, os.Stderr = wOut, wErr
+	rootCmd.SetOut(wOut)
+	rootCmd.SetErr(wErr)
+
+	outCh := make(chan string, 1)
+	errCh := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, rOut)
+		outCh <- buf.String()
+	}()
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, rErr)
+		errCh <- buf.String()
+	}()
+
+	fnErr := fn()
+
+	_ = wOut.Close()
+	_ = wErr.Close()
+	os.Stdout, os.Stderr = origOut, origErr
+
+	return <-outCh, <-errCh, fnErr
+}
+
+// runSplit executes the CLI with stdout and stderr captured separately.
+func runSplit(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	resetAllCmdFlags()
+	return captureStreams(func() error {
+		rootCmd.SetArgs(args)
+		return rootCmd.Execute()
+	})
+}
+
 // executeCommandJSON is a convenience wrapper that runs executeCommand and
 // parses the output as JSON into the provided envelope-shaped map.
 func executeCommandJSON(args ...string) (map[string]any, string, error) {

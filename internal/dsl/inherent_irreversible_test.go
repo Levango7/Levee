@@ -1,4 +1,4 @@
-package executor
+package dsl
 
 import (
 	"testing"
@@ -21,17 +21,17 @@ func TestDefaultIrreversibleActions(t *testing.T) {
 	}, DefaultIrreversibleActions())
 }
 
-// TestIsDefaultIrreversible pins the lookup semantics: hits on the five
+// TestIsInherentIrreversible pins the lookup semantics: hits on the five
 // inherent pairs, misses on everything else (including empty inputs and the
 // same module's reversible actions).
-func TestIsDefaultIrreversible(t *testing.T) {
-	assert.True(t, IsDefaultIrreversible("pkg", "remove"))
-	assert.True(t, IsDefaultIrreversible("file", "delete"))
-	assert.True(t, IsDefaultIrreversible("user", "remove"))
-	assert.True(t, IsDefaultIrreversible("mysql", "replica_switch"))
-	assert.True(t, IsDefaultIrreversible("mysql", "pt_osc"))
+func TestIsInherentIrreversible(t *testing.T) {
+	assert.True(t, IsInherentIrreversible("pkg", "remove"))
+	assert.True(t, IsInherentIrreversible("file", "delete"))
+	assert.True(t, IsInherentIrreversible("user", "remove"))
+	assert.True(t, IsInherentIrreversible("mysql", "replica_switch"))
+	assert.True(t, IsInherentIrreversible("mysql", "pt_osc"))
 
-	assert.False(t, IsDefaultIrreversible("pkg", "install"))
-	assert.False(t, IsDefaultIrreversible("mysql", "exec"))
-	assert.False(t, IsDefaultIrreversible("", ""))
+	assert.False(t, IsInherentIrreversible("pkg", "install"))
+	assert.False(t, IsInherentIrreversible("mysql", "exec"))
+	assert.False(t, IsInherentIrreversible("", ""))
 }

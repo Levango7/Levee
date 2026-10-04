@@ -14,6 +14,7 @@ import (
 
 	"github.com/nexus/levee/internal/backup"
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/state"
 )
 
 // Backup / restore command option variables. They are populated by cobra and
@@ -97,8 +98,14 @@ func resolvePGDSN(flagValue string) string {
 }
 
 // resolveBackupManager builds the backup.Manager matching the requested
-// backend: PostgreSQL when a DSN is available, otherwise the SQLite database
-// configured for this profile.
+// backend: an explicit --pg-dsn / LEVEE_PG_DSN wins, then the database this
+// profile actually points at.
+//
+// The second step is the one that matters for a PostgreSQL deployment: without
+// it, `levee backup` with no flag copied `database.path` — a file that does not
+// hold this deployment's data — and reported success. A backup that succeeds
+// against the wrong database is worse than a failed one, so the configured
+// backend is honoured here rather than assumed to be SQLite.
 func resolveBackupManager(pgDSN string) (*backup.Manager, error) {
 	if dsn := resolvePGDSN(pgDSN); dsn != "" {
 		return backup.NewManagerPostgres(dsn), nil
@@ -108,6 +115,9 @@ func resolveBackupManager(pgDSN string) (*backup.Manager, error) {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 	applySecurityConfig(cfg)
+	if cfg.Database.Driver == state.DriverPostgres {
+		return backup.NewManagerPostgres(cfg.Database.DSN), nil
+	}
 	return backup.NewManagerSQLite(cfg.Database.Path), nil
 }
 
@@ -202,7 +212,11 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	payload := backupPayload("restore", mgr, restoreOptInput)
-	payload["target"] = mgr.Source()
+	// "target" is the name the restore output has always used for the same
+	// thing "source" names. Copying it from the payload rather than calling the
+	// manager again keeps one redaction decision: two call sites for one value is
+	// how one of them ends up printing the DSN.
+	payload["target"] = payload["source"]
 	if preRestore != "" {
 		payload["pre_restore_backup"] = preRestore
 	}
@@ -251,9 +265,12 @@ func confirmProceed(r io.Reader, w io.Writer) bool {
 // and SHA-256 digest, so both human and JSON output report identical facts.
 func backupPayload(action string, mgr *backup.Manager, backupPath string) map[string]any {
 	payload := map[string]any{
-		"action":      action,
-		"driver":      mgr.Driver(),
-		"source":      mgr.Source(),
+		"action": action,
+		"driver": mgr.Driver(),
+		// SafeSource, not Source: for a PostgreSQL backup Source() is the DSN,
+		// and this document is printed on stdout and handed to `--json`
+		// consumers, so the connection password used to travel with it.
+		"source":      mgr.SafeSource(),
 		"backup_path": backupPath,
 	}
 	if st, err := os.Stat(backupPath); err == nil {

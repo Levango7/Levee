@@ -78,20 +78,36 @@ LEVEE Doctor: healthy
 
 ```命令示例：创建一个 Nginx 重载模板
 levee template create --name nginx-reload --content "name: nginx-reload
+version: \"1.0\"
+target:
+  type: host
+  query: \"role=web\"
 steps:
   - name: reload-nginx
-    action: shell
-    command: systemctl reload nginx
-    rollback: systemctl restart nginx" --params '[{"name":"target","description":"Target host"}]'
+    action: shell.exec
+    args:
+      cmd: systemctl reload {{.service}}
+    rollback:
+      action: shell.exec
+      args:
+        cmd: systemctl restart nginx" --params '[{"name":"service","type":"string","required":true}]'
 ```
+
+`--content` 存的是一份**现行方言的 LEVEELang 工作流正文**（占位符按 `{{.name}}`
+字面替换）。参数声明只能经 `--params` 的 JSON 数组进来：正文里写 `params:` 块不会
+被读。工作流形状本身见 `docs/leveelang-spec.md`，可直接抄
+`examples/templates/patch-rolling.yaml`。
 
 ### 2. 实例化 Workflow
 
 ```命令示例：从模板创建 workflow
-levee new nginx-reload --params target=web01.prod
+levee new nginx-reload --params service=nginx
 ```
 
-输出中将包含 `run_id`，后续操作均以此 ID 为准。
+输出中将包含 `run_id`，后续操作均以此 ID 为准。`new` 把**渲染后的工作流**写进 run
+（`run.WorkflowName` 就是 plan 阶段解析的那个源），所以先过 `levee compile --strict`
+的解析与结构校验两道门，且不允许留下未替换的 `{{.参数}}`：任一条不过就 `exit 2` 并
+且不创建 run，而不是留一条到 `plan` 才报 `LE001` 的孤儿记录。
 
 ### 3. 查看 Workflow 详情
 
@@ -101,17 +117,26 @@ levee show <run-id>
 
 ## 变更生命周期
 
-LEVEE 没有 `plan` 子命令，也没有独立的 dry-run 步骤。变更生命周期为：
+变更生命周期为：
 
 ```text
-new（创建 draft run） -> approve（审批通过） -> apply（执行）
+new（创建 draft run） -> plan（生成并落库计划） -> approve（审批通过） -> apply（执行）
+```
+
+`plan` 解析该 run 的工作流源、按清单校验目标主机、生成批次计划并把
+`plan_json` + `plan_hash` 写在 run 上；`apply` 之后执行的正是这份被哈希绑定的产物，
+并且只读存储与清单、不接触任何目标机：
+
+```命令示例：生成计划
+levee plan <run-id> --targets web-1,web-2
 ```
 
 `apply` 内部依次完成：哈希校验、执行前快照、按批次顺序执行、验证门禁，
 失败时自动触发回滚——验证与回滚都发生在 apply 阶段内，无需单独命令。
 
-如需在执行前静态检查 workflow 内容，可使用 `levee compile <file.yml>`
-做类型检查；用 `levee show <run-id>` 查看实例化后的完整内容。
+如需在执行前静态检查一个尚未实例化的文件，可使用 `levee compile <file.yml>`
+做类型检查；用 `levee show <run-id>` 查看实例化后的 run（`--json` 输出里带完整的
+工作流源）。
 
 ## 审批与执行
 

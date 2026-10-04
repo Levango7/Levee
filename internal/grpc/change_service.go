@@ -43,7 +43,9 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
@@ -309,6 +311,63 @@ func (s *ChangeService) authorize(ctx context.Context, run *state.Run, action, r
 		rpc, d.Subject, d.Env, action, d.Reason, d.Subject, d.Env, action)
 }
 
+// authorizeRead is the read-gate half of authorize. Writes require a subject the
+// policy can judge; reads deliberately admit an unattributable caller (see
+// authz.AdmitsRead for why), so this can only refuse a caller the registry DOES
+// know and whose team is not granted `view` on this environment.
+//
+// The refusal names subject/env and points at `authz explain`, because a
+// dashboard that shows fewer changes than expected is otherwise indistinguishable
+// from a store that has fewer changes.
+func (s *ChangeService) authorizeRead(ctx context.Context, run *state.Run, rpc string) error {
+	if s.authz == nil {
+		return nil
+	}
+	subject := SubjectFromContext(ctx)
+	allowed, reason := s.authz.AdmitsRead(subject, envOf(run))
+	if allowed {
+		return nil
+	}
+	env := envOf(run)
+	return status.Errorf(codes.PermissionDenied,
+		"%s denied for subject %q on env %q action %q: %s (see `levee authz explain --subject %s --env %s --action %s`)",
+		rpc, subject, env, permission.ActionView, reason, subject, env, permission.ActionView)
+}
+
+// authorizeReadOf resolves the change first, because the environment a read is
+// judged against lives on the run. A missing run is not a policy question: the
+// caller learns "not found" from the handler that loads it, so this returns nil
+// and lets that handler produce the accurate answer.
+func (s *ChangeService) authorizeReadOf(ctx context.Context, changeID, rpc string) error {
+	if s.authz == nil || changeID == "" {
+		return nil
+	}
+	run, err := s.store.GetRun(ctx, changeID)
+	if err != nil || run == nil {
+		return nil
+	}
+	return s.authorizeRead(ctx, run, rpc)
+}
+
+// envVisibilityPredicate returns nil when this caller may see every
+// environment, or a predicate over runs naming the ones they may. It is the list
+// counterpart of authorizeRead: a list must narrow to what the caller may see
+// instead of refusing outright, because refusing would hide the changes they ARE
+// allowed to see and turn a permissions question into an empty dashboard.
+func (s *ChangeService) envVisibilityPredicate(ctx context.Context) func(*state.Run) bool {
+	if s.authz == nil {
+		return nil
+	}
+	subject := SubjectFromContext(ctx)
+	if !s.authz.ReadFilteringActive(subject) {
+		return nil
+	}
+	return func(run *state.Run) bool {
+		allowed, _ := s.authz.AdmitsRead(subject, envOf(run))
+		return allowed
+	}
+}
+
 // ContextWithActor returns a context carrying the actor name used for
 // audit attribution by service-layer calls. It exists for in-process
 // callers (the CLI's local mode calls services directly, bypassing the
@@ -482,6 +541,15 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
 	}
 
+	// Policy first, exactly like apply: `plan` is a write. It persists the
+	// canonical plan on the run, it kicks off (or supersedes) the approval
+	// chain, and re-planning an already-approved change resets it to draft.
+	// Leaving this RPC ungated meant any authenticated caller could undo
+	// somebody else's approval by asking for a fresh plan.
+	if err := s.authorize(ctx, run, permission.ActionPlan, "plan"); err != nil {
+		return nil, err
+	}
+
 	// Frozen-target guard (first enforcement point): planning against a
 	// frozen host is rejected up front. Execution-time re-validation lives
 	// in the engine's host guard (ClosureRunner.WithHostGuard), which fires
@@ -494,10 +562,12 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 	if s.engine != nil && s.engine.Plan != nil {
 		planMsg, stored, err := s.engine.Plan(ctx, req.GetChangeId(), req.GetTargetHosts())
 		if err != nil {
-			// A closed change window is a refusal the operator can act on,
-			// not a server fault: report it like the approval-quorum refusal
-			// below instead of burying it in Internal.
-			if errors.Is(err, dsl.ErrWindowClosed) {
+			// A closed change window, an unexecutable declared gate and a
+			// calendar freeze are all refusals the operator can act on, not
+			// server faults: report them like the approval-quorum refusal below
+			// instead of burying them in Internal.
+			if errors.Is(err, dsl.ErrWindowClosed) || errors.Is(err, engine.ErrGateNotExecutable) ||
+				errors.Is(err, calendar.ErrFrozen) {
 				return nil, status.Error(codes.FailedPrecondition, err.Error())
 			}
 			return nil, status.Errorf(codes.Internal, "plan: %v", err)
@@ -1461,21 +1531,34 @@ func (s *ChangeService) bulkTransition(ctx context.Context, targetStatus, action
 		return nil, status.Error(codes.Internal, "store not configured")
 	}
 
-	// Authorise the fleet-wide action before a single run is read or
-	// touched. The key and permission names are exactly the ones the CLI
-	// path uses (the acting actor, pause:all / resume:all), so a grant
-	// list cannot be sidestepped by calling the API instead of
-	// `levee pause all`. Denial auditing lives on the injected checker
-	// (pause.SimplePermissionChecker.SetDenyRecorder), so this code
-	// decides and never reports.
+	// Authorise the fleet-wide action before a single run is read or touched.
+	// The decision is made on the VERIFIED subject, not the audit actor:
+	// actorFromCtx documents itself as "never for authorization decisions",
+	// and under a shared --token any holder may claim any actor string — a
+	// grant list keyed on that name is a lock you can hand the key to by
+	// shouting its name. Callers with nothing to prove are refused rather than
+	// allowed, because this is a write that stops every change at once.
 	if s.bulkAuth != nil {
-		permission := pause.PermissionPauseAll
+		granted := pause.PermissionPauseAll
 		if targetStatus == "running" {
-			permission = pause.PermissionResumeAll
+			granted = pause.PermissionResumeAll
 		}
-		if actor := actorFromCtx(ctx); !s.bulkAuth.HasPermission(actor, permission) {
+		subject := SubjectFromContext(ctx)
+		// Ask the checker in every case, including "no subject": its denial
+		// recorder is what puts `permission.denied` in the audit table, and a
+		// rejected fleet-wide action with no provable name is exactly the kind
+		// of event an auditor asks about.
+		grantedOK := s.bulkAuth.HasPermission(subject, granted)
+		if subject == "" {
+			return nil, status.Errorf(codes.Unauthenticated,
+				"%s requires a provable identity: the bulk grant list cannot judge an asserted "+
+					"actor name. Authenticate with a named token (--auth-token name=secret), SSO or OIDC.",
+				action)
+		}
+		if !grantedOK {
 			return nil, status.Errorf(codes.PermissionDenied,
-				"%s requires the %q permission, which actor %q does not hold", action, permission, actor)
+				"%s denied for subject %q: %q is not granted (see `levee authz explain --subject %s`)",
+				action, subject, granted, subject)
 		}
 	}
 
@@ -2376,6 +2459,9 @@ func (s *ChangeService) GetChange(ctx context.Context, req *pb.GetChangeRequest)
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetId())
 	}
+	if err := s.authorizeRead(ctx, run, "get"); err != nil {
+		return nil, err
+	}
 	return runToPB(run), nil
 }
 
@@ -2425,6 +2511,15 @@ func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequ
 		storeStatus = ""
 	}
 	clientFiltered := len(statuses) > 1 || labelContains != ""
+
+	// Read visibility is an environment predicate and RunFilter can only carry
+	// ONE IncidentID, so a caller with a restricted view has to take the scan
+	// path. Everyone else — no policy, no matrix, or an unattributable caller
+	// (see authz.AdmitsRead) — keeps the store-paged fast path unchanged.
+	maySee := s.envVisibilityPredicate(ctx)
+	if maySee != nil {
+		clientFiltered = true
+	}
 
 	var (
 		changes   []*pb.Change
@@ -2493,6 +2588,12 @@ func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequ
 				continue
 			}
 			if !matchStatuses(c, statuses) {
+				continue
+			}
+			if maySee != nil && !maySee(run) {
+				// Not a permission error — the row is simply not in this
+				// caller's view. A list is the one read where refusing the
+				// whole request would hide the rows it MAY show.
 				continue
 			}
 			matchedTotal++
@@ -2652,6 +2753,12 @@ func (s *ChangeService) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*p
 		}
 	}
 
+	// Step output is change content: a caller who may not read the change may
+	// not read its logs either.
+	if err := s.authorizeReadOf(ctx, req.GetChangeId(), "logs"); err != nil {
+		return nil, err
+	}
+
 	runID := req.GetChangeId()
 	if req.GetRunId() != "" {
 		runID = req.GetRunId()
@@ -2729,6 +2836,9 @@ func (s *ChangeService) GetDiff(ctx context.Context, req *pb.GetDiffRequest) (*p
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", runID)
 	}
+	if aerr := s.authorizeRead(ctx, run, "diff"); aerr != nil {
+		return nil, aerr
+	}
 
 	format := req.GetFormat()
 	if format == "" {
@@ -2790,6 +2900,9 @@ func (s *ChangeService) GetTrace(ctx context.Context, req *pb.GetTraceRequest) (
 	}
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+	if aerr := s.authorizeRead(ctx, run, "trace"); aerr != nil {
+		return nil, aerr
 	}
 
 	traces, err := s.store.ListTraces(ctx, state.TraceFilter{RunID: runID})
@@ -2871,6 +2984,9 @@ func (s *ChangeService) WatchChange(req *pb.WatchChangeRequest, stream grpcpkg.S
 	if run == nil {
 		return status.Errorf(codes.NotFound, "change %q not found", changeID)
 	}
+	if err := s.authorizeRead(ctx, run, "watch"); err != nil {
+		return err
+	}
 
 	// Optionally emit the current state as the first event.
 	if req.GetIncludeCurrentState() {
@@ -2942,6 +3058,10 @@ func (s *ChangeService) StreamLogs(req *pb.StreamLogsRequest, stream grpcpkg.Ser
 	runID := req.GetChangeId()
 	if req.GetRunId() != "" {
 		runID = req.GetRunId()
+	}
+
+	if err := s.authorizeReadOf(ctx, req.GetChangeId(), "stream logs"); err != nil {
+		return err
 	}
 
 	// Replay historical logs. Alongside the per-step ID set we track the

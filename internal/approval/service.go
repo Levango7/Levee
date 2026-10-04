@@ -213,18 +213,6 @@ func casRetryBackoff(attempt int) {
 	time.Sleep(time.Duration(attempt) * 2 * time.Millisecond)
 }
 
-// validLevel reports whether the given approval level is one of the
-// three legal tiers defined by the LEVEELang spec (standard / high /
-// emergency).
-func validLevel(level string) bool {
-	switch level {
-	case "standard", "high", "emergency":
-		return true
-	default:
-		return false
-	}
-}
-
 // --- Service ----------------------------------------------------------------
 
 // Service is the approval service. It drives the approval state machine
@@ -288,8 +276,8 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Approval, err
 	if req.RunID == "" {
 		return nil, ErrEmptyRunID
 	}
-	if !validLevel(req.Level) {
-		return nil, fmt.Errorf("%w: %q (allowed: standard, high, emergency)", ErrInvalidLevel, req.Level)
+	if !IsLevel(req.Level) {
+		return nil, fmt.Errorf("%w: %q (allowed: %s)", ErrInvalidLevel, req.Level, LevelNamesJoined())
 	}
 	if req.MinApprovers <= 0 {
 		req.MinApprovers = 1

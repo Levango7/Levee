@@ -23,8 +23,6 @@ package dsl
 import (
 	"fmt"
 	"strings"
-
-	"github.com/nexus/levee/internal/executor"
 )
 
 // 自定义校验错误码。当 internal/errors 中已有合适码时优先复用，
@@ -342,8 +340,8 @@ func joinAction(module, action string) string {
 //
 // 判定与 executor.IrreversibleChecker.Check 的优先级一致——先看作者显式
 // 声明（irreversible: true），再看引擎固有破坏性词表
-// （executor.DefaultIrreversibleActions，与 plan 生成器注册的是同一份）。
-// 词表放一份在 executor，编译期与 plan 期对「天生不可逆」的认定不可能分叉。
+// （DefaultIrreversibleActions，与 plan 生成器注册的是同一份）。
+// 词表只在 internal/dsl 存一份，编译期与 plan 期对「天生不可逆」的认定不可能分叉。
 func (v *Validator) validateIrreversibleWhitelist(wf *Workflow) []ValidationError {
 	var errs []ValidationError
 
@@ -362,7 +360,7 @@ func (v *Validator) validateIrreversibleWhitelist(wf *Workflow) []ValidationErro
 	}
 
 	for i, s := range wf.Steps {
-		if !s.Irreversible && !executor.IsDefaultIrreversible(s.Module, s.Action) {
+		if !s.Irreversible && !IsInherentIrreversible(s.Module, s.Action) {
 			continue
 		}
 		key := s.Module + "." + s.Action

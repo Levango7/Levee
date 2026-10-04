@@ -136,6 +136,10 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 	// with slow gates can bound the detached verification (see
 	// WithPostVerifyTimeout); zero keeps rollback.DefaultVerifyTimeout.
 	actors := e.resolveRollbackActors(ctx, changeID)
+	// The emergency override for the change calendar comes from the stored
+	// workflow's own declaration, not from the tier risk scoring derived — see
+	// declaresEmergency. An unreadable workflow grants nothing.
+	calendarEmergency := e.declaresEmergencyFor(ctx, changeID)
 	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr,
 		rollback.WithGrader(newRollbackGrader(e.newRunNotifySink(actors))),
 		rollback.WithVerifyTimeout(e.postVerifyTimeout))
@@ -147,12 +151,21 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 	}
 	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, postVerifier,
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
-			return inventory.ValidateNotFrozen(ctx, store, hosts)
+			if err := inventory.ValidateNotFrozen(ctx, store, hosts); err != nil {
+				return err
+			}
+			// The same calendar the plan consulted, asked again now that the
+			// change is about to touch targets: a freeze raised while the
+			// change sat in approval must still stop it. Rollback never comes
+			// through engine.ClosureRunner.Run, so this stays out of the
+			// recovery path — TestCalendarGateIsForwardOnly pins that.
+			return e.assertCalendarAllowsExecution(ctx, rx, hosts, calendarEmergency)
 		}),
-		// Gate runtime: only the slo gate consumes PrometheusURL. With the
-		// default (empty) the materialisation of an slo/human gate still
-		// fails closed exactly as it would with no runtime attached.
-		engine.WithGateRuntime(engine.GateRuntime{PrometheusURL: e.gatePrometheusURL}),
+		// Gate runtime: the deployment capabilities declared gates may need
+		// (Prometheus endpoint for slo, approval transport for human). It is the
+		// same value GeneratePlan checks against, so a plan that was accepted is
+		// always executable here — see Engine.gateRuntime.
+		engine.WithGateRuntime(e.gateRuntime()),
 	)
 	if snapHook != nil {
 		// The WithSnapshotter option is applied post-construction via a

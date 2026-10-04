@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/template"
 )
@@ -28,7 +30,13 @@ func newNewCmd() *cobra.Command {
 		Short: "Instantiate a workflow from a template",
 		Long: "Instantiate a workflow from a named template by filling its " +
 			"placeholders with the supplied parameters. The result is a new " +
-			"run record in draft status ready for planning and approval.",
+			"run record in draft status ready for planning and approval.\n\n" +
+			"The rendered workflow is stored on the run as its workflow source, " +
+			"which is what `levee plan` later parses. Before the run is created " +
+			"the rendered text must pass the same parse and structural-validation " +
+			"gates `levee compile --strict` runs, and no {{.placeholder}} may " +
+			"survive substitution; a template that fails any of them is refused " +
+			"here (exit 2) and no run record is created.",
 		Args: cobra.ExactArgs(1),
 		RunE: runNew,
 	}
@@ -71,7 +79,15 @@ func runNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("instantiate: %w", err)
 	}
 
-	// 5. Open the state store and create a run record.
+	// 5. Refuse to mint a run this command cannot later plan. This is the first
+	// moment the rendered text exists and the last one where the cause is
+	// obvious, so it is where the check belongs (see validateRenderedWorkflow).
+	advisories, err := validateRenderedWorkflow(templateName, result.Content)
+	if err != nil {
+		return err
+	}
+
+	// 6. Open the state store and create a run record.
 	store, err := openStore(ctx)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
@@ -89,9 +105,13 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 
 	now := time.Now().UTC()
+	// WorkflowName carries the run's workflow *source*, not a display name:
+	// wiring.resolveWorkflow parses it as inline YAML (or reads it as a path),
+	// and this is what the gRPC instantiation path already stores. Putting the
+	// template name here instead left every `levee new` run unplannable.
 	run := &state.Run{
 		ID:             runID,
-		WorkflowName:   result.TemplateName,
+		WorkflowName:   result.Content,
 		TemplateName:   result.TemplateName,
 		Params:         string(paramsJSON),
 		Status:         "draft",
@@ -104,7 +124,14 @@ func runNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("create run: %w", err)
 	}
 
-	// 6. Output the result.
+	// 7. Output the result.
+	//
+	// Advisories ride on stderr and change nothing about the run: the
+	// template simply does not declare a window, an approval tier or batches,
+	// which is legal. Naming them here is what makes the run's defaults
+	// discoverable before someone approves them blind.
+	emitAdvisories(cmd.ErrOrStderr(), "template "+templateName, advisories)
+
 	output := map[string]any{
 		"run_id":        runID,
 		"template_name": result.TemplateName,
@@ -129,4 +156,44 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	PrintHuman(os.Stdout, output)
 	return nil
+}
+
+// validateRenderedWorkflow checks instantiated template content with the first
+// two gates `levee compile --strict` runs — parse, then structural validation.
+// The third gate (strict type checking) is deliberately left out: it resolves
+// arg types for known actions, so a placeholder standing in a typed position
+// would be refused before any value exists, while unknown actions are skipped
+// by that checker anyway (typechecker.go:184-208) — the gate would cost false
+// refusals and buy nothing this check does not already cover. A placeholder
+// check comes first, because both retained gates accept `{{.package}}` as a
+// legal YAML string.
+//
+// It exists because the run record stores this exact text as its workflow
+// source, which plan then parses. Before this check a template could render a
+// document nothing could plan, and the failure surfaced later as
+// `LE001: cannot unmarshal !!str 'probe' into dsl.yamlWorkflowRaw` — an error
+// naming the run id and the workflow, with no mention of the template that was
+// the cause.
+//
+// The second result is the advisory channel for the same document: kept
+// out of the error so a legal-but-bare template still mints its run.
+func validateRenderedWorkflow(templateName, content string) ([]dsl.ValidationError, error) {
+	if left := template.UnsubstitutedPlaceholders(content); len(left) > 0 {
+		return nil, fmt.Errorf("template %q leaves parameter(s) unsubstituted: %s — pass them with --params or declare a default in the template [exit=2]",
+			templateName, strings.Join(left, ", "))
+	}
+	wf, err := dsl.NewParser().ParseBytes([]byte(content))
+	if err != nil {
+		return nil, fmt.Errorf("template %q renders a workflow that does not parse: %w [exit=2]", templateName, err)
+	}
+	validator := dsl.NewValidator()
+	if verrs := validator.Validate(wf); len(verrs) > 0 {
+		msgs := make([]string, 0, len(verrs))
+		for _, ve := range verrs {
+			msgs = append(msgs, ve.Error())
+		}
+		return nil, fmt.Errorf("template %q renders a workflow that fails validation: %s [exit=2]",
+			templateName, strings.Join(msgs, "; "))
+	}
+	return validator.Advise(wf), nil
 }

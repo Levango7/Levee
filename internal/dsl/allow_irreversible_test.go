@@ -3,8 +3,8 @@ package dsl
 // allow_irreversible_test.go — V14 不可逆白名单（LE082）的端到端单元测试：
 // 解析 → 校验 → 发射回环 → IR 携带。判定语义（显式声明优先、引擎固有
 // 破坏性词表其次）与 executor.IrreversibleChecker.Check 的优先级对齐，
-// 词表单一来源在 executor.DefaultIrreversibleActions——编译期与 plan 期
-// 对「天生不可逆」的认定不可能分叉。
+// 词表单一来源在本包的 DefaultIrreversibleActions / IsInherentIrreversible
+// ——编译期与 plan 期对「天生不可逆」的认定不可能分叉。
 
 import (
 	"testing"

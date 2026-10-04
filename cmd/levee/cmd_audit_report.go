@@ -139,7 +139,7 @@ func collectAuditReport(ctx context.Context, store state.Store, runs []*state.Ru
 			continue
 		}
 		section := auditReportRun{
-			ID: run.ID, Workflow: run.WorkflowName, Status: run.Status,
+			ID: run.ID, Workflow: workflowDisplay(run.WorkflowName), Status: run.Status,
 			Creator: run.Creator, CreatedAt: run.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: run.UpdatedAt.Format(time.RFC3339),
 		}

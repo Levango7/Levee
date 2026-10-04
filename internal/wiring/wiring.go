@@ -25,10 +25,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/verify"
 
 	// Register the built-in transports on channel.DefaultRegistry().
 	_ "github.com/nexus/levee/internal/channel/local"
@@ -106,6 +108,14 @@ type Engine struct {
 	rollbackConcurrency int
 	gatePrometheusURL   string
 
+	// gateApprover is the transport behind workflow `human` gates. Nil (the
+	// default) means no human-approval transport is wired, and then a plan
+	// declaring a human check is REFUSED at GeneratePlan rather than failing
+	// when the first gate phase materialises it — which for a post-apply or
+	// post-batch declaration is after the batches already modified targets.
+	// See WithGateApprover and engine.PlanGateBlockers.
+	gateApprover verify.HumanApprover
+
 	// snapshotDir roots the pre-apply snapshot store. Empty (the default)
 	// disables snapshot capture/restore: workflows declaring
 	// strategy "snapshot" run with capture skipped (the pre-wiring
@@ -132,6 +142,12 @@ type Engine struct {
 	execLeaseTTL time.Duration
 	execNodeID   string
 
+	// calendar is the organisation change calendar consulted before a plan
+	// artifact exists and again before the first mutation. Nil (the default)
+	// leaves the freeze gate inert and says so on every plan — see
+	// WithChangeCalendar.
+	calendar *calendar.CalendarService
+
 	// sem is the process-wide parallel-run semaphore (capacity =
 	// maxParallelRuns). Acquire is non-blocking: beyond the cap a run
 	// fast-fails instead of queueing. Initialised in NewEngine after
@@ -141,6 +157,16 @@ type Engine struct {
 
 // Option customises an Engine (see With* helpers).
 type Option func(*Engine)
+
+// WithChangeCalendar attaches the organisation change calendar so freeze
+// periods refuse changes and overlapping windows get reported (see
+// calendar_gate.go). Nil clears it, which makes the gate inert; `serve` and the
+// local plan path both install a service built over the same database handle
+// that holds the run records, because a freeze read from a different database
+// than the one `levee calendar freeze` wrote to enforces nothing.
+func WithChangeCalendar(svc *calendar.CalendarService) Option {
+	return func(e *Engine) { e.calendar = svc }
+}
 
 // WithCredentialResolver attaches the credential resolver used to expand
 // target credential references before dialling. Nil is valid (and the
@@ -170,9 +196,32 @@ func WithMaxParallelRuns(n int) Option {
 // WithGatePrometheusURL supplies the Prometheus HTTP base URL used by
 // declared slo verification gates. Empty (the default) keeps the existing
 // fail-closed semantics: an slo gate without a Prometheus runtime fails
-// materialisation instead of silently passing.
+// materialisation instead of silently passing — and now refuses the plan
+// before any target is touched. See gateRuntime.
 func WithGatePrometheusURL(url string) Option {
 	return func(e *Engine) { e.gatePrometheusURL = url }
+}
+
+// WithGateApprover wires the transport behind workflow `human` gates. It is
+// deliberately not installed by any serve path today: no approver transport
+// (chat ops round-trip, ticket-system callback, terminal prompt) has been
+// built, and the roadmap carries that as an open product decision rather than
+// a hidden nil. Installing one here is all a deployment needs — the plan-time
+// refusal and the phase-time materialisation both read gateRuntime, so there
+// is no second switch to remember to flip.
+func WithGateApprover(a verify.HumanApprover) Option {
+	return func(e *Engine) { e.gateApprover = a }
+}
+
+// gateRuntime is the ONE view of what this process can execute for declared
+// gates. Both the plan-time refusal (engine.PlanGateBlockers) and the phase-time
+// registration (engine.WithGateRuntime) read it, so a deployment can never be
+// told a plan is fine and then fail on the same declaration.
+func (e *Engine) gateRuntime() engine.GateRuntime {
+	return engine.GateRuntime{
+		PrometheusURL: e.gatePrometheusURL,
+		Approver:      e.gateApprover,
+	}
 }
 
 // WithSnapshotDir roots the pre-apply snapshot store (design §4.4.4.2).

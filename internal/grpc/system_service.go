@@ -20,6 +20,7 @@ import (
 
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -92,7 +93,6 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 		ActiveRuns:    0,
 		PausedRuns:    0,
 		UptimeSeconds: int64(time.Since(s.startTime).Seconds()),
-		StoreType:     "sqlite",
 		Warnings:      nil,
 	}
 
@@ -115,10 +115,14 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 		resp.Warnings = append(resp.Warnings, "store not configured")
 	}
 
-	// Determine store type from config.
-	if s.cfg != nil && s.cfg.Database.Driver != "" {
-		resp.StoreType = s.cfg.Database.Driver
-	}
+	// The store answers for its own backend. This used to read
+	// `cfg.Database.Driver`, which is a claim about a file on disk rather than
+	// about this process: `serve --cluster --pg-dsn …` opens PostgreSQL while
+	// `database.driver` still defaults to "sqlite", so the health endpoint
+	// reported the wrong backend to everyone reading it — including the
+	// operator deciding whether the cluster is healthy. backendLabel is the
+	// same mapping the REST gateway already uses, so both surfaces agree.
+	resp.StoreType = backendLabel(s.store)
 
 	// Derive overall status from warnings.
 	if len(resp.Warnings) > 0 {
@@ -131,12 +135,13 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 // GetConfig returns the current configuration, optionally filtering to a
 // specific section.
 //
-// REDACTION IS THE DEFAULT. A nil request or RedactSecrets=true yields
-// redacted output; only a caller that EXPLICITLY sets RedactSecrets=false
-// receives raw secrets. The REST gateway enforces the same posture by
-// sending redact_secrets=true unless the client passes the explicit
-// ?redactSecrets=false override, so an omitted flag can never leak
-// credentials.
+// REDACTION IS DECIDED BY THE DEPLOYMENT, NOT BY THE REQUEST. The wire field
+// `redact_secrets` is a proto3 scalar bool, so an omitted field is
+// indistinguishable from an explicit false — a rule that reads "redact only when
+// the caller says so" therefore redacts for nobody and leaks credentials to every
+// default client. Raw output is served only when the operator opted in with
+// security.expose_raw_config AND the caller asked for the unredacted form, and
+// every such response is logged: config content carries target credentials.
 func (s *SystemService) GetConfig(ctx context.Context, req *pb.GetConfigRequest) (*pb.Config, error) {
 	if s.cfg == nil {
 		return nil, status.Error(codes.FailedPrecondition, "config not loaded")
@@ -157,8 +162,13 @@ func (s *SystemService) GetConfig(ctx context.Context, req *pb.GetConfigRequest)
 		content = []byte(sectionContent)
 	}
 
-	// Redact unless the caller explicitly opted out (nil request ⇒ redact).
-	if req == nil || req.GetRedactSecrets() {
+	// Redact unless the deployment opted in AND this caller asked for the
+	// unredacted form. A nil request asks for nothing, so it gets redaction.
+	if s.rawConfigEnabled() && req != nil && !req.GetRedactSecrets() {
+		log.Warn("serving UNREDACTED configuration: the document contains target credentials; "+
+			"revoke it by unsetting security.expose_raw_config",
+			"subject", SubjectFromContext(ctx), "actor", actorFromCtx(ctx), "config", s.cfgPath)
+	} else {
 		content = []byte(redactSecrets(string(content)))
 	}
 
@@ -168,6 +178,12 @@ func (s *SystemService) GetConfig(ctx context.Context, req *pb.GetConfigRequest)
 		SourcePath: s.cfgPath,
 		LoadedAt:   s.startTime.Unix(),
 	}, nil
+}
+
+// rawConfigEnabled reports the deployment's opt-in for serving configuration
+// without redaction. Absent config (a query-only SystemService) is "no".
+func (s *SystemService) rawConfigEnabled() bool {
+	return s.cfg != nil && s.cfg.Security.ExposeRawConfig
 }
 
 // RunDoctor executes a suite of diagnostic checks and returns a report.

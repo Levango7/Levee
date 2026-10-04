@@ -46,6 +46,7 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/chatops"
@@ -170,7 +171,12 @@ func newServeCmd() *cobra.Command {
 			"Pass --cluster --pg-dsn <dsn> to enable cluster mode: the store " +
 			"moves to PostgreSQL and a ClusterManager coordinates node " +
 			"membership, heartbeats and distributed locks. Without --cluster " +
-			"the server stays in single-node SQLite mode.",
+			"the server runs single-node against the database the configuration " +
+			"names (database.driver = sqlite or postgres).\n\n" +
+			"For a freeze period written with `levee calendar freeze` to be " +
+			"visible to this process, the two must name the same database: give " +
+			"the CLI the same configs file, or set database.driver = postgres " +
+			"and database.dsn equal to the --pg-dsn below.",
 		Args: cobra.NoArgs,
 		RunE: runServe,
 	}
@@ -184,7 +190,7 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().Float64Var(&serveOptRateLimit, "rate-limit", grpc.DefaultRatePerSec, "REST gateway rate limit (req/s); negative disables")
 	cmd.Flags().IntVar(&serveOptRateBurst, "rate-burst", grpc.DefaultRateBurst, "REST gateway rate burst size")
 	cmd.Flags().BoolVar(&serveOptCluster, "cluster", false, "Enable cluster mode (PostgreSQL store + cluster coordination)")
-	cmd.Flags().StringVar(&serveOptPGDSN, "pg-dsn", "", "PostgreSQL DSN (required with --cluster)")
+	cmd.Flags().StringVar(&serveOptPGDSN, "pg-dsn", "", "PostgreSQL DSN (required with --cluster; must equal database.dsn when that is set; refused without --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeAddr, "node-addr", "", "Cluster node address (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
@@ -996,6 +1002,33 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		} else {
 			log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
 		}
+		// The change calendar rides on the same database handle as the run
+		// records: `levee calendar freeze` writes to the database its own
+		// configuration names, and the gates in internal/wiring read the handle
+		// opened here. Failing to open it is logged as the hole it leaves,
+		// because a server that plans happily while its operator believes
+		// freezes are enforced is worse than one that says it cannot check.
+		// buildServeServices has no request context, so this uses a background
+		// one: two reads at process start, nothing to cancel.
+		calCtx := context.Background()
+		if cal, calErr := calendarFor(calCtx, store); calErr != nil {
+			log.Warn("serve: change calendar UNAVAILABLE — freeze periods will not block plan or apply",
+				"error", calErr)
+		} else {
+			opts = append(opts, wiring.WithChangeCalendar(cal))
+			log.Info("serve: change calendar wired — freeze periods refuse plan and apply for covered targets",
+				"driver", state.StoreDriver(store), "location", cfg.Database.StoreLocation())
+			// An empty table is not evidence that nobody declared a freeze: the
+			// CLI writes to whatever database *its* --config names, so a
+			// mismatched config leaves this server enforcing nothing while an
+			// operator holds a list of freeze periods. Say so at startup instead
+			// of letting the gate look enforced.
+			if windows, lerr := cal.ListWindows(calCtx, calendar.WindowFilter{}); lerr == nil && len(windows) == 0 {
+				log.Warn("serve: change calendar has no windows in this database — a freeze created by `levee calendar freeze` "+
+					"under a different --config lands in another database and will not be enforced here",
+					"location", cfg.Database.StoreLocation())
+			}
+		}
 		if execGuard != nil {
 			// Cluster mode: executions are fenced by run_execution leases.
 			// Begin failure refuses the run outright (no invisible
@@ -1254,21 +1287,37 @@ func pgStoreDB(store state.Store) *sql.DB {
 
 // openServeStore opens the backend store for serve mode. In cluster mode it
 // requires --pg-dsn/--node-id/--node-addr, opens PostgreSQL, joins and
-// starts the cluster manager; otherwise it opens the single-node SQLite
-// store. The caller owns both returned resources (store.Close,
-// clusterMgr.Stop). Split out of runServe; behaviour unchanged.
+// starts the cluster manager; otherwise it opens the store the configuration
+// names (SQLite by default, PostgreSQL under database.driver = postgres).
+// The caller owns both returned resources (store.Close, clusterMgr.Stop).
+//
+// Non-cluster mode refuses an explicit --pg-dsn rather than ignoring it. The
+// flag is how a cluster node points at shared storage; a server started with
+// it but without --cluster would run un-coordinated against that same database
+// — no leases, no fencing, two nodes able to execute one run — which is a worse
+// outcome than a startup error that names the missing flag.
 func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *cluster.ClusterManager, error) {
 	if !serveOptCluster {
-		sqliteStore, err := state.NewSQLiteStore(ctx, cfg.Database.Path,
-			state.WithSynchronous(cfg.State.SQLiteSynchronous))
-		if err != nil {
-			return nil, nil, fmt.Errorf("open store: %w", err)
+		if serveOptPGDSN != "" {
+			return nil, nil, errors.New("--pg-dsn was given without --cluster: cluster storage needs " +
+				"cluster coordination. Add --cluster (with --node-id and --node-addr), or point the " +
+				"configuration at PostgreSQL with database.driver = postgres and database.dsn for a " +
+				"deliberate single-node PostgreSQL deployment")
 		}
-		log.Info("single-node mode (SQLite)")
-		return sqliteStore, nil, nil
+		store, err := openStoreFromConfig(ctx, cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		log.Info("single-node mode", "driver", state.StoreDriver(store),
+			"location", cfg.Database.StoreLocation())
+		return store, nil, nil
 	}
 	if serveOptPGDSN == "" {
 		return nil, nil, errors.New("--cluster requires --pg-dsn")
+	}
+	if cfg.Database.DSN != "" && serveOptPGDSN != cfg.Database.DSN {
+		return nil, nil, fmt.Errorf("--cluster: --pg-dsn and database.dsn name two different PostgreSQL servers (%s vs %s); the change calendar and the plan/apply path must read one database, so set them equal or drop database.dsn",
+			state.RedactDSN(serveOptPGDSN), cfg.Database.StoreLocation())
 	}
 	if serveOptNodeID == "" || serveOptNodeAddr == "" {
 		return nil, nil, errors.New("--cluster requires --node-id and --node-addr")
