@@ -82,7 +82,8 @@ func runNew(cmd *cobra.Command, args []string) error {
 	// 5. Refuse to mint a run this command cannot later plan. This is the first
 	// moment the rendered text exists and the last one where the cause is
 	// obvious, so it is where the check belongs (see validateRenderedWorkflow).
-	if err := validateRenderedWorkflow(templateName, result.Content); err != nil {
+	advisories, err := validateRenderedWorkflow(templateName, result.Content)
+	if err != nil {
 		return err
 	}
 
@@ -124,6 +125,13 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// 7. Output the result.
+	//
+	// Advisories ride on stderr and change nothing about the run: the
+	// template simply does not declare a window, an approval tier or batches,
+	// which is legal. Naming them here is what makes the run's defaults
+	// discoverable before someone approves them blind.
+	emitAdvisories(cmd.ErrOrStderr(), "template "+templateName, advisories)
+
 	output := map[string]any{
 		"run_id":        runID,
 		"template_name": result.TemplateName,
@@ -166,22 +174,26 @@ func runNew(cmd *cobra.Command, args []string) error {
 // `LE001: cannot unmarshal !!str 'probe' into dsl.yamlWorkflowRaw` — an error
 // naming the run id and the workflow, with no mention of the template that was
 // the cause.
-func validateRenderedWorkflow(templateName, content string) error {
+//
+// The second result is the advisory channel for the same document: kept
+// out of the error so a legal-but-bare template still mints its run.
+func validateRenderedWorkflow(templateName, content string) ([]dsl.ValidationError, error) {
 	if left := template.UnsubstitutedPlaceholders(content); len(left) > 0 {
-		return fmt.Errorf("template %q leaves parameter(s) unsubstituted: %s — pass them with --params or declare a default in the template [exit=2]",
+		return nil, fmt.Errorf("template %q leaves parameter(s) unsubstituted: %s — pass them with --params or declare a default in the template [exit=2]",
 			templateName, strings.Join(left, ", "))
 	}
 	wf, err := dsl.NewParser().ParseBytes([]byte(content))
 	if err != nil {
-		return fmt.Errorf("template %q renders a workflow that does not parse: %w [exit=2]", templateName, err)
+		return nil, fmt.Errorf("template %q renders a workflow that does not parse: %w [exit=2]", templateName, err)
 	}
-	if verrs := dsl.NewValidator().Validate(wf); len(verrs) > 0 {
+	validator := dsl.NewValidator()
+	if verrs := validator.Validate(wf); len(verrs) > 0 {
 		msgs := make([]string, 0, len(verrs))
 		for _, ve := range verrs {
 			msgs = append(msgs, ve.Error())
 		}
-		return fmt.Errorf("template %q renders a workflow that fails validation: %s [exit=2]",
+		return nil, fmt.Errorf("template %q renders a workflow that fails validation: %s [exit=2]",
 			templateName, strings.Join(msgs, "; "))
 	}
-	return nil
+	return validator.Advise(wf), nil
 }

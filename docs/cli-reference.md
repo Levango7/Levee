@@ -69,6 +69,11 @@ levee new nginx-reload --params target=web01.prod,env=production
 模板报 `template "x" renders a workflow that does not parse: LE002 ...`，漏传可选参数报
 `template "x" leaves parameter(s) unsubstituted: y`）。
 
+渲染结果同时走一遍编译期提示（见第 12 章）：模板没有声明 `window` / `approval` /
+`batches` 时逐条打 stderr 并冠以 `advisory: template <名>: …`，**run 照常创建、退出码
+不变**——提示说的是"这条 run 跑在哪些缺省上"，单条命令拒绝它并不会让那份草案变得合法。
+`--json` 的 stdout 信封不含提示文字。
+
 ### 1.2 clone
 
 克隆历史 run 为可编辑草稿。
@@ -1321,6 +1326,7 @@ levee compile <file> [--strict|--lenient] [--ir] [--check-only]
 - 执行流程：解析 YAML → 结构校验 → 类型检查 →（可选）IR 生成
 - `--lenient` 优先于 `--strict`：两者同时设置时按宽松模式处理
 - 所有错误附带源文件 + 行 + 列信息，多错误合并为单次报告
+- **编译期提示（advisory）不参与判定**：目录表里判为 `CompileWarning` 的条件（缺 `window` / 缺 `approval` / 缺 `batches`、percent 首批超过 5%）逐条打到 **stderr**，人类可读摘要与 `--json` 输出以 `advisories=N` 给出条数。它们是"这份文档跑在哪些缺省上"的告知，不是拒绝——严格模式下也不会因提示而失败，退出码只由校验与类型检查决定。stdout 上只有文档（IR / 摘要 / 信封），永远不会混进提示文字。
 
 **示例**
 

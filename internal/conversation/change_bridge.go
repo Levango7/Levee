@@ -83,7 +83,8 @@ func (e *ConversationEngine) promoteRecommendation(ctx context.Context, sess *Se
 			"recommendation_id", rec.ID, "error", err)
 		return &Reply{Text: fmt.Sprintf("工作流草案解析失败，未创建变更：%v\n可回复「修改」调整建议内容。", err)}, nil
 	}
-	if verrs := dsl.NewValidator().Validate(wf); len(verrs) > 0 {
+	validator := dsl.NewValidator()
+	if verrs := validator.Validate(wf); len(verrs) > 0 {
 		var b strings.Builder
 		fmt.Fprintf(&b, "工作流草案未通过校验（%d 项），未创建变更：", len(verrs))
 		for _, ve := range verrs {
@@ -93,6 +94,23 @@ func (e *ConversationEngine) promoteRecommendation(ctx context.Context, sess *Se
 		e.log.Warn("recommendation draft failed validation; not creating change",
 			"recommendation_id", rec.ID, "errors", len(verrs))
 		return &Reply{Text: b.String()}, nil
+	}
+
+	// Advisories are handed to the operator but never block the bridge.
+	// They are the catalogue's CompileWarning class — a draft that declares no
+	// window, no approval block, or a first batch above the canary guidance is
+	// legal — and the point of surfacing them here is that the person who
+	// approves the change learns which defaults it is running on.
+	advisoryNote := ""
+	if adv := validator.Advise(wf); len(adv) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "\n另有 %d 条提示（不阻断创建）：", len(adv))
+		for _, a := range adv {
+			fmt.Fprintf(&b, "\n- %s", a.Error())
+		}
+		advisoryNote = b.String()
+		e.log.Info("recommendation draft carries advisories",
+			"recommendation_id", rec.ID, "advisories", len(adv))
 	}
 
 	label := strings.TrimSpace(rec.Summary)
@@ -142,7 +160,7 @@ func (e *ConversationEngine) promoteRecommendation(ctx context.Context, sess *Se
 
 	return &Reply{
 		Text: fmt.Sprintf("已创建变更 %s（状态 %s）。后续走标准治理链：计划 → 审批 → 应用"+
-			"（`levee plan %s`）。审批与应用不会由本对话自动发起。", id, status, id),
+			"（`levee plan %s`）。审批与应用不会由本对话自动发起。%s", id, status, id, advisoryNote),
 		Action: action,
 	}, nil
 }

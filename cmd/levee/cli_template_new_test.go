@@ -70,7 +70,11 @@ func registerTemplate(t *testing.T, e *cliEnv, name, content string, params ...t
 // id it printed.
 func newRunID(t *testing.T, e *cliEnv, name, params string) string {
 	t.Helper()
-	out := mustRun(t, "--config", e.cfgPath, "new", name, "--params", params, "--json")
+	// runSplit, not mustRun: `new` reports advisories about the workflow it
+	// rendered on stderr, and the merged capture would splice that prose into
+	// the JSON envelope.
+	out, _, err := runSplit(t, "--config", e.cfgPath, "new", name, "--params", params, "--json")
+	require.NoError(t, err, "cli output: %s", out)
 	var env struct {
 		Data struct {
 			RunID string `json:"run_id"`
