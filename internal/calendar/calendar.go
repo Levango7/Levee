@@ -5,9 +5,16 @@
 // sets, and conflict detection between overlapping windows that share targets.
 //
 // All timestamps are stored in UTC. The schema is created lazily via
-// EnsureSchema on top of an existing *sql.DB handle (typically the same SQLite
-// database used by internal/state, so calendar data lives next to run/batch/
-// step/trace data in a single file).
+// EnsureSchema on top of an existing *sql.DB handle, which is typically the one
+// internal/state already opened, so calendar data lives next to run/batch/
+// step/trace data instead of in a separate file.
+//
+// The handle may be SQLite or PostgreSQL, and the store has to be told which:
+// the two dialects disagree on placeholders (`?` vs `$n`) and on the timestamp
+// type (`DATETIME` does not exist in PostgreSQL — measured: applying the SQLite
+// DDL to a live PostgreSQL fails with `type "datetime" does not exist`). Dialect
+// is therefore a required argument with no zero value, because guessing wrong
+// produces either a schema that cannot be created or queries that cannot bind.
 package calendar
 
 import (
@@ -17,9 +24,37 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// Dialect is the SQL surface a Store speaks against its *sql.DB handle.
+type Dialect int
+
+const (
+	// DialectUnknown is the zero value and is refused: a store that has not been
+	// told what it is talking to would default to SQLite against a PostgreSQL
+	// handle, which fails at schema time in the best case and silently mis-binds
+	// in the worst.
+	DialectUnknown Dialect = iota
+	// DialectSQLite is a handle opened by state.NewSQLiteStore.
+	DialectSQLite
+	// DialectPostgres is a handle opened by state.NewPGStore (pgx driver).
+	DialectPostgres
+)
+
+// String names the dialect for error messages and logs.
+func (d Dialect) String() string {
+	switch d {
+	case DialectSQLite:
+		return "sqlite"
+	case DialectPostgres:
+		return "postgres"
+	default:
+		return "unknown"
+	}
+}
 
 // =========================================================================
 // Domain types
@@ -73,15 +108,15 @@ type CalendarStore interface {
 }
 
 // =========================================================================
-// SQLite schema
+// Schema
 // =========================================================================
 
-// calendarSchemaSQL creates the calendar_windows table. Target labels are
-// stored as a JSON array in a TEXT column; queries that need to filter by
-// label perform the matching in Go after loading candidate rows. For the
-// expected MVP scale (tens to low hundreds of windows) this is sufficient
+// calendarSchemaSQLite creates the calendar_windows table on SQLite. Target
+// labels are stored as a JSON array in a TEXT column; queries that need to
+// filter by label perform the matching in Go after loading candidate rows. For
+// the expected MVP scale (tens to low hundreds of windows) this is sufficient
 // and avoids the complexity of a join table.
-const calendarSchemaSQL = `
+const calendarSchemaSQLite = `
 CREATE TABLE IF NOT EXISTS calendar_windows (
     id            TEXT    PRIMARY KEY,
     name          TEXT    NOT NULL,
@@ -101,53 +136,124 @@ CREATE INDEX IF NOT EXISTS idx_calendar_windows_is_frozen  ON calendar_windows (
 CREATE INDEX IF NOT EXISTS idx_calendar_windows_name       ON calendar_windows (name);
 `
 
-// EnsureSchema applies the calendar schema to the given database. It is
+// calendarSchemaPostgres is the same table in the shape PostgreSQL accepts:
+// TIMESTAMPTZ instead of the (non-existent) DATETIME, per internal/state's
+// pgschema.sql convention.
+//
+// is_frozen stays INTEGER rather than becoming BOOLEAN on purpose: the Go side
+// binds 0/1 (boolToInt) and scans an int back (scanWindow), because one of the
+// two dialects has no boolean type. Making this column BOOLEAN would mean two
+// bind paths for the one field; the cost of the shared int is a check constraint
+// that keeps it 0 or 1, so a hand-edited row cannot invent a third state.
+const calendarSchemaPostgres = `
+CREATE TABLE IF NOT EXISTS calendar_windows (
+    id            TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    start_time    TIMESTAMPTZ NOT NULL,
+    end_time      TIMESTAMPTZ NOT NULL,
+    target_labels TEXT NOT NULL DEFAULT '[]',
+    is_frozen     INTEGER NOT NULL DEFAULT 0 CHECK (is_frozen IN (0, 1)),
+    repeat_rule   TEXT NOT NULL DEFAULT '',
+    cron_expr     TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_windows_start_time ON calendar_windows (start_time);
+CREATE INDEX IF NOT EXISTS idx_calendar_windows_end_time   ON calendar_windows (end_time);
+CREATE INDEX IF NOT EXISTS idx_calendar_windows_is_frozen  ON calendar_windows (is_frozen);
+CREATE INDEX IF NOT EXISTS idx_calendar_windows_name       ON calendar_windows (name);
+`
+
+// SchemaDDLFor returns the DDL for one dialect. Exported so internal/dbschema
+// style consistency checks and deployment docs can quote the same text the
+// store applies instead of retyping it.
+func SchemaDDLFor(d Dialect) string {
+	if d == DialectPostgres {
+		return calendarSchemaPostgres
+	}
+	return calendarSchemaSQLite
+}
+
+// EnsureSchema applies the calendar schema for the given dialect. It is
 // idempotent: running it on an already-migrated database is a no-op. Callers
 // typically invoke it once at process start, right after opening the shared
 // *sql.DB handle.
-func EnsureSchema(ctx context.Context, db *sql.DB) error {
+func EnsureSchema(ctx context.Context, db *sql.DB, d Dialect) error {
 	if db == nil {
 		return fmt.Errorf("calendar: ensure schema: nil db handle")
 	}
-	if _, err := db.ExecContext(ctx, calendarSchemaSQL); err != nil {
-		return fmt.Errorf("calendar: apply schema: %w", err)
+	if d != DialectSQLite && d != DialectPostgres {
+		return fmt.Errorf("calendar: ensure schema: dialect must be DialectSQLite or DialectPostgres, got %d", int(d))
+	}
+	if _, err := db.ExecContext(ctx, SchemaDDLFor(d)); err != nil {
+		return fmt.Errorf("calendar: apply schema (%s): %w", d, err)
 	}
 	return nil
 }
 
 // =========================================================================
-// SQLiteStore
+// Store
 // =========================================================================
 
-// SQLiteStore is the SQLite-backed implementation of CalendarStore. It relies
-// on the caller to provide a *sql.DB handle (typically shared with
-// internal/state). Concurrency safety comes from database/sql's connection
-// pool plus SQLite WAL mode.
-type SQLiteStore struct {
-	db *sql.DB
+// Store is the SQL-backed implementation of CalendarStore. It relies on the
+// caller to provide a *sql.DB handle (typically shared with internal/state) and
+// to declare which dialect that handle speaks. Concurrency safety comes from
+// database/sql's connection pool plus SQLite WAL mode.
+type Store struct {
+	db      *sql.DB
+	dialect Dialect
 }
 
-// NewSQLiteStore wraps an existing *sql.DB handle and ensures the calendar
-// schema exists. The caller retains ownership of the handle; Close on the
-// returned store is a no-op (the caller closes the shared handle).
-func NewSQLiteStore(ctx context.Context, db *sql.DB) (*SQLiteStore, error) {
+// NewStore wraps an existing *sql.DB handle and ensures the calendar schema
+// exists in the given dialect. The caller retains ownership of the handle;
+// Close on the returned store is a no-op (the caller closes the shared handle).
+//
+// An undeclared dialect is refused rather than defaulted: applying the SQLite
+// DDL to a PostgreSQL handle fails at CREATE TABLE, while applying `?`
+// placeholders to it fails at every query — both are quieter than refusing here.
+func NewStore(ctx context.Context, db *sql.DB, d Dialect) (*Store, error) {
 	if db == nil {
-		return nil, fmt.Errorf("calendar: new sqlite store: nil db handle")
+		return nil, fmt.Errorf("calendar: new store: nil db handle")
 	}
-	if err := EnsureSchema(ctx, db); err != nil {
+	if err := EnsureSchema(ctx, db, d); err != nil {
 		return nil, err
 	}
-	return &SQLiteStore{db: db}, nil
+	return &Store{db: db, dialect: d}, nil
 }
 
+// ph renders the placeholder for the n-th bound argument (1-based).
+func (s *Store) ph(n int) string {
+	if s.dialect == DialectPostgres {
+		return "$" + strconv.Itoa(n)
+	}
+	return "?"
+}
+
+// phList renders n placeholders for a VALUES list or an IN clause, numbered
+// from `first`.
+func (s *Store) phList(n, first int) string {
+	parts := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		parts = append(parts, s.ph(first+i))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// compile-time proof that the store satisfies the interface it documents.
+var _ CalendarStore = (*Store)(nil)
+
+// Dialect reports which SQL surface this store speaks.
+func (s *Store) Dialect() Dialect { return s.dialect }
+
 // DB exposes the underlying handle for advanced use cases (e.g. backups).
-func (s *SQLiteStore) DB() *sql.DB { return s.db }
+func (s *Store) DB() *sql.DB { return s.db }
 
 // Close is a no-op: the store does not own the *sql.DB handle.
-func (s *SQLiteStore) Close() error { return nil }
+func (s *Store) Close() error { return nil }
 
 // CreateWindow inserts a new calendar window row.
-func (s *SQLiteStore) CreateWindow(ctx context.Context, w *Window) error {
+func (s *Store) CreateWindow(ctx context.Context, w *Window) error {
 	if w == nil {
 		return fmt.Errorf("calendar: create window: nil window")
 	}
@@ -158,10 +264,10 @@ func (s *SQLiteStore) CreateWindow(ctx context.Context, w *Window) error {
 	if err != nil {
 		return fmt.Errorf("calendar: marshal target labels: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO calendar_windows
+	_, err = s.db.ExecContext(ctx, fmt.Sprintf(`INSERT INTO calendar_windows
 		(id, name, start_time, end_time, target_labels, is_frozen,
 		 repeat_rule, cron_expr, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (%s)`, s.phList(10, 1)),
 		w.ID, w.Name, w.StartTime.UTC(), w.EndTime.UTC(), string(labelsJSON),
 		boolToInt(w.IsFrozen), w.RepeatRule, w.CronExpr,
 		w.CreatedAt.UTC(), w.UpdatedAt.UTC(),
@@ -173,11 +279,11 @@ func (s *SQLiteStore) CreateWindow(ctx context.Context, w *Window) error {
 }
 
 // GetWindow returns the window with the given id, or (nil, nil) if not found.
-func (s *SQLiteStore) GetWindow(ctx context.Context, id string) (*Window, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT
+func (s *Store) GetWindow(ctx context.Context, id string) (*Window, error) {
+	row := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT
 		id, name, start_time, end_time, target_labels, is_frozen,
 		repeat_rule, cron_expr, created_at, updated_at
-		FROM calendar_windows WHERE id = ?`, id)
+		FROM calendar_windows WHERE id = %s`, s.ph(1)), id)
 	w, err := scanWindow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -190,27 +296,31 @@ func (s *SQLiteStore) GetWindow(ctx context.Context, id string) (*Window, error)
 
 // ListWindows returns windows matching the filter, ordered by start_time
 // ascending.
-func (s *SQLiteStore) ListWindows(ctx context.Context, filter WindowFilter) ([]*Window, error) {
+func (s *Store) ListWindows(ctx context.Context, filter WindowFilter) ([]*Window, error) {
 	var (
 		clauses []string
 		args    []any
 	)
+	// Placeholders are numbered by the position the value lands in `args`, so a
+	// clause that forgot to bump this counter would bind the wrong column rather
+	// than fail loudly — hence one helper for both.
+	next := func(v any) string {
+		args = append(args, v)
+		return s.ph(len(args))
+	}
 	if filter.Name != "" {
-		clauses = append(clauses, "name = ?")
-		args = append(args, filter.Name)
+		clauses = append(clauses, "name = "+next(filter.Name))
 	}
 	if filter.IsFrozen != nil {
-		clauses = append(clauses, "is_frozen = ?")
-		args = append(args, boolToInt(*filter.IsFrozen))
+		clauses = append(clauses, "is_frozen = "+next(boolToInt(*filter.IsFrozen)))
 	}
 	now := filter.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
 	if filter.OnlyActive {
-		clauses = append(clauses, "start_time <= ?")
-		clauses = append(clauses, "end_time > ?")
-		args = append(args, now.UTC(), now.UTC())
+		clauses = append(clauses, "start_time <= "+next(now.UTC()))
+		clauses = append(clauses, "end_time > "+next(now.UTC()))
 	}
 
 	q := `SELECT id, name, start_time, end_time, target_labels, is_frozen,
@@ -221,8 +331,9 @@ func (s *SQLiteStore) ListWindows(ctx context.Context, filter WindowFilter) ([]*
 	}
 	q += " ORDER BY start_time ASC"
 	if filter.Limit > 0 {
-		q += " LIMIT ?"
-		args = append(args, filter.Limit)
+		// #nosec G202 -- next() emits a placeholder token ($n / ?) and appends the
+		// value to args; the limit never reaches the statement as SQL text.
+		q += " LIMIT " + next(filter.Limit)
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
@@ -246,7 +357,7 @@ func (s *SQLiteStore) ListWindows(ctx context.Context, filter WindowFilter) ([]*
 }
 
 // UpdateWindow overwrites all mutable columns of an existing window.
-func (s *SQLiteStore) UpdateWindow(ctx context.Context, w *Window) error {
+func (s *Store) UpdateWindow(ctx context.Context, w *Window) error {
 	if w == nil {
 		return fmt.Errorf("calendar: update window: nil window")
 	}
@@ -257,10 +368,17 @@ func (s *SQLiteStore) UpdateWindow(ctx context.Context, w *Window) error {
 	if err != nil {
 		return fmt.Errorf("calendar: marshal target labels: %w", err)
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE calendar_windows SET
-		name=?, start_time=?, end_time=?, target_labels=?, is_frozen=?,
-		repeat_rule=?, cron_expr=?, updated_at=?
-		WHERE id=?`,
+	// SET clauses bind as arguments 1..8 and the WHERE id as 9 — the order the
+	// varargs below are written in.
+	cols := []string{"name", "start_time", "end_time", "target_labels", "is_frozen",
+		"repeat_rule", "cron_expr", "updated_at"}
+	sets := make([]string, 0, len(cols))
+	for i, c := range cols {
+		sets = append(sets, c+"="+s.ph(i+1))
+	}
+	res, err := s.db.ExecContext(ctx, fmt.Sprintf(`UPDATE calendar_windows SET
+		%s
+		WHERE id=%s`, strings.Join(sets, ", "), s.ph(9)),
 		w.Name, w.StartTime.UTC(), w.EndTime.UTC(), string(labelsJSON),
 		boolToInt(w.IsFrozen), w.RepeatRule, w.CronExpr,
 		w.UpdatedAt.UTC(), w.ID,
@@ -275,8 +393,8 @@ func (s *SQLiteStore) UpdateWindow(ctx context.Context, w *Window) error {
 }
 
 // DeleteWindow removes a window by id. Missing id is not an error.
-func (s *SQLiteStore) DeleteWindow(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM calendar_windows WHERE id = ?`, id)
+func (s *Store) DeleteWindow(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM calendar_windows WHERE id = %s`, s.ph(1)), id)
 	if err != nil {
 		return fmt.Errorf("calendar: delete window %q: %w", id, err)
 	}
@@ -403,6 +521,17 @@ func (s *CalendarService) IsFrozen(ctx context.Context, targetLabels []string) (
 // supplied set. An empty targetLabels slice means "any target" — the function
 // returns true if any freeze window is active at `at`.
 func (s *CalendarService) IsFrozenAt(ctx context.Context, targetLabels []string, at time.Time) (bool, error) {
+	windows, err := s.FreezeWindowsAt(ctx, targetLabels, at)
+	if err != nil {
+		return false, err
+	}
+	return len(windows) > 0, nil
+}
+
+// FreezeWindowsAt returns the active freeze windows covering targetLabels at
+// `at`, i.e. exactly what makes a change refusal, with the names an operator
+// has to look up to clear it. An error here is a store failure, not "frozen".
+func (s *CalendarService) FreezeWindowsAt(ctx context.Context, targetLabels []string, at time.Time) ([]*Window, error) {
 	at = at.UTC()
 	windows, err := s.store.ListWindows(ctx, WindowFilter{
 		IsFrozen:   ptrBool(true),
@@ -410,37 +539,51 @@ func (s *CalendarService) IsFrozenAt(ctx context.Context, targetLabels []string,
 		Now:        at,
 	})
 	if err != nil {
-		return false, fmt.Errorf("calendar: list frozen windows: %w", err)
+		return nil, fmt.Errorf("calendar: list frozen windows: %w", err)
 	}
-	if len(targetLabels) == 0 {
-		return len(windows) > 0, nil
-	}
-	labelSet := toSet(targetLabels)
+	var hits []*Window
 	for _, w := range windows {
-		if intersects(labelSet, w.TargetLabels) {
-			return true, nil
+		if len(targetLabels) == 0 || intersects(toSet(targetLabels), w.TargetLabels) {
+			hits = append(hits, w)
 		}
 	}
-	return false, nil
+	return hits, nil
 }
 
+// ErrFrozen reports a change refused by the calendar. Callers map it to their
+// own transport (gRPC FailedPrecondition, CLI exit code) the same way they map
+// a closed change window — a refusal the operator cannot distinguish from a
+// policy error is a refusal they cannot act on.
+var ErrFrozen = errors.New("calendar: target set is inside an active freeze period")
+
 // AssertNotFrozen returns an error if any of targetLabels is currently frozen.
-// The error message lists the offending windows so callers can surface a
-// helpful diagnostic. When emergency is true the check is bypassed (the
-// caller has explicit emergency-approval authority).
+// See AssertNotFrozenAt for the time-injective form.
 func (s *CalendarService) AssertNotFrozen(ctx context.Context, targetLabels []string, emergency bool) error {
+	return s.AssertNotFrozenAt(ctx, targetLabels, time.Now().UTC(), emergency)
+}
+
+// AssertNotFrozenAt is AssertNotFrozen with the reference instant supplied, so a
+// test (or a scheduler deciding about a future moment) can pin the verdict
+// without racing the wall clock. The error names the offending windows (id, name,
+// end time) so the operator learns which freeze to look at and when it lifts;
+// `emergency` bypasses the check and is the caller's declaration that it holds
+// emergency authority — see wiring's gate for who is allowed to set it.
+func (s *CalendarService) AssertNotFrozenAt(ctx context.Context, targetLabels []string, at time.Time, emergency bool) error {
 	if emergency {
 		return nil
 	}
-	frozen, err := s.IsFrozen(ctx, targetLabels)
+	hits, err := s.FreezeWindowsAt(ctx, targetLabels, at)
 	if err != nil {
 		return err
 	}
-	if frozen {
-		return fmt.Errorf("calendar: target set %v is currently frozen; pass emergency approval to override",
-			targetLabels)
+	if len(hits) == 0 {
+		return nil
 	}
-	return nil
+	parts := make([]string, 0, len(hits))
+	for _, w := range hits {
+		parts = append(parts, fmt.Sprintf("%s (%q, lifts %s)", w.ID, w.Name, w.EndTime.UTC().Format(time.RFC3339)))
+	}
+	return fmt.Errorf("%w: targets %v — freeze windows: %s", ErrFrozen, targetLabels, strings.Join(parts, ", "))
 }
 
 // ActiveWindowsAt returns all (non-frozen and frozen) windows whose

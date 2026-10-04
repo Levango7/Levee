@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/notify"
@@ -141,6 +142,12 @@ type Engine struct {
 	execLeaseTTL time.Duration
 	execNodeID   string
 
+	// calendar is the organisation change calendar consulted before a plan
+	// artifact exists and again before the first mutation. Nil (the default)
+	// leaves the freeze gate inert and says so on every plan — see
+	// WithChangeCalendar.
+	calendar *calendar.CalendarService
+
 	// sem is the process-wide parallel-run semaphore (capacity =
 	// maxParallelRuns). Acquire is non-blocking: beyond the cap a run
 	// fast-fails instead of queueing. Initialised in NewEngine after
@@ -150,6 +157,16 @@ type Engine struct {
 
 // Option customises an Engine (see With* helpers).
 type Option func(*Engine)
+
+// WithChangeCalendar attaches the organisation change calendar so freeze
+// periods refuse changes and overlapping windows get reported (see
+// calendar_gate.go). Nil clears it, which makes the gate inert; `serve` and the
+// local plan path both install a service built over the same database handle
+// that holds the run records, because a freeze read from a different database
+// than the one `levee calendar freeze` wrote to enforces nothing.
+func WithChangeCalendar(svc *calendar.CalendarService) Option {
+	return func(e *Engine) { e.calendar = svc }
+}
 
 // WithCredentialResolver attaches the credential resolver used to expand
 // target credential references before dialling. Nil is valid (and the

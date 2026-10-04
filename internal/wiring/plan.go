@@ -63,8 +63,20 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 	if err != nil {
 		return nil, nil, err
 	}
+	hosts := make([]string, 0, len(targets))
+	for _, t := range targets {
+		hosts = append(hosts, t.Hostname)
+	}
 
-	p, err := plan.NewGenerator().Generate(wf, targets)
+	// Change-calendar freeze gate: an organisation-wide freeze period refusing
+	// this change before anything is written. Sits in the same funnel as the
+	// window gate for the same reason — every plan comes through here, so no
+	// entry point can produce an artifact that ignores the calendar.
+	if err := e.assertCalendarAllows(ctx, changeID, targets, wf); err != nil {
+		return nil, nil, err
+	}
+
+	p, err := plan.NewGenerator().Generate(wf, hosts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wiring: generate plan: %w", err)
 	}
@@ -186,10 +198,14 @@ func looksLikeWorkflowPath(src string) bool {
 }
 
 // validateTargets checks every requested host against the inventory and
-// returns the de-duplicated, order-preserving host list. Unknown hosts and
-// retired targets are refused; frozen hosts are handled by the caller
+// returns the matching entries, de-duplicated and in request order. Unknown
+// hosts and retired targets are refused; frozen hosts are handled by the caller
 // (inventory.ValidateNotFrozen) and the execution-time host guard.
-func (e *Engine) validateTargets(ctx context.Context, hosts []string) ([]string, error) {
+//
+// The inventory entries come back rather than just the names because the
+// change-calendar gate needs their labels, and a second full inventory scan per
+// plan would be paid by every deployment to serve one comparison.
+func (e *Engine) validateTargets(ctx context.Context, hosts []string) ([]*state.Target, error) {
 	if len(hosts) == 0 {
 		return nil, fmt.Errorf("wiring: target_hosts is required to plan a change")
 	}
@@ -204,7 +220,7 @@ func (e *Engine) validateTargets(ctx context.Context, hosts []string) ([]string,
 		}
 	}
 	var unknown, retired []string
-	out := make([]string, 0, len(hosts))
+	out := make([]*state.Target, 0, len(hosts))
 	seen := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
 		if seen[h] {
@@ -220,7 +236,7 @@ func (e *Engine) validateTargets(ctx context.Context, hosts []string) ([]string,
 			retired = append(retired, h)
 			continue
 		}
-		out = append(out, h)
+		out = append(out, t)
 	}
 	if len(unknown) > 0 {
 		return nil, fmt.Errorf("wiring: targets not found in inventory: %s", strings.Join(unknown, ", "))

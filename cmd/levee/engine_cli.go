@@ -6,11 +6,13 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/credential"
 	"github.com/nexus/levee/internal/grpc"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/wiring"
 )
@@ -41,8 +43,17 @@ func cliCredentialResolver(store state.Store) wiring.CredentialResolver {
 // inject the actor via grpc.ContextWithActor so audits attribute to the
 // CLI user rather than the "grpc-user" fallback.
 func newCLIChangeService(store state.Store) *grpc.ChangeService {
-	engine := wiring.NewEngine(store,
-		wiring.WithCredentialResolver(cliCredentialResolver(store)),
-	).Adapter()
+	opts := []wiring.Option{wiring.WithCredentialResolver(cliCredentialResolver(store))}
+	// Same rule as serve: the calendar gates must read the database the operator's
+	// `levee calendar` commands write, and a failure to open it is reported rather
+	// than turned into an inert gate.
+	cal, calErr := calendarFor(context.Background(), store)
+	if calErr != nil {
+		log.Warn("change calendar UNAVAILABLE for this local command — freeze periods will not block plan or apply",
+			"error", calErr)
+	} else {
+		opts = append(opts, wiring.WithChangeCalendar(cal))
+	}
+	engine := wiring.NewEngine(store, opts...).Adapter()
 	return grpc.NewChangeService(store, engine, approval.NewService(newApprovalStoreAdapter(store)), nil)
 }

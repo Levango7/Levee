@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/state"
@@ -62,6 +64,40 @@ func openStore(ctx context.Context) (*state.SQLiteStore, error) {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
 	return store, nil
+}
+
+// calendarFor attaches the change calendar to the database this process already
+// holds. It takes the state store rather than a DSN on purpose: freeze periods
+// have to be read from the same database the server executes against, and a
+// second connection string is a second thing to get wrong.
+//
+// The store's concrete type decides the SQL dialect, because `internal/calendar`
+// cannot tell a SQLite handle from a PostgreSQL one by looking at it, and
+// guessing wrong fails at CREATE TABLE (`type "datetime" does not exist`) or at
+// every `$n`/`?` placeholder. An unknown store implementation is an error, not a
+// silent SQLite: a calendar nobody can open means freeze enforcement is inert,
+// and the caller has to say so out loud rather than plan happily.
+func calendarFor(ctx context.Context, store state.Store) (*calendar.CalendarService, error) {
+	if store == nil {
+		return nil, fmt.Errorf("calendar unavailable: no state store to share")
+	}
+	var (
+		db      *sql.DB
+		dialect calendar.Dialect
+	)
+	switch s := store.(type) {
+	case *state.SQLiteStore:
+		db, dialect = s.DB(), calendar.DialectSQLite
+	case *state.PGStore:
+		db, dialect = s.DB(), calendar.DialectPostgres
+	default:
+		return nil, fmt.Errorf("calendar unavailable: unknown state store type %T", store)
+	}
+	calStore, err := calendar.NewStore(ctx, db, dialect)
+	if err != nil {
+		return nil, fmt.Errorf("calendar unavailable: %w", err)
+	}
+	return calendar.NewCalendarService(calStore), nil
 }
 
 // currentActor returns the identity of the CLI user for audit purposes. It

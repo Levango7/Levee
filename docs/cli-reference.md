@@ -1413,6 +1413,20 @@ levee calendar create --name "发版窗口" --start 2026-08-16T10:00:00Z --end 2
 levee calendar create --name "月末冻结" --start 2026-08-31T00:00:00Z --end 2026-08-31T23:59:59Z --targets prod --frozen --cron "0 0 1 * *"
 ```
 
+**说明**
+
+- 冻结期是**执行期门禁**，不只是台账：`levee plan` 与 apply 执行前各判一次，命中即拒绝
+  （gRPC 侧为 `FailedPrecondition`），且被拒的 plan 不留任何产物。规范口径见
+  `leveelang-spec.md` §4.2b。
+- `--targets` 的匹配词汇表：主机名 / 清单分组名 / 标签 `key=value` / 标签裸 `value`
+  四种写法都能命中（示例里的 `web`、`prod` 属于裸 `value`）。裸标签名（如 `env`）
+  **不会**命中——每台主机都有 `env`，接受它等于一条命令冻结整个机群。
+- 绕过冻结的唯一途径是 workflow 自己声明 `approval.level: emergency`；risk 分数抬上来的
+  派生 emergency 档位不构成授权。回滚永不被冻结期阻断（失败的前向变更必须可撤销）。
+- `--frozen` 创建成功后，stderr 会打印一行 `notice: freeze <id> recorded in <db 文件>`：
+  服务端必须读同一个数据库才会生效。CLI 目前只连本机 SQLite（尚无 `database.dsn`），
+  PostgreSQL 集群形态下 CLI 写的冻结期服务端读不到，服务端启动时会为此打 WARN。
+
 ### 13.4 calendar update
 
 更新变更窗口。仅设置的标志生效，未设置标志保留原值。

@@ -520,6 +520,37 @@ window {
 }
 ```
 
+### 4.2b 组织级冻结期（change calendar）执行契约
+
+`window` 是**单个 workflow 自带**的时间窗；冻结期（freeze）是**组织级**的日历条目，
+由 `levee calendar create --frozen` 建立，作用于命中的那批目标的所有变更。两者是两回事，
+错误信息里都会出现「窗口/frozen」字样，判读时按来源区分：
+
+| 概念 | 谁声明 | 判定时机 | 回滚是否豁免 |
+| --- | --- | --- | --- |
+| `window`（§4.2） | workflow 作者 | plan 阶段 | 豁免 |
+| 冻结期（本节） | 运维/发布经理（日历） | plan 阶段 + apply 执行前各一次 | 豁免 |
+| 清单主机 `status=frozen` | 资源清单 | plan 入口 + 执行前 host guard | 不属本节（另一套机制） |
+
+匹配规则（一次说清，因为文档里同时出现过两种写法）：某条冻结期命中这次变更，当且仅当
+它的 `--targets` 任一项等于本次目标主机词汇表里的一项，词汇表 = 主机名 ∪ 清单分组名 ∪
+每个标签的 `key=value` ∪ 每个标签的裸 `value`。**裸标签名（如 `env`）刻意不算**：每台主机
+都有 `env`，接受它等于一条 `--targets env` 冻结整个机群。
+
+其他契约事实：
+
+- 拒绝发生在**任何状态写入之前**，且不带产物：被拒的 plan 不会留下 `plan_json`/`plan_hash`。
+- 应急覆盖只认**作者在 workflow 里写的** `approval.level: emergency`；由 risk 分数抬上去的
+  派生档位不构成覆盖——否则一个高分变更就能自己解锁绕过冻结。
+- 日历**读不到**时按失败关闭处理（plan 被拒），而不是"判不了就放行"。
+- 重叠的普通变更窗口只告警（服务端 WARN 日志），不拒绝：只有冻结拒绝。
+- 存储形状：`calendar_windows` 表与 run 记录同库；SQLite 与 PostgreSQL 两种方言由
+  `calendar.Dialect` 显式声明（PostgreSQL 用 `TIMESTAMPTZ`，`DATETIME` 在该服务端不存在）。
+  **当前边界**：CLI 的 `levee calendar` 只连本机 SQLite 文件（尚无 `database.dsn`），
+  因此在 `--cluster --pg-dsn` 形态下，CLI 写下的冻结期不会被服务端读到——服务端启动时
+  若该库日历表为空会打 WARN，`levee calendar create --frozen` 成功后也会在 stderr 说明
+  这一行落在哪个文件。接线前提见 `docs/product-roadmap.md`。
+
 ### 4.3 batches 字段
 
 batches 字段声明批次划分策略，是 workflow 的可选块，缺省表示单批全量执行（不推荐，告警 LE051 warning）。
