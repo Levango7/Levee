@@ -313,6 +313,8 @@ levee serve --cluster \
 
 因此多节点部署应视为“共享存储 + 共享成员/锁 + 多接入点”，可用性提升依赖外部负载均衡与健康检查（`/healthz`）摘除故障节点，而非内置的在途工作自动切换。启动时的告警日志会重申这一点，请在容量与 SLO 评估中纳入。
 
+**变更日历（冻结期）在集群形态下的边界**：`levee serve --cluster --pg-dsn …` 会在**它自己那个 PostgreSQL 库**上建 `calendar_windows`（PostgreSQL 形状：`TIMESTAMPTZ` 列 + `$n` 占位符）并据此强制冻结期——plan 与 apply 执行前各判一次，命中即 `FailedPrecondition` 且不留计划产物，回滚豁免（口径见 `leveelang-spec.md` §4.2b）。但 **CLI 侧的 `levee calendar` 命令目前只会连本机 SQLite 文件**（`internal/config` 的 `database` 段只有 `driver`(仅 sqlite)/`path`，`--pg-dsn` 是 serve 旗标），所以在集群形态下用 `levee calendar freeze` 建立的冻结期**不会**被服务端读到。两头都会出声以免静默失效：`calendar create --frozen` 成功后在 stderr 打印该行落到哪个库文件，`serve` 启动时若自己的日历表为空会打 WARN。把 CLI 指到共享库需要先在配置里加 `database.dsn` 并放开 `config.Validate` 对 sqlite 的坚持（影响所有 CLI 命令的取库路径），登记在 `docs/product-roadmap.md`；在那之前，集群部署的冻结期只能由**能连该库的方式**写入（例如直接在共享 PostgreSQL 上 `INSERT INTO calendar_windows …`，列与类型见 `internal/calendar/calendar.go` 的 `calendarSchemaPostgres`）。
+
 ## 13. 常见问题
 
 - **服务拒绝启动，提示缺少 token**：这是启动门禁生效。配置 `--token` / `LEVEE_TOKEN` / `--auth-token` 之一；仅本地开发可用 `--insecure`。
