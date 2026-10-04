@@ -170,6 +170,8 @@ func TestPrintSystemStatusHuman(t *testing.T) {
 		"version":     "1.0.0",
 		"config_path": "/etc/levee/config.yaml",
 		"db_status":   "ok",
+		"db_driver":   "sqlite",
+		"db_location": "/var/lib/levee/levee.db",
 		"db_path":     "/var/lib/levee/levee.db",
 	}
 
@@ -179,6 +181,11 @@ func TestPrintSystemStatusHuman(t *testing.T) {
 	assert.Contains(t, out, "1.0.0")
 	assert.Contains(t, out, "ok")
 	assert.Contains(t, out, "/etc/levee/config.yaml")
+	// The backend and where it lives are printed because `db_status: ok` alone
+	// used to be ambiguous: an operator could not tell which database the check
+	// had just opened.
+	assert.Contains(t, out, "sqlite (/var/lib/levee/levee.db)")
+	assert.NotContains(t, out, "%!")
 }
 
 func TestPrintConfigGetHuman(t *testing.T) {

@@ -1772,16 +1772,16 @@ func (gw *Gateway) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, summary)
 }
 
-// backendLabel returns a human-readable backend name for the store.
+// backendLabel returns a human-readable backend name for the store. It defers
+// to state.StoreDriver, which owns the vocabulary, so that this endpoint and
+// SystemService.GetStatus cannot report two different backends for one process —
+// the disagreement that made `store_type` untrustworthy is exactly a second,
+// hand-written copy of this switch.
 func backendLabel(s state.Store) string {
-	switch s.(type) {
-	case *state.PGStore:
-		return "postgres"
-	case *state.SQLiteStore:
-		return "sqlite"
-	default:
-		return "unknown"
+	if name := state.StoreDriver(s); name != "" {
+		return name
 	}
+	return "unknown"
 }
 
 func (gw *Gateway) handleSystemConfig(w http.ResponseWriter, r *http.Request) {

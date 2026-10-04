@@ -29,7 +29,7 @@ import (
 
 // storeOpener opens the CLI's state store. It is a field rather than a direct
 // call to openStore so tests can point the bridge at a temporary database.
-type storeOpener func(context.Context) (*state.SQLiteStore, error)
+type storeOpener func(context.Context) (state.Store, error)
 
 // lazyLocalChangeCreator is a conversation.ChangeCreator that opens the local
 // state store on first use. It is safe for concurrent use: the bridge may be
@@ -37,7 +37,7 @@ type storeOpener func(context.Context) (*state.SQLiteStore, error)
 type lazyLocalChangeCreator struct {
 	mu      sync.Mutex
 	open    storeOpener
-	store   *state.SQLiteStore
+	store   state.Store
 	svc     *grpc.ChangeService
 	openErr error
 }

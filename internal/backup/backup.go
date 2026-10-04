@@ -34,10 +34,13 @@ import (
 	"github.com/nexus/levee/internal/state"
 )
 
-// Supported backend driver names.
+// Supported backend driver names. They alias internal/state, which owns the
+// vocabulary: a backup file's backend marker and the store a process holds must
+// be spelled identically, or `levee restore` can be pointed at a database whose
+// type is named two different ways.
 const (
-	DriverSQLite   = "sqlite"
-	DriverPostgres = "postgres"
+	DriverSQLite   = state.DriverSQLite
+	DriverPostgres = state.DriverPostgres
 )
 
 // ChecksumSuffix is appended to a backup file path to name its SHA-256
@@ -87,6 +90,18 @@ func (m *Manager) Source() string {
 		return m.dbPath
 	}
 	return m.dsn
+}
+
+// SafeSource is Source with the PostgreSQL credentials removed, for anything
+// that prints: `levee backup` put Source() into its result document and onto
+// stdout, which for a PostgreSQL backup wrote the connection password into the
+// operator's terminal and into whatever audit record consumes that output.
+// Use Source() to connect and SafeSource() to describe.
+func (m *Manager) SafeSource() string {
+	if m.driver == DriverSQLite {
+		return m.dbPath
+	}
+	return state.RedactDSN(m.dsn)
 }
 
 // Backup creates a backup file at outputPath using the backend this Manager

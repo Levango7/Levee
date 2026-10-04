@@ -545,11 +545,22 @@ window {
 - 日历**读不到**时按失败关闭处理（plan 被拒），而不是"判不了就放行"。
 - 重叠的普通变更窗口只告警（服务端 WARN 日志），不拒绝：只有冻结拒绝。
 - 存储形状：`calendar_windows` 表与 run 记录同库；SQLite 与 PostgreSQL 两种方言由
-  `calendar.Dialect` 显式声明（PostgreSQL 用 `TIMESTAMPTZ`，`DATETIME` 在该服务端不存在）。
-  **当前边界**：CLI 的 `levee calendar` 只连本机 SQLite 文件（尚无 `database.dsn`），
-  因此在 `--cluster --pg-dsn` 形态下，CLI 写下的冻结期不会被服务端读到——服务端启动时
-  若该库日历表为空会打 WARN，`levee calendar create --frozen` 成功后也会在 stderr 说明
-  这一行落在哪个文件。接线前提见 `docs/product-roadmap.md`。
+  `calendar.Dialect` 显式声明（PostgreSQL 用 `TIMESTAMPTZ`，`DATETIME` 在该服务端不存在），
+  两条 DDL 的列集合由测试钉住不漂移。
+- 连哪个库只有一处决定：`database.driver`（`sqlite` / `postgres`）配 `database.path` 或
+  `database.dsn`。所有 CLI 命令、未加 `--cluster` 的 `serve`、`system status`/`doctor` 的探活
+  与本表的读写共用同一个取库函数，因此"冻结期写在 A 库、执行读 B 库"不可能由命令种类造成；
+  配对错误（`postgres` 缺 `dsn`、`sqlite` 多 `dsn`、未知驱动）是启动失败，而不是退回本机文件。
+  `serve --cluster` 仍用 `--pg-dsn`，且当 `database.dsn` 也存在时两者必须相等；只给 `--pg-dsn`
+  而不给 `--cluster` 同样启动失败——未启协调（无成员、无租约、无 fencing）的进程连集群共享库，
+  比它退回本机文件更危险。
+- `levee calendar create --frozen` 成功后在 stderr 打印这一行落在哪个库（驱动 + 位置），
+  `driver: sqlite` 时额外警告"本地文件，跑在 PostgreSQL 上的服务端读不到"；服务端启动时若该库
+  日历表为空会打 WARN。DSN 含凭据，故所有输出面（通知、`system status`、`system config get
+  database.dsn`、错误串、备份结果文档）一律打印 `postgres@host:port/db`，非 URL 形态的连接串
+  整体 withheld 而不回显。
+- 多租户（`tenant.enabled: true`）不改变以上判定：服务端持有的是 `tenant.TenantStore` 装饰器，
+  方言与后端名按底层真实库解析（`state.Underlying`），开启隔离不会让冻结门禁失效。
 
 ### 4.3 batches 字段
 

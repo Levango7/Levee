@@ -22,9 +22,13 @@ func TestLazyLocalChangeCreatorOpensStoreOnFirstUse(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "levee-converse-bridge.db")
 	opens := 0
-	creator := newLazyLocalChangeCreator(func(context.Context) (*state.SQLiteStore, error) {
+	creator := newLazyLocalChangeCreator(func(context.Context) (state.Store, error) {
 		opens++
-		return state.NewSQLiteStore(ctx, path)
+		st, oerr := state.NewSQLiteStore(ctx, path)
+		if oerr != nil {
+			return nil, oerr
+		}
+		return st, nil
 	})
 
 	// --list / --history / a plain question must never touch a database.
@@ -51,7 +55,7 @@ func TestLazyLocalChangeCreatorOpensStoreOnFirstUse(t *testing.T) {
 }
 
 func TestLazyLocalChangeCreatorCloseWithoutUse(t *testing.T) {
-	creator := newLazyLocalChangeCreator(func(context.Context) (*state.SQLiteStore, error) {
+	creator := newLazyLocalChangeCreator(func(context.Context) (state.Store, error) {
 		t.Error("a read-only invocation must never open the store")
 		return nil, nil
 	})
@@ -60,7 +64,7 @@ func TestLazyLocalChangeCreatorCloseWithoutUse(t *testing.T) {
 
 func TestLazyLocalChangeCreatorSurfacesOpenFailure(t *testing.T) {
 	opens := 0
-	creator := newLazyLocalChangeCreator(func(context.Context) (*state.SQLiteStore, error) {
+	creator := newLazyLocalChangeCreator(func(context.Context) (state.Store, error) {
 		opens++
 		return nil, errors.New("config missing")
 	})

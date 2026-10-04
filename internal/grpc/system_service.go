@@ -93,7 +93,6 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 		ActiveRuns:    0,
 		PausedRuns:    0,
 		UptimeSeconds: int64(time.Since(s.startTime).Seconds()),
-		StoreType:     "sqlite",
 		Warnings:      nil,
 	}
 
@@ -116,10 +115,14 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 		resp.Warnings = append(resp.Warnings, "store not configured")
 	}
 
-	// Determine store type from config.
-	if s.cfg != nil && s.cfg.Database.Driver != "" {
-		resp.StoreType = s.cfg.Database.Driver
-	}
+	// The store answers for its own backend. This used to read
+	// `cfg.Database.Driver`, which is a claim about a file on disk rather than
+	// about this process: `serve --cluster --pg-dsn …` opens PostgreSQL while
+	// `database.driver` still defaults to "sqlite", so the health endpoint
+	// reported the wrong backend to everyone reading it — including the
+	// operator deciding whether the cluster is healthy. backendLabel is the
+	// same mapping the REST gateway already uses, so both surfaces agree.
+	resp.StoreType = backendLabel(s.store)
 
 	// Derive overall status from warnings.
 	if len(resp.Warnings) > 0 {

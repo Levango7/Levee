@@ -313,7 +313,16 @@ levee serve --cluster \
 
 因此多节点部署应视为“共享存储 + 共享成员/锁 + 多接入点”，可用性提升依赖外部负载均衡与健康检查（`/healthz`）摘除故障节点，而非内置的在途工作自动切换。启动时的告警日志会重申这一点，请在容量与 SLO 评估中纳入。
 
-**变更日历（冻结期）在集群形态下的边界**：`levee serve --cluster --pg-dsn …` 会在**它自己那个 PostgreSQL 库**上建 `calendar_windows`（PostgreSQL 形状：`TIMESTAMPTZ` 列 + `$n` 占位符）并据此强制冻结期——plan 与 apply 执行前各判一次，命中即 `FailedPrecondition` 且不留计划产物，回滚豁免（口径见 `leveelang-spec.md` §4.2b）。但 **CLI 侧的 `levee calendar` 命令目前只会连本机 SQLite 文件**（`internal/config` 的 `database` 段只有 `driver`(仅 sqlite)/`path`，`--pg-dsn` 是 serve 旗标），所以在集群形态下用 `levee calendar freeze` 建立的冻结期**不会**被服务端读到。两头都会出声以免静默失效：`calendar create --frozen` 成功后在 stderr 打印该行落到哪个库文件，`serve` 启动时若自己的日历表为空会打 WARN。把 CLI 指到共享库需要先在配置里加 `database.dsn` 并放开 `config.Validate` 对 sqlite 的坚持（影响所有 CLI 命令的取库路径），登记在 `docs/product-roadmap.md`；在那之前，集群部署的冻结期只能由**能连该库的方式**写入（例如直接在共享 PostgreSQL 上 `INSERT INTO calendar_windows …`，列与类型见 `internal/calendar/calendar.go` 的 `calendarSchemaPostgres`）。
+**变更日历（冻结期）与"哪个数据库"的唯一口径**：`levee serve --cluster --pg-dsn …` 会在**它自己那个 PostgreSQL 库**上建 `calendar_windows`（PostgreSQL 形状：`TIMESTAMPTZ` 列 + `$n` 占位符）并据此强制冻结期——plan 与 apply 执行前各判一次，命中即 `FailedPrecondition` 且不留计划产物，回滚豁免（口径见 `leveelang-spec.md` §4.2b）。冻结期要拦得住，写它的进程和读它的进程必须落在同一个库，而这件事现在由**配置文件一处决定**：`database.driver` 取 `sqlite`（默认，`database.path` 那个文件）或 `postgres`（此时 `database.dsn` 必填）。所有 CLI 命令、未加 `--cluster` 的 `serve`、`system status`/`doctor` 的探活、以及 `levee calendar` 都走同一个决策函数（`cmd/levee/helpers.go` 的 `openStoreFromConfig`），不存在"这条命令连本机、那条连服务端"。因此集群部署的推荐做法是把服务端那份 `configs/config.yaml`（`driver: postgres` + `dsn`）交给运维侧使用；`calendar create --frozen` 成功后仍会在 stderr 打印它写到哪个库，`driver: sqlite` 时额外警告"这是本地文件、服务端读不到"。
+
+三条启动期硬约束，都是为了避免"看起来配置好了其实各连各的"：
+
+- `serve` 只给 `--pg-dsn` 而不给 `--cluster`：启动失败。该旗标是集群共享存储的入口，未启用协调（无成员、无租约、无 fencing）的进程连上集群库，比它退回本机文件更危险；真要单节点 PostgreSQL，请用 `database.driver: postgres`。
+- `--cluster` 时 `--pg-dsn` 与 `database.dsn` 同时出现且指向不同：启动失败，并打印两者的**脱敏端点**。同一部署里两个答案等于没有答案。
+- 多租户（`tenant.enabled: true`）下服务端持有的 store 是 `tenant.TenantStore` 装饰器；日历按底层真实库判定方言（`state.Underlying`），因此开启隔离不会让冻结门禁失效。
+- 用 `database.driver: postgres` 让 CLI 直连共享库时，**每条命令打开连接都会走一遍与 serve 相同的迁移路径**（`state.NewPGStore` 在建池后应用 `pgMigrations`，与 `internal/backup` 共用同一把 advisory lock）。这是"读同一个库"的必要条件，但意味着服务账号需要 DDL 权限；若只想让服务端读写共享库、CLI 不碰，请让 CLI 侧配置继续指向本机 SQLite——`calendar create --frozen` 会明确告诉你那一行落在哪个库，而 `serve` 在它的日历表为空时会 WARN 提示可能是两边 `--config` 不一致。
+
+DSN 里含凭据，所以它不会出现在任何输出面上：`system status`、`system config get database.dsn`、启动日志与错误串一律打印 `postgres@host:port/db`（`internal/state.RedactDSN`，非 URL 形态的连接串整体 withheld 而不回显），`levee backup` 的结果文档同此口径。
 
 ## 13. 常见问题
 

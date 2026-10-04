@@ -145,12 +145,15 @@ func runSystemStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Check DB connectivity.
+	// Check DB connectivity through the same decision every other command uses.
+	// Probing SQLite directly here used to make `system status` green for a
+	// PostgreSQL deployment: it opened (and created) the local SQLite file while
+	// the server ran against PostgreSQL, so the health check validated a
+	// database that holds nothing.
 	dbStatus := "ok"
 	dbErr := ""
 	ctx := context.Background()
-	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path,
-		state.WithSynchronous(cfg.State.SQLiteSynchronous))
+	store, err := openStoreFromConfig(ctx, cfg)
 	if err != nil {
 		dbStatus = "unreachable"
 		dbErr = err.Error()
@@ -168,7 +171,15 @@ func runSystemStatus(cmd *cobra.Command, args []string) error {
 		"version":     version,
 		"config_path": configPath,
 		"db_status":   dbStatus,
-		"db_path":     cfg.Database.Path,
+		"db_driver":   cfg.Database.Driver,
+		"db_location": cfg.Database.StoreLocation(),
+	}
+	// db_path stays for the SQLite deployments that already parse it. It is
+	// omitted rather than filled with a DSN-shaped string under postgres: a key
+	// called "path" that sometimes holds a connection URI is how an operator
+	// ends up scripting against the wrong field.
+	if cfg.Database.Driver == state.DriverSQLite {
+		output["db_path"] = cfg.Database.Path
 	}
 	if dbErr != "" {
 		output["db_error"] = dbErr
@@ -294,22 +305,27 @@ func runSystemDoctor(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	// Check 2: Database reachable.
+	// Check 2: Database reachable — through openStoreFromConfig, so `doctor`
+	// probes the backend the deployment actually uses instead of always opening
+	// a local SQLite file and calling that healthy.
 	if cfg != nil {
 		ctx := context.Background()
-		store, dbErr := state.NewSQLiteStore(ctx, cfg.Database.Path,
-			state.WithSynchronous(cfg.State.SQLiteSynchronous))
+		store, dbErr := openStoreFromConfig(ctx, cfg)
 		if dbErr != nil {
 			checks = append(checks, map[string]any{
-				"check":  "database",
-				"status": "FAIL",
-				"error":  dbErr.Error(),
+				"check":    "database",
+				"status":   "FAIL",
+				"driver":   cfg.Database.Driver,
+				"location": cfg.Database.StoreLocation(),
+				"error":    dbErr.Error(),
 			})
 		} else {
 			_ = store.Close()
 			checks = append(checks, map[string]any{
-				"check":  "database",
-				"status": "OK",
+				"check":    "database",
+				"status":   "OK",
+				"driver":   cfg.Database.Driver,
+				"location": cfg.Database.StoreLocation(),
 			})
 		}
 	} else {
@@ -390,6 +406,13 @@ func getConfigValue(cfg *config.Config, key string) (string, error) {
 		return cfg.Database.Driver, nil
 	case "database.path":
 		return cfg.Database.Path, nil
+	// The DSN is answerable but never verbatim: `system config get` prints to
+	// stdout, and this value is a connection string with a password in it. The
+	// redacted form still answers what the operator is asking — which server and
+	// database this profile points at — without shipping the credential to the
+	// terminal, the scrollback and any log capture in between.
+	case "database.dsn":
+		return state.RedactDSN(cfg.Database.DSN), nil
 	case "database.max_open_conns":
 		return fmt.Sprintf("%d", cfg.Database.MaxOpenConns), nil
 	case "database.max_idle_conns":
@@ -494,7 +517,8 @@ func setConfigValue(cfgPath, key, value string) error {
 func printSystemStatusHuman(w io.Writer, output map[string]any) {
 	fmt.Fprintf(w, "levee %s\n", output["version"])
 	fmt.Fprintf(w, "  config:  %s\n", output["config_path"])
-	fmt.Fprintf(w, "  db:      %s (%s)\n", output["db_status"], output["db_path"])
+	fmt.Fprintf(w, "  db:      %s %s (%v)\n",
+		output["db_status"], output["db_driver"], output["db_location"])
 	if dbErr, ok := output["db_error"].(string); ok && dbErr != "" {
 		fmt.Fprintf(w, "  db_err:  %s\n", dbErr)
 	}

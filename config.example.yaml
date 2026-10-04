@@ -40,14 +40,21 @@ server:
 
 # -----------------------------------------------------------------------------
 # database —— 数据库配置（对应 DatabaseConfig）
-# MVP 仅支持内嵌 SQLite；postgres 等其他 driver 为后续版本规划。
+# 所有命令与 serve（未加 --cluster 时）都只按这里的 driver/path/dsn 取库，一处生效。
+# 因此「冻结期写在哪个库」由配置文件决定，而不是由先运行了哪条命令决定；
+# 集群/服务端共享库形态请用 driver: postgres 并把 dsn 指向服务端那个库
+# （见 docs/deployment.md 的变更日历一节，含 --pg-dsn 与 database.dsn 必须一致这条约束）。
 # -----------------------------------------------------------------------------
 database:
-  # 数据库驱动，当前仅允许 sqlite。 默认: sqlite
-  driver: sqlite
-  # 数据库文件路径（绝对/相对路径，支持 ~）。
-  # 留空时自动派生为 <server.data_dir>/levee.db。必填（可留空由默认派生）。
+  # 数据库驱动。其他取值是配置错误，程序不会退回 sqlite。 默认: sqlite
+  driver: sqlite    # sqlite | postgres
+  # 数据库文件路径（绝对/相对路径，支持 ~），仅 sqlite 使用。
+  # 留空时自动派生为 <server.data_dir>/levee.db。
   path: ""    # 例: ~/.levee/data/levee.db
+  # PostgreSQL 连接串，仅 postgres 使用且此时必填；sqlite 配了 dsn 会启动失败。
+  # 该值含凭据，因此不会原样出现在任何输出面上（打印形态为 postgres@host:port/db）。
+  # 环境变量覆盖名：LEVEE_DATABASE_DSN。
+  dsn: ""    # 例: postgres://levee:pass@db.internal:5432/levee?sslmode=require
   # 连接池：最大打开连接数（>= 0）。 默认: 50
   max_open_conns: 50
   # 连接池：最大空闲连接数（>= 0，且 <= max_open_conns）。 默认: 10
@@ -465,16 +472,19 @@ state:
 # -----------------------------------------------------------------------------
 # 场景二：多节点集群
 # -----------------------------------------------------------------------------
-# 注意：database.driver 当前仅支持 sqlite（MVP），PostgreSQL 支持为后续
-#       版本规划；集群形态下建议每个节点使用独立 data_dir，或将数据库文件
-#       置于低延迟的本地盘，勿放网络共享盘以避免 SQLite 锁竞争。
+# 注意：集群形态的服务端由 `levee serve --cluster --pg-dsn <dsn>` 指定 PostgreSQL，
+#       该 DSN 必须与这里 `database.dsn` 一致（两处同时存在且不同 → 启动失败）；
+#       运维侧要用 CLI 读写同一个库（尤其是 `levee calendar` 的冻结期），就把
+#       本文件的 driver 设为 postgres、dsn 设为服务端那个库，否则命令只会作用在
+#       操作者本机的 SQLite 文件上（`calendar create --frozen` 会在 stderr 说明
+#       这一行落在哪个库）。各节点仍应使用独立 data_dir，勿放网络共享盘。
 # server:
 #   data_dir: /var/lib/levee/data
 #   log_level: info
 #   log_format: json
 # database:
-#   driver: sqlite
-#   path: /var/lib/levee/data/levee.db
+#   driver: postgres
+#   dsn: postgres://levee:pass@db.internal:5432/levee?sslmode=require
 #   max_open_conns: 100
 #   max_idle_conns: 20
 # executor:
