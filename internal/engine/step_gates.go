@@ -30,6 +30,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -58,51 +59,143 @@ type GateRuntime struct {
 	Approver      verify.HumanApprover
 }
 
-// materializeStepGates registers a runnable verify.Gate for every inline
-// gate declaration in the plan. Names are deterministic per step, timing
-// and index ("step:<name>:pre:<i>", "step:<name>:batch:<i>"), so re-running
-// a runner over the same plan overwrites rather than duplicates.
-func materializeStepGates(verifier *verify.GateManager, p *plan.Plan, rt GateRuntime) error {
+// walkPlanGates calls fn once per inline gate declaration in the plan, in
+// registration order, with the deterministic name materialisation uses
+// ("step:<name>:pre:<i>" and so on).
+//
+// It exists as the single traversal: materializeStepGates and the plan-time
+// executability refusal (internal/wiring) must agree about which declarations
+// exist. A second hand-written walk is how a refusal ends up covering pre-apply
+// checks only while the phase runs post-apply ones.
+func walkPlanGates(p *plan.Plan, fn func(name string, phase verify.GatePhase, c *dsl.GateCheck) error) error {
+	if p == nil {
+		return nil
+	}
 	for _, b := range p.Batches {
 		for _, s := range b.Steps {
 			if s.Gate == nil {
 				continue
 			}
-			for i := range s.Gate.Pre {
-				g, err := gateFromCheck(fmt.Sprintf("step:%s:pre:%d", s.Name, i), verify.PhasePreApply, &s.Gate.Pre[i], rt)
-				if err != nil {
-					return err
-				}
-				verifier.Register(g)
-			}
 			// Batch-timing checks run after EVERY batch completes, so they
 			// register under the post-batch phase.
-			for i := range s.Gate.Batch {
-				g, err := gateFromCheck(fmt.Sprintf("step:%s:batch:%d", s.Name, i), verify.PhasePostBatch, &s.Gate.Batch[i], rt)
-				if err != nil {
-					return err
+			for _, slot := range []struct {
+				kind  string
+				phase verify.GatePhase
+				items []dsl.GateCheck
+			}{
+				{"pre", verify.PhasePreApply, s.Gate.Pre},
+				{"batch", verify.PhasePostBatch, s.Gate.Batch},
+				{"post", verify.PhasePostApply, s.Gate.Post},
+			} {
+				for i := range slot.items {
+					name := fmt.Sprintf("step:%s:%s:%d", s.Name, slot.kind, i)
+					if err := fn(name, slot.phase, &slot.items[i]); err != nil {
+						return err
+					}
 				}
-				verifier.Register(g)
-			}
-			for i := range s.Gate.Post {
-				g, err := gateFromCheck(fmt.Sprintf("step:%s:post:%d", s.Name, i), verify.PhasePostApply, &s.Gate.Post[i], rt)
-				if err != nil {
-					return err
-				}
-				verifier.Register(g)
 			}
 		}
 	}
 	return nil
 }
 
+// materializeStepGates registers a runnable verify.Gate for every inline
+// gate declaration in the plan. Names are deterministic per step, timing
+// and index ("step:<name>:pre:<i>", "step:<name>:batch:<i>"), so re-running
+// a runner over the same plan overwrites rather than duplicates.
+func materializeStepGates(verifier *verify.GateManager, p *plan.Plan, rt GateRuntime) error {
+	return walkPlanGates(p, func(name string, phase verify.GatePhase, c *dsl.GateCheck) error {
+		g, err := rt.gateFromCheck(name, phase, c)
+		if err != nil {
+			return err
+		}
+		verifier.Register(g)
+		return nil
+	})
+}
+
+// executabilityProblem reports why this check cannot run as declared here, or
+// nil when it can. Two causes share one judge deliberately: a missing deployment
+// capability (slo needs a PromQL endpoint, human needs an approval transport),
+// and a declaration the engine can never honour (slo outside post_batch).
+//
+// The judge is shared with the plan-time refusal so that "executable here" has
+// exactly one definition. Without it, a workflow declaring a human or slo check
+// compiles and plans, then dies at the first phase that materialises the gate —
+// after earlier batches already modified the targets. A declared gate must never
+// silently pass, and it must not be discovered unexecutable mid-flight either.
+func (rt GateRuntime) executabilityProblem(name string, phase verify.GatePhase, c *dsl.GateCheck) error {
+	switch c.Type {
+	case "slo":
+		// Without a Prometheus endpoint there is no honest way to evaluate an
+		// SLO threshold, so refuse instead of registering a gate that would guess.
+		if rt.PrometheusURL == "" {
+			return fmt.Errorf("slo gate %q requires verify.prometheus_url configuration", name)
+		}
+		// The phase rule belongs to the same judge because it is the other way a
+		// declaration cannot be honoured: an slo check anywhere but post_batch
+		// registers a gate RunPhase never visits, i.e. a silent skip that reads as
+		// a passing verification. It is also pure declaration geometry — knowable
+		// at plan time with no deployment knowledge at all.
+		if phase != verify.PhasePostBatch {
+			// The remediation has to be stated honestly: no YAML path reaches the
+			// post_batch slot today. convertGate() puts every declaration — step
+			// `verify:`, `batches.gate:` and `gates[].position: post_batch` alike —
+			// into GateSpec.Post, which materialises as post_apply. So an slo check
+			// cannot be declared executable yet, and telling the operator to "move
+			// it to post_batch" would send them editing YAML for no effect. The
+			// parser routing is registered as a defect in docs/product-roadmap.md.
+			return fmt.Errorf("gate %q: slo checks execute in the post_batch phase only, got phase %q"+
+				" — no workflow declaration reaches that slot today (batches.gate and"+
+				" gates[].position: post_batch both route to post_apply); see the"+
+				" post_batch routing defect in docs/product-roadmap.md", name, phase)
+		}
+	case "human":
+		// A human gate without an approver transport can only block forever
+		// or fabricate a pass; neither is acceptable, so require the wiring.
+		if rt.Approver == nil {
+			return fmt.Errorf("human gate %q requires an approver (supply GateRuntime.Approver via WithGateRuntime)", name)
+		}
+	}
+	return nil
+}
+
+// ErrGateNotExecutable reports that a plan declares a verification gate this
+// process has no transport for: a human check with no approver wired, or an slo
+// check with no Prometheus endpoint.
+//
+// It is a sentinel in the package that owns the executability judgement so both
+// halve of the wiring can name it — internal/wiring refuses the plan, and the
+// gRPC layer maps the refusal to a client-actionable FailedPrecondition instead
+// of letting it surface as an Internal fault. A refusal nobody can see the class
+// of is a refusal that gets "fixed" by widening the error match.
+var ErrGateNotExecutable = errors.New("engine: declared verification gate is not executable in this deployment")
+
+// PlanGateBlockers returns one message per inline gate declaration the given
+// runtime cannot execute. Callers use it to refuse a plan up front rather than
+// let the first gate phase fail after targets were already changed.
+func PlanGateBlockers(p *plan.Plan, rt GateRuntime) []string {
+	var out []string
+	//nolint:errcheck // the sink below never returns an error; walkPlanGates' error is unused by construction
+	walkPlanGates(p, func(name string, phase verify.GatePhase, c *dsl.GateCheck) error {
+		if err := rt.executabilityProblem(name, phase, c); err != nil {
+			out = append(out, err.Error())
+		}
+		return nil
+	})
+	return out
+}
+
 // gateFromCheck compiles one dsl.GateCheck into a verify.Gate for the given
 // phase. Unknown check types, invalid params and missing GateRuntime
 // dependencies fail materialisation so that an unexecutable declaration
 // surfaces as an explicit run failure instead of a silent pass.
-func gateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck, rt GateRuntime) (verify.Gate, error) {
+func (rt GateRuntime) gateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck) (verify.Gate, error) {
 	if c == nil {
 		return nil, fmt.Errorf("gate %q: nil check", name)
+	}
+	if err := rt.executabilityProblem(name, phase, c); err != nil {
+		return nil, err
 	}
 	switch c.Type {
 	case "cmd":
@@ -135,17 +228,13 @@ func gateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck, rt Gat
 		return verify.NewProbeGate(name, phase, params), nil
 
 	case "slo":
-		return sloGateFromCheck(name, phase, c, rt)
+		return rt.sloGateFromCheck(name, c)
 
 	case "human":
-		// A human gate without an approver transport can only block forever
-		// or fabricate a pass; neither is acceptable, so require the runtime
-		// wiring up front.
-		if rt.Approver == nil {
-			return nil, fmt.Errorf("human gate %q requires an approver (supply GateRuntime.Approver via WithGateRuntime)", name)
-		}
-		// HumanGate validates its own params strictly; hand the mapping over
-		// verbatim so its schema stays the single source of truth.
+		// executabilityProblem already required the approver and gateFromCheck
+		// checked it before dispatching here, so a transport exists. HumanGate
+		// validates its own params strictly; hand the mapping over verbatim so
+		// its schema stays the single source of truth.
 		return verify.NewHumanGate(name, string(phase), rt.Approver, c.Params), nil
 
 	default:
@@ -154,21 +243,12 @@ func gateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck, rt Gat
 }
 
 // sloGateFromCheck compiles a "slo" GateCheck. It is split out of
-// gateFromCheck purely to keep that dispatcher readable; behaviour is
-// unchanged.
-func sloGateFromCheck(name string, phase verify.GatePhase, c *dsl.GateCheck, rt GateRuntime) (verify.Gate, error) {
-	// Without a Prometheus endpoint there is no honest way to evaluate an
-	// SLO threshold, so materialisation aborts instead of registering a
-	// gate that would guess.
-	if rt.PrometheusURL == "" {
-		return nil, fmt.Errorf("slo gate %q requires verify.prometheus_url configuration", name)
-	}
-	// The verify.SLOGate is bound to the post-batch phase; a declaration
-	// asking for any other timing would register a gate RunPhase never
-	// sees (silent skip), so reject it up front.
-	if phase != verify.PhasePostBatch {
-		return nil, fmt.Errorf("gate %q: slo checks execute in the post_batch phase only, got phase %q", name, phase)
-	}
+// gateFromCheck purely to keep that dispatcher readable.
+//
+// It takes no phase: the endpoint requirement and the post_batch-only rule are
+// both enforced by executabilityProblem before it is reached, and SLOGate itself
+// carries no phase — the phase comes from the slot the gate was registered under.
+func (rt GateRuntime) sloGateFromCheck(name string, c *dsl.GateCheck) (verify.Gate, error) {
 
 	pp, err := parseStrictParams(c.Params, map[string]string{
 		"query":           "string",
