@@ -59,6 +59,18 @@ func NewTenantStore(base state.Store, res *Resolver, qm *QuotaManager) *TenantSt
 // tenant-scoped request: it has no isolation whatsoever.
 func (s *TenantStore) Base() state.Store { return s.base }
 
+// Underlying implements state.Unwrapper so that code which has to know what
+// database is in use — the change calendar's dialect choice, `system status`'s
+// backend label — can see through this decorator instead of reporting "unknown
+// store type". Without it, turning on `tenant.enabled` makes the freeze-period
+// gate inert, because internal/state cannot import this package to ask.
+//
+// It is deliberately not a way to bypass isolation: it returns the same handle
+// Base does, and only type identification should use it.
+func (s *TenantStore) Underlying() state.Store { return s.base }
+
+var _ state.Unwrapper = (*TenantStore)(nil)
+
 // Resolver returns the resolver this store enforces.
 func (s *TenantStore) Resolver() *Resolver { return s.res }
 

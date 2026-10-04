@@ -235,6 +235,16 @@ jobs:
         run: go test -race ./internal/cluster/... -count=1 -timeout 600s
       - name: go test (takeover, isolated step)
         run: go test -race ./internal/takeover/... -count=1 -timeout 300s
+      # Change-calendar dialect tests and the CLI's PostgreSQL store selection.
+      # Both ship live tests that skip without LEVEE_PG_TEST_DSN, so without a
+      # step here "verified against a real server" would never be re-checked and
+      # could rot silently — the calendar package had no step at all until this.
+      # Each runs inside a generated private schema with a pinned search_path, so
+      # neither touches the rows the state/cluster/takeover steps share.
+      - name: go test (change calendar on postgres, isolated step)
+        run: go test -race ./internal/calendar/... -count=1 -timeout 300s
+      - name: go test (CLI postgres store selection, isolated step)
+        run: go test -race ./cmd/levee/ -run TestPostgresConfigRoundTrips -count=1 -timeout 300s
       # Backup restore drill (D-3): the drill creates/restores/drops its OWN
       # scratch databases, so it never touches the shared levee_test database;
       # kept as a separate step anyway so a drill failure is attributable.

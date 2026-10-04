@@ -75,6 +75,20 @@ func TestNewManagerPostgres(t *testing.T) {
 	assert.Equal(t, "postgres://u:p@h:5432/db", m.Source())
 }
 
+// SafeSource is the printing half of the pair: `levee backup` put Source() into
+// its result document, so a PostgreSQL backup printed the connection password on
+// stdout. Source() keeps returning the DSN because it is what the code connects
+// with; the two must not be collapsed into one method.
+func TestManagerSafeSource(t *testing.T) {
+	pg := NewManagerPostgres("postgres://levee:s3cr3t@db.internal:5432/levee?sslmode=require")
+	assert.Equal(t, "postgres@db.internal:5432/levee", pg.SafeSource())
+	assert.Contains(t, pg.Source(), "s3cr3t", "Source stays connectable; only the printed form is redacted")
+
+	sqlite := NewManagerSQLite("/var/lib/levee/levee.db")
+	assert.Equal(t, "/var/lib/levee/levee.db", sqlite.SafeSource(),
+		"a file path is not a credential; redacting it would cost the operator the one useful detail")
+}
+
 func TestBackupDispatchUnknownDriver(t *testing.T) {
 	m := &Manager{driver: "mysql"}
 	err := m.Backup(context.Background(), "x")

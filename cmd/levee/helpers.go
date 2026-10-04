@@ -50,20 +50,62 @@ func applySecurityConfig(cfg *config.Config) {
 	audit.SetSensitiveFields(cfg.Security.SensitiveFields)
 }
 
-// openStore loads the LEVEE configuration and opens a SQLite store. The caller
-// is responsible for calling Close on the returned store when done.
-func openStore(ctx context.Context) (*state.SQLiteStore, error) {
+// openStore loads the LEVEE configuration and opens the database it names. The
+// caller is responsible for calling Close on the returned store when done.
+func openStore(ctx context.Context) (state.Store, error) {
 	cfg, err := config.Load(optConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 	applySecurityConfig(cfg)
-	store, err := state.NewSQLiteStore(ctx, cfg.Database.Path,
-		state.WithSynchronous(cfg.State.SQLiteSynchronous))
-	if err != nil {
-		return nil, fmt.Errorf("open store: %w", err)
+	return openStoreFromConfig(ctx, cfg)
+}
+
+// openStoreFromConfig is the single place in the CLI that turns a configuration
+// into a live store: `levee <command>`, `serve` without --cluster, `system
+// status`/`doctor` and the change calendar all reach a database through it.
+//
+// Two properties are load-bearing here, and both are why this is a function
+// rather than four copies of an if-statement.
+//
+// The first is that the calendar gates added in #46 only protect a deployment
+// when the process that *writes* freeze periods and the process that *reads*
+// them hold the same database. Choosing the backend in one place is what makes
+// "the same database" a property of the config file instead of a coincidence of
+// which sub-command happened to be invoked.
+//
+// The second is that an unrecognised driver must fail rather than default to
+// SQLite. Silent fallback to a local file is the worst available outcome: the
+// operator's runs, approvals and freeze periods stay in a database the server
+// never reads, every command reports success, and nothing on any output surface
+// says the deployment is split. config.Validate rejects unknown drivers, so
+// this default arm only fires on a Config built in memory — and it says so.
+func openStoreFromConfig(ctx context.Context, cfg *config.Config) (state.Store, error) {
+	switch cfg.Database.Driver {
+	case state.DriverSQLite:
+		store, err := state.NewSQLiteStore(ctx, cfg.Database.Path,
+			state.WithSynchronous(cfg.State.SQLiteSynchronous))
+		if err != nil {
+			return nil, fmt.Errorf("open sqlite store at %s: %w", cfg.Database.Path, err)
+		}
+		return store, nil
+	case state.DriverPostgres:
+		store, err := state.NewPGStore(ctx, cfg.Database.DSN, state.PGPoolConfig{
+			MaxOpenConns:    cfg.Database.MaxOpenConns,
+			MaxIdleConns:    cfg.Database.MaxIdleConns,
+			ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+		})
+		if err != nil {
+			// The DSN is deliberately not repeated: it carries credentials, and
+			// an error string like this ends up on stderr and in audit records.
+			return nil, fmt.Errorf("open postgres store at %s: %w",
+				cfg.Database.StoreLocation(), err)
+		}
+		return store, nil
+	default:
+		return nil, fmt.Errorf("unknown database.driver %q (want %s or %s)",
+			cfg.Database.Driver, state.DriverSQLite, state.DriverPostgres)
 	}
-	return store, nil
 }
 
 // calendarFor attaches the change calendar to the database this process already
@@ -77,6 +119,13 @@ func openStore(ctx context.Context) (*state.SQLiteStore, error) {
 // every `$n`/`?` placeholder. An unknown store implementation is an error, not a
 // silent SQLite: a calendar nobody can open means freeze enforcement is inert,
 // and the caller has to say so out loud rather than plan happily.
+//
+// Decorators are unwrapped before the type switch. This is not cosmetic: with
+// `tenant.enabled: true` the handle every request-serving service holds is a
+// tenant.TenantStore around the real store, and matching the decorator instead of
+// the database behind it made the freeze gate refuse to open — a governance
+// control that silently switches itself off in the deployment shape it exists
+// for. See internal/tenant.TenantStore.Underlying.
 func calendarFor(ctx context.Context, store state.Store) (*calendar.CalendarService, error) {
 	if store == nil {
 		return nil, fmt.Errorf("calendar unavailable: no state store to share")
@@ -85,7 +134,7 @@ func calendarFor(ctx context.Context, store state.Store) (*calendar.CalendarServ
 		db      *sql.DB
 		dialect calendar.Dialect
 	)
-	switch s := store.(type) {
+	switch s := state.Underlying(store).(type) {
 	case *state.SQLiteStore:
 		db, dialect = s.DB(), calendar.DialectSQLite
 	case *state.PGStore:

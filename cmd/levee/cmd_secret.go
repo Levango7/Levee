@@ -153,7 +153,7 @@ func openCredentialStore(ctx context.Context) (*credential.CredentialStore, erro
 
 // credStoreWithCleanup opens a credential store and returns both the store
 // and the underlying state store so the caller can close both.
-func credStoreWithCleanup(ctx context.Context) (*credential.CredentialStore, *state.SQLiteStore, error) {
+func credStoreWithCleanup(ctx context.Context) (*credential.CredentialStore, state.Store, error) {
 	s, err := openStore(ctx)
 	if err != nil {
 		return nil, nil, err

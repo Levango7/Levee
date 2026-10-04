@@ -122,6 +122,29 @@ func TestGetStatus_NoStore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "degraded", resp.GetStatus())
 	assert.Contains(t, resp.GetWarnings(), "store not configured")
+	assert.Equal(t, "unknown", resp.GetStoreType(),
+		"with no store there is nothing to ask, so the answer must not be a backend name")
+}
+
+// TestGetStatus_StoreTypeComesFromTheStore is the regression for the cluster
+// deployment that reported the wrong backend: `serve --cluster --pg-dsn …`
+// opens a PGStore while database.driver keeps its "sqlite" default, and
+// GetStatus used to read the config. A status endpoint that names a database
+// the process is not using is what an operator then scripts against.
+//
+// The divergence is asserted in the direction that needs no PostgreSQL: the
+// config claims postgres, the store is sqlite, the answer must be sqlite.
+func TestGetStatus_StoreTypeComesFromTheStore(t *testing.T) {
+	store := newTestStore(t)
+	cfg := &config.Config{
+		Database: config.DatabaseConfig{Driver: "postgres", DSN: "postgres://levee@db.internal:5432/levee"},
+	}
+	svc := NewSystemService(store, cfg, "", "v", "c", "d", "g", time.Now())
+
+	resp, err := svc.GetStatus(context.Background(), &emptypb.Empty{})
+	require.NoError(t, err)
+	assert.Equal(t, "sqlite", resp.GetStoreType(),
+		"the open store answers for its own backend; the config file does not")
 }
 
 // =========================================================================

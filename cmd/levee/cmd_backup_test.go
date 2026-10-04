@@ -140,6 +140,27 @@ func TestPrintBackupHuman(t *testing.T) {
 	}
 }
 
+// TestBackupPayloadSourceIsPrintable is the call-site half of the redaction.
+// backup.SafeSource was correct on day one and nothing consumed it: what reaches
+// stdout is built here, so a mutation that puts mgr.Source() back must turn this
+// red — otherwise a PostgreSQL password is one refactor away from the operator's
+// terminal and any log that captures it.
+func TestBackupPayloadSourceIsPrintable(t *testing.T) {
+	pg := backup.NewManagerPostgres("postgres://levee:s3cr3t@db.internal:5432/levee?sslmode=require")
+	payload := backupPayload("backup", pg, "/tmp/levee-backup.sql")
+	assert.Equal(t, "postgres@db.internal:5432/levee", payload["source"])
+	assert.NotContains(t, payload["source"], "s3cr3t")
+
+	var buf bytes.Buffer
+	printBackupHuman(&buf, payload)
+	assert.NotContains(t, buf.String(), "s3cr3t", "the human output must not leak what the payload does not carry")
+
+	// A file path is not a secret: redacting it would remove the one detail the
+	// operator needs to confirm which database was copied.
+	sqlite := backup.NewManagerSQLite("/var/lib/levee/levee.db")
+	assert.Equal(t, "/var/lib/levee/levee.db", backupPayload("backup", sqlite, "/tmp/x.db")["source"])
+}
+
 // --- end-to-end CLI lifecycle ----------------------------------------------------
 
 // insertTestAudit seeds one audit row through the real store layer.

@@ -334,14 +334,71 @@ func TestValidate_InvalidLogFormat(t *testing.T) {
 	assert.Contains(t, err.Error(), "server.log_format")
 }
 
+// TestValidate_InvalidDBDriver uses "mysql" as the unsupported driver. It used
+// to use "postgres", which stopped being an example of "invalid" the moment
+// PostgreSQL became a real backend; a driver the program does not implement at
+// all is what this switch has to refuse.
 func TestValidate_InvalidDBDriver(t *testing.T) {
 	cfg, err := Load(writeYAML(t, minimalValidYAML()))
 	require.NoError(t, err)
 
-	cfg.Database.Driver = "postgres"
+	cfg.Database.Driver = "mysql"
 	err = Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "database.driver")
+	assert.Contains(t, err.Error(), "must be one of sqlite|postgres")
+}
+
+func TestValidate_PostgresDriverRequiresDSN(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+
+	cfg.Database.Driver = "postgres"
+	cfg.Database.DSN = ""
+	err = Validate(cfg)
+	require.Error(t, err, "postgres without a DSN must not validate: every opener would then have nothing to dial")
+	assert.Contains(t, err.Error(), "database.dsn is required")
+}
+
+func TestValidate_PostgresDriverWithDSNIsAccepted(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+
+	cfg.Database.Driver = "postgres"
+	cfg.Database.DSN = "postgres://levee:s3cr3t@db.internal:5432/levee?sslmode=require"
+	require.NoError(t, Validate(cfg))
+}
+
+// A DSN under the sqlite driver is refused rather than ignored. Silently
+// accepting it would leave credentials in a deployment file that do nothing,
+// and an operator who believes they configured PostgreSQL.
+func TestValidate_SQLiteDriverRejectsDSN(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+
+	cfg.Database.Driver = "sqlite"
+	cfg.Database.DSN = "postgres://levee:s3cr3t@db.internal:5432/levee"
+	err = Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "database.dsn is only used when database.driver = postgres")
+}
+
+func TestValidate_DSNReadFromYAML(t *testing.T) {
+	cfg, err := Load(writeYAML(t, "database:\n  driver: postgres\n  dsn: 'postgres://levee@127.0.0.1:5432/levee'\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "postgres", cfg.Database.Driver)
+	assert.Equal(t, "postgres://levee@127.0.0.1:5432/levee", cfg.Database.DSN)
+	require.NoError(t, Validate(cfg))
+}
+
+func TestStoreLocationFollowsDriver(t *testing.T) {
+	sqlite := DatabaseConfig{Driver: "sqlite", Path: "/var/lib/levee/levee.db"}
+	assert.Equal(t, "/var/lib/levee/levee.db", sqlite.StoreLocation())
+
+	pg := DatabaseConfig{Driver: "postgres", Path: "/var/lib/levee/levee.db",
+		DSN: "postgres://levee:s3cr3t@db.internal:5432/levee"}
+	assert.Equal(t, "postgres@db.internal:5432/levee", pg.StoreLocation(),
+		"a postgres deployment must not be reported by the file path it does not use")
 }
 
 func TestValidate_IdleExceedsOpen(t *testing.T) {
@@ -483,7 +540,7 @@ func TestValidate_MultipleProblemsReported(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg.Server.LogLevel = "trace"
-	cfg.Database.Driver = "postgres"
+	cfg.Database.Driver = "mysql"
 	cfg.Channel.SSH.Port = 0
 	cfg.Permission.DefaultTeam = ""
 

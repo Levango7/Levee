@@ -140,7 +140,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 // a persisted plan artifact (run `levee plan` first), CAS-es into
 // "running", drives the closure synchronously and writes the terminal
 // status; this function only maps the outcome to CLI conventions.
-func runApplyWithEngine(ctx context.Context, store *state.SQLiteStore, run *state.Run) error {
+func runApplyWithEngine(ctx context.Context, store state.Store, run *state.Run) error {
 	svc := newCLIChangeService(store)
 	ctx = grpc.ContextWithActor(ctx, currentActor())
 

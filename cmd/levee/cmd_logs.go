@@ -71,7 +71,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 }
 
 // runLogsOnce queries and outputs trace records once.
-func runLogsOnce(ctx context.Context, store *state.SQLiteStore, runID string) error {
+func runLogsOnce(ctx context.Context, store state.Store, runID string) error {
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: runID})
 	if err != nil {
 		return fmt.Errorf("list traces: %w", err)
@@ -104,7 +104,7 @@ func runLogsOnce(ctx context.Context, store *state.SQLiteStore, runID string) er
 }
 
 // runLogsFollow follows the log stream by polling for new trace records.
-func runLogsFollow(ctx context.Context, store *state.SQLiteStore, runID string) error {
+func runLogsFollow(ctx context.Context, store state.Store, runID string) error {
 	var lastCount int
 
 	for {

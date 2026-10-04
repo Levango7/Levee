@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // Config is the root configuration object for LEVEE. It mirrors the
@@ -97,15 +99,40 @@ type ServerConfig struct {
 	LogFormat string `json:"log_format" mapstructure:"log_format"`
 }
 
-// DatabaseConfig holds SQLite specific configuration. LEVEE MVP ships
-// with a single embedded SQLite database file under Server.DataDir.
+// DatabaseConfig names the one database a process works against. `driver`
+// selects the backend: state.DriverSQLite (the default, a single embedded file
+// under Server.DataDir) or state.DriverPostgres, which additionally requires
+// `dsn`.
+//
+// The pair is deliberately the *only* store selector: every entry point that
+// holds a configuration (CLI commands, `serve` without --cluster, `system
+// status`/`doctor`, the change calendar) opens through the same decision, so
+// "which database did this write land in" has one answer per config file. See
+// openStoreFromConfig in cmd/levee/helpers.go.
 type DatabaseConfig struct {
-	Driver string `json:"driver" mapstructure:"driver"` // sqlite (MVP)
-	Path   string `json:"path"   mapstructure:"path"`   // absolute or relative db file path
+	Driver string `json:"driver" mapstructure:"driver"` // sqlite | postgres
+	Path   string `json:"path"   mapstructure:"path"`   // db file path (sqlite only)
+	// DSN is the PostgreSQL connection string (pgx format, e.g.
+	// "postgres://user:pass@host:5432/levee?sslmode=require"). It is required
+	// when driver is postgres, and setting it under the sqlite driver is a
+	// config error rather than something to ignore: an unread DSN sitting in a
+	// deployment file is a credential leak that also quietly means the
+	// operator's intent was not carried out.
+	DSN string `json:"dsn" mapstructure:"dsn"`
 	// Pool tuning
 	MaxOpenConns    int           `json:"max_open_conns"    mapstructure:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"    mapstructure:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime" mapstructure:"conn_max_lifetime"`
+}
+
+// StoreLocation describes which database this section points at, in a form
+// safe to print or log: the SQLite file path, or "postgres@host:port/db" with
+// the credentials removed. It never returns the raw DSN.
+func (d DatabaseConfig) StoreLocation() string {
+	if d.Driver == state.DriverPostgres {
+		return state.RedactDSN(d.DSN)
+	}
+	return d.Path
 }
 
 // AuthConfig groups API authentication settings. Static bearer tokens are
@@ -530,14 +557,26 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 		problems = append(problems, fmt.Sprintf("server.log_format %q must be one of text|json", cfg.Server.LogFormat))
 	}
 
-	// Database
-	if cfg.Database.Path == "" {
-		problems = append(problems, "database.path is required")
-	}
+	// Database. `driver` picks the backend and each backend has exactly one
+	// mandatory locator: a file for sqlite, a DSN for postgres. Both rules are
+	// stated here because every opener in the program goes through this
+	// decision — a driver that Validate accepts but no opener implements would
+	// surface as "open store: …" at runtime instead.
 	switch cfg.Database.Driver {
-	case "sqlite":
+	case state.DriverSQLite:
+		if cfg.Database.Path == "" {
+			problems = append(problems, "database.path is required")
+		}
+		if cfg.Database.DSN != "" {
+			problems = append(problems, "database.dsn is only used when database.driver = "+state.DriverPostgres)
+		}
+	case state.DriverPostgres:
+		if cfg.Database.DSN == "" {
+			problems = append(problems, "database.dsn is required when database.driver = "+state.DriverPostgres)
+		}
 	default:
-		problems = append(problems, fmt.Sprintf("database.driver %q must be sqlite (MVP)", cfg.Database.Driver))
+		problems = append(problems, fmt.Sprintf("database.driver %q must be one of %s|%s",
+			cfg.Database.Driver, state.DriverSQLite, state.DriverPostgres))
 	}
 	if cfg.Database.MaxOpenConns < 0 {
 		problems = append(problems, "database.max_open_conns must be >= 0")
@@ -720,7 +759,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.log_format", "text")
 
 	// Database (derived from server.data_dir in postProcess if empty)
-	v.SetDefault("database.driver", "sqlite")
+	v.SetDefault("database.driver", state.DriverSQLite)
 	v.SetDefault("database.max_open_conns", 50)
 	v.SetDefault("database.max_idle_conns", 10)
 	v.SetDefault("database.conn_max_lifetime", "30m")

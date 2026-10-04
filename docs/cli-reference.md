@@ -1167,7 +1167,9 @@ levee system status
 
 **输出**
 
-包含版本号、配置文件路径、数据库连接状态和数据库路径。
+包含版本号、配置文件路径，以及**本机这一份配置所指向的那个数据库**的连接状态：`db_driver`（`sqlite` / `postgres`）、`db_location`（SQLite 是文件路径，PostgreSQL 是 `postgres@host:port/db` 的脱敏端点）、`db_status`（`ok` / `unreachable`），SQLite 形态下另附历史字段 `db_path`。
+
+`db_path` 在 PostgreSQL 部署下**不输出**：一个名叫 path 的键偶尔装着连接串，比少一个键更糟——探活打的是哪个库，运维必须能从字段名读出来，而不是靠猜当前驱动。同理 `db_location` 永不含凭据。
 
 **示例**
 
@@ -1196,8 +1198,9 @@ levee system config get <key>
 | `server.data_dir` | 数据目录 |
 | `server.log_level` | 日志级别 |
 | `server.log_format` | 日志格式 |
-| `database.driver` | 数据库驱动 |
-| `database.path` | 数据库路径 |
+| `database.driver` | 数据库驱动（`sqlite` / `postgres`） |
+| `database.path` | 数据库文件路径（sqlite） |
+| `database.dsn` | PostgreSQL 端点，**以 `postgres@host:port/db` 的脱敏形态返回** |
 | `database.max_open_conns` | 最大打开连接数 |
 | `database.max_idle_conns` | 最大空闲连接数 |
 | `log.level` | 日志级别 |
@@ -1205,6 +1208,10 @@ levee system config get <key>
 | `log.output` | 日志输出 |
 | `permission.default_team` | 默认团队 |
 | `permission.default_env` | 默认环境 |
+
+`database.dsn` 可以查询，但返回的是脱敏端点 `postgres@host:port/db` 而不是原始连接串：
+DSN 含口令，而本命令的输出会落在终端与滚动缓冲里。要问的是"这份 profile 指向哪台库"，
+脱敏形态已经回答；需要口令本身请直接看自己的配置文件。
 
 **示例**
 
@@ -1423,9 +1430,14 @@ levee calendar create --name "月末冻结" --start 2026-08-31T00:00:00Z --end 2
   **不会**命中——每台主机都有 `env`，接受它等于一条命令冻结整个机群。
 - 绕过冻结的唯一途径是 workflow 自己声明 `approval.level: emergency`；risk 分数抬上来的
   派生 emergency 档位不构成授权。回滚永不被冻结期阻断（失败的前向变更必须可撤销）。
-- `--frozen` 创建成功后，stderr 会打印一行 `notice: freeze <id> recorded in <db 文件>`：
-  服务端必须读同一个数据库才会生效。CLI 目前只连本机 SQLite（尚无 `database.dsn`），
-  PostgreSQL 集群形态下 CLI 写的冻结期服务端读不到，服务端启动时会为此打 WARN。
+- `--frozen` 创建成功后，stderr 会打印一行 `notice: freeze <id> recorded in <driver> <库位置>`：
+  服务端必须读同一个数据库才会生效。库位置由配置决定且只有一处（`database.driver` +
+  `database.path`/`database.dsn`，见 `docs/deployment.md`），所有 CLI 命令、未加
+  `--cluster` 的 `serve`、`system status`/`doctor` 与本命令都走同一个取库函数，因此
+  "这条命令连本机、那条连服务端"不可能发生。`driver: sqlite` 时通知会额外警告
+  "这是本地文件，跑在 PostgreSQL 上的服务端看不到"——要把冻结期落到集群共享库，就把
+  运维侧的 `--config` 指到 `database.driver: postgres` 那份配置。PostgreSQL 端点一律以
+  `postgres@host:port/db` 的脱敏形态打印，不打印凭据。
 
 ### 13.4 calendar update
 
@@ -1999,7 +2011,7 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 | `--rate-limit` | `200` | REST 网关全局限流（req/s，令牌桶）；传负数关闭限流 |
 | `--rate-burst` | `400` | 令牌桶突发容量 |
 | `--cluster` | `false` | 启用集群模式（PostgreSQL 存储 + 集群协同，见下方说明） |
-| `--pg-dsn` | | PostgreSQL DSN（`--cluster` 时必填） |
+| `--pg-dsn` | | PostgreSQL DSN（`--cluster` 时必填；只给本旗标而不给 `--cluster` 会拒绝启动，见下方"单节点 PostgreSQL"） |
 | `--node-id` | | 集群节点 ID（`--cluster` 时必填） |
 | `--node-addr` | | 集群节点地址（`--cluster` 时必填） |
 | `--node-role` | `worker` | 集群节点角色：`master` / `worker` |
@@ -2013,6 +2025,7 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 - **/metrics 鉴权**：启用任一 token 后，`/metrics` 默认同样要求 Bearer 鉴权；无法携带凭据的采集器可用 `--metrics-public` 显式放开
 - **AI 引擎装配**：`serve` 启动时装配真实诊断引擎（日志采集/分析 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose` / `SendMessage` RPC 可直接使用；完整告警网关仍用独立的 `levee alert serve`
 - **集群模式**：集群协同覆盖共享 PostgreSQL 存储（数据一致性）、持久化成员注册（`cluster_nodes` 表心跳 + stale 检测，leader 按确定性策略收敛）与租约式分布式锁（`cluster_locks` 表，过期租约自动可被抢占，带单调 fence token）；在途变更的自动故障转移/跨节点调度尚未实现；`--cluster` 启动时会输出告警提示
+- **单节点 PostgreSQL**：不加 `--cluster` 时，服务端连哪个库由配置决定（`database.driver: postgres` + `database.dsn`），与所有 CLI 命令同一处取库决策，因此 `levee calendar freeze` 可以写进服务端真正读的那张表；口径与三条启动期硬约束见 `docs/deployment.md` 的变更日历一节。只给 `--pg-dsn` 而不给 `--cluster` 会拒绝启动而不是退回本机文件——未启协调（无成员、无租约、无 fencing）的进程连集群共享库，比连错库更危险
 - CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
 - 限流触发时返回 HTTP 429 并附带 `Retry-After`
 - 每个 REST 响应携带 `X-Request-Id`（可由客户端传入复用）；gRPC 日志含 `request_id` 字段，支持链路关联
