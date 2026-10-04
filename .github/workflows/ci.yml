@@ -557,6 +557,43 @@ jobs:
         run: bash scripts/smoke_serve.sh ./levee
 
   # ---------------------------------------------------------------------------
+  # delivery: render and lint the shipped deployment artifacts.
+  #
+  # The Helm chart and the systemd unit are release artifacts users install, and
+  # before this job nothing in CI had ever run helm against them. That is how a
+  # chart passing `--cluster-dispatch-worker-capacity` — a flag the binary does
+  # not define — reached users: every `helm install` produced pods in
+  # CrashLoopBackOff, and the only symptom was in a pod log nobody read.
+  #
+  # The cobra-tree comparison lives in Go (cmd/levee/cli_reference_flags_test.go
+  # scans the chart templates and the unit against the real command tree), so
+  # this job adds what a text scan cannot: template syntax errors, `.Values`
+  # paths that no longer exist, lint failures, and the helm signature for an
+  # unresolvable key reaching a container arg list as the literal "<no value>".
+  #
+  # helm is pinned by checksum rather than "latest" so a runner-side upgrade
+  # cannot turn this gate red (or green) on its own.
+  # ---------------------------------------------------------------------------
+  delivery:
+    name: delivery (helm lint + render + package)
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: install helm
+        env:
+          HELM_VERSION: v3.18.4
+          HELM_SHA256: f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1
+        run: |
+          curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o /tmp/helm.tgz
+          echo "${HELM_SHA256}  /tmp/helm.tgz" | sha256sum -c -
+          tar -xzf /tmp/helm.tgz -C /tmp
+          sudo install /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version --short
+      - name: validate delivery artifacts
+        run: bash scripts/validate_delivery.sh
+
+  # ---------------------------------------------------------------------------
   # check: composite gate job that PRs must pass before merge. Branch
   # protection rules can require this single job instead of listing every
   # leaf job.
@@ -565,7 +602,7 @@ jobs:
     name: check (all jobs passed)
     timeout-minutes: 5
     runs-on: ubuntu-latest
-    needs: [release-gate, vet, lint, frontend, test, integration, proto, docs, smoke, build, gosec, govulncheck, trivy]
+    needs: [release-gate, vet, lint, frontend, test, integration, proto, docs, smoke, delivery, build, gosec, govulncheck, trivy]
     if: always()
     steps:
       - name: aggregate
@@ -576,7 +613,7 @@ jobs:
           # the bash variable, and there is no such needs entry. Hand each
           # result to bash as a literal name:value pair instead and check
           # them there.
-          status="release-gate:${{ needs.release-gate.result }} vet:${{ needs.vet.result }} lint:${{ needs.lint.result }} frontend:${{ needs.frontend.result }} test:${{ needs.test.result }} integration:${{ needs.integration.result }} proto:${{ needs.proto.result }} docs:${{ needs.docs.result }} smoke:${{ needs.smoke.result }} build:${{ needs.build.result }} gosec:${{ needs.gosec.result }} govulncheck:${{ needs.govulncheck.result }} trivy:${{ needs.trivy.result }}"
+          status="release-gate:${{ needs.release-gate.result }} vet:${{ needs.vet.result }} lint:${{ needs.lint.result }} frontend:${{ needs.frontend.result }} test:${{ needs.test.result }} integration:${{ needs.integration.result }} proto:${{ needs.proto.result }} docs:${{ needs.docs.result }} smoke:${{ needs.smoke.result }} delivery:${{ needs.delivery.result }} build:${{ needs.build.result }} gosec:${{ needs.gosec.result }} govulncheck:${{ needs.govulncheck.result }} trivy:${{ needs.trivy.result }}"
           # Drift guard: hand-enumerating the pairs above is required by the
           # interpolation semantics, and it rots — `docs` sat in needs() but not
           # in this list, so a docs-regeneration failure could never redden the

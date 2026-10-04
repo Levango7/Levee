@@ -19,7 +19,7 @@ LEVEE 是单二进制程序，按角色拆分为三类常驻进程，可按需�
   - **持久化成员注册**：节点心跳写入 PG `cluster_nodes` 表（含 stale 检测），**不是进程内状态**（`internal/cluster/pg_registry.go`）。
   - **leader 选举 + 租约式分布式锁**：选举规则为「优先 `role=master` 且 `status=active` 的最小 ID，否则回退到最小 ID 的 active worker」（`internal/cluster/node.go` 的 `ElectLeader`）；锁带租约、过期可抢占。
   - **执行围栏与故障接管**：运行中的变更持执行租约（`--cluster-exec-lease-ttl`），执行节点崩溃后由 leader 接管循环（`--cluster-takeover-interval`）把其运行中变更收敛到 `interrupted` 终态，**不重跑副作用**（审计留痕，需再驱动用 `RetryChange`）。
-  - **跨节点调度**：leader 把已批准 run 分派给空闲 worker 节点（`--cluster-dispatch-interval` / `--cluster-dispatch-worker-capacity` / `--cluster-dispatch-claim-timeout`），worker 节点在本机执行。
+  - **跨节点调度**：leader 把已批准 run 分派给空闲 worker 节点（`--cluster-dispatch-interval` / `--cluster-dispatch-capacity` / `--cluster-dispatch-claim-timeout`），worker 节点在本机执行。
   后两层是 **leader-only 循环且需要 `--engine-enabled`**；把对应间隔设为 `<= 0` 可单独关闭该循环（关闭接管循环时**执行围栏仍然生效**）。`--cluster` 启动时会在日志中打印一行协同能力摘要（`cluster coordination: shared storage, membership, locking; ...`）。
 
 分布式执行 Agent（`levee agent start`）为独立常驻进程，注册到 master 节点承担任务执行，见 [cli-reference.md 第20章](cli-reference.md)。
