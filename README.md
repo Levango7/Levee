@@ -97,10 +97,15 @@ make build
 # 所以先建模板；参数要用 --params 以 JSON 显式声明：
 ./levee template create --name nginx-reload \
   --content 'name: nginx-reload
+version: "1.0"
+target:
+  type: host
+  query: "role=web"
 steps:
   - name: reload-nginx
-    action: shell
-    command: systemctl reload {{.service}}' \
+    action: shell.exec
+    args:
+      cmd: systemctl reload {{.service}}' \
   --params '[{"name":"service","type":"string","required":true}]'
 
 # 从模板实例化一个变更（产出 draft，等计划与审批）
@@ -109,18 +114,29 @@ steps:
 # 查看变更
 ./levee list
 ./levee show <run-id>
+
+# 生成计划（目标主机要先在清单里：`levee target import --file inv.yaml`）
+./levee plan <run-id> --targets web-1
 ```
 
-以上四条在本仓库实测通过：`template create` 与 `new` 均 exit 0，`new` 输出
-`params: map[service:nginx]`、`status: draft`，`list` / `show` 能看到并展开那条 run。
+以上五步在本仓库实测通过（2026-10-04，临时数据目录 + 一台 `web-1` 清单）：
+`template create` 与 `new` 均 exit 0，`new` 输出 `run_id: run-…` 与渲染后的
+`content`，`plan` 输出 `Plan for run …: 1 batch(es)` 与
+`plan persisted and hash-bound`。
 
 **`template create` 不会解析 `--content` 里的 `params:` 块**——参数必须经 `--params`
-以 JSON 数组显式传入。实测拿仓库自带的 `examples/templates/patch-rolling.yaml`（它在
-content 里声明了 `params: [package, target_group]`）建模板，`template show` 显示
-`Parameters: (none)`，随后 `new patch-rolling --params package=nginx` 报
-`unknown parameter: package`（实例化按记录里的 `tmpl.Parameters` 校验，
-`internal/template/instantiate.go:120-127`）。所以照抄该示例文件建模板时，
-参数要另写一遍 `--params '[{"name":"package","type":"string","required":true}]'`。
+以 JSON 数组显式传入（实例化按记录里的 `tmpl.Parameters` 校验，
+`internal/template/instantiate.go:120-127`；`examples/templates/*.yaml` 因此只是
+工作流正文，参数在那里另写一份）。
+
+**`levee new` 在写库之前把渲染结果过 `levee compile --strict` 的两道门**（解析 +
+结构校验），并拒绝仍留着 `{{.参数}}` 占位符的模板；任一条不过就 `exit 2` 且**一条
+run 都不建**。此前它会照常建出 draft，缺陷要到 `levee plan` 才现身，报的是
+`LE001: cannot unmarshal !!str 'nginx-reload' into dsl.yamlWorkflowRaw`——既不提模板，
+也不提真正的原因。同理 `examples/templates/patch-rolling.yaml` 早前是 `workflow:` 信封
++ `params:` 块的旧方言（那种形状没有任何代码读，模板库只认 `<name>.json`），现已按
+现形重写，并被 `TestShippedExamplesCompile` 一并编译；它声明了 02:00-04:00 UTC 窗口，
+窗口外 `plan` 会按规范 §4.2 拒绝（实测 `FailedPrecondition: change window is closed`）。
 
 ### 启动 API 服务
 
