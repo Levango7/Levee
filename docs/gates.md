@@ -35,19 +35,32 @@ duplicating them.
 
 ### Fail-closed policy
 
-A declaration the engine cannot execute aborts **materialisation** with an
-error instead of being silently skipped: unknown check types, invalid params,
-and slo/human gates whose runtime dependency is missing (below). A
-declared-but-unexecutable gate must never masquerade as a passing one. The
-same philosophy applies inside the gates themselves: configuration errors
-detected at construction time are surfaced by `Check` as
-`Passed=false` plus an error (mirroring `CommandGate.policyErr`).
+A declaration this process cannot execute is refused **at plan time**, before
+any target is touched: `internal/wiring` asks the engine's
+`PlanGateBlockers(p, gateRuntime)` inside `GeneratePlan` — the one funnel every
+plan goes through (gRPC `PlanChange`, `levee plan --local`, and the re-plan
+inside apply) — and returns `engine.ErrGateNotExecutable`, which the gRPC layer
+maps to `FailedPrecondition`. Materialisation applies the **same** judgement
+again, so the two halves cannot disagree.
+
+Why plan time and not just materialisation: `RunPhase` materialises gates when
+its phase begins, so a post-apply or post-batch declaration that turns out to be
+unexecutable kills the run **after** earlier batches already modified targets —
+the operator learns about a configuration gap mid-change, with rollback to sort
+out. The refusal is not a ban on the gate type: wire the capability and the same
+workflow plans.
+
+Also refused here: unknown check types, invalid params, and an `slo` check bound
+to a phase the engine never evaluates. A declared-but-unexecutable gate must
+never masquerade as a passing one. The same philosophy applies inside the gates
+themselves: configuration errors detected at construction time are surfaced by
+`Check` as `Passed=false` plus an error (mirroring `CommandGate.policyErr`).
 
 ### GateRuntime configuration
 
-Some gates need process-level wiring beyond the workflow YAML. It is supplied
-to the engine via `engine.WithGateRuntime(engine.GateRuntime{...})` on
-`NewClosureRunner`:
+Some gates need process-level wiring beyond the workflow YAML. The deployment
+builds exactly one value for it — `Engine.gateRuntime()` in `internal/wiring`,
+which both the plan-time refusal and `engine.WithGateRuntime(...)` read:
 
 | Field | Backs | Configuration pointer |
 |---|---|---|
@@ -56,8 +69,29 @@ to the engine via `engine.WithGateRuntime(engine.GateRuntime{...})` on
 
 The zero `GateRuntime` is valid for plans that only declare `cmd` / `probe`
 gates. A plan declaring `slo` without `PrometheusURL`, or `human` without an
-`Approver`, fails materialisation with an explicit error naming the missing
+`Approver`, is refused at plan time with an explicit error naming the missing
 configuration.
+
+> **No approver transport ships today.** `verify.HumanApprover` has exactly one
+> production-shaped consumer path (`engine.GateRuntime.Approver`) and **zero**
+> implementations in the repo outside tests — chat-ops round-trip, ticket-system
+> callback and terminal prompt are all unwritten. So in a stock `levee serve`,
+> `WithGateApprover` is never installed and any workflow declaring a `human`
+> check is refused at plan time. Wiring one is a product decision (which
+> transport, how the answer arrives, what happens on transport failure), tracked
+> in `docs/product-roadmap.md`; installing it there is all a deployment needs —
+> there is no second switch to remember.
+
+> **`slo` is not declarable today, for a different reason.** `convertGate` puts
+> every declaration — step `verify:`, `batches.gate:`, and
+> `gates[].position: post_batch` — into `GateSpec.Post`, which materialises as
+> `post_apply`; nothing populates `GateSpec.Batch`, the only slot bound to
+> `PhasePostBatch`, which is where an `slo` check must run. The plan-time refusal
+> therefore rejects every `slo` declaration and its message says so rather than
+> telling operators to move something that has nowhere to move to. See the
+> `post_batch` routing defect row in `docs/product-roadmap.md` (it also means the
+> batch-level gate in `examples/gate-templates/redis.yaml` has always run once at
+> the end rather than "after every batch" as its comment claims).
 
 ## Gate types
 

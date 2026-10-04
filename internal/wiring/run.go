@@ -149,10 +149,11 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			return inventory.ValidateNotFrozen(ctx, store, hosts)
 		}),
-		// Gate runtime: only the slo gate consumes PrometheusURL. With the
-		// default (empty) the materialisation of an slo/human gate still
-		// fails closed exactly as it would with no runtime attached.
-		engine.WithGateRuntime(engine.GateRuntime{PrometheusURL: e.gatePrometheusURL}),
+		// Gate runtime: the deployment capabilities declared gates may need
+		// (Prometheus endpoint for slo, approval transport for human). It is the
+		// same value GeneratePlan checks against, so a plan that was accepted is
+		// always executable here — see Engine.gateRuntime.
+		engine.WithGateRuntime(e.gateRuntime()),
 	)
 	if snapHook != nil {
 		// The WithSnapshotter option is applied post-construction via a

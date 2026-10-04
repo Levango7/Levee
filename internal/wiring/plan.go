@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
@@ -66,6 +67,21 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 	p, err := plan.NewGenerator().Generate(wf, targets)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wiring: generate plan: %w", err)
+	}
+
+	// Executable-gate gate: a workflow may declare `human` or `slo` checks that
+	// this process has no transport for (no approver wired, no Prometheus URL).
+	// The engine already refuses to materialise such a gate rather than let it
+	// silently pass — but that happens in RunPhase, i.e. after the batches that
+	// precede the declaration have already modified targets. Refusing here moves
+	// the same verdict to before anything is touched, in the one funnel every
+	// plan goes through. Rollback never comes through here (it reloads the stored
+	// plan), which is what keeps a failed change always recoverable.
+	if blockers := engine.PlanGateBlockers(p, e.gateRuntime()); len(blockers) > 0 {
+		return nil, nil, fmt.Errorf("%w: %s — fix by wiring the named capability "+
+			"(verify.prometheus_url / --engine-gate-prometheus, or a human-gate approver), "+
+			"or by removing the declaration",
+			engine.ErrGateNotExecutable, strings.Join(blockers, "; "))
 	}
 
 	// Risk scoring (R4): score the generated plan and stamp the verdict
