@@ -18,6 +18,7 @@ package template
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -176,6 +177,50 @@ func (inst *Instantiator) Instantiate(tmpl *Template, params map[string]string) 
 		Params:       resolved,
 		Missing:      nil,
 	}, nil
+}
+
+// placeholderRE matches the Go-template style placeholder grammar this package
+// substitutes: "{{.name}}". The leading dot is required by the pattern, which
+// is what keeps a shell document like `awk '{{print $1}}'` out of the results.
+var placeholderRE = regexp.MustCompile(`\{\{\s*\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+
+// UnsubstitutedPlaceholders returns the placeholder names still present in
+// content, in order of first appearance and de-duplicated.
+//
+// Two ways lead there, both of which produce a workflow that parses but carries
+// template syntax into the commands sent to targets:
+//   - a parameter declared optional with no default and not supplied, which
+//     Instantiate documents as "left in the content unchanged";
+//   - a placeholder in the content that no parameter declaration names, since
+//     substitution walks the declared parameters and never looks back.
+//
+// Consumers that persist instantiated content (the plan/approve/apply chain
+// stores it as the run's workflow source) need this check because neither the
+// parser nor the structural validator treats "{{.x}}" as an error: it is a
+// legal string value.
+//
+// Standalone comment lines are excluded — prose in a template header is never
+// substituted and never reaches a target, so flagging it would make the check
+// cry wolf. Only whole-line comments are recognised: a `#` inside a quoted
+// command is data, and treating it as a comment would hide the very placeholders
+// this function exists to find.
+func UnsubstitutedPlaceholders(content string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+			continue
+		}
+		for _, m := range placeholderRE.FindAllStringSubmatch(line, -1) {
+			name := m[1]
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // validateParamType checks that val matches the declared type of p.

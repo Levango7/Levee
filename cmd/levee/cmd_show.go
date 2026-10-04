@@ -133,7 +133,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 // printShowHuman renders the show output in a human-readable format.
 func printShowHuman(w io.Writer, run *state.Run, batches, steps, traces []map[string]any) {
 	fmt.Fprintf(w, "Run: %s\n", run.ID)
-	fmt.Fprintf(w, "  Workflow:    %s\n", run.WorkflowName)
+	fmt.Fprintf(w, "  Workflow:    %s\n", workflowDisplay(run.WorkflowName))
 	fmt.Fprintf(w, "  Template:    %s\n", run.TemplateName)
 	fmt.Fprintf(w, "  Status:      %s\n", run.Status)
 	fmt.Fprintf(w, "  Approval:    %s\n", run.ApprovalStatus)
