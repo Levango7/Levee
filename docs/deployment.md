@@ -273,6 +273,14 @@ LEVEE 为单二进制，升级即“备份 → 替换 → 验证”。推荐流�
    - 抽查一条变更 `levee list --limit 1` 与审计 `levee audit verify <run-id>`。
 7. **恢复服务**：若第 1 步执行了全局暂停，`levee resume-all --reason "升级完成"`。
 
+**库结构（schema）自动迁移**：第 5 步重启时，`levee serve` 会把库结构前推到当前版本，无需人工执行 SQL。机制与边界：
+
+- 版本号记在 `schema_version` 表里，SQLite 与 PostgreSQL **各自独立递增**（两条梯子可以不同长，因为有的步骤是方言专属的）；
+- **只前进、不后退**：回退二进制不会回退库结构，因此升级前第 2 步的备份就是唯一的回退手段；
+- 每个迁移步骤跑在**自己的事务**里，失败即整体回滚且**不写版本号**，下次启动重试同一版本；
+- PostgreSQL 侧先取一把 advisory lock，多个节点同时升级不会互相踩 DDL；
+- 例：v7（PostgreSQL）把 `cluster_nodes` 收敛到统一 DDL——去掉早期 state 侧建表遗留的 `UNIQUE (address)`（节点身份是 `id`，同一监听地址换新 `id` 重注册是接管动作的正常形状，留着它会让接管失败于 `SQLSTATE 23505`），并给早期 cluster 侧建表补上 `capabilities` 列。两条语句都幂等。
+
 **回滚**：若新版本异常，用升级前备份恢复后回退二进制：
 
 ```bash

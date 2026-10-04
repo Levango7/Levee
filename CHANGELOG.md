@@ -13,6 +13,10 @@
 
 验证：新增 13 例（`internal/grpc/change_service_readauthz_test.go`）——plan 的两种拒绝与 dev/prod 分界、6 个读 RPC 各自被拒且 `view` 出现在文案里、不可归因主体读放行而写仍拒、列表按环境收窄（含与多状态过滤组合的那条路径）、批量动作在"只有自报名字"时被拒且留下审计行、`GetConfig` 的裸调用/显式 false/nil 请求三种形态都拿不到凭据、开关打开后的明文路径。**变异验证 7 条全部被抓**（去掉 plan 授权、读门恒放行、把不可归因主体改成拒绝、列表过滤永不启用、批量判定退回 `actorFromCtx`、`GetConfig` 退回按请求决定、忽略部署开关）。`go build ./...` / `go vet ./...` / `go test ./...` / golangci-lint / docgen 与 proto 漂移门（pb 未改）见下条提交说明。
 
+### 修复
+
+- **`cluster_nodes` 的现网欠账补上迁移（PostgreSQL schema v7）**：#21 把 DDL 收成 `internal/dbschema` 一份，并按集群路径实际生效的形状去掉了 `UNIQUE (address)`——但 `CREATE TABLE IF NOT EXISTS` 不改已存在的表，所以由 state 侧先建库的部署**仍带着这条约束**。它不是闲置：节点身份是 `id`，同一监听地址以新 `id` 重新注册正是 failover/takeover 的动作，实测含该约束时 `internal/takeover` 有 10 个用例报 `SQLSTATE 23505 (cluster_nodes_address_key)`。新增 v7 步骤做两件事：`DROP CONSTRAINT IF EXISTS cluster_nodes_address_key`（再跟一条 `DROP INDEX IF EXISTS` 覆盖"以同名唯一索引形式存在"的形态）与 `ADD COLUMN IF NOT EXISTS capabilities`（cluster 侧先建库的历史形状没有这一列）。两条都幂等，两条历史形状迁移后与唯一定义**列集合相等**。如实分档：**约束那一半是真缺陷**（会让接管失败），**补列那一半只是形状收敛**——今天没有任何生产代码读写 `capabilities`（全仓检索只命中注释）。活库实测：`-p 1` 串行跑 `internal/state`、`internal/cluster`、`internal/takeover`、`internal/backup`、`internal/dbschema` 全绿；新增 5 例迁移测试，含"迁移前重复地址插入必须失败、迁移后必须成功"的双向断言；6 项变异全部被抓（删约束语句、约束名拼错、删补列语句、补列写错列名、`pgCurrentSchemaVersion` 不跟着涨、步骤版本号错位）。迁移测试用私有 schema + 固定 `search_path` 的单连接并在用完立即归还——共享测试库上的 `cluster_nodes` 由并发的 cluster 包测试所有，动它会让两边都红；连接若按 helper 逐个持有会耗尽 `MaxOpenConns=5` 把整包挂死到超时（实踩过一次）。
+
 ## [v1.18.0] - 2026-10-03 — 交付物齐备：Helm chart + 裸金属一键安装 + 跨区域场景方案 + 镜像发布
 
 本版把"能上线、能交付"所需的**交付物**补齐：K8s 客户有了一配置即部署的 Helm chart（单机/集群两形态，`helm lint`/双形态 `template` 全文档 YAML 校验通过）；裸金属客户有了幂等一键安装脚本与自带 systemd 单元（容器实测）；每个 `v*` tag 现在还发布多架构容器镜像到 GHCR（独立 job，镜像失败不阻塞二进制发布）；跨区域数据同步与运维的**场景方案文档**及其配套示例 workflow 落库（示例进 `TestShippedExamplesCompile`，实测编译通过）；部署手册新增 Helm 与交付检查单两节。同时做了一致性订正：spec 的 `allow_irreversible` 字段如实标注"规范目标未接线"（LE082 零产生点登记 roadmap），security-audit 的三处历史边界留痕订正（trace 链接线关闭、PG 触发器 CI 实跑）。

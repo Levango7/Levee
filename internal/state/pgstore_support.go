@@ -214,6 +214,44 @@ $fn$ LANGUAGE plpgsql`,
     EXECUTE FUNCTION levee_worm_prevent_audit_delete()`,
 		},
 	},
+	{
+		// v7 (PostgreSQL): reconcile cluster_nodes with dbschema.ClusterNodesDDL.
+		//
+		// The DDL is now a single definition (internal/dbschema), but
+		// CREATE TABLE IF NOT EXISTS is a no-op on a table that already
+		// exists, so databases created before the unification keep the shape
+		// their package wrote first. Two historical shapes are live:
+		//
+		//   * state-first (pgschema.sql): carried `UNIQUE (address)`, which
+		//     PostgreSQL backs with the constraint/index
+		//     `cluster_nodes_address_key`. This one is a real failure, not
+		//     cosmetic: node identity is `id`, and re-registering the same
+		//     listener address under a new node id is what failover and
+		//     takeover do. Measured on a live PostgreSQL, that unique key made
+		//     ten internal/takeover cases fail with SQLSTATE 23505.
+		//   * cluster-first (internal/cluster/pg_registry.go): never had the
+		//     constraint and never had `capabilities`. The column add is shape
+		//     convergence only — no production path reads or writes
+		//     capabilities today, so a cluster-first database was not broken.
+		//
+		// Both statements are idempotent, so a database already at the unified
+		// shape replays them as no-ops (which is the fresh-database path too).
+		//
+		// Residual limit: the drop names the constraint PostgreSQL derives from
+		// the shipped DDL. A hand-created table with a differently named UNIQUE
+		// on address is out of reach here; `levee doctor` reporting is the place
+		// that would surface it, and no such shape is produced by any version
+		// this project shipped.
+		version: 7,
+		stmts: []string{
+			`ALTER TABLE cluster_nodes DROP CONSTRAINT IF EXISTS cluster_nodes_address_key`,
+			// A unique index by that name is the other way the old shape could
+			// have arrived; after the constraint drop this is a no-op, and
+			// dropping a constraint-backed index directly would be refused.
+			`DROP INDEX IF EXISTS cluster_nodes_address_key`,
+			`ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS capabilities TEXT NOT NULL DEFAULT '{}'`,
+		},
+	},
 }
 
 // MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and
