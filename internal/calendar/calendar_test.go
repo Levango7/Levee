@@ -16,7 +16,7 @@ import (
 // newTestStore opens a fresh SQLite database in a temp dir and wraps it with
 // a calendar SQLiteStore. The store is closed automatically when the test
 // ends.
-func newTestStore(t *testing.T) *SQLiteStore {
+func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -35,7 +35,7 @@ func newTestStore(t *testing.T) *SQLiteStore {
 		require.NoError(t, err)
 	}
 
-	store, err := NewSQLiteStore(ctx, db)
+	store, err := NewStore(ctx, db, DialectSQLite)
 	require.NoError(t, err)
 	return store
 }
@@ -81,11 +81,11 @@ func TestEnsureSchema_Idempotent(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 	// Re-applying on the same DB must succeed.
-	require.NoError(t, EnsureSchema(ctx, store.DB()))
+	require.NoError(t, EnsureSchema(ctx, store.DB(), DialectSQLite))
 }
 
-func TestNewSQLiteStore_NilDB(t *testing.T) {
-	_, err := NewSQLiteStore(context.Background(), nil)
+func TestNewStore_NilDB(t *testing.T) {
+	_, err := NewStore(context.Background(), nil, DialectSQLite)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil db handle")
 }

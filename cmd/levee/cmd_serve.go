@@ -46,6 +46,7 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/chatops"
@@ -995,6 +996,33 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 			log.Info("execution engine snapshot capture enabled; strategy-snapshot steps capture target files pre-apply and restore on rollback", "dir", serveOptEngineSnapshotDir)
 		} else {
 			log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
+		}
+		// The change calendar rides on the same database handle as the run
+		// records: `levee calendar freeze` writes there and the gates in
+		// internal/wiring read from there. Failing to open it is logged as the
+		// hole it leaves, because a server that plans happily while believing
+		// freezes are enforced is worse than one that says it cannot check.
+		// startup instead of letting the gate look enforced. buildServeServices
+		// has no request context, so this uses a background one: two reads at
+		// process start, nothing to cancel.
+		calCtx := context.Background()
+		if cal, calErr := calendarFor(calCtx, store); calErr != nil {
+			log.Warn("serve: change calendar UNAVAILABLE — freeze periods will not block plan or apply",
+				"error", calErr)
+		} else {
+			opts = append(opts, wiring.WithChangeCalendar(cal))
+			log.Info("serve: change calendar wired — freeze periods refuse plan and apply for covered targets")
+			// A PostgreSQL deployment has one reachable database and one place
+			// the CLI writes to: `levee calendar freeze` opens the operator's
+			// local store (cmd/levee/helpers.go openStore is SQLite-only until
+			// `database.dsn` exists), so an empty table here means freezes are
+			// being written somewhere this process will never read. Say it at
+			// startup instead of letting the gate look enforced.
+			if windows, lerr := cal.ListWindows(calCtx, calendar.WindowFilter{}); lerr == nil && len(windows) == 0 {
+				log.Warn("serve: change calendar has no windows — in a PostgreSQL deployment `levee calendar freeze` " +
+					"writes to the operator's local SQLite file, not this database, so freeze enforcement is inert " +
+					"until the rows are created here (see docs/deployment.md, change calendar boundary)")
+			}
 		}
 		if execGuard != nil {
 			// Cluster mode: executions are fenced by run_execution leases.

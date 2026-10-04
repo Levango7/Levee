@@ -43,6 +43,7 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -561,10 +562,12 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 	if s.engine != nil && s.engine.Plan != nil {
 		planMsg, stored, err := s.engine.Plan(ctx, req.GetChangeId(), req.GetTargetHosts())
 		if err != nil {
-			// A closed change window and an unexecutable declared gate are both
-			// refusals the operator can act on, not server faults: report them like
-			// the approval-quorum refusal below instead of burying them in Internal.
-			if errors.Is(err, dsl.ErrWindowClosed) || errors.Is(err, engine.ErrGateNotExecutable) {
+			// A closed change window, an unexecutable declared gate and a
+			// calendar freeze are all refusals the operator can act on, not
+			// server faults: report them like the approval-quorum refusal below
+			// instead of burying them in Internal.
+			if errors.Is(err, dsl.ErrWindowClosed) || errors.Is(err, engine.ErrGateNotExecutable) ||
+				errors.Is(err, calendar.ErrFrozen) {
 				return nil, status.Error(codes.FailedPrecondition, err.Error())
 			}
 			return nil, status.Errorf(codes.Internal, "plan: %v", err)

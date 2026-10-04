@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/calendar"
+	"github.com/nexus/levee/internal/config"
 )
 
 // Calendar command option variables. Kept as package-level vars to mirror
@@ -158,12 +159,11 @@ func openCalendarService(ctx context.Context) (*calendar.CalendarService, func()
 	if err != nil {
 		return nil, nil, fmt.Errorf("open store: %w", err)
 	}
-	calStore, err := calendar.NewSQLiteStore(ctx, store.DB())
-	if err != nil {
+	svc, cerr := calendarFor(ctx, store)
+	if cerr != nil {
 		_ = store.Close()
-		return nil, nil, fmt.Errorf("open calendar store: %w", err)
+		return nil, nil, cerr
 	}
-	svc := calendar.NewCalendarService(calStore)
 	cleanup := func() { _ = store.Close() }
 	return svc, cleanup, nil
 }
@@ -277,6 +277,18 @@ func runCalendarCreate(cmd *cobra.Command, args []string) error {
 	if err := svc.CreateWindow(ctx, w); err != nil {
 		return fmt.Errorf("create window: %w", err)
 	}
+	if calOptFrozen {
+		// A freeze only stops changes if the enforcing process reads the same
+		// database this row went into. `openStore` is SQLite-only (there is no
+		// database.dsn yet), so a cluster deployment running on PostgreSQL gets
+		// no benefit from this row — say where it landed while the operator is
+		// still looking, instead of letting the freeze appear to do nothing.
+		if where, ok := calendarStoreLocation(); ok {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"notice: freeze %s recorded in %s; enforcement applies only to a serve process "+
+					"reading this same database (a PostgreSQL deployment does not)\n", w.ID, where)
+		}
+	}
 
 	row := windowToMap(w)
 	if optJSON {
@@ -293,6 +305,18 @@ func runCalendarCreate(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "Created window %s\n", w.ID)
 	printCalendarShowHuman(os.Stdout, row)
 	return nil
+}
+
+// calendarStoreLocation reports the SQLite file this command writes calendar
+// rows into, for the notice above. Returns ok=false when the configuration
+// cannot be read — the notice is diagnostics, and a broken config already fails
+// the command elsewhere.
+func calendarStoreLocation() (string, bool) {
+	cfg, err := config.Load(optConfigPath)
+	if err != nil || cfg.Database.Path == "" {
+		return "", false
+	}
+	return cfg.Database.Path, true
 }
 
 // runCalendarUpdate executes `levee calendar update <id>`.
