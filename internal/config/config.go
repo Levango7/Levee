@@ -303,6 +303,15 @@ type SecurityConfig struct {
 	// environment binding table (allKeys): BindEnv can only surface a
 	// scalar, which cannot represent a list.
 	SensitiveFields []string `json:"sensitive_fields" mapstructure:"sensitive_fields"`
+
+	// ExposeRawConfig lets `SystemService.GetConfig` serve the configuration
+	// WITHOUT secret redaction, but only to a caller that asked for raw output.
+	// Default false means the answer is always redacted, whichever transport it
+	// arrived on, so an omitted request field can never disclose credentials —
+	// see the note on GetConfig about why the field alone cannot be trusted.
+	// Enabling it is a deployment decision (the serving process logs a WARN on
+	// every raw response, and /system/status reports the switch).
+	ExposeRawConfig bool `json:"expose_raw_config" mapstructure:"expose_raw_config"`
 }
 
 // StateConfig tunes the state store (SQLite) beyond the connection/pool
@@ -758,6 +767,9 @@ func setDefaults(v *viper.Viper) {
 	// Security (yaml-only; see SecurityConfig.SensitiveFields for why this
 	// key is not env-bound)
 	v.SetDefault("security.sensitive_fields", []string{})
+	// Deliberately false: raw configuration (which carries credentials) must be
+	// an opt-in, never an accident of a request field defaulting to zero.
+	v.SetDefault("security.expose_raw_config", false)
 
 	// State
 	v.SetDefault("state.sqlite_synchronous", "normal")
@@ -880,6 +892,10 @@ func allKeys() []string {
 		"database.max_open_conns", "database.max_idle_conns",
 		"database.conn_max_lifetime",
 		"state.sqlite_synchronous",
+		// security.sensitive_fields stays out (a list cannot be surfaced by
+		// BindEnv); this scalar can and is, so a container can opt in without
+		// editing a file.
+		"security.expose_raw_config",
 		"log.level", "log.format", "log.output",
 		"executor.default_concurrency", "executor.max_concurrency",
 		"executor.connect_timeout", "executor.exec_timeout",

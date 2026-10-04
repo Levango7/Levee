@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 安全修复
+
+- **`plan` 从未被授权，于是任何人都能撤销别人的批准（服务端授权覆盖面 6→11 个 RPC）**：`internal/authz` 接线时只覆盖了 apply / rollback / approve / reject 四个治理动作，`PlanChange` 漏在外面。而 plan **是写操作**：它把规范化计划持久化到 run、发起审批链，并且**当计划哈希变化时把 `approved` 的 run 重置回 `draft`**（`change_service.go` 的 re-plan 分支）。后果是任何认证调用方——包括只该看列表的人——都能对一个已批准的变更再 plan 一次，让批准作废。现在 `plan` 与 apply 走同一姿态：矩阵生效且主体不可归因 → `Unauthenticated`；主体可归因但无 `plan` 授予 → `PermissionDenied`，并在**任何状态写入之前**拒绝（断言 `run.PlanJSON` 为空，被拒的 plan 不留产物）。
+- **批量暂停/恢复的授权名单原本按"客户端自报的名字"判定**：`bulkTransition` 用的是 `actorFromCtx(ctx)`，而这个函数自己的注释写着 *"suitable for audit-trail attribution and UX only, never for authorization decisions"*——共享单令牌模式下 `x-actor` 随便填，`bulk_grants` 里写了 `sre-oncall` 就等于把钥匙挂在门上。现在判定改用**已验签主体**（命名令牌 / SSO / OIDC），无主体 → `Unauthenticated` 并在消息里给出补救办法（`--auth-token name=secret`）；仍然先问授权检查器再返回，所以被拒事件照旧落到 `permission.denied` 审计行。CLI 本地模式不受影响（`ContextWithActor` 同时设置主体）。
+- **`GetConfig` 在 gRPC 上默认返回未脱敏配置，而注释写着"脱敏是默认"**：判定是 `if req == nil || req.GetRedactSecrets() { 脱敏 }`，但 `redact_secrets` 是 proto3 **标量 bool**，"未设置"与"显式 false"在服务器端不可区分——于是裸调 `GetConfig(&pb.GetConfigRequest{})` 拿到的是含目标机凭据的明文（REST 侧因为强制传 true 而把问题藏住了）。修法是把决定权交还给部署：新增 `security.expose_raw_config`（默认 false）；关闭时任何请求都只拿脱敏内容（含 nil 请求与 `?redactSecrets=false`），打开时才允许明文且每次响应记 WARN。**没有新增 wire 字段**：本地 protoc 与 CI 钉住的 27.0 不同版、无法字节复现生成物，加字段会让 CI 的 proto 漂移门变红，而"部署开关"这个形状也不需要字段存在性就能闭合漏洞。
+- **变更读路径（25 个 RPC 中的 7 个）接入 `view` 判定，并明确"不可归因主体不过滤"这一取舍**：`GetChange` / `GetLogs` / `GetTrace` / `GetDiff` / `WatchChange` / `StreamLogs` 现在按 `action=view` 判定；`ListChanges` 不是拒绝整页而是**按可见环境收窄**（拒绝会把允许看的行也藏掉），且因为 `RunFilter` 只能带一个 `IncidentID`，可归因主体会走带扫描上限的过滤路径、其余保持原有 store 分页不变。**刻意与写不同的一半**：无可验签主体的调用者（共享令牌）读路径放行——同一令牌的所有人在服务端是同一个主体，拒他们不带来任何隔离、只会让看板变黑；这一半和那一半被同一组测试钉住，写路径的豁免则不存在。姿态同时写进 `config.example.yaml` 与 `docs/security-audit.md` 已知限制。
+
+验证：新增 13 例（`internal/grpc/change_service_readauthz_test.go`）——plan 的两种拒绝与 dev/prod 分界、6 个读 RPC 各自被拒且 `view` 出现在文案里、不可归因主体读放行而写仍拒、列表按环境收窄（含与多状态过滤组合的那条路径）、批量动作在"只有自报名字"时被拒且留下审计行、`GetConfig` 的裸调用/显式 false/nil 请求三种形态都拿不到凭据、开关打开后的明文路径。**变异验证 7 条全部被抓**（去掉 plan 授权、读门恒放行、把不可归因主体改成拒绝、列表过滤永不启用、批量判定退回 `actorFromCtx`、`GetConfig` 退回按请求决定、忽略部署开关）。`go build ./...` / `go vet ./...` / `go test ./...` / golangci-lint / docgen 与 proto 漂移门（pb 未改）见下条提交说明。
+
 ### 修复
 
 - **Helm chart 向 `levee serve` 传了一个不存在的旗标**：`deploy/helm/levee/templates/deployment.yaml` 传 `--cluster-dispatch-worker-capacity`，二进制注册的是 `--cluster-dispatch-capacity`（`cmd/levee/cmd_serve.go:194`）。后果是**每次 `helm install --set mode=cluster` 起来的 Pod 都在启动时以 "unknown flag" 退出**（CrashLoopBackOff），而 `docs/deployment.md` 也照抄了同一个错名。v1.18.0 发布说明里写的"`helm lint`/双形态 `template` 校验通过"确实做过，但是**手工做的、且手工校验只到 YAML 能解析为止**——没有任何环节把渲染出的 args 与真实命令树比过。两处名字已订正，并补了下述两道持久门禁。
@@ -17,12 +26,12 @@
 - **CI `delivery` job（`scripts/validate_delivery.sh`）**：`helm lint --strict` + 6 个取值形态渲染（defaults / cluster / cluster 去掉 snapshotDir / ingress / 内嵌 PG / 3 worker）+ `helm package`。它覆盖文本扫描看不到的那一类：模板语法错误、`.Values` 路径失效、以及 helm 把无法解析的键渲染成字面量 `<no value>` 塞进容器 args。每个形态还断言"渲染出非零个 serve 旗标"（实测 defaults 7 / cluster 17），否则分支没被渲染到就等于没测。helm 按 SHA256 钉版（v3.18.4），本机与容器内均实测脚本全绿后才入库；`delivery` 同时进 `needs` 与聚合清单（后者有防漂移断言，漏一个就会红）。
 - **文档旗标守卫的可选值分支修复 + 行号定位**：`[--strict|--lenient]` 形式的每个备选都要剥前导 `--`；finding 现在带 `文件:行号`，一条文档写错不用在 2600 行里人肉找。当前交叉核对 **457** 个文档旗标引用（`cli-reference.md` + `quickstart.md`，含每处调用的选项与继承的持久旗标）。
 
+**两条门禁共做 13 项变异，逐条确认"红"来自断言失败而非编译失败**（先 `go build ./...` 通过才认定是语义变异）：chart 与 systemd 各改一个旗标名、`--status` 过滤被忽略、drift host 过滤反转、push payload 退回 nil、装载路径重新铸造 ID、`suspend_reason` 未写进注册表记录、resume 未清除原因、tenant/agent 两份词表各删一项、重复 suspend 不再更新原因、扫描器不剥备选值前导 `--`（这条复现的正是 `--lenient` 假阳性本身）。
+
 ### 已知限制（本次实测确认，登记不修）
 
 - **`levee agent list/show/remove` 读的是进程内注册表**：`AgentRegistry` 既不落盘也没有对应的 master 端 RPC（`proto/` 内无任何 agent 服务定义），因此跨进程执行 `agent list` 恒返回空表、`show`/`remove` 恒 not-found。`cli-reference.md` 第 20 章已加醒目边界说明。接 master 端 Agent 服务需要改 proto，而 CI 用 protoc 27.0 钉住 `internal/grpc/pb/` 并 `git diff --exit-code` 校验，本机 protoc 是 36.2，无法在本地生成一致的产物。
 - **`--deep-link` 的移动端消费未验**：CLI 侧 payload 键与 `internal/approval/mobile.go` 一致，但没有真实移动客户端可验证点击行为，验证面到"发出的 APNs/FCM 报文含该键"为止。
-
-## [v1.18.0] - 2026-10-03 — 交付物齐备：Helm chart + 裸金属一键安装 + 跨区域场景方案 + 镜像发布
 
 ## [v1.18.0] - 2026-10-03 — 交付物齐备：Helm chart + 裸金属一键安装 + 跨区域场景方案 + 镜像发布
 
