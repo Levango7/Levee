@@ -208,6 +208,8 @@ func newDriftBaselineListCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  runDriftBaselineList,
 	}
+	cmd.Flags().StringVar(&driftOptHost, "host", "",
+		"Restrict to one host (empty = every stored baseline)")
 	return cmd
 }
 
@@ -325,6 +327,15 @@ func runDriftBaselineList(cmd *cobra.Command, args []string) error {
 	}
 
 	baselines := bm.List()
+	if driftOptHost != "" {
+		filtered := make([]*drift.Baseline, 0, 1)
+		for _, b := range baselines {
+			if b.Host == driftOptHost {
+				filtered = append(filtered, b)
+			}
+		}
+		baselines = filtered
+	}
 	rows := make([]map[string]any, 0, len(baselines))
 	for _, b := range baselines {
 		rows = append(rows, baselineToMap(b))

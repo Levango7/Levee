@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,6 +32,36 @@ const (
 	// is considered unavailable for scheduling.
 	StatusOffline AgentStatus = "offline"
 )
+
+// AgentStatusValues lists every lifecycle state a registry entry can hold, in
+// transition order. It names the constants instead of repeating their strings,
+// so CLI help and validation cannot drift from the registry the way a second
+// hand-written vocabulary did (the reference once documented
+// "active / inactive / lost", none of which this package can produce).
+var AgentStatusValues = []AgentStatus{StatusRegistered, StatusIdle, StatusBusy, StatusOffline}
+
+// AgentStatusNames renders AgentStatusValues for help text and error messages.
+func AgentStatusNames() []string {
+	out := make([]string, 0, len(AgentStatusValues))
+	for _, s := range AgentStatusValues {
+		out = append(out, string(s))
+	}
+	return out
+}
+
+// ParseAgentStatus converts a caller-supplied string into an AgentStatus.
+// Unknown values are an error naming the accepted vocabulary: a status filter
+// that silently matched nothing would look like "no agents registered".
+func ParseAgentStatus(s string) (AgentStatus, error) {
+	target := strings.ToLower(strings.TrimSpace(s))
+	for _, v := range AgentStatusValues {
+		if string(v) == target {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("agent: unknown status %q (accepted: %s)",
+		s, strings.Join(AgentStatusNames(), ", "))
+}
 
 // AgentInfo is the master-side record for a registered agent. It is
 // kept in the AgentRegistry and updated by Register / Deregister /

@@ -108,18 +108,18 @@ func TestTenantManagerSuspend(t *testing.T) {
 	tt, err := tm.Create(context.Background(), "acme", "ACME", Quota{})
 	require.NoError(t, err)
 
-	require.NoError(t, tm.Suspend(context.Background(), tt.ID))
+	require.NoError(t, tm.Suspend(context.Background(), tt.ID, ""))
 	got, err := tm.Get(tt.ID)
 	require.NoError(t, err)
 	assert.Equal(t, TenantSuspended, got.Status)
 
 	// Suspending again is a no-op.
-	require.NoError(t, tm.Suspend(context.Background(), tt.ID))
+	require.NoError(t, tm.Suspend(context.Background(), tt.ID, ""))
 }
 
 func TestTenantManagerSuspendMissing(t *testing.T) {
 	tm := NewTenantManager()
-	err := tm.Suspend(context.Background(), "missing")
+	err := tm.Suspend(context.Background(), "missing", "")
 	assert.ErrorIs(t, err, ErrTenantNotFound)
 }
 
@@ -129,7 +129,7 @@ func TestTenantManagerSuspendDeleted(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, tm.Delete(context.Background(), tt.ID))
-	err = tm.Suspend(context.Background(), tt.ID)
+	err = tm.Suspend(context.Background(), tt.ID, "")
 	assert.ErrorIs(t, err, ErrTenantDeleted)
 }
 
@@ -138,7 +138,7 @@ func TestTenantManagerResume(t *testing.T) {
 	tt, err := tm.Create(context.Background(), "acme", "ACME", Quota{})
 	require.NoError(t, err)
 
-	require.NoError(t, tm.Suspend(context.Background(), tt.ID))
+	require.NoError(t, tm.Suspend(context.Background(), tt.ID, ""))
 	require.NoError(t, tm.Resume(context.Background(), tt.ID))
 	got, err := tm.Get(tt.ID)
 	require.NoError(t, err)
@@ -265,7 +265,7 @@ func TestTenantManagerCheckQuotaSuspended(t *testing.T) {
 	tm := NewTenantManager()
 	tt, err := tm.Create(context.Background(), "acme", "ACME", Quota{MaxTargets: 5})
 	require.NoError(t, err)
-	require.NoError(t, tm.Suspend(context.Background(), tt.ID))
+	require.NoError(t, tm.Suspend(context.Background(), tt.ID, ""))
 
 	err = tm.CheckQuota(tt.ID, ResourceTargets, 1)
 	assert.ErrorIs(t, err, ErrTenantSuspended)
@@ -289,7 +289,7 @@ func TestTenantManagerSetNow(t *testing.T) {
 	tt, err := tm.Create(context.Background(), "acme", "ACME", Quota{})
 	require.NoError(t, err)
 
-	require.NoError(t, tm.Suspend(context.Background(), tt.ID))
+	require.NoError(t, tm.Suspend(context.Background(), tt.ID, ""))
 	got, err := tm.Get(tt.ID)
 	require.NoError(t, err)
 	assert.Equal(t, fixed, got.UpdatedAt)
@@ -316,7 +316,7 @@ func TestTenantManagerLifecycle(t *testing.T) {
 	assert.Equal(t, TenantActive, tt.Status)
 
 	// Suspend.
-	require.NoError(t, tm.Suspend(context.Background(), tt.ID))
+	require.NoError(t, tm.Suspend(context.Background(), tt.ID, ""))
 	got, err := tm.Get(tt.ID)
 	require.NoError(t, err)
 	assert.Equal(t, TenantSuspended, got.Status)

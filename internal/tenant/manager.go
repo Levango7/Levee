@@ -83,6 +83,55 @@ func (tm *TenantManager) Create(ctx context.Context, name, displayName string, q
 	return t, nil
 }
 
+// Restore re-inserts a tenant that came back from persistence, keyed by the ID
+// it was saved with.
+//
+// Create cannot serve this purpose: it mints a fresh ID, so a reload renumbers
+// every tenant and the IDs already printed by `tenant create`/`tenant list`,
+// written to tenants.yaml and referenced from audit rows stop resolving. That is
+// precisely what the previous load path (Create, then patch the struct in place)
+// did, and it made every ID-addressed tenant subcommand fail with "not found"
+// across invocations.
+//
+// The quota is installed under t.ID for the same reason: quotas live in
+// QuotaManager keyed by tenant ID, so restoring a tenant under a different key
+// than its quota makes `tenant show`/`quota` read back unlimited limits without
+// any error.
+//
+// A soft-deleted tenant keeps no name claim (Delete releases it so the name can
+// be reused), so a registry may legitimately contain the same name twice with
+// different IDs. Restoring over an ID that already exists is refused: silently
+// dropping half of a corrupt registry is worse than reporting it.
+func (tm *TenantManager) Restore(t *Tenant, quota Quota) error {
+	if tm == nil {
+		return errors.New("tenant: nil manager")
+	}
+	if err := t.Validate(); err != nil {
+		return err
+	}
+
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	if _, exists := tm.tenants[t.ID]; exists {
+		return fmt.Errorf("%w: id %s", ErrTenantExists, t.ID)
+	}
+	if holder, exists := tm.byName[t.Name]; exists && holder != t.ID {
+		if prev, ok := tm.tenants[holder]; ok && prev.Status != TenantDeleted {
+			return fmt.Errorf("%w: name %q already held by %s", ErrTenantExists, t.Name, holder)
+		}
+	}
+	if err := tm.quotaMgr.SetQuota(t.ID, quota); err != nil {
+		return fmt.Errorf("tenant: restore quota for %s: %w", t.ID, err)
+	}
+
+	tm.tenants[t.ID] = t
+	if t.Status != TenantDeleted {
+		tm.byName[t.Name] = t.ID
+	}
+	return nil
+}
+
 // Get returns the tenant with the given id. It returns ErrTenantNotFound
 // when no such tenant exists (including soft-deleted tenants, which are
 // retained in the map).
@@ -132,10 +181,17 @@ func (tm *TenantManager) List() []*Tenant {
 	return result
 }
 
-// Suspend transitions a tenant to TenantSuspended. It is a no-op when
-// the tenant is already suspended. A deleted tenant cannot be
-// suspended.
-func (tm *TenantManager) Suspend(ctx context.Context, tenantID string) error {
+// Suspend transitions a tenant to TenantSuspended and records why. reason is
+// free-form operator text ("" means "not stated"); it lives on the tenant
+// record so that `tenant show` can still answer "why is this one parked" after
+// the shell history is gone.
+//
+// Re-suspending an already-suspended tenant stays a no-op for the status, but a
+// newly supplied reason is recorded rather than dropped: an operator who
+// suspended first and wrote the reason down later must not get exit code 0 and
+// no change. An empty reason on an already-suspended tenant leaves the recorded
+// reason untouched. A deleted tenant cannot be suspended.
+func (tm *TenantManager) Suspend(ctx context.Context, tenantID, reason string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -147,17 +203,27 @@ func (tm *TenantManager) Suspend(ctx context.Context, tenantID string) error {
 		return fmt.Errorf("%w: cannot suspend deleted tenant %s", ErrTenantDeleted, tenantID)
 	}
 	if t.Status == TenantSuspended {
+		if reason == "" || reason == t.SuspendReason {
+			return nil
+		}
+		t.SuspendReason = reason
+		t.UpdatedAt = tm.now()
+		log.InfoCtx(ctx, "tenant suspension reason updated", "tenant_id", tenantID, "reason", reason)
 		return nil
 	}
 
 	t.Status = TenantSuspended
+	t.SuspendReason = reason
 	t.UpdatedAt = tm.now()
-	log.InfoCtx(ctx, "tenant suspended", "tenant_id", tenantID)
+	log.InfoCtx(ctx, "tenant suspended", "tenant_id", tenantID, "reason", reason)
 	return nil
 }
 
 // Resume transitions a tenant to TenantActive. It is a no-op when the
-// tenant is already active. A deleted tenant cannot be resumed.
+// tenant is already active. A deleted tenant cannot be resumed. The
+// recorded suspension reason is cleared: leaving it set would let an
+// active tenant carry a stale "why we parked it" that `tenant show`
+// would keep surfacing.
 func (tm *TenantManager) Resume(ctx context.Context, tenantID string) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
@@ -174,6 +240,7 @@ func (tm *TenantManager) Resume(ctx context.Context, tenantID string) error {
 	}
 
 	t.Status = TenantActive
+	t.SuspendReason = ""
 	t.UpdatedAt = tm.now()
 	log.InfoCtx(ctx, "tenant resumed", "tenant_id", tenantID)
 	return nil
