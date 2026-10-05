@@ -134,7 +134,18 @@
 
 - **PG 测试在复用数据库上不再假失败**：`newPGTestStore` 刻意不清理 `run_assignment` 与 `cluster_nodes`（这两张表归 dispatch / cluster 包并发持有，CI 亦按包分步串行执行以共用同一个库），但三个用例自身的假设没跟上——`TestClusterNodes_PGListsNodes` 用裸 INSERT 写固定 id（重跑撞唯一键）、`TestAssignmentSummary_PGWithRows` 对全表聚合断言精确计数（他包残留行即失配）、`TestPGStore_ReclaimAssignmentCAS` 用 `CreateAssignment` 写固定 run_id（残留行撞主键）。CI 每次是全新数据库所以从未暴露，本地对着常驻容器复跑必红。现按该文件既有的"只断言存在性 / 只碰自己的键"模式补齐：`cluster_nodes` 改为照抄 cluster 包 `RegisterNode` 的 `ON CONFLICT (id) DO UPDATE`、聚合断言改为相对封链前基线的增量、两个用例在播种前删除自己那把键。实测：常驻共享库连跑三次全绿；新库上 `./internal/state/... ./internal/cluster/... ./internal/takeover/... ./internal/backup/...` 全部通过（与 CI 序列一致）。
 
+### 修复（交付物版本口径与一致性门禁）
+
+- **chart 引用的版本从未发布过**：`CHANGELOG.md` 写有 `## [v1.19.0] - 2026-10-04` 小节、`docs/release-notes/v1.19.0.md` 已存在、`Chart.yaml` 的 appVersion 也升到了 1.19.0，但远端最新 tag 是 `v1.18.0`，`v1.19.0` 从未打过；镜像只在 `release.yml` 的 `push: tags: v*` 时构建，因此 `ghcr.io/levango7/levee:1.19.0` 这个制品并不存在。同一个 chart 里还自相矛盾——`appVersion: "1.19.0"` 而 `values.yaml image.tag: "1.18.0"`，即"声明 1.19.0、部署 1.18.0"。本批把 appVersion 对齐到**已发布**的 1.18.0，并在下方 v1.19.0 小节显式标注"未切版"（内容已在 master，制品不存在）。
+- **新增硬门禁 `scripts/check_release_versions.py`**（由 `validate_delivery.sh` 在 helm 检查之前调用；delivery 作业的 checkout 改为 `fetch-depth: 0` + `fetch-tags: true` 才能拿到 tag 集合）：① `appVersion` 必须等于 `image.tag`；② `image.tag` 引用的版本必须已有 `v<version>` tag，否则等于把部署指向一个从未构建的镜像；③ CHANGELOG 每个 `## [vX.Y.Z]` 小节要么有对应 tag、要么写明"未切版"；④ 一个 `v*` tag 都看不到时**直接失败**——静默的空 tag 列表会让前三条全部假通过，那比没有门禁更糟。
+- **验证**：基线通过（20 个 tag，chart 与 image.tag 均为 1.18.0）；变异四条分别变红——appVersion 改回 1.19.0、`image.tag` 改成未发布的 9.9.9、删掉 v1.19.0 的"未切版"标注、在无 tag 仓库里运行（触发规则④）。`bash -n` 通过；用 `HELM_BIN=/nonexistent-helm` 跑 `validate_delivery.sh` 证明版本检查确实在链路上、且先于 helm 检查执行（版本被改坏时它在 helm 之前就失败退出）。
+
 ## [v1.19.0] - 2026-10-04 — `allow_irreversible` 白名单接线（V14/LE082 编译期门禁）
+
+> **发布状态：未切版。** 远端最新 tag 是 `v1.18.0`，`v1.19.0` 的 tag 与镜像
+> `ghcr.io/levango7/levee:1.19.0` 从未构建（`release.yml` 只在 `push: tags: v*` 时触发）。
+> 本小节的日期是这批内容进入 master 的时间，不是发布时间；部署口径以
+> `deploy/helm/levee/Chart.yaml` 的 appVersion 为准。
 
 规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。
 
