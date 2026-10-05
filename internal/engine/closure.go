@@ -391,7 +391,8 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		return result, result.Error
 	}
 	preInput := verify.GateInput{
-		RunID:     result.RunID,
+
+		ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
 		TargetIDs: targets,
 	}
 	preResults := cr.verifier.RunPhase(ctx, verify.PhasePreApply, preInput)
@@ -500,7 +501,8 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 
 		// Post-batch verification.
 		postBatchInput := verify.GateInput{
-			RunID:     result.RunID,
+
+			ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
 			BatchID:   fmt.Sprintf("batch-%d", b.Index),
 			TargetIDs: b.Targets,
 		}
@@ -522,7 +524,8 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			rollbackReason = fmt.Errorf("cancelled before post-apply verify: %w", err).Error()
 		} else {
 			postInput := verify.GateInput{
-				RunID:     result.RunID,
+
+				ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
 				TargetIDs: targets,
 			}
 			postResults := cr.verifier.RunPhase(ctx, verify.PhasePostApply, postInput)
@@ -623,7 +626,8 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		// answered. The bound is what makes continuing safe.
 		if cr.postVerifier != nil && postRollbackVerifyRequested(p) {
 			pvInput := verify.GateInput{
-				RunID:     result.RunID,
+
+				ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
 				TargetIDs: targets,
 			}
 			// VerifyAndGrade, not Verify: identical verification, plus the

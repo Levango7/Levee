@@ -27,7 +27,7 @@ MVP 周期 3 个月，单二进制零依赖部署，覆盖从计划到归档的�
 | D-01 | CLI 优先 | D2.2.5 | 所有操作可通过 CLI 完成，不强制 Web UI |
 | D-02 | 连接池执行（SSH + WinRM 最小） | D1.1 | 通道抽象层 + SSH 连接池 + WinRM 最小子集 |
 | D-03 | 批次执行 | D5.1 | 批次一等公民，按百分比 / 数量 / 标签分批 |
-| D-04 | 验证门禁 | D4.4.5 | 命令门禁 + SLO 门禁（post_batch）—— **部分可达（2026-10-05 实测）**：SLO 门禁可达（需 `--gate-prometheus` URL，缺 URL 时失败关闭）；**`cmd` 门禁在 run 路径中拿不到通道**，引擎构造 `GateInput` 时从不填 `Channel`（`internal/engine/closure.go:393`、`:502` 只填 RunID/BatchID/TargetIDs，全仓唯一的非测试 `Channel:` 赋值在 `internal/wiring/exec.go:114`，那是给步骤执行用的），于是 `verify/command_gate.go:230-239` 恒报 "missing channel" 并让该阶段失败——安全方向正确（失败关闭），但等价于**声明了命令门禁的变更永远过不了这一关**，不是"配了通道就能跑"。probe 的 `remote` 模式同理。证据：`tests/integration/gate_block_rollback_e2e_test.go` 用通道层派发记录直接证明声明的 `gate-check` 从未执行。登记与决策项见 `docs/product-roadmap.md`。 |
+| D-04 | 验证门禁 | D4.4.5 | 命令门禁 + SLO 门禁（post_batch）—— **两类都真可执行（2026-10-06）**：SLO 门禁需 `--gate-prometheus` URL（缺 URL 失败关闭）；**cmd 门禁按 `TargetIDs` 逐台执行、全部通过才算过**，通道由本次执行的会话缓存供给（`runExec.gateChannelProvider` → `GateInput.ChannelFor`），与步骤共用同一条连接、同一份执行租约与同一套凭据；连不上的目标记失败而非跳过，空目标集失败关闭。**留痕（三段口径不许抹平）**：2026-08-15 原文按"已交付"记录；2026-10-05 实测发现 run 路径从不给 `GateInput.Channel` 赋值，cmd 门禁一律以 "missing channel" 失败关闭——安全（绝不伪造通过）但从未执行被声明的检查，故当时降为"部分可达"；2026-10-06 供通道后改为本口径。**遗留**：`probe` 的 `mode: remote` 仍只认单一 `Channel`、未消费 provider，执行路径下仍以 missing channel 失败关闭（`direct` 模式不受影响）。 |
 | D-05 | 回滚协议 | D4.4.6 | 白名单 + 快照 + 按批逆序 + 回滚后验证 |
 | D-06 | dry-run 预览 | D2.2.4 | 产出执行计划不真正执行 |
 | D-07 | 审计（哈希链） | D7.1 | trace + 哈希链 + WORM 存储 |

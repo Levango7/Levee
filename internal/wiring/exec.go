@@ -17,6 +17,7 @@ import (
 	"github.com/nexus/levee/internal/executor"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/verify"
 
 	// Register the built-in executor modules on executor.DefaultExecutor().
 	_ "github.com/nexus/levee/internal/executor/modules/file"
@@ -138,6 +139,20 @@ func (r *runExec) exec(ctx context.Context, host string, step dsl.Step) error {
 // and re-dialling when a cached channel has lost its session. Channels are
 // cached for the whole run so a multi-step workflow reuses one transport
 // session per target.
+// gateChannelProvider exposes this run's channel dialing to verification gates.
+//
+// It is deliberately the SAME accessor the steps use: lease-checked, cached per
+// host, and closed by the run at teardown. A gate that reached a machine over a
+// separately-dialled session could pass while the change it guards is running
+// somewhere else entirely — with a stolen or stale lease that is exactly what
+// would happen. What the gate checks is the connection the change owns.
+func (r *runExec) gateChannelProvider() verify.GateChannelProvider {
+	return func(ctx context.Context, host string) (channel.Channel, error) {
+		ch, _, err := r.channelFor(ctx, host)
+		return ch, err
+	}
+}
+
 func (r *runExec) channelFor(ctx context.Context, host string) (channel.Channel, channel.Target, error) {
 	r.mu.Lock()
 	if ch, ok := r.chans[host]; ok && ch.IsConnected() {

@@ -227,6 +227,10 @@ func (g *CommandGate) Check(ctx context.Context, input GateInput) (GateResult, e
 		}, fmt.Errorf("command gate %q: unsafe command: %w", g.name, g.policyErr)
 	}
 
+	if input.Channel == nil && input.ChannelFor != nil {
+		return g.checkAcrossTargets(ctx, input)
+	}
+
 	if input.Channel == nil {
 		return GateResult{
 			Passed:  false,
@@ -239,8 +243,13 @@ func (g *CommandGate) Check(ctx context.Context, input GateInput) (GateResult, e
 		}, fmt.Errorf("command gate %q: channel is nil", g.name)
 	}
 
-	// Retry loop. We keep the last attempt's evidence so that the result
-	// carries the most recent stdout / exit code for the audit trail.
+	return g.checkOnChannel(ctx, input.Channel)
+}
+
+// checkOnChannel is the retry loop for one already-established channel: it keeps
+// the last attempt's evidence so the result carries the most recent stdout /
+// exit code for the audit trail.
+func (g *CommandGate) checkOnChannel(ctx context.Context, ch channel.Channel) (GateResult, error) {
 	var lastResult GateResult
 	for attempt := 0; attempt <= g.retries; attempt++ {
 		// Stop retrying if the caller's context has expired.
@@ -259,7 +268,7 @@ func (g *CommandGate) Check(ctx context.Context, input GateInput) (GateResult, e
 			return lastResult, nil
 		}
 
-		result, err := g.runOnce(ctx, input.Channel, attempt+1)
+		result, err := g.runOnce(ctx, ch, attempt+1)
 		if err != nil {
 			// An error from runOnce means the channel itself failed
 			// (e.g. context cancelled mid-exec). We treat this as a
@@ -304,6 +313,110 @@ func (g *CommandGate) Check(ctx context.Context, input GateInput) (GateResult, e
 	}
 
 	return lastResult, nil
+}
+
+// checkAcrossTargets runs the declared command once per target the phase names
+// and folds the per-target verdicts into one.
+//
+// The rule is deliberate and strict: EVERY target must pass. Reporting a batch
+// as verified because one host answered correctly is exactly the kind of
+// evidence that reads well in an audit and means nothing in an incident.
+//
+// Two things are on purpose: a target we cannot reach counts as FAILED (not
+// skipped — an unreachable host has not been shown to be healthy), and one
+// failing host does not hide the others, so the verdict lists every offender
+// rather than the first one. Channel lifetime belongs to the provider.
+func (g *CommandGate) checkAcrossTargets(ctx context.Context, input GateInput) (GateResult, error) {
+	hosts := input.TargetIDs
+	if len(hosts) == 0 {
+		return GateResult{
+			Passed:  false,
+			Message: fmt.Sprintf("command gate %q has no targets to check", g.name),
+			Details: map[string]any{
+				"gate":   "command",
+				"name":   g.name,
+				"reason": "no_targets",
+			},
+		}, nil
+	}
+
+	perTarget := make(map[string]any, len(hosts))
+	var failed []string
+	var firstFailure string
+	allPassed := true
+
+	for _, host := range hosts {
+		if err := ctx.Err(); err != nil {
+			// Stop early: the caller's deadline means the remaining targets
+			// cannot be checked either, and that is reported as a failure of
+			// the whole check, never as a pass.
+			return GateResult{
+				Passed:  false,
+				Message: fmt.Sprintf("command gate %q cancelled while checking targets: %v", g.name, err),
+				Details: map[string]any{
+					"gate":    "command",
+					"name":    g.name,
+					"reason":  "context_cancelled",
+					"checked": len(perTarget),
+					"targets": perTarget,
+				},
+			}, nil
+		}
+
+		ch, derr := input.ChannelFor(ctx, host)
+		if derr != nil {
+			allPassed = false
+			failed = append(failed, host)
+			perTarget[host] = map[string]any{"passed": false, "error": derr.Error()}
+			if firstFailure == "" {
+				firstFailure = fmt.Sprintf("%s: dial failed: %v", host, derr)
+			}
+			log.Warn("command gate could not reach a target",
+				"gate", g.name, "target", host, "err", derr)
+			continue
+		}
+
+		res, err := g.checkOnChannel(ctx, ch)
+		entry := map[string]any{"passed": res.Passed, "message": res.Message}
+		if err != nil {
+			entry["error"] = err.Error()
+		}
+		if res.Details != nil {
+			if exit, ok := res.Details["exit_code"]; ok {
+				entry["exit_code"] = exit
+			}
+		}
+		perTarget[host] = entry
+		if !res.Passed {
+			allPassed = false
+			failed = append(failed, host)
+			if firstFailure == "" {
+				firstFailure = fmt.Sprintf("%s: %s", host, res.Message)
+			}
+		}
+	}
+
+	base := map[string]any{
+		"gate":    "command",
+		"name":    g.name,
+		"command": g.command,
+		"targets": perTarget,
+		"checked": len(hosts),
+	}
+	if allPassed {
+		return GateResult{
+			Passed:  true,
+			Message: fmt.Sprintf("command gate %q passed on all %d target(s)", g.name, len(hosts)),
+			Details: base,
+		}, nil
+	}
+	base["failed_targets"] = failed
+	return GateResult{
+		Passed: false,
+		Message: fmt.Sprintf("command gate %q failed on %d of %d target(s): %s",
+			g.name, len(failed), len(hosts), firstFailure),
+		Details: base,
+	}, nil
 }
 
 // runOnce executes the command a single time and compares the result against

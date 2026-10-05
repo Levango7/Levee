@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+
+### 新增（验证门禁按目标执行：cmd 门禁终于能跑它声明的那条检查）
+
+- **`GateInput.Channel` 在 run 路径无人供给，命令门禁一律失败关闭**：引擎构造 `GateInput` 时只填 RunID / BatchID / TargetIDs，全仓唯一的非测试 `Channel:` 赋值在 `internal/wiring/exec.go`，而那是给步骤执行用的。后果不是"少个功能"，而是**任何声明了 cmd 门禁的工作流永远过不去自己这一关**——每次都走 "missing channel" 分支：安全地失败，但从未执行过被声明的那条检查。
+- **接缝只开一处**：新增 `verify.GateChannelProvider` 作为 `GateInput` 的可选字段，`engine.GateRuntime` 增加 `Channels` 与 `WithChannels`（返回副本）；wiring 在每次 run 用 `runExec.gateChannelProvider()` 供通道——**复用步骤已有的那条缓存会话**，所以门禁与它守护的执行共用同一份租约与凭据，不可能出现"检查走 A 身份、执行走 B 身份"。plan 期拒绝与 phase 期注册仍读同一个 `gateRuntime()`，两处判定不会分叉。
+- **判定规则（全部有测试）**：按 `TargetIDs` 逐台执行，**每台都要过**——web-1 过了不等于这批过了；连不上的目标算**失败**而非跳过（没被证明健康的机器不能算通过）；失败结论列出全部 offender 与 `failed_targets`；空目标集失败关闭（`no_targets`），绝不因为"没有东西要查"就判通过。SLO / human 门禁不消费 provider，保持 run 级一次，不会随目标数被跑 N 次。
+- **行为变更**：升级后声明了 cmd 门禁的工作流从"必然回滚"变成"按检查真结果放行或阻断"——这是门禁第一次真正生效。若某条命令在其目标上本就通不过，行为不变（仍回滚），只是原因从 `missing channel` 换成真实退出码。
+- **遗留（同日登记，不含在本批）**：`probe` 的 `mode: remote` 仍只认单一 `GateInput.Channel`、未消费 provider，在执行路径下仍以 missing channel 失败关闭；`direct` 模式不受影响。
+### 修复（手动回滚的结局不再被当成服务端故障）
+
+- **`RollbackChange` 把"跑了但没补全"当成 `codes.Internal` 抛出，并且这条路径根本不推进 run 状态**：`internal/grpc/change_service.go` 对 `engine.Rollback` 的任何 error 一律 `codes.Internal`，于是补偿已经派发到目标机之后，记录仍停在尝试之前的 `rolled_back_partial` —— 操作者既看不出"我试过且没成功"，也无法据此决定重试还是收工。实测两条路径都中招：从 `rolled_back_partial` 再手动回滚、以及回滚一个步骤没有补偿声明的 `completed` 变更。
+- **修法**：新增领域错误类 `internal/rollback.ErrIncomplete`（wiring 在 `!res.Success` 时以 `%w: %w` 双包裹，既保留"哪条 undo 失败"的原文又让 `errors.Is` 可用）；gRPC 侧据此分流——领域结局走 `Success=false` + `rollback_incomplete` + 同状态的审计行与事件，真故障仍是 `codes.Internal` 且**不改写历史**。`rollback_incomplete` 本就在 `runstatus.RollbackAdmitted` 内，因此未补全的回滚仍可再来一次，也不会被误封成终态。
+- **验证**：`internal/grpc/change_service_rollback_outcome_test.go` 两条新用例（结局用例自建 `EngineAdapter`，因为共享 fake 在返回 error 时会丢掉 rollback id 与 hosts——那不是生产形状）；`tests/integration/gate_block_rollback_e2e_test.go` 把原先"容忍 Internal"的断言翻成新契约，并如实记录第二次尝试未派发任何新补偿（D-2 台账判定已补过的不重复补）。变异四条各自变红：wiring 不再分类 / grpc 一律 Internal / 状态不推进 / 一律当结局处理（吞掉真故障）。
+
 ### 变更（v1.19.0 切版后的口径对齐）
 
 - **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，Release workflow 已据此发布镜像与 GitHub Release（实测：`draft=false`、`publishedAt=2026-10-05T16:43:33Z`、assets 为 5 个平台包 + `checksums.txt`）。`Chart.yaml` 的 appVersion 升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。

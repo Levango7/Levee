@@ -165,7 +165,7 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 		// (Prometheus endpoint for slo, approval transport for human). It is the
 		// same value GeneratePlan checks against, so a plan that was accepted is
 		// always executable here — see Engine.gateRuntime.
-		engine.WithGateRuntime(e.gateRuntime()),
+		engine.WithGateRuntime(e.gateRuntime().WithChannels(rx.gateChannelProvider())),
 	)
 	if snapHook != nil {
 		// The WithSnapshotter option is applied post-construction via a
@@ -642,7 +642,11 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		if persistErr != nil {
 			cause = errors.Join(cause, fmt.Errorf("persisting rollback evidence: %w", persistErr))
 		}
-		return rbID, hosts, cause
+		// Classify it: the compensations ran and did not finish. Wrapping
+		// rollback.ErrIncomplete is what lets the transport report an outcome
+		// (Success=false, rollback_incomplete) instead of a server fault, while
+		// the joined cause still names what failed.
+		return rbID, hosts, fmt.Errorf("%w: %w", rollback.ErrIncomplete, cause)
 	}
 	if persistErr != nil {
 		return rbID, hosts, fmt.Errorf("wiring: rollback succeeded but persisting evidence failed: %w", persistErr)

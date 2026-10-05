@@ -8,12 +8,12 @@
 //	① "声明的 post_batch 门禁真的挡住下一批"。engine 级证据在
 //	internal/engine/gate_position_wiring_test.go:132；这里把它抬到 live grpc.Server +
 //	真实 wiring 引擎上，用通道层的实际派发记录定义"挡住"——第二批从未被派发。
-//	用例同时钉住一条当场查出的现状：门禁本身**没有执行**声明的检查，因为引擎路径
-//	从不给 GateInput.Channel 赋值（closure.go:393 与 :502 只填 RunID/BatchID/TargetIDs，
-//	全仓唯一的非测试 Channel 赋值是 wiring/exec.go:114，那是给步骤执行用的）。所以
-//	cmd 门禁是以 "missing channel" 失败关闭的。已登记 docs/product-roadmap.md。
-//	若将来给门禁供通道，本用例的 NotContains 断言应当翻成 Contains——那是有意为之的
-//	红线，不是疏漏。
+//	本文件同时钉住门禁的两侧：失败的门禁挡住下一批（TestEngineServe_BatchGateStops…），
+//	通过的门禁让整条 rollout 走完（TestEngineServe_BatchGatePassing…）。后者在以前是
+//	不可能成立的——引擎路径从不给 GateInput.Channel 赋值，cmd 门禁一律以 "missing
+//	channel" 失败关闭，声明了命令门禁的变更永远过不去自己那一关。现在通道由本次执行
+//	自己的会话缓存供给（wiring runExec.gateChannelProvider），门禁与步骤走同一条连接、
+//	同一份租约、同一套凭据。
 //
 //	② RollbackChange 的准入：rolled_back_partial 必须跨过状态门（那正是手动回滚存在
 //	的理由），干净的 rolled_back 必须被拒（双重 undo 保护）。
@@ -98,18 +98,51 @@ func TestEngineServe_BatchGateStopsTheNextBatchOverGRPC(t *testing.T) {
 	assert.Contains(t, cmds, "web-1\x00undo-command",
 		"the applied batch must be reversed, dispatches: %v", cmds)
 
-	// The finding, pinned as a fact rather than an aspiration: the declared gate
-	// command never reached a channel, so the block came from the honest
-	// "missing channel" failure (verify/command_gate.go:230-239). Command gates
-	// are therefore non-executable in every run path today.
-	assert.NotContains(t, cmds, "web-1\x00gate-check",
-		"registered in docs/product-roadmap.md: no run path supplies GateInput.Channel, "+
-			"so a declared cmd gate cannot execute. Flip this to Contains when gates get channels.")
+	// The check itself must reach the target. This is the assertion that used to
+	// read "the declared gate never executes"; per-target fan-out now comes from
+	// the run's own cached, lease-checked sessions.
+	assert.Contains(t, cmds, "web-1\x00gate-check",
+		"a declared cmd gate must execute on the target it guards, dispatches: %v", cmds)
+	assert.NotContains(t, cmds, "web-2\x00gate-check",
+		"the rollout stops at the failing batch, so batch 2 is applied neither checked nor run: %v", cmds)
 
 	auditSvc := leveegrpc.NewAuditService(store)
 	vr, verr := auditSvc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{ChangeId: changeID})
 	require.NoError(t, verr)
 	assert.True(t, vr.GetValid(), "the audit chain must verify across a gate-blocked rollback")
+}
+
+// TestEngineServe_BatchGatePassingLetsEveryBatchRun is the half that could not
+// exist before: a declared cmd gate that passes on every target must let the
+// rollout finish. With no channel supplied the same workflow rolled itself back
+// on its own gate, so "the gate can pass" was not merely unproven — it was
+// unreachable. Both batches must be applied AND checked, in that order.
+func TestEngineServe_BatchGatePassingLetsEveryBatchRun(t *testing.T) {
+	ctx := context.Background()
+	rec := &loopRecorder{}
+	client, store := serveEngine(t, rec, "web-1", "web-2")
+
+	changeID := createChange(t, client, "batch-gate-pass-e2e", serveBatchGateWorkflowYAML)
+	planApproveChange(t, client, store, changeID, []string{"web-1", "web-2"})
+
+	resp, err := client.ApplyChange(ctx, &pb.ApplyChangeRequest{
+		ChangeId:       changeID,
+		AutoApprove:    false,
+		MaxConcurrency: 1,
+	})
+	require.NoError(t, err)
+	assert.True(t, resp.GetSuccess(), "a passing batch gate must not block the rollout")
+
+	run, err := store.GetRun(ctx, changeID)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", run.Status, "the change must finish once every gate passes")
+
+	cmds := rec.snapshotCmds()
+	assert.Contains(t, cmds, "web-1\x00work-command")
+	assert.Contains(t, cmds, "web-2\x00work-command", "batch 2 must run once batch 1's gate passed")
+	assert.Contains(t, cmds, "web-1\x00gate-check", "the gate runs after every batch, not only the last")
+	assert.Contains(t, cmds, "web-2\x00gate-check")
+	assert.NotContains(t, cmds, "web-1\x00undo-command", "nothing may be reversed when nothing failed")
 }
 
 func TestEngineServe_RollbackChangeClearsTheStateGateFromPartialVerdict(t *testing.T) {
@@ -134,24 +167,29 @@ func TestEngineServe_RollbackChangeClearsTheStateGateFromPartialVerdict(t *testi
 	require.Contains(t, runstatus.RollbackAdmitted, run.Status,
 		"the e2e premise must agree with the single-sourced admission set")
 
-	_, err = client.RollbackChange(ctx, &pb.RollbackRequest{
+	before := len(rec.snapshotCmds())
+	resp, err := client.RollbackChange(ctx, &pb.RollbackRequest{
 		ChangeId:    changeID,
 		AutoApprove: true,
 	})
-	if err != nil {
-		// Admission is the claim under test. FailedPrecondition would mean the
-		// state gate refused a run it exists to remediate. Anything else (today
-		// it is codes.Internal, "partial rollback: some undo steps failed") got
-		// past admission and failed further down — a separate, registered defect.
-		require.NotEqual(t, codes.FailedPrecondition, status.Code(err),
-			"rolled_back_partial must clear the rollback state gate, got: %v", err)
-		t.Logf("observed (registered in docs/product-roadmap.md): manual rollback from a "+
-			"partial verdict surfaces as %s: %v", status.Code(err), err)
-		return
-	}
+	// The registered defect this line used to tolerate: an unfinished manual
+	// rollback came back as codes.Internal and left the run on its pre-attempt
+	// status. It is now an outcome — Success=false with a status that says so —
+	// and the attempt stays inside the retryable set.
+	require.NoError(t, err, "an unfinished manual rollback must be reported as an outcome, not a server fault")
+	assert.False(t, resp.GetSuccess(), "the response must not claim a completed rollback")
+	assert.Contains(t, resp.GetMessage(), "incomplete",
+		"the message must say the attempt did not finish, got %q", resp.GetMessage())
+	t.Logf("attempt dispatched %d channel calls (before=%d), hosts=%v",
+		len(rec.snapshotCmds()), before, resp.GetRolledBackHosts())
 
-	// Admitted and completed: the compensation must actually dispatch, and the
-	// audit chain must survive a second rollback pass.
+	run, err = store.GetRun(ctx, changeID)
+	require.NoError(t, err)
+	assert.Equal(t, runstatus.StatusRollbackIncomplete, run.Status,
+		"the record must advance from the pre-attempt verdict to what actually happened")
+	assert.Contains(t, runstatus.RollbackAdmitted, run.Status,
+		"an unfinished rollback stays retryable, never sealed")
+
 	auditSvc := leveegrpc.NewAuditService(store)
 	vr, verr := auditSvc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{ChangeId: changeID})
 	require.NoError(t, verr)
