@@ -72,7 +72,10 @@ func TestCompileSummaryCountIsTheSameListAsStderr(t *testing.T) {
 		want int
 	}{
 		{name: "nothing declared", src: bareGovernanceWorkflow, want: 3},
-		{name: "window only missing", src: validCompileYAML, want: 1}, // declares approval and batches
+		// validCompileYAML declares approval and batches but no between-batches
+		// check, so it is told about the missing window (LE095) and the missing
+		// post_batch gate (LE052).
+		{name: "window only missing", src: validCompileYAML, want: 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

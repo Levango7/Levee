@@ -64,6 +64,29 @@ steps:
         source: prometheus
 `
 
+// sloPostBatchWorkflow is the same slo check declared where the refusal says it
+// executes. Its only difference from sloGatedWorkflow is the position, which is
+// exactly the advice under test.
+const sloPostBatchWorkflow = `name: slo-post-batch
+version: "1.0"
+target:
+  type: host
+  hosts: ["web-1"]
+batches:
+  strategy: one-per-target
+steps:
+  - name: restart
+    action: svc.restart
+    verify:
+      position: post_batch
+      slo:
+        query: "rate(node_load1[5m])"
+        source: prometheus
+      params:
+        threshold: 4
+        comparison: lte
+`
+
 const cmdGatedWorkflow = `name: cmd-gated
 version: "1.0"
 target:
@@ -105,16 +128,37 @@ func TestGeneratePlan_AcceptsHumanGateOnceApproverIsWired(t *testing.T) {
 }
 
 // TestGeneratePlan_RefusesSloAndNamesTheRealRemediation guards the message, not
-// just the verdict. An operator told only "must be in the post_batch phase" would
-// go add `position: post_batch`, which the parser routes to post_apply as well —
-// advice that cannot work is worse than no advice.
+// just the verdict, and the message must name something that works. An slo check
+// only executes in the post_batch phase, so the refusal has to say where to put
+// it — and that route must exist. It did not: convertGate filed every
+// declaration in GateSpec.Post, so the honest advice back then was "no YAML path
+// reaches that slot". Position routing is fixed now, so the test also drives the
+// remediation it advertises: the same check declared with position: post_batch
+// plans.
 func TestGeneratePlan_RefusesSloAndNamesTheRealRemediation(t *testing.T) {
 	err := planWorkflow(t, sloGatedWorkflow, WithGatePrometheusURL("http://prom:9090"))
-	require.Error(t, err, "an slo declaration is not executable by any current YAML path")
+	require.Error(t, err, "an slo check outside post_batch is not executable")
 	assert.True(t, errors.Is(err, engine.ErrGateNotExecutable), "%v", err)
 	assert.Contains(t, err.Error(), "post_batch phase only", err.Error())
-	assert.Contains(t, err.Error(), "no workflow declaration reaches that slot today",
-		"the refusal must say the fix is not in the operator's hands yet, got: %v", err)
+	assert.Contains(t, err.Error(), "declare it with position: post_batch",
+		"the refusal must name the declaration that actually reaches the phase, got: %v", err)
+}
+
+// TestGeneratePlan_AcceptsSloOnceDeclaredInPostBatch is the other side of that
+// advice: with the position the message names, and an endpoint wired, the plan
+// is produced.
+func TestGeneratePlan_AcceptsSloOnceDeclaredInPostBatch(t *testing.T) {
+	require.NoError(t, planWorkflow(t, sloPostBatchWorkflow, WithGatePrometheusURL("http://prom:9090")))
+}
+
+// TestGeneratePlan_RefusesSloAtPostBatchWithoutAnEndpoint keeps the position fix
+// from turning slo into something that can guess: the same declaration is still
+// refused when no Prometheus endpoint is wired.
+func TestGeneratePlan_RefusesSloAtPostBatchWithoutAnEndpoint(t *testing.T) {
+	err := planWorkflow(t, sloPostBatchWorkflow)
+	require.Error(t, err, "an slo check with no Prometheus endpoint must not plan")
+	assert.True(t, errors.Is(err, engine.ErrGateNotExecutable), "%v", err)
+	assert.Contains(t, err.Error(), "requires verify.prometheus_url", err.Error())
 }
 
 // TestGeneratePlan_CmdAndProbeGatesAreNeverRefused keeps the refusal from

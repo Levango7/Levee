@@ -61,38 +61,74 @@ type GateRuntime struct {
 
 // walkPlanGates calls fn once per inline gate declaration in the plan, in
 // registration order, with the deterministic name materialisation uses
-// ("step:<name>:pre:<i>" and so on).
+// ("step:<name>:pre:<i>", "workflow:batch:0", "batches:post:1" and so on).
 //
 // It exists as the single traversal: materializeStepGates and the plan-time
 // executability refusal (internal/wiring) must agree about which declarations
 // exist. A second hand-written walk is how a refusal ends up covering pre-apply
 // checks only while the phase runs post-apply ones.
+//
+// All three declaration sites are walked. Coverage used to stop at the step
+// level, which silently voided the other two: a workflow-level `gates:` entry and
+// `batches.gate` were parsed, copied into the plan and hashed into plan_hash — so
+// the approved artifact promised them — while nothing registered a gate for them
+// and the executability refusal never looked. A declared gate that runs nowhere is
+// a false compliance record, and a human gate there was not even refused at plan
+// time.
 func walkPlanGates(p *plan.Plan, fn func(name string, phase verify.GatePhase, c *dsl.GateCheck) error) error {
 	if p == nil {
 		return nil
 	}
+	if err := walkGateSpec("workflow", p.Gate, fn); err != nil {
+		return err
+	}
+	// The generator hands every Batch the same *dsl.GateSpec, so the between-batches
+	// declaration is walked once per distinct block rather than once per batch. The
+	// registered gate is visited after every batch anyway: RunPhase(PhasePostBatch)
+	// runs once per batch.
+	seen := make(map[*dsl.GateSpec]struct{}, len(p.Batches))
+	for _, b := range p.Batches {
+		if b.Gate == nil {
+			continue
+		}
+		if _, dup := seen[b.Gate]; dup {
+			continue
+		}
+		seen[b.Gate] = struct{}{}
+		if err := walkGateSpec("batches", b.Gate, fn); err != nil {
+			return err
+		}
+	}
 	for _, b := range p.Batches {
 		for _, s := range b.Steps {
-			if s.Gate == nil {
-				continue
+			if err := walkGateSpec("step:"+s.Name, s.Gate, fn); err != nil {
+				return err
 			}
-			// Batch-timing checks run after EVERY batch completes, so they
-			// register under the post-batch phase.
-			for _, slot := range []struct {
-				kind  string
-				phase verify.GatePhase
-				items []dsl.GateCheck
-			}{
-				{"pre", verify.PhasePreApply, s.Gate.Pre},
-				{"batch", verify.PhasePostBatch, s.Gate.Batch},
-				{"post", verify.PhasePostApply, s.Gate.Post},
-			} {
-				for i := range slot.items {
-					name := fmt.Sprintf("step:%s:%s:%d", s.Name, slot.kind, i)
-					if err := fn(name, slot.phase, &slot.items[i]); err != nil {
-						return err
-					}
-				}
+		}
+	}
+	return nil
+}
+
+// walkGateSpec feeds one declaration block's checks to fn, mapping slot to phase.
+// Batch-timing checks run after EVERY batch completes, so they register under the
+// post-batch phase.
+func walkGateSpec(prefix string, spec *dsl.GateSpec, fn func(name string, phase verify.GatePhase, c *dsl.GateCheck) error) error {
+	if spec == nil {
+		return nil
+	}
+	for _, slot := range []struct {
+		kind  string
+		phase verify.GatePhase
+		items []dsl.GateCheck
+	}{
+		{"pre", verify.PhasePreApply, spec.Pre},
+		{"batch", verify.PhasePostBatch, spec.Batch},
+		{"post", verify.PhasePostApply, spec.Post},
+	} {
+		for i := range slot.items {
+			name := fmt.Sprintf("%s:%s:%d", prefix, slot.kind, i)
+			if err := fn(name, slot.phase, &slot.items[i]); err != nil {
+				return err
 			}
 		}
 	}
@@ -138,17 +174,14 @@ func (rt GateRuntime) executabilityProblem(name string, phase verify.GatePhase, 
 		// a passing verification. It is also pure declaration geometry — knowable
 		// at plan time with no deployment knowledge at all.
 		if phase != verify.PhasePostBatch {
-			// The remediation has to be stated honestly: no YAML path reaches the
-			// post_batch slot today. convertGate() puts every declaration — step
-			// `verify:`, `batches.gate:` and `gates[].position: post_batch` alike —
-			// into GateSpec.Post, which materialises as post_apply. So an slo check
-			// cannot be declared executable yet, and telling the operator to "move
-			// it to post_batch" would send them editing YAML for no effect. The
-			// parser routing is registered as a defect in docs/product-roadmap.md.
+			// The remediation must name something that works. It did not use to:
+			// convertGate filed every declaration in GateSpec.Post, so telling an
+			// operator to move a check to post_batch sent them editing YAML for no
+			// effect. Position routing is fixed (internal/dsl/gate_position.go), so
+			// the advice can now be the truth.
 			return fmt.Errorf("gate %q: slo checks execute in the post_batch phase only, got phase %q"+
-				" — no workflow declaration reaches that slot today (batches.gate and"+
-				" gates[].position: post_batch both route to post_apply); see the"+
-				" post_batch routing defect in docs/product-roadmap.md", name, phase)
+				" — declare it with position: post_batch (on a step verify block, on"+
+				" batches.gate, or in a gates[] entry)", name, phase)
 		}
 	case "human":
 		// A human gate without an approver transport can only block forever
