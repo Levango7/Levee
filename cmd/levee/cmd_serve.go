@@ -946,6 +946,86 @@ type serveServices struct {
 	chatOpsMgr *chatops.BotManager
 }
 
+// buildEngineServeOptions assembles the wiring.Option set for the execution
+// engine. Split out of buildServeServices, whose cyclomatic complexity had
+// outgrown the lint budget: the behaviour here is the same code, but an
+// enabled-but-unusable notify.webhook channel now comes back as an error so the
+// caller can refuse the boot instead of installing a channel that never delivers.
+func buildEngineServeOptions(cfg *config.Config, store state.Store,
+	credResolver *serveCredentialResolver, execGuard *cluster.ExecutionGuard) ([]wiring.Option, error) {
+	var opts []wiring.Option
+	if credResolver != nil {
+		opts = append(opts, wiring.WithCredentialResolver(credResolver))
+		log.Info("execution engine enabled with credential resolution for target channels")
+	} else {
+		log.Warn("execution engine enabled WITHOUT LEVEE_MASTER_PASSWORD: channels will dial targets without credentials")
+	}
+	if serveOptEngineMaxParallel > 0 {
+		opts = append(opts, wiring.WithMaxParallelRuns(serveOptEngineMaxParallel))
+	}
+	if serveOptEngineGatePrometheus != "" {
+		opts = append(opts, wiring.WithGatePrometheusURL(serveOptEngineGatePrometheus))
+		log.Info("execution engine slo gates will query Prometheus", "url", serveOptEngineGatePrometheus)
+	} else {
+		log.Info("execution engine slo gates have no Prometheus URL: declared slo gates fail closed")
+	}
+	if serveOptEngineSnapshotDir != "" {
+		opts = append(opts, wiring.WithSnapshotDir(serveOptEngineSnapshotDir))
+		log.Info("execution engine snapshot capture enabled; strategy-snapshot steps capture target files pre-apply and restore on rollback", "dir", serveOptEngineSnapshotDir)
+	} else {
+		log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
+	}
+	// Outbound notification transport for rollback grading (notify.webhook).
+	// With no channel configured the grader keeps logging grades and
+	// newRunNotifySink stays nil — the honest no-transport path. An enabled
+	// but unusable webhook refuses the boot instead of pretending a channel
+	// that never delivers is installed (same rule as notify.chatops.*).
+	notifyMgr, notifyErr := buildServeNotifyManager(cfg.Notify)
+	if notifyErr != nil {
+		return nil, notifyErr
+	}
+	if notifyMgr != nil {
+		opts = append(opts, wiring.WithNotificationManager(notifyMgr))
+	}
+	// The change calendar rides on the same database handle as the run
+	// records: `levee calendar freeze` writes to the database its own
+	// configuration names, and the gates in internal/wiring read the handle
+	// opened here. Failing to open it is logged as the hole it leaves,
+	// because a server that plans happily while its operator believes
+	// freezes are enforced is worse than one that says it cannot check.
+	// buildServeServices has no request context, so this uses a background
+	// one: two reads at process start, nothing to cancel.
+	calCtx := context.Background()
+	if cal, calErr := calendarFor(calCtx, store); calErr != nil {
+		log.Warn("serve: change calendar UNAVAILABLE — freeze periods will not block plan or apply",
+			"error", calErr)
+	} else {
+		opts = append(opts, wiring.WithChangeCalendar(cal))
+		log.Info("serve: change calendar wired — freeze periods refuse plan and apply for covered targets",
+			"driver", state.StoreDriver(store), "location", cfg.Database.StoreLocation())
+		// An empty table is not evidence that nobody declared a freeze: the
+		// CLI writes to whatever database *its* --config names, so a
+		// mismatched config leaves this server enforcing nothing while an
+		// operator holds a list of freeze periods. Say so at startup instead
+		// of letting the gate look enforced.
+		if windows, lerr := cal.ListWindows(calCtx, calendar.WindowFilter{}); lerr == nil && len(windows) == 0 {
+			log.Warn("serve: change calendar has no windows in this database — a freeze created by `levee calendar freeze` "+
+				"under a different --config lands in another database and will not be enforced here",
+				"location", cfg.Database.StoreLocation())
+		}
+	}
+	if execGuard != nil {
+		// Cluster mode: executions are fenced by run_execution leases.
+		// Begin failure refuses the run outright (no invisible
+		// takeover candidates) and losing the lease mid-flight stops
+		// the executor without rolling back.
+		opts = append(opts,
+			wiring.WithExecutionGuard(clusterExecGuardAdapter{g: execGuard}, serveOptNodeID),
+			wiring.WithExecLeaseTTL(serveOptClusterExecLeaseTTL))
+	}
+	return opts, nil
+}
+
 // buildServeServices constructs the in-process service implementations,
 // mirroring the CLI code paths. Split out of runServe; behaviour unchanged.
 // execGuard is non-nil only in cluster mode: it attaches the execution
@@ -980,69 +1060,16 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	var engine *grpc.EngineAdapter
 	var eng *wiring.Engine
 	if serveOptEngineEnabled {
-		var opts []wiring.Option
-		if credResolver != nil {
-			opts = append(opts, wiring.WithCredentialResolver(credResolver))
-			log.Info("execution engine enabled with credential resolution for target channels")
-		} else {
-			log.Warn("execution engine enabled WITHOUT LEVEE_MASTER_PASSWORD: channels will dial targets without credentials")
-		}
-		if serveOptEngineMaxParallel > 0 {
-			opts = append(opts, wiring.WithMaxParallelRuns(serveOptEngineMaxParallel))
-		}
-		if serveOptEngineGatePrometheus != "" {
-			opts = append(opts, wiring.WithGatePrometheusURL(serveOptEngineGatePrometheus))
-			log.Info("execution engine slo gates will query Prometheus", "url", serveOptEngineGatePrometheus)
-		} else {
-			log.Info("execution engine slo gates have no Prometheus URL: declared slo gates fail closed")
-		}
-		if serveOptEngineSnapshotDir != "" {
-			opts = append(opts, wiring.WithSnapshotDir(serveOptEngineSnapshotDir))
-			log.Info("execution engine snapshot capture enabled; strategy-snapshot steps capture target files pre-apply and restore on rollback", "dir", serveOptEngineSnapshotDir)
-		} else {
-			log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
-		}
-		// The change calendar rides on the same database handle as the run
-		// records: `levee calendar freeze` writes to the database its own
-		// configuration names, and the gates in internal/wiring read the handle
-		// opened here. Failing to open it is logged as the hole it leaves,
-		// because a server that plans happily while its operator believes
-		// freezes are enforced is worse than one that says it cannot check.
-		// buildServeServices has no request context, so this uses a background
-		// one: two reads at process start, nothing to cancel.
-		calCtx := context.Background()
-		if cal, calErr := calendarFor(calCtx, store); calErr != nil {
-			log.Warn("serve: change calendar UNAVAILABLE — freeze periods will not block plan or apply",
-				"error", calErr)
-		} else {
-			opts = append(opts, wiring.WithChangeCalendar(cal))
-			log.Info("serve: change calendar wired — freeze periods refuse plan and apply for covered targets",
-				"driver", state.StoreDriver(store), "location", cfg.Database.StoreLocation())
-			// An empty table is not evidence that nobody declared a freeze: the
-			// CLI writes to whatever database *its* --config names, so a
-			// mismatched config leaves this server enforcing nothing while an
-			// operator holds a list of freeze periods. Say so at startup instead
-			// of letting the gate look enforced.
-			if windows, lerr := cal.ListWindows(calCtx, calendar.WindowFilter{}); lerr == nil && len(windows) == 0 {
-				log.Warn("serve: change calendar has no windows in this database — a freeze created by `levee calendar freeze` "+
-					"under a different --config lands in another database and will not be enforced here",
-					"location", cfg.Database.StoreLocation())
-			}
-		}
-		if execGuard != nil {
-			// Cluster mode: executions are fenced by run_execution leases.
-			// Begin failure refuses the run outright (no invisible
-			// takeover candidates) and losing the lease mid-flight stops
-			// the executor without rolling back.
-			opts = append(opts,
-				wiring.WithExecutionGuard(clusterExecGuardAdapter{g: execGuard}, serveOptNodeID),
-				wiring.WithExecLeaseTTL(serveOptClusterExecLeaseTTL))
+		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard)
+		if optsErr != nil {
+			return serveServices{}, optsErr
 		}
 		eng = wiring.NewEngine(store, opts...)
 		engine = eng.Adapter()
 		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
 	} else {
 		log.Info("serve: execution engine not wired (--engine-enabled=false); ApplyChange RPC returns FailedPrecondition (status-only mode). Plan/approve/status tracking remain fully functional.")
+		warnNotifyTransportWithoutEngine(cfg)
 	}
 	// Approval service over the same store: PlanChange kicks off the
 	// approval chain (R4 risk-tiered routing; see ChangeService.

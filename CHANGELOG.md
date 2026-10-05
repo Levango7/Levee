@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增（D-20 webhook 通知渠道装配）
+
+- **`notify.webhook.enabled` 此前是一个背后没有接线的开关**：渠道实现（`internal/notify/webhook.go`）、配置键与启动校验（`internal/config/config.go:724-732`）都在，但全仓 `NewWebhookNotifier` 的非测试调用点为 0，`cmd_serve.go` 从不构造 `NotificationManager`，于是引擎的 `newRunNotifySink` 恒为 nil、回滚分级只落日志（MVP 清单 D-20 原先按"已交付"记录，2026-10-05 上午按实测改标"未装配"）。本批接线：`cmd/levee/serve_notify.go` 的 `buildServeNotifyManager` 在 enabled 时注册名为 `webhook` 的渠道，并作为 `wiring.WithNotificationManager` 装进执行引擎；启用而 URL 缺失**拒绝启动**（与 `notify.chatops` / `notify.jira` 同规则——静默跳过会留下一个看起来配好、实则永不投递的服务）；签名密钥取环境变量 `LEVEE_WEBHOOK_SECRET`，未设置时明文投递并在启动日志与 `config.example.yaml` 里言明"接收端无法验真"；`--engine-enabled=false` 且 webhook 启用时启动告警：回滚分级是当前唯一投递源，引擎不在就一条也不会发。
+- **投递范围如实限定**：只有回滚分级（partial / failure）接入该 manager；apply / approval 事件尚无生产者，未在本批假装接通。
+- **验证**：`cmd/levee/serve_notify_test.go` 把一条真实回滚通知打到 `httptest` 接收端，断言事件头、`metadata`（`run_id` / `initiator` / `approver` / `scope`）与 `X-Levee-Signature` 可被密钥验证，另有"未设密钥不得出现签名头"的对照与"禁用时不构造管理器"的对照；`internal/wiring/rollback_notify_transport_test.go` 证明 `newRunNotifySink` 在"有传输 + 有 initiator"时真投递、在无传输或无 initiator 时保持 nil（宁可不寄也不寄给编造的收件人）；`TestNotifyWebhookSwitchHasAssemblyPoint` 是结构守卫——`cmd_serve.go` 必须同时存在开关消费点与 `WithNotificationManager` 装配点，防止"配置在骗人"这一族缺陷复发。
+
 ### 安全修复（变更创建路径的归属与环境保真）
 
 - **模板实例化出来的变更"不属于任何人、位于默认环境"，三个独立后果**：`InstantiateTemplate` 是三条创建变更路径中的一条（另两条为 `CreateChange` 与 `CloneChange`），但没有跟上把 `run.Creator` 绑到**已验签主体**的那一轮修正——它写入 `Creator: "grpc"`，并且**根本不写 `IncidentID`**，而 `envOf()` 读的就是这一列。
