@@ -18,8 +18,13 @@ mode: single
 
 image:
   repository: ghcr.io/levango7/levee
-  # 现场无法拉 ghcr 时改推送到客户镜像库后覆盖此值
-  tag: "1.19.0"
+  # 这个值就是渲染出的镜像 tag（templates/deployment.yaml 直接拼接），所以它必须
+  # 逐字等于 release.yml 推上去的那个 tag —— `. ${github.ref_name}` 即 git tag 名，
+  # 带 v 前缀：ghcr 上存在的是 `v1.19.0`，`1.19.0` 从未被推送过。
+  # 写成不带 v 的 "1.19.0" 会渲染出一个不存在的镜像，`helm install` 直接
+  # ImagePullBackOff；这一条由 scripts/check_release_versions.py 规则 2 钉住。
+  # 现场无法拉 ghcr 时改推送到客户镜像库后覆盖此值。
+  tag: "v1.19.0"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 

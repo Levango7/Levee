@@ -6,8 +6,11 @@
 
 ### 变更（v1.19.0 切版后的口径对齐）
 
-- **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，`release.yml` 正在据此构建 `ghcr.io/levango7/levee:1.19.0` 与 GitHub Release。因此 `Chart.yaml` 的 appVersion 与 `values.yaml` 的 image.tag 同步升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。
-- 门禁复核：`scripts/check_release_versions.py` 现在从 `git ls-remote` 读到 10 个 tag、`newest_tag=v1.19.0`，规则②（引用的版本必须有 tag）与规则③（比最新 tag 更晚的小节须标注）同时满足。
+- **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，Release workflow 已据此发布镜像与 GitHub Release（实测：`draft=false`、`publishedAt=2026-10-05T16:43:33Z`、assets 为 5 个平台包 + `checksums.txt`）。`Chart.yaml` 的 appVersion 升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。
+  > 本条目最初写作"release.yml 正在据此构建 `ghcr.io/levango7/levee:1.19.0`"——那个 tag 拼写是错的，见下一条；措辞按实测收回。
+- **交付缺陷（本批修掉，v1.18.0 起即存在）：chart 默认值拉取一个从未构建过的镜像 tag。** `values.yaml` 的 `image.tag` 是不带 v 的 `1.19.0`，而 `release.yml` 推的镜像 tag 是 `${{ github.ref_name }}`——即 git tag 名本身，带 v。异源证据三份：① `helm template` 真实解析器渲染出 `ghcr.io/levango7/levee:1.19.0`；② registry 对 `manifests/1.19.0` 返回 **404**、`tags/list` 只有 `["v1.18.0","latest","v1.19.0"]`；③ 同一 registry 对 `manifests/v1.19.0` 返回 **200**。⇒ 按 chart 默认值执行 `helm install` 的客户会落在 ImagePullBackOff，而 chart 自称 1.19.0。`image.tag` 改为逐字的 `v1.19.0`。
+- **门禁为什么放过了它，以及补上的规则**：`check_release_versions.py` 规则②原先把引用版本**合成** `v<version>` 后去查 git tag，于是 `1.19.0` 与 `v1.19.0` 都能通过——它验的是"git tag 存在"，不是"渲染出的镜像引用存在"。现拆成两条：规则②要求 `values.image.tag` **逐字**出现在 tag 集合里（"镜像以 git tag 名发布"这一事实写进脚注释），appVersion 另按 `v` 前缀可有可无地校验；规则①改按版本号比较（两处拼写有意不同，各自有约定）。变异实测三条：改回 `1.19.0` → 规则②以新文案失败；改成 `v1.18.0` 与 appVersion 分叉 → 规则①失败；恢复 `v1.19.0` → `RELEASE VERSION CHECK PASSED`（tag 集合取自 origin，10 个，`newest_tag=v1.19.0`）。规则③（比最新 tag 更晚的 CHANGELOG 小节须标注）同时满足。
+- **给门禁本身补上自测**：`check_release_versions.py` 此前没有测试，规则被重构掉不会有任何东西发现。新增 `scripts/test_check_release_versions.py`（10 例：一致通过、v 前缀差异不算失败、规则①②③各自的失败形态、空 tag 集合必须拒绝、历史无 tag 小节只点名、sidecar 的 `postgres.image.tag` 不被误读）；其中 `test_image_tag_without_v_prefix_fails` 就是本条缺陷的回归用例。反向验过：把规则②改回"合成 `v` 前缀"的旧行为，该用例立刻变红（`AssertionError: 0 != 1`）。`release-gate` job 的 python 步骤改为 `unittest discover -s scripts`，并逐套件点名两个套件是否被收集——空收集会以 `Ran 0 tests / OK` 静默通过。实测本地 21 例全绿。
 
 ## [v1.19.0] - 2026-10-06 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
 
