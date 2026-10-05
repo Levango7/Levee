@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（手动回滚的结局不再被当成服务端故障）
+
+- **`RollbackChange` 把"跑了但没补全"当成 `codes.Internal` 抛出，并且这条路径根本不推进 run 状态**：`internal/grpc/change_service.go` 对 `engine.Rollback` 的任何 error 一律 `codes.Internal`，于是补偿已经派发到目标机之后，记录仍停在尝试之前的 `rolled_back_partial` —— 操作者既看不出"我试过且没成功"，也无法据此决定重试还是收工。实测两条路径都中招：从 `rolled_back_partial` 再手动回滚、以及回滚一个步骤没有补偿声明的 `completed` 变更。
+- **修法**：新增领域错误类 `internal/rollback.ErrIncomplete`（wiring 在 `!res.Success` 时以 `%w: %w` 双包裹，既保留"哪条 undo 失败"的原文又让 `errors.Is` 可用）；gRPC 侧据此分流——领域结局走 `Success=false` + `rollback_incomplete` + 同状态的审计行与事件，真故障仍是 `codes.Internal` 且**不改写历史**。`rollback_incomplete` 本就在 `runstatus.RollbackAdmitted` 内，因此未补全的回滚仍可再来一次，也不会被误封成终态。
+- **验证**：`internal/grpc/change_service_rollback_outcome_test.go` 两条新用例（结局用例自建 `EngineAdapter`，因为共享 fake 在返回 error 时会丢掉 rollback id 与 hosts——那不是生产形状）；`tests/integration/gate_block_rollback_e2e_test.go` 把原先"容忍 Internal"的断言翻成新契约，并如实记录第二次尝试未派发任何新补偿（D-2 台账判定已补过的不重复补）。变异四条各自变红：wiring 不再分类 / grpc 一律 Internal / 状态不推进 / 一律当结局处理（吞掉真故障）。
+
 ## [v1.19.0] - 2026-10-05 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
 
 > **发布状态：未切版。** 远端最新 tag 是 `v1.18.0`，`v1.19.0` 的 tag 与镜像
