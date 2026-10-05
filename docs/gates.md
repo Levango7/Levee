@@ -127,8 +127,12 @@ live in the declaration's free-form `params:` mapping, validated strictly
 (unknown keys are rejected fail-closed listing the valid keys).
 
 Modes: `direct` (default) probes from the orchestrator's network position;
-`remote` executes the check **from the target** through the live channel and
-therefore requires one (missing channel ⇒ failed gate).
+`remote` executes the check **from the target** and therefore needs a channel.
+In a run, the engine supplies a channel *provider*, so a remote probe (and
+`kind: script`, which always executes on the target) runs **once per declared
+target and every target must pass** — a machine we cannot dial counts as failed,
+not skipped, and the verdict lists all offenders in `failed_targets`. A probe
+with no targets fails closed. `direct` probes never dial targets.
 
 | Param | Type | Default | Applies to | Notes |
 |---|---|---|---|---|
@@ -149,7 +153,15 @@ Remote behaviour is **POSIX best-effort**: remote http shells out to
 `curl -fsS -o /dev/null -w '%{http_code}' <url>` (pass = exit 0 and printed
 status starts with `2`); remote tcp uses
 `timeout 5 bash -c 'exec 3<>/dev/tcp/<host>/<port>'` (pass = exit 0).
-Both require the corresponding tools on the target.
+Both require the corresponding tools on the target. Two asymmetries to know
+about: in the run path a remote **tcp** probe is narrowed to one target per
+iteration, so each machine is asked about its own address (`port_from_target`
+and `{target}` both resolve against that single host), while a remote **http**
+probe sends the URL exactly as declared — `{target}` in a remote `url` is not
+expanded the way direct mode expands it. A caller that hands the gate one
+pre-dialed `Channel` instead of a provider keeps the older single-machine
+behaviour (that channel answers for every address listed); the run path always
+supplies a provider.
 
 ### `slo` — Prometheus threshold query (`slo_gate.go`)
 
