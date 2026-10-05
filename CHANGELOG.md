@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+## [v1.19.0] - 2026-10-05 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
+
+> **发布状态：未切版。** 远端最新 tag 是 `v1.18.0`，`v1.19.0` 的 tag 与镜像
+> `ghcr.io/levango7/levee:1.19.0` 从未构建（`release.yml` 只在 `push: tags: v*` 时触发）。
+> 本小节的日期是这批内容进入 master 的时间，不是发布时间；部署口径以
+> `deploy/helm/levee/Chart.yaml` 的 appVersion 为准。
+
+规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。
+
+### 变更（含迁移说明）
+
+- **缺省拒绝（breaking）**：升级到本版后，凡步骤判定为不可逆而未列名 `allow_irreversible` 的工作流，`levee compile`、`levee import` 与 serve 的 plan 路径都会以 LE082 拒绝。受影响动作 = 显式声明 `irreversible: true` 的任意 action，以及引擎固有破坏性词表：`pkg.remove`、`file.delete`、`user.remove`、`mysql.replica_switch`、`mysql.pt_osc`。**迁移**：在 workflow 顶层加一段白名单，逐个列名确要执行的不可逆动作——
+
+  ```yaml
+  allow_irreversible:
+    - mysql.replica_switch
+  ```
+
+  白名单条目同样要求 `module.action` 形式（LE101）。无法列名即不应执行——这正是这条门禁的语义。仓库内 2 个示例文档（`dr-switch-orders-db.yaml`、`gate-templates/redis.yaml`）已同步迁移；既有库里**已审批过的 plan 不受影响**（门禁作用在编译/生成期，不追溯已批准的产物）。
+
+### 新增
+
+- **解析器与 AST**：workflow 级 `allow_irreversible` 字段（`yamlWorkflowRaw` → `Workflow.AllowIrreversible`）；IR 产物（`levee compile --ir`）携带 `workflow.allow_irreversible`，作为"本次编译授权了什么"的凭证；发射器按排序输出保证字节稳定，并可回环解析。
+- **validator V14 规则（`validateIrreversibleWhitelist`）**：判定优先级与 `executor.IrreversibleChecker.Check` 一致（显式声明 > 固有词表）；白名单条目格式按 LE101 校验；多步骤混合只报未列名者，不误伤已列名步骤。
+- **固有词表单一来源**：`dsl.DefaultIrreversibleActions()` / `dsl.IsInherentIrreversible()` 成为"天生不可逆"的唯一词表——plan 生成器的 checker 注册与 dsl 编译门禁消费同一份，两个层面不可能对判定分叉（原内联在 `plan.NewGenerator` 的清单迁入）。
+- **plan 期纵深防御**：`plan.Generator.Generate` 对服务器路径（wiring.GeneratePlan 直连、不经 validator）执行同一 V14 判定，LE082 拒绝——与 LE097 的 plan 期门禁同型。
+- **测试**：新增 `internal/dsl/allow_irreversible_test.go`（解析/门禁/条目格式/混合步骤/发射回环/IR 携带）与 `internal/dsl/inherent_irreversible_test.go`（词表钉住）；plan 生成器新增未授权拒绝用例；e2e 回滚演练夹具补授权；两个示例进 `TestShippedExamplesCompile` 守护。实测：`levee compile` 对带白名单示例 ok、对未列名 `pkg.remove` 以 LE082 退出 1。
+- **文档一致性**：spec 字段表与 V14 行改为已接线口径；roadmap P1 项闭环；`docs/scenario-cross-region-ops.md` §7 边界更新为三层保护（编译期白名单 + `confirm=yes` 硬门 + 高危审批路由）；Chart appVersion → 1.19.0。
+
+
 ### 新增（D-20 webhook 通知渠道装配）
 
 - **`notify.webhook.enabled` 此前是一个背后没有接线的开关**：渠道实现（`internal/notify/webhook.go`）、配置键与启动校验（`internal/config/config.go:724-732`）都在，但全仓 `NewWebhookNotifier` 的非测试调用点为 0，`cmd_serve.go` 从不构造 `NotificationManager`，于是引擎的 `newRunNotifySink` 恒为 nil、回滚分级只落日志（MVP 清单 D-20 原先按"已交付"记录，2026-10-05 上午按实测改标"未装配"）。本批接线：`cmd/levee/serve_notify.go` 的 `buildServeNotifyManager` 在 enabled 时注册名为 `webhook` 的渠道，并作为 `wiring.WithNotificationManager` 装进执行引擎；启用而 URL 缺失**拒绝启动**（与 `notify.chatops` / `notify.jira` 同规则——静默跳过会留下一个看起来配好、实则永不投递的服务）；签名密钥取环境变量 `LEVEE_WEBHOOK_SECRET`，未设置时明文投递并在启动日志与 `config.example.yaml` 里言明"接收端无法验真"；`--engine-enabled=false` 且 webhook 启用时启动告警：回滚分级是当前唯一投递源，引擎不在就一条也不会发。
@@ -146,35 +176,6 @@
 - **新增硬门禁 `scripts/check_release_versions.py`**（由 `validate_delivery.sh` 在 helm 检查之前调用；delivery 作业的 checkout 改为 `fetch-depth: 0` + `fetch-tags: true` 才能拿到 tag 集合）：① `appVersion` 必须等于 `image.tag`；② chart 引用的版本必须已有 `v<version>` tag，否则等于把部署指向一个从未构建的镜像；③ CHANGELOG 里比最新 tag 更晚的 `## [vX.Y.Z]` 小节要么已打 tag、要么写明"未切版"（比最新 tag 更早的无 tag 历史小节不阻断，但会被逐条点名，不静默）；④ 一个 `v*` tag 都拿不到时**直接失败**——静默的空 tag 列表会让前三条全部假通过。
 - **判据取远端而不是本地 tag**（第一版就被自己的环境教育了）：本地克隆残留了 `v1.0.0`–`v1.9.0`，而 origin 上只有 `v1.10.0`+，于是本地跑"通过"、CI 跑"失败"。脚本现在优先 `git ls-remote --tags origin`，取不到远端才退回本地集合并打印来源警告；顺带查出并如实登记：CHANGELOG 的 v1.7.0 小节在远端无对应 tag（历史追溯，不阻断交付）。
 - **验证**：基线通过（20 个 tag，chart 与 image.tag 均为 1.18.0）；变异四条分别变红——appVersion 改回 1.19.0、`image.tag` 改成未发布的 9.9.9、删掉 v1.19.0 的"未切版"标注、在无 tag 仓库里运行（触发规则④）。`bash -n` 通过；用 `HELM_BIN=/nonexistent-helm` 跑 `validate_delivery.sh` 证明版本检查确实在链路上、且先于 helm 检查执行（版本被改坏时它在 helm 之前就失败退出）。
-
-## [v1.19.0] - 2026-10-04 — `allow_irreversible` 白名单接线（V14/LE082 编译期门禁）
-
-> **发布状态：未切版。** 远端最新 tag 是 `v1.18.0`，`v1.19.0` 的 tag 与镜像
-> `ghcr.io/levango7/levee:1.19.0` 从未构建（`release.yml` 只在 `push: tags: v*` 时触发）。
-> 本小节的日期是这批内容进入 master 的时间，不是发布时间；部署口径以
-> `deploy/helm/levee/Chart.yaml` 的 appVersion 为准。
-
-规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。
-
-### 变更（含迁移说明）
-
-- **缺省拒绝（breaking）**：升级到本版后，凡步骤判定为不可逆而未列名 `allow_irreversible` 的工作流，`levee compile`、`levee import` 与 serve 的 plan 路径都会以 LE082 拒绝。受影响动作 = 显式声明 `irreversible: true` 的任意 action，以及引擎固有破坏性词表：`pkg.remove`、`file.delete`、`user.remove`、`mysql.replica_switch`、`mysql.pt_osc`。**迁移**：在 workflow 顶层加一段白名单，逐个列名确要执行的不可逆动作——
-
-  ```yaml
-  allow_irreversible:
-    - mysql.replica_switch
-  ```
-
-  白名单条目同样要求 `module.action` 形式（LE101）。无法列名即不应执行——这正是这条门禁的语义。仓库内 2 个示例文档（`dr-switch-orders-db.yaml`、`gate-templates/redis.yaml`）已同步迁移；既有库里**已审批过的 plan 不受影响**（门禁作用在编译/生成期，不追溯已批准的产物）。
-
-### 新增
-
-- **解析器与 AST**：workflow 级 `allow_irreversible` 字段（`yamlWorkflowRaw` → `Workflow.AllowIrreversible`）；IR 产物（`levee compile --ir`）携带 `workflow.allow_irreversible`，作为"本次编译授权了什么"的凭证；发射器按排序输出保证字节稳定，并可回环解析。
-- **validator V14 规则（`validateIrreversibleWhitelist`）**：判定优先级与 `executor.IrreversibleChecker.Check` 一致（显式声明 > 固有词表）；白名单条目格式按 LE101 校验；多步骤混合只报未列名者，不误伤已列名步骤。
-- **固有词表单一来源**：`dsl.DefaultIrreversibleActions()` / `dsl.IsInherentIrreversible()` 成为"天生不可逆"的唯一词表——plan 生成器的 checker 注册与 dsl 编译门禁消费同一份，两个层面不可能对判定分叉（原内联在 `plan.NewGenerator` 的清单迁入）。
-- **plan 期纵深防御**：`plan.Generator.Generate` 对服务器路径（wiring.GeneratePlan 直连、不经 validator）执行同一 V14 判定，LE082 拒绝——与 LE097 的 plan 期门禁同型。
-- **测试**：新增 `internal/dsl/allow_irreversible_test.go`（解析/门禁/条目格式/混合步骤/发射回环/IR 携带）与 `internal/dsl/inherent_irreversible_test.go`（词表钉住）；plan 生成器新增未授权拒绝用例；e2e 回滚演练夹具补授权；两个示例进 `TestShippedExamplesCompile` 守护。实测：`levee compile` 对带白名单示例 ok、对未列名 `pkg.remove` 以 LE082 退出 1。
-- **文档一致性**：spec 字段表与 V14 行改为已接线口径；roadmap P1 项闭环；`docs/scenario-cross-region-ops.md` §7 边界更新为三层保护（编译期白名单 + `confirm=yes` 硬门 + 高危审批路由）；Chart appVersion → 1.19.0。
 
 ## [v1.18.0] - 2026-10-03 — 交付物齐备：Helm chart + 裸金属一键安装 + 跨区域场景方案 + 镜像发布
 
