@@ -37,8 +37,19 @@ fail() {
 	exit 1
 }
 
-command -v "$HELM" >/dev/null 2>&1 || fail "helm not found (set HELM_BIN); the chart is a shipped artifact and must be rendered in CI"
+command -v git >/dev/null 2>&1 || fail "git not found: the release-version check proves referenced versions against the tag set"
 [ -d "$CHART" ] || fail "chart directory not found: $CHART"
+
+echo "== release version consistency (chart appVersion / image.tag / git tags / CHANGELOG)"
+# Runs before the helm checks on purpose: it needs no rendering, and it is the
+# only check that catches a chart shipping a version that was never released —
+# a defect spread across Chart.yaml, values.yaml and CHANGELOG, invisible in a
+# per-file review. It fails loudly when no tags are visible rather than passing
+# quietly against an empty tag set.
+python3 scripts/check_release_versions.py "$CHART" CHANGELOG.md \
+	|| fail "release version references are inconsistent (see the checker output above)"
+
+command -v "$HELM" >/dev/null 2>&1 || fail "helm not found (set HELM_BIN); the chart is a shipped artifact and must be rendered in CI"
 
 echo "== helm version"
 "$HELM" version --short || fail "helm is not runnable"

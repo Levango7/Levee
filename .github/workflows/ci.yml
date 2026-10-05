@@ -589,7 +589,14 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0 + fetch-tags: the release-version checker reads `git tag`
+      # to prove the image tag the chart deploys was actually released. A
+      # partial clone without tags would hand it an empty set, so the checkout
+      # must fetch them — and the checker fails loudly if they are still missing.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - name: install helm
         env:
           HELM_VERSION: v3.18.4
