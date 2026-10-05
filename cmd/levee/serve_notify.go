@@ -22,9 +22,9 @@ const (
 	// 所以它是固定字符串，不从 URL 推导。
 	webhookChannelName = "webhook"
 
-	// envWebhookSecret 提供 HMAC-SHA256 签名密钥。和 Jira token 一样走环境变量
+	// envWebhookSigningKey 提供 HMAC-SHA256 签名密钥。和 Jira token 一样走环境变量
 	// 而不是配置文件：配置文件会被贴进工单和评审。
-	envWebhookSecret = "LEVEE_WEBHOOK_SECRET"
+	envWebhookSigningKey = "LEVEE_WEBHOOK_SECRET"
 )
 
 // buildServeNotifyManager 按配置构造通知管理器；一个渠道都没启用时返回
@@ -37,9 +37,9 @@ func buildServeNotifyManager(cfg config.NotifyConfig) (*notify.NotificationManag
 	if !cfg.Webhook.Enabled {
 		return nil, nil
 	}
-	secret := os.Getenv(envWebhookSecret)
+	secret := os.Getenv(envWebhookSigningKey)
 	if secret == "" {
-		log.Warn("notify.webhook is enabled without " + envWebhookSecret +
+		log.Warn("notify.webhook is enabled without " + envWebhookSigningKey +
 			"; payloads will be delivered unsigned, so the receiver cannot verify they came from LEVEE")
 	}
 
@@ -65,4 +65,15 @@ func buildServeNotifyManager(cfg config.NotifyConfig) (*notify.NotificationManag
 		"signed", secret != "",
 		"retry", cfg.Webhook.Retry)
 	return mgr, nil
+}
+
+// warnNotifyTransportWithoutEngine says the quiet part out loud: rollback
+// grading is today's only producer of notifications, and it lives inside the
+// engine. An enabled webhook with the engine switched off would sit configured
+// and deliver nothing forever, so the boot states that instead of letting the
+// switch read as "we will be notified".
+func warnNotifyTransportWithoutEngine(cfg *config.Config) {
+	if cfg != nil && cfg.Notify.Webhook.Enabled {
+		log.Warn("serve: notify.webhook is enabled but the execution engine is off (--engine-enabled=false); no notification will ever be sent")
+	}
 }

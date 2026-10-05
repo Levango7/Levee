@@ -131,7 +131,7 @@ func TestServeNotifyDeliversRollbackGradeOverSignedWebhook(t *testing.T) {
 	assert.True(t, strings.HasPrefix(hit.sig, notify.SignaturePrefix),
 		"signature header must be prefixed, got %q", hit.sig)
 	assert.True(t, hmac.Equal([]byte(want), []byte(hit.sig)),
-		"payload signature does not verify with %s", envWebhookSecret)
+		"payload signature does not verify with %s", envWebhookSigningKey)
 }
 
 // TestServeNotifyUnsignedWhenNoSecret pins the other posture: no secret in the
