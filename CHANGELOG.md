@@ -18,6 +18,13 @@
 - **修法**：新增领域错误类 `internal/rollback.ErrIncomplete`（wiring 在 `!res.Success` 时以 `%w: %w` 双包裹，既保留"哪条 undo 失败"的原文又让 `errors.Is` 可用）；gRPC 侧据此分流——领域结局走 `Success=false` + `rollback_incomplete` + 同状态的审计行与事件，真故障仍是 `codes.Internal` 且**不改写历史**。`rollback_incomplete` 本就在 `runstatus.RollbackAdmitted` 内，因此未补全的回滚仍可再来一次，也不会被误封成终态。
 - **验证**：`internal/grpc/change_service_rollback_outcome_test.go` 两条新用例（结局用例自建 `EngineAdapter`，因为共享 fake 在返回 error 时会丢掉 rollback id 与 hosts——那不是生产形状）；`tests/integration/gate_block_rollback_e2e_test.go` 把原先"容忍 Internal"的断言翻成新契约，并如实记录第二次尝试未派发任何新补偿（D-2 台账判定已补过的不重复补）。变异四条各自变红：wiring 不再分类 / grpc 一律 Internal / 状态不推进 / 一律当结局处理（吞掉真故障）。
 
+### 门禁（CI 冒烟脚本：先报端口归属，再谈健康检查）
+
+- **`scripts/smoke_serve.sh` 会在别人的端口上冒充"本仓服务起不来"**：本机 127.0.0.1:9091/9092 被容器栈占用时，它报 `::error::smoke failed: /healthz never became reachable on :9092`，把读者送去查一个并不存在的 bug。根因按实测定位——`--http-addr ":9092"` 绑的是**通配地址**，与已存在的 **127.0.0.1** 专用监听并不冲突，于是进程活着、日志照常打 `REST gateway listening addr=:9092`，而 curl 打 127.0.0.1 时被更具体的那个 socket 接走（实测 prometheus 对 /healthz 回 404、对 / 回 302）。现在在启动任何东西之前逐端口探测并点名归属：`something already listens on :9092 (HTTP, it answered HTTP 200) — free it or set SMOKE_HTTP_PORT`；非 HTTP 的占用（裸 gRPC 监听）只报端口与标签，**不编造 HTTP 状态码**。
+- **踩到的 shell 坑写进注释**：探测必须在子 shell 里做。若在父 shell 用 `exec 3<&-` 关闭一个它从未打开的 fd，那是**失败的重定向**，而非交互式 shell 中失败的重定向会**静默终止脚本**——实测退出码 0、停在函数体中途、既不报错也不跑后续用例。改动前那版就是这样"通过"的。
+- **每次成功运行都泄漏一个临时目录**：trap 原本 `kill` 完立刻 `rm -rf`，Windows 上"打开即锁定"，levee 还没退出就删 ⇒ stderr 出现 `rm: cannot remove .../levee.db: Device or resource busy`，而脚本自称成功。改为 kill → wait → rm，删不掉就点名路径。
+- **验证**（受控监听器，不靠环境巧合）：9092 放一个 HTTP 应答、9091 放一个非 HTTP 裸监听 ⇒ A 默认端口报出 `(HTTP, it answered HTTP 200)`；B 只空出 HTTP 时报 `:9091 (GRPC)` 且无状态码；C 两端口皆空 ⇒ exit 0、**stderr 0 字节**、临时目录计数不增。反向对照：同一二进制跑改动前的脚本，报回的仍是 `healthz never became reachable`——这条预检确实承重。CI 侧无需改动（`smoke` job 跑在 ubuntu-latest，端口本就空着；这道检查在 CI 上是 no-op，只在开发机上把误报变成可读的错）。
+
 ### 变更（v1.19.0 切版后的口径对齐）
 
 - **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，Release workflow 已据此发布镜像与 GitHub Release（实测：`draft=false`、`publishedAt=2026-10-05T16:43:33Z`、assets 为 5 个平台包 + `checksums.txt`）。`Chart.yaml` 的 appVersion 升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。
