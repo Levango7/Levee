@@ -57,6 +57,21 @@ import (
 type GateRuntime struct {
 	PrometheusURL string
 	Approver      verify.HumanApprover
+
+	// Channels supplies the live channel to one target, so gates that execute
+	// ON targets (cmd, probe in remote mode) can run their declared check per
+	// target. Nil keeps the previous honest failure: such gates report
+	// "missing channel" and fail the phase rather than pretending to pass.
+	Channels verify.GateChannelProvider
+}
+
+// WithChannels returns a copy of the runtime with the target-channel provider
+// attached. It exists so the per-run assembly (which owns the channel cache and
+// the execution lease) can hand the same sessions to gates without mutating the
+// Engine-level view that plan-time refusal reads.
+func (rt GateRuntime) WithChannels(p verify.GateChannelProvider) GateRuntime {
+	rt.Channels = p
+	return rt
 }
 
 // walkPlanGates calls fn once per inline gate declaration in the plan, in
