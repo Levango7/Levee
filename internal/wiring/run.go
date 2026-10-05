@@ -165,7 +165,7 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 		// (Prometheus endpoint for slo, approval transport for human). It is the
 		// same value GeneratePlan checks against, so a plan that was accepted is
 		// always executable here — see Engine.gateRuntime.
-		engine.WithGateRuntime(e.gateRuntime()),
+		engine.WithGateRuntime(e.gateRuntime().WithChannels(rx.gateChannelProvider())),
 	)
 	if snapHook != nil {
 		// The WithSnapshotter option is applied post-construction via a

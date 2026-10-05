@@ -100,6 +100,13 @@ type Gate interface {
 
 // GateInput is the structured payload passed to Gate.Check. It carries
 // everything a gate needs to evaluate the run state at its phase.
+// GateChannelProvider supplies the live channel for one target host. It is how a
+// verification gate reaches a machine without owning a session: the execution run
+// caches its channels, checks its lease and closes them at the end, so a gate that
+// asks for web-1 talks over the very connection the change is using — the check
+// cannot run against a different identity than the apply it is guarding.
+type GateChannelProvider func(ctx context.Context, host string) (channel.Channel, error)
+
 type GateInput struct {
 	// RunID is the unique identifier of the change run this gate belongs to.
 	RunID string `json:"run_id"`
@@ -117,6 +124,18 @@ type GateInput struct {
 	// execute remote commands (e.g. command gate, probe gate) use it; gates
 	// that only query external systems (e.g. SLO gate) may leave it nil.
 	Channel channel.Channel `json:"-"`
+
+	// ChannelFor dials (or reuses) the live channel to one named target. When
+	// it is supplied, a gate that executes on targets runs its check once per
+	// TargetIDs entry instead of once overall — a check that passes on web-1
+	// and fails on web-2 has not verified the batch. Gates that do not need a
+	// channel (slo, human) ignore it and keep running once per phase, so
+	// per-target fan-out can never ask a human twice or scrape Prometheus N
+	// times.
+	//
+	// The provider owns the channel's lifetime (an execution run caches and
+	// closes its sessions); gates must not Close what they are given.
+	ChannelFor GateChannelProvider `json:"-"`
 
 	// Params is the gate-specific parameter map. The keys and value types are
 	// defined by each gate's documentation; the manager does not interpret
