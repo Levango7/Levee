@@ -35,6 +35,8 @@ bash scripts/validate_delivery.sh
 
 历史上这里只写了"改模板前手工核对 `levee serve --help`"，而 chart 带着一个不存在的 `--cluster-dispatch-worker-capacity` 发了版——每次 `helm install --set mode=cluster` 起来的 Pod 都以 "unknown flag" 退出。手册式核对在无人复述流程时等于没有核对。
 
+同族但上面两道检查都覆盖不到的一层是**镜像引用本身**：旗标名与模板渲染都能过，而 `image.tag` 指向一个 registry 里不存在的 tag，`helm install` 照样起不来（ImagePullBackOff）。真实事故：`release.yml` 推的镜像 tag 就是 git tag 名（带 `v`），而 chart 里写的是不带 `v` 的版本号，v1.18.0 起如此——`values.image.tag` 与 `Chart.appVersion` 相等、git tag 也存在，所以旧的版本门禁一路判绿。现在 `scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，渲染出的那串字符才是被校验的对象。**从旧 tag 部署时的自救**：`helm install … --set image.tag=vX.Y.Z`（X.Y.Z 是你实际要跑的那个发布，v1.19.0 的镜像是 `ghcr.io/levango7/levee:v1.19.0`）。
+
 留作备查的手工动作（例如临时排查某个旗标是否存在）：
 
 ```bash

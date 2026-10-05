@@ -25,12 +25,15 @@
 - **每次成功运行都泄漏一个临时目录**：trap 原本 `kill` 完立刻 `rm -rf`，Windows 上"打开即锁定"，levee 还没退出就删 ⇒ stderr 出现 `rm: cannot remove .../levee.db: Device or resource busy`，而脚本自称成功。改为 kill → wait → rm，删不掉就点名路径。
 - **验证**（受控监听器，不靠环境巧合）：9092 放一个 HTTP 应答、9091 放一个非 HTTP 裸监听 ⇒ A 默认端口报出 `(HTTP, it answered HTTP 200)`；B 只空出 HTTP 时报 `:9091 (GRPC)` 且无状态码；C 两端口皆空 ⇒ exit 0、**stderr 0 字节**、临时目录计数不增。反向对照：同一二进制跑改动前的脚本，报回的仍是 `healthz never became reachable`——这条预检确实承重。CI 侧无需改动（`smoke` job 跑在 ubuntu-latest，端口本就空着；这道检查在 CI 上是 no-op，只在开发机上把误报变成可读的错）。
 
-## [v1.19.0] - 2026-10-05 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
+### 变更（v1.19.0 切版后的口径对齐）
 
-> **发布状态：未切版。** 远端最新 tag 是 `v1.18.0`，`v1.19.0` 的 tag 与镜像
-> `ghcr.io/levango7/levee:1.19.0` 从未构建（`release.yml` 只在 `push: tags: v*` 时触发）。
-> 本小节的日期是这批内容进入 master 的时间，不是发布时间；部署口径以
-> `deploy/helm/levee/Chart.yaml` 的 appVersion 为准。
+- **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，Release workflow 已据此发布镜像与 GitHub Release（实测：`draft=false`、`publishedAt=2026-10-05T16:43:33Z`、assets 为 5 个平台包 + `checksums.txt`）。`Chart.yaml` 的 appVersion 升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。
+  > 本条目最初写作"release.yml 正在据此构建 `ghcr.io/levango7/levee:1.19.0`"——那个 tag 拼写是错的，见下一条；措辞按实测收回。
+- **交付缺陷（本批修掉；tag `v1.19.0` 快照即带此问题，拼写错误自 v1.18.0 起存在）：chart 默认值渲染出一个从未构建过的镜像 tag。** 在 tag 本身上量（`git archive v1.19.0 | tar -x` 后 `helm template`）：渲染出 `ghcr.io/levango7/levee:1.18.0`——那时 `values.image.tag`/appVersion 对齐到"最后一个已发布的 tag"，而 v1.19.0 的切版发生在其后。本批上一笔把它升到 `1.19.0`，**拼写仍然不存在**。于是两重错同时成立：chart 对外自称的版本与本批二进制不是同一个；那个拼写在 registry 里根本没有——`release.yml` 推的镜像 tag 是 github.ref_name，即 git tag 名本身，带 v。异源证据：① `helm template` 真实解析器（不是 grep）；② registry 对 `manifests/1.18.0`、`manifests/1.19.0` 均返回 **404**，对 `manifests/v1.19.0` 返回 **200**，`tags/list` 只有 [v1.18.0, latest, v1.19.0]。⇒ 按 chart 默认值执行 `helm install` 的客户拿不到镜像。**tag 不可变，v1.19.0 快照维持原样**：`docs/release-notes/v1.19.0.md` 记下该已知问题与绕过方式（`--set image.tag=v1.19.0`），修好的默认值随下一个版本切出。本批把 `image.tag` 改为逐字的 `v1.19.0`。
+- **门禁为什么放过了它，以及补上的规则**：`check_release_versions.py` 规则②原先把引用版本**合成** `v<version>` 后去查 git tag，于是 `1.19.0` 与 `v1.19.0` 都能通过——它验的是"git tag 存在"，不是"渲染出的镜像引用存在"。现拆成两条：规则②要求 `values.image.tag` **逐字**出现在 tag 集合里（"镜像以 git tag 名发布"这一事实写进脚注释），appVersion 另按 `v` 前缀可有可无地校验；规则①改按版本号比较（两处拼写有意不同，各自有约定）。变异实测三条：改回 `1.19.0` → 规则②以新文案失败；改成 `v1.18.0` 与 appVersion 分叉 → 规则①失败；恢复 `v1.19.0` → `RELEASE VERSION CHECK PASSED`（tag 集合取自 origin，10 个，`newest_tag=v1.19.0`）。规则③（比最新 tag 更晚的 CHANGELOG 小节须标注）同时满足。
+- **给门禁本身补上自测**：`check_release_versions.py` 此前没有测试，规则被重构掉不会有任何东西发现。新增 `scripts/test_check_release_versions.py`（10 例：一致通过、v 前缀差异不算失败、规则①②③各自的失败形态、空 tag 集合必须拒绝、历史无 tag 小节只点名、sidecar 的 `postgres.image.tag` 不被误读）；其中 `test_image_tag_without_v_prefix_fails` 就是本条缺陷的回归用例。反向验过：把规则②改回"合成 `v` 前缀"的旧行为，该用例立刻变红（`AssertionError: 0 != 1`）。`release-gate` job 的 python 步骤改为 `unittest discover -s scripts`，并逐套件点名两个套件是否被收集——空收集会以 `Ran 0 tests / OK` 静默通过。实测本地 21 例全绿。
+
+## [v1.19.0] - 2026-10-06 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
 
 规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。
 

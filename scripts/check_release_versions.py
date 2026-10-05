@@ -9,10 +9,18 @@ docs/release-notes/v1.19.0.md 与 Chart appVersion 都写了 1.19.0，而 origin
 tag 是 v1.18.0、values.image.tag 还是 1.18.0，镜像 `:1.19.0` 从未被构建过）。
 
 规则（全部硬失败，不留"跳过即通过"的分支）：
-  1. Chart.yaml 的 appVersion 必须等于 values.yaml 的 image.tag——渲染出的
-     Deployment 拉取的镜像，就是 chart 自称的那个版本。
-  2. 该版本必须存在对应的 **远端** tag（v<version>）——镜像由 release.yml 在
-     `push: tags: v*` 时构建，没有 tag 就没有制品。
+  1. Chart.yaml 的 appVersion 与 values.yaml 的 image.tag 必须是**同一个版本号**——
+     渲染出的 Deployment 拉取的镜像，就是 chart 自称的那个版本。两者拼写有意不同
+     （appVersion 按 Helm 惯例不带 v，image.tag 按规则 2 必须逐字是 tag 名），所以比的是
+     数字而不是字符串。
+  2. image.tag 必须**逐字**存在于远端 tag 集合里（不是给它补一个 v 再查）——
+     release.yml 推的镜像 tag 就是 `${{ github.ref_name }}`，也就是 git tag 名本身。
+     appVersion 同样必须已发布（v 前缀可有可无）。
+     为什么强调"逐字"：本脚本第一版按 `v<image.tag>` 合成查询，于是 chart 写
+     `image.tag: "1.19.0"` 也能通过（git tag 是 v1.19.0），而 ghcr 上从来只有 `v1.19.0`
+     ——`helm install` 默认值拉到的是一个不存在的镜像。实测：helm template 渲染出
+     `ghcr.io/levango7/levee:1.19.0`，registry 对该 manifest 返回 404，tags/list 只有
+     ["v1.18.0","latest","v1.19.0"]。自 v1.18.0 起即如此。
   3. CHANGELOG 里每个 `## [vX.Y.Z]` 小节：若它比最新 tag 更晚（= 声称了一个还没切版
      的发布），要么已打 tag，要么在小节正文里显式写明"未切版"，否则失败。比最新 tag
      更早的无 tag 小节属历史追溯，不阻断交付，但会被逐条点名（不静默）。
@@ -59,6 +67,11 @@ def run(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
 
 def parse_version(tag: str) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r"\d+", tag))
+
+
+def with_v(version: str) -> str:
+    """Normalise a version spelling to a git tag name."""
+    return version if version.startswith("v") else f"v{version}"
 
 
 def tag_set() -> tuple[set[str], str]:
@@ -150,7 +163,9 @@ def main() -> int:
         fail("image.tag not found in values.yaml")
 
     # Rule 1 — the chart must not claim one version while deploying another.
-    if app_version and image_tag and app_version != image_tag:
+    # Compared by version number, not spelling: image.tag carries the `v` that
+    # appVersion conventionally omits (see rule 2 for why neither may be guessed).
+    if app_version and image_tag and parse_version(app_version) != parse_version(image_tag):
         fail(
             f"chart appVersion ({app_version}) != values.image.tag ({image_tag}): "
             f"`helm install` pulls :{image_tag} while the chart advertises {app_version}"
@@ -168,15 +183,24 @@ def main() -> int:
     newest_tag = max(tags, key=parse_version)
     newest_v = parse_version(newest_tag)
 
-    referenced = [v for v in (image_tag, app_version) if v]
-    # Rule 2 — the artifact the deployment actually pulls must have been released.
-    for version in referenced:
-        if f"v{version}" not in tags:
-            fail(
-                f"chart references {version} but tag v{version} does not exist on "
-                f"{source}, so ghcr.io ...:levee:{version} was never built "
-                f"(release.yml runs on `push: tags: v*`)"
-            )
+    # Rule 2a — the image reference the rendered Deployment pulls must name a tag
+    # that exists. Literal, no synthesised prefix: release.yml publishes the image
+    # under the git tag name itself (github.ref_name), so the set of image tags on
+    # ghcr is exactly the set of git tag names.
+    if image_tag and image_tag not in tags:
+        fail(
+            f"values.image.tag ({image_tag}) is not a released tag name on {source}; "
+            f"release.yml publishes the image under the git tag name, so `helm install` "
+            f"would pull ghcr.io ...:levee:{image_tag}, an image that was never built "
+            f"(newest released tag: {newest_tag})"
+        )
+
+    # Rule 2b — the version the chart advertises must be released too.
+    if app_version and with_v(app_version) not in tags:
+        fail(
+            f"chart appVersion ({app_version}) has no tag {with_v(app_version)} on "
+            f"{source}, so the version it advertises was never released"
+        )
 
     legacy: list[str] = []
     # Rule 3 — a section newer than the last tag is a release claim.

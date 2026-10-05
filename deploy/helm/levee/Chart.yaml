@@ -4,11 +4,15 @@ description: |
   LEVEE 高危变更治理引擎：计划 → 审批 → 分批执行 → 验证门禁 → 回滚 → 审计留痕。
   单二进制、无代理（SSH/WinRM）；本 Chart 覆盖单机（SQLite）与集群（PostgreSQL 共享存储）两种形态。
 type: application
-# appVersion 跟随"已发布、且本 Chart 按其验证过"的二进制版本，也就是 values.image.tag
-# 实际拉取的那个版本；version 是 Chart 自身的版本。两者必须一致，且该版本必须已有对应
-# git tag（镜像由 release.yml 在 push tag v* 时构建，没 tag 就没有制品）。
-# 这条约定由 scripts/check_release_versions.py 钉住（CI 经 validate_delivery.sh 调用）。
-appVersion: "1.18.0"
+# appVersion 跟随"已发布、且本 Chart 按其验证过"的二进制版本；version 是 Chart 自身
+# 的版本。两者拼写不同、各有约定：
+#   appVersion    —— Helm 惯例，不带 v 的 semver（"1.19.0"）；
+#   values.image.tag —— 逐字的 git tag 名（"v1.19.0"），因为 release.yml 推的镜像 tag
+#                    就是 `${{ github.ref_name }}`，ghcr 上只有带 v 的那个。
+# 版本号必须一致，且该版本必须已有对应 git tag（镜像由 release.yml 在 push tag v*
+# 时构建，没 tag 就没有制品）。这条约定由 scripts/check_release_versions.py 钉住
+# （CI 经 validate_delivery.sh 调用）。
+appVersion: "1.19.0"
 version: 0.1.0
 home: https://github.com/Levango7/Levee
 sources:

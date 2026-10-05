@@ -7,6 +7,12 @@
 # Go
 vendor/
 
+# Python tooling state: the release scripts' unit suites compile bytecode on
+# every run, and an untracked __pycache__ dirties `git status` right where a
+# commit is supposed to be provably clean.
+__pycache__/
+*.pyc
+
 
 # Test
 *.test

@@ -32,8 +32,17 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: '3.12'
-      - name: unit tests
-        run: python -m unittest -v scripts/test_require_ci_release.py
+      - name: release script self-tests
+        # Discovery rather than a hard-coded file list: a suite added later is
+        # picked up without anyone remembering to edit this step. An empty
+        # discovery would still exit 0, so each expected suite must show up in
+        # the verbose log.
+        run: |
+          python -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee /tmp/py.log
+          for suite in test_require_ci_release test_check_release_versions; do
+            grep -q "$suite" /tmp/py.log \
+              || { echo "::error::discovery collected nothing for $suite (renamed or deleted?)"; exit 1; }
+          done
 
   # ---------------------------------------------------------------------------
   # vet: cheap structural checks, runs first to fail fast.
