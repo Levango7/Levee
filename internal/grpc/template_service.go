@@ -21,7 +21,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/template"
 )
@@ -329,6 +331,11 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 	}
 
 	now := time.Now().UTC()
+	// envOf() reads IncidentID for every later policy decision, so a change
+	// created here without the declared environment is judged in
+	// permission.default_env for the rest of its life. See creatorFromCtx for
+	// the other half.
+	creator := creatorFromCtx(ctx)
 	run := &state.Run{
 		ID:             runID,
 		WorkflowName:   tmplContent,
@@ -338,10 +345,30 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 		ApprovalStatus: "pending",
 		CreatedAt:      now,
 		UpdatedAt:      now,
-		Creator:        "grpc",
+		Creator:        creator,
+		IncidentID:     req.Environment,
 	}
 	if err := s.store.CreateRun(ctx, run); err != nil {
 		return nil, status.Errorf(codes.Internal, "create run: %v", err)
+	}
+	// Creation is audited the way CreateChange audits its own. A failed write
+	// never unwinds the change (the state transition is already committed —
+	// same posture as ChangeService.recordAudit), but it is logged instead of
+	// discarded, so a gap in the trail is at least observable.
+	if audID, aerr := generateID("aud-"); aerr != nil {
+		log.Warn("audit id generation failed; template instantiation left unaudited",
+			"run_id", run.ID, "error", aerr)
+	} else if err := audit.Record(ctx, s.store, &state.Audit{
+		ID:        audID,
+		RunID:     run.ID,
+		Action:    "create",
+		Actor:     creator,
+		Target:    req.TemplateName,
+		Result:    run.Status,
+		Timestamp: now,
+	}); err != nil {
+		log.Warn("audit write failed",
+			"run_id", run.ID, "action", "create", "template", req.TemplateName, "error", err)
 	}
 
 	return &pb.Change{
@@ -354,7 +381,7 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 		Params:       req.Params,
 		CreatedAt:    now.Unix(),
 		UpdatedAt:    now.Unix(),
-		CreatedBy:    "grpc",
+		CreatedBy:    creator,
 		Team:         req.Team,
 		Environment:  req.Environment,
 	}, nil

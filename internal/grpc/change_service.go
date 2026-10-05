@@ -402,19 +402,10 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	}
 
 	// The creator recorded for audit and governance must be the VERIFIED
-	// subject when one exists, not the client-supplied actor label.
-	// run.Creator feeds the approval chain's Initiator (kickoffApproval →
-	// approval.CreateRequest.Initiator), and that field drives
-	// exclude_initiator — the independence rule that stops an author from
-	// approving their own high-tier change. Sourcing it from actorFromCtx
-	// would let a caller name someone else in the "x-actor" header and
-	// then vote their own change through. Unverifiable credentials (legacy
-	// shared token, development mode) keep the label: there is no subject
-	// to prefer.
-	creator := actorFromCtx(ctx)
-	if subj := SubjectFromContext(ctx); subj != "" {
-		creator = subj
-	}
+	// subject when one exists, not the client-supplied actor label — the rule
+	// and its reasoning live once, in creatorFromCtx (subject.go), because
+	// every creation path has to agree on it.
+	creator := creatorFromCtx(ctx)
 
 	run := &state.Run{
 		ID:             runID,
@@ -501,7 +492,7 @@ func (s *ChangeService) CloneChange(ctx context.Context, req *pb.CloneChangeRequ
 		ApprovalLevel:  src.ApprovalLevel,
 		CreatedAt:      now,
 		UpdatedAt:      now,
-		Creator:        actorFromCtx(ctx),
+		Creator:        creatorFromCtx(ctx),
 		IncidentID:     env,
 	}
 	if err := s.store.CreateRun(ctx, run); err != nil {
