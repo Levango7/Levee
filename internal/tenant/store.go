@@ -489,6 +489,27 @@ func (s *TenantStore) UpdateTrace(ctx context.Context, tr *state.Trace) error {
 	return s.base.UpdateTrace(ctx, tr)
 }
 
+// UpdateTraceChain stamps the trace chain hashes, tenant-checked the same way
+// UpdateAuditChain is: the row must belong to the caller's tenant, so sealing
+// cannot reach across into another tenant's run. The hashes themselves are
+// written by the chain builder rather than recomputed per tenant — a per-tenant
+// recomputation would produce different hashes for the same row and break the
+// run's chain.
+func (s *TenantStore) UpdateTraceChain(ctx context.Context, id string, prevHash string, currHash string) error {
+	ctx, tid, err := s.scope(ctx)
+	if err != nil {
+		return err
+	}
+	tr, err := s.base.GetTrace(ctx, id)
+	if err != nil {
+		return err
+	}
+	if tr != nil && tr.TenantID != tid {
+		return fmt.Errorf("%w: trace %q belongs to tenant %q", ErrCrossTenantAccess, id, tr.TenantID)
+	}
+	return s.base.UpdateTraceChain(ctx, id, prevHash, currHash)
+}
+
 func (s *TenantStore) UpdateTraceChecksum(ctx context.Context, id, checksum string) error {
 	ctx, tid, err := s.scope(ctx)
 	if err != nil {
@@ -854,6 +875,20 @@ func (s *TenantStore) ListAudits(ctx context.Context, filter state.AuditFilter) 
 	}
 	filter.TenantID = tid
 	return s.base.ListAudits(ctx, filter)
+}
+
+// ListAuditChainPage scopes the audit chain walk to the caller's tenant, so a
+// tenant's chain spans its own rows only — the per-tenant chain the audit
+// package documents. The cursor passes through untouched: paging is relative to
+// whatever the previous page returned, so an unscoped cursor cannot widen the
+// walk. The tenantID argument is ignored on purpose — a caller must not be able
+// to name another tenant here.
+func (s *TenantStore) ListAuditChainPage(ctx context.Context, after *state.AuditCursor, limit int, _ string) ([]*state.Audit, error) {
+	_, tid, err := s.scope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.base.ListAuditChainPage(ctx, after, limit, tid)
 }
 
 // --- Assignment (cross-node dispatch) ---------------------------------------

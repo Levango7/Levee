@@ -1552,6 +1552,27 @@ func (s *SQLiteStore) UpdateAuditChain(ctx context.Context, id string, prevHash 
 	return nil
 }
 
+// UpdateTraceChain stamps only the chain columns onto a trace row, leaving
+// every content column untouched. Twin of UpdateAuditChain; see Store for why
+// the write surface is this narrow.
+func (s *SQLiteStore) UpdateTraceChain(ctx context.Context, id string, prevHash string, currHash string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE trace SET prev_hash=?, curr_hash=? WHERE id=?`,
+		prevHash, currHash, id,
+	)
+	if err != nil {
+		return fmt.Errorf("state: update trace chain %q: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("state: update trace chain %q: rows affected: %w", id, err)
+	} else if n == 0 {
+		// Silently succeeding here would leave a gap in the chain that only
+		// surfaces much later, at verification time.
+		return fmt.Errorf("state: update trace chain %q: not found", id)
+	}
+	return nil
+}
+
 // GetAudit returns the audit entry with the given id, or (nil, nil) if not found.
 func (s *SQLiteStore) GetAudit(ctx context.Context, id string) (*Audit, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
@@ -1623,6 +1644,59 @@ func (s *SQLiteStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Au
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("state: list audits rows: %w", err)
+	}
+	return out, nil
+}
+
+// ListAuditChainPage returns one page of audit rows in ascending chain order
+// (timestamp, id), starting strictly after the cursor. See Store for why the
+// chain gets its own read instead of a ListAudits filter.
+func (s *SQLiteStore) ListAuditChainPage(ctx context.Context, after *AuditCursor, limit int, tenantID string) ([]*Audit, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	// Keyset predicate. Written as an explicit OR rather than a row-value
+	// comparison so it works on the SQLite builds this project supports, and so
+	// the two backends read the same way. The timestamp is bound twice: once
+	// for the "strictly newer" arm and once for the tie arm.
+	if after != nil {
+		clauses = append(clauses, "(timestamp > ? OR (timestamp = ? AND id > ?))")
+		args = append(args, after.Timestamp, after.Timestamp, after.ID)
+	}
+	// Tenant predicate appended last, matching the arg/clause order convention
+	// the other list queries use.
+	if tenantID != "" {
+		clauses = append(clauses, "tenant_id = ?")
+		args = append(args, tenantID)
+	}
+	if limit <= 0 {
+		limit = DefaultAuditChainPageSize
+	}
+	args = append(args, limit)
+
+	q := `SELECT id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash FROM audit`
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
+	}
+	q += " ORDER BY timestamp ASC, id ASC LIMIT ?"
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("state: list audit chain page: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Audit
+	for rows.Next() {
+		a := &Audit{}
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Action, &a.Actor, &a.Target, &a.Result, &a.Timestamp, &a.TenantID, &a.PrevHash, &a.CurrHash); err != nil {
+			return nil, fmt.Errorf("state: list audit chain page scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list audit chain page rows: %w", err)
 	}
 	return out, nil
 }

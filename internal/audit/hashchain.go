@@ -119,6 +119,94 @@ func (b *HashChainBuilder) Build(ctx context.Context, runID string) (count int, 
 	return b.buildChain(ctx, traces)
 }
 
+// SealResult reports what one Seal call did.
+type SealResult struct {
+	// Count is the number of trace records the walk examined.
+	Count int
+	// Sealed is how many records had their chain columns written — the newly
+	// appended ones, plus any hole left by an earlier failed seal. Records
+	// already carrying the right hash are not counted.
+	Sealed int
+	// TailHash is the CurrHash of the last record, i.e. the value the next
+	// appended record chains onto.
+	TailHash string
+}
+
+// Seal extends the run's chain over its unsealed tail and reports how many
+// records it had to write. It is the production seal, and the counterpart of
+// the audit chain's Seal of the same name: both walk the stored order, keep a
+// running predecessor hash, and write only the records whose stored hashes
+// differ from the recomputed ones.
+//
+// What makes it safe to call on every append is what it refuses to do. A record
+// whose stored chain does not verify is NOT rewritten — the walk stops and
+// returns ErrChainBroken. So:
+//
+//   - A record written after the chain was closed (CurrHash empty) is sealed and
+//     the chain grows. This is the case that made a settle-time-only seal
+//     untenable: a late trace arriving after a Build left Build refusing
+//     forever, so /audit/verify reported the run as tampered for good.
+//   - A record that IS sealed but does not verify is evidence — its content was
+//     altered, or a row was inserted or removed with the WORM triggers dropped.
+//     Recomputing would relink the chain and launder that evidence, so Seal
+//     leaves it alone and reports it. BuildForce remains the deliberate
+//     administrative override.
+//
+// Those two rules together mean a seal can never turn a broken chain back into
+// a passing one, which is what makes it safe to run unattended on the write
+// path — the audit chain's Seal can, since it rewrites any row that differs.
+//
+// Concurrent seals are safe the way the audit chain's are: hashes are derived
+// from stored content, so two overlapping walks compute identical values for the
+// records they share and at worst write the same hash twice.
+//
+// The cost is a full walk of the run's traces per call, so sealing on every
+// append is O(n²) in a run's trace count. That is affordable at MVP volumes —
+// a run carries roughly one record per step, gate and approval decision — and it
+// is written down here because the audit chain's equivalent walk is global and
+// needed paging for the same reason (see auditchain.go).
+func (b *HashChainBuilder) Seal(ctx context.Context, runID string) (*SealResult, error) {
+	if runID == "" {
+		return nil, ErrEmptyRunID
+	}
+
+	// ListTraces orders by (timestamp, id) ascending — the same total order the
+	// hashes are computed over. No Go-side re-sort: that would be a second place
+	// where ties could break differently from the seal that wrote the hashes.
+	traces, err := b.store.ListTraces(ctx, state.TraceFilter{RunID: runID})
+	if err != nil {
+		return nil, fmt.Errorf("audit: list traces for run %q: %w", runID, err)
+	}
+	if len(traces) == 0 {
+		return nil, ErrNoTraces
+	}
+
+	result := &SealResult{Count: len(traces)}
+	prev := ""
+	for _, t := range traces {
+		want := ComputeHash(t, prev)
+		switch {
+		case t.PrevHash == prev && t.CurrHash == want:
+			// Already exactly what this walk would write: the steady state, and
+			// the reason the comparison comes before the write.
+		case t.CurrHash == "":
+			// Unsealed — newly appended, or a hole left by an earlier failure.
+			if err := b.store.UpdateTraceChain(ctx, t.ID, prev, want); err != nil {
+				return result, fmt.Errorf("audit: seal trace %q: %w", t.ID, err)
+			}
+			result.Sealed++
+		default:
+			// Sealed, but not with the hash its position and content imply.
+			// Report it; do not rewrite it.
+			return result, fmt.Errorf("audit: seal run %q: record %q is sealed but does not verify: %w",
+				runID, t.ID, ErrChainBroken)
+		}
+		prev = want
+	}
+	result.TailHash = prev
+	return result, nil
+}
+
 // BuildForce forcefully rebuilds the hash chain even if one already exists.
 // This should only be used for administrative recovery after a confirmed
 // tampering incident. The caller is responsible for logging and auditing

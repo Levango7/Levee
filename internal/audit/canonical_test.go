@@ -39,21 +39,28 @@ func TestComputeHash_V2DiffersFromLegacy(t *testing.T) {
 // --- legacy chain acceptance (VerifyHashChain against pre-existing data) ----
 
 // seedChainRun creates a run plus n trace records and returns their ids.
+// seedChainRun inserts rows that carry NO chain, which is the case Build
+// exists for. The recorder cannot be used to seed them: it seals on every
+// append now, so Build would refuse a chain it had already built.
 func seedChainRun(t *testing.T, store *state.SQLiteStore, runID string, n int) []string {
 	t.Helper()
 	createRun(t, store, runID)
-	rec, err := NewTraceRecorder(store)
-	require.NoError(t, err)
 	var ids []string
 	for i := 0; i < n; i++ {
-		tr, err := rec.Record(context.Background(), TraceRecord{
+		id, err := newID()
+		require.NoError(t, err)
+		detail, err := buildDetail(TraceRecord{
 			RunID:  runID,
 			Event:  EventStepExecute,
 			Actor:  "tester",
 			Output: map[string]any{"i": i},
 		})
 		require.NoError(t, err)
-		ids = append(ids, tr.ID)
+		require.NoError(t, store.CreateTrace(context.Background(), &state.Trace{
+			ID: id, RunID: runID, Event: EventStepExecute, Actor: "tester",
+			Detail: detail, Timestamp: time.Now().UTC(),
+		}))
+		ids = append(ids, id)
 	}
 	return ids
 }
