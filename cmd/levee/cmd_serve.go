@@ -1002,6 +1002,18 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		} else {
 			log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
 		}
+		// Outbound notification transport for rollback grading (notify.webhook).
+		// With no channel configured the grader keeps logging grades and
+		// newRunNotifySink stays nil — the honest no-transport path. An enabled
+		// but unusable webhook refuses the boot instead of pretending a channel
+		// that never delivers is installed (same rule as notify.chatops.*).
+		notifyMgr, notifyErr := buildServeNotifyManager(cfg.Notify)
+		if notifyErr != nil {
+			return serveServices{}, notifyErr
+		}
+		if notifyMgr != nil {
+			opts = append(opts, wiring.WithNotificationManager(notifyMgr))
+		}
 		// The change calendar rides on the same database handle as the run
 		// records: `levee calendar freeze` writes to the database its own
 		// configuration names, and the gates in internal/wiring read the handle
@@ -1043,6 +1055,12 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
 	} else {
 		log.Info("serve: execution engine not wired (--engine-enabled=false); ApplyChange RPC returns FailedPrecondition (status-only mode). Plan/approve/status tracking remain fully functional.")
+		if cfg.Notify.Webhook.Enabled {
+			// Rollback grading is today's only producer of notifications, and it
+			// lives in the engine. Saying so beats letting an enabled switch read
+			// as "we will be notified".
+			log.Warn("serve: notify.webhook is enabled but the execution engine is off (--engine-enabled=false); no notification will ever be sent")
+		}
 	}
 	// Approval service over the same store: PlanChange kicks off the
 	// approval chain (R4 risk-tiered routing; see ChangeService.
