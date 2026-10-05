@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 安全修复（变更创建路径的归属与环境保真）
+
+- **模板实例化出来的变更"不属于任何人、位于默认环境"，三个独立后果**：`InstantiateTemplate` 是三条创建变更路径中的一条（另两条为 `CreateChange` 与 `CloneChange`），但没有跟上把 `run.Creator` 绑到**已验签主体**的那一轮修正——它写入 `Creator: "grpc"`，并且**根本不写 `IncidentID`**，而 `envOf()` 读的就是这一列。
+  ① **环境被洗成默认环境**：请求带着 `environment: prod` 来，落库后环境为空，此后每一个治理判定（plan / apply / rollback / approve、以及读可见性过滤）都退回 `permission.default_env`。本机 SQLite 实测（矩阵：dev 可 act、prod 仅 view，`default_env=dev`，alice 的角色只有 view）：**一个只被允许看 prod 的调用方成功 apply 了声明为 prod 的变更**——`ApplyChange` 里策略门在任何其它判定之前，所以它是被无关的批准版本检查拦下的，而不是被策略拦下的。响应体又把 `environment: "prod"` 原样回显，客户端拿不到任何信号（`TestInstantiateTemplate_ResponseAgreesWithTheStoredRow` 现在钉住"回显即承诺"）。
+  ② **`exclude_initiator` 对模板创建的变更失效**：`run.Creator` 是审批链 `Initiator` 的唯一来源，而 `"grpc"` 不等于任何真实主体名，于是规范 §8.1 对 high 档强制的独立审查排除的是一个人格化的通道名，作者自己就能投出关键一票（`TestInstantiateTemplate_AuthorCannotSelfApproveWhenIndependenceRequired` 走真实审批服务复现并封口）。
+  ③ **创建动作不留审计行**：`CreateChange` 记 `action=create`，模板路径一条都不写，这些变更在 `levee audit log` 与哈希链证据里是凭空出现的。现在补上同款 create 行（写入失败只 WARN，与 `recordAudit` 一致的姿态）。
+  落地：三条创建路径共用一个归属函数 `creatorFromCtx`（有可验签主体取主体，否则保留审计标签——就是 `CreateChange` 原本写了一遍的规则，现在只有一份），`InstantiateTemplate` 持久化声明的环境并补审计行。**迁移说明（行为变更）**：存量由模板创建、环境为空的 run 仍按默认环境判定（本批不回填历史行——伪造历史行的环境等于替操作者编造事实）；但从本批起，声明了操作者无权操作的环境的实例化请求会在 apply 处被拒，此前它会成功。
+- **`CloneChange` 的归属仍取客户端自报的名字**：那一轮只改了 `CreateChange`，克隆路径依旧是 `Creator: actorFromCtx(ctx)`——`x-actor` 头里写谁就是谁。后果与上面 ② 同源：调用方可以把发起人登记成别人的名字，于是独立审查排除的是那个人，而真正的作者投票无碍。现在三条路径同源，且"无可验签主体时保留标签"这一半由 `TestCloneChange_KeepsTheAssertedLabelWithoutASubject` 单独钉住（本地模式与共享令牌下那是唯一可得的记录，改成常量等于把"谁敲的命令"擦掉）。
+
+验证：新增 8 个测试函数（`internal/grpc/change_attribution_fidelity_test.go`：环境落库、prod 声明不被 dev 授予 apply（含"同一调用者在 dev 确实能 apply"的反证一半，否则测不出"-marker 被尊重"与"策略一律拒绝"的区别）、创建者=已验签主体、响应与行一致、审计行存在、模板变更的作者不能自批、克隆取主体不取 header、无主体时保留 header 标签）。**8 项变异全部被抓且均能编译**（环境写回空、Creator 退回 `"grpc"`、克隆退回 `actorFromCtx`、`creatorFromCtx` 忽略主体、审计 action 改名、审计行的 run_id 变成孤儿、响应 owner 退回常量、响应环境退回空串）。`go build ./...` / `go vet ./...` / `go test ./...`（65 包）见提交说明。
+
 ### 变更（门禁位置路由，含迁移说明）
 
 - **`position` 现在真的决定门禁什么时候跑，三处声明点全部被执行**：规范 §2.2 的位置词表（`pre_apply` / `post_batch` / `post_apply`）此前是**装饰**——`convertGate` 无条件把每条声明塞进 `GateSpec.Post`（物化成 `post_apply`），而只有 `GateSpec.Batch` 绑定 `verify.PhasePostBatch`，全仓没有任何代码填充 `.Batch`。同时 `walkPlanGates`（唯一把声明变成可运行门禁的遍历）只走 `Batches[].Steps[].Gate`，于是：
