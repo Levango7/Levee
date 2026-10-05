@@ -33,6 +33,14 @@
 - **门禁为什么放过了它，以及补上的规则**：`check_release_versions.py` 规则②原先把引用版本**合成** `v<version>` 后去查 git tag，于是 `1.19.0` 与 `v1.19.0` 都能通过——它验的是"git tag 存在"，不是"渲染出的镜像引用存在"。现拆成两条：规则②要求 `values.image.tag` **逐字**出现在 tag 集合里（"镜像以 git tag 名发布"这一事实写进脚注释），appVersion 另按 `v` 前缀可有可无地校验；规则①改按版本号比较（两处拼写有意不同，各自有约定）。变异实测三条：改回 `1.19.0` → 规则②以新文案失败；改成 `v1.18.0` 与 appVersion 分叉 → 规则①失败；恢复 `v1.19.0` → `RELEASE VERSION CHECK PASSED`（tag 集合取自 origin，10 个，`newest_tag=v1.19.0`）。规则③（比最新 tag 更晚的 CHANGELOG 小节须标注）同时满足。
 - **给门禁本身补上自测**：`check_release_versions.py` 此前没有测试，规则被重构掉不会有任何东西发现。新增 `scripts/test_check_release_versions.py`（10 例：一致通过、v 前缀差异不算失败、规则①②③各自的失败形态、空 tag 集合必须拒绝、历史无 tag 小节只点名、sidecar 的 `postgres.image.tag` 不被误读）；其中 `test_image_tag_without_v_prefix_fails` 就是本条缺陷的回归用例。反向验过：把规则②改回"合成 `v` 前缀"的旧行为，该用例立刻变红（`AssertionError: 0 != 1`）。`release-gate` job 的 python 步骤改为 `unittest discover -s scripts`，并逐套件点名两个套件是否被收集——空收集会以 `Ran 0 tests / OK` 静默通过。实测本地 21 例全绿。
 
+### 新增（remote 探针与 script 门禁按目标逐台执行，#74 剩下的那一半）
+
+- **通道提供者接到了 `probe` 上**：#74 给 `GateInput` 开了 `ChannelFor` 接缝并把 cmd 门禁接了上去，`probe` 的 `mode: remote` 与 `kind: script` 当时仍只认单一 `Channel`，在执行路径下照旧以 "missing channel" 失败关闭——也就是说"声明了远程探针的变更永远过不了自己那一关"这一半缺陷还在。现在 `verify/probe_gate.go` 的 `checkAcrossTargets` 消费同一个 provider，判定与 cmd 门禁刻意一致：**每台都要过**（web-1 通不等于这批通）、**拨不上算失败**而不是跳过（没连上的机器没被证明可达）、**空目标失败关闭**、结论列出 `failed_targets` 与逐台证据；`direct` 形态**不**接 provider，因为它从控制面测量，接上只会白白拨 N 次号。
+- **`script` 一类以前没有归属约束**：脚本探针现在也是逐台上传+执行，任何一台退出码不符就整体判失败并点名。
+- **结构守卫补上（这是当初真正断掉的那一层）**：新增 `internal/engine/gate_input_channel_provider_test.go`，要求引擎每一处构造 `verify.GateInput` 都填 `ChannelFor`，并且**不许**直接填单通道 `Channel`（单通道形态等于把"随便挑一台来证明全部"写进结构）。扫描命中数低于 4 处即判红——"标记失效导致 0 命中"不能伪装成通过。
+- **文档如实写明新的不对称**：逐台收窄后，remote **tcp** 的 `{target}` / `port_from_target` 天然按本机地址判定，而 remote **http** 的 `url` 不做 `{target}` 展开（direct 模式才会）；`docs/gates.md` 写了这一差异，`docs/product-roadmap.md` 把"要不要让 remote http 也展开"留作界面一致性决策。
+- **验证**：`internal/verify/probe_gate_targets_test.go` 10 条用例（全过、一台失败挡整批并点名、拨不上算失败、空目标失败关闭、tcp 每台只见自己的地址、script 逐台、direct 绝不调用 provider、旧的单通道形态行为不变、无 provider 仍失败关闭、取消后不再声明下一台的证据）；`-race` 下 verify 与 engine 包全绿。变异 6 条全部被对应用例抓红（含把"拨不上"改成"跳过"、去掉逐台收窄、让 direct 也扇出、去掉循环内的取消检查），结构守卫另做 3 条变异（抽掉一处 `ChannelFor`、加一处 `Channel:`、把标记改成不存在的串）均判红且点名位置。
+
 ## [v1.19.0] - 2026-10-06 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
 
 规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。
