@@ -744,6 +744,33 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 		problems = append(problems, "inventory.patrol_interval_seconds must be >= 0 (0 disables the patrol)")
 	}
 
+	// AI.LLM. Only checked when enabled: the section is off by default and its
+	// zero values must stay harmless, so a disabled deployment never has to fill
+	// this in.
+	//
+	// "mock" is deliberately NOT accepted here. recommend.NewLLMClient maps it to
+	// a client that returns canned completions, so a typo'd provider reaching
+	// that path would serve fabricated recommendations while every health check
+	// and log line said the LLM was fine. Refusing it at startup is the only
+	// place that mistake can still be caught.
+	if cfg.AI.LLM.Enabled {
+		switch cfg.AI.LLM.Provider {
+		case "openai", "ollama":
+		default:
+			problems = append(problems, fmt.Sprintf("ai.llm.provider %q must be one of openai|ollama", cfg.AI.LLM.Provider))
+		}
+		if cfg.AI.LLM.Timeout <= 0 {
+			problems = append(problems, "ai.llm.timeout must be > 0 when the LLM is enabled")
+		}
+		if cfg.AI.LLM.Temperature < 0 || cfg.AI.LLM.Temperature > 1 {
+			problems = append(problems, "ai.llm.temperature must be between 0 and 1")
+		}
+		// A missing api_key is NOT checked here on purpose: the client falls
+		// back to OPENAI_API_KEY, and some gateways front OpenAI with no key at
+		// all. Refusing to boot over it would break those; a construction
+		// failure already degrades to knowledge-base mode with a warning.
+	}
+
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))
 	}
@@ -873,6 +900,27 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("notify.jira.project_key", "")
 	v.SetDefault("notify.jira.issue_type", "Task")
 	v.SetDefault("notify.jira.timeout", 10*time.Second)
+
+	// AI.LLM (AI-assist for the recommend engine; OFF by default, so an
+	// existing deployment constructs no client at all).
+	//
+	// The provider default is load-bearing rather than cosmetic:
+	// recommend.NewLLMClient treats an EMPTY provider as "mock" and hands back a
+	// canned client. Without this default, an operator who set enabled=true and
+	// nothing else would silently get fabricated recommendations from a stub —
+	// no error, no warning. Defaulting to openai makes that deployment fail
+	// loudly instead.
+	v.SetDefault("ai.llm.enabled", false)
+	v.SetDefault("ai.llm.provider", "openai")
+	v.SetDefault("ai.llm.api_key", "")
+	v.SetDefault("ai.llm.model", "")
+	v.SetDefault("ai.llm.base_url", "")
+	// 0 means "the client's own built-in default" (see recommend's
+	// DefaultMaxTokens and friends), so these mirror what config.example.yaml
+	// documents rather than second-guessing the engine.
+	v.SetDefault("ai.llm.max_tokens", 0)
+	v.SetDefault("ai.llm.temperature", 0.0)
+	v.SetDefault("ai.llm.timeout", 30*time.Second)
 }
 
 // bindFile wires viper to the YAML file at path. The file extension is
@@ -957,6 +1005,9 @@ func allKeys() []string {
 		"notify.jira.enabled", "notify.jira.url", "notify.jira.api_token",
 		"notify.jira.email", "notify.jira.project_key",
 		"notify.jira.issue_type", "notify.jira.timeout",
+		"ai.llm.enabled", "ai.llm.provider", "ai.llm.api_key", "ai.llm.model",
+		"ai.llm.base_url", "ai.llm.max_tokens", "ai.llm.temperature",
+		"ai.llm.timeout",
 		"permission.default_team", "permission.default_env",
 		"verify.prometheus_url",
 		"inventory.patrol_interval_seconds",
