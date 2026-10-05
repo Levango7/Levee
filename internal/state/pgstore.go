@@ -1499,6 +1499,27 @@ func (s *PGStore) UpdateAuditChain(ctx context.Context, id string, prevHash stri
 	return nil
 }
 
+// UpdateTraceChain stamps only the chain columns onto a trace row, leaving
+// every content column untouched. Twin of UpdateAuditChain; see Store for why
+// the write surface is this narrow.
+func (s *PGStore) UpdateTraceChain(ctx context.Context, id string, prevHash string, currHash string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE trace SET prev_hash=$1, curr_hash=$2 WHERE id=$3`,
+		prevHash, currHash, id,
+	)
+	if err != nil {
+		return fmt.Errorf("state: update trace chain %q: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("state: update trace chain %q: rows affected: %w", id, err)
+	} else if n == 0 {
+		// Silently succeeding here would leave a gap in the chain that only
+		// surfaces much later, at verification time.
+		return fmt.Errorf("state: update trace chain %q: not found", id)
+	}
+	return nil
+}
+
 // GetAudit returns the audit entry with the given id, or (nil, nil) if not found.
 func (s *PGStore) GetAudit(ctx context.Context, id string) (*Audit, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
@@ -1570,6 +1591,63 @@ func (s *PGStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit,
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("state: list audits rows: %w", err)
+	}
+	return out, nil
+}
+
+// ListAuditChainPage returns one page of audit rows in ascending chain order
+// (timestamp, id), starting strictly after the cursor. See Store for why the
+// chain gets its own read instead of a ListAudits filter.
+func (s *PGStore) ListAuditChainPage(ctx context.Context, after *AuditCursor, limit int, tenantID string) ([]*Audit, error) {
+	var (
+		clauses []string
+		args    []any
+	)
+	// Keyset predicate, same shape as the SQLite side. The cursor timestamp is
+	// bound once and referenced twice — PostgreSQL compares TIMESTAMPTZ values,
+	// so unlike SQLite this keeps sub-second precision and does not round.
+	if after != nil {
+		args = append(args, after.Timestamp)
+		ts := len(args)
+		args = append(args, after.ID)
+		clauses = append(clauses, fmt.Sprintf(
+			"(timestamp > $%d OR (timestamp = $%d AND id > $%d))", ts, ts, len(args)))
+	}
+	// Tenant predicate appended last, matching the arg/clause order convention
+	// the other list queries use.
+	if tenantID != "" {
+		args = append(args, tenantID)
+		clauses = append(clauses, fmt.Sprintf("tenant_id = $%d", len(args)))
+	}
+	if limit <= 0 {
+		limit = DefaultAuditChainPageSize
+	}
+	args = append(args, limit)
+
+	q := `SELECT id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash FROM audit`
+	if len(clauses) > 0 {
+		// Joined, not run through pgJoinPlaceholders: that helper renumbers one
+		// placeholder per clause, and the keyset predicate binds three.
+		q += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	q += fmt.Sprintf(" ORDER BY timestamp ASC, id ASC LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("state: list audit chain page: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Audit
+	for rows.Next() {
+		a := &Audit{}
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Action, &a.Actor, &a.Target, &a.Result, &a.Timestamp, &a.TenantID, &a.PrevHash, &a.CurrHash); err != nil {
+			return nil, fmt.Errorf("state: list audit chain page scan: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("state: list audit chain page rows: %w", err)
 	}
 	return out, nil
 }

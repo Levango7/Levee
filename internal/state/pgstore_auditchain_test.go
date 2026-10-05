@@ -124,3 +124,81 @@ func TestPGStore_AuditChainSealAndWORM(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.Valid)
 }
+
+// TestPGStore_ListAuditChainPage_OrderCursorAndTenant pins the paged chain read
+// on PostgreSQL. It exists because the SQL behind it is not the same SQL the
+// SQLite path runs — different placeholder style, and unlike SQLite PostgreSQL
+// keeps sub-second timestamps instead of rounding them to whole seconds — so a
+// chain that walks correctly on one backend can still be wrong on the other.
+// The internal/audit paging tests cover the chain; this covers the query.
+func TestPGStore_ListAuditChainPage_OrderCursorAndTenant(t *testing.T) {
+	dsn := os.Getenv("LEVEE_PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("LEVEE_PG_TEST_DSN not set; skipping PostgreSQL audit chain page test")
+	}
+	ctx := context.Background()
+	store, err := state.NewPGStore(ctx, dsn, state.PGPoolConfig{MaxOpenConns: 5, MaxIdleConns: 2})
+	require.NoError(t, err)
+	defer store.Close()
+
+	_, err = store.DB().ExecContext(ctx, "TRUNCATE TABLE audit RESTART IDENTITY CASCADE")
+	require.NoError(t, err)
+
+	base := time.Now().UTC().Truncate(time.Microsecond)
+	// Insertion order is deliberately not chain order; cp-a1/cp-b1/cp-c1 share
+	// one instant and must come back ordered by id.
+	for _, a := range []*state.Audit{
+		{ID: "cp-2", Action: "apply", Actor: "alice", Result: "success", Timestamp: base.Add(time.Second)},
+		{ID: "cp-b1", Action: "login", Actor: "alice", Result: "success", Timestamp: base},
+		{ID: "cp-1", Action: "config", Actor: "alice", Result: "success", Timestamp: base.Add(500 * time.Millisecond)},
+		{ID: "cp-a1", Action: "login", Actor: "alice", Result: "success", Timestamp: base},
+		{ID: "cp-c1", Action: "login", Actor: "alice", Result: "success", Timestamp: base},
+	} {
+		require.NoError(t, store.CreateAudit(ctx, a))
+	}
+
+	whole, err := store.ListAuditChainPage(ctx, nil, 100, "")
+	require.NoError(t, err)
+	wholeIDs := make([]string, len(whole))
+	for i, a := range whole {
+		wholeIDs[i] = a.ID
+	}
+	assert.Equal(t, []string{"cp-a1", "cp-b1", "cp-c1", "cp-1", "cp-2"}, wholeIDs,
+		"chain order is (timestamp, id) — sub-second precision kept, ties broken by id")
+
+	// Paging by cursor reproduces the single-shot order exactly.
+	var paged []string
+	var cursor *state.AuditCursor
+	for {
+		page, err := store.ListAuditChainPage(ctx, cursor, 2, "")
+		require.NoError(t, err)
+		for _, a := range page {
+			paged = append(paged, a.ID)
+		}
+		if len(page) < 2 {
+			break
+		}
+		last := page[len(page)-1]
+		cursor = &state.AuditCursor{Timestamp: last.Timestamp, ID: last.ID}
+	}
+	assert.Equal(t, wholeIDs, paged)
+
+	// A row appended after the walk was under way belongs to the NEXT page, not
+	// to this walk's past — the property keyset paging buys over OFFSET. The
+	// cursor still sits on cp-1, so the continuation page carries cp-2 (never
+	// read) followed by the newly appended row.
+	require.NoError(t, store.CreateAudit(ctx, &state.Audit{
+		ID: "cp-3", Action: "login", Actor: "alice", Result: "success",
+		TenantID: "tenant-b", Timestamp: base.Add(2 * time.Second),
+	}))
+	page, err := store.ListAuditChainPage(ctx, cursor, 10, "")
+	require.NoError(t, err)
+	require.Len(t, page, 2)
+	assert.Equal(t, "cp-2", page[0].ID)
+	assert.Equal(t, "cp-3", page[1].ID, "the row appended mid-walk must be reachable, not skipped")
+
+	page, err = store.ListAuditChainPage(ctx, nil, 10, "tenant-b")
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	assert.Equal(t, "cp-3", page[0].ID, "a tenant page must not see other tenants' rows")
+}

@@ -95,37 +95,39 @@ func hasFailureType(result *VerifyResult, ft FailureType) bool {
 	return false
 }
 
-// TestIntegration_FullAuditLoop exercises the complete audit闭环: record →
-// build hash chain → verify. A freshly built chain must verify as intact, the
-// tail hash must be non-empty, and the tail must equal the last trace's
-// CurrHash.
+// TestIntegration_FullAuditLoop exercises the complete audit 闭环: record →
+// seal → verify. Recording a trace seals the run's chain (TraceRecorder.Record
+// seals after every append), so the chain is verifiable while the run is still
+// in flight; Build is now the one-shot path over rows that carry no chain.
 func TestIntegration_FullAuditLoop(t *testing.T) {
 	store, ids := integrationSetup(t, "run-full")
 	ctx := context.Background()
 	require.Len(t, ids, 5)
 
-	// Build the hash chain over the recorded traces.
-	builder, err := NewHashChainBuilder(store)
-	require.NoError(t, err)
-	count, tail, err := builder.Build(ctx, "run-full")
-	require.NoError(t, err)
-	assert.Equal(t, 5, count)
-	assert.NotEmpty(t, tail, "tail hash must be non-empty")
-
-	// Verify the chain integrity — a freshly built chain must pass.
+	// Verify the chain integrity — a chain sealed by the recorder must pass.
 	verifier, err := NewChainVerifier(store)
 	require.NoError(t, err)
 	result, err := verifier.Verify(ctx, "run-full")
 	require.NoError(t, err)
-	assert.True(t, result.Valid, "freshly built chain must verify")
+	assert.True(t, result.Valid, "a chain sealed by the recorder must verify")
 	assert.Equal(t, 5, result.Count)
 	assert.Empty(t, result.Failures)
 
-	// The tail hash must equal the last trace's CurrHash.
+	// Sealing again over a sealed run writes nothing and hands back the tail.
+	// That is what makes the settle-time call harmless when the recorder has
+	// already sealed the run's last trace.
+	builder, err := NewHashChainBuilder(store)
+	require.NoError(t, err)
+	seal, err := builder.Seal(ctx, "run-full")
+	require.NoError(t, err)
+	assert.Equal(t, 5, seal.Count)
+	assert.Equal(t, 0, seal.Sealed, "an already-sealed chain must not be rewritten")
+	assert.NotEmpty(t, seal.TailHash, "tail hash must be non-empty")
+
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-full"})
 	require.NoError(t, err)
 	require.Len(t, traces, 5)
-	assert.Equal(t, tail, traces[len(traces)-1].CurrHash,
+	assert.Equal(t, seal.TailHash, traces[len(traces)-1].CurrHash,
 		"tail hash must equal last trace CurrHash")
 }
 
@@ -135,10 +137,13 @@ func TestIntegration_TamperDetection_Detail(t *testing.T) {
 	store, _ := integrationSetup(t, "run-tamper-detail")
 	ctx := context.Background()
 
+	// The recorder sealed the chain when these traces were written, so there is
+	// nothing to build — tampering is detected against what is already stored.
 	builder, err := NewHashChainBuilder(store)
 	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, "run-tamper-detail")
+	seal, err := builder.Seal(ctx, "run-tamper-detail")
 	require.NoError(t, err)
+	require.Equal(t, 0, seal.Sealed)
 
 	// Tamper with the middle trace's Detail via raw SQL (bypassing WORM trigger).
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-tamper-detail"})
@@ -169,10 +174,13 @@ func TestIntegration_TamperDetection_CurrHash(t *testing.T) {
 	store, _ := integrationSetup(t, "run-tamper-curr")
 	ctx := context.Background()
 
+	// The recorder sealed the chain when these traces were written, so there is
+	// nothing to build — tampering is detected against what is already stored.
 	builder, err := NewHashChainBuilder(store)
 	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, "run-tamper-curr")
+	seal, err := builder.Seal(ctx, "run-tamper-curr")
 	require.NoError(t, err)
+	require.Equal(t, 0, seal.Sealed)
 
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-tamper-curr"})
 	require.NoError(t, err)
@@ -201,10 +209,13 @@ func TestIntegration_TamperDetection_PrevHash(t *testing.T) {
 	store, _ := integrationSetup(t, "run-tamper-prev")
 	ctx := context.Background()
 
+	// The recorder sealed the chain when these traces were written, so there is
+	// nothing to build — tampering is detected against what is already stored.
 	builder, err := NewHashChainBuilder(store)
 	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, "run-tamper-prev")
+	seal, err := builder.Seal(ctx, "run-tamper-prev")
 	require.NoError(t, err)
+	require.Equal(t, 0, seal.Sealed)
 
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-tamper-prev"})
 	require.NoError(t, err)
@@ -280,9 +291,9 @@ func TestIntegration_MultiRun_Independent(t *testing.T) {
 
 	builder, err := NewHashChainBuilder(store)
 	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, "run-a")
+	_, err = builder.Seal(ctx, "run-a")
 	require.NoError(t, err)
-	_, _, err = builder.Build(ctx, "run-b")
+	_, err = builder.Seal(ctx, "run-b")
 	require.NoError(t, err)
 
 	verifier, err := NewChainVerifier(store)
@@ -363,7 +374,7 @@ func TestIntegration_ChainOrdering(t *testing.T) {
 
 	builder, err := NewHashChainBuilder(store)
 	require.NoError(t, err)
-	_, tail, err := builder.Build(ctx, "run-order")
+	seal, err := builder.Seal(ctx, "run-order")
 	require.NoError(t, err)
 
 	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-order"})
@@ -383,7 +394,7 @@ func TestIntegration_ChainOrdering(t *testing.T) {
 	}
 
 	// Tail hash equals the last trace's CurrHash.
-	assert.Equal(t, tail, traces[len(traces)-1].CurrHash,
+	assert.Equal(t, seal.TailHash, traces[len(traces)-1].CurrHash,
 		"tail hash must equal last trace CurrHash")
 
 	// Timestamps must be non-decreasing (chronological order preserved).

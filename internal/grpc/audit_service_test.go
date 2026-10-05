@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
 
@@ -322,6 +323,35 @@ func TestVerifyHashChain_SingleRun(t *testing.T) {
 	// The chain may or may not be valid depending on how ChainVerifier
 	// computes hashes; we just verify the response structure.
 	assert.NotNil(t, resp)
+}
+
+// TestVerifyHashChain_RecordedRunVerifies is the end-to-end statement of what
+// sealing on append buys: a run recorded through the production recorder —
+// still running, never settled — comes back from VerifyHashChain as valid.
+// Before the recorder sealed, every such run came back invalid with an
+// empty_hash on its first record, which reads exactly like tampering.
+func TestVerifyHashChain_RecordedRunVerifies(t *testing.T) {
+	svc, store := newTestAuditService(t)
+	ctx := context.Background()
+	seedRun(t, ctx, store, "run-inflight", "running")
+
+	rec, err := audit.NewTraceRecorder(store)
+	require.NoError(t, err)
+	for i := 0; i < 3; i++ {
+		_, err := rec.Record(ctx, audit.TraceRecord{
+			RunID: "run-inflight", Event: audit.EventStepExecute, Actor: "system",
+			Output: map[string]any{"i": i},
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := svc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{RunId: "run-inflight"})
+	require.NoError(t, err)
+	assert.True(t, resp.GetValid(), "an in-flight recorded run must verify: %+v", resp)
+	require.Len(t, resp.GetRuns(), 1)
+	assert.Equal(t, int64(3), resp.GetRuns()[0].GetEntriesVerified())
+	assert.Empty(t, resp.GetRuns()[0].GetBrokenEntryId(),
+		"a sealed run must not report a broken entry")
 }
 
 func TestVerifyHashChain_NoTraces(t *testing.T) {

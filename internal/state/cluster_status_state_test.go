@@ -60,8 +60,12 @@ func TestClusterNodes_PGListsNodes(t *testing.T) {
 	// cluster_nodes is NOT truncated by newPGTestStore (the cluster package's
 	// membership tests own it and run concurrently against this same database),
 	// so we key on unique IDs and assert presence rather than total count.
+	// The rows survive a rerun, so upsert them the way the cluster package's own
+	// RegisterNode does — a plain INSERT would fail on the unique id.
 	idA, idB := "cs-node-a", "cs-node-b"
-	_, err := store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat) VALUES ($1,$2,$3,$4,NOW())`,
+	_, err := store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat) VALUES ($1,$2,$3,$4,NOW())
+		ON CONFLICT (id) DO UPDATE SET address = EXCLUDED.address, role = EXCLUDED.role,
+		                            status = EXCLUDED.status, last_heartbeat = EXCLUDED.last_heartbeat`,
 		idA, "10.0.0.1:9090", "master", "active")
 	require.NoError(t, err)
 	// last_heartbeat is written explicitly: cluster_nodes is the one table whose
@@ -69,7 +73,9 @@ func TestClusterNodes_PGListsNodes(t *testing.T) {
 	// has DEFAULT NOW()), and both create it with IF NOT EXISTS — so whichever
 	// package initialises the database first decides whether the column may be
 	// omitted. Naming it makes this test independent of that order.
-	_, err = store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat) VALUES ($1,$2,$3,$4,NOW())`,
+	_, err = store.DB().ExecContext(ctx, `INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat) VALUES ($1,$2,$3,$4,NOW())
+		ON CONFLICT (id) DO UPDATE SET address = EXCLUDED.address, role = EXCLUDED.role,
+		                            status = EXCLUDED.status, last_heartbeat = EXCLUDED.last_heartbeat`,
 		idB, "10.0.0.2:9090", "worker", "active")
 	require.NoError(t, err)
 
@@ -93,7 +99,20 @@ func TestAssignmentSummary_PGWithRows(t *testing.T) {
 	defer cleanup()
 
 	// run_assignment is not truncated by newPGTestStore (dispatch tests own
-	// it), so use ON CONFLICT to keep the test idempotent across reruns.
+	// it), so this test's own rows survive a rerun. Drop them before taking the
+	// baseline, otherwise they would already be counted in it and the seeded
+	// rows would contribute a delta of zero instead of one.
+	_, err := store.DB().ExecContext(ctx,
+		`DELETE FROM run_assignment WHERE run_id IN ('csr1','csr2','csr3')`)
+	require.NoError(t, err)
+	// AssignmentSummary aggregates the whole table, and rows the dispatch and
+	// takeover packages leave behind are none of this test's business — so the
+	// assertions are deltas against that baseline, not absolute counts. On a
+	// private database the baseline is zero and the deltas reduce to the
+	// original expectations. ON CONFLICT then guards against a rerun that
+	// raced another test's insert.
+	before, err := store.AssignmentSummary(ctx)
+	require.NoError(t, err)
 	for _, a := range []*Assignment{
 		{RunID: "csr1", OwnerNode: "cs-node-a", Epoch: 1, State: AssignStatePending},
 		{RunID: "csr2", OwnerNode: "cs-node-b", Epoch: 1, State: AssignmentStateExecuting},
@@ -109,10 +128,10 @@ func TestAssignmentSummary_PGWithRows(t *testing.T) {
 
 	summary, err := store.AssignmentSummary(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, summary.Counts[AssignStatePending])
-	assert.Equal(t, 1, summary.Counts[AssignmentStateExecuting])
-	assert.Equal(t, 1, summary.Counts[AssignmentStateDone])
-	assert.Equal(t, 1, summary.NodeLoad["cs-node-a"]) // pending only (done excluded)
-	assert.Equal(t, 1, summary.NodeLoad["cs-node-b"]) // executing
-	assert.Equal(t, 2, summary.TotalActive)
+	assert.Equal(t, before.Counts[AssignStatePending]+1, summary.Counts[AssignStatePending])
+	assert.Equal(t, before.Counts[AssignmentStateExecuting]+1, summary.Counts[AssignmentStateExecuting])
+	assert.Equal(t, before.Counts[AssignmentStateDone]+1, summary.Counts[AssignmentStateDone])
+	assert.Equal(t, before.NodeLoad["cs-node-a"]+1, summary.NodeLoad["cs-node-a"]) // pending only (done excluded)
+	assert.Equal(t, before.NodeLoad["cs-node-b"]+1, summary.NodeLoad["cs-node-b"]) // executing
+	assert.Equal(t, before.TotalActive+2, summary.TotalActive)
 }

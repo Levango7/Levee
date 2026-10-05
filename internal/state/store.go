@@ -260,10 +260,35 @@ type AuditFilter struct {
 	Limit  int
 	// Offset skips the first Offset matching rows (timestamp DESC order).
 	// Negative values are treated as 0. Use with Limit for pagination.
+	//
+	// Paging with it is only safe against a read-only table: a row inserted
+	// mid-walk shifts every later offset. For a walk that must survive
+	// concurrent writers, use ListAuditChainPage.
 	Offset int
 	// TenantID restricts results to one owning tenant (see RunFilter).
 	TenantID string
 }
+
+// AuditCursor is a position in the global audit chain order — the total order
+// the audit hash chain is built over: ascending by (timestamp, id).
+//
+// It exists for ListAuditChainPage's keyset paging. An OFFSET would be simpler,
+// but ListAudits reads newest-first, so a row inserted while a walk is in
+// flight shifts every later offset by one: the walk re-reads a row it already
+// sealed and silently skips the oldest one, which for a hash chain means
+// writing a row's hash against a predecessor that is no longer its own.
+// Comparing against the last row actually read cannot do that — the walk only
+// ever moves forward, whatever arrives at the head.
+type AuditCursor struct {
+	Timestamp time.Time
+	ID        string
+}
+
+// DefaultAuditChainPageSize is how many rows one ListAuditChainPage call
+// returns when the caller does not choose. It bounds what a chain walk holds
+// in memory: the walk keeps only the running predecessor hash, so a page of
+// rows is the entire footprint regardless of how long the audit log gets.
+const DefaultAuditChainPageSize = 1000
 
 // Target is a managed inventory host. It persists across daemon restarts,
 // unlike the earlier in-memory TargetService registry.
@@ -409,6 +434,22 @@ type Store interface {
 	CreateTrace(ctx context.Context, trace *Trace) error
 	GetTrace(ctx context.Context, id string) (*Trace, error)
 	UpdateTrace(ctx context.Context, trace *Trace) error
+	// UpdateTraceChain stamps the chain hashes onto a trace row. It is the
+	// trace-side twin of UpdateAuditChain and exists for the same reason: the
+	// row is inserted before its position in the chain is known, so the builder
+	// writes the hashes afterwards.
+	//
+	// It writes NOTHING else. UpdateTrace would also work — the WORM trigger
+	// compares column values, not the statement — but a whole-row write makes
+	// the chain seal the only thing in the codebase that can touch every
+	// content column at once, and its safety would rest on the values happening
+	// to be identical. Naming the write surface keeps the seal provably
+	// chain-only, and keeps it working if the trigger's comparison ever
+	// tightens.
+	//
+	// It returns an error when no row matched — a silent no-op here would
+	// produce a chain with a hole in it.
+	UpdateTraceChain(ctx context.Context, id string, prevHash string, currHash string) error
 	// UpdateTraceChecksum writes checksum into the curr_hash column of the
 	// trace identified by id, but only when curr_hash is still empty
 	// (WHERE id=? AND curr_hash=''). It exists so the archiver can stamp a
@@ -477,6 +518,22 @@ type Store interface {
 	// a silent no-op here would produce a chain with a hole in it.
 	UpdateAuditChain(ctx context.Context, id string, prevHash string, currHash string) error
 	ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit, error)
+
+	// ListAuditChainPage returns up to limit audit rows in ASCENDING chain order
+	// — (timestamp, id), the total order the global audit hash chain is built
+	// over — starting strictly after the given cursor, and restricted to one
+	// tenant when tenantID is set. A nil cursor starts at the oldest row; a page
+	// shorter than limit is the end of the chain.
+	//
+	// This is ListAudits' counterpart for chain work, and the two differ in
+	// direction, in paging and in what tenantID means: the chain must be walked
+	// oldest-first (each row's hash covers its predecessor's) and must keep
+	// advancing past whatever is being appended to the log meanwhile, so it
+	// pages by cursor rather than by offset. It is a separate method rather than
+	// a filter flag because the read has to be exactly the total order the
+	// hashes were computed over — a tie broken differently here and there would
+	// make every row after the tie look tampered.
+	ListAuditChainPage(ctx context.Context, after *AuditCursor, limit int, tenantID string) ([]*Audit, error)
 
 	// Dispatch assignment CRUD (design-cluster-dispatch.md).
 	CreateAssignment(ctx context.Context, a *Assignment) error

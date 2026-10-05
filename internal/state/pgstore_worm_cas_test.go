@@ -129,3 +129,53 @@ func TestPG_DeleteLockByIDAndOwner(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, deleted)
 }
+
+// TestPG_UpdateTraceChain_ChainColumnsOnly pins the trace seal's write surface
+// against the real plpgsql trigger. The audit side has the same guarantee
+// (TestPGStore_AuditChainSealAndWORM), and it is worth having on both: if the
+// trigger's immutable set ever grows to include the chain columns, the seal
+// stops working on PostgreSQL while SQLite — where the trigger is separate DDL
+// with its own copy — would keep passing. Nothing but this test would notice.
+func TestPG_UpdateTraceChain_ChainColumnsOnly(t *testing.T) {
+	store, cleanup := newPGTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	require.NoError(t, store.CreateRun(ctx, &Run{
+		ID: "pg-run-trc", WorkflowName: "w", TemplateName: "t", PlanHash: "h",
+		Status: "running", CreatedAt: now, UpdatedAt: now, Creator: "u",
+	}))
+	require.NoError(t, store.CreateTrace(ctx, &Trace{
+		ID: "pg-trc-1", RunID: "pg-run-trc", Event: "step_execute", Actor: "u",
+		Detail: `{"step":1}`, Timestamp: now,
+	}))
+
+	// The seal's write is permitted: the trigger compares content columns only.
+	require.NoError(t, store.UpdateTraceChain(ctx, "pg-trc-1", "prev-1", "curr-1"))
+
+	got, err := store.GetTrace(ctx, "pg-trc-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "prev-1", got.PrevHash)
+	assert.Equal(t, "curr-1", got.CurrHash)
+	assert.Equal(t, `{"step":1}`, got.Detail, "a chain stamp must not touch content")
+
+	// Re-stamping is how a seal catches up a hole, so it must not be
+	// single-shot either.
+	require.NoError(t, store.UpdateTraceChain(ctx, "pg-trc-1", "prev-2", "curr-2"))
+	got, err = store.GetTrace(ctx, "pg-trc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "curr-2", got.CurrHash)
+
+	// Content columns remain WORM-protected, so the seal cannot be repurposed
+	// into a content edit by a caller with a Store handle.
+	_, err = store.DB().ExecContext(ctx, `UPDATE trace SET detail = '{"tampered":true}' WHERE id = 'pg-trc-1'`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WORM")
+
+	// An unknown id is an error, not a silent success.
+	err = store.UpdateTraceChain(ctx, "pg-trc-missing", "p", "c")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}

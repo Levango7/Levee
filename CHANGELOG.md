@@ -80,6 +80,38 @@
 
 验证：**12 项变异全部被抓且均为断言失败**（`IsLevel` 恒真、表里删一档、`LevelNames` 交出共享切片、`LevelNamesJoined` 手抄、`All()` 逐名列举、四处报错文案各自手抄、`Create`/`RegisterTemplate` 两处判定被跳过、executor 常量指向错误档位）。其中两条第一版**编不过**（`strings` / `dsl` 变成未使用导入）——改成同形可编译的变异后才认定，未编译的变异不作证据。另有一处自伤如实记录：第一个提交漏了 `benchmark_test.go:156` 的 `validLevel` 调用点，那条提交单独 checkout 时 `go vet ./...` 会红，由后续提交补齐（未重写已提交历史）。`go build ./...` / `go vet ./...` / `go test ./...` / golangci-lint / docgen / proto 漂移门见提交说明。
 
+### 变更（审计链随写封链与分批遍历）
+
+- **审计链改为按游标分批遍历（`audit: walkChain`）**：`AuditChainBuilder.Seal` / `Verify` 不再"一次读全表 + Go 内排序"，改为经新增的 `state.Store.ListAuditChainPage` 按 **keyset 游标**逐页推进，内存占用从 O(审计行数) 降为 O(页大小)（默认 1000 行），遍历期只保留滚动的前驱哈希。
+
+  为什么不是 OFFSET 分页：`ListAudits` 是**降序**（REST 日志接口依赖），而链必须**升序**推进（每行哈希覆盖前一行）；且 `Record` 每次审计写入都会封链，分页期间必然有并发写入——OFFSET 分页下新行插在队首会把后续 offset 整体前移，导致已处理的行被重复读取、最旧的行永远读不到，而对哈希链而言"重复读到一行"等于**拿一个已不再是其前驱的哈希去封它**，直接写坏链。游标分页只会向前推进：新增行落进下一页，落后于游标的回填行留待下一次封链补上，两者都不会损坏链（后者表现为 `Verify` 报 `Unsealed`，是可见的缺口而非静默通过）。
+
+  两个后端 + 租户层同步实现：`SQLiteStore` / `PGStore` 的链页查询用 `ORDER BY timestamp ASC, id ASC` 把 tie-breaker 钉进 SQL（两个后端原本都只有 `ORDER BY timestamp DESC`，同时间戳行顺序不稳定，而同时间戳恰是链序最不能含糊的地方）；`TenantStore` 强制以上下文解析出的租户限定页面并**忽略调用方传入的 tenantID**，无租户上下文时 fail-closed。
+
+  **如实标注的边界**：分批解决的是内存，不是扫描量——封链仍需遍历全部可见行，而 `Record` 每次写入都调用一次，因此超长审计库每次审计写入仍付一次全表扫描。改为增量封链（只封已封尾巴之后的行）需要先能区分"链中空洞"与"新增尾巴"（例如对未封行建部分索引），这会改变"断链"的既有语义，故不在本版夹带。
+
+  测试：新增 `internal/audit/auditchain_paging_test.go`（页大小 2 强制多次跨界：跨页封链后校验、跨页篡改只报一行不级联、同时间戳跨页、**遍历途中并发插入新行链仍自洽**、回填时间戳的行延后而非损坏）；`internal/state/audit_chain_page_test.go` 与 `pgstore_auditchain_test.go` 新增对等的后端用例（PG 侧实测：微秒精度保留、同秒 tie 按 id）；`internal/tenant/audit_chain_page_test.go` 新增租户隔离用例（含调用方传 tenantID 不能放宽作用域、无租户上下文报错）。
+
+- **trace 哈希链改为「只延展、不重写」的随写封链**：v1.14.0 起 trace 链只在**终态收口点**封一次链（`audit.SealRunTraceChain` → `Build`）。这有两个可量化的后果，本版一并消除。① **执行中的 run 无法验证**：`VerifyHashChain` 把 `empty_hash` 计为失败，而 run 结链前每一行 trace 的 `CurrHash` 都是空，于是任何进行中的 run 都被报成 `valid=false` + `brokenEntryId`——响应里与真实篡改无法区分。② **结链后到达的 trace 永久报假警**：`Build` 对已存在的链一律拒绝（`ErrChainAlreadyBuilt`），一条晚到的 trace（终态收口与最后一条 trace 之间的竞态、或异步收尾写入）此后永远打不开链，`/audit/verify` 恒报篡改。
+
+  新增 `HashChainBuilder.Seal`：按存储顺序遍历、只重算不重写——**`CurrHash` 为空**则写入并延展（新增行、或上次封链失败留下的空洞）；**已封但不匹配**则**不写**并返回 `ErrChainBroken`。`audit.TraceRecorder.Record` 在每次追加后调用它，封链失败只 `log.Warn` 不影响 trace 写入（与 `audit.Record` 同款处理），未封行在下次验证时以 `empty_hash` 可见、下次封链补上。于是：进行中的 run 随写随封可验证、晚到的 trace 延展链而非弄坏它、并发封链安全（哈希由存储内容派生，重叠遍历对共享行算出同值）。
+
+  **SA-002 在 trace 侧由此收敛**：trace 链的封链路径永不重写已封行，"先篡改再封链"销毁证据的场景在 trace 上不成立——封链返回 `ErrChainBroken`、验证继续报出被改的那一行；管理侧显式恢复入口仍是 `BuildForce`（`TestSeal_DoesNotRepairATamperedChain`）。
+
+  **兼容性**：`Build` / `BuildBatch` / `BuildForce` 的签名与语义一律不动（仍是对"无链存量行"的一次性建链入口），`VerifyResult` 与 proto/REST 响应无变化。代价是每次追加遍历该 run 的全部 trace，run 内 O(n²)——MVP 量级下 n 是"每 step/gate/审批一行"，已在代码注释中记录。
+
+- **新增 `state.Store.UpdateTraceChain`（只写链列）**：trace 侧此前用整行 `UpdateTrace` 写链（WORM 触发器按列值比较，整行写能过），使封链成为全代码库唯一能同时触碰每个内容列的操作，其安全性取决于值恰好相同。现在有专门的链列原语，与 `UpdateAuditChain` 对称，写入面在 SQL 层面可证。PG 侧由 `TestPG_UpdateTraceChain_ChainColumnsOnly` 对真实 plpgsql 触发器实跑：链列可写（含重复盖章）、内容列仍被拒、未知 id 报错而非静默成功。
+
+### 新增
+
+- **`ai.llm` 配置键接入默认值 / 环境变量 / 校验（`internal/config`）**：`LLMConfig` 结构体与 `config.example.yaml` 的文档早已存在，`cmd_converse.go` 也确实消费它，但配套三件套全缺——8 个键不在 `allKeys()` 里（`bindEnv` 不绑定 → `LEVEE_AI_LLM_*` 环境变量对 `viper.Unmarshal` 完全不可见，只有 YAML 文件能配，而容器化部署正是只给环境变量的）、无 `SetDefault`、`Validate` 不校验。现补齐：`provider` 默认 `openai`（**这一条是有语义的**：`recommend.NewLLMClient` 把空 provider 当作 `mock` 并返回罐头客户端，运维只开 `enabled` 不配 provider 就会静默拿到**编造的推荐结果**且无任何告警）、`timeout` 默认 30s、`max_tokens`/`temperature` 保持 0（交由客户端内置默认，与文档口径一致）；`enabled` 时校验 provider ∈ {openai, ollama}（**拒绝 `mock`**：那是测试专用值，误配会让服务一边返回假数据一边报告 LLM 健康）、`timeout > 0`、`temperature ∈ [0,1]`；关闭状态下零值不参与校验（保持"默认关闭、既有部署逐字节不变"）。测试见 `internal/config/llm_config_test.go`（默认值 / 环境变量覆盖 / 文件配置 / provider 拒绝 / 关闭态放行 / 数值边界 / `allKeys` 防漂移）。
+
+### 修复
+
+- **同时间戳的 trace 会被随机 id 排到错误位置，把在跑的 run 报成篡改**：trace 链按 `(timestamp, id)` 升序遍历，而 `Record` 每追加一行就封一次链——新行若因时间戳相同而按 id 排在已封行之前，就把那行挤到了它哈希所依据的前驱之外，下一次封链因此返回 `ErrChainBroken`，`/audit/verify` 从此对该 run 恒报篡改（真实成因不是攻击，是时钟粒度）。本机 SQLite 实测 2026-10-05：连续 84 个「三条记录」循环中 5 个的链被 `Verify` 判坏。修法是把 id 变成可排序的：`audit.newID` 现在用 8 字节大端 unix 纳秒前缀 + 8 字节随机后缀，前缀额外强制严格递增（时钟没走时也要大于上一个），于是同时间戳行的 tie-breaker 就是写入顺序，追加只能延展链尾。`Seal` 的「已封不匹配则不重写」规则一字不动——把它放宽成重写会给「改内容后重新接链」留出一条洗白路径。残留面按代码注释登记：墙钟回拨（行时间戳倒退但 id 不倒退）、以及旧二进制留下的随机 id 存量行，两者仍能让晚到的追加换位，处置入口是 `BuildForce`。测试：`internal/audit/trace_chain_order_test.go` 三例——`TestNewIDSortsInCreationOrder`（2000 个 id 严格递增且不重）、`TestSeal_AppendNeverRepositionsSealedRow`（钉死同一时间戳，逐行插入+封链，任何换位都会让 `Seal` 报错；这一例不依赖真实时钟，因此在 ns 粒度时钟的 CI 上同样真跑到 tie-breaker）、`TestSeal_ProductionPathStaysVerifiableAcrossManyAppends`（走 `Record` 生产路径连追 60 行）。变异验证：把 `newID` 还原为纯随机后三例全红（确定性那例停在 `seal 2 must extend the chain`），修复前 `TestVerifyHashChain_RecordedRunVerifies` 在本机 20 次里间歇性红、修复后 40/40 绿。
+
+- **PG 测试在复用数据库上不再假失败**：`newPGTestStore` 刻意不清理 `run_assignment` 与 `cluster_nodes`（这两张表归 dispatch / cluster 包并发持有，CI 亦按包分步串行执行以共用同一个库），但三个用例自身的假设没跟上——`TestClusterNodes_PGListsNodes` 用裸 INSERT 写固定 id（重跑撞唯一键）、`TestAssignmentSummary_PGWithRows` 对全表聚合断言精确计数（他包残留行即失配）、`TestPGStore_ReclaimAssignmentCAS` 用 `CreateAssignment` 写固定 run_id（残留行撞主键）。CI 每次是全新数据库所以从未暴露，本地对着常驻容器复跑必红。现按该文件既有的"只断言存在性 / 只碰自己的键"模式补齐：`cluster_nodes` 改为照抄 cluster 包 `RegisterNode` 的 `ON CONFLICT (id) DO UPDATE`、聚合断言改为相对封链前基线的增量、两个用例在播种前删除自己那把键。实测：常驻共享库连跑三次全绿；新库上 `./internal/state/... ./internal/cluster/... ./internal/takeover/... ./internal/backup/...` 全部通过（与 CI 序列一致）。
+
 ## [v1.19.0] - 2026-10-04 — `allow_irreversible` 白名单接线（V14/LE082 编译期门禁）
 
 规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。

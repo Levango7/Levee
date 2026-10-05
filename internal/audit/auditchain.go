@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 
 	"github.com/nexus/levee/internal/state"
@@ -65,6 +64,10 @@ type AuditChainResult struct {
 // AuditChainBuilder seals and verifies the global audit hash chain.
 type AuditChainBuilder struct {
 	store state.Store
+	// pageSize overrides how many rows one walk reads at a time; 0 means
+	// state.DefaultAuditChainPageSize. Only tests set it — small enough to
+	// exercise paging with a handful of rows rather than a thousand-row fixture.
+	pageSize int
 }
 
 // NewAuditChainBuilder creates an AuditChainBuilder over the given store.
@@ -113,29 +116,54 @@ func ComputeAuditHash(a *state.Audit, prevHash string) string {
 	return digest(canonicalV2(fields...))
 }
 
-// loadChainOrder returns every audit row the store exposes, in chain order —
-// ascending by (timestamp, id).
+// walkChain calls fn once per audit row the store exposes, in chain order —
+// ascending by (timestamp, id) — holding one page of rows at a time.
 //
-// ListAudits orders by timestamp DESC alone, which is not a total order: rows
-// sharing a timestamp come back in whatever order the engine picks, and the
-// engine is free to pick differently on the next read. Combined with random
-// hex ids that would make the chain's order unstable between a Seal and a
-// later Verify, which is indistinguishable from tampering. Sorting here makes
-// the order a total and reproducible one. No LIMIT is set, so the whole
-// visible chain is read; a deployment with a very large audit log pays for a
-// full scan per seal.
-func (b *AuditChainBuilder) loadChainOrder(ctx context.Context) ([]*state.Audit, error) {
-	rows, err := b.store.ListAudits(ctx, state.AuditFilter{})
-	if err != nil {
-		return nil, fmt.Errorf("audit: list audits for chain: %w", err)
+// The order is the chain's whole foundation, so it is read from the store as
+// (timestamp, id) rather than derived here. ListAudits orders by timestamp DESC
+// alone, which is not a total order: rows sharing a timestamp come back in
+// whatever order the engine picks, and the engine is free to pick differently
+// on the next read. With audit ids being 8 random bytes rendered as hex, that
+// would make the order unstable between a Seal and a later Verify — which is
+// indistinguishable from tampering. ListAuditChainPage pins the tie-breaker in
+// SQL, where it is the same every time.
+//
+// Paging is by cursor rather than offset for a reason that only shows up in
+// production: Record seals on every write, so a walk is normally running while
+// rows are being appended. An offset walk would re-read rows it already
+// processed and skip the oldest ones, and for a hash chain a re-read row is
+// sealed against a predecessor that is no longer its own. Comparing against the
+// last row read makes the walk move forward no matter what arrives at the head.
+//
+// The cost that paging does NOT remove is the read itself: sealing still walks
+// every visible row, and Record calls it per write. A deployment with a very
+// large audit log therefore still pays a full scan per audit write. Making that
+// incremental means sealing only the rows after the sealed tail, which needs a
+// way to tell a mid-chain hole from a merely new tail (an index over unsealed
+// rows, say) — a change to what a broken chain means, so it is not folded in
+// here.
+func (b *AuditChainBuilder) walkChain(ctx context.Context, fn func(a *state.Audit) error) error {
+	limit := b.pageSize
+	if limit <= 0 {
+		limit = state.DefaultAuditChainPageSize
 	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		if !rows[i].Timestamp.Equal(rows[j].Timestamp) {
-			return rows[i].Timestamp.Before(rows[j].Timestamp)
+	var cursor *state.AuditCursor
+	for {
+		page, err := b.store.ListAuditChainPage(ctx, cursor, limit, "")
+		if err != nil {
+			return fmt.Errorf("audit: list audits for chain: %w", err)
 		}
-		return rows[i].ID < rows[j].ID
-	})
-	return rows, nil
+		for _, a := range page {
+			if err := fn(a); err != nil {
+				return err
+			}
+		}
+		if len(page) < limit {
+			return nil
+		}
+		last := page[len(page)-1]
+		cursor = &state.AuditCursor{Timestamp: last.Timestamp, ID: last.ID}
+	}
 }
 
 // Seal recomputes the chain over every visible audit row and persists any hash
@@ -151,21 +179,21 @@ func (b *AuditChainBuilder) loadChainOrder(ctx context.Context) ([]*state.Audit,
 // leaves the affected rows without hashes, which Verify then reports as
 // FailureEmptyHash rather than silently passing.
 func (b *AuditChainBuilder) Seal(ctx context.Context) (int, error) {
-	rows, err := b.loadChainOrder(ctx)
-	if err != nil {
-		return 0, err
-	}
 	prev := ""
 	sealed := 0
-	for _, a := range rows {
+	err := b.walkChain(ctx, func(a *state.Audit) error {
 		want := ComputeAuditHash(a, prev)
 		if a.PrevHash != prev || a.CurrHash != want {
 			if err := b.store.UpdateAuditChain(ctx, a.ID, prev, want); err != nil {
-				return sealed, fmt.Errorf("audit: seal audit %q: %w", a.ID, err)
+				return fmt.Errorf("audit: seal audit %q: %w", a.ID, err)
 			}
 			sealed++
 		}
 		prev = want
+		return nil
+	})
+	if err != nil {
+		return sealed, err
 	}
 	return sealed, nil
 }
@@ -176,14 +204,11 @@ func (b *AuditChainBuilder) Seal(ctx context.Context) (int, error) {
 // only to re-establish the chain over rows that were legitimately left
 // unsealed.
 func (b *AuditChainBuilder) Verify(ctx context.Context) (*AuditChainResult, error) {
-	rows, err := b.loadChainOrder(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result := &AuditChainResult{Count: len(rows), Valid: true}
+	result := &AuditChainResult{Valid: true}
 
 	prev := ""
-	for i, a := range rows {
+	i := 0
+	err := b.walkChain(ctx, func(a *state.Audit) error {
 		want := ComputeAuditHash(a, prev)
 		switch {
 		case a.CurrHash == "":
@@ -218,6 +243,12 @@ func (b *AuditChainBuilder) Verify(ctx context.Context) (*AuditChainResult, erro
 		// single tampered row from cascading into a failure report for every
 		// row behind it. The real break stays the only one reported.
 		prev = a.CurrHash
+		i++
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	result.Count = i
 	return result, nil
 }

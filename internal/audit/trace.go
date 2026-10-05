@@ -9,12 +9,15 @@ package audit
 import (
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -90,10 +93,19 @@ func NewTraceRecorder(store state.Store) (*TraceRecorder, error) {
 
 // Record persists one trace entry. It generates a unique id, redacts sensitive
 // fields in Input/Output, serialises the detail payload to JSON and inserts
-// the resulting state.Trace. The returned *state.Trace is the row that was
-// written.
+// the resulting state.Trace. It then seals the run's hash chain over the record
+// just written, so the chain covers a run while it is still running rather than
+// only once it settles. The returned *state.Trace is the row that was written.
 //
-// Record does not set PrevHash/CurrHash; the hash chain is built by T044.
+// Record does not set PrevHash/CurrHash itself; the chain columns are written by
+// the seal that follows the insert, because a row's position in the chain is
+// only known once every earlier record is in place.
+//
+// A seal failure is logged, not returned: the trace itself is already durably
+// written, and LEVEE treats audit-writing as non-fatal for the action that
+// triggered it (the same contract as Record for audit entries). An unsealed row
+// is not silently accepted — verification reports it as empty_hash and the next
+// seal closes it.
 func (r *TraceRecorder) Record(ctx context.Context, record TraceRecord) (*state.Trace, error) {
 	if record.RunID == "" {
 		return nil, ErrEmptyRunID
@@ -123,6 +135,13 @@ func (r *TraceRecorder) Record(ctx context.Context, record TraceRecord) (*state.
 
 	if err := r.store.CreateTrace(ctx, trace); err != nil {
 		return nil, fmt.Errorf("audit: create trace: %w", err)
+	}
+	if err := SealRunTraceChain(ctx, r.store, trace.RunID); err != nil {
+		log.Warn("audit: trace chain seal failed",
+			"trace_id", trace.ID,
+			"run_id", trace.RunID,
+			"event", trace.Event,
+			"error", err)
 	}
 	return trace, nil
 }
@@ -242,12 +261,50 @@ func buildDetail(record TraceRecord) (string, error) {
 	return string(buf), nil
 }
 
-// newID generates a 16-byte hex-encoded random id (32 chars). It uses
-// crypto/rand so that ids are unpredictable and collision-resistant.
+// idClock lets newID hand out strictly increasing time prefixes even when the
+// wall clock did not advance between two calls.
+var idClock = struct {
+	sync.Mutex
+	last int64
+}{}
+
+// newID returns a 32-character hex id: 8 bytes of big-endian unix time in
+// nanoseconds, forced strictly greater than the previous issued value, followed
+// by 8 crypto/rand bytes. So ids are unpredictable within the same nanosecond
+// and globally sortable by creation time.
+//
+// The sortable half is not cosmetic. A run's trace chain is walked in
+// (timestamp, id) order — see ListTraces — and Record seals that chain after
+// every insert, so a record that lands *before* an already-sealed one is moved
+// off the predecessor its hash was computed against. With purely random ids the
+// tie-break is arbitrary: two records sharing a timestamp (routine on a clock
+// with millisecond granularity — measured 2026-10-05, local Windows build with
+// SQLite: 5 of the first 84 three-record loops ended with a chain that Verify
+// reported broken) get sealed in an order that later flips, and the next seal
+// reports an innocent run as tampered. Creation-ordered ids make the tie-break
+// agree with the order records were appended in, so an append can only ever
+// extend the tail.
+//
+// Two residual ways to reposition anyway are documented rather than fixed, and
+// both keep the seal's refusal (rewriting instead would launder a genuine
+// relink): a backwards wall-clock step between two appends, because the row's
+// timestamp column goes backwards even though its id does not; and a late
+// append to a run whose existing records were written by a binary that issued
+// random ids. Either way Verify reports the break and BuildForce is the
+// deliberate administrative repair.
 func newID() (string, error) {
+	ns := time.Now().UnixNano()
+	idClock.Lock()
+	if ns <= idClock.last {
+		ns = idClock.last + 1
+	}
+	idClock.last = ns
+	idClock.Unlock()
+
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
+	if _, err := rand.Read(b[8:]); err != nil {
 		return "", fmt.Errorf("read random bytes: %w", err)
 	}
+	binary.BigEndian.PutUint64(b[:8], uint64(ns))
 	return hex.EncodeToString(b), nil
 }

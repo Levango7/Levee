@@ -25,15 +25,23 @@ func newChainBuilder(t *testing.T) (*HashChainBuilder, *state.SQLiteStore) {
 // recordTraces records n traces for the given run with strictly increasing
 // timestamps and returns the persisted trace ids. The traces use distinct
 // events/actors/details so their hashes are distinct.
+// recordTraces inserts n trace rows for a run that carry NO chain.
+//
+// It writes through the store rather than through TraceRecorder because Record
+// seals the chain by design now, and Build's contract is the opposite case:
+// rows carrying no hashes at all — a run recorded before the chain existed, or
+// by a version that never sealed one. buildDetail is the recorder's own helper,
+// so these rows are identical to recorded ones minus the chain columns; a test
+// seeding data this way still exercises the production hashing.
 func recordTraces(t *testing.T, store state.Store, runID string, n int) []string {
 	t.Helper()
 	ctx := context.Background()
-	rec, err := NewTraceRecorder(store)
-	require.NoError(t, err)
 
 	ids := make([]string, 0, n)
 	for i := 0; i < n; i++ {
-		trace, err := rec.Record(ctx, TraceRecord{
+		id, err := newID()
+		require.NoError(t, err)
+		detail, err := buildDetail(TraceRecord{
 			RunID:  runID,
 			Event:  EventStepExecute,
 			Actor:  "system",
@@ -45,7 +53,11 @@ func recordTraces(t *testing.T, store state.Store, runID string, n int) []string
 			},
 		})
 		require.NoError(t, err)
-		ids = append(ids, trace.ID)
+		require.NoError(t, store.CreateTrace(ctx, &state.Trace{
+			ID: id, RunID: runID, Event: EventStepExecute, Actor: "system",
+			Detail: detail, Timestamp: time.Now().UTC(),
+		}))
+		ids = append(ids, id)
 		// Sleep so timestamps are strictly increasing (SQLite stores with
 		// microsecond precision; 1ms is plenty).
 		time.Sleep(2 * time.Millisecond)
