@@ -107,6 +107,14 @@ Runs a shell command through `GateInput.Channel`; judges exit code and
 (optionally) stdout. No `GateRuntime` dependency; a missing channel reports
 `Passed=false` ("missing channel") which fails the phase honestly.
 
+> **现状（2026-10-05 实测）**：run 路径**从不给 `GateInput.Channel` 赋值**——
+> `internal/engine/closure.go:393`（pre_apply）与 `:502`（post_batch）只填 RunID /
+> BatchID / TargetIDs，全仓唯一的非测试 `Channel:` 赋值在 `internal/wiring/exec.go:114`，
+> 而那是给步骤执行用的。所以今天任何被声明出来的 `cmd` 门禁都会以 "missing channel"
+> 失败关闭：**它不会伪造通过（安全），但它也从未执行你声明的那条命令（不可用）**。
+> `probe` 的 `remote` 模式同理。证据：`tests/integration/gate_block_rollback_e2e_test.go`
+> 第一条用例；是否给门禁供通道是需要产品定夺的条目，登记在 `docs/product-roadmap.md`。
+
 | Param | Type | Default | Notes |
 |---|---|---|---|
 | `run` | string | — (required) | command line; subject to the verify-gate metacharacter blacklist |
