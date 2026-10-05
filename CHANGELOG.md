@@ -137,7 +137,8 @@
 ### 修复（交付物版本口径与一致性门禁）
 
 - **chart 引用的版本从未发布过**：`CHANGELOG.md` 写有 `## [v1.19.0] - 2026-10-04` 小节、`docs/release-notes/v1.19.0.md` 已存在、`Chart.yaml` 的 appVersion 也升到了 1.19.0，但远端最新 tag 是 `v1.18.0`，`v1.19.0` 从未打过；镜像只在 `release.yml` 的 `push: tags: v*` 时构建，因此 `ghcr.io/levango7/levee:1.19.0` 这个制品并不存在。同一个 chart 里还自相矛盾——`appVersion: "1.19.0"` 而 `values.yaml image.tag: "1.18.0"`，即"声明 1.19.0、部署 1.18.0"。本批把 appVersion 对齐到**已发布**的 1.18.0，并在下方 v1.19.0 小节显式标注"未切版"（内容已在 master，制品不存在）。
-- **新增硬门禁 `scripts/check_release_versions.py`**（由 `validate_delivery.sh` 在 helm 检查之前调用；delivery 作业的 checkout 改为 `fetch-depth: 0` + `fetch-tags: true` 才能拿到 tag 集合）：① `appVersion` 必须等于 `image.tag`；② `image.tag` 引用的版本必须已有 `v<version>` tag，否则等于把部署指向一个从未构建的镜像；③ CHANGELOG 每个 `## [vX.Y.Z]` 小节要么有对应 tag、要么写明"未切版"；④ 一个 `v*` tag 都看不到时**直接失败**——静默的空 tag 列表会让前三条全部假通过，那比没有门禁更糟。
+- **新增硬门禁 `scripts/check_release_versions.py`**（由 `validate_delivery.sh` 在 helm 检查之前调用；delivery 作业的 checkout 改为 `fetch-depth: 0` + `fetch-tags: true` 才能拿到 tag 集合）：① `appVersion` 必须等于 `image.tag`；② chart 引用的版本必须已有 `v<version>` tag，否则等于把部署指向一个从未构建的镜像；③ CHANGELOG 里比最新 tag 更晚的 `## [vX.Y.Z]` 小节要么已打 tag、要么写明"未切版"（比最新 tag 更早的无 tag 历史小节不阻断，但会被逐条点名，不静默）；④ 一个 `v*` tag 都拿不到时**直接失败**——静默的空 tag 列表会让前三条全部假通过。
+- **判据取远端而不是本地 tag**（第一版就被自己的环境教育了）：本地克隆残留了 `v1.0.0`–`v1.9.0`，而 origin 上只有 `v1.10.0`+，于是本地跑"通过"、CI 跑"失败"。脚本现在优先 `git ls-remote --tags origin`，取不到远端才退回本地集合并打印来源警告；顺带查出并如实登记：CHANGELOG 的 v1.7.0 小节在远端无对应 tag（历史追溯，不阻断交付）。
 - **验证**：基线通过（20 个 tag，chart 与 image.tag 均为 1.18.0）；变异四条分别变红——appVersion 改回 1.19.0、`image.tag` 改成未发布的 9.9.9、删掉 v1.19.0 的"未切版"标注、在无 tag 仓库里运行（触发规则④）。`bash -n` 通过；用 `HELM_BIN=/nonexistent-helm` 跑 `validate_delivery.sh` 证明版本检查确实在链路上、且先于 helm 检查执行（版本被改坏时它在 helm 之前就失败退出）。
 
 ## [v1.19.0] - 2026-10-04 — `allow_irreversible` 白名单接线（V14/LE082 编译期门禁）

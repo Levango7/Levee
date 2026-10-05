@@ -5,18 +5,23 @@ Why: CHANGELOG 可以写下 `## [vX.Y.Z] - 日期` 小节、Helm chart 可以把
 镜像 tag 指到那个版本，而 tag 从未打过——于是 `helm install` 拉到的是上一个版本的镜像
 （或一个不存在的 tag），而 chart 与 changelog 对外声称的是另一个版本。这类不一致横跨
 三个文件，逐文件 review 看不见：本仓的 v1.19.0 正是停在这个状态（CHANGELOG 小节、
-docs/release-notes/v1.19.0.md 与 Chart appVersion 都写了 1.19.0，而远端最新 tag 是
-v1.18.0、values.yaml 的 image.tag 还是 1.18.0，镜像 v1.19.0 从未被构建过）。
+docs/release-notes/v1.19.0.md 与 Chart appVersion 都写了 1.19.0，而 origin 上最新的
+tag 是 v1.18.0、values.image.tag 还是 1.18.0，镜像 `:1.19.0` 从未被构建过）。
 
 规则（全部硬失败，不留"跳过即通过"的分支）：
   1. Chart.yaml 的 appVersion 必须等于 values.yaml 的 image.tag——渲染出的
      Deployment 拉取的镜像，就是 chart 自称的那个版本。
-  2. 该版本必须存在对应 git tag（v<version>）——镜像由 release.yml 在
+  2. 该版本必须存在对应的 **远端** tag（v<version>）——镜像由 release.yml 在
      `push: tags: v*` 时构建，没有 tag 就没有制品。
-  3. CHANGELOG 里每个 `## [vX.Y.Z]` 小节要么已有对应 tag，要么在小节正文里显式写明
-     "未切版"。写下日期却不切版，等于对部署方宣称一个不存在的制品。
-  4. 一个 v* tag 都看不到时直接失败：CI 的 checkout 默认不取 tag，静默的空 tag 列表
-     会让上面三条永远"通过"，那比没有门禁更糟。
+  3. CHANGELOG 里每个 `## [vX.Y.Z]` 小节：若它比最新 tag 更晚（= 声称了一个还没切版
+     的发布），要么已打 tag，要么在小节正文里显式写明"未切版"，否则失败。比最新 tag
+     更早的无 tag 小节属历史追溯，不阻断交付，但会被逐条点名（不静默）。
+  4. 拿不到任何 v* tag 时直接失败：静默的空 tag 列表会让前三条永远"通过"。
+
+为什么 tag 集合取远端而不是本地：本地克隆可能残留从未推送的 tag。本仓实测本地有
+v1.0.0–v1.9.0，而 origin 只有 v1.10.0+ ——用本地 tag 会让"已发布"类断言假绿（本脚本
+第一版就在本地放行、在 CI 变红，正是这个差别）。CI 里 checkout 抓来的就是远端集合，
+取不到远端时退回本地并打印来源，绝不静默。
 
 用法：scripts/check_release_versions.py [chart_dir] [changelog_path]
 退出码：0 = 通过，1 = 失败。
@@ -39,18 +44,37 @@ def fail(msg: str) -> None:
     failures.append(msg)
 
 
-def run_git(*args: str) -> str:
-    proc = subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if proc.returncode != 0:
-        fail(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
-        return ""
-    return proc.stdout
+def note(msg: str) -> None:
+    print(f"note: {msg}")
+
+
+def run(args: list[str], timeout: int = 30) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def parse_version(tag: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", tag))
+
+
+def tag_set() -> tuple[set[str], str]:
+    """Return (version tags, where they came from) — remote preferred."""
+    code, out, _ = run(["git", "ls-remote", "--tags", "origin"])
+    if code == 0 and out.strip():
+        tags = {re.sub(r"\^\{\}$", "", m.group(1))
+                for m in re.finditer(r"refs/tags/(v[0-9][^\s]*)$", out, re.MULTILINE)}
+        return tags, "origin (git ls-remote --tags)"
+    code, out, err = run(["git", "tag", "--list", "v*"])
+    if code != 0:
+        fail(f"reading tags failed: {err.strip()}")
+        return set(), "unreadable"
+    note("tag set taken from the LOCAL clone (remote unreachable) — local tags can "
+         "include versions that were never pushed")
+    return {t.strip() for t in out.splitlines() if t.strip()}, "local clone (fallback)"
 
 
 def first_match(pattern: str, text: str, label: str, source: Path) -> str:
@@ -76,7 +100,7 @@ def image_tag_of(values_text: str) -> str:
             if raw and not raw.startswith((" ", "\t", "#")):
                 in_image = False  # left the block
                 continue
-            m = re.match(r"^\s+tag:\s*\"?([^\"\s#]+)\"?", raw)
+            m = re.match(r'^\s+tag:\s*"?([^"\s#]+)"?', raw)
             if m:
                 return m.group(1)
     return ""
@@ -96,7 +120,7 @@ def changelog_sections(text: str) -> list[tuple[str, str]]:
             continue
         if current is None:
             continue
-        if line.startswith("## ["):  # [Unreleased] or any other header closes it
+        if line.startswith("## ["):  # [Unreleased] or another header closes it
             out.append((current, "\n".join(buf)))
             current, buf = None, []
             continue
@@ -132,46 +156,63 @@ def main() -> int:
             f"`helm install` pulls :{image_tag} while the chart advertises {app_version}"
         )
 
-    # Rule 4 — prove the tag list is real before trusting it (see docstring).
-    tag_out = run_git("tag", "--list", "v*")
-    tags = {t.strip() for t in tag_out.splitlines() if t.strip()}
+    tags, source = tag_set()
     if not tags:
         fail(
-            "no v* tags are visible in this checkout — the tag set must be fetched "
-            "(actions/checkout: fetch-tags: true); an empty tag list would silently "
-            "pass every version check below"
+            "no v* tags are visible (remote and local both empty) — the tag set must be "
+            "fetched (actions/checkout: fetch-depth: 0 / fetch-tags: true); an empty tag "
+            "list would silently pass every version check below"
         )
+        return report()
+
+    newest_tag = max(tags, key=parse_version)
+    newest_v = parse_version(newest_tag)
 
     referenced = [v for v in (image_tag, app_version) if v]
     # Rule 2 — the artifact the deployment actually pulls must have been released.
     for version in referenced:
-        if tags and f"v{version}" not in tags:
+        if f"v{version}" not in tags:
             fail(
-                f"values.image.tag / appVersion reference {version} but tag v{version} "
-                f"does not exist, so ghcr.io ...:levee:{version} was never built "
+                f"chart references {version} but tag v{version} does not exist on "
+                f"{source}, so ghcr.io ...:levee:{version} was never built "
                 f"(release.yml runs on `push: tags: v*`)"
             )
 
-    # Rule 3 — a dated CHANGELOG section is a release claim.
+    legacy: list[str] = []
+    # Rule 3 — a section newer than the last tag is a release claim.
     for version, body in changelog_sections(log_text):
         if f"v{version}" in tags:
             continue
-        if PENDING_MARKER in body:
-            print(f"note: CHANGELOG v{version} is declared {PENDING_MARKER} (not tagged yet)")
-            continue
-        fail(
-            f"CHANGELOG declares `## [v{version}]` as a released section but tag v{version} "
-            f"does not exist; either cut the tag or mark the section with '{PENDING_MARKER}'"
+        if parse_version(version) > newest_v:
+            if PENDING_MARKER in body:
+                note(f"CHANGELOG v{version} is declared {PENDING_MARKER} (no tag v{version} yet)")
+                continue
+            fail(
+                f"CHANGELOG declares `## [v{version}]` (newer than {newest_tag}) as a "
+                f"released section but tag v{version} does not exist; either cut the tag "
+                f"or mark the section with '{PENDING_MARKER}'"
+            )
+        else:
+            legacy.append(version)
+
+    if legacy:
+        note(
+            "CHANGELOG has historical sections with no matching tag (older than "
+            f"{newest_tag}, so they do not affect what deploys): "
+            + ", ".join("v" + v for v in sorted(legacy, key=parse_version))
+            + " — recorded rather than silently accepted"
         )
 
+    return report(f"chart={app_version} tag={image_tag} newest_tag={newest_tag} "
+                  f"tag_source={source} tags={len(tags)}")
+
+
+def report(ok_summary: str = "") -> int:
     if failures:
         for f in failures:
             print(f"RELEASE-VERSION CHECK FAILED: {f}", file=sys.stderr)
         return 1
-
-    newest = sorted(tags, key=lambda t: [int(x) for x in re.findall(r"\d+", t)])
-    print(f"RELEASE VERSION CHECK PASSED: chart={app_version} tag={image_tag} "
-          f"released={len(tags)} tags (newest {newest[-1]})")
+    print(f"RELEASE VERSION CHECK PASSED: {ok_summary}")
     return 0
 
 
