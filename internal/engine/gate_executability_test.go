@@ -242,54 +242,51 @@ func TestPlanGateBlockersMatchesMaterialisation(t *testing.T) {
 	}
 }
 
-// TestBatchLevelGateIsHashBoundButNeverMaterialised is a characterisation test:
-// it pins a defect rather than endorsing it, and it exists because the defect is
-// invisible from either side alone.
+// TestBatchLevelGateIsHashBoundAndMaterialised is the same pair of halves, now
+// read the way it must work.
 //
 // `batches: gate:` flows through the generator into plan.Batch.Gate
-// (internal/plan/generator.go:230) and IS covered by the plan hash
-// (internal/plan/hash.go:289), so it is part of the artifact an approval binds
-// to. But walkPlanGates — the only thing that turns declarations into runnable
-// gates — iterates Batches[].Steps[].Gate, so a batch-level declaration is never
-// materialised and never runs. Reading the generator alone suggests the gate
-// exists; reading the engine alone suggests nothing was dropped.
+// (internal/plan/generator.go) and IS covered by the plan hash
+// (internal/plan/hash.go), so it is part of the artifact an approval binds to.
+// walkPlanGates — the only thing that turns declarations into runnable gates —
+// used to iterate Batches[].Steps[].Gate only, so the batch-level half of that
+// promise was never kept: nothing registered, nothing ran, and the plan-time
+// refusal did not see it either. examples/gate-templates/redis.yaml ships a
+// batch probe gate whose comment claims it "runs after EVERY batch completes and
+// blocks the next batch on failure"; that claim is now true instead of pinned as
+// a defect.
 //
-// The consequence is the exact failure docs/gates.md promises cannot happen: a
-// declared verification gate that masquerades as satisfied. examples/
-// gate-templates/redis.yaml ships a batch probe gate whose comment claims it
-// "runs after EVERY batch completes and blocks the next batch on failure"; today
-// it blocks nothing, anywhere.
-//
-// Turning it on is deliberately NOT done here: a gate that has never run may
-// start failing batches that have always passed, which is a behaviour change
-// needing migration notes and a decision, not a side effect of a refactor. See
-// the post_batch routing row in docs/product-roadmap.md.
-func TestBatchLevelGateIsHashBoundButNeverMaterialised(t *testing.T) {
-	failingBatchGate := &dsl.GateSpec{Post: []dsl.GateCheck{
+// The behaviour change this carries is deliberate and documented in
+// CHANGELOG.md: a batch-level gate that has never run can start failing batches
+// that always passed. That is the point — the approved plan already promised the
+// check — but it is not a refactor detail, so it is stated as a migration note.
+func TestBatchLevelGateIsHashBoundAndMaterialised(t *testing.T) {
+	batchGate := &dsl.GateSpec{Batch: []dsl.GateCheck{
 		{Type: "cmd", Command: "exit 1", ExpectExit: 0},
 	}}
 
 	p := &plan.Plan{ID: "plan-batch-gate", Batches: []plan.Batch{{
 		Targets: []string{"web-1"},
-		Gate:    failingBatchGate,
+		Gate:    batchGate,
 		Steps:   []plan.PlanStep{{Name: "restart"}},
 	}}}
 
-	// 1. It never runs: nothing is registered in any phase.
+	// 1. It runs: the declaration lands in the phase that executes between
+	//    batches, under the name the refusal reports.
 	gm := verify.NewGateManager()
 	require.NoError(t, materializeStepGates(gm, p, GateRuntime{}))
 	assert.Empty(t, gateNames(gm.Gates(verify.PhasePreApply)))
 	assert.Empty(t, gateNames(gm.Gates(verify.PhasePostApply)))
-	assert.Empty(t, gateNames(gm.Gates(verify.PhasePostBatch)),
-		"the batch-level gate is bound to this phase by name, yet nothing lands here")
+	assert.Equal(t, []string{"batches:batch:0"}, gateNames(gm.Gates(verify.PhasePostBatch)),
+		"the batch-level gate must land in the post-batch phase")
 
-	// 2. Yet it is bound into the approved artifact: two plans differing only in
+	// 2. It is bound into the approved artifact: two plans differing only in
 	//    their batch-level gate hash differently. Proving this half matters —
 	//    without it the declaration would be invisible to governance as well,
 	//    and the honest label would be "ignored field" instead of "promised and
-	//    not delivered".
+	//    now delivered".
 	withGate := &plan.Plan{ID: "plan-batch-gate", Batches: []plan.Batch{{
-		Targets: []string{"web-1"}, Gate: failingBatchGate,
+		Targets: []string{"web-1"}, Gate: batchGate,
 		Steps: []plan.PlanStep{{Name: "restart"}},
 	}}}
 	withoutGate := &plan.Plan{ID: "plan-batch-gate", Batches: []plan.Batch{{
@@ -297,18 +294,16 @@ func TestBatchLevelGateIsHashBoundButNeverMaterialised(t *testing.T) {
 		Steps:   []plan.PlanStep{{Name: "restart"}},
 	}}}
 	assert.NotEqual(t, plan.ComputeHash(withGate), plan.ComputeHash(withoutGate),
-		"Batch.Gate must be inside the hash for this finding to read as it does")
+		"Batch.Gate must be inside the hash for this gate to be approval-bound")
 
-	// 3. And the plan-time refusal does not see it either, so a batch-level
-	//    human gate is neither refused up front nor executed later: it just
-	//    vanishes. Pinning this so the eventual fix has to move both halves.
-	assert.Empty(t, PlanGateBlockers(p, GateRuntime{}),
-		"today an unexecutable batch-level gate is invisible at plan time as well")
+	// 3. And the plan-time refusal sees it too, so a batch-level human gate with
+	//    no approver is refused up front rather than vanishing at execution time.
 	escalated := &plan.Plan{ID: "plan-escape", Batches: []plan.Batch{{
 		Targets: []string{"web-1"},
-		Gate:    &dsl.GateSpec{Post: []dsl.GateCheck{humanCheck()}},
+		Gate:    &dsl.GateSpec{Batch: []dsl.GateCheck{humanCheck()}},
 		Steps:   []plan.PlanStep{{Name: "restart"}},
 	}}}
-	assert.Empty(t, PlanGateBlockers(escalated, GateRuntime{}),
-		"a batch-level human check with no approver wired is not reported either")
+	blockers := PlanGateBlockers(escalated, GateRuntime{})
+	require.Len(t, blockers, 1, "a batch-level human check with no approver wired must be reported")
+	assert.Contains(t, blockers[0], "batches:batch:0", blockers[0])
 }

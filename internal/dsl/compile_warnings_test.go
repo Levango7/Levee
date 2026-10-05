@@ -66,6 +66,9 @@ approval:
 batches:
   strategy: percent
   steps: [1, 10, 100]
+  gate:
+    cmd:
+      run: "true"
 steps:
   - name: reload
     action: shell.exec
@@ -161,17 +164,19 @@ func TestAdvisoriesAreCatalogueWarningsNotRestatedHere(t *testing.T) {
 		"severity is the catalogue's verdict, not this package's emit list")
 }
 
-// TestLE052IsDeliberatelyNotProduced pins an absence. LE052 ("batches missing
-// post_batch gate") is catalogued as a warning and would be trivial to emit, but
-// its remedy does not exist yet: no code path populates GateSpec.Batch, so only
-// that slot binds PhasePostBatch, and batch-level gates are never materialised
-// (see docs/product-roadmap.md). Emitting it now would tell operators to add a
-// check that either cannot be declared or never runs.
-func TestLE052IsDeliberatelyNotProduced(t *testing.T) {
+// TestLE052FiresOnlyWhenNoPostBatchCheckIsDeclared is the advisory half of the
+// between-batches gate. LE052 was withheld for as long as its remedy did not
+// exist: nothing populated GateSpec.Batch and batch-level declarations were never
+// materialised, so telling an operator to declare a post_batch check was advice
+// that could not work. Position routing and the engine walk now cover all three
+// declaration sites, so the warning names something real — and it must stay a
+// warning: a workflow without a between-batches check is legal per spec §4.3.
+func TestLE052FiresOnlyWhenNoPostBatchCheckIsDeclared(t *testing.T) {
 	ci, ok := errors.Lookup("LE052")
-	require.True(t, ok, "LE052 stays catalogued; the gap is in production, not classification")
+	require.True(t, ok, "LE052 stays catalogued")
 	assert.Equal(t, errors.CompileWarning, ci.Compile)
-	for _, src := range []string{minimalWorkflow, `name: g
+
+	const batchesNoGate = `name: g
 target:
   type: host
   query: "env=test"
@@ -183,11 +188,112 @@ steps:
     action: shell.exec
     args:
       cmd: "true"
-`} {
+`
+	codes := []string{}
+	for _, a := range NewValidator().Advise(mustAdviseParse(t, batchesNoGate)) {
+		codes = append(codes, a.Code)
+	}
+	assert.Contains(t, codes, "LE052",
+		"a staged rollout with nothing verified between batches must be advised, got %v", codes)
+
+	// Each of the three declaration sites satisfies it — the same sites the
+	// engine walks.
+	for name, src := range map[string]string{
+		"batches.gate": `name: g
+target:
+  type: host
+  query: "env=test"
+batches:
+  strategy: percent
+  steps: [1, 100]
+  gate:
+    cmd:
+      run: "true"
+steps:
+  - name: x
+    action: shell.exec
+`,
+		"gates[] position": `name: g
+target:
+  type: host
+  query: "env=test"
+batches:
+  strategy: percent
+  steps: [1, 100]
+gates:
+  - position: post_batch
+    cmd:
+      run: "true"
+steps:
+  - name: x
+    action: shell.exec
+`,
+		"step verify position": `name: g
+target:
+  type: host
+  query: "env=test"
+batches:
+  strategy: percent
+  steps: [1, 100]
+steps:
+  - name: x
+    action: shell.exec
+    verify:
+      position: post_batch
+      cmd:
+        run: "true"
+`,
+	} {
 		for _, a := range NewValidator().Advise(mustAdviseParse(t, src)) {
-			assert.NotEqual(t, "LE052", a.Code,
-				"LE052 must not fire until post_batch gates can actually be declared and executed")
+			assert.NotEqual(t, "LE052", a.Code, "%s declares a between-batches check", name)
 		}
+	}
+
+	// A gates[] entry that is not a between-batches check does not satisfy it: the
+	// predicate asks specifically about the batch slot, so a workflow declaring only
+	// pre_apply and post_apply checks is still told it verifies nothing in between.
+	for _, src := range map[string]string{
+		"post_apply only": `name: g
+target:
+  type: host
+  query: "env=test"
+batches:
+  strategy: percent
+  steps: [1, 100]
+gates:
+  - position: post_apply
+    cmd:
+      run: "true"
+steps:
+  - name: x
+    action: shell.exec
+`,
+		"pre_apply only": `name: g
+target:
+  type: host
+  query: "env=test"
+batches:
+  strategy: percent
+  steps: [1, 100]
+gates:
+  - position: pre_apply
+    cmd:
+      run: "true"
+steps:
+  - name: x
+    action: shell.exec
+`,
+	} {
+		codes := []string{}
+		for _, a := range NewValidator().Advise(mustAdviseParse(t, src)) {
+			codes = append(codes, a.Code)
+		}
+		assert.Contains(t, codes, "LE052", "a non-batch declaration is not a between-batches check, got %v", codes)
+	}
+	// With no batches block at all the question does not arise: LE096 already
+	// says the change lands in one batch.
+	for _, a := range NewValidator().Advise(mustAdviseParse(t, minimalWorkflow)) {
+		assert.NotEqual(t, "LE052", a.Code, "a single-batch workflow must not be told about between-batches checks")
 	}
 }
 

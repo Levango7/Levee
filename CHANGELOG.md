@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 变更（门禁位置路由，含迁移说明）
+
+- **`position` 现在真的决定门禁什么时候跑，三处声明点全部被执行**：规范 §2.2 的位置词表（`pre_apply` / `post_batch` / `post_apply`）此前是**装饰**——`convertGate` 无条件把每条声明塞进 `GateSpec.Post`（物化成 `post_apply`），而只有 `GateSpec.Batch` 绑定 `verify.PhasePostBatch`，全仓没有任何代码填充 `.Batch`。同时 `walkPlanGates`（唯一把声明变成可运行门禁的遍历）只走 `Batches[].Steps[].Gate`，于是：
+  - **`batches: gate:` 与 workflow 级 `gates:` 进了 plan、进了 plan_hash（即被批准的产物承诺了它），却一次都不执行**。`examples/gate-templates/redis.yaml` 头部注释"after EVERY batch completes and blocks the next batch on failure"挡住的东西为零。
+  - **workflow 级的 `human` 门禁连 plan 期拒绝都收不到**（判定与物化共用同一个遍历，遍历没看到它）——声明了、批准了、静默消失，正是 `docs/gates.md` 承诺不可能发生的"声明的门禁假装通过"。
+  - **`slo` 是任何 YAML 形状都表达不出来的门禁类型**（它只能在 post_batch 执行），报错文案当时只能如实写"目前没有路径能到达那个槽位"。
+  落地：位置词表与槽位映射收成一份 `internal/dsl/gate_position.go`（未知位置 LE051 拒绝，不默认塞入），三个声明点（workflow 级 `gates:`、step `verify:`、`batches.gate:`）共用；`walkPlanGates` 遍历三处并按 `workflow:<槽>:<序>` / `batches:<槽>:<序>` / `step:<名>:<槽>:<序>` 命名，**执行与 plan 期拒绝判定同一个漏斗**；slo 的补救文案换成可执行的真实建议并补正例（同一检查换个位置即可出计划）。
+  **迁移说明（行为变更）**：从未运行过的 `batches.gate` / workflow 级 `gates` 现在会真的执行——原本能连续通过的批次可能被挡下并触发回滚。这不是新增压制，而是把已批准产物里那条一直存在的承诺兑现；若某条存量工作流的批级门禁本就不该拦批，请显式改掉那条声明而不是期待它继续沉默。缺省位置：step `verify:` 仍是 `post_apply`（与旧行为一致），`batches.gate:` 缺省即 `post_batch`（§4.3 语义）。
+  **LE052 随之路由完成后可发**：`levee compile` / `new` / `import` / 会话桥会提示"声明了 batches 却没有任何 post_batch 检查"（三处任一有即满足；无 batches 块不发，那条由 LE096 负责）。
+  测试：`internal/engine/gate_position_wiring_test.go`（从文档一路到注册门禁：槽位路由、三处都注册、workflow 级 human 门禁被 plan 期拒绝、slo 换个位置就能计划）、`internal/dsl/compile_warnings_test.go`（LE052 发出与三处豁免）、原钉住 bug 的 `TestBatchLevelGateIsHashBoundButNeverMaterialised` 翻为 `TestBatchLevelGateIsHashBoundAndMaterialised`、`parser_test.go` 的 `gates:` 断言按槽位重写。
+
 ### 安全修复
 
 - **`plan` 从未被授权，于是任何人都能撤销别人的批准（服务端授权覆盖面 6→11 个 RPC）**：`internal/authz` 接线时只覆盖了 apply / rollback / approve / reject 四个治理动作，`PlanChange` 漏在外面。而 plan **是写操作**：它把规范化计划持久化到 run、发起审批链，并且**当计划哈希变化时把 `approved` 的 run 重置回 `draft`**（`change_service.go` 的 re-plan 分支）。后果是任何认证调用方——包括只该看列表的人——都能对一个已批准的变更再 plan 一次，让批准作废。现在 `plan` 与 apply 走同一姿态：矩阵生效且主体不可归因 → `Unauthenticated`；主体可归因但无 `plan` 授予 → `PermissionDenied`，并在**任何状态写入之前**拒绝（断言 `run.PlanJSON` 为空，被拒的 plan 不留产物）。

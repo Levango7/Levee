@@ -245,6 +245,10 @@ approval:
 batches:
   strategy: percent
   steps: [1, 10, 100]
+  gate:
+    cmd:
+      run: "systemctl is-active nginx"
+      expect_exit: 0
 steps:
   - name: restart
     action: shell.exec

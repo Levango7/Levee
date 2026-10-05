@@ -343,7 +343,13 @@ func convertWorkflow(raw *yamlWorkflowRaw) (*Workflow, error) {
 			Steps:          raw.Batches.Steps,
 		}
 		if raw.Batches.Gate != nil {
-			wf.Batches.Gate = convertGate(raw.Batches.Gate)
+			// `batches.gate` is the between-batches check itself, so that is the
+			// slot an absent position means — unlike a step's `verify:` block.
+			bg, err := convertGate(raw.Batches.Gate, GateSlotBatch)
+			if err != nil {
+				return nil, err
+			}
+			wf.Batches.Gate = bg
 		}
 	}
 
@@ -384,24 +390,19 @@ func convertWorkflow(raw *yamlWorkflowRaw) (*Workflow, error) {
 		}
 	}
 
-	// Workflow-level gates: distribute by position.
+	// Workflow-level gates: distribute by position, through the one table that
+	// maps a position keyword to the slot the engine binds a phase to. An absent
+	// position keeps its historical default here (pre_apply).
 	for i := range raw.Gates {
 		gc, err := convertGateCheck(&raw.Gates[i])
 		if err != nil {
 			return nil, err
 		}
-		pos := raw.Gates[i].Position
 		if wf.Gate == nil {
 			wf.Gate = &GateSpec{}
 		}
-		switch pos {
-		case "pre_apply", "":
-			wf.Gate.Pre = append(wf.Gate.Pre, gc)
-		case "post_apply", "post_batch":
-			wf.Gate.Post = append(wf.Gate.Post, gc)
-		default:
-			return nil, newError("LE051", "gates[].position",
-				fmt.Sprintf("unknown gate position %q", pos))
+		if err := AppendGateCheck(wf.Gate, raw.Gates[i].Position, gc, GateSlotPre); err != nil {
+			return nil, err
 		}
 	}
 
@@ -538,7 +539,13 @@ func convertStep(s *yamlStepRaw) (Step, error) {
 		DependsOn:      s.DependsOn,
 	}
 	if s.Verify != nil {
-		out.Gate = convertGate(s.Verify)
+		// A step's verify block checks the step's outcome, so an absent position
+		// means post_apply — the historical behaviour for every declaration.
+		sg, err := convertGate(s.Verify, GateSlotPost)
+		if err != nil {
+			return Step{}, err
+		}
+		out.Gate = sg
 	}
 	if s.Approval != nil {
 		out.Approval = convertApproval(s.Approval)
@@ -594,9 +601,19 @@ func convertRollback(r *yamlRollbackRaw) (*RollbackSpec, error) {
 // convertGate converts a raw gate (used for step verify and batches gate)
 // into a GateSpec. For verify/batches gates the position is ignored and all
 // checks go into Post.
-func convertGate(g *yamlGateRaw) *GateSpec {
-	gc, _ := convertGateCheck(g)
-	return &GateSpec{Post: []GateCheck{gc}}
+// convertGate turns one raw gate declaration into a spec, routing the check into
+// the slot its `position` names. defaultSlot is what an absent position means at
+// this declaration site — see AppendGateCheck.
+func convertGate(g *yamlGateRaw, defaultSlot GateSlot) (*GateSpec, error) {
+	gc, err := convertGateCheck(g)
+	if err != nil {
+		return nil, err
+	}
+	spec := &GateSpec{}
+	if err := AppendGateCheck(spec, g.Position, gc, defaultSlot); err != nil {
+		return nil, err
+	}
+	return spec, nil
 }
 
 // convertGateCheck converts a raw gate into a GateCheck. The free-form

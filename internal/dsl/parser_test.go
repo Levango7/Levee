@@ -179,14 +179,16 @@ func TestParseFullWorkflow(t *testing.T) {
 	assert.Equal(t, "uname -r | grep -q 5.15", wf.Steps[1].Gate.Post[0].Command)
 	assert.Equal(t, 0, wf.Steps[1].Gate.Post[0].ExpectExit)
 
-	// Workflow-level gates
+	// Workflow-level gates: each lands in the slot its position names, because
+	// the slot is what internal/engine binds a verify phase to.
 	require.NotNil(t, wf.Gate)
-	require.Len(t, wf.Gate.Post, 2)
-	assert.Equal(t, "cmd", wf.Gate.Post[0].Type)
-	assert.Equal(t, "systemctl is-active sshd", wf.Gate.Post[0].Command)
-	assert.Equal(t, "slo", wf.Gate.Post[1].Type)
-	assert.Equal(t, "rate(node_load1[5m]) < 4", wf.Gate.Post[1].Command)
-	assert.Equal(t, "prometheus", wf.Gate.Post[1].Source)
+	require.Len(t, wf.Gate.Batch, 1)
+	assert.Equal(t, "cmd", wf.Gate.Batch[0].Type)
+	assert.Equal(t, "systemctl is-active sshd", wf.Gate.Batch[0].Command)
+	require.Len(t, wf.Gate.Post, 1)
+	assert.Equal(t, "slo", wf.Gate.Post[0].Type)
+	assert.Equal(t, "rate(node_load1[5m]) < 4", wf.Gate.Post[0].Command)
+	assert.Equal(t, "prometheus", wf.Gate.Post[0].Source)
 
 	// Rollback: the workflow level carries run-level policy only (spec
 	// §7.1). The compensation contract lives on the step — the validator

@@ -82,16 +82,22 @@ configuration.
 > in `docs/product-roadmap.md`; installing it there is all a deployment needs —
 > there is no second switch to remember.
 
-> **`slo` is not declarable today, for a different reason.** `convertGate` puts
-> every declaration — step `verify:`, `batches.gate:`, and
-> `gates[].position: post_batch` — into `GateSpec.Post`, which materialises as
-> `post_apply`; nothing populates `GateSpec.Batch`, the only slot bound to
-> `PhasePostBatch`, which is where an `slo` check must run. The plan-time refusal
-> therefore rejects every `slo` declaration and its message says so rather than
-> telling operators to move something that has nowhere to move to. See the
-> `post_batch` routing defect row in `docs/product-roadmap.md` (it also means the
-> batch-level gate in `examples/gate-templates/redis.yaml` has always run once at
-> the end rather than "after every batch" as its comment claims).
+> **`position` decides when a check runs, and all three declaration sites are
+> executed.** A declaration's position keyword (`pre_apply` / `post_batch` /
+> `post_apply`, spec §2.2) selects the `GateSpec` slot, and the slot is what binds
+> a `verify.GatePhase`: `walkPlanGates` registers the workflow-level `gates:`
+> entries, `batches.gate:`, and per-step `verify:` blocks alike. It did not used to
+> work that way: `convertGate` filed every declaration in `GateSpec.Post`
+> (`post_apply`), nothing populated `GateSpec.Batch` — the only slot bound to
+> `PhasePostBatch` — and the walk covered step gates only, so a batch-level or
+> workflow-level declaration was parsed, hashed into `plan_hash` and then run
+> nowhere. Two consequences are now visible to authors: an `slo` check (which must
+> run in `post_batch`) is declarable, and `examples/gate-templates/redis.yaml`
+> really does run "after every batch" as its comment always claimed.
+>
+> That is a behaviour change, not a cleanup: a batch-level gate that has never run
+> can now fail a batch that previously passed. See `CHANGELOG.md` and the
+> `post_batch` routing row in `docs/product-roadmap.md`.
 
 ## Gate types
 
@@ -143,7 +149,9 @@ Both require the corresponding tools on the target.
 
 Instant PromQL query compared against a numeric threshold. Bound to the
 **post_batch** phase; declaring it in any other timing is a materialisation
-error.
+error. Declare it where the position reaches that phase — `batches.gate:`, a
+step `verify:` block with `position: post_batch`, or a `gates:` entry with the
+same position (see `examples/gate-templates/redis.yaml` for the shape).
 
 Requires `GateRuntime.PrometheusURL` (config key `verify.prometheus_url`);
 without it materialisation fails with

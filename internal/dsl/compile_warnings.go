@@ -18,13 +18,14 @@
 // the disjointness of the two sets is pinned by
 // TestValidateAndAdviseNeverAgreeOnSeverity.
 //
-// Deliberately not produced here: **LE052** ("batches missing post_batch gate").
-// Its remedy does not exist yet — `convertGate` routes every declared gate into
-// `GateSpec.Post`, only `GateSpec.Batch` binds `verify.PhasePostBatch`, and no
-// code path populates `.Batch` (see docs/product-roadmap.md, "post_batch 门禁路由
-// 缺陷"). Advising operators to add a check that then either cannot be declared
-// or is never materialised is the same fault as an error message that offers a
-// configuration which does nothing. Land the routing fix first.
+// LE052 ("batches missing post_batch gate") IS produced here now. It was held
+// back because its remedy did not exist yet: `convertGate` routed every declared
+// gate into `GateSpec.Post`, only `GateSpec.Batch` binds `verify.PhasePostBatch`,
+// and nothing reached `.Batch` from YAML. Advising operators to add a check that
+// either cannot be declared or is never materialised is the same fault as an
+// error message that offers a configuration which does nothing. Position routing
+// landed in gate_position.go, and `walkPlanGates` in internal/engine now covers
+// all three declaration sites, so the advice names something that works.
 package dsl
 
 import (
@@ -49,6 +50,9 @@ const (
 	// codeMissingBatchesBlock is LE096: no batches block, so every target is
 	// changed in one batch.
 	codeMissingBatchesBlock = "LE096"
+	// codeMissingPostBatchGate is LE052: a batches block with no between-batches
+	// check, so nothing can stop the next batch.
+	codeMissingPostBatchGate = "LE052"
 )
 
 // maxCanaryPercent is the §4.3 guidance for a first batch: 5% of the fleet.
@@ -118,7 +122,39 @@ func (v *Validator) Advise(wf *Workflow) []ValidationError {
 		}
 	}
 
+	// LE052: a staged rollout with no between-batches check. §4.3 makes
+	// post_batch the position that stops the next batch (设计红线 R5), and the
+	// field table prescribes this warning when it is absent. Without it a bad
+	// first batch is already followed by every remaining batch, and the first
+	// verification the operator sees is the post_apply one at the very end.
+	//
+	// Only fires when the document declares a batches block at all: with none,
+	// LE096 already says the change lands in a single batch, and there is no
+	// "between batches" to check.
+	if hasBatchesBlock(wf) {
+		specs := make([]*GateSpec, 0, len(wf.Steps)+2)
+		specs = append(specs, wf.Gate, wf.Batches.Gate)
+		for i := range wf.Steps {
+			specs = append(specs, wf.Steps[i].Gate)
+		}
+		if !HasBatchCheck(specs...) {
+			out = append(out, ValidationError{
+				Code:  codeMissingPostBatchGate,
+				Field: "batches.gate",
+				Message: "no post_batch gate: batches run back to back with nothing verified " +
+					"in between (declare batches.gate, or a check with position: post_batch, " +
+					"to stop the next batch when a check fails)",
+			})
+		}
+	}
+
 	return out
+}
+
+// hasBatchesBlock reports whether the document declared a batches block, using
+// the same fields the LE096 advisory treats as its absence.
+func hasBatchesBlock(wf *Workflow) bool {
+	return wf.Batches.Strategy != "" || len(wf.Batches.Steps) > 0 || wf.Batches.Serial
 }
 
 // IsCompileWarning reports whether code is catalogued as a compile-time warning.
