@@ -266,6 +266,10 @@ func TestRollbackDrill_IrreversibleSkip(t *testing.T) {
 
 	wf := &dsl.Workflow{
 		Meta: dsl.WorkflowMeta{Name: "irreversible-drill"},
+		// V14/LE082: the drill's declared-irreversible shell.rm step must be
+		// authorized, or the plan generator refuses the workflow before the
+		// rollback machinery ever sees it.
+		AllowIrreversible: []string{"shell.rm"},
 		Batches: dsl.BatchConfig{
 			Strategy:       "serial",
 			MaxConcurrency: 5,

@@ -1,0 +1,62 @@
+# LEVEE 实验室工作流 —— 演练 1：跨区域副本切换（deploy/lab/README.md §4）
+#
+# 与 examples/workflows/dr-switch-orders-db.yaml 同形，但目标查询指向实验室
+# 清单（env=lab）。覆盖四个验收点：
+#   * mysql.replica_switch 已列入 allow_irreversible 白名单（V14/LE082；
+#     把这一行删掉再 compile，即可看到编译期拒绝）
+#   * 运行时 confirm=yes 硬门（把 confirm 改成别的值执行，运行期拒绝）
+#   * one-per-target 严格逐台 + 每台切换后 verify
+#   * 失败不自动回滚（on_failure: manual），按演练手册决策
+name: lab-replica-switch
+version: "1.0"
+description: >
+  把实验室测试 MySQL 的副本逐个重指到新主库：每批一台、串行、
+  窗口内、高危审批；每台切换后核对复制状态才继续。
+
+input:
+  - name: new_primary
+    type: string
+    required: true
+    description: 新主库地址（host:port），如 192.168.56.12:3306
+
+target:
+  name: lab-orders-replicas
+  type: mysql
+  query: "env=lab AND role=replica AND cluster=orders-db"
+  min_count: 1
+
+window:
+  start: "01:00"
+  end: "05:00"
+  timezone: Asia/Shanghai
+
+batches:
+  strategy: one-per-target
+
+approval:
+  level: high
+
+allow_irreversible:
+  - mysql.replica_switch
+
+steps:
+  - name: precheck-replication
+    action: shell.exec
+    args:
+      cmd: "mysql -e \"SHOW SLAVE STATUS\\G\" | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'"
+
+  - name: switch-primary
+    action: mysql.replica_switch
+    args:
+      new_primary: "{{.new_primary}}"
+      confirm: "yes"
+    irreversible: true
+    depends_on: ["precheck-replication"]
+    verify:
+      cmd:
+        run: "mysql -e \"SHOW SLAVE STATUS\\G\" | grep -c 'Slave_IO_Running: Yes'"
+        expect_exit: 0
+
+rollback:
+  on_failure: manual
+  verify_after: true

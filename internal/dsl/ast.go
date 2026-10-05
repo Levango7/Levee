@@ -114,6 +114,14 @@ type Workflow struct {
 	// last. What a run-level baseline actually wants is a single pre-image
 	// of the whole run, which is what this field declares.
 	Snapshot *RunSnapshotSpec
+
+	// AllowIrreversible is the workflow-level V14 whitelist: the
+	// module.action pairs this workflow authorizes for irreversible work.
+	// The compile gate (LE082) refuses any step whose reversibility verdict
+	// is irreversible — declared via irreversible: true or inherently
+	// destructive (DefaultIrreversibleActions) — unless its
+	// module.action is listed here. An absent list authorizes nothing.
+	AllowIrreversible []string
 }
 
 // RunSnapshotSpec declares the run-level baseline.

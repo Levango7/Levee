@@ -181,9 +181,12 @@ type yamlWorkflowRaw struct {
 	Window      *yamlWindowRaw   `yaml:"window"`
 	Batches     *yamlBatchesRaw  `yaml:"batches"`
 	Approval    *yamlApprovalRaw `yaml:"approval"`
-	Steps       []yamlStepRaw    `yaml:"steps"`
-	Gates       []yamlGateRaw    `yaml:"gates"`
-	Rollback    *yamlRollbackRaw `yaml:"rollback"`
+	// AllowIrreversible is the workflow-level V14 whitelist (LE082): the
+	// module.action pairs this workflow authorizes for irreversible work.
+	AllowIrreversible []string         `yaml:"allow_irreversible"`
+	Steps             []yamlStepRaw    `yaml:"steps"`
+	Gates             []yamlGateRaw    `yaml:"gates"`
+	Rollback          *yamlRollbackRaw `yaml:"rollback"`
 	// Snapshot is the run-level baseline block. It is NOT part of
 	// yamlRollbackRaw on purpose: keeping it a sibling key is what stops
 	// anyone from quietly re-folding it back into workflow-level
@@ -348,6 +351,10 @@ func convertWorkflow(raw *yamlWorkflowRaw) (*Workflow, error) {
 	if raw.Approval != nil {
 		wf.Approval = convertApproval(raw.Approval)
 	}
+
+	// V14 whitelist (LE082): carried verbatim; entry format and step
+	// coverage are the validator's business.
+	wf.AllowIrreversible = raw.AllowIrreversible
 
 	// Steps.
 	for i := range raw.Steps {

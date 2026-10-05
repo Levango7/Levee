@@ -7,6 +7,7 @@
 | **裸金属 / VM（推荐主线）** | 物理机房、无 K8s、等保要求最小依赖 | `deploy/baremetal/install.sh` + `deploy/systemd/levee.service` + [deployment.md](../docs/deployment.md) |
 | **Kubernetes（Helm）** | 有 K8s 的客户，一配置即部署 | `deploy/helm/levee/`（`helm install levee ./levee -f your-values.yaml`） |
 | **容器（无 K8s）** | docker/podman 直接跑 | `docker run ghcr.io/levango7/levee:<版本> serve ...`（仓库根 Dockerfile 构建） |
+| **实验室（试点/验证）** | 在 4~5 台 VM 小集群上跑通试点演练、产出案例证据 | [lab/](lab/README.md)（`bootstrap.sh` 一键安装 + 三条 CI 守护的演练工作流） |
 
 ## 镜像来源
 

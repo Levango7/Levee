@@ -47,6 +47,12 @@ batches:
 approval:
   level: high
 
+# V14 whitelist (LE082): the one irreversible step this workflow runs is the
+# declared shell.exec upgrade; any other irreversible action would be
+# refused at compile time.
+allow_irreversible:
+  - shell.exec
+
 steps:
   - name: upgrade-redis
     action: shell.exec

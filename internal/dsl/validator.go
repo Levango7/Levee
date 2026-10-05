@@ -51,6 +51,9 @@ const (
 	codeWindowClock = "LE020"
 	// codeWindowZone 复用 LE021：时区不是合法 IANA 名。
 	codeWindowZone = "LE021"
+	// codeIrreversibleNotWhitelisted 复用 LE082：判定为不可逆的动作不在
+	// workflow 级 allow_irreversible 白名单（V14）。
+	codeIrreversibleNotWhitelisted = "LE082"
 )
 
 // allowedInputTypes 列出 input 参数允许的类型集合。
@@ -153,6 +156,11 @@ func (v *Validator) Validate(wf *Workflow) []ValidationError {
 	// 「声明了却没人恢复」的组合（on_failure: manual）。坏声明在这里挡住，
 	// 比在首批发前才发现基线无处可存要早、也要便宜。
 	errs = append(errs, ValidateRunSnapshot(wf.Snapshot, wf.Rollback, "snapshot")...)
+
+	// 12. 不可逆白名单（V14）：判定为不可逆的步骤（显式 irreversible: true
+	// 或引擎固有破坏性词表命中）必须列在 workflow 级 allow_irreversible 里。
+	// 缺省语义是「白名单缺席 = 什么都没授权」，不是「全部允许」。
+	errs = append(errs, v.validateIrreversibleWhitelist(wf)...)
 
 	return errs
 }
@@ -325,4 +333,53 @@ func joinAction(module, action string) string {
 		return module
 	}
 	return module + "." + action
+}
+
+// validateIrreversibleWhitelist 实现 V14：凡判定为不可逆的步骤，其
+// module.action 必须列在 workflow 级 allow_irreversible 白名单里。
+//
+// 判定与 executor.IrreversibleChecker.Check 的优先级一致——先看作者显式
+// 声明（irreversible: true），再看引擎固有破坏性词表
+// （DefaultIrreversibleActions，与 plan 生成器注册的是同一份）。
+// 词表只在 internal/dsl 存一份，编译期与 plan 期对「天生不可逆」的认定不可能分叉。
+func (v *Validator) validateIrreversibleWhitelist(wf *Workflow) []ValidationError {
+	var errs []ValidationError
+
+	allowed := make(map[string]struct{}, len(wf.AllowIrreversible))
+	for i, key := range wf.AllowIrreversible {
+		module, action, ok := splitWhitelistKey(key)
+		if !ok {
+			errs = append(errs, ValidationError{
+				Code:    codeActionFormat,
+				Field:   fmt.Sprintf("allow_irreversible[%d]", i),
+				Message: fmt.Sprintf("whitelist entry %q must be in module.action format", key),
+			})
+			continue
+		}
+		allowed[module+"."+action] = struct{}{}
+	}
+
+	for i, s := range wf.Steps {
+		if !s.Irreversible && !IsInherentIrreversible(s.Module, s.Action) {
+			continue
+		}
+		key := s.Module + "." + s.Action
+		if _, ok := allowed[key]; !ok {
+			errs = append(errs, ValidationError{
+				Code:    codeIrreversibleNotWhitelisted,
+				Field:   fmt.Sprintf("steps[%d].action", i),
+				Message: fmt.Sprintf("irreversible action %q is not listed in the workflow-level allow_irreversible whitelist", key),
+			})
+		}
+	}
+	return errs
+}
+
+// splitWhitelistKey 拆分 "module.action"，要求点号前后均非空。
+func splitWhitelistKey(key string) (string, string, bool) {
+	module, action, found := strings.Cut(key, ".")
+	if !found || module == "" || action == "" {
+		return "", "", false
+	}
+	return module, action, true
 }

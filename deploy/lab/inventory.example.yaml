@@ -1,0 +1,48 @@
+# LEVEE 实验室清单 —— 4~5 台 VM 小集群（配合 deploy/lab/README.md）
+#
+# 地址按你的虚拟机实际改。导入是幂等的（按 address upsert，重复导入只更新）：
+#   levee -c /etc/levee/config.yaml target import --file inventory.example.yaml
+#
+# labels 是查询选择的依据：演练工作流用
+#   env=lab AND role=app                       （演练 2/3：批量重启、窗口）
+#   env=lab AND role=replica AND cluster=orders-db（演练 1：副本切换）
+groups:
+  - name: lab-core
+  - name: lab-dc-a
+  - name: lab-dc-b
+
+targets:
+  # —— 核心机房 ——
+  - address: 192.168.56.10
+    port: 22
+    channel_type: ssh
+    group: lab-core
+    labels: {env: lab, dc: core, role: app}
+
+  # —— 区域 DC-A ——
+  - address: 192.168.56.11
+    port: 22
+    channel_type: ssh
+    group: lab-dc-a
+    labels: {env: lab, dc: dc-a, role: app}
+  # 测试 MySQL 副本（演练 1；在两台副本机上装 MySQL Server 并配好主从）
+  - address: 192.168.56.12
+    port: 22
+    channel_type: ssh
+    group: lab-dc-a
+    labels: {env: lab, dc: dc-a, role: replica, cluster: orders-db}
+    # 演练 1 前置：先 `levee secret add` 录入 MySQL 凭据，把引用名填到这里后重新 import
+    # credential_ref: mysql-orders-lab
+
+  # —— 区域 DC-B ——
+  - address: 192.168.56.13
+    port: 22
+    channel_type: ssh
+    group: lab-dc-b
+    labels: {env: lab, dc: dc-b, role: replica, cluster: orders-db}
+    # credential_ref: mysql-orders-lab
+  - address: 192.168.56.14
+    port: 22
+    channel_type: ssh
+    group: lab-dc-b
+    labels: {env: lab, dc: dc-b, role: app}

@@ -1,0 +1,31 @@
+# LEVEE 实验室工作流 —— 演练 3：变更窗口强制（deploy/lab/README.md §4）
+#
+# 用法：把 window 改成「当前时间 +10 分钟」到「+20 分钟」（UTC），
+#   1) 到点之前 levee plan —— 被窗外阻断拒绝；
+#   2) 进入窗口后再 plan —— 通过。
+# 窗口时钟/时区写错（如 25:00、Mars/Olympus_Mons）则在 compile 期就被
+# LE020/LE021 拒绝。
+name: lab-window-test
+version: "1.0"
+description: >
+  窗口演练：窗外 plan 被拒、窗内放行。执行体只是 uptime，零副作用。
+
+target:
+  name: lab-one
+  type: host
+  query: "env=lab AND dc=core"
+  min_count: 1
+
+window:
+  start: "03:00"
+  end: "04:00"
+  timezone: UTC
+
+approval:
+  level: standard
+
+steps:
+  - name: uptime
+    action: shell.exec
+    args:
+      cmd: "uptime"

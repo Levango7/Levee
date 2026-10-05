@@ -50,6 +50,10 @@ type IRWorkflow struct {
 	Name        string `json:"name"`
 	Version     string `json:"version"`
 	Description string `json:"description,omitempty"`
+	// AllowIrreversible records the module.action pairs the compile gate
+	// (V14/LE082) judged this workflow against — the whitelist the author
+	// authorized for irreversible work. Empty means nothing was authorized.
+	AllowIrreversible []string `json:"allow_irreversible,omitempty"`
 }
 
 // IRInput is a typed input parameter entry in the IR.
@@ -122,9 +126,10 @@ func GenerateIR(ast *Workflow, registry *TypeRegistry) (*IR, error) {
 	ir := &IR{
 		IRVersion: IRVersion,
 		Workflow: IRWorkflow{
-			Name:        ast.Meta.Name,
-			Version:     ast.Meta.Version,
-			Description: ast.Meta.Description,
+			Name:              ast.Meta.Name,
+			Version:           ast.Meta.Version,
+			Description:       ast.Meta.Description,
+			AllowIrreversible: ast.AllowIrreversible,
 		},
 	}
 

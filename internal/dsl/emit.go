@@ -33,6 +33,13 @@ func MarshalWorkflow(wf *Workflow) ([]byte, error) {
 
 	out := map[string]any{}
 	emitMeta(out, &wf.Meta)
+	if len(wf.AllowIrreversible) > 0 {
+		// Sorted so the output is byte-stable for equal workflows, same
+		// contract as step args.
+		allowed := append([]string(nil), wf.AllowIrreversible...)
+		sort.Strings(allowed)
+		out["allow_irreversible"] = allowed
+	}
 	if targets := emitTargets(wf.Targets); len(targets) > 0 {
 		out["targets"] = targets
 	}
