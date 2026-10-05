@@ -4,12 +4,12 @@
 
 ## [Unreleased]
 
-## [v1.19.0] - 2026-10-05 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
+### 变更（v1.19.0 切版后的口径对齐）
 
-> **发布状态：未切版。** 远端最新 tag 是 `v1.18.0`，`v1.19.0` 的 tag 与镜像
-> `ghcr.io/levango7/levee:1.19.0` 从未构建（`release.yml` 只在 `push: tags: v*` 时触发）。
-> 本小节的日期是这批内容进入 master 的时间，不是发布时间；部署口径以
-> `deploy/helm/levee/Chart.yaml` 的 appVersion 为准。
+- **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，`release.yml` 正在据此构建 `ghcr.io/levango7/levee:1.19.0` 与 GitHub Release。因此 `Chart.yaml` 的 appVersion 与 `values.yaml` 的 image.tag 同步升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。
+- 门禁复核：`scripts/check_release_versions.py` 现在从 `git ls-remote` 读到 10 个 tag、`newest_tag=v1.19.0`，规则②（引用的版本必须有 tag）与规则③（比最新 tag 更晚的小节须标注）同时满足。
+
+## [v1.19.0] - 2026-10-06 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
 
 规范登记的最后一个"零产生点"词表被接线：`allow_irreversible` 从"规范目标，尚未接线"变为真实的编译期门禁——判定为不可逆的步骤（显式 `irreversible: true` 或引擎固有破坏性词表命中）必须列在 workflow 级白名单里，否则 LE082 拒绝编译。**这是行为变更**（缺省拒绝），迁移说明见下。
 

@@ -19,7 +19,7 @@ mode: single
 image:
   repository: ghcr.io/levango7/levee
   # 现场无法拉 ghcr 时改推送到客户镜像库后覆盖此值
-  tag: "1.18.0"
+  tag: "1.19.0"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
