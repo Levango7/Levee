@@ -22,8 +22,10 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/template"
 )
@@ -39,9 +41,20 @@ type TemplateService struct {
 
 	store state.Store
 	lib   *template.TemplateLibrary
+	authz *authz.Authorizer // optional; nil means no policy configured
 
 	mu        sync.RWMutex
 	templates map[string]*pb.Template // in-memory registry, keyed by name
+}
+
+// WithAuthorizer installs the policy authorizer. A template declares no
+// environment on the wire, so the library is judged as what it is: a
+// deployment-wide artifact, in permission.default_env. InstantiateTemplate is
+// the exception — the request carries the environment of the change it creates,
+// and creating a change is a `plan` there.
+func (s *TemplateService) WithAuthorizer(a *authz.Authorizer) *TemplateService {
+	s.authz = a
+	return s
 }
 
 // NewTemplateService returns a TemplateService backed by the given store and
@@ -67,6 +80,12 @@ func (s *TemplateService) CreateTemplate(ctx context.Context, req *pb.CreateTemp
 	}
 	if req.WorkflowContent == "" {
 		return nil, status.Error(codes.InvalidArgument, "workflow content is required")
+	}
+	// The library is deployment-wide: a template is the text of a change that
+	// somebody else will instantiate, and the wire message carries no
+	// environment to judge against. Fleet-wide write scope.
+	if err := authorizeResource(ctx, s.authz, "", permission.ActionAdmin, "CreateTemplate"); err != nil {
+		return nil, err
 	}
 
 	if s.lib != nil {
@@ -137,6 +156,9 @@ func (s *TemplateService) GetTemplate(ctx context.Context, req *pb.GetTemplateRe
 	if req == nil || strings.TrimSpace(req.Name) == "" {
 		return nil, status.Error(codes.InvalidArgument, "template name is required")
 	}
+	if err := authorizeResourceRead(ctx, s.authz, "", "GetTemplate"); err != nil {
+		return nil, err
+	}
 
 	if s.lib != nil {
 		tmpl, err := s.lib.Get(ctx, req.Name)
@@ -162,6 +184,12 @@ func (s *TemplateService) GetTemplate(ctx context.Context, req *pb.GetTemplateRe
 func (s *TemplateService) ListTemplates(ctx context.Context, req *pb.ListTemplatesRequest) (*pb.ListTemplatesResponse, error) {
 	if req == nil {
 		req = &pb.ListTemplatesRequest{}
+	}
+	// Not filtered per row, unlike ListTargets: templates declare no
+	// environment of their own, so every row resolves to the same scope and the
+	// predicate would be a constant.
+	if err := authorizeResourceRead(ctx, s.authz, "", "ListTemplates"); err != nil {
+		return nil, err
 	}
 
 	pageSize := int(req.PageSize)
@@ -232,6 +260,9 @@ func (s *TemplateService) DeleteTemplate(ctx context.Context, req *pb.DeleteTemp
 	if req == nil || strings.TrimSpace(req.Name) == "" {
 		return nil, status.Error(codes.InvalidArgument, "template name is required")
 	}
+	if err := authorizeResource(ctx, s.authz, "", permission.ActionAdmin, "DeleteTemplate"); err != nil {
+		return nil, err
+	}
 
 	if s.lib != nil {
 		if err := s.lib.Delete(ctx, req.Name); err != nil {
@@ -261,6 +292,12 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 	}
 	if s.store == nil {
 		return nil, status.Error(codes.FailedPrecondition, "store not configured")
+	}
+	// Instantiating writes a change, so it takes the change-scoped action and
+	// the change's own declared environment — the same pair PlanChange judges.
+	// The library it reads from is deployment-wide; the run it produces is not.
+	if err := authorizeResource(ctx, s.authz, req.Environment, permission.ActionPlan, "InstantiateTemplate"); err != nil {
+		return nil, err
 	}
 
 	// 1. Load template.

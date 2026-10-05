@@ -296,20 +296,7 @@ func envOf(run *state.Run) string {
 // without the team/env/action triple is the kind of message operators cannot
 // act on — and `levee authz explain` takes exactly those three.
 func (s *ChangeService) authorize(ctx context.Context, run *state.Run, action, rpc string) error {
-	if s.authz == nil {
-		return nil
-	}
-	d := s.authz.Decide(SubjectFromContext(ctx), envOf(run), action)
-	if d.Allowed {
-		return nil
-	}
-	if d.Subject == "" {
-		return status.Errorf(codes.Unauthenticated,
-			"%s requires an identity the policy can judge: %s", rpc, d.Reason)
-	}
-	return status.Errorf(codes.PermissionDenied,
-		"%s denied for subject %q on env %q action %q: %s (see `levee authz explain --subject %s --env %s --action %s`)",
-		rpc, d.Subject, d.Env, action, d.Reason, d.Subject, d.Env, action)
+	return authorizeResource(ctx, s.authz, envOf(run), action, rpc)
 }
 
 // authorizeRead is the read-gate half of authorize. Writes require a subject the
@@ -321,18 +308,7 @@ func (s *ChangeService) authorize(ctx context.Context, run *state.Run, action, r
 // dashboard that shows fewer changes than expected is otherwise indistinguishable
 // from a store that has fewer changes.
 func (s *ChangeService) authorizeRead(ctx context.Context, run *state.Run, rpc string) error {
-	if s.authz == nil {
-		return nil
-	}
-	subject := SubjectFromContext(ctx)
-	allowed, reason := s.authz.AdmitsRead(subject, envOf(run))
-	if allowed {
-		return nil
-	}
-	env := envOf(run)
-	return status.Errorf(codes.PermissionDenied,
-		"%s denied for subject %q on env %q action %q: %s (see `levee authz explain --subject %s --env %s --action %s`)",
-		rpc, subject, env, permission.ActionView, reason, subject, env, permission.ActionView)
+	return authorizeResourceRead(ctx, s.authz, envOf(run), rpc)
 }
 
 // authorizeReadOf resolves the change first, because the environment a read is
@@ -356,17 +332,11 @@ func (s *ChangeService) authorizeReadOf(ctx context.Context, changeID, rpc strin
 // instead of refusing outright, because refusing would hide the changes they ARE
 // allowed to see and turn a permissions question into an empty dashboard.
 func (s *ChangeService) envVisibilityPredicate(ctx context.Context) func(*state.Run) bool {
-	if s.authz == nil {
+	byEnv := resourceVisibility(ctx, s.authz)
+	if byEnv == nil {
 		return nil
 	}
-	subject := SubjectFromContext(ctx)
-	if !s.authz.ReadFilteringActive(subject) {
-		return nil
-	}
-	return func(run *state.Run) bool {
-		allowed, _ := s.authz.AdmitsRead(subject, envOf(run))
-		return allowed
-	}
+	return func(run *state.Run) bool { return byEnv(envOf(run)) }
 }
 
 // ContextWithActor returns a context carrying the actor name used for

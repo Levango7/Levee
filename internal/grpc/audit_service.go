@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
 )
@@ -27,6 +28,16 @@ type AuditService struct {
 	pb.UnimplementedAuditServiceServer
 
 	store state.Store
+	authz *authz.Authorizer // optional; nil means no policy configured
+}
+
+// WithAuthorizer installs the policy authorizer. Every row in this service is
+// about a run, so the scope is that run's environment: an unfiltered request
+// narrows to the runs the caller may see, and a request that names a run they
+// may not is refused rather than quietly skipped.
+func (s *AuditService) WithAuthorizer(a *authz.Authorizer) *AuditService {
+	s.authz = a
+	return s
 }
 
 // NewAuditService returns an AuditService backed by the given store. The
@@ -42,6 +53,65 @@ const auditStorePageSize = 1000
 // verifyRunPageSize is the page size used when VerifyHashChain walks all
 // runs in the store (offset stepping until a short page).
 const verifyRunPageSize = 1000
+
+// auditRunScopes resolves the environment of the run an audit row belongs to,
+// caching per request: this service walks rows in pages and many rows share a
+// run, so the naive version would re-read the same run hundreds of times.
+//
+// `known` is false when the run could not be read at all. A caller under
+// visibility filtering then loses the row rather than keeping it: an audit
+// trail is the artifact that has to stay conservative about what it implies,
+// and "default environment" is a guess about a run this service could not see.
+type auditRunScopes struct {
+	store state.Store
+	cache map[string]auditRunScope
+}
+
+type auditRunScope struct {
+	env   string
+	known bool
+}
+
+func newAuditRunScopes(store state.Store) *auditRunScopes {
+	return &auditRunScopes{store: store, cache: map[string]auditRunScope{}}
+}
+
+func (r *auditRunScopes) lookup(ctx context.Context, runID string) auditRunScope {
+	if runID == "" {
+		return auditRunScope{}
+	}
+	if s, ok := r.cache[runID]; ok {
+		return s
+	}
+	run, err := r.store.GetRun(ctx, runID)
+	s := auditRunScope{}
+	if err == nil && run != nil {
+		s.env, s.known = envOf(run), true
+	}
+	r.cache[runID] = s
+	return s
+}
+
+// authorizeRequestedRun refuses a request that names runs outside the caller's
+// view, as opposed to a request that asks for everything and gets the visible
+// subset. Naming a run is an assertion of interest in it, so the answer is
+// either the data or a refusal — never an empty page that looks like "nothing
+// happened in that change".
+func (s *AuditService) authorizeRequestedRun(ctx context.Context, runIDs []string, rpc string) error {
+	if s.authz == nil || resourceVisibility(ctx, s.authz) == nil {
+		return nil
+	}
+	scopes := newAuditRunScopes(s.store)
+	for _, id := range runIDs {
+		if id == "" {
+			continue
+		}
+		if err := authorizeResourceRead(ctx, s.authz, scopes.lookup(ctx, id).env, rpc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // GetAuditLog returns audit log entries matching the given filters, with
 // pagination. Entries are sourced from state.Store.ListAudits and converted
@@ -76,6 +146,19 @@ func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogReque
 		return nil, err
 	}
 
+	named := make([]string, 0, 2)
+	if req.RunId != "" {
+		named = append(named, req.RunId)
+	}
+	if req.ChangeId != "" {
+		named = append(named, req.ChangeId)
+	}
+	if err := s.authorizeRequestedRun(ctx, named, "GetAuditLog"); err != nil {
+		return nil, err
+	}
+	visible := resourceVisibility(ctx, s.authz)
+	scopes := newAuditRunScopes(s.store)
+
 	entries := make([]*pb.TraceEntry, 0, pageSize)
 	total := 0 // global count of filtered rows
 
@@ -95,6 +178,12 @@ func (s *AuditService) GetAuditLog(ctx context.Context, req *pb.GetAuditLogReque
 		for _, a := range audits {
 			if req.ChangeId != "" && a.RunID != req.ChangeId {
 				continue
+			}
+			if visible != nil {
+				scope := scopes.lookup(ctx, a.RunID)
+				if !scope.known || !visible(scope.env) {
+					continue
+				}
 			}
 			ts := a.Timestamp.Unix()
 			if req.Since > 0 && ts < req.Since {
@@ -148,6 +237,11 @@ func (s *AuditService) ListAuditTraces(ctx context.Context, req *pb.ListAuditTra
 	if len(runIDs) == 0 && req.ChangeId != "" {
 		runIDs = []string{req.ChangeId}
 	}
+	if err := s.authorizeRequestedRun(ctx, runIDs, "ListAuditTraces"); err != nil {
+		return nil, err
+	}
+	visible := resourceVisibility(ctx, s.authz)
+	scopes := newAuditRunScopes(s.store)
 
 	var allTraces []*state.Trace
 	if len(runIDs) > 0 {
@@ -169,6 +263,12 @@ func (s *AuditService) ListAuditTraces(ctx context.Context, req *pb.ListAuditTra
 	// Convert and apply time-range filter.
 	entries := make([]*pb.TraceEntry, 0, len(allTraces))
 	for _, t := range allTraces {
+		if visible != nil {
+			scope := scopes.lookup(ctx, t.RunID)
+			if !scope.known || !visible(scope.env) {
+				continue
+			}
+		}
 		ts := t.Timestamp.Unix()
 		if req.Since > 0 && ts < req.Since {
 			continue
@@ -230,7 +330,17 @@ func (s *AuditService) VerifyHashChain(ctx context.Context, req *pb.VerifyHashCh
 		runIDs = append(runIDs, req.RunId)
 	} else if req.ChangeId != "" {
 		runIDs = append(runIDs, req.ChangeId)
+	}
+	if len(runIDs) > 0 {
+		// Verifying a named chain is a read about that change.
+		if err := s.authorizeRequestedRun(ctx, runIDs, "VerifyHashChain"); err != nil {
+			return nil, err
+		}
 	} else {
+		// Verifying everything verifies the runs this caller may see. A dev
+		// team's integrity check is not entitled to learn which prod runs exist
+		// — the response lists run IDs and per-row breakage.
+		visible := resourceVisibility(ctx, s.authz)
 		// Verify all runs, paging through the store with offset stepping
 		// until a page comes back short (RunFilter supports Offset,
 		// unlike AuditFilter). The previous single maxPageSize fetch
@@ -241,6 +351,9 @@ func (s *AuditService) VerifyHashChain(ctx context.Context, req *pb.VerifyHashCh
 				return nil, status.Errorf(codes.Internal, "list runs: %v", err)
 			}
 			for _, r := range runs {
+				if visible != nil && !visible(envOf(r)) {
+					continue
+				}
 				runIDs = append(runIDs, r.ID)
 			}
 			if len(runs) < verifyRunPageSize {
@@ -311,6 +424,9 @@ func (s *AuditService) GetRunReport(ctx context.Context, req *pb.GetRunReportReq
 	}
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "run %q not found", runID)
+	}
+	if err := authorizeResourceRead(ctx, s.authz, envOf(run), "GetRunReport"); err != nil {
+		return nil, err
 	}
 
 	report := &pb.RunReport{

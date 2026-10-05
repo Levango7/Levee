@@ -786,10 +786,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 
 	// 5b. Inventory service: persistent target groups/import/status/history.
-	// It is given svcStore, not the raw store: inventory reads and writes are
-	// request-driven and tenant-owned, so handing it the unscoped store would
-	// leave /targets readable across tenants.
-	pb.RegisterInventoryServiceServer(srv.GrpcServer(), grpc.NewInventoryService(svcStore))
+	// It comes from buildServeServices, which gave it svcStore — not the raw
+	// store — because inventory reads and writes are request-driven and
+	// tenant-owned, so an unscoped store would leave /targets readable across
+	// tenants. It carries the same policy authorizer as the other services:
+	// tenancy says WHICH ORGANISATION a host belongs to, the matrix says WHICH
+	// TEAM inside it may touch it, and neither replaces the other.
+	pb.RegisterInventoryServiceServer(srv.GrpcServer(), svcs.inventorySvc)
 
 	// 5c. Apply the loaded SSH channel configuration (host-key policy +
 	// privilege escalation) to the channel factory defaults. Without this
@@ -929,11 +932,15 @@ type serveServices struct {
 	targetSvc   *grpc.TargetService
 	auditSvc    *grpc.AuditService
 	systemSvc   *grpc.SystemService
-	alertSvc    *grpc.AlertService
-	diagSvc     *grpc.DiagnosisService
-	convSvc     *grpc.ConversationService
-	convEngine  *conversation.ConversationEngine
-	mobileSvc   *approval.MobileApprovalService
+	// inventorySvc is built here rather than at its registration site so that
+	// "every service the process serves carries the policy" is a property of
+	// this one function — and of one test.
+	inventorySvc *grpc.InventoryService
+	alertSvc     *grpc.AlertService
+	diagSvc      *grpc.DiagnosisService
+	convSvc      *grpc.ConversationService
+	convEngine   *conversation.ConversationEngine
+	mobileSvc    *approval.MobileApprovalService
 	// gateSvc is the ad-hoc gate verification service (POST
 	// /gates/verify); nil when the execution engine is not wired.
 	gateSvc *grpc.GateService
@@ -1155,8 +1162,10 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Warn("bulk pause/resume authorization is NOT configured: every authenticated caller may pause or resume ALL changes; set permission.bulk_grants to restrict",
 			"permissions", pause.PermissionPauseAll+"/"+pause.PermissionResumeAll)
 	}
-	// Change-scoped policy authorisation (apply / rollback / approve /
-	// reject). Different posture from the bulk grant list above: a policy that
+	// Change-scoped policy authorisation (plan / apply / rollback / approve /
+	// reject) plus the fleet surfaces (inventory, template library, audit
+	// trail, system) — see internal/grpc/resource_authz.go for the posture each
+	// RPC gets. Different posture from the bulk grant list above: a policy that
 	// exists but cannot be parsed stops startup, because silently degrading to
 	// "not enforced" would leave an operator believing a policy is active. An
 	// absent policy is not an error — it is announced instead.
@@ -1166,24 +1175,26 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	}
 	changeSvc.WithAuthorizer(authzSvc)
 	if authzSvc.Enforced() {
-		log.Info("authorization enabled: change-scoped RPCs enforce the permission matrix",
-			"registered_subjects", len(authzSvc.Registered()))
+		log.Info("authorization enabled: change and fleet RPCs enforce the permission matrix",
+			"registered_subjects", len(authzSvc.Registered()),
+			"default_env", cfg.Permission.DefaultEnv)
 	} else {
-		log.Warn("authorization is NOT configured: apply/rollback/approve/reject are limited to authentication alone; write permissions.yaml (see `levee team add`) to enforce policy")
+		log.Warn("authorization is NOT configured: every authenticated caller may apply changes, rewrite inventory and read the audit trail; write permissions.yaml (see `levee team add`) to enforce policy")
 	}
 
-	templateSvc := grpc.NewTemplateService(store, nil)
-	targetSvc := grpc.NewTargetService(store, nil)
+	templateSvc := grpc.NewTemplateService(store, nil).WithAuthorizer(authzSvc)
+	targetSvc := grpc.NewTargetService(store, nil).WithAuthorizer(authzSvc)
 	if credResolver != nil {
 		// Credential-aware probing: CheckTarget probes targets with their
 		// stored credentials instead of unauthenticated.
 		targetSvc.WithCredentialResolver(credResolver)
 	}
-	auditSvc := grpc.NewAuditService(store)
+	auditSvc := grpc.NewAuditService(store).WithAuthorizer(authzSvc)
+	inventorySvc := grpc.NewInventoryService(store).WithAuthorizer(authzSvc)
 	systemSvc := grpc.NewSystemService(
 		store, cfg, optConfigPath,
 		version, commitHash, buildTime, goVersion, time.Now(),
-	)
+	).WithAuthorizer(authzSvc)
 	// Alert ingestion stays stand-alone here (the AlertService keeps its own
 	// bounded ring); run `levee alert serve` for the full gateway with
 	// Prometheus/custom adapters. Diagnosis and conversation get real engines
@@ -1229,7 +1240,8 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	return serveServices{
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
-		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
+		inventorySvc: inventorySvc,
+		diagSvc:      diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
 		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
 	}, nil
 }

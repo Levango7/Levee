@@ -19,8 +19,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -44,6 +46,17 @@ type TargetService struct {
 	store    state.Store
 	factory  channel.ChannelFactory
 	resolver CredentialResolver // optional; nil disables credential resolution
+	authz    *authz.Authorizer  // optional; nil means no policy configured
+}
+
+// WithAuthorizer installs the policy authorizer that decides which environment
+// a caller may see a host in, and who may change the inventory at all. Nil
+// keeps the deployment's previous behaviour exactly: an unconfigured
+// `permissions.yaml` is a state the server announces at startup, not one it
+// replays per request.
+func (s *TargetService) WithAuthorizer(a *authz.Authorizer) *TargetService {
+	s.authz = a
+	return s
 }
 
 // NewTargetService returns a store-backed TargetService. The optional factory
@@ -97,6 +110,17 @@ func (s *TargetService) AddTarget(ctx context.Context, req *pb.AddTargetRequest)
 	}
 	if strings.TrimSpace(req.Hostname) == "" {
 		return nil, status.Error(codes.InvalidArgument, "hostname is required")
+	}
+	// Judged in the environment the request DECLARES the host belongs to, so a
+	// team cannot register a prod machine by leaving the label off (that falls
+	// to the default environment, which is itself a scope) nor register one in
+	// an environment it may only look at. What this does not prove is that the
+	// label is true: `env` on an add request is caller-asserted, so the policy
+	// answers "may you claim hosts in this environment", not "is this really a
+	// prod machine". Acting ON the host stays a change-scoped decision.
+	if err := authorizeResource(ctx, s.authz, req.Labels[targetEnvLabelKey],
+		permission.ActionAdmin, "AddTarget"); err != nil {
+		return nil, err
 	}
 	channelType := req.ChannelType
 	if channelType == "" {
@@ -158,6 +182,12 @@ func (s *TargetService) RemoveTarget(ctx context.Context, req *pb.RemoveTargetRe
 	if existing == nil {
 		return nil, status.Errorf(codes.NotFound, "target %q not found", req.Id)
 	}
+	// The stored row decides the scope, and the caller cannot rewrite it —
+	// unlike the label on an add request.
+	if err := authorizeResource(ctx, s.authz, envOfTarget(existing),
+		permission.ActionAdmin, "RemoveTarget"); err != nil {
+		return nil, err
+	}
 	if err := s.store.DeleteTarget(ctx, req.Id); err != nil {
 		return nil, status.Errorf(codes.Internal, "delete target: %v", err)
 	}
@@ -193,11 +223,19 @@ func (s *TargetService) ListTargets(ctx context.Context, req *pb.ListTargetsRequ
 	}
 
 	matched := make([]*pb.Target, 0, len(rows))
+	// A list narrows instead of refusing: an error would also hide the hosts
+	// this caller may see (and a hostname list is what a fleet console renders).
+	// The total below is the narrowed total, so a pager never promises rows the
+	// next page withholds.
+	visible := resourceVisibility(ctx, s.authz)
 	for _, row := range rows {
 		if req.ChannelType != "" && row.ChannelType != req.ChannelType {
 			continue
 		}
 		if req.ReachableOnly && !row.Reachable {
+			continue
+		}
+		if visible != nil && !visible(envOfTarget(row)) {
 			continue
 		}
 		matched = append(matched, pbFromState(row))
@@ -236,6 +274,9 @@ func (s *TargetService) GetTarget(ctx context.Context, req *pb.GetTargetRequest)
 	if row == nil {
 		return nil, status.Errorf(codes.NotFound, "target %q not found", req.Id)
 	}
+	if err := authorizeResourceRead(ctx, s.authz, envOfTarget(row), "GetTarget"); err != nil {
+		return nil, err
+	}
 	return pbFromState(row), nil
 }
 
@@ -254,6 +295,12 @@ func (s *TargetService) CheckTarget(ctx context.Context, req *pb.CheckTargetRequ
 	}
 	if row == nil {
 		return nil, status.Errorf(codes.NotFound, "target %q not found", req.Id)
+	}
+	// Probing is a diagnostic, so it takes the read scope: a `Fresh` check
+	// opens a connection and stamps a derived reachability field, and neither
+	// is a change to what the fleet may be asked to do.
+	if err := authorizeResourceRead(ctx, s.authz, envOfTarget(row), "CheckTarget"); err != nil {
+		return nil, err
 	}
 
 	resp := &pb.CheckTargetResponse{
