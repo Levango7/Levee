@@ -18,6 +18,7 @@ package engine
 // unreachable from any YAML. These tests pin both halves from the document down.
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -117,6 +118,63 @@ func TestMaterializeGates_RegistersEveryDeclaredSite(t *testing.T) {
 
 	post := names(verify.PhasePostApply)
 	assert.Contains(t, post, "workflow:post:0", "a workflow-level post_apply check must run at the end")
+}
+
+// TestParsedDocument_BatchGateBlocksTheNextBatch is the claim the migration note
+// makes, checked end to end rather than at registration: a workflow whose
+// `batches.gate` fails must stop after the first batch and roll it back. Before
+// the routing fix this document planned and applied both batches — the gate was
+// in the plan and in plan_hash and ran nowhere.
+//
+// The check is a `cmd` gate with no channel, which the command gate reports as
+// Passed=false ("missing channel") instead of passing: an honest failure from a
+// declaration the document really made.
+func TestParsedDocument_BatchGateBlocksTheNextBatch(t *testing.T) {
+	const doc = `name: batch-gate-blocks
+version: "1.0"
+target:
+  type: host
+  hosts: ["host-a", "host-b"]
+batches:
+  strategy: one-per-target
+  gate:
+    cmd:
+      run: "systemctl is-active nginx"
+      expect_exit: 0
+steps:
+  - name: apply-change
+    action: pkg.upgrade
+    rollback:
+      steps:
+        - name: undo-change
+          action: pkg.downgrade
+          idempotent: true
+`
+	store := newTestStore(t)
+	ctx := context.Background()
+	wf, err := dsl.NewParser().ParseBytes([]byte(doc))
+	require.NoError(t, err)
+	p, err := plan.NewGenerator().Generate(wf, []string{"host-a", "host-b"})
+	require.NoError(t, err)
+	require.Len(t, p.Batches, 2, "one-per-target over two hosts")
+	require.NotNil(t, p.Batches[0].Gate)
+	require.Len(t, p.Batches[0].Gate.Batch, 1, "batches.gate must sit in the between-batches slot")
+
+	cr := newTestClosureRunner(t, store)
+	exec := &mockExecutor{}
+	result, err := cr.Run(ctx, p, exec.exec)
+	require.NoError(t, err, "the run rolls back, which is the gate doing its job")
+
+	assert.Equal(t, PhaseRolledBack, result.Phase, "a failing batch gate must stop the rollout")
+	assert.Equal(t, 1, exec.callsFor("upgrade"), "only the first batch may be applied")
+	assert.Equal(t, 1, exec.callsFor("downgrade"), "the applied batch must be reversed")
+	// GateResult carries no phase or gate name, so the shape of this list is the
+	// evidence: exactly one verification ran — the batch check after batch 0 —
+	// and it is the one that refused to pass for lack of a channel.
+	require.Len(t, result.VerifyResults, 1, "only the post-batch check runs, got %+v", result.VerifyResults)
+	assert.False(t, result.VerifyResults[0].Passed, "the batch gate must report the failure it blocked on")
+	assert.Contains(t, result.VerifyResults[0].Message, "channel",
+		"the failing check must be the declared cmd gate, got: %+v", result.VerifyResults[0])
 }
 
 // TestPlanGateBlockers_SeesWorkflowLevelDeclarations covers the refusal half:
