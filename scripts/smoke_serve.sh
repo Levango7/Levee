@@ -29,8 +29,51 @@ HTTP_PORT="${SMOKE_HTTP_PORT:-9092}"
 # pass with the bug present.
 OBSERVE_SECONDS="${SMOKE_OBSERVE_SECONDS:-25}"
 
+# 0. The ports must be unclaimed before anything is launched.
+#
+# Why this exists: a container stack that maps the same loopback ports is the
+# normal way this script goes red on a developer machine, and it failed in the
+# most misleading shape — the server logged "REST gateway listening", the probe
+# then talked to somebody else's process (an actual measurement: prometheus
+# answering HTTP 404 for /healthz), and the report read "healthz never became
+# reachable". That sends the reader to hunt a bug that is not in the code.
+# Naming the port costs nothing and ends the guessing.
+assert_port_free() {
+  label="$1"; port="$2"
+  # The socket is opened inside a subshell so it is reaped with the subshell.
+  # Do NOT close the fd here: closing a descriptor this shell never opened is a
+  # failed redirection, and a failed redirection aborts a non-interactive shell
+  # — silently, with status 0. Measured on bash 5.2 (msys): the script stopped
+  # mid-body and exited 0 while still reporting nothing.
+  if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+    # Optional colour for the message: who is answering? curl is already a hard
+    # dependency of the /healthz probe below, and a missing/unreachable answer
+    # just leaves the hint out ("000" is what curl reports for a non-HTTP
+    # listener such as the gRPC port).
+    hint=""
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$port/" 2>/dev/null || true)"
+    case "$code" in ''|000) ;; *) hint=", it answered HTTP $code" ;; esac
+    printf '::error::smoke cannot start: something already listens on :%s (%s%s) — free it or set SMOKE_%s_PORT\n' \
+      "$port" "$label" "$hint" "$label" >&2
+    exit 1
+  fi
+}
+assert_port_free HTTP "$HTTP_PORT"
+assert_port_free GRPC "$GRPC_PORT"
+
 WORKDIR="$(mktemp -d)"
-trap 'kill "${SERVE_PID:-}" 2>/dev/null; rm -rf "$WORKDIR"' EXIT
+cleanup() {
+  # Reap the daemon before deleting its data_dir. On Windows an open file is a
+  # locked file, so the old kill-then-rm trap raced the process exit and left
+  # every smoke workdir behind (measured: "rm: cannot remove .../levee.db:
+  # Device or resource busy" printed on stderr by a run that reported success).
+  if [ -n "${SERVE_PID:-}" ]; then
+    kill "${SERVE_PID}" 2>/dev/null || true
+    wait "${SERVE_PID}" 2>/dev/null || true
+  fi
+  rm -rf "$WORKDIR" || echo "smoke: warning: could not remove $WORKDIR" >&2
+}
+trap cleanup EXIT
 
 # An isolated data_dir keeps the smoke run off the operator's real ~/.levee
 # store, and doubles as a check that config-file loading works from a binary.
