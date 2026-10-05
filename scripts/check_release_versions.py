@@ -22,8 +22,11 @@ tag 是 v1.18.0、values.image.tag 还是 1.18.0，镜像 `:1.19.0` 从未被构
      `ghcr.io/levango7/levee:1.19.0`，registry 对该 manifest 返回 404，tags/list 只有
      ["v1.18.0","latest","v1.19.0"]。自 v1.18.0 起即如此。
   3. CHANGELOG 里每个 `## [vX.Y.Z]` 小节：若它比最新 tag 更晚（= 声称了一个还没切版
-     的发布），要么已打 tag，要么在小节正文里显式写明"未切版"，否则失败。比最新 tag
-     更早的无 tag 小节属历史追溯，不阻断交付，但会被逐条点名（不静默）。
+     的发布），要么已打 tag，要么在小节正文里显式写明"未切版"，否则失败。**标注必须
+     独占一行且行首就是这句声明**（`> **发布状态：未切版。**` 这种形式可以）——散文里
+     顺带出现"未切版"三个字不算，因为把旧版本的"撤掉未切版标注"记录折进新小节就会
+     白送一个通过（2026-10-06 实测踩到）。比最新 tag 更早的无 tag 小节属历史追溯，
+     不阻断交付，但会被逐条点名（不静默）。
   4. 拿不到任何 v* tag 时直接失败：静默的空 tag 列表会让前三条永远"通过"。
 
 为什么 tag 集合取远端而不是本地：本地克隆可能残留从未推送的 tag。本仓实测本地有
@@ -44,6 +47,18 @@ from pathlib import Path
 
 # 与 Chart.yaml / CHANGELOG.md 里"尚未切版"的中文标注约定同词，改词要同时改三处。
 PENDING_MARKER = "未切版"
+
+# 规则③只认这两种"声明行"，且必须是**行首**：
+#   A. `> 未切版`            —— 标记本身就是这句话的开头
+#   B. `> **发布状态：未切版。**` —— 仓库沿用的写法（加粗标签 + ：未切版）
+# 为什么不能拿 `PENDING_MARKER in body` 当证据：2026-10-06 实测，把上一个版本的
+# "撤掉未切版标注"这类历史留痕折进新版本小节之后，正文里就出现了"未切版"三个字——
+# 于是任何没标注的新小节都能借别人的话通过规则③。一个可以被无关散文满足的门禁等于没有门禁。
+PENDING_DECLARATION = re.compile(
+    r"^[ \t>#*-]*未切版(?![^\s。.,;:，；：])"      # A
+    r"|^[ \t>#*-]*\*\*[^*\n]{1,24}：未切版。?\*\*"  # B
+    , re.MULTILINE
+)
 
 failures: list[str] = []
 
@@ -208,13 +223,15 @@ def main() -> int:
         if f"v{version}" in tags:
             continue
         if parse_version(version) > newest_v:
-            if PENDING_MARKER in body:
+            if PENDING_DECLARATION.search(body):
                 note(f"CHANGELOG v{version} is declared {PENDING_MARKER} (no tag v{version} yet)")
                 continue
             fail(
                 f"CHANGELOG declares `## [v{version}]` (newer than {newest_tag}) as a "
                 f"released section but tag v{version} does not exist; either cut the tag "
-                f"or mark the section with '{PENDING_MARKER}'"
+                f"or add a declaration line starting with '{PENDING_MARKER}' "
+                f"(e.g. `> {PENDING_MARKER}` or `> **发布状态：{PENDING_MARKER}。**`) — "
+                f"a mention inside other prose does not count"
             )
         else:
             legacy.append(version)
