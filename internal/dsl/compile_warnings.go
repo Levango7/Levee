@@ -154,7 +154,7 @@ func (v *Validator) Advise(wf *Workflow) []ValidationError {
 // hasBatchesBlock reports whether the document declared a batches block, using
 // the same fields the LE096 advisory treats as its absence.
 func hasBatchesBlock(wf *Workflow) bool {
-	return !(wf.Batches.Strategy == "" && len(wf.Batches.Steps) == 0 && !wf.Batches.Serial)
+	return wf.Batches.Strategy != "" || len(wf.Batches.Steps) > 0 || wf.Batches.Serial
 }
 
 // IsCompileWarning reports whether code is catalogued as a compile-time warning.
