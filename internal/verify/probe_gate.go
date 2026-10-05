@@ -355,26 +355,154 @@ func (g *ProbeGate) Check(ctx context.Context, input GateInput) (GateResult, err
 		res GateResult
 		err error
 	)
-	switch g.kind {
-	case "http":
-		res, err = g.checkHTTP(ctx, input, details)
-	case "tcp":
-		res, err = g.checkTCP(ctx, input, details)
-	case "script":
-		res, err = g.checkScript(ctx, input, details)
-	default:
-		// Unreachable: applyParams rejects an empty/unknown kind, but keep
-		// the default branch total so the gate can never panic.
-		res = GateResult{
-			Passed:  false,
-			Message: fmt.Sprintf("probe gate %q has unsupported kind %q", g.name, g.kind),
-			Details: details,
-		}
+	// The engine's run path hands gates a channel *provider*, not a channel:
+	// every declared target has to be measured from its own machine. Probes
+	// that never touch the channel (direct http/tcp) are untouched by this.
+	if input.Channel == nil && input.ChannelFor != nil && g.needsChannel() {
+		res, err = g.checkAcrossTargets(ctx, input, details)
+	} else {
+		res, err = g.dispatch(ctx, input, details)
 	}
 	if res.Latency == 0 {
 		res.Latency = time.Since(start)
 	}
 	return res, err
+}
+
+// needsChannel reports whether this probe has to execute something on a
+// target. Direct http/tcp probes measure from the controller; remote http/tcp
+// and script probes all shell out on the target machine.
+func (g *ProbeGate) needsChannel() bool {
+	if g.kind == "script" {
+		return true
+	}
+	return g.mode == "remote"
+}
+
+// dispatch runs the configured probe against whatever channel the input
+// carries. It is the single judgement used both by the legacy one-channel
+// path and, with a bound channel, by each iteration of checkAcrossTargets.
+func (g *ProbeGate) dispatch(ctx context.Context, input GateInput, details map[string]any) (GateResult, error) {
+	switch g.kind {
+	case "http":
+		return g.checkHTTP(ctx, input, details)
+	case "tcp":
+		return g.checkTCP(ctx, input, details)
+	case "script":
+		return g.checkScript(ctx, input, details)
+	default:
+		// Unreachable: applyParams rejects an empty/unknown kind, but keep
+		// the default branch total so the gate can never panic.
+		return GateResult{
+			Passed:  false,
+			Message: fmt.Sprintf("probe gate %q has unsupported kind %q", g.name, g.kind),
+			Details: details,
+		}, nil
+	}
+}
+
+// checkAcrossTargets runs the probe once per declared target and folds the
+// verdicts into one. The rules match CommandGate's checkAcrossTargets on
+// purpose, because both are claims that a batch is healthy:
+//
+//   - EVERY target must pass; a batch is never "verified" because one host answered.
+//   - A target we cannot dial counts as FAILED, not skipped.
+//   - One failing host does not hide the others — all offenders are listed.
+//   - No targets at all fails closed rather than reporting a pass.
+//
+// Channel lifetime belongs to the provider, so nothing here closes what
+// ChannelFor handed out.
+func (g *ProbeGate) checkAcrossTargets(ctx context.Context, input GateInput, details map[string]any) (GateResult, error) {
+	hosts := input.TargetIDs
+	if len(hosts) == 0 {
+		details["reason"] = "no_targets"
+		return GateResult{
+			Passed:  false,
+			Message: fmt.Sprintf("probe gate %q has no targets to probe", g.name),
+			Details: details,
+		}, nil
+	}
+
+	perTarget := make(map[string]any, len(hosts))
+	var failed []string
+
+	for _, host := range hosts {
+		if err := ctx.Err(); err != nil {
+			// The caller's deadline means the remaining targets cannot be
+			// measured either; that is a failed check, never a pass.
+			details["reason"] = "context_cancelled"
+			details["cause"] = err.Error()
+			details["checked"] = len(perTarget)
+			details["targets"] = perTarget
+			return GateResult{
+				Passed:  false,
+				Message: fmt.Sprintf("probe gate %q cancelled while probing targets: %v", g.name, err),
+				Details: details,
+			}, nil
+		}
+
+		ch, derr := input.ChannelFor(ctx, host)
+		if derr != nil {
+			failed = append(failed, host)
+			perTarget[host] = map[string]any{"passed": false, "error": derr.Error()}
+			log.Warn("probe gate could not reach a target",
+				"gate", g.name, "target", host, "err", derr)
+			continue
+		}
+
+		// Bind this host's channel and narrow the target list to it, so a
+		// port_from_target probe measures that machine. The bound Channel
+		// sends the call down the single-channel path, so this does not
+		// recurse.
+		single := input
+		single.Channel = ch
+		single.TargetIDs = []string{host}
+		sub := copyGateDetails(details)
+		sub["host"] = host
+		res, err := g.dispatch(ctx, single, sub)
+
+		entry := map[string]any{"passed": res.Passed, "message": res.Message}
+		if err != nil {
+			entry["error"] = err.Error()
+		}
+		for _, key := range []string{"exit_code", "last_status", "command"} {
+			if v, ok := res.Details[key]; ok {
+				entry[key] = v
+			}
+		}
+		perTarget[host] = entry
+		if !res.Passed {
+			failed = append(failed, host)
+		}
+	}
+
+	details["targets"] = perTarget
+	if len(failed) == 0 {
+		details["reason"] = "all_targets_ok"
+		return GateResult{
+			Passed:  true,
+			Message: fmt.Sprintf("probe gate %q passed: %d/%d target(s) ok", g.name, len(hosts), len(hosts)),
+			Details: details,
+		}, nil
+	}
+	details["reason"] = "failed_targets"
+	details["failed_targets"] = failed
+	return GateResult{
+		Passed: false,
+		Message: fmt.Sprintf("probe gate %q failed on %d/%d target(s): %s",
+			g.name, len(failed), len(hosts), strings.Join(failed, ", ")),
+		Details: details,
+	}, nil
+}
+
+// copyGateDetails shallow-copies the shared details map so a per-target run
+// cannot rewrite the aggregate evidence trail.
+func copyGateDetails(src map[string]any) map[string]any {
+	dst := make(map[string]any, len(src)+1)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // checkHTTP executes the http probe. In direct mode it GETs the URL with a
