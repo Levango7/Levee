@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 门禁（CI 聚合步骤把"没有判定结果"和"失败"分开说）
+
+- **一条红并不等于一次回归**：2026-10-06 实测，runner 池饥饿时 `docs`/`gosec`/`build (ubuntu-arm64)`/`check (all jobs passed)` 四个 job **各自在排队 901 秒后被杀**，`steps=0`——一次都没开始跑。聚合步骤原先对所有非 `success` 都写 `required job 'x' did not pass`，读起来像"这次改动没通过检查"，而真相是"这次改动从未被检查过"。这两种情况的下一步动作完全相反（前者查代码，后者重跑），却被同一句话混在一起。
+- **改法**：聚合按结论分桶——`failure` 仍是 `FAILED`；`cancelled`/`skipped`/`neutral`/`timed_out`/`stale` 归为 `UNVERIFIED, not failed`，摘要行点名是哪几个 job 没有判定结果，并写出"先重跑，别当回归读"。**两种都仍然 exit 1**：没有证据不许变绿，这条不许松。
+- **给聚合步骤本身补上 CI 内的自测**：新增 `scripts/test_ci_aggregate.py`（5 例：全绿、真失败、排队超时、`neutral`/`stale` 归桶、聚合清单与 `needs()` 漂移）。它不另抄一段逻辑，而是**从 `.github/workflows/ci.yml` 原样抽出那 35 行 bash**，只替换两处环境差异（Actions 的 `${{ }}` 插值 → 夹具；`jq` 那条管道 → 同形状 echo），所以测的就是入库文本本身；改坏那段脚本会让这些用例变红。
+- `release-gate` job 的逐套件点名清单加上 `test_ci_aggregate`（重命名或删除该套件会直接判红）；`.gitignore` 加 `.agg_case_*.sh`——测试的中途打断不该在 `git status` 里留脏文件。
+- 实测：`python -m unittest discover -s scripts` 29 例 OK；把套件文件改名后守卫判 `GUARD RED: test_ci_aggregate not collected`，恢复后转绿；`ci.yml` YAML 解析通过（15 job）。
+
+
 ## [v1.19.1] - 未切版
 
 > **发布状态：未切版。** `v1.19.1` 的 tag 尚未打出，因此 `ghcr.io/levango7/levee:v1.19.1` 这个制品还不存在；下面五批内容都已进 master。chart 的 `appVersion` 与 `values.image.tag` 保持指向上一个真实存在的发布，等 tag 切出后再一并升档——`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，抢先写未来的版本号会让 `delivery` job 变红，而那正是这条门禁该做的事。

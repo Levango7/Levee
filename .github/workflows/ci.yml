@@ -39,7 +39,7 @@ jobs:
         # the verbose log.
         run: |
           python -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee /tmp/py.log
-          for suite in test_require_ci_release test_check_release_versions; do
+          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate; do
             grep -q "$suite" /tmp/py.log \
               || { echo "::error::discovery collected nothing for $suite (renamed or deleted?)"; exit 1; }
           done
@@ -651,14 +651,37 @@ jobs:
             exit 1
           fi
           rc=0
+          unverified=""
           for pair in $status; do
             job=${pair%%:*}
             result=${pair#*:}
             echo "$job=$result"
-            if [[ "$result" != "success" ]]; then
-              echo "::error::required job '$job' did not pass ($result)"
-              rc=1
-            fi
+            case "$result" in
+              success) ;;
+              # A job that never got a runner reports cancelled / skipped / neutral /
+              # timed_out. That is NOT a code verdict: on a starved runner pool the
+              # whole run can expire in-queue (measured 2026-10-06: four jobs, each
+              # killed exactly 901s after being queued, steps=0 — none ever started).
+              # Saying "did not pass" sent a reader to look for a regression; say
+              # which of the two situations this is, and still refuse to be green.
+              cancelled|skipped|neutral|timed_out|stale)
+                echo "::error::required job '$job' produced no verdict ($result) — UNVERIFIED, not failed. Re-run this workflow before reading it as a regression."
+                unverified="$unverified $job"
+                rc=1
+                ;;
+              *)
+                echo "::error::required job '$job' FAILED ($result)"
+                rc=1
+                ;;
+            esac
           done
-          if [[ $rc -eq 0 ]]; then echo "All required jobs passed"; fi
+          if [[ $rc -eq 0 ]]; then
+            echo "All required jobs passed"
+          elif [ -n "$unverified" ]; then
+            # Distinguish the two failure modes in the summary line too, so a queued
+            # re-run is the obvious next action instead of a bisect.
+            echo "Aggregate result: NOT GREEN — jobs with no verdict:$unverified"
+          else
+            echo "Aggregate result: NOT GREEN — at least one required job failed"
+          fi
           exit $rc
