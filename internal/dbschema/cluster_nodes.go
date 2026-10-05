@@ -30,9 +30,11 @@ package dbschema
 //
 // It changes nothing about databases that already exist (IF NOT EXISTS is a
 // no-op there); it only guarantees that a freshly created database has one
-// shape no matter which package got there first. Existing state-first
-// databases still carry the constraint, which is a real latent failure for
-// address reuse — see the roadmap entry asking for that one migration.
+// shape no matter which package got there first. State-first databases that
+// predate this single-sourcing did carry the constraint, and PostgreSQL
+// schema v7 drops it — the constraint plus the same-named index, idempotently
+// (see pgMigrations in internal/state/pgstore_support.go), so address reuse no
+// longer depends on which package created the table.
 // Adding a column that production code actually reads requires a migration
 // for existing databases too; TestClusterNodesSchemaIsSingleSourced guards
 // against a second copy appearing in the meantime.

@@ -6,6 +6,7 @@
 | 文档类型 | 开发任务拆分文档 |
 | 版本 | v1.0 |
 | 日期 | 2026-08-15 |
+| 交付清单核查 | 逐行按代码复核；最后复核 2026-10-05（D-08、D-20 两行据此订正，其余行仍是 2026-08-15 的原始口径） |
 | 周期 | 3 个月（12 周） |
 | 技术栈 | Go + SQLite |
 | 上游依据 | levee-design.md 第 8 章 MVP 路线图 |
@@ -30,7 +31,7 @@ MVP 周期 3 个月，单二进制零依赖部署，覆盖从计划到归档的�
 | D-05 | 回滚协议 | D4.4.6 | 白名单 + 快照 + 按批逆序 + 回滚后验证 |
 | D-06 | dry-run 预览 | D2.2.4 | 产出执行计划不真正执行 |
 | D-07 | 审计（哈希链） | D7.1 | trace + 哈希链 + WORM 存储 |
-| D-08 | playbook 兼容层最小子集 | D8.2 | 导入并执行现有 Ansible playbook —— **未交付（2026-09-29 按代码核查）**：`internal/compat` 全仓零生产引用（`go list -deps ./cmd/levee` 未链入该包，非测试导入数为 0），CLI 也没有任何 ansible/playbook 命令；`CompatExecutor` 自述"simulates execution (MVP stage — no real target connection)… Approval and gate requirements are recorded but **not enforced**"（`internal/compat/executor.go:4-7`）；动作映射表还把 4 个执行器并不存在的动作当作目标输出（`compat.go:48-55` 的 `file.manage` / `svc.manage` / `user.manage` / `user.group`；`file` 模块只实现 copy/template，`svc` 只 start/stop/restart/reload/enable/disable，`user` 只 add/remove/modify）。原行文按"包已存在"记为交付项，与"能力可用"不是一回事。 |
+| D-08 | playbook 兼容层最小子集 | D8.2 | 导入并执行现有 Ansible playbook —— **已交付为翻译入口（2026-10-05 复核）**：CLI `levee import ansible <playbook>` 已存在并链入二进制（`cmd/levee/cmd_import.go:3`；`go list -deps ./cmd/levee` 含 `internal/compat`，其唯一非测试导入方就是该命令），产出的工作流必须过 parse + validate 两道门才落盘，之后按标准治理链（审批 / 门禁 / 回滚）执行 —— D-08 的语义是"翻译后治理"，不是"直接跑 playbook"。**本行 2026-09-29 的"未交付"判定作废**，其三条依据今天全部不成立：① `internal/compat` 已是生产依赖（不再零引用）；② CLI 已有 ansible 导入命令；③ 当时引作证据的模拟执行器 `internal/compat/executor.go`（自述 simulates execution、不强制审批）已随"去莠"删除，该目录现只剩 `compat.go`，包内 `grep -i simul` 零命中。处置记录见 `docs/product-roadmap.md` 的 8 包处置行（映射改状态感知 + fail-closed，幻影动作由注册表 oracle 测试清零）。 |
 | D-09 | YAML 子集表达工作流 | D2.2.2 | LEVEELang 基础语法（batch / gate / approval / rollback） |
 | D-10 | LEVEELang 基础 | D2.2.2 | 类型化 input / target / window / batches / step / rollback |
 | D-11 | 变更克隆 / 模板实例化 | D2.2.3 | clone 历史变更 + 模板参数填充 |
@@ -42,7 +43,7 @@ MVP 周期 3 个月，单二进制零依赖部署，覆盖从计划到归档的�
 | D-17 | 权限 v0（团队 × 环境） | D8 | 二维权限矩阵最小子集 |
 | D-18 | 单机零依赖部署 | D12.1 | 单二进制 + 内嵌 SQLite，空机器一键跑通 |
 | D-19 | 跑通批量变更 100 台 | 第 8 章门禁 | 端到端集成验证 |
-| D-20 | 通知（webhook） | D9 | webhook 通知渠道 |
+| D-20 | 通知（webhook） | D9 | webhook 通知渠道 —— **未装配，二进制内不可达（2026-10-05 实测）**：`internal/notify/webhook.go:94` 的 `NewWebhookNotifier` 全仓非测试调用点为 0；`cmd/levee/cmd_serve.go` 对 `WebhookNotifier`、`NotificationManager`、`NotifySink` 三个符号 grep 零命中。配置面倒是齐的（`config.example.yaml:189` 的 `notify.webhook`、`internal/config/config.go:372` 的 `Webhook WebhookConfig`、`:723` 的校验段），只是没有任何装配路径消费它。**别与已接的线路混同**：ChatOps 审批镜像确实在线（`cmd/levee/cmd_serve.go:52,66` 导入 `internal/chatops` 与 `internal/notify/chatopsbridge`，`stopServeChatOps` 见 :476-484），但它不是 D-20 要求的通用 webhook 渠道。**同源的另一处**：回滚分级的通知装配入口 `wiring.WithNotificationManager`（`internal/wiring/wiring.go:238`）全仓零调用点（定义与注释除外），即回滚侧通知从未被接上传输。 |
 
 ### 1.2 不做清单
 
