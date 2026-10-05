@@ -33,11 +33,13 @@ OBSERVE_SECONDS="${SMOKE_OBSERVE_SECONDS:-25}"
 #
 # Why this exists: a container stack that maps the same loopback ports is the
 # normal way this script goes red on a developer machine, and it failed in the
-# most misleading shape — the server logged "REST gateway listening", the probe
-# then talked to somebody else's process (an actual measurement: prometheus
-# answering HTTP 404 for /healthz), and the report read "healthz never became
-# reachable". That sends the reader to hunt a bug that is not in the code.
-# Naming the port costs nothing and ends the guessing.
+# most misleading shape. Measured root cause: `--http-addr ":9092"` binds the
+# wildcard address, which does not collide with an existing 127.0.0.1-only
+# listener, so the daemon stays up and logs "REST gateway listening addr=:9092"
+# while curl to 127.0.0.1 is answered by the *more specific* socket (observed:
+# prometheus replying HTTP 404 for /healthz). The report then read "healthz
+# never became reachable" — a bug that is not in this repo. Naming the port
+# costs nothing and ends the guessing.
 assert_port_free() {
   label="$1"; port="$2"
   # The socket is opened inside a subshell so it is reaped with the subshell.
