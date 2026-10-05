@@ -41,6 +41,12 @@ func TestPGStore_ReclaimAssignmentCAS(t *testing.T) {
 	ctx := context.Background()
 
 	now := time.Now().UTC()
+	// run_assignment is shared with the dispatch and takeover packages and is
+	// deliberately not truncated by newPGTestStore, so this test's row outlives
+	// the run and would collide with CreateAssignment below on a rerun. Delete
+	// this key only — other packages' rows are none of this test's business.
+	_, err := store.DB().ExecContext(ctx, `DELETE FROM run_assignment WHERE run_id = 'run-reclaim-pg'`)
+	require.NoError(t, err)
 	require.NoError(t, store.CreateRun(ctx, &Run{
 		ID: "run-reclaim-pg", WorkflowName: "wf", TemplateName: "tpl", Params: "{}",
 		PlanHash: "ph", Status: "approved", ApprovalStatus: "approved",
