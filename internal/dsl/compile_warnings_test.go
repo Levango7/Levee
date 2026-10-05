@@ -249,6 +249,47 @@ steps:
 		}
 	}
 
+	// A gates[] entry that is not a between-batches check does not satisfy it: the
+	// predicate asks specifically about the batch slot, so a workflow declaring only
+	// pre_apply and post_apply checks is still told it verifies nothing in between.
+	for _, src := range map[string]string{
+		"post_apply only": `name: g
+target:
+  type: host
+  query: "env=test"
+batches:
+  strategy: percent
+  steps: [1, 100]
+gates:
+  - position: post_apply
+    cmd:
+      run: "true"
+steps:
+  - name: x
+    action: shell.exec
+`,
+		"pre_apply only": `name: g
+target:
+  type: host
+  query: "env=test"
+batches:
+  strategy: percent
+  steps: [1, 100]
+gates:
+  - position: pre_apply
+    cmd:
+      run: "true"
+steps:
+  - name: x
+    action: shell.exec
+`,
+	} {
+		codes := []string{}
+		for _, a := range NewValidator().Advise(mustAdviseParse(t, src)) {
+			codes = append(codes, a.Code)
+		}
+		assert.Contains(t, codes, "LE052", "a non-batch declaration is not a between-batches check, got %v", codes)
+	}
 	// With no batches block at all the question does not arise: LE096 already
 	// says the change lands in one batch.
 	for _, a := range NewValidator().Advise(mustAdviseParse(t, minimalWorkflow)) {
