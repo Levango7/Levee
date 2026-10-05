@@ -4,6 +4,9 @@
 
 ## [Unreleased]
 
+## [v1.19.1] - 未切版
+
+> **发布状态：未切版。** `v1.19.1` 的 tag 尚未打出，因此 `ghcr.io/levango7/levee:v1.19.1` 这个制品还不存在；下面五批内容都已进 master。chart 的 `appVersion` 与 `values.image.tag` 保持指向上一个真实存在的发布，等 tag 切出后再一并升档——`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，抢先写未来的版本号会让 `delivery` job 变红，而那正是这条门禁该做的事。
 
 ### 新增（验证门禁按目标执行：cmd 门禁终于能跑它声明的那条检查）
 
@@ -40,6 +43,12 @@
 - **结构守卫补上（这是当初真正断掉的那一层）**：新增 `internal/engine/gate_input_channel_provider_test.go`，要求引擎每一处构造 `verify.GateInput` 都填 `ChannelFor`，并且**不许**直接填单通道 `Channel`（单通道形态等于把"随便挑一台来证明全部"写进结构）。扫描命中数低于 4 处即判红——"标记失效导致 0 命中"不能伪装成通过。
 - **文档如实写明新的不对称**：逐台收窄后，remote **tcp** 的 `{target}` / `port_from_target` 天然按本机地址判定，而 remote **http** 的 `url` 不做 `{target}` 展开（direct 模式才会）；`docs/gates.md` 写了这一差异，`docs/product-roadmap.md` 把"要不要让 remote http 也展开"留作界面一致性决策。
 - **验证**：`internal/verify/probe_gate_targets_test.go` 10 条用例（全过、一台失败挡整批并点名、拨不上算失败、空目标失败关闭、tcp 每台只见自己的地址、script 逐台、direct 绝不调用 provider、旧的单通道形态行为不变、无 provider 仍失败关闭、取消后不再声明下一台的证据）；`-race` 下 verify 与 engine 包全绿。变异 6 条全部被对应用例抓红（含把"拨不上"改成"跳过"、去掉逐台收窄、让 direct 也扇出、去掉循环内的取消检查），结构守卫另做 3 条变异（抽掉一处 `ChannelFor`、加一处 `Channel:`、把标记改成不存在的串）均判红且点名位置。
+
+### 修复（发布版本门禁的规则③——本批折叠 CHANGELOG 时当场暴露）
+
+- **`未切版` 标注原先是"正文里出现即可"**：规则③用 `PENDING_MARKER in body` 判断一个小节有没有声明"还没切版"。把 v1.19.0 那一节的留痕（"撤掉**未切版**标注并把 Helm 口径升到 1.19.0"）折进新版本小节之后，正文里天然就有这三个字，于是**任何未标注的新小节都能借别人的话通过**——本次折叠 v1.19.1 时实测到：删掉真正的声明行、只留无关散文，门禁仍然 `PASSED`。
+- **改法**：只认**行首的声明行**，两种形式（`> 未切版`、`> **发布状态：未切版。**`），并要求标记后面紧跟分隔符（`未切版本` 这种更长词不算）。报错文案给出可照抄的写法。**回归用例**：`test_prose_mention_does_not_count_as_pending_declaration`、`test_marker_inside_a_larger_word_does_not_count`（先跑旧实现会全绿，是真正的盲区）；另在真实文件上做过一次反向验：删掉声明行、保留"撤掉未切版标注"那句 → `FAILED` 且点名缺失声明。
+- 台账 `docs/mvp-tasks.md` 的 D-04 行随 #76 更新为"cmd 与 remote/script 探针都按目标逐台执行"，三段留痕保留（2026-08-15"已交付"→ 2026-10-05"部分可达"→ 2026-10-06 现口径），并列出两条未闭合项。
 
 ## [v1.19.0] - 2026-10-06 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
 
