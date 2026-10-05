@@ -55,6 +55,7 @@ import (
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/recommend/feedback"
 	"github.com/nexus/levee/internal/risk"
+	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 
@@ -1911,10 +1912,26 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 	// Delegate to the engine when available.
 	if s.engine != nil && s.engine.Rollback != nil {
 		rollbackRunID, hosts, err := s.engine.Rollback(ctx, req.GetChangeId(), req.GetRunId(), req.GetAutoApprove())
-		if err != nil {
+		// An incomplete rollback is an OUTCOME, not a server fault. Before this
+		// branch existed every non-nil error became codes.Internal and the run was
+		// never rewritten — so a manual attempt that dispatched compensations and
+		// could not finish left the record claiming the pre-attempt status while
+		// the targets had already been touched. Report it truthfully instead:
+		// Success=false plus a status that says what happened, and it stays inside
+		// the rollback-admitted set so the operator can try again.
+		incomplete := errors.Is(err, rollback.ErrIncomplete)
+		if err != nil && !incomplete {
 			return nil, status.Errorf(codes.Internal, "engine rollback: %v", err)
 		}
-		run.Status = "rolled_back"
+		newStatus := runstatus.StatusRolledBack
+		message := "rollback completed"
+		if incomplete {
+			newStatus = runstatus.StatusRollbackIncomplete
+			message = fmt.Sprintf("rollback incomplete: %v", err)
+			log.Warn("manual rollback did not fully restore the targets; status records the outcome",
+				"change_id", run.ID, "error", err)
+		}
+		run.Status = newStatus
 		run.UpdatedAt = time.Now().UTC()
 		if err := s.store.UpdateRun(ctx, run); err != nil {
 			return nil, status.Errorf(codes.Internal, "update run after rollback: %v", err)
@@ -1926,7 +1943,7 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 			Action:    "rollback",
 			Actor:     actorFromCtx(ctx),
 			Target:    rollbackRunID,
-			Result:    "rolled_back",
+			Result:    newStatus,
 			Timestamp: now,
 		})
 
@@ -1934,17 +1951,17 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 			ChangeId:  run.ID,
 			EventType: "status_changed",
 			OldStatus: oldStatus,
-			NewStatus: "rolled_back",
-			Message:   "rollback completed",
+			NewStatus: newStatus,
+			Message:   message,
 			Timestamp: now.Unix(),
 		})
 
 		return &pb.RollbackResponse{
 			Change:          runToPB(run),
 			RollbackRunId:   rollbackRunID,
-			Success:         true,
+			Success:         !incomplete,
 			RolledBackHosts: hosts,
-			Message:         "rollback completed",
+			Message:         message,
 		}, nil
 	}
 

@@ -134,24 +134,29 @@ func TestEngineServe_RollbackChangeClearsTheStateGateFromPartialVerdict(t *testi
 	require.Contains(t, runstatus.RollbackAdmitted, run.Status,
 		"the e2e premise must agree with the single-sourced admission set")
 
-	_, err = client.RollbackChange(ctx, &pb.RollbackRequest{
+	before := len(rec.snapshotCmds())
+	resp, err := client.RollbackChange(ctx, &pb.RollbackRequest{
 		ChangeId:    changeID,
 		AutoApprove: true,
 	})
-	if err != nil {
-		// Admission is the claim under test. FailedPrecondition would mean the
-		// state gate refused a run it exists to remediate. Anything else (today
-		// it is codes.Internal, "partial rollback: some undo steps failed") got
-		// past admission and failed further down — a separate, registered defect.
-		require.NotEqual(t, codes.FailedPrecondition, status.Code(err),
-			"rolled_back_partial must clear the rollback state gate, got: %v", err)
-		t.Logf("observed (registered in docs/product-roadmap.md): manual rollback from a "+
-			"partial verdict surfaces as %s: %v", status.Code(err), err)
-		return
-	}
+	// The registered defect this line used to tolerate: an unfinished manual
+	// rollback came back as codes.Internal and left the run on its pre-attempt
+	// status. It is now an outcome — Success=false with a status that says so —
+	// and the attempt stays inside the retryable set.
+	require.NoError(t, err, "an unfinished manual rollback must be reported as an outcome, not a server fault")
+	assert.False(t, resp.GetSuccess(), "the response must not claim a completed rollback")
+	assert.Contains(t, resp.GetMessage(), "incomplete",
+		"the message must say the attempt did not finish, got %q", resp.GetMessage())
+	t.Logf("attempt dispatched %d channel calls (before=%d), hosts=%v",
+		len(rec.snapshotCmds()), before, resp.GetRolledBackHosts())
 
-	// Admitted and completed: the compensation must actually dispatch, and the
-	// audit chain must survive a second rollback pass.
+	run, err = store.GetRun(ctx, changeID)
+	require.NoError(t, err)
+	assert.Equal(t, runstatus.StatusRollbackIncomplete, run.Status,
+		"the record must advance from the pre-attempt verdict to what actually happened")
+	assert.Contains(t, runstatus.RollbackAdmitted, run.Status,
+		"an unfinished rollback stays retryable, never sealed")
+
 	auditSvc := leveegrpc.NewAuditService(store)
 	vr, verr := auditSvc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{ChangeId: changeID})
 	require.NoError(t, verr)
