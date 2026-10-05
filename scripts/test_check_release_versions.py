@@ -124,6 +124,34 @@ class GateRun(unittest.TestCase):
         self.assertEqual(rc, 0, f"unexpected failures: {failures}")
         self.assertTrue(any("declared 未切版" in n for n in notes), notes)
 
+    def test_pending_declaration_line_is_accepted(self) -> None:
+        # The form the repository actually uses (v1.19.0's prep PR used it too).
+        claim = ("## [Unreleased]\n\n## [v1.20.0] - 2026-10-07\n\n"
+                 "> **发布状态：未切版。** tag 尚未打出\n\n- done\n")
+        rc, failures, notes = self.run_gate(log=claim)
+        self.assertEqual(rc, 0, f"unexpected failures: {failures}")
+        self.assertTrue(any("declared 未切版" in n for n in notes), notes)
+
+    def test_prose_mention_does_not_count_as_pending_declaration(self) -> None:
+        """Regression 2026-10-06: folding a previous release's "撤掉未切版标注" note into a
+        new section made the marker substring-match, so an *unmarked* release claim passed
+        rule 3. Only a line that opens with the declaration counts."""
+        claim = (
+            "## [Unreleased]\n\n## [v1.20.0] - 2026-10-07\n\n"
+            "- **上一批的留痕**：撤掉\"未切版\"标注并把 Helm 口径升到 1.19.0\n\n- done\n"
+        )
+        rc, failures, _ = self.run_gate(log=claim)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("declaration line starting with '未切版'" in f for f in failures), failures)
+
+    def test_marker_inside_a_larger_word_does_not_count(self) -> None:
+        # "未切版本" is a different (longer) token; matching it would be substring luck.
+        claim = ("## [Unreleased]\n\n## [v1.20.0] - 2026-10-07\n\n"
+                 "未切版本尚未确认\n")
+        rc, failures, _ = self.run_gate(log=claim)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("declaration line starting with '未切版'" in f for f in failures), failures)
+
     def test_historical_untagged_section_is_recorded_not_fatal(self) -> None:
         claim = ("## [Unreleased]\n\n## [v1.19.0] - 2026-10-06\n\n- done\n\n"
                  "## [v1.7.0] - 2026-06-01\n\n- older than the newest tag\n")
