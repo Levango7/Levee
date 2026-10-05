@@ -153,8 +153,11 @@ func (s *ChangeService) WithApprovalCreateObserver(fn func(a *approval.Approval)
 }
 
 // WithAuthorizer installs the policy authorizer consulted by the
-// change-scoped governance actions (apply / rollback / approve / reject).
-// Nil disables policy enforcement, which is the state of every deployment
+// change-scoped governance actions (plan / apply / rollback / approve / reject)
+// and by the change read paths (view). The fleet surfaces — inventory,
+// template library, audit trail, system — take the same authorizer through
+// their own WithAuthorizer methods; see resource_authz.go for what each asks
+// for. Nil disables policy enforcement, which is the state of every deployment
 // that never wrote a permission matrix.
 func (s *ChangeService) WithAuthorizer(a *authz.Authorizer) *ChangeService {
 	s.authz = a
