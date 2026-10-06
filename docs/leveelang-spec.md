@@ -175,7 +175,7 @@ workflow <name> {
     args { ... }
     requires_reboot: <bool>
     irreversible: <bool>
-    idempotent: <bool>                # 声明该步骤可安全重复执行（治理字段）
+    idempotent: <bool>                # 作者标注该步可安全重跑（advisory，不进 plan 哈希；见 §4.5 step 块）
 
     rollback {                        # 补偿契约：声明"这一步做完之后怎么撤销"
       strategy: "<rollback-strategy>"
@@ -249,7 +249,7 @@ workflow <name> {
 | requires_reboot | bool | 该步是否需要目标机重启 |
 | irreversible | bool | 该步是否不可逆 |
 | allow_irreversible | list | workflow 级字段（V14，已接线）：不可逆动作白名单。判定为不可逆的步骤——显式 `irreversible: true` 或引擎固有破坏性词表（pkg.remove / file.delete / user.remove / mysql.replica_switch / mysql.pt_osc）——必须列名于此，否则编译期 LE082 拒绝；**白名单缺席 = 什么都没授权**。条目要求 `module.action` 形式（LE101）。运行时两层机制保持原位：模块内 `confirm=yes` 硬门与计划侧高危审批路由。迁移说明见 CHANGELOG v1.19.0 |
-| idempotent | bool | 该步是否可安全重复执行；回滚补偿在证据无法定序时据此决定重跑还是拒绝 |
+| idempotent | bool | **前瞻步（step）上的 `idempotent` 是作者标注（advisory）**：编译进 IR 供工具链读取，但**不进 plan 哈希**、也不是任何运行期门禁的判据。断点续跑"跳过哪一批"看的是 **executor 模块类型自身**声明的幂等性（`executor.IsIdempotent`），作者的逐步声明被刻意排除——见 `docs/design-cluster-failover.md` §7.5 Q3（"需要 executor 逐类型幂等声明"），因为让调用方自证"可安全重跑"等于把安全属性交给调用方断言，与"客户端控制 autoApprove"同族。**真正进 plan 哈希、并被回滚补偿门禁 `compensationRepeatable` 读取的 `idempotent`，是 `rollback {}` 内 undo step 上的同名声明**（见 §4.5.5 rollback 声明与 `internal/plan/hash.go` canonicalRollbackStep） |
 | on_failure | string | workflow 级回滚触发策略：auto / manual（见 §7.1） |
 | verify_after | bool | workflow 级运行态策略：回滚后是否验证 |
 
@@ -703,7 +703,7 @@ step 块声明一个变更步骤，是 workflow 的必需块，可声明多个�
 | verify | 块 | 否 | 步骤级验证（post_step） |
 | requires_reboot | bool | 否 | 是否需要目标机重启，缺省 false |
 | irreversible | bool | 否 | 是否不可逆，缺省 false |
-| idempotent | bool | 否 | 是否可安全重复执行，缺省 false；**该声明进入 plan 哈希**（v2 治理字段），批准后不可改写；回滚补偿仅在证据无法定序且未声明时拒绝重跑 |
+| idempotent | bool | 否 | 作者标注该步可安全重跑，缺省 false；**该前瞻步声明是 advisory：不进 plan 哈希**，也非运行期门禁判据（断点续跑的跳过看 executor 模块类型的幂等声明，见 `design-cluster-failover.md` §7.5 Q3）。注意区分：**`rollback {}` 内 undo step 上的 `idempotent` 才是 v2 治理字段**——它进 plan 哈希、批准后不可改写，并被回滚补偿门禁 `compensationRepeatable` 读取，在补偿无法定序且未声明时拒绝重跑（见 §4.5.5、`internal/plan/hash.go` canonicalRollbackStep） |
 | depends_on | string[] | 否 | 显式依赖的前置 step |
 | output | 块 | 否 | 输出声明，供后续 step 引用 |
 
@@ -1132,6 +1132,7 @@ grace_period 配置：
 | --- | --- | --- | --- |
 | strategy | string | 是 | 回滚策略：snapshot / undo-action / config-revert |
 | step / steps | 块 | 否 | 撤销步骤声明（undo-action / config-revert 策略时必需） |
+| idempotent（undo step 上） | bool | 否 | 声明该撤销步骤可安全重跑，缺省 false。**这是 v2 治理字段**：`rollback {}` 内每个 undo step 的 `idempotent` 进入 plan 哈希（`hash.go` canonicalRollbackStep，`omitempty` 故对未声明者哈希不变）、批准后不可改写；回滚补偿门禁 `compensationRepeatable`（`internal/rollback/manager.go`）读取它，在补偿证据无法定序、且并非每条已声明 undo step 都标 `idempotent: true` 时**拒绝重跑补偿**（有一条未声明即整份补偿视为不可重跑，避免半重复）。**与前瞻步上的同名 `idempotent` 区分**：后者只是 advisory、不进哈希、非门禁判据（见 §2.2 关键字清单与 §4.5 step 块） |
 | snapshot_paths | list | 否 | snapshot 策略时要备份的目标机路径列表（apply 前采集，回滚时原样恢复） |
 
 表：workflow 级 rollback 字段定义（运行态策略）
