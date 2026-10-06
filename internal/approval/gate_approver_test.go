@@ -38,7 +38,7 @@ func TestGateApproverReturnsTheApprovalDecision(t *testing.T) {
 	done := make(chan verify.HumanDecision, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		d, err := g.RequestAndWait(context.Background(), "run-1", "release-hold", "freeze")
+		d, err := g.RequestAndWait(context.Background(), verify.HumanRequest{RunID: "run-1", Gate: "release-hold", Reason: "freeze"})
 		done <- d
 		errCh <- err
 	}()
@@ -63,7 +63,7 @@ func TestGateApproverReturnsARejection(t *testing.T) {
 
 	done := make(chan verify.HumanDecision, 1)
 	go func() {
-		d, _ := g.RequestAndWait(context.Background(), "run-2", "cutover", "")
+		d, _ := g.RequestAndWait(context.Background(), verify.HumanRequest{RunID: "run-2", Gate: "cutover", Reason: ""})
 		done <- d
 	}()
 
@@ -89,7 +89,7 @@ func TestGateApproverOpensAnIsolatedRecord(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { _, _ = g.RequestAndWait(ctx, "run-3", "gate-x", "") }()
+	go func() { _, _ = g.RequestAndWait(ctx, verify.HumanRequest{RunID: "run-3", Gate: "gate-x", Reason: ""}) }()
 
 	row := waitForRecord(t, store, GateApprovalID("run-3", "gate-x"))
 	require.NotEmpty(t, row.PlanHash, "an empty PlanHash is the legacy marker and matches EVERY plan")
@@ -104,7 +104,7 @@ func TestGateApproverHonoursCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := g.RequestAndWait(ctx, "run-4", "gate-y", "")
+		_, err := g.RequestAndWait(ctx, verify.HumanRequest{RunID: "run-4", Gate: "gate-y", Reason: ""})
 		errCh <- err
 	}()
 
@@ -135,7 +135,7 @@ func TestGateApproverReattachesToAnExistingRecord(t *testing.T) {
 
 	done := make(chan verify.HumanDecision, 1)
 	go func() {
-		d, _ := g.RequestAndWait(context.Background(), "run-5", "gate-z", "")
+		d, _ := g.RequestAndWait(context.Background(), verify.HumanRequest{RunID: "run-5", Gate: "gate-z", Reason: ""})
 		done <- d
 	}()
 
@@ -148,4 +148,67 @@ func TestGateApproverReattachesToAnExistingRecord(t *testing.T) {
 		t.Fatal("re-attached transport never returned")
 	}
 	_ = store
+}
+
+// Quorum: the transport must not report approval until min_approvers distinct
+// humans have agreed.
+func TestGateApproverWaitsForQuorum(t *testing.T) {
+	svc, store := newService(t)
+	g := fastApprover(svc)
+
+	done := make(chan verify.HumanDecision, 1)
+	go func() {
+		d, _ := g.RequestAndWait(context.Background(), verify.HumanRequest{
+			RunID: "run-q1", Gate: "release", MinApprovers: 2,
+		})
+		done <- d
+	}()
+
+	id := GateApprovalID("run-q1", "release")
+	waitForRecord(t, store, id)
+	require.NoError(t, svc.Approve(context.Background(), id, "alice"))
+
+	select {
+	case d := <-done:
+		t.Fatalf("one vote settled a 2-of-N gate: %+v", d)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	require.NoError(t, svc.Approve(context.Background(), id, "bob"))
+	select {
+	case d := <-done:
+		assert.True(t, d.Approved)
+		assert.Equal(t, "alice,bob", d.Approver, "every approver is named, not just the last")
+	case <-time.After(3 * time.Second):
+		t.Fatal("quorum reached but the transport never returned")
+	}
+}
+
+// Independence: the run's initiator cannot cast the vote the workflow excluded.
+func TestGateApproverRefusesTheInitiatorVote(t *testing.T) {
+	svc, store := newService(t)
+	g := fastApprover(svc)
+
+	done := make(chan verify.HumanDecision, 1)
+	go func() {
+		d, _ := g.RequestAndWait(context.Background(), verify.HumanRequest{
+			RunID: "run-q2", Gate: "four-eyes", ExcludeInitiator: true, Initiator: "alice",
+		})
+		done <- d
+	}()
+
+	id := GateApprovalID("run-q2", "four-eyes")
+	waitForRecord(t, store, id)
+
+	err := svc.Approve(context.Background(), id, "alice")
+	require.Error(t, err, "the initiator's own vote must be refused")
+
+	require.NoError(t, svc.Approve(context.Background(), id, "bob"))
+	select {
+	case d := <-done:
+		assert.True(t, d.Approved)
+		assert.Equal(t, "bob", d.Approver)
+	case <-time.After(3 * time.Second):
+		t.Fatal("transport never returned after the independent vote")
+	}
 }

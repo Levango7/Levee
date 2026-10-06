@@ -111,6 +111,11 @@ type GateInput struct {
 	// RunID is the unique identifier of the change run this gate belongs to.
 	RunID string `json:"run_id"`
 
+	// Initiator is the identity recorded as authoring the run. Human gates that
+	// declare exclude_initiator need it to know whose vote to refuse; empty means
+	// unknown, and such a gate refuses rather than accepting that vote.
+	Initiator string `json:"initiator,omitempty"`
+
 	// BatchID identifies the batch that just completed. It is populated only
 	// for PhasePostBatch gates; PreApply and PostApply gates leave it empty.
 	BatchID string `json:"batch_id,omitempty"`

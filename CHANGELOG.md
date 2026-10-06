@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 功能（human 门禁支持 quorum 与 exclude_initiator）
+
+- human 门禁从"单人同意"扩到工作流可声明的**同意形状**：两个新参数
+  - `min_approvers: <int>`（>0，缺省 1）：需要**几个不同的人**同意才放行；
+  - `exclude_initiator: <bool>`：**禁止 run 的发起人**投这一票（四眼原则）。
+- 落地分层：`verify` 的 `HumanRequest` 现在承载同意形状（`MinApprovers` / `ExcludeInitiator` / `Initiator`），而不是只传 run/gate/reason——**形状是问题的一部分，不是传输的实现细节**：表达不了 quorum 的传输必须拒绝，而不是用一个投票作答。`GateInput` 新增 `Initiator`，`engine` 从 `run.Creator` 取（读不到就是空，见下）。
+- **审批层不用改**：`approval.Service.decide` 早已强制 `MinApprovers` 配额与 `ExcludeInitiator`（本仓既有实现）；本次只是把工作流的声明透传进 `CreateRequest`。
+- **两个 fail-closed 点**：
+  - 声明了 `exclude_initiator` 但 run **没有记录的发起人**时，门禁**直接拒绝**（`unverifiable_independence`），不把"无人可排除"悄悄降级成"谁都能投"——正是该声明要防的事；
+  - `min_approvers <= 0` 是**参数错误**（fail-closed 拒绝，不静默当 1）。
+- 审批人记录：quorum 下 `HumanDecision.Approver` **列出全部同意者**（逗号连接），不是只报最后一票——`min_approvers > 1` 的语义是"这些人同意"，只报一个是少报。
+- 迁移说明：**纯新增**——此前 `min_approvers` / `exclude_initiator` 是**未知参数**（strict 校验会 fail-closed 拒绝），所以没有存量工作流使用它们，行为不变。
+- 验证：`verify` 3 条（不可执行的排除拒绝且**根本不问传输**、同意形状抵达传输、非正配额拒绝）+ `approval` 2 条（2-of-N：一票**不**放行、两票放行且列出两人；发起人那票被拒后独立投票放行）。**2 项变异被抓**：quorum 不落进记录 → 2-of-N 被一票放行；去掉不可执行排除的拒绝 → 该用例转红。
+
 ### 功能（human 门禁终于有传输：复用审批链，`levee gate approve|reject` 是决定面）
 
 - **此前 human 门禁在 serve 下不可用**：`WithGateApprover` 生产 0 调用点，计划期直接拒绝（`ErrGateNotExecutable`），任何声明 `human` 的 workflow **根本 plan 不出来**。上一批只补了"契约能携带审批人身份"（`HumanDecision`），本批补上传输。
