@@ -258,8 +258,10 @@ permission:
   # 读= view，列表按可见环境收窄；无 env 概念的资源按 permission.default_env
   # 判定，未配 default_env 即拒绝）+ pause_all / resume_all 这两个批量动作。
   # 文件解析失败则**启动失败**
-  # ——把坏策略静默降级成"不拦"比没有策略更危险。仍未接线：policies.yaml 的条件式
-  # ABAC（只有 `levee rbac` 在算），见 docs/product-roadmap.md。
+  # ——把坏策略静默降级成"不拦"比没有策略更危险。**条件式 ABAC 已接线**：本目录下若有
+  # policies.yaml，serve 会读它，并在矩阵×角色放行后再跑一道"只收窄"的策略层（变更类
+  # 动作映射到 change:*；条件里可用 env / target.env；无策略匹配=维持原判定，求值出错=
+  # 拒绝）。细节见 CHANGELOG 与 internal/authz/authz.go 的 applyPolicyLayer。
   # 读路径的缺省姿态（刻意与写不同）：没有可验签主体的调用者**不被过滤**，因为
   # 共享令牌下所有调用者是同一个主体，拒他们不会带来任何隔离、只会让看板变黑；
   # 需要按队隔离读可见性就启用命名令牌 / SSO / OIDC。
