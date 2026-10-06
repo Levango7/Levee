@@ -63,18 +63,18 @@ func NewGateApprover(svc *Service) *GateApprover {
 
 // RequestAndWait opens (or re-attaches to) the approval for this (run, gate) and
 // blocks until it is decided or ctx ends. See verify.HumanApprover.
-func (g *GateApprover) RequestAndWait(ctx context.Context, runID, subject, reason string) (verify.HumanDecision, error) {
+func (g *GateApprover) RequestAndWait(ctx context.Context, req verify.HumanRequest) (verify.HumanDecision, error) {
 	if g == nil || g.svc == nil {
 		return verify.HumanDecision{}, errors.New("gate approver: no approval service")
 	}
-	if strings.TrimSpace(runID) == "" || strings.TrimSpace(subject) == "" {
+	if strings.TrimSpace(req.RunID) == "" || strings.TrimSpace(req.Gate) == "" {
 		return verify.HumanDecision{}, errors.New("gate approver: run id and gate name are required")
 	}
 
-	id := GateApprovalID(runID, subject)
+	id := GateApprovalID(req.RunID, req.Gate)
 	// Rejections are carried on the record's status, not on an error, so the
 	// gate can distinguish "a human said no" from "the transport failed".
-	if err := g.open(ctx, id, runID, subject); err != nil {
+	if err := g.open(ctx, id, req); err != nil {
 		return verify.HumanDecision{}, err
 	}
 
@@ -99,16 +99,23 @@ func (g *GateApprover) RequestAndWait(ctx context.Context, runID, subject, reaso
 	}
 }
 
-// open creates the gate's approval record. A record that already exists is fine:
-// the gate is re-attaching (a resumed run, or two phases declaring the same
-// name), and the existing record is the one the human will decide.
-func (g *GateApprover) open(ctx context.Context, id, runID, gate string) error {
+// open creates the gate's approval record carrying the workflow's consent shape.
+// A record that already exists is fine: the gate is re-attaching (a resumed run,
+// or two phases declaring the same name), and the existing record is the one the
+// human will decide.
+func (g *GateApprover) open(ctx context.Context, id string, req verify.HumanRequest) error {
+	minApprovers := req.MinApprovers
+	if minApprovers <= 0 {
+		minApprovers = 1
+	}
 	_, err := g.svc.Create(ctx, CreateRequest{
-		ID:           id,
-		RunID:        runID,
-		Level:        LevelStandard,
-		MinApprovers: 1,
-		PlanHash:     GatePlanMarkerPrefix + gate,
+		ID:               id,
+		RunID:            req.RunID,
+		Level:            LevelStandard,
+		MinApprovers:     minApprovers,
+		PlanHash:         GatePlanMarkerPrefix + req.Gate,
+		Initiator:        req.Initiator,
+		ExcludeInitiator: req.ExcludeInitiator,
 	})
 	if err == nil {
 		return nil
@@ -121,22 +128,27 @@ func (g *GateApprover) open(ctx context.Context, id, runID, gate string) error {
 	return fmt.Errorf("gate approver: open %q: %w", id, err)
 }
 
-// decider returns the identity behind the decision that settled the record: the
-// rejecter when one exists (a rejection is terminal), else the approver. Empty
-// when the deciding surface recorded no identity.
+// decider returns the identity behind the decision that settled the record.
+//
+// A rejection is terminal, so the rejecter is named. An approval settled a
+// quorum, so EVERY approver is named (comma-joined) rather than only the last
+// vote: with min_approvers > 1 the gate's justification is "these people
+// agreed", and reporting one of them would understate it. Empty when the
+// deciding surface recorded no identity.
 func decider(a *Approval) string {
 	if a == nil {
 		return ""
 	}
-	for i := len(a.Decisions) - 1; i >= 0; i-- {
-		if a.Decisions[i].Action == ActionReject {
-			return a.Decisions[i].Approver
+	var approved []string
+	for _, d := range a.Decisions {
+		switch d.Action {
+		case ActionReject:
+			return d.Approver
+		case ActionApprove:
+			if d.Approver != "" {
+				approved = append(approved, d.Approver)
+			}
 		}
 	}
-	for i := len(a.Decisions) - 1; i >= 0; i-- {
-		if a.Decisions[i].Action == ActionApprove {
-			return a.Decisions[i].Approver
-		}
-	}
-	return ""
+	return strings.Join(approved, ",")
 }

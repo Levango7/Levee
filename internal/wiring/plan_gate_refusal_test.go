@@ -33,7 +33,7 @@ import (
 // a chat-ops transport would.
 type acceptApprover struct{}
 
-func (acceptApprover) RequestAndWait(_ context.Context, _, _, _ string) (verify.HumanDecision, error) {
+func (acceptApprover) RequestAndWait(_ context.Context, _ verify.HumanRequest) (verify.HumanDecision, error) {
 	return verify.HumanDecision{Approved: true}, nil
 }
 
