@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### 安全修复（清单/模板/审计/系统面接入权限矩阵，另 23 个 RPC 从此有判定）
+
+覆盖面按生成的 `*ServiceServer` 接口逐个点数：target 5 + inventory 6 + template 5 + audit 4 + system 4 = **24 个 RPC**，其中 22 个走准入判定、`GetStatus` 走可见性过滤（计数也是一种读），只有 `GetVersion` 刻意保持不门禁。
+
+- **写了 `permissions.yaml` 的部署，只把一半的 API 交给策略管**：`internal/grpc` 中五个服务对 authz 的引用计数为 0——`grep -c authz` 打在 `target_service.go` / `inventory_service.go` / `template_service.go` / `audit_service.go` / `system_service.go` 上全是 0（本批开始前实测）。矩阵只在变更路径生效，于是同一个只被允许看 dev 的调用方仍然可以：**枚举全部 prod 主机及其 `credential_ref`**（`ListTargets`/`GetTarget`/`CheckTarget`）、**冻结或退役一台 prod 主机**（`SetTargetStatus`，等于让别人跑不起来的刹车）、批量导入清单、删掉别队赖以创建变更的模板、读整条审计链与任意 run 的报告（`GetAuditLog`/`ListAuditTraces`/`VerifyHashChain`/`GetRunReport`，其中 `TargetHistory` 还会交出每个触及该主机的 run 的**工作流全文与创建者**）、导出部署配置（`GetConfig`，脱敏后仍含数据目录、监听地址与凭据引用形态）。
+  落地姿态（一份 `internal/grpc/resource_authz.go`，五个服务不许各自漂移）：
+  - **作用域取资源自己声明的环境**。主机的环境是 `labels["env"]`；变更的是 run 的环境列。分组、模板、配置什么都不声明，它们本来就是部署级的，按 `permission.default_env` 判定——**不去解析分组名 `"prod/db"` 的第一段**，那把一个安全判定挂在命名习惯上；矩阵生效又没有默认环境时是**拒绝**而不是猜（`authz.Decide` 既有语义）。
+  - **清单级写 = `admin`**：能在机群里面做什么，不等于能决定机群里面有什么。
+  - **读 = `view`，且列表收窄而不是整页拒绝**（拒绝会把本来允许看的行也藏掉）：`ListTargets`、`TargetHistory`、`GetAuditLog`、`ListAuditTraces`、不带 run 参数的 `VerifyHashChain`、以及 `GetStatus` 的 run 计数（**计数也是一种读**："你的 prod 此刻在跑 2 个变更"是关于别人变更的信息）。`TotalSize` 跟着收窄后的集合走，否则分页会承诺下一页拿不到的行。
+  - **不可归因主体照旧放行读、拒绝写**——继承既有姿态而非新造（共享令牌下过滤所有人不产生任何隔离，只会把控制台弄黑）。
+  - 两处刻意不同：`InstantiateTemplate` 取**请求声明环境里的 `plan`**（它创建的是一条变更）；`ImportTargets` 对文件里**每一个**声明环境都要 `admin`，因为一份清单文件就是一批 `AddTarget`，不能比其中单条更可授权——判定在任何写入之前，含一台越界主机的文件**一台都不导**。`GetVersion` 保持不门禁：需要队授权的探针等于让监控在没人配置时集体失效。
+  **接线由测试证明，不靠假设**：`InventoryService` 原本在注册点构造（`cmd_serve.go:792`），游离于所有测试之外；现在它和其余服务一样出自 `buildServeServices`，`cmd/levee/serve_policy_wiring_test.go` 用真实构造函数断言①六个服务对未登记主体都拒、②sre 成员的变更授权齐全仍被拒清单写、③dave 的 `admin` 让同一批调用通过（证明拒的是矩阵而不是硬编码）、④空数据目录一切照旧。**此前 `cmd/levee` 没有任何测试提到过 authorizer**——门在结构体里不等于门在进程里。
+  **迁移说明（行为变更）**：启用矩阵的部署会立刻看到三类变化——只读型调用方拿不到别的环境的主机/审计行（列表变短，不是变空）；清单与模板的写、`GetConfig` 需要 `admin`；**未配 `permission.default_env` 时分组/模板/配置一律拒绝**（那是"没有环境可判"的正确回答，补救是配默认环境或给矩阵补一个 `*` 环境）。`levee serve` 启动日志与 `levee authz status` 的文案同步改成如实描述覆盖面。
+
+验证：新增 15 个测试函数（`internal/grpc/service_policy_test.go` 12 + `cmd/levee/serve_policy_wiring_test.go` 3）。**先探针后修复**：12 条服务级用例在未接线树上跑，11 条按断言失败（只有"没配矩阵就不变"那条通过）——这就是"今天是敞开的"的实测证据。**18 项变异全部被抓且均能编译**：判定动作用错（写按 `view` 判）、读判定退回默认环境、过滤整体关闭、过滤恒放行、`envOfTarget` 恒空、`AddTarget`/`RemoveTarget`/`SetTargetStatus`/`ImportTargets`/`InstantiateTemplate` 五处作用域各自退回默认环境、列表与历史与审计行与 verify 全扫描四处去掉过滤、`GetRunReport` 不判环境、`GetStatus` 退回总数、serve 的两处 `WithAuthorizer` 分别删掉。`ChangeService` 的 `authorize`/`authorizeRead`/可见性谓词改为调用同三个助手，拒绝文案与"是否启用过滤"的规则从此只有一份定义。`go build ./...` / `go vet ./...` / `go test ./...`（65 包）与 `internal/grpc/pb/` 未改见提交说明。
+
 ## [v1.19.1] - 未切版
 
 > **发布状态：未切版。** `v1.19.1` 的 tag 尚未打出，因此 `ghcr.io/levango7/levee:v1.19.1` 这个制品还不存在；下面五批内容都已进 master。chart 的 `appVersion` 与 `values.image.tag` 保持指向上一个真实存在的发布，等 tag 切出后再一并升档——`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，抢先写未来的版本号会让 `delivery` job 变红，而那正是这条门禁该做的事。
