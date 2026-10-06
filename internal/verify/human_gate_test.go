@@ -17,6 +17,10 @@ type stubApprover struct {
 	decision bool
 	err      error
 
+	// approverIdentity is echoed back in the decision, standing in for a
+	// transport that can authenticate the human (empty = it cannot).
+	approverIdentity string
+
 	// waitForContext, when true, blocks until the passed context is done and
 	// then returns that context's error (used for timeout / cancel tests).
 	waitForContext bool
@@ -28,7 +32,7 @@ type stubApprover struct {
 	calls      int
 }
 
-func (a *stubApprover) RequestAndWait(ctx context.Context, runID, subject, reason string) (bool, error) {
+func (a *stubApprover) RequestAndWait(ctx context.Context, runID, subject, reason string) (HumanDecision, error) {
 	a.calls++
 	a.gotCtx = ctx
 	a.gotRunID = runID
@@ -37,12 +41,12 @@ func (a *stubApprover) RequestAndWait(ctx context.Context, runID, subject, reaso
 
 	if a.waitForContext {
 		<-ctx.Done()
-		return false, ctx.Err()
+		return HumanDecision{}, ctx.Err()
 	}
 	if a.err != nil {
-		return false, a.err
+		return HumanDecision{}, a.err
 	}
-	return a.decision, nil
+	return HumanDecision{Approved: a.decision, Approver: a.approverIdentity}, nil
 }
 
 func TestHumanGateImplementsGateInterface(t *testing.T) {
@@ -181,4 +185,43 @@ func TestHumanGateRegisteredWithManager(t *testing.T) {
 	results := gm.RunPhase(context.Background(), PhasePostBatch, GateInput{BatchID: "b1"})
 	require.Len(t, results, 1)
 	assert.True(t, results[0].Passed)
+}
+
+// The decision carries WHO answered: a transport that can authenticate the human
+// must have that identity land in the recorded result, so the trail names the
+// approver rather than just saying "approved".
+func TestHumanGateRecordsTheApproverIdentity(t *testing.T) {
+	g := NewHumanGate("release-hold", "post_apply",
+		&stubApprover{decision: true, approverIdentity: "alice"}, nil)
+
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-7"})
+	require.NoError(t, err)
+	require.True(t, res.Passed)
+	assert.Equal(t, "alice", res.Details["approver"])
+}
+
+// A rejection is attributed too: an audit trail that names who refused is as
+// important as one that names who approved.
+func TestHumanGateRecordsWhoRejected(t *testing.T) {
+	g := NewHumanGate("release-hold", "post_apply",
+		&stubApprover{decision: false, approverIdentity: "bob"}, nil)
+
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-8"})
+	require.NoError(t, err)
+	assert.False(t, res.Passed)
+	assert.Equal(t, "bob", res.Details["approver"])
+}
+
+// A transport that cannot authenticate the human leaves Approver empty; the gate
+// must NOT invent a name or render an empty one. The absence is what the trail
+// shows, so an unauthenticated decision is visible rather than silently
+// attributed.
+func TestHumanGateOmitsAnUnverifiableApprover(t *testing.T) {
+	g := NewHumanGate("release-hold", "post_apply", &stubApprover{decision: true}, nil)
+
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-9"})
+	require.NoError(t, err)
+	require.True(t, res.Passed)
+	assert.NotContains(t, res.Details, "approver",
+		"an unauthenticated approval must not be attributed to any name")
 }

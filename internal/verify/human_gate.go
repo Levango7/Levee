@@ -42,6 +42,21 @@ var validHumanParamKeys = []string{
 	"timeout_seconds",
 }
 
+// HumanDecision is one human's answer to a gate request. Approved is the
+// verdict; Approver is the identity that gave it.
+//
+// Approver is a VERIFIABLE SUBJECT when the transport can authenticate the human
+// who answered (the same subject the rest of the system binds decisions to), and
+// empty when it cannot. It is recorded as-is and never invented: a transport that
+// cannot say who answered must leave it empty rather than echo a name the caller
+// supplied. The gate does not itself refuse an empty Approver — the transport is
+// the authentication boundary — but the empty value is what an audit trail shows,
+// so an unauthenticated approval is visible rather than silently attributed.
+type HumanDecision struct {
+	Approved bool
+	Approver string
+}
+
 // HumanApprover is the transport abstraction behind HumanGate. Implementations
 // block until a human decision is available, the context expires, or an
 // infrastructure error occurs. They must respect ctx cancellation so that an
@@ -49,10 +64,12 @@ var validHumanParamKeys = []string{
 type HumanApprover interface {
 	// RequestAndWait asks a human to approve the subject for the given run,
 	// presenting reason as the justification, and blocks until a decision.
-	// It returns true when approved. A nil error with false means the human
-	// explicitly rejected; a non-nil error means the request could not be
-	// completed (transport failure, context cancelled mid-wait, ...).
-	RequestAndWait(ctx context.Context, runID, subject, reason string) (bool, error)
+	// A nil error carries the decision; Approved=false means the human
+	// explicitly rejected. A non-nil error means the request could not be
+	// completed (transport failure, context cancelled mid-wait, ...). The
+	// returned HumanDecision's Approver names who answered, or is empty when
+	// the transport cannot authenticate them (see HumanDecision).
+	RequestAndWait(ctx context.Context, runID, subject, reason string) (HumanDecision, error)
 }
 
 // HumanGate pauses the verification pipeline at its phase until a human
@@ -198,11 +215,18 @@ func (g *HumanGate) Check(ctx context.Context, input GateInput) (GateResult, err
 		"timeout_seconds": int(g.timeout.Seconds()),
 	}
 
-	approved, err := g.approver.RequestAndWait(dctx, input.RunID, g.name, g.reason)
+	decision, err := g.approver.RequestAndWait(dctx, input.RunID, g.name, g.reason)
 	details["latency"] = time.Since(start).String()
+	// Record who answered when the transport could authenticate them. An empty
+	// identity stays absent rather than being rendered as a name, so an
+	// unauthenticated decision is visible in the trail instead of anonymous-but-
+	// attributed.
+	if decision.Approver != "" {
+		details["approver"] = decision.Approver
+	}
 
 	switch {
-	case err == nil && approved:
+	case err == nil && decision.Approved:
 		details["decision"] = "approved"
 		return GateResult{
 			Passed:  true,
