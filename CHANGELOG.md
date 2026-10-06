@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 变更（human 门禁的审批决定现在携带可验签审批人身份）
+
+- **此前 `verify.HumanApprover` 连"谁批的"都表达不了**：`RequestAndWait` 只返回一个 `bool`。于是即使将来装了传输，门禁结果里也不会有人名——审计只能记"approved"，记不了"alice 批的"。
+- `RequestAndWait` 现在返回 `HumanDecision{Approved bool, Approver string}`；`HumanGate.Check` 在传输能认证主体时把 `Approver` 记进结果的 `details["approver"]`，**认证不了就留空**（不伪造、不渲染空名字），未认证的批准因此在轨迹里可见而非被匿名归因。
+- 语义边界：门禁本身不做鉴权判定（那是传输层的边界），它只忠实记录传输给出的身份——与 `#50` 的「归属保真」同一口径：回显即承诺、身份必须可跨进程解析。
+- **仍未做（明确记此，不留给沉默）**：生产端**没有**安装任何传输，`WithGateApprover`（`wiring.go:212`）调用点数仍为 0，故 human 门禁在 serve 下仍 **fail-closed**（计划期拒绝 / 运行期 Passed=false，不自动放行）。本次只补上"契约能携带身份"这一半——这是**任何**传输的前置。另一半（门禁级的人在环输入路径）需要**新增一个 RPC**（现有 approve/deeplink 路径都是 change 级、按 run 结算，没有"按门禁"的目标定位），而 `internal/grpc/pb/` 被 CI 的 protoc 版本钉死、本轮不动；或走投递集成（chatops/mobile deeplink 已有部分零件）。这是 roadmap 上 human 门禁审批人传输的开放产品决策，方向已定（复用 `internal/approval`），待独立排期。
+- 影响面：接口变更只动了 3 个测试替身（本仓无生产实现），`go build ./...` / `go test ./internal/verify/ ./internal/engine/ ./internal/wiring/` 全绿。3 条新测试 + 1 项变异（去掉记录 → 身份两例转红）。
+
 ### 功能（条件式 ABAC 接入服务层：`policies.yaml` 成为第三条收窄约束）
 
 - **此前 `policies.yaml` 只有 `levee rbac` 在算，服务层 `authz.Decide` 从不读它**——同一份策略文件，CLI 判它、serve 不判。现在 `authz.Load` 会读 `<dataDir>/policies.yaml`（缺失=正常；**解析失败=启动失败**，与 permissions.yaml 同姿态），并在矩阵与角色两轴都放行之后，再跑一道**只收窄、绝不能放宽**的策略层。

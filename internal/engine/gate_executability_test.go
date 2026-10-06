@@ -25,8 +25,8 @@ import (
 // is wired" is expressible in a test.
 type scriptedApprover struct{ approved bool }
 
-func (a scriptedApprover) RequestAndWait(_ context.Context, _, _, _ string) (bool, error) {
-	return a.approved, nil
+func (a scriptedApprover) RequestAndWait(_ context.Context, _, _, _ string) (verify.HumanDecision, error) {
+	return verify.HumanDecision{Approved: a.approved}, nil
 }
 
 func gatePlan(steps ...plan.PlanStep) *plan.Plan {
