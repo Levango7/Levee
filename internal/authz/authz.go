@@ -74,6 +74,7 @@ type Decision struct {
 const (
 	ViaMatrix = "matrix"
 	ViaRole   = "role"
+	ViaPolicy = "policy"
 )
 
 // Authorizer answers authorisation questions against a loaded snapshot of the
@@ -83,6 +84,7 @@ type Authorizer struct {
 	registry   *identity.Registry
 	matrix     *permission.PermissionMatrix
 	roles      *permission.RoleTree
+	policies   *permission.PolicySet
 	defaultEnv string
 }
 
@@ -91,6 +93,11 @@ const MatrixFileName = "permissions.yaml"
 
 // RoleTreeFileName is the role tree file within the LEVEE data directory.
 const RoleTreeFileName = "roles.yaml"
+
+// PoliciesFileName is the optional conditional-policy file within the LEVEE
+// data directory. When present it adds a third, narrowing-only constraint on
+// top of the matrix and role axes; see applyPolicyLayer.
+const PoliciesFileName = "policies.yaml"
 
 // Load reads the registry, the permission matrix and the role tree from
 // dataDir. Missing files are not errors — an unconfigured deployment is a
@@ -120,10 +127,24 @@ func Load(dataDir, defaultEnv string) (*Authorizer, error) {
 		return nil, fmt.Errorf("load role tree: %w", err)
 	}
 
+	// The conditional policy set is optional, but a file the operator wrote and
+	// LEVEE cannot parse must stop the load rather than silently drop the
+	// constraint (same posture as the matrix above).
+	policies := permission.NewPolicySet()
+	policiesPath := filepath.Join(dataDir, PoliciesFileName)
+	if _, statErr := os.Stat(policiesPath); statErr == nil {
+		if err := policies.LoadFromYAML(policiesPath); err != nil {
+			return nil, fmt.Errorf("load policies: %w", err)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, fmt.Errorf("stat policies: %w", statErr)
+	}
+
 	return &Authorizer{
 		registry:   reg,
 		matrix:     matrix,
 		roles:      roles,
+		policies:   policies,
 		defaultEnv: defaultEnv,
 	}, nil
 }
@@ -242,8 +263,7 @@ func (a *Authorizer) Decide(subject, env, action string) Decision {
 
 	// Axis 1: the matrix may allow the action outright.
 	if a.matrix.Allow(member.Team, env, action) {
-		d.Allowed, d.Via = true, ViaMatrix
-		return d
+		return a.applyPolicyLayer(d, subject, env, action, ViaMatrix)
 	}
 
 	// Axis 2: a role grant, bounded by the environments the team can reach.
@@ -263,11 +283,73 @@ func (a *Authorizer) Decide(subject, env, action string) Decision {
 		d.Reason = fmt.Sprintf("role %q is not declared in %s and the matrix does not grant %q", member.Role, RoleTreeFileName, action)
 		return d
 	case containsAction(granted, action):
-		d.Allowed, d.Via = true, ViaRole
-		return d
+		return a.applyPolicyLayer(d, subject, env, action, ViaRole)
 	}
 	d.Reason = fmt.Sprintf("neither the matrix nor role %q grants %q in %q", member.Role, action, env)
 	return d
+}
+
+// applyPolicyLayer runs the optional conditional policies (policies.yaml) after
+// the matrix and role axes have allowed a request, and is a NARROWING-ONLY
+// constraint: it is only consulted on the allow path, so a request the matrix
+// and role axes refuse is never re-allowed here. It is not a replacement for
+// either axis — the two-axis model still answers "which environments may this
+// team reach" and "what may it do there"; this layer only adds "…and does the
+// resource's condition hold".
+//
+// Posture: an explicit matching deny refuses; an explicit matching allow passes
+// (Via=ViaPolicy); no matching policy leaves the base decision untouched
+// (ErrNoMatch is the engine's "nothing spoke to this request", which must not be
+// confused with a deny — that is the whole reason this layer reads Evaluate's
+// error rather than its boolean); a malformed condition fails closed, because a
+// policy LEVEE cannot evaluate must not silently stop constraining.
+//
+// What a condition can name: the request's environment, exposed as both `env`
+// and `target.env` (the spelling the policy examples use). The labels map is
+// deliberately small — the service layer decides on (env, action) and has no
+// other resource attributes — so a condition on an unknown key evaluates as a
+// missing key (empty string) and therefore does not match, which narrows rather
+// than widens. Resource patterns other than `change:*` and the bare wildcard are
+// not produced here yet; they remain meaningful to `levee rbac`, which evaluates
+// the full context, and are documented as such.
+func (a *Authorizer) applyPolicyLayer(d Decision, subject, env, action, via string) Decision {
+	if a.policies == nil || a.policies.Len() == 0 {
+		d.Allowed, d.Via = true, via
+		return d
+	}
+	allowed, err := a.policies.Evaluate(permission.EvaluationContext{
+		Subject:  subject,
+		Action:   action,
+		Resource: policyResourceFor(action),
+		Labels:   map[string]string{"env": env, "target.env": env},
+	})
+	switch {
+	case errors.Is(err, permission.ErrNoMatch):
+		d.Allowed, d.Via = true, via
+	case err != nil:
+		d.Reason = fmt.Sprintf("conditional policy could not be evaluated: %v", err)
+	case allowed:
+		d.Allowed, d.Via = true, ViaPolicy
+	default:
+		d.Reason = "denied by a conditional policy"
+	}
+	return d
+}
+
+// policyResourceFor names the resource family a service-layer action belongs
+// to. Change-scoped actions are unambiguous; every other action (view, admin and
+// future verbs) spans several resource families in the HTTP/gRPC surface, so it
+// is given the bare wildcard — a policy with a concrete non-change resource
+// pattern simply does not match it.
+func policyResourceFor(action string) string {
+	switch action {
+	case permission.ActionPlan, permission.ActionApply, permission.ActionApprove,
+		permission.ActionRollback, permission.ActionPause, permission.ActionResume,
+		permission.ActionPauseAll, permission.ActionResumeAll, permission.ActionCancel:
+		return "change:*"
+	default:
+		return permission.Wildcard
+	}
 }
 
 // Explain renders a decision as an indented report for `levee authz explain`.

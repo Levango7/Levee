@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 功能（条件式 ABAC 接入服务层：`policies.yaml` 成为第三条收窄约束）
+
+- **此前 `policies.yaml` 只有 `levee rbac` 在算，服务层 `authz.Decide` 从不读它**——同一份策略文件，CLI 判它、serve 不判。现在 `authz.Load` 会读 `<dataDir>/policies.yaml`（缺失=正常；**解析失败=启动失败**，与 permissions.yaml 同姿态），并在矩阵与角色两轴都放行之后，再跑一道**只收窄、绝不能放宽**的策略层。
+- 语义（`internal/authz/authz.go` `applyPolicyLayer`）：
+  - **只在 allow 路径上咨询**——矩阵/角色拒绝了就不再看策略，所以策略永远不能把被拒的请求救回来（`TestConditionalPolicyCannotWiden` 钉住）。
+  - **三态靠 `Evaluate` 的 error 区分**：显式匹配的 deny→拒绝；显式匹配的 allow→放行（`Via=policy`）；**无任何策略匹配（`ErrNoMatch`）→ 维持原判定**。把 `ErrNoMatch` 当成 deny 是这一层最容易犯的错——它就是"没有任何策略谈到这个请求"，与"策略拒绝"是两回事（`TestConditionalPolicyLeavesNonMatchingRequestAlone` 钉住；变异把 no-match 改成 deny 即转红）。
+  - **条件求值出错 fail-closed**（拒绝），不静默放过。
+  - 条件里能引用的 label：请求环境，以 `env` 与 `target.env` 两种拼写暴露（策略示例用的正是后者）；服务层按 `(env, action)` 判定，没有别的资源属性，故引用未知 key 的条件求值为"缺键"→不匹配→维持原判定（收窄方向）。
+  - **资源族映射** `policyResourceFor`：变更类动作（plan/apply/approve/rollback/pause/resume/pause_all/resume_all/cancel）→ `change:*`；其余（view/admin 等跨族动作）→ 裸通配 `*`。即**具体非变更资源模式（如 `target:*`）在服务层暂不匹配**，它们对 `levee rbac` 仍然有效——这是本层的已知边界，写在此处而非留作沉默的空转。
+- 与既有语义的关系：不改矩阵×角色两轴口径（继续管"哪些环境能去"与"在那儿能做什么"），策略层只加"且该资源条件成立"。`Decision.Via` 新增取值 `policy`，`levee authz explain` 会显示。
+- 迁移说明（行为变更）：**给部署放一份 `policies.yaml` 的运维请注意**——它现在会立刻作用于 serve 的 plan/apply/approve/rollback/暂停/取消等变更动作判定；此前只影响 `levee rbac` 的检查输出。条件写错会拒绝本来放行的动作（收窄方向），需按 `levee authz explain` 的文案排查。
+
 ### 文档修正（前瞻步 `idempotent` 被规范误标为治理字段）
 
 - **规范承诺了一个代码从不提供、且设计刻意不提供保证的不可篡改性**。`docs/leveelang-spec.md` §4.5 字段表曾写：step 上的 `idempotent`「**该声明进入 plan 哈希**（v2 治理字段），批准后不可改写；回滚补偿……据此决定重跑还是拒绝」。实测三处都不成立：
