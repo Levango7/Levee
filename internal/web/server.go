@@ -107,7 +107,7 @@ func (s *WebUIServer) buildMux() (http.Handler, error) {
 		devProxy := httputil.NewSingleHostReverseProxy(devUpstream)
 		// In dev mode every non-API request goes to Vite, which serves
 		// the SPA with HMR. We deliberately do not fall back to the
-		// embedded placeholder here.
+		// embedded assets here.
 		mux.Handle("/", devProxy)
 	} else {
 		mux.Handle("/", Handler())
