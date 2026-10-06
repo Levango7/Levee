@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 文档修正（前瞻步 `idempotent` 被规范误标为治理字段）
+
+- **规范承诺了一个代码从不提供、且设计刻意不提供保证的不可篡改性**。`docs/leveelang-spec.md` §4.5 字段表曾写：step 上的 `idempotent`「**该声明进入 plan 哈希**（v2 治理字段），批准后不可改写；回滚补偿……据此决定重跑还是拒绝」。实测三处都不成立：
+  - `plan.PlanStep`（`internal/plan/generator.go`）**没有** `Idempotent` 字段——前瞻步的声明在 parser→IR 之后、进入 plan 层时即被丢弃；`canonicalStepV2`（`internal/plan/hash.go`）同样无此字段，故前瞻步 `idempotent` **从不出现在 plan 哈希里**。
+  - 真正进哈希、并被回滚补偿门禁 `compensationRepeatable`（`internal/rollback/manager.go:675`）读取的 `idempotent`，是 **`rollback {}` 内 undo step 上的同名声明**（`canonicalRollbackStep.Idempotent`，`hash.go:195`）——规范把两个字段混为一谈了。
+  - 断点续跑「跳过哪一批」的判据是 **executor 模块类型自身**的幂等声明（`completedIdempotentBatches` 调 `executor.IsIdempotent(ps.Module)`，`internal/wiring/persist.go:334`），**从不**读作者的逐步 YAML 声明。这是 `docs/design-cluster-failover.md` §7.5 Q3 的明文取舍（"需要 executor 逐类型幂等声明……是独立项目"）——让调用方自证"可安全重跑"等于把安全属性交给调用方断言，与已修的「客户端控制 autoApprove」同族，故刻意不做。
+  - 出厂 `examples/gate-templates/{nginx,mysql}.yaml`、`deploy/lab/workflows/lab-batch-restart.yaml` 里 5 处 `idempotent: true` 都是标在 **shell.exec 前瞻步**上（作者想说"这条重跑安全"），但模块级判定对 shell.exec 恒为 false，因此这些声明按上述设计本就不驱动任何跳过——规范把它们说成哈希绑定的治理字段是错的。
+  处置（**改文档以匹配代码与设计，不改代码行为**，兼容零影响）：§2.2 关键字清单、§4.5 字段表、§2.1 语法草图三处统一改口径——前瞻步 `idempotent` 是 advisory（进 IR、不进哈希、非门禁），undo step 的 `idempotent` 才是 v2 治理字段；并在 §7.1「step 级 rollback 字段定义（补偿契约）」表补上此前**完全没登记**的 `idempotent（undo step 上）` 行，说明其哈希绑定 + `compensationRepeatable` 消费 + "一条未声明即整份补偿不可重跑"的语义。
+  守门：新增 `internal/plan/idempotent_advisory_test.go` 两条特征测试把这个不对称钉成可执行契约——`TestForwardStepIdempotentIsNotHashBound`（仅改前瞻步 `idempotent` → plan 哈希必须不变）、`TestRollbackStepIdempotentIsHashBound`（仅改 undo step `idempotent` → 哈希必须变）。**变异自证**：把 `Idempotent` 从 `canonicalRollbackStep` 摘掉 → 第二条转红；把前瞻步 `idempotent` 一路接进 `PlanStep`+`canonicalStepV2` → 第一条转红；两条都能编译，红来自断言而非构建失败。若日后有人欲将前瞻步声明升格为治理字段，必须先同时改设计文档 §7.5 Q3 的取舍并翻这两条测试，不能悄悄漂移。
+
 ### 安全修复（清单/模板/审计/系统面接入权限矩阵，另 23 个 RPC 从此有判定）
 
 覆盖面按生成的 `*ServiceServer` 接口逐个点数：target 5 + inventory 6 + template 5 + audit 4 + system 4 = **24 个 RPC**，其中 22 个走准入判定、`GetStatus` 走可见性过滤（计数也是一种读），只有 `GetVersion` 刻意保持不门禁。
