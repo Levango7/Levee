@@ -79,7 +79,7 @@ function batchProgressPct(b: { total_hosts: number; succeeded: number; failed: n
 		</p>
 
 		<p v-else-if="backend === 'postgres' && nodes.length === 0" class="hint">
-			集群模式已启用，但尚无节点注册。启动 worker 节点以加入集群。
+			未注册任何 worker 节点。集群模式（<code>levee serve --cluster --pg-dsn …</code>）下请启动 worker 节点加入；单节点 PostgreSQL 部署无需 worker。
 		</p>
 
 		<template v-else>
