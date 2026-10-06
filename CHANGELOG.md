@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 功能（human 门禁终于有传输：复用审批链，`levee gate approve|reject` 是决定面）
+
+- **此前 human 门禁在 serve 下不可用**：`WithGateApprover` 生产 0 调用点，计划期直接拒绝（`ErrGateNotExecutable`），任何声明 `human` 的 workflow **根本 plan 不出来**。上一批只补了"契约能携带审批人身份"（`HumanDecision`），本批补上传输。
+- 传输 = **复用审批链**（`approval.GateApprover`，实现 `verify.HumanApprover`）：门禁打开时按确定性 ID `gate-<run>-<gate>` 建一条审批记录，轮询直到有人决定，把决定与**审批人身份**回给门禁。
+  - **与变更审批隔离**（关键）：门禁记录绑一个 run 永远不可能有的 PlanHash（`human-gate:<gate>` 前缀）。变更结算/apply/重规划三处都用 `state.Approval.MatchesPlan(run.PlanHash)` 选行，而它只在 PlanHash **非空且相等**时匹配——所以批准变更不会顺带放行门禁、反之亦然。若忘了这层，两类同意就被混成一个（测试 `TestGateApproverOpensAnIsolatedRecord` 钉住）。
+  - **重入安全**：确定性 ID 让重启/续跑的门禁**重挂到同一条记录**，而不是叠第二条（`TestGateApproverReattachesToAnExistingRecord`）。
+  - 决定面是新 CLI **`levee gate approve|reject <run-id> <gate-name>`**（审批人＝本地 actor，与 `levee approve` 同一信任边界）。**它刻意不结算 run**——run 已经在跑，门禁只是其中一步；这与 `levee approve` 只动门禁、不动 run 状态的区别写进了命令帮助。
+  - 未做的（明确留此）：门禁的 quorum / `min_approvers` 与独立性（`exclude_initiator`）——门禁 MVP 是**单人**（与 `verify.HumanApprover` 同口径），多人同意属后续。
+- **迁移说明（行为变更）**：装了 `--engine-enabled` 的 serve 从此**会安装门禁传输**——声明 `human` 的 workflow 由"计划期被拒"变为"可计划、运行到门禁时等待人在环"。等不到人时按门禁自身的 `timeout_seconds`（缺省 1800s）超时失败。需要人工介入的部署请确保有人值守 `levee gate approve`。
+- `approval.CreateRequest` 新增可选 `ID`（调用方要等待自己创建的记录，没有自选 ID 就没有可轮询的目标）。
+- 验证：`internal/approval` 5 条传输测试（批准/驳回各带身份、隔离标记、ctx 取消、重入）+ `cmd/levee` 1 条**走真实 serve 选项构造器与真实 plan 漏斗**的接线测试（带控制组：无审批服务时同一 workflow 仍被 `ErrGateNotExecutable` 拒——证明"能计划"来自接线而非 workflow 本身）。2 项变异被抓（摘掉接线选项 → 接线测试红；去掉隔离 PlanHash → 隔离测试红）。
+
 ### 变更（human 门禁的审批决定现在携带可验签审批人身份）
 
 - **此前 `verify.HumanApprover` 连"谁批的"都表达不了**：`RequestAndWait` 只返回一个 `bool`。于是即使将来装了传输，门禁结果里也不会有人名——审计只能记"approved"，记不了"alice 批的"。
