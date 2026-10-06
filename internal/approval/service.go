@@ -128,6 +128,12 @@ type Approval struct {
 // CreateRequest is the input to Service.Create. The service generates
 // the ID and CreatedAt; the caller supplies everything else.
 type CreateRequest struct {
+	// ID, when non-empty, is used as the record's identifier instead of a
+	// random one. A caller that must WAIT on the decision needs this: without a
+	// caller-chosen id there is nothing to poll, and a re-attaching caller
+	// (a resumed gate) would otherwise stack a second record. It must be unique
+	// across approvals.
+	ID           string
 	RunID        string
 	Level        string // standard / high / emergency
 	Approvers    []string
@@ -287,9 +293,13 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Approval, err
 	}
 
 	now := time.Now().UTC()
-	id, err := newID()
-	if err != nil {
-		return nil, err
+	id := req.ID
+	if id == "" {
+		var err error
+		id, err = newID()
+		if err != nil {
+			return nil, err
+		}
 	}
 	a := &Approval{
 		ID:               id,

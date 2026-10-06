@@ -959,7 +959,8 @@ type serveServices struct {
 // enabled-but-unusable notify.webhook channel now comes back as an error so the
 // caller can refuse the boot instead of installing a channel that never delivers.
 func buildEngineServeOptions(cfg *config.Config, store state.Store,
-	credResolver *serveCredentialResolver, execGuard *cluster.ExecutionGuard) ([]wiring.Option, error) {
+	credResolver *serveCredentialResolver, execGuard *cluster.ExecutionGuard,
+	approvalSvc *approval.Service) ([]wiring.Option, error) {
 	var opts []wiring.Option
 	if credResolver != nil {
 		opts = append(opts, wiring.WithCredentialResolver(credResolver))
@@ -1030,6 +1031,14 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 			wiring.WithExecutionGuard(clusterExecGuardAdapter{g: execGuard}, serveOptNodeID),
 			wiring.WithExecLeaseTTL(serveOptClusterExecLeaseTTL))
 	}
+	// Human gates get a transport. Without one the engine refuses to plan or run
+	// any workflow declaring `human` (fail-closed), so installing it here is what
+	// makes such workflows usable at all. The decision surface is `levee gate
+	// approve|reject <run> <gate>`, whose record is isolated from the change
+	// approval chain (see approval.GateApprover).
+	if approvalSvc != nil {
+		opts = append(opts, wiring.WithGateApprover(approval.NewGateApprover(approvalSvc)))
+	}
 	return opts, nil
 }
 
@@ -1059,6 +1068,14 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 			"(no resolver configured)")
 	}
 
+	// Approval service over the same store: PlanChange kicks off the
+	// approval chain (R4 risk-tiered routing; see ChangeService.
+	// kickoffApproval) and ApproveChange/RejectChange then find real
+	// pending records. Before this wiring those RPCs only ever saw
+	// manually seeded rows. Built before the engine because the engine's
+	// human-gate transport reads the same service.
+	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
+
 	// Execution engine (--engine-enabled, off by default). When wired, the
 	// ChangeService gains real plan generation (persisted plan artifacts)
 	// and apply execution via internal/wiring; when nil, ApplyChange keeps
@@ -1067,7 +1084,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	var engine *grpc.EngineAdapter
 	var eng *wiring.Engine
 	if serveOptEngineEnabled {
-		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard)
+		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard, approvalSvc)
 		if optsErr != nil {
 			return serveServices{}, optsErr
 		}
@@ -1078,12 +1095,6 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Info("serve: execution engine not wired (--engine-enabled=false); ApplyChange RPC returns FailedPrecondition (status-only mode). Plan/approve/status tracking remain fully functional.")
 		warnNotifyTransportWithoutEngine(cfg)
 	}
-	// Approval service over the same store: PlanChange kicks off the
-	// approval chain (R4 risk-tiered routing; see ChangeService.
-	// kickoffApproval) and ApproveChange/RejectChange then find real
-	// pending records. Before this wiring those RPCs only ever saw
-	// manually seeded rows.
-	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
 
 	// Outbound ITSM Jira mirror (notify.jira.*): decision comments and
 	// kickoff issues keep the org's change record where ITSM lives.
