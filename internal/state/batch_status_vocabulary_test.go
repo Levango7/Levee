@@ -12,6 +12,9 @@ package state
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,5 +82,91 @@ func TestBatchStateConstantsMatchTheWrittenStrings(t *testing.T) {
 	}
 	for _, s := range []string{BatchStateFailed, BatchStateRolledBack, BatchStateInterrupted, BatchStatePending, BatchStateRunning} {
 		assert.False(t, batchDoneStates[s], s+" must not be treated as a completed forward batch")
+	}
+}
+
+// The UI keeps a hand-written mirror of this vocabulary (web/src/utils/batch.ts
+// lists the spellings it colours and labels). Copies drift, and this particular
+// copy already caused one shipped defect: state judged "done" by a string the
+// engine never wrote. internal/runstatus/vocabulary_guard_test.go does the same
+// job for run statuses; this is the batch-level half, kept in the owning package
+// so a constant added here without a UI mapping turns red *here*.
+
+// repoFile walks up from the test working directory to locate a repository file,
+// so the guard works from any package depth.
+func repoFile(t *testing.T, rel string) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	for i := 0; i < 8; i++ {
+		p := filepath.Join(dir, rel)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+		dir = filepath.Dir(dir)
+	}
+	t.Fatalf("cannot locate %s from the test working directory", rel)
+	return ""
+}
+
+// goBatchStates parses the constant block in store.go instead of restating it.
+// A restatement would let a newly added constant pass unnoticed.
+func goBatchStates(t *testing.T) map[string]string {
+	t.Helper()
+	src, err := os.ReadFile(repoFile(t, "internal/state/store.go"))
+	require.NoError(t, err)
+	re := regexp.MustCompile(`(?m)^\s*(BatchState\w+)\s*=\s*"([^"]+)"$`)
+	out := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+		out[m[1]] = m[2]
+	}
+	require.NotEmpty(t, out, "no BatchState constants parsed from store.go — the const block shape changed")
+	return out
+}
+
+func TestWebBatchMirrorMatchesGoBatchStates(t *testing.T) {
+	src, err := os.ReadFile(repoFile(t, "web/src/utils/batch.ts"))
+	require.NoError(t, err)
+	text := string(src)
+
+	decl := regexp.MustCompile(`(?m)^export const BATCH_STATES = \[([^\]]*)\] as const$`).FindStringSubmatch(text)
+	require.Len(t, decl, 2, "could not find the `export const BATCH_STATES = [...] as const` declaration")
+	uiStates := map[string]bool{}
+	// Both quote styles: this file is single-quoted today, but the guard should
+	// not go red because someone ran a formatter that prefers `"`.
+	for _, m := range regexp.MustCompile(`['"]([^'"]+)['"]`).FindAllStringSubmatch(decl[1], -1) {
+		uiStates[m[1]] = true
+	}
+	require.NotEmpty(t, uiStates, "BATCH_STATES parsed empty")
+
+	// Direction 1: every state Go can write has a UI mapping. Without this the
+	// page shows the raw wire value and, worse, batchTagType falls back to grey.
+	goStates := map[string]bool{}
+	for _, v := range goBatchStates(t) {
+		goStates[v] = true
+		assert.True(t, uiStates[v], "batch state "+v+" has no entry in web/src/utils/batch.ts BATCH_STATES")
+	}
+	// Direction 2: the UI does not invent a spelling the backend cannot produce.
+	// That is how `success` and a bare `done` once lived here for years.
+	for s := range uiStates {
+		assert.True(t, goStates[s], "web BATCH_STATES lists "+s+", which no BatchState constant declares")
+	}
+	assert.Equal(t, len(goStates), len(uiStates), "the two vocabularies differ in size, so one side has an entry the other lacks")
+}
+
+func TestWebBatchLabelsCoverEveryState(t *testing.T) {
+	src, err := os.ReadFile(repoFile(t, "web/src/utils/batch.ts"))
+	require.NoError(t, err)
+
+	block := regexp.MustCompile(`(?m)^const LABEL_BY_STATE: Record<BatchState, string> = \{\n([\s\S]*?)^\}$`).FindStringSubmatch(string(src))
+	require.Len(t, block, 2, "could not find the `LABEL_BY_STATE: Record<BatchState, string>` map — its shape changed")
+	keys := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\s*(\w+):`).FindAllStringSubmatch(block[1], -1) {
+		keys[m[1]] = true
+	}
+	require.NotEmpty(t, keys, "LABEL_BY_STATE parsed empty")
+
+	for name, value := range goBatchStates(t) {
+		assert.True(t, keys[value], "%s (%q) has no batchLabel entry — the Chinese page would render %q verbatim", name, value, value)
 	}
 }
