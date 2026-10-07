@@ -1,8 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { batchBarStatus, batchProgress, batchTagType } from './batch'
+import { BATCH_STATES, batchBarStatus, batchLabel, batchProgress, batchTagType } from './batch'
 
 // The vocabulary under test is internal/state/store.go's, not the UI's wish:
-// pending | running | done | failed | interrupted.
+// pending | running | completed | done | failed | rolled_back | interrupted —
+// all seven constants, listed and pinned by the first case below.
+
+describe('BATCH_STATES', () => {
+  it('is exactly the seven spellings internal/state declares', () => {
+    // Sorted so the assertion says something about the set, not about the order
+    // this file happens to list it in. The cross-language half of this pin lives
+    // in internal/state/batch_status_vocabulary_test.go: a constant added there
+    // without a label/colour mapping here turns that Go test red.
+    expect([...BATCH_STATES].sort()).toEqual(
+      ['completed', 'done', 'failed', 'interrupted', 'pending', 'rolled_back', 'running'].sort(),
+    )
+  })
+})
 
 describe('batchProgress', () => {
   it('is the share of assigned hosts that have an outcome', () => {
@@ -70,5 +83,42 @@ describe('batchBarStatus', () => {
     expect(batchBarStatus('running')).toBeUndefined()
     expect(batchBarStatus('pending')).toBeUndefined()
     expect(batchBarStatus('success')).toBeUndefined()
+  })
+})
+
+describe('batchLabel', () => {
+  it('names every declared state in Chinese', () => {
+    // Structural, not a spot-check: the pages this feeds are Chinese, and a
+    // state that falls through to its wire value renders English inside a
+    // Chinese table — which is exactly what the batch rows did before.
+    for (const state of BATCH_STATES) {
+      const label = batchLabel(state)
+      expect(label).not.toBe('')
+      expect(label).not.toBe(state)
+    }
+  })
+
+  it('maps the spellings the engine writes', () => {
+    expect(batchLabel('completed')).toBe('已完成')
+    expect(batchLabel('failed')).toBe('失败')
+    expect(batchLabel('rolled_back')).toBe('已回滚')
+    expect(batchLabel('running')).toBe('执行中')
+    expect(batchLabel('pending')).toBe('待执行')
+  })
+
+  it('keeps the legacy `done` on the same words as `completed`', () => {
+    // internal/state counts both as complete, so the two must not read as
+    // different outcomes on the same page.
+    expect(batchLabel('done')).toBe(batchLabel('completed'))
+  })
+
+  it('does not translate `rolled_back` / `interrupted` into `failed`', () => {
+    // Colour already refuses to conflate them; the words must not either.
+    expect(batchLabel('rolled_back')).not.toBe(batchLabel('failed'))
+    expect(batchLabel('interrupted')).not.toBe(batchLabel('failed'))
+  })
+
+  it('shows an unrecognised wire value verbatim instead of guessing', () => {
+    expect(batchLabel('some_future_backend_state')).toBe('some_future_backend_state')
   })
 })

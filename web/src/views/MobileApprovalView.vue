@@ -13,7 +13,7 @@ import { useResponsive } from '@/composables/useResponsive'
 import { changesApi, auditApi } from '@/api'
 import type { Change, TraceEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
-import { formatTimestamp } from '@/utils/format'
+import { STATUS_LABEL, formatTimestamp } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -206,7 +206,7 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
       </div>
       <div class="mobile-approval__field">
         <span class="mobile-approval__label">状态</span>
-        <span class="mobile-approval__value">{{ change.status }}</span>
+        <span class="mobile-approval__value">{{ STATUS_LABEL[change.status] || change.status }}</span>
       </div>
       <div class="mobile-approval__field">
         <span class="mobile-approval__label">创建时间</span>
