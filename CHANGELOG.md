@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 修复（批次状态在中文页面上渲染的是线上原值；/cluster 与 /monitor 各自一套词表）
+
+- **`/monitor` 与 `/cluster` 的批次标签把线上字符串直接当文案渲染**（`{{ b.status }}`）：页面其余部分都是中文，批次这一列却是 `completed` / `rolled_back`。#88 修的是判色键词表错，判色已经对了但文字仍是英文——同一条批次的两个呈现面。移动端审批页 `状态` 字段同类（`web/src/views/MobileApprovalView.vue` 渲染 `change.status` 原值，而 `STATUS_LABEL` 早已存在且 `StatusTag.vue` 一直在用），一并按标签表取文案。
+- **`/cluster` 的批次行是第二份手写词表**，与 #88 刚统一到 `web/src/utils/batch.ts` 的那份并行存在：内联三元把成功键在**没有任何写入方产生**的 `done` 上（写入方是 `completed`），所以真实的完成批次在 `/cluster` 上是灰的；`interrupted` 被涂成 danger，而 `internal/state` 与 `/monitor` 都拒绝把"跑到一半停了"说成"失败"；进度另有一个本地 `batchProgressPct`，缺 `succeeded+failed > total_hosts` 的钳制。这就是"孪生副本各自落门禁"的形状：`/monitor` 修好了，`/cluster` 原样留着。
+- **修法**：`web/src/utils/batch.ts` 改为单一声明 `BATCH_STATES`（七个拼写）+ 三张 `Record<BatchState, …>`（label / tag / bar）。用查表而不是 `switch` 是为了让"新增一个状态忘了配中文/配色"变成 `vue-tsc` 编译错误而不是运行时悄悄落到默认分支；未识别的线上值仍原样显示、判灰，**不猜翻译**（猜出来的"已完成"是在替引擎宣布它没宣布过的结论）。两个视图删掉本地实现，统一 `batchLabel` / `batchTagType` / `batchBarStatus` / `batchProgress`。
+- **验证**：前端 `web/src/utils/batch.spec.ts` 16 例（含结构性一条：`BATCH_STATES` 里每个拼写都必须有非空且不同于拼写本身的标签——按状态列出来跑，不是抽查）；`npm run test` 全绿（本小节收尾时 69 例 = 原有 50 + 批次标签 16 + 面板形状 3）、`vue-tsc` 干净、`vite build` 后按 CI 同法刷新并核对 `internal/web/dist`（`batch-*.js` chunk 里七个标签齐全，`ClusterView`/`MonitorView` 两个 chunk 都 import 它）。跨语言两条落在 owning 包：`internal/state/batch_status_vocabulary_test.go` 从 `store.go` 解析 `BatchState* = "…"` 常量（不是复述，复述会让新常量无人发现）与 TS 的 `BATCH_STATES` 双向对齐，另要求每个 Go 拼写都在 `LABEL_BY_STATE` 里有键。变异五条逐一变红：TS 删 `rolled_back`、TS 加不存在的 `success`、`store.go` 新增 `BatchStateAborted`（两条守卫同时红）、删 label 键（只 label 守卫红，证明二者不是同一条断言写两遍）、把 `BATCH_STATES` 改名（锚点缺失必须自曝而不是解析成空集通过）。`go test ./internal/state ./internal/wiring ./internal/grpc` 全绿。
+- **真机渲染核对**（无后端，`internal/web/dist` 由一个只读桩服务器供 `/api/v1` 七种批次状态各一行）：`/monitor/run-1` 七行标签依次为 已完成/已完成/失败/已回滚/已中断/执行中/待执行，条形类 `is-success`/`is-exception`/`is-warning`/中性，`leaked=[]`；`/cluster` 填 run_id 查询后同一套七个标签与配色，与 `/monitor` 逐行一致；`/m/approve/run-1` 状态列显示"执行中"。
+- **`/cluster` 的批次面板在默认形态下根本渲染不出来（本批一并修）**：`web/src/views/ClusterView.vue:73-81` 是 `v-if="backend === 'sqlite'"` / `v-else-if="backend === 'postgres' && nodes.length === 0"` / `v-else` 三段，面板原先落在最后的 `v-else` 里 ⇒ **SQLite 部署（默认形态）下整块看不到**，与有没有 worker 节点无关；同一批数据在 `/monitor` 可见，所以这不是"没有数据"而是入口被分支挡掉。它读的是 `GET /system/batch-status`，per-run 数据，与集群协调无关 ⇒ 移出该分支。实测（桩服务器给 `backend=sqlite, nodes=[]` 这个曾经看不见的形态）：改前页面上找不到"Run 批次进度"标题；改后标题、输入框、查询按钮都在，填 run_id 后真点"查询"，七行批次照常渲染且标签配色与 `/monitor` 逐行一致。该形状由新增的 `web/src/views/ClusterView.spec.ts` 钉住（3 例：分支闭合点必须早于面板标题、二者之间不得再有条件渲染、面板不得依赖 cluster-status 载荷）；两条变异各自变红（把面板挪回分支内 / 给卡片重新加 `v-if="backend === 'postgres'"`）。用结构断言而不是渲染断言的原因：本仓没有 `@vue/test-utils`，结构断言至少挡住"分支条件把它包回去"这条复发路径。
+- **同页"分配状态分布"渲染的是 assignment 词表**（`pending`/`executing`/`done`/`interrupted`）的原值，与批次词表**同名不同物**（`done`/`interrupted` 两边都有但含义不同），需要单独一张标签表，故不在本批——同一个文件里叠两批改动只会让归因变难。
+
 ### 修复（批次状态还有第三份抄件：schema 的行内注释；clone 路径的状态写在自家常量上）
 
 - **`batches.status` 的注释是一份假文档**：两个引擎（`internal/state/schema.sql:53`、`internal/state/pgschema.sql:50`）都写着
@@ -37,6 +47,7 @@
   没有可对齐的真值；② `runs.approval_status` 同样是裸字面量（`internal/wiring/run.go:522`、
   `internal/grpc/change_service.go:601` 写 `"pending"`，:990 比较 `"approved"`）。给它们建 owning 包是一次真正的
   收敛改动（要一并改写入端并配守卫），不在这一批里顺手做。
+
 
 ## [v1.20.0] - 2026-10-07
 

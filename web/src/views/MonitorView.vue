@@ -11,7 +11,7 @@ import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import { formatTimestamp } from '@/utils/format'
-import { batchBarStatus, batchProgress, batchTagType } from '@/utils/batch'
+import { batchBarStatus, batchLabel, batchProgress, batchTagType } from '@/utils/batch'
 
 const route = useRoute()
 
@@ -166,7 +166,7 @@ onUnmounted(stopPolling)
             <div v-for="b in summary.batches" :key="b.batch_no" class="batch-item">
               <div class="batch-item__head">
                 <span>批次 #{{ b.batch_no }}</span>
-                <el-tag size="small" :type="batchTagType(b.status)">{{ b.status }}</el-tag>
+                <el-tag size="small" :type="batchTagType(b.status)">{{ batchLabel(b.status) }}</el-tag>
               </div>
               <el-progress :percentage="batchProgress(b)" :status="batchBarStatus(b.status)" />
               <div class="batch-item__hosts">
