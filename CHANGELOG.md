@@ -4,6 +4,56 @@
 
 ## [Unreleased]
 
+## [v1.20.0] - 未切版
+
+> **发布状态：未切版。** `v1.20.0` 的 tag 尚未打出，因此 `ghcr.io/levango7/levee:v1.20.0` 这个制品还不存在；下面 14 个小节的内容都已进 master。chart 的 `appVersion` 与 `values.image.tag` 保持指向上一个真实存在的发布（`1.19.0` / `v1.19.0`），等 tag 切出后再一并升档——`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，抢先写未来的版本号会让 `delivery` job 变红，而那正是这条门禁该做的事。
+>
+> **为什么这一版叫 v1.20.0 而不是 v1.19.1**：本小节最初以 `## [v1.19.1] - 未切版` 登记（#77），当时 master 上只有那五批修复与门禁工作。此后 master 又落了 8 批新增能力——human 门禁的 quorum（#84）、human 门禁的审批传输（#83）、审批决定携带可验签审批人（#82）、条件式 ABAC 接入服务层（#81）、清单/模板/审计/系统面的权限矩阵接入（#51）、master 端 Agent 注册表 RPC（#85）、规范文本纠正（#79）与 CI 聚合门禁的 UNVERIFIED/FAILED 分立（#78）——按 semver 属于 minor 而非 patch。`v1.19.1` 从未切版，registry 里也没有那个制品，所以这次改名不收回任何对外承诺。
+
+### 新增（验证门禁按目标执行：cmd 门禁终于能跑它声明的那条检查）
+
+- **`GateInput.Channel` 在 run 路径无人供给，命令门禁一律失败关闭**：引擎构造 `GateInput` 时只填 RunID / BatchID / TargetIDs，全仓唯一的非测试 `Channel:` 赋值在 `internal/wiring/exec.go`，而那是给步骤执行用的。后果不是"少个功能"，而是**任何声明了 cmd 门禁的工作流永远过不去自己这一关**——每次都走 "missing channel" 分支：安全地失败，但从未执行过被声明的那条检查。
+- **接缝只开一处**：新增 `verify.GateChannelProvider` 作为 `GateInput` 的可选字段，`engine.GateRuntime` 增加 `Channels` 与 `WithChannels`（返回副本）；wiring 在每次 run 用 `runExec.gateChannelProvider()` 供通道——**复用步骤已有的那条缓存会话**，所以门禁与它守护的执行共用同一份租约与凭据，不可能出现"检查走 A 身份、执行走 B 身份"。plan 期拒绝与 phase 期注册仍读同一个 `gateRuntime()`，两处判定不会分叉。
+- **判定规则（全部有测试）**：按 `TargetIDs` 逐台执行，**每台都要过**——web-1 过了不等于这批过了；连不上的目标算**失败**而非跳过（没被证明健康的机器不能算通过）；失败结论列出全部 offender 与 `failed_targets`；空目标集失败关闭（`no_targets`），绝不因为"没有东西要查"就判通过。SLO / human 门禁不消费 provider，保持 run 级一次，不会随目标数被跑 N 次。
+- **行为变更**：升级后声明了 cmd 门禁的工作流从"必然回滚"变成"按检查真结果放行或阻断"——这是门禁第一次真正生效。若某条命令在其目标上本就通不过，行为不变（仍回滚），只是原因从 `missing channel` 换成真实退出码。
+- **遗留（同日登记，不含在本批）**：`probe` 的 `mode: remote` 仍只认单一 `GateInput.Channel`、未消费 provider，在执行路径下仍以 missing channel 失败关闭；`direct` 模式不受影响。
+### 修复（手动回滚的结局不再被当成服务端故障）
+
+- **`RollbackChange` 把"跑了但没补全"当成 `codes.Internal` 抛出，并且这条路径根本不推进 run 状态**：`internal/grpc/change_service.go` 对 `engine.Rollback` 的任何 error 一律 `codes.Internal`，于是补偿已经派发到目标机之后，记录仍停在尝试之前的 `rolled_back_partial` —— 操作者既看不出"我试过且没成功"，也无法据此决定重试还是收工。实测两条路径都中招：从 `rolled_back_partial` 再手动回滚、以及回滚一个步骤没有补偿声明的 `completed` 变更。
+- **修法**：新增领域错误类 `internal/rollback.ErrIncomplete`（wiring 在 `!res.Success` 时以 `%w: %w` 双包裹，既保留"哪条 undo 失败"的原文又让 `errors.Is` 可用）；gRPC 侧据此分流——领域结局走 `Success=false` + `rollback_incomplete` + 同状态的审计行与事件，真故障仍是 `codes.Internal` 且**不改写历史**。`rollback_incomplete` 本就在 `runstatus.RollbackAdmitted` 内，因此未补全的回滚仍可再来一次，也不会被误封成终态。
+- **验证**：`internal/grpc/change_service_rollback_outcome_test.go` 两条新用例（结局用例自建 `EngineAdapter`，因为共享 fake 在返回 error 时会丢掉 rollback id 与 hosts——那不是生产形状）；`tests/integration/gate_block_rollback_e2e_test.go` 把原先"容忍 Internal"的断言翻成新契约，并如实记录第二次尝试未派发任何新补偿（D-2 台账判定已补过的不重复补）。变异四条各自变红：wiring 不再分类 / grpc 一律 Internal / 状态不推进 / 一律当结局处理（吞掉真故障）。
+
+### 门禁（CI 冒烟脚本：先报端口归属，再谈健康检查）
+
+- **`scripts/smoke_serve.sh` 会在别人的端口上冒充"本仓服务起不来"**：本机 127.0.0.1:9091/9092 被容器栈占用时，它报 `::error::smoke failed: /healthz never became reachable on :9092`，把读者送去查一个并不存在的 bug。根因按实测定位——`--http-addr ":9092"` 绑的是**通配地址**，与已存在的 **127.0.0.1** 专用监听并不冲突，于是进程活着、日志照常打 `REST gateway listening addr=:9092`，而 curl 打 127.0.0.1 时被更具体的那个 socket 接走（实测 prometheus 对 /healthz 回 404、对 / 回 302）。现在在启动任何东西之前逐端口探测并点名归属：`something already listens on :9092 (HTTP, it answered HTTP 200) — free it or set SMOKE_HTTP_PORT`；非 HTTP 的占用（裸 gRPC 监听）只报端口与标签，**不编造 HTTP 状态码**。
+- **踩到的 shell 坑写进注释**：探测必须在子 shell 里做。若在父 shell 用 `exec 3<&-` 关闭一个它从未打开的 fd，那是**失败的重定向**，而非交互式 shell 中失败的重定向会**静默终止脚本**——实测退出码 0、停在函数体中途、既不报错也不跑后续用例。改动前那版就是这样"通过"的。
+- **每次成功运行都泄漏一个临时目录**：trap 原本 `kill` 完立刻 `rm -rf`，Windows 上"打开即锁定"，levee 还没退出就删 ⇒ stderr 出现 `rm: cannot remove .../levee.db: Device or resource busy`，而脚本自称成功。改为 kill → wait → rm，删不掉就点名路径。
+- **验证**（受控监听器，不靠环境巧合）：9092 放一个 HTTP 应答、9091 放一个非 HTTP 裸监听 ⇒ A 默认端口报出 `(HTTP, it answered HTTP 200)`；B 只空出 HTTP 时报 `:9091 (GRPC)` 且无状态码；C 两端口皆空 ⇒ exit 0、**stderr 0 字节**、临时目录计数不增。反向对照：同一二进制跑改动前的脚本，报回的仍是 `healthz never became reachable`——这条预检确实承重。CI 侧无需改动（`smoke` job 跑在 ubuntu-latest，端口本就空着；这道检查在 CI 上是 no-op，只在开发机上把误报变成可读的错）。
+
+### 变更（v1.19.0 切版后的口径对齐）
+
+- **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，Release workflow 已据此发布镜像与 GitHub Release（实测：`draft=false`、`publishedAt=2026-10-05T16:43:33Z`、assets 为 5 个平台包 + `checksums.txt`）。`Chart.yaml` 的 appVersion 升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。
+  > 本条目最初写作"release.yml 正在据此构建 `ghcr.io/levango7/levee:1.19.0`"——那个 tag 拼写是错的，见下一条；措辞按实测收回。
+- **交付缺陷（本批修掉；tag `v1.19.0` 快照即带此问题，拼写错误自 v1.18.0 起存在）：chart 默认值渲染出一个从未构建过的镜像 tag。** 在 tag 本身上量（`git archive v1.19.0 | tar -x` 后 `helm template`）：渲染出 `ghcr.io/levango7/levee:1.18.0`——那时 `values.image.tag`/appVersion 对齐到"最后一个已发布的 tag"，而 v1.19.0 的切版发生在其后。本批上一笔把它升到 `1.19.0`，**拼写仍然不存在**。于是两重错同时成立：chart 对外自称的版本与本批二进制不是同一个；那个拼写在 registry 里根本没有——`release.yml` 推的镜像 tag 是 github.ref_name，即 git tag 名本身，带 v。异源证据：① `helm template` 真实解析器（不是 grep）；② registry 对 `manifests/1.18.0`、`manifests/1.19.0` 均返回 **404**，对 `manifests/v1.19.0` 返回 **200**，`tags/list` 只有 [v1.18.0, latest, v1.19.0]。⇒ 按 chart 默认值执行 `helm install` 的客户拿不到镜像。**tag 不可变，v1.19.0 快照维持原样**：`docs/release-notes/v1.19.0.md` 记下该已知问题与绕过方式（`--set image.tag=v1.19.0`），修好的默认值随下一个版本切出。本批把 `image.tag` 改为逐字的 `v1.19.0`。
+- **门禁为什么放过了它，以及补上的规则**：`check_release_versions.py` 规则②原先把引用版本**合成** `v<version>` 后去查 git tag，于是 `1.19.0` 与 `v1.19.0` 都能通过——它验的是"git tag 存在"，不是"渲染出的镜像引用存在"。现拆成两条：规则②要求 `values.image.tag` **逐字**出现在 tag 集合里（"镜像以 git tag 名发布"这一事实写进脚注释），appVersion 另按 `v` 前缀可有可无地校验；规则①改按版本号比较（两处拼写有意不同，各自有约定）。变异实测三条：改回 `1.19.0` → 规则②以新文案失败；改成 `v1.18.0` 与 appVersion 分叉 → 规则①失败；恢复 `v1.19.0` → `RELEASE VERSION CHECK PASSED`（tag 集合取自 origin，10 个，`newest_tag=v1.19.0`）。规则③（比最新 tag 更晚的 CHANGELOG 小节须标注）同时满足。
+- **给门禁本身补上自测**：`check_release_versions.py` 此前没有测试，规则被重构掉不会有任何东西发现。新增 `scripts/test_check_release_versions.py`（10 例：一致通过、v 前缀差异不算失败、规则①②③各自的失败形态、空 tag 集合必须拒绝、历史无 tag 小节只点名、sidecar 的 `postgres.image.tag` 不被误读）；其中 `test_image_tag_without_v_prefix_fails` 就是本条缺陷的回归用例。反向验过：把规则②改回"合成 `v` 前缀"的旧行为，该用例立刻变红（`AssertionError: 0 != 1`）。`release-gate` job 的 python 步骤改为 `unittest discover -s scripts`，并逐套件点名两个套件是否被收集——空收集会以 `Ran 0 tests / OK` 静默通过。实测本地 21 例全绿。
+
+### 新增（remote 探针与 script 门禁按目标逐台执行，#74 剩下的那一半）
+
+- **通道提供者接到了 `probe` 上**：#74 给 `GateInput` 开了 `ChannelFor` 接缝并把 cmd 门禁接了上去，`probe` 的 `mode: remote` 与 `kind: script` 当时仍只认单一 `Channel`，在执行路径下照旧以 "missing channel" 失败关闭——也就是说"声明了远程探针的变更永远过不了自己那一关"这一半缺陷还在。现在 `verify/probe_gate.go` 的 `checkAcrossTargets` 消费同一个 provider，判定与 cmd 门禁刻意一致：**每台都要过**（web-1 通不等于这批通）、**拨不上算失败**而不是跳过（没连上的机器没被证明可达）、**空目标失败关闭**、结论列出 `failed_targets` 与逐台证据；`direct` 形态**不**接 provider，因为它从控制面测量，接上只会白白拨 N 次号。
+- **`script` 一类以前没有归属约束**：脚本探针现在也是逐台上传+执行，任何一台退出码不符就整体判失败并点名。
+- **结构守卫补上（这是当初真正断掉的那一层）**：新增 `internal/engine/gate_input_channel_provider_test.go`，要求引擎每一处构造 `verify.GateInput` 都填 `ChannelFor`，并且**不许**直接填单通道 `Channel`（单通道形态等于把"随便挑一台来证明全部"写进结构）。扫描命中数低于 4 处即判红——"标记失效导致 0 命中"不能伪装成通过。
+- **文档如实写明新的不对称**：逐台收窄后，remote **tcp** 的 `{target}` / `port_from_target` 天然按本机地址判定，而 remote **http** 的 `url` 不做 `{target}` 展开（direct 模式才会）；`docs/gates.md` 写了这一差异，`docs/product-roadmap.md` 把"要不要让 remote http 也展开"留作界面一致性决策。
+- **验证**：`internal/verify/probe_gate_targets_test.go` 10 条用例（全过、一台失败挡整批并点名、拨不上算失败、空目标失败关闭、tcp 每台只见自己的地址、script 逐台、direct 绝不调用 provider、旧的单通道形态行为不变、无 provider 仍失败关闭、取消后不再声明下一台的证据）；`-race` 下 verify 与 engine 包全绿。变异 6 条全部被对应用例抓红（含把"拨不上"改成"跳过"、去掉逐台收窄、让 direct 也扇出、去掉循环内的取消检查），结构守卫另做 3 条变异（抽掉一处 `ChannelFor`、加一处 `Channel:`、把标记改成不存在的串）均判红且点名位置。
+
+### 修复（发布版本门禁的规则③——本批折叠 CHANGELOG 时当场暴露）
+
+- **`未切版` 标注原先是"正文里出现即可"**：规则③用 `PENDING_MARKER in body` 判断一个小节有没有声明"还没切版"。把 v1.19.0 那一节的留痕（"撤掉**未切版**标注并把 Helm 口径升到 1.19.0"）折进新版本小节之后，正文里天然就有这三个字，于是**任何未标注的新小节都能借别人的话通过**——本次折叠 v1.19.1 时实测到：删掉真正的声明行、只留无关散文，门禁仍然 `PASSED`。
+- **改法**：只认**行首的声明行**，两种形式（`> 未切版`、`> **发布状态：未切版。**`），并要求标记后面紧跟分隔符（`未切版本` 这种更长词不算）。报错文案给出可照抄的写法。**回归用例**：`test_prose_mention_does_not_count_as_pending_declaration`、`test_marker_inside_a_larger_word_does_not_count`（先跑旧实现会全绿，是真正的盲区）；另在真实文件上做过一次反向验：删掉声明行、保留"撤掉未切版标注"那句 → `FAILED` 且点名缺失声明。
+- 台账 `docs/mvp-tasks.md` 的 D-04 行随 #76 更新为"cmd 与 remote/script 探针都按目标逐台执行"，三段留痕保留（2026-08-15"已交付"→ 2026-10-05"部分可达"→ 2026-10-06 现口径），并列出两条未闭合项。
+
+
+
 ### 门禁（CI 聚合步骤把"没有判定结果"和"失败"分开说）
 - **一条红并不等于一次回归**：2026-10-06 实测，runner 池饥饿时 `docs`/`gosec`/`build (ubuntu-arm64)`/`check (all jobs passed)` 四个 job **各自在排队 901 秒后被杀**，`steps=0`——一次都没开始跑。聚合步骤原先对所有非 `success` 都写 `required job 'x' did not pass`，读起来像"这次改动没通过检查"，而真相是"这次改动从未被检查过"。这两种情况的下一步动作完全相反（前者查代码，后者重跑），却被同一句话混在一起。
 - **改法**：聚合按结论分桶——`failure` 仍是 `FAILED`；`cancelled`/`skipped`/`neutral`/`timed_out`/`stale` 归为 `UNVERIFIED, not failed`，摘要行点名是哪几个 job 没有判定结果，并写出"先重跑，别当回归读"。**两种都仍然 exit 1**：没有证据不许变绿，这条不许松。
@@ -81,52 +131,6 @@
   **接线由测试证明，不靠假设**：`InventoryService` 原本在注册点构造（`cmd_serve.go:792`），游离于所有测试之外；现在它和其余服务一样出自 `buildServeServices`，`cmd/levee/serve_policy_wiring_test.go` 用真实构造函数断言①六个服务对未登记主体都拒、②sre 成员的变更授权齐全仍被拒清单写、③dave 的 `admin` 让同一批调用通过（证明拒的是矩阵而不是硬编码）、④空数据目录一切照旧。**此前 `cmd/levee` 没有任何测试提到过 authorizer**——门在结构体里不等于门在进程里。
   **迁移说明（行为变更）**：启用矩阵的部署会立刻看到三类变化——只读型调用方拿不到别的环境的主机/审计行（列表变短，不是变空）；清单与模板的写、`GetConfig` 需要 `admin`；**未配 `permission.default_env` 时分组/模板/配置一律拒绝**（那是"没有环境可判"的正确回答，补救是配默认环境或给矩阵补一个 `*` 环境）。`levee serve` 启动日志与 `levee authz status` 的文案同步改成如实描述覆盖面。
 验证：新增 15 个测试函数（`internal/grpc/service_policy_test.go` 12 + `cmd/levee/serve_policy_wiring_test.go` 3）。**先探针后修复**：12 条服务级用例在未接线树上跑，11 条按断言失败（只有"没配矩阵就不变"那条通过）——这就是"今天是敞开的"的实测证据。**18 项变异全部被抓且均能编译**：判定动作用错（写按 `view` 判）、读判定退回默认环境、过滤整体关闭、过滤恒放行、`envOfTarget` 恒空、`AddTarget`/`RemoveTarget`/`SetTargetStatus`/`ImportTargets`/`InstantiateTemplate` 五处作用域各自退回默认环境、列表与历史与审计行与 verify 全扫描四处去掉过滤、`GetRunReport` 不判环境、`GetStatus` 退回总数、serve 的两处 `WithAuthorizer` 分别删掉。`ChangeService` 的 `authorize`/`authorizeRead`/可见性谓词改为调用同三个助手，拒绝文案与"是否启用过滤"的规则从此只有一份定义。`go build ./...` / `go vet ./...` / `go test ./...`（65 包）与 `internal/grpc/pb/` 未改见提交说明。
-
-## [v1.19.1] - 未切版
-
-> **发布状态：未切版。** `v1.19.1` 的 tag 尚未打出，因此 `ghcr.io/levango7/levee:v1.19.1` 这个制品还不存在；下面五批内容都已进 master。chart 的 `appVersion` 与 `values.image.tag` 保持指向上一个真实存在的发布，等 tag 切出后再一并升档——`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，抢先写未来的版本号会让 `delivery` job 变红，而那正是这条门禁该做的事。
-
-### 新增（验证门禁按目标执行：cmd 门禁终于能跑它声明的那条检查）
-
-- **`GateInput.Channel` 在 run 路径无人供给，命令门禁一律失败关闭**：引擎构造 `GateInput` 时只填 RunID / BatchID / TargetIDs，全仓唯一的非测试 `Channel:` 赋值在 `internal/wiring/exec.go`，而那是给步骤执行用的。后果不是"少个功能"，而是**任何声明了 cmd 门禁的工作流永远过不去自己这一关**——每次都走 "missing channel" 分支：安全地失败，但从未执行过被声明的那条检查。
-- **接缝只开一处**：新增 `verify.GateChannelProvider` 作为 `GateInput` 的可选字段，`engine.GateRuntime` 增加 `Channels` 与 `WithChannels`（返回副本）；wiring 在每次 run 用 `runExec.gateChannelProvider()` 供通道——**复用步骤已有的那条缓存会话**，所以门禁与它守护的执行共用同一份租约与凭据，不可能出现"检查走 A 身份、执行走 B 身份"。plan 期拒绝与 phase 期注册仍读同一个 `gateRuntime()`，两处判定不会分叉。
-- **判定规则（全部有测试）**：按 `TargetIDs` 逐台执行，**每台都要过**——web-1 过了不等于这批过了；连不上的目标算**失败**而非跳过（没被证明健康的机器不能算通过）；失败结论列出全部 offender 与 `failed_targets`；空目标集失败关闭（`no_targets`），绝不因为"没有东西要查"就判通过。SLO / human 门禁不消费 provider，保持 run 级一次，不会随目标数被跑 N 次。
-- **行为变更**：升级后声明了 cmd 门禁的工作流从"必然回滚"变成"按检查真结果放行或阻断"——这是门禁第一次真正生效。若某条命令在其目标上本就通不过，行为不变（仍回滚），只是原因从 `missing channel` 换成真实退出码。
-- **遗留（同日登记，不含在本批）**：`probe` 的 `mode: remote` 仍只认单一 `GateInput.Channel`、未消费 provider，在执行路径下仍以 missing channel 失败关闭；`direct` 模式不受影响。
-### 修复（手动回滚的结局不再被当成服务端故障）
-
-- **`RollbackChange` 把"跑了但没补全"当成 `codes.Internal` 抛出，并且这条路径根本不推进 run 状态**：`internal/grpc/change_service.go` 对 `engine.Rollback` 的任何 error 一律 `codes.Internal`，于是补偿已经派发到目标机之后，记录仍停在尝试之前的 `rolled_back_partial` —— 操作者既看不出"我试过且没成功"，也无法据此决定重试还是收工。实测两条路径都中招：从 `rolled_back_partial` 再手动回滚、以及回滚一个步骤没有补偿声明的 `completed` 变更。
-- **修法**：新增领域错误类 `internal/rollback.ErrIncomplete`（wiring 在 `!res.Success` 时以 `%w: %w` 双包裹，既保留"哪条 undo 失败"的原文又让 `errors.Is` 可用）；gRPC 侧据此分流——领域结局走 `Success=false` + `rollback_incomplete` + 同状态的审计行与事件，真故障仍是 `codes.Internal` 且**不改写历史**。`rollback_incomplete` 本就在 `runstatus.RollbackAdmitted` 内，因此未补全的回滚仍可再来一次，也不会被误封成终态。
-- **验证**：`internal/grpc/change_service_rollback_outcome_test.go` 两条新用例（结局用例自建 `EngineAdapter`，因为共享 fake 在返回 error 时会丢掉 rollback id 与 hosts——那不是生产形状）；`tests/integration/gate_block_rollback_e2e_test.go` 把原先"容忍 Internal"的断言翻成新契约，并如实记录第二次尝试未派发任何新补偿（D-2 台账判定已补过的不重复补）。变异四条各自变红：wiring 不再分类 / grpc 一律 Internal / 状态不推进 / 一律当结局处理（吞掉真故障）。
-
-### 门禁（CI 冒烟脚本：先报端口归属，再谈健康检查）
-
-- **`scripts/smoke_serve.sh` 会在别人的端口上冒充"本仓服务起不来"**：本机 127.0.0.1:9091/9092 被容器栈占用时，它报 `::error::smoke failed: /healthz never became reachable on :9092`，把读者送去查一个并不存在的 bug。根因按实测定位——`--http-addr ":9092"` 绑的是**通配地址**，与已存在的 **127.0.0.1** 专用监听并不冲突，于是进程活着、日志照常打 `REST gateway listening addr=:9092`，而 curl 打 127.0.0.1 时被更具体的那个 socket 接走（实测 prometheus 对 /healthz 回 404、对 / 回 302）。现在在启动任何东西之前逐端口探测并点名归属：`something already listens on :9092 (HTTP, it answered HTTP 200) — free it or set SMOKE_HTTP_PORT`；非 HTTP 的占用（裸 gRPC 监听）只报端口与标签，**不编造 HTTP 状态码**。
-- **踩到的 shell 坑写进注释**：探测必须在子 shell 里做。若在父 shell 用 `exec 3<&-` 关闭一个它从未打开的 fd，那是**失败的重定向**，而非交互式 shell 中失败的重定向会**静默终止脚本**——实测退出码 0、停在函数体中途、既不报错也不跑后续用例。改动前那版就是这样"通过"的。
-- **每次成功运行都泄漏一个临时目录**：trap 原本 `kill` 完立刻 `rm -rf`，Windows 上"打开即锁定"，levee 还没退出就删 ⇒ stderr 出现 `rm: cannot remove .../levee.db: Device or resource busy`，而脚本自称成功。改为 kill → wait → rm，删不掉就点名路径。
-- **验证**（受控监听器，不靠环境巧合）：9092 放一个 HTTP 应答、9091 放一个非 HTTP 裸监听 ⇒ A 默认端口报出 `(HTTP, it answered HTTP 200)`；B 只空出 HTTP 时报 `:9091 (GRPC)` 且无状态码；C 两端口皆空 ⇒ exit 0、**stderr 0 字节**、临时目录计数不增。反向对照：同一二进制跑改动前的脚本，报回的仍是 `healthz never became reachable`——这条预检确实承重。CI 侧无需改动（`smoke` job 跑在 ubuntu-latest，端口本就空着；这道检查在 CI 上是 no-op，只在开发机上把误报变成可读的错）。
-
-### 变更（v1.19.0 切版后的口径对齐）
-
-- **撤掉"未切版"标注并把 Helm 口径升到 1.19.0**：tag `v1.19.0`（附注 tag，指向 `ddad079`，切版时间 2026-10-06 00:19 +0800）已推送，Release workflow 已据此发布镜像与 GitHub Release（实测：`draft=false`、`publishedAt=2026-10-05T16:43:33Z`、assets 为 5 个平台包 + `checksums.txt`）。`Chart.yaml` 的 appVersion 升到 **1.19.0**（此前对齐到已发布的 1.18.0），CHANGELOG 的 v1.19.0 小节移除"未切版"说明并把日期改为真实切版日 2026-10-06。
-  > 本条目最初写作"release.yml 正在据此构建 `ghcr.io/levango7/levee:1.19.0`"——那个 tag 拼写是错的，见下一条；措辞按实测收回。
-- **交付缺陷（本批修掉；tag `v1.19.0` 快照即带此问题，拼写错误自 v1.18.0 起存在）：chart 默认值渲染出一个从未构建过的镜像 tag。** 在 tag 本身上量（`git archive v1.19.0 | tar -x` 后 `helm template`）：渲染出 `ghcr.io/levango7/levee:1.18.0`——那时 `values.image.tag`/appVersion 对齐到"最后一个已发布的 tag"，而 v1.19.0 的切版发生在其后。本批上一笔把它升到 `1.19.0`，**拼写仍然不存在**。于是两重错同时成立：chart 对外自称的版本与本批二进制不是同一个；那个拼写在 registry 里根本没有——`release.yml` 推的镜像 tag 是 github.ref_name，即 git tag 名本身，带 v。异源证据：① `helm template` 真实解析器（不是 grep）；② registry 对 `manifests/1.18.0`、`manifests/1.19.0` 均返回 **404**，对 `manifests/v1.19.0` 返回 **200**，`tags/list` 只有 [v1.18.0, latest, v1.19.0]。⇒ 按 chart 默认值执行 `helm install` 的客户拿不到镜像。**tag 不可变，v1.19.0 快照维持原样**：`docs/release-notes/v1.19.0.md` 记下该已知问题与绕过方式（`--set image.tag=v1.19.0`），修好的默认值随下一个版本切出。本批把 `image.tag` 改为逐字的 `v1.19.0`。
-- **门禁为什么放过了它，以及补上的规则**：`check_release_versions.py` 规则②原先把引用版本**合成** `v<version>` 后去查 git tag，于是 `1.19.0` 与 `v1.19.0` 都能通过——它验的是"git tag 存在"，不是"渲染出的镜像引用存在"。现拆成两条：规则②要求 `values.image.tag` **逐字**出现在 tag 集合里（"镜像以 git tag 名发布"这一事实写进脚注释），appVersion 另按 `v` 前缀可有可无地校验；规则①改按版本号比较（两处拼写有意不同，各自有约定）。变异实测三条：改回 `1.19.0` → 规则②以新文案失败；改成 `v1.18.0` 与 appVersion 分叉 → 规则①失败；恢复 `v1.19.0` → `RELEASE VERSION CHECK PASSED`（tag 集合取自 origin，10 个，`newest_tag=v1.19.0`）。规则③（比最新 tag 更晚的 CHANGELOG 小节须标注）同时满足。
-- **给门禁本身补上自测**：`check_release_versions.py` 此前没有测试，规则被重构掉不会有任何东西发现。新增 `scripts/test_check_release_versions.py`（10 例：一致通过、v 前缀差异不算失败、规则①②③各自的失败形态、空 tag 集合必须拒绝、历史无 tag 小节只点名、sidecar 的 `postgres.image.tag` 不被误读）；其中 `test_image_tag_without_v_prefix_fails` 就是本条缺陷的回归用例。反向验过：把规则②改回"合成 `v` 前缀"的旧行为，该用例立刻变红（`AssertionError: 0 != 1`）。`release-gate` job 的 python 步骤改为 `unittest discover -s scripts`，并逐套件点名两个套件是否被收集——空收集会以 `Ran 0 tests / OK` 静默通过。实测本地 21 例全绿。
-
-### 新增（remote 探针与 script 门禁按目标逐台执行，#74 剩下的那一半）
-
-- **通道提供者接到了 `probe` 上**：#74 给 `GateInput` 开了 `ChannelFor` 接缝并把 cmd 门禁接了上去，`probe` 的 `mode: remote` 与 `kind: script` 当时仍只认单一 `Channel`，在执行路径下照旧以 "missing channel" 失败关闭——也就是说"声明了远程探针的变更永远过不了自己那一关"这一半缺陷还在。现在 `verify/probe_gate.go` 的 `checkAcrossTargets` 消费同一个 provider，判定与 cmd 门禁刻意一致：**每台都要过**（web-1 通不等于这批通）、**拨不上算失败**而不是跳过（没连上的机器没被证明可达）、**空目标失败关闭**、结论列出 `failed_targets` 与逐台证据；`direct` 形态**不**接 provider，因为它从控制面测量，接上只会白白拨 N 次号。
-- **`script` 一类以前没有归属约束**：脚本探针现在也是逐台上传+执行，任何一台退出码不符就整体判失败并点名。
-- **结构守卫补上（这是当初真正断掉的那一层）**：新增 `internal/engine/gate_input_channel_provider_test.go`，要求引擎每一处构造 `verify.GateInput` 都填 `ChannelFor`，并且**不许**直接填单通道 `Channel`（单通道形态等于把"随便挑一台来证明全部"写进结构）。扫描命中数低于 4 处即判红——"标记失效导致 0 命中"不能伪装成通过。
-- **文档如实写明新的不对称**：逐台收窄后，remote **tcp** 的 `{target}` / `port_from_target` 天然按本机地址判定，而 remote **http** 的 `url` 不做 `{target}` 展开（direct 模式才会）；`docs/gates.md` 写了这一差异，`docs/product-roadmap.md` 把"要不要让 remote http 也展开"留作界面一致性决策。
-- **验证**：`internal/verify/probe_gate_targets_test.go` 10 条用例（全过、一台失败挡整批并点名、拨不上算失败、空目标失败关闭、tcp 每台只见自己的地址、script 逐台、direct 绝不调用 provider、旧的单通道形态行为不变、无 provider 仍失败关闭、取消后不再声明下一台的证据）；`-race` 下 verify 与 engine 包全绿。变异 6 条全部被对应用例抓红（含把"拨不上"改成"跳过"、去掉逐台收窄、让 direct 也扇出、去掉循环内的取消检查），结构守卫另做 3 条变异（抽掉一处 `ChannelFor`、加一处 `Channel:`、把标记改成不存在的串）均判红且点名位置。
-
-### 修复（发布版本门禁的规则③——本批折叠 CHANGELOG 时当场暴露）
-
-- **`未切版` 标注原先是"正文里出现即可"**：规则③用 `PENDING_MARKER in body` 判断一个小节有没有声明"还没切版"。把 v1.19.0 那一节的留痕（"撤掉**未切版**标注并把 Helm 口径升到 1.19.0"）折进新版本小节之后，正文里天然就有这三个字，于是**任何未标注的新小节都能借别人的话通过**——本次折叠 v1.19.1 时实测到：删掉真正的声明行、只留无关散文，门禁仍然 `PASSED`。
-- **改法**：只认**行首的声明行**，两种形式（`> 未切版`、`> **发布状态：未切版。**`），并要求标记后面紧跟分隔符（`未切版本` 这种更长词不算）。报错文案给出可照抄的写法。**回归用例**：`test_prose_mention_does_not_count_as_pending_declaration`、`test_marker_inside_a_larger_word_does_not_count`（先跑旧实现会全绿，是真正的盲区）；另在真实文件上做过一次反向验：删掉声明行、保留"撤掉未切版标注"那句 → `FAILED` 且点名缺失声明。
-- 台账 `docs/mvp-tasks.md` 的 D-04 行随 #76 更新为"cmd 与 remote/script 探针都按目标逐台执行"，三段留痕保留（2026-08-15"已交付"→ 2026-10-05"部分可达"→ 2026-10-06 现口径），并列出两条未闭合项。
 
 ## [v1.19.0] - 2026-10-06 — 首个可交付快照：`allow_irreversible` 编译期白名单，外加 post_batch 门禁路由、变更归属绑定、webhook 通知装配与交付物版本门禁
 
