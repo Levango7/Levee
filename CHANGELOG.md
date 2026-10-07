@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（master 端 Agent 注册表 RPC：注册表第一次跨进程可见）
+
+- **注册表原先只是"构造它的那个进程"里的一张 map**：`internal/agent/registry.go` 的 `AgentRegistry` 由 `cmd/levee/cmd_agent_support.go` 提成进程内单例，既没有落盘入口，`proto/` 里也没有任何 agent 服务定义（2026-10-04 实测：`internal/grpc`、`internal/wiring`、`internal/cluster` 三个装配面对它的引用计数均为 0）。后果是 `levee agent list` 跨进程恒空表、`show`/`remove` 恒 not-found——**不是"没有 agent 注册"，而是答案来自错误的进程**。CLI 参考第 20 章当时据此写下边界说明并把示例改成不承诺跨进程可见。
+- **交付**：`proto/levee_extra.proto` 新增 `AgentService` 六个 RPC（RegisterAgent / AgentHeartbeat / DeregisterAgent / ListAgents / GetAgent / RemoveAgent）；pb 产物用 CI 钉住的 protoc 27.0 + protoc-gen-go v1.36.12 工具链生成（该 job 以 `git diff --exit-code -- internal/grpc/pb/` 校验产物，本机 protoc 36.2 产出对不上——这正是 roadmap 那条前置条件记录的障碍）。注册表落盘为 `agents` 表：schema **v8** 前向迁移，SQLite 与 PostgreSQL 双引擎同列序，fresh-vs-upgraded 形状与列集分别钉桩。`capabilities` 存 JSON 数组而非分隔符拼接（含逗号的能力名要能原样回来），`last_heartbeat` 可空，用以区分"从未心跳"与"在某个时刻心跳过"。
+- **列归属是设计而不是巧合**：`registered_at` 与 `last_heartbeat` 被刻意挡在 `ON CONFLICT DO UPDATE` 的 SET 列表之外——re-register 不许让 agent 变年轻，也不许覆盖心跳已经写下的活跃度；心跳只写活跃度列，`address`/`capabilities`/`max_concurrent` 归 RegisterAgent 所有。**一列两个写主**正是"谁赢了"这类竞态的来源；改了自身并发的 agent 重新注册（那调用幂等）。
+- **状态词表被校验而非透传**：注册表只能产出 `registered | idle | busy | offline`（`agent.AgentStatusValues`）。心跳的状态缺省由负载**派生**，复用 `agent.DeriveStatus`——避免出现第二份手写判据，让心跳与调度器对"busy"各有其解；显式状态仍过同一词表。收下任意字符串等于允许一个拼写错误把 agent 永久停在"看起来健康"。
+- **`Unimplemented` 与"空注册表"必须可区分**：store 供不出 `state.AgentStore` 时，serve 打 WARN 并交给生成的 stub（`cmd/levee/cmd_serve_agent.go`）；服务自身的 nil-store 分支同样逐方法回 `codes.Unimplemented`。拿一张没有 store 的服务去回答空表，就是本功能要消灭的那个谎言。
+- **`RemoveAgent` 的在途拒绝是结局而非错误**：`removed=false` + 可读 refusal（`... pass force to remove the record anyway`），目标不存在（含重复删除）走同一条可读拒绝；CLI 把它翻成非零退出并打印原文，脚本因此看得见失败。roadmap P2「在途任务守卫」的原话——"`--force` 已从文档删除，因为没有守卫可绕过"——至此闭合，`--force` 重新出现在语法行。
+- **权限矩阵同日接入**（本批在 rebase 到 master 时发现 #51 刚落地的姿态并要求跟上）：注册表属 fleet 面，按 `internal/grpc/resource_authz.go` 的既有姿态判定——四个写 RPC 要 `admin`（与 `AddTarget` 同一条），两个读 RPC 要 `view`；agent 记录不声明环境，故与 group / template / config 一样在 `permission.default_env` 判定，矩阵存在但无 default 时**拒绝而非猜**。服务构造并入 `buildServeServices`，因而被 `serve_policy_wiring_test.go` 的"每个受策略服务都拒绝未知主体"守卫覆盖；`levee authz status` 的覆盖面文案同步点名 agent registry。**运维推论（新部署要求）**：装了矩阵的部署里，用共享令牌（无可归因主体）的 agent 会被拒写。
+- **`agent start` 仍是进程内**（刻意不做）：proto 没有 master→agent 的任务流 RPC，把生命周期切到 gRPC 只会得到一个"注册成功、然后永远等不到派发"的 agent。本批交付 master 侧契约 + 持久化 + 运维可见性这三件，任务通道另行排期。
+- **一处入口回归（本批自查修掉）**：改写 list/show/remove 时把 `cmd.Context()` 引入三个 `run*` 入口，而本包既有测试直接以 **nil 命令**驱动 `run*`（全仓 27 处这种调用）——cobra 的 `(*Command).Context` 解引用接收者，`TestRunAgentShowMissing` 当场 panic（`0xc0000005`）。更值得记下的是这条 panic **终止了整个测试进程**，同包后续用例一次都没跑；只按 `-run` 过滤跑单包的验证看不见它。改法取包内既有姿态并补上外层判断（nil 命令与 nil context 都退回 `context.Background()`）。
+- **验证**：`internal/grpc/agent_service_test.go` 20 例（列归属 fake + 固定时钟 + 鉴权豁免反查 + nil-store 分流 + 共享令牌写落 `Unauthenticated` 的策略形态）；`internal/state/agents_test.go` 7 例 + `agents_schema_test.go` 6 例（CRUD、能力编码 9 形、v7→v8 真实升级与形状比对）；`cmd/levee/cmd_agent_remote_test.go` 1 例用与 serve 相同的装配跑通 list / 过滤 / show / NotFound / 在途拒绝 / force 后删除；**跨进程可见性由 `internal/grpc/agent_service_e2e_test.go` 直接证明**——测试二进制以子进程重执行自身、独立打开同一 SQLite 文件读注册表，注册→心跳→daemon 重启→删除四腿逐项断言。变异 11 条全部被具名断言抓红（服务层 4：心跳恒 idle / remove 忽略在途 / nil store 竟答空表 / agent 被加进鉴权豁免；存储层 3：re-register 复位年龄 / 心跳对未知 id 报成功 / upsert 覆盖 last_heartbeat；E2E 1：子进程读错文件；权限侧 3：摘写 guard / 摘读 guard / wiring 传 nil 主体），源码逐条复原后按字节核对一致。
+
 ### 功能（human 门禁支持 quorum 与 exclude_initiator）
 
 - human 门禁从"单人同意"扩到工作流可声明的**同意形状**：两个新参数

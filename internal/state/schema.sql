@@ -326,3 +326,46 @@ CREATE TABLE IF NOT EXISTS run_assignment (
 CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state);
 CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
 CREATE INDEX IF NOT EXISTS idx_assignment_tenant ON run_assignment (tenant_id);
+
+-- ---------------------------------------------------------------------------
+-- Agent registry (v8): the LEVEE agents that have registered with the master.
+--
+-- Persisted because the registry was a map inside whichever process built it
+-- (internal/agent/registry.go): an agent registered against the daemon was
+-- invisible to every other process, so `levee agent list` always came back
+-- empty. One table, read by the gRPC service and the CLI alike.
+--
+-- NOT tenant-scoped, exactly like `locks` above: an agent is one process
+-- serving the whole deployment, and state.Agent (internal/state/agents.go) has
+-- no tenant to store. The decision is recorded in the
+-- nonTenantOwnedTables checklist in legacy_v1_test.go, which the
+-- fresh-vs-upgraded shape test reads, so adding a tenant_id here is a red
+-- test rather than a silent drift.
+--
+-- capabilities is a JSON array in TEXT, the way params and labels are: TEXT
+-- validated by the application, never a delimiter-joined list, so a capability
+-- whose name contains a comma survives the round trip. '[]' is the only
+-- spelling of "none" — see encodeAgentCapabilities for why '' and 'null'
+-- fabricate a phantom empty capability on the way back out.
+--
+-- last_heartbeat is nullable on purpose: NULL means "no heartbeat has ever
+-- arrived" (Agent.LastHeartbeat's zero value). NOT NULL with a default would
+-- make a never-seen agent look alive at the instant its row was created.
+--
+-- status is free text for the same reason runs.status and cluster_nodes.status
+-- are: the state layer stores what the caller validated. In play today are
+-- idle | busy | draining | offline, plus registered (agent.StatusRegistered).
+CREATE TABLE IF NOT EXISTS agents (
+    id                TEXT    PRIMARY KEY,
+    address           TEXT    NOT NULL,                          -- host:port the agent listens on
+    capabilities      TEXT    NOT NULL DEFAULT '[]',             -- JSON encoded []string, '[]' = none
+    status            TEXT    NOT NULL DEFAULT 'idle',           -- caller-owned vocabulary, see the note above
+    last_heartbeat    DATETIME,                                  -- NULL = never heartbeated
+    registered_at     DATETIME NOT NULL,                         -- first registration, kept across re-registers
+    active_tasks      INTEGER NOT NULL DEFAULT 0,
+    completed_tasks   INTEGER NOT NULL DEFAULT 0,
+    failed_tasks      INTEGER NOT NULL DEFAULT 0,
+    max_concurrent    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status);

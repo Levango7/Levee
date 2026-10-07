@@ -56,11 +56,11 @@ const pgBaseSchemaVersion = 1
 // to pgMigrations; pgschema.sql must gain the same change.
 //
 // It is intentionally NOT equal to currentSchemaVersion: the two ladders
-// version independently (7 / 7 today, coincidentally) because a step can be
+// version independently (8 / 8 today, coincidentally) because a step can be
 // dialect-specific. What must hold is that each ladder is internally gapless
 // and ends at its own current value — both are asserted by
 // TestMigrationsTable_Shape.
-const pgCurrentSchemaVersion = 7
+const pgCurrentSchemaVersion = 8
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
