@@ -1,14 +1,17 @@
 <script setup lang="ts">
-// MonitorView is the real-time execution monitor. It shows a live log stream
-// (polled at a fixed interval since SSE support depends on the gateway), batch
-// progress bars and gate (verification) status cards.
+// MonitorView is the real-time execution monitor: a polled log stream (there is
+// no SSE route — `WatchChange`/`StreamLogs` exist only as gRPC server streams,
+// so the browser polls), batch progress read from the same endpoint the cluster
+// page uses, and a gate panel that is deliberately EMPTY until gate verdicts get
+// a read route.
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { changesApi } from '@/api'
+import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import { formatTimestamp } from '@/utils/format'
+import { batchBarStatus, batchProgress, batchTagType } from '@/utils/batch'
 
 const route = useRoute()
 
@@ -23,31 +26,22 @@ const logStreamRef = ref<HTMLElement | null>(null)
 const POLL_INTERVAL_MS = 2000
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-// Batch progress mock structure. The real /changes/:id/plan endpoint would
-// populate this; we keep a local copy so the UI degrades gracefully when the
-// plan is unavailable.
-interface BatchProgress {
-  index: number
-  hosts: string[]
-  status: 'pending' | 'running' | 'success' | 'failed'
-  progress: number
-}
+// Batch progress is `GET /system/batch-status?run_id=…`. A change id and a run
+// id are the same key in this system (ApplyChange and GetRunReport both resolve
+// against the run row), so the route param goes straight through.
+//
+// The status vocabulary is the store's own — pending | running | done | failed |
+// interrupted. This file used to declare a LOCAL copy of the shape whose states
+// were `pending|running|success|failed`: nothing ever writes `success`, and
+// `interrupted` (the real "the run stopped mid-batch" state) had no rendering at
+// all. Binding to the server DTO is what keeps the two vocabularies from drifting.
+const summary = ref<BatchSummaryDTO | null>(null)
 
-const batches = ref<BatchProgress[]>([])
-
-// Gate status cards. Each gate is a verification step the engine runs between
-// batches; the UI shows pass/fail/pending.
-interface GateStatus {
-  name: string
-  status: 'pass' | 'fail' | 'pending' | 'running'
-  message: string
-}
-
-const gates = ref<GateStatus[]>([
-  { name: 'pre_check', status: 'pending', message: '前置检查' },
-  { name: 'post_check', status: 'pending', message: '后置验证' },
-  { name: 'rollback_ready', status: 'pending', message: '回滚就绪' },
-])
+// Gate verdicts are recorded per run inside the engine's closure, but there is
+// no read route for them: `POST /gates/verify` evaluates on demand and returns
+// nothing historical. The card used to render three hardcoded rows all saying
+// `pending`, so a run with no gates at all looked like a run whose gates were
+// still running. That is removed rather than dressed up — see the panel below.
 
 async function loadChange(): Promise<void> {
   if (!changeId.value) return
@@ -79,15 +73,29 @@ function scrollToBottom(): void {
   }
 }
 
+async function loadSummary(): Promise<void> {
+  if (!changeId.value) return
+  try {
+    summary.value = await batchApi.batchStatus(changeId.value)
+  } catch {
+    // Silent during polling, same policy as the log stream: a transient failure
+    // must not raise a toast every 2 seconds. The panel keeps the last real
+    // numbers rather than replacing them with anything invented.
+  }
+}
+
 async function refreshAll(): Promise<void> {
   loading.value = true
-  await Promise.all([loadChange(), loadLogs()])
+  await Promise.all([loadChange(), loadLogs(), loadSummary()])
   loading.value = false
 }
 
 function startPolling(): void {
   stopPolling()
-  pollTimer = setInterval(loadLogs, POLL_INTERVAL_MS)
+  pollTimer = setInterval(() => {
+    void loadLogs()
+    void loadSummary()
+  }, POLL_INTERVAL_MS)
 }
 
 function stopPolling(): void {
@@ -107,19 +115,6 @@ function levelTag(level: LogEntry['level']): 'info' | 'success' | 'warning' | 'd
       return 'warning'
     case 'ERROR':
       return 'danger'
-    default:
-      return 'info'
-  }
-}
-
-function gateTagType(status: GateStatus['status']): 'success' | 'danger' | 'info' | 'primary' {
-  switch (status) {
-    case 'pass':
-      return 'success'
-    case 'fail':
-      return 'danger'
-    case 'running':
-      return 'primary'
     default:
       return 'info'
   }
@@ -162,30 +157,28 @@ onUnmounted(stopPolling)
 
         <el-card shadow="never" class="levee-card">
           <template #header>批次进度</template>
-          <el-empty v-if="batches.length === 0" description="暂无批次信息" />
-          <div v-for="b in batches" :key="b.index" class="batch-item">
-            <div class="batch-item__head">
-              <span>批次 #{{ b.index }}</span>
-              <el-tag size="small" :type="b.status === 'success' ? 'success' : b.status === 'failed' ? 'danger' : 'primary'">
-                {{ b.status }}
-              </el-tag>
+          <el-empty v-if="!summary || summary.batches.length === 0" description="暂无批次记录（该变更还没有进入分批执行）" />
+          <template v-else>
+            <div class="batch-summary">
+              共 {{ summary.total_batches }} 批 · 已完成 {{ summary.done_batches }} 批<template v-if="summary.current_batch_no > 0">
+                · 当前第 {{ summary.current_batch_no }} 批</template>
             </div>
-            <el-progress :percentage="b.progress" :status="b.status === 'failed' ? 'exception' : b.status === 'success' ? 'success' : undefined" />
-            <div class="batch-item__hosts">{{ b.hosts.join(', ') }}</div>
-          </div>
+            <div v-for="b in summary.batches" :key="b.batch_no" class="batch-item">
+              <div class="batch-item__head">
+                <span>批次 #{{ b.batch_no }}</span>
+                <el-tag size="small" :type="batchTagType(b.status)">{{ b.status }}</el-tag>
+              </div>
+              <el-progress :percentage="batchProgress(b)" :status="batchBarStatus(b.status)" />
+              <div class="batch-item__hosts">
+                {{ b.total_hosts }} 台 · 成功 {{ b.succeeded }} · 失败 {{ b.failed }}
+              </div>
+            </div>
+          </template>
         </el-card>
 
         <el-card shadow="never" class="levee-card">
           <template #header>门禁状态</template>
-          <el-row :gutter="8">
-            <el-col v-for="g in gates" :key="g.name" :span="8">
-              <div class="gate-card">
-                <el-tag :type="gateTagType(g.status)" size="small">{{ g.status }}</el-tag>
-                <div class="gate-card__name">{{ g.name }}</div>
-                <div class="gate-card__msg">{{ g.message }}</div>
-              </div>
-            </el-col>
-          </el-row>
+          <el-empty description="暂无法显示：门禁结论按 run 记在引擎里，但没有对外读路由（POST /gates/verify 只做即时求值，不返回历史）。这里不放占位数据——上一版写的三行 pending 是编造的。" />
         </el-card>
       </el-col>
 
@@ -217,6 +210,11 @@ onUnmounted(stopPolling)
 </template>
 
 <style scoped>
+.batch-summary {
+  font-size: 12px;
+  color: #606266;
+  margin-bottom: 8px;
+}
 .batch-item + .batch-item {
   margin-top: 12px;
 }
@@ -227,22 +225,6 @@ onUnmounted(stopPolling)
 }
 .batch-item__hosts {
   margin-top: 4px;
-  font-size: 12px;
-  color: #909399;
-}
-
-.gate-card {
-  text-align: center;
-  padding: 8px;
-  border: 1px solid var(--levee-border);
-  border-radius: 4px;
-}
-.gate-card__name {
-  margin-top: 4px;
-  font-size: 13px;
-  font-weight: 500;
-}
-.gate-card__msg {
   font-size: 12px;
   color: #909399;
 }
