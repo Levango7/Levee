@@ -10,7 +10,15 @@ permissions:
 
 jobs:
   ci-gate:
-    timeout-minutes: 30
+    # 等待预算必须严格大于里面脚本的 CI_TIMEOUT_SECONDS，否则 job 先被杀，
+    # 脚本那段预算永远不可能生效——原配置正是这种不可满足的组合：
+    # job `timeout-minutes: 30`(=1800s) 而 CI_TIMEOUT_SECONDS: '3600'。
+    #
+    # 数值依据（2026-10-07 实测，不是估的）：master 一次完整绿 run 用时 58.5 分钟
+    # （`8eced6eb`，07:53:58Z → 08:52:27Z），同日 #86 的 run 已跑到 ~61 分钟还在等
+    # 聚合 job 排到 runner。所以 60 分钟的等待预算在今天这种池状态下本就只剩两分钟
+    # 余量，再叠一层 30 分钟的 job 上限等于把发布卡在必然失败的位置。
+    timeout-minutes: 100
     name: CI gate (tag commit)
     runs-on: ubuntu-latest
     permissions:
@@ -23,7 +31,10 @@ jobs:
       - name: require successful CI for exact tag commit
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CI_TIMEOUT_SECONDS: '3600'
+          # 90 分钟：< job 的 100 分钟，且覆盖实测的 ~59 分钟最慢完整 run。
+          # 这条不变量由 scripts/test_release_workflow_budget.py 守住——
+          # 谁改了其中一个而忘了另一个，当场变红，而不是等到切 tag 那天才发现。
+          CI_TIMEOUT_SECONDS: '5400'
           CI_POLL_SECONDS: '15'
         run: python3 scripts/require_ci_release.py
 
