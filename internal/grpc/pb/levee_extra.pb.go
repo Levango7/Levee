@@ -1537,6 +1537,693 @@ func (x *TargetHistoryResponse) GetEntries() []*TargetHistoryEntry {
 	return nil
 }
 
+// AgentRecord is the wire form of one registry entry.
+type AgentRecord struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// address is host:port the agent listens on for task dispatch.
+	Address string `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	// capabilities are module names the agent can execute (shell, file, pkg...).
+	Capabilities []string `protobuf:"bytes,3,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	// status is one of registered | idle | busy | offline — the vocabulary the
+	// registry itself can produce (agent.AgentStatusValues). A fresh registration
+	// lands as "registered" until the first heartbeat flips it.
+	Status string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	// last_heartbeat_unix is Unix seconds of the most recent heartbeat; 0 until
+	// the first one lands.
+	LastHeartbeatUnix int64 `protobuf:"varint,5,opt,name=last_heartbeat_unix,json=lastHeartbeatUnix,proto3" json:"last_heartbeat_unix,omitempty"`
+	// active_tasks is what the agent last reported as currently executing.
+	ActiveTasks    int32 `protobuf:"varint,6,opt,name=active_tasks,json=activeTasks,proto3" json:"active_tasks,omitempty"`
+	CompletedTasks int64 `protobuf:"varint,7,opt,name=completed_tasks,json=completedTasks,proto3" json:"completed_tasks,omitempty"`
+	FailedTasks    int64 `protobuf:"varint,8,opt,name=failed_tasks,json=failedTasks,proto3" json:"failed_tasks,omitempty"`
+	// max_concurrent is the agent's own concurrency ceiling.
+	MaxConcurrent    int32 `protobuf:"varint,9,opt,name=max_concurrent,json=maxConcurrent,proto3" json:"max_concurrent,omitempty"`
+	RegisteredAtUnix int64 `protobuf:"varint,10,opt,name=registered_at_unix,json=registeredAtUnix,proto3" json:"registered_at_unix,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *AgentRecord) Reset() {
+	*x = AgentRecord{}
+	mi := &file_levee_extra_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentRecord) ProtoMessage() {}
+
+func (x *AgentRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentRecord.ProtoReflect.Descriptor instead.
+func (*AgentRecord) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *AgentRecord) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AgentRecord) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *AgentRecord) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
+}
+
+func (x *AgentRecord) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *AgentRecord) GetLastHeartbeatUnix() int64 {
+	if x != nil {
+		return x.LastHeartbeatUnix
+	}
+	return 0
+}
+
+func (x *AgentRecord) GetActiveTasks() int32 {
+	if x != nil {
+		return x.ActiveTasks
+	}
+	return 0
+}
+
+func (x *AgentRecord) GetCompletedTasks() int64 {
+	if x != nil {
+		return x.CompletedTasks
+	}
+	return 0
+}
+
+func (x *AgentRecord) GetFailedTasks() int64 {
+	if x != nil {
+		return x.FailedTasks
+	}
+	return 0
+}
+
+func (x *AgentRecord) GetMaxConcurrent() int32 {
+	if x != nil {
+		return x.MaxConcurrent
+	}
+	return 0
+}
+
+func (x *AgentRecord) GetRegisteredAtUnix() int64 {
+	if x != nil {
+		return x.RegisteredAtUnix
+	}
+	return 0
+}
+
+type RegisterAgentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Capabilities  []string               `protobuf:"bytes,3,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
+	MaxConcurrent int32                  `protobuf:"varint,4,opt,name=max_concurrent,json=maxConcurrent,proto3" json:"max_concurrent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterAgentRequest) Reset() {
+	*x = RegisterAgentRequest{}
+	mi := &file_levee_extra_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterAgentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterAgentRequest) ProtoMessage() {}
+
+func (x *RegisterAgentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterAgentRequest.ProtoReflect.Descriptor instead.
+func (*RegisterAgentRequest) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *RegisterAgentRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *RegisterAgentRequest) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *RegisterAgentRequest) GetCapabilities() []string {
+	if x != nil {
+		return x.Capabilities
+	}
+	return nil
+}
+
+func (x *RegisterAgentRequest) GetMaxConcurrent() int32 {
+	if x != nil {
+		return x.MaxConcurrent
+	}
+	return 0
+}
+
+type AgentHeartbeatRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// status is OPTIONAL: when empty the server derives idle|busy from
+	// active_tasks and max_concurrent with the same rule the in-process
+	// registry uses (agent.DeriveStatus). When present it must be one of the
+	// accepted agent statuses — an unknown value is rejected rather than
+	// stored, so a typo cannot silently make an agent look healthy forever.
+	Status         string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	ActiveTasks    int32  `protobuf:"varint,3,opt,name=active_tasks,json=activeTasks,proto3" json:"active_tasks,omitempty"`
+	CompletedTasks int64  `protobuf:"varint,4,opt,name=completed_tasks,json=completedTasks,proto3" json:"completed_tasks,omitempty"`
+	FailedTasks    int64  `protobuf:"varint,5,opt,name=failed_tasks,json=failedTasks,proto3" json:"failed_tasks,omitempty"`
+	// client_timestamp_unix is when the agent generated this heartbeat. Zero
+	// means "use the server clock".
+	ClientTimestampUnix int64 `protobuf:"varint,6,opt,name=client_timestamp_unix,json=clientTimestampUnix,proto3" json:"client_timestamp_unix,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *AgentHeartbeatRequest) Reset() {
+	*x = AgentHeartbeatRequest{}
+	mi := &file_levee_extra_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentHeartbeatRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentHeartbeatRequest) ProtoMessage() {}
+
+func (x *AgentHeartbeatRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentHeartbeatRequest.ProtoReflect.Descriptor instead.
+func (*AgentHeartbeatRequest) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *AgentHeartbeatRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AgentHeartbeatRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *AgentHeartbeatRequest) GetActiveTasks() int32 {
+	if x != nil {
+		return x.ActiveTasks
+	}
+	return 0
+}
+
+func (x *AgentHeartbeatRequest) GetCompletedTasks() int64 {
+	if x != nil {
+		return x.CompletedTasks
+	}
+	return 0
+}
+
+func (x *AgentHeartbeatRequest) GetFailedTasks() int64 {
+	if x != nil {
+		return x.FailedTasks
+	}
+	return 0
+}
+
+func (x *AgentHeartbeatRequest) GetClientTimestampUnix() int64 {
+	if x != nil {
+		return x.ClientTimestampUnix
+	}
+	return 0
+}
+
+type AgentHeartbeatReply struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Id     string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Status string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// stale_after_unix is the server-side instant at which this agent is
+	// considered offline if no further heartbeat arrives.
+	StaleAfterUnix int64 `protobuf:"varint,3,opt,name=stale_after_unix,json=staleAfterUnix,proto3" json:"stale_after_unix,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *AgentHeartbeatReply) Reset() {
+	*x = AgentHeartbeatReply{}
+	mi := &file_levee_extra_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentHeartbeatReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentHeartbeatReply) ProtoMessage() {}
+
+func (x *AgentHeartbeatReply) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentHeartbeatReply.ProtoReflect.Descriptor instead.
+func (*AgentHeartbeatReply) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *AgentHeartbeatReply) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *AgentHeartbeatReply) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *AgentHeartbeatReply) GetStaleAfterUnix() int64 {
+	if x != nil {
+		return x.StaleAfterUnix
+	}
+	return 0
+}
+
+type DeregisterAgentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeregisterAgentRequest) Reset() {
+	*x = DeregisterAgentRequest{}
+	mi := &file_levee_extra_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeregisterAgentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeregisterAgentRequest) ProtoMessage() {}
+
+func (x *DeregisterAgentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeregisterAgentRequest.ProtoReflect.Descriptor instead.
+func (*DeregisterAgentRequest) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *DeregisterAgentRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type DeregisterAgentReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Removed       bool                   `protobuf:"varint,1,opt,name=removed,proto3" json:"removed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeregisterAgentReply) Reset() {
+	*x = DeregisterAgentReply{}
+	mi := &file_levee_extra_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeregisterAgentReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeregisterAgentReply) ProtoMessage() {}
+
+func (x *DeregisterAgentReply) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeregisterAgentReply.ProtoReflect.Descriptor instead.
+func (*DeregisterAgentReply) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *DeregisterAgentReply) GetRemoved() bool {
+	if x != nil {
+		return x.Removed
+	}
+	return false
+}
+
+type ListAgentsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// capability optionally filters to agents advertising it.
+	Capability string `protobuf:"bytes,1,opt,name=capability,proto3" json:"capability,omitempty"`
+	// status optionally filters on an exact AgentRecord.status match. It is
+	// validated against the registry vocabulary rather than passed through:
+	// an unknown filter value must not look like "no agents registered".
+	Status        string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgentsRequest) Reset() {
+	*x = ListAgentsRequest{}
+	mi := &file_levee_extra_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgentsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgentsRequest) ProtoMessage() {}
+
+func (x *ListAgentsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgentsRequest.ProtoReflect.Descriptor instead.
+func (*ListAgentsRequest) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *ListAgentsRequest) GetCapability() string {
+	if x != nil {
+		return x.Capability
+	}
+	return ""
+}
+
+func (x *ListAgentsRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+type ListAgentsReply struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Agents        []*AgentRecord         `protobuf:"bytes,1,rep,name=agents,proto3" json:"agents,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAgentsReply) Reset() {
+	*x = ListAgentsReply{}
+	mi := &file_levee_extra_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAgentsReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAgentsReply) ProtoMessage() {}
+
+func (x *ListAgentsReply) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAgentsReply.ProtoReflect.Descriptor instead.
+func (*ListAgentsReply) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *ListAgentsReply) GetAgents() []*AgentRecord {
+	if x != nil {
+		return x.Agents
+	}
+	return nil
+}
+
+type GetAgentRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAgentRequest) Reset() {
+	*x = GetAgentRequest{}
+	mi := &file_levee_extra_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAgentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAgentRequest) ProtoMessage() {}
+
+func (x *GetAgentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAgentRequest.ProtoReflect.Descriptor instead.
+func (*GetAgentRequest) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *GetAgentRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+type RemoveAgentRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// force removes the record even when it still reports in-flight tasks.
+	Force         bool `protobuf:"varint,2,opt,name=force,proto3" json:"force,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveAgentRequest) Reset() {
+	*x = RemoveAgentRequest{}
+	mi := &file_levee_extra_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveAgentRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveAgentRequest) ProtoMessage() {}
+
+func (x *RemoveAgentRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveAgentRequest.ProtoReflect.Descriptor instead.
+func (*RemoveAgentRequest) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *RemoveAgentRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *RemoveAgentRequest) GetForce() bool {
+	if x != nil {
+		return x.Force
+	}
+	return false
+}
+
+type RemoveAgentReply struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Removed bool                   `protobuf:"varint,1,opt,name=removed,proto3" json:"removed,omitempty"`
+	// refusal explains why nothing was removed (empty when removed is true).
+	// It is a field rather than a status message so the CLI can print something
+	// actionable without decoding error strings.
+	Refusal       string `protobuf:"bytes,2,opt,name=refusal,proto3" json:"refusal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RemoveAgentReply) Reset() {
+	*x = RemoveAgentReply{}
+	mi := &file_levee_extra_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RemoveAgentReply) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RemoveAgentReply) ProtoMessage() {}
+
+func (x *RemoveAgentReply) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_extra_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RemoveAgentReply.ProtoReflect.Descriptor instead.
+func (*RemoveAgentReply) Descriptor() ([]byte, []int) {
+	return file_levee_extra_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *RemoveAgentReply) GetRemoved() bool {
+	if x != nil {
+		return x.Removed
+	}
+	return false
+}
+
+func (x *RemoveAgentReply) GetRefusal() string {
+	if x != nil {
+		return x.Refusal
+	}
+	return ""
+}
+
 var File_levee_extra_proto protoreflect.FileDescriptor
 
 const file_levee_extra_proto_rawDesc = "" +
@@ -1662,7 +2349,54 @@ const file_levee_extra_proto_rawDesc = "" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x05R\x05limit\"L\n" +
 	"\x15TargetHistoryResponse\x123\n" +
-	"\aentries\x18\x01 \x03(\v2\x19.levee.TargetHistoryEntryR\aentries2\xd0\x01\n" +
+	"\aentries\x18\x01 \x03(\v2\x19.levee.TargetHistoryEntryR\aentries\"\xe7\x02\n" +
+	"\vAgentRecord\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\"\n" +
+	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\x12\x16\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12.\n" +
+	"\x13last_heartbeat_unix\x18\x05 \x01(\x03R\x11lastHeartbeatUnix\x12!\n" +
+	"\factive_tasks\x18\x06 \x01(\x05R\vactiveTasks\x12'\n" +
+	"\x0fcompleted_tasks\x18\a \x01(\x03R\x0ecompletedTasks\x12!\n" +
+	"\ffailed_tasks\x18\b \x01(\x03R\vfailedTasks\x12%\n" +
+	"\x0emax_concurrent\x18\t \x01(\x05R\rmaxConcurrent\x12,\n" +
+	"\x12registered_at_unix\x18\n" +
+	" \x01(\x03R\x10registeredAtUnix\"\x8b\x01\n" +
+	"\x14RegisterAgentRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x18\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\"\n" +
+	"\fcapabilities\x18\x03 \x03(\tR\fcapabilities\x12%\n" +
+	"\x0emax_concurrent\x18\x04 \x01(\x05R\rmaxConcurrent\"\xe2\x01\n" +
+	"\x15AgentHeartbeatRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12!\n" +
+	"\factive_tasks\x18\x03 \x01(\x05R\vactiveTasks\x12'\n" +
+	"\x0fcompleted_tasks\x18\x04 \x01(\x03R\x0ecompletedTasks\x12!\n" +
+	"\ffailed_tasks\x18\x05 \x01(\x03R\vfailedTasks\x122\n" +
+	"\x15client_timestamp_unix\x18\x06 \x01(\x03R\x13clientTimestampUnix\"g\n" +
+	"\x13AgentHeartbeatReply\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12(\n" +
+	"\x10stale_after_unix\x18\x03 \x01(\x03R\x0estaleAfterUnix\"(\n" +
+	"\x16DeregisterAgentRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"0\n" +
+	"\x14DeregisterAgentReply\x12\x18\n" +
+	"\aremoved\x18\x01 \x01(\bR\aremoved\"K\n" +
+	"\x11ListAgentsRequest\x12\x1e\n" +
+	"\n" +
+	"capability\x18\x01 \x01(\tR\n" +
+	"capability\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\"=\n" +
+	"\x0fListAgentsReply\x12*\n" +
+	"\x06agents\x18\x01 \x03(\v2\x12.levee.AgentRecordR\x06agents\"!\n" +
+	"\x0fGetAgentRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\":\n" +
+	"\x12RemoveAgentRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\"F\n" +
+	"\x10RemoveAgentReply\x12\x18\n" +
+	"\aremoved\x18\x01 \x01(\bR\aremoved\x12\x18\n" +
+	"\arefusal\x18\x02 \x01(\tR\arefusal2\xd0\x01\n" +
 	"\fAlertService\x129\n" +
 	"\fReceiveAlert\x12\x13.levee.AlertMessage\x1a\x14.levee.AlertResponse\x12B\n" +
 	"\x0eGetAlertStatus\x12\x1c.levee.GetAlertStatusRequest\x1a\x12.levee.AlertStatus\x12A\n" +
@@ -1680,7 +2414,15 @@ const file_levee_extra_proto_rawDesc = "" +
 	"\vDeleteGroup\x12\x19.levee.DeleteGroupRequest\x1a\x1a.levee.DeleteGroupResponse\x12J\n" +
 	"\rImportTargets\x12\x1b.levee.ImportTargetsRequest\x1a\x1c.levee.ImportTargetsResponse\x12P\n" +
 	"\x0fSetTargetStatus\x12\x1d.levee.SetTargetStatusRequest\x1a\x1e.levee.SetTargetStatusResponse\x12J\n" +
-	"\rTargetHistory\x12\x1b.levee.TargetHistoryRequest\x1a\x1c.levee.TargetHistoryResponseB,Z*github.com/nexus/levee/internal/grpc/pb;pbb\x06proto3"
+	"\rTargetHistory\x12\x1b.levee.TargetHistoryRequest\x1a\x1c.levee.TargetHistoryResponse2\xa6\x03\n" +
+	"\fAgentService\x12@\n" +
+	"\rRegisterAgent\x12\x1b.levee.RegisterAgentRequest\x1a\x12.levee.AgentRecord\x12J\n" +
+	"\x0eAgentHeartbeat\x12\x1c.levee.AgentHeartbeatRequest\x1a\x1a.levee.AgentHeartbeatReply\x12M\n" +
+	"\x0fDeregisterAgent\x12\x1d.levee.DeregisterAgentRequest\x1a\x1b.levee.DeregisterAgentReply\x12>\n" +
+	"\n" +
+	"ListAgents\x12\x18.levee.ListAgentsRequest\x1a\x16.levee.ListAgentsReply\x126\n" +
+	"\bGetAgent\x12\x16.levee.GetAgentRequest\x1a\x12.levee.AgentRecord\x12A\n" +
+	"\vRemoveAgent\x12\x19.levee.RemoveAgentRequest\x1a\x17.levee.RemoveAgentReplyB,Z*github.com/nexus/levee/internal/grpc/pb;pbb\x06proto3"
 
 var (
 	file_levee_extra_proto_rawDescOnce sync.Once
@@ -1694,7 +2436,7 @@ func file_levee_extra_proto_rawDescGZIP() []byte {
 	return file_levee_extra_proto_rawDescData
 }
 
-var file_levee_extra_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_levee_extra_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
 var file_levee_extra_proto_goTypes = []any{
 	(*AlertMessage)(nil),            // 0: levee.AlertMessage
 	(*AlertResponse)(nil),           // 1: levee.AlertResponse
@@ -1720,46 +2462,70 @@ var file_levee_extra_proto_goTypes = []any{
 	(*TargetHistoryEntry)(nil),      // 21: levee.TargetHistoryEntry
 	(*TargetHistoryRequest)(nil),    // 22: levee.TargetHistoryRequest
 	(*TargetHistoryResponse)(nil),   // 23: levee.TargetHistoryResponse
-	nil,                             // 24: levee.AlertMessage.LabelsEntry
-	nil,                             // 25: levee.ReplyMessage.ActionPayloadEntry
+	(*AgentRecord)(nil),             // 24: levee.AgentRecord
+	(*RegisterAgentRequest)(nil),    // 25: levee.RegisterAgentRequest
+	(*AgentHeartbeatRequest)(nil),   // 26: levee.AgentHeartbeatRequest
+	(*AgentHeartbeatReply)(nil),     // 27: levee.AgentHeartbeatReply
+	(*DeregisterAgentRequest)(nil),  // 28: levee.DeregisterAgentRequest
+	(*DeregisterAgentReply)(nil),    // 29: levee.DeregisterAgentReply
+	(*ListAgentsRequest)(nil),       // 30: levee.ListAgentsRequest
+	(*ListAgentsReply)(nil),         // 31: levee.ListAgentsReply
+	(*GetAgentRequest)(nil),         // 32: levee.GetAgentRequest
+	(*RemoveAgentRequest)(nil),      // 33: levee.RemoveAgentRequest
+	(*RemoveAgentReply)(nil),        // 34: levee.RemoveAgentReply
+	nil,                             // 35: levee.AlertMessage.LabelsEntry
+	nil,                             // 36: levee.ReplyMessage.ActionPayloadEntry
 }
 var file_levee_extra_proto_depIdxs = []int32{
-	24, // 0: levee.AlertMessage.labels:type_name -> levee.AlertMessage.LabelsEntry
+	35, // 0: levee.AlertMessage.labels:type_name -> levee.AlertMessage.LabelsEntry
 	8,  // 1: levee.DiagnosticReportMessage.findings:type_name -> levee.FindingMessage
-	25, // 2: levee.ReplyMessage.action_payload:type_name -> levee.ReplyMessage.ActionPayloadEntry
+	36, // 2: levee.ReplyMessage.action_payload:type_name -> levee.ReplyMessage.ActionPayloadEntry
 	11, // 3: levee.ListGroupsResponse.groups:type_name -> levee.Group
 	21, // 4: levee.TargetHistoryResponse.entries:type_name -> levee.TargetHistoryEntry
-	0,  // 5: levee.AlertService.ReceiveAlert:input_type -> levee.AlertMessage
-	2,  // 6: levee.AlertService.GetAlertStatus:input_type -> levee.GetAlertStatusRequest
-	4,  // 7: levee.AlertService.SubscribeAlerts:input_type -> levee.SubscribeRequest
-	5,  // 8: levee.DiagnosisService.Diagnose:input_type -> levee.DiagnoseRequest
-	6,  // 9: levee.DiagnosisService.GetDiagnosis:input_type -> levee.GetDiagnosisRequest
-	9,  // 10: levee.ConversationService.SendMessage:input_type -> levee.SendMessageRequest
-	4,  // 11: levee.ConversationService.SubscribeConversation:input_type -> levee.SubscribeRequest
-	13, // 12: levee.InventoryService.ListGroups:input_type -> levee.ListGroupsRequest
-	12, // 13: levee.InventoryService.CreateGroup:input_type -> levee.CreateGroupRequest
-	15, // 14: levee.InventoryService.DeleteGroup:input_type -> levee.DeleteGroupRequest
-	17, // 15: levee.InventoryService.ImportTargets:input_type -> levee.ImportTargetsRequest
-	19, // 16: levee.InventoryService.SetTargetStatus:input_type -> levee.SetTargetStatusRequest
-	22, // 17: levee.InventoryService.TargetHistory:input_type -> levee.TargetHistoryRequest
-	1,  // 18: levee.AlertService.ReceiveAlert:output_type -> levee.AlertResponse
-	3,  // 19: levee.AlertService.GetAlertStatus:output_type -> levee.AlertStatus
-	0,  // 20: levee.AlertService.SubscribeAlerts:output_type -> levee.AlertMessage
-	7,  // 21: levee.DiagnosisService.Diagnose:output_type -> levee.DiagnosticReportMessage
-	7,  // 22: levee.DiagnosisService.GetDiagnosis:output_type -> levee.DiagnosticReportMessage
-	10, // 23: levee.ConversationService.SendMessage:output_type -> levee.ReplyMessage
-	10, // 24: levee.ConversationService.SubscribeConversation:output_type -> levee.ReplyMessage
-	14, // 25: levee.InventoryService.ListGroups:output_type -> levee.ListGroupsResponse
-	11, // 26: levee.InventoryService.CreateGroup:output_type -> levee.Group
-	16, // 27: levee.InventoryService.DeleteGroup:output_type -> levee.DeleteGroupResponse
-	18, // 28: levee.InventoryService.ImportTargets:output_type -> levee.ImportTargetsResponse
-	20, // 29: levee.InventoryService.SetTargetStatus:output_type -> levee.SetTargetStatusResponse
-	23, // 30: levee.InventoryService.TargetHistory:output_type -> levee.TargetHistoryResponse
-	18, // [18:31] is the sub-list for method output_type
-	5,  // [5:18] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	24, // 5: levee.ListAgentsReply.agents:type_name -> levee.AgentRecord
+	0,  // 6: levee.AlertService.ReceiveAlert:input_type -> levee.AlertMessage
+	2,  // 7: levee.AlertService.GetAlertStatus:input_type -> levee.GetAlertStatusRequest
+	4,  // 8: levee.AlertService.SubscribeAlerts:input_type -> levee.SubscribeRequest
+	5,  // 9: levee.DiagnosisService.Diagnose:input_type -> levee.DiagnoseRequest
+	6,  // 10: levee.DiagnosisService.GetDiagnosis:input_type -> levee.GetDiagnosisRequest
+	9,  // 11: levee.ConversationService.SendMessage:input_type -> levee.SendMessageRequest
+	4,  // 12: levee.ConversationService.SubscribeConversation:input_type -> levee.SubscribeRequest
+	13, // 13: levee.InventoryService.ListGroups:input_type -> levee.ListGroupsRequest
+	12, // 14: levee.InventoryService.CreateGroup:input_type -> levee.CreateGroupRequest
+	15, // 15: levee.InventoryService.DeleteGroup:input_type -> levee.DeleteGroupRequest
+	17, // 16: levee.InventoryService.ImportTargets:input_type -> levee.ImportTargetsRequest
+	19, // 17: levee.InventoryService.SetTargetStatus:input_type -> levee.SetTargetStatusRequest
+	22, // 18: levee.InventoryService.TargetHistory:input_type -> levee.TargetHistoryRequest
+	25, // 19: levee.AgentService.RegisterAgent:input_type -> levee.RegisterAgentRequest
+	26, // 20: levee.AgentService.AgentHeartbeat:input_type -> levee.AgentHeartbeatRequest
+	28, // 21: levee.AgentService.DeregisterAgent:input_type -> levee.DeregisterAgentRequest
+	30, // 22: levee.AgentService.ListAgents:input_type -> levee.ListAgentsRequest
+	32, // 23: levee.AgentService.GetAgent:input_type -> levee.GetAgentRequest
+	33, // 24: levee.AgentService.RemoveAgent:input_type -> levee.RemoveAgentRequest
+	1,  // 25: levee.AlertService.ReceiveAlert:output_type -> levee.AlertResponse
+	3,  // 26: levee.AlertService.GetAlertStatus:output_type -> levee.AlertStatus
+	0,  // 27: levee.AlertService.SubscribeAlerts:output_type -> levee.AlertMessage
+	7,  // 28: levee.DiagnosisService.Diagnose:output_type -> levee.DiagnosticReportMessage
+	7,  // 29: levee.DiagnosisService.GetDiagnosis:output_type -> levee.DiagnosticReportMessage
+	10, // 30: levee.ConversationService.SendMessage:output_type -> levee.ReplyMessage
+	10, // 31: levee.ConversationService.SubscribeConversation:output_type -> levee.ReplyMessage
+	14, // 32: levee.InventoryService.ListGroups:output_type -> levee.ListGroupsResponse
+	11, // 33: levee.InventoryService.CreateGroup:output_type -> levee.Group
+	16, // 34: levee.InventoryService.DeleteGroup:output_type -> levee.DeleteGroupResponse
+	18, // 35: levee.InventoryService.ImportTargets:output_type -> levee.ImportTargetsResponse
+	20, // 36: levee.InventoryService.SetTargetStatus:output_type -> levee.SetTargetStatusResponse
+	23, // 37: levee.InventoryService.TargetHistory:output_type -> levee.TargetHistoryResponse
+	24, // 38: levee.AgentService.RegisterAgent:output_type -> levee.AgentRecord
+	27, // 39: levee.AgentService.AgentHeartbeat:output_type -> levee.AgentHeartbeatReply
+	29, // 40: levee.AgentService.DeregisterAgent:output_type -> levee.DeregisterAgentReply
+	31, // 41: levee.AgentService.ListAgents:output_type -> levee.ListAgentsReply
+	24, // 42: levee.AgentService.GetAgent:output_type -> levee.AgentRecord
+	34, // 43: levee.AgentService.RemoveAgent:output_type -> levee.RemoveAgentReply
+	25, // [25:44] is the sub-list for method output_type
+	6,  // [6:25] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_levee_extra_proto_init() }
@@ -1773,9 +2539,9 @@ func file_levee_extra_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_levee_extra_proto_rawDesc), len(file_levee_extra_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   26,
+			NumMessages:   37,
 			NumExtensions: 0,
-			NumServices:   4,
+			NumServices:   5,
 		},
 		GoTypes:           file_levee_extra_proto_goTypes,
 		DependencyIndexes: file_levee_extra_proto_depIdxs,
