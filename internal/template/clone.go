@@ -22,23 +22,34 @@ import (
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
 // --- Status / action / result constants -------------------------------------
 //
-// These mirror the values used by the engine and stored in state.Run.Status.
-// They are repeated here to keep the template package self-documenting and
-// avoid importing the engine package (which would create an import cycle).
+// Run and batch statuses are NOT repeated here: the cloned run's status is
+// `runstatus.StatusDraft` and the cloned batch's is `state.BatchStatePending`,
+// because those are the vocabularies the engine, `batchDoneStates` and the web
+// UI read. The old block here carried its own `StatusDraft = "draft"` /
+// `StatusPending = "pending"` and justified it as avoiding an import cycle with
+// `engine` — but this package already imports `internal/state`, and neither
+// `runstatus` (which imports only "strings") nor `state` imports `template`, so
+// no cycle existed. A parallel constant set stays correct only by luck: if one
+// side's spelling changes, the writer keeps producing a value nobody reads,
+// which is exactly how #88 shipped (`state` judged "done", the engine wrote
+// "completed", and every test stayed green on its own side).
 
 const (
-	// StatusDraft is the status assigned to a cloned run. A draft is editable
-	// and has not yet been submitted for approval or execution.
-	StatusDraft = "draft"
-
-	// StatusPending is the default batch/step status assigned to cloned
-	// batches and steps so they appear as "not yet started".
-	StatusPending = "pending"
+	// StepStatusPending is the step status assigned to cloned steps so they
+	// appear as "not yet started".
+	//
+	// Steps are the one status column here without an owning package: there is
+	// no `StepState*` set in internal/state, and the engine writes bare
+	// literals ("failed" / "skipped" in internal/wiring/persist.go:131/222/224/429).
+	// Naming the constant after its single remaining use keeps it from implying
+	// it also covers batches; giving steps a real owner is a separate change.
+	StepStatusPending = "pending"
 )
 
 // Audit action constants recorded in state.Audit.Action.
@@ -162,7 +173,7 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 		TemplateName:   srcRun.TemplateName,
 		Params:         srcRun.Params,
 		PlanHash:       srcRun.PlanHash,
-		Status:         StatusDraft,
+		Status:         runstatus.StatusDraft,
 		ApprovalStatus: "pending",
 		ApprovalLevel:  srcRun.ApprovalLevel,
 		CreatedAt:      now,
@@ -190,7 +201,7 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 			ID:          newBatchID,
 			RunID:       clonedRunID,
 			BatchNo:     b.BatchNo,
-			Status:      StatusPending,
+			Status:      state.BatchStatePending,
 			TotalHosts:  b.TotalHosts,
 			Succeeded:   0,
 			Failed:      0,
@@ -228,7 +239,7 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 			Host:        s.Host,
 			StepName:    s.StepName,
 			Action:      s.Action,
-			Status:      StatusPending,
+			Status:      StepStatusPending,
 			ExitCode:    nil,
 			Stdout:      "",
 			Stderr:      "",
