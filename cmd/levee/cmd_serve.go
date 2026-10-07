@@ -776,13 +776,23 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// the caller supplied none.
 	srv := grpc.NewServer(svcStore, serverOpts...)
 
-	// 5. Register extra services (Alert, Diagnosis, Conversation) on the
+	// 5. Register extra services (Alert, Diagnosis, Conversation, Agent) on the
 	//    gRPC server and construct the REST gateway that shares the same
 	//    in-process service instances.
+	//
+	// The agent registry reads the UNDERLYING store deliberately: an agent record
+	// describes a process, not a customer's change, so it has no tenant column and
+	// scoping it by tenant would be invented. Reading it through the tenant
+	// wrapper instead would make `agent list` answer differently depending on
+	// whether tenancy happens to be enabled — the way the calendar gate once
+	// silently stopped working. A store that cannot serve the registry is reported
+	// and left Unimplemented, never registered as an empty-looking registry.
+	agentSvc := serveAgentRegistry(slog.Default(), state.Underlying(svcStore))
 	grpc.RegisterExtraServices(srv.GrpcServer(), grpc.ExtraServicesConfig{
 		Alert:        alertSvc,
 		Diagnosis:    diagSvc,
 		Conversation: convSvc,
+		Agent:        agentSvc,
 	})
 
 	// 5b. Inventory service: persistent target groups/import/status/history.

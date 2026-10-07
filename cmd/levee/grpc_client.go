@@ -42,7 +42,8 @@ import (
 // short enough that a misconfigured --server flag fails noticeably fast.
 const defaultConnectTimeout = 10 * time.Second
 
-// grpcClient bundles a gRPC ClientConn and the five generated service clients.
+// grpcClient bundles a gRPC ClientConn and the generated service clients
+// (the original five, plus the agent registry).
 // All fields are read-only after construction; the type is safe for concurrent
 // use because the underlying *grpc.ClientConn is.
 type grpcClient struct {
@@ -51,6 +52,7 @@ type grpcClient struct {
 	template pb.TemplateServiceClient
 	target   pb.TargetServiceClient
 	audit    pb.AuditServiceClient
+	agent    pb.AgentServiceClient
 	system   pb.SystemServiceClient
 
 	// token is retained for diagnostic output (never logged in full).
@@ -104,6 +106,7 @@ func newGRPCClient(addr string, token string, _opts ...grpcClientOption) (*grpcC
 		target:   pb.NewTargetServiceClient(conn),
 		audit:    pb.NewAuditServiceClient(conn),
 		system:   pb.NewSystemServiceClient(conn),
+		agent:    pb.NewAgentServiceClient(conn),
 		token:    token,
 	}, nil
 }

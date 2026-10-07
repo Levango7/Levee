@@ -118,17 +118,27 @@ func newAgentShowCmd() *cobra.Command {
 	}
 }
 
+// agentRemoveOptForce is the --force switch for `agent remove`. The master
+// refuses to delete a register that still reports in-flight tasks, because that
+// record is the only evidence of what is running where; the flag is the operator
+// saying "I know — drop it anyway".
+var agentRemoveOptForce bool
+
 // newAgentRemoveCmd builds the `levee agent remove <agent-id>` sub-command.
 func newAgentRemoveCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "remove <agent-id>",
 		Short: "Remove an agent from the registry",
 		Long: "Remove an agent from the master registry. Use this to " +
 			"reclaim the slot of an agent that crashed without " +
-			"deregistering.",
+			"deregistering. An agent that still reports in-flight tasks " +
+			"is not removed unless --force is given.",
 		Args: cobra.ExactArgs(1),
 		RunE: runAgentRemove,
 	}
+	cmd.Flags().BoolVar(&agentRemoveOptForce, "force", false,
+		"remove the agent even while it reports in-flight tasks")
+	return cmd
 }
 
 // runAgentStart executes the `levee agent start` command.
@@ -138,9 +148,11 @@ func runAgentStart(cmd *cobra.Command, args []string) error {
 	a := agent.NewAgent(agentStartOptID, agentStartOptAddr, caps, agentStartOptMaxConc)
 	a.HeartbeatInterval = agentStartOptHeartbeat
 
-	// Build a master client. In the current MVP we only support the
-	// in-process local dispatcher path; a real gRPC client will be
-	// wired in once the master-side agent service is implemented.
+	// The master-side registry RPC exists now (internal/grpc/agent_service.go),
+	// but `agent start` still registers in-process: the proto has no task
+	// transport, so an agent switched to gRPC would register against the master
+	// and then wait forever for a dispatch channel that does not exist. The
+	// read side of the CLI does go remote — see cmd_agent_remote.go.
 	mc := newInProcessMasterClient(agentStartOptMaster)
 	a.SetMasterClient(mc)
 
@@ -202,8 +214,7 @@ func runAgentStatus(cmd *cobra.Command, args []string) error {
 
 // runAgentList executes the `levee agent list` command.
 func runAgentList(cmd *cobra.Command, args []string) error {
-	registry := getGlobalAgentRegistry()
-	agents, err := filterAgentsByStatus(registry.List(), agentListOptStatus)
+	agents, err := fetchRegistryAgents(cmd.Context(), agentListOptStatus)
 	if err != nil {
 		return fmt.Errorf("agent list: %w", err)
 	}
@@ -255,8 +266,7 @@ func filterAgentsByStatus(all []agent.AgentInfo, status string) ([]agent.AgentIn
 // runAgentShow executes the `levee agent show <agent-id>` command.
 func runAgentShow(cmd *cobra.Command, args []string) error {
 	agentID := args[0]
-	registry := getGlobalAgentRegistry()
-	info, err := registry.Get(agentID)
+	info, err := lookupRegistryAgent(cmd.Context(), agentID)
 	if err != nil {
 		return fmt.Errorf("agent show: %w", err)
 	}
@@ -277,8 +287,7 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 // runAgentRemove executes the `levee agent remove <agent-id>` command.
 func runAgentRemove(cmd *cobra.Command, args []string) error {
 	agentID := args[0]
-	registry := getGlobalAgentRegistry()
-	if err := registry.Deregister(agentID); err != nil {
+	if err := removeRegistryAgent(cmd.Context(), agentID, agentRemoveOptForce); err != nil {
 		return fmt.Errorf("agent remove: %w", err)
 	}
 
