@@ -4,11 +4,11 @@
 
 ## [Unreleased]
 
-## [v1.20.0] - 未切版
+## [v1.20.0] - 2026-10-07
 
-> **发布状态：未切版。** `v1.20.0` 的 tag 尚未打出，因此 `ghcr.io/levango7/levee:v1.20.0` 这个制品还不存在；下面 14 个小节的内容都已进 master。chart 的 `appVersion` 与 `values.image.tag` 保持指向上一个真实存在的发布（`1.19.0` / `v1.19.0`），等 tag 切出后再一并升档——`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，抢先写未来的版本号会让 `delivery` job 变红，而那正是这条门禁该做的事。
+> **发布状态：已切版。** 附注 tag `v1.20.0`（tag 对象 `fe4b162`，剥壳指向 `738c477e`）于 2026-10-07 推送，`release.yml` 据此发布：GitHub Release `draft=false`、`publishedAt=2026-10-07T14:35:31Z`、资产为 6 个平台包 + `checksums.txt`；镜像 `ghcr.io/levango7/levee:v1.20.0` 按外部事实核过——`manifests/v1.20.0` 返回 200，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0]`。本小节共 **15** 个小节。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.20.0` / 逐字 `v1.20.0`——顺序不能反：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，所以在 tag 存在之前它们必须继续指向上一个真实发布（此前指 `1.19.0` / `v1.19.0`）。
 >
-> **为什么这一版叫 v1.20.0 而不是 v1.19.1**：本小节最初以 `## [v1.19.1] - 未切版` 登记（#77），当时 master 上只有那五批修复与门禁工作。此后 master 又落了 8 批新增能力——human 门禁的 quorum（#84）、human 门禁的审批传输（#83）、审批决定携带可验签审批人（#82）、条件式 ABAC 接入服务层（#81）、清单/模板/审计/系统面的权限矩阵接入（#51）、master 端 Agent 注册表 RPC（#85）、规范文本纠正（#79）与 CI 聚合门禁的 UNVERIFIED/FAILED 分立（#78）——按 semver 属于 minor 而非 patch。`v1.19.1` 从未切版，registry 里也没有那个制品，所以这次改名不收回任何对外承诺。
+> **为什么这一版叫 v1.20.0 而不是 v1.19.1**：本小节最初以 `## [v1.19.1] - 未切版` 登记（#77），当时 master 上只有那五批修复与门禁工作。此后 master 又落了 8 批新增能力——human 门禁的 quorum（#84）、human 门禁的审批传输（#83）、审批决定携带可验签审批人（#82）、条件式 ABAC 接入服务层（#81）、清单/模板/审计/系统面的权限矩阵接入（#51）、master 端 Agent 注册表 RPC（#85）、规范文本纠正（#79）与 CI 聚合门禁的 UNVERIFIED/FAILED 分立（#78）——按 semver 属于 minor 而非 patch。`v1.19.1` 从未切版，registry 里也没有那个制品，所以这次改名不收回任何对外承诺。折叠之后、切版之前又并入一批：**#88**（批次状态两套词表 ⇒ `done_batches` 恒为 0；`batch-status` 线上传输是 PascalCase 而视图读 snake_case ⇒ `/cluster` 批次面板从落地起就是死的；`/monitor` 三视图的第一步）。
 
 ### 新增（验证门禁按目标执行：cmd 门禁终于能跑它声明的那条检查）
 

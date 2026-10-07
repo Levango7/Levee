@@ -6,13 +6,15 @@ description: |
 type: application
 # appVersion 跟随"已发布、且本 Chart 按其验证过"的二进制版本；version 是 Chart 自身
 # 的版本。两者拼写不同、各有约定：
-#   appVersion    —— Helm 惯例，不带 v 的 semver（"1.19.0"）；
-#   values.image.tag —— 逐字的 git tag 名（"v1.19.0"），因为 release.yml 推的镜像 tag
+#   appVersion    —— Helm 惯例，不带 v 的 semver（"1.20.0"）；
+#   values.image.tag —— 逐字的 git tag 名（"v1.20.0"），因为 release.yml 推的镜像 tag
 #                    就是 `${{ github.ref_name }}`，ghcr 上只有带 v 的那个。
 # 版本号必须一致，且该版本必须已有对应 git tag（镜像由 release.yml 在 push tag v*
 # 时构建，没 tag 就没有制品）。这条约定由 scripts/check_release_versions.py 钉住
 # （CI 经 validate_delivery.sh 调用）。
-appVersion: "1.19.0"
+# 升档只发生在 tag 之后：v1.20.0 的 tag 于 2026-10-07 切出，ghcr 的
+# `manifests/v1.20.0` 实测返回 200，本 Chart 才跟着升到 1.20.0/v1.20.0。
+appVersion: "1.20.0"
 version: 0.1.0
 home: https://github.com/Levango7/Levee
 sources:
