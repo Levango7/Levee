@@ -2056,6 +2056,8 @@ levee serve --insecure
 
 > **实现边界（务必先读）**：注册表现在是**持久化**的——daemon（`levee serve`）把 Agent 注册记录存在自己的 store 里（SQLite 单机为 `agents` 表；集群模式为 PostgreSQL 同名表，schema v8 前向迁移），并通过 gRPC `AgentService` 对外服务。`agent list / show / remove` 加全局 `--remote`（配合 `--server` / `--token`，见上文全局选项表）后查询的是 **daemon 进程**的注册表，**跨进程可见**；不加 `--remote` 时行为不变——读的仍是**当前进程**的注册表，对一次性的 CLI 调用几乎总是空表 / not-found（本地/测试形态，不是回归）。仍不存在的部分是**任务下发通道**：proto 没有 master→agent 的任务流 RPC，所以 `levee agent start` 依旧在进程内注册；本能力覆盖"注册、心跳、运维可见性"这半边，任务通道是已登记事项，见 [product-roadmap.md](product-roadmap.md)。
 
+> **权限矩阵（装了 `permissions.yaml` 的部署必读）**：注册表属于 fleet 面，按 `internal/grpc/resource_authz.go` 的既有姿态判定——**写要 `admin`**（RegisterAgent / AgentHeartbeat / DeregisterAgent / RemoveAgent），**读要 `view`**（ListAgents / GetAgent）。agent 记录不声明环境，所以判定发生在 `permission.default_env`；矩阵存在但没有 default 时是**拒绝**而不是猜。没写矩阵的部署行为不变（仍只受认证约束），`levee authz status` 会点名这一状态。注意由此推出的一条运维要求：**注册与心跳都需要 admin 身份**，用共享令牌（无可归因主体）的 agent 在装了矩阵的部署里会被拒写——这是与 `AddTarget` 同一条姿态，不是本功能的额外限制。
+
 ### 20.1 agent start
 
 启动 Agent 常驻进程，注册到 master 节点并开始心跳。
