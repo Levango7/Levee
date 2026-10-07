@@ -18,9 +18,11 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 	"gopkg.in/yaml.v3"
 
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -39,6 +41,19 @@ type SystemService struct {
 	gitCommit string
 	buildDate string
 	goVersion string
+
+	authz *authz.Authorizer // optional; nil means no policy configured
+}
+
+// WithAuthorizer installs the policy authorizer. The split inside this service
+// is deliberate: a version handshake and a health endpoint answer for the
+// process, so they stay reachable (a monitoring scrape must not need a team
+// grant), while the *content* of the configuration and the counts derived from
+// other teams' changes are policy questions. GetStatus keeps answering, with
+// its run counts narrowed to what the caller may see.
+func (s *SystemService) WithAuthorizer(a *authz.Authorizer) *SystemService {
+	s.authz = a
+	return s
 }
 
 // NewSystemService returns a SystemService backed by the given store and
@@ -97,19 +112,27 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 	}
 
 	// Count active and paused runs if a store is configured.
+	//
+	// The endpoint itself stays open — a scrape that needs a team grant is a
+	// scrape that pages the on-call at 03:00 — but the counts are derived from
+	// other teams' changes, so an attributable caller under a matrix gets the
+	// number of runs THEY can see. A monitoring system that wants the deployment
+	// total keeps using a shared token, which is the credential the read
+	// exemption was written for.
+	visible := resourceVisibility(ctx, s.authz)
 	if s.store != nil {
 		activeRuns, err := s.store.ListRuns(ctx, state.RunFilter{Status: "running", Limit: 10000})
 		if err != nil {
 			resp.Warnings = append(resp.Warnings, fmt.Sprintf("count active runs: %v", err))
 		} else {
-			resp.ActiveRuns = int32(len(activeRuns))
+			resp.ActiveRuns = int32(countVisibleRuns(activeRuns, visible))
 		}
 
 		pausedRuns, err := s.store.ListRuns(ctx, state.RunFilter{Status: "paused", Limit: 10000})
 		if err != nil {
 			resp.Warnings = append(resp.Warnings, fmt.Sprintf("count paused runs: %v", err))
 		} else {
-			resp.PausedRuns = int32(len(pausedRuns))
+			resp.PausedRuns = int32(countVisibleRuns(pausedRuns, visible))
 		}
 	} else {
 		resp.Warnings = append(resp.Warnings, "store not configured")
@@ -143,6 +166,15 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 // security.expose_raw_config AND the caller asked for the unredacted form, and
 // every such response is logged: config content carries target credentials.
 func (s *SystemService) GetConfig(ctx context.Context, req *pb.GetConfigRequest) (*pb.Config, error) {
+	// Policy first, and against the deployment's default environment: this
+	// document describes the process, not a change, so it has no environment of
+	// its own to be judged in. Redaction decides *what* a reader sees; this
+	// decides *whether* they may read it at all — data directory, listener
+	// addresses, credential references and the shape of the policy itself are
+	// the map of the deployment.
+	if err := authorizeResource(ctx, s.authz, "", permission.ActionAdmin, "GetConfig"); err != nil {
+		return nil, err
+	}
 	if s.cfg == nil {
 		return nil, status.Error(codes.FailedPrecondition, "config not loaded")
 	}
@@ -190,6 +222,13 @@ func (s *SystemService) rawConfigEnabled() bool {
 // Checks include: config loadability, store reachability, data directory
 // writability, and configuration completeness.
 func (s *SystemService) RunDoctor(ctx context.Context, _ *emptypb.Empty) (*pb.DoctorReport, error) {
+	// Diagnostics answer "is this deployment healthy", like GetStatus, so the
+	// read scope is the right one — and `view` is not a free pass: a subject
+	// whose team is granted nothing in the default environment is refused,
+	// because the report names data directories, store errors and file paths.
+	if err := authorizeResourceRead(ctx, s.authz, "", "RunDoctor"); err != nil {
+		return nil, err
+	}
 	var checks []*pb.DoctorCheck
 
 	// Check 1: Configuration.

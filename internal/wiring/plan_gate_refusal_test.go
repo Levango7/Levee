@@ -33,8 +33,8 @@ import (
 // a chat-ops transport would.
 type acceptApprover struct{}
 
-func (acceptApprover) RequestAndWait(_ context.Context, _, _, _ string) (bool, error) {
-	return true, nil
+func (acceptApprover) RequestAndWait(_ context.Context, _ verify.HumanRequest) (verify.HumanDecision, error) {
+	return verify.HumanDecision{Approved: true}, nil
 }
 
 const humanGatedWorkflow = `name: human-gated

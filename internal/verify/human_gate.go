@@ -38,8 +38,50 @@ const DefaultHumanTimeout = 1800 * time.Second
 // validHumanParamKeys lists every accepted HumanGate parameter, sorted, for
 // inclusion in validation error messages. Keep in sync with applyParams.
 var validHumanParamKeys = []string{
+	"exclude_initiator",
+	"min_approvers",
 	"reason",
 	"timeout_seconds",
+}
+
+// HumanDecision is one human's answer to a gate request. Approved is the
+// verdict; Approver is the identity that gave it.
+//
+// Approver is a VERIFIABLE SUBJECT when the transport can authenticate the human
+// who answered (the same subject the rest of the system binds decisions to), and
+// empty when it cannot. It is recorded as-is and never invented: a transport that
+// cannot say who answered must leave it empty rather than echo a name the caller
+// supplied. The gate does not itself refuse an empty Approver — the transport is
+// the authentication boundary — but the empty value is what an audit trail shows,
+// so an unauthenticated approval is visible rather than silently attributed.
+type HumanDecision struct {
+	Approved bool
+	Approver string
+}
+
+// HumanRequest is one gate's ask of a transport: which run and gate, why, and
+// the consent shape the workflow declared.
+//
+// It is a struct rather than a longer parameter list because the consent shape
+// is part of the QUESTION, not an implementation detail of the transport: a
+// transport that cannot express quorum must refuse the request rather than
+// silently answer it with a single vote.
+type HumanRequest struct {
+	// RunID names the run under decision; Gate is the gate's declared name.
+	RunID string
+	Gate  string
+	// Reason is the workflow author's justification, shown to the approver.
+	Reason string
+	// MinApprovers is how many distinct humans must approve before the gate
+	// passes. Zero or one means a single approver.
+	MinApprovers int
+	// ExcludeInitiator forbids the run's Initiator from casting any decision.
+	ExcludeInitiator bool
+	// Initiator is the identity recorded as authoring the run. Empty means
+	// unknown, and exclusion then cannot be enforced — a gate that declared
+	// ExcludeInitiator refuses rather than quietly accepting the initiator's
+	// own vote.
+	Initiator string
 }
 
 // HumanApprover is the transport abstraction behind HumanGate. Implementations
@@ -47,12 +89,14 @@ var validHumanParamKeys = []string{
 // infrastructure error occurs. They must respect ctx cancellation so that an
 // aborted run does not leak a pending request.
 type HumanApprover interface {
-	// RequestAndWait asks a human to approve the subject for the given run,
-	// presenting reason as the justification, and blocks until a decision.
-	// It returns true when approved. A nil error with false means the human
-	// explicitly rejected; a non-nil error means the request could not be
-	// completed (transport failure, context cancelled mid-wait, ...).
-	RequestAndWait(ctx context.Context, runID, subject, reason string) (bool, error)
+	// RequestAndWait asks a human to decide the request and blocks until the
+	// request's consent shape is satisfied. A nil error carries the decision;
+	// Approved=false means a human explicitly rejected. A non-nil error means
+	// the request could not be completed (transport failure, context cancelled
+	// mid-wait, ...). The returned HumanDecision's Approver names who answered,
+	// or is empty when the transport cannot authenticate them (see
+	// HumanDecision).
+	RequestAndWait(ctx context.Context, req HumanRequest) (HumanDecision, error)
 }
 
 // HumanGate pauses the verification pipeline at its phase until a human
@@ -64,6 +108,15 @@ type HumanGate struct {
 	approver HumanApprover
 	timeout  time.Duration
 	reason   string
+
+	// minApprovers is how many distinct humans must approve. 1 (the default) is
+	// the single-approver MVP; >1 is quorum, which the transport must be able to
+	// express (a transport that cannot must refuse rather than answer with one
+	// vote).
+	minApprovers int
+	// excludeInitiator forbids the run's initiator from deciding. It needs the
+	// run's Initiator to mean anything, and Check refuses when that is unknown.
+	excludeInitiator bool
 
 	// paramsErr holds the first configuration violation found while applying
 	// the params map. It is set at construction time and surfaced by Check
@@ -83,10 +136,11 @@ type HumanGate struct {
 // Passed=false plus an error.
 func NewHumanGate(name, phase string, approver HumanApprover, params map[string]any) *HumanGate {
 	g := &HumanGate{
-		name:     name,
-		phase:    GatePhase(phase),
-		approver: approver,
-		timeout:  DefaultHumanTimeout,
+		name:         name,
+		phase:        GatePhase(phase),
+		approver:     approver,
+		timeout:      DefaultHumanTimeout,
+		minApprovers: 1,
 	}
 	g.paramsErr = g.applyParams(params)
 	return g
@@ -106,6 +160,17 @@ func (g *HumanGate) applyParams(params map[string]any) error {
 			if err == nil {
 				g.timeout = time.Duration(n) * time.Second
 			}
+		case "min_approvers":
+			var n int
+			n, err = paramInt(v, k) //nolint:gosec // paramInt validates integer shape
+			if err == nil && n <= 0 {
+				err = fmt.Errorf("human param %q must be > 0, got %d", k, n)
+			}
+			if err == nil {
+				g.minApprovers = n
+			}
+		case "exclude_initiator":
+			g.excludeInitiator, err = paramBool(v, k)
 		case "reason":
 			g.reason, err = paramString(v, k)
 		default:
@@ -188,6 +253,23 @@ func (g *HumanGate) Check(ctx context.Context, input GateInput) (GateResult, err
 	}
 	defer cancel()
 
+	// Exclusion needs an initiator to exclude. Declaring it against a run with no
+	// recorded initiator would quietly degrade to "anyone may decide" — exactly
+	// the guarantee the workflow asked for — so refuse instead of answering.
+	if g.excludeInitiator && strings.TrimSpace(input.Initiator) == "" {
+		msg := fmt.Sprintf("human gate %q cannot enforce exclude_initiator: the run has no recorded initiator", g.name)
+		return GateResult{
+			Passed:  false,
+			Message: msg,
+			Details: map[string]any{
+				"gate":   "human",
+				"name":   g.name,
+				"reason": "unverifiable_independence",
+				"cause":  "exclude_initiator is declared but the run records no initiator",
+			},
+		}, errors.New(msg)
+	}
+
 	start := time.Now()
 	details := map[string]any{
 		"gate":            "human",
@@ -196,13 +278,31 @@ func (g *HumanGate) Check(ctx context.Context, input GateInput) (GateResult, err
 		"subject":         g.name,
 		"reason":          g.reason,
 		"timeout_seconds": int(g.timeout.Seconds()),
+		"min_approvers":   g.minApprovers,
+	}
+	if g.excludeInitiator {
+		details["exclude_initiator"] = true
 	}
 
-	approved, err := g.approver.RequestAndWait(dctx, input.RunID, g.name, g.reason)
+	decision, err := g.approver.RequestAndWait(dctx, HumanRequest{
+		RunID:            input.RunID,
+		Gate:             g.name,
+		Reason:           g.reason,
+		MinApprovers:     g.minApprovers,
+		ExcludeInitiator: g.excludeInitiator,
+		Initiator:        input.Initiator,
+	})
 	details["latency"] = time.Since(start).String()
+	// Record who answered when the transport could authenticate them. An empty
+	// identity stays absent rather than being rendered as a name, so an
+	// unauthenticated decision is visible in the trail instead of anonymous-but-
+	// attributed.
+	if decision.Approver != "" {
+		details["approver"] = decision.Approver
+	}
 
 	switch {
-	case err == nil && approved:
+	case err == nil && decision.Approved:
 		details["decision"] = "approved"
 		return GateResult{
 			Passed:  true,

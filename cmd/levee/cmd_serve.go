@@ -786,10 +786,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	})
 
 	// 5b. Inventory service: persistent target groups/import/status/history.
-	// It is given svcStore, not the raw store: inventory reads and writes are
-	// request-driven and tenant-owned, so handing it the unscoped store would
-	// leave /targets readable across tenants.
-	pb.RegisterInventoryServiceServer(srv.GrpcServer(), grpc.NewInventoryService(svcStore))
+	// It comes from buildServeServices, which gave it svcStore — not the raw
+	// store — because inventory reads and writes are request-driven and
+	// tenant-owned, so an unscoped store would leave /targets readable across
+	// tenants. It carries the same policy authorizer as the other services:
+	// tenancy says WHICH ORGANISATION a host belongs to, the matrix says WHICH
+	// TEAM inside it may touch it, and neither replaces the other.
+	pb.RegisterInventoryServiceServer(srv.GrpcServer(), svcs.inventorySvc)
 
 	// 5c. Apply the loaded SSH channel configuration (host-key policy +
 	// privilege escalation) to the channel factory defaults. Without this
@@ -929,11 +932,15 @@ type serveServices struct {
 	targetSvc   *grpc.TargetService
 	auditSvc    *grpc.AuditService
 	systemSvc   *grpc.SystemService
-	alertSvc    *grpc.AlertService
-	diagSvc     *grpc.DiagnosisService
-	convSvc     *grpc.ConversationService
-	convEngine  *conversation.ConversationEngine
-	mobileSvc   *approval.MobileApprovalService
+	// inventorySvc is built here rather than at its registration site so that
+	// "every service the process serves carries the policy" is a property of
+	// this one function — and of one test.
+	inventorySvc *grpc.InventoryService
+	alertSvc     *grpc.AlertService
+	diagSvc      *grpc.DiagnosisService
+	convSvc      *grpc.ConversationService
+	convEngine   *conversation.ConversationEngine
+	mobileSvc    *approval.MobileApprovalService
 	// gateSvc is the ad-hoc gate verification service (POST
 	// /gates/verify); nil when the execution engine is not wired.
 	gateSvc *grpc.GateService
@@ -952,7 +959,8 @@ type serveServices struct {
 // enabled-but-unusable notify.webhook channel now comes back as an error so the
 // caller can refuse the boot instead of installing a channel that never delivers.
 func buildEngineServeOptions(cfg *config.Config, store state.Store,
-	credResolver *serveCredentialResolver, execGuard *cluster.ExecutionGuard) ([]wiring.Option, error) {
+	credResolver *serveCredentialResolver, execGuard *cluster.ExecutionGuard,
+	approvalSvc *approval.Service) ([]wiring.Option, error) {
 	var opts []wiring.Option
 	if credResolver != nil {
 		opts = append(opts, wiring.WithCredentialResolver(credResolver))
@@ -1023,6 +1031,14 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 			wiring.WithExecutionGuard(clusterExecGuardAdapter{g: execGuard}, serveOptNodeID),
 			wiring.WithExecLeaseTTL(serveOptClusterExecLeaseTTL))
 	}
+	// Human gates get a transport. Without one the engine refuses to plan or run
+	// any workflow declaring `human` (fail-closed), so installing it here is what
+	// makes such workflows usable at all. The decision surface is `levee gate
+	// approve|reject <run> <gate>`, whose record is isolated from the change
+	// approval chain (see approval.GateApprover).
+	if approvalSvc != nil {
+		opts = append(opts, wiring.WithGateApprover(approval.NewGateApprover(approvalSvc)))
+	}
 	return opts, nil
 }
 
@@ -1052,6 +1068,14 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 			"(no resolver configured)")
 	}
 
+	// Approval service over the same store: PlanChange kicks off the
+	// approval chain (R4 risk-tiered routing; see ChangeService.
+	// kickoffApproval) and ApproveChange/RejectChange then find real
+	// pending records. Before this wiring those RPCs only ever saw
+	// manually seeded rows. Built before the engine because the engine's
+	// human-gate transport reads the same service.
+	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
+
 	// Execution engine (--engine-enabled, off by default). When wired, the
 	// ChangeService gains real plan generation (persisted plan artifacts)
 	// and apply execution via internal/wiring; when nil, ApplyChange keeps
@@ -1060,7 +1084,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	var engine *grpc.EngineAdapter
 	var eng *wiring.Engine
 	if serveOptEngineEnabled {
-		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard)
+		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard, approvalSvc)
 		if optsErr != nil {
 			return serveServices{}, optsErr
 		}
@@ -1071,12 +1095,6 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Info("serve: execution engine not wired (--engine-enabled=false); ApplyChange RPC returns FailedPrecondition (status-only mode). Plan/approve/status tracking remain fully functional.")
 		warnNotifyTransportWithoutEngine(cfg)
 	}
-	// Approval service over the same store: PlanChange kicks off the
-	// approval chain (R4 risk-tiered routing; see ChangeService.
-	// kickoffApproval) and ApproveChange/RejectChange then find real
-	// pending records. Before this wiring those RPCs only ever saw
-	// manually seeded rows.
-	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
 
 	// Outbound ITSM Jira mirror (notify.jira.*): decision comments and
 	// kickoff issues keep the org's change record where ITSM lives.
@@ -1155,8 +1173,10 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		log.Warn("bulk pause/resume authorization is NOT configured: every authenticated caller may pause or resume ALL changes; set permission.bulk_grants to restrict",
 			"permissions", pause.PermissionPauseAll+"/"+pause.PermissionResumeAll)
 	}
-	// Change-scoped policy authorisation (apply / rollback / approve /
-	// reject). Different posture from the bulk grant list above: a policy that
+	// Change-scoped policy authorisation (plan / apply / rollback / approve /
+	// reject) plus the fleet surfaces (inventory, template library, audit
+	// trail, system) — see internal/grpc/resource_authz.go for the posture each
+	// RPC gets. Different posture from the bulk grant list above: a policy that
 	// exists but cannot be parsed stops startup, because silently degrading to
 	// "not enforced" would leave an operator believing a policy is active. An
 	// absent policy is not an error — it is announced instead.
@@ -1166,24 +1186,26 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	}
 	changeSvc.WithAuthorizer(authzSvc)
 	if authzSvc.Enforced() {
-		log.Info("authorization enabled: change-scoped RPCs enforce the permission matrix",
-			"registered_subjects", len(authzSvc.Registered()))
+		log.Info("authorization enabled: change and fleet RPCs enforce the permission matrix",
+			"registered_subjects", len(authzSvc.Registered()),
+			"default_env", cfg.Permission.DefaultEnv)
 	} else {
-		log.Warn("authorization is NOT configured: apply/rollback/approve/reject are limited to authentication alone; write permissions.yaml (see `levee team add`) to enforce policy")
+		log.Warn("authorization is NOT configured: every authenticated caller may apply changes, rewrite inventory and read the audit trail; write permissions.yaml (see `levee team add`) to enforce policy")
 	}
 
-	templateSvc := grpc.NewTemplateService(store, nil)
-	targetSvc := grpc.NewTargetService(store, nil)
+	templateSvc := grpc.NewTemplateService(store, nil).WithAuthorizer(authzSvc)
+	targetSvc := grpc.NewTargetService(store, nil).WithAuthorizer(authzSvc)
 	if credResolver != nil {
 		// Credential-aware probing: CheckTarget probes targets with their
 		// stored credentials instead of unauthenticated.
 		targetSvc.WithCredentialResolver(credResolver)
 	}
-	auditSvc := grpc.NewAuditService(store)
+	auditSvc := grpc.NewAuditService(store).WithAuthorizer(authzSvc)
+	inventorySvc := grpc.NewInventoryService(store).WithAuthorizer(authzSvc)
 	systemSvc := grpc.NewSystemService(
 		store, cfg, optConfigPath,
 		version, commitHash, buildTime, goVersion, time.Now(),
-	)
+	).WithAuthorizer(authzSvc)
 	// Alert ingestion stays stand-alone here (the AlertService keeps its own
 	// bounded ring); run `levee alert serve` for the full gateway with
 	// Prometheus/custom adapters. Diagnosis and conversation get real engines
@@ -1229,7 +1251,8 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	return serveServices{
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
-		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
+		inventorySvc: inventorySvc,
+		diagSvc:      diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
 		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
 	}, nil
 }

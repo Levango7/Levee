@@ -17,6 +17,10 @@ type stubApprover struct {
 	decision bool
 	err      error
 
+	// approverIdentity is echoed back in the decision, standing in for a
+	// transport that can authenticate the human (empty = it cannot).
+	approverIdentity string
+
 	// waitForContext, when true, blocks until the passed context is done and
 	// then returns that context's error (used for timeout / cancel tests).
 	waitForContext bool
@@ -25,24 +29,26 @@ type stubApprover struct {
 	gotRunID   string
 	gotSubject string
 	gotReason  string
+	gotRequest HumanRequest
 	calls      int
 }
 
-func (a *stubApprover) RequestAndWait(ctx context.Context, runID, subject, reason string) (bool, error) {
+func (a *stubApprover) RequestAndWait(ctx context.Context, req HumanRequest) (HumanDecision, error) {
 	a.calls++
 	a.gotCtx = ctx
-	a.gotRunID = runID
-	a.gotSubject = subject
-	a.gotReason = reason
+	a.gotRunID = req.RunID
+	a.gotSubject = req.Gate
+	a.gotReason = req.Reason
+	a.gotRequest = req
 
 	if a.waitForContext {
 		<-ctx.Done()
-		return false, ctx.Err()
+		return HumanDecision{}, ctx.Err()
 	}
 	if a.err != nil {
-		return false, a.err
+		return HumanDecision{}, a.err
 	}
-	return a.decision, nil
+	return HumanDecision{Approved: a.decision, Approver: a.approverIdentity}, nil
 }
 
 func TestHumanGateImplementsGateInterface(t *testing.T) {
@@ -181,4 +187,85 @@ func TestHumanGateRegisteredWithManager(t *testing.T) {
 	results := gm.RunPhase(context.Background(), PhasePostBatch, GateInput{BatchID: "b1"})
 	require.Len(t, results, 1)
 	assert.True(t, results[0].Passed)
+}
+
+// The decision carries WHO answered: a transport that can authenticate the human
+// must have that identity land in the recorded result, so the trail names the
+// approver rather than just saying "approved".
+func TestHumanGateRecordsTheApproverIdentity(t *testing.T) {
+	g := NewHumanGate("release-hold", "post_apply",
+		&stubApprover{decision: true, approverIdentity: "alice"}, nil)
+
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-7"})
+	require.NoError(t, err)
+	require.True(t, res.Passed)
+	assert.Equal(t, "alice", res.Details["approver"])
+}
+
+// A rejection is attributed too: an audit trail that names who refused is as
+// important as one that names who approved.
+func TestHumanGateRecordsWhoRejected(t *testing.T) {
+	g := NewHumanGate("release-hold", "post_apply",
+		&stubApprover{decision: false, approverIdentity: "bob"}, nil)
+
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-8"})
+	require.NoError(t, err)
+	assert.False(t, res.Passed)
+	assert.Equal(t, "bob", res.Details["approver"])
+}
+
+// A transport that cannot authenticate the human leaves Approver empty; the gate
+// must NOT invent a name or render an empty one. The absence is what the trail
+// shows, so an unauthenticated decision is visible rather than silently
+// attributed.
+func TestHumanGateOmitsAnUnverifiableApprover(t *testing.T) {
+	g := NewHumanGate("release-hold", "post_apply", &stubApprover{decision: true}, nil)
+
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-9"})
+	require.NoError(t, err)
+	require.True(t, res.Passed)
+	assert.NotContains(t, res.Details, "approver",
+		"an unauthenticated approval must not be attributed to any name")
+}
+
+// A gate that declares exclude_initiator against a run with no recorded
+// initiator cannot honour that guarantee, so it must REFUSE rather than quietly
+// accept anyone's vote (the default-satisfied failure mode).
+func TestHumanGateRefusesUnenforceableExcludeInitiator(t *testing.T) {
+	ap := &stubApprover{decision: true, approverIdentity: "alice"}
+	g := NewHumanGate("four-eyes", "post_apply", ap, map[string]any{
+		"exclude_initiator": true,
+	})
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-1"}) // no Initiator
+	require.Error(t, err)
+	assert.False(t, res.Passed)
+	assert.Equal(t, 0, ap.calls, "the transport must not even be asked")
+	assert.Contains(t, res.Details["reason"], "unverifiable_independence")
+}
+
+// The consent shape the workflow declared is part of the QUESTION: it must reach
+// the transport, or a transport cannot honour it.
+func TestHumanGatePassesTheConsentShapeToTheTransport(t *testing.T) {
+	ap := &stubApprover{decision: true, approverIdentity: "bob"}
+	g := NewHumanGate("four-eyes", "post_apply", ap, map[string]any{
+		"min_approvers": 2, "exclude_initiator": true,
+	})
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-2", Initiator: "alice"})
+	require.NoError(t, err)
+	require.True(t, res.Passed)
+	assert.Equal(t, 2, ap.gotRequest.MinApprovers)
+	assert.True(t, ap.gotRequest.ExcludeInitiator)
+	assert.Equal(t, "alice", ap.gotRequest.Initiator)
+	assert.Equal(t, 2, res.Details["min_approvers"])
+	assert.Equal(t, true, res.Details["exclude_initiator"])
+}
+
+func TestHumanGateRejectsNonPositiveMinApprovers(t *testing.T) {
+	g := NewHumanGate("bad-quorum", "post_apply", &stubApprover{decision: true}, map[string]any{
+		"min_approvers": 0,
+	})
+	res, err := g.Check(context.Background(), GateInput{RunID: "run-3"})
+	require.Error(t, err)
+	assert.False(t, res.Passed)
+	assert.Contains(t, err.Error(), "must be > 0")
 }
