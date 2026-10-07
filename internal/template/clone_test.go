@@ -177,7 +177,10 @@ func TestClone_Success_StatusIsDraft(t *testing.T) {
 
 	clonedRun, err := st.GetRun(bgCtx(), result.ClonedRunID)
 	require.NoError(t, err)
-	assert.Equal(t, StatusDraft, clonedRun.Status)
+	// Literal on purpose: it is the value the column, the engine and the UI
+	// all read. Asserting against the writer's own constant would stay green
+	// even if that constant's value changed.
+	assert.Equal(t, "draft", clonedRun.Status, "a cloned run must be an editable draft")
 }
 
 func TestClone_Success_CreatorIsActor(t *testing.T) {
@@ -218,7 +221,7 @@ func TestClone_Success_PreservesBatches(t *testing.T) {
 		assert.Equal(t, result.ClonedRunID, cb.RunID, "batch should belong to cloned run")
 		assert.NotEqual(t, ob.ID, cb.ID, "batch ID should be new")
 		// Cloned batch should be reset to pending.
-		assert.Equal(t, StatusPending, cb.Status, "cloned batch status should be pending")
+		assert.Equal(t, "pending", cb.Status, "cloned batch status must be the value batchDoneStates does not count as done")
 		assert.Equal(t, 0, cb.Succeeded, "cloned batch succeeded should be 0")
 		assert.Equal(t, 0, cb.Failed, "cloned batch failed should be 0")
 		assert.Nil(t, cb.StartedAt, "cloned batch started_at should be nil")
@@ -259,7 +262,7 @@ func TestClone_Success_PreservesSteps(t *testing.T) {
 		assert.NotEqual(t, os.ID, cs.ID, "step ID should be new")
 		assert.NotEqual(t, os.BatchID, cs.BatchID, "step batch ID should be new")
 		// Cloned step should be reset to pending.
-		assert.Equal(t, StatusPending, cs.Status, "cloned step status should be pending")
+		assert.Equal(t, "pending", cs.Status, "cloned step status should be pending")
 		assert.Nil(t, cs.ExitCode, "cloned step exit_code should be nil")
 		assert.Empty(t, cs.Stdout, "cloned step stdout should be empty")
 		assert.Empty(t, cs.Stderr, "cloned step stderr should be empty")

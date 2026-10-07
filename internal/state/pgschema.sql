@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS batches (
     id            TEXT    PRIMARY KEY,
     run_id        TEXT    NOT NULL,
     batch_no      INTEGER NOT NULL,
-    status        TEXT    NOT NULL,                  -- pending|running|completed|failed|skipped
+    status        TEXT    NOT NULL,                  -- pending|running|completed|done|failed|rolled_back|interrupted
     total_hosts   INTEGER NOT NULL DEFAULT 0,
     succeeded     INTEGER NOT NULL DEFAULT 0,
     failed        INTEGER NOT NULL DEFAULT 0,
