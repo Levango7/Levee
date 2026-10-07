@@ -670,20 +670,33 @@ type AssignmentSummary struct {
 }
 
 // BatchSummary is the per-batch progress of a run (cluster v2 observability).
+//
+// The json tags are load-bearing, not decoration: this struct is marshalled
+// verbatim by the REST gateway (`GET /api/v1/system/batch-status`), and without
+// them the wire shape is Go's PascalCase field names while BOTH consumers —
+// web/src/api's BatchSummaryDTO and the two views that read it — spell the keys
+// snake_case. Nothing failed loudly; the panels were just永远空. Tags align the
+// wire with the declared DTO.
 type BatchSummary struct {
-	Batches        []BatchProgress // ordered by batch_no
-	CurrentBatchNo int             // first non-terminal batch_no, or 0 when all terminal
-	TotalBatches   int
-	DoneBatches    int
+	Batches        []BatchProgress `json:"batches"`
+	CurrentBatchNo int             `json:"current_batch_no"` // first non-terminal batch_no, or 0 when all terminal
+	TotalBatches   int             `json:"total_batches"`
+	DoneBatches    int             `json:"done_batches"`
 }
 
 // BatchProgress is a single batch's execution status.
+//
+// Status carries the values the execution path writes — completed | failed |
+// rolled_back (see internal/wiring/persist.go) — plus the older spellings
+// declared as BatchState* constants. See batchDoneStates for what counts as
+// done, and internal/wiring/batch_summary_seam_test.go for the seam test that
+// keeps writer and reader using one vocabulary.
 type BatchProgress struct {
-	BatchNo    int    // 1-based sequence number
-	Status     string // pending | running | done | failed | interrupted
-	TotalHosts int
-	Succeeded  int
-	Failed     int
+	BatchNo    int    `json:"batch_no"` // 1-based sequence number
+	Status     string `json:"status"`
+	TotalHosts int    `json:"total_hosts"`
+	Succeeded  int    `json:"succeeded"`
+	Failed     int    `json:"failed"`
 }
 
 // batchDoneStates are the batch statuses that count as fully completed for
@@ -691,12 +704,30 @@ type BatchProgress struct {
 // NOT terminal in the execution sense — they need re-execution/resumption, so
 // they are excluded here. CurrentBatchNo points at the first batch NOT in
 // this set, i.e. the one the executor should resume from.
+//
+// BatchStateCompleted is in this set because that is the string the execution
+// path actually writes (internal/wiring/persist.go). Before it was added, this
+// map only held BatchStateDone — and nothing ever wrote "done": every batch row
+// the engine persisted said "completed". The visible consequence was operator
+// facing: DoneBatches stayed 0 on a fully finished run, and CurrentBatchNo kept
+// naming batch #1 as "the one to resume from". Both spellings are listed so a
+// row written under either is read correctly.
 var batchDoneStates = map[string]bool{
-	BatchStateDone: true,
+	BatchStateCompleted: true,
+	BatchStateDone:      true,
 }
 
 const (
 	// Batch states (run-level batches within a run).
+	//
+	// Writer and reader must use THESE constants rather than literals: the
+	// execution path writes `completed` / `failed` / `rolled_back` (see
+	// internal/wiring/persist.go), while this list also carries the older
+	// `done` / `interrupted` / `pending` / `running` spelling that the schema
+	// comment documents. A literal on one side and a constant on the other is
+	// exactly how the two vocabularies stopped describing the same row.
+	BatchStateCompleted   = "completed"
+	BatchStateRolledBack  = "rolled_back"
 	BatchStatePending     = "pending"
 	BatchStateRunning     = "running"
 	BatchStateDone        = "done"

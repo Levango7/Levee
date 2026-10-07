@@ -54,6 +54,15 @@
 
 
 
+### 修复（批次状态两套词表：`done_batches` 对任何真实 run 恒为 0）
+
+- **缺陷形态**：写批次的那一端（`internal/wiring/persist.go`）落的是 `completed` / `failed`，回滚路径落 `rolled_back`；而判"已彻底完成"的 `state.batchDoneStates` 里只有 `BatchStateDone = "done"`——**这个值全仓没有任何非测试写入点**（实测：`grep` 排除测试后，state 包外的 `BatchState*` 引用数为 0）。后果落在操作者看得见的两个数字上：`BatchSummary.DoneBatches` 对一趟全部成功的 run 恒为 0，`CurrentBatchNo` 又停在第 1 批（"第 1 批还等着续跑"）。
+- **为什么整套测试都没发现**：`internal/state` 的用例自己按 `BatchStateDone` 种数据，读的就是它写的那个词；`internal/wiring` 的用例根本不读 `BatchSummary`。两边各自都绿——这是"两套词表各自成立"的形态，不是缺覆盖率。同一条裂缝也映在 UI 上：`/monitor` 先按 `success` 映射（没人写），我修的时候又按 `done` 映射（也没人写），只有按写入端真实值 `completed`/`rolled_back` 才对。
+- **改法**：为写入端真正使用的值补常量 `BatchStateCompleted` / `BatchStateRolledBack` 并让 persist.go 改用它（读写共用一组常量，字面量不再各走各的）；`batchDoneStates` 加入 `completed`（保留 `done` 兼容既有行）。`failed` / `rolled_back` / `interrupted` 仍**排除**在外，与该集合原注释的语义一致——那些是"要重跑/已回滚"，不是"前向完成"。
+- **前端**：`web/src/utils/batch.ts` 按写入端词表着色（`completed`/遗留 `done` → 绿；`failed` → 红；`rolled_back`/`interrupted` → 警示；未知值一律中性，永不绿），逻辑从 SFC 抽出以在无组件测试依赖（本仓 `@vue/test-utils` 未装）的前提下可测。
+- **顺带查出的第二层（同一条裂缝的线上传输面）**：这条路由 `writeJSON(w, summary)` 直接序列化 Go 结构体，而 `state.BatchSummary` / `BatchProgress` **没有 json tag**，于是线上字段名是 PascalCase（`DoneBatches`），而两个视图与 `BatchSummaryDTO` 读的是 snake_case（`done_batches`）。没有任何东西报错——`/cluster` 的批次面板因此一直是死的，`/monitor` 接上去也会一样。修法是把 tag 补上让线上传输与已声明的 DTO 对齐（消费面实测只有这两个视图 + 该路由，CLI 与文档都不读它）。**这条形状此前无测试**：新增 `internal/grpc/rest_batch_status_contract_test.go` 钉住四个顶层键与批次行的五个键，并显式禁止 PascalCase 回流；变异实测：摘掉 `done_batches` 的 tag ⇒ 同一用例带着线上原文判红（`PascalCase key "DoneBatches" leaked back into the payload`）。
+- **验证**：新增 `internal/state/batch_status_vocabulary_test.go`（按写入端字面量种数据 + 把常量↔字符串、done 集合成员关系钉成断言）与 `internal/wiring/batch_summary_seam_test.go`（真实走 persist 再读 BatchSummary 的跨缝用例）。**撤掉修复**（done 集合退回只认 `done`）⇒ 跨缝用例两条具名断言同时判红，复原后 state+wiring 全绿。前端 `vitest` 10 例通过、`vue-tsc + vite build` 通过、`internal/web/dist` 与构建产物逐文件一致。**真实渲染已验**：用改动后的二进制起真 serve（`--insecure`）+ 真 SQLite + 真 `levee web`，直接向 `batches` 表写入引擎真正使用的 `completed` 状态，浏览器读到 `批次进度 | 共 2 批 · 已完成 2 批 | 批次 #1 completed 2 台 · 成功 2 · 失败 0 …`，门禁卡显示的是那句诚实说明而非假 `pending`，控制台 0 错误；同一路由的 HTTP 响应在补 tag 前是 `"DoneBatches":2`、补后是 `"done_batches":2`。
+
 ### 门禁（CI 聚合步骤把"没有判定结果"和"失败"分开说）
 - **一条红并不等于一次回归**：2026-10-06 实测，runner 池饥饿时 `docs`/`gosec`/`build (ubuntu-arm64)`/`check (all jobs passed)` 四个 job **各自在排队 901 秒后被杀**，`steps=0`——一次都没开始跑。聚合步骤原先对所有非 `success` 都写 `required job 'x' did not pass`，读起来像"这次改动没通过检查"，而真相是"这次改动从未被检查过"。这两种情况的下一步动作完全相反（前者查代码，后者重跑），却被同一句话混在一起。
 - **改法**：聚合按结论分桶——`failure` 仍是 `FAILED`；`cancelled`/`skipped`/`neutral`/`timed_out`/`stale` 归为 `UNVERIFIED, not failed`，摘要行点名是哪几个 job 没有判定结果，并写出"先重跑，别当回归读"。**两种都仍然 exit 1**：没有证据不许变绿，这条不许松。
