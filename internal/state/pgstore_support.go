@@ -252,6 +252,35 @@ $fn$ LANGUAGE plpgsql`,
 			`ALTER TABLE cluster_nodes ADD COLUMN IF NOT EXISTS capabilities TEXT NOT NULL DEFAULT '{}'`,
 		},
 	},
+	{
+		// v8 (PostgreSQL): the agent registry becomes durable — see the
+		// SQLite v8 step in migrate.go for the rationale and the shape
+		// notes (capabilities as a JSON array in TEXT, exactly like
+		// cluster_nodes.capabilities rather than targets' jsonb, because
+		// nothing filters on the server side; last_heartbeat nullable so
+		// "never heartbeated" stays distinguishable).
+		//
+		// CREATE TABLE IF NOT EXISTS means a fresh database that already
+		// got the table from pgschema.sql replays this as a no-op, which
+		// is the path TestPGMigrate_V1ToV2_CredentialsTags takes: it pins
+		// the ledger at v1 and runs the whole ladder on one shared
+		// database, so nothing here may be non-idempotent.
+		version: 8,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS agents (` +
+				`id TEXT PRIMARY KEY, ` +
+				`address TEXT NOT NULL, ` +
+				`capabilities TEXT NOT NULL DEFAULT '[]', ` +
+				`status TEXT NOT NULL DEFAULT 'idle', ` +
+				`last_heartbeat TIMESTAMPTZ, ` +
+				`registered_at TIMESTAMPTZ NOT NULL, ` +
+				`active_tasks INTEGER NOT NULL DEFAULT 0, ` +
+				`completed_tasks BIGINT NOT NULL DEFAULT 0, ` +
+				`failed_tasks BIGINT NOT NULL DEFAULT 0, ` +
+				`max_concurrent INTEGER NOT NULL DEFAULT 0)`,
+			`CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status)`,
+		},
+	},
 }
 
 // MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and

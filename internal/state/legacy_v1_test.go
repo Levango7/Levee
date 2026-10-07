@@ -19,6 +19,8 @@ package state
 //   - approvals.plan_hash     (v5)
 //   - approvals.revision      (v5)
 //   - tenant_id on all tables (v6)
+//   - audit prev/curr_hash    (v7)
+//   - agents table            (v8, created by the step, so absent at v1)
 //
 // The v1 WORM triggers are reproduced WITHOUT tenant_id on purpose: that is
 // the state a real v1 database is in, and it is what forces the v6 step to
@@ -206,4 +208,11 @@ var tenantOwnedTables = []string{
 // nonTenantOwnedTables are platform-scoped on purpose; see the note in
 // schema.sql. Listing them here makes that decision testable — if someone
 // "helpfully" adds tenant_id to locks, this fails.
-var nonTenantOwnedTables = []string{"locks", "schema_version"}
+//
+// agents is here for the same reason as locks: one agent is one process
+// serving the whole deployment, so there is no tenant to scope its record by
+// (state.Agent has no tenant field at all). It is also the first table added
+// by a step that CREATEs rather than ALTERs since run_assignment (v4), so
+// listing it is what puts the fresh-vs-upgraded shape comparison on the v8
+// CREATE TABLE text — the step and schema.sql must agree column-for-column.
+var nonTenantOwnedTables = []string{"locks", "schema_version", "agents"}
