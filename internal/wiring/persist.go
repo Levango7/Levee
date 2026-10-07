@@ -81,9 +81,9 @@ func (e *Engine) persistClosureResults(
 			}
 		}
 		succeeded := len(br.TargetResults) - failed
-		status := "completed"
+		status := state.BatchStateCompleted
 		if br.Error != nil {
-			status = "failed"
+			status = state.BatchStateFailed
 		}
 		started := now.Add(-br.Duration)
 		completed := now
@@ -194,7 +194,7 @@ func (e *Engine) persistRollbackResults(
 				ID:          newID("bat-"),
 				RunID:       changeID,
 				BatchNo:     batchNo,
-				Status:      "rolled_back",
+				Status:      state.BatchStateRolledBack,
 				TotalHosts:  len(br.TargetResults),
 				StartedAt:   ptrTo(now),
 				CompletedAt: ptrTo(now),

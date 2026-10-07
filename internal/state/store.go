@@ -691,12 +691,30 @@ type BatchProgress struct {
 // NOT terminal in the execution sense — they need re-execution/resumption, so
 // they are excluded here. CurrentBatchNo points at the first batch NOT in
 // this set, i.e. the one the executor should resume from.
+//
+// BatchStateCompleted is in this set because that is the string the execution
+// path actually writes (internal/wiring/persist.go). Before it was added, this
+// map only held BatchStateDone — and nothing ever wrote "done": every batch row
+// the engine persisted said "completed". The visible consequence was operator
+// facing: DoneBatches stayed 0 on a fully finished run, and CurrentBatchNo kept
+// naming batch #1 as "the one to resume from". Both spellings are listed so a
+// row written under either is read correctly.
 var batchDoneStates = map[string]bool{
-	BatchStateDone: true,
+	BatchStateCompleted: true,
+	BatchStateDone:      true,
 }
 
 const (
 	// Batch states (run-level batches within a run).
+	//
+	// Writer and reader must use THESE constants rather than literals: the
+	// execution path writes `completed` / `failed` / `rolled_back` (see
+	// internal/wiring/persist.go), while this list also carries the older
+	// `done` / `interrupted` / `pending` / `running` spelling that the schema
+	// comment documents. A literal on one side and a constant on the other is
+	// exactly how the two vocabularies stopped describing the same row.
+	BatchStateCompleted   = "completed"
+	BatchStateRolledBack  = "rolled_back"
 	BatchStatePending     = "pending"
 	BatchStateRunning     = "running"
 	BatchStateDone        = "done"
