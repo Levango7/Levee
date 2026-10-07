@@ -337,3 +337,25 @@ CREATE TABLE IF NOT EXISTS run_assignment (
 CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_node, state);
 CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
 CREATE INDEX IF NOT EXISTS idx_assignment_tenant ON run_assignment (tenant_id);
+
+-- ---------------------------------------------------------------------------
+-- Agent registry (v8): the LEVEE agents that have registered with the master.
+-- Mirrors the identical block in schema.sql; only the types differ
+-- (TIMESTAMPTZ for timestamps). See that file for why the table is not
+-- tenant-scoped, why capabilities is a JSON array in TEXT rather than a
+-- delimiter-joined list ('[]' = none), and why last_heartbeat is nullable
+-- (NULL = no heartbeat has ever arrived).
+CREATE TABLE IF NOT EXISTS agents (
+    id                TEXT        PRIMARY KEY,
+    address           TEXT        NOT NULL,               -- host:port the agent listens on
+    capabilities      TEXT        NOT NULL DEFAULT '[]',  -- JSON encoded []string, '[]' = none
+    status            TEXT        NOT NULL DEFAULT 'idle',
+    last_heartbeat    TIMESTAMPTZ,                        -- NULL = never heartbeated
+    registered_at     TIMESTAMPTZ NOT NULL,
+    active_tasks      INTEGER     NOT NULL DEFAULT 0,
+    completed_tasks   BIGINT      NOT NULL DEFAULT 0,
+    failed_tasks      BIGINT      NOT NULL DEFAULT 0,
+    max_concurrent    INTEGER     NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status);

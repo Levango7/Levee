@@ -31,7 +31,7 @@ func newAuthzCmd() *cobra.Command {
 		Long: "Inspect the permission matrix / role tree / user registry that govern " +
 			"change actions (plan, apply, rollback, approve, reject), the read scope " +
 			"(view) and the fleet surfaces (inventory, template library, audit trail, " +
-			"system config — admin), and explain a " +
+			"system config, agent registry — admin), and explain a " +
 			"single decision: which team and role a subject resolves to, which axis " +
 			"granted or refused, and why.",
 	}
@@ -116,10 +116,10 @@ func runAuthzStatus(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		fmt.Fprintln(os.Stdout, "note       : no permission matrix found — every RPC (changes,")
-		fmt.Fprintln(os.Stdout, "             inventory, templates, audit reads, system config) is")
-		fmt.Fprintln(os.Stdout, "             limited to authentication alone. Configure teams with")
-		fmt.Fprintln(os.Stdout, "             `levee team add`, roles with `levee rbac`, and members with")
-		fmt.Fprintln(os.Stdout, "             `levee user add`.")
+		fmt.Fprintln(os.Stdout, "             inventory, templates, audit reads, system config,")
+		fmt.Fprintln(os.Stdout, "             agent registry) is limited to authentication alone.")
+		fmt.Fprintln(os.Stdout, "             Configure teams with `levee team add`, roles with")
+		fmt.Fprintln(os.Stdout, "             `levee rbac`, and members with `levee user add`.")
 	}
 	return nil
 }

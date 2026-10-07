@@ -229,3 +229,143 @@ message TargetHistoryRequest {
 message TargetHistoryResponse {
   repeated TargetHistoryEntry entries = 1;
 }
+
+// ============================================================================
+// AgentService - master-side agent registry
+// ============================================================================
+//
+// Why this exists: the agent registry lived only in the memory of whichever
+// process constructed it (cmd/levee/cmd_agent_support.go kept an in-process
+// singleton), so an agent that registered against the daemon was invisible to
+// a CLI process, and `levee agent list` answered with an empty table while
+// `agent show` answered not-found. These RPCs read and write the *persisted*
+// registry, so the answer no longer depends on which process is asking.
+//
+// Auth: every method goes through the normal interceptor chain. There is no
+// exemption in skipAuthMethods — registration is a write to operator-visible
+// state, so it carries an authenticated subject like everything else does.
+
+service AgentService {
+  // RegisterAgent creates or refreshes an agent record. Re-registering an
+  // existing id updates that record instead of failing, because an agent that
+  // restarts should not have to delete its own entry first. The record is
+  // stored with status "registered"; its age is measured from the FIRST
+  // successful registration, so re-registering does not reset it.
+  rpc RegisterAgent(RegisterAgentRequest) returns (AgentRecord);
+
+  // AgentHeartbeat is the liveness write: it advances last_seen and folds in
+  // the reported task counters.
+  rpc AgentHeartbeat(AgentHeartbeatRequest) returns (AgentHeartbeatReply);
+
+  // DeregisterAgent is the agent's own goodbye (clean shutdown).
+  rpc DeregisterAgent(DeregisterAgentRequest) returns (DeregisterAgentReply);
+
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsReply);
+
+  rpc GetAgent(GetAgentRequest) returns (AgentRecord);
+
+  // RemoveAgent is the operator-side deletion behind `levee agent remove`.
+  // It refuses while the record still reports in-flight tasks unless force
+  // is set — deleting a register that is mid-change would erase the only
+  // evidence of what is running where.
+  rpc RemoveAgent(RemoveAgentRequest) returns (RemoveAgentReply);
+}
+
+// AgentRecord is the wire form of one registry entry.
+message AgentRecord {
+  string id = 1;
+  // address is host:port the agent listens on for task dispatch.
+  string address = 2;
+  // capabilities are module names the agent can execute (shell, file, pkg...).
+  repeated string capabilities = 3;
+  // status is one of registered | idle | busy | offline — the vocabulary the
+  // registry itself can produce (agent.AgentStatusValues). A fresh registration
+  // lands as "registered" until the first heartbeat flips it.
+  string status = 4;
+  // last_heartbeat_unix is Unix seconds of the most recent heartbeat; 0 until
+  // the first one lands.
+  int64 last_heartbeat_unix = 5;
+  // active_tasks is what the agent last reported as currently executing.
+  int32 active_tasks = 6;
+  int64 completed_tasks = 7;
+  int64 failed_tasks = 8;
+  // max_concurrent is the agent's own concurrency ceiling.
+  int32 max_concurrent = 9;
+  int64 registered_at_unix = 10;
+}
+
+message RegisterAgentRequest {
+  string id = 1;
+  string address = 2;
+  repeated string capabilities = 3;
+  int32 max_concurrent = 4;
+}
+
+message AgentHeartbeatRequest {
+  string id = 1;
+  // status is OPTIONAL: when empty the server derives idle|busy from
+  // active_tasks and max_concurrent with the same rule the in-process
+  // registry uses (agent.DeriveStatus). When present it must be one of the
+  // accepted agent statuses — an unknown value is rejected rather than
+  // stored, so a typo cannot silently make an agent look healthy forever.
+  string status = 2;
+  int32 active_tasks = 3;
+  int64 completed_tasks = 4;
+  int64 failed_tasks = 5;
+  // client_timestamp_unix is when the agent generated this heartbeat. Zero
+  // means "use the server clock".
+  int64 client_timestamp_unix = 6;
+
+  // There is deliberately NO max_concurrent here: capabilities, address and
+  // the concurrency ceiling are identity/config columns written by
+  // RegisterAgent only, while heartbeats write liveness columns only. Two
+  // writers for one column is how a "who won" race starts; an agent that
+  // changes its own ceiling re-registers (that call is idempotent).
+}
+
+message AgentHeartbeatReply {
+  string id = 1;
+  string status = 2;
+  // stale_after_unix is the server-side instant at which this agent is
+  // considered offline if no further heartbeat arrives.
+  int64 stale_after_unix = 3;
+}
+
+message DeregisterAgentRequest {
+  string id = 1;
+}
+
+message DeregisterAgentReply {
+  bool removed = 1;
+}
+
+message ListAgentsRequest {
+  // capability optionally filters to agents advertising it.
+  string capability = 1;
+  // status optionally filters on an exact AgentRecord.status match. It is
+  // validated against the registry vocabulary rather than passed through:
+  // an unknown filter value must not look like "no agents registered".
+  string status = 2;
+}
+
+message ListAgentsReply {
+  repeated AgentRecord agents = 1;
+}
+
+message GetAgentRequest {
+  string id = 1;
+}
+
+message RemoveAgentRequest {
+  string id = 1;
+  // force removes the record even when it still reports in-flight tasks.
+  bool force = 2;
+}
+
+message RemoveAgentReply {
+  bool removed = 1;
+  // refusal explains why nothing was removed (empty when removed is true).
+  // It is a field rather than a status message so the CLI can print something
+  // actionable without decoding error strings.
+  string refusal = 2;
+}

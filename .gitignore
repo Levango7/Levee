@@ -13,6 +13,9 @@ vendor/
 __pycache__/
 *.pyc
 
+# Scratch fixture written by scripts/test_ci_aggregate.py while it runs.
+.agg_case_*.sh
+
 
 # Test
 *.test

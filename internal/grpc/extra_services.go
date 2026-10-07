@@ -34,6 +34,11 @@ type ExtraServicesConfig struct {
 	// Conversation is the ConversationService implementation. When nil
 	// an UnimplementedConversationServiceServer is registered.
 	Conversation pb.ConversationServiceServer
+	// Agent is the AgentService implementation. When nil an
+	// UnimplementedAgentServiceServer is registered, so the methods are
+	// advertised and answer codes.Unimplemented rather than looking like a
+	// transport error — and never like "zero agents are registered".
+	Agent pb.AgentServiceServer
 	// Logger is the structured logger used by the default service
 	// constructors when Alert/Diagnosis/Conversation are nil but the
 	// caller still wants real implementations built from the supplied
@@ -41,8 +46,8 @@ type ExtraServicesConfig struct {
 	Logger *slog.Logger
 }
 
-// RegisterExtraServices registers the AlertService, DiagnosisService and
-// ConversationService on s. It is safe to call multiple times; later
+// RegisterExtraServices registers the AlertService, DiagnosisService,
+// ConversationService and AgentService on s. It is safe to call multiple times; later
 // calls overwrite earlier registrations for the same service.
 //
 // The function does not modify s in any other way; in particular it does
@@ -65,4 +70,10 @@ func RegisterExtraServices(s *ggrpc.Server, cfg ExtraServicesConfig) {
 		convSvc = &pb.UnimplementedConversationServiceServer{}
 	}
 	pb.RegisterConversationServiceServer(s, convSvc)
+
+	agentSvc := cfg.Agent
+	if agentSvc == nil {
+		agentSvc = &pb.UnimplementedAgentServiceServer{}
+	}
+	pb.RegisterAgentServiceServer(s, agentSvc)
 }
