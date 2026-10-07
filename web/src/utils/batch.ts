@@ -7,14 +7,14 @@
 // devDependencies), so the logic the page renders is separated from the markup
 // that renders it.
 //
-// The status vocabulary is the store's own — internal/state/store.go
-// (BatchStatePending/Running/Done/Failed/Interrupted). Two things follow, and
-// both are regression points this file exists to hold:
-//   - there is NO `success` state; a batch completes as `done`. The monitor used
-//     to compare against `success`, so a finished batch rendered as a neutral
-//     bar no matter what the engine said.
-//   - `interrupted` is not a failure. It means the run stopped before the batch
-//     reached a verdict; painting it red would tell an operator the change broke.
+// The vocabulary under test is what the WRITER emits, not what a constant list
+// suggests: internal/wiring/persist.go writes `completed` / `failed`, and the
+// rollback path writes `rolled_back`. internal/state declares older spellings
+// (`done` / `interrupted` / `pending` / `running`) that nothing writes today,
+// and that gap is precisely the bug this file was born from — state counted
+// `done`, the engine wrote `completed`, so every finished run reported
+// "0 batches done". Mapping keys must be checked against the writer, and the
+// backend seam is pinned by internal/wiring/batch_summary_seam_test.go.
 
 import type { BatchProgressDTO } from '@/api'
 
@@ -38,13 +38,22 @@ export function batchProgress(b: Pick<BatchProgressDTO, 'total_hosts' | 'succeed
   return Math.min(100, Math.round((accounted / b.total_hosts) * 100))
 }
 
-/** Tag colour for a batch state. Unknown states fall back to `info`, never to a colour that asserts an outcome. */
+/** Tag colour for a batch state. Unknown states fall back to `info`, never to a colour that asserts an outcome.
+ *
+ * The keys here are the strings the backend actually writes — see
+ * internal/wiring/persist.go: `completed` / `failed` / `rolled_back`.
+ * `done` is accepted too because internal/state counts both spellings as
+ * complete, and a grey bar next to "this batch is done" would contradict the
+ * summary on the same page.
+ */
 export function batchTagType(status: string): TagTone {
   switch (status) {
+    case 'completed':
     case 'done':
       return 'success'
     case 'failed':
       return 'danger'
+    case 'rolled_back':
     case 'interrupted':
       return 'warning'
     case 'running':
@@ -57,10 +66,12 @@ export function batchTagType(status: string): TagTone {
 /** Progress-bar status for a batch state; `undefined` keeps the bar neutral. */
 export function batchBarStatus(status: string): BarStatus {
   switch (status) {
+    case 'completed':
     case 'done':
       return 'success'
     case 'failed':
       return 'exception'
+    case 'rolled_back':
     case 'interrupted':
       return 'warning'
     default:
