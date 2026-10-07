@@ -97,7 +97,16 @@ levee clone run-20260812-001 \
 levee show run-20260815-001
 ```
 
-输出含：基本信息、plan 摘要、plan_hash、审批状态、批次进度、门禁结果、当前阶段、关联工单。
+输出含四段：基本信息（Run id / Workflow / Template / Status / Approval / Creator / 创建与更新时间）、
+`Batches`（每批 status / hosts / ok / fail）、`Steps`（host / action / status）、`Traces`（actor / at）。
+实现见 `cmd/levee/cmd_show.go:135-163`，它只读 `GetRun` / `ListBatches` / `ListSteps` / `ListTraces`。
+
+> **这里曾有五项过头声明，已按实测收回**：plan 摘要、plan_hash、门禁结果、当前阶段、关联工单
+> **都不在 `levee show` 的输出里**。现状：`plan_hash` 只在 `levee diff` 的字段比较中出现
+> （`cmd/levee/cmd_diff.go:132-133`）；门禁判定明细、run 当前阶段、ITSM 关联工单在 CLI 与 REST
+> **都还没有读出口**（`levee gate` 只做 human gate 的 approve/reject 写侧；REST 侧只有
+> `POST /gates/verify`，审批历史 `ListApprovals` 也只被服务端内部判定与 CLI 直连 store 使用）。
+> 这一族缺口同时也是 Web UI 变更详情页（P0-1）做不出来的原因，登记在项目 roadmap 的 P0 项。
 
 命令示例：列出变更
 
@@ -849,6 +858,18 @@ RESTful 风格，支持两套路径：
 | POST | `/auth/github` | — | GitHub OAuth code 交换（服务端，见 13.3，免 Bearer） | — |
 
 > 说明：本节**仅列核心变更生命周期与服务端点**；凭据（secret）、用户/团队/权限、通知渠道等管理面资源未全部投影为 REST 端点，管理操作走对应 CLI 章节（第 7–9 章）。
+>
+> **`GET /changes/:id` 目前不返回执行计划，`includePlan` 是惰性参数。** `GetChangeRequest` 有
+> `include_plan` 字段，`proto/levee.proto` 的注释写着 "If true, include the latest plan and run
+> summary in the response"，但服务端没有实现：网关 `internal/grpc/rest.go:753` 确实把
+> `?includePlan=true` 转成该字段，而 `ChangeService.GetChange` 从不读它（全仓 `GetIncludePlan()`
+> 零命中）；响应类型 `rpc GetChange returns (Change)` 里的 `message Change` 只有 9 个字段
+> （id / label / status / priority / workflow_file / template_name / created_by / team / environment），
+> 本来也没有放计划的位置。现状由 `internal/grpc/rest_getchange_include_plan_test.go` 钉住——
+> 带与不带该参数的响应必须逐字节相同；**谁实现了这个参数，那条测试会变红**，届时请同步改 proto
+> 注释与本节。需要计划的等价内容：CLI `levee show <run-id>` 直连 store
+> （`cmd/levee/cmd_show.go` 读 `GetRun` / `ListBatches` / `ListSteps`），批次进度另有
+> `GET /system/batch-status?run_id=`。
 
 ### 13.3 认证
 
