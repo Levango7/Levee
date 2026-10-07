@@ -15,6 +15,9 @@
 | `--timeout` | | `30m` | 单命令超时，超时退出码 8 |
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
+| `--local` | | `true` | 本地模式（默认），直连本地 store |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。当前由 `agent list / show / remove` 消费（读取 daemon 的注册表），其余命令仍按本地语义执行 |
+| `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
 
@@ -2051,7 +2054,7 @@ levee serve --insecure
 
 管理分布式执行 Agent 常驻进程，支持注册到 master 节点、心跳保活、任务执行与结果回传。
 
-> **实现边界（务必先读）**：本章的 registry 目前是**进程内**的——`levee agent start` 在自身进程里维护注册表，`agent list / show / remove` 读取的是**同一次进程调用内**的注册表，既未持久化到磁盘，也没有对应的 master 端 RPC。因此跨进程执行 `levee agent list` 恒返回空表，`show`/`remove` 恒报 not-found。下文示例展示的是同一进程内（如集成测试驱动）的形态。接入 master 端 Agent 服务是已登记事项，见 [product-roadmap.md](product-roadmap.md)。
+> **实现边界（务必先读）**：注册表现在是**持久化**的——daemon（`levee serve`）把 Agent 注册记录存在自己的 store 里（SQLite 单机为 `agents` 表；集群模式为 PostgreSQL 同名表，schema v8 前向迁移），并通过 gRPC `AgentService` 对外服务。`agent list / show / remove` 加全局 `--remote`（配合 `--server` / `--token`，见上文全局选项表）后查询的是 **daemon 进程**的注册表，**跨进程可见**；不加 `--remote` 时行为不变——读的仍是**当前进程**的注册表，对一次性的 CLI 调用几乎总是空表 / not-found（本地/测试形态，不是回归）。仍不存在的部分是**任务下发通道**：proto 没有 master→agent 的任务流 RPC，所以 `levee agent start` 依旧在进程内注册；本能力覆盖"注册、心跳、运维可见性"这半边，任务通道是已登记事项，见 [product-roadmap.md](product-roadmap.md)。
 
 ### 20.1 agent start
 
@@ -2107,7 +2110,7 @@ levee agent status
 
 ### 20.3 agent list
 
-列出所有已注册 Agent（master 端）。
+列出注册表中的 Agent。
 
 ```text
 levee agent list [--status STATUS]
@@ -2119,10 +2122,18 @@ levee agent list [--status STATUS]
 |------|--------|------|
 | `--status` | | 按状态过滤：`registered` / `idle` / `busy` / `offline`；取值非法时报错并列出全部接受值，空值表示不过滤 |
 
+**说明**
+
+- 加全局 `--remote` 时查询 **daemon 的注册表**（跨进程可见）；不加时读当前进程的注册表，对一次性 CLI 调用通常为空表。
+- `--status` 过滤在 CLI 侧应用，本地/远程两种模式的非法取值报错文案一致；daemon 不可达时以 `cannot reach master at <addr>: ...` 并非零退出，**不会**静默回退成空表。
+
 **示例**
 
 ```命令示例：列出所有已注册 Agent
 levee agent list
+
+命令示例：读取 daemon 的注册表（跨进程可见）
+levee agent list --remote --server localhost:9090
 
 命令示例：仅列出有空闲容量的 Agent
 levee agent list --status idle
@@ -2146,10 +2157,17 @@ levee agent show <agent-id>
 
 包含 Agent ID、地址、能力、注册时间、最近心跳、当前执行任务等。
 
+**说明**
+
+- 加全局 `--remote` 时向 daemon 查询该记录；ID 不存在时返回 not-found 并非零退出（gRPC `NotFound`）。
+
 **示例**
 
 ```命令示例：查看 Agent 详情
 levee agent show agent-web-01
+
+命令示例：查询 daemon 的注册表
+levee agent show agent-web-01 --remote --server localhost:9090
 ```
 
 ### 20.5 agent remove
@@ -2157,7 +2175,7 @@ levee agent show agent-web-01
 从 master 移除 Agent 注册记录。
 
 ```text
-levee agent remove <agent-id>
+levee agent remove <agent-id> [--force]
 ```
 
 **参数**
@@ -2166,15 +2184,25 @@ levee agent remove <agent-id>
 |------|------|------|
 | `<agent-id>` | 是 | Agent ID |
 
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--force` | `false` | 远程模式下，即使记录仍报在途任务也删除（默认拒绝） |
+
 **说明**
 
-- 移除只删注册记录，不等待也不中断在途任务：`Deregister` 本就不检查 `ActiveTasks`，所以这里没有 `--force` 可绕过的守卫。若确实需要"有在途任务时拒绝移除"，那是一个待实现的行为，不是旗标缺失。
-- Agent ID 不存在时返回 not-found 并非零退出。
+- `--remote` 模式下 daemon **默认拒绝**删除仍报在途任务的记录（那是在跑什么、跑在哪里的唯一凭据），拒绝文案形如 `agent <id> reports <N> in-flight task(s); pass force to remove the record anyway`，`--force` 是显式覆盖。
+- 本地模式（不加 `--remote`）的进程内 `Deregister` 不检查 `ActiveTasks`，`--force` 只影响远程模式。
+- 目标不存在（含重复删除）时并非零退出，信息形如 `agent remove: agent <id> is not registered`（服务端把"没删到"表达为可读拒绝而非内部错误）。
 
 **示例**
 
 ```命令示例：移除 Agent
 levee agent remove agent-web-01
+
+命令示例：回收崩溃 Agent 的槽位（远程模式，忽略在途计数强行移除）
+levee agent remove agent-web-01 --remote --force
 ```
 
 ## 第21章 tenant — 租户管理
