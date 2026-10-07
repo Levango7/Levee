@@ -21,9 +21,28 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/nexus/levee/internal/agent"
 	"github.com/nexus/levee/internal/grpc/pb"
 )
+
+// agentRunContext returns the command's context for a run* function.
+//
+// A nil command is not hypothetical: this package drives the run* helpers
+// straight from tests with `nil` as the command (27 such call sites), and
+// cobra's (*Command).Context dereferences its receiver — so cmd.Context()
+// panics there before any of the registry code runs. Background keeps those
+// tests on the real path instead of a guard clause.
+func agentRunContext(cmd *cobra.Command) context.Context {
+	if cmd == nil {
+		return context.Background()
+	}
+	if ctx := cmd.Context(); ctx != nil {
+		return ctx
+	}
+	return context.Background()
+}
 
 // dialAgentRegistry connects to the master at --server (bearer token from
 // --token when one is configured) and returns the registry client plus the

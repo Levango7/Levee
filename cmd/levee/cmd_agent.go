@@ -214,7 +214,7 @@ func runAgentStatus(cmd *cobra.Command, args []string) error {
 
 // runAgentList executes the `levee agent list` command.
 func runAgentList(cmd *cobra.Command, args []string) error {
-	agents, err := fetchRegistryAgents(cmd.Context(), agentListOptStatus)
+	agents, err := fetchRegistryAgents(agentRunContext(cmd), agentListOptStatus)
 	if err != nil {
 		return fmt.Errorf("agent list: %w", err)
 	}
@@ -266,7 +266,7 @@ func filterAgentsByStatus(all []agent.AgentInfo, status string) ([]agent.AgentIn
 // runAgentShow executes the `levee agent show <agent-id>` command.
 func runAgentShow(cmd *cobra.Command, args []string) error {
 	agentID := args[0]
-	info, err := lookupRegistryAgent(cmd.Context(), agentID)
+	info, err := lookupRegistryAgent(agentRunContext(cmd), agentID)
 	if err != nil {
 		return fmt.Errorf("agent show: %w", err)
 	}
@@ -287,7 +287,7 @@ func runAgentShow(cmd *cobra.Command, args []string) error {
 // runAgentRemove executes the `levee agent remove <agent-id>` command.
 func runAgentRemove(cmd *cobra.Command, args []string) error {
 	agentID := args[0]
-	if err := removeRegistryAgent(cmd.Context(), agentID, agentRemoveOptForce); err != nil {
+	if err := removeRegistryAgent(agentRunContext(cmd), agentID, agentRemoveOptForce); err != nil {
 		return fmt.Errorf("agent remove: %w", err)
 	}
 
