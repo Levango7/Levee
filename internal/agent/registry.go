@@ -228,10 +228,19 @@ func (r *AgentRegistry) Heartbeat(agentID string, hb Heartbeat) error {
 // computeStatus derives the agent's lifecycle state from its load. It
 // is a free function so that tests can exercise it directly.
 func computeStatus(info *AgentInfo) AgentStatus {
-	if info.ActiveTasks <= 0 {
+	return DeriveStatus(info.ActiveTasks, info.MaxConcurrent)
+}
+
+// DeriveStatus is the single rule that turns load into a lifecycle state:
+// zero in-flight tasks is idle, and a count at or above the agent's own
+// ceiling is busy. It is exported because the gRPC registry service must
+// apply the SAME rule — a second hand-written copy is exactly how a
+// heartbeat and a scheduler could start disagreeing about what "busy" means.
+func DeriveStatus(activeTasks, maxConcurrent int) AgentStatus {
+	if activeTasks <= 0 {
 		return StatusIdle
 	}
-	if info.MaxConcurrent > 0 && info.ActiveTasks >= info.MaxConcurrent {
+	if maxConcurrent > 0 && activeTasks >= maxConcurrent {
 		return StatusBusy
 	}
 	return StatusIdle

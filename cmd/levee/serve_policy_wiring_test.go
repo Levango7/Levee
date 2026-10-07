@@ -96,9 +96,10 @@ func deniedAs(t *testing.T, want codes.Code, err error, rpc string) {
 	assert.Equal(t, want, st.Code(), "%s: %v", rpc, err)
 }
 
-// TestServeInstallsPolicyInEveryService is the wiring guard: each of the six
-// services the process registers refuses an unknown subject, through the code
-// path a real request would take.
+// TestServeInstallsPolicyInEveryService is the wiring guard: each of the seven
+// services the process polices refuses an unknown subject, through the code
+// path a real request would take. (Alert, diagnosis and conversation are served
+// but not policed, so they are deliberately not in this list.)
 func TestServeInstallsPolicyInEveryService(t *testing.T) {
 	svcs, store := newWiringServices(t, true)
 	require.True(t, svcs.authzSvc.Enforced(), "the fixture must produce an enforced matrix")
@@ -127,6 +128,8 @@ func TestServeInstallsPolicyInEveryService(t *testing.T) {
 	deniedAs(t, codes.PermissionDenied, err, "AuditService.GetRunReport")
 	_, err = svcs.changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{ChangeId: "run-prod"})
 	deniedAs(t, codes.PermissionDenied, err, "ChangeService.ApplyChange")
+	_, err = svcs.agentSvc.RemoveAgent(ctx, &pb.RemoveAgentRequest{Id: "ghost"})
+	deniedAs(t, codes.PermissionDenied, err, "AgentService.RemoveAgent")
 }
 
 // TestServePolicyDeniesFleetWritesThatChangeGrantsAllow is the half that makes
@@ -146,12 +149,17 @@ func TestServePolicyDeniesFleetWritesThatChangeGrantsAllow(t *testing.T) {
 	deniedAs(t, codes.PermissionDenied, err, "CreateTemplate (no admin grant)")
 	_, err = svcs.systemSvc.GetConfig(alice, &pb.GetConfigRequest{})
 	deniedAs(t, codes.PermissionDenied, err, "GetConfig (no admin grant)")
+	_, err = svcs.agentSvc.RegisterAgent(alice, &pb.RegisterAgentRequest{Id: "a1", Address: "10.0.0.5:9099"})
+	deniedAs(t, codes.PermissionDenied, err, "RegisterAgent (no admin grant)")
 
 	// dave's team holds admin, so the same calls work for him. The refusal
 	// above is the matrix speaking, not a hard-coded deny.
 	_, err = svcs.targetSvc.AddTarget(grpc.ContextWithSubject(context.Background(), "dave"),
 		&pb.AddTargetRequest{Id: "t2", Hostname: "h2"})
 	require.NoError(t, err, "dave has admin in dev: %v", err)
+	_, err = svcs.agentSvc.RegisterAgent(grpc.ContextWithSubject(context.Background(), "dave"),
+		&pb.RegisterAgentRequest{Id: "a2", Address: "10.0.0.6:9099"})
+	require.NoError(t, err, "dave may register an agent too: %v", err)
 }
 
 // TestServeWithoutMatrixKeepsPreviousBehaviour is the compatibility promise at
@@ -176,4 +184,6 @@ func TestServeWithoutMatrixKeepsPreviousBehaviour(t *testing.T) {
 	require.NoError(t, err, "%v", err)
 	_, err = svcs.auditSvc.GetRunReport(ctx, &pb.GetRunReportRequest{RunId: "run-1"})
 	require.NoError(t, err, "%v", err)
+	_, err = svcs.agentSvc.RegisterAgent(ctx, &pb.RegisterAgentRequest{Id: "a1", Address: "10.0.0.5:9099"})
+	require.NoError(t, err, "the agent registry must follow the same compatibility promise: %v", err)
 }

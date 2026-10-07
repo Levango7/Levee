@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -223,6 +223,41 @@ BEFORE DELETE ON audit
 BEGIN
     SELECT RAISE(ABORT, 'WORM violation: audit records cannot be deleted');
 END`,
+		},
+	},
+	{
+		// v8: the agent registry becomes durable.
+		//
+		// Until now the registry was a map inside one process
+		// (internal/agent/registry.go), so agents registered against the
+		// daemon were invisible to every other process and `levee agent list`
+		// was always empty cross-process.
+		//
+		// CREATE TABLE IF NOT EXISTS rather than an ALTER: this is the v4
+		// run_assignment case. Fresh databases get the table from schema.sql
+		// directly, so the step only ever runs on a database that predates it.
+		// The column order below is exactly the order schema.sql declares,
+		// which is what TestMigrate_FreshAndUpgraded_SchemaShapesMatch
+		// compares — an appended column here and an inserted one there would
+		// otherwise pass every functional test while handing upgraded and
+		// fresh databases different shapes.
+		//
+		// Not tenant-scoped, like locks: an agent is one process serving the
+		// whole deployment. Recorded in nonTenantOwnedTables.
+		version: 8,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS agents (` +
+				`id TEXT PRIMARY KEY, ` +
+				`address TEXT NOT NULL, ` +
+				`capabilities TEXT NOT NULL DEFAULT '[]', ` +
+				`status TEXT NOT NULL DEFAULT 'idle', ` +
+				`last_heartbeat DATETIME, ` +
+				`registered_at DATETIME NOT NULL, ` +
+				`active_tasks INTEGER NOT NULL DEFAULT 0, ` +
+				`completed_tasks INTEGER NOT NULL DEFAULT 0, ` +
+				`failed_tasks INTEGER NOT NULL DEFAULT 0, ` +
+				`max_concurrent INTEGER NOT NULL DEFAULT 0)`,
+			`CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status)`,
 		},
 	},
 }

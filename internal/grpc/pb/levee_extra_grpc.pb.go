@@ -775,3 +775,319 @@ var InventoryService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "levee_extra.proto",
 }
+
+const (
+	AgentService_RegisterAgent_FullMethodName   = "/levee.AgentService/RegisterAgent"
+	AgentService_AgentHeartbeat_FullMethodName  = "/levee.AgentService/AgentHeartbeat"
+	AgentService_DeregisterAgent_FullMethodName = "/levee.AgentService/DeregisterAgent"
+	AgentService_ListAgents_FullMethodName      = "/levee.AgentService/ListAgents"
+	AgentService_GetAgent_FullMethodName        = "/levee.AgentService/GetAgent"
+	AgentService_RemoveAgent_FullMethodName     = "/levee.AgentService/RemoveAgent"
+)
+
+// AgentServiceClient is the client API for AgentService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type AgentServiceClient interface {
+	// RegisterAgent creates or refreshes an agent record. Re-registering an
+	// existing id updates that record instead of failing, because an agent that
+	// restarts should not have to delete its own entry first. The record is
+	// stored with status "registered"; its age is measured from the FIRST
+	// successful registration, so re-registering does not reset it.
+	RegisterAgent(ctx context.Context, in *RegisterAgentRequest, opts ...grpc.CallOption) (*AgentRecord, error)
+	// AgentHeartbeat is the liveness write: it advances last_seen and folds in
+	// the reported task counters.
+	AgentHeartbeat(ctx context.Context, in *AgentHeartbeatRequest, opts ...grpc.CallOption) (*AgentHeartbeatReply, error)
+	// DeregisterAgent is the agent's own goodbye (clean shutdown).
+	DeregisterAgent(ctx context.Context, in *DeregisterAgentRequest, opts ...grpc.CallOption) (*DeregisterAgentReply, error)
+	ListAgents(ctx context.Context, in *ListAgentsRequest, opts ...grpc.CallOption) (*ListAgentsReply, error)
+	GetAgent(ctx context.Context, in *GetAgentRequest, opts ...grpc.CallOption) (*AgentRecord, error)
+	// RemoveAgent is the operator-side deletion behind `levee agent remove`.
+	// It refuses while the record still reports in-flight tasks unless force
+	// is set — deleting a register that is mid-change would erase the only
+	// evidence of what is running where.
+	RemoveAgent(ctx context.Context, in *RemoveAgentRequest, opts ...grpc.CallOption) (*RemoveAgentReply, error)
+}
+
+type agentServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewAgentServiceClient(cc grpc.ClientConnInterface) AgentServiceClient {
+	return &agentServiceClient{cc}
+}
+
+func (c *agentServiceClient) RegisterAgent(ctx context.Context, in *RegisterAgentRequest, opts ...grpc.CallOption) (*AgentRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AgentRecord)
+	err := c.cc.Invoke(ctx, AgentService_RegisterAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) AgentHeartbeat(ctx context.Context, in *AgentHeartbeatRequest, opts ...grpc.CallOption) (*AgentHeartbeatReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AgentHeartbeatReply)
+	err := c.cc.Invoke(ctx, AgentService_AgentHeartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) DeregisterAgent(ctx context.Context, in *DeregisterAgentRequest, opts ...grpc.CallOption) (*DeregisterAgentReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeregisterAgentReply)
+	err := c.cc.Invoke(ctx, AgentService_DeregisterAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) ListAgents(ctx context.Context, in *ListAgentsRequest, opts ...grpc.CallOption) (*ListAgentsReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListAgentsReply)
+	err := c.cc.Invoke(ctx, AgentService_ListAgents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) GetAgent(ctx context.Context, in *GetAgentRequest, opts ...grpc.CallOption) (*AgentRecord, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AgentRecord)
+	err := c.cc.Invoke(ctx, AgentService_GetAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *agentServiceClient) RemoveAgent(ctx context.Context, in *RemoveAgentRequest, opts ...grpc.CallOption) (*RemoveAgentReply, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RemoveAgentReply)
+	err := c.cc.Invoke(ctx, AgentService_RemoveAgent_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AgentServiceServer is the server API for AgentService service.
+// All implementations must embed UnimplementedAgentServiceServer
+// for forward compatibility.
+type AgentServiceServer interface {
+	// RegisterAgent creates or refreshes an agent record. Re-registering an
+	// existing id updates that record instead of failing, because an agent that
+	// restarts should not have to delete its own entry first. The record is
+	// stored with status "registered"; its age is measured from the FIRST
+	// successful registration, so re-registering does not reset it.
+	RegisterAgent(context.Context, *RegisterAgentRequest) (*AgentRecord, error)
+	// AgentHeartbeat is the liveness write: it advances last_seen and folds in
+	// the reported task counters.
+	AgentHeartbeat(context.Context, *AgentHeartbeatRequest) (*AgentHeartbeatReply, error)
+	// DeregisterAgent is the agent's own goodbye (clean shutdown).
+	DeregisterAgent(context.Context, *DeregisterAgentRequest) (*DeregisterAgentReply, error)
+	ListAgents(context.Context, *ListAgentsRequest) (*ListAgentsReply, error)
+	GetAgent(context.Context, *GetAgentRequest) (*AgentRecord, error)
+	// RemoveAgent is the operator-side deletion behind `levee agent remove`.
+	// It refuses while the record still reports in-flight tasks unless force
+	// is set — deleting a register that is mid-change would erase the only
+	// evidence of what is running where.
+	RemoveAgent(context.Context, *RemoveAgentRequest) (*RemoveAgentReply, error)
+	mustEmbedUnimplementedAgentServiceServer()
+}
+
+// UnimplementedAgentServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedAgentServiceServer struct{}
+
+func (UnimplementedAgentServiceServer) RegisterAgent(context.Context, *RegisterAgentRequest) (*AgentRecord, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterAgent not implemented")
+}
+func (UnimplementedAgentServiceServer) AgentHeartbeat(context.Context, *AgentHeartbeatRequest) (*AgentHeartbeatReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method AgentHeartbeat not implemented")
+}
+func (UnimplementedAgentServiceServer) DeregisterAgent(context.Context, *DeregisterAgentRequest) (*DeregisterAgentReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeregisterAgent not implemented")
+}
+func (UnimplementedAgentServiceServer) ListAgents(context.Context, *ListAgentsRequest) (*ListAgentsReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListAgents not implemented")
+}
+func (UnimplementedAgentServiceServer) GetAgent(context.Context, *GetAgentRequest) (*AgentRecord, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAgent not implemented")
+}
+func (UnimplementedAgentServiceServer) RemoveAgent(context.Context, *RemoveAgentRequest) (*RemoveAgentReply, error) {
+	return nil, status.Error(codes.Unimplemented, "method RemoveAgent not implemented")
+}
+func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
+func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
+
+// UnsafeAgentServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AgentServiceServer will
+// result in compilation errors.
+type UnsafeAgentServiceServer interface {
+	mustEmbedUnimplementedAgentServiceServer()
+}
+
+func RegisterAgentServiceServer(s grpc.ServiceRegistrar, srv AgentServiceServer) {
+	// If the following call panics, it indicates UnimplementedAgentServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&AgentService_ServiceDesc, srv)
+}
+
+func _AgentService_RegisterAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).RegisterAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_RegisterAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).RegisterAgent(ctx, req.(*RegisterAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_AgentHeartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AgentHeartbeatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).AgentHeartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_AgentHeartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).AgentHeartbeat(ctx, req.(*AgentHeartbeatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_DeregisterAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeregisterAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).DeregisterAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_DeregisterAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).DeregisterAgent(ctx, req.(*DeregisterAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_ListAgents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAgentsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).ListAgents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_ListAgents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).ListAgents(ctx, req.(*ListAgentsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_GetAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).GetAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_GetAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).GetAgent(ctx, req.(*GetAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AgentService_RemoveAgent_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveAgentRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).RemoveAgent(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_RemoveAgent_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).RemoveAgent(ctx, req.(*RemoveAgentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var AgentService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "levee.AgentService",
+	HandlerType: (*AgentServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "RegisterAgent",
+			Handler:    _AgentService_RegisterAgent_Handler,
+		},
+		{
+			MethodName: "AgentHeartbeat",
+			Handler:    _AgentService_AgentHeartbeat_Handler,
+		},
+		{
+			MethodName: "DeregisterAgent",
+			Handler:    _AgentService_DeregisterAgent_Handler,
+		},
+		{
+			MethodName: "ListAgents",
+			Handler:    _AgentService_ListAgents_Handler,
+		},
+		{
+			MethodName: "GetAgent",
+			Handler:    _AgentService_GetAgent_Handler,
+		},
+		{
+			MethodName: "RemoveAgent",
+			Handler:    _AgentService_RemoveAgent_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "levee_extra.proto",
+}

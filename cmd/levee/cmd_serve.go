@@ -776,13 +776,19 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// the caller supplied none.
 	srv := grpc.NewServer(svcStore, serverOpts...)
 
-	// 5. Register extra services (Alert, Diagnosis, Conversation) on the
+	// 5. Register extra services (Alert, Diagnosis, Conversation, Agent) on the
 	//    gRPC server and construct the REST gateway that shares the same
 	//    in-process service instances.
+	//
+	// The agent registry comes out of buildServeServices like the rest of the
+	// served surface, so "every service carries the policy" stays one
+	// function's and one test's property. Why it reads the UNDERLYING store is
+	// documented there.
 	grpc.RegisterExtraServices(srv.GrpcServer(), grpc.ExtraServicesConfig{
 		Alert:        alertSvc,
 		Diagnosis:    diagSvc,
 		Conversation: convSvc,
+		Agent:        svcs.agentSvc,
 	})
 
 	// 5b. Inventory service: persistent target groups/import/status/history.
@@ -936,11 +942,17 @@ type serveServices struct {
 	// "every service the process serves carries the policy" is a property of
 	// this one function — and of one test.
 	inventorySvc *grpc.InventoryService
-	alertSvc     *grpc.AlertService
-	diagSvc      *grpc.DiagnosisService
-	convSvc      *grpc.ConversationService
-	convEngine   *conversation.ConversationEngine
-	mobileSvc    *approval.MobileApprovalService
+	// agentSvc is the agent-registry RPC (see internal/grpc/agent_service.go).
+	// It is built here for the same reason as inventorySvc: the policy wiring of
+	// every served service is one function's job. Nil means the served store
+	// cannot persist agents, and RegisterExtraServices then installs the
+	// Unimplemented stub rather than a registry that looks empty.
+	agentSvc   pb.AgentServiceServer
+	alertSvc   *grpc.AlertService
+	diagSvc    *grpc.DiagnosisService
+	convSvc    *grpc.ConversationService
+	convEngine *conversation.ConversationEngine
+	mobileSvc  *approval.MobileApprovalService
 	// gateSvc is the ad-hoc gate verification service (POST
 	// /gates/verify); nil when the execution engine is not wired.
 	gateSvc *grpc.GateService
@@ -1206,6 +1218,13 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		store, cfg, optConfigPath,
 		version, commitHash, buildTime, goVersion, time.Now(),
 	).WithAuthorizer(authzSvc)
+	// The agent registry is the one served store that is deliberately NOT
+	// tenant-scoped: an agent record describes a process, not a customer's
+	// change, and `agents` has no tenant column. Reading it through the tenant
+	// wrapper would make `levee agent list --remote` answer differently
+	// depending on whether tenancy happens to be enabled — the way the calendar
+	// gate once silently stopped working.
+	agentSvc := serveAgentRegistry(slog.Default(), state.Underlying(store), authzSvc)
 	// Alert ingestion stays stand-alone here (the AlertService keeps its own
 	// bounded ring); run `levee alert serve` for the full gateway with
 	// Prometheus/custom adapters. Diagnosis and conversation get real engines
@@ -1251,8 +1270,8 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	return serveServices{
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,
 		auditSvc: auditSvc, systemSvc: systemSvc, alertSvc: alertSvc,
-		inventorySvc: inventorySvc,
-		diagSvc:      diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
+		inventorySvc: inventorySvc, agentSvc: agentSvc,
+		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
 		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
 	}, nil
 }
