@@ -670,20 +670,33 @@ type AssignmentSummary struct {
 }
 
 // BatchSummary is the per-batch progress of a run (cluster v2 observability).
+//
+// The json tags are load-bearing, not decoration: this struct is marshalled
+// verbatim by the REST gateway (`GET /api/v1/system/batch-status`), and without
+// them the wire shape is Go's PascalCase field names while BOTH consumers —
+// web/src/api's BatchSummaryDTO and the two views that read it — spell the keys
+// snake_case. Nothing failed loudly; the panels were just永远空. Tags align the
+// wire with the declared DTO.
 type BatchSummary struct {
-	Batches        []BatchProgress // ordered by batch_no
-	CurrentBatchNo int             // first non-terminal batch_no, or 0 when all terminal
-	TotalBatches   int
-	DoneBatches    int
+	Batches        []BatchProgress `json:"batches"`
+	CurrentBatchNo int             `json:"current_batch_no"` // first non-terminal batch_no, or 0 when all terminal
+	TotalBatches   int             `json:"total_batches"`
+	DoneBatches    int             `json:"done_batches"`
 }
 
 // BatchProgress is a single batch's execution status.
+//
+// Status carries the values the execution path writes — completed | failed |
+// rolled_back (see internal/wiring/persist.go) — plus the older spellings
+// declared as BatchState* constants. See batchDoneStates for what counts as
+// done, and internal/wiring/batch_summary_seam_test.go for the seam test that
+// keeps writer and reader using one vocabulary.
 type BatchProgress struct {
-	BatchNo    int    // 1-based sequence number
-	Status     string // pending | running | done | failed | interrupted
-	TotalHosts int
-	Succeeded  int
-	Failed     int
+	BatchNo    int    `json:"batch_no"` // 1-based sequence number
+	Status     string `json:"status"`
+	TotalHosts int    `json:"total_hosts"`
+	Succeeded  int    `json:"succeeded"`
+	Failed     int    `json:"failed"`
 }
 
 // batchDoneStates are the batch statuses that count as fully completed for
