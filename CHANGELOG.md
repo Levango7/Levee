@@ -14,6 +14,41 @@
 - **`/cluster` 的批次面板在默认形态下根本渲染不出来（本批一并修）**：`web/src/views/ClusterView.vue:73-81` 是 `v-if="backend === 'sqlite'"` / `v-else-if="backend === 'postgres' && nodes.length === 0"` / `v-else` 三段，面板原先落在最后的 `v-else` 里 ⇒ **SQLite 部署（默认形态）下整块看不到**，与有没有 worker 节点无关；同一批数据在 `/monitor` 可见，所以这不是"没有数据"而是入口被分支挡掉。它读的是 `GET /system/batch-status`，per-run 数据，与集群协调无关 ⇒ 移出该分支。实测（桩服务器给 `backend=sqlite, nodes=[]` 这个曾经看不见的形态）：改前页面上找不到"Run 批次进度"标题；改后标题、输入框、查询按钮都在，填 run_id 后真点"查询"，七行批次照常渲染且标签配色与 `/monitor` 逐行一致。该形状由新增的 `web/src/views/ClusterView.spec.ts` 钉住（3 例：分支闭合点必须早于面板标题、二者之间不得再有条件渲染、面板不得依赖 cluster-status 载荷）；两条变异各自变红（把面板挪回分支内 / 给卡片重新加 `v-if="backend === 'postgres'"`）。用结构断言而不是渲染断言的原因：本仓没有 `@vue/test-utils`，结构断言至少挡住"分支条件把它包回去"这条复发路径。
 - **同页"分配状态分布"渲染的是 assignment 词表**（`pending`/`executing`/`done`/`interrupted`）的原值，与批次词表**同名不同物**（`done`/`interrupted` 两边都有但含义不同），需要单独一张标签表，故不在本批——同一个文件里叠两批改动只会让归因变难。
 
+### 修复（批次状态还有第三份抄件：schema 的行内注释；clone 路径的状态写在自家常量上）
+
+- **`batches.status` 的注释是一份假文档**：两个引擎（`internal/state/schema.sql:53`、`internal/state/pgschema.sql:50`）都写着
+  `pending|running|completed|failed|skipped`。`skipped` 没有任何 `BatchState*` 常量、也没有任何批次行的写入点
+  （`internal/wiring/persist.go:222/429` 的 `"skipped"` 是**步骤**状态，写进 `steps.status`），而真正写入的
+  `rolled_back`、以及 `batchDoneStates` 认账的 `done` / `interrupted` 反倒不在名单上。列定义是 `status TEXT NOT NULL`，
+  **两库都没有 DEFAULT**（`grep "DEFAULT 'done'" --include=*.go --include=*.sql` 零命中），所以库自己也不会产出 `done`。
+  后果不是难看而是可执行：读注释的人会以为库里可能出现 `skipped` 并据此写查询或 UI —— 与 #88 同源（两套词表各自都绿）。
+  注释改为按 `internal/state` 的七个常量列全，并新增守卫 `internal/state/batch_status_schema_comment_test.go`：
+  名单**从 `store.go` 解析**（复述一份清单会让新常量无人发现），要求与常量集**双向相等**，且**两个文件各自独立校验**。
+  另加一条 `TestBatchesStatusCommentIsNotTheStepsComment`：解析必须落在 batches 表块内——`steps` 表也有一行同形的
+  `status TEXT NOT NULL, -- …` 注释，按"文件里第一条 status 行"解析会读到另一套词表。
+  变异四条各自变红且点名正确：注释删 `done` ⇒ `omits "done"`；注释加 `skipped` ⇒ `no BatchState constant declares`；
+  注释整体换成 steps 词表 ⇒ 两条守卫同时红；**只把一个引擎的注释删掉 `rolled_back`** ⇒ 失败信息点名那一个文件
+  （先试的是"只改 SQLite 侧"，结果被另一侧代答，说明这条必须单独验）。
+- **`internal/template/clone.go` 用自己的一套常量写 state 的状态列**：`StatusDraft = "draft"` / `StatusPending = "pending"`
+  分别写进 `runs.status`（:175）、`batches.status`（:203）、`steps.status`（:241），而原来那段注释给的理由是
+  "避免 import engine 造成环"——**理由不成立**：这个包本来就 `import` 了 `internal/state`，而
+  `go list -deps ./internal/runstatus` 显示 runstatus 除自身外不依赖任何本仓包（只 import "strings"），
+  `internal/state` 也不 import `template`，接上 owning 常量不会成环。
+  改法：run 写 `runstatus.StatusDraft`、batch 写 `state.BatchStatePending`，模板包的常量只留 step 用并改名
+  `StepStatusPending`（"pending" 一词同时充当 run/batch/step 三套词表的默认值，正是靠拼写巧合对齐）。
+  对齐之后 `template` 包不再有 run/batch 的平行词表；跨包改名前按旧标识符精确查过：
+  `template.StatusDraft` / `template.StatusPending` 全仓零命中，包内只有 clone.go 三处 + clone_test.go 三处断言。
+- **测试断言改用字面量，而不是换成 owning 常量**：`assert.Equal(t, state.BatchStatePending, cb.Status)` 在写入端
+  也用同一常量时就是 `x == x`，值漂移照样绿（这条教训来自"门禁全绿地校验自己合成的命题"）。字面量才是独立真值：
+  它是落进列里的值、是 `batchDoneStates` 读的值、是 web UI 映射的键。实测：把 `BatchStatePending` 改成 `"queued"`，
+  `TestClone_Success_PreservesBatches` 立刻以 `expected: "pending"` 变红；还原即 `ok`。
+- **两条词表缺口如实登记，本批不动**：① `steps.status` 全仓没有 owning 常量，写入端是散在
+  `internal/wiring/persist.go:131/222/224/429` 的裸字面量，注释那份 `pending|running|success|failed|skipped` 因此
+  没有可对齐的真值；② `runs.approval_status` 同样是裸字面量（`internal/wiring/run.go:522`、
+  `internal/grpc/change_service.go:601` 写 `"pending"`，:990 比较 `"approved"`）。给它们建 owning 包是一次真正的
+  收敛改动（要一并改写入端并配守卫），不在这一批里顺手做。
+
+
 ## [v1.20.0] - 2026-10-07
 
 > **发布状态：已切版。** 附注 tag `v1.20.0`（tag 对象 `fe4b162`，剥壳指向 `738c477e`）于 2026-10-07 推送，`release.yml` 据此发布：GitHub Release `draft=false`、`publishedAt=2026-10-07T14:35:31Z`、资产为 6 个平台包 + `checksums.txt`；镜像 `ghcr.io/levango7/levee:v1.20.0` 按外部事实核过——`manifests/v1.20.0` 返回 200，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0]`。本小节共 **15** 个小节。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.20.0` / 逐字 `v1.20.0`——顺序不能反：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，所以在 tag 存在之前它们必须继续指向上一个真实发布（此前指 `1.19.0` / `v1.19.0`）。
