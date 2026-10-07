@@ -150,46 +150,52 @@ const statusClass = (s: string) => `status-dot status-${s}`
 				</div>
 			</el-card>
 
-			<!-- Batch progress (cluster v2 observability) -->
-			<h3 class="section-title">Run 批次进度</h3>
-			<el-card shadow="never" class="dist-card">
-				<div class="batch-run-input">
-					<el-input
-						v-model="selectedRunID"
-						placeholder="输入 run_id 查看批次进度"
-						clearable
-						@change="fetchBatchStatus"
-						class="batch-run-input__field"
-					/>
-					<el-button type="primary" @click="fetchBatchStatus">查询</el-button>
-				</div>
-				<p v-if="!selectedRunID.trim()" class="muted">输入 run_id 查看该 run 的各批次执行进度</p>
-				<p v-else-if="batchError" class="error">{{ batchError }}</p>
-				<template v-else-if="batchData">
-					<div class="batch-summary">
-						<el-tag size="small" :type="batchData.done_batches === batchData.total_batches ? 'success' : 'info'">
-							{{ batchData.done_batches }} / {{ batchData.total_batches }} 批次完成
-						</el-tag>
-						<span v-if="batchData.current_batch_no > 0" class="batch-current">
-							当前批次 #{{ batchData.current_batch_no }}
-						</span>
-					</div>
-					<div class="batch-row" v-for="b in batchData.batches" :key="b.batch_no">
-						<span class="batch-label">#{{ b.batch_no }}</span>
-						<el-tag size="small" :type="batchTagType(b.status)">
-							{{ batchLabel(b.status) }}
-						</el-tag>
-						<el-progress
-							:percentage="batchProgress(b)"
-							:status="batchBarStatus(b.status)"
-							:stroke-width="12"
-							class="batch-bar"
-						></el-progress>
-						<span class="batch-count">{{ b.succeeded }}/{{ b.total_hosts }} 成功<span v-if="b.failed"> · {{ b.failed }} 失败</span></span>
-					</div>
-				</template>
-			</el-card>
 		</template>
+
+		<!-- Batch progress (cluster v2 observability).
+		     Deliberately OUTSIDE the backend/nodes branch above: this is per-run
+		     data from GET /system/batch-status and has nothing to do with cluster
+		     coordination. Inside that branch it was unreachable in the default
+		     SQLite deployment -- `v-if="backend === 'sqlite'"` swallowed the whole
+		     block -- so the same rows were visible on /monitor but not here. -->
+		<h3 class="section-title">Run 批次进度</h3>
+		<el-card shadow="never" class="dist-card">
+			<div class="batch-run-input">
+				<el-input
+					v-model="selectedRunID"
+					placeholder="输入 run_id 查看批次进度"
+					clearable
+					@change="fetchBatchStatus"
+					class="batch-run-input__field"
+				/>
+				<el-button type="primary" @click="fetchBatchStatus">查询</el-button>
+			</div>
+			<p v-if="!selectedRunID.trim()" class="muted">输入 run_id 查看该 run 的各批次执行进度</p>
+			<p v-else-if="batchError" class="error">{{ batchError }}</p>
+			<template v-else-if="batchData">
+				<div class="batch-summary">
+					<el-tag size="small" :type="batchData.done_batches === batchData.total_batches ? 'success' : 'info'">
+						{{ batchData.done_batches }} / {{ batchData.total_batches }} 批次完成
+					</el-tag>
+					<span v-if="batchData.current_batch_no > 0" class="batch-current">
+						当前批次 #{{ batchData.current_batch_no }}
+					</span>
+				</div>
+				<div class="batch-row" v-for="b in batchData.batches" :key="b.batch_no">
+					<span class="batch-label">#{{ b.batch_no }}</span>
+					<el-tag size="small" :type="batchTagType(b.status)">
+						{{ batchLabel(b.status) }}
+					</el-tag>
+					<el-progress
+						:percentage="batchProgress(b)"
+						:status="batchBarStatus(b.status)"
+						:stroke-width="12"
+						class="batch-bar"
+					></el-progress>
+					<span class="batch-count">{{ b.succeeded }}/{{ b.total_hosts }} 成功<span v-if="b.failed"> · {{ b.failed }} 失败</span></span>
+				</div>
+			</template>
+		</el-card>
 
 		<p v-if="error" class="error">{{ error }}</p>
 	</div>
