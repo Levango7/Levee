@@ -108,7 +108,7 @@ func fetchRegistryAgents(ctx context.Context, statusFilter string) ([]agent.Agen
 	if err != nil {
 		return nil, err
 	}
-	defer closeFn()
+	defer func() { _ = closeFn() }()
 
 	resp, err := client.ListAgents(ctx, &pb.ListAgentsRequest{})
 	if err != nil {
@@ -126,7 +126,7 @@ func lookupRegistryAgent(ctx context.Context, id string) (agent.AgentInfo, error
 	if err != nil {
 		return agent.AgentInfo{}, err
 	}
-	defer closeFn()
+	defer func() { _ = closeFn() }()
 
 	rec, err := client.GetAgent(ctx, &pb.GetAgentRequest{Id: id})
 	if err != nil {
@@ -146,7 +146,7 @@ func removeRegistryAgent(ctx context.Context, id string, force bool) error {
 	if err != nil {
 		return err
 	}
-	defer closeFn()
+	defer func() { _ = closeFn() }()
 
 	resp, err := client.RemoveAgent(ctx, &pb.RemoveAgentRequest{Id: id, Force: force})
 	if err != nil {
