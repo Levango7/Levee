@@ -33,7 +33,7 @@ import (
 func startAgentTestDaemon(t *testing.T, store state.Store) string {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	agentSvc := serveAgentRegistry(log, state.Underlying(store))
+	agentSvc := serveAgentRegistry(log, state.Underlying(store), nil)
 	require.NotNil(t, agentSvc, "the CLI test store must be able to serve the agent registry")
 
 	srv := grpc.NewServer(store, grpc.WithListenAddr(":0"))

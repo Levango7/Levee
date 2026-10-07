@@ -368,3 +368,121 @@ func TestAgentServiceStoreErrorIsInternal(t *testing.T) {
 	assert.Equal(t, codes.Internal, status.Code(err))
 	assert.Contains(t, err.Error(), "disk wedged")
 }
+
+// --- permission matrix -------------------------------------------------------
+//
+// The registry is a fleet surface: an agent record says which host:port will
+// execute LEVEE's tasks. So it goes through the same posture the other served
+// services are pinned to (internal/grpc/resource_authz.go, service_policy_test.go)
+// — reads take `view`, writes take `admin`, judged in permission.default_env
+// because an agent declares no environment. Nothing here re-derives that rule.
+
+// newPolicyAgentService wires the service on the shared matrix fixture:
+// alice = view+plan in dev, admin nowhere; dave = admin in dev;
+// carol = approve in dev only (not even view); mallory = not registered.
+func newPolicyAgentService(t *testing.T) (*AgentService, *fakeAgentStore) {
+	t.Helper()
+	st := newFakeAgentStore()
+	svc := NewAgentService(st).WithAuthorizer(newServiceAuthorizer(t))
+	svc.now = func() time.Time { return time.Unix(1700000000, 0) }
+	return svc, st
+}
+
+func TestAgentServicePolicyWritesRequireAdmin(t *testing.T) {
+	svc, _ := newPolicyAgentService(t)
+
+	_, err := svc.RegisterAgent(asSubject("alice"), &pb.RegisterAgentRequest{
+		Id: "a1", Address: "10.0.0.5:9099", Capabilities: []string{"shell"}, MaxConcurrent: 2,
+	})
+	requireDenied(t, err, "RegisterAgent")
+	assert.Contains(t, err.Error(), `"admin"`, "the refusal must name the action it judged")
+
+	// Each write RPC is refused for the same subject, listed by name so a future
+	// method cannot be added without one of these appearing.
+	for _, tc := range []struct {
+		rpc  string
+		call func() error
+	}{
+		{"AgentHeartbeat", func() error {
+			_, e := svc.AgentHeartbeat(asSubject("alice"), &pb.AgentHeartbeatRequest{Id: "a1"})
+			return e
+		}},
+		{"DeregisterAgent", func() error {
+			_, e := svc.DeregisterAgent(asSubject("alice"), &pb.DeregisterAgentRequest{Id: "a1"})
+			return e
+		}},
+		{"RemoveAgent", func() error {
+			_, e := svc.RemoveAgent(asSubject("alice"), &pb.RemoveAgentRequest{Id: "a1", Force: true})
+			return e
+		}},
+	} {
+		requireDenied(t, tc.call(), tc.rpc)
+	}
+
+	// mallory is named but absent from users.yaml: PermissionDenied, not
+	// Unauthenticated — the same split the shared fixture documents.
+	_, err = svc.RemoveAgent(asSubject("mallory"), &pb.RemoveAgentRequest{Id: "a1", Force: true})
+	requireDenied(t, err, "RemoveAgent(mallory)")
+
+	// A shared-token caller has no identity to judge, and a write must refuse
+	// rather than fall through to the default environment.
+	_, err = svc.RegisterAgent(context.Background(), &pb.RegisterAgentRequest{Id: "a2", Address: "10.0.0.6:9099"})
+	assert.Equal(t, codes.Unauthenticated, codeOf(t, err),
+		"an unattributable write must be refused, never guessed past")
+}
+
+func TestAgentServicePolicyAdminSubjectMayWrite(t *testing.T) {
+	svc, st := newPolicyAgentService(t)
+
+	rec, err := svc.RegisterAgent(asSubject("dave"), &pb.RegisterAgentRequest{
+		Id: "a1", Address: "10.0.0.5:9099", Capabilities: []string{"shell"}, MaxConcurrent: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "a1", rec.GetId())
+
+	resp, err := svc.RemoveAgent(asSubject("dave"), &pb.RemoveAgentRequest{Id: "a1"})
+	require.NoError(t, err)
+	require.True(t, resp.GetRemoved(), "refusal: %s", resp.GetRefusal())
+	assert.Empty(t, st.rows, "the write must land on the store, not just be permitted")
+}
+
+func TestAgentServicePolicyReadsUseViewScope(t *testing.T) {
+	svc, st := newPolicyAgentService(t)
+	// Seeded through the store: this test is about the read path.
+	st.rows["a1"] = &state.Agent{
+		ID: "a1", Address: "10.0.0.5:9099", Status: "idle",
+		RegisteredAt: time.Unix(1600000000, 0),
+	}
+
+	list, err := svc.ListAgents(asSubject("alice"), &pb.ListAgentsRequest{})
+	require.NoError(t, err)
+	require.Len(t, list.GetAgents(), 1)
+
+	one, err := svc.GetAgent(asSubject("alice"), &pb.GetAgentRequest{Id: "a1"})
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.5:9099", one.GetAddress())
+
+	// carol holds approve in dev and nothing else, so not even `view`: the
+	// registry is dark to her on both read RPCs.
+	_, err = svc.ListAgents(asSubject("carol"), &pb.ListAgentsRequest{})
+	requireDenied(t, err, "ListAgents(carol)")
+	_, err = svc.GetAgent(asSubject("carol"), &pb.GetAgentRequest{Id: "a1"})
+	requireDenied(t, err, "GetAgent(carol)")
+
+	// An unattributable caller keeps passing reads — the documented posture for
+	// a shared token (there is no identity to narrow by), pinned here so it
+	// stays a decision rather than drifting into an accident.
+	_, err = svc.ListAgents(context.Background(), &pb.ListAgentsRequest{})
+	require.NoError(t, err)
+}
+
+func TestAgentServicePolicyNilAuthorizerKeepsPreviousBehaviour(t *testing.T) {
+	svc, _ := newTestAgentService()
+
+	// No matrix configured: nothing to decide against, and that state is
+	// announced at startup rather than replayed per request.
+	_, err := svc.RegisterAgent(asSubject("mallory"), &pb.RegisterAgentRequest{
+		Id: "a1", Address: "10.0.0.5:9099",
+	})
+	require.NoError(t, err)
+}

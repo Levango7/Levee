@@ -10,9 +10,11 @@
 //
 // Two rules this file holds on purpose:
 //
-//   - Nothing here widens the auth surface. Every method runs behind the
-//     standard interceptor chain with an authenticated subject; registration is
-//     a write to operator-visible state and is treated as such.
+//   - The permission matrix is applied, not just the auth interceptor. Reads
+//     take `view`, every write takes `admin`, through the same
+//     authorizeResource/authorizeResourceRead pair the other five services use
+//     (internal/grpc/resource_authz.go) — a new service that skipped it would
+//     reopen exactly the hole that posture was written to close.
 //   - Status vocabulary is validated, never passed through. The registry can
 //     produce exactly four states (agent.AgentStatusValues); accepting an
 //     arbitrary string would let a typo park an agent in a state that reads
@@ -32,7 +34,9 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/nexus/levee/internal/agent"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -47,6 +51,17 @@ type AgentService struct {
 	pb.UnimplementedAgentServiceServer
 
 	store state.AgentStore
+	// authz is the permission matrix, optional like every other service's: nil
+	// means the deployment configured no policy, which is announced at startup
+	// rather than replayed per request.
+	//
+	// An agent record declares no environment, so — exactly like a group, a
+	// template or the config document — it is judged in permission.default_env,
+	// and a matrix with no default refuses rather than guessing. That is also a
+	// real limitation worth naming: an agent that only ever touches prod is
+	// gated at the default environment, not at prod, because `agents` has no env
+	// column. Adding one is a schema decision, not a thing to slip into this RPC.
+	authz *authz.Authorizer
 	// now is a seam so the staleness arithmetic is testable without sleeping.
 	now func() time.Time
 }
@@ -59,12 +74,26 @@ func NewAgentService(store state.AgentStore) *AgentService {
 	return &AgentService{store: store, now: time.Now}
 }
 
+// WithAuthorizer installs the permission matrix and returns s, matching the
+// form every other served service uses so serve-side wiring stays one pattern.
+func (s *AgentService) WithAuthorizer(a *authz.Authorizer) *AgentService {
+	s.authz = a
+	return s
+}
+
 var _ pb.AgentServiceServer = (*AgentService)(nil)
 
 // RegisterAgent creates or refreshes an agent record.
 func (s *AgentService) RegisterAgent(ctx context.Context, req *pb.RegisterAgentRequest) (*pb.AgentRecord, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Unimplemented, "agent registry is not configured on this server")
+	}
+	// A registering agent says which host:port will execute LEVEE's tasks, so
+	// this is a fleet-wide write and needs `admin` — the same posture AddTarget
+	// takes. Judged before validation: a refused caller should not learn the
+	// shape of the registry from an error message.
+	if err := authorizeResource(ctx, s.authz, "", permission.ActionAdmin, "RegisterAgent"); err != nil {
+		return nil, err
 	}
 	id := strings.TrimSpace(req.GetId())
 	if id == "" {
@@ -114,6 +143,12 @@ func (s *AgentService) RegisterAgent(ctx context.Context, req *pb.RegisterAgentR
 func (s *AgentService) AgentHeartbeat(ctx context.Context, req *pb.AgentHeartbeatRequest) (*pb.AgentHeartbeatReply, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Unimplemented, "agent registry is not configured on this server")
+	}
+	// Marking an agent live and loaded is a write into operator-visible state,
+	// so it takes the same `admin` grant as the registration it follows —
+	// otherwise a caller who cannot register could still fabricate liveness.
+	if err := authorizeResource(ctx, s.authz, "", permission.ActionAdmin, "AgentHeartbeat"); err != nil {
+		return nil, err
 	}
 	id := strings.TrimSpace(req.GetId())
 	if id == "" {
@@ -175,6 +210,9 @@ func (s *AgentService) DeregisterAgent(ctx context.Context, req *pb.DeregisterAg
 	if s.store == nil {
 		return nil, status.Error(codes.Unimplemented, "agent registry is not configured on this server")
 	}
+	if err := authorizeResource(ctx, s.authz, "", permission.ActionAdmin, "DeregisterAgent"); err != nil {
+		return nil, err
+	}
 	id := strings.TrimSpace(req.GetId())
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "agent id is required")
@@ -190,6 +228,12 @@ func (s *AgentService) DeregisterAgent(ctx context.Context, req *pb.DeregisterAg
 func (s *AgentService) ListAgents(ctx context.Context, req *pb.ListAgentsRequest) (*pb.ListAgentsReply, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Unimplemented, "agent registry is not configured on this server")
+	}
+	// Reads take `view`. ListTargets narrows a page per row because a target
+	// declares its environment; an agent record declares none, so there is no
+	// subset to hide and the whole registry is judged in one scope.
+	if err := authorizeResourceRead(ctx, s.authz, "", "ListAgents"); err != nil {
+		return nil, err
 	}
 	wantStatus := ""
 	if raw := strings.TrimSpace(req.GetStatus()); raw != "" {
@@ -223,6 +267,9 @@ func (s *AgentService) GetAgent(ctx context.Context, req *pb.GetAgentRequest) (*
 	if s.store == nil {
 		return nil, status.Error(codes.Unimplemented, "agent registry is not configured on this server")
 	}
+	if err := authorizeResourceRead(ctx, s.authz, "", "GetAgent"); err != nil {
+		return nil, err
+	}
 	id := strings.TrimSpace(req.GetId())
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "agent id is required")
@@ -243,6 +290,12 @@ func (s *AgentService) GetAgent(ctx context.Context, req *pb.GetAgentRequest) (*
 func (s *AgentService) RemoveAgent(ctx context.Context, req *pb.RemoveAgentRequest) (*pb.RemoveAgentReply, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Unimplemented, "agent registry is not configured on this server")
+	}
+	// Deleting a register decides what the fleet contains, so it is the
+	// strongest write here and takes `admin` — the same grant AddTarget needs to
+	// add a member.
+	if err := authorizeResource(ctx, s.authz, "", permission.ActionAdmin, "RemoveAgent"); err != nil {
+		return nil, err
 	}
 	id := strings.TrimSpace(req.GetId())
 	if id == "" {

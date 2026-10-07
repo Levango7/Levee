@@ -14,19 +14,22 @@ package main
 import (
 	"log/slog"
 
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
 )
 
 // serveAgentRegistry builds the AgentService when the (already unwrapped) store
-// can persist agents; otherwise it warns and returns nil.
-func serveAgentRegistry(log *slog.Logger, store state.Store) pb.AgentServiceServer {
+// can persist agents; otherwise it warns and returns nil. The authorizer is
+// passed through exactly as the other served services receive it — nil is the
+// documented "no policy configured" case, not a bypass.
+func serveAgentRegistry(log *slog.Logger, store state.Store, authorizer *authz.Authorizer) pb.AgentServiceServer {
 	agentStore, ok := store.(state.AgentStore)
 	if !ok {
 		log.Warn("serve: agent registry RPC unavailable on this store; " +
 			"`levee agent list --remote` will report Unimplemented rather than an empty registry")
 		return nil
 	}
-	return grpc.NewAgentService(agentStore)
+	return grpc.NewAgentService(agentStore).WithAuthorizer(authorizer)
 }
