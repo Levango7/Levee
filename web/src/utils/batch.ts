@@ -18,6 +18,16 @@
 
 import type { BatchProgressDTO } from '@/api'
 
+// The seven spellings a batch row can carry. This list, and not a switch
+// statement, is the source of truth below: keyed `Record`s make "no label / no
+// colour for the new state" a compile error instead of a silent fallback, which
+// is how a finished batch came to be drawn grey with the English word on it.
+// internal/state/batch_status_vocabulary_test.go pins this list against
+// internal/state/store.go's constants, so the Go side cannot add a spelling
+// without turning a test red here.
+export const BATCH_STATES = ['pending', 'running', 'completed', 'done', 'failed', 'rolled_back', 'interrupted'] as const
+export type BatchState = (typeof BATCH_STATES)[number]
+
 export type TagTone = 'success' | 'danger' | 'warning' | 'info' | 'primary'
 export type BarStatus = 'success' | 'exception' | 'warning' | undefined
 
@@ -46,35 +56,55 @@ export function batchProgress(b: Pick<BatchProgressDTO, 'total_hosts' | 'succeed
  * complete, and a grey bar next to "this batch is done" would contradict the
  * summary on the same page.
  */
+const TAG_TONE_BY_STATE: Record<BatchState, TagTone> = {
+  completed: 'success',
+  done: 'success',
+  failed: 'danger',
+  rolled_back: 'warning',
+  interrupted: 'warning',
+  running: 'primary',
+  pending: 'info',
+}
+
 export function batchTagType(status: string): TagTone {
-  switch (status) {
-    case 'completed':
-    case 'done':
-      return 'success'
-    case 'failed':
-      return 'danger'
-    case 'rolled_back':
-    case 'interrupted':
-      return 'warning'
-    case 'running':
-      return 'primary'
-    default:
-      return 'info'
-  }
+  return TAG_TONE_BY_STATE[status as BatchState] ?? 'info'
 }
 
 /** Progress-bar status for a batch state; `undefined` keeps the bar neutral. */
+const BAR_STATUS_BY_STATE: Record<BatchState, BarStatus> = {
+  completed: 'success',
+  done: 'success',
+  failed: 'exception',
+  rolled_back: 'warning',
+  interrupted: 'warning',
+  running: undefined,
+  pending: undefined,
+}
+
 export function batchBarStatus(status: string): BarStatus {
-  switch (status) {
-    case 'completed':
-    case 'done':
-      return 'success'
-    case 'failed':
-      return 'exception'
-    case 'rolled_back':
-    case 'interrupted':
-      return 'warning'
-    default:
-      return undefined
-  }
+  return BAR_STATUS_BY_STATE[status as BatchState]
+}
+
+const LABEL_BY_STATE: Record<BatchState, string> = {
+  completed: '已完成',
+  done: '已完成',
+  failed: '失败',
+  rolled_back: '已回滚',
+  interrupted: '已中断',
+  running: '执行中',
+  pending: '待执行',
+}
+
+/**
+ * Chinese label for a batch state, for pages whose chrome is Chinese.
+ *
+ * The fallback is deliberately the raw wire value, not a translation of it: an
+ * unrecognised spelling must stay visible so an operator can report it, and
+ * guessing ("some new word — show 已完成") would assert an outcome the engine
+ * never wrote. Until this existed both batch rows rendered the raw string, so
+ * the monitor page read "completed" inside an otherwise Chinese table while its
+ * neighbour column said 已完成.
+ */
+export function batchLabel(status: string): string {
+  return LABEL_BY_STATE[status as BatchState] ?? status
 }
