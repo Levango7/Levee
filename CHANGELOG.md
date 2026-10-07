@@ -14,6 +14,34 @@
 - **`/cluster` 的批次面板在默认形态下根本渲染不出来（本批一并修）**：`web/src/views/ClusterView.vue:73-81` 是 `v-if="backend === 'sqlite'"` / `v-else-if="backend === 'postgres' && nodes.length === 0"` / `v-else` 三段，面板原先落在最后的 `v-else` 里 ⇒ **SQLite 部署（默认形态）下整块看不到**，与有没有 worker 节点无关；同一批数据在 `/monitor` 可见，所以这不是"没有数据"而是入口被分支挡掉。它读的是 `GET /system/batch-status`，per-run 数据，与集群协调无关 ⇒ 移出该分支。实测（桩服务器给 `backend=sqlite, nodes=[]` 这个曾经看不见的形态）：改前页面上找不到"Run 批次进度"标题；改后标题、输入框、查询按钮都在，填 run_id 后真点"查询"，七行批次照常渲染且标签配色与 `/monitor` 逐行一致。该形状由新增的 `web/src/views/ClusterView.spec.ts` 钉住（3 例：分支闭合点必须早于面板标题、二者之间不得再有条件渲染、面板不得依赖 cluster-status 载荷）；两条变异各自变红（把面板挪回分支内 / 给卡片重新加 `v-if="backend === 'postgres'"`）。用结构断言而不是渲染断言的原因：本仓没有 `@vue/test-utils`，结构断言至少挡住"分支条件把它包回去"这条复发路径。
 - **同页"分配状态分布"渲染的是 assignment 词表**（`pending`/`executing`/`done`/`interrupted`）的原值，与批次词表**同名不同物**（`done`/`interrupted` 两边都有但含义不同），需要单独一张标签表，故不在本批——同一个文件里叠两批改动只会让归因变难。
 
+## [Unreleased]
+
+### 修复（分配状态分布也在渲染线上原值；两套词表拼写重叠、语义不同）
+
+- **`/cluster` 的"分配状态分布"把 assignments 的状态原值当文案渲染**（`ClusterView.vue` 里 `{{ state }}`）：
+  与 #90 那批同一类缺陷，但读的是**另一套词表**——`internal/state/store.go:738-741` 的
+  `AssignStatePending` / `AssignmentStateExecuting` / `AssignmentStateDone` / `AssignmentStateInterrupted`
+  （四个状态；`AssignResult*` 是第二组值域 completed/failed/rolled_back，这一栏不渲染，别混）。
+  现在按 `web/src/utils/assignment.ts` 取文案：待领取 / 执行中 / 已完成 / 已中断。
+- **为什么不复用 #90 那张批次表**：两套词表在拼写上重叠（`pending` / `done` / `interrupted` 三词双跨）而语义不重叠——
+  批次的 `pending` 是"这一批还没开始跑"，分配的 `pending` 是"还没被 worker 领取"；批次的 `done` 是历史拼写
+  （没有任何写入方，见 #90），分配的 `done` 是活跃终态（`internal/dispatch/dispatch.go` 就在写它）。
+  并表会让操作者把"没派出去"读成"没跑起来"。这条语义差异由 `assignmentLabel('pending') !== batchLabel('pending')`
+  一条断言钉住，变异实测：把 `待领取` 改成 `待执行`（即抄批次表）该用例立刻变红。
+- **守卫**：`web/src/utils/assignment.spec.ts` 6 例（含结构性一条：每个声明状态都必须有非空且不同于拼写本身的标签）；
+  `internal/state/assignment_status_vocabulary_test.go` 两条跨语言守卫从 `store.go` **解析状态组**
+  （正则要求标识符含 `State`，所以结果组 `AssignResultCompleted` 不会被误收；另有断言显式拒绝 Result 混入）
+  与 TS 的 `ASSIGNMENT_STATES` 双向比对，并要求每个 Go 拼写都在 `LABEL_BY_STATE` 里有键。
+  本包的批次守卫已有同名 helper，这里刻意自带一份本地 helper 并另起名——不是重复劳动，是为了让本批
+  能独立通过 CI（堆叠在未合并分支上的 PR 拿不到 CI）。变异五条逐一变红：`store.go` 新增 `AssignmentStatePaused`
+  （两条同时红）／TS 删 `executing`／TS 加只有结果组才有的 `completed`（方向二抓住借词表）／改 TS 声明名（锚点自曝）／
+  抄批次措辞（跨词表那条红）。
+- **验证**：前端 `npm run test` 75 例、`vue-tsc` 干净；`vite build` 后按 CI 同法刷新 `internal/web/dist`，
+  `diff -r web/dist internal/web/dist` 无差异（标签被内联进 `ClusterView-*.js` chunk，`待领取` 在其中可 grep 到）；
+  `go test ./internal/state/` 全绿。真机核对（桩服务器给 `backend=postgres` + 一个节点 + 四类分配计数）：
+  分布四行依次是 待领取 / 执行中 / 已完成 / 已中断，`leaked=[]`；同一页四个小节标题（节点、分配状态分布、
+  Worker 负载、Run 批次进度）都在，#90 的面板可达性没有回退。
+
 ## [v1.20.0] - 2026-10-07
 
 > **发布状态：已切版。** 附注 tag `v1.20.0`（tag 对象 `fe4b162`，剥壳指向 `738c477e`）于 2026-10-07 推送，`release.yml` 据此发布：GitHub Release `draft=false`、`publishedAt=2026-10-07T14:35:31Z`、资产为 6 个平台包 + `checksums.txt`；镜像 `ghcr.io/levango7/levee:v1.20.0` 按外部事实核过——`manifests/v1.20.0` 返回 200，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0]`。本小节共 **15** 个小节。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.20.0` / 逐字 `v1.20.0`——顺序不能反：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，所以在 tag 存在之前它们必须继续指向上一个真实发布（此前指 `1.19.0` / `v1.19.0`）。
