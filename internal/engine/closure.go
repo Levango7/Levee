@@ -225,6 +225,21 @@ type ClosureRunner struct {
 	runSnapshotter RunSnapshotter
 }
 
+// gateInitiator returns the run's recorded creator, or "" when it cannot be
+// read. Human gates that declare exclude_initiator need it to know whose vote to
+// refuse, and they REFUSE on "", so a lookup failure can never be mistaken for
+// "nobody to exclude".
+func (cr *ClosureRunner) gateInitiator(ctx context.Context, runID string) string {
+	if cr.store == nil || runID == "" {
+		return ""
+	}
+	run, err := cr.store.GetRun(ctx, runID)
+	if err != nil || run == nil {
+		return ""
+	}
+	return run.Creator
+}
+
 // ClosureOption configures optional ClosureRunner behaviour at construction
 // time.
 type ClosureOption func(*ClosureRunner)
@@ -393,6 +408,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	preInput := verify.GateInput{
 
 		ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
+		Initiator: cr.gateInitiator(ctx, result.RunID),
 		TargetIDs: targets,
 	}
 	preResults := cr.verifier.RunPhase(ctx, verify.PhasePreApply, preInput)
@@ -503,6 +519,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		postBatchInput := verify.GateInput{
 
 			ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
+			Initiator: cr.gateInitiator(ctx, result.RunID),
 			BatchID:   fmt.Sprintf("batch-%d", b.Index),
 			TargetIDs: b.Targets,
 		}
@@ -526,6 +543,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			postInput := verify.GateInput{
 
 				ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
+				Initiator: cr.gateInitiator(ctx, result.RunID),
 				TargetIDs: targets,
 			}
 			postResults := cr.verifier.RunPhase(ctx, verify.PhasePostApply, postInput)
@@ -628,6 +646,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			pvInput := verify.GateInput{
 
 				ChannelFor: cr.gateRuntime.Channels, RunID: result.RunID,
+				Initiator: cr.gateInitiator(ctx, result.RunID),
 				TargetIDs: targets,
 			}
 			// VerifyAndGrade, not Verify: identical verification, plus the

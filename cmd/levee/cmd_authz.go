@@ -29,7 +29,9 @@ func newAuthzCmd() *cobra.Command {
 		Use:   "authz",
 		Short: "Inspect the authorization policy and explain decisions",
 		Long: "Inspect the permission matrix / role tree / user registry that govern " +
-			"change-scoped actions (apply, rollback, approve, reject) and explain a " +
+			"change actions (plan, apply, rollback, approve, reject), the read scope " +
+			"(view) and the fleet surfaces (inventory, template library, audit trail, " +
+			"system config — admin), and explain a " +
 			"single decision: which team and role a subject resolves to, which axis " +
 			"granted or refused, and why.",
 	}
@@ -113,7 +115,8 @@ func runAuthzStatus(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stdout, "  - %s\n", s)
 		}
 	} else {
-		fmt.Fprintln(os.Stdout, "note       : no permission matrix found — change-scoped actions are")
+		fmt.Fprintln(os.Stdout, "note       : no permission matrix found — every RPC (changes,")
+		fmt.Fprintln(os.Stdout, "             inventory, templates, audit reads, system config) is")
 		fmt.Fprintln(os.Stdout, "             limited to authentication alone. Configure teams with")
 		fmt.Fprintln(os.Stdout, "             `levee team add`, roles with `levee rbac`, and members with")
 		fmt.Fprintln(os.Stdout, "             `levee user add`.")

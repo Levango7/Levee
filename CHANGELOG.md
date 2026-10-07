@@ -4,6 +4,78 @@
 
 ## [Unreleased]
 
+### 功能（human 门禁支持 quorum 与 exclude_initiator）
+
+- human 门禁从"单人同意"扩到工作流可声明的**同意形状**：两个新参数
+  - `min_approvers: <int>`（>0，缺省 1）：需要**几个不同的人**同意才放行；
+  - `exclude_initiator: <bool>`：**禁止 run 的发起人**投这一票（四眼原则）。
+- 落地分层：`verify` 的 `HumanRequest` 现在承载同意形状（`MinApprovers` / `ExcludeInitiator` / `Initiator`），而不是只传 run/gate/reason——**形状是问题的一部分，不是传输的实现细节**：表达不了 quorum 的传输必须拒绝，而不是用一个投票作答。`GateInput` 新增 `Initiator`，`engine` 从 `run.Creator` 取（读不到就是空，见下）。
+- **审批层不用改**：`approval.Service.decide` 早已强制 `MinApprovers` 配额与 `ExcludeInitiator`（本仓既有实现）；本次只是把工作流的声明透传进 `CreateRequest`。
+- **两个 fail-closed 点**：
+  - 声明了 `exclude_initiator` 但 run **没有记录的发起人**时，门禁**直接拒绝**（`unverifiable_independence`），不把"无人可排除"悄悄降级成"谁都能投"——正是该声明要防的事；
+  - `min_approvers <= 0` 是**参数错误**（fail-closed 拒绝，不静默当 1）。
+- 审批人记录：quorum 下 `HumanDecision.Approver` **列出全部同意者**（逗号连接），不是只报最后一票——`min_approvers > 1` 的语义是"这些人同意"，只报一个是少报。
+- 迁移说明：**纯新增**——此前 `min_approvers` / `exclude_initiator` 是**未知参数**（strict 校验会 fail-closed 拒绝），所以没有存量工作流使用它们，行为不变。
+- 验证：`verify` 3 条（不可执行的排除拒绝且**根本不问传输**、同意形状抵达传输、非正配额拒绝）+ `approval` 2 条（2-of-N：一票**不**放行、两票放行且列出两人；发起人那票被拒后独立投票放行）。**2 项变异被抓**：quorum 不落进记录 → 2-of-N 被一票放行；去掉不可执行排除的拒绝 → 该用例转红。
+
+### 功能（human 门禁终于有传输：复用审批链，`levee gate approve|reject` 是决定面）
+
+- **此前 human 门禁在 serve 下不可用**：`WithGateApprover` 生产 0 调用点，计划期直接拒绝（`ErrGateNotExecutable`），任何声明 `human` 的 workflow **根本 plan 不出来**。上一批只补了"契约能携带审批人身份"（`HumanDecision`），本批补上传输。
+- 传输 = **复用审批链**（`approval.GateApprover`，实现 `verify.HumanApprover`）：门禁打开时按确定性 ID `gate-<run>-<gate>` 建一条审批记录，轮询直到有人决定，把决定与**审批人身份**回给门禁。
+  - **与变更审批隔离**（关键）：门禁记录绑一个 run 永远不可能有的 PlanHash（`human-gate:<gate>` 前缀）。变更结算/apply/重规划三处都用 `state.Approval.MatchesPlan(run.PlanHash)` 选行，而它只在 PlanHash **非空且相等**时匹配——所以批准变更不会顺带放行门禁、反之亦然。若忘了这层，两类同意就被混成一个（测试 `TestGateApproverOpensAnIsolatedRecord` 钉住）。
+  - **重入安全**：确定性 ID 让重启/续跑的门禁**重挂到同一条记录**，而不是叠第二条（`TestGateApproverReattachesToAnExistingRecord`）。
+  - 决定面是新 CLI **`levee gate approve|reject <run-id> <gate-name>`**（审批人＝本地 actor，与 `levee approve` 同一信任边界）。**它刻意不结算 run**——run 已经在跑，门禁只是其中一步；这与 `levee approve` 只动门禁、不动 run 状态的区别写进了命令帮助。
+  - 未做的（明确留此）：门禁的 quorum / `min_approvers` 与独立性（`exclude_initiator`）——门禁 MVP 是**单人**（与 `verify.HumanApprover` 同口径），多人同意属后续。
+- **迁移说明（行为变更）**：装了 `--engine-enabled` 的 serve 从此**会安装门禁传输**——声明 `human` 的 workflow 由"计划期被拒"变为"可计划、运行到门禁时等待人在环"。等不到人时按门禁自身的 `timeout_seconds`（缺省 1800s）超时失败。需要人工介入的部署请确保有人值守 `levee gate approve`。
+- `approval.CreateRequest` 新增可选 `ID`（调用方要等待自己创建的记录，没有自选 ID 就没有可轮询的目标）。
+- 验证：`internal/approval` 5 条传输测试（批准/驳回各带身份、隔离标记、ctx 取消、重入）+ `cmd/levee` 1 条**走真实 serve 选项构造器与真实 plan 漏斗**的接线测试（带控制组：无审批服务时同一 workflow 仍被 `ErrGateNotExecutable` 拒——证明"能计划"来自接线而非 workflow 本身）。2 项变异被抓（摘掉接线选项 → 接线测试红；去掉隔离 PlanHash → 隔离测试红）。
+
+### 变更（human 门禁的审批决定现在携带可验签审批人身份）
+
+- **此前 `verify.HumanApprover` 连"谁批的"都表达不了**：`RequestAndWait` 只返回一个 `bool`。于是即使将来装了传输，门禁结果里也不会有人名——审计只能记"approved"，记不了"alice 批的"。
+- `RequestAndWait` 现在返回 `HumanDecision{Approved bool, Approver string}`；`HumanGate.Check` 在传输能认证主体时把 `Approver` 记进结果的 `details["approver"]`，**认证不了就留空**（不伪造、不渲染空名字），未认证的批准因此在轨迹里可见而非被匿名归因。
+- 语义边界：门禁本身不做鉴权判定（那是传输层的边界），它只忠实记录传输给出的身份——与 `#50` 的「归属保真」同一口径：回显即承诺、身份必须可跨进程解析。
+- **仍未做（明确记此，不留给沉默）**：生产端**没有**安装任何传输，`WithGateApprover`（`wiring.go:212`）调用点数仍为 0，故 human 门禁在 serve 下仍 **fail-closed**（计划期拒绝 / 运行期 Passed=false，不自动放行）。本次只补上"契约能携带身份"这一半——这是**任何**传输的前置。另一半（门禁级的人在环输入路径）需要**新增一个 RPC**（现有 approve/deeplink 路径都是 change 级、按 run 结算，没有"按门禁"的目标定位），而 `internal/grpc/pb/` 被 CI 的 protoc 版本钉死、本轮不动；或走投递集成（chatops/mobile deeplink 已有部分零件）。这是 roadmap 上 human 门禁审批人传输的开放产品决策，方向已定（复用 `internal/approval`），待独立排期。
+- 影响面：接口变更只动了 3 个测试替身（本仓无生产实现），`go build ./...` / `go test ./internal/verify/ ./internal/engine/ ./internal/wiring/` 全绿。3 条新测试 + 1 项变异（去掉记录 → 身份两例转红）。
+
+### 功能（条件式 ABAC 接入服务层：`policies.yaml` 成为第三条收窄约束）
+
+- **此前 `policies.yaml` 只有 `levee rbac` 在算，服务层 `authz.Decide` 从不读它**——同一份策略文件，CLI 判它、serve 不判。现在 `authz.Load` 会读 `<dataDir>/policies.yaml`（缺失=正常；**解析失败=启动失败**，与 permissions.yaml 同姿态），并在矩阵与角色两轴都放行之后，再跑一道**只收窄、绝不能放宽**的策略层。
+- 语义（`internal/authz/authz.go` `applyPolicyLayer`）：
+  - **只在 allow 路径上咨询**——矩阵/角色拒绝了就不再看策略，所以策略永远不能把被拒的请求救回来（`TestConditionalPolicyCannotWiden` 钉住）。
+  - **三态靠 `Evaluate` 的 error 区分**：显式匹配的 deny→拒绝；显式匹配的 allow→放行（`Via=policy`）；**无任何策略匹配（`ErrNoMatch`）→ 维持原判定**。把 `ErrNoMatch` 当成 deny 是这一层最容易犯的错——它就是"没有任何策略谈到这个请求"，与"策略拒绝"是两回事（`TestConditionalPolicyLeavesNonMatchingRequestAlone` 钉住；变异把 no-match 改成 deny 即转红）。
+  - **条件求值出错 fail-closed**（拒绝），不静默放过。
+  - 条件里能引用的 label：请求环境，以 `env` 与 `target.env` 两种拼写暴露（策略示例用的正是后者）；服务层按 `(env, action)` 判定，没有别的资源属性，故引用未知 key 的条件求值为"缺键"→不匹配→维持原判定（收窄方向）。
+  - **资源族映射** `policyResourceFor`：变更类动作（plan/apply/approve/rollback/pause/resume/pause_all/resume_all/cancel）→ `change:*`；其余（view/admin 等跨族动作）→ 裸通配 `*`。即**具体非变更资源模式（如 `target:*`）在服务层暂不匹配**，它们对 `levee rbac` 仍然有效——这是本层的已知边界，写在此处而非留作沉默的空转。
+- 与既有语义的关系：不改矩阵×角色两轴口径（继续管"哪些环境能去"与"在那儿能做什么"），策略层只加"且该资源条件成立"。`Decision.Via` 新增取值 `policy`，`levee authz explain` 会显示。
+- 迁移说明（行为变更）：**给部署放一份 `policies.yaml` 的运维请注意**——它现在会立刻作用于 serve 的 plan/apply/approve/rollback/暂停/取消等变更动作判定；此前只影响 `levee rbac` 的检查输出。条件写错会拒绝本来放行的动作（收窄方向），需按 `levee authz explain` 的文案排查。
+
+### 文档修正（前瞻步 `idempotent` 被规范误标为治理字段）
+
+- **规范承诺了一个代码从不提供、且设计刻意不提供保证的不可篡改性**。`docs/leveelang-spec.md` §4.5 字段表曾写：step 上的 `idempotent`「**该声明进入 plan 哈希**（v2 治理字段），批准后不可改写；回滚补偿……据此决定重跑还是拒绝」。实测三处都不成立：
+  - `plan.PlanStep`（`internal/plan/generator.go`）**没有** `Idempotent` 字段——前瞻步的声明在 parser→IR 之后、进入 plan 层时即被丢弃；`canonicalStepV2`（`internal/plan/hash.go`）同样无此字段，故前瞻步 `idempotent` **从不出现在 plan 哈希里**。
+  - 真正进哈希、并被回滚补偿门禁 `compensationRepeatable`（`internal/rollback/manager.go:675`）读取的 `idempotent`，是 **`rollback {}` 内 undo step 上的同名声明**（`canonicalRollbackStep.Idempotent`，`hash.go:195`）——规范把两个字段混为一谈了。
+  - 断点续跑「跳过哪一批」的判据是 **executor 模块类型自身**的幂等声明（`completedIdempotentBatches` 调 `executor.IsIdempotent(ps.Module)`，`internal/wiring/persist.go:334`），**从不**读作者的逐步 YAML 声明。这是 `docs/design-cluster-failover.md` §7.5 Q3 的明文取舍（"需要 executor 逐类型幂等声明……是独立项目"）——让调用方自证"可安全重跑"等于把安全属性交给调用方断言，与已修的「客户端控制 autoApprove」同族，故刻意不做。
+  - 出厂 `examples/gate-templates/{nginx,mysql}.yaml`、`deploy/lab/workflows/lab-batch-restart.yaml` 里 5 处 `idempotent: true` 都是标在 **shell.exec 前瞻步**上（作者想说"这条重跑安全"），但模块级判定对 shell.exec 恒为 false，因此这些声明按上述设计本就不驱动任何跳过——规范把它们说成哈希绑定的治理字段是错的。
+  处置（**改文档以匹配代码与设计，不改代码行为**，兼容零影响）：§2.2 关键字清单、§4.5 字段表、§2.1 语法草图三处统一改口径——前瞻步 `idempotent` 是 advisory（进 IR、不进哈希、非门禁），undo step 的 `idempotent` 才是 v2 治理字段；并在 §7.1「step 级 rollback 字段定义（补偿契约）」表补上此前**完全没登记**的 `idempotent（undo step 上）` 行，说明其哈希绑定 + `compensationRepeatable` 消费 + "一条未声明即整份补偿不可重跑"的语义。
+  守门：新增 `internal/plan/idempotent_advisory_test.go` 两条特征测试把这个不对称钉成可执行契约——`TestForwardStepIdempotentIsNotHashBound`（仅改前瞻步 `idempotent` → plan 哈希必须不变）、`TestRollbackStepIdempotentIsHashBound`（仅改 undo step `idempotent` → 哈希必须变）。**变异自证**：把 `Idempotent` 从 `canonicalRollbackStep` 摘掉 → 第二条转红；把前瞻步 `idempotent` 一路接进 `PlanStep`+`canonicalStepV2` → 第一条转红；两条都能编译，红来自断言而非构建失败。若日后有人欲将前瞻步声明升格为治理字段，必须先同时改设计文档 §7.5 Q3 的取舍并翻这两条测试，不能悄悄漂移。
+
+### 安全修复（清单/模板/审计/系统面接入权限矩阵，另 23 个 RPC 从此有判定）
+
+覆盖面按生成的 `*ServiceServer` 接口逐个点数：target 5 + inventory 6 + template 5 + audit 4 + system 4 = **24 个 RPC**，其中 22 个走准入判定、`GetStatus` 走可见性过滤（计数也是一种读），只有 `GetVersion` 刻意保持不门禁。
+
+- **写了 `permissions.yaml` 的部署，只把一半的 API 交给策略管**：`internal/grpc` 中五个服务对 authz 的引用计数为 0——`grep -c authz` 打在 `target_service.go` / `inventory_service.go` / `template_service.go` / `audit_service.go` / `system_service.go` 上全是 0（本批开始前实测）。矩阵只在变更路径生效，于是同一个只被允许看 dev 的调用方仍然可以：**枚举全部 prod 主机及其 `credential_ref`**（`ListTargets`/`GetTarget`/`CheckTarget`）、**冻结或退役一台 prod 主机**（`SetTargetStatus`，等于让别人跑不起来的刹车）、批量导入清单、删掉别队赖以创建变更的模板、读整条审计链与任意 run 的报告（`GetAuditLog`/`ListAuditTraces`/`VerifyHashChain`/`GetRunReport`，其中 `TargetHistory` 还会交出每个触及该主机的 run 的**工作流全文与创建者**）、导出部署配置（`GetConfig`，脱敏后仍含数据目录、监听地址与凭据引用形态）。
+  落地姿态（一份 `internal/grpc/resource_authz.go`，五个服务不许各自漂移）：
+  - **作用域取资源自己声明的环境**。主机的环境是 `labels["env"]`；变更的是 run 的环境列。分组、模板、配置什么都不声明，它们本来就是部署级的，按 `permission.default_env` 判定——**不去解析分组名 `"prod/db"` 的第一段**，那把一个安全判定挂在命名习惯上；矩阵生效又没有默认环境时是**拒绝**而不是猜（`authz.Decide` 既有语义）。
+  - **清单级写 = `admin`**：能在机群里面做什么，不等于能决定机群里面有什么。
+  - **读 = `view`，且列表收窄而不是整页拒绝**（拒绝会把本来允许看的行也藏掉）：`ListTargets`、`TargetHistory`、`GetAuditLog`、`ListAuditTraces`、不带 run 参数的 `VerifyHashChain`、以及 `GetStatus` 的 run 计数（**计数也是一种读**："你的 prod 此刻在跑 2 个变更"是关于别人变更的信息）。`TotalSize` 跟着收窄后的集合走，否则分页会承诺下一页拿不到的行。
+  - **不可归因主体照旧放行读、拒绝写**——继承既有姿态而非新造（共享令牌下过滤所有人不产生任何隔离，只会把控制台弄黑）。
+  - 两处刻意不同：`InstantiateTemplate` 取**请求声明环境里的 `plan`**（它创建的是一条变更）；`ImportTargets` 对文件里**每一个**声明环境都要 `admin`，因为一份清单文件就是一批 `AddTarget`，不能比其中单条更可授权——判定在任何写入之前，含一台越界主机的文件**一台都不导**。`GetVersion` 保持不门禁：需要队授权的探针等于让监控在没人配置时集体失效。
+  **接线由测试证明，不靠假设**：`InventoryService` 原本在注册点构造（`cmd_serve.go:792`），游离于所有测试之外；现在它和其余服务一样出自 `buildServeServices`，`cmd/levee/serve_policy_wiring_test.go` 用真实构造函数断言①六个服务对未登记主体都拒、②sre 成员的变更授权齐全仍被拒清单写、③dave 的 `admin` 让同一批调用通过（证明拒的是矩阵而不是硬编码）、④空数据目录一切照旧。**此前 `cmd/levee` 没有任何测试提到过 authorizer**——门在结构体里不等于门在进程里。
+  **迁移说明（行为变更）**：启用矩阵的部署会立刻看到三类变化——只读型调用方拿不到别的环境的主机/审计行（列表变短，不是变空）；清单与模板的写、`GetConfig` 需要 `admin`；**未配 `permission.default_env` 时分组/模板/配置一律拒绝**（那是"没有环境可判"的正确回答，补救是配默认环境或给矩阵补一个 `*` 环境）。`levee serve` 启动日志与 `levee authz status` 的文案同步改成如实描述覆盖面。
+
+验证：新增 15 个测试函数（`internal/grpc/service_policy_test.go` 12 + `cmd/levee/serve_policy_wiring_test.go` 3）。**先探针后修复**：12 条服务级用例在未接线树上跑，11 条按断言失败（只有"没配矩阵就不变"那条通过）——这就是"今天是敞开的"的实测证据。**18 项变异全部被抓且均能编译**：判定动作用错（写按 `view` 判）、读判定退回默认环境、过滤整体关闭、过滤恒放行、`envOfTarget` 恒空、`AddTarget`/`RemoveTarget`/`SetTargetStatus`/`ImportTargets`/`InstantiateTemplate` 五处作用域各自退回默认环境、列表与历史与审计行与 verify 全扫描四处去掉过滤、`GetRunReport` 不判环境、`GetStatus` 退回总数、serve 的两处 `WithAuthorizer` 分别删掉。`ChangeService` 的 `authorize`/`authorizeRead`/可见性谓词改为调用同三个助手，拒绝文案与"是否启用过滤"的规则从此只有一份定义。`go build ./...` / `go vet ./...` / `go test ./...`（65 包）与 `internal/grpc/pb/` 未改见提交说明。
+
 ## [v1.19.1] - 未切版
 
 > **发布状态：未切版。** `v1.19.1` 的 tag 尚未打出，因此 `ghcr.io/levango7/levee:v1.19.1` 这个制品还不存在；下面五批内容都已进 master。chart 的 `appVersion` 与 `values.image.tag` 保持指向上一个真实存在的发布，等 tag 切出后再一并升档——`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，抢先写未来的版本号会让 `delivery` job 变红，而那正是这条门禁该做的事。

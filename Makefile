@@ -14,7 +14,8 @@ build:
 	go build $(GOFLAGS) $(LDFLAGS) -o $(BINARY) ./cmd/levee
 
 # Build the Web UI (npm ci + vite build) and refresh internal/web/dist so the
-# Go binary embeds the real assets. Preserves internal/web/dist/.gitignore.
+# Go binary embeds the real assets. The dist/ contents are committed (there is
+# no .gitignore under it); this target mirrors web/dist over them.
 web:
 	cd web && npm ci && npm run build
 	find internal/web/dist -mindepth 1 ! -name '.gitignore' -exec rm -rf {} +

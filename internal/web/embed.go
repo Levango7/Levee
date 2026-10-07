@@ -4,10 +4,11 @@
 // start with /api/ or /events/ is rewritten to index.html so that client-
 // side routing works on a fresh page load.
 //
-// The embedded directory is internal/web/dist/. A committed placeholder
-// index.html keeps `go build` working in a fresh checkout; the Makefile
-// `web` target overwrites dist/ with the real `npm run build` output before
-// release builds.
+// The embedded directory is internal/web/dist/, whose full contents (index.html
+// plus hashed assets/) are committed so `go build` works without a node
+// toolchain. The Makefile `web` target refreshes dist/ from `npm run build`
+// whenever the frontend changes; CI rebuilds and diffs it to catch a stale
+// commit.
 package web
 
 import (
@@ -26,8 +27,8 @@ var errNotSeekable = errors.New("file is not seekable")
 
 // distFS holds the embedded static files. The `all:` prefix includes files
 // starting with `_` or `.`, which Vite may emit. The directive requires
-// internal/web/dist/ to exist at compile time; the committed placeholder
-// index.html guarantees that.
+// internal/web/dist/ to exist at compile time; the committed dist/ (checked
+// into the repository) guarantees that.
 //
 //go:embed all:dist
 var distFS embed.FS
