@@ -166,28 +166,64 @@ func (b *AuditChainBuilder) walkChain(ctx context.Context, fn func(a *state.Audi
 	}
 }
 
-// Seal recomputes the chain over every visible audit row and persists any hash
-// that is missing or wrong, returning how many rows it had to write.
+// Seal extends the chain over rows that are not yet sealed at their current
+// position, and refuses to relink a row whose CONTENT no longer matches its own
+// stored hashes. Those two rules are what the walk has to tell apart, and the
+// discriminator is self-consistency:
 //
-// The walk writes only rows whose stored hash differs from the recomputed one,
-// so the steady state — one new row per call — costs one read of the chain and
-// a single-row update. It is safe to call concurrently: any two overlapping
-// calls derive identical hashes for the rows they share, so at worst they
-// write the same value twice.
+//   - stored (prev, curr) already equals the recomputation — the steady state,
+//     nothing to write;
+//   - CurrHash is empty — the row was never sealed (a new append, or a row this
+//     walk could not see on an earlier pass) — write it;
+//   - the row is self-CONSISTENT — ComputeAuditHash(a, a.PrevHash) == a.CurrHash
+//     — but no longer sits where the walk expects, because rows arrived before
+//     it after it was sealed (two concurrent writers whose timestamps order
+//     opposite to their inserts; a backdated write). The row's content is intact
+//     by its own hash, so it is relinked at its current position;
+//   - the row is self-INCONSISTENT — its content no longer matches the pair it
+//     was sealed with — write nothing and return ErrChainBroken.
 //
-// An empty audit log is not an error; it seals to zero rows. A failure to seal
-// leaves the affected rows without hashes, which Verify then reports as
-// FailureEmptyHash rather than silently passing.
+// The last case is the point of the whole exercise. Before this rule the walk
+// rewrote every row whose stored hash differed, so "edit a row, then let any
+// audit write happen" erased the edit: the next Seal relinked the altered row
+// and Verify passed. WORM triggers block content edits at the database, which
+// makes the seal's rewrite the remaining path by which altered content could
+// become verifiable — the same hole SA-002 recorded on the trace side.
+//
+// What this deliberately does NOT catch: a row DELETED with the triggers
+// dropped. Its successor is self-consistent and is relinked by the next seal,
+// exactly as before — the triggers are the guard against deletion, and Verify
+// reports the break until the next write seals over it. Recorded here because
+// the alternative reading ("a seal can never repair anything") is what the first
+// draft of this change assumed, and it turned a benign concurrent write into a
+// permanently red chain: BuildForce/Rebuild have no production caller and no
+// operator-facing command, so "report and let an admin repair" is not reachable
+// for anyone. A rule that fires on legal writes and cannot be cleared is worse
+// than the hole it closes.
+//
+// An empty audit log is not an error; it seals to zero rows.
 func (b *AuditChainBuilder) Seal(ctx context.Context) (int, error) {
-	prev := ""
 	sealed := 0
+	prev := ""
 	err := b.walkChain(ctx, func(a *state.Audit) error {
 		want := ComputeAuditHash(a, prev)
-		if a.PrevHash != prev || a.CurrHash != want {
+		switch {
+		case a.PrevHash == prev && a.CurrHash == want:
+			// Already exactly what this walk would write: the steady state.
+		case a.CurrHash == "":
 			if err := b.store.UpdateAuditChain(ctx, a.ID, prev, want); err != nil {
 				return fmt.Errorf("audit: seal audit %q: %w", a.ID, err)
 			}
 			sealed++
+		case ComputeAuditHash(a, a.PrevHash) == a.CurrHash:
+			// Relocated, not altered: relink it here.
+			if err := b.store.UpdateAuditChain(ctx, a.ID, prev, want); err != nil {
+				return fmt.Errorf("audit: seal audit %q: %w", a.ID, err)
+			}
+			sealed++
+		default:
+			return fmt.Errorf("audit: seal audit %q: record content no longer matches the hashes it was sealed with: %w",
+				a.ID, ErrChainBroken)
 		}
 		prev = want
 		return nil
@@ -196,6 +232,36 @@ func (b *AuditChainBuilder) Seal(ctx context.Context) (int, error) {
 		return sealed, err
 	}
 	return sealed, nil
+}
+
+// Rebuild discards the stored hashes and recomputes the whole chain, returning
+// how many rows it wrote. It is the deliberate administrative override for a
+// chain Seal refuses to repair, and the audit-side counterpart of the trace
+// chain's BuildForce.
+//
+// Callers are responsible for investigating the break and for recording why the
+// relink was authorised: after Rebuild the tamper is no longer detectable from
+// the table. Against a tampered row this is exactly the operation SA-002 warns
+// about, which is why it is a differently-named method that nothing on the write
+// path calls, rather than a flag on Seal.
+func (b *AuditChainBuilder) Rebuild(ctx context.Context) (int, error) {
+	written := 0
+	prev := ""
+	err := b.walkChain(ctx, func(a *state.Audit) error {
+		want := ComputeAuditHash(a, prev)
+		if a.PrevHash != prev || a.CurrHash != want {
+			if err := b.store.UpdateAuditChain(ctx, a.ID, prev, want); err != nil {
+				return fmt.Errorf("audit: rebuild audit %q: %w", a.ID, err)
+			}
+			written++
+		}
+		prev = want
+		return nil
+	})
+	if err != nil {
+		return written, err
+	}
+	return written, nil
 }
 
 // Verify walks the chain read-only and reports every row that does not link up.

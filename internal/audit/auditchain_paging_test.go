@@ -129,14 +129,24 @@ func TestAuditChain_Paging_DetectsTamperAcrossBoundary(t *testing.T) {
 	assert.Equal(t, "pt-3", result.Failures[0].AuditID)
 	assert.Equal(t, 3, result.Failures[0].Index)
 
-	// Re-sealing repairs it: the paged walk recomputes the whole chain, so the
-	// rows after the break get their hashes back. That is three of the six —
-	// the edited row and the two behind it, whose prev_hash covered it. A chain
-	// relinks from the break onward, which is why Verify's job is to report the
-	// ONE break while Seal's is to rewrite the tail it invalidates.
-	sealed, err := b.Seal(ctx)
+	// Seal must NOT repair it. Rewriting the row the tamper lives in would relink
+	// the chain and make Verify pass, erasing the only evidence of the edit — the
+	// exact hole SA-002 recorded. Seal stops and reports instead.
+	_, err = b.Seal(ctx)
+	require.Error(t, err, "a sealed-but-wrong row must be reported, never rewritten")
+	assert.ErrorIs(t, err, ErrChainBroken)
+
+	after, err := b.Verify(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 3, sealed)
+	assert.False(t, after.Valid, "the evidence must survive a seal attempt")
+
+	// Rebuild is the deliberate administrative override: with the break
+	// investigated, wiping the stored hashes is an explicit choice rather than
+	// something every seal does silently. Three of six rows are rewritten — the
+	// edited row and the two behind it whose prev_hash covered it.
+	written, err := b.Rebuild(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 3, written)
 	result, err = b.Verify(ctx)
 	require.NoError(t, err)
 	assert.True(t, result.Valid, "failures: %+v", result.Failures)
