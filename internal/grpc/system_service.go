@@ -20,6 +20,7 @@ import (
 
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/diagnosis"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/permission"
@@ -102,9 +103,18 @@ func (s *SystemService) GetVersion(ctx context.Context, _ *emptypb.Empty) (*pb.V
 
 // GetStatus returns a snapshot of daemon health: active/paused run counts,
 // uptime, store type, and any warnings.
+//
+// The `status` value set is diagnosis.HealthStatus, not a private invention of
+// this handler: the literals here used to be spelled by hand ("healthy",
+// "degraded") while the owning vocabulary lives one package over. Hand-spelled
+// values only stay correct by coincidence -- that exact coincidence is what
+// shipped #88 (state judged "done", the engine wrote "completed"). The web
+// mirror is pinned to those same constants by
+// internal/diagnosis/health_status_vocabulary_test.go, so a value change now has
+// to move all three copies together or a test goes red.
 func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.SystemStatus, error) {
 	resp := &pb.SystemStatus{
-		Status:        "healthy",
+		Status:        string(diagnosis.StatusHealthy),
 		ActiveRuns:    0,
 		PausedRuns:    0,
 		UptimeSeconds: int64(time.Since(s.startTime).Seconds()),
@@ -149,7 +159,7 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 
 	// Derive overall status from warnings.
 	if len(resp.Warnings) > 0 {
-		resp.Status = "degraded"
+		resp.Status = string(diagnosis.StatusDegraded)
 	}
 
 	return resp, nil
