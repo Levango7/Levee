@@ -124,6 +124,34 @@
   另外 `web/src/types/levee.ts:117` 把该字段类型写死成三个值（无 `unknown`），与 `HealthStatus` 四值不同源，
   本批的查表入口是 `string`，不受该类型限制。
 
+### 修复（`/system/status` 的健康值以前是手抄的）
+
+- **`GetStatus` 用裸字面量写自己声明的词表**：`internal/grpc/system_service.go:107` 写 `Status: "healthy"`、
+  `:152` 写 `resp.Status = "degraded"`，而这组值的 owning 常量就在同仓的
+  `internal/diagnosis/health_probe.go:39-49`（`StatusHealthy` / `StatusDegraded`），`internal/grpc`
+  也已经 import 了该包（`diagnosis_service.go:23`）⇒ 不存在"为了避环才手抄"的理由。
+  这正是 #88 的成因形状（state 按 `"done"` 判完成、引擎写 `"completed"`，两边各自都有绿测试）与
+  #91 里 `template/clone.go` 用本包常量写 state 列的同一族：**手抄只在拼写巧合成立时才正确**。
+- **两处改用常量**（值不变，`pb.SystemStatus.status` 仍是 string），并在函数注释里写明词表归属。
+- **新增守卫** `internal/grpc/system_health_vocabulary_test.go` 两条：① 函数体里 `Status:` / `resp.Status =`
+  出现裸字符串即判红，并显式要求两个 `diagnosis.Status*` 引用在场（作用域只圈响应状态，
+  同函数里 `state.RunFilter{Status: "running"}` 是**运行**词表，不该被抓——这正是 #94 里
+  "同名不同物"的教训）；② 前端类型 `web/src/types/levee.ts` 的 `SystemStatus.status` union 与
+  常量组**双向**核对（端点能产出的值必须在 union 里；union 也不许出现常量组之外的自造词），
+  常量侧从 `health_probe.go` 源码解析而非复述清单。
+- **两处实现细节值得留档，因为它们各藏过一次假结论**：
+  ① 我第一版用一条 `(?ms)` 正则去截函数体，静默匹配为零，测试报的是"锚点找不到"而不是"断言失败"——
+  改成按行扫描（找到签名列到第一个第 0 列的 `}`）后问题立刻现形；TS 那条也一样，我先假设接口成员
+  以 `;` 结尾，而该文件不写分号。判据：**解析不到必须是响的失败，而不是空集合通过**。
+  ② 第一次变异我把两处常量一起换回字面量，结果是**编译失败**（`diagnosis` import 变成未使用）——
+  那是"语法红"不是"逻辑红"。重做为只改一处、`go build ./internal/grpc/` 先过，
+  两条断言才各自报出自己该报的话（`should assign diagnosis.StatusHealthy` + `bare literal assigned to the health status`）。
+- **已知且刻意保留的不一致**：类型里还写着 `unhealthy`、常量组里还有 `unknown`，而本端点今天只可能产出
+  `healthy` / `degraded`（warnings 非空即降级）。所以 ② 的断言方向是"产出 ⊆ 类型"而非相等，
+  并把这条差异写在测试注释里——不用断言把差异抹平，也不用断言制造一个假的完备感。
+- 验证：`go build ./...`、`internal/grpc` + `internal/diagnosis` 用例全绿、`golangci-lint --timeout 5m ./internal/grpc/...`、
+  `python scripts/check_release_versions.py` PASSED。本批不碰 web 与构建产物。
+
 ## [v1.20.0] - 2026-10-07
 
 > **发布状态：已切版。** 附注 tag `v1.20.0`（tag 对象 `fe4b162`，剥壳指向 `738c477e`）于 2026-10-07 推送，`release.yml` 据此发布：GitHub Release `draft=false`、`publishedAt=2026-10-07T14:35:31Z`、资产为 6 个平台包 + `checksums.txt`；镜像 `ghcr.io/levango7/levee:v1.20.0` 按外部事实核过——`manifests/v1.20.0` 返回 200，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0]`。本小节共 **15** 个小节。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.20.0` / 逐字 `v1.20.0`——顺序不能反：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，所以在 tag 存在之前它们必须继续指向上一个真实发布（此前指 `1.19.0` / `v1.19.0`）。
