@@ -33,7 +33,15 @@ function responseErrorAdapter(status: number, data: unknown, message = ''): Axio
   }
 }
 
-describe('token storage', () => {
+// These suites re-import the module graph (vi.resetModules() + await import(...)).
+// That cold transform costs ~1s when the machine is idle but was measured at
+// 18090ms under load, and vitest's default testTimeout is 5000ms -- so the FIRST
+// test of the file fails at random whenever the box is busy. 30s absorbs the
+// transform without hiding a real hang (an unresolvable promise still fails,
+// just later). Numbers come from the runs recorded in the PR description.
+const COLD_IMPORT_TIMEOUT = 30_000
+
+describe('token storage', { timeout: COLD_IMPORT_TIMEOUT }, () => {
   beforeEach(() => {
     localStorage.clear()
   })
@@ -61,7 +69,7 @@ describe('token storage', () => {
   })
 })
 
-describe('request pipeline', () => {
+describe('request pipeline', { timeout: COLD_IMPORT_TIMEOUT }, () => {
   beforeEach(() => {
     localStorage.clear()
   })
@@ -88,7 +96,7 @@ describe('request pipeline', () => {
   })
 })
 
-describe('error normalisation', () => {
+describe('error normalisation', { timeout: COLD_IMPORT_TIMEOUT }, () => {
   beforeEach(() => {
     localStorage.clear()
   })
@@ -126,7 +134,7 @@ describe('error normalisation', () => {
   })
 })
 
-describe('401 handling', () => {
+describe('401 handling', { timeout: COLD_IMPORT_TIMEOUT }, () => {
   beforeEach(() => {
     localStorage.clear()
   })
