@@ -37,12 +37,28 @@ jobs:
         # picked up without anyone remembering to edit this step. An empty
         # discovery would still exit 0, so each expected suite must show up in
         # the verbose log.
+        #
+        # `set -o pipefail` is load-bearing, not decoration. The runner's default
+        # shell is `bash -e {0}` WITHOUT pipefail, so `unittest … | tee` reports
+        # tee's status and a FAILED suite still exits 0 — the name grep below
+        # would pass and this job would go green on a red suite. Measured
+        # 2026-10-09, after a structurally broken CHANGELOG passed this gate:
+        # `bash -e -c '… | tee'` → exit 0 with PIPESTATUS `unittest=1 tee=0`;
+        # the same command with pipefail → exit 1. Both judgments are recorded
+        # and reported together, so `-e` cannot cut the step off at the first
+        # failure and hide the other verdict. scripts/test_release_gate_step.py
+        # pins this shape (including that the pipe and the name list are still
+        # there, so the guard cannot rot into a vacuous check).
         run: |
-          python -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee /tmp/py.log
-          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget test_changelog_structure; do
+          set -o pipefail
+          failures=""
+          python -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee /tmp/py.log \
+            || failures="unittest"
+          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget test_changelog_structure test_release_gate_step; do
             grep -q "$suite" /tmp/py.log \
-              || { echo "::error::discovery collected nothing for $suite (renamed or deleted?)"; exit 1; }
+              || { echo "::error::discovery collected nothing for $suite (renamed or deleted?)"; failures="$failures missing:$suite"; }
           done
+          [ -z "$failures" ] || { echo "::error::release-gate self-tests failed: $failures"; exit 1; }
 
   # ---------------------------------------------------------------------------
   # vet: cheap structural checks, runs first to fail fast.
