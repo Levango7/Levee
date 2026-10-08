@@ -39,7 +39,7 @@ jobs:
         # the verbose log.
         run: |
           python -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee /tmp/py.log
-          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget; do
+          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget test_changelog_structure; do
             grep -q "$suite" /tmp/py.log \
               || { echo "::error::discovery collected nothing for $suite (renamed or deleted?)"; exit 1; }
           done

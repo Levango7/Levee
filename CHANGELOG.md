@@ -74,9 +74,6 @@
   分布四行依次是 待领取 / 执行中 / 已完成 / 已中断，`leaked=[]`；同一页四个小节标题（节点、分配状态分布、
   Worker 负载、Run 批次进度）都在，#90 的面板可达性没有回退。
 
-
-## [Unreleased]
-
 ### 修复（系统页与会话页也在把线上原值当文案；doctor 判定其实有四个值）
 
 - **两处渲染原值**：`SystemView.vue` 三处（`status.status` 健康状态、`doctor.status` 诊断总评、`row.status` 每条检查）、
@@ -124,6 +121,27 @@
   另外 `web/src/types/levee.ts:117` 把该字段类型写死成三个值（无 `unknown`），与 `HealthStatus` 四值不同源，
   本批的查表入口是 `string`，不受该类型限制。
 
+### 修复（CHANGELOG 自己也被静默改坏过：master 上出现两个 `## [Unreleased]`）
+
+- **现象**：修完 #94 之后 `CHANGELOG.md` 有两个 `## [Unreleased]`（第 5 行与第 78 行）。第一份下面已有 #90/#91/#92 三节，
+  第二份下面是 #94 那节 ⇒ 按目录读文件的人只看得到最后一节，前三节在结构上"消失"，而**内容还在**。
+- **成因是一次锚点选择**：#94 那节的落笔锚在 `## [v1.20.0] - 2026-10-07` 上、连带写了一个 `## [Unreleased]`；
+  三方合并时两侧改的不是同一行，**git 不冲突、门禁不报错**，于是静默进 master。同一个错我在 #92 合并时手工发现并改掉了
+  （那次是把它拼成单一标题），但没有任何机器检查防它复发。
+- **修法**：只删重复的 3 行（空行 + 标题 + 空行），四节重新挂在唯一的 `## [Unreleased]` 下；
+  核对方式是数出来而不是看着说：`git diff --numstat` 为 `0 插入 / 3 删除`，`grep -c "^- "` 前后都是 **504** 行条目，
+  即零内容丢失、零内容新增。
+- **补上的守卫** `scripts/test_changelog_structure.py`（4 条真文件断言 + 3 条检测器自检）：唯一的 `## [Unreleased]`
+  且必须在第 5 行、它必须是第一个 `## ` 标题、它与第一个版本标题之间的内容必须归进 `### ` 小节、
+  版本号标题不得重复。**检测器自检不是装饰**：一条只会检查"当前恰好干净"的文件的门禁，无法证明它看得见损坏，
+  所以对合成的好/坏样本跑同一表达式，含一条"重复标题出现在文件深处（第 200+ 行）也要抓到"——
+  真实事故正是标题隔了 73 行，只看文件头的写法会漏。
+- **双向验过**：修复后的文件 7 例 OK；`git checkout HEAD -- CHANGELOG.md` 换回 master 上那份损坏版即
+  `AssertionError: Lists differ: [5] != [5, 78]`；再换回修复版重新 OK。登记进 `release-gate` 的逐套件点名表
+  （`ci.yml` 里那条 `for suite in …`），因为 discovery 空收集也会以 `Ran 0 tests / OK` 蒙混过去。
+- 本批同时把 #27 那条 `frontend` 随机红的根因记录在案（见下一条 PR/另一分支），它属于同一族：
+  **能静默通过的检查，不等于在检查什么**。
+
 ### 修复（`/system/status` 的健康值以前是手抄的）
 
 - **`GetStatus` 用裸字面量写自己声明的词表**：`internal/grpc/system_service.go:107` 写 `Status: "healthy"`、
@@ -151,6 +169,7 @@
   并把这条差异写在测试注释里——不用断言把差异抹平，也不用断言制造一个假的完备感。
 - 验证：`go build ./...`、`internal/grpc` + `internal/diagnosis` 用例全绿、`golangci-lint --timeout 5m ./internal/grpc/...`、
   `python scripts/check_release_versions.py` PASSED。本批不碰 web 与构建产物。
+
 
 ## [v1.20.0] - 2026-10-07
 
