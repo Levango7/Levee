@@ -1,0 +1,369 @@
+/* Design tokens — the single source of colour, type, space and motion.
+ *
+ * Structure: raw palette -> semantic aliases -> Element Plus variable mapping.
+ * Components must reference the SEMANTIC aliases (--lv-surface, --lv-text-2,
+ * …), never the raw palette and never a literal hex, so that the dark theme
+ * below can re-point every alias without touching a component.
+ *
+ * The Element Plus mapping is the second half of that contract: EP components
+ * (tables, buttons, tags, dialogs) paint themselves from --el-*, so re-pointing
+ * those at the same aliases is what makes an EP-first codebase look designed
+ * rather than default. Everything EP reads lives in its own block, and the
+ * dark block mirrors it — EP ships its own `html.dark` vars, and the ones set
+ * here deliberately come AFTER that file in the import order (see main.ts). */
+
+:root {
+  /* ------------------------------------------------------------------ brand
+   * Teal scale built around #0e7c7b — the product's existing brand colour,
+   * kept so the favicon, docs and console stay one identity. */
+  --lv-teal-50: #eefafa;
+  --lv-teal-100: #d3f1f0;
+  --lv-teal-200: #a6e3e1;
+  --lv-teal-300: #71cecb;
+  --lv-teal-400: #3fadaa;
+  --lv-teal-500: #0e7c7b;
+  --lv-teal-600: #0b6a69;
+  --lv-teal-700: #0a5655;
+  --lv-teal-800: #084342;
+  --lv-teal-900: #062f2f;
+
+  /* --------------------------------------------------------------- neutrals
+   * Cool grey with a faint blue cast: reads as an instrument panel, and keeps
+   * the teal accents from looking pasted on. */
+  --lv-ink-25: #fbfcfd;
+  --lv-ink-50: #f5f7f8;
+  --lv-ink-100: #eceff2;
+  --lv-ink-150: #e4e8ec;
+  --lv-ink-200: #d8dee4;
+  --lv-ink-300: #c3cbd4;
+  --lv-ink-400: #98a2ad;
+  --lv-ink-500: #6b7684;
+  --lv-ink-600: #4b5563;
+  --lv-ink-700: #37404c;
+  --lv-ink-800: #232b35;
+  --lv-ink-850: #1a212a;
+  --lv-ink-900: #12181f;
+  --lv-ink-950: #0b1016;
+
+  /* --------------------------------------------------------------- semantic
+   * Light theme. Overridden wholesale under html.dark. */
+  --lv-surface: #ffffff;          /* cards, panels, rails */
+  --lv-surface-2: var(--lv-ink-50); /* page background */
+  --lv-surface-3: var(--lv-ink-100); /* inset wells: log panes, code */
+  --lv-surface-hover: var(--lv-ink-50);
+
+  --lv-border: var(--lv-ink-200);
+  --lv-border-strong: var(--lv-ink-300);
+  --lv-border-soft: var(--lv-ink-150);
+
+  --lv-text-1: var(--lv-ink-900);  /* headings, primary content */
+  --lv-text-2: var(--lv-ink-600);  /* body */
+  --lv-text-3: var(--lv-ink-500);  /* secondary labels, captions */
+
+  --lv-accent: var(--lv-teal-500);
+  --lv-accent-hover: var(--lv-teal-600);
+  --lv-accent-soft: var(--lv-teal-50);
+  --lv-accent-border: var(--lv-teal-200);
+  --lv-accent-contrast: #ffffff;
+
+  --lv-ok: #0b8156;
+  --lv-ok-soft: #eaf7f1;
+  --lv-ok-border: #b7e3cd;
+  --lv-warn: #97550a;
+  --lv-warn-soft: #fdf3e6;
+  --lv-warn-border: #f0d5aa;
+  --lv-bad: #d92d20;
+  --lv-bad-soft: #fdecea;
+  --lv-bad-border: #f3c2bd;
+  --lv-neutral-tone: var(--lv-ink-500);
+  --lv-neutral-soft: var(--lv-ink-100);
+  --lv-neutral-border: var(--lv-ink-200);
+
+  /* Shadows: hairline-first. A console should read as surfaces on a panel,
+   * not as floating cards, so the border does the work and the shadow only
+   * lifts interactive things. */
+  --lv-shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --lv-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --lv-shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.06);
+  --lv-shadow-lg: 0 12px 24px -6px rgba(16, 24, 40, 0.12), 0 4px 8px -4px rgba(16, 24, 40, 0.08);
+  --lv-ring: 0 0 0 3px rgba(14, 124, 123, 0.18);
+
+  /* ------------------------------------------------------------------- type
+   * IBM Plex Sans carries Latin and digits (an engineered, slightly squared
+   * voice); CJK falls through to the platform's own faces, which are better
+   * than anything we could bundle at a sane size. Mono carries EVERY machine
+   * string: ids, hashes, timestamps, log lines. */
+  --lv-font-sans: 'IBM Plex Sans Variable', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    'Noto Sans SC', 'Source Han Sans SC', sans-serif;
+  --lv-font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular,
+    'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --lv-text-xs: 12px;
+  --lv-text-sm: 13px;
+  --lv-text-base: 14px;
+  --lv-text-md: 15px;
+  --lv-text-lg: 17px;
+  --lv-text-xl: 20px;
+  --lv-text-2xl: 26px;
+  --lv-text-3xl: 32px;
+
+  --lv-leading-tight: 1.25;
+  --lv-leading-normal: 1.55;
+  --lv-tracking-wide: 0.02em;
+  --lv-tracking-caps: 0.08em;
+
+  /* ------------------------------------------------------------------ space */
+  --lv-space-1: 4px;
+  --lv-space-2: 8px;
+  --lv-space-3: 12px;
+  --lv-space-4: 16px;
+  --lv-space-5: 20px;
+  --lv-space-6: 24px;
+  --lv-space-8: 32px;
+  --lv-space-10: 40px;
+
+  /* ----------------------------------------------------------------- shape */
+  --lv-radius-sm: 4px;
+  --lv-radius: 6px;
+  --lv-radius-lg: 8px;
+  --lv-radius-xl: 12px;
+  --lv-radius-full: 999px;
+
+  /* ---------------------------------------------------------------- motion */
+  --lv-ease: cubic-bezier(0.2, 0, 0.15, 1);
+  --lv-dur-fast: 120ms;
+  --lv-dur: 180ms;
+
+  /* ---------------------------------------------------------------- layout */
+  --lv-rail-width: 232px;
+  --lv-rail-width-collapsed: 60px;
+  --lv-topbar-height: 56px;
+  --lv-page-max: 1600px;
+
+  /* ------------------------------------------------------------------- rail
+   * The navigation rail is dark in BOTH themes: it is the console's identity,
+   * and on a light page it frames the work area instead of competing with it.
+   * These are therefore not re-pointed under html.dark. */
+  --lv-rail-bg: #0c1618;
+  --lv-rail-bg-top: #101d1f;
+  --lv-rail-border: rgba(255, 255, 255, 0.07);
+  --lv-rail-text: #93a4a8;
+  --lv-rail-text-strong: #eaf5f4;
+  --lv-rail-section: #5c7075;
+  --lv-rail-hover-bg: rgba(255, 255, 255, 0.05);
+  --lv-rail-active-bg: rgba(63, 173, 170, 0.16);
+  --lv-rail-active-text: #7fd6d3;
+  --lv-rail-accent: #2fa8a5;
+}
+
+/* =============================================================== dark theme
+ * One flip of an alias set. Consumers that only ever read the semantic names
+ * need no dark-specific rules at all. */
+html.dark {
+  --lv-surface: #12181f;
+  --lv-surface-2: #0b1016;
+  --lv-surface-3: #0d131a;
+  --lv-surface-hover: #18202a;
+
+  --lv-border: #232d38;
+  --lv-border-strong: #313d4a;
+  --lv-border-soft: #1b232d;
+
+  --lv-text-1: #e8edf3;
+  --lv-text-2: #a9b4c0;
+  --lv-text-3: #7d8896;
+
+  --lv-accent: var(--lv-teal-400);
+  --lv-accent-hover: var(--lv-teal-300);
+  --lv-accent-soft: rgba(63, 173, 170, 0.12);
+  --lv-accent-border: rgba(63, 173, 170, 0.34);
+  --lv-accent-contrast: #06272a;
+
+  --lv-ok: #34c98d;
+  --lv-ok-soft: rgba(52, 201, 141, 0.12);
+  --lv-ok-border: rgba(52, 201, 141, 0.32);
+  --lv-warn: #e8a33d;
+  --lv-warn-soft: rgba(232, 163, 61, 0.12);
+  --lv-warn-border: rgba(232, 163, 61, 0.3);
+  --lv-bad: #f97066;
+  --lv-bad-soft: rgba(249, 112, 102, 0.12);
+  --lv-bad-border: rgba(249, 112, 102, 0.3);
+  --lv-neutral-tone: #9aa5b1;
+  --lv-neutral-soft: rgba(154, 165, 177, 0.12);
+  --lv-neutral-border: rgba(154, 165, 177, 0.26);
+
+  --lv-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --lv-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --lv-shadow-md: 0 4px 10px -2px rgba(0, 0, 0, 0.55);
+  --lv-shadow-lg: 0 14px 28px -8px rgba(0, 0, 0, 0.6);
+  --lv-ring: 0 0 0 3px rgba(63, 173, 170, 0.24);
+}
+
+/* ============================================================ Element Plus
+ * Light theme. Values are the semantic aliases above, so this file stays the
+ * only place that translates "our tokens" into "what EP reads". */
+:root {
+  --el-font-family: var(--lv-font-sans);
+  --el-font-size-base: var(--lv-text-base);
+
+  --el-color-primary: #0e7c7b;
+  --el-color-primary-light-3: #56a3a2; /* white-mixed 30% */
+  --el-color-primary-light-5: #86bdbd;
+  --el-color-primary-light-7: #b7d8d7;
+  --el-color-primary-light-8: #cfe5e5;
+  --el-color-primary-light-9: #e7f2f2;
+  --el-color-primary-dark-2: #0b6362;
+
+  --el-color-success: #0f9d68;
+  --el-color-success-light-3: #57ba90;
+  --el-color-success-light-5: #87ceae;
+  --el-color-success-light-7: #b7e3cd;
+  --el-color-success-light-8: #cfeade;
+  --el-color-success-light-9: #eaf7f1;
+  --el-color-success-dark-2: #0c7e53;
+
+  --el-color-warning: #b3690a;
+  --el-color-warning-light-3: #c68f43;
+  --el-color-warning-light-5: #d4ab71;
+  --el-color-warning-light-7: #e6cdaa;
+  --el-color-warning-light-8: #efdcc0;
+  --el-color-warning-light-9: #fdf3e6;
+  --el-color-warning-dark-2: #8f5408;
+
+  --el-color-danger: #d92d20;
+  --el-color-danger-light-3: #e4675c;
+  --el-color-danger-light-5: #ea968e;
+  --el-color-danger-light-7: #f3c2bd;
+  --el-color-danger-light-8: #f7d7d4;
+  --el-color-danger-light-9: #fdecea;
+  --el-color-error: #d92d20;
+  --el-color-error-light-3: #e4675c;
+  --el-color-error-light-5: #ea968e;
+  --el-color-error-light-7: #f3c2bd;
+  --el-color-error-light-8: #f7d7d4;
+  --el-color-error-light-9: #fdecea;
+  --el-color-danger-dark-2: #ae2419;
+
+  --el-color-info: #6b7684;
+  --el-color-info-light-3: #989fab;
+  --el-color-info-light-5: #b5bac2;
+  --el-color-info-light-7: #d2d6da;
+  --el-color-info-light-8: #e1e3e6;
+  --el-color-info-light-9: #f0f1f3;
+  --el-color-info-dark-2: #565e69;
+
+  --el-bg-color: var(--lv-surface);
+  --el-bg-color-page: var(--lv-surface-2);
+  --el-bg-color-overlay: var(--lv-surface);
+
+  --el-text-color-primary: var(--lv-text-1);
+  --el-text-color-regular: var(--lv-text-2);
+  --el-text-color-secondary: var(--lv-text-3);
+  --el-text-color-placeholder: var(--lv-ink-400);
+  --el-text-color-disabled: var(--lv-ink-400);
+
+  --el-border-color: var(--lv-border);
+  --el-border-color-light: var(--lv-border-soft);
+  --el-border-color-lighter: var(--lv-border-soft);
+  --el-border-color-extra-light: var(--lv-border-soft);
+  --el-border-color-dark: var(--lv-border-strong);
+  --el-border-color-darker: var(--lv-border-strong);
+
+  --el-fill-color: var(--lv-surface-3);
+  --el-fill-color-light: var(--lv-surface-3);
+  --el-fill-color-lighter: var(--lv-surface-2);
+  --el-fill-color-extra-light: var(--lv-surface-2);
+  --el-fill-color-dark: var(--lv-ink-200);
+  --el-fill-color-darker: var(--lv-ink-300);
+  --el-fill-color-blank: var(--lv-surface);
+
+  --el-border-radius-base: var(--lv-radius);
+  --el-border-radius-small: var(--lv-radius-sm);
+  --el-border-radius-round: var(--lv-radius-full);
+
+  --el-box-shadow: var(--lv-shadow-lg);
+  --el-box-shadow-light: var(--lv-shadow-md);
+  --el-box-shadow-lighter: var(--lv-shadow-sm);
+  --el-mask-color: rgba(11, 16, 22, 0.5);
+}
+
+/* Dark theme: EP's own dark file sets html.dark --el-*; ours must win, which
+ * is why main.ts imports this stylesheet after it. */
+html.dark {
+  --el-color-primary: var(--lv-teal-400);
+  --el-color-primary-light-3: #2f807e;
+  --el-color-primary-light-5: #25605f;
+  --el-color-primary-light-7: #17403f;
+  --el-color-primary-light-8: #123332;
+  --el-color-primary-light-9: #0f2423;
+  --el-color-primary-dark-2: #65bdbb;
+
+  --el-color-success: #34c98d;
+  --el-color-success-light-3: #2c9d70;
+  --el-color-success-light-5: #257957;
+  --el-color-success-light-7: #1d5140;
+  --el-color-success-light-8: #184134;
+  --el-color-success-light-9: #142d25;
+  --el-color-success-dark-2: #5dd4a4;
+
+  --el-color-warning: #e8a33d;
+  --el-color-warning-light-3: #b58237;
+  --el-color-warning-light-5: #8d6530;
+  --el-color-warning-light-7: #624726;
+  --el-color-warning-light-8: #4d3921;
+  --el-color-warning-light-9: #2f271b;
+  --el-color-warning-dark-2: #ecb563;
+
+  --el-color-danger: #f97066;
+  --el-color-danger-light-3: #c25c54;
+  --el-color-danger-light-5: #974a44;
+  --el-color-danger-light-7: #6a3834;
+  --el-color-danger-light-8: #542f2c;
+  --el-color-danger-light-9: #322221;
+  --el-color-error: #f97066;
+  --el-color-error-light-3: #c25c54;
+  --el-color-error-light-5: #974a44;
+  --el-color-error-light-7: #6a3834;
+  --el-color-error-light-8: #542f2c;
+  --el-color-error-light-9: #322221;
+  --el-color-danger-dark-2: #fa8d85;
+
+  --el-color-info: #9aa5b1;
+  --el-color-info-light-3: #7a838c;
+  --el-color-info-light-5: #5f666d;
+  --el-color-info-light-7: #43484e;
+  --el-color-info-light-8: #353a3f;
+  --el-color-info-light-9: #24282c;
+  --el-color-info-dark-2: #aeb7c1;
+
+  --el-bg-color: var(--lv-surface);
+  --el-bg-color-page: var(--lv-surface-2);
+  --el-bg-color-overlay: var(--lv-surface-3);
+
+  --el-text-color-primary: var(--lv-text-1);
+  --el-text-color-regular: var(--lv-text-2);
+  --el-text-color-secondary: var(--lv-text-3);
+  --el-text-color-placeholder: var(--lv-text-3);
+  --el-text-color-disabled: #5b6673;
+
+  --el-border-color: var(--lv-border);
+  --el-border-color-light: var(--lv-border-soft);
+  --el-border-color-lighter: var(--lv-border-soft);
+  --el-border-color-extra-light: var(--lv-border-soft);
+  --el-border-color-dark: var(--lv-border-strong);
+  --el-border-color-darker: var(--lv-border-strong);
+
+  --el-fill-color: var(--lv-surface-3);
+  --el-fill-color-light: var(--lv-surface-hover);
+  --el-fill-color-lighter: var(--lv-surface-3);
+  --el-fill-color-extra-light: var(--lv-surface-2);
+  --el-fill-color-dark: #2a343f;
+  --el-fill-color-darker: #333e4a;
+  --el-fill-color-blank: var(--lv-surface);
+
+  --el-box-shadow: var(--lv-shadow-lg);
+  --el-box-shadow-light: var(--lv-shadow-md);
+  --el-box-shadow-lighter: var(--lv-shadow-sm);
+  --el-mask-color: rgba(2, 5, 8, 0.66);
+}

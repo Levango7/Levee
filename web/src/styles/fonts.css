@@ -1,0 +1,40 @@
+/* Self-hosted Latin subsets, imported once from main.ts.
+ *
+ * Why only latin: the console's prose is Chinese and renders through the
+ * system CJK stack (PingFang SC / Microsoft YaHei / Noto Sans SC) — bundling a
+ * CJK webfont would add megabytes to the assets embedded into the Go binary
+ * for no visual gain, since the CJK system faces are already good. Latin and
+ * digits are what these two faces carry: IBM Plex Sans gives labels and
+ * numerals an engineered, slightly squarish Latin voice, and JetBrains Mono
+ * carries every machine-produced string (ids, hashes, timestamps, log lines).
+ *
+ * Paths point into the npm packages rather than node_modules-copied files so
+ * the faces stay version-locked to package-lock.json; Vite hashes and emits
+ * them like any other asset.
+ *
+ * `font-display: swap` matters here: the shell must paint before fonts land,
+ * otherwise the embedded console flashes blank on a cold cache. */
+
+@font-face {
+  font-family: 'IBM Plex Sans Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url('../../node_modules/@fontsource-variable/ibm-plex-sans/files/ibm-plex-sans-latin-wght-normal.woff2')
+    format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url('../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2')
+    format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
 import { conversationApi, type ConversationMessageDTO, type ConversationReplyDTO, type ConversationSessionDTO } from '@/api'
-import { sessionStateLabel, sessionTagType } from '@/utils/session'
+import { sessionStateLabel } from '@/utils/session'
+import PageHeader from '@/components/PageHeader.vue'
 
 const currentUserID = ref('operator')
 const sessions = ref<ConversationSessionDTO[]>([])
@@ -114,73 +115,91 @@ refreshSessions()
 </script>
 
 <template>
-	<div class="levee-page conversation">
-		<h2 class="levee-page__title">AI 对话运维</h2>
+	<div class="levee-page">
+		<PageHeader title="AI 对话运维" description="用自然语言发起变更、查询状态与诊断（会话按操作员隔离）">
+			<template #actions>
+				<el-button :icon="'Refresh'" size="small" @click="refreshSessions">刷新会话</el-button>
+			</template>
+		</PageHeader>
 
-		<div class="conversation__layout">
-			<!-- Session list sidebar -->
-			<aside class="conversation__sidebar">
-				<div class="conversation__sidebar-header">
-					<el-button type="primary" size="small" @click="newSession">+ 新建会话</el-button>
+		<div class="chat-layout">
+			<!-- Session list -->
+			<aside class="lv-panel sessions">
+				<div class="lv-panel__head">
+					<span class="lv-panel__title">会话</span>
+					<el-button type="primary" size="small" :icon="'Plus'" @click="newSession">新建</el-button>
 				</div>
-				<div v-if="sessions.length === 0" class="conversation__empty">暂无会话，点击新建开始对话</div>
-				<div
-					v-for="s in sessions"
-					:key="s.id"
-					:class="['conversation__session-item', { active: s.id === activeSessionID }]"
-					@click="openSession(s.id)"
-				>
-					<div class="conversation__session-top">
-						<span class="conversation__session-id">{{ s.id.slice(0, 8) }}…</span>
-						<el-tag size="small" :type="sessionTagType(s.state)">
-							{{ sessionStateLabel(s.state) }}
-						</el-tag>
+				<div class="sessions__list">
+					<div v-if="sessions.length === 0" class="lv-empty">
+						<span>暂无会话</span>
+						<span>点「新建」开始一次对话。</span>
 					</div>
-					<div class="conversation__session-meta">
-						{{ s.messages.length }} 条消息 · {{ formatTime(s.updated_at) }}
-					</div>
-					<el-button
-						link
-						type="danger"
-						size="small"
-						class="conversation__session-close"
-						@click.stop="closeSession(s.id)"
-					>关闭</el-button>
+					<button
+						v-for="s in sessions"
+						:key="s.id"
+						type="button"
+						class="session"
+						:class="{ 'session--active': s.id === activeSessionID }"
+						@click="openSession(s.id)"
+					>
+						<div class="session__top">
+							<span class="session__id lv-mono">{{ s.id.slice(0, 8) }}…</span>
+							<span class="session__state">{{ sessionStateLabel(s.state) }}</span>
+						</div>
+						<div class="session__meta">
+							{{ s.messages.length }} 条消息 · {{ formatTime(s.updated_at) }}
+						</div>
+						<span class="session__close" title="关闭会话" @click.stop="closeSession(s.id)">
+							<el-icon><Close /></el-icon>
+						</span>
+					</button>
 				</div>
 			</aside>
 
-			<!-- Chat area -->
-			<main class="conversation__chat">
-				<div v-if="!activeSessionID" class="conversation__empty conversation__empty--main">
-					选择一个会话或新建会话开始对话
+			<!-- Conversation -->
+			<section class="lv-panel chat">
+				<div class="lv-panel__head">
+					<span class="lv-panel__title">
+						{{ activeSessionID ? `会话 ${activeSessionID.slice(0, 8)}…` : '对话' }}
+					</span>
+					<span v-if="activeSessionID" class="lv-panel__hint lv-mono">{{ messages.length }} 条</span>
 				</div>
+
+				<div v-if="!activeSessionID" class="lv-empty chat__empty">
+					<el-icon class="lv-empty__icon"><ChatDotRound /></el-icon>
+					<span class="lv-empty__title">未选择会话</span>
+					<span>从左侧选择，或新建一个会话开始。</span>
+				</div>
+
 				<template v-else>
-					<div class="conversation__messages" :ref="onContainer">
-						<div
-							v-for="m in messages"
-							:key="m.id"
-							:class="['message', `message--${m.role}`]"
-						>
-							<div class="message__role">{{ m.role === 'user' ? '操作员' : m.role === 'assistant' ? 'LEVEE' : '系统' }}</div>
-							<div class="message__bubble">
-								{{ m.content }}
-								<span v-if="m.action" class="message__action">[{{ m.action.type }}]</span>
+					<div class="messages" :ref="onContainer">
+						<div v-if="messages.length === 0" class="lv-empty">
+							<span>还没有消息，试试 /help 查看可用命令。</span>
+						</div>
+						<div v-for="m in messages" :key="m.id" class="msg" :class="`msg--${m.role}`">
+							<div class="msg__role">
+								{{ m.role === 'user' ? '操作员' : m.role === 'assistant' ? 'LEVEE' : '系统' }}
+								<span class="msg__time lv-mono">{{ formatTime(m.timestamp) }}</span>
 							</div>
-							<div class="message__time">{{ formatTime(m.timestamp) }}</div>
+							<div class="msg__bubble">
+								{{ m.content }}
+								<span v-if="m.action" class="msg__action lv-mono">{{ m.action.type }}</span>
+							</div>
 						</div>
 					</div>
-					<div class="conversation__input">
+
+					<div class="composer">
 						<el-input
 							v-model="input"
 							type="textarea"
 							:rows="2"
-							placeholder="输入消息，试试 /help 查看命令"
+							placeholder="输入消息，Enter 发送（Shift+Enter 换行）；试试 /help"
 							@keyup.enter.exact.prevent="send"
 						/>
 						<el-button type="primary" :loading="loading" @click="send">发送</el-button>
 					</div>
 				</template>
-			</main>
+			</section>
 		</div>
 
 		<p v-if="error" class="error">{{ error }}</p>
@@ -188,121 +207,213 @@ refreshSessions()
 </template>
 
 <style scoped>
-.conversation__layout {
-	display: flex;
-	gap: 1rem;
-	min-height: 60vh;
+.chat-layout {
+	display: grid;
+	grid-template-columns: 264px minmax(0, 1fr);
+	gap: var(--lv-space-4);
+	align-items: start;
 }
-.conversation__sidebar {
-	width: 18rem;
-	border-right: 1px solid var(--el-border-color-lighter);
-	padding-right: 1rem;
+
+@media (max-width: 900px) {
+	.chat-layout {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+/* ---------------------------------------------------------------- sessions */
+
+.sessions {
+	overflow: hidden;
+}
+
+.sessions__list {
+	max-height: 62vh;
 	overflow-y: auto;
-	max-height: 70vh;
+	padding: var(--lv-space-2);
 }
-.conversation__sidebar-header {
-	margin-bottom: 0.75rem;
-}
-.conversation__session-item {
-	padding: 0.5rem;
-	border-radius: 6px;
-	cursor: pointer;
-	margin-bottom: 0.5rem;
+
+.session {
+	position: relative;
+	display: block;
+	width: 100%;
+	padding: var(--lv-space-3);
+	margin-bottom: 4px;
 	border: 1px solid transparent;
+	border-radius: var(--lv-radius);
+	background: transparent;
+	font-family: inherit;
+	text-align: left;
+	cursor: pointer;
+	transition:
+		background-color var(--lv-dur-fast) var(--lv-ease),
+		border-color var(--lv-dur-fast) var(--lv-ease);
 }
-.conversation__session-item:hover {
-	background: var(--el-fill-color-light);
+
+.session:hover {
+	background: var(--lv-surface-hover);
 }
-.conversation__session-item.active {
-	border-color: var(--el-color-primary);
-	background: var(--el-color-primary-light-9);
+
+.session--active {
+	background: var(--lv-accent-soft);
+	border-color: var(--lv-accent-border);
 }
-.conversation__session-top {
+
+.session__top {
 	display: flex;
-	justify-content: space-between;
 	align-items: center;
+	justify-content: space-between;
+	gap: var(--lv-space-2);
 }
-.conversation__session-id {
+
+.session__id {
+	font-size: var(--lv-text-sm);
 	font-weight: 600;
-	font-family: monospace;
+	color: var(--lv-text-1);
 }
-.conversation__session-meta {
-	font-size: 0.75rem;
-	color: var(--el-text-color-secondary);
-	margin: 0.25rem 0;
+
+.session__state {
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
 }
-.conversation__session-close {
-	float: right;
+
+.session--active .session__state {
+	color: var(--lv-accent);
 }
-.conversation__chat {
-	flex: 1;
+
+.session__meta {
+	margin-top: 2px;
+	font-size: 11px;
+	color: var(--lv-text-3);
+}
+
+.session__close {
+	position: absolute;
+	right: 6px;
+	bottom: 6px;
+	display: none;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	border-radius: var(--lv-radius-sm);
+	color: var(--lv-text-3);
+}
+
+.session:hover .session__close {
+	display: inline-flex;
+}
+
+.session__close:hover {
+	background: var(--lv-bad-soft);
+	color: var(--lv-bad);
+}
+
+/* -------------------------------------------------------------------- chat */
+
+.chat {
 	display: flex;
 	flex-direction: column;
+	height: 68vh;
 }
-.conversation__messages {
+
+.chat__empty {
+	flex: 1;
+	justify-content: center;
+}
+
+.messages {
 	flex: 1;
 	overflow-y: auto;
-	max-height: 60vh;
-	padding: 0.5rem;
-	border: 1px solid var(--el-border-color-lighter);
-	border-radius: 6px;
-	margin-bottom: 0.75rem;
-}
-.conversation__input {
-	display: flex;
-	gap: 0.5rem;
-	align-items: flex-end;
-}
-.conversation__empty {
-	color: var(--el-text-color-secondary);
-	text-align: center;
-	padding: 2rem;
-}
-.message {
-	margin-bottom: 0.75rem;
+	padding: var(--lv-space-4);
 	display: flex;
 	flex-direction: column;
+	gap: var(--lv-space-4);
 }
-.message--user {
+
+.msg {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-width: 78%;
+}
+
+.msg--user {
+	align-self: flex-end;
 	align-items: flex-end;
 }
-.message--assistant,
-.message--system {
+
+.msg--assistant,
+.msg--system {
+	align-self: flex-start;
 	align-items: flex-start;
 }
-.message__role {
-	font-size: 0.7rem;
-	color: var(--el-text-color-secondary);
-	margin-bottom: 0.15rem;
+
+.msg__role {
+	display: flex;
+	align-items: baseline;
+	gap: var(--lv-space-2);
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
 }
-.message__bubble {
-	padding: 0.5rem 0.75rem;
-	border-radius: 8px;
-	max-width: 80%;
+
+.msg__time {
+	font-size: 10px;
+	color: var(--lv-ink-400);
+}
+
+.msg__bubble {
+	padding: var(--lv-space-3) var(--lv-space-4);
+	border-radius: var(--lv-radius-lg);
+	font-size: var(--lv-text-sm);
+	line-height: 1.65;
 	white-space: pre-wrap;
 	word-break: break-word;
+	border: 1px solid transparent;
 }
-.message--user .message__bubble {
-	background: var(--el-color-primary);
-	color: #fff;
+
+.msg--user .msg__bubble {
+	background: var(--lv-accent);
+	color: var(--lv-accent-contrast);
 }
-.message--assistant .message__bubble {
-	background: var(--el-fill-color);
+
+.msg--assistant .msg__bubble {
+	background: var(--lv-surface-3);
+	border-color: var(--lv-border);
+	color: var(--lv-text-1);
 }
-.message--system .message__bubble {
-	background: var(--el-color-warning-light-9);
+
+.msg--system .msg__bubble {
+	background: var(--lv-warn-soft);
+	border-color: var(--lv-warn-border);
+	color: var(--lv-warn);
 }
-.message__time {
-	font-size: 0.65rem;
-	color: var(--el-text-color-secondary);
-	margin-top: 0.1rem;
+
+.msg__action {
+	display: inline-block;
+	margin-left: 6px;
+	padding: 1px 6px;
+	border-radius: var(--lv-radius-sm);
+	background: rgba(0, 0, 0, 0.06);
+	font-size: 11px;
 }
-.message__action {
-	font-size: 0.7rem;
-	color: var(--el-color-warning);
+
+/* ---------------------------------------------------------------- composer */
+
+.composer {
+	display: flex;
+	align-items: flex-end;
+	gap: var(--lv-space-2);
+	padding: var(--lv-space-3) var(--lv-space-4);
+	border-top: 1px solid var(--lv-border-soft);
 }
+
+.composer .el-input {
+	flex: 1;
+}
+
 .error {
-	color: var(--el-color-danger);
-	margin-top: 1rem;
+	margin-top: var(--lv-space-4);
+	color: var(--lv-bad);
+	font-size: var(--lv-text-sm);
 }
 </style>

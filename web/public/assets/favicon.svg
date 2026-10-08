@@ -1,4 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect width="32" height="32" rx="6" fill="#0E7C7B"/>
-  <path d="M9 22 L9 10 L13 10 L13 16 L19 16 L19 10 L23 10 L23 22 L19 22 L19 18 L13 18 L13 22 Z" fill="#FFFFFF"/>
+  <!-- The levee mark: three stacked courses of a flood wall, in the brand teal.
+       Matches the glyph in the console's navigation rail (which draws the same
+       three bars in currentColor). -->
+  <rect width="32" height="32" rx="7" fill="#0E7C7B"/>
+  <g fill="#FFFFFF">
+    <rect x="6" y="7.5" width="20" height="4.5" rx="1.3" opacity="0.95"/>
+    <rect x="6" y="14" width="20" height="4.5" rx="1.3" opacity="0.62"/>
+    <rect x="6" y="20.5" width="20" height="4" rx="1.3" opacity="0.36"/>
+  </g>
 </svg>

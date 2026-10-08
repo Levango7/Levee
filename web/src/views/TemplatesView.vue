@@ -6,6 +6,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { templatesApi } from '@/api'
 import type { Template } from '@/types/levee'
+import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp } from '@/utils/format'
 
 const loading = ref(false)
@@ -157,32 +158,57 @@ onMounted(load)
 
 <template>
   <div class="levee-page">
-    <h2 class="levee-page__title">模板管理</h2>
+    <PageHeader title="模板管理" description="工作流模板的版本化载体；实例化即生成一份可审批的变更">
+      <template #actions>
+        <el-button :icon="'Refresh'" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="'Plus'" @click="openCreate">新建模板</el-button>
+      </template>
+    </PageHeader>
 
-    <el-card shadow="never" class="levee-card">
-      <div class="toolbar">
-        <el-input v-model="search" placeholder="按名称搜索" clearable style="width: 220px" @keyup.enter="load" />
-        <el-button @click="load">查询</el-button>
-        <div class="toolbar__right">
-          <el-button type="primary" @click="openCreate">新建模板</el-button>
+    <div class="lv-panel">
+      <div class="lv-panel__head">
+        <div class="lv-toolbar">
+          <el-input
+            v-model="search"
+            placeholder="按名称搜索"
+            clearable
+            style="width: 220px"
+            :prefix-icon="'Search'"
+            @keyup.enter="load"
+          />
+          <el-button @click="load">查询</el-button>
         </div>
+        <span class="lv-panel__hint lv-mono">共 {{ total }} 个模板</span>
       </div>
 
-      <el-table v-loading="loading" :data="templates" stripe>
-        <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
-        <el-table-column prop="description" label="描述" min-width="220" show-overflow-tooltip />
-        <el-table-column label="必填参数" width="220">
+      <el-table v-loading="loading" :data="templates">
+        <el-table-column label="模板" min-width="240">
           <template #default="{ row }">
-            <el-tag v-for="p in row.requiredParams" :key="p" size="small" class="param-tag">{{ p }}</el-tag>
+            <div class="cell-template">
+              <span class="cell-template__name lv-mono">{{ row.name }}</span>
+              <span class="cell-template__desc">{{ row.description || '无描述' }}</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="180">
-          <template #default="{ row }">{{ formatTimestamp(row.createdAt) }}</template>
+        <el-table-column label="必填参数" min-width="220">
+          <template #default="{ row }">
+            <div class="param-list">
+              <span v-for="p in row.requiredParams" :key="p" class="param-chip lv-mono">{{ p }}</span>
+              <span v-if="row.requiredParams.length === 0" class="lv-muted">—</span>
+            </div>
+          </template>
         </el-table-column>
-        <el-table-column label="更新时间" width="180">
-          <template #default="{ row }">{{ formatTimestamp(row.updatedAt) }}</template>
+        <el-table-column label="创建时间" width="168">
+          <template #default="{ row }">
+            <span class="cell-time lv-mono">{{ formatTimestamp(row.createdAt) }}</span>
+          </template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="更新时间" width="168">
+          <template #default="{ row }">
+            <span class="cell-time lv-mono">{{ formatTimestamp(row.updatedAt) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" @click="openInstantiate(row)">实例化</el-button>
             <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
@@ -190,13 +216,13 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </div>
 
     <!-- Create / edit dialog -->
-    <el-dialog v-model="edit.visible" :title="edit.mode === 'create' ? '新建模板' : '编辑模板'" width="640px">
+    <el-dialog v-model="edit.visible" :title="edit.mode === 'create' ? '新建模板' : '编辑模板'" width="680px">
       <el-form :model="edit.form" label-width="120px">
         <el-form-item label="名称" required>
-          <el-input v-model="edit.form.name" :disabled="edit.mode === 'edit'" />
+          <el-input v-model="edit.form.name" :disabled="edit.mode === 'edit'" placeholder="如 deploy-web" />
         </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="edit.form.description" type="textarea" :rows="2" />
@@ -205,7 +231,13 @@ onMounted(load)
           <el-input v-model="edit.form.requiredParams" placeholder="逗号分隔，如 host, port" />
         </el-form-item>
         <el-form-item label="Workflow" required>
-          <el-input v-model="edit.form.workflowContent" type="textarea" :rows="10" placeholder="YAML workflow content" />
+          <el-input
+            v-model="edit.form.workflowContent"
+            type="textarea"
+            :rows="12"
+            class="code-input"
+            placeholder="YAML workflow content"
+          />
         </el-form-item>
         <el-form-item v-if="edit.mode === 'edit'" label="覆盖">
           <el-switch v-model="edit.form.overwrite" />
@@ -218,7 +250,7 @@ onMounted(load)
     </el-dialog>
 
     <!-- Instantiate dialog -->
-    <el-dialog v-model="instantiate.visible" title="实例化模板" width="560px">
+    <el-dialog v-model="instantiate.visible" title="实例化模板" width="600px">
       <template v-if="instantiate.template">
         <el-form :model="instantiate.form" label-width="120px">
           <el-form-item label="模板">
@@ -258,15 +290,54 @@ onMounted(load)
 </template>
 
 <style scoped>
-.toolbar {
+.cell-template {
   display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
-.toolbar__right {
-  margin-left: auto;
+
+.cell-template__name {
+  font-size: var(--lv-text-sm);
+  font-weight: 600;
+  color: var(--lv-text-1);
 }
-.param-tag + .param-tag {
-  margin-left: 4px;
+
+.cell-template__desc {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.param-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.param-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--lv-radius-sm);
+  background: var(--lv-surface-3);
+  border: 1px solid var(--lv-border-soft);
+  color: var(--lv-text-2);
+  font-size: 11px;
+}
+
+.cell-time {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+/* The workflow body is YAML; mono is the only readable face for it. */
+.code-input :deep(textarea) {
+  font-family: var(--lv-font-mono);
+  font-size: var(--lv-text-xs);
+  line-height: 1.6;
 }
 </style>

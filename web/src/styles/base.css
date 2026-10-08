@@ -1,0 +1,822 @@
+/* Base layer: reset, typography, Element Plus refinements, console utilities.
+ *
+ * Import order matters: tokens.css -> fonts.css -> element-plus light CSS ->
+ * element-plus dark CSS -> this file. Everything here may therefore assume a
+ * complete --lv-* and --el-* variable set for both themes. */
+
+/* ================================================================= reset */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--lv-font-sans);
+  font-size: var(--lv-text-base);
+  line-height: var(--lv-leading-normal);
+  color: var(--lv-text-2);
+  background: var(--lv-surface-2);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  color: var(--lv-text-1);
+  font-weight: 600;
+  line-height: var(--lv-leading-tight);
+}
+
+a {
+  color: var(--lv-accent);
+  text-decoration: none;
+  transition: color var(--lv-dur-fast) var(--lv-ease);
+}
+
+a:hover {
+  color: var(--lv-accent-hover);
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--lv-font-mono);
+  font-size: 0.92em;
+}
+
+code {
+  padding: 0.1em 0.36em;
+  color: var(--lv-text-1);
+  background: var(--lv-surface-3);
+  border: 1px solid var(--lv-border-soft);
+  border-radius: var(--lv-radius-sm);
+}
+
+/* Focus: one visible ring everywhere, keyboard-only. The default EP outline is
+ * removed per component below and replaced by this. */
+:focus-visible {
+  outline: 2px solid var(--lv-accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--lv-accent-soft);
+  color: var(--lv-text-1);
+}
+
+/* ============================================================== scrollbar */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--lv-border-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--lv-radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--lv-ink-400);
+  background-clip: content-box;
+}
+
+html.dark ::-webkit-scrollbar-thumb:hover {
+  background: var(--lv-ink-500);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ============================================================ layout prims */
+
+.levee-page {
+  max-width: var(--lv-page-max);
+  margin: 0 auto;
+  padding: var(--lv-space-6) var(--lv-space-8) var(--lv-space-10);
+}
+
+.levee-page__title {
+  margin: 0 0 var(--lv-space-5);
+  font-size: var(--lv-text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Page header: title row with an optional description and an action cluster on
+ * the right. One shape for every page, so the eye always knows where to land. */
+.lv-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--lv-space-4);
+  margin-bottom: var(--lv-space-5);
+}
+
+.lv-page-head__main {
+  min-width: 0;
+}
+
+.lv-page-head__title {
+  font-size: var(--lv-text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.lv-page-head__desc {
+  margin-top: var(--lv-space-1);
+  font-size: var(--lv-text-sm);
+  color: var(--lv-text-3);
+}
+
+.lv-page-head__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--lv-space-2);
+}
+
+/* Panels: the console's work surface. Hairline border + flat fill; the shadow
+ * is reserved for things that float (dropdowns, dialogs). */
+.lv-panel {
+  background: var(--lv-surface);
+  border: 1px solid var(--lv-border);
+  border-radius: var(--lv-radius-lg);
+}
+
+/* Opt-in vertical rhythm. This used to be an automatic `.lv-panel + .lv-panel`
+ * margin, which silently broke every grid: inside a grid the sibling selector
+ * still matched, so items 2..n got a top margin, shrank to fit the row, and
+ * rendered lower than the first item (and shorter). Layout distance now belongs
+ * to the container (grid/flex gap) or to this explicit stack. */
+.lv-stack > * + * {
+  margin-top: var(--lv-space-4);
+}
+
+.lv-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--lv-space-3);
+  min-height: 44px;
+  padding: var(--lv-space-3) var(--lv-space-4);
+  border-bottom: 1px solid var(--lv-border-soft);
+}
+
+.lv-panel__title {
+  font-size: var(--lv-text-base);
+  font-weight: 600;
+  color: var(--lv-text-1);
+}
+
+.lv-panel__hint {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+.lv-panel__body {
+  padding: var(--lv-space-4);
+}
+
+.lv-panel__body--flush {
+  padding: 0;
+}
+
+.lv-panel__body--tight {
+  padding: var(--lv-space-3) var(--lv-space-4);
+}
+
+/* Toolbar: the filter / bulk-action strip above a table. */
+.lv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lv-space-2);
+}
+
+.lv-toolbar__spacer {
+  flex: 1 1 auto;
+}
+
+.lv-section-title {
+  margin: var(--lv-space-6) 0 var(--lv-space-3);
+  font-size: var(--lv-text-md);
+  font-weight: 600;
+  color: var(--lv-text-1);
+}
+
+.lv-section-title:first-child {
+  margin-top: 0;
+}
+
+/* ============================================================== utilities */
+
+.lv-mono {
+  font-family: var(--lv-font-mono);
+  font-size: 0.94em;
+  font-variant-ligatures: none;
+  letter-spacing: -0.01em;
+}
+
+.lv-label {
+  font-size: var(--lv-text-xs);
+  font-weight: 500;
+  color: var(--lv-text-3);
+  letter-spacing: var(--lv-tracking-caps);
+  text-transform: uppercase;
+}
+
+.lv-muted {
+  color: var(--lv-text-3);
+}
+
+.lv-strong {
+  color: var(--lv-text-1);
+  font-weight: 600;
+}
+
+.lv-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lv-dim {
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-sm);
+}
+
+/* Key/value rows: the console's replacement for two-column descriptions —
+ * denser, and the value column can hold a mono id without wrapping. */
+.lv-kv {
+  display: grid;
+  grid-template-columns: minmax(0, 132px) minmax(0, 1fr);
+  gap: 0;
+}
+
+.lv-kv__k,
+.lv-kv__v {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--lv-border-soft);
+  min-width: 0;
+}
+
+.lv-kv__k {
+  font-size: var(--lv-text-sm);
+  color: var(--lv-text-3);
+}
+
+.lv-kv__v {
+  color: var(--lv-text-1);
+  overflow-wrap: anywhere;
+}
+
+.lv-kv > :nth-last-child(-n + 2) {
+  border-bottom: none;
+}
+
+/* Status dot: 8px, tinted, with a soft halo so it reads at a glance without a
+ * full pill. Used in table cells and node cards. */
+.lv-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--lv-radius-full);
+  flex: none;
+  background: var(--lv-neutral-tone);
+}
+
+.lv-dot--ok {
+  background: var(--lv-ok);
+  box-shadow: 0 0 0 3px var(--lv-ok-soft);
+}
+
+.lv-dot--warn {
+  background: var(--lv-warn);
+  box-shadow: 0 0 0 3px var(--lv-warn-soft);
+}
+
+.lv-dot--bad {
+  background: var(--lv-bad);
+  box-shadow: 0 0 0 3px var(--lv-bad-soft);
+}
+
+.lv-dot--idle {
+  background: var(--lv-neutral-tone);
+  box-shadow: 0 0 0 3px var(--lv-neutral-soft);
+}
+
+.lv-dot--live {
+  background: var(--lv-ok);
+  box-shadow: 0 0 0 3px var(--lv-ok-soft);
+  animation: lv-pulse 1.8s var(--lv-ease) infinite;
+}
+
+@keyframes lv-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px var(--lv-ok-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lv-dot--live {
+    animation: none;
+  }
+}
+
+/* Empty state: a bordered well with a glyph slot — quieter than el-empty's
+ * illustration, and it can carry explanatory prose (which several panels need,
+ * because "no data" here often means "no route exists yet"). */
+.lv-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--lv-space-2);
+  padding: var(--lv-space-8) var(--lv-space-6);
+  text-align: center;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-sm);
+}
+
+.lv-empty__title {
+  color: var(--lv-text-2);
+  font-weight: 500;
+}
+
+.lv-empty__icon {
+  font-size: 22px;
+  color: var(--lv-ink-400);
+}
+
+.lv-well {
+  padding: var(--lv-space-4);
+  background: var(--lv-surface-3);
+  border: 1px solid var(--lv-border-soft);
+  border-radius: var(--lv-radius);
+}
+
+/* Metric card: label, number, optional footnote — the KPI unit. */
+.lv-metric {
+  position: relative;
+  /* Three fixed rows so every card in a strip shares a baseline: label, value,
+   * footnote. The footnote row is reserved whether or not a card has one —
+   * letting it collapse was what pushed single-footnote cards' numbers up and
+   * out of line with their neighbours. */
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 96px;
+  padding: var(--lv-space-4);
+  background: var(--lv-surface);
+  border: 1px solid var(--lv-border);
+  border-radius: var(--lv-radius-lg);
+  transition:
+    border-color var(--lv-dur) var(--lv-ease),
+    box-shadow var(--lv-dur) var(--lv-ease),
+    transform var(--lv-dur) var(--lv-ease);
+}
+
+.lv-metric--interactive {
+  cursor: pointer;
+}
+
+.lv-metric--interactive:hover {
+  border-color: var(--lv-border-strong);
+  box-shadow: var(--lv-shadow-sm);
+  transform: translateY(-1px);
+}
+
+.lv-metric--interactive:focus-visible {
+  outline: none;
+  box-shadow: var(--lv-ring);
+  border-color: var(--lv-accent);
+}
+
+.lv-metric--selected {
+  border-color: var(--lv-accent);
+  box-shadow: var(--lv-ring);
+}
+
+.lv-metric__label {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lv-metric__value {
+  align-self: end;
+  margin-top: var(--lv-space-2);
+  font-family: var(--lv-font-mono);
+  /* Sized up from 2xl: these cards are ~260px wide, and at 26px the number read
+   * as a footnote to the label rather than as the metric itself. */
+  font-size: 30px;
+  font-weight: 500;
+  line-height: 1.1;
+  color: var(--lv-text-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.lv-metric__foot {
+  align-self: end;
+  margin-top: var(--lv-space-1);
+  min-height: 16px; /* reserved row; see the grid comment above */
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+.lv-metric__accent {
+  position: absolute;
+  top: var(--lv-space-4);
+  right: var(--lv-space-4);
+  width: 6px;
+  height: 6px;
+  border-radius: var(--lv-radius-full);
+  background: var(--lv-neutral-tone);
+}
+
+/* ==================================================== Element Plus polish */
+
+/* --- buttons ---------------------------------------------------------- */
+.el-button {
+  font-weight: 500;
+  transition:
+    background-color var(--lv-dur-fast) var(--lv-ease),
+    border-color var(--lv-dur-fast) var(--lv-ease),
+    color var(--lv-dur-fast) var(--lv-ease),
+    box-shadow var(--lv-dur-fast) var(--lv-ease);
+}
+
+.el-button:focus-visible {
+  outline: none;
+  box-shadow: var(--lv-ring);
+}
+
+.el-button--primary {
+  --el-button-bg-color: var(--lv-accent);
+  --el-button-border-color: var(--lv-accent);
+  --el-button-hover-bg-color: var(--lv-accent-hover);
+  --el-button-hover-border-color: var(--lv-accent-hover);
+  --el-button-active-bg-color: var(--lv-accent-hover);
+  --el-button-active-border-color: var(--lv-accent-hover);
+  --el-button-text-color: var(--lv-accent-contrast);
+}
+
+.el-button.is-text,
+.el-button.is-link {
+  font-weight: 500;
+}
+
+.el-button.is-text:not(.is-disabled):hover {
+  background: var(--lv-surface-hover);
+}
+
+/* Compact text buttons inside table rows: no padding jump on hover. */
+.el-table .el-button.is-text {
+  padding: 2px 6px;
+  height: auto;
+  font-size: var(--lv-text-sm);
+}
+
+/* --- inputs & selects ------------------------------------------------- */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  background: var(--lv-surface);
+  box-shadow: 0 0 0 1px var(--lv-border) inset;
+  border-radius: var(--lv-radius);
+  transition: box-shadow var(--lv-dur-fast) var(--lv-ease);
+}
+
+.el-input__wrapper:hover,
+.el-textarea__inner:hover,
+.el-select__wrapper:hover {
+  box-shadow: 0 0 0 1px var(--lv-border-strong) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow:
+    0 0 0 1px var(--lv-accent) inset,
+    var(--lv-ring);
+}
+
+.el-form-item__label {
+  font-size: var(--lv-text-sm);
+  color: var(--lv-text-3);
+}
+
+.el-form-item {
+  margin-bottom: var(--lv-space-4);
+}
+
+.el-form--inline .el-form-item {
+  margin-right: var(--lv-space-3);
+  margin-bottom: 0;
+}
+
+/* --- cards ------------------------------------------------------------ */
+.el-card {
+  border: 1px solid var(--lv-border);
+  border-radius: var(--lv-radius-lg);
+  background: var(--lv-surface);
+  overflow: visible;
+}
+
+.el-card.is-never-shadow {
+  box-shadow: none;
+}
+
+.el-card__header {
+  padding: var(--lv-space-3) var(--lv-space-4);
+  border-bottom: 1px solid var(--lv-border-soft);
+  font-size: var(--lv-text-base);
+  font-weight: 600;
+  color: var(--lv-text-1);
+}
+
+.el-card__body {
+  padding: var(--lv-space-4);
+}
+
+/* --- tables ----------------------------------------------------------- */
+.el-table {
+  --el-table-border-color: var(--lv-border-soft);
+  --el-table-header-bg-color: var(--lv-surface-3);
+  --el-table-header-text-color: var(--lv-text-3);
+  --el-table-row-hover-bg-color: var(--lv-surface-hover);
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  font-size: var(--lv-text-sm);
+}
+
+.el-table th.el-table__cell {
+  background: var(--lv-surface-3);
+  font-size: var(--lv-text-xs);
+  font-weight: 600;
+  letter-spacing: var(--lv-tracking-wide);
+  text-transform: uppercase;
+  color: var(--lv-text-3);
+}
+
+.el-table .el-table__cell {
+  padding: 9px 0;
+}
+
+.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
+  background: var(--lv-surface-3);
+}
+
+.el-table__inner-wrapper::before {
+  background-color: var(--lv-border-soft);
+}
+
+.el-table .cell {
+  line-height: 1.45;
+}
+
+/* Row-as-affordance: the cursor says the whole row is clickable (the change
+ * board opens a row's detail), which a hover tint alone does not. */
+.el-table__body tr.lv-row-clickable {
+  cursor: pointer;
+}
+
+/* --- tags ------------------------------------------------------------- */
+.el-tag {
+  border-radius: var(--lv-radius-sm);
+  font-weight: 500;
+  font-size: var(--lv-text-xs);
+  --el-tag-border-radius: var(--lv-radius-sm);
+}
+
+.el-tag.el-tag--info {
+  --el-tag-bg-color: var(--lv-neutral-soft);
+  --el-tag-border-color: var(--lv-neutral-border);
+  --el-tag-text-color: var(--lv-text-2);
+}
+
+/* --- tabs ------------------------------------------------------------- */
+.el-tabs__header {
+  margin-bottom: var(--lv-space-4);
+}
+
+.el-tabs__item {
+  font-size: var(--lv-text-base);
+  font-weight: 500;
+  color: var(--lv-text-3);
+}
+
+.el-tabs__item.is-active {
+  color: var(--lv-accent);
+}
+
+.el-tabs__nav-wrap::after {
+  height: 1px;
+  background: var(--lv-border);
+}
+
+.el-tabs__active-bar {
+  height: 2px;
+  border-radius: 2px;
+  background: var(--lv-accent);
+}
+
+/* --- dialogs & drawer ------------------------------------------------- */
+.el-dialog {
+  --el-dialog-border-radius: var(--lv-radius-xl);
+  border: 1px solid var(--lv-border);
+  box-shadow: var(--lv-shadow-lg);
+}
+
+.el-dialog__header {
+  margin-right: 0;
+  padding: var(--lv-space-4) var(--lv-space-5);
+  border-bottom: 1px solid var(--lv-border-soft);
+}
+
+.el-dialog__title {
+  font-size: var(--lv-text-md);
+  font-weight: 600;
+  color: var(--lv-text-1);
+}
+
+.el-dialog__body {
+  padding: var(--lv-space-5);
+}
+
+.el-dialog__footer {
+  padding: var(--lv-space-3) var(--lv-space-5) var(--lv-space-5);
+}
+
+.el-overlay {
+  backdrop-filter: blur(1.5px);
+}
+
+/* --- descriptions ----------------------------------------------------- */
+.el-descriptions {
+  --el-descriptions-item-bordered-label-background: var(--lv-surface-3);
+}
+
+.el-descriptions__label.el-descriptions__cell.is-bordered-label {
+  font-size: var(--lv-text-xs);
+  font-weight: 500;
+  color: var(--lv-text-3);
+  letter-spacing: var(--lv-tracking-wide);
+}
+
+.el-descriptions__content.el-descriptions__cell.is-bordered-content {
+  font-size: var(--lv-text-sm);
+}
+
+/* --- progress --------------------------------------------------------- */
+.el-progress-bar__outer {
+  background: var(--lv-surface-3);
+  border-radius: var(--lv-radius-full);
+}
+
+.el-progress-bar__inner {
+  border-radius: var(--lv-radius-full);
+  transition: width var(--lv-dur) var(--lv-ease);
+}
+
+/* --- pagination ------------------------------------------------------- */
+.el-pagination {
+  --el-pagination-button-bg-color: var(--lv-surface);
+  font-weight: 500;
+}
+
+.el-pagination .el-pager li {
+  border-radius: var(--lv-radius-sm);
+}
+
+/* --- empty ------------------------------------------------------------ */
+.el-empty {
+  --el-empty-padding: var(--lv-space-8) 0;
+}
+
+.el-empty__description p {
+  font-size: var(--lv-text-sm);
+  color: var(--lv-text-3);
+  max-width: 46ch;
+  line-height: var(--lv-leading-normal);
+}
+
+/* --- alerts / results ------------------------------------------------- */
+.el-alert {
+  border-radius: var(--lv-radius);
+  border: 1px solid transparent;
+  padding: var(--lv-space-3) var(--lv-space-4);
+}
+
+.el-alert--warning.is-light {
+  background: var(--lv-warn-soft);
+  border-color: var(--lv-warn-border);
+  color: var(--lv-warn);
+}
+
+.el-alert--error.is-light {
+  background: var(--lv-bad-soft);
+  border-color: var(--lv-bad-border);
+  color: var(--lv-bad);
+}
+
+.el-alert--success.is-light {
+  background: var(--lv-ok-soft);
+  border-color: var(--lv-ok-border);
+  color: var(--lv-ok);
+}
+
+.el-result__title p {
+  font-size: var(--lv-text-lg);
+  font-weight: 600;
+}
+
+/* --- messages / notifications ---------------------------------------- */
+.el-message {
+  border-radius: var(--lv-radius);
+  border: 1px solid var(--lv-border);
+  box-shadow: var(--lv-shadow-md);
+}
+
+.el-message-box {
+  --el-messagebox-border-radius: var(--lv-radius-xl);
+  border: 1px solid var(--lv-border);
+}
+
+/* --- dropdown menus --------------------------------------------------- */
+.el-dropdown-menu,
+.el-popper.is-light {
+  border-color: var(--lv-border);
+}
+
+.el-dropdown-menu__item {
+  font-size: var(--lv-text-sm);
+}
+
+.el-dropdown-menu__item:not(.is-disabled):focus {
+  background: var(--lv-surface-hover);
+  color: var(--lv-accent);
+}
+
+/* --- switch ----------------------------------------------------------- */
+.el-switch.is-checked .el-switch__core {
+  background-color: var(--lv-accent);
+  border-color: var(--lv-accent);
+}
+
+/* --- skeleton --------------------------------------------------------- */
+.el-skeleton__item {
+  background: linear-gradient(
+    90deg,
+    var(--lv-surface-3) 25%,
+    var(--lv-surface-hover) 37%,
+    var(--lv-surface-3) 63%
+  );
+}
+
+/* --- loading mask ----------------------------------------------------- */
+.el-loading-mask {
+  background-color: color-mix(in srgb, var(--lv-surface) 72%, transparent);
+}
+
+/* --- links inside EP content ------------------------------------------ */
+.el-descriptions__content a,
+.el-table a {
+  color: var(--lv-accent);
+}

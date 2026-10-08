@@ -6,6 +6,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { targetsApi } from '@/api'
 import type { Target } from '@/types/levee'
+import PageHeader from '@/components/PageHeader.vue'
 
 const loading = ref(false)
 const targets = ref<Target[]>([])
@@ -174,20 +175,27 @@ onMounted(load)
 
 <template>
   <div class="levee-page">
-    <h2 class="levee-page__title">目标机管理</h2>
+    <PageHeader title="目标机管理" description="受管主机清单与连通性；执行通道与凭据在此绑定">
+      <template #actions>
+        <el-button :icon="'Refresh'" :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :icon="'Plus'" @click="openAdd">添加目标机</el-button>
+      </template>
+    </PageHeader>
 
-    <el-card shadow="never" class="levee-card">
-      <div class="toolbar">
-        <el-select v-model="search.channelType" placeholder="通道类型" clearable style="width: 140px">
-          <el-option label="SSH" value="ssh" />
-          <el-option label="WinRM" value="winrm" />
-        </el-select>
-        <el-checkbox v-model="search.reachableOnly">仅可达</el-checkbox>
-        <el-button @click="load">查询</el-button>
-        <div class="toolbar__right">
+    <div class="lv-panel">
+      <div class="lv-panel__head">
+        <div class="lv-toolbar">
+          <el-select v-model="search.channelType" placeholder="通道类型" clearable style="width: 140px">
+            <el-option label="SSH" value="ssh" />
+            <el-option label="WinRM" value="winrm" />
+          </el-select>
+          <el-checkbox v-model="search.reachableOnly">仅可达</el-checkbox>
+          <el-button @click="load">查询</el-button>
+        </div>
+        <div class="lv-toolbar">
+          <span class="lv-panel__hint lv-mono">共 {{ total }} 台</span>
           <el-button @click="bulkCheck">批量连通性检查</el-button>
           <el-button @click="importVisible = true">导入</el-button>
-          <el-button type="primary" @click="openAdd">添加目标机</el-button>
         </div>
       </div>
 
@@ -229,7 +237,7 @@ onMounted(load)
           </template>
         </el-table-column>
       </el-table>
-    </el-card>
+    </div>
 
     <!-- Add dialog -->
     <el-dialog v-model="add.visible" title="添加目标机" width="480px">
@@ -276,23 +284,11 @@ onMounted(load)
 </template>
 
 <style scoped>
-.toolbar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 12px;
-}
-.toolbar__right {
-  margin-left: auto;
-  display: flex;
-  gap: 8px;
-}
-.label-tag + .label-tag {
-  margin-left: 4px;
-}
+/* Only the failure text of an inline check needs a rule: reachability and check
+ * results use the themed tag colours from the base layer. */
 .check-error {
-  margin-left: 4px;
-  color: #f56c6c;
-  font-size: 12px;
+  margin-left: 6px;
+  color: var(--lv-bad);
+  font-size: var(--lv-text-xs);
 }
 </style>
