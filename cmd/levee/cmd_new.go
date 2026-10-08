@@ -115,7 +115,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 		TemplateName:   result.TemplateName,
 		Params:         string(paramsJSON),
 		Status:         "draft",
-		ApprovalStatus: "pending",
+		ApprovalStatus: state.ApprovalStatusPending,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		Creator:        currentActor(),

@@ -519,7 +519,7 @@ func (e *Engine) planAuthorised(ctx context.Context, changeID, planHash string) 
 func (e *Engine) reenterApprovalFlow(ctx context.Context, run *state.Run) error {
 	now := utcNow()
 	run.Status = "draft"
-	run.ApprovalStatus = "pending"
+	run.ApprovalStatus = state.ApprovalStatusPending
 	run.UpdatedAt = now
 	if err := e.store.UpdateRun(ctx, run); err != nil {
 		return fmt.Errorf("wiring: re-enter approval flow for %q: %w", run.ID, err)

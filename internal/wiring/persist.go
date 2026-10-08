@@ -126,9 +126,9 @@ func (e *Engine) persistClosureResults(
 				if havePlan {
 					action = stepAction(pb, sr.StepName)
 				}
-				stepStatus := "success"
+				stepStatus := state.StepStatusSuccess
 				if sr.Error != nil {
-					stepStatus = "failed"
+					stepStatus = state.StepStatusFailed
 				}
 				step := &state.Step{
 					ID:          newID("stp-"),
@@ -216,12 +216,12 @@ func (e *Engine) persistRollbackResults(
 				if sr.Module != "" {
 					action = sr.Module + "." + sr.Action
 				}
-				stepStatus := "success"
+				stepStatus := state.StepStatusSuccess
 				switch {
 				case sr.Skipped:
-					stepStatus = "skipped"
+					stepStatus = state.StepStatusSkipped
 				case sr.Error != nil:
-					stepStatus = "failed"
+					stepStatus = state.StepStatusFailed
 				}
 				step := &state.Step{
 					ID:          newID("stp-"),
@@ -317,7 +317,7 @@ func (e *Engine) completedIdempotentBatches(ctx context.Context, changeID string
 		if batchNo == 0 {
 			continue
 		}
-		if s.Status != "success" {
+		if s.Status != state.StepStatusSuccess {
 			continue
 		}
 		succeeded[stepKey{batchNo: batchNo, stepName: s.StepName, host: s.Host}] = true
@@ -426,7 +426,7 @@ func (e *Engine) persistResumeEvidence(ctx context.Context, changeID string, ski
 			Host:        sk.Host,
 			StepName:    sk.StepName,
 			Action:      sk.Action,
-			Status:      "skipped",
+			Status:      state.StepStatusSkipped,
 			Stderr:      "skipped on resume: already completed by idempotent module",
 			DurationMs:  0,
 			StartedAt:   &now,
