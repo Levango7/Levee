@@ -6,9 +6,38 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="LEVEE - 非云原生基础设施变更流水线引擎控制台" />
     <title>LEVEE Console</title>
-    <script type="module" crossorigin src="/assets/index-CTlWbSY5.js"></script>
-    <link rel="modulepreload" crossorigin href="/assets/vendor-Cxsycex0.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-TZsyZKBJ.css">
+    <script>
+      /* Anti-flash bootstrap. The theme is a class on <html> and the stylesheet
+       * is bundled, so applying it from the app would paint the first frame
+       * light and flip afterwards — which reads as a bug on a dark console.
+       * This runs before first paint and does what useTheme does: read the
+       * stored choice (default "system"), resolve it, set class + color-scheme.
+       *
+       * Deliberately tiny and dependency-free, and it necessarily duplicates
+       * the storage key and media query from web/src/composables/useTheme.ts
+       * (this runs before the module graph loads). useTheme.spec.ts pins both
+       * so the two copies cannot drift silently. */
+      (function () {
+        try {
+          var stored = localStorage.getItem('levee-theme')
+          var dark =
+            stored === 'dark' ||
+            (stored !== 'light' &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) {
+            document.documentElement.classList.add('dark')
+            document.documentElement.style.colorScheme = 'dark'
+          } else {
+            document.documentElement.style.colorScheme = 'light'
+          }
+        } catch (e) {
+          /* localStorage unavailable: fall through to the light default. */
+        }
+      })()
+    </script>
+    <script type="module" crossorigin src="/assets/index-GOsge_z6.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-D6K1SSD_.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CABH57_w.css">
   </head>
   <body>
     <div id="app"></div>
