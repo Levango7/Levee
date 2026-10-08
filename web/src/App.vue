@@ -1,30 +1,98 @@
 <script setup lang="ts">
-// App.vue is the layout shell: a fixed sidebar + top bar + scrollable content
-// area. The content area is filled by <router-view>, so each route renders
-// inside this frame. We keep the shell free of business logic; per-page state
-// lives in the views.
-import { computed, ref } from 'vue'
+// App.vue is the layout shell: a dark navigation rail, a top bar, and a
+// scrollable content area filled by <router-view>.
+//
+// The rail is dark in BOTH themes — it is the console's fixed frame and the
+// only place the brand teal appears at full strength. Keeping it dark while the
+// work area follows the theme is what stops a light console from reading as a
+// blank page: the content sits inside a frame instead of floating on white.
+//
+// Shell responsibilities are deliberately narrow: navigation, the theme
+// switch, and the session menu. Per-page state lives in the views.
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { clearToken } from '@/api/client'
+import { useTheme, type ThemeChoice } from '@/composables/useTheme'
 
 const route = useRoute()
 const router = useRouter()
+const { choice: themeChoice, resolved: themeResolved, setChoice: setTheme } = useTheme()
 
 const collapsed = ref(false)
 
+// Navigation groups: the rail's information architecture. Ordered by how often
+// an operator touches them — work first, inventory second, platform last.
+// Every entry names its icon component; icons stay string names so the global
+// registration in main.ts resolves them (no per-entry imports).
+interface NavItem {
+  path: string
+  label: string
+  icon: string
+}
+interface NavGroup {
+  title: string
+  items: NavItem[]
+}
+
+const navGroups: NavGroup[] = [
+  {
+    title: '变更运营',
+    items: [
+      { path: '/changes', label: '变更看板', icon: 'Odometer' },
+      { path: '/monitor', label: '实时监控', icon: 'Monitor' },
+      { path: '/approval', label: '审批中心', icon: 'Stamp' },
+      { path: '/conversation', label: 'AI 对话', icon: 'ChatDotRound' },
+    ],
+  },
+  {
+    title: '资产与模板',
+    items: [
+      { path: '/targets', label: '目标机', icon: 'Connection' },
+      { path: '/templates', label: '模板管理', icon: 'Files' },
+    ],
+  },
+  {
+    title: '平台',
+    items: [
+      { path: '/cluster', label: '集群状态', icon: 'Share' },
+      { path: '/audit', label: '审计查询', icon: 'Tickets' },
+      { path: '/system', label: '系统状态', icon: 'Cpu' },
+    ],
+  },
+]
+
+// isActive matches by path prefix so nested routes (/changes/:id, /monitor/:x)
+// keep their parent entry lit. Root-anchored to avoid /cluster/... matching
+// a hypothetical /c route.
+function isActive(path: string): boolean {
+  return route.path === path || route.path.startsWith(path + '/')
+}
+
 const pageTitle = computed(() => (route.meta.title as string) || 'LEVEE')
 
+// Breadcrumb group for the current page, shown next to the title. Purely a
+// wayfinding aid: the rail shows where you are, the header says which cluster
+// of pages you are in.
+const currentGroup = computed(
+  () => navGroups.find((g) => g.items.some((i) => isActive(i.path)))?.title ?? '',
+)
+
 // Standalone pages (login, SSO callback, mobile approval deeplinks) render
-// without the sidebar / header chrome so they work on phones and pre-auth
-// screens.
+// without the shell chrome so they work on phones and pre-auth screens.
 const showShell = computed(
   () => !route.path.startsWith('/m/') && route.path !== '/login' && route.path !== '/login/callback',
 )
 
-function toggleCollapse(): void {
-  collapsed.value = !collapsed.value
-}
+const THEME_OPTIONS: Array<{ value: ThemeChoice; label: string; icon: string }> = [
+  { value: 'light', label: '浅色', icon: 'Sunny' },
+  { value: 'dark', label: '深色', icon: 'Moon' },
+  { value: 'system', label: '跟随系统', icon: 'Laptop' },
+]
+
+const themeIcon = computed(() =>
+  themeResolved.value === 'dark' ? 'Moon' : 'Sunny',
+)
 
 function handleCommand(command: string): void {
   if (command === 'logout') {
@@ -33,73 +101,136 @@ function handleCommand(command: string): void {
     router.push('/login')
   } else if (command === 'docs') {
     window.open('https://github.com/nexus/levee', '_blank')
+  } else {
+    setTheme(command as ThemeChoice)
   }
 }
+
+// ---------------------------------------------------------------------------
+// Clock. A console header carries the current time: it is how an operator
+// correlates what they are reading with the timestamps in logs and audit rows.
+// Rendered in the local zone with a fixed shape so the width never jitters.
+const now = ref(new Date())
+let clockTimer: ReturnType<typeof setInterval> | undefined
+
+onMounted(() => {
+  clockTimer = setInterval(() => {
+    now.value = new Date()
+  }, 1000)
+})
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer)
+})
+
+const clockText = computed(() => {
+  const d = now.value
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+})
+
+// Keep the window title in step with the route: an operator running several
+// consoles needs to tell them apart from the task bar.
+watch(
+  pageTitle,
+  (t) => {
+    document.title = t === 'LEVEE' ? 'LEVEE Console' : `${t} · LEVEE`
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <el-container class="layout">
-    <el-aside v-if="showShell" :width="collapsed ? '64px' : '220px'" class="layout__aside">
-      <div class="layout__brand">
-        <span class="layout__brand-mark">L</span>
-        <span v-if="!collapsed" class="layout__brand-text">LEVEE</span>
+    <el-aside v-if="showShell" :width="collapsed ? 'var(--lv-rail-width-collapsed)' : 'var(--lv-rail-width)'" class="rail">
+      <div class="rail__brand">
+        <span class="rail__mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+            <!-- Levee mark: three stacked courses of a flood wall. -->
+            <path d="M3 5h18v4H3z" fill="currentColor" opacity="0.95" />
+            <path d="M3 11h18v4H3z" fill="currentColor" opacity="0.6" />
+            <path d="M3 17h18v3H3z" fill="currentColor" opacity="0.3" />
+          </svg>
+        </span>
+        <span v-if="!collapsed" class="rail__wordmark">
+          <span class="rail__name">LEVEE</span>
+          <span class="rail__tagline">变更治理控制台</span>
+        </span>
       </div>
-      <el-menu
-        :default-active="route.path"
-        :collapse="collapsed"
-        router
-        class="layout__menu"
-      >
-        <el-menu-item index="/changes">
-          <el-icon><List /></el-icon>
-          <template #title>变更看板</template>
-        </el-menu-item>
-        <el-menu-item index="/approval">
-          <el-icon><Select /></el-icon>
-          <template #title>审批中心</template>
-        </el-menu-item>
-        <el-menu-item index="/monitor">
-          <el-icon><Monitor /></el-icon>
-          <template #title>实时监控</template>
-        </el-menu-item>
-        <el-menu-item index="/templates">
-          <el-icon><Document /></el-icon>
-          <template #title>模板管理</template>
-        </el-menu-item>
-        <el-menu-item index="/targets">
-          <el-icon><Connection /></el-icon>
-          <template #title>目标机</template>
-        </el-menu-item>
-        <el-menu-item index="/audit">
-          <el-icon><Tickets /></el-icon>
-          <template #title>审计查询</template>
-        </el-menu-item>
-        <el-menu-item index="/system">
-          <el-icon><DataLine /></el-icon>
-          <template #title>系统状态</template>
-        </el-menu-item>
-      </el-menu>
+
+      <nav class="rail__nav" aria-label="主导航">
+        <div v-for="group in navGroups" :key="group.title" class="rail__group">
+          <div v-if="!collapsed" class="rail__group-title">{{ group.title }}</div>
+          <div v-else class="rail__group-rule" aria-hidden="true"></div>
+
+          <router-link
+            v-for="item in group.items"
+            :key="item.path"
+            :to="item.path"
+            class="rail__link"
+            :class="{ 'rail__link--active': isActive(item.path) }"
+            :title="collapsed ? item.label : undefined"
+            :aria-current="isActive(item.path) ? 'page' : undefined"
+          >
+            <el-icon class="rail__icon"><component :is="item.icon" /></el-icon>
+            <span v-if="!collapsed" class="rail__label">{{ item.label }}</span>
+          </router-link>
+        </div>
+      </nav>
+
+      <div class="rail__foot">
+        <button class="rail__collapse" type="button" @click="collapsed = !collapsed">
+          <el-icon><component :is="collapsed ? 'Expand' : 'Fold'" /></el-icon>
+          <span v-if="!collapsed">收起导航</span>
+        </button>
+      </div>
     </el-aside>
 
-    <el-container>
-      <el-header v-if="showShell" class="layout__header">
-        <div class="layout__header-left">
-          <el-button text @click="toggleCollapse">
-            <el-icon><Fold v-if="!collapsed" /><Expand v-else /></el-icon>
-          </el-button>
-          <span class="layout__header-title">{{ pageTitle }}</span>
+    <el-container class="layout__body">
+      <el-header v-if="showShell" class="topbar">
+        <div class="topbar__left">
+          <span v-if="currentGroup" class="topbar__crumb">{{ currentGroup }}</span>
+          <el-icon v-if="currentGroup" class="topbar__crumb-sep"><ArrowRight /></el-icon>
+          <h1 class="topbar__title">{{ pageTitle }}</h1>
         </div>
-        <div class="layout__header-right">
+
+        <div class="topbar__right">
+          <span class="topbar__clock lv-mono" :title="now.toLocaleString()">{{ clockText }}</span>
+
           <el-dropdown trigger="click" @command="handleCommand">
-            <span class="layout__user">
-              <el-icon><User /></el-icon>
-              <span class="layout__user-name">operator</span>
-              <el-icon><ArrowDown /></el-icon>
-            </span>
+            <button class="topbar__icon-btn" type="button" :title="`主题：${THEME_OPTIONS.find((o) => o.value === themeChoice)?.label}`">
+              <el-icon><component :is="themeIcon" /></el-icon>
+            </button>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item command="docs">文档</el-dropdown-item>
-                <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+                <el-dropdown-item
+                  v-for="opt in THEME_OPTIONS"
+                  :key="opt.value"
+                  :command="opt.value"
+                  :class="{ 'is-active': themeChoice === opt.value }"
+                >
+                  <el-icon><component :is="opt.icon" /></el-icon>
+                  {{ opt.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-dropdown trigger="click" @command="handleCommand">
+            <button class="topbar__user" type="button">
+              <span class="topbar__avatar" aria-hidden="true">OP</span>
+              <span class="topbar__user-name">operator</span>
+              <el-icon class="topbar__caret"><ArrowDown /></el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="docs">
+                  <el-icon><Document /></el-icon>
+                  文档
+                </el-dropdown-item>
+                <el-dropdown-item command="logout" divided>
+                  <el-icon><SwitchButton /></el-icon>
+                  退出登录
+                </el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -108,7 +239,9 @@ function handleCommand(command: string): void {
 
       <el-main class="layout__main">
         <router-view v-slot="{ Component }">
-          <component :is="Component" />
+          <transition name="page" mode="out-in">
+            <component :is="Component" />
+          </transition>
         </router-view>
       </el-main>
     </el-container>
@@ -118,89 +251,331 @@ function handleCommand(command: string): void {
 <style scoped>
 .layout {
   height: 100%;
+  background: var(--lv-surface-2);
 }
 
-.layout__aside {
-  background: #ffffff;
-  border-right: 1px solid var(--levee-border);
-  transition: width 0.2s ease;
+/* ------------------------------------------------------------------- rail */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, var(--lv-rail-bg-top), var(--lv-rail-bg));
+  border-right: 1px solid var(--lv-rail-border);
+  transition: width var(--lv-dur) var(--lv-ease);
   overflow: hidden;
 }
 
-.layout__brand {
-  height: var(--levee-header-height);
+.rail__brand {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border-bottom: 1px solid var(--levee-border);
+  gap: 10px;
+  height: var(--lv-topbar-height);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--lv-rail-border);
+  flex: none;
 }
 
-.layout__brand-mark {
+.rail__mark {
   display: inline-flex;
-  width: 28px;
-  height: 28px;
   align-items: center;
   justify-content: center;
-  background: var(--levee-primary);
-  color: #fff;
-  font-weight: 700;
-  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: var(--lv-radius);
+  background: rgba(63, 173, 170, 0.16);
+  color: var(--lv-rail-active-text);
 }
 
-.layout__brand-text {
-  font-size: 16px;
+.rail__wordmark {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rail__name {
+  font-family: var(--lv-font-sans);
+  font-size: 15px;
   font-weight: 600;
-  color: var(--levee-text-regular);
-  letter-spacing: 1px;
+  letter-spacing: 0.14em;
+  color: var(--lv-rail-text-strong);
+  line-height: 1.2;
 }
 
-.layout__menu {
-  border-right: none;
+.rail__tagline {
+  font-size: 11px;
+  color: var(--lv-rail-section);
+  white-space: nowrap;
 }
 
-.layout__header {
-  height: var(--levee-header-height);
-  background: #ffffff;
-  border-bottom: 1px solid var(--levee-border);
+.rail__nav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--lv-space-3) var(--lv-space-2);
+}
+
+.rail__nav::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  background-clip: content-box;
+}
+
+.rail__group + .rail__group {
+  margin-top: var(--lv-space-4);
+}
+
+.rail__group-title {
+  padding: 0 10px var(--lv-space-2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: var(--lv-tracking-caps);
+  text-transform: uppercase;
+  color: var(--lv-rail-section);
+}
+
+.rail__group-rule {
+  height: 1px;
+  margin: 0 10px var(--lv-space-2);
+  background: var(--lv-rail-border);
+}
+
+.rail__link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  margin-bottom: 2px;
+  border-radius: var(--lv-radius);
+  color: var(--lv-rail-text);
+  font-size: var(--lv-text-sm);
+  font-weight: 500;
+  text-decoration: none;
+  transition:
+    background-color var(--lv-dur-fast) var(--lv-ease),
+    color var(--lv-dur-fast) var(--lv-ease);
+}
+
+.rail__link:hover {
+  background: var(--lv-rail-hover-bg);
+  color: var(--lv-rail-text-strong);
+}
+
+.rail__link--active {
+  background: var(--lv-rail-active-bg);
+  color: var(--lv-rail-active-text);
+}
+
+/* Active marker: a 2px bar bled to the rail's edge. Reads instantly in
+ * peripheral vision, which a background tint alone does not. */
+.rail__link--active::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--lv-rail-accent);
+}
+
+.rail__icon {
+  font-size: 16px;
+  flex: none;
+}
+
+.rail__label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail__foot {
+  flex: none;
+  padding: var(--lv-space-2);
+  border-top: 1px solid var(--lv-rail-border);
+}
+
+.rail__collapse {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--lv-radius);
+  background: transparent;
+  color: var(--lv-rail-section);
+  font-family: inherit;
+  font-size: var(--lv-text-xs);
+  cursor: pointer;
+  transition: background-color var(--lv-dur-fast) var(--lv-ease);
+}
+
+.rail__collapse:hover {
+  background: var(--lv-rail-hover-bg);
+  color: var(--lv-rail-text-strong);
+}
+
+/* ----------------------------------------------------------------- topbar */
+
+.topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  gap: var(--lv-space-4);
+  height: var(--lv-topbar-height);
+  padding: 0 var(--lv-space-5);
+  background: var(--lv-surface);
+  border-bottom: 1px solid var(--lv-border);
+  flex: none;
 }
 
-.layout__header-left {
+.topbar__left {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  align-items: baseline;
+  gap: var(--lv-space-2);
+  min-width: 0;
 }
 
-.layout__header-title {
-  font-size: 16px;
+.topbar__crumb {
+  font-size: var(--lv-text-sm);
+  color: var(--lv-text-3);
+  white-space: nowrap;
+}
+
+.topbar__crumb-sep {
+  font-size: 11px;
+  color: var(--lv-ink-400);
+  align-self: center;
+}
+
+.topbar__title {
+  font-size: var(--lv-text-lg);
   font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.layout__header-right {
+.topbar__right {
   display: flex;
   align-items: center;
+  gap: var(--lv-space-3);
+  flex: none;
 }
 
-.layout__user {
+.topbar__clock {
+  font-size: var(--lv-text-sm);
+  color: var(--lv-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.topbar__icon-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: var(--lv-radius);
+  background: transparent;
+  color: var(--lv-text-2);
   cursor: pointer;
-  color: var(--levee-text-regular);
+  transition:
+    background-color var(--lv-dur-fast) var(--lv-ease),
+    color var(--lv-dur-fast) var(--lv-ease);
 }
 
-.layout__user-name {
-  margin: 0 4px 0 2px;
-  font-size: 14px;
+.topbar__icon-btn:hover {
+  background: var(--lv-surface-hover);
+  color: var(--lv-text-1);
 }
+
+.topbar__user {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--lv-space-2);
+  height: 32px;
+  padding: 0 var(--lv-space-2) 0 4px;
+  border: 1px solid var(--lv-border);
+  border-radius: var(--lv-radius-full);
+  background: var(--lv-surface);
+  color: var(--lv-text-2);
+  font-family: inherit;
+  font-size: var(--lv-text-sm);
+  cursor: pointer;
+  transition: border-color var(--lv-dur-fast) var(--lv-ease);
+}
+
+.topbar__user:hover {
+  border-color: var(--lv-border-strong);
+}
+
+.topbar__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--lv-radius-full);
+  background: var(--lv-accent-soft);
+  color: var(--lv-accent);
+  font-family: var(--lv-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.topbar__caret {
+  font-size: 12px;
+  color: var(--lv-text-3);
+}
+
+/* ------------------------------------------------------------------- main */
 
 .layout__main {
-  background: var(--levee-bg);
   padding: 0;
   overflow-y: auto;
+  background: var(--lv-surface-2);
+}
+
+/* ----------------------------------------------------------------- motion */
+
+.page-enter-active,
+.page-leave-active {
+  transition:
+    opacity var(--lv-dur) var(--lv-ease),
+    transform var(--lv-dur) var(--lv-ease);
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.page-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-enter-active,
+  .page-leave-active {
+    transition: none;
+  }
+}
+
+/* Dropdown items carry their icon inline; align it with the label. */
+.el-dropdown-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--lv-space-2);
+}
+
+.el-dropdown-menu__item.is-active {
+  color: var(--lv-accent);
+  font-weight: 600;
 }
 </style>

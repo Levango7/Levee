@@ -1,60 +1,29 @@
-/* Global stylesheet imported once in main.ts. Keeps Element Plus theme
-   overrides and LEVEE-specific tokens in one place. */
+/* Global stylesheet, imported once from main.ts.
+ *
+ * This file used to hold every override inline — five CSS variables and a
+ * handful of rules. It is now an index: the design system lives in layers so a
+ * change has exactly one home.
+ *
+ * Import order is load-bearing:
+ *   1. tokens — defines --lv-* and re-points --el-* (light and dark)
+ *   2. fonts  — @font-face for the two Latin faces
+ *   3. base   — reset, console utilities, Element Plus polish
+ *
+ * main.ts imports Element Plus's own light and dark stylesheets BEFORE this
+ * one, so the --el-* mapping here is what wins in both themes. */
 
+@import './tokens.css';
+@import './fonts.css';
+@import './base.css';
+
+/* Compatibility aliases for the pre-design-system variable names. A few view
+ * stylesheets still reference them; pointing them at the new tokens keeps those
+ * files correct until they are reworked, instead of silently losing colour. */
 :root {
-  --levee-sidebar-width: 220px;
-  --levee-header-height: 56px;
-  --levee-bg: #f5f7fa;
-  --levee-border: #e4e7ed;
-  --levee-text-regular: #303133;
-  --levee-primary: #0e7c7b;
-}
-
-html,
-body,
-#app {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', Arial, sans-serif;
-  background: var(--levee-bg);
-  color: var(--levee-text-regular);
-  -webkit-font-smoothing: antialiased;
-}
-
-a {
-  color: var(--levee-primary);
-  text-decoration: none;
-}
-
-/* Subtle scrollbars to match the light theme. */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-thumb {
-  background: #c0c4cc;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.levee-page {
-  padding: 16px 24px;
-}
-
-.levee-page__title {
-  margin: 0 0 16px;
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--levee-text-regular);
-}
-
-.levee-card + .levee-card {
-  margin-top: 16px;
+  --levee-sidebar-width: var(--lv-rail-width);
+  --levee-header-height: var(--lv-topbar-height);
+  --levee-bg: var(--lv-surface-2);
+  --levee-border: var(--lv-border);
+  --levee-text-regular: var(--lv-text-2);
+  --levee-primary: var(--lv-accent);
 }

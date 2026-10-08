@@ -202,7 +202,7 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
     >
       <div class="mobile-approval__field">
         <span class="mobile-approval__label">变更 ID</span>
-        <span class="mobile-approval__value">{{ change.id }}</span>
+        <span class="mobile-approval__value lv-mono">{{ change.id }}</span>
       </div>
       <div class="mobile-approval__field">
         <span class="mobile-approval__label">状态</span>
@@ -321,8 +321,9 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
   display: grid;
   gap: 12px 24px;
   padding: 16px;
-  background: var(--el-fill-color-light);
-  border-radius: 8px;
+  background: var(--lv-surface-3);
+  border: 1px solid var(--lv-border-soft);
+  border-radius: var(--lv-radius-lg);
 }
 
 .mobile-approval__field {
@@ -332,8 +333,8 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
 }
 
 .mobile-approval__label {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
 }
 
 .mobile-approval__value {
@@ -353,8 +354,8 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
   right: 0;
   bottom: 0;
   padding: 12px 16px;
-  background: var(--el-bg-color);
-  border-top: 1px solid var(--el-border-color-light);
+  background: var(--lv-surface);
+  border-top: 1px solid var(--lv-border);
   justify-content: stretch;
   z-index: 10;
 }

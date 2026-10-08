@@ -1,8 +1,17 @@
 <script setup lang="ts">
+// ClusterView shows cluster coordination state: registered nodes, assignment
+// distribution, and per-run batch progress.
+//
+// Indentation note: this file is tab-indented, and its template keeps exactly
+// one `\n\t\t</template>` (the night-watch guard in ClusterView.spec.ts keys on
+// that string to assert the batch panel sits OUTSIDE the backend/nodes branch).
+// Reformatting this file with spaces silently disarms that guard — change the
+// spec first if the shape ever needs to move.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { batchApi, systemApi, type BatchSummaryDTO, type ClusterStatus } from '@/api'
-import { batchBarStatus, batchLabel, batchProgress, batchTagType } from '@/utils/batch'
+import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { assignmentLabel } from '@/utils/assignment'
+import PageHeader from '@/components/PageHeader.vue'
 
 const data = ref<ClusterStatus | null>(null)
 const batchData = ref<BatchSummaryDTO | null>(null)
@@ -64,92 +73,122 @@ function lastHeartbeatRelative(iso: string): string {
 	return `${Math.floor(diff / 3_600_000)}h ago`
 }
 
-const statusClass = (s: string) => `status-dot status-${s}`
+// Node liveness: `active` is the only status the registry writes as healthy.
+function nodeTone(status: string): string {
+	return status === 'active' ? 'ok' : 'bad'
+}
+
+const assignmentDistribution = computed(() => {
+	const counts = summary.value?.counts ?? {}
+	const entries = Object.entries(counts).map(([state, count]) => ({
+		state,
+		label: assignmentLabel(state),
+		count: Number(count) || 0,
+	}))
+	const max = Math.max(1, ...entries.map((e) => e.count))
+	return entries.map((e) => ({ ...e, pct: Math.round((e.count / max) * 100) }))
+})
 </script>
 
 <template>
 	<div class="levee-page">
-		<h2 class="levee-page__title">集群状态</h2>
+		<PageHeader title="集群状态" description="节点注册、分配负载与分批推进（每 30 秒自动刷新）">
+			<template #actions>
+				<el-button :icon="'Refresh'" :loading="loading" @click="fetchStatus">刷新</el-button>
+			</template>
+		</PageHeader>
 
 		<p v-if="backend === 'sqlite'" class="hint">
-			单节点模式（SQLite）：集群协调未启用。使用 <code>levee serve --cluster --pg-dsn …</code> 启用集群模式。
+			<el-icon class="hint__icon"><InfoFilled /></el-icon>
+			<span>
+				单节点模式（SQLite）：集群协调未启用。使用
+				<code>levee serve --cluster --pg-dsn …</code> 启用集群模式。
+			</span>
 		</p>
 
 		<p v-else-if="backend === 'postgres' && nodes.length === 0" class="hint">
-			未注册任何 worker 节点。集群模式（<code>levee serve --cluster --pg-dsn …</code>）下请启动 worker 节点加入；单节点 PostgreSQL 部署无需 worker。
+			<el-icon class="hint__icon"><InfoFilled /></el-icon>
+			<span>
+				未注册任何 worker 节点。集群模式下请启动 worker 加入；单节点 PostgreSQL 部署无需 worker。
+			</span>
 		</p>
 
 		<template v-else>
-			<!-- Summary cards -->
-			<el-row :gutter="12" class="summary-row">
-				<el-col :span="6">
-					<el-card shadow="hover" class="summary-card">
-						<div class="summary-card__count">{{ nodes.length }}</div>
-						<div class="summary-card__label">节点总数</div>
-					</el-card>
-				</el-col>
-				<el-col :span="6">
-					<el-card shadow="hover" class="summary-card">
-						<div class="summary-card__count">{{ summary?.totalActive ?? 0 }}</div>
-						<div class="summary-card__label">活跃分配</div>
-					</el-card>
-				</el-col>
-				<el-col :span="6">
-					<el-card shadow="hover" class="summary-card">
-						<div class="summary-card__count">{{ summary?.counts?.done ?? 0 }}</div>
-						<div class="summary-card__label">已完成</div>
-					</el-card>
-				</el-col>
-				<el-col :span="6">
-					<el-card shadow="hover" class="summary-card">
-						<div class="summary-card__count">{{ summary?.counts?.interrupted ?? 0 }}</div>
-						<div class="summary-card__label">已中断</div>
-					</el-card>
-				</el-col>
-			</el-row>
-
-			<!-- Node grid -->
-			<h3 class="section-title">节点</h3>
-			<el-row :gutter="12">
-				<el-col v-for="n in nodes" :key="n.id" :span="8">
-					<el-card shadow="hover" class="node-card">
-						<div class="node-card__header">
-							<span class="node-card__id">{{ n.id }}</span>
-							<span :class="statusClass(n.status)"></span>
-						</div>
-						<div class="node-card__addr">{{ n.address }}</div>
-						<div class="node-card__meta">
-							<el-tag size="small">{{ n.role }}</el-tag>
-							<span class="node-card__heartbeat">最后心跳 {{ lastHeartbeatRelative(n.lastHeartbeat) }}</span>
-						</div>
-					</el-card>
-				</el-col>
-			</el-row>
-
-			<!-- Assignment distribution -->
-			<h3 class="section-title">分配状态分布</h3>
-			<el-card shadow="never" class="dist-card">
-				<div class="dist-row" v-for="(count, state) in (summary?.counts ?? {})" :key="state">
-					<span class="dist-label">{{ assignmentLabel(state) }}</span>
-					<el-progress
-						:percentage="summary?.totalActive ? Math.round((count / Math.max(summary.totalActive, 1)) * 100) : 0"
-						:stroke-width="14"
-						class="dist-bar"
-					></el-progress>
-					<span class="dist-count">{{ count }}</span>
+			<div class="stat-row">
+				<div class="lv-metric">
+					<span class="lv-metric__accent metric-accent--accent"></span>
+					<div class="lv-metric__label">节点总数</div>
+					<div class="lv-metric__value">{{ nodes.length }}</div>
 				</div>
-			</el-card>
-
-			<!-- Worker load -->
-			<h3 class="section-title">Worker 负载</h3>
-			<el-card shadow="never" class="dist-card">
-				<div v-if="activeNodeLoad.length === 0" class="muted">无活跃分配</div>
-				<div class="dist-row" v-for="n in activeNodeLoad" :key="n.id">
-					<span class="dist-label">{{ n.id }}</span>
-					<el-progress :percentage="100" :stroke-width="14" class="dist-bar"></el-progress>
-					<span class="dist-count">{{ n.count }} 活跃</span>
+				<div class="lv-metric">
+					<span class="lv-metric__accent metric-accent--ok"></span>
+					<div class="lv-metric__label">活跃分配</div>
+					<div class="lv-metric__value">{{ summary?.totalActive ?? 0 }}</div>
 				</div>
-			</el-card>
+				<div class="lv-metric">
+					<span class="lv-metric__accent metric-accent--ok"></span>
+					<div class="lv-metric__label">已完成</div>
+					<div class="lv-metric__value">{{ summary?.counts?.done ?? 0 }}</div>
+				</div>
+				<div class="lv-metric">
+					<span class="lv-metric__accent metric-accent--bad"></span>
+					<div class="lv-metric__label">已中断</div>
+					<div class="lv-metric__value">{{ summary?.counts?.interrupted ?? 0 }}</div>
+				</div>
+			</div>
+
+			<h3 class="lv-section-title">节点</h3>
+			<div class="node-grid">
+				<div v-for="n in nodes" :key="n.id" class="lv-panel node">
+					<div class="node__head">
+						<span class="node__id lv-mono">{{ n.id }}</span>
+						<span class="lv-dot" :class="`lv-dot--${nodeTone(n.status)}`" :title="n.status"></span>
+					</div>
+					<div class="node__addr lv-mono">{{ n.address }}</div>
+					<div class="node__meta">
+						<span class="node__role">{{ n.role }}</span>
+						<span class="node__beat">心跳 {{ lastHeartbeatRelative(n.lastHeartbeat) }}</span>
+					</div>
+				</div>
+			</div>
+
+			<div class="split">
+				<div>
+					<h3 class="lv-section-title">分配状态分布</h3>
+					<div class="lv-panel">
+						<div class="lv-panel__body">
+							<div v-if="assignmentDistribution.length === 0" class="lv-empty">
+								<span>暂无分配记录</span>
+							</div>
+							<div v-for="d in assignmentDistribution" :key="d.state" class="bar-row">
+								<span class="bar-row__label">{{ d.label }}</span>
+								<div class="bar-row__track">
+									<div class="bar-row__fill" :style="{ width: d.pct + '%' }"></div>
+								</div>
+								<span class="bar-row__count lv-mono">{{ d.count }}</span>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<div>
+					<h3 class="lv-section-title">Worker 负载</h3>
+					<div class="lv-panel">
+						<div class="lv-panel__body">
+							<div v-if="activeNodeLoad.length === 0" class="lv-empty">
+								<span>无活跃分配</span>
+							</div>
+							<div v-for="n in activeNodeLoad" :key="n.id" class="bar-row">
+								<span class="bar-row__label lv-mono">{{ n.id }}</span>
+								<div class="bar-row__track">
+									<div class="bar-row__fill bar-row__fill--load" :style="{ width: '100%' }"></div>
+								</div>
+								<span class="bar-row__count lv-mono">{{ n.count }} 活跃</span>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
 
 		</template>
 
@@ -159,83 +198,243 @@ const statusClass = (s: string) => `status-dot status-${s}`
 		     coordination. Inside that branch it was unreachable in the default
 		     SQLite deployment -- `v-if="backend === 'sqlite'"` swallowed the whole
 		     block -- so the same rows were visible on /monitor but not here. -->
-		<h3 class="section-title">Run 批次进度</h3>
-		<el-card shadow="never" class="dist-card">
-			<div class="batch-run-input">
-				<el-input
-					v-model="selectedRunID"
-					placeholder="输入 run_id 查看批次进度"
-					clearable
-					@change="fetchBatchStatus"
-					class="batch-run-input__field"
-				/>
-				<el-button type="primary" @click="fetchBatchStatus">查询</el-button>
+		<h3 class="lv-section-title">Run 批次进度</h3>
+		<div class="lv-panel">
+			<div class="lv-panel__body">
+				<div class="batch-query">
+					<el-input
+						v-model="selectedRunID"
+						placeholder="输入 run_id 查看批次进度"
+						clearable
+						@change="fetchBatchStatus"
+					/>
+					<el-button type="primary" @click="fetchBatchStatus">查询</el-button>
+				</div>
+				<p v-if="!selectedRunID.trim()" class="muted">
+					按 run 查询逐批推进：每批的主机数、成功/失败分布与当前批次。
+				</p>
+				<p v-else-if="batchError" class="error">{{ batchError }}</p>
+				<template v-else-if="batchData">
+					<div class="batch-head">
+						<span class="batch-head__stamp lv-mono">
+							{{ batchData.done_batches }} / {{ batchData.total_batches }}
+						</span>
+						<span class="muted">批次完成</span>
+						<span v-if="batchData.current_batch_no > 0" class="muted">
+							· 当前第 <b class="lv-mono">{{ batchData.current_batch_no }}</b> 批
+						</span>
+					</div>
+					<div v-for="b in batchData.batches" :key="b.batch_no" class="batch-row">
+						<span class="batch-row__no lv-mono">#{{ b.batch_no }}</span>
+						<span class="batch-row__state">{{ batchLabel(b.status) }}</span>
+						<el-progress
+							:percentage="batchProgress(b)"
+							:status="batchBarStatus(b.status)"
+							:stroke-width="6"
+							:show-text="false"
+							class="batch-row__bar"
+						/>
+						<span class="batch-row__count lv-mono">
+							{{ b.succeeded }}/{{ b.total_hosts }}<template v-if="b.failed"> · <b class="bad">{{ b.failed }} 失败</b></template>
+						</span>
+					</div>
+				</template>
 			</div>
-			<p v-if="!selectedRunID.trim()" class="muted">输入 run_id 查看该 run 的各批次执行进度</p>
-			<p v-else-if="batchError" class="error">{{ batchError }}</p>
-			<template v-else-if="batchData">
-				<div class="batch-summary">
-					<el-tag size="small" :type="batchData.done_batches === batchData.total_batches ? 'success' : 'info'">
-						{{ batchData.done_batches }} / {{ batchData.total_batches }} 批次完成
-					</el-tag>
-					<span v-if="batchData.current_batch_no > 0" class="batch-current">
-						当前批次 #{{ batchData.current_batch_no }}
-					</span>
-				</div>
-				<div class="batch-row" v-for="b in batchData.batches" :key="b.batch_no">
-					<span class="batch-label">#{{ b.batch_no }}</span>
-					<el-tag size="small" :type="batchTagType(b.status)">
-						{{ batchLabel(b.status) }}
-					</el-tag>
-					<el-progress
-						:percentage="batchProgress(b)"
-						:status="batchBarStatus(b.status)"
-						:stroke-width="12"
-						class="batch-bar"
-					></el-progress>
-					<span class="batch-count">{{ b.succeeded }}/{{ b.total_hosts }} 成功<span v-if="b.failed"> · {{ b.failed }} 失败</span></span>
-				</div>
-			</template>
-		</el-card>
+		</div>
 
 		<p v-if="error" class="error">{{ error }}</p>
 	</div>
 </template>
 
 <style scoped>
-.section-title {
-	margin: 1.5rem 0 0.75rem;
-	font-size: 1rem;
+.hint {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--lv-space-2);
+	padding: var(--lv-space-3) var(--lv-space-4);
+	margin-bottom: var(--lv-space-4);
+	background: var(--lv-accent-soft);
+	border: 1px solid var(--lv-accent-border);
+	border-radius: var(--lv-radius);
+	color: var(--lv-text-2);
+	font-size: var(--lv-text-sm);
 }
-.summary-row { margin-bottom: 1rem; }
-.summary-card { text-align: center; }
-.summary-card__count { font-size: 1.6rem; font-weight: 600; }
-.summary-card__label { color: var(--el-text-color-secondary); font-size: 0.85rem; }
 
-.node-card__header { display: flex; justify-content: space-between; align-items: center; }
-.node-card__id { font-weight: 600; }
-.node-card__addr { color: var(--el-text-color-secondary); font-size: 0.85rem; margin: 0.25rem 0; }
-.node-card__meta { display: flex; justify-content: space-between; align-items: center; }
-.node-card__heartbeat { font-size: 0.75rem; color: var(--el-text-color-secondary); }
+.hint__icon {
+	flex: none;
+	margin-top: 2px;
+	color: var(--lv-accent);
+}
 
-.status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.status-active { background: var(--el-color-success); }
-.status-offline { background: var(--el-color-danger); }
+.stat-row {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+	gap: var(--lv-space-3);
+}
 
-.dist-row { display: flex; align-items: center; margin-bottom: 0.5rem; }
-.dist-label { width: 8rem; text-transform: capitalize; }
-.dist-bar { flex: 1; margin: 0 1rem; }
-.dist-count { width: 5rem; text-align: right; color: var(--el-text-color-secondary); }
+.metric-accent--accent { background: var(--lv-accent); }
+.metric-accent--ok { background: var(--lv-ok); }
+.metric-accent--bad { background: var(--lv-bad); }
 
-.hint, .muted { color: var(--el-text-color-secondary); }
-.error { color: var(--el-color-danger); margin-top: 1rem; }
+.node-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: var(--lv-space-3);
+}
 
-.batch-run-input { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-.batch-run-input__field { flex: 1; }
-.batch-summary { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.75rem; }
-.batch-current { font-size: 0.85rem; color: var(--el-text-color-secondary); }
-.batch-row { display: flex; align-items: center; margin-bottom: 0.5rem; gap: 0.5rem; }
-.batch-label { width: 2.5rem; font-weight: 600; }
-.batch-bar { flex: 1; }
-.batch-count { width: 9rem; text-align: right; color: var(--el-text-color-secondary); font-size: 0.8rem; }
+.node {
+	padding: var(--lv-space-3) var(--lv-space-4);
+}
+
+.node__head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--lv-space-2);
+}
+
+.node__id {
+	font-size: var(--lv-text-sm);
+	font-weight: 600;
+	color: var(--lv-text-1);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.node__addr {
+	margin: 3px 0 6px;
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
+}
+
+.node__meta {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--lv-space-2);
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
+}
+
+.node__role {
+	padding: 1px 7px;
+	border-radius: var(--lv-radius-sm);
+	background: var(--lv-neutral-soft);
+	border: 1px solid var(--lv-neutral-border);
+}
+
+.split {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	gap: var(--lv-space-4);
+}
+
+.bar-row {
+	display: grid;
+	grid-template-columns: minmax(0, 88px) minmax(0, 1fr) 76px;
+	align-items: center;
+	gap: var(--lv-space-3);
+	padding: 5px 0;
+}
+
+.bar-row__label {
+	font-size: var(--lv-text-sm);
+	color: var(--lv-text-2);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.bar-row__track {
+	height: 6px;
+	border-radius: var(--lv-radius-full);
+	background: var(--lv-surface-3);
+	overflow: hidden;
+}
+
+.bar-row__fill {
+	height: 100%;
+	background: var(--lv-accent);
+	border-radius: var(--lv-radius-full);
+	transition: width var(--lv-dur) var(--lv-ease);
+}
+
+.bar-row__fill--load {
+	background: linear-gradient(90deg, var(--lv-accent), var(--lv-teal-300));
+}
+
+.bar-row__count {
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
+	text-align: right;
+}
+
+.batch-query {
+	display: flex;
+	gap: var(--lv-space-2);
+	margin-bottom: var(--lv-space-3);
+}
+
+.batch-query .el-input {
+	flex: 1;
+}
+
+.batch-head {
+	display: flex;
+	align-items: baseline;
+	gap: var(--lv-space-2);
+	margin-bottom: var(--lv-space-3);
+	font-size: var(--lv-text-sm);
+}
+
+.batch-head__stamp {
+	font-size: var(--lv-text-lg);
+	font-weight: 600;
+	color: var(--lv-text-1);
+}
+
+.batch-row {
+	display: grid;
+	grid-template-columns: 44px 64px minmax(0, 1fr) 132px;
+	align-items: center;
+	gap: var(--lv-space-3);
+	padding: 5px 0;
+}
+
+.batch-row__no {
+	font-size: var(--lv-text-sm);
+	font-weight: 600;
+	color: var(--lv-text-1);
+}
+
+.batch-row__state {
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
+}
+
+.batch-row__count {
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
+	text-align: right;
+}
+
+.batch-row__count b {
+	font-weight: 600;
+}
+
+.muted {
+	color: var(--lv-text-3);
+	font-size: var(--lv-text-sm);
+}
+
+.error {
+	margin-top: var(--lv-space-4);
+	color: var(--lv-bad);
+	font-size: var(--lv-text-sm);
+}
+
+.bad {
+	color: var(--lv-bad);
+}
 </style>

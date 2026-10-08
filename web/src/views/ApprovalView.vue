@@ -2,11 +2,12 @@
 // ApprovalView shows pending approvals and approval history. Operators can
 // approve, reject or delegate a change. The history tab lists past decisions
 // sourced from the audit log.
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi, auditApi } from '@/api'
 import type { Change, TraceEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp } from '@/utils/format'
 
 const activeTab = ref<'pending' | 'history'>('pending')
@@ -122,32 +123,63 @@ function switchTab(tab: 'pending' | 'history'): void {
 }
 
 onMounted(loadPending)
+
+const pendingCount = computed(() => pending.value.length)
 </script>
 
 <template>
   <div class="levee-page">
-    <h2 class="levee-page__title">审批中心</h2>
+    <PageHeader title="审批中心" description="待审批变更的决策入口；历史来源为审计链上的审批动作">
+    </PageHeader>
 
-    <el-tabs :value="activeTab" @tab-change="switchTab">
-      <el-tab-pane label="待审批" name="pending" />
-      <el-tab-pane label="审批历史" name="history" />
-    </el-tabs>
+    <div class="lv-panel">
+      <div class="lv-panel__head tabs-head">
+        <el-tabs :value="activeTab" @tab-change="switchTab" class="tabs">
+          <el-tab-pane name="pending">
+            <template #label>
+              <span class="tab-label">
+                待审批
+                <span v-if="pendingCount" class="tab-badge lv-mono">{{ pendingCount }}</span>
+              </span>
+            </template>
+          </el-tab-pane>
+          <el-tab-pane label="审批历史" name="history" />
+        </el-tabs>
+        <div class="head-tools">
+          <span class="approver">
+            <span class="approver__label">审批人</span>
+            <el-input v-model="approver" size="small" style="width: 132px" />
+          </span>
+          <el-button :icon="'Refresh'" :loading="loading" size="small" @click="switchTab(activeTab)">刷新</el-button>
+        </div>
+      </div>
 
-    <el-card shadow="never" class="levee-card" v-loading="loading">
-      <template v-if="activeTab === 'pending'">
-        <el-table :data="pending" stripe>
-          <el-table-column prop="id" label="变更 ID" width="180" show-overflow-tooltip />
-          <el-table-column prop="label" label="名称" min-width="180" show-overflow-tooltip />
+      <div v-if="activeTab === 'pending'">
+        <el-table v-loading="loading" :data="pending">
+          <el-table-column label="变更" min-width="260">
+            <template #default="{ row }">
+              <div class="cell-change">
+                <span class="cell-change__label">{{ row.label }}</span>
+                <span class="cell-change__id lv-mono">{{ row.id }}</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="状态" width="120">
-            <template #default="{ row }"><StatusTag :status="row.status" /></template>
+            <template #default="{ row }"><StatusTag :status="row.status" variant="plain" /></template>
           </el-table-column>
-          <el-table-column prop="priority" label="优先级" width="100" />
-          <el-table-column prop="team" label="团队" width="120" />
-          <el-table-column prop="environment" label="环境" width="120" />
-          <el-table-column label="创建时间" width="180">
-            <template #default="{ row }">{{ formatTimestamp(row.createdAt) }}</template>
+          <el-table-column label="优先级" width="88">
+            <template #default="{ row }">
+              <span class="cell-prio" :class="`cell-prio--${row.priority}`">{{ row.priority }}</span>
+            </template>
           </el-table-column>
-          <el-table-column label="操作" width="240" fixed="right">
+          <el-table-column prop="team" label="团队" width="110" />
+          <el-table-column prop="environment" label="环境" width="110" />
+          <el-table-column label="创建时间" width="168">
+            <template #default="{ row }">
+              <span class="cell-time lv-mono">{{ formatTimestamp(row.createdAt) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="决策" width="196" fixed="right">
             <template #default="{ row }">
               <el-button text type="success" @click="approve(row)">通过</el-button>
               <el-button text type="danger" @click="reject(row)">驳回</el-button>
@@ -155,22 +187,140 @@ onMounted(loadPending)
             </template>
           </el-table-column>
         </el-table>
-        <el-empty v-if="!loading && pending.length === 0" description="暂无待审批变更" />
-      </template>
+        <el-empty
+          v-if="!loading && pending.length === 0"
+          description="暂无待审批变更"
+        />
+      </div>
 
-      <template v-else>
-        <el-table :data="history" stripe>
-          <el-table-column prop="id" label="记录 ID" width="200" show-overflow-tooltip />
-          <el-table-column prop="changeId" label="变更 ID" width="180" show-overflow-tooltip />
-          <el-table-column prop="action" label="动作" width="120" />
-          <el-table-column prop="actor" label="操作人" width="140" />
-          <el-table-column label="时间" width="180">
-            <template #default="{ row }">{{ formatTimestamp(row.timestamp) }}</template>
+      <div v-else>
+        <el-table v-loading="loading" :data="history">
+          <el-table-column label="记录 ID" width="190">
+            <template #default="{ row }">
+              <span class="cell-id lv-mono" :title="row.id">{{ row.id }}</span>
+            </template>
           </el-table-column>
-          <el-table-column prop="targetHost" label="目标" min-width="160" show-overflow-tooltip />
+          <el-table-column label="变更 ID" width="176">
+            <template #default="{ row }">
+              <span class="cell-id lv-mono" :title="row.changeId">{{ row.changeId || '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="action" label="动作" width="110" />
+          <el-table-column prop="actor" label="操作人" width="132" />
+          <el-table-column label="时间" width="168">
+            <template #default="{ row }">
+              <span class="cell-time lv-mono">{{ formatTimestamp(row.timestamp) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="targetHost" label="目标" min-width="150" show-overflow-tooltip />
         </el-table>
         <el-empty v-if="!loading && history.length === 0" description="暂无审批历史" />
-      </template>
-    </el-card>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.head-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--lv-space-3);
+}
+
+.approver {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--lv-space-2);
+}
+
+.approver__label {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+/* The tabs live inside the panel head; the head's own bottom border becomes the
+ * tab bar's underline, so the two chrome lines do not stack. */
+.tabs-head {
+  padding-bottom: 0;
+}
+
+.tabs :deep(.el-tabs__header) {
+  margin: 0;
+}
+
+.tabs :deep(.el-tabs__nav-wrap::after) {
+  display: none;
+}
+
+.tabs :deep(.el-tabs__item) {
+  height: 43px;
+}
+
+.tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--lv-radius-full);
+  background: var(--lv-warn-soft);
+  border: 1px solid var(--lv-warn-border);
+  color: var(--lv-warn);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cell-change {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cell-change__label {
+  color: var(--lv-text-1);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-change__id,
+.cell-id {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--lv-font-mono);
+  font-size: 11px;
+  color: var(--lv-text-3);
+}
+
+.cell-prio {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-2);
+}
+
+.cell-prio--urgent {
+  color: var(--lv-bad);
+  font-weight: 600;
+}
+
+.cell-prio--high {
+  color: var(--lv-warn);
+  font-weight: 500;
+}
+
+.cell-time {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+</style>

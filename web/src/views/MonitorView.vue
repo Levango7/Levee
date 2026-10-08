@@ -10,8 +10,9 @@ import { ElMessage } from 'element-plus'
 import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
+import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp } from '@/utils/format'
-import { batchBarStatus, batchLabel, batchProgress, batchTagType } from '@/utils/batch'
+import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 
 const route = useRoute()
 
@@ -33,8 +34,9 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 // The status vocabulary is the store's own — pending | running | done | failed |
 // interrupted. This file used to declare a LOCAL copy of the shape whose states
 // were `pending|running|success|failed`: nothing ever writes `success`, and
-// `interrupted` (the real "the run stopped mid-batch" state) had no rendering at
-// all. Binding to the server DTO is what keeps the two vocabularies from drifting.
+// `interrupted` (the real "the run stopped mid-batch" state) had no rendering
+// at all. Binding to the server DTO is what keeps the two vocabularies from
+// drifting.
 const summary = ref<BatchSummaryDTO | null>(null)
 
 // Gate verdicts are recorded per run inside the engine's closure, but there is
@@ -105,19 +107,19 @@ function stopPolling(): void {
   }
 }
 
-function levelTag(level: LogEntry['level']): 'info' | 'success' | 'warning' | 'danger' {
-  switch (level) {
-    case 'DEBUG':
-      return 'info'
-    case 'INFO':
-      return 'success'
-    case 'WARN':
-      return 'warning'
-    case 'ERROR':
-      return 'danger'
-    default:
-      return 'info'
-  }
+// Log level → tone. Kept as a class name rather than an el-tag type because the
+// terminal panel paints its own colours (a tag's chrome would fight the pane).
+function levelClass(level: LogEntry['level']): string {
+  return `log-line--${(level || 'INFO').toLowerCase()}`
+}
+
+// The timestamp column is fixed-width in the pane; logs carry an ISO string and
+// only the time-of-day part is useful at a glance, so trim it here rather than
+// widening the column for the date everyone already knows.
+function logTime(ts: string): string {
+  if (!ts) return ''
+  const t = ts.includes('T') ? ts.split('T')[1] || ts : ts
+  return t.replace('Z', '').slice(0, 12)
 }
 
 // When autoScroll is toggled on, immediately jump to the bottom.
@@ -131,138 +133,438 @@ onMounted(async () => {
 })
 
 onUnmounted(stopPolling)
+
+const batchTotals = computed(() => {
+  const s = summary.value
+  if (!s) return null
+  return {
+    total: s.total_batches,
+    done: s.done_batches,
+    current: s.current_batch_no,
+  }
+})
 </script>
 
 <template>
   <div class="levee-page">
-    <h2 class="levee-page__title">实时监控<template v-if="change"> — {{ change.label }}</template></h2>
+    <PageHeader
+      :title="change ? `执行监控 · ${change.label}` : '执行监控'"
+      description="实时日志与分批推进；进入 run 后每 2 秒轮询一次"
+    >
+      <template #actions>
+        <el-button :icon="'Refresh'" :loading="loading" @click="refreshAll">刷新</el-button>
+      </template>
+    </PageHeader>
 
-    <el-row :gutter="16">
-      <!-- Left: change summary + batches + gates -->
-      <el-col :span="10">
-        <el-card shadow="never" class="levee-card" v-loading="loading">
-          <template #header>变更概览</template>
-          <template v-if="change">
-            <el-descriptions :column="2" border>
-              <el-descriptions-item label="ID">{{ change.id }}</el-descriptions-item>
-              <el-descriptions-item label="状态"><StatusTag :status="change.status" /></el-descriptions-item>
-              <el-descriptions-item label="优先级">{{ change.priority }}</el-descriptions-item>
-              <el-descriptions-item label="环境">{{ change.environment }}</el-descriptions-item>
-              <el-descriptions-item label="创建时间">{{ formatTimestamp(change.createdAt) }}</el-descriptions-item>
-              <el-descriptions-item label="更新时间">{{ formatTimestamp(change.updatedAt) }}</el-descriptions-item>
-            </el-descriptions>
-          </template>
-          <el-empty v-else description="未选择变更" />
-        </el-card>
-
-        <el-card shadow="never" class="levee-card">
-          <template #header>批次进度</template>
-          <el-empty v-if="!summary || summary.batches.length === 0" description="暂无批次记录（该变更还没有进入分批执行）" />
-          <template v-else>
-            <div class="batch-summary">
-              共 {{ summary.total_batches }} 批 · 已完成 {{ summary.done_batches }} 批<template v-if="summary.current_batch_no > 0">
-                · 当前第 {{ summary.current_batch_no }} 批</template>
-            </div>
-            <div v-for="b in summary.batches" :key="b.batch_no" class="batch-item">
-              <div class="batch-item__head">
-                <span>批次 #{{ b.batch_no }}</span>
-                <el-tag size="small" :type="batchTagType(b.status)">{{ batchLabel(b.status) }}</el-tag>
-              </div>
-              <el-progress :percentage="batchProgress(b)" :status="batchBarStatus(b.status)" />
-              <div class="batch-item__hosts">
-                {{ b.total_hosts }} 台 · 成功 {{ b.succeeded }} · 失败 {{ b.failed }}
-              </div>
-            </div>
-          </template>
-        </el-card>
-
-        <el-card shadow="never" class="levee-card">
-          <template #header>门禁状态</template>
-          <el-empty description="暂无法显示：门禁结论按 run 记在引擎里，但没有对外读路由（POST /gates/verify 只做即时求值，不返回历史）。这里不放占位数据——上一版写的三行 pending 是编造的。" />
-        </el-card>
-      </el-col>
-
-      <!-- Right: live log stream -->
-      <el-col :span="14">
-        <el-card shadow="never" class="levee-card log-card">
-          <template #header>
-            <div class="log-header">
-              <span>实时日志</span>
-              <div>
-                <el-switch v-model="autoScroll" inline-prompt active-text="自动滚动" />
-                <el-button text @click="loadLogs">刷新</el-button>
-              </div>
-            </div>
-          </template>
-          <div ref="logStreamRef" class="log-stream">
-            <div v-for="(log, idx) in logs" :key="idx" class="log-line">
-              <span class="log-line__ts">{{ log.timestamp }}</span>
-              <el-tag :type="levelTag(log.level)" size="small" effect="plain">{{ log.level }}</el-tag>
-              <span class="log-line__source">[{{ log.source }}]</span>
-              <span class="log-line__msg">{{ log.message }}</span>
-            </div>
-            <el-empty v-if="logs.length === 0" description="暂无日志" />
+    <div class="monitor">
+      <!-- Left column: what is running -->
+      <div class="monitor__side">
+        <section class="lv-panel" v-loading="loading">
+          <div class="lv-panel__head">
+            <span class="lv-panel__title">变更概览</span>
+            <StatusTag v-if="change" :status="change.status" />
           </div>
-        </el-card>
-      </el-col>
-    </el-row>
+          <div class="lv-panel__body">
+            <template v-if="change">
+              <div class="lv-kv">
+                <div class="lv-kv__k">变更 ID</div>
+                <div class="lv-kv__v lv-mono">{{ change.id }}</div>
+                <div class="lv-kv__k">优先级</div>
+                <div class="lv-kv__v">{{ change.priority }}</div>
+                <div class="lv-kv__k">环境</div>
+                <div class="lv-kv__v">{{ change.environment }}</div>
+                <div class="lv-kv__k">模板</div>
+                <div class="lv-kv__v lv-mono">{{ change.templateName || '—' }}</div>
+                <div class="lv-kv__k">创建时间</div>
+                <div class="lv-kv__v lv-mono">{{ formatTimestamp(change.createdAt) }}</div>
+                <div class="lv-kv__k">更新时间</div>
+                <div class="lv-kv__v lv-mono">{{ formatTimestamp(change.updatedAt) }}</div>
+              </div>
+            </template>
+            <div v-else class="lv-empty">
+              <el-icon class="lv-empty__icon"><Aim /></el-icon>
+              <span class="lv-empty__title">未指定变更</span>
+              <span>从变更看板点进某个变更，或直接用 /monitor/&lt;change-id&gt; 打开。</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="lv-panel">
+          <div class="lv-panel__head">
+            <span class="lv-panel__title">批次推进</span>
+            <span v-if="batchTotals" class="lv-panel__hint lv-mono">
+              {{ batchTotals.done }} / {{ batchTotals.total }} 批完成
+            </span>
+          </div>
+          <div class="lv-panel__body">
+            <div v-if="!summary || summary.batches.length === 0" class="lv-empty">
+              <el-icon class="lv-empty__icon"><Files /></el-icon>
+              <span>暂无批次记录</span>
+              <span>该变更还没有进入分批执行阶段。</span>
+            </div>
+            <ol v-else class="batches">
+              <li
+                v-for="b in summary.batches"
+                :key="b.batch_no"
+                class="batch"
+                :class="{ 'batch--current': b.batch_no === batchTotals?.current }"
+              >
+                <div class="batch__rail" aria-hidden="true">
+                  <span class="batch__node" :class="`batch__node--${b.status}`"></span>
+                </div>
+                <div class="batch__body">
+                  <div class="batch__head">
+                    <span class="batch__no lv-mono">批次 #{{ b.batch_no }}</span>
+                    <span class="batch__state" :class="`batch__state--${b.status}`">{{ batchLabel(b.status) }}</span>
+                  </div>
+                  <el-progress
+                    :percentage="batchProgress(b)"
+                    :status="batchBarStatus(b.status)"
+                    :stroke-width="6"
+                    :show-text="false"
+                  />
+                  <div class="batch__meta">
+                    <span>{{ b.total_hosts }} 台</span>
+                    <span class="batch__ok">成功 {{ b.succeeded }}</span>
+                    <span v-if="b.failed" class="batch__bad">失败 {{ b.failed }}</span>
+                  </div>
+                </div>
+              </li>
+            </ol>
+          </div>
+        </section>
+
+        <section class="lv-panel">
+          <div class="lv-panel__head">
+            <span class="lv-panel__title">门禁状态</span>
+          </div>
+          <div class="lv-panel__body">
+            <div class="lv-empty">
+              <el-icon class="lv-empty__icon"><Lock /></el-icon>
+              <span class="lv-empty__title">暂无历史门禁结论可读</span>
+              <span>
+                门禁结论按 run 记录在引擎内部，但没有对外读路由 ——
+                <code>POST /gates/verify</code> 只做即时求值，不返回历史。
+                这里不放占位数据。
+              </span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right column: the live log terminal -->
+      <section class="lv-panel terminal-card">
+        <div class="lv-panel__head">
+          <span class="lv-panel__title">实时日志</span>
+          <div class="terminal-tools">
+            <span class="terminal-count lv-mono">{{ logs.length }} 行</span>
+            <el-switch v-model="autoScroll" inline-prompt active-text="自动滚动" />
+            <el-button text :icon="'Refresh'" @click="loadLogs">刷新</el-button>
+          </div>
+        </div>
+        <div ref="logStreamRef" class="terminal">
+          <div v-if="logs.length === 0" class="terminal__empty">
+            <span class="terminal__prompt lv-mono">$</span>
+            <span>等待日志输出…（该 run 尚未产生日志，或日志已被轮转）</span>
+          </div>
+          <div v-for="(log, idx) in logs" :key="idx" class="log-line" :class="levelClass(log.level)">
+            <span class="log-line__ts lv-mono">{{ logTime(log.timestamp) }}</span>
+            <span class="log-line__level lv-mono">{{ log.level }}</span>
+            <span class="log-line__source lv-mono">{{ log.source }}</span>
+            <span class="log-line__msg">{{ log.message }}</span>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.batch-summary {
-  font-size: 12px;
-  color: #606266;
-  margin-bottom: 8px;
-}
-.batch-item + .batch-item {
-  margin-top: 12px;
-}
-.batch-item__head {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-.batch-item__hosts {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #909399;
+.monitor {
+  display: grid;
+  grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);
+  gap: var(--lv-space-4);
+  align-items: stretch;
 }
 
-.log-card {
-  height: calc(100vh - 200px);
+@media (max-width: 1180px) {
+  .monitor {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
-.log-header {
+
+.monitor__side {
   display: flex;
+  flex-direction: column;
+  gap: var(--lv-space-4);
+}
+
+/* ---------------------------------------------------------------- batches */
+
+.batches {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.batch {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--lv-space-3);
+}
+
+.batch__rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+/* The connecting rail between nodes: a timeline, so a run's advance reads as a
+ * sequence instead of as N unrelated progress bars. */
+.batch__rail::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--lv-border);
+}
+
+.batch:first-child .batch__rail::before {
+  top: 10px;
+}
+
+.batch:last-child .batch__rail::before {
+  bottom: calc(100% - 10px);
+}
+
+.batch__node {
+  position: relative;
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: var(--lv-radius-full);
+  background: var(--lv-ink-400);
+  box-shadow: 0 0 0 3px var(--lv-surface);
+}
+
+html.dark .batch__node {
+  background: var(--lv-ink-500);
+}
+
+.batch__node--completed,
+.batch__node--done {
+  background: var(--lv-ok);
+}
+
+.batch__node--failed {
+  background: var(--lv-bad);
+}
+
+.batch__node--rolled_back,
+.batch__node--interrupted {
+  background: var(--lv-warn);
+}
+
+.batch__node--running {
+  background: var(--lv-accent);
+  animation: lv-pulse 1.8s var(--lv-ease) infinite;
+  box-shadow: 0 0 0 3px var(--lv-accent-soft);
+}
+
+.batch__body {
+  padding-bottom: var(--lv-space-4);
+}
+
+.batch:last-child .batch__body {
+  padding-bottom: 0;
+}
+
+.batch__head {
+  display: flex;
+  align-items: center;
   justify-content: space-between;
-  align-items: center;
+  gap: var(--lv-space-2);
+  margin-bottom: 6px;
 }
-.log-stream {
-  height: calc(100% - 60px);
-  overflow-y: auto;
-  font-family: 'Consolas', 'Menlo', monospace;
-  font-size: 12px;
-  background: #fafafa;
-  padding: 8px;
-  border-radius: 4px;
+
+.batch__no {
+  font-size: var(--lv-text-sm);
+  font-weight: 500;
+  color: var(--lv-text-1);
 }
-.log-line {
+
+.batch--current .batch__no {
+  color: var(--lv-accent);
+}
+
+.batch__state {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+.batch__state--completed,
+.batch__state--done {
+  color: var(--lv-ok);
+}
+
+.batch__state--failed {
+  color: var(--lv-bad);
+}
+
+.batch__state--rolled_back,
+.batch__state--interrupted,
+.batch__state--running {
+  color: var(--lv-warn);
+}
+
+.batch__meta {
   display: flex;
-  gap: 6px;
+  gap: var(--lv-space-3);
+  margin-top: 5px;
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+.batch__ok {
+  color: var(--lv-ok);
+}
+
+.batch__bad {
+  color: var(--lv-bad);
+}
+
+/* --------------------------------------------------------------- terminal */
+
+.terminal-card {
+  display: flex;
+  flex-direction: column;
+  /* Fills the grid row so the terminal's frame lines up with the left column's
+   * bottom edge instead of stopping where its own content ended. */
+  height: 100%;
+  min-height: 520px;
+  overflow: hidden;
+}
+
+.terminal-tools {
+  display: flex;
   align-items: center;
-  padding: 2px 0;
-  border-bottom: 1px solid #f0f0f0;
+  gap: var(--lv-space-3);
 }
+
+.terminal-count {
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+/* The log pane is dark in BOTH themes: it is a terminal, and inverting it with
+ * the page would both break the operator's expectation and destroy the level
+ * colours' contrast. */
+.terminal {
+  flex: 1;
+  min-height: 320px;
+  overflow-y: auto;
+  padding: var(--lv-space-3) 0;
+  background: #0b1016;
+  font-family: var(--lv-font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+  border-bottom-left-radius: var(--lv-radius-lg);
+  border-bottom-right-radius: var(--lv-radius-lg);
+}
+
+.terminal::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  background-clip: content-box;
+}
+
+.terminal__empty {
+  display: flex;
+  align-items: center;
+  gap: var(--lv-space-2);
+  padding: var(--lv-space-6) var(--lv-space-4);
+  color: #6b7c85;
+}
+
+.terminal__prompt {
+  color: #3fadaa;
+}
+
+.log-line {
+  display: grid;
+  grid-template-columns: 84px 52px 110px minmax(0, 1fr);
+  gap: var(--lv-space-2);
+  padding: 1px var(--lv-space-4);
+  color: #c3ced6;
+  border-left: 2px solid transparent;
+}
+
+.log-line:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 .log-line__ts {
-  color: #909399;
-  flex-shrink: 0;
+  color: #5c6b75;
+  font-variant-numeric: tabular-nums;
 }
+
+.log-line__level {
+  font-weight: 600;
+  font-size: 11px;
+}
+
 .log-line__source {
-  color: #409eff;
-  flex-shrink: 0;
+  color: #7d8f9a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
 .log-line__msg {
-  white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.log-line--info .log-line__level {
+  color: #6fbfa8;
+}
+
+.log-line--debug .log-line__level {
+  color: #7d8f9a;
+}
+
+.log-line--debug .log-line__msg {
+  color: #8d9ba4;
+}
+
+.log-line--warn {
+  border-left-color: rgba(232, 163, 61, 0.55);
+}
+
+.log-line--warn .log-line__level {
+  color: #e8a33d;
+}
+
+.log-line--warn .log-line__msg {
+  color: #f0d9b0;
+}
+
+.log-line--error {
+  border-left-color: rgba(249, 112, 102, 0.6);
+  background: rgba(249, 112, 102, 0.06);
+}
+
+.log-line--error .log-line__level {
+  color: #f97066;
+}
+
+.log-line--error .log-line__msg {
+  color: #f6cfcb;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .batch__node--running {
+    animation: none;
+  }
 }
 </style>
