@@ -172,7 +172,10 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 .lv-panel {
   background: var(--lv-surface);
   border: 1px solid var(--lv-border);
-  border-radius: var(--lv-radius-lg);
+  /* Outer radius of the concentric scale; nested elements step down to 8 then
+   * 6 (see the radius comment in tokens.css). */
+  border-radius: var(--lv-radius-xl);
+  box-shadow: var(--lv-specular-soft);
 }
 
 /* Opt-in vertical rhythm. This used to be an automatic `.lv-panel + .lv-panel`
@@ -387,7 +390,44 @@ html.dark ::-webkit-scrollbar-thumb:hover {
   padding: var(--lv-space-4);
   background: var(--lv-surface-3);
   border: 1px solid var(--lv-border-soft);
-  border-radius: var(--lv-radius);
+  border-radius: var(--lv-radius-lg);
+}
+
+/* ================================================================== glass
+ * The material for the CHROME layer: the sticky top bar, menus, dialogs, the
+ * command palette. Never for content surfaces — see the token comment.
+ *
+ * Three states, in this order of preference:
+ *   1. backdrop blur + saturation (the actual glass effect);
+ *   2. no backdrop-filter support -> the surface colour, opaque (the @supports
+ *      block is additive, so the solid background above is the fallback);
+ *   3. prefers-reduced-transparency -> opaque by explicit request. Apple ships
+ *      this switch with the material; honouring it is part of copying it. */
+.lv-glass {
+  background: var(--lv-glass-bg);
+  border-color: var(--lv-glass-border);
+  box-shadow: var(--lv-specular);
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .lv-glass {
+    -webkit-backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+    backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .lv-glass {
+    background: var(--lv-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* Stronger variant for surfaces that carry text over arbitrary content: menus
+ * and dialogs need more opacity than a toolbar to stay readable over anything. */
+.lv-glass--strong {
+  background: var(--lv-glass-bg-strong);
 }
 
 /* Metric card: label, number, optional footnote — the KPI unit. */
@@ -554,8 +594,9 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 /* --- cards ------------------------------------------------------------ */
 .el-card {
   border: 1px solid var(--lv-border);
-  border-radius: var(--lv-radius-lg);
+  border-radius: var(--lv-radius-xl);
   background: var(--lv-surface);
+  box-shadow: var(--lv-specular-soft);
   overflow: visible;
 }
 
@@ -660,8 +701,22 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 /* --- dialogs & drawer ------------------------------------------------- */
 .el-dialog {
   --el-dialog-border-radius: var(--lv-radius-xl);
-  border: 1px solid var(--lv-border);
-  box-shadow: var(--lv-shadow-lg);
+  border: 1px solid var(--lv-glass-border);
+  background: var(--lv-glass-bg-strong);
+  box-shadow: var(--lv-shadow-lg), var(--lv-specular);
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .el-dialog {
+    -webkit-backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+    backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+  }
+}
+
+/* Content inside a dialog sits on its own solid surface: the dialog frame may
+ * be glass, but a form or a table inside it is content and stays opaque. */
+.el-dialog__body {
+  background: transparent;
 }
 
 .el-dialog__header {
@@ -685,7 +740,14 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 }
 
 .el-overlay {
-  backdrop-filter: blur(1.5px);
+  background-color: var(--lv-scrim);
+  backdrop-filter: blur(2px);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .el-overlay {
+    backdrop-filter: none;
+  }
 }
 
 /* --- descriptions ----------------------------------------------------- */
@@ -769,20 +831,56 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 
 /* --- messages / notifications ---------------------------------------- */
 .el-message {
-  border-radius: var(--lv-radius);
-  border: 1px solid var(--lv-border);
-  box-shadow: var(--lv-shadow-md);
+  border-radius: var(--lv-radius-lg);
+  border: 1px solid var(--lv-glass-border);
+  background: var(--lv-glass-bg-strong);
+  box-shadow: var(--lv-shadow-md), var(--lv-specular);
 }
 
 .el-message-box {
   --el-messagebox-border-radius: var(--lv-radius-xl);
-  border: 1px solid var(--lv-border);
+  border: 1px solid var(--lv-glass-border);
+  background: var(--lv-glass-bg-strong);
+  box-shadow: var(--lv-shadow-lg), var(--lv-specular);
 }
 
-/* --- dropdown menus --------------------------------------------------- */
-.el-dropdown-menu,
-.el-popper.is-light {
-  border-color: var(--lv-border);
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .el-message,
+  .el-message-box {
+    -webkit-backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+    backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+  }
+}
+
+/* --- dropdown menus & popovers ---------------------------------------- */
+.el-popper.is-light,
+.el-dropdown__popper,
+.el-select__popper,
+.el-picker__popper {
+  background: var(--lv-glass-bg-strong);
+  border: 1px solid var(--lv-glass-border);
+  box-shadow: var(--lv-shadow-lg), var(--lv-specular);
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .el-popper.is-light,
+  .el-dropdown__popper,
+  .el-select__popper,
+  .el-picker__popper {
+    -webkit-backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+    backdrop-filter: blur(var(--lv-glass-blur)) saturate(var(--lv-glass-saturate));
+  }
+}
+
+/* The arrow is a rotated square sharing the popper's background. */
+.el-popper__arrow::before {
+  background: var(--lv-glass-bg-strong) !important;
+  border-color: var(--lv-glass-border) !important;
+}
+
+.el-dropdown-menu {
+  background: transparent;
+  border: none;
 }
 
 .el-dropdown-menu__item {

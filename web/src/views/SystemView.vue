@@ -3,12 +3,15 @@
 // and the loaded config. It is read-only; the only action is "run doctor"
 // which re-runs the diagnostic checks.
 import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { systemApi } from '@/api'
 import type { SystemStatus, VersionInfo } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp, formatUptime } from '@/utils/format'
 import { healthLabel, verdictLabel } from '@/utils/diagnosis'
+
+const route = useRoute()
 
 const loading = ref(false)
 const version = ref<VersionInfo | null>(null)
@@ -76,7 +79,13 @@ async function refresh(): Promise<void> {
   loading.value = false
 }
 
-onMounted(refresh)
+onMounted(async () => {
+  await refresh()
+  // /system?doctor=1 — how the command palette runs the doctor without making
+  // the operator click a second button. The check re-runs on every visit with
+  // the flag; that is the point of a "run doctor" command.
+  if (route.query.doctor) void runDoctor()
+})
 </script>
 
 <template>
