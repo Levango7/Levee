@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref } from 'vue'
 import { conversationApi, type ConversationMessageDTO, type ConversationReplyDTO, type ConversationSessionDTO } from '@/api'
+import { sessionStateLabel, sessionTagType } from '@/utils/session'
 
 const currentUserID = ref('operator')
 const sessions = ref<ConversationSessionDTO[]>([])
@@ -131,8 +132,8 @@ refreshSessions()
 				>
 					<div class="conversation__session-top">
 						<span class="conversation__session-id">{{ s.id.slice(0, 8) }}…</span>
-						<el-tag size="small" :type="s.state === 'failed' ? 'danger' : s.state === 'done' ? 'success' : 'info'">
-							{{ s.state }}
+						<el-tag size="small" :type="sessionTagType(s.state)">
+							{{ sessionStateLabel(s.state) }}
 						</el-tag>
 					</div>
 					<div class="conversation__session-meta">

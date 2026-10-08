@@ -7,6 +7,7 @@ import { ElMessage } from 'element-plus'
 import { systemApi } from '@/api'
 import type { SystemStatus, VersionInfo } from '@/types/levee'
 import { formatTimestamp, formatUptime } from '@/utils/format'
+import { healthLabel, verdictLabel } from '@/utils/diagnosis'
 
 const loading = ref(false)
 const version = ref<VersionInfo | null>(null)
@@ -95,7 +96,7 @@ onMounted(async () => {
           <template v-if="status">
             <el-descriptions :column="1" border>
               <el-descriptions-item label="状态">
-                <el-tag :type="statusType(status.status)" size="small">{{ status.status }}</el-tag>
+                <el-tag :type="statusType(status.status)" size="small">{{ healthLabel(status.status) }}</el-tag>
               </el-descriptions-item>
               <el-descriptions-item label="活跃执行">{{ status.activeRuns }}</el-descriptions-item>
               <el-descriptions-item label="暂停执行">{{ status.pausedRuns }}</el-descriptions-item>
@@ -125,13 +126,13 @@ onMounted(async () => {
             </div>
           </template>
           <template v-if="doctor">
-            <el-tag :type="statusType(doctor.status)" size="small">{{ doctor.status }}</el-tag>
+            <el-tag :type="statusType(doctor.status)" size="small">{{ verdictLabel(doctor.status) }}</el-tag>
             <span class="doctor-time">检查时间：{{ formatTimestamp(doctor.checkedAt) }}</span>
             <el-table :data="doctor.checks" stripe style="margin-top: 8px">
               <el-table-column prop="name" label="检查项" width="160" show-overflow-tooltip />
               <el-table-column label="状态" width="80">
                 <template #default="{ row }">
-                  <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
+                  <el-tag :type="statusType(row.status)" size="small">{{ verdictLabel(row.status) }}</el-tag>
                 </template>
               </el-table-column>
               <el-table-column prop="message" label="信息" min-width="180" show-overflow-tooltip />

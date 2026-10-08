@@ -75,6 +75,55 @@
   Worker 负载、Run 批次进度）都在，#90 的面板可达性没有回退。
 
 
+## [Unreleased]
+
+### 修复（系统页与会话页也在把线上原值当文案；doctor 判定其实有四个值）
+
+- **两处渲染原值**：`SystemView.vue` 三处（`status.status` 健康状态、`doctor.status` 诊断总评、`row.status` 每条检查）、
+  `ConversationView.vue` 一处（`s.state` 会话状态）。与 #90/#92 同一类缺陷，但这是**第三、第四、第五套词表**，
+  所以各自一张表，不并入已有表。
+- **`skip` 是守卫自己抓出来的，不是我数出来的**：我最初按"pass/warn/fail 三个判定"写表，
+  `internal/grpc/system_verdict_vocabulary_test.go`（解析 `system_service.go` 里 `c.Status = "…"` /
+  `overall := "…"` 的字面量赋值，而不是复述清单）当场变红，指出端点还会产出第四个值 `skip`
+  （`system_service.go:346-349`：数据库检查在未加载配置时主动跳过）。若按我原来的三分表实现，
+  诊断表里那一行会直接显示英文 `skip`。补上后标签是 **已跳过**，且 `verdictLabel('skip') !== verdictLabel('pass')`
+  一条断言钉住"没检查过"不等于"通过"。
+- **会话侧的源头不是常量组，是 `SessionState.String()` 的 return 值**：`SessionState` 是 int 枚举
+  （`internal/conversation/session.go:34-50`），线上传的是 `String()` 的结果，因此
+  `session_state_vocabulary_test.go` 解析那个方法体内的 `return "…"`（新增枚举成员没命名、或命名了 UI 没配标签，
+  都会在这里变红）；顺带把 `default: return "unknown"` 也纳入表内，避免"未知"被当成一个真实状态机节点。
+- **`ConversationView` 的判色原来是内联三元**（只认识 `failed`/`done`，其余六个态一律灰），
+  其中 `reviewing` 恰恰是"引擎在等人确认"的那个态——灰掉等于把最需要人动手的一步藏起来。
+  改成 `TONE_BY_STATE` 查表（漏配是 `vue-tsc` 编译错误），`reviewing` 现在是 warning。
+  这与 #92 里 `/cluster` 自带第二份词表是同一个形状：视图里的手写副本与旁边的可测表各说各话。
+- **健康侧与判定侧必须分开**：健康有 `unknown`（探针说不清），判定根本没有这个值；
+  合并两张表就会把"说不清"和"没通过"涂成同一句话。两条守卫分别钉在
+  `internal/diagnosis/health_status_vocabulary_test.go`（解析 `HealthStatus` 常量组）与
+  `internal/grpc/system_verdict_vocabulary_test.go`（解析裸字面量），后者还在断言里明确拒绝
+  `healthy` 混进判定集。
+- **验证**：前端 `npm run test` 91 例（本批新增 `diagnosis.spec.ts` 8 例 + `session.spec.ts` 8 例，均为毫秒级、无网络），
+  `vue-tsc` 干净；三条 Go 跨语言守卫全绿；**变异七条逐一变红**（健康表删 `unknown`／健康表凭空加
+  `vibrating`／`HEALTH_LABEL` 丢键／判定表丢 `skip`／会话表加 `String()` 产不出的 `paused`／
+  把 `SESSION_STATES` 改名以验锚点诚实／把 `reviewing` 的 warning 退回 info 复现旧行为）；七条跑完后
+  三条守卫与全量 vitest 均还原为绿（脚本 `finally` 里逐文件回写并再跑一遍，不是口头声明）。
+  另外登记一条与本批无关的既有缺陷（不在本批修）：`src/api/conversation.spec.ts` 里 `vi.resetModules()` + 动态
+  `import('./index')` 的用例平时 ~1.1s，偶尔整段挂住并以 `Test timed out in 5000ms` 变红（实测一轮里该用例累计
+  18090ms；本仓 vitest 未配 `testTimeout`，默认 5s）。同一棵树的 6 轮单跑翻 1 轮，而无本批改动的另一棵树单跑
+  4 轮全绿 ⇒ 并发负载敏感，会随机咬任何 PR 的 `frontend` job。本批两个新 spec 都是毫秒级、不做动态重导入，
+  但它们让套件多了两个文件、提高了触发概率，所以如实写在这里而不是"全绿"。**这条自测本身也翻过一次车**：第一版变异脚本在 Windows 上用
+  `shell=True` 传 `-run 'TestX'`，cmd.exe 不剥单引号 ⇒ Go 匹配到零个用例仍报 `ok`，于是把"守卫没红"
+  误读成守卫失效；手工复现（M1 给出 `health state "unknown" has no entry…`、rc=1）证明守卫一直是好的，
+  坏的是脚本。第二版脚本改为不引号、不用 `|` 拼测试名，并对 `no tests to run` 主动判红。
+- **真机核对**（`internal/web/dist` 由只读桩供 `/api/v1`）：`/system` 健康行显示 **降级**（桩故意不给
+  `healthy`，避免"绿着的 fixture 证明不了映射"）、诊断总评 **告警**、四行依次 **通过 / 告警 / 未通过 / 已跳过**；
+  `/conversation` 八个会话（每态一行）依次 等待输入 / 诊断中 / 生成建议中 / 等待确认 / 执行中 / 已完成 / 已失败 / 未知，
+  tone 各自区分，两页 `leaked` 均为空。
+- **如实登记、本批不动**：`system_service.go:107` 与 `:152` 用裸字面量 `"healthy"` / `"degraded"` 写
+  `SystemStatus.status`，而 owning 常量组就在 `internal/diagnosis/health_probe.go:39-49`（同仓已有 import 先例，
+  不构成环）——与 #91 里 `template/clone.go` 的平行常量同一族，属产品码改动，留给单独一批；
+  另外 `web/src/types/levee.ts:117` 把该字段类型写死成三个值（无 `unknown`），与 `HealthStatus` 四值不同源，
+  本批的查表入口是 `string`，不受该类型限制。
+
 ## [v1.20.0] - 2026-10-07
 
 > **发布状态：已切版。** 附注 tag `v1.20.0`（tag 对象 `fe4b162`，剥壳指向 `738c477e`）于 2026-10-07 推送，`release.yml` 据此发布：GitHub Release `draft=false`、`publishedAt=2026-10-07T14:35:31Z`、资产为 6 个平台包 + `checksums.txt`；镜像 `ghcr.io/levango7/levee:v1.20.0` 按外部事实核过——`manifests/v1.20.0` 返回 200，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0]`。本小节共 **15** 个小节。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.20.0` / 逐字 `v1.20.0`——顺序不能反：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，所以在 tag 存在之前它们必须继续指向上一个真实发布（此前指 `1.19.0` / `v1.19.0`）。
