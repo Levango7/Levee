@@ -734,6 +734,42 @@ const (
 	BatchStateFailed      = "failed"
 	BatchStateInterrupted = "interrupted"
 
+	// Step states (one row per (run, batch, host, step)).
+	//
+	// These are the strings the steps.status schema comment documents and the
+	// execution path writes. They are deliberately NOT the same set as
+	// BatchState*: a step's success is `success`, a batch's is `completed`, and
+	// reusing one name for the other is how the two vocabularies stop
+	// describing the rows they claim to (see the BatchState* note above for
+	// that exact failure, already once).
+	//
+	// Pending and running have no writers today: the schema comment lists them
+	// because the state machine's shape anticipates them, and internal/lock's
+	// busy-host probe reads them. They stay in the set so a future writer
+	// cannot invent a third spelling for a state that is already named.
+	StepStatusPending = "pending"
+	StepStatusRunning = "running"
+	StepStatusSuccess = "success"
+	StepStatusFailed  = "failed"
+	StepStatusSkipped = "skipped"
+
+	// Run approval states: the approval verdict carried on a RUN row, settled
+	// by the approval service independently of the run's execution status.
+	//
+	// This set is exactly what the writers write — verified by sweeping the writers
+	// rather than by copying the schema comment, which is not the same list.
+	// The schema comment on runs.approval_status reads
+	// `pending|approved|rejected|timeout|skipped`, but `timeout` and `skipped`
+	// belong to the APPROVALS table's status column (documented one column
+	// over) and have no writer here; the run-side initial value is set by
+	// CreateChange / InstantiateTemplate / CloneChange / cmd new. Both columns
+	// are called "status" in prose, which is exactly why the constants are
+	// named apart — see the BatchState* note above for what happens when one
+	// vocabulary is assumed to cover the other's rows.
+	ApprovalStatusPending  = "pending"
+	ApprovalStatusApproved = "approved"
+	ApprovalStatusRejected = "rejected"
+
 	// Assignment states.
 	AssignStatePending         = "pending"
 	AssignmentStateExecuting   = "executing"

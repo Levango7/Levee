@@ -171,6 +171,17 @@
   `python scripts/check_release_versions.py` PASSED。本批不碰 web 与构建产物。
 
 
+### 修复（上批登记的两条词表缺口收口；audit 链的封链不再重写内容被改的行）
+
+- **`steps.status` 与 `runs.approval_status` 建 owning 常量，写入端全部收敛**：上一批把两条缺口如实登记为"本批不动"——`steps.status` 全仓没有 owning 常量、写入端是 `internal/wiring/persist.go` 的裸字面量；`runs.approval_status` 同样是裸字面量。现补 `state.StepStatus*`（五个）与 `state.ApprovalStatus*`（三个），`persist.go` 的五个写入点 + 一处比较、`internal/lock` 的两处查询、`grpc/change_service.go`、`grpc/template_service.go`、`template/clone.go`、`wiring/run.go`、`cmd/levee/cmd_new.go` 全部改走常量，`clone.go` 的本地 `StepStatusPending` 改为别名（别名即 owner 的值，无法漂移）。
+  **取值集合按写入端扫描确定，不照抄 schema 注释**：`runs.approval_status` 的行内注释写着 `pending|approved|rejected|timeout|skipped`，但后两个值属于**隔壁 approvals 表的 status 列**，run 行上没有任何写入方产生它们。注释与常量都已改正，并新增 `internal/state/status_column_comment_guard_test.go`：解析 store.go 的常量块（不是复述，新常量不会漏检）与两个 schema 文件的对应列注释，双向对齐，两侧缺一即红。
+- **守卫的 CRLF 陷阱顺带修掉**：既有的 `batch_status_schema_comment_test.go` 用 `(?m)$` 匹配常量行，在 LF 检出下正常、在 Windows 的 CRLF 工作副本下静默解析成空集后仅以 `require.NotEmpty` 报"块形状变了"——守卫本身在该机器上等于不存在。三处正则补 `?`，注释写明原因。
+- **audit 链的 `Seal` 不再重写"内容与自己的哈希不符"的行**（关闭 SA-002 在 audit 侧的残余）：原实现重写任何哈希不符的行，于是"改一行内容，然后等任意一次审计写入"就会让下一次 Seal 重新链接它、Verify 通过——篡改被自己抹掉。新判据区分两类不符：**行自洽**（`H(内容, 行自己存的 prev) == 行自己存的 curr`，内容完好、只是被后来的行挤走了前驱，如同时间戳下并发写入的乱序落库）→ 正文重链；**行不自洽**（内容已改）→ 不写、返回 `ErrChainBroken`，证据保留。
+  **这一版的判据是第二稿**：第一稿照搬 trace 链的"只延展、绝不重写"，被两条既有测试直接证伪——良性重排会被当成永久断链，而 `BuildForce`/`Rebuild` 全仓无生产调用点、CLI 也没有修复子命令，"报断等运维修"这条路对任何人都不可达。一条会对合法写入报警且无法清除的规则，比它要堵的洞更糟。
+  **如实登记残留**：**删除**（在 WORM 触发器被摘掉的前提下）仍会被下一次 Seal 重链接覆盖——后继行自洽，判据看不出"前驱被删"与"前驱被挤位"的区别。触发器是删除的防线，Verify 在下一次写入封链前一直报出该断点。
+- **新增 `AuditChainBuilder.Rebuild`**：审计侧与 trace 侧 `BuildForce` 对应的显式管理口子，丢弃已存哈希重算全链。它是"已调查并决定重链"的授权动作，故是另一个名字的方法而非 `Seal` 的开关。**与 `BuildForce` 处境相同：无生产调用点、无 CLI**——这是刻意留白的运维决策（什么时候允许重链、谁批准、是否要留审计），不是遗漏。
+- 验证：新增 `internal/audit/auditchain_seal_semantics_test.go`（合法重排重链 + 内容篡改报断且不重写 + 重排后幂等）、`internal/state/step_approval_status_vocabulary_test.go`（常量对写入端字面量、过滤器能找到写入行）、`internal/state/status_column_comment_guard_test.go`；`pgstore_auditchain_test.go` 的"重封链修复 curr_hash"断言按新契约改为"Seal 报 `ErrChainBroken`、`Rebuild` 才修复"，并在**活 PostgreSQL 16** 上跑通（`TestPGStore_AuditChainSealAndWORM` 1.14s）。`go build ./...` / `go test ./...`（65 包）/ `golangci-lint run ./...`（0 issues）/ PG 侧五包（state·cluster·takeover·backup·audit）全绿。
+
 ## [v1.20.0] - 2026-10-07
 
 > **发布状态：已切版。** 附注 tag `v1.20.0`（tag 对象 `fe4b162`，剥壳指向 `738c477e`）于 2026-10-07 推送，`release.yml` 据此发布：GitHub Release `draft=false`、`publishedAt=2026-10-07T14:35:31Z`、资产为 6 个平台包 + `checksums.txt`；镜像 `ghcr.io/levango7/levee:v1.20.0` 按外部事实核过——`manifests/v1.20.0` 返回 200，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0]`。本小节共 **15** 个小节。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.20.0` / 逐字 `v1.20.0`——顺序不能反：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，所以在 tag 存在之前它们必须继续指向上一个真实发布（此前指 `1.19.0` / `v1.19.0`）。

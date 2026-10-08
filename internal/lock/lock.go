@@ -546,14 +546,14 @@ func (m *LockManager) CleanExpired(ctx context.Context) (int, error) {
 // not be preempted, because the owning run is still actively executing
 // work on it.
 func (m *LockManager) isTargetBusy(ctx context.Context, target string) (bool, error) {
-	running, err := m.state.ListSteps(ctx, state.StepFilter{Host: target, Status: "running"})
+	running, err := m.state.ListSteps(ctx, state.StepFilter{Host: target, Status: state.StepStatusRunning})
 	if err != nil {
 		return false, fmt.Errorf("list running steps: %w", err)
 	}
 	if len(running) > 0 {
 		return true, nil
 	}
-	pending, err := m.state.ListSteps(ctx, state.StepFilter{Host: target, Status: "pending"})
+	pending, err := m.state.ListSteps(ctx, state.StepFilter{Host: target, Status: state.StepStatusPending})
 	if err != nil {
 		return false, fmt.Errorf("list pending steps: %w", err)
 	}

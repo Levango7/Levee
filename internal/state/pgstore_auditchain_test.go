@@ -110,16 +110,27 @@ func TestPGStore_AuditChainSealAndWORM(t *testing.T) {
 		`SELECT action FROM audit WHERE id = 'pg-az-zz'`).Scan(&action))
 	assert.Equal(t, "login", action)
 
-	// Chain columns stay writable — that is the seal path — and Verify flags
-	// a relinked hash immediately; Seal then re-establishes the chain.
+	// Chain columns stay writable — that is the seal path — but overwriting one
+	// with a value the row's content cannot produce is tampering, and Seal now
+	// refuses it: the row no longer satisfies H(content, prev) == curr, which is
+	// exactly the signature of an edited row. Rebuild is the deliberate override.
 	_, err = store.DB().ExecContext(ctx, `UPDATE audit SET curr_hash = 'evil' WHERE id = 'pg-az-aa'`)
 	require.NoError(t, err, "the chain columns must remain updatable")
 	result, err = b.Verify(ctx)
 	require.NoError(t, err)
 	assert.False(t, result.Valid, "a rewritten curr_hash must not verify")
-	sealed, err = b.Seal(ctx)
+
+	_, err = b.Seal(ctx)
+	require.Error(t, err, "Seal must report a row whose stored hash its content cannot produce")
+	assert.ErrorIs(t, err, audit.ErrChainBroken)
+
+	result, err = b.Verify(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 1, sealed, "only the tampered row needs resealing")
+	assert.False(t, result.Valid, "the evidence must survive a seal attempt")
+
+	written, err := b.Rebuild(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, written, "Rebuild rewrites only the row that differs")
 	result, err = b.Verify(ctx)
 	require.NoError(t, err)
 	assert.True(t, result.Valid)

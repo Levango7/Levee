@@ -52,7 +52,10 @@ func schemaDeclaredBatchStates(t *testing.T) map[string]string {
 	raw, err := os.ReadFile(schemaRepoFile(t, "internal/state/store.go"))
 	require.NoError(t, err)
 	out := map[string]string{}
-	for _, m := range regexp.MustCompile(`(?m)^[ \t]*(BatchState\w+)[ \t]*=[ \t]*"([^"]+)"$`).FindAllStringSubmatch(string(raw), -1) {
+	// \r? before $: the repository stores LF, but a Windows working copy may
+	// materialise CRLF, and (?m)$ matches before the \n — leaving the \r to
+	// break the match and turn this guard into a silent no-op on that machine.
+	for _, m := range regexp.MustCompile(`(?m)^[ \t]*(BatchState\w+)[ \t]*=[ \t]*"([^"]+)"\r?$`).FindAllStringSubmatch(string(raw), -1) {
 		out[m[1]] = m[2]
 	}
 	require.NotEmpty(t, out, "no BatchState constants parsed from store.go — the const block shape changed")
@@ -72,7 +75,7 @@ func statusCommentList(t *testing.T, rel string) []string {
 	block := regexp.MustCompile(`(?ms)CREATE TABLE IF NOT EXISTS batches \(.*?\n\);`).FindString(src)
 	require.NotEmpty(t, block, "could not find the `CREATE TABLE IF NOT EXISTS batches (…) …);` block in "+rel)
 
-	line := regexp.MustCompile(`(?m)^[ \t]*status[ \t]+TEXT[ \t]+NOT NULL,?[ \t]*--[ \t]*(.+)$`).FindStringSubmatch(block)
+	line := regexp.MustCompile(`(?m)^[ \t]*status[ \t]+TEXT[ \t]+NOT NULL,?[ \t]*--[ \t]*(.+?)\r?$`).FindStringSubmatch(block)
 	require.Len(t, line, 2, "batches.status has no `TEXT NOT NULL, -- list` line in "+rel)
 
 	var out []string

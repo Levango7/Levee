@@ -379,7 +379,7 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 		TemplateName:   req.TemplateName,
 		Params:         paramsToJSON(req.Params),
 		Status:         runStatus,
-		ApprovalStatus: "pending",
+		ApprovalStatus: state.ApprovalStatusPending,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		Creator:        creator,

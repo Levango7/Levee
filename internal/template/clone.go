@@ -44,12 +44,12 @@ const (
 	// StepStatusPending is the step status assigned to cloned steps so they
 	// appear as "not yet started".
 	//
-	// Steps are the one status column here without an owning package: there is
-	// no `StepState*` set in internal/state, and the engine writes bare
-	// literals ("failed" / "skipped" in internal/wiring/persist.go:131/222/224/429).
-	// Naming the constant after its single remaining use keeps it from implying
-	// it also covers batches; giving steps a real owner is a separate change.
-	StepStatusPending = "pending"
+	// The step vocabulary now has an owner: state.StepStatus*, where the
+	// execution path's write sites were converged. This declaration stays as an
+	// alias rather than a literal because clone.go names its statuses through
+	// this package (as it does for run/batch), and an alias cannot drift from
+	// its owner — it IS the owner's value.
+	StepStatusPending = state.StepStatusPending
 )
 
 // Audit action constants recorded in state.Audit.Action.
@@ -174,7 +174,7 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 		Params:         srcRun.Params,
 		PlanHash:       srcRun.PlanHash,
 		Status:         runstatus.StatusDraft,
-		ApprovalStatus: "pending",
+		ApprovalStatus: state.ApprovalStatusPending,
 		ApprovalLevel:  srcRun.ApprovalLevel,
 		CreatedAt:      now,
 		UpdatedAt:      now,

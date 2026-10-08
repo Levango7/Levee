@@ -387,7 +387,7 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 		TemplateName:   req.GetTemplateName(),
 		Params:         pbToRunParams(req.GetParams()),
 		Status:         "draft",
-		ApprovalStatus: "pending",
+		ApprovalStatus: state.ApprovalStatusPending,
 		// NOTE: ApprovalLevel doubles as the change's PRIORITY here, and
 		// the two are NOT the same vocabulary. priority is
 		// low/normal/high/urgent (client-supplied, mirrored back out at
@@ -462,7 +462,7 @@ func (s *ChangeService) CloneChange(ctx context.Context, req *pb.CloneChangeRequ
 		TemplateName:   src.TemplateName,
 		Params:         pbToRunParams(params),
 		Status:         "draft",
-		ApprovalStatus: "pending",
+		ApprovalStatus: state.ApprovalStatusPending,
 		ApprovalLevel:  src.ApprovalLevel,
 		CreatedAt:      now,
 		UpdatedAt:      now,
@@ -589,7 +589,7 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 			// untouched (re-planning a completed/failed run is a retry, not a
 			// re-approval gate).
 			if run.Status == "approved" && stored.Hash != "" && stored.Hash != prevHash {
-				if ok, cerr := s.store.UpdateRunApprovalStatusIf(ctx, req.GetChangeId(), "approved", "draft", "pending", now); cerr != nil {
+				if ok, cerr := s.store.UpdateRunApprovalStatusIf(ctx, req.GetChangeId(), "approved", runstatus.StatusDraft, state.ApprovalStatusPending, now); cerr != nil {
 					return nil, status.Errorf(codes.Internal, "reset run to draft after re-plan: %v", cerr)
 				} else if !ok {
 					log.Warn("re-plan: run status changed concurrently before approval reset", "run_id", req.GetChangeId())
@@ -598,7 +598,7 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 					// kickoff below (whose tail does an UpdateRun when the
 					// tier changes) cannot write the stale 'approved' back.
 					run.Status = "draft"
-					run.ApprovalStatus = "pending"
+					run.ApprovalStatus = state.ApprovalStatusPending
 				}
 			}
 			// Approval kickoff (R4 routing): now that the artifact (with
@@ -2280,7 +2280,7 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 	// without it this direct write preserves the pre-wiring behaviour.
 	if s.approval == nil {
 		run.Status = "approved"
-		run.ApprovalStatus = "approved"
+		run.ApprovalStatus = state.ApprovalStatusApproved
 		run.UpdatedAt = now
 		if err := s.store.UpdateRun(ctx, run); err != nil {
 			return nil, status.Errorf(codes.Internal, "update run: %v", err)
@@ -2373,7 +2373,7 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 		}
 	} else {
 		run.Status = "rejected"
-		run.ApprovalStatus = "rejected"
+		run.ApprovalStatus = state.ApprovalStatusRejected
 		run.UpdatedAt = now
 		if err := s.store.UpdateRun(ctx, run); err != nil {
 			return nil, status.Errorf(codes.Internal, "update run: %v", err)
