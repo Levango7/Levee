@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { batchApi, systemApi, type BatchSummaryDTO, type ClusterStatus } from '@/api'
 import { batchBarStatus, batchLabel, batchProgress, batchTagType } from '@/utils/batch'
+import { assignmentLabel } from '@/utils/assignment'
 
 const data = ref<ClusterStatus | null>(null)
 const batchData = ref<BatchSummaryDTO | null>(null)
@@ -129,7 +130,7 @@ const statusClass = (s: string) => `status-dot status-${s}`
 			<h3 class="section-title">分配状态分布</h3>
 			<el-card shadow="never" class="dist-card">
 				<div class="dist-row" v-for="(count, state) in (summary?.counts ?? {})" :key="state">
-					<span class="dist-label">{{ state }}</span>
+					<span class="dist-label">{{ assignmentLabel(state) }}</span>
 					<el-progress
 						:percentage="summary?.totalActive ? Math.round((count / Math.max(summary.totalActive, 1)) * 100) : 0"
 						:stroke-width="14"

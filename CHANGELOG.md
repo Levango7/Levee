@@ -48,6 +48,32 @@
   `internal/grpc/change_service.go:601` 写 `"pending"`，:990 比较 `"approved"`）。给它们建 owning 包是一次真正的
   收敛改动（要一并改写入端并配守卫），不在这一批里顺手做。
 
+### 修复（分配状态分布也在渲染线上原值；两套词表拼写重叠、语义不同）
+
+- **`/cluster` 的"分配状态分布"把 assignments 的状态原值当文案渲染**（`ClusterView.vue` 里 `{{ state }}`）：
+  与 #90 那批同一类缺陷，但读的是**另一套词表**——`internal/state/store.go:738-741` 的
+  `AssignStatePending` / `AssignmentStateExecuting` / `AssignmentStateDone` / `AssignmentStateInterrupted`
+  （四个状态；`AssignResult*` 是第二组值域 completed/failed/rolled_back，这一栏不渲染，别混）。
+  现在按 `web/src/utils/assignment.ts` 取文案：待领取 / 执行中 / 已完成 / 已中断。
+- **为什么不复用 #90 那张批次表**：两套词表在拼写上重叠（`pending` / `done` / `interrupted` 三词双跨）而语义不重叠——
+  批次的 `pending` 是"这一批还没开始跑"，分配的 `pending` 是"还没被 worker 领取"；批次的 `done` 是历史拼写
+  （没有任何写入方，见 #90），分配的 `done` 是活跃终态（`internal/dispatch/dispatch.go` 就在写它）。
+  并表会让操作者把"没派出去"读成"没跑起来"。这条语义差异由 `assignmentLabel('pending') !== batchLabel('pending')`
+  一条断言钉住，变异实测：把 `待领取` 改成 `待执行`（即抄批次表）该用例立刻变红。
+- **守卫**：`web/src/utils/assignment.spec.ts` 6 例（含结构性一条：每个声明状态都必须有非空且不同于拼写本身的标签）；
+  `internal/state/assignment_status_vocabulary_test.go` 两条跨语言守卫从 `store.go` **解析状态组**
+  （正则要求标识符含 `State`，所以结果组 `AssignResultCompleted` 不会被误收；另有断言显式拒绝 Result 混入）
+  与 TS 的 `ASSIGNMENT_STATES` 双向比对，并要求每个 Go 拼写都在 `LABEL_BY_STATE` 里有键。
+  本包的批次守卫已有同名 helper，这里刻意自带一份本地 helper 并另起名——不是重复劳动，是为了让本批
+  能独立通过 CI（堆叠在未合并分支上的 PR 拿不到 CI）。变异五条逐一变红：`store.go` 新增 `AssignmentStatePaused`
+  （两条同时红）／TS 删 `executing`／TS 加只有结果组才有的 `completed`（方向二抓住借词表）／改 TS 声明名（锚点自曝）／
+  抄批次措辞（跨词表那条红）。
+- **验证**：前端 `npm run test` 75 例、`vue-tsc` 干净；`vite build` 后按 CI 同法刷新 `internal/web/dist`，
+  `diff -r web/dist internal/web/dist` 无差异（标签被内联进 `ClusterView-*.js` chunk，`待领取` 在其中可 grep 到）；
+  `go test ./internal/state/` 全绿。真机核对（桩服务器给 `backend=postgres` + 一个节点 + 四类分配计数）：
+  分布四行依次是 待领取 / 执行中 / 已完成 / 已中断，`leaked=[]`；同一页四个小节标题（节点、分配状态分布、
+  Worker 负载、Run 批次进度）都在，#90 的面板可达性没有回退。
+
 
 ## [v1.20.0] - 2026-10-07
 
