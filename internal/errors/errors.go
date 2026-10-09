@@ -260,10 +260,11 @@ func CodeOf(err error) string {
 // appendix C. They are grouped by category for readability.
 
 const (
-	// Type errors (LE001-LE003)
+	// Type errors (LE001-LE004)
 	LE001 = "LE001" // type mismatch
 	LE002 = "LE002" // required field missing or name duplicated
 	LE003 = "LE003" // enum value illegal
+	LE004 = "LE004" // input parameters are declared or referenced, but nothing resolves them [warning]
 
 	// Label errors (LE010-LE012)
 	LE010 = "LE010" // label expression syntax error
@@ -294,6 +295,12 @@ const (
 
 	// Reference errors (LE061)
 	LE061 = "LE061" // referenced step output does not exist or type mismatch
+	// NOTE: LE061 is registered but has NO producer. Nothing in the pipeline
+	// resolves `{{input.x}}` / step-output references at all, so there is no
+	// pass that could decide a reference is missing — see LE004, the advisory
+	// that tells the author their reference will not be substituted. A code
+	// with no producer is worse than no code (see the LE102 note below): it
+	// reads as something the compiler can emit, and it cannot.
 
 	// Dependency errors (LE071)
 	LE071 = "LE071" // DAG contains a cycle
@@ -355,6 +362,7 @@ var codeCatalogue = []CodeInfo{
 	{LE001, "type", "type mismatch", CompileError},
 	{LE002, "structure", "required field missing or name duplicated", CompileError},
 	{LE003, "type", "enum value illegal", CompileError},
+	{LE004, "type", "input parameters are declared or referenced, but nothing resolves them", CompileWarning},
 	{LE010, "label", "label expression syntax error", CompileError},
 	{LE011, "label", "label key name violates naming convention", CompileError},
 	{LE012, "label", "asset type not in whitelist", CompileError},

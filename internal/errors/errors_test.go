@@ -237,8 +237,10 @@ func TestAllCodes_CountAndImmutable(t *testing.T) {
 	// (a constant that never reaches Lookup is a code the CLI cannot print
 	// and the docs cannot describe). LE098-LE101 took it 30 → 34; LE102 was
 	// added with the run snapshot and withdrawn again in the same day once
-	// the manual rollback path learned to restore the baseline.
-	assert.Equal(t, 34, len(all))
+	// the manual rollback path learned to restore the baseline. LE004 took it
+	// 34 → 35: the advisory for a declared/referenced input block that nothing
+	// resolves.
+	assert.Equal(t, 35, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}

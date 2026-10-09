@@ -129,7 +129,7 @@ LEVEELang 的顶层结构是 `workflow` 声明块，一个文件可包含一个�
 
 workflow 声明块包含以下子块，顺序建议但不强制：
 
-1. `input`：参数声明块（可选）。
+1. `input`：参数声明块（可选）。**尚未实现**——声明会被解析、类型校验并进 IR（因此进计划哈希），但没有任何代码路径注入取值或替换 `{{input.x}}`：该引用会作为字面量传给模块（对 `shell.exec` 就是一条没人写过的命令）。编译期以 **LE004 warning** 提示；参数化请走模板实例化（它替换 `{{.name}}`）。
 2. `target`：目标集声明块（必需）。
 3. `window`：变更窗口声明块（可选）。
 4. `batches`：批次声明块（可选，缺省单批）。
@@ -202,7 +202,7 @@ workflow <name> {
 | 关键字 | 语义 | 必需 | 示例 |
 | --- | --- | --- | --- |
 | workflow | 声明一个工作流，后接 name | 是 | `workflow db-migrate { }` |
-| input | 声明 workflow 输入参数 | 否 | `input { table: string }` |
+| input | 声明 workflow 输入参数（**尚未实现**，编译期 LE004 warning） | 否 | `input { table: string }` |
 | target | 声明目标集 | 是 | `target { type: "mysql" }` |
 | window | 声明变更窗口 | 否 | `window { start: "02:00" }` |
 | batches | 声明批次策略 | 否 | `batches { strategy: "percent" }` |
@@ -320,8 +320,8 @@ LEVEELang 静态类型系统在编译期完成类型检查，运行期不做隐�
 | approval_level | 审批枚举 | `standard` / `high` / `emergency` | approval level |
 | action_ref | 动作引用 | `mysql.pt-online-schema-change` | step action |
 | target_ref | 目标引用 | `{{target.host}}` | args 中引用目标属性 |
-| input_ref | 输入引用 | `{{input.table}}` | args 中引用输入参数 |
-| output_ref | 输出引用 | `{{step.migrate.output}}` | 引用前步输出 |
+| input_ref | 输入引用（**尚未实现**：不替换，按字面量传给模块；编译期 LE004 warning） | `{{input.table}}` | args 中引用输入参数 |
+| output_ref | 输出引用（**尚未实现**：同样不替换；LE061 已登记但**没有产生方**） | `{{step.migrate.output}}` | 引用前步输出 |
 
 duration 字面量支持单位：`s`（秒）、`m`（分）、`h`（时）、`d`（天），如 `90s`、`5m`、`4h`、`1d`。
 
@@ -1099,7 +1099,7 @@ grace_period 配置：
 - `wait` 字段声明 grace period 时长，缺省 5m。
 - grace period 内不查询，仅等待，避免变更刚结束指标抖动误判。
 - grace period 结束后查询，失败触发回滚。
-- grace period 可被 workflow input 参数化：`wait: "{{input.grace_period}}"`。
+- grace period **设计上**可被 workflow input 参数化：`wait: "{{input.grace_period}}"`——但该替换尚未实现（见 LE004），当前写法会把字面量当等待时长。
 
 重试与超时（对应设计文档 4.4.5.3）：
 
@@ -1342,6 +1342,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | LE001 | 类型 | 类型不匹配 | error |
 | LE002 | 结构 | 必需字段缺失或命名重复 | error |
 | LE003 | 类型 | 枚举值非法 | error |
+| LE004 | 类型 | 声明/引用了 input 参数，但没有任何代码路径注入或替换取值 | warning |
 | LE010 | 标签 | 标签表达式语法错误 | error |
 | LE011 | 标签 | 标签键名不符合命名规范 | error |
 | LE012 | 标签 | 资产类型不在白名单 | error |
@@ -1394,6 +1395,8 @@ LE042: action 参数不满足契约
 ---
 
 ## 第9章 完整示例
+
+> **状态（2026-10）**：本章示例中的 `input` 声明与 `{{input.x}}` 引用**尚未实现**——声明会被解析、类型校验并进 IR/计划哈希，但取值不会被注入，引用不会替换，编译期以 LE004 warning 提示。示例保留原样是为了记录目标形态；可直接运行请以模板实例化（`{{.name}}`）参数化。
 
 ### 9.1 示例：补丁灰度
 
@@ -2038,7 +2041,7 @@ rollback:
 | 关键字 | 类别 | 出现位置 | 简述 |
 | --- | --- | --- | --- |
 | workflow | 声明 | 顶层 | 声明工作流 |
-| input | 声明 | workflow 内 | 声明输入参数 |
+| input | 声明 | workflow 内 | 声明输入参数（尚未实现，LE004 warning） |
 | target | 声明 | workflow 内 | 声明目标集 |
 | window | 声明 | workflow 内 | 声明变更窗口 |
 | batches | 声明 | workflow 内 | 声明批次策略 |
@@ -2085,8 +2088,8 @@ rollback:
 | approval_level | `standard` / `high` / `emergency` | approval level |
 | action_ref | `mysql.pt-online-schema-change` | step action |
 | target_ref | `{{target.host}}` | 引用目标属性 |
-| input_ref | `{{input.table}}` | 引用输入参数 |
-| output_ref | `{{step.migrate.output}}` | 引用前步输出 |
+| input_ref | `{{input.table}}` | 引用输入参数（尚未实现，LE004 warning） |
+| output_ref | `{{step.migrate.output}}` | 引用前步输出（尚未实现；LE061 无产生方） |
 
 ---
 
@@ -2099,6 +2102,7 @@ rollback:
 | LE001 | error | 类型不匹配 |
 | LE002 | error | 必需字段缺失或命名重复 |
 | LE003 | error | 枚举值非法 |
+| LE004 | warning | input 参数被声明/引用但无人解析 |
 | LE010 | error | 标签表达式语法错误 |
 | LE011 | error | 标签键名不符合命名规范 |
 | LE012 | error | 资产类型不在白名单 |

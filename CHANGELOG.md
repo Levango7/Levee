@@ -34,6 +34,15 @@
 - **变异五条逐一变红**：useTheme 去掉超时（原缺陷）/ conversation 重新手抄一份 / 值改成 5_000 / 新增第五个重导入 spec / owner 改名（硬失败，而不是空集通过）。
 - 验证：`npm run test` **119 例全绿（13 文件）**、`vue-tsc` 干净、`vite build` 产物与 `internal/web/dist` **逐字节一致**（本批只动测试，不动产物）。
 
+### 修复（workflow 的 `input:` 块没有读者：不新增替换引擎，改为编译期如实告警 LE004）
+
+- **查证结论**：`input:` 声明会被解析、类型校验（`validateInputs` / `checkInputs`）、降级进 IR（因此**进计划哈希**），但**没有任何东西消费它**：全仓生产代码不含 `{{input` 字面量，planner / executor / dispatcher / batch 都不做占位符替换，proto 与 CLI 也没有承载输入取值的字段或开关。也就是说，按 spec 写 `args: { name: "{{ input.package_name }}" }` 的作者，模块收到的是**那串字面量本身**——对 `shell.exec` 就是一条没人写过的命令（shell 还可能对花括号做展开）。
+- **不做"接成单一真源"**：那是独立功能（取值注入 + 解析时机 + 类型强制 + trace 脱敏 + 参考校验），不是一批能收口的事；**也不只删 spec**：那样解析器仍静默接受死语法。选**如实告警**——新增 `internal/errors` 的 **LE004**（`CompileWarning`），`dsl.Advise` 在「声明了 input 块」或「任意 step 参数里出现 `{{input.x}}`」时提示后果与真实替代路径（模板实例化替换的是 `{{.name}}`）。
+- **告警的边界**：`{{.name}}`（模板实例化语法，**能工作**）不报——把作者从可用的路推开的告警是坏告警；递归走 `args` 的映射/列表与 **rollback 里的 undo step**（reader 最容易忘的 args，变异实测：去掉嵌套遍历或去掉 rollback 遍历都判红）。
+- **同族登记**：`LE061`（引用前步输出不存在/类型不符，`CompileError`）**登记了但没有产生方**——没有任何 pass 能判定"引用缺失"，因为不存在解析引用的 pass。已在常量处写明，并把 spec 的 `input_ref` / `output_ref` 两行、`input` 章节目录项与第 9 章示例加上「尚未实现」状态。
+- **变异五条逐一变红**：去掉"仅声明"触发 / 不遍历嵌套 args / 不遍历 rollback step / 正则放宽到匹配 `{{.name}}` / 目录把 LE004 的严重度改成 error。
+- 验证：`go test ./internal/dsl ./internal/errors ./cmd/levee` 全绿；`golangci-lint`（本仓 `.golangci.yml`）0 issues；目录计数守卫 `TestAllCodes_CountAndImmutable` 34 → 35（新增一个码必须同时进目录，这条守卫正是为此存在）。
+
 ### 门禁（重试上限终于由服务端强制；顺带修好每主机计数器的截断）
 
 - **重试上限此前只在 CLI 里存在**。`docs/levee-api.md` 写着"重试次数有上限（默认 3），超限升级人工"，但那个上限是 `cmd/levee` 的私有逻辑：`RetryChange` / `RetryHost` 两个 RPC **完全不检查**，所以经控制台/API 可以无限重试——文档承诺的封顶在服务端不存在。（上一批修的是"API 写的行 CLI 数不到"，这一批修的是"API 根本不数"。）
