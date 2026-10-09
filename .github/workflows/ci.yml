@@ -71,8 +71,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: go vet
         run: go vet ./...
@@ -88,8 +87,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: golangci-lint
         uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa  # v7
@@ -165,8 +163,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       # -race needs cgo/gcc; it is flaky-slow on the Windows runner, so the
       # Windows leg runs without the detector (Linux/macOS keep full -race).
@@ -237,8 +234,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       # Every step here runs under -race. The unit matrix already races the
       # default build, but on a machine without LEVEE_PG_TEST_DSN the whole
@@ -293,8 +289,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: install pinned protoc toolchain
         run: |
@@ -332,8 +327,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: regenerate spec tables
         run: go run ./internal/docgen -root .
@@ -383,8 +377,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: go build
         env:
@@ -411,8 +404,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       # gosec runs as a pinned-version Go program on the runner, not as the
       # project's docker action. The docker image bundles the Go toolchain
@@ -422,7 +414,10 @@ jobs:
       # does not survive — observed as a silent kill mid-scan, twice, while
       # `go run` of the same scanner version against the same tree completes
       # with 0 issues. Here the scanner version stays pinned below while the
-      # toolchain floats with go-version above, exactly like govulncheck.
+      # toolchain comes from go.mod above, exactly like govulncheck — and, since
+      # 2026-10-09, like every other Go job here: the floating '1.26' alias was
+      # measured resolving from a stale source (`Resolved as '1.26.8'` even with
+      # check-latest: true) while go.mod required 1.26.9.
       - name: install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
       - name: run gosec
@@ -458,7 +453,11 @@ jobs:
   # covering this before.
   #
   # go-version-file is used rather than a pinned version so this job can never
-  # silently test a different toolchain than the one go.mod declares.
+  # silently test a different toolchain than the one go.mod declares. That rule
+  # now holds for every Go job in this workflow: measured 2026-10-09, a floating
+  # `go-version: '1.26'` resolved to 1.26.8 from a stale source — `check-latest:
+  # true` and all — and 11 jobs died on `go.mod requires go >= 1.26.9` while
+  # this one, reading go.mod, was already on 1.26.9.
   # ---------------------------------------------------------------------------
   govulncheck:
     name: govulncheck
@@ -590,8 +589,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: '1.26'
-          check-latest: true  # newest 1.26.x, not the runner's cached patch
+          go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: build the release-shaped binary
         env:
