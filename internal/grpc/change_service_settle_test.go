@@ -53,6 +53,16 @@ func TestApproveChange_PartialQuorumLeavesRunDraft(t *testing.T) {
 	assert.Equal(t, "draft", got.Status, "1/2 votes must not approve the run")
 	assert.NotEqual(t, "approved", got.ApprovalStatus)
 
+	// The row this vote leaves behind carries the outcome TOKEN, not a
+	// sentence: audit.result is what queries filter on, and the REST
+	// layer's human copy ("recorded; quorum pending") is not vocabulary.
+	rows, err := store.ListAudits(context.Background(), state.AuditFilter{
+		RunID: "run-q", Action: state.AuditActionApprove,
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the unsettled vote must leave exactly one audit row")
+	assert.Equal(t, state.AuditResultQuorumPending, rows[0].Result)
+
 	// Second vote: the quorum completes, the run settles.
 	_, err = svc.ApproveChange(ContextWithActor(context.Background(), "bob"), &pb.ApproveRequest{ChangeId: "run-q", Approver: "bob"})
 	require.NoError(t, err)

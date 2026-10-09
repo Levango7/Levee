@@ -14,8 +14,17 @@
 - **两份 schema 注释（sqlite + pg）改成真词表**，并新增守卫 `internal/state/audit_vocabulary_test.go`：`action` 与常量集**双向相等**（多一个不存在的值、漏一个已声明的值，都判红）；`result` 因为它合法地装**两族**值（结局词 + 迁移到的运行状态），守卫要求两族都被列全——运行状态那族**从 `internal/runstatus` 解析**而不是复述，那里加一个状态就会让注释变错并判红。
 - **跨路径守卫** `cmd/levee/retry_budget_crosspath_test.go`：用 gRPC 的写形状种审计行，再用 CLI 的 `countHostRetries` 数——断言的是**入口之间的契约**，不是各自的自洽。变异实测：把 gRPC 侧改回旧形状，`TestRetryHost` 以 `one row per host, each matching the budget's Target shape` 判红。
 - **顺手发现同族第三处**：`internal/pause` 自带一份 run 状态词表（6 个值，逐字等于 `runstatus` 的），而它写进的正是 `run.status` 列——那里的注释说"为免 import 环"，但 `runstatus` 是只依赖 `strings` 的叶子包（`go list -deps` 实测只有它自己），环不存在。已改为别名。
-- **登记不修（各需一次独立决定）**：① `approval_kickoff` 把审批档位 `tier` 写进 `result`，而 `result` 是枚举列、没有 detail 列可放——要么给它一列，要么别记；② 未结算的 quorum 把散文 `"recorded; quorum pending"` 写进同一列，已给它常量（`AuditResultQuorumPending`）以免写入端与 REST 回显漂移，但"散文进枚举列"这件事本身还在；③ **API 侧仍不自行拒绝超限的重试**——本次只让它记的行被 CLI 的预算数到，控制台/API 路径自己要不要在超限时拒绝是产品决定（改了就是行为变更：原本成功的一次重试会开始报错）。**【已收口，见下一个 `[Unreleased]` 小节】**用户拍板后，两个 RPC 现在都在执行前按同一份预算拒绝。
+- **登记不修（各需一次独立决定）**：① `approval_kickoff` 把审批档位 `tier` 写进 `result`，而 `result` 是枚举列、没有 detail 列可放——要么给它一列，要么别记；② 未结算的 quorum 把散文 `"recorded; quorum pending"` 写进同一列，已给它常量（`AuditResultQuorumPending`）以免写入端与 REST 回显漂移，但"散文进枚举列"这件事本身还在。**【已收口，见下一个 `[Unreleased]` 小节】**决定不加列、三处散文全部移出该列，写入端还会在越界时告警；③ **API 侧仍不自行拒绝超限的重试**——本次只让它记的行被 CLI 的预算数到，控制台/API 路径自己要不要在超限时拒绝是产品决定（改了就是行为变更：原本成功的一次重试会开始报错）。**【已收口，见下一个 `[Unreleased]` 小节】**用户拍板后，两个 RPC 现在都在执行前按同一份预算拒绝。
 - 验证：`go test ./...` **65 包全绿（EXIT=0）**；`gofmt` 干净；新增 2 个测试文件（词汇守卫 + 跨路径预算），改 3 处既有测试断言（它们此前钉的正是旧拼写与旧 Target 形状——反过来说明这批碰到了真实契约）。
+
+### 修复（audit.result 只剩 token：三处散文收口；写入口从此会"喊"）
+
+- **决定：不加 `detail` 列，改为不记散文。** 审计链把固定字段集拼起来做哈希（`auditContentFields`），加第 9 个字段进哈希会让**全部历史行**验签失败——审计链没有 trace 那套 V1/V2 回退（它随 v7 schema 一次引入）；而不进哈希，就等于给 WORM 表开一个"改了也不破链"的列。为三个衍生值付这个价不值当。散文移除后信息各有归宿（写在每个写入点的注释里）。
+- **三处写入端收口**（只修两处，这列的契约仍是假的）：① `approval_kickoff` 不再把审批档位 `tier` 写进 `result`，改写 `success`——档位没丢：这行的 `Target` 就是 approval id，它的行上有 `level`，run 上有 `ApprovalLevel`；② 未结算 quorum 的 `AuditResultQuorumPending` 从散文 `"recorded; quorum pending"` 改为 token `quorum_pending`（REST 给移动端的那句人话是**另一件事**：`internal/grpc/rest.go` 的 UI 文案，二者 free to differ，已在常量的注释里点明）；③ `rest_gate` 原先把 `outcome + ": " + 截断消息` 拼进该列，现只写 outcome，消息回到响应（本就在）与一行 INFO 日志——顺带一个安全理由：门禁消息里可能有通道输出，不该冻进 WORM 行。
+- **写入口第一次会"喊"**：`audit.Record` 现在调用 `state.AuditResultKnown`（两族 = `AuditResult*` ∪ `runstatus.All`，后者**直接读 owner 的 `All`** 而不是复制），越界则 **warn 但照写**——写歪的行仍是证据，丢行不是。
+- **守卫与收紧**：`internal/state/audit_vocabulary_test.go` 新增 `TestAuditResultVocabularyIsTheTwoDocumentedFamilies`（谓词与源码解析出的常量集**双向相等**，另拒绝 `L2` / `recorded; quorum pending` / `passed: disk ok` 三例散文）；`internal/audit/record_vocabulary_test.go` 钉住"越界要 warn 且行仍落库"与"两族静默"；既有三处断言从 `Contains` 收紧成 `Equal`——它们此前钉的正是旧形状（`Contains(a.Result, "passed")` 分不出 `passed` 与 `passed: …`，`rest_gate_test.go` 的这条正是漏过一次的形状）。
+- **变异七条逐一变红**：词表删 `quorum_pending`；谓词放行散文；schema 注释漏 token；`Record` 不 warn；门禁把消息拼回 `Result`；kickoff 写回 tier；quorum 写回句子。
+- 验证：`go test ./...` 全绿（EXIT=0）、`gofmt` 干净、`scripts` 48 例 OK（两份 schema 注释都改了）。
 
 ### 门禁（重试上限终于由服务端强制；顺带修好每主机计数器的截断）
 

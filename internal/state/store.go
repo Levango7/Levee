@@ -834,8 +834,7 @@ const (
 
 	// Audit results: the outcome recorded on the row (audit.result).
 	//
-	// Two kinds of value legitimately land here, and the schema comment named a
-	// third that no writer produces:
+	// Two kinds of value legitimately land here:
 	//
 	//   - an OUTCOME word: the action finished (or was refused). These are the
 	//     constants below.
@@ -844,23 +843,28 @@ const (
 	//     vocabulary, and writers use runstatus.Status* for it rather than
 	//     inventing a second name for a state that already has one.
 	//
-	// Two values are neither and are recorded here as known defects, not as
-	// vocabulary: `tier` (approval_kickoff writes the derived approval tier) and
-	// "recorded; quorum pending" (an approval that landed but did not settle the
-	// run). Both put prose in a column the schema comment describes as an enum;
-	// giving them a proper home is a separate change with a schema decision in
-	// it, so this batch names their absence instead of pretending they fit.
+	// Every value written to this column is one of these tokens or a runstatus
+	// value — the prose exceptions this block used to carry (`tier` and
+	// "recorded; quorum pending") were removed rather than given a column of
+	// their own, because the audit hash chain covers a FIXED field set: adding
+	// a field would either invalidate every historical row's digest or add an
+	// unhashed column to a WORM table. Where the removed information lives now
+	// is noted at each writer (the derived tier is on the approvals row the
+	// audit row's Target names, and on run.ApprovalLevel).
 	AuditResultSuccess   = "success"
 	AuditResultFailed    = "failed"
 	AuditResultPassed    = "passed"
 	AuditResultDenied    = "denied"
 	AuditResultTriggered = "triggered"
 
-	// AuditResultQuorumPending is the outcome of an approval that was recorded
-	// while the quorum is still short of min_approvers. It is prose rather than
-	// a token (see the note above); it lives here so the writer and the REST
-	// response that mirrors it cannot drift into two spellings.
-	AuditResultQuorumPending = "recorded; quorum pending"
+	// AuditResultQuorumPending is the outcome of an approve action whose vote
+	// was recorded while the quorum is still short of min_approvers: the run
+	// did NOT move, which is why this is an outcome token rather than a status.
+	// It is deliberately not the sentence the REST layer shows the mobile
+	// client ("recorded; quorum pending", internal/grpc/rest.go): that string
+	// is UI copy for a human, this one is a value the audit column is queried
+	// by, and the two are free to read differently.
+	AuditResultQuorumPending = "quorum_pending"
 )
 
 // AuditTargetHost is the Target shape a per-host action records:

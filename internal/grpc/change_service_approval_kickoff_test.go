@@ -210,6 +210,21 @@ func TestPlanChange_KicksOffApprovalChain(t *testing.T) {
 	run, err := store.GetRun(context.Background(), created.GetId())
 	require.NoError(t, err)
 	assert.Equal(t, "high", run.ApprovalLevel)
+
+	// The kickoff audit row records the token, NOT the derived tier: the
+	// column has no detail field to hold it (the chain hashes a fixed
+	// field set), and it is not lost — this row's Target is the approval
+	// id, whose row carries `level`, and the run carries ApprovalLevel.
+	// Asserted as an equality so a writer folding the tier (or anything
+	// else) back into Result fails here.
+	logs, err := store.ListAudits(context.Background(), state.AuditFilter{
+		RunID: created.GetId(), Action: state.AuditActionApprovalKickoff,
+	})
+	require.NoError(t, err)
+	require.Len(t, logs, 1, "planning must leave exactly one kickoff audit row")
+	assert.Equal(t, state.AuditResultSuccess, logs[0].Result)
+	assert.Equal(t, approvals[0].ID, logs[0].Target,
+		"the Target must name the approval row that carries the tier")
 }
 
 func TestApprovalRouting_DeclaredEmergencyWinsOverHighFloor(t *testing.T) {

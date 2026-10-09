@@ -99,6 +99,16 @@ func TestGateVerify_CmdCheckFailsClosedOnExitMismatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.False(t, resp.Passed)
+	require.NotEmpty(t, resp.Message, "the reason must still reach the caller")
+
+	// The audit row records the outcome TOKEN; the reason lives in the
+	// response and the log, not in the column queries filter on. The old
+	// writer concatenated them ("failed: exit=3, want 0"), which the
+	// passing-side Contains() assertion next door could not tell apart.
+	rows, err := store.ListAudits(context.Background(), state.AuditFilter{Action: state.AuditActionGateVerify})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "one ad-hoc check, one audit row")
+	assert.Equal(t, state.AuditResultFailed, rows[0].Result)
 }
 
 func TestGateVerify_CmdMissingCmdParamIsBadRequest(t *testing.T) {
@@ -247,7 +257,11 @@ func TestGateVerify_Audited(t *testing.T) {
 		if a.Action == "gate_verify" {
 			saw = true
 			assert.Equal(t, "run-audit", a.RunID)
-			assert.Contains(t, a.Result, "passed")
+			// Equality, not Contains: this column is queried, and the
+			// previous writer folded the check message in here
+			// ("passed: <message>"), which Contains could not tell from
+			// the token.
+			assert.Equal(t, state.AuditResultPassed, a.Result)
 		}
 	}
 	assert.True(t, saw, "ad-hoc verification must leave an audit row")

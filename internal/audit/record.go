@@ -29,6 +29,16 @@ func Record(ctx context.Context, store state.Store, a *state.Audit) error {
 	if a == nil {
 		return fmt.Errorf("audit: record: nil audit entry")
 	}
+	// The boundary where a writer that folds prose into audit.result becomes
+	// loud. Warn, do not refuse: the row is still evidence, a lost row is not,
+	// and the value is what a reader would need to spot in a query. See
+	// state.AuditResultKnown for the two families it accepts.
+	if !state.AuditResultKnown(a.Result) {
+		log.Warn("audit: result is outside the audit.result vocabulary; row written as-is",
+			"audit_id", a.ID,
+			"action", a.Action,
+			"result", a.Result)
+	}
 	if err := store.CreateAudit(ctx, a); err != nil {
 		return err
 	}
