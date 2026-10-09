@@ -14,8 +14,19 @@
 - **两份 schema 注释（sqlite + pg）改成真词表**，并新增守卫 `internal/state/audit_vocabulary_test.go`：`action` 与常量集**双向相等**（多一个不存在的值、漏一个已声明的值，都判红）；`result` 因为它合法地装**两族**值（结局词 + 迁移到的运行状态），守卫要求两族都被列全——运行状态那族**从 `internal/runstatus` 解析**而不是复述，那里加一个状态就会让注释变错并判红。
 - **跨路径守卫** `cmd/levee/retry_budget_crosspath_test.go`：用 gRPC 的写形状种审计行，再用 CLI 的 `countHostRetries` 数——断言的是**入口之间的契约**，不是各自的自洽。变异实测：把 gRPC 侧改回旧形状，`TestRetryHost` 以 `one row per host, each matching the budget's Target shape` 判红。
 - **顺手发现同族第三处**：`internal/pause` 自带一份 run 状态词表（6 个值，逐字等于 `runstatus` 的），而它写进的正是 `run.status` 列——那里的注释说"为免 import 环"，但 `runstatus` 是只依赖 `strings` 的叶子包（`go list -deps` 实测只有它自己），环不存在。已改为别名。
-- **登记不修（各需一次独立决定）**：① `approval_kickoff` 把审批档位 `tier` 写进 `result`，而 `result` 是枚举列、没有 detail 列可放——要么给它一列，要么别记；② 未结算的 quorum 把散文 `"recorded; quorum pending"` 写进同一列，已给它常量（`AuditResultQuorumPending`）以免写入端与 REST 回显漂移，但"散文进枚举列"这件事本身还在；③ **API 侧仍不自行拒绝超限的重试**——本次只让它记的行被 CLI 的预算数到，控制台/API 路径自己要不要在超限时拒绝是产品决定（改了就是行为变更：原本成功的一次重试会开始报错）。
+- **登记不修（各需一次独立决定）**：① `approval_kickoff` 把审批档位 `tier` 写进 `result`，而 `result` 是枚举列、没有 detail 列可放——要么给它一列，要么别记；② 未结算的 quorum 把散文 `"recorded; quorum pending"` 写进同一列，已给它常量（`AuditResultQuorumPending`）以免写入端与 REST 回显漂移，但"散文进枚举列"这件事本身还在；③ **API 侧仍不自行拒绝超限的重试**——本次只让它记的行被 CLI 的预算数到，控制台/API 路径自己要不要在超限时拒绝是产品决定（改了就是行为变更：原本成功的一次重试会开始报错）。**【已收口，见下一个 `[Unreleased]` 小节】**用户拍板后，两个 RPC 现在都在执行前按同一份预算拒绝。
 - 验证：`go test ./...` **65 包全绿（EXIT=0）**；`gofmt` 干净；新增 2 个测试文件（词汇守卫 + 跨路径预算），改 3 处既有测试断言（它们此前钉的正是旧拼写与旧 Target 形状——反过来说明这批碰到了真实契约）。
+
+### 门禁（重试上限终于由服务端强制；顺带修好每主机计数器的截断）
+
+- **重试上限此前只在 CLI 里存在**。`docs/levee-api.md` 写着"重试次数有上限（默认 3），超限升级人工"，但那个上限是 `cmd/levee` 的私有逻辑：`RetryChange` / `RetryHost` 两个 RPC **完全不检查**，所以经控制台/API 可以无限重试——文档承诺的封顶在服务端不存在。（上一批修的是"API 写的行 CLI 数不到"，这一批修的是"API 根本不数"。）
+- **预算逻辑提取成共用 owner `internal/retrybudget`**：`MaxAttempts`、`RunUsage`、`HostUsage`、`Exhausted` 四样，CLI 与 RPC 都调它——上限只定义一次，计数只有一份实现。`cmd/levee` 的 `maxRetryAttempts` 与两个计数器改成别名/委托（值不变，`[exit=5]` 文案与 JSON 输出不变）。
+- **顺带修掉一个此前查不到的计数 bug**：`HostUsage` 原来是"先 `Limit=4` 拉最近 4 行、再在 Go 里按 Target 过滤"——多主机交错重试时，目标主机的行会被挤出窗口。变异实测：3 次 `web-01` 加 4 次其他主机（时间更晚）之后，`web-01` 的计数读到 **0** 而不是 3，即**预算在主机被分散重试时完全失明**（而那正是最需要它的时候）。修法是给 `state.AuditFilter` 加 `Target` 字段、在 SQL 层过滤（sqlite 与 pg 同步，tenant 装饰器透传），`LIMIT` 于是作用在已收窄的集合上。
+- **两个入口的语义**：`RetryChange` 按整轮预算（`retry` 行）计，**检查在 replan 分支之前**——replan 会重新生成计划并重新执行，豁免它等于把 replan 变成新的绕过路径；`RetryHost` 按每主机预算（`retry_host` 行、Target 精确匹配）计，**任一主机超限就整批拒绝**（部分执行会是静默超额），并点名是哪几台。拒绝码 `ResourceExhausted`（REST 429），消息指向可达的升级路径：重新规划并审批应用、或克隆一条新变更。
+- **拒绝发生在执行之前**：两个 RPC 的预算检查都在调引擎之前，测试的断言不是"返回了什么错"而是**引擎零调用**（`recordingEngine.retryCalled == 0`）——被拒的重试不能执行。
+- **顺带：`RetryHost` 的空主机列表**此前会被交给引擎（引擎报一句 `Internal` 风格的手工错误）；现在显式返回 `InvalidArgument` 并说明"要重试全部失败主机请用 RetryChange"——空列表不是"全部"，接受它会让审计行声称做过从未发生的事。
+- **登记不修（需要一次产品决定）**：查这条时发现 `RetryChange`/`RetryHost`/`CancelChange`/`ArchiveChange`/`CloneChange`/`CreateChange` 六个写 RPC **没有任何 `authorize` 调用**——`plan`/`apply`/`rollback`/`approve`/`reject` 都按权限矩阵判定，而"谁能重试/取消/归档/克隆"目前没判（`permission.ActionCancel` 早在词表里、`policyResourceFor` 也把它映射到 `change:*`，但没有 RPC 消费它；设计文档 §4.4.8 写的"发起人或管理员"也没有对应机制——矩阵是 team×env×action，表达不了"发起人"）。**不在本批授权范围内**：接上它会改变现有部署里谁能操作，且"重试该映射到哪个 action（`apply`？新的 `retry`？）"是产品决定。**当前姿态如实记录**：无矩阵时一切照旧（无人受影响）；配了矩阵的部署里，这六个 RPC 仍可被任何已认证调用方使用。
+- 验证：`go test ./...` **全绿**；新增 `internal/retrybudget/retrybudget_test.go`（3 例，含上面那条截断回归）与 `internal/grpc/change_service_retrybudget_test.go`（9 例子测试）；变异四组各自按预期红——摘掉两个 RPC 的强制（3 条子测试红）、把 Target 过滤改回 Go 侧（截断回归红、计数 3→0）、上一批的 gRPC 旧行形状（`TestRetryHost` 红）。
 
 ## [v1.21.0] - 2026-10-09
 

@@ -257,6 +257,13 @@ type AuditFilter struct {
 	RunID  string
 	Action string
 	Actor  string
+	// Target matches the row's target column exactly. It exists because the
+	// retry budget counts per-host rows (audit.action=retry_host with
+	// target=<run>/<host>): filtering Target in Go AFTER a LIMITed query
+	// under-counts — a run retried across several hosts pushes one host's rows
+	// out of the newest-N window and the budget stops seeing them. Applied
+	// server-side, the LIMIT already applies to the narrowed set.
+	Target string
 	Limit  int
 	// Offset skips the first Offset matching rows (timestamp DESC order).
 	// Negative values are treated as 0. Use with Limit for pagination.

@@ -54,6 +54,7 @@ import (
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/recommend/feedback"
+	"github.com/nexus/levee/internal/retrybudget"
 	"github.com/nexus/levee/internal/risk"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/runstatus"
@@ -1723,6 +1724,26 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 			runstatus.JoinRetryAdmitted(), run.Status)
 	}
 
+	// Retry budget: the cap is a documented product promise
+	// (docs/levee-api.md: 重试次数有上限（默认 3），超限升级人工) and this
+	// RPC used to be the way around it — it did not count at all, so a
+	// console user could retry past the limit the CLI enforces. Checked
+	// BEFORE the replan branch on purpose: replan re-generates a plan and
+	// re-executes, so exempting it would make it the new bypass.
+	//
+	// The escalation the docs name (超限升级人工) stays reachable: re-planning
+	// through PlanChange + approval + apply is a different lifecycle and is
+	// not a retry (and is judged by its own `plan` authorization).
+	runAttempts, err := retrybudget.RunUsage(ctx, s.store, run.ID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "count retries: %v", err)
+	}
+	if retrybudget.Exhausted(runAttempts) {
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"change %q has reached the retry limit (%d/%d); escalate instead of retrying (re-plan and apply, or clone the change)",
+			run.ID, runAttempts, retrybudget.MaxAttempts)
+	}
+
 	oldStatus := run.Status
 
 	if s.engine != nil && s.engine.Retry != nil {
@@ -1819,6 +1840,35 @@ func (s *ChangeService) RetryHost(ctx context.Context, req *pb.RetryHostRequest)
 	}
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+
+	// An empty host list is not "all hosts" here — RetryChange is the RPC
+	// for that (its host subset is optional). Accepting it silently would
+	// record a retry that retried nothing, which is worse than a refusal:
+	// the audit row would claim work that never happened.
+	if len(req.GetHosts()) == 0 {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"retry-host requires an explicit host list; use RetryChange to retry every failed host")
+	}
+
+	// Per-host budget, checked BEFORE the engine call so a refused retry
+	// does not execute: the budget is the refused thing, not a report
+	// afterwards. Same implementation the CLI's retry-host uses
+	// (internal/retrybudget), so the two cannot disagree about the cap.
+	exhausted := make([]string, 0, len(req.GetHosts()))
+	for _, host := range req.GetHosts() {
+		attempts, err := retrybudget.HostUsage(ctx, s.store, run.ID, host)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "count retries: %v", err)
+		}
+		if retrybudget.Exhausted(attempts) {
+			exhausted = append(exhausted, host)
+		}
+	}
+	if len(exhausted) > 0 {
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"host(s) %s in change %q have reached the retry limit (%d each); escalate instead of retrying",
+			strings.Join(exhausted, ", "), run.ID, retrybudget.MaxAttempts)
 	}
 
 	if s.engine != nil && s.engine.Retry != nil {

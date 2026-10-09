@@ -1607,6 +1607,10 @@ func (s *SQLiteStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Au
 		clauses = append(clauses, "actor = ?")
 		args = append(args, filter.Actor)
 	}
+	if filter.Target != "" {
+		clauses = append(clauses, "target = ?")
+		args = append(args, filter.Target)
+	}
 	// Tenant predicate. Appended LAST so the placeholder numbering matches the
 	// append order regardless of which optional filters were set.
 	if filter.TenantID != "" {
