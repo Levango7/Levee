@@ -26,6 +26,14 @@
 - **变异七条逐一变红**：词表删 `quorum_pending`；谓词放行散文；schema 注释漏 token；`Record` 不 warn；门禁把消息拼回 `Result`；kickoff 写回 tier；quorum 写回句子。
 - 验证：`go test ./...` 全绿（EXIT=0）、`gofmt` 干净、`scripts` 48 例 OK（两份 schema 注释都改了）。
 
+### 修复（冷导入超时：一份常量三处手抄，第四个重导入的 spec 根本没有）
+
+- **形状**：`vi.resetModules()` + `await import()` 的 spec，第一例按 vitest 默认 5000ms 计时，而冷转换空闲时约 1s、负载下实测 18090ms ⇒ 忙的时候随机红。上一批的修法是把 `COLD_IMPORT_TIMEOUT = 30_000` **手抄进三个 spec**（conversation / cluster / client）；`composables/useTheme.spec.ts` 同样重导入模块图，**从头到尾没有超时**——flake 不是消失了，是还没红到。
+- **收口**：常量搬到单一 owner `web/src/test/coldImport.ts`（"18090ms under load" 的实测依据只留一份），四个 spec 改为从 owner import；`useTheme` 的套件接上超时。
+- **守卫** `web/src/test/coldImport.spec.ts`：用 typescript 自己的 parser 扫 `src/**/*.spec.ts`（**注释里的提及不算调用点**——守卫自己的头部就提及了这个调用，第一版用字符串匹配时它把自己扫成了违规），要求「凡真实调用 `vi.resetModules()` 的 spec 必须 import 并应用该常量」「常量只允许在 owner 里声明」「owner 的值不得回落」；找不到 `web/src` 或扫到 0 个 spec 一律硬失败（静默扫空比不扫更糟）。
+- **变异五条逐一变红**：useTheme 去掉超时（原缺陷）/ conversation 重新手抄一份 / 值改成 5_000 / 新增第五个重导入 spec / owner 改名（硬失败，而不是空集通过）。
+- 验证：`npm run test` **119 例全绿（13 文件）**、`vue-tsc` 干净、`vite build` 产物与 `internal/web/dist` **逐字节一致**（本批只动测试，不动产物）。
+
 ### 门禁（重试上限终于由服务端强制；顺带修好每主机计数器的截断）
 
 - **重试上限此前只在 CLI 里存在**。`docs/levee-api.md` 写着"重试次数有上限（默认 3），超限升级人工"，但那个上限是 `cmd/levee` 的私有逻辑：`RetryChange` / `RetryHost` 两个 RPC **完全不检查**，所以经控制台/API 可以无限重试——文档承诺的封顶在服务端不存在。（上一批修的是"API 写的行 CLI 数不到"，这一批修的是"API 根本不数"。）
@@ -212,7 +220,8 @@
 
 - **`steps.status` 与 `runs.approval_status` 建 owning 常量，写入端全部收敛**：上一批把两条缺口如实登记为"本批不动"——`steps.status` 全仓没有 owning 常量、写入端是 `internal/wiring/persist.go` 的裸字面量；`runs.approval_status` 同样是裸字面量。现补 `state.StepStatus*`（五个）与 `state.ApprovalStatus*`（三个），`persist.go` 的五个写入点 + 一处比较、`internal/lock` 的两处查询、`grpc/change_service.go`、`grpc/template_service.go`、`template/clone.go`、`wiring/run.go`、`cmd/levee/cmd_new.go` 全部改走常量，`clone.go` 的本地 `StepStatusPending` 改为别名（别名即 owner 的值，无法漂移）。
   **取值集合按写入端扫描确定，不照抄 schema 注释**：`runs.approval_status` 的行内注释写着 `pending|approved|rejected|timeout|skipped`，但后两个值属于**隔壁 approvals 表的 status 列**，run 行上没有任何写入方产生它们。注释与常量都已改正，并新增 `internal/state/status_column_comment_guard_test.go`：解析 store.go 的常量块（不是复述，新常量不会漏检）与两个 schema 文件的对应列注释，双向对齐，两侧缺一即红。
-- **守卫的 CRLF 陷阱顺带修掉**：既有的 `batch_status_schema_comment_test.go` 用 `(?m)$` 匹配常量行，在 LF 检出下正常、在 Windows 的 CRLF 工作副本下静默解析成空集后仅以 `require.NotEmpty` 报"块形状变了"——守卫本身在该机器上等于不存在。三处正则补 `?`，注释写明原因。
+- **守卫的 CRLF 陷阱顺带修掉**：既有的 `batch_status_schema_comment_test.go` 用 `(?m)$` 匹配常量行，在 LF 检出下正常、在 Windows 的 CRLF 工作副本下静默解析成空集后仅以 `require.NotEmpty` 报"块形状变了"——守卫本身在该机器上等于不存在。三处正则补 `
+?`，注释写明原因。
 - **audit 链的 `Seal` 不再重写"内容与自己的哈希不符"的行**（关闭 SA-002 在 audit 侧的残余）：原实现重写任何哈希不符的行，于是"改一行内容，然后等任意一次审计写入"就会让下一次 Seal 重新链接它、Verify 通过——篡改被自己抹掉。新判据区分两类不符：**行自洽**（`H(内容, 行自己存的 prev) == 行自己存的 curr`，内容完好、只是被后来的行挤走了前驱，如同时间戳下并发写入的乱序落库）→ 正文重链；**行不自洽**（内容已改）→ 不写、返回 `ErrChainBroken`，证据保留。
   **这一版的判据是第二稿**：第一稿照搬 trace 链的"只延展、绝不重写"，被两条既有测试直接证伪——良性重排会被当成永久断链，而 `BuildForce`/`Rebuild` 全仓无生产调用点、CLI 也没有修复子命令，"报断等运维修"这条路对任何人都不可达。一条会对合法写入报警且无法清除的规则，比它要堵的洞更糟。
   **如实登记残留**：**删除**（在 WORM 触发器被摘掉的前提下）仍会被下一次 Seal 重链接覆盖——后继行自洽，判据看不出"前驱被删"与"前驱被挤位"的区别。触发器是删除的防线，Verify 在下一次写入封链前一直报出该断点。

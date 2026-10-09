@@ -14,6 +14,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DARK_MEDIA_QUERY, THEME_STORAGE_KEY, parseThemeChoice, resolveTheme } from './useTheme'
 
+import { COLD_IMPORT_TIMEOUT } from '@/test/coldImport'
+
 type ThemeModule = typeof import('./useTheme')
 
 /** installMatchMedia stubs window.matchMedia with a controllable query and
@@ -48,7 +50,9 @@ function installMatchMedia(matches: boolean): {
   }
 }
 
-/** freshTheme loads a fresh copy of the module (see the file header). */
+/** freshTheme loads a fresh copy of the module (see the file header).
+ *  Its suites take the owned cold-import timeout: the re-import runs the
+ *  same cold transform the api specs hit (src/test/coldImport.ts). */
 async function freshTheme(): Promise<ThemeModule['useTheme']> {
   vi.resetModules()
   const mod: ThemeModule = await import('./useTheme')
@@ -89,7 +93,7 @@ describe('resolveTheme', () => {
   })
 })
 
-describe('useTheme', () => {
+describe('useTheme', { timeout: COLD_IMPORT_TIMEOUT }, () => {
   // The bootstrap in index.html necessarily duplicates these two constants
   // (it runs before the module graph loads). Pin them so renaming either one
   // turns this red instead of silently making the stored choice unreadable.

@@ -4,13 +4,7 @@
 // cluster.spec.ts).
 import { describe, expect, it, vi } from 'vitest'
 
-// These suites re-import the module graph (vi.resetModules() + await import(...)).
-// That cold transform costs ~1s when the machine is idle but was measured at
-// 18090ms under load, and vitest's default testTimeout is 5000ms -- so the FIRST
-// test of the file fails at random whenever the box is busy. 30s absorbs the
-// transform without hiding a real hang (an unresolvable promise still fails,
-// just later). Source of the numbers: the runs recorded in the PR description.
-const COLD_IMPORT_TIMEOUT = 30_000
+import { COLD_IMPORT_TIMEOUT } from '@/test/coldImport'
 
 describe('conversationApi', { timeout: COLD_IMPORT_TIMEOUT }, () => {
 	it('newSession issues POST /conversation/sessions and unwraps {session}', async () => {
