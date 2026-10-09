@@ -76,6 +76,24 @@ export function isRetryableStatus(status: ChangeStatus): boolean {
   return RETRYABLE_STATUSES.has(status)
 }
 
+// Remediable statuses: the two partial-rollback verdicts. Here the outstanding
+// work is to FINISH compensating the hosts that did not roll back — a different
+// action from retry, which re-drives the forward change. Both are offered and
+// deliberately not merged into one button: on these two states the operator has
+// two different intents, and the UI must not pick for them.
+//
+// Backed by POST /changes/{id}/rollback (idempotent) — the same endpoint takes
+// dry_run, and that is what lets the dialog show the evidence (which hosts
+// would be compensated, which skipped) before anything moves.
+const REMEDIABLE_STATUSES: ReadonlySet<ChangeStatus> = new Set([
+  'rolled_back_partial',
+  'rollback_incomplete',
+])
+
+export function isRemediableStatus(status: ChangeStatus): boolean {
+  return REMEDIABLE_STATUSES.has(status)
+}
+
 export function formatTimestamp(ts: number): string {
   if (!ts) return '-'
   return dayjs.unix(ts).format('YYYY-MM-DD HH:mm:ss')

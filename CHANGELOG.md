@@ -43,6 +43,14 @@
 - **变异五条逐一变红**：去掉"仅声明"触发 / 不遍历嵌套 args / 不遍历 rollback step / 正则放宽到匹配 `{{.name}}` / 目录把 LE004 的严重度改成 error。
 - 验证：`go test ./internal/dsl ./internal/errors ./cmd/levee` 全绿；`golangci-lint`（本仓 `.golangci.yml`）0 issues；目录计数守卫 `TestAllCodes_CountAndImmutable` 34 → 35（新增一个码必须同时进目录，这条守卫正是为此存在）。
 
+### 新增（部分回滚有出口：行内「补救」先 dry_run 看证据，再决定补不补）
+
+- **缺口**：roadmap 交互层 P0「部分回滚补救向导」。`rolled_back_partial` / `rollback_incomplete` 这两个判定此前在 UI 里**只是标签**（`StatusTag` 配色 + `/changes` 的状态筛选项 + KPI「需处理」的分组），运维盯着"部分回滚"没有任何按得下去的动作；行内唯一沾边的是「重试」，而它重跑的是**前向步骤**——与"把没走完的回滚补完"是两个不同意图，让 UI 二选一是替运维做决定。后端那条路早就在（`POST /changes/{id}/rollback`，幂等），API 客户端里也有方法（`changesApi.rollback`）——**零调用点**。
+- **实现**：`/changes` 行内新增「补救」，**仅**这两个状态可见，判定走 `utils/format.ts` 的 `isRemediableStatus`（与 `isRetryableStatus` 同源、同"补集"守卫）。点击**先 dry_run**，把端点自己给的证据摊开再问一句：待补偿主机（`rolledBackHosts`）、将跳过（`skippedHosts`）、服务端 message，并写清「补救＝补完回滚（幂等）；要重跑前向步骤请用重试」；确认后同一端点不带 dry_run 提交，成功后刷新并回报「补偿 N 台，回滚 run <id>」。里侧摊证据、外侧只问「现在补吗」——正是那个 P0 的验收口径。
+- **对话框正文用 VNode 组装，不用 HTML 字符串**：主机名与 message 都是服务端数据，`dangerouslyUseHTMLString` 会把它们变成标记。结构守卫把这条钉成「属性形式不得出现」（注释里提到这个词不算违规——守卫第一版就是被自己的注释绊住的）。
+- **顺带修掉一个自己引入又量出来的布局缺陷**：操作列从 3 个按钮（176px）涨到 4 个（232px）后，各列声明宽度之和 1184 > 表格可用 1142，固定列把「创建时间」压掉 14px（截图可见 `…05:04:44监控` 贴在一起）。改法不是继续加宽：操作格改 flex + 6px gap（Element 给同辈按钮的默认间距是 12px），列宽 204，并把「范围」200 → 176——实测声明宽度之和正好 1142，时间戳到首个按钮 22px、末个按钮距表右边 12px、无文本截断（1440 / 1920 两档实测）。
+- 验证：`npm run test` **125 例全绿（14 文件）**、`vue-tsc` 干净、`vite build` 产物已刷进 `internal/web/dist`（CI 要求逐字节最新）；真机走查（本仓 dev server + 无头 Chrome，API 在请求层打桩）四行四种状态：部分回滚/回滚未完成 = 监控·详情·**补救**·重试，失败 = 监控·详情·重试，已完成 = 监控·详情；对话框正文、请求顺序（先 `{"dryRun":true}`，确认后 `{}`）与成功提示均实测。变异六条逐一变红：去掉 `isRemediableStatus` 门禁 / 去掉 dry_run 预览 / 正文改用 HTML 字符串 / 打开 `dangerouslyUseHTMLString` / 删掉按钮 / 丢掉 helper import。
+
 ### 门禁（重试上限终于由服务端强制；顺带修好每主机计数器的截断）
 
 - **重试上限此前只在 CLI 里存在**。`docs/levee-api.md` 写着"重试次数有上限（默认 3），超限升级人工"，但那个上限是 `cmd/levee` 的私有逻辑：`RetryChange` / `RetryHost` 两个 RPC **完全不检查**，所以经控制台/API 可以无限重试——文档承诺的封顶在服务端不存在。（上一批修的是"API 写的行 CLI 数不到"，这一批修的是"API 根本不数"。）
