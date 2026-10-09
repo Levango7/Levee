@@ -136,7 +136,7 @@
 
 ---
 
-#### [SA-007] 权限校验缺少操作级审计——拒绝决策未自动记录审计 trace [部分修复+边界]
+#### [SA-007] 权限校验缺少操作级审计——拒绝决策未自动记录审计 trace [已修复 v1.21.0]
 
 **位置**：`internal/permission/checker.go:130-161`
 
@@ -151,6 +151,8 @@
 1. 在 `PermissionChecker` 中注入 `audit.TraceRecorder`，`Check` 在拒绝时自动记录审计 trace
 2. 或提供 `CheckWithAudit` 方法，同时执行权限检查和审计记录
 3. 至少在文档中强制要求调用方记录所有拒绝事件
+
+**追记（2026-10-09）**：本条此前登记为「部分修复+边界」，收口的判据这次从"机制存在"改成"**生产接线存在**"，补齐的正是后半句。① **生产路径不是 `PermissionChecker`**：它改造后仍**全仓零生产调用点**（`grep NewPermissionChecker|WithRecorder` 非测试命中为 0），真正判权限的是 `internal/authz`（矩阵 + 角色树 + 条件策略），而它拒绝时**不记任何审计**——所以"机制在、没人装"这半条一直是空的。② 服务层两个漏斗（`internal/grpc/resource_authz.go` 的 `authorizeResource` / `authorizeResourceRead`）现在在**返回拒绝之前**调用 `Authorizer.RecordDenial`，落进**审计链**而非 trace 表：trace.run_id 有 `REFERENCES runs(id)` 外键，无 run 的拒绝写不进去；audit.run_id 无外键、`NOT NULL DEFAULT ''`，`state.Audit` 的注释本来就写着"无 run 的行恰是安全相关的那类"。行形状 `Action=permission.denied`、`Result=denied`、`Actor=<被拒主体>`、`Target=<action>@<env>`、`RunID=''`，词表与行构造由 `internal/audit/denial.go` 单点持有，`internal/pause` 既有的记录器（本条此前那"部分修复"的一半）改为委托它——两条路径不可能写出两种行。③ **逐行过滤刻意不记**：`resourceVisibility` 的谓词按行调用，回答的是"这个人能看这个环境吗"而不是"这个请求被拒了"；在那里记账会让一页 200 行的列表写出 200 条拒绝。边界写在函数注释里，也有测试钉住（3 次谓词调用不增行）。④ **接线由结构守卫钉住**：`cmd/levee/serve_authz_recorder_test.go` 要求 `cmd_serve.go` 的 `authz.Load(` 与 `WithAuthorizer(` 之间必须有 recorder 的安装——摘掉它编译照过、所有行为测试照样绿（拒绝本身一模一样），只有这条守卫会红；变异实测把 recorder 换成空实现，守卫按预期文案判红。⑤ 证据：`internal/audit/denial_test.go`（行形状 + 已封链 + nil store 惰性）、`internal/authz/authz_denial_recorder_test.go`（只报被审的那一问、allow 不记、无身份主体记 `<unattributable>`）、`internal/grpc/change_service_authz_denial_audit_test.go`（被拒的 apply/read 各恰好一行 `apply@prod` / `view@prod`，过滤不增行）。**刻意未做**：`PermissionChecker` 自带的可选 trace 记录器没有改成审计链——它无生产调用点，且其占位 run id 受 trace 表外键所限写不进去（注释已如实写明该限制）；给一个没人用的类型搬家需要时另开一批。
 
 ---
 
@@ -226,6 +228,8 @@
 1. 提供 `RetrieveWithCallback` 方法，接受一个回调函数，在回调执行后自动清零明文
 2. 或将 `Retrieve` 标记为内部方法，外部调用统一走 `CredentialProvider`
 3. 在文档中用 MUST 级别强调调用方清零义务
+
+**追记（2026-10-09）**：建议 1 早已落地（方法名是 `RetrieveInto`，`store.go:556` 起：`defer SecureZero` 后调回调，panic 展开时同样清零，注释自称"preferred read API (SA-011)"；测试 `retrieve_into_test.go` 三例覆盖正常返回、错误返回、panic 三条路径）。本次收口的是"**义务仍是注释**"那半条：① 生产调用点里最后一处 `Retrieve` + 手写 `defer` 改成 `RetrieveInto`（`cmd/levee/cmd_serve.go` 的 `serveCredentialResolver`），现在**没有任何调用点依赖调用方记得写 defer**；② 新增调用点守卫 `internal/credential/retrieve_callers_guard_test.go`：扫全仓非测试 `.go`，每处 `.Retrieve(` 必须属于三种之一——`RetrieveInto` 自己体内、或前 5 行内带 `NOTE(SA-011)` 的所有权转移说明（现存两处：`provider.Resolve` 与 KMS 本地回退，都把明文交给文档上拥有它的上层）、否则判红并点名 `文件:行`；扫描到的调用点数必须 > 0，**锚点失效要响而不是空集通过**（变异实测：摘掉 `provider.go` 的 NOTE 标记，守卫以 `provider.go:166` 判红）。③ **边界不变、如实保留**：`channel.CredentialRef.Password` 是 `string`，Go 字符串不可清零，裸口令约定下必然留下一份副本；抹掉它要把 `CredentialRef` 跨 ssh/winrm/grpc 改成 `[]byte`（并改动凭据 blob 的 JSON 形态），仍按设计搁置——`cmd_serve.go` 该处与 `provider.go`/`kms.go` 都各自留了带本文编号的注释。
 
 ---
 
