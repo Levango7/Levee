@@ -72,6 +72,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       - name: go vet
         run: go vet ./...
@@ -88,6 +89,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       - name: golangci-lint
         uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa  # v7
@@ -164,6 +166,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       # -race needs cgo/gcc; it is flaky-slow on the Windows runner, so the
       # Windows leg runs without the detector (Linux/macOS keep full -race).
@@ -235,6 +238,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       # Every step here runs under -race. The unit matrix already races the
       # default build, but on a machine without LEVEE_PG_TEST_DSN the whole
@@ -290,6 +294,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       - name: install pinned protoc toolchain
         run: |
@@ -328,6 +333,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       - name: regenerate spec tables
         run: go run ./internal/docgen -root .
@@ -378,6 +384,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       - name: go build
         env:
@@ -405,6 +412,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       # gosec runs as a pinned-version Go program on the runner, not as the
       # project's docker action. The docker image bundles the Go toolchain
@@ -583,6 +591,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: '1.26'
+          check-latest: true  # newest 1.26.x, not the runner's cached patch
           cache: true
       - name: build the release-shaped binary
         env:
