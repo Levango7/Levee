@@ -464,7 +464,7 @@ func TestRecord_PropagatesCreateFailure(t *testing.T) {
 	// A duplicate primary key is a reliable CreateAudit failure.
 	entry := &state.Audit{
 		ID: "dup", Action: "login", Actor: "a", Target: "t",
-		Result: "ok", Timestamp: time.Now().UTC(),
+		Result: state.AuditResultSuccess, Timestamp: time.Now().UTC(),
 	}
 	require.NoError(t, Record(context.Background(), store, entry))
 	err := Record(context.Background(), store, entry)

@@ -36,6 +36,7 @@ import (
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/verify"
 )
@@ -187,9 +188,12 @@ func (s *GateService) Verify(ctx context.Context, req *GateVerifyRequest) (*Gate
 		resp.Details = result.Details
 	}
 
-	// Audit trail: ad-hoc checks must not be an audit blind spot. The
-	// state row has no detail column, so the outcome and a truncated
-	// message share the Result field.
+	// Audit trail: ad-hoc checks must not be an audit blind spot.
+	// Result carries the outcome token and nothing else: the audit
+	// chain hashes a fixed field set, so there is no detail column for
+	// prose, and folding the message in here would make the column
+	// unqueryable (and freeze channel output into a WORM row). The
+	// message stays observable in the response and in this log line.
 	if s.store != nil {
 		actor := actorFromCtx(ctx)
 		target := req.Target
@@ -200,17 +204,15 @@ func (s *GateService) Verify(ctx context.Context, req *GateVerifyRequest) (*Gate
 		if resp.Passed {
 			outcome = state.AuditResultPassed
 		}
-		msg := resp.Message
-		if len(msg) > 200 {
-			msg = msg[:200]
-		}
+		log.Info("gate verified",
+			"run_id", req.RunID, "target", target, "outcome", outcome, "message", resp.Message)
 		_ = audit.Record(ctx, s.store, &state.Audit{
 			ID:        newID("aud-"),
 			RunID:     req.RunID,
 			Action:    state.AuditActionGateVerify,
 			Actor:     actor,
 			Target:    target,
-			Result:    outcome + ": " + msg,
+			Result:    outcome,
 			Timestamp: ranAt,
 		})
 	}

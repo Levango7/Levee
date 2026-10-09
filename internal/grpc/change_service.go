@@ -807,13 +807,19 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) err
 		}
 	}
 
+	// The outcome is that the chain exists; the derived tier is NOT written
+	// here. It used to be (`Result: tier`, a value that is neither an outcome
+	// nor a run status), and it is not lost by dropping it: this row's Target
+	// IS the approval id, whose row carries `level`, and the run carries
+	// ApprovalLevel. Duplicating it in a vocabulary column cost the column its
+	// meaning — every result is now a token the column can be queried by.
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
 		Action:    state.AuditActionApprovalKickoff,
 		Actor:     "system",
 		Target:    created.ID,
-		Result:    tier,
+		Result:    state.AuditResultSuccess,
 		Timestamp: time.Now().UTC(),
 	})
 	log.Info("approval chain kicked off",

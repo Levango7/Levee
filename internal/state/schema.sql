@@ -219,7 +219,7 @@ CREATE TABLE IF NOT EXISTS audit (
     action     TEXT    NOT NULL,                     -- create|clone|approve|reject|cancel|retry|retry_host|rollback|archive|lock|gate_verify|approval_kickoff|pause_all|resume_all|permission.denied
     actor      TEXT    NOT NULL,
     target     TEXT    NOT NULL DEFAULT '',
-    result     TEXT    NOT NULL,                     -- success|failed|passed|denied|triggered, OR the run status the action moved the run to (draft|pending|planned|approved|rejected|running|paused|completed|failed|cancelled|rolled_back|rolled_back_partial|rollback_incomplete|archived|interrupted); approval_kickoff records the derived tier, and an unsettled quorum records the prose outcome "recorded; quorum pending"
+    result     TEXT    NOT NULL,                     -- success|failed|passed|denied|triggered|quorum_pending, OR the run status the action moved the run to (draft|pending|planned|approved|rejected|running|paused|completed|failed|cancelled|rolled_back|rolled_back_partial|rollback_incomplete|archived|interrupted); tokens only — prose would be unqueryable and there is no detail column (the chain hashes a fixed field set)
     timestamp  DATETIME NOT NULL,
     tenant_id  TEXT    NOT NULL DEFAULT '',          -- v6: owning tenant (NOT derivable — run_id may be ''); declared last, see the note on trace.tenant_id
     -- v7: the chain. Same shape as trace: each row's curr_hash covers the

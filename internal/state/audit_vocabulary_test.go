@@ -14,11 +14,12 @@
 //     (the run status a transition moved to, plus two prose outcomes) were not
 //     named.
 //
-// `action` is a closed vocabulary and is guarded set-equal to the constants.
-// `result` is deliberately NOT closed: it carries outcome words AND the run
-// status the action moved the run to (see the constants block in store.go for
-// why), so its guard requires the documented families to be named and the
-// closed half to match, rather than pretending the column is an enum.
+// Both columns are now closed vocabularies and guarded set-equal to their
+// owners: `action` to the AuditAction* constants, `result` to the outcome
+// constants PLUS the runstatus vocabulary (see the constants block in store.go
+// for why the run status legitimately lands there). The prose outcomes the
+// column used to carry were removed, not accommodated — so the guard also
+// refuses a sentence-shaped AuditResult* constant outright.
 package state
 
 import (
@@ -27,6 +28,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -97,25 +99,26 @@ func TestAuditActionCommentMatchesConstants(t *testing.T) {
 }
 
 // TestAuditResultCommentNamesBothFamilies requires the audit.result comment to
-// (a) list exactly the outcome constants, (b) list exactly the run statuses a
-// transition can record — parsed from internal/runstatus, not restated — and
-// (c) keep naming the two prose outcomes that are known defects rather than
-// vocabulary.
+// (a) list exactly the outcome constants, and (b) list exactly the run statuses
+// a transition can record — parsed from internal/runstatus, not restated. It
+// also refuses a prose-shaped AuditResult* constant: such a value could not be
+// listed in the `|` vocabulary at all, which is how the column stopped being
+// queryable before.
 func TestAuditResultCommentNamesBothFamilies(t *testing.T) {
 	outcomes := declaredConstants(t, "AuditResult")
 	live := map[string]bool{}
-	var proseValues []string
 	for name, value := range outcomes {
-		if strings.ContainsAny(value, " ;") {
-			// Prose outcomes cannot sit in a `|` list; they are asserted as
-			// mentioned text instead (see below).
-			proseValues = append(proseValues, value)
-			continue
-		}
 		assert.Positive(t, len(value), "%s has an empty value", name)
+		// A token, not a sentence: the column is what audit queries filter on,
+		// and there is no detail column to hold prose (the chain hashes a fixed
+		// field set). Values like `tier` and "recorded; quorum pending" were
+		// removed rather than given one; the tier is recoverable from the
+		// approvals row the audit row's Target names.
+		assert.Regexp(t, `^[a-z][a-z_]*$`, value,
+			"%s = %q is not a token; audit.result is a vocabulary column", name, value)
 		live[value] = true
 	}
-	require.NotEmpty(t, live, "no token-shaped AuditResult* constants parsed")
+	require.NotEmpty(t, live, "no AuditResult* constants parsed")
 
 	statuses := runStatusVocabulary(t)
 	require.GreaterOrEqual(t, len(statuses), 10, "parsed suspiciously few runstatus constants: %d", len(statuses))
@@ -162,11 +165,12 @@ func TestAuditResultCommentNamesBothFamilies(t *testing.T) {
 				"%s: audit.result omits run status %q, which a transition can record", rel, value)
 		}
 
-		// The prose outcomes stay visible as defects.
-		for _, value := range proseValues {
-			assert.Contains(t, comment, value,
-				"%s: audit.result must keep naming the prose outcome %q", rel, value)
-		}
+		// The comment must state the contract, not only the vocabulary: a
+		// reader who sees the two lists needs to know the column is tokens
+		// only. (This is also what stops the next writer from folding a
+		// message in and calling the comment wrong.)
+		assert.Contains(t, comment, "tokens only",
+			"%s: audit.result comment must state that the column holds tokens only", rel)
 	}
 }
 
@@ -183,4 +187,48 @@ func runStatusVocabulary(t *testing.T) map[string]bool {
 		out[m[1]] = true
 	}
 	return out
+}
+
+// TestAuditResultVocabularyIsTheTwoDocumentedFamilies pins the predicate the
+// audit writer calls on every row: it must accept exactly the AuditResult*
+// constants plus the runstatus vocabulary. No third family, and no prose — the
+// prose the column used to carry is what the predicate exists to make loud.
+func TestAuditResultVocabularyIsTheTwoDocumentedFamilies(t *testing.T) {
+	declared := map[string]bool{}
+	for _, value := range declaredConstants(t, "AuditResult") {
+		declared[value] = true
+	}
+	require.NotEmpty(t, declared, "no AuditResult* constants parsed from store.go")
+
+	// Two-way against production: AuditResultKnown reads auditOutcomeTokens, so
+	// a constant missing from that list would be a value writers use and the
+	// write-boundary check rejects.
+	listed := map[string]bool{}
+	for _, tok := range auditOutcomeTokens {
+		assert.False(t, listed[tok], "auditOutcomeTokens lists %q twice", tok)
+		listed[tok] = true
+		assert.True(t, declared[tok],
+			"auditOutcomeTokens lists %q, which no AuditResult* constant declares", tok)
+	}
+	for value := range declared {
+		assert.True(t, listed[value],
+			"auditOutcomeTokens omits %q, which internal/state declares and writers use", value)
+		assert.True(t, AuditResultKnown(value),
+			"AuditResultKnown must accept the declared outcome token %q", value)
+	}
+
+	// The runstatus half comes from its own owner (runstatus.All), so it cannot
+	// drift here the way a copied list would.
+	require.NotEmpty(t, runstatus.All)
+	for _, s := range runstatus.All {
+		assert.True(t, AuditResultKnown(s),
+			"AuditResultKnown must accept run status %q: a transition records it in this column", s)
+	}
+
+	// The prose this column used to carry, plus the concatenated shape the
+	// gate verifier wrote: the whole point is that these are warned about now.
+	for _, prose := range []string{"L2", "recorded; quorum pending", "passed: disk ok"} {
+		assert.False(t, AuditResultKnown(prose),
+			"AuditResultKnown must reject %q: audit.result is tokens only", prose)
+	}
 }
