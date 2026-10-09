@@ -219,7 +219,7 @@ func TestPauseAllOutputEnvelope(t *testing.T) {
 	defer resetRootFlags()
 
 	data := map[string]any{
-		"action":   "pause_all",
+		"action":   pause.ActionPauseAll,
 		"actor":    "cli-user",
 		"reason":   "maintenance window",
 		"affected": []string{"run-001", "run-002"},
@@ -241,5 +241,5 @@ func TestPauseAllOutputEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(raw, &result))
-	assert.Equal(t, "pause_all", result["action"])
+	assert.Equal(t, pause.ActionPauseAll, result["action"])
 }

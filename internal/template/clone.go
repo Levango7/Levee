@@ -52,15 +52,14 @@ const (
 	StepStatusPending = state.StepStatusPending
 )
 
-// Audit action constants recorded in state.Audit.Action.
+// Audit action and result values recorded in state.Audit. The owning
+// definitions live in internal/state (see its AuditAction*/AuditResult* block);
+// these are aliases so the writers here and the readers anywhere else cannot
+// drift into two spellings of one fact.
 const (
-	ActionClone = "clone"
-)
-
-// Audit result constants recorded in state.Audit.Result.
-const (
-	ResultSuccess = "success"
-	ResultFailed  = "failed"
+	ActionClone   = state.AuditActionClone
+	ResultSuccess = state.AuditResultSuccess
+	ResultFailed  = state.AuditResultFailed
 )
 
 // --- Sentinel errors --------------------------------------------------------

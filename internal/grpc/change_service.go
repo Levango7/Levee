@@ -418,10 +418,10 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     runID,
-		Action:    "create",
+		Action:    state.AuditActionCreate,
 		Actor:     run.Creator,
 		Target:    req.GetTemplateName(),
-		Result:    "draft",
+		Result:    runstatus.StatusDraft,
 		Timestamp: now,
 	})
 
@@ -482,10 +482,10 @@ func (s *ChangeService) CloneChange(ctx context.Context, req *pb.CloneChangeRequ
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     runID,
-		Action:    "clone",
+		Action:    state.AuditActionClone,
 		Actor:     run.Creator,
 		Target:    req.GetSourceChangeId(),
-		Result:    "draft",
+		Result:    runstatus.StatusDraft,
 		Timestamp: now,
 	})
 
@@ -809,7 +809,7 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) err
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
-		Action:    "approval_kickoff",
+		Action:    state.AuditActionApprovalKickoff,
 		Actor:     "system",
 		Target:    created.ID,
 		Result:    tier,
@@ -1488,12 +1488,12 @@ func isValidTransition(from, to string) bool {
 // the changes that were paused and those that were skipped (e.g.
 // already completed).
 func (s *ChangeService) PauseAll(ctx context.Context, req *pb.PauseAllRequest) (*pb.PauseAllResponse, error) {
-	return s.bulkTransition(ctx, "paused", "pause-all", req.GetTeams(), req.GetEnvironments(), req.GetReason())
+	return s.bulkTransition(ctx, runstatus.StatusPaused, state.AuditActionPauseAll, req.GetTeams(), req.GetEnvironments(), req.GetReason())
 }
 
 // ResumeAll resumes every paused change.
 func (s *ChangeService) ResumeAll(ctx context.Context, req *pb.PauseAllRequest) (*pb.PauseAllResponse, error) {
-	return s.bulkTransition(ctx, "running", "resume-all", req.GetTeams(), req.GetEnvironments(), req.GetReason())
+	return s.bulkTransition(ctx, runstatus.StatusRunning, state.AuditActionResumeAll, req.GetTeams(), req.GetEnvironments(), req.GetReason())
 }
 
 // bulkTransition is the shared implementation for PauseAll/ResumeAll.
@@ -1621,7 +1621,7 @@ func toSet(items []string) map[string]bool {
 // CancelChange cancels a change. Cancellation is terminal: the run
 // cannot be resumed after being cancelled.
 func (s *ChangeService) CancelChange(ctx context.Context, req *pb.CancelRequest) (*pb.Change, error) {
-	return s.transitionStatusWithForce(ctx, req.GetChangeId(), "cancelled", "cancel", req.GetReason(), req.GetForce())
+	return s.transitionStatusWithForce(ctx, req.GetChangeId(), runstatus.StatusCancelled, state.AuditActionCancel, req.GetReason(), req.GetForce())
 }
 
 // transitionStatusWithForce is like transitionStatus but supports a
@@ -1753,7 +1753,7 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 		s.recordAudit(ctx, &state.Audit{
 			ID:        newID("aud-"),
 			RunID:     run.ID,
-			Action:    "retry",
+			Action:    state.AuditActionRetry,
 			Actor:     actorFromCtx(ctx),
 			Target:    run.ID,
 			Result:    run.Status,
@@ -1785,7 +1785,7 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
-		Action:    "retry",
+		Action:    state.AuditActionRetry,
 		Actor:     actorFromCtx(ctx),
 		Target:    run.ID,
 		Result:    newStatus,
@@ -1828,15 +1828,25 @@ func (s *ChangeService) RetryHost(ctx context.Context, req *pb.RetryHostRequest)
 	}
 
 	now := time.Now().UTC()
-	s.recordAudit(ctx, &state.Audit{
-		ID:        newID("aud-"),
-		RunID:     run.ID,
-		Action:    "retry-host",
-		Actor:     actorFromCtx(ctx),
-		Target:    strings.Join(req.GetHosts(), ","),
-		Result:    run.Status,
-		Timestamp: now,
-	})
+	// One row per host, in the shape the retry budget reads. This path used to
+	// write a single row with Action "retry-host" and a comma-joined host list
+	// as its Target, while cmd/levee's countHostRetries counts rows by
+	// Action == "retry_host" and Target == "<run>/<host>" — so a retry through
+	// the API was invisible to the CLI's per-host budget, and the cap the CLI
+	// documents ("重试次数有上限（默认 3）", docs/levee-api.md) could be exceeded
+	// by retrying here instead. Writing per host also matches what a
+	// multi-host retry IS: N independent retries, one per host.
+	for _, host := range req.GetHosts() {
+		s.recordAudit(ctx, &state.Audit{
+			ID:        newID("aud-"),
+			RunID:     run.ID,
+			Action:    state.AuditActionRetryHost,
+			Actor:     actorFromCtx(ctx),
+			Target:    state.AuditTargetHost(run.ID, host),
+			Result:    run.Status,
+			Timestamp: now,
+		})
+	}
 
 	return runToPB(run), nil
 }
@@ -1919,7 +1929,7 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		s.recordAudit(ctx, &state.Audit{
 			ID:        newID("aud-"),
 			RunID:     run.ID,
-			Action:    "rollback",
+			Action:    state.AuditActionRollback,
 			Actor:     actorFromCtx(ctx),
 			Target:    rollbackRunID,
 			Result:    newStatus,
@@ -1962,10 +1972,10 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
-		Action:    "rollback",
+		Action:    state.AuditActionRollback,
 		Actor:     actorFromCtx(ctx),
 		Target:    rollbackRunID,
-		Result:    "rolled_back",
+		Result:    runstatus.StatusRolledBack,
 		Timestamp: now,
 	})
 
@@ -2270,10 +2280,10 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 			s.recordAudit(ctx, &state.Audit{
 				ID:        newID("aud-"),
 				RunID:     run.ID,
-				Action:    "approve",
+				Action:    state.AuditActionApprove,
 				Actor:     approver,
 				Target:    run.ID,
-				Result:    "recorded; quorum pending",
+				Result:    state.AuditResultQuorumPending,
 				Timestamp: now,
 			})
 			return runToPB(run), nil
@@ -2301,10 +2311,10 @@ func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveReques
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
-		Action:    "approve",
+		Action:    state.AuditActionApprove,
 		Actor:     approver,
 		Target:    run.ID,
-		Result:    "approved",
+		Result:    runstatus.StatusApproved,
 		Timestamp: now,
 	})
 
@@ -2389,10 +2399,10 @@ func (s *ChangeService) RejectChange(ctx context.Context, req *pb.RejectRequest)
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
-		Action:    "reject",
+		Action:    state.AuditActionReject,
 		Actor:     rejecter,
 		Target:    run.ID,
-		Result:    "rejected",
+		Result:    runstatus.StatusRejected,
 		Timestamp: now,
 	})
 
@@ -2692,10 +2702,10 @@ func (s *ChangeService) ArchiveChange(ctx context.Context, req *pb.ArchiveReques
 	s.recordAudit(ctx, &state.Audit{
 		ID:        newID("aud-"),
 		RunID:     run.ID,
-		Action:    "archive",
+		Action:    state.AuditActionArchive,
 		Actor:     actorFromCtx(ctx),
 		Target:    run.ID,
-		Result:    "archived",
+		Result:    runstatus.StatusArchived,
 		Timestamp: now,
 	})
 

@@ -780,4 +780,90 @@ const (
 	AssignResultCompleted  = "completed"
 	AssignResultFailed     = "failed"
 	AssignResultRolledBack = "rolled_back"
+
+	// Audit actions: what an audit row records happened (audit.action).
+	//
+	// Swept from the writers, not copied from the schema comment: that comment
+	// listed ten values, and ten of them had no writer at all while the values
+	// actually written were missing from it. Two of them were written under two
+	// spellings each, which is a defect and not a style choice:
+	//
+	//   - the CLI wrote `retry_host` while the gRPC path wrote `retry-host`, and
+	//     the CLI's per-host retry budget COUNTS rows by the action name
+	//     (countHostRetries) - so a retry triggered over gRPC was invisible to
+	//     the budget the CLI enforces. Same for the Target shape: both sides now
+	//     build it with AuditTargetHost.
+	//   - the pause manager wrote `pause_all` while the bulk transition wrote
+	//     `pause-all`, and both spellings authorise against the same
+	//     permission.ActionPauseAll - so an audit query by action saw half the
+	//     pauses.
+	//
+	// The underscored spelling won for both because it is the one the
+	// permission vocabulary already uses (permission.ActionPauseAll) and the one
+	// cmd_pause's JSON output has always reported; the hyphenated twins have no
+	// production reader. Rows written before this change keep their spelling -
+	// the audit chain is append-only and is never rewritten - so a query for
+	// historical retries must still accept `retry-host`.
+	AuditActionCreate           = "create"
+	AuditActionClone            = "clone"
+	AuditActionApprove          = "approve"
+	AuditActionReject           = "reject"
+	AuditActionCancel           = "cancel"
+	AuditActionRetry            = "retry"
+	AuditActionRetryHost        = "retry_host"
+	AuditActionRetryHostLegacy  = "retry-host" // pre-2026-10; never written again
+	AuditActionRollback         = "rollback"
+	AuditActionArchive          = "archive"
+	AuditActionLock             = "lock"
+	AuditActionGateVerify       = "gate_verify"
+	AuditActionApprovalKickoff  = "approval_kickoff"
+	AuditActionPauseAll         = "pause_all"
+	AuditActionResumeAll        = "resume_all"
+	AuditActionPermissionDenied = "permission.denied"
+
+	// AuditTargetAll is the wildcard Target for actions that cover everything
+	// rather than one row (a bulk pause summary, a denial with no run).
+	AuditTargetAll = "*"
+
+	// Audit results: the outcome recorded on the row (audit.result).
+	//
+	// Two kinds of value legitimately land here, and the schema comment named a
+	// third that no writer produces:
+	//
+	//   - an OUTCOME word: the action finished (or was refused). These are the
+	//     constants below.
+	//   - the RUN STATUS the action moved the run to (draft / approved /
+	//     rolled_back / archived / cancelled ...). That is the runstatus
+	//     vocabulary, and writers use runstatus.Status* for it rather than
+	//     inventing a second name for a state that already has one.
+	//
+	// Two values are neither and are recorded here as known defects, not as
+	// vocabulary: `tier` (approval_kickoff writes the derived approval tier) and
+	// "recorded; quorum pending" (an approval that landed but did not settle the
+	// run). Both put prose in a column the schema comment describes as an enum;
+	// giving them a proper home is a separate change with a schema decision in
+	// it, so this batch names their absence instead of pretending they fit.
+	AuditResultSuccess   = "success"
+	AuditResultFailed    = "failed"
+	AuditResultPassed    = "passed"
+	AuditResultDenied    = "denied"
+	AuditResultTriggered = "triggered"
+
+	// AuditResultQuorumPending is the outcome of an approval that was recorded
+	// while the quorum is still short of min_approvers. It is prose rather than
+	// a token (see the note above); it lives here so the writer and the REST
+	// response that mirrors it cannot drift into two spellings.
+	AuditResultQuorumPending = "recorded; quorum pending"
 )
+
+// AuditTargetHost is the Target shape a per-host action records:
+// "<run-id>/<host>". It is a function rather than a format string at each call
+// site because the retry budget MATCHES on it (cmd/levee's countHostRetries):
+// the CLI built this shape while the gRPC retry path recorded a bare
+// comma-joined host list, so the budget could not see the gRPC rows at all —
+// a documented cap ("重试次数有上限（默认 3）", docs/levee-api.md) that a
+// different entry point could exceed. Writers of per-host audit rows build the
+// target here so the shape has one definition.
+func AuditTargetHost(runID, host string) string {
+	return runID + "/" + host
+}

@@ -108,10 +108,10 @@ func runRetry(cmd *cobra.Command, args []string) error {
 	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     retryOptRunID,
-		Action:    "retry",
+		Action:    state.AuditActionRetry,
 		Actor:     actor,
 		Target:    retryOptRunID,
-		Result:    "success",
+		Result:    state.AuditResultSuccess,
 		Timestamp: now,
 	}
 	if err := audit.Record(ctx, store, entry); err != nil {
@@ -121,7 +121,7 @@ func runRetry(cmd *cobra.Command, args []string) error {
 	// 7. Output the result.
 	output := map[string]any{
 		"run_id":      retryOptRunID,
-		"action":      "retry",
+		"action":      state.AuditActionRetry,
 		"actor":       actor,
 		"retry_count": retryCount + 1,
 		"max_retries": maxRetryAttempts,
@@ -193,10 +193,10 @@ func runRetryHost(cmd *cobra.Command, args []string) error {
 	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     retryHostOptRunID,
-		Action:    "retry_host",
+		Action:    state.AuditActionRetryHost,
 		Actor:     actor,
-		Target:    fmt.Sprintf("%s/%s", retryHostOptRunID, retryHostOptHost),
-		Result:    "success",
+		Target:    state.AuditTargetHost(retryHostOptRunID, retryHostOptHost),
+		Result:    state.AuditResultSuccess,
 		Timestamp: now,
 	}
 	if err := audit.Record(ctx, store, entry); err != nil {
@@ -207,7 +207,7 @@ func runRetryHost(cmd *cobra.Command, args []string) error {
 	output := map[string]any{
 		"run_id":      retryHostOptRunID,
 		"host":        retryHostOptHost,
-		"action":      "retry_host",
+		"action":      state.AuditActionRetryHost,
 		"actor":       actor,
 		"retry_count": hostRetryCount + 1,
 		"max_retries": maxRetryAttempts,
@@ -241,7 +241,7 @@ func isRetryableStatus(status string) bool {
 func countRetries(ctx context.Context, store state.Store, runID string) (int, error) {
 	audits, err := store.ListAudits(ctx, state.AuditFilter{
 		RunID:  runID,
-		Action: "retry",
+		Action: state.AuditActionRetry,
 		Limit:  maxRetryAttempts + 1,
 	})
 	if err != nil {
@@ -255,14 +255,14 @@ func countRetries(ctx context.Context, store state.Store, runID string) (int, er
 func countHostRetries(ctx context.Context, store state.Store, runID, host string) (int, error) {
 	audits, err := store.ListAudits(ctx, state.AuditFilter{
 		RunID:  runID,
-		Action: "retry_host",
+		Action: state.AuditActionRetryHost,
 		Limit:  maxRetryAttempts + 1,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("list audits: %w", err)
 	}
 	// Filter by host in the Target field.
-	target := fmt.Sprintf("%s/%s", runID, host)
+	target := state.AuditTargetHost(runID, host)
 	count := 0
 	for _, a := range audits {
 		if a.Target == target {

@@ -26,31 +26,35 @@ import (
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
 // --- Status / action / result constants -------------------------------------
 //
-// These mirror the values used by the engine and stored in
-// state.Run.Status. They are repeated here to keep the pause package
-// self-documenting and avoid importing the engine package (which would
-// create an import cycle).
+// The status values are aliases of internal/runstatus, which owns the run
+// lifecycle vocabulary: these strings are written into state.Run.Status, so a
+// second literal copy here would be a second answer to "what states can a run
+// be in" — the exact shape that produced the batch-status defect (two
+// vocabularies, each self-consistent, disagreeing about the same row). Aliases
+// cannot drift; note the earlier comment here claimed an import cycle, but
+// runstatus is a leaf package (it imports only "strings"), so no cycle exists.
 
 const (
-	StatusPending   = "pending"
-	StatusRunning   = "running"
-	StatusPaused    = "paused"
-	StatusCompleted = "completed"
-	StatusFailed    = "failed"
-	StatusCancelled = "cancelled"
+	StatusPending   = runstatus.StatusPending
+	StatusRunning   = runstatus.StatusRunning
+	StatusPaused    = runstatus.StatusPaused
+	StatusCompleted = runstatus.StatusCompleted
+	StatusFailed    = runstatus.StatusFailed
+	StatusCancelled = runstatus.StatusCancelled
 )
 
 // Audit action constants recorded in state.Audit.Action.
 const (
 	ActionPause     = "pause"
 	ActionResume    = "resume"
-	ActionPauseAll  = "pause_all"
-	ActionResumeAll = "resume_all"
+	ActionPauseAll  = state.AuditActionPauseAll
+	ActionResumeAll = state.AuditActionResumeAll
 )
 
 // TargetAll is the audit Target wildcard used for global summary entries.
@@ -61,9 +65,9 @@ const TargetAll = "*"
 // denial.go); they are aliased rather than repeated so a `pause --force`
 // refusal and an RPC refusal cannot drift into two names for one fact.
 const (
-	ResultSuccess = "success"
-	ResultFailed  = "failed"
-	ResultDenied  = audit.ResultDenied
+	ResultSuccess = state.AuditResultSuccess
+	ResultFailed  = state.AuditResultFailed
+	ResultDenied  = state.AuditResultDenied
 )
 
 // ActionPermissionDenied is the audit action recorded when a global
