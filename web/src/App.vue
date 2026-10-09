@@ -1,30 +1,35 @@
 <script setup lang="ts">
-// App.vue is the layout shell: a dark navigation rail, a top bar, and a
-// scrollable content area filled by <router-view>.
+// App.vue is the layout shell: a dark navigation rail, a sticky glass top bar,
+// and the scrolling work area.
 //
-// The rail is dark in BOTH themes — it is the console's fixed frame and the
-// only place the brand teal appears at full strength. Keeping it dark while the
-// work area follows the theme is what stops a light console from reading as a
-// blank page: the content sits inside a frame instead of floating on white.
+// Two structural decisions worth stating:
 //
-// Shell responsibilities are deliberately narrow: navigation, the theme
-// switch, and the session menu. Per-page state lives in the views.
+//  * The top bar is STICKY INSIDE the scroll container, not a fixed row above
+//    it. That is what makes the glass material mean anything: content slides
+//    under the bar and shows through it. A blurred bar over a static page
+//    background renders identically to an opaque one, at a compositing cost.
+//  * The rail is opaque in both themes — it is the console's frame, and it is
+//    the only place the brand teal appears at full strength. Glass is for the
+//    chrome that floats over content; the frame does not float.
+//
+// Shell responsibilities stay narrow: navigation, the theme switch, the session
+// menu, and the command palette. Per-page state lives in the views.
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { clearToken } from '@/api/client'
 import { useTheme, type ThemeChoice } from '@/composables/useTheme'
+import CommandPalette from '@/components/CommandPalette.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { choice: themeChoice, resolved: themeResolved, setChoice: setTheme } = useTheme()
 
 const collapsed = ref(false)
+const paletteOpen = ref(false)
 
 // Navigation groups: the rail's information architecture. Ordered by how often
 // an operator touches them — work first, inventory second, platform last.
-// Every entry names its icon component; icons stay string names so the global
-// registration in main.ts resolves them (no per-entry imports).
 interface NavItem {
   path: string
   label: string
@@ -63,17 +68,13 @@ const navGroups: NavGroup[] = [
 ]
 
 // isActive matches by path prefix so nested routes (/changes/:id, /monitor/:x)
-// keep their parent entry lit. Root-anchored to avoid /cluster/... matching
-// a hypothetical /c route.
+// keep their parent entry lit; root-anchored so /cluster cannot match /c.
 function isActive(path: string): boolean {
   return route.path === path || route.path.startsWith(path + '/')
 }
 
 const pageTitle = computed(() => (route.meta.title as string) || 'LEVEE')
 
-// Breadcrumb group for the current page, shown next to the title. Purely a
-// wayfinding aid: the rail shows where you are, the header says which cluster
-// of pages you are in.
 const currentGroup = computed(
   () => navGroups.find((g) => g.items.some((i) => isActive(i.path)))?.title ?? '',
 )
@@ -90,9 +91,7 @@ const THEME_OPTIONS: Array<{ value: ThemeChoice; label: string; icon: string }> 
   { value: 'system', label: '跟随系统', icon: 'Laptop' },
 ]
 
-const themeIcon = computed(() =>
-  themeResolved.value === 'dark' ? 'Moon' : 'Sunny',
-)
+const themeIcon = computed(() => (themeResolved.value === 'dark' ? 'Moon' : 'Sunny'))
 
 function handleCommand(command: string): void {
   if (command === 'logout') {
@@ -107,9 +106,24 @@ function handleCommand(command: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Clock. A console header carries the current time: it is how an operator
-// correlates what they are reading with the timestamps in logs and audit rows.
-// Rendered in the local zone with a fixed shape so the width never jitters.
+// Command palette. Ctrl/Cmd+K anywhere in the shell; the same shortcut closes
+// it. Not bound on standalone pages (login has nothing to navigate to).
+function onGlobalKeydown(event: KeyboardEvent): void {
+  if (!showShell.value) return
+  const k = event.key.toLowerCase()
+  if ((event.ctrlKey || event.metaKey) && k === 'k') {
+    event.preventDefault()
+    paletteOpen.value = !paletteOpen.value
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onGlobalKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onGlobalKeydown))
+
+// ---------------------------------------------------------------------------
+// Clock: an operator correlates what they are reading with the timestamps in
+// logs and audit rows, so the header carries the current time. Fixed width so
+// it never jitters.
 const now = ref(new Date())
 let clockTimer: ReturnType<typeof setInterval> | undefined
 
@@ -140,8 +154,8 @@ watch(
 </script>
 
 <template>
-  <el-container class="layout">
-    <el-aside v-if="showShell" :width="collapsed ? 'var(--lv-rail-width-collapsed)' : 'var(--lv-rail-width)'" class="rail">
+  <div class="layout">
+    <aside v-if="showShell" class="rail" :class="{ 'rail--collapsed': collapsed }">
       <div class="rail__brand">
         <span class="rail__mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
@@ -183,10 +197,12 @@ watch(
           <span v-if="!collapsed">收起导航</span>
         </button>
       </div>
-    </el-aside>
+    </aside>
 
-    <el-container class="layout__body">
-      <el-header v-if="showShell" class="topbar">
+    <!-- The scroll container. The top bar is sticky INSIDE it, so page content
+         passes underneath the glass material. -->
+    <main class="sheet" :class="{ 'sheet--standalone': !showShell }">
+      <header v-if="showShell" class="topbar lv-glass">
         <div class="topbar__left">
           <span v-if="currentGroup" class="topbar__crumb">{{ currentGroup }}</span>
           <el-icon v-if="currentGroup" class="topbar__crumb-sep"><ArrowRight /></el-icon>
@@ -194,10 +210,20 @@ watch(
         </div>
 
         <div class="topbar__right">
+          <button class="topbar__search" type="button" @click="paletteOpen = true">
+            <el-icon class="topbar__search-icon"><Search /></el-icon>
+            <span class="topbar__search-label">搜索或跳转…</span>
+            <kbd class="topbar__search-kbd">Ctrl K</kbd>
+          </button>
+
           <span class="topbar__clock lv-mono" :title="now.toLocaleString()">{{ clockText }}</span>
 
           <el-dropdown trigger="click" @command="handleCommand">
-            <button class="topbar__icon-btn" type="button" :title="`主题：${THEME_OPTIONS.find((o) => o.value === themeChoice)?.label}`">
+            <button
+              class="topbar__icon-btn"
+              type="button"
+              :title="`主题：${THEME_OPTIONS.find((o) => o.value === themeChoice)?.label}`"
+            >
               <el-icon><component :is="themeIcon" /></el-icon>
             </button>
             <template #dropdown>
@@ -235,23 +261,26 @@ watch(
             </template>
           </el-dropdown>
         </div>
-      </el-header>
+      </header>
 
-      <el-main class="layout__main">
+      <div class="page-host">
         <router-view v-slot="{ Component }">
           <transition name="page" mode="out-in">
             <component :is="Component" />
           </transition>
         </router-view>
-      </el-main>
-    </el-container>
-  </el-container>
+      </div>
+    </main>
+
+    <CommandPalette v-model="paletteOpen" />
+  </div>
 </template>
 
 <style scoped>
 .layout {
+  display: flex;
   height: 100%;
-  background: var(--lv-surface-2);
+  overflow: hidden;
 }
 
 /* ------------------------------------------------------------------- rail */
@@ -259,10 +288,16 @@ watch(
 .rail {
   display: flex;
   flex-direction: column;
+  flex: none;
+  width: var(--lv-rail-width);
   background: linear-gradient(180deg, var(--lv-rail-bg-top), var(--lv-rail-bg));
   border-right: 1px solid var(--lv-rail-border);
   transition: width var(--lv-dur) var(--lv-ease);
   overflow: hidden;
+}
+
+.rail--collapsed {
+  width: var(--lv-rail-width-collapsed);
 }
 
 .rail__brand {
@@ -294,7 +329,6 @@ watch(
 }
 
 .rail__name {
-  font-family: var(--lv-font-sans);
   font-size: 15px;
   font-weight: 600;
   letter-spacing: 0.14em;
@@ -367,8 +401,8 @@ watch(
   color: var(--lv-rail-active-text);
 }
 
-/* Active marker: a 2px bar bled to the rail's edge. Reads instantly in
- * peripheral vision, which a background tint alone does not. */
+/* Active marker: a 2px bar bled to the rail's edge — readable in peripheral
+ * vision, which a background tint alone is not. */
 .rail__link--active::before {
   content: '';
   position: absolute;
@@ -419,18 +453,42 @@ watch(
   color: var(--lv-rail-text-strong);
 }
 
+/* ------------------------------------------------------------------ sheet */
+
+/* The scroll container. The ambient tint lives here rather than on the panels:
+ * glass needs something to pick up, and a completely flat page background makes
+ * a blurred bar indistinguishable from an opaque one. Kept at a few percent so
+ * tables stay clean. Fixed attachment so the tint reads as environment rather
+ * than as a band that scrolls away. */
+.sheet {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  background-color: var(--lv-surface-2);
+  background-image:
+    radial-gradient(1100px 560px at 12% -8%, var(--lv-ambient-1), transparent 62%),
+    radial-gradient(900px 480px at 88% 108%, var(--lv-ambient-2), transparent 60%);
+  background-attachment: fixed;
+}
+
+.sheet--standalone {
+  background-image: none;
+}
+
 /* ----------------------------------------------------------------- topbar */
 
 .topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--lv-space-4);
   height: var(--lv-topbar-height);
   padding: 0 var(--lv-space-5);
-  background: var(--lv-surface);
   border-bottom: 1px solid var(--lv-border);
-  flex: none;
 }
 
 .topbar__left {
@@ -466,6 +524,50 @@ watch(
   align-items: center;
   gap: var(--lv-space-3);
   flex: none;
+}
+
+/* Palette trigger: shaped like a search field, because that is what it is —
+ * and it advertises the shortcut, which is the only way a palette gets used. */
+.topbar__search {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--lv-space-2);
+  height: 30px;
+  min-width: 200px;
+  padding: 0 var(--lv-space-2) 0 10px;
+  border: 1px solid var(--lv-border);
+  border-radius: var(--lv-radius-lg);
+  background: var(--lv-surface);
+  color: var(--lv-text-3);
+  font-family: inherit;
+  font-size: var(--lv-text-sm);
+  cursor: pointer;
+  transition: border-color var(--lv-dur-fast) var(--lv-ease);
+}
+
+.topbar__search:hover {
+  border-color: var(--lv-border-strong);
+}
+
+.topbar__search-icon {
+  flex: none;
+  font-size: 14px;
+}
+
+.topbar__search-label {
+  flex: 1;
+  text-align: left;
+}
+
+.topbar__search-kbd {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--lv-border);
+  border-radius: var(--lv-radius-sm);
+  background: var(--lv-surface-3);
+  font-family: var(--lv-font-mono);
+  font-size: 10px;
+  color: var(--lv-text-3);
 }
 
 .topbar__clock {
@@ -534,12 +636,25 @@ watch(
   color: var(--lv-text-3);
 }
 
-/* ------------------------------------------------------------------- main */
+/* Hide the palette trigger's label on narrow screens; the shortcut still works
+ * and the icon still opens it. */
+@media (max-width: 900px) {
+  .topbar__search-label,
+  .topbar__search-kbd,
+  .topbar__clock {
+    display: none;
+  }
 
-.layout__main {
-  padding: 0;
-  overflow-y: auto;
-  background: var(--lv-surface-2);
+  .topbar__search {
+    min-width: 0;
+    width: 34px;
+    justify-content: center;
+    padding: 0;
+  }
+}
+
+.page-host {
+  min-height: calc(100% - var(--lv-topbar-height));
 }
 
 /* ----------------------------------------------------------------- motion */

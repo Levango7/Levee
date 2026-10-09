@@ -9,12 +9,15 @@
 // in the mono face, rather than as two wide grey columns whose relationship you
 // have to reconstruct by eye.
 import { onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auditApi } from '@/api'
 import type { TraceEntry } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import HashCell from '@/components/HashCell.vue'
 import { formatTimestamp } from '@/utils/format'
+
+const route = useRoute()
 
 const loading = ref(false)
 const entries = ref<TraceEntry[]>([])
@@ -101,7 +104,13 @@ async function runVerify(): Promise<void> {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  // /audit?verify=1 — the palette's "校验审计哈希链" command lands here and the
+  // verification starts itself; navigating to a page that then needs a second
+  // click is not a command, it is a shortcut to a shortcut.
+  if (route.query.verify) void runVerify()
+})
 </script>
 
 <template>

@@ -58,7 +58,15 @@
 
   --lv-text-1: var(--lv-ink-900);  /* headings, primary content */
   --lv-text-2: var(--lv-ink-600);  /* body */
-  --lv-text-3: var(--lv-ink-500);  /* secondary labels, captions */
+  /* Secondary labels, captions, placeholders.
+   *
+   * Deliberately darker than the ink-500 it used to be: at #6b7684 the label
+   * measured 4.6:1 on pure white, which is inside the 4.5:1 floor but leaves no
+   * room at all — any tinted, blended or glass surface dropped it under. The
+   * palette's own placeholder measured 4.16:1 against its glass panel before
+   * this. #5f6b78 restores headroom without collapsing the hierarchy against
+   * text-2 (which stays at #4b5563, 8.5:1). */
+  --lv-text-3: #5f6b78;
 
   --lv-accent: var(--lv-teal-500);
   --lv-accent-hover: var(--lv-teal-600);
@@ -78,6 +86,41 @@
   --lv-neutral-tone: var(--lv-ink-500);
   --lv-neutral-soft: var(--lv-ink-100);
   --lv-neutral-border: var(--lv-ink-200);
+
+  /* ----------------------------------------------------------------- glass
+   * The material for the CHROME layer only — the sticky top bar, menus,
+   * dialogs, the command palette. Content surfaces (panels, tables) stay
+   * opaque: a backdrop blur behind 12px mono hashes costs text contrast and a
+   * compositing pass per element, and an ops console is read for hours.
+   *
+   * Blur radius is deliberately modest. Measured from the host app (ZCode) and
+   * Cursor, both of which use translucency for floating surfaces at 5–10px;
+   * past ~16px the layer stops reading as glass and starts reading as fog. */
+  --lv-glass-bg: rgba(255, 255, 255, 0.72);
+  /* Text-carrying floating surfaces (menus, dialogs, the palette) run more
+   * opaque than the toolbar. Measured on the light theme: at 0.86 a small
+   * secondary label inside the palette landed at 4.06:1 against its own glass
+   * ground, under the 4.5:1 floor — the panel was dimming the text it carried.
+   * More opacity, not a darker label, because the label already reads fine on
+   * an opaque surface. */
+  --lv-glass-bg-strong: rgba(255, 255, 255, 0.93);
+  --lv-glass-blur: 14px;
+  --lv-glass-saturate: 1.6;
+  --lv-glass-border: rgba(255, 255, 255, 0.6);
+  /* Specular edge: a 1px inner highlight along the top of a surface, which is
+   * what separates "glass" from "flat grey rectangle". */
+  --lv-specular: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  --lv-specular-soft: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+
+  /* Scrim behind dialogs. Slightly stronger than EP's default so a glass
+   * dialog has a settled surface to sit on rather than half-seen content. */
+  --lv-scrim: rgba(11, 16, 22, 0.44);
+
+  /* Ambient tint behind the work area. Glass needs something to pick up: with a
+   * completely flat page background, a blurred toolbar renders identically to
+   * an opaque one. Kept at a few percent so tables stay clean. */
+  --lv-ambient-1: rgba(14, 124, 123, 0.05);
+  --lv-ambient-2: rgba(63, 173, 170, 0.04);
 
   /* Shadows: hairline-first. A console should read as surfaces on a panel,
    * not as floating cards, so the border does the work and the shadow only
@@ -123,7 +166,12 @@
   --lv-space-8: 32px;
   --lv-space-10: 40px;
 
-  /* ----------------------------------------------------------------- shape */
+  /* ----------------------------------------------------------------- shape
+   * Concentric scale (the Liquid Glass geometry rule): a nested radius is the
+   * outer radius MINUS the gap between them, so two rounded shapes sitting
+   * inside each other read as one assembly instead of two unrelated arcs.
+   *   panel 12  ->  element inset 4px  ->  8  ->  chip inset 4px  ->  4
+   * Anything that only needs to be round (dots, pills) uses --lv-radius-full. */
   --lv-radius-sm: 4px;
   --lv-radius: 6px;
   --lv-radius-lg: 8px;
@@ -192,6 +240,15 @@ html.dark {
   --lv-neutral-tone: #9aa5b1;
   --lv-neutral-soft: rgba(154, 165, 177, 0.12);
   --lv-neutral-border: rgba(154, 165, 177, 0.26);
+
+  --lv-scrim: rgba(2, 5, 8, 0.62);
+  --lv-glass-bg: rgba(18, 24, 31, 0.72);
+  --lv-glass-bg-strong: rgba(18, 24, 31, 0.92);
+  --lv-glass-border: rgba(255, 255, 255, 0.09);
+  --lv-specular: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --lv-specular-soft: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --lv-ambient-1: rgba(63, 173, 170, 0.07);
+  --lv-ambient-2: rgba(14, 124, 123, 0.05);
 
   --lv-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
   --lv-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px rgba(0, 0, 0, 0.4);

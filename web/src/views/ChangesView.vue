@@ -16,7 +16,7 @@
 //  * Each KPI is a filter: clicking it narrows the table to that group, which
 //    is what an operator does next after seeing the number.
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi } from '@/api'
 import type { Change, ChangeStatus } from '@/types/levee'
@@ -26,6 +26,7 @@ import MetricCard from '@/components/MetricCard.vue'
 import { formatTimestamp, isRetryableStatus } from '@/utils/format'
 
 const router = useRouter()
+const route = useRoute()
 
 interface FilterState {
   // Multi-valued: the backend accepts a comma-joined status list, and the KPI
@@ -334,6 +335,11 @@ async function bulkArchive(): Promise<void> {
 }
 
 onMounted(() => {
+  // Deep link from the command palette: /changes?q=<name fragment>. Read it into
+  // the filter before the first load so the table arrives already narrowed
+  // instead of flashing the full list and re-querying.
+  const q = route.query.q
+  if (typeof q === 'string' && q) filter.labelContains = q
   void load()
   void loadKpis()
 })
