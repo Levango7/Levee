@@ -15,7 +15,7 @@
 //    15 competing headlines.
 //  * Each KPI is a filter: clicking it narrows the table to that group, which
 //    is what an operator does next after seeing the number.
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi } from '@/api'
@@ -23,7 +23,7 @@ import type { Change, ChangeStatus } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import MetricCard from '@/components/MetricCard.vue'
-import { formatTimestamp, isRetryableStatus } from '@/utils/format'
+import { formatTimestamp, isRemediableStatus, isRetryableStatus } from '@/utils/format'
 
 const router = useRouter()
 const route = useRoute()
@@ -204,6 +204,61 @@ async function retryChange(row: Change): Promise<void> {
     load()
   } catch (err) {
     ElMessage.error(`重试 ${row.label} 失败：${(err as { message?: string })?.message}`)
+  }
+}
+
+// Remediation for the two partial-rollback states (rolled_back_partial /
+// rollback_incomplete): some hosts compensated, some did not, and the work left
+// is to finish the rollback — not to re-drive the forward change (that is 重试).
+//
+// The evidence comes from the endpoint's own dry_run: it answers which hosts
+// WOULD be compensated and which would be skipped, so the dialog can show the
+// chain and the operator is asked one thing ("现在补吗"). Committing re-calls the
+// same endpoint without dry_run; the roadmap records the operation as
+// idempotent, so a repeat is safe.
+//
+// The dialog body is built from VNodes rather than an HTML string: the host
+// names and the server's message are data, and `dangerouslyUseHTMLString`
+// would turn them into markup.
+async function remediateRollback(row: Change): Promise<void> {
+  let preview: Awaited<ReturnType<typeof changesApi.rollback>>
+  try {
+    preview = await changesApi.rollback(row.id, { dryRun: true })
+  } catch (err) {
+    ElMessage.error(`补救预览 ${row.label} 失败：${(err as { message?: string })?.message}`)
+    return
+  }
+  const willFix = preview.rolledBackHosts || []
+  const skipped = preview.skippedHosts || []
+  const stateLabel = STATUS_LABEL_BY_VALUE[row.status] || row.status
+  const note = { style: 'margin: 8px 0 0; color: var(--el-text-color-secondary)' }
+  try {
+    await ElMessageBox.confirm(
+      h('div', [
+        h('p', { style: 'margin: 0' },
+          `变更「${row.label}」（${stateLabel}）的回滚没有走完：${willFix.length} 台待补偿，${skipped.length} 台将跳过。`),
+        h('p', { style: 'margin: 8px 0 0' },
+          willFix.length > 0
+            ? `待补偿：${willFix.join('、')}`
+            : '没有待补偿的主机——继续执行不会改变任何主机。'),
+        skipped.length > 0 ? h('p', { style: 'margin: 8px 0 0' }, `将跳过：${skipped.join('、')}`) : null,
+        preview.message ? h('p', note, preview.message) : null,
+        h('p', note, '补救＝把没走完的回滚补完（幂等，可重复执行）；要重新执行这次变更的前向步骤请用「重试」。'),
+      ]),
+      '补救未完成的回滚',
+      { confirmButtonText: '现在补', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return // cancelled
+  }
+  try {
+    const res = await changesApi.rollback(row.id, {})
+    ElMessage.success(
+      `补救已提交：补偿 ${res.rolledBackHosts?.length ?? 0} 台，回滚 run ${res.rollbackRunId || '—'}`,
+    )
+    load()
+  } catch (err) {
+    ElMessage.error(`补救 ${row.label} 失败：${(err as { message?: string })?.message}`)
   }
 }
 
@@ -449,7 +504,7 @@ onMounted(() => {
             <StatusTag :status="row.status" variant="plain" />
           </template>
         </el-table-column>
-        <el-table-column label="范围" width="200">
+        <el-table-column label="范围" width="176">
           <template #default="{ row }">
             <div class="cell-scope">
               <span v-if="row.environment" class="cell-chip">{{ row.environment }}</span>
@@ -467,10 +522,16 @@ onMounted(() => {
             <span class="lv-mono cell-time">{{ formatTimestamp(row.createdAt) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="176" fixed="right">
+        <el-table-column label="操作" width="204" fixed="right" class-name="cell-actions">
           <template #default="{ row }">
             <el-button text type="primary" @click.stop="router.push(`/monitor/${row.id}`)">监控</el-button>
             <el-button text type="primary" @click.stop="viewDetail(row)">详情</el-button>
+            <el-button
+              v-if="isRemediableStatus(row.status)"
+              text
+              type="danger"
+              @click.stop="remediateRollback(row)"
+            >补救</el-button>
             <el-button
               v-if="isRetryableStatus(row.status)"
               text
@@ -693,4 +754,20 @@ html.dark .dist__seg--archived {
   padding: var(--lv-space-3) var(--lv-space-4);
   border-top: 1px solid var(--lv-border-soft);
 }
+
+/* The action cell holds up to four text buttons (监控/详情/补救/重试). Element
+   Plus spaces siblings by 12px; at that gap four buttons plus cell padding
+   exceed the column, and the columns' declared widths then sum past the table
+   (fixed layout clips the last one — measured 1184 declared vs 1142 available).
+   The flex gap owns the spacing so the column stays inside the container. */
+:deep(.cell-actions .cell) {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+:deep(.cell-actions .el-button + .el-button) {
+  margin-left: 0;
+}
+
 </style>

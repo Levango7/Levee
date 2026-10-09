@@ -14,6 +14,7 @@ import {
   formatDuration,
   formatTimestamp,
   formatUptime,
+  isRemediableStatus,
   isRetryableStatus,
 } from './format'
 
@@ -128,5 +129,32 @@ describe('isRetryableStatus', () => {
     for (const s of others) {
       expect(isRetryableStatus(s as ChangeStatus)).toBe(false)
     }
+  })
+})
+
+describe('isRemediableStatus', () => {
+  // The two partial-rollback verdicts: the outstanding work there is to finish
+  // compensating, which is POST /changes/{id}/rollback — NOT the retry path.
+  it('admits exactly the two partial-rollback verdicts', () => {
+    expect(isRemediableStatus('rolled_back_partial')).toBe(true)
+    expect(isRemediableStatus('rollback_incomplete')).toBe(true)
+  })
+
+  it('refuses every other status, including the retryable ones', () => {
+    // `rolled_back` is a complete rollback and `failed` never started one: for
+    // both, "补救" would be a button that cannot do anything, and the retry
+    // entry point is the right one. Guarded as a complement so a new status
+    // must explicitly join the set rather than default into it.
+    const remediable = ['rolled_back_partial', 'rollback_incomplete']
+    const others = Object.keys(STATUS_LABEL).filter((s) => !remediable.includes(s))
+    expect(others.length).toBeGreaterThan(5)
+    for (const s of others) {
+      expect(isRemediableStatus(s as ChangeStatus)).toBe(false)
+    }
+    // The two sets overlap on the partial verdicts by design (you may either
+    // finish the rollback or re-drive the change), and that overlap is the
+    // reason the UI offers two buttons instead of one.
+    expect(isRetryableStatus('rolled_back_partial')).toBe(true)
+    expect(isRetryableStatus('rollback_incomplete')).toBe(true)
   })
 })
