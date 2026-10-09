@@ -68,6 +68,12 @@ func authorizeResource(ctx context.Context, a *authz.Authorizer, env, action, rp
 	if d.Allowed {
 		return nil
 	}
+	// Refusals are persisted before they are returned (SA-007): a refusal that
+	// only exists in the client's error message is unauditable — the client can
+	// drop it, and a caller that logs nothing leaves no trace that we said no.
+	// Recorded here, at the request-level gate, and not inside Decide (see
+	// Authorizer.RecordDenial for why).
+	a.RecordDenial(ctx, d)
 	if d.Subject == "" {
 		return status.Errorf(codes.Unauthenticated,
 			"%s requires an identity the policy can judge: %s", rpc, d.Reason)
@@ -91,8 +97,10 @@ func authorizeResourceRead(ctx context.Context, a *authz.Authorizer, env, rpc st
 	// Decide is called again for the message only: it is the function that
 	// applies the default-env fallback, and an operator reading "env \"\"" out
 	// of a refusal would go looking for an empty environment instead of the
-	// default one that was actually judged.
+	// default one that was actually judged. RecordDenial reuses that same
+	// decision, so the audited environment is the one that was judged too.
 	d := a.Decide(subject, env, permission.ActionView)
+	a.RecordDenial(ctx, d)
 	return status.Errorf(codes.PermissionDenied,
 		"%s denied for subject %q on env %q action %q: %s (see `levee authz explain --subject %s --env %s --action %s`)",
 		rpc, subject, d.Env, permission.ActionView, reason, subject, d.Env, permission.ActionView)
@@ -120,6 +128,13 @@ func countVisibleRuns(runs []*state.Run, visible func(env string) bool) int {
 // the list counterpart of authorizeResourceRead, and the "is filtering active
 // at all" rule lives in one place because a list that filters when it cannot
 // change the answer is just a slower list.
+//
+// The predicate does NOT record refusals (SA-007), deliberately: it runs once
+// per row, and it answers "may this caller see this environment" rather than
+// "is this request refused". Recording here would write one denial row per
+// hidden row of a list — a page of 200 changes would bury the audit chain in
+// 200 rows for one question. Refusals that turn a request away are recorded by
+// the two gates above, one row per refused request.
 func resourceVisibility(ctx context.Context, a *authz.Authorizer) func(env string) bool {
 	if a == nil {
 		return nil

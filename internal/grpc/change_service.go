@@ -240,8 +240,14 @@ func runToPB(r *state.Run) *pb.Change {
 		_ = json.Unmarshal([]byte(r.Params), &params)
 	}
 	return &pb.Change{
-		Id:           r.ID,
-		Label:        r.WorkflowName, // map workflow_name to label for now
+		Id: r.ID,
+		// Label is the display name, not the source. WorkflowName's contract is
+		// the workflow SOURCE — for a template-instantiated run that is the
+		// rendered document — so mapping it straight onto the label put a YAML
+		// blob where the board prints a change's name. WorkflowFile below still
+		// carries the source verbatim; the name comes from dsl.DisplayName,
+		// which is also what the CLI prints.
+		Label:        dsl.DisplayName(r.WorkflowName),
 		Status:       r.Status,
 		Priority:     r.ApprovalLevel,
 		WorkflowFile: r.WorkflowName,

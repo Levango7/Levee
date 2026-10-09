@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/calendar"
@@ -1196,6 +1197,14 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	if err != nil {
 		return serveServices{}, fmt.Errorf("load authorization policy: %w", err)
 	}
+	// SA-007: a refusal is persisted, not only returned. Without this the
+	// authorizer still refuses correctly — and the refusal exists nowhere but
+	// in the client's error message, which the client may simply drop. Same
+	// recorder the bulk pause checker above installs, so both paths write the
+	// same audit row; installed here because this is the one place the serving
+	// process builds the authorizer (cmd/levee/serve_authz_recorder_test.go
+	// pins that this line stays next to the Load call).
+	authzSvc = authzSvc.WithDenialRecorder(audit.NewDenialRecorder(store))
 	changeSvc.WithAuthorizer(authzSvc)
 	if authzSvc.Enforced() {
 		log.Info("authorization enabled: change and fleet RPCs enforce the permission matrix",
@@ -1439,23 +1448,29 @@ type serveCredentialResolver struct {
 
 // ResolveTargetCredential implements grpc.CredentialResolver.
 func (r *serveCredentialResolver) ResolveTargetCredential(ctx context.Context, ref string) (*channel.CredentialRef, error) {
-	plaintext, err := r.store.Retrieve(ctx, ref)
+	// The callback form owns the plaintext's lifetime (SA-011): the buffer is
+	// wiped when this closure returns, by RetrieveInto itself, instead of by a
+	// defer in this function that a later edit could drop or reorder.
+	var out *channel.CredentialRef
+	err := r.store.RetrieveInto(ctx, ref, func(plaintext []byte) error {
+		var cred channel.CredentialRef
+		if err := json.Unmarshal(plaintext, &cred); err == nil && (cred.Username != "" || cred.Password != "" || cred.KeyPath != "" || cred.KeyPassphrase != "") {
+			out = &cred
+			return nil
+		}
+		// SA-011 known residue: channel.CredentialRef.Password is a string, and
+		// Go strings cannot be zeroed, so this conversion leaves one copy of the
+		// secret behind for the bare-password convention. Erasing it requires
+		// changing CredentialRef to []byte across ssh/winrm/grpc, which was
+		// scoped out of the hardening round by design; tracked as a known
+		// residual in the SA-011 ledger row, not as a fixed issue.
+		out = &channel.CredentialRef{Password: string(plaintext)}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer credential.SecureZero(plaintext)
-
-	var cred channel.CredentialRef
-	if err := json.Unmarshal(plaintext, &cred); err == nil && (cred.Username != "" || cred.Password != "" || cred.KeyPath != "" || cred.KeyPassphrase != "") {
-		return &cred, nil
-	}
-	// SA-011 known residue: channel.CredentialRef.Password is a string, and
-	// Go strings cannot be zeroed, so this conversion leaves one copy of the
-	// secret behind for the bare-password convention. Erasing it requires
-	// changing CredentialRef to []byte across ssh/winrm/grpc, which was
-	// scoped out of the hardening round by design; tracked as a known
-	// residual in the SA-011 ledger row, not as a fixed issue.
-	return &channel.CredentialRef{Password: string(plaintext)}, nil
+	return out, nil
 }
 
 // loadTLSConfig reads the cert/key pair and returns a *tls.Config suitable for

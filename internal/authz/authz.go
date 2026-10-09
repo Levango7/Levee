@@ -39,6 +39,7 @@
 package authz
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -86,6 +87,60 @@ type Authorizer struct {
 	roles      *permission.RoleTree
 	policies   *permission.PolicySet
 	defaultEnv string
+
+	// denialRecorder, when non-nil, persists refusals (SA-007). It is injected
+	// by the host rather than built here: this package owns the decision and
+	// not the audit log. Install it at construction time, before the authorizer
+	// is shared across goroutines — the field is not synchronised.
+	denialRecorder func(ctx context.Context, actor, action, env string)
+}
+
+// UnattributableActor is the actor an audit row carries when the refused
+// subject had no identity at all (an identity-less write is refused outright).
+// An empty actor would read like a system action, which is the opposite of
+// what happened.
+const UnattributableActor = "<unattributable>"
+
+// WithDenialRecorder installs the callback that persists refusals (SA-007).
+// The recorder is handed (actor, action, env) — the authorizer knows what was
+// asked and who asked, and the row shape belongs to the audit layer. A nil fn
+// clears any previously installed recorder.
+//
+// The receiver is returned to support builder-style chaining:
+//
+//	a, _ := authz.Load(dataDir, env)
+//	a = a.WithDenialRecorder(audit.NewDenialRecorder(store))
+func (a *Authorizer) WithDenialRecorder(fn func(ctx context.Context, actor, action, env string)) *Authorizer {
+	if a == nil {
+		return a
+	}
+	a.denialRecorder = fn
+	return a
+}
+
+// RecordDenial persists a refusal the caller is about to return. It is a no-op
+// when no recorder is installed, when the decision was an allow, or on a nil
+// receiver.
+//
+// The transport gates call this, deliberately NOT Decide:
+//
+//   - Decide is called speculatively. The read gate calls it a second time just
+//     to render the resolved environment in its error message.
+//   - Decide is called per row. resourceVisibility asks it once per environment
+//     while filtering a list.
+//
+// Recording inside Decide would therefore double-log one refusal and would
+// write one row per hidden row of a list — the opposite of an audit trail
+// somebody can read.
+func (a *Authorizer) RecordDenial(ctx context.Context, d Decision) {
+	if a == nil || a.denialRecorder == nil || d.Allowed {
+		return
+	}
+	actor := d.Subject
+	if actor == "" {
+		actor = UnattributableActor
+	}
+	a.denialRecorder(ctx, actor, d.Action, d.Env)
 }
 
 // FileName is the permission matrix file within the LEVEE data directory.

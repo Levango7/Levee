@@ -56,17 +56,20 @@ const (
 // TargetAll is the audit Target wildcard used for global summary entries.
 const TargetAll = "*"
 
-// Audit result constants recorded in state.Audit.Result.
+// Audit vocabulary recorded in state.Audit. internal/audit owns the two
+// spellings this package shares with the service-layer gate (see its
+// denial.go); they are aliased rather than repeated so a `pause --force`
+// refusal and an RPC refusal cannot drift into two names for one fact.
 const (
 	ResultSuccess = "success"
 	ResultFailed  = "failed"
-	ResultDenied  = "denied"
+	ResultDenied  = audit.ResultDenied
 )
 
 // ActionPermissionDenied is the audit action recorded when a global
 // pause/resume request is rejected by the PermissionChecker (SA-007).
 // The rejected permission name is stored in the audit Target.
-const ActionPermissionDenied = "permission.denied"
+const ActionPermissionDenied = audit.ActionPermissionDenied
 
 // Permission strings consumed by PauseAll / ResumeAll and checked via
 // PermissionChecker.HasPermission.
@@ -177,36 +180,22 @@ func (c *SimplePermissionChecker) HasPermission(actor, permission string) bool {
 }
 
 // NewDenialAuditRecorder returns a denial recorder for
-// SimplePermissionChecker.SetDenyRecorder that persists every rejection as
-// a row in the audit table (SA-007): Action="permission.denied",
+// SimplePermissionChecker.SetDenyRecorder that persists every rejection as a
+// row in the audit table (SA-007): Action="permission.denied",
 // Result="denied", Actor=<rejected subject>, Target=<rejected permission>,
-// RunID="" (the audit table has run_id DEFAULT ” with NO foreign key, so
+// RunID="" (the audit table has run_id DEFAULT '' with NO foreign key, so
 // rejections that happen BEFORE any run is picked — the only place the CLI
 // pause path enforces permissions — can still be recorded).
 //
-// Write failures (including ID minting failures) are logged and swallowed:
-// the denial itself is the security decision and must not depend on the
-// observability path.
+// The row shape itself now lives in internal/audit's NewDenialRecorder, which
+// the service-layer gate (internal/authz) also uses; this wrapper only adapts
+// the checker's two-argument callback to it. Write failures (including ID
+// minting failures) are logged and swallowed there: the denial is the security
+// decision and must not depend on the observability path.
 func NewDenialAuditRecorder(store state.Store) func(actor, permission string) {
+	record := audit.NewDenialRecorder(store)
 	return func(actor, permission string) {
-		id, err := newID()
-		if err != nil {
-			log.Warn("pause: permission-denied audit id generation failed; entry skipped",
-				"actor", actor, "permission", permission, "err", err)
-			return
-		}
-		entry := &state.Audit{
-			ID:        id,
-			Action:    ActionPermissionDenied,
-			Actor:     actor,
-			Target:    permission,
-			Result:    ResultDenied,
-			Timestamp: time.Now().UTC(),
-		}
-		if err := audit.Record(context.Background(), store, entry); err != nil {
-			log.Warn("pause: permission-denied audit write failed",
-				"actor", actor, "permission", permission, "err", err)
-		}
+		record(context.Background(), actor, permission, "")
 	}
 }
 

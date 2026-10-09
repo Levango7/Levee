@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
@@ -27,16 +26,13 @@ import (
 // cell can show. The workflow's own declared name is the honest rendering.
 // Anything that does not parse (a path, or a corrupt document the operator
 // still has to recognise) is returned exactly as stored, never guessed at.
+//
+// The implementation moved to dsl.DisplayName when the gRPC change board
+// needed the same rendering (it was mapping the raw source onto Change.Label):
+// one implementation, two callers, because two would eventually disagree about
+// what a run is called.
 func workflowDisplay(src string) string {
-	src = strings.TrimSpace(src)
-	if src == "" || !strings.ContainsAny(src, "\n\r") {
-		return src
-	}
-	wf, err := dsl.NewParser().ParseBytes([]byte(src))
-	if err != nil || wf == nil || wf.Meta.Name == "" {
-		return src
-	}
-	return wf.Meta.Name
+	return dsl.DisplayName(src)
 }
 
 // applySecurityConfig propagates security-related configuration into the
