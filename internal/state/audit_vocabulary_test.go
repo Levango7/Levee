@@ -28,9 +28,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nexus/levee/internal/runstatus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/runstatus"
 )
 
 // auditColumnComment returns the single-line inline comment on `column` inside

@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // captureLogger points the process-wide logger at a buffer for the duration of
