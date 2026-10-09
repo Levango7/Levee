@@ -16,7 +16,26 @@ build:
 # Build the Web UI (npm ci + vite build) and refresh internal/web/dist so the
 # Go binary embeds the real assets. The dist/ contents are committed (there is
 # no .gitignore under it); this target mirrors web/dist over them.
+#
+# The CRLF pre-check is not cosmetic. @vitejs/plugin-vue hashes the SOURCE BYTES
+# into each component's scoped-style id (data-v-<hash>), so a CRLF working copy
+# of a .vue/.ts file produces different chunk hashes than CI's LF checkout, and
+# the CI frontend job rebuilds and requires the committed bundle to match byte
+# for byte. Measured 2026-10-10: CRLF -> ChangesView-h12LhjpQ.js, LF ->
+# ChangesView-Du5DbgNu.js for the same file. .gitattributes pins these types to
+# LF at the boundary, but a file written by an editor or tool can still be CRLF
+# in the working tree. The failure has no local symptom: a rebuild from the same
+# CRLF tree matches itself, so `diff -r web/dist internal/web/dist` is clean
+# while the pushed artifacts are stale. Refuse up front, with the one-shot fix.
 web:
+	@crlf=$$(find web/src -type f \( -name '*.ts' -o -name '*.vue' -o -name '*.css' \) \
+		-exec grep -lU "$$(printf '')" {} + 2>/dev/null); \
+	if [ -n "$$crlf" ]; then \
+		echo "error: web/src has CRLF files, so the bundle would not match CI's LF build:"; \
+		echo "$$crlf"; \
+		echo "hint: git -c core.autocrlf=false checkout -- web/src   (or set core.autocrlf=false for this repo)"; \
+		exit 1; \
+	fi
 	cd web && npm ci && npm run build
 	find internal/web/dist -mindepth 1 ! -name '.gitignore' -exec rm -rf {} +
 	cp -r web/dist/. internal/web/dist/

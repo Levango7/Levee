@@ -51,6 +51,15 @@
 - **顺带修掉一个自己引入又量出来的布局缺陷**：操作列从 3 个按钮（176px）涨到 4 个（232px）后，各列声明宽度之和 1184 > 表格可用 1142，固定列把「创建时间」压掉 14px（截图可见 `…05:04:44监控` 贴在一起）。改法不是继续加宽：操作格改 flex + 6px gap（Element 给同辈按钮的默认间距是 12px），列宽 204，并把「范围」200 → 176——实测声明宽度之和正好 1142，时间戳到首个按钮 22px、末个按钮距表右边 12px、无文本截断（1440 / 1920 两档实测）。
 - 验证：`npm run test` **125 例全绿（14 文件）**、`vue-tsc` 干净、`vite build` 产物已刷进 `internal/web/dist`（CI 要求逐字节最新）；真机走查（本仓 dev server + 无头 Chrome，API 在请求层打桩）四行四种状态：部分回滚/回滚未完成 = 监控·详情·**补救**·重试，失败 = 监控·详情·重试，已完成 = 监控·详情；对话框正文、请求顺序（先 `{"dryRun":true}`，确认后 `{}`）与成功提示均实测。变异六条逐一变红：去掉 `isRemediableStatus` 门禁 / 去掉 dry_run 预览 / 正文改用 HTML 字符串 / 打开 `dangerouslyUseHTMLString` / 删掉按钮 / 丢掉 helper import。
 
+### 门禁（`make web` 拒绝从 CRLF 工作副本构建：那份产物 CI 永远判 stale）
+
+- **现象与根因（已实测到 commit 级证据）**：`internal/web/dist` 的新鲜度门禁在 CI 上用 **LF** 工作树重建后逐字节比对，而 **@vitejs/plugin-vue 把源码字节算进每个组件的 scoped 样式 id（`data-v-<hash>`）** ⇒ 同一个 `ChangesView.vue`，**CRLF 构建出 `ChangesView-h12LhjpQ.js`，LF 构建出 `ChangesView-Du5DbgNu.js`**（本会话两次真实构建的输出）。**本地没有任何症状**：同一棵 CRLF 树连建两次完全一致、`diff -r web/dist internal/web/dist` 干净——推上去必红（`frontend` 作业报 `internal/web/dist is stale against web/`，而逐个文件**尺寸相同**，差异只在 `data-v-` id 与随之级联的 chunk 名）。
+- **`.gitattributes` 挡不住它**：仓库早已把 `*.ts/*.vue/*.css/*.svg` 钉成 `eol=lf`（那份注释还专门写了"否则 vite 产物与 CI 不同"），但那只在 **git 边界**（checkout/add）生效——**编辑器/脚本写进工作副本的 CRLF 它管不到**。（本会话就是被自己用 Python 写出的 CRLF 反咬一口。）
+- **修法**：① `make web`（CI 报错原文指向的入口）在构建前扫 `web/src`，命中 CRLF 就**拒绝构建**、打印文件清单与一次性修复命令（`git -c core.autocrlf=false checkout -- web/src`）；② 顺手把 `Makefile` 也钉成 `eol=lf`——它此前只有 `text=auto`，会随 `core.autocrlf` 在工作树/索引之间来回转，一笔 12 行的改动因此变成整文件 diff（本 PR 自己就中了一次）。
+- **为什么不直接全仓改检出行尾**：`.gitattributes` 已按类型逐条钉过，扩大范围会让每个克隆、每个并行会话的工作副本整体换行尾，而本仓有并行会话在跑；在入口拦是同样保护下更小的爆炸半径。
+- 验证：LF 树 `make -n web` 解析通过、守卫放行；**注入一个 CRLF 文件后守卫指名报出并以 1 退出**；改动后的 `Makefile` 与 master 的差异只剩 **+19 行**（不再整文件 churn），工作副本与索引均为 LF。
+
+
 ### 门禁（重试上限终于由服务端强制；顺带修好每主机计数器的截断）
 
 - **重试上限此前只在 CLI 里存在**。`docs/levee-api.md` 写着"重试次数有上限（默认 3），超限升级人工"，但那个上限是 `cmd/levee` 的私有逻辑：`RetryChange` / `RetryHost` 两个 RPC **完全不检查**，所以经控制台/API 可以无限重试——文档承诺的封顶在服务端不存在。（上一批修的是"API 写的行 CLI 数不到"，这一批修的是"API 根本不数"。）

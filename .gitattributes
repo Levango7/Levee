@@ -18,6 +18,10 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.proto text eol=lf
+# The Makefile builds the artifacts the gates compare byte for byte;
+# leaving it to text=auto round-trips it through core.autocrlf, and a CRLF
+# blob turns a 12-line change into a whole-file diff.
+Makefile text eol=lf
 *.json text eol=lf
 *.ts text eol=lf
 *.vue text eol=lf
