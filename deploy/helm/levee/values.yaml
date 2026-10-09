@@ -25,7 +25,7 @@ image:
   # 写成 "1.20.0" 会渲染出一个不存在的镜像，`helm install` 直接
   # ImagePullBackOff；这一条由 scripts/check_release_versions.py 规则 2 钉住。
   # 现场无法拉 ghcr 时改推送到客户镜像库后覆盖此值。
-  tag: "v1.20.0"
+  tag: "v1.21.0"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 

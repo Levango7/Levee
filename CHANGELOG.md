@@ -6,7 +6,7 @@
 
 ## [v1.21.0] - 2026-10-09
 
-> **发布状态：未切版。** 本节共 **12** 个小节，三条主线：七批词表/判据收口（批次、分配、会话、系统页的中文标签与 owning 常量，每处都补了从常量源解析的守卫）、控制台重做与"玻璃只上 chrome"+ 命令面板、以及三处**门禁级**缺陷（CHANGELOG 结构守卫抓到自己登记的那类损坏；`release-gate` 的 `unittest | tee` 在 `bash -e` 下吞掉一切断言失败；`govulncheck` 被 `go` 指令挡住），另收口 SA-007/SA-011 与看板变更名。**切版顺序按既有约束**：这一笔只折叠 CHANGELOG 与 release notes，chart 的 `appVersion` / `values.image.tag` 继续指向上一个真实发布（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升）；tag `v1.21.0` 推送并确认 `release.yml` 发布后，再随下一笔把它们升到 `1.21.0` / 逐字 `v1.21.0`。release notes 见 [`docs/release-notes/v1.21.0.md`](docs/release-notes/v1.21.0.md)。
+> **发布状态：已切版。** 附注 tag `v1.21.0`（tag 对象 `b28bbd0f`，指向合并提交 `fcac5dd3`）于 2026-10-09 推送，`release.yml` 三段（CI gate / goreleaser / container image）全部 success：GitHub Release `draft=false`、`publishedAt=2026-10-09T03:50:51Z`，资产 7 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.21.0` 按外部事实核过——`manifests/v1.21.0` 返回 **200**，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0, v1.21.0]`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.21.0` / 逐字 `v1.21.0`（顺序不能反：规则②要求它逐字出现在 tag 集合里）。 本节共 **12** 个小节，三条主线：七批词表/判据收口（批次、分配、会话、系统页的中文标签与 owning 常量，每处都补了从常量源解析的守卫）、控制台重做与"玻璃只上 chrome"+ 命令面板、以及三处**门禁级**缺陷（CHANGELOG 结构守卫抓到自己登记的那类损坏；`release-gate` 的 `unittest | tee` 在 `bash -e` 下吞掉一切断言失败；`govulncheck` 被 `go` 指令挡住），另收口 SA-007/SA-011 与看板变更名。**切版顺序按既有约束**：这一笔只折叠 CHANGELOG 与 release notes，chart 的 `appVersion` / `values.image.tag` 继续指向上一个真实发布（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升）；tag `v1.21.0` 推送并确认 `release.yml` 发布后，再随下一笔把它们升到 `1.21.0` / 逐字 `v1.21.0`。release notes 见 [`docs/release-notes/v1.21.0.md`](docs/release-notes/v1.21.0.md)。
 
 ### 修复（批次状态在中文页面上渲染的是线上原值；/cluster 与 /monitor 各自一套词表）
 
