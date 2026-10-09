@@ -11,11 +11,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/retrybudget"
 	"github.com/nexus/levee/internal/state"
 )
 
-// maxRetryAttempts is the maximum number of retries allowed per run or per host.
-const maxRetryAttempts = 3
+// maxRetryAttempts is the cap, owned by internal/retrybudget: the RPCs the
+// console calls enforce the same number, and a second copy here would be a
+// second answer to "how many retries are allowed".
+const maxRetryAttempts = retrybudget.MaxAttempts
 
 // retryHostOptHost holds the value of the <host> positional arg for retry-host.
 var retryHostOptHost string
@@ -237,39 +240,16 @@ func isRetryableStatus(status string) bool {
 	return status == "failed" || status == "paused"
 }
 
-// countRetries counts the number of retry audit entries for a given run.
+// countRetries and countHostRetries delegate to internal/retrybudget, which
+// the serving path's RetryChange/RetryHost also use. They are kept as names
+// because the CLI's call sites and tests read better with them, but they add
+// no logic — the shared package owns both the cap and the counting.
 func countRetries(ctx context.Context, store state.Store, runID string) (int, error) {
-	audits, err := store.ListAudits(ctx, state.AuditFilter{
-		RunID:  runID,
-		Action: state.AuditActionRetry,
-		Limit:  maxRetryAttempts + 1,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("list audits: %w", err)
-	}
-	return len(audits), nil
+	return retrybudget.RunUsage(ctx, store, runID)
 }
 
-// countHostRetries counts the number of retry_host audit entries for a given
-// run and host combination.
 func countHostRetries(ctx context.Context, store state.Store, runID, host string) (int, error) {
-	audits, err := store.ListAudits(ctx, state.AuditFilter{
-		RunID:  runID,
-		Action: state.AuditActionRetryHost,
-		Limit:  maxRetryAttempts + 1,
-	})
-	if err != nil {
-		return 0, fmt.Errorf("list audits: %w", err)
-	}
-	// Filter by host in the Target field.
-	target := state.AuditTargetHost(runID, host)
-	count := 0
-	for _, a := range audits {
-		if a.Target == target {
-			count++
-		}
-	}
-	return count, nil
+	return retrybudget.HostUsage(ctx, store, runID, host)
 }
 
 // newRetryAuditID generates a unique audit identifier for retry actions.
