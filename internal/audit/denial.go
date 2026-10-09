@@ -21,13 +21,13 @@ const (
 	// permission.EventPermissionDenied (the trace-table event): both are read
 	// by the same person looking for the same thing, and two spellings for it
 	// would be a search that silently misses rows.
-	ActionPermissionDenied = "permission.denied"
+	ActionPermissionDenied = state.AuditActionPermissionDenied
 
 	// ResultDenied is the state.Audit.Result for a refusal. It is distinct
 	// from ResultFailed on purpose: "understood and refused" is a different
 	// fact from "attempted and failed", and only one of them is a security
 	// event.
-	ResultDenied = "denied"
+	ResultDenied = state.AuditResultDenied
 )
 
 // DenialTarget renders the refused permission the way the audit Target column

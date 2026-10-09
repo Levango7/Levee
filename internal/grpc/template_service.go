@@ -398,14 +398,14 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 	} else if err := audit.Record(ctx, s.store, &state.Audit{
 		ID:        audID,
 		RunID:     run.ID,
-		Action:    "create",
+		Action:    state.AuditActionCreate,
 		Actor:     creator,
 		Target:    req.TemplateName,
 		Result:    run.Status,
 		Timestamp: now,
 	}); err != nil {
 		log.Warn("audit write failed",
-			"run_id", run.ID, "action", "create", "template", req.TemplateName, "error", err)
+			"run_id", run.ID, "action", state.AuditActionCreate, "template", req.TemplateName, "error", err)
 	}
 
 	return &pb.Change{

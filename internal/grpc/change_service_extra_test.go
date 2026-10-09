@@ -819,7 +819,7 @@ func TestRetryHost(t *testing.T) {
 		assert.Equal(t, codes.NotFound, status.Code(err))
 	})
 
-	t.Run("records audit without changing status", func(t *testing.T) {
+	t.Run("records one audit row per host, in the shape the retry budget reads", func(t *testing.T) {
 		svc, store := newTestChangeService(t)
 		created, err := svc.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "host-retry"})
 		require.NoError(t, err)
@@ -832,16 +832,24 @@ func TestRetryHost(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "failed", resp.GetStatus(), "overall status must not change")
 
-		audits, err := store.ListAudits(context.Background(), state.AuditFilter{RunID: created.GetId()})
+		// The shape asserted here IS the contract with cmd/levee's retry budget:
+		// countHostRetries counts rows by this action and matches this Target.
+		// This path used to write one row with Action "retry-host" and a
+		// comma-joined host list, which the budget could not see at all — so a
+		// retry triggered through the API did not consume the documented cap.
+		targets := map[string]bool{}
+		audits, err := store.ListAudits(context.Background(), state.AuditFilter{
+			RunID:  created.GetId(),
+			Action: state.AuditActionRetryHost,
+		})
 		require.NoError(t, err)
-		found := false
 		for _, a := range audits {
-			if a.Action == "retry-host" {
-				found = true
-				assert.Equal(t, "h1,h2", a.Target)
-			}
+			targets[a.Target] = true
 		}
-		assert.True(t, found, "expected a retry-host audit entry")
+		assert.Equal(t, map[string]bool{
+			state.AuditTargetHost(created.GetId(), "h1"): true,
+			state.AuditTargetHost(created.GetId(), "h2"): true,
+		}, targets, "one row per host, each matching the budget's Target shape")
 	})
 
 	t.Run("delegates to engine with host subset", func(t *testing.T) {

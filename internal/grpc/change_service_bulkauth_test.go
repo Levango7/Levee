@@ -121,7 +121,7 @@ func TestBulkTransitionOverNamedTokenIgnoresForgedActor(t *testing.T) {
 	// point is therefore about attribution, not admission.
 	require.NoError(t, err)
 
-	audits, aerr := store.ListAudits(context.Background(), state.AuditFilter{Action: "pause-all"})
+	audits, aerr := store.ListAudits(context.Background(), state.AuditFilter{Action: state.AuditActionPauseAll})
 	require.NoError(t, aerr)
 	require.NotEmpty(t, audits)
 	assert.Equal(t, "alice", audits[0].Actor,

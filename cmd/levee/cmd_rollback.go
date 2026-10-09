@@ -92,10 +92,10 @@ func runRollback(cmd *cobra.Command, args []string) error {
 	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     rollbackOptRunID,
-		Action:    "rollback",
+		Action:    state.AuditActionRollback,
 		Actor:     actor,
 		Target:    rollbackOptRunID,
-		Result:    "triggered",
+		Result:    state.AuditResultTriggered,
 		Timestamp: now,
 	}
 	if err := audit.Record(ctx, store, entry); err != nil {

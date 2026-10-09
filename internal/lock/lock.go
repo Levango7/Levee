@@ -579,10 +579,10 @@ func (m *LockManager) recordAudit(ctx context.Context, target, oldOwner, newOwne
 	entry := &state.Audit{
 		ID:        id,
 		RunID:     newOwner,
-		Action:    "lock",
+		Action:    state.AuditActionLock,
 		Actor:     newOwner,
 		Target:    target,
-		Result:    "success",
+		Result:    state.AuditResultSuccess,
 		Timestamp: time.Now().UTC(),
 	}
 	if err := audit.Record(ctx, m.state, entry); err != nil {

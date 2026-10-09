@@ -216,10 +216,10 @@ CREATE INDEX IF NOT EXISTS idx_credentials_tenant ON credentials (tenant_id);
 CREATE TABLE IF NOT EXISTS audit (
     id         TEXT    PRIMARY KEY,
     run_id     TEXT    NOT NULL DEFAULT '',
-    action     TEXT    NOT NULL,                     -- plan|apply|verify|rollback|approval|lock|credential|archive|login|config
+    action     TEXT    NOT NULL,                     -- create|clone|approve|reject|cancel|retry|retry_host|rollback|archive|lock|gate_verify|approval_kickoff|pause_all|resume_all|permission.denied
     actor      TEXT    NOT NULL,
     target     TEXT    NOT NULL DEFAULT '',
-    result     TEXT    NOT NULL,                     -- success|failure|denied|error
+    result     TEXT    NOT NULL,                     -- success|failed|passed|denied|triggered, OR the run status the action moved the run to (draft|pending|planned|approved|rejected|running|paused|completed|failed|cancelled|rolled_back|rolled_back_partial|rollback_incomplete|archived|interrupted); approval_kickoff records the derived tier, and an unsettled quorum records the prose outcome "recorded; quorum pending"
     timestamp  TIMESTAMPTZ NOT NULL,
     tenant_id  TEXT    NOT NULL DEFAULT '',          -- v6: owning tenant (NOT derivable — run_id may be ''); declared last, see the note on trace.tenant_id
     -- v7: the chain. GLOBAL, not per-run like trace: an audit row with an

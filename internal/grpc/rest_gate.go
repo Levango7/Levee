@@ -196,9 +196,9 @@ func (s *GateService) Verify(ctx context.Context, req *GateVerifyRequest) (*Gate
 		if target == "" {
 			target = "-"
 		}
-		outcome := "failed"
+		outcome := state.AuditResultFailed
 		if resp.Passed {
-			outcome = "passed"
+			outcome = state.AuditResultPassed
 		}
 		msg := resp.Message
 		if len(msg) > 200 {
@@ -207,7 +207,7 @@ func (s *GateService) Verify(ctx context.Context, req *GateVerifyRequest) (*Gate
 		_ = audit.Record(ctx, s.store, &state.Audit{
 			ID:        newID("aud-"),
 			RunID:     req.RunID,
-			Action:    "gate_verify",
+			Action:    state.AuditActionGateVerify,
 			Actor:     actor,
 			Target:    target,
 			Result:    outcome + ": " + msg,

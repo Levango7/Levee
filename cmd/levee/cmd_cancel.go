@@ -86,10 +86,10 @@ func runCancel(cmd *cobra.Command, args []string) error {
 	entry := &state.Audit{
 		ID:        auditID,
 		RunID:     cancelOptRunID,
-		Action:    "cancel",
+		Action:    state.AuditActionCancel,
 		Actor:     actor,
 		Target:    cancelOptRunID,
-		Result:    "success",
+		Result:    state.AuditResultSuccess,
 		Timestamp: now,
 	}
 	if err := audit.Record(ctx, store, entry); err != nil {

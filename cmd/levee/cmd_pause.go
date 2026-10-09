@@ -199,7 +199,7 @@ func runPauseAll(cmd *cobra.Command, args []string) error {
 
 	// 4. Output the result.
 	output := map[string]any{
-		"action":   "pause_all",
+		"action":   pause.ActionPauseAll,
 		"actor":    actor,
 		"reason":   pauseAllOptReason,
 		"affected": result.Affected,
@@ -255,7 +255,7 @@ func runResumeAll(cmd *cobra.Command, args []string) error {
 
 	// 4. Output the result.
 	output := map[string]any{
-		"action":   "resume_all",
+		"action":   pause.ActionResumeAll,
 		"actor":    actor,
 		"reason":   resumeAllOptReason,
 		"affected": result.Affected,
