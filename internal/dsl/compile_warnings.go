@@ -30,6 +30,7 @@ package dsl
 
 import (
 	"fmt"
+	"regexp"
 
 	"github.com/nexus/levee/internal/errors"
 )
@@ -53,6 +54,10 @@ const (
 	// codeMissingPostBatchGate is LE052: a batches block with no between-batches
 	// check, so nothing can stop the next batch.
 	codeMissingPostBatchGate = "LE052"
+	// codeUnresolvedInputs is LE004: the document declares input parameters (or
+	// references them with `{{input.x}}`), and NOTHING in the pipeline supplies
+	// or substitutes them — the reference reaches the module as literal text.
+	codeUnresolvedInputs = "LE004"
 )
 
 // maxCanaryPercent is the §4.3 guidance for a first batch: 5% of the fleet.
@@ -148,8 +153,98 @@ func (v *Validator) Advise(wf *Workflow) []ValidationError {
 		}
 	}
 
+	// LE004: the input block is declaration-only. It is parsed, its types are
+	// validated, and it is lowered into the IR (so it is inside the plan hash) —
+	// but no code path supplies values or substitutes `{{input.x}}`: a grep for
+	// the reference shape finds it in the spec and in fixtures, never in the
+	// planner or the executor, and there is no RPC field or CLI flag that
+	// carries input values.
+	//
+	// The advisory fires on the DECLARATION or the REFERENCE, because either one
+	// on its own says the author expects substitution:
+	//   - declared: the document promises a parameter interface nothing honours;
+	//   - referenced: the literal text reaches the module. For `shell.exec` that
+	//     is not merely useless, it is a command nobody wrote ("{{input.table}}"
+	//     is passed through, and shells may expand braces), which is why the
+	//     message names the consequence rather than the syntax.
+	//
+	// It is a warning, not an error, because the remedy is authoring-level and
+	// the channel's contract is that an advisory never blocks (see the package
+	// comment): documents that compile today must keep compiling, and the ones
+	// that intend to parameterise are told how to do it for real.
+	if len(wf.Inputs) > 0 || referencesInputs(wf) {
+		out = append(out, ValidationError{
+			Code:  codeUnresolvedInputs,
+			Field: "input",
+			Message: "input parameters are declared or referenced, but nothing supplies or " +
+				"substitutes them: `{{input.x}}` reaches the module as that literal text (declaring " +
+				"input values is not implemented; parameterise with template instantiation, which " +
+				"fills `{{.name}}`, or with a workflow that hardcodes the value)",
+		})
+	}
+
 	return out
 }
+
+// referencesInputs reports whether any step argument — forward steps AND the
+// undo steps nested under them, which are args a reader forgets are args —
+// contains an `{{ input.x }}` reference. Both spellings the spec uses are
+// covered: `{{input.table}}` and `{{ input.package_name }}`.
+func referencesInputs(wf *Workflow) bool {
+	for i := range wf.Steps {
+		if stepReferencesInputs(&wf.Steps[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func stepReferencesInputs(s *Step) bool {
+	if argsReferenceInputs(s.Args) {
+		return true
+	}
+	if s.Rollback != nil {
+		for i := range s.Rollback.Steps {
+			if stepReferencesInputs(&s.Rollback.Steps[i]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// argsReferenceInputs walks an argument value of any shape (string, nested map,
+// list) because args is `map[string]any` all the way down.
+func argsReferenceInputs(args map[string]any) bool {
+	for _, v := range args {
+		if valueReferencesInputs(v) {
+			return true
+		}
+	}
+	return false
+}
+
+func valueReferencesInputs(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return inputRefPattern.MatchString(t)
+	case map[string]any:
+		return argsReferenceInputs(t)
+	case []any:
+		for _, e := range t {
+			if valueReferencesInputs(e) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inputRefPattern matches the spec's input-reference shape: `{{`, optional
+// whitespace, `input.`, optional whitespace, `}}`. The leading-dot-less form is
+// deliberate: `{{.name}}` is the TEMPLATE instantiation syntax (internal/template
+// fills it), which works, and must not be reported here.
+var inputRefPattern = regexp.MustCompile(`\{\{\s*input\.`)
 
 // hasBatchesBlock reports whether the document declared a batches block, using
 // the same fields the LE096 advisory treats as its absence.

@@ -200,8 +200,9 @@ func TestCompileEmitIR(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "compile-test", wf["name"])
 
-	// validCompileYAML declares no window, so it carries exactly one advisory —
-	// on stderr, never in front of the document.
+	// validCompileYAML carries advisories (no window, no post_batch gate, and
+	// an input block nothing resolves) — on stderr, never in front of the
+	// document.
 	assert.NotContains(t, stdout, "advisory:", "the IR document must not carry advisory prose")
 	assert.Contains(t, stderr, "advisory:")
 }
