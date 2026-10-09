@@ -50,7 +50,7 @@ func DenialTarget(action, env string) string {
 // Actor=<refused subject>, Target=<refused permission>, RunID="".
 //
 // RunID is empty on purpose, and that is why this sink is the audit table and
-// not trace: audit.run_id carries no foreign key (NOT NULL DEFAULT '', as
+// not trace: audit.run_id carries no foreign key (NOT NULL DEFAULT ”, as
 // state.Audit documents: "a run-less entry is exactly the security-relevant
 // kind"), so a refusal that happens before any run exists — or that is not
 // about a run at all — still gets recorded. The trace table's run_id does

@@ -183,7 +183,7 @@ func (c *SimplePermissionChecker) HasPermission(actor, permission string) bool {
 // SimplePermissionChecker.SetDenyRecorder that persists every rejection as a
 // row in the audit table (SA-007): Action="permission.denied",
 // Result="denied", Actor=<rejected subject>, Target=<rejected permission>,
-// RunID="" (the audit table has run_id DEFAULT '' with NO foreign key, so
+// RunID="" (the audit table has run_id DEFAULT ” with NO foreign key, so
 // rejections that happen BEFORE any run is picked — the only place the CLI
 // pause path enforces permissions — can still be recorded).
 //
