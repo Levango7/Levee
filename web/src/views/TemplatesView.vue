@@ -2,12 +2,23 @@
 // TemplatesView provides CRUD over workflow templates plus a parameter form
 // driven by the template's `requiredParams`. The form is reused for both
 // creating a template and instantiating one into a new change.
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { templatesApi } from '@/api'
+import { targetsApi, templatesApi } from '@/api'
 import type { Template } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp } from '@/utils/format'
+import {
+  blankForm,
+  environmentOptions,
+  instantiateIssues,
+  instantiateWarnings,
+  paramsRows,
+  type InstantiateForm,
+} from '@/utils/templateForm'
+
+const router = useRouter()
 
 const loading = ref(false)
 const templates = ref<Template[]>([])
@@ -35,21 +46,67 @@ const edit = reactive<EditState>({
 interface InstantiateState {
   visible: boolean
   template: Template | null
-  form: {
-    label: string
-    params: Record<string, string>
-    team: string
-    environment: string
-    priority: string
-    dryRun: boolean
-  }
+  form: InstantiateForm
+  /** 0 = parameters, 1 = review, 2 = created. */
+  step: number
+  /** Set on the last step: the change the wizard produced. */
+  createdId: string
+  createdStatus: string
 }
 
 const instantiate = reactive<InstantiateState>({
   visible: false,
   template: null,
   form: { label: '', params: {}, team: '', environment: '', priority: 'normal', dryRun: false },
+  step: 0,
+  createdId: '',
+  createdStatus: '',
 })
+
+// Environments seen in the inventory, offered as suggestions. A hint, not a
+// whitelist: the authorization layer judges the DECLARED environment, and the
+// inventory does not necessarily name every environment a deployment uses.
+const inventoryEnvs = ref<string[]>([])
+
+const envOptions = computed(() => environmentOptions(inventoryEnvs.value, [instantiate.form.environment]))
+
+const issues = computed(() =>
+  instantiate.template ? instantiateIssues(instantiate.form, instantiate.template.requiredParams) : [],
+)
+const warnings = computed(() => instantiateWarnings(instantiate.form))
+const paramRows = computed(() =>
+  instantiate.template ? paramsRows(instantiate.form, instantiate.template.requiredParams) : [],
+)
+const issueFor = (field: string): string | undefined => issues.value.find((i) => i.field === field)?.message
+
+async function loadInventoryEnvs(): Promise<void> {
+  try {
+    const res = await targetsApi.list({ pageSize: 200 })
+    const seen = (res.items || []).map((t) => t.labels?.env).filter((e): e is string => !!e)
+    inventoryEnvs.value = [...new Set(seen)]
+  } catch {
+    // A suggestion list is not worth an error banner: the field stays usable
+    // and the authorization layer still judges whatever is declared.
+    inventoryEnvs.value = []
+  }
+}
+
+function nextStep(): void {
+  // The gate: a parameter the server would refuse never leaves the browser.
+  if (issues.value.length > 0) {
+    ElMessage.warning(issues.value[0]?.message || '还有未填写的字段')
+    return
+  }
+  instantiate.step = 1
+}
+
+function prevStep(): void {
+  instantiate.step = 0
+}
+
+function closeInstantiate(): void {
+  instantiate.visible = false
+}
 
 async function load(): Promise<void> {
   loading.value = true
@@ -120,18 +177,12 @@ async function remove(row: Template): Promise<void> {
 
 function openInstantiate(row: Template): void {
   instantiate.template = row
-  instantiate.form = {
-    label: `${row.name}-${Date.now()}`,
-    params: {},
-    team: '',
-    environment: '',
-    priority: 'normal',
-    dryRun: false,
-  }
-  for (const p of row.requiredParams) {
-    instantiate.form.params[p] = ''
-  }
+  instantiate.form = blankForm(row)
+  instantiate.step = 0
+  instantiate.createdId = ''
+  instantiate.createdStatus = ''
   instantiate.visible = true
+  if (inventoryEnvs.value.length === 0) loadInventoryEnvs()
 }
 
 async function submitInstantiate(): Promise<void> {
@@ -146,8 +197,10 @@ async function submitInstantiate(): Promise<void> {
       priority: instantiate.form.priority,
       dryRun: instantiate.form.dryRun,
     })
-    ElMessage.success(`已创建变更 ${change.id}`)
-    instantiate.visible = false
+    instantiate.createdId = change.id
+    instantiate.createdStatus = change.status
+    instantiate.step = 2
+    load()
   } catch (err) {
     ElMessage.error(`实例化失败：${(err as { message?: string })?.message}`)
   }
@@ -249,24 +302,56 @@ onMounted(load)
       </template>
     </el-dialog>
 
-    <!-- Instantiate dialog -->
-    <el-dialog v-model="instantiate.visible" title="实例化模板" width="600px">
+    <!-- Instantiate wizard: parameters -> review -> created. The review step is
+         the point of the wizard: the single dialog this replaces moved from
+         "filled in" to "created" in one click, so a blank required parameter
+         only surfaced as a server error and a typed environment was never read
+         back. -->
+    <el-dialog
+      v-model="instantiate.visible"
+      title="实例化模板"
+      width="640px"
+      :close-on-click-modal="false"
+    >
       <template v-if="instantiate.template">
-        <el-form :model="instantiate.form" label-width="120px">
+        <el-steps :active="instantiate.step" align-center finish-status="success" class="wizard__steps">
+          <el-step title="参数" description="模板声明的必填项" />
+          <el-step title="确认" description="提交前逐项核对" />
+          <el-step title="完成" description="变更已创建" />
+        </el-steps>
+
+        <!-- Step 1: parameters -->
+        <el-form v-if="instantiate.step === 0" :model="instantiate.form" label-width="120px">
           <el-form-item label="模板">
             <el-input :model-value="instantiate.template.name" disabled />
           </el-form-item>
-          <el-form-item label="变更名称" required>
+          <el-form-item label="变更名称" required :error="issueFor('label')">
             <el-input v-model="instantiate.form.label" />
           </el-form-item>
-          <el-form-item v-for="p in instantiate.template.requiredParams" :key="p" :label="p">
+          <el-form-item
+            v-for="p in instantiate.template.requiredParams"
+            :key="p"
+            :label="p"
+            required
+            :error="issueFor('param:' + p)"
+          >
             <el-input v-model="instantiate.form.params[p]" />
           </el-form-item>
-          <el-form-item label="团队">
-            <el-input v-model="instantiate.form.team" />
+          <el-form-item label="环境" :error="issueFor('environment')">
+            <el-select
+              v-model="instantiate.form.environment"
+              filterable
+              allow-create
+              default-first-option
+              clearable
+              placeholder="选择或输入环境，如 prod"
+              style="width: 100%"
+            >
+              <el-option v-for="e in envOptions" :key="e" :label="e" :value="e" />
+            </el-select>
           </el-form-item>
-          <el-form-item label="环境">
-            <el-input v-model="instantiate.form.environment" />
+          <el-form-item label="团队">
+            <el-input v-model="instantiate.form.team" placeholder="选填" />
           </el-form-item>
           <el-form-item label="优先级">
             <el-select v-model="instantiate.form.priority" style="width: 160px">
@@ -276,20 +361,128 @@ onMounted(load)
               <el-option label="紧急" value="urgent" />
             </el-select>
           </el-form-item>
-          <el-form-item label="仅计划">
-            <el-switch v-model="instantiate.form.dryRun" />
-          </el-form-item>
+          <el-alert
+            v-for="w in warnings"
+            :key="w.field"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="wizard__note"
+            :title="w.message"
+          />
         </el-form>
+
+        <!-- Step 2: review -->
+        <div v-else-if="instantiate.step === 1" class="wizard__review">
+          <el-descriptions :column="1" border size="small">
+            <el-descriptions-item label="模板">
+              {{ instantiate.template.name }}
+              <span v-if="instantiate.template.description" class="wizard__dim">
+                — {{ instantiate.template.description }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="变更名称">{{ instantiate.form.label }}</el-descriptions-item>
+            <el-descriptions-item v-for="r in paramRows" :key="r.name" :label="r.name">
+              <span :class="{ 'wizard__missing': r.missing }">{{ r.value || '（空）' }}</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="环境">
+              <span :class="{ 'wizard__missing': !instantiate.form.environment }">
+                {{ instantiate.form.environment || '（留空，按默认环境判定）' }}
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item label="团队">{{ instantiate.form.team || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="优先级">{{ instantiate.form.priority }}</el-descriptions-item>
+            <el-descriptions-item label="创建方式">
+              {{ instantiate.form.dryRun ? '仅计划：创建 planned 变更，不执行' : '提交审批：创建 pending 变更，等待审批后执行' }}
+            </el-descriptions-item>
+          </el-descriptions>
+          <el-form-item label="仅计划" class="wizard__dry">
+            <el-switch v-model="instantiate.form.dryRun" />
+            <span class="wizard__dim">开启＝只创建一份 planned 变更供预览，不进入执行</span>
+          </el-form-item>
+          <el-collapse class="wizard__source">
+            <el-collapse-item title="模板正文（参数由服务端代入）">
+              <pre class="wizard__code">{{ instantiate.template.workflowContent }}</pre>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
+
+        <!-- Step 3: created -->
+        <div v-else-if="instantiate.step === 2" class="wizard__done">
+          <p class="wizard__done-line">
+            变更 <span class="lv-mono">{{ instantiate.createdId }}</span> 已创建，当前状态
+            <strong>{{ instantiate.createdStatus || 'draft' }}</strong>。
+          </p>
+          <p class="wizard__dim">
+            下一步：{{ instantiate.form.dryRun ? '查看计划与目标集' : '在审批中心等待/推进入口审批' }}。
+          </p>
+        </div>
       </template>
+
       <template #footer>
-        <el-button @click="instantiate.visible = false">取消</el-button>
-        <el-button type="primary" @click="submitInstantiate">创建</el-button>
+        <el-button v-if="instantiate.step === 0" @click="closeInstantiate">取消</el-button>
+        <el-button v-if="instantiate.step === 1" @click="prevStep">上一步</el-button>
+        <el-button v-if="instantiate.step === 0" type="primary" @click="nextStep">下一步：确认</el-button>
+        <el-button v-else-if="instantiate.step === 1" type="primary" @click="submitInstantiate">
+          创建变更
+        </el-button>
+        <template v-else>
+          <el-button @click="closeInstantiate">关闭</el-button>
+          <el-button type="primary" @click="router.push(`/monitor/${instantiate.createdId}`)">
+            查看监控
+          </el-button>
+        </template>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
+.wizard__steps {
+  margin-bottom: var(--lv-space-4, 16px);
+}
+
+.wizard__review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lv-space-3, 12px);
+}
+
+.wizard__dim {
+  color: var(--el-text-color-secondary);
+  margin-left: 6px;
+}
+
+/* A missing value is shown, not hidden: the review step exists so the operator
+   sees the gap before the server refuses or the change lands nameless. */
+.wizard__missing {
+  color: var(--el-color-danger);
+}
+
+.wizard__code {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--lv-font-mono, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.wizard__note {
+  margin-top: var(--lv-space-2, 8px);
+}
+
+.wizard__dry {
+  margin-top: var(--lv-space-2, 8px);
+}
+
+.wizard__done-line {
+  margin: 0 0 6px;
+}
+
+.wizard__done {
+  padding: var(--lv-space-3, 12px) 0;
+}
+
 .cell-template {
   display: flex;
   flex-direction: column;
