@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -74,16 +75,37 @@ func newPolicyAuthorizer(t *testing.T) *authz.Authorizer {
 
 // approvedProdRun creates a change in the prod environment that is ready to
 // apply: approved, with a plan artifact and a stub engine behind it.
+//
+// Seeded into the store rather than created through the RPC: the fixture matrix
+// grants prod `view` only, and CreateChange is itself gated on `plan` in the
+// declared environment, so routing setup through the gate would refuse the
+// fixture before the test's own subject (apply) is reached.
 func approvedProdRun(t *testing.T, svc *ChangeService, store state.Store) string {
 	t.Helper()
-	ctx := context.Background()
-	created, err := svc.CreateChange(ContextWithActor(ctx, "alice"), &pb.CreateChangeRequest{
-		Label: "policy-target", Environment: "prod",
-	})
-	require.NoError(t, err)
-	persistPlanOnRun(t, store, created.GetId())
-	setRunStatus(t, store, created.GetId(), "approved")
-	return created.GetId()
+	id := seedRunIn(t, store, "alice", "prod")
+	persistPlanOnRun(t, store, id)
+	setRunStatus(t, store, id, "approved")
+	return id
+}
+
+// seedRunIn writes a draft run in env straight into the store, for fixtures
+// whose subject is a later RPC. See approvedProdRun for why the setup does not
+// go through CreateChange.
+func seedRunIn(t *testing.T, store state.Store, actor, env string) string {
+	t.Helper()
+	id := newID("run-")
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateRun(context.Background(), &state.Run{
+		ID:             id,
+		Status:         "draft",
+		ApprovalStatus: state.ApprovalStatusPending,
+		ApprovalLevel:  "normal",
+		Creator:        actor,
+		IncidentID:     env,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}))
+	return id
 }
 
 func TestApplyChange_PolicyDeniesUnregisteredAndUnauthorisedSubjects(t *testing.T) {
@@ -134,23 +156,20 @@ func TestApproveChange_PolicyDenialPrecedesApprovalList(t *testing.T) {
 	svc, store := newTestChangeServiceWithEngine(t, (&recordingEngine{}).adapter())
 	svc.WithAuthorizer(newPolicyAuthorizer(t))
 
-	created, err := svc.CreateChange(ContextWithActor(ctx, "alice"), &pb.CreateChangeRequest{
-		Label: "approve-under-policy", Environment: "prod",
-	})
-	require.NoError(t, err)
-	persistPlanOnRun(t, store, created.GetId())
+	id := seedRunIn(t, store, "alice", "prod")
+	persistPlanOnRun(t, store, id)
 
 	// carol is a legitimate sre member but her role cannot approve anywhere,
 	// and prod grants the team only view.
-	_, err = svc.ApproveChange(ContextWithActor(ctx, "carol"), &pb.ApproveRequest{
-		ChangeId: created.GetId(), Approver: "carol",
+	_, err := svc.ApproveChange(ContextWithActor(ctx, "carol"), &pb.ApproveRequest{
+		ChangeId: id, Approver: "carol",
 	})
 	require.Error(t, err)
 	assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	assert.Contains(t, err.Error(), "approve denied")
 
 	// The run was not settled by the refused vote.
-	run, err := store.GetRun(ctx, created.GetId())
+	run, err := store.GetRun(ctx, id)
 	require.NoError(t, err)
 	assert.NotEqual(t, "approved", run.Status)
 }
