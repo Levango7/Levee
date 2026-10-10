@@ -81,6 +81,14 @@
 - **变异八条逐一变红**：去掉 create / clone / retry / retry-host / 状态转换 / archive 六处门禁；把 clone 改回判**源**环境；把 pause 映射到 `cancel`。
 - **兼容性**：无矩阵（未配 `permissions.yaml`）的部署**行为一字不变**（`authorizeResource` 对 nil authorizer 直接放行），既有 `TestNoAuthorizerKeepsPreviousBehaviour` 继续钉这条承诺。
 
+### 新增（模板实例化改成三步向导：参数 → 确认 → 完成）
+
+- **缺口（roadmap 交互层 P0 的另一半）**：`/templates` 的"实例化"是一个对话框——必填参数是一排空输入框、环境是自由文本、点"创建"就直接建变更。两个后果都是真的：**必填参数留空**要等服务端转一圈才报错（`ErrRequiredParamMissing`）；**环境靠手打**更糟——授权层按变更**声明**的环境判定，打错一个字母就换了一批能操作它的人，而这个值此后不改（审计文档里写明的边界）。
+- **实现**：三步向导（`el-steps` 可见进度）。**参数**：变更名称与模板声明的必填项逐项标注必填并在本地拦截（与服务端同一条规则，只是提前了），环境改为**可选可输入的下拉**——候选项来自清单里出现过的 `env` 标签（是提示不是白名单，授权判定仍在服务端）；**确认**：逐项回显（模板+描述、名称、每个参数的值、环境、团队、优先级、创建方式），空值显红而不隐藏，另附「模板正文（参数由服务端代入）」折叠区与「仅计划」开关（写明开启后创建的是 planned 变更、不进入执行）；**完成**：显示变更 id 与状态，并给出下一步入口（查看监控），不再是一个会消失的 toast。
+- **两处如实说明而不是假装**：环境留空时给 amber 告警（"将按服务端默认环境判定授权，且此后不可改"）而**不是**硬拦——有 `permission.default_env` 的部署留空是合法的，UI 无从得知；团队字段注明"服务端回显但不落库"（`state.Run` 没有 team 列），避免让人以为归属被记下了。
+- **可测性**：规则抽到 `web/src/utils/templateForm.ts`（issues / warnings / paramsRows / environmentOptions）并单测 12 例——含"警告永不阻塞"与"未声明的参数不参与校验"两条边界；模板形状由 `TemplatesView.spec.ts` 六项结构断言钉住（确认步是唯一有创建按钮的地方、推进必须过校验、确认步要回显值、环境必须是可输入下拉、创建后要有下一步、打开时必须复位）。写第一版守卫时它**立刻抓到我把第三步写成 `v-else` 而断言找 `step === 2`**，遂把三步都写成显式判断。
+- 验证：`npm run test` **143 例全绿（16 文件）**、`vue-tsc` 干净、`vite build` 产物已刷进 `internal/web/dist`（LF 工作树构建，`make web` 的 CRLF 预检放行）。真机走查（本仓 dev server + 无头 Chrome，API 请求层打桩）：空白提交被本地拦下（toast + 两个字段内联报错、停在第一步）→ 环境下拉给出 `dev`/`prod`（来自清单）→ 确认步逐项回显 → 创建请求体与确认页逐项一致（`templateName=patch-rolling, params={pkg_name:nginx,pkg_version:1.24.0}, environment=prod, priority=normal, dryRun=false`）→ 完成步给出 id 与「查看监控」。
+
 ## [v1.21.0] - 2026-10-09
 
 > **发布状态：已切版。** 附注 tag `v1.21.0`（tag 对象 `b28bbd0f`，指向合并提交 `fcac5dd3`）于 2026-10-09 推送，`release.yml` 三段（CI gate / goreleaser / container image）全部 success：GitHub Release `draft=false`、`publishedAt=2026-10-09T03:50:51Z`，资产 7 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.21.0` 按外部事实核过——`manifests/v1.21.0` 返回 **200**，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0, v1.21.0]`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.21.0` / 逐字 `v1.21.0`（顺序不能反：规则②要求它逐字出现在 tag 集合里）。 本节共 **12** 个小节，三条主线：七批词表/判据收口（批次、分配、会话、系统页的中文标签与 owning 常量，每处都补了从常量源解析的守卫）、控制台重做与"玻璃只上 chrome"+ 命令面板、以及三处**门禁级**缺陷（CHANGELOG 结构守卫抓到自己登记的那类损坏；`release-gate` 的 `unittest | tee` 在 `bash -e` 下吞掉一切断言失败；`govulncheck` 被 `go` 指令挡住），另收口 SA-007/SA-011 与看板变更名。**切版顺序（按既有约束执行）**：先折叠 CHANGELOG 与 release notes、chart 不动（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升），推 tag 并确认 `release.yml` 三段 success 之后，再随下一笔把 chart 两处升到 `1.21.0` / 逐字 `v1.21.0`。release notes 见 [`docs/release-notes/v1.21.0.md`](docs/release-notes/v1.21.0.md)。
