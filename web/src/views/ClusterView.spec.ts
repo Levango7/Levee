@@ -44,6 +44,48 @@ function codeBetween(from: number, to: number): string {
   return source.slice(from, to).replace(/<!--[\s\S]*?-->/g, '')
 }
 
+/** The <script> block with whole-line comments removed. This file quotes the
+ *  expressions it retires (so a reader knows what was replaced), and a guard that
+ *  matched its own prose would be asserting on comments. */
+function scriptCode(): string {
+  const start = source.indexOf('<script')
+  const end = source.indexOf('</script>')
+  if (start < 0 || end < 0) throw new Error('ClusterView.vue has no <script> block to read')
+  return source
+    .slice(start, end)
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n')
+}
+
+describe('ClusterView node card vocabulary', () => {
+  it('finds the node card anchors', () => {
+    expect(source).toContain('v-for="n in nodes"')
+    expect(source).toContain('node__role')
+    expect(source).toContain("from '@/utils/node'")
+  })
+
+  it('names role and status through the shared vocabulary, not the wire value', () => {
+    const card = source.slice(source.indexOf('v-for="n in nodes"'), source.indexOf('node__beat'))
+    expect(card).toContain('nodeRoleLabel(n.role)')
+    expect(card).toContain('nodeStatusLabel(n.status)')
+    expect(card).toContain('nodeStatusTone(n.status)')
+    // The two shapes this replaces: the raw role printed on a Chinese page, and the
+    // raw status used as the dot's tooltip.
+    expect(card).not.toMatch(/\{\{\s*n\.role\s*\}\}/)
+    expect(card).not.toMatch(/:title="n\.status"/)
+  })
+
+  it('keeps the two-colour tone expression out of the view', () => {
+    // `status === 'active' ? 'ok' : 'bad'` folded three registry states onto two
+    // colours, so a gracefully leaving node was painted as an outage. The colour
+    // decision now belongs to @/utils/node, where the Go guard can check it.
+    const code = scriptCode()
+    expect(code).not.toMatch(/function\s+nodeTone\b/)
+    expect(code).not.toMatch(/'active'\s*\?\s*'ok'/)
+  })
+})
+
 describe('ClusterView batch panel placement', () => {
   it('finds the anchors it is asserting on', () => {
     // Anchor honesty first: a renamed heading or a re-indented branch must fail
