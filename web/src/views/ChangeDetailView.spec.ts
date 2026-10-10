@@ -49,7 +49,10 @@ describe('change detail page', () => {
     expect(view, 'the trace must be fetched with verification on').toContain("trace(changeId.value, { verify: true })")
     expect(view, 'the verdict must be rendered, not just fetched').toContain('hashChainValid')
     expect(view, 'the verdict must be labelled for a reader').toContain('哈希链')
-    expect(view, 'the entries feed the timeline').toContain('el-timeline')
+    // The rendering itself is the shared component (components/TraceTimeline),
+    // which the audit view also uses; this view must not grow a second copy.
+    expect(view, 'the entries feed the shared timeline').toContain('<TraceTimeline :entries="timeline"')
+    expect(view, 'no local timeline rendering').not.toContain('el-timeline-item')
   })
 
   it('renders batches through the batch vocabulary, not a local map', () => {
