@@ -372,6 +372,13 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
 	}
+	// Creating a change takes the same pair InstantiateTemplate judges: the
+	// change-scoped `plan` action and the environment the request declares
+	// (empty falls back to permission.default_env inside Decide, and a
+	// deployment with no default env refuses rather than guessing).
+	if err := authorizeResource(ctx, s.authz, req.GetEnvironment(), permission.ActionPlan, "CreateChange"); err != nil {
+		return nil, err
+	}
 
 	now := time.Now().UTC()
 	runID := newID("run-")
@@ -446,6 +453,16 @@ func (s *ChangeService) CloneChange(ctx context.Context, req *pb.CloneChangeRequ
 	}
 	if src == nil {
 		return nil, status.Errorf(codes.NotFound, "source change %q not found", req.GetSourceChangeId())
+	}
+	// Authorised against the environment the NEW change lands in: the override
+	// when given, otherwise the source's. Judging the source alone would let a
+	// caller who may plan in dev clone a prod change into prod.
+	cloneEnv := req.GetEnvironment()
+	if cloneEnv == "" {
+		cloneEnv = envOf(src)
+	}
+	if err := authorizeResource(ctx, s.authz, cloneEnv, permission.ActionPlan, "CloneChange"); err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -1329,6 +1346,32 @@ func (s *ChangeService) ResumeChange(ctx context.Context, req *pb.PauseRequest) 
 // records an audit entry. The action parameter is recorded in the
 // audit log; the newStatus parameter is the target status.
 func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, action, reason string) (*pb.Change, error) {
+	return s.transitionStatusWith(ctx, runID, newStatus, action, reason, permissionActionForStatus(action), false)
+}
+
+// permissionActionForStatus maps a pause/resume audit action to the matrix
+// action that authorises it. Both spellings come from different owners
+// (state.AuditAction* / permission.Action*), so the mapping is written out
+// rather than assumed equal: a rename on either side has to come through here.
+func permissionActionForStatus(action string) string {
+	switch action {
+	case "pause":
+		return permission.ActionPause
+	case "resume":
+		return permission.ActionResume
+	case state.AuditActionCancel:
+		return permission.ActionCancel
+	default:
+		return action
+	}
+}
+
+// transitionStatusWith is the shared implementation for Pause/Resume/Cancel. It
+// loads the run, authorises the caller against the run's own environment,
+// validates the transition, updates the store and records an audit entry. The
+// action parameter is recorded in the audit log; permissionAction is the matrix
+// action that authorises it; force relaxes the state guard (cancel only).
+func (s *ChangeService) transitionStatusWith(ctx context.Context, runID, newStatus, action, reason, permissionAction string, force bool) (*pb.Change, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
 	}
@@ -1341,9 +1384,19 @@ func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, 
 		return nil, status.Errorf(codes.NotFound, "change %q not found", runID)
 	}
 
+	// Authorised against the run's DECLARED environment, which is why the gate
+	// sits after the load: a caller who may not act in this change's
+	// environment must not be able to stop, pause or resume it. The refusal
+	// precedes every effect below — status write, audit row, event, trace seal.
+	if err := authorizeResource(ctx, s.authz, envOf(run), permissionAction, "change status transition"); err != nil {
+		return nil, err
+	}
+
 	// Delegate to the pause manager when available — it enforces the
-	// full state machine and writes its own audit entries.
-	if s.pause != nil {
+	// full state machine and writes its own audit entries. Only the two
+	// statuses it owns go through it; a cancel falls through to the direct
+	// transition, exactly as before this gate was added.
+	if s.pause != nil && (newStatus == runstatus.StatusPaused || newStatus == runstatus.StatusRunning) {
 		switch newStatus {
 		case "paused":
 			if err := s.pause.PauseRun(ctx, runID, actorFromCtx(ctx)); err != nil {
@@ -1369,8 +1422,8 @@ func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, 
 
 	// Fallback: direct status transition.
 	oldStatus := run.Status
-	if !isValidTransition(oldStatus, newStatus) {
-		return nil, status.Errorf(codes.FailedPrecondition, "cannot transition from %q to %q", oldStatus, newStatus)
+	if !force && !isValidTransition(oldStatus, newStatus) {
+		return nil, status.Errorf(codes.FailedPrecondition, "cannot transition from %q to %q (use force=true to override)", oldStatus, newStatus)
 	}
 	now := time.Now().UTC()
 	run.Status = newStatus
@@ -1400,8 +1453,10 @@ func (s *ChangeService) transitionStatus(ctx context.Context, runID, newStatus, 
 
 	// Both direct-transition paths land here: pause/resume (via
 	// transitionStatus) and cancel (via transitionStatusWithForce). A
-	// TERMINAL transition closes the run's trace set, so its per-run trace
-	// chain can seal; mid-run transitions (paused/running) must not seal —
+	// Both direct-transition paths land here: pause/resume and cancel, which
+	// share this implementation (transitionStatusWith). A TERMINAL transition
+	// closes the run's trace set, so its per-run trace chain can seal; mid-run
+	// transitions (paused/running) must not seal —
 	// every trace written afterwards would land outside the chain and
 	// surface as empty_hash at verification. Same best-effort-but-loud
 	// contract as the Apply funnel's seal.
@@ -1628,66 +1683,8 @@ func toSet(items []string) map[string]bool {
 // CancelChange cancels a change. Cancellation is terminal: the run
 // cannot be resumed after being cancelled.
 func (s *ChangeService) CancelChange(ctx context.Context, req *pb.CancelRequest) (*pb.Change, error) {
-	return s.transitionStatusWithForce(ctx, req.GetChangeId(), runstatus.StatusCancelled, state.AuditActionCancel, req.GetReason(), req.GetForce())
-}
-
-// transitionStatusWithForce is like transitionStatus but supports a
-// force flag that relaxes the state-guard checks.
-func (s *ChangeService) transitionStatusWithForce(ctx context.Context, runID, newStatus, action, reason string, force bool) (*pb.Change, error) {
-	if s.store == nil {
-		return nil, status.Error(codes.Internal, "store not configured")
-	}
-
-	run, err := s.store.GetRun(ctx, runID)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get run: %v", err)
-	}
-	if run == nil {
-		return nil, status.Errorf(codes.NotFound, "change %q not found", runID)
-	}
-
-	oldStatus := run.Status
-	if !force && !isValidTransition(oldStatus, newStatus) {
-		return nil, status.Errorf(codes.FailedPrecondition, "cannot transition from %q to %q (use force=true to override)", oldStatus, newStatus)
-	}
-	now := time.Now().UTC()
-	run.Status = newStatus
-	run.UpdatedAt = now
-	if err := s.store.UpdateRun(ctx, run); err != nil {
-		return nil, status.Errorf(codes.Internal, "update run: %v", err)
-	}
-
-	s.recordAudit(ctx, &state.Audit{
-		ID:        newID("aud-"),
-		RunID:     runID,
-		Action:    action,
-		Actor:     actorFromCtx(ctx),
-		Target:    runID,
-		Result:    newStatus,
-		Timestamp: now,
-	})
-
-	s.publishEvent(&pb.ChangeEvent{
-		ChangeId:  runID,
-		EventType: "status_changed",
-		OldStatus: oldStatus,
-		NewStatus: newStatus,
-		Message:   reason,
-		Timestamp: now.Unix(),
-	})
-
-	// Both direct-transition paths land here: pause/resume (via
-	// transitionStatus) and cancel (via transitionStatusWithForce). A
-	// TERMINAL transition closes the run's trace set, so its per-run trace
-	// chain can seal; mid-run transitions (paused/running) must not seal —
-	// every trace written afterwards would land outside the chain and
-	// surface as empty_hash at verification. Same best-effort-but-loud
-	// contract as the Apply funnel's seal.
-	if runstatus.IsTerminal(newStatus) {
-		s.sealTraceChain(ctx, runID, newStatus)
-	}
-
-	return runToPB(run), nil
+	return s.transitionStatusWith(ctx, req.GetChangeId(), runstatus.StatusCancelled, state.AuditActionCancel,
+		req.GetReason(), permission.ActionCancel, req.GetForce())
 }
 
 // --- RetryChange / RetryHost -----------------------------------------------
@@ -1706,6 +1703,13 @@ func (s *ChangeService) RetryChange(ctx context.Context, req *pb.RetryRequest) (
 	}
 	if run == nil {
 		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+	// A retry re-drives execution through the full approval/fencing/evidence
+	// gates, so it takes the execution action, not a separate `retry` verb the
+	// matrix does not have. The gate precedes the budget check below so a
+	// refusal is never reported as an exhausted budget.
+	if err := s.authorize(ctx, run, permission.ActionApply, "retry"); err != nil {
+		return nil, err
 	}
 
 	// interrupted (cluster takeover verdict) is retryable by design
@@ -1855,6 +1859,11 @@ func (s *ChangeService) RetryHost(ctx context.Context, req *pb.RetryHostRequest)
 	if len(req.GetHosts()) == 0 {
 		return nil, status.Errorf(codes.InvalidArgument,
 			"retry-host requires an explicit host list; use RetryChange to retry every failed host")
+	}
+	// Same execution action as RetryChange; checked before the budget loop so a
+	// refusal is always the permission one.
+	if err := s.authorize(ctx, run, permission.ActionApply, "retry-host"); err != nil {
+		return nil, err
 	}
 
 	// Per-host budget, checked BEFORE the engine call so a refused retry
@@ -2719,6 +2728,16 @@ func (s *ChangeService) ArchiveChange(ctx context.Context, req *pb.ArchiveReques
 
 	if run.Status == "archived" {
 		return runToPB(run), nil
+	}
+
+	// Archiving is records management, not a lifecycle step: it hides a
+	// finished change from the active lists and — with purge_artifacts — deletes
+	// its evidence. The matrix has no `archive` verb, and the established home
+	// for "management without a lifecycle verb" is `admin` (CreateGroup,
+	// RegisterAgent, RemoveAgent). Gating it on `cancel` would hand everyone who
+	// may stop a RUNNING change the right to purge a FINISHED one's evidence.
+	if err := s.authorize(ctx, run, permission.ActionAdmin, "archive"); err != nil {
+		return nil, err
 	}
 
 	// Archiving is for finished work. Running/paused changes still own

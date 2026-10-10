@@ -81,12 +81,31 @@ func newReadPolicyAuthorizer(t *testing.T) *authz.Authorizer {
 }
 
 // createIn makes a change in one environment and returns its id.
+//
+// The run is seeded straight into the store rather than through CreateChange.
+// These tests are about plan/apply/read, and CreateChange is itself gated on
+// `plan` in the declared environment (so a caller who may only VIEW prod could
+// no longer create the prod fixture at all). Routing setup through the gate
+// would entangle two different subjects; the create gate has its own test
+// (TestCreateChange_RequiresPlanInTheDeclaredEnvironment). The fields mirrored
+// here are the ones these tests read: environment, creator and a draft status.
 func createIn(t *testing.T, svc *ChangeService, actor, env string) string {
 	t.Helper()
-	created, err := svc.CreateChange(ContextWithActor(context.Background(), actor),
-		&pb.CreateChangeRequest{Label: "in-" + env, Environment: env})
-	require.NoError(t, err)
-	return created.GetId()
+	store, ok := any(svc.store).(state.Store)
+	require.True(t, ok, "the service under test must expose a store")
+	id := newID("run-")
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateRun(context.Background(), &state.Run{
+		ID:             id,
+		Status:         "draft",
+		ApprovalStatus: state.ApprovalStatusPending,
+		ApprovalLevel:  "normal",
+		Creator:        actor,
+		IncidentID:     env,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}))
+	return id
 }
 
 func policySvc(t *testing.T) (*ChangeService, state.Store) {
