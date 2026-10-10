@@ -14,7 +14,11 @@ import {
   formatDuration,
   formatTimestamp,
   formatUptime,
+  isArchivableStatus,
+  isCancellableStatus,
+  isPausableStatus,
   isRemediableStatus,
+  isResumableStatus,
   isRetryableStatus,
 } from './format'
 
@@ -156,5 +160,44 @@ describe('isRemediableStatus', () => {
     // reason the UI offers two buttons instead of one.
     expect(isRetryableStatus('rolled_back_partial')).toBe(true)
     expect(isRetryableStatus('rollback_incomplete')).toBe(true)
+  })
+})
+
+describe('action gates mirror the server switches', () => {
+  // Each set is asserted both ways against the status vocabulary: the admitted
+  // ones by name, and every other status by exclusion — so a status added to
+  // the union has to be decided about rather than silently defaulting in or
+  // out.
+  const statuses = Object.keys(STATUS_LABEL) as ChangeStatus[]
+  const cases: Array<{ name: string; fn: (s: ChangeStatus) => boolean; admits: ChangeStatus[] }> = [
+    {
+      name: 'isCancellableStatus',
+      fn: isCancellableStatus,
+      // isValidTransition("cancelled"): everything but the recorded verdicts
+      // and the takeover terminal.
+      admits: statuses.filter(
+        (s) => !['completed', 'cancelled', 'archived', 'interrupted'].includes(s),
+      ),
+    },
+    {
+      name: 'isArchivableStatus',
+      fn: isArchivableStatus,
+      // ArchiveChange refuses running/paused; archived is not offered again.
+      admits: statuses.filter((s) => !['running', 'paused', 'archived'].includes(s)),
+    },
+    { name: 'isPausableStatus', fn: isPausableStatus, admits: ['running', 'pending'] },
+    { name: 'isResumableStatus', fn: isResumableStatus, admits: ['paused'] },
+  ]
+  it.each(cases)('$name admits exactly its set', ({ fn, admits }) => {
+    expect(admits.length).toBeGreaterThan(0)
+    for (const s of statuses) {
+      expect(fn(s), `${s}`).toBe(admits.includes(s))
+    }
+  })
+
+  it('keeps pause and resume disjoint', () => {
+    for (const s of statuses) {
+      expect(isPausableStatus(s) && isResumableStatus(s), s).toBe(false)
+    }
   })
 })

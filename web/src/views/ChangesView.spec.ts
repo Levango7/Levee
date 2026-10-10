@@ -45,7 +45,7 @@ describe('partial-rollback remediation entry', () => {
     // completed change.
     const gate = view.indexOf('v-if="isRemediableStatus(row.status)"')
     expect(gate, 'the action must be gated on isRemediableStatus(row.status)').toBeGreaterThan(-1)
-    const call = view.indexOf('@click.stop="remediateRollback(row)"')
+    const call = view.indexOf('@click.stop="remediate(row)"')
     expect(call, 'the row must expose the remediation action').toBeGreaterThan(-1)
     // The gate and the handler must be on the same element: within the opening
     // tag that the v-if starts, and before the next sibling button.
@@ -60,25 +60,15 @@ describe('partial-rollback remediation entry', () => {
     expect(view).toContain('v-if="isRetryableStatus(row.status)"')
   })
 
-  it('previews with dry_run before it commits', () => {
-    const preview = view.indexOf("changesApi.rollback(row.id, { dryRun: true })")
-    expect(preview, 'the dialog must be fed by a dry_run preview').toBeGreaterThan(-1)
-    const confirm = view.indexOf("'补救未完成的回滚'", preview)
-    expect(confirm, 'the preview must reach the dialog').toBeGreaterThan(-1)
-    const commit = view.indexOf('changesApi.rollback(row.id, {})', confirm)
-    expect(commit, 'the commit call must come after the confirmation').toBeGreaterThan(-1)
-    // And the evidence the dialog shows must be the preview's own fields.
-    expect(view.slice(preview, commit)).toContain('rolledBackHosts')
-    expect(view.slice(preview, commit)).toContain('skippedHosts')
-  })
-
-  it('builds the dialog body as VNodes, not as an HTML string', () => {
-    expect(view).toContain("import { computed, h, onMounted, reactive, ref } from 'vue'")
-    expect(view).toContain("h('div', [")
-    // The property form is what would pass API-supplied host names and messages
-    // straight into the DOM as markup. Matched as a property, not as a word:
-    // the function's own comment explains why it is not used, and a mention is
-    // not a usage.
-    expect(view).not.toMatch(/dangerouslyUseHTMLString\s*:/)
+  it('delegates the flow to the shared composable instead of carrying a copy', () => {
+    // The order that matters (dry_run preview -> evidence -> commit) lives in
+    // composables/useRollbackRemediation.ts, shared with the change detail
+    // page; its own spec asserts that order. What this view must not do is
+    // grow a second copy: the list and the detail page would then drift on the
+    // pairing, which is exactly the failure this area is about.
+    expect(view).toContain("import { remediateRollback } from '@/composables/useRollbackRemediation'")
+    expect(view).toContain('await remediateRollback(row)')
+    expect(view).not.toContain('changesApi.rollback(')
+    expect(view).not.toContain('dangerouslyUseHTMLString: true')
   })
 })

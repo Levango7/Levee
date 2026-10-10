@@ -94,6 +94,66 @@ export function isRemediableStatus(status: ChangeStatus): boolean {
   return REMEDIABLE_STATUSES.has(status)
 }
 
+// The four action gates below mirror the server's own switches
+// (internal/grpc/change_service.go): a button is offered exactly where the RPC
+// would accept it, so the UI stops promising actions the server refuses. The
+// admission sets are written out rather than derived, because the server's
+// rules are stated as exclusions in one place and inclusions in another:
+//
+//   - cancel: isValidTransition's "cancelled" arm — everything EXCEPT the
+//     endpoints that already recorded a verdict (completed, cancelled,
+//     archived) and interrupted, which is a takeover terminal: cancelling
+//     afterwards would rewrite history the audit chain already recorded.
+//   - archive: ArchiveChange refuses only running/paused (they still own live
+//     execution state); an archived change is not offered again.
+//   - pause/resume: isValidTransition's "paused"/"running" arms.
+const CANCELLABLE_STATUSES: ReadonlySet<ChangeStatus> = new Set([
+  'draft',
+  'planned',
+  'pending',
+  'approved',
+  'rejected',
+  'running',
+  'paused',
+  'failed',
+  'rolled_back',
+  'rolled_back_partial',
+  'rollback_incomplete',
+])
+
+const ARCHIVABLE_STATUSES: ReadonlySet<ChangeStatus> = new Set([
+  'draft',
+  'planned',
+  'pending',
+  'approved',
+  'rejected',
+  'completed',
+  'failed',
+  'cancelled',
+  'rolled_back',
+  'rolled_back_partial',
+  'rollback_incomplete',
+  'interrupted',
+])
+
+const PAUSABLE_STATUSES: ReadonlySet<ChangeStatus> = new Set(['running', 'pending'])
+
+export function isCancellableStatus(status: ChangeStatus): boolean {
+  return CANCELLABLE_STATUSES.has(status)
+}
+
+export function isArchivableStatus(status: ChangeStatus): boolean {
+  return ARCHIVABLE_STATUSES.has(status)
+}
+
+export function isPausableStatus(status: ChangeStatus): boolean {
+  return PAUSABLE_STATUSES.has(status)
+}
+
+export function isResumableStatus(status: ChangeStatus): boolean {
+  return status === 'paused'
+}
+
 export function formatTimestamp(ts: number): string {
   if (!ts) return '-'
   return dayjs.unix(ts).format('YYYY-MM-DD HH:mm:ss')

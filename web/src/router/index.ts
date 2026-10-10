@@ -15,9 +15,11 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '变更看板' },
   },
   {
+    // The detail page is its own view: it used to point at the list, so
+    // “详情” landed back on the table with the id unused in the URL.
     path: '/changes/:id',
     name: 'change-detail',
-    component: () => import('@/views/ChangesView.vue'),
+    component: () => import('@/views/ChangeDetailView.vue'),
     meta: { title: '变更详情' },
   },
   {
