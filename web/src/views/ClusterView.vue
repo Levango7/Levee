@@ -11,6 +11,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { batchApi, systemApi, type BatchSummaryDTO, type ClusterStatus } from '@/api'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { assignmentLabel } from '@/utils/assignment'
+import { nodeRoleLabel, nodeStatusLabel, nodeStatusTone } from '@/utils/node'
 import PageHeader from '@/components/PageHeader.vue'
 
 const data = ref<ClusterStatus | null>(null)
@@ -73,10 +74,11 @@ function lastHeartbeatRelative(iso: string): string {
 	return `${Math.floor(diff / 3_600_000)}h ago`
 }
 
-// Node liveness: `active` is the only status the registry writes as healthy.
-function nodeTone(status: string): string {
-	return status === 'active' ? 'ok' : 'bad'
-}
+// Node liveness and role wording live in @/utils/node so the vocabulary is declared in
+// one place and pinned against internal/cluster by
+// internal/cluster/node_vocabulary_test.go. The expression this replaces
+// (`status === 'active' ? 'ok' : 'bad'`) folded three registry states onto two colours,
+// so a node that asked to leave gracefully was painted as a failure.
 
 const assignmentDistribution = computed(() => {
 	const counts = summary.value?.counts ?? {}
@@ -142,11 +144,11 @@ const assignmentDistribution = computed(() => {
 				<div v-for="n in nodes" :key="n.id" class="lv-panel node">
 					<div class="node__head">
 						<span class="node__id lv-mono">{{ n.id }}</span>
-						<span class="lv-dot" :class="`lv-dot--${nodeTone(n.status)}`" :title="n.status"></span>
+						<span class="lv-dot" :class="`lv-dot--${nodeStatusTone(n.status)}`" :title="nodeStatusLabel(n.status)"></span>
 					</div>
 					<div class="node__addr lv-mono">{{ n.address }}</div>
 					<div class="node__meta">
-						<span class="node__role">{{ n.role }}</span>
+						<span class="node__role">{{ nodeRoleLabel(n.role) }}</span>
 						<span class="node__beat">心跳 {{ lastHeartbeatRelative(n.lastHeartbeat) }}</span>
 					</div>
 				</div>
