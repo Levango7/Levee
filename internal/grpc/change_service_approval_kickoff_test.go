@@ -57,81 +57,43 @@ func encodeKickoffMeta(ap *approval.Approval) string {
 	return string(raw)
 }
 
+// The kickoff adapter's Create/Get/Update delegate to internal/approval's row
+// mapping (approval/staterow.go) instead of carrying their own encoding: two
+// copies of the row mapping is how a production change to it becomes invisible
+// to the tests that seed rows the production code reads.
 func (a *kickoffStoreAdapter) Create(ctx context.Context, ap *approval.Approval) error {
-	acted := ap.ExpiresAt
-	return a.store.CreateApproval(ctx, &state.Approval{
-		ID:        ap.ID,
-		RunID:     ap.RunID,
-		Level:     ap.Level,
-		Status:    string(ap.Status),
-		Comment:   encodeKickoffMeta(ap),
-		TimeoutAt: &acted,
-		PlanHash:  ap.PlanHash,
-	})
+	sa, err := approval.StateApproval(ap)
+	if err != nil {
+		return err
+	}
+	return a.store.CreateApproval(ctx, sa)
 }
 
 func (a *kickoffStoreAdapter) Get(ctx context.Context, id string) (*approval.Approval, error) {
 	row, err := a.store.GetApproval(ctx, id)
-	if err != nil || row == nil {
+	if err != nil {
+		return nil, err
+	}
+	if row == nil {
 		return nil, approval.ErrNotFound
 	}
-	out := &approval.Approval{
-		ID:       row.ID,
-		RunID:    row.RunID,
-		Level:    row.Level,
-		Status:   approval.Status(row.Status),
-		PlanHash: row.PlanHash,
-	}
-	if row.TimeoutAt != nil {
-		out.ExpiresAt = *row.TimeoutAt
-	}
-	if row.Comment != "" {
-		var meta kickoffMeta
-		if err := json.Unmarshal([]byte(row.Comment), &meta); err == nil {
-			out.Approvers = meta.Approvers
-			out.MinApprovers = meta.MinApprovers
-			out.Decisions = meta.Decisions
-			out.Initiator = meta.Initiator
-			out.ExcludeInitiator = meta.ExcludeInitiator
-		}
-	}
-	if out.MinApprovers == 0 {
-		out.MinApprovers = 1
-	}
-	return out, nil
+	return approval.ApprovalFromState(row)
 }
 
 func (a *kickoffStoreAdapter) Update(ctx context.Context, ap *approval.Approval) error {
-	acted := ap.ExpiresAt
-	return a.store.UpdateApproval(ctx, &state.Approval{
-		ID:        ap.ID,
-		RunID:     ap.RunID,
-		Level:     ap.Level,
-		Status:    string(ap.Status),
-		Comment:   encodeKickoffMeta(ap),
-		TimeoutAt: &acted,
-		PlanHash:  ap.PlanHash,
-	})
+	sa, err := approval.StateApproval(ap)
+	if err != nil {
+		return err
+	}
+	return a.store.UpdateApproval(ctx, sa)
 }
 
 func (a *kickoffStoreAdapter) UpdateIfPending(ctx context.Context, ap *approval.Approval) (bool, error) {
-	row, err := a.store.GetApproval(ctx, ap.ID)
-	if err != nil || row == nil {
-		return false, approval.ErrNotFound
+	sa, err := approval.StateApproval(ap)
+	if err != nil {
+		return false, err
 	}
-	if row.Status != "pending" {
-		return false, nil
-	}
-	acted := ap.ExpiresAt
-	return true, a.store.UpdateApproval(ctx, &state.Approval{
-		ID:        ap.ID,
-		RunID:     ap.RunID,
-		Level:     ap.Level,
-		Status:    string(ap.Status),
-		Comment:   encodeKickoffMeta(ap),
-		TimeoutAt: &acted,
-		PlanHash:  ap.PlanHash,
-	})
+	return a.store.UpdateApprovalIfPending(ctx, sa)
 }
 
 func (a *kickoffStoreAdapter) ListPending(ctx context.Context) ([]*approval.Approval, error) {

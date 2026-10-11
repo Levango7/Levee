@@ -40,6 +40,7 @@ const (
 	ChangeService_GetLogs_FullMethodName        = "/levee.ChangeService/GetLogs"
 	ChangeService_GetDiff_FullMethodName        = "/levee.ChangeService/GetDiff"
 	ChangeService_GetTrace_FullMethodName       = "/levee.ChangeService/GetTrace"
+	ChangeService_GetApprovals_FullMethodName   = "/levee.ChangeService/GetApprovals"
 	ChangeService_WatchChange_FullMethodName    = "/levee.ChangeService/WatchChange"
 	ChangeService_StreamLogs_FullMethodName     = "/levee.ChangeService/StreamLogs"
 )
@@ -88,6 +89,12 @@ type ChangeServiceClient interface {
 	GetDiff(ctx context.Context, in *GetDiffRequest, opts ...grpc.CallOption) (*GetDiffResponse, error)
 	// `levee trace`
 	GetTrace(ctx context.Context, in *GetTraceRequest, opts ...grpc.CallOption) (*GetTraceResponse, error)
+	// GetApprovals reads a change's approval chain: who was asked, who has
+	// decided, and which plan version each decision attests to. The chain was
+	// internal-only, so the console could show "pending approval" and nothing
+	// about why a vote would not land -- the entrap the roadmap's approval-centre
+	// row is about.
+	GetApprovals(ctx context.Context, in *GetApprovalsRequest, opts ...grpc.CallOption) (*GetApprovalsResponse, error)
 	// Real-time status push.
 	WatchChange(ctx context.Context, in *WatchChangeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChangeEvent], error)
 	// Real-time log stream.
@@ -302,6 +309,16 @@ func (c *changeServiceClient) GetTrace(ctx context.Context, in *GetTraceRequest,
 	return out, nil
 }
 
+func (c *changeServiceClient) GetApprovals(ctx context.Context, in *GetApprovalsRequest, opts ...grpc.CallOption) (*GetApprovalsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetApprovalsResponse)
+	err := c.cc.Invoke(ctx, ChangeService_GetApprovals_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *changeServiceClient) WatchChange(ctx context.Context, in *WatchChangeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ChangeEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &ChangeService_ServiceDesc.Streams[0], ChangeService_WatchChange_FullMethodName, cOpts...)
@@ -384,6 +401,12 @@ type ChangeServiceServer interface {
 	GetDiff(context.Context, *GetDiffRequest) (*GetDiffResponse, error)
 	// `levee trace`
 	GetTrace(context.Context, *GetTraceRequest) (*GetTraceResponse, error)
+	// GetApprovals reads a change's approval chain: who was asked, who has
+	// decided, and which plan version each decision attests to. The chain was
+	// internal-only, so the console could show "pending approval" and nothing
+	// about why a vote would not land -- the entrap the roadmap's approval-centre
+	// row is about.
+	GetApprovals(context.Context, *GetApprovalsRequest) (*GetApprovalsResponse, error)
 	// Real-time status push.
 	WatchChange(*WatchChangeRequest, grpc.ServerStreamingServer[ChangeEvent]) error
 	// Real-time log stream.
@@ -457,6 +480,9 @@ func (UnimplementedChangeServiceServer) GetDiff(context.Context, *GetDiffRequest
 }
 func (UnimplementedChangeServiceServer) GetTrace(context.Context, *GetTraceRequest) (*GetTraceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetTrace not implemented")
+}
+func (UnimplementedChangeServiceServer) GetApprovals(context.Context, *GetApprovalsRequest) (*GetApprovalsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetApprovals not implemented")
 }
 func (UnimplementedChangeServiceServer) WatchChange(*WatchChangeRequest, grpc.ServerStreamingServer[ChangeEvent]) error {
 	return status.Error(codes.Unimplemented, "method WatchChange not implemented")
@@ -845,6 +871,24 @@ func _ChangeService_GetTrace_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _ChangeService_GetApprovals_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetApprovalsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChangeServiceServer).GetApprovals(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChangeService_GetApprovals_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChangeServiceServer).GetApprovals(ctx, req.(*GetApprovalsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _ChangeService_WatchChange_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(WatchChangeRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -953,6 +997,10 @@ var ChangeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTrace",
 			Handler:    _ChangeService_GetTrace_Handler,
+		},
+		{
+			MethodName: "GetApprovals",
+			Handler:    _ChangeService_GetApprovals_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

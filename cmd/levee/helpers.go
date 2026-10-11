@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -268,80 +267,14 @@ type approvalExtra struct {
 }
 
 // approvalToState converts an approval.Approval to a state.Approval.
+// approvalToState / stateToApproval delegate to internal/approval's staterow.go,
+// the single owner of the row mapping. Two copies used to exist (this one and a
+// near-identical one in internal/grpc's tests), so a change to the mapping
+// rewritten how one surface read rows the other still wrote the old shape.
 func approvalToState(ap *approval.Approval) (*state.Approval, error) {
-	extra := approvalExtra{
-		Approvers:        ap.Approvers,
-		MinApprovers:     ap.MinApprovers,
-		Decisions:        ap.Decisions,
-		CreatedAt:        ap.CreatedAt,
-		ExpiresAt:        ap.ExpiresAt,
-		Initiator:        ap.Initiator,
-		ExcludeInitiator: ap.ExcludeInitiator,
-	}
-	extraJSON, err := json.Marshal(extra)
-	if err != nil {
-		return nil, fmt.Errorf("marshal approval extra: %w", err)
-	}
-
-	sa := &state.Approval{
-		ID:       ap.ID,
-		RunID:    ap.RunID,
-		Level:    ap.Level,
-		Status:   string(ap.Status),
-		Comment:  string(extraJSON),
-		PlanHash: ap.PlanHash,
-		Revision: ap.Revision,
-	}
-
-	if !ap.ExpiresAt.IsZero() {
-		t := ap.ExpiresAt
-		sa.TimeoutAt = &t
-	}
-
-	// Set Approver and ActedAt from the latest decision, if any.
-	if len(ap.Decisions) > 0 {
-		last := ap.Decisions[len(ap.Decisions)-1]
-		sa.Approver = last.Approver
-		sa.ActedAt = &last.At
-	}
-
-	return sa, nil
+	return approval.StateApproval(ap)
 }
 
-// stateToApproval converts a state.Approval back to an approval.Approval.
-// A non-empty Comment that fails to parse is treated as a hard error rather
-// than silently returning a zero-valued record: approver identity, quorum and
-// existing decisions are governance data, and silently degrading them could
-// let a record pass through with MinApprovers effectively 0 (which the
-// service re-clamps to 1) or lose prior votes. ListPending callers already
-// skip malformed records; decision paths surface this error to the operator.
 func stateToApproval(sa *state.Approval) (*approval.Approval, error) {
-	ap := &approval.Approval{
-		ID:       sa.ID,
-		RunID:    sa.RunID,
-		Level:    sa.Level,
-		Status:   approval.Status(sa.Status),
-		PlanHash: sa.PlanHash,
-		Revision: sa.Revision,
-	}
-
-	if sa.Comment != "" {
-		var extra approvalExtra
-		if err := json.Unmarshal([]byte(sa.Comment), &extra); err != nil {
-			return nil, fmt.Errorf("approval %q has unparsable metadata (comment %q): %w", sa.ID, sa.Comment, err)
-		}
-		ap.Approvers = extra.Approvers
-		ap.MinApprovers = extra.MinApprovers
-		ap.Decisions = extra.Decisions
-		ap.CreatedAt = extra.CreatedAt
-		ap.ExpiresAt = extra.ExpiresAt
-		ap.Initiator = extra.Initiator
-		ap.ExcludeInitiator = extra.ExcludeInitiator
-	}
-
-	if sa.TimeoutAt != nil && ap.ExpiresAt.IsZero() {
-		ap.ExpiresAt = *sa.TimeoutAt
-	}
-
-	return ap, nil
+	return approval.ApprovalFromState(sa)
 }
