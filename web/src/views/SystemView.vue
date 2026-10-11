@@ -2,12 +2,15 @@
 // SystemView is the operator dashboard: version, daemon health, doctor report
 // and the loaded config. It is read-only; the only action is "run doctor"
 // which re-runs the diagnostic checks.
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { systemApi } from '@/api'
 import type { SystemStatus, VersionInfo } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
+import StateBlock from '@/components/StateBlock.vue'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 import { formatTimestamp, formatUptime } from '@/utils/format'
 import { healthLabel, verdictLabel } from '@/utils/diagnosis'
 
@@ -23,27 +26,52 @@ const doctor = ref<{
   checkedAt: number
 } | null>(null)
 
+// The three panels load independently and tolerate each other's failure (a
+// dead /version must not hide the daemon health). Tolerating a failure, though,
+// is not the same as hiding it: each panel keeps its own failure so the region
+// can say "this could not be read" instead of the old "未取到" that rendered
+// identically for a 500, a 403 and an empty deployment (utils/apiState.ts).
+const statusError = ref<unknown>(null)
+const versionError = ref<unknown>(null)
+const configError = ref<unknown>(null)
+
+const statusTier = computed<LoadTier>(() =>
+  statusError.value === null ? 'ok' : classifyError(statusError.value),
+)
+const statusText = computed(() => errorMessage(statusError.value, '运行状态读取失败'))
+const versionTier = computed<LoadTier>(() =>
+  versionError.value === null ? 'ok' : classifyError(versionError.value),
+)
+const versionText = computed(() => errorMessage(versionError.value, '版本信息读取失败'))
+const configTier = computed<LoadTier>(() =>
+  configError.value === null ? 'ok' : classifyError(configError.value),
+)
+const configText = computed(() => errorMessage(configError.value, '配置读取失败'))
+
 async function loadVersion(): Promise<void> {
   try {
     version.value = await systemApi.version()
-  } catch {
-    // Tolerate failure: the dashboard still shows other panels.
+    versionError.value = null
+  } catch (err) {
+    versionError.value = err
   }
 }
 
 async function loadStatus(): Promise<void> {
   try {
     status.value = await systemApi.status()
-  } catch {
-    // Same as above.
+    statusError.value = null
+  } catch (err) {
+    statusError.value = err
   }
 }
 
 async function loadConfig(): Promise<void> {
   try {
     config.value = await systemApi.config({ redactSecrets: true })
-  } catch {
-    // Same as above.
+    configError.value = null
+  } catch (err) {
+    configError.value = err
   }
 }
 
@@ -75,6 +103,9 @@ function isHealthy(s: string | undefined): boolean {
 
 async function refresh(): Promise<void> {
   loading.value = true
+  statusError.value = null
+  versionError.value = null
+  configError.value = null
   await Promise.all([loadVersion(), loadStatus(), loadConfig()])
   loading.value = false
 }
@@ -130,6 +161,14 @@ onMounted(async () => {
               </div>
             </div>
           </template>
+          <StateBlock
+            v-else-if="statusTier === 'error' || statusTier === 'forbidden'"
+            :tier="statusTier"
+            :message="statusText"
+            :hint="statusTier === 'forbidden' ? '运行状态受角色管控，请联系管理员授权' : ''"
+            dense
+            @retry="refresh"
+          />
           <div v-else class="lv-empty"><span>未取到运行状态</span></div>
         </div>
       </section>
@@ -152,6 +191,14 @@ onMounted(async () => {
               <div class="lv-kv__v lv-mono">{{ version.goVersion }}</div>
             </div>
           </template>
+          <StateBlock
+            v-else-if="versionTier === 'error' || versionTier === 'forbidden'"
+            :tier="versionTier"
+            :message="versionText"
+            :hint="versionTier === 'forbidden' ? '构建信息受角色管控，请联系管理员授权' : ''"
+            dense
+            @retry="refresh"
+          />
           <div v-else class="lv-empty"><span>未取到版本信息</span></div>
         </div>
       </section>
@@ -203,6 +250,14 @@ onMounted(async () => {
         </span>
       </div>
       <pre v-if="config" class="config-content">{{ config.content }}</pre>
+      <StateBlock
+        v-else-if="configTier === 'error' || configTier === 'forbidden'"
+        :tier="configTier"
+        :message="configText"
+        :hint="configTier === 'forbidden' ? '生效配置受角色管控，请联系管理员授权' : ''"
+        dense
+        @retry="refresh"
+      />
       <div v-else class="lv-empty"><span>暂无配置信息</span></div>
     </section>
   </div>

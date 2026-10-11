@@ -4,16 +4,76 @@
 // sourced from the audit log.
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { TableInstance } from 'element-plus'
 import { changesApi, auditApi } from '@/api'
 import type { Change, TraceEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
+import StateBlock from '@/components/StateBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp } from '@/utils/format'
 import { approvalSummary, type ApprovalChain } from '@/utils/approvalChain'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
+import { useKeyboardCursor } from '@/composables/useKeyboardCursor'
 
 const activeTab = ref<'pending' | 'history'>('pending')
 const loading = ref(false)
 const pending = ref<Change[]>([])
+
+// Region states per tab (utils/apiState.ts). The two tabs load independently,
+// so each owns its failure: a broken history query must not empty the queue
+// the approver is looking at.
+const pendingError = ref<unknown>(null)
+const historyError = ref<unknown>(null)
+
+const pendingTier = computed<LoadTier>(() => {
+  if (pendingError.value !== null) return classifyError(pendingError.value)
+  if (!loading.value && pending.value.length === 0) return 'empty'
+  return 'ok'
+})
+const pendingText = computed(() => errorMessage(pendingError.value, '加载待审批列表失败'))
+
+const historyTier = computed<LoadTier>(() => {
+  if (historyError.value !== null) return classifyError(historyError.value)
+  if (!loading.value && history.value.length === 0) return 'empty'
+  return 'ok'
+})
+const historyText = computed(() => errorMessage(historyError.value, '加载审批历史失败'))
+
+// The full-keyboard approval chain (roadmap P1): a visible row cursor moved
+// with j/k, Enter to open the chain, and a / r / d for the three decisions.
+// The cursor is a ref on the table instance so Enter can drive the same
+// expansion the mouse arrow does — one mechanism, two inputs.
+const pendingTable = ref<TableInstance>()
+
+const cursor = useKeyboardCursor({
+  count: () => (activeTab.value === 'pending' ? pending.value.length : 0),
+  onOpen: (i) => toggleChain(pending.value[i]),
+  actions: {
+    a: (i) => actOnRow(i, approve),
+    r: (i) => actOnRow(i, reject),
+    d: (i) => actOnRow(i, delegate),
+  },
+})
+
+// The cursor index is a keystroke away from a list that may have been refetched
+// underneath it, so every action re-resolves the row and refuses when it is not
+// there. Acting on a stale index would approve the wrong change — the one
+// failure mode a keyboard shortcut must not have.
+function actOnRow(i: number, action: (row: Change) => void | Promise<void>): void {
+  const row = pending.value[i]
+  if (!row) return
+  void action(row)
+}
+
+function toggleChain(row: Change | undefined): void {
+  if (!row) return
+  pendingTable.value?.toggleRowExpansion(row)
+}
+
+function pendingRowClass({ rowIndex }: { rowIndex: number }): string {
+  return cursor.index.value === rowIndex ? 'lv-row-cursor' : ''
+}
 
 /** shortHash renders a plan digest at a glance (head…tail), like HashCell. */
 function shortHash(h: string): string {
@@ -45,6 +105,7 @@ const approver = ref('operator')
 
 async function loadPending(): Promise<void> {
   loading.value = true
+  pendingError.value = null
   try {
     // The backend run status for "awaiting approval" is `pending`; querying
     // `pending_approval` (a value the server never emits) returned an empty
@@ -52,19 +113,24 @@ async function loadPending(): Promise<void> {
     const res = await changesApi.list({ status: ['pending'], pageSize: 100 })
     pending.value = res.items || []
   } catch (err) {
-    ElMessage.error((err as { message?: string })?.message || '加载待审批列表失败')
+    // "Nothing waiting on you" and "the queue could not be read" are opposite
+    // operational facts; only one of them means the queue is empty.
+    pendingError.value = err
   } finally {
+    // A reloaded queue is a different set of rows; the cursor resets with it.
+    cursor.reset()
     loading.value = false
   }
 }
 
 async function loadHistory(): Promise<void> {
   loading.value = true
+  historyError.value = null
   try {
     const res = await auditApi.log({ action: 'approve', pageSize: 100 })
     history.value = res.items || []
   } catch (err) {
-    ElMessage.error((err as { message?: string })?.message || '加载审批历史失败')
+    historyError.value = err
   } finally {
     loading.value = false
   }
@@ -148,6 +214,9 @@ function onExpand(row: Change, expanded: unknown): void {
 
 function switchTab(tab: 'pending' | 'history'): void {
   activeTab.value = tab
+  // The cursor belongs to the table it moved over; the history tab has no
+  // cursor of its own, so leaving the pending tab clears it.
+  cursor.reset()
   if (tab === 'pending') loadPending()
   else loadHistory()
 }
@@ -180,12 +249,24 @@ const pendingCount = computed(() => pending.value.length)
             <span class="approver__label">审批人</span>
             <el-input v-model="approver" size="small" style="width: 132px" />
           </span>
+          <!-- The keyboard path is only usable if it is SAYABLE: the keys are
+               printed next to the list they drive, not hidden in a help modal. -->
+          <span class="kbd-hint" v-if="activeTab === 'pending' && pending.length > 0">
+            <kbd>j</kbd><kbd>k</kbd> 移动 · <kbd>Enter</kbd> 审批链 · <kbd>a</kbd> 通过 · <kbd>r</kbd> 驳回 ·
+            <kbd>d</kbd> 转授权
+          </span>
           <el-button :icon="'Refresh'" :loading="loading" size="small" @click="switchTab(activeTab)">刷新</el-button>
         </div>
       </div>
 
       <div v-if="activeTab === 'pending'">
-        <el-table v-loading="loading" :data="pending" @expand-change="onExpand">
+        <el-table
+          ref="pendingTable"
+          v-loading="loading"
+          :data="pending"
+          :row-class-name="pendingRowClass"
+          @expand-change="onExpand"
+        >
           <!-- The chain, not a bare "pending". Every line here answers "why is
                my vote not going to land" -- the entrap this page hid behind a
                status tag. -->
@@ -263,9 +344,17 @@ const pendingCount = computed(() => pending.value.length)
             </template>
           </el-table-column>
         </el-table>
-        <el-empty
-          v-if="!loading && pending.length === 0"
-          description="暂无待审批变更"
+        <StateBlock
+          v-if="pendingTier === 'error' || pendingTier === 'forbidden'"
+          :tier="pendingTier"
+          :message="pendingText"
+          :hint="pendingTier === 'forbidden' ? '待审批队列受角色管控，请联系管理员授权' : ''"
+          @retry="loadPending"
+        />
+        <StateBlock
+          v-else-if="pendingTier === 'empty'"
+          tier="empty"
+          hint="没有等待审批的变更"
         />
       </div>
 
@@ -290,7 +379,18 @@ const pendingCount = computed(() => pending.value.length)
           </el-table-column>
           <el-table-column prop="targetHost" label="目标" min-width="150" show-overflow-tooltip />
         </el-table>
-        <el-empty v-if="!loading && history.length === 0" description="暂无审批历史" />
+        <StateBlock
+          v-if="historyTier === 'error' || historyTier === 'forbidden'"
+          :tier="historyTier"
+          :message="historyText"
+          :hint="historyTier === 'forbidden' ? '审批历史受角色管控，请联系管理员授权' : ''"
+          @retry="loadHistory"
+        />
+        <StateBlock
+          v-else-if="historyTier === 'empty'"
+          tier="empty"
+          hint="还没有审批记录"
+        />
       </div>
     </div>
   </div>
@@ -379,6 +479,40 @@ const pendingCount = computed(() => pending.value.length)
   display: inline-flex;
   align-items: center;
   gap: var(--lv-space-3);
+}
+
+/* Keyboard affordance. Printed in the panel head rather than hidden in a help
+ * modal: a shortcut nobody can discover is a shortcut nobody uses, and the
+ * approval list is the page where an operator spends the whole session. */
+.kbd-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+.kbd-hint kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--lv-border);
+  border-bottom-width: 2px;
+  border-radius: var(--lv-radius-sm);
+  background: var(--lv-surface);
+  font-family: var(--lv-font-mono, inherit);
+  font-size: 11px;
+  color: var(--lv-text-2);
+}
+
+/* The visible keyboard cursor. An outline, not a background: the row keeps its
+ * own hover/selected states, and two backgrounds stacked would read as a
+ * different row state rather than as "the keys act here". */
+:deep(.lv-row-cursor) td {
+  box-shadow: inset 0 0 0 1px var(--lv-accent-border);
+  background: var(--lv-accent-soft);
+}
+
+:deep(.lv-row-cursor:first-child) td:first-child {
+  box-shadow: inset 2px 0 0 0 var(--lv-accent);
 }
 
 .approver {

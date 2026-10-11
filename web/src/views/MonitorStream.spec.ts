@@ -65,7 +65,14 @@ describe('monitor event stream', () => {
   it('reads the aggregates on an event, because the event carries no snapshot', () => {
     // Status and batch panels are snapshots; the event only says "something
     // changed". Reloading them is the honest response.
-    expect(view, 'an event must refresh the aggregates').toContain('void loadSummary()')
-    expect(view, 'an event must refresh the change').toContain('void loadChange()')
+    expect(view, 'an event must refresh the aggregates').toContain('void loadSummary(true)')
+    expect(view, 'an event must refresh the change').toContain('void loadChange(true)')
+    // The quiet flag is load-bearing, not a style choice: without it a
+    // stream-driven failure would raise a region error (or, before that, a
+    // toast) on every event of a flaky network, while the panels above keep
+    // their last real numbers. refreshAll (mount / manual 刷新) passes nothing,
+    // so a manual refresh still answers in place — see regionStates.spec.ts.
+    expect(view, 'the stream path must stay quiet').toContain('void loadLogs(true)')
+    expect(view, 'the manual path must be loud').toContain('await Promise.all([loadChange(), loadLogs(), loadSummary()])')
   })
 })

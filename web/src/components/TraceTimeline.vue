@@ -19,6 +19,7 @@
 //    owner is the backend, and a partial Chinese map here would drift from it
 //    silently. The audit view takes the same stance.
 import type { TraceEntry } from '@/types/levee'
+import StateBlock from '@/components/StateBlock.vue'
 import { formatTimestamp } from '@/utils/format'
 
 defineProps<{
@@ -49,7 +50,9 @@ defineProps<{
         <div v-if="e.detail" class="tl__detail">{{ e.detail }}</div>
       </el-timeline-item>
     </el-timeline>
-    <el-empty v-else :description="emptyText || '暂无记录'" :image-size="60" />
+    <!-- Empty goes through the shared StateBlock so "no entries" reads the same
+         on every region of the console; the caller's phrase is the hint. -->
+    <StateBlock v-else tier="empty" :hint="emptyText || '暂无记录'" dense />
   </div>
 </template>
 

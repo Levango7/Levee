@@ -13,22 +13,35 @@ import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { assignmentLabel } from '@/utils/assignment'
 import { nodeRoleLabel, nodeStatusLabel, nodeStatusTone } from '@/utils/node'
 import PageHeader from '@/components/PageHeader.vue'
+import StateBlock from '@/components/StateBlock.vue'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 
 const data = ref<ClusterStatus | null>(null)
 const batchData = ref<BatchSummaryDTO | null>(null)
 const selectedRunID = ref('')
-const error = ref('')
-const batchError = ref('')
+// The caught failure itself, not a string: the tier (utils/apiState.ts) reads
+// the HTTP status off it, and the server's own wording travels with it.
+const error = ref<unknown>(null)
+const batchError = ref<unknown>(null)
 const loading = ref(false)
 let timer: ReturnType<typeof setInterval> | undefined
+
+const errorTier = computed<LoadTier>(() => (error.value === null ? 'ok' : classifyError(error.value)))
+const errorText = computed(() => errorMessage(error.value, '集群状态加载失败'))
+
+const batchErrorTier = computed<LoadTier>(() =>
+	batchError.value === null ? 'ok' : classifyError(batchError.value),
+)
+const batchErrorText = computed(() => errorMessage(batchError.value, '批次进度加载失败'))
 
 async function fetchStatus() {
 	loading.value = true
 	try {
 		data.value = await systemApi.clusterStatus()
-		error.value = ''
+		error.value = null
 	} catch (e) {
-		error.value = e instanceof Error ? e.message : String(e)
+		error.value = e
 	} finally {
 		loading.value = false
 	}
@@ -41,9 +54,9 @@ async function fetchBatchStatus() {
 	}
 	try {
 		batchData.value = await batchApi.batchStatus(selectedRunID.value.trim())
-		batchError.value = ''
+		batchError.value = null
 	} catch (e) {
-		batchError.value = e instanceof Error ? e.message : String(e)
+		batchError.value = e
 	}
 }
 
@@ -215,7 +228,13 @@ const assignmentDistribution = computed(() => {
 				<p v-if="!selectedRunID.trim()" class="muted">
 					按 run 查询逐批推进：每批的主机数、成功/失败分布与当前批次。
 				</p>
-				<p v-else-if="batchError" class="error">{{ batchError }}</p>
+				<StateBlock
+					v-else-if="batchErrorTier === 'error' || batchErrorTier === 'forbidden'"
+					:tier="batchErrorTier"
+					:message="batchErrorText"
+					retry-label="重新查询"
+					@retry="fetchBatchStatus"
+				/>
 				<template v-else-if="batchData">
 					<div class="batch-head">
 						<span class="batch-head__stamp lv-mono">
@@ -244,7 +263,17 @@ const assignmentDistribution = computed(() => {
 			</div>
 		</div>
 
-		<p v-if="error" class="error">{{ error }}</p>
+		<!-- Cluster-status failure answers in place. It used to be a bare red
+		     paragraph under the panels, i.e. below everything it invalidated:
+		     the node cards above stayed on screen showing stale registry data
+		     that read as current. -->
+		<StateBlock
+			v-if="errorTier === 'error' || errorTier === 'forbidden'"
+			:tier="errorTier"
+			:message="errorText"
+			:hint="errorTier === 'forbidden' ? '集群状态受角色管控，请联系管理员授权' : ''"
+			@retry="fetchStatus"
+		/>
 	</div>
 </template>
 
@@ -427,12 +456,6 @@ const assignmentDistribution = computed(() => {
 
 .muted {
 	color: var(--lv-text-3);
-	font-size: var(--lv-text-sm);
-}
-
-.error {
-	margin-top: var(--lv-space-4);
-	color: var(--lv-bad);
 	font-size: var(--lv-text-sm);
 }
 

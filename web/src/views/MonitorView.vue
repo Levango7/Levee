@@ -1,16 +1,17 @@
 <script setup lang="ts">
-// MonitorView is the real-time execution monitor: a polled log stream (there is
-// no SSE route — `WatchChange`/`StreamLogs` exist only as gRPC server streams,
-// so the browser polls), batch progress read from the same endpoint the cluster
-// page uses, and a gate panel that is deliberately EMPTY until gate verdicts get
-// a read route.
+// MonitorView is the real-time execution monitor: an SSE log stream (the server
+// publishes /changes/<id>/events and this view subscribes with EventSource —
+// the old 2s poll is gone; see MonitorStream.spec.ts), batch progress read from
+// the same endpoint the cluster page uses, and a gate panel that is
+// deliberately EMPTY until gate verdicts get a read route.
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
+import StateBlock from '@/components/StateBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
+import { classifyError, errorMessage } from '@/utils/apiState'
 import { formatTimestamp } from '@/utils/format'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { buildTargetMap, cellSummary, STEP_LABEL } from '@/utils/targetMap'
@@ -23,6 +24,24 @@ const logs = ref<LogEntry[]>([])
 const loading = ref(false)
 const autoScroll = ref(true)
 const logStreamRef = ref<HTMLElement | null>(null)
+
+// Region states (utils/apiState.ts). The monitor's three panels answer
+// separately: a change the operator may not read must not blank the batch
+// panel, and a log tail that failed to load must not claim "no logs".
+const loadError = ref<unknown>(null)
+const batchError = ref<unknown>(null)
+const logsError = ref<unknown>(null)
+// Kept last-refresh failure for the stream path: the panels stay on their last
+// real data, so the fact that the newest refresh failed is worth surfacing
+// somewhere without overwriting what is on screen.
+const lastError = ref<unknown>(null)
+
+const loadTier = computed(() => (loadError.value === null ? 'ok' : classifyError(loadError.value)))
+const loadText = computed(() => errorMessage(loadError.value, '加载变更失败'))
+const batchTier = computed(() => (batchError.value === null ? 'ok' : classifyError(batchError.value)))
+const batchText = computed(() => errorMessage(batchError.value, '加载批次进度失败'))
+const logsTier = computed(() => (logsError.value === null ? 'ok' : classifyError(logsError.value)))
+const logsText = computed(() => errorMessage(logsError.value, '加载执行日志失败'))
 
 // Polling interval. 2s is a reasonable trade-off between freshness and load.
 
@@ -68,12 +87,21 @@ const targetBatchNos = computed(() => targetMap.value.batchNos)
 // `pending`, so a run with no gates at all looked like a run whose gates were
 // still running. That is removed rather than dressed up — see the panel below.
 
-async function loadChange(): Promise<void> {
+async function loadChange(quiet = false): Promise<void> {
   if (!changeId.value) return
   try {
     change.value = await changesApi.get(changeId.value)
   } catch (err) {
-    ElMessage.error((err as { message?: string })?.message || '加载变更失败')
+    // A FIRST load that fails is a page with no content: it says so in place.
+    // A stream-driven refresh that fails is the opposite case by policy — the
+    // panels keep the last real numbers rather than blanking to an error — so
+    // the failure is carried, not raised, when quiet.
+    if (quiet) {
+      lastError.value = err
+    } else {
+      loadError.value = err
+    }
+    return
   }
   try {
     const plan = await changesApi.plan(changeId.value)
@@ -85,7 +113,7 @@ async function loadChange(): Promise<void> {
   }
 }
 
-async function loadLogs(): Promise<void> {
+async function loadLogs(quiet = false): Promise<void> {
   if (!changeId.value) return
   try {
     const res = await changesApi.logs(changeId.value, { limit: 200 })
@@ -94,8 +122,10 @@ async function loadLogs(): Promise<void> {
       await nextTick()
       scrollToBottom()
     }
-  } catch {
-    // Silent fail during polling to avoid spamming toasts.
+  } catch (err) {
+    // Same quiet policy: a dropped tail during a stream refresh is the next
+    // event's problem, not a toast's.
+    if (!quiet) logsError.value = err
   }
 }
 
@@ -145,9 +175,9 @@ function openStream(): void {
     }, retryDelay.value)
   }
   es.onmessage = () => {
-    void loadChange()
-    void loadSummary()
-    void loadLogs()
+    void loadChange(true)
+    void loadSummary(true)
+    void loadLogs(true)
   }
   eventSource.value = es
 }
@@ -159,19 +189,25 @@ function scrollToBottom(): void {
   }
 }
 
-async function loadSummary(): Promise<void> {
+async function loadSummary(quiet = false): Promise<void> {
   if (!changeId.value) return
   try {
     summary.value = await batchApi.batchStatus(changeId.value)
-  } catch {
-    // Silent during polling, same policy as the log stream: a transient failure
-    // must not raise a toast every 2 seconds. The panel keeps the last real
-    // numbers rather than replacing them with anything invented.
+    batchError.value = null
+  } catch (err) {
+    // A stream refresh that fails is silent by policy: a toast per event on a
+    // flaky network is noise, and the panel keeps the last real numbers rather
+    // than replacing them with anything invented. refreshAll (mount + manual)
+    // passes quiet=false, so an operator pressing 刷新 does get an answer.
+    if (!quiet) batchError.value = err
   }
 }
 
 async function refreshAll(): Promise<void> {
   loading.value = true
+  loadError.value = null
+  batchError.value = null
+  logsError.value = null
   await Promise.all([loadChange(), loadLogs(), loadSummary()])
   loading.value = false
 }
@@ -256,6 +292,16 @@ const batchTotals = computed(() => {
                 <div class="lv-kv__v lv-mono">{{ formatTimestamp(change.updatedAt) }}</div>
               </div>
             </template>
+            <!-- A failed read must not fall through to "未指定变更": the id was
+                 specified, it just could not be fetched. -->
+            <StateBlock
+              v-else-if="loadTier === 'error' || loadTier === 'forbidden'"
+              :tier="loadTier"
+              :message="loadText"
+              :hint="loadTier === 'forbidden' ? '该账号的角色看不到这个变更，请联系管理员授权' : ''"
+              dense
+              @retry="refreshAll"
+            />
             <div v-else class="lv-empty">
               <el-icon class="lv-empty__icon"><Aim /></el-icon>
               <span class="lv-empty__title">未指定变更</span>
@@ -272,11 +318,22 @@ const batchTotals = computed(() => {
             </span>
           </div>
           <div class="lv-panel__body">
-            <div v-if="!summary || summary.batches.length === 0" class="lv-empty">
-              <el-icon class="lv-empty__icon"><Files /></el-icon>
-              <span>暂无批次记录</span>
-              <span>该变更还没有进入分批执行阶段。</span>
-            </div>
+            <!-- "No batches" and "batches could not be read" are different
+                 answers; the second one used to render the first one. -->
+            <StateBlock
+              v-if="batchTier === 'error' || batchTier === 'forbidden'"
+              :tier="batchTier"
+              :message="batchText"
+              :hint="batchTier === 'forbidden' ? '批次进度受角色管控，请联系管理员授权' : ''"
+              dense
+              @retry="loadSummary()"
+            />
+            <StateBlock
+              v-else-if="!summary || summary.batches.length === 0"
+              tier="empty"
+              hint="该变更还没有进入分批执行阶段"
+              dense
+            />
             <ol v-else class="batches">
               <li
                 v-for="b in summary.batches"
@@ -322,7 +379,17 @@ const batchTotals = computed(() => {
             </span>
           </div>
           <div class="lv-panel__body">
-            <div v-if="targetRows.length === 0" class="lv-empty">
+            <!-- An unread run (403) must not render as "no targets yet": the
+                 hosts exist, this principal just may not see them. -->
+            <StateBlock
+              v-if="batchTier === 'error' || batchTier === 'forbidden'"
+              :tier="batchTier"
+              :message="batchText"
+              :hint="batchTier === 'forbidden' ? '目标进度受角色管控，请联系管理员授权' : ''"
+              dense
+              @retry="loadSummary()"
+            />
+            <div v-else-if="targetRows.length === 0" class="lv-empty">
               <span class="lv-empty__title">暂无目标进度</span>
               <span>计划还没有分配到主机，或执行还没有写出第一步。</span>
             </div>
@@ -390,7 +457,17 @@ const batchTotals = computed(() => {
           </div>
         </div>
         <div ref="logStreamRef" class="terminal">
-          <div v-if="logs.length === 0" class="terminal__empty">
+          <!-- A tail that failed to load says so; "no logs yet" stays the
+               prompt, which is what an idle run actually looks like. -->
+          <StateBlock
+            v-if="logsTier === 'error' || logsTier === 'forbidden'"
+            :tier="logsTier"
+            :message="logsText"
+            :hint="logsTier === 'forbidden' ? '执行日志受角色管控，请联系管理员授权' : ''"
+            dense
+            @retry="loadLogs()"
+          />
+          <div v-else-if="logs.length === 0" class="terminal__empty">
             <span class="terminal__prompt lv-mono">$</span>
             <span>等待日志输出…（该 run 尚未产生日志，或日志已被轮转）</span>
           </div>
