@@ -355,11 +355,29 @@ export interface BatchProgressDTO {
   failed: number
 }
 
+/** One host's row in one batch (per-host progress under /system/batch-status). */
+export interface StepRowDTO {
+  host: string
+  /** The batch NUMBER the row belongs to (resolved server-side).
+   *  snake_case: /system/batch-status writes the aggregates and these rows
+   *  with JSON tags (see stepPayload in internal/grpc/rest.go) — this field
+   *  was camelCase for a while and read back as undefined. */
+  batch_no: number
+  step_name: string
+  /** pending|running|success|failed|skipped — internal/state.StepStatus* */
+  status: string
+  duration_ms: number
+  /** Omitted when the engine did not record one. */
+  exit_code?: number
+}
+
 export interface BatchSummaryDTO {
   batches: BatchProgressDTO[]
   current_batch_no: number
   total_batches: number
   done_batches: number
+  /** Absent when the run has no step rows yet. */
+  steps?: StepRowDTO[]
 }
 
 export const batchApi = {

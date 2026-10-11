@@ -521,17 +521,10 @@ func auditToTraceEntry(a *state.Audit) *pb.TraceEntry {
 	}
 }
 
-// traceToPB converts a state.Trace to a pb.TraceEntry.
+// traceToPB converts a state.Trace to a pb.TraceEntry, through the shared
+// mapping (trace_map.go) — the copy that lived here dropped the target, the
+// actor and the whole Detail payload, which is why the audit view's evidence
+// fragments were empty for trace rows.
 func traceToPB(t *state.Trace) *pb.TraceEntry {
-	if t == nil {
-		return nil
-	}
-	return &pb.TraceEntry{
-		Id:        t.ID,
-		RunId:     t.RunID,
-		Action:    t.Event,
-		PrevHash:  t.PrevHash,
-		CurrHash:  t.CurrHash,
-		Timestamp: t.Timestamp.Unix(),
-	}
+	return traceEntryToPB(t)
 }

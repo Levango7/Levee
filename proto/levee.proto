@@ -92,6 +92,12 @@ message TraceEntry {
   int64 timestamp = 8;
   string prev_hash = 9;
   string curr_hash = 10;
+  // Who acted, and the readable context (an error, or the recorder's
+  // metadata: batch number, step name). The web console has typed these two
+  // fields for months while nothing filled them for trace rows, which is why
+  // the target column showed the actor instead of the host.
+  string actor = 11;
+  string detail = 12;
 }
 
 // LogEntry is a single log line, used both in batched responses and streaming.
