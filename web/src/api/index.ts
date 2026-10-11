@@ -120,6 +120,12 @@ export const changesApi = {
   archive: (id: string, purgeArtifacts?: boolean): Promise<Change> =>
     post<Change>(`/changes/${id}/archive`, { purgeArtifacts }),
 
+  // One approval CHAIN per change: who was asked, the quorum, every decision.
+  // The chain was internal-only, so the console could say "awaiting approval"
+  // and nothing about why a vote would not land.
+  approvals: (id: string): Promise<ApprovalChain[]> =>
+    get<{ approvals: ApprovalChain[] }>(`/changes/${id}/approvals`).then((raw) => raw.approvals ?? []),
+
   logs: (id: string, params?: { runId?: string; levels?: string[]; limit?: number }): Promise<{
     entries: LogEntry[]
     truncated: boolean
@@ -287,6 +293,35 @@ export const systemApi = {
     checkedAt: number
   }> => post('/system/doctor', {}),
   clusterStatus: (): Promise<ClusterStatus> => get<ClusterStatus>('/system/cluster-status'),
+}
+
+export interface ApprovalDecision {
+  approver: string
+  /** approve | reject */
+  action: string
+  reason: string
+  /** Unix timestamp (seconds); 0 when not set. */
+  decidedAt: number
+}
+
+export interface ApprovalChain {
+  id: string
+  changeId: string
+  /** standard / high / emergency */
+  level: string
+  /** pending / approved / rejected / timeout / skipped */
+  status: string
+  approvers: string[]
+  /** Votes the quorum needs before the run may settle. */
+  minApprovers: number
+  decisions: ApprovalDecision[]
+  /** Unix timestamp (seconds); 0 when not set. */
+  expiresAt: number
+  /** Empty planHash + legacy=true: still settles the run regardless of plan. */
+  planHash: string
+  legacy: boolean
+  initiator: string
+  excludeInitiator: boolean
 }
 
 // --- Cluster status types (mirror internal/state/backend) ---

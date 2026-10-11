@@ -566,62 +566,85 @@ func (gw *Gateway) dispatchChange(w http.ResponseWriter, r *http.Request, method
 			writeJSONError(w, http.StatusBadRequest, "invalid change path")
 			return
 		}
-		id, rest := parts[0], ""
-		if len(parts) > 1 && parts[1] != "" {
+		rest := ""
+		if len(parts) > 1 {
 			rest = parts[1]
 		}
-		switch rest {
-		case "":
-			switch method {
-			case "GET":
-				gw.handleChangeGet(w, r, id)
-			default:
-				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
-			}
-		case "plan", "apply", "approve", "reject", "pause", "resume", "cancel", "retry", "rollback", "archive":
-			// State-changing actions must use POST. Rejecting other verbs
-			// prevents crawlers, link prefetchers and cached GETs from
-			// mutating change state (e.g. GET /changes/<id>/pause pausing a
-			// run).
-			if method != http.MethodPost {
-				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use POST")
-				return
-			}
-			switch rest {
-			case "plan":
-				gw.handleChangePlan(w, r, id)
-			case "apply":
-				gw.handleChangeApply(w, r, id)
-			case "approve":
-				gw.handleChangeApprove(w, r, id)
-			case "reject":
-				gw.handleChangeReject(w, r, id)
-			case "pause":
-				gw.handleChangePause(w, r, id)
-			case "resume":
-				gw.handleChangeResume(w, r, id)
-			case "cancel":
-				gw.handleChangeCancel(w, r, id)
-			case "retry":
-				gw.handleChangeRetry(w, r, id)
-			case "rollback":
-				gw.handleChangeRollback(w, r, id)
-			case "archive":
-				gw.handleChangeArchive(w, r, id)
-			}
-		case "logs", "trace":
-			if method != http.MethodGet {
-				writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use GET")
-				return
-			}
-			if rest == "logs" {
-				gw.handleChangeLogs(w, r, id)
-			} else {
-				gw.handleChangeTrace(w, r, id)
-			}
-		default:
-			writeJSONError(w, http.StatusBadRequest, "unknown change sub-path: /"+rest)
+		gw.dispatchChangeSubPath(w, r, method, parts[0], rest)
+	}
+}
+
+// dispatchChangeSubPath routes /changes/<id>/<rest>. It is its own function
+// because the sub-path rules are a small state machine of their own (mutating
+// verbs must be POST, read-only verbs must be GET) and folding it into
+// dispatchChange made that function exceed the complexity gate the moment a
+// third read-only verb was added.
+func (gw *Gateway) dispatchChangeSubPath(w http.ResponseWriter, r *http.Request, method, id, rest string) {
+	switch rest {
+	case "":
+		if method != http.MethodGet {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
 		}
+		gw.handleChangeGet(w, r, id)
+	case "plan", "apply", "approve", "reject", "pause", "resume", "cancel", "retry", "rollback", "archive":
+		// State-changing actions must use POST. Rejecting other verbs
+		// prevents crawlers, link prefetchers and cached GETs from
+		// mutating change state (e.g. GET /changes/<id>/pause pausing a
+		// run).
+		if method != http.MethodPost {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use POST")
+			return
+		}
+		gw.handleChangeAction(w, r, id, rest)
+	case "approvals", "logs", "trace":
+		if method != http.MethodGet {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use GET")
+			return
+		}
+		gw.handleChangeRead(w, r, id, rest)
+	default:
+		writeJSONError(w, http.StatusBadRequest, "unknown change sub-path: /"+rest)
+	}
+}
+
+// handleChangeAction runs one mutating change action.
+func (gw *Gateway) handleChangeAction(w http.ResponseWriter, r *http.Request, id, action string) {
+	switch action {
+	case "plan":
+		gw.handleChangePlan(w, r, id)
+	case "apply":
+		gw.handleChangeApply(w, r, id)
+	case "approve":
+		gw.handleChangeApprove(w, r, id)
+	case "reject":
+		gw.handleChangeReject(w, r, id)
+	case "pause":
+		gw.handleChangePause(w, r, id)
+	case "resume":
+		gw.handleChangeResume(w, r, id)
+	case "cancel":
+		gw.handleChangeCancel(w, r, id)
+	case "retry":
+		gw.handleChangeRetry(w, r, id)
+	case "rollback":
+		gw.handleChangeRollback(w, r, id)
+	case "archive":
+		gw.handleChangeArchive(w, r, id)
+	}
+}
+
+// handleChangeRead runs one read-only change action. The three reads share the
+// verb rule and nothing else, which is why they dispatch through a tagged
+// switch instead of a chain of conditions.
+func (gw *Gateway) handleChangeRead(w http.ResponseWriter, r *http.Request, id, which string) {
+	switch which {
+	case "logs":
+		gw.handleChangeLogs(w, r, id)
+	case "approvals":
+		gw.handleChangeApprovals(w, r, id)
+	case "trace":
+		gw.handleChangeTrace(w, r, id)
 	}
 }
 
@@ -996,6 +1019,17 @@ func (gw *Gateway) handleChangeLogs(w http.ResponseWriter, r *http.Request, id s
 		req.Limit = int32(n)
 	}
 	resp, err := svc.GetLogs(ctx, req)
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	writeProto(w, resp)
+}
+
+func (gw *Gateway) handleChangeApprovals(w http.ResponseWriter, r *http.Request, id string) {
+	svc := gw.change
+	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
+	resp, err := svc.GetApprovals(ctx, &pb.GetApprovalsRequest{ChangeId: id})
 	if err != nil {
 		writeGRPCError(w, err)
 		return

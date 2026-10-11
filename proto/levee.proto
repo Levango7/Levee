@@ -180,6 +180,12 @@ service ChangeService {
   rpc GetDiff(GetDiffRequest) returns (GetDiffResponse);
   // `levee trace`
   rpc GetTrace(GetTraceRequest) returns (GetTraceResponse);
+  // GetApprovals reads a change's approval chain: who was asked, who has
+  // decided, and which plan version each decision attests to. The chain was
+  // internal-only, so the console could show "pending approval" and nothing
+  // about why a vote would not land -- the entrap the roadmap's approval-centre
+  // row is about.
+  rpc GetApprovals(GetApprovalsRequest) returns (GetApprovalsResponse);
   // Real-time status push.
   rpc WatchChange(WatchChangeRequest) returns (stream ChangeEvent);
   // Real-time log stream.
@@ -396,6 +402,54 @@ message GetTraceResponse {
   // Populated only when verify=true.
   bool hash_chain_valid = 3;
   string verification_message = 4;
+}
+
+message GetApprovalsRequest {
+  string change_id = 1;
+}
+
+// ApprovalInfo is ONE approval chain for a change. A chain is not a row per
+// approver: who was asked, the quorum, and every decision travel together
+// (see internal/approval), which is why the console has to show a chain rather
+// than "nobody has approved yet".
+message ApprovalInfo {
+  string id = 1;
+  string change_id = 2;
+  // Approval tier (standard / high / emergency).
+  string level = 3;
+  // pending / approved / rejected / timeout / skipped -- the set the service
+  // writes (internal/approval.Status).
+  string status = 4;
+  // Everyone asked to decide, in the order the chain declared them.
+  repeated string approvers = 5;
+  // Votes the quorum needs before the run may settle.
+  int32 min_approvers = 6;
+  repeated ApprovalDecision decisions = 7;
+  // Unix timestamp (seconds since epoch); 0 when not set.
+  int64 expires_at = 8;
+  // The plan artifact this chain attests to. EMPTY means a legacy record: it
+  // still settles/authorises the run regardless of plan version, which is
+  // exactly what the console has to say rather than render a blank hash.
+  string plan_hash = 9;
+  bool legacy = 10;
+  // Who authored the change being approved, and whether they are barred from
+  // deciding on it (the high tier forces this true).
+  string initiator = 11;
+  bool exclude_initiator = 12;
+}
+
+// ApprovalDecision is one approver's vote within a chain.
+message ApprovalDecision {
+  string approver = 1;
+  // "approve" or "reject".
+  string action = 2;
+  string reason = 3;
+  // Unix timestamp (seconds since epoch); 0 when not set.
+  int64 decided_at = 4;
+}
+
+message GetApprovalsResponse {
+  repeated ApprovalInfo approvals = 1;
 }
 
 message WatchChangeRequest {

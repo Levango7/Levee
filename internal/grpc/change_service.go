@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1325,6 +1326,90 @@ func (s *ChangeService) casRunStatus(ctx context.Context, run *state.Run, final 
 		run.UpdatedAt = latest.UpdatedAt
 	}
 	return false
+}
+
+// GetApprovals reads a change's approval chain. The chain was internal-only,
+// so an operator looking at a pending change could be told "awaiting approval"
+// and nothing else -- not who was asked, how many votes the quorum needs, or
+// which plan version a decision attests to. That is the entrap the roadmap's
+// approval-centre row names: a vote that cannot land because the quorum is
+// short, because the approver is the initiator, or because the plan moved, all
+// look the same as "nobody has approved yet".
+//
+// A chain is not a row per approver: who was asked, the quorum and every
+// decision travel together, and the row that carries them stores that part as
+// JSON in its comment column. The mapping lives in internal/approval (the
+// domain owner), so this reader and the writer cannot disagree about the shape.
+//
+// Reads are gated like every other read (`view`, on the run's own environment),
+// and a deployment without a policy keeps answering.
+func (s *ChangeService) GetApprovals(ctx context.Context, req *pb.GetApprovalsRequest) (*pb.GetApprovalsResponse, error) {
+	if s.store == nil {
+		return nil, status.Error(codes.Internal, "store not configured")
+	}
+	if req.GetChangeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "change id is required")
+	}
+	run, err := s.store.GetRun(ctx, req.GetChangeId())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get run: %v", err)
+	}
+	if run == nil {
+		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+	if err := authorizeResourceRead(ctx, s.authz, envOf(run), "GetApprovals"); err != nil {
+		return nil, err
+	}
+	rows, err := s.store.ListApprovals(ctx, state.ApprovalFilter{RunID: req.GetChangeId()})
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "list approvals: %v", err)
+	}
+	// Stable order across refreshes: a page whose chains shuffle reads as a
+	// different chain set each time. The UI keeps its own order on top.
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Level != rows[j].Level {
+			return rows[i].Level < rows[j].Level
+		}
+		return rows[i].ID < rows[j].ID
+	})
+	out := &pb.GetApprovalsResponse{}
+	for _, row := range rows {
+		chain, err := approval.ApprovalFromState(row)
+		if err != nil {
+			// One unreadable row must not hide the chains around it, and it
+			// must not be reported as an empty chain either: say which row.
+			return nil, status.Errorf(codes.Internal,
+				"read approval chain %q: %v", row.ID, err)
+		}
+		info := &pb.ApprovalInfo{
+			Id:               chain.ID,
+			ChangeId:         chain.RunID,
+			Level:            chain.Level,
+			Status:           string(chain.Status),
+			Approvers:        chain.Approvers,
+			MinApprovers:     int32(chain.MinApprovers),
+			PlanHash:         chain.PlanHash,
+			Legacy:           chain.PlanHash == "",
+			Initiator:        chain.Initiator,
+			ExcludeInitiator: chain.ExcludeInitiator,
+		}
+		if !chain.ExpiresAt.IsZero() {
+			info.ExpiresAt = chain.ExpiresAt.Unix()
+		}
+		for _, d := range chain.Decisions {
+			pd := &pb.ApprovalDecision{
+				Approver: d.Approver,
+				Action:   d.Action,
+				Reason:   d.Reason,
+			}
+			if !d.At.IsZero() {
+				pd.DecidedAt = d.At.Unix()
+			}
+			info.Decisions = append(info.Decisions, pd)
+		}
+		out.Approvals = append(out.Approvals, info)
+	}
+	return out, nil
 }
 
 // --- PauseChange / ResumeChange --------------------------------------------

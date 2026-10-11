@@ -9,10 +9,31 @@ import type { Change, TraceEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp } from '@/utils/format'
+import { approvalSummary, type ApprovalChain } from '@/utils/approvalChain'
 
 const activeTab = ref<'pending' | 'history'>('pending')
 const loading = ref(false)
 const pending = ref<Change[]>([])
+// The approval chain behind a pending row, fetched when the row is expanded.
+// Without it a row can only say "awaiting approval": who was asked, how many
+// votes the quorum needs, who has decided and why, whether the initiator is
+// barred, and whether the chain belongs to a plan at all.
+const chains = ref<Record<string, ApprovalChain[]>>({})
+const chainsLoading = ref<Record<string, boolean>>({})
+const chainsError = ref<Record<string, string>>({})
+
+async function loadChains(row: Change): Promise<void> {
+  if (chains.value[row.id] || chainsLoading.value[row.id]) return
+  chainsLoading.value[row.id] = true
+  chainsError.value[row.id] = ''
+  try {
+    chains.value = { ...chains.value, [row.id]: await changesApi.approvals(row.id) }
+  } catch (err) {
+    chainsError.value[row.id] = (err as { message?: string })?.message || '加载审批链失败'
+  } finally {
+    chainsLoading.value[row.id] = false
+  }
+}
 const history = ref<TraceEntry[]>([])
 
 const approver = ref('operator')
@@ -116,6 +137,10 @@ async function delegate(change: Change): Promise<void> {
   }
 }
 
+function onExpand(row: Change, expanded: unknown): void {
+  if (Array.isArray(expanded) && expanded.includes(row)) void loadChains(row)
+}
+
 function switchTab(tab: 'pending' | 'history'): void {
   activeTab.value = tab
   if (tab === 'pending') loadPending()
@@ -155,7 +180,44 @@ const pendingCount = computed(() => pending.value.length)
       </div>
 
       <div v-if="activeTab === 'pending'">
-        <el-table v-loading="loading" :data="pending">
+        <el-table v-loading="loading" :data="pending" @expand-change="onExpand">
+          <!-- The chain, not a bare "pending". Every line here answers "why is
+               my vote not going to land" -- the entrap this page hid behind a
+               status tag. -->
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div class="chain">
+                <span v-if="chainsLoading[row.id]" class="chain__dim">加载审批链…</span>
+                <span v-else-if="chainsError[row.id]" class="chain__error">{{ chainsError[row.id] }}</span>
+                <template v-else-if="(chains[row.id] || []).length > 0">
+                  <div v-for="c in approvalSummary(chains[row.id] || [])" :key="c.id" class="chain__one">
+                    <div class="chain__head">
+                      <span class="chain__level">{{ c.level }}</span>
+                      <span class="chain__quorum">需 {{ c.minApprovers }} 票</span>
+                      <span class="chain__votes">已投 {{ c.decided }} 票</span>
+                      <span class="chain__pending">
+                        未投 {{ c.pending.length }} 人{{ c.pending.length ? '：' + c.pending.join('、') : '' }}
+                      </span>
+                      <span v-if="c.excludeInitiator" class="chain__note">发起人 {{ c.initiator }} 不可自批</span>
+                      <span v-if="c.legacy" class="chain__note">链未绑定计划版本（旧记录）</span>
+                      <span v-if="c.expiresAt" class="chain__dim">超时 {{ formatTimestamp(c.expiresAt) }}</span>
+                    </div>
+                    <ul class="chain__decisions">
+                      <li v-for="d in c.decisions" :key="d.approver">
+                        <span class="chain__who lv-mono">{{ d.approver }}</span>
+                        <span :class="d.action === 'approve' ? 'chain__ok' : 'chain__no'">
+                          {{ d.action === 'approve' ? '同意' : '驳回' }}
+                        </span>
+                        <span v-if="d.reason" class="chain__reason">{{ d.reason }}</span>
+                        <span class="chain__dim lv-mono">{{ d.decidedAt ? formatTimestamp(d.decidedAt) : '' }}</span>
+                      </li>
+                    </ul>
+                  </div>
+                </template>
+                <span v-else class="chain__dim">暂无审批链记录</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column label="变更" min-width="260">
             <template #default="{ row }">
               <div class="cell-change">
@@ -221,6 +283,84 @@ const pendingCount = computed(() => pending.value.length)
 </template>
 
 <style scoped>
+.chain {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lv-space-2, 8px);
+  padding: var(--lv-space-2, 8px) var(--lv-space-3, 12px);
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+}
+
+.chain__one {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chain__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lv-space-2, 8px);
+  font-size: 13px;
+}
+
+.chain__level {
+  font-weight: 600;
+}
+
+.chain__decisions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chain__decisions li {
+  display: flex;
+  align-items: center;
+  gap: var(--lv-space-2, 8px);
+  font-size: 12px;
+}
+
+.chain__who {
+  min-width: 96px;
+}
+
+.chain__ok {
+  color: var(--el-color-success);
+}
+
+.chain__no {
+  color: var(--el-color-danger);
+}
+
+.chain__reason {
+  color: var(--el-text-color-regular);
+  flex: 1 1 auto;
+}
+
+.chain__note {
+  padding: 0 6px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.chain__dim {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.chain__error {
+  color: var(--el-color-danger);
+  font-size: 12px;
+}
+
 .head-tools {
   display: inline-flex;
   align-items: center;
