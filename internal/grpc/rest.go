@@ -597,7 +597,7 @@ func (gw *Gateway) dispatchChangeSubPath(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		gw.handleChangeAction(w, r, id, rest)
-	case "approvals", "logs", "trace":
+	case "approvals", "logs", "trace", "events":
 		if method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use GET")
 			return
@@ -645,6 +645,8 @@ func (gw *Gateway) handleChangeRead(w http.ResponseWriter, r *http.Request, id, 
 		gw.handleChangeApprovals(w, r, id)
 	case "trace":
 		gw.handleChangeTrace(w, r, id)
+	case "events":
+		gw.handleChangeEvents(w, r, id)
 	}
 }
 
