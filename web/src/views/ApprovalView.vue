@@ -14,6 +14,11 @@ import { approvalSummary, type ApprovalChain } from '@/utils/approvalChain'
 const activeTab = ref<'pending' | 'history'>('pending')
 const loading = ref(false)
 const pending = ref<Change[]>([])
+
+/** shortHash renders a plan digest at a glance (head…tail), like HashCell. */
+function shortHash(h: string): string {
+  return h.length <= 18 ? h : `${h.slice(0, 8)}…${h.slice(-6)}`
+}
 // The approval chain behind a pending row, fetched when the row is expanded.
 // Without it a row can only say "awaiting approval": who was asked, how many
 // votes the quorum needs, who has decided and why, whether the initiator is
@@ -199,7 +204,16 @@ const pendingCount = computed(() => pending.value.length)
                         未投 {{ c.pending.length }} 人{{ c.pending.length ? '：' + c.pending.join('、') : '' }}
                       </span>
                       <span v-if="c.excludeInitiator" class="chain__note">发起人 {{ c.initiator }} 不可自批</span>
-                      <span v-if="c.legacy" class="chain__note">链未绑定计划版本（旧记录）</span>
+                      <!-- The plan this chain attests to. A bound chain names
+                           the (short) hash; a legacy one says so, and the
+                           wording is the same one the backend uses. -->
+                      <span v-if="c.legacy" class="chain__note">未绑定计划版本（旧链，任意 plan 均可）</span>
+                      <span v-else class="chain__hash lv-mono" :title="`plan ${c.planHash}`">
+                        plan {{ shortHash(c.planHash) }}
+                      </span>
+                      <span v-if="c.stale" class="chain__note chain__note--bad">
+                        该决策所引计划已不是当前版本
+                      </span>
                       <span v-if="c.expiresAt" class="chain__dim">超时 {{ formatTimestamp(c.expiresAt) }}</span>
                     </div>
                     <ul class="chain__decisions">

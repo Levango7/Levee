@@ -122,6 +122,76 @@ func TestGetApprovals_ARejectionDecidesTheChainAndCarriesItsReason(t *testing.T)
 // TestGetApprovals_ALegacyChainSaysSo: a chain with no plan hash still settles
 // the run regardless of plan version. Rendering that as a blank would read as
 // "this decision attests to nothing", which is the opposite of what it does.
+// TestGetApprovals_StaleWhenTheRunMovedOn: a chain that bound to a plan hash
+// which is no longer the run's is a verdict on a superseded plan. The
+// approver (and anyone reading the card) must be told, because approving
+// against an old plan is exactly the entrap this page exists to surface.
+func TestGetApprovals_StaleWhenTheRunMovedOn(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newApprovalSvc(t)
+	id := seedRunIn(t, store, "alice", "prod")
+	chainID := createChainWithPlan(t, store, id, "plan-old-1")
+
+	// Same hash: the chain is the current plan — not stale.
+	resp, err := svc.GetApprovals(ContextWithActor(ctx, "alice"), &pb.GetApprovalsRequest{ChangeId: id})
+	require.NoError(t, err)
+	found := findChain(resp, chainID)
+	require.NotNil(t, found)
+	assert.False(t, found.GetStale(), "the bound plan is the run's plan")
+	assert.Equal(t, "plan-old-1", found.GetPlanHash())
+
+	// The run re-planned: the chain now attests to a superseded version.
+	run, err := store.GetRun(ctx, id)
+	require.NoError(t, err)
+	run.PlanHash = "plan-new-2"
+	require.NoError(t, store.UpdateRun(ctx, run))
+
+	resp, err = svc.GetApprovals(ContextWithActor(ctx, "alice"), &pb.GetApprovalsRequest{ChangeId: id})
+	require.NoError(t, err)
+	found = findChain(resp, chainID)
+	require.NotNil(t, found)
+	assert.True(t, found.GetStale(), "a bound plan that is no longer the run's must be flagged")
+}
+
+// TestGetApprovals_NoCurrentPlanIsNotStale: an empty run hash is the absence of
+// a comparison, not a verdict: the run has not (re)planned yet.
+func TestGetApprovals_NoCurrentPlanIsNotStale(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newApprovalSvc(t)
+	id := seedRunIn(t, store, "alice", "prod")
+	createChainWithPlan(t, store, id, "plan-old-1")
+
+	resp, err := svc.GetApprovals(ContextWithActor(ctx, "alice"), &pb.GetApprovalsRequest{ChangeId: id})
+	require.NoError(t, err)
+	require.Len(t, resp.GetApprovals(), 1)
+	assert.False(t, resp.GetApprovals()[0].GetStale())
+	assert.False(t, resp.GetApprovals()[0].GetLegacy(), "a bound plan is not a legacy chain")
+}
+
+func createChainWithPlan(t *testing.T, store state.Store, id, planHash string) string {
+	t.Helper()
+	as := approval.NewService(&kickoffStoreAdapter{store: store})
+	_, err := as.Create(context.Background(), approval.CreateRequest{
+		RunID: id, Level: approval.LevelStandard, Approvers: []string{"bob"},
+		MinApprovers: 1, ExpiresAt: time.Now().UTC().Add(time.Hour),
+		PlanHash: planHash, Initiator: "alice", ExcludeInitiator: true,
+	})
+	require.NoError(t, err)
+	rows, err := store.ListApprovals(context.Background(), state.ApprovalFilter{RunID: id})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	return rows[0].ID
+}
+
+func findChain(resp *pb.GetApprovalsResponse, chainID string) *pb.ApprovalInfo {
+	for _, c := range resp.GetApprovals() {
+		if c.GetId() == chainID {
+			return c
+		}
+	}
+	return nil
+}
+
 func TestGetApprovals_ALegacyChainSaysSo(t *testing.T) {
 	ctx := context.Background()
 	svc, store := newApprovalSvc(t)

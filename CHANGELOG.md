@@ -133,6 +133,13 @@
 - **一个踩过的坑（记下来免得复发）**：`/system/batch-status` 的 step 行字段名服务端发 `snake_case`、客户端类型先写成 `batch_no`→`batchNo`，于是前端读到 `undefined` 进了 Set、排序跑到最后变成第三列。纯函数返回 `[1,2]` 而 DOM 三列——典型**线类型谎报**。类型现在与 wire 逐字对齐并留注释。
 - **验证**：`go test` 66 包全绿、`golangci-lint` 0 issues（含 `revive` 的 indent-error-flow，顺手把 `if/else` 摆正）；`npm run test` **194 例全绿（23 文件）**、`vue-tsc` 干净、`internal/web/dist` 用 LF 工作树重建。真机走查（dev server + 无头 Chrome、plan 与 batch-status 打桩）：6 台 × 2 批，`web-02 失败` 排首行红点、`web-03 执行中` 次之、`web-05 未开始` 仍是独立行（计划里的灰格不会消失）、`web-06 跳过`、两台成功；批次 #1/#2 列与深色/1920 下均无错位。
 
+### 新增（审批中心补齐"历史 plan 版本"一栏：绑定的计划、过期与否、旧链如实）
+
+- **缺口**：roadmap 交互层 P0「审批中心卡片化」两栏里最要紧的那栏——"历史 plan 版本"一直没有。审批页此前只能告诉管理员"谁被问、需几票、谁已投"，却看不见**这批票是投在哪一版计划上的**。这正是"看上去能批、实际被拒"的入口：`apply` 会拿链上的 `plan_hash` 和 run 当前哈希比对，不一致就拒；管理员事前无从判断。
+- **实现**（数据本就存在，缺的是读出来）：审批链返回里加 `planHash` 与 `stale`。`planHash` = 链绑定的计划哈希（空 = pre-D-1 v2 的旧链，仍对任意 plan 生效，如实标注"未绑定计划版本（旧链，任意 plan 均可）"）；`stale` = 链绑的哈希**已不是 run 上当前那个**，即"你投的这票建在一版已经过去了的计划上"，由服务端跟 run 的当前 `PlanHash` 比对得出。**边界**：run 自己没有计划哈希时不判过期——"当前没有"不是"你这票烂了"。
+- **路由上看得见**：卡片上绑定计划渲染成 `plan <短哈希>`（hover 拿全值），过期时加红字"该决策所引计划已不是当前版本"。
+- **验证**：`go test` 全绿（新增 2 例：哈希一致时 `stale=false` 且 `planHash` 原样；run 改版后 `stale=true`；另 1 例钉住"无当前计划不算过期"且"绑定计划不是旧链"）；`golangci-lint` 0 issues；前端 194 例全绿、`vue-tsc` 干净；`internal/web/dist` 用 LF 工作树重建。真机走查三种状态逐一定格：绑定当前版本（`plan a1b2c3d4…556677`）、过期（红字）、旧链（文字说明），截图三张。
+
 ## [v1.21.0] - 2026-10-09
 
 > **发布状态：已切版。** 附注 tag `v1.21.0`（tag 对象 `b28bbd0f`，指向合并提交 `fcac5dd3`）于 2026-10-09 推送，`release.yml` 三段（CI gate / goreleaser / container image）全部 success：GitHub Release `draft=false`、`publishedAt=2026-10-09T03:50:51Z`，资产 7 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.21.0` 按外部事实核过——`manifests/v1.21.0` 返回 **200**，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0, v1.21.0]`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.21.0` / 逐字 `v1.21.0`（顺序不能反：规则②要求它逐字出现在 tag 集合里）。 本节共 **12** 个小节，三条主线：七批词表/判据收口（批次、分配、会话、系统页的中文标签与 owning 常量，每处都补了从常量源解析的守卫）、控制台重做与"玻璃只上 chrome"+ 命令面板、以及三处**门禁级**缺陷（CHANGELOG 结构守卫抓到自己登记的那类损坏；`release-gate` 的 `unittest | tee` 在 `bash -e` 下吞掉一切断言失败；`govulncheck` 被 `go` 指令挡住），另收口 SA-007/SA-011 与看板变更名。**切版顺序（按既有约束执行）**：先折叠 CHANGELOG 与 release notes、chart 不动（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升），推 tag 并确认 `release.yml` 三段 success 之后，再随下一笔把 chart 两处升到 `1.21.0` / 逐字 `v1.21.0`。release notes 见 [`docs/release-notes/v1.21.0.md`](docs/release-notes/v1.21.0.md)。

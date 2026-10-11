@@ -2747,8 +2747,12 @@ type ApprovalInfo struct {
 	// deciding on it (the high tier forces this true).
 	Initiator        string `protobuf:"bytes,11,opt,name=initiator,proto3" json:"initiator,omitempty"`
 	ExcludeInitiator bool   `protobuf:"varint,12,opt,name=exclude_initiator,json=excludeInitiator,proto3" json:"exclude_initiator,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The plan this chain bound to is NOT the run's current plan hash: the
+	// approver decided on a version that has since moved. Computed against the
+	// run the request names, so it can only be answered here.
+	Stale         bool `protobuf:"varint,13,opt,name=stale,proto3" json:"stale,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ApprovalInfo) Reset() {
@@ -2861,6 +2865,13 @@ func (x *ApprovalInfo) GetInitiator() string {
 func (x *ApprovalInfo) GetExcludeInitiator() bool {
 	if x != nil {
 		return x.ExcludeInitiator
+	}
+	return false
+}
+
+func (x *ApprovalInfo) GetStale() bool {
+	if x != nil {
+		return x.Stale
 	}
 	return false
 }
@@ -5266,7 +5277,7 @@ const file_levee_proto_rawDesc = "" +
 	"\x10hash_chain_valid\x18\x03 \x01(\bR\x0ehashChainValid\x121\n" +
 	"\x14verification_message\x18\x04 \x01(\tR\x13verificationMessage\"2\n" +
 	"\x13GetApprovalsRequest\x12\x1b\n" +
-	"\tchange_id\x18\x01 \x01(\tR\bchangeId\"\x82\x03\n" +
+	"\tchange_id\x18\x01 \x01(\tR\bchangeId\"\x98\x03\n" +
 	"\fApprovalInfo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\tchange_id\x18\x02 \x01(\tR\bchangeId\x12\x14\n" +
@@ -5281,7 +5292,8 @@ const file_levee_proto_rawDesc = "" +
 	"\x06legacy\x18\n" +
 	" \x01(\bR\x06legacy\x12\x1c\n" +
 	"\tinitiator\x18\v \x01(\tR\tinitiator\x12+\n" +
-	"\x11exclude_initiator\x18\f \x01(\bR\x10excludeInitiator\"}\n" +
+	"\x11exclude_initiator\x18\f \x01(\bR\x10excludeInitiator\x12\x14\n" +
+	"\x05stale\x18\r \x01(\bR\x05stale\"}\n" +
 	"\x10ApprovalDecision\x12\x1a\n" +
 	"\bapprover\x18\x01 \x01(\tR\bapprover\x12\x16\n" +
 	"\x06action\x18\x02 \x01(\tR\x06action\x12\x16\n" +

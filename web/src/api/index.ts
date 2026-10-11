@@ -322,6 +322,8 @@ export interface ApprovalChain {
   legacy: boolean
   initiator: string
   excludeInitiator: boolean
+  /** The plan this chain bound is NOT the run's current plan. */
+  stale: boolean
 }
 
 // --- Cluster status types (mirror internal/state/backend) ---

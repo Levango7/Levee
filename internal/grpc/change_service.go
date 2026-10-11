@@ -1392,6 +1392,11 @@ func (s *ChangeService) GetApprovals(ctx context.Context, req *pb.GetApprovalsRe
 			Legacy:           chain.PlanHash == "",
 			Initiator:        chain.Initiator,
 			ExcludeInitiator: chain.ExcludeInitiator,
+			// A bound chain whose hash is no longer the run's is a verdict on
+			// a superseded plan. An empty run hash counts as not stale: the
+			// comparison needs both sides, and "no current plan" is the store
+			// saying the run has not (re)planned, not that the chain rotted.
+			Stale: chain.PlanHash != "" && run.PlanHash != "" && chain.PlanHash != run.PlanHash,
 		}
 		if !chain.ExpiresAt.IsZero() {
 			info.ExpiresAt = chain.ExpiresAt.Unix()
