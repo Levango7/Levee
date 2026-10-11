@@ -518,6 +518,15 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 - **降档**：SA-014 经 C-7 消除错误语义问题后，竞态本身仅剩"预检后被约束兜底"的良性路径，台账降档 LOW。
 - **本轮修复的测试环境限制**：并发正确性测试以 `-count=5` 重复压力替代 `-race`（该机无 C 工具链，race detector 不可用），CI（linux）仍以 `-race` 为准。
 
+### 全部 RPC 的门禁审计（2026-10-11 复核，结论：无裸写路径）
+
+对 `internal/grpc/pb/*_grpc.pb.go` 声明的全部 56 个 RPC 逐一比对实现体是否 consult 策略层（authorizeResource / authorizeResourceRead / AdmitsRead 等），并按调用链展开委托：
+
+- **脚本初判 18 个"无策略"**，逐个人工判定后 14 个为误报（脚本看不到跨函数委托）：PauseChange / ResumeChange → transitionStatus（pause / resume 动作）、PauseAll / ResumeAll → bulkTransition、CancelChange → transitionStatusWith（cancel 动作）、ListChanges / ListTargets / TargetHistory / GetStatus → 读路径按可见环境**收窄**而非拒绝。
+- **真无 env 判的 6 个均属无 env 概念的域**（agent / alert / diagnosis / conversation），按域判 admin（写）/ view（读）：AgentService 六方法全部有门禁（RegisterAgent / AgentHeartbeat / DeregisterAgent / RemoveAgent 取 admin，ListAgents / GetAgent 取 view）；AlertService.ReceiveAlert 是入站 webhook（无主体）；GetAlertStatus / Diagnose / GetDiagnosis 读告警与诊断域；ConversationService.SendMessage 只产出回复，变更创建走 CreateChange（已有 plan 门禁）。
+- **GetVersion 刻意不门禁**：探活 / 握手端点要求授权，等于让监控系统在无人授权时集体失效。
+- **修正一条过期登记**：2026-10-09 登记的「6 个写 RPC 无 authorize」在 #112 那批（2026-10-11）已收口，本条作废。
+
 ## 部署安全声明（2026-08-22，2026-09-06 修订）
 
 ### 已加固项
