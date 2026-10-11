@@ -16,6 +16,7 @@ const chain = (patch: Partial<ApprovalChain>): ApprovalChain => ({
   legacy: true,
   initiator: 'alice',
   excludeInitiator: true,
+  stale: false,
   ...patch,
 })
 

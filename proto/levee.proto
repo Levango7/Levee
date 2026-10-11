@@ -442,6 +442,10 @@ message ApprovalInfo {
   // deciding on it (the high tier forces this true).
   string initiator = 11;
   bool exclude_initiator = 12;
+  // The plan this chain bound to is NOT the run's current plan hash: the
+  // approver decided on a version that has since moved. Computed against the
+  // run the request names, so it can only be answered here.
+  bool stale = 13;
 }
 
 // ApprovalDecision is one approver's vote within a chain.
