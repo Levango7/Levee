@@ -140,6 +140,16 @@
 - **路由上看得见**：卡片上绑定计划渲染成 `plan <短哈希>`（hover 拿全值），过期时加红字"该决策所引计划已不是当前版本"。
 - **验证**：`go test` 全绿（新增 2 例：哈希一致时 `stale=false` 且 `planHash` 原样；run 改版后 `stale=true`；另 1 例钉住"无当前计划不算过期"且"绑定计划不是旧链"）；`golangci-lint` 0 issues；前端 194 例全绿、`vue-tsc` 干净；`internal/web/dist` 用 LF 工作树重建。真机走查三种状态逐一定格：绑定当前版本（`plan a1b2c3d4…556677`）、过期（红字）、旧链（文字说明），截图三张。
 
+### 新增（监控页从 2 秒轮询换成 SSE 事件流；服务端补上 /changes/<id>/events）
+
+- **缺口**：roadmap 交互层最后一件缺的是"真流"。监控页此前每 2 秒查一次 `GET /changes/<id>/logs`：进度最晚晚 2 秒到，且每次都要重发整个尾部。引擎其实一直有实时事件——`publishEvent` 会扇出到事件总线，`WatchChange` 早已订阅——**只是没有 HTTP 出口**，而浏览器唯一能长连接的正是 HTTP。
+- **服务端**：新增 `GET /changes/<id>/events`（`text/event-stream`）。事件取自 `WatchChange` 订阅的**同一条总线**，SSE 客户端与 gRPC 观察者看到的事件集合与顺序一致——不另立生产者（那正是两个端点会对"变更何时结束"产生分歧的原因）。终态同样用 `runstatus.Terminal` 判定，没有新增手抄词表。
+- **鉴权**：读门禁**只在连接建立时判一次**。流是长连接，逐事件重判既贵，还可能在流中间从允许翻成拒绝。缺 change 时先答 404 再判权限——否则一个 id 打错会收到权限拒绝，把运维引向错误的问题。
+- **帧与保活**：`event:` + `data:` + 空行一帧；空闲流每 15 秒发一个**注释帧**（冒号开头、不带 data），否则中间设备会把静默当断连；同时 `X-Accel-Buffering: no` 关掉代理缓冲。
+- **前端**：`EventSource` 订阅，`onerror` 指数退避重连（EventSource close 后不会自己重连，无节制的重连在服务端故障时会打成回环）；`onUnmounted` 关闭（否则切走页面还会继续收事件）；换 run 时重订阅。聚合/变更两个面板在事件到来时重读——事件只说明"有变"，不带快照，重读是诚实的回应。
+- **验证**：`go test` 全绿、`golangci-lint` 0 issues；前端 **199 例全绿（24 文件）**、`vue-tsc` 干净、`internal/web/dist` 用 LF 工作树重建。新增守卫：SSE 四个用例（真起服务、真发事件——帧格式、两帧两事件、终态即关、**客户端断开即关**；未注册主体与不可见环境被拒、未知 id 404、POST 不得开流）+ 前端 `MonitorStream.spec.ts` 五条结构断言（`setInterval`/`POLL_INTERVAL` 不得回来、卸载必须 close、换 run 必须重订阅、退避必须存在、事件必须重读聚合）。
+
+
 ## [v1.21.0] - 2026-10-09
 
 > **发布状态：已切版。** 附注 tag `v1.21.0`（tag 对象 `b28bbd0f`，指向合并提交 `fcac5dd3`）于 2026-10-09 推送，`release.yml` 三段（CI gate / goreleaser / container image）全部 success：GitHub Release `draft=false`、`publishedAt=2026-10-09T03:50:51Z`，资产 7 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.21.0` 按外部事实核过——`manifests/v1.21.0` 返回 **200**，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0, v1.21.0]`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.21.0` / 逐字 `v1.21.0`（顺序不能反：规则②要求它逐字出现在 tag 集合里）。 本节共 **12** 个小节，三条主线：七批词表/判据收口（批次、分配、会话、系统页的中文标签与 owning 常量，每处都补了从常量源解析的守卫）、控制台重做与"玻璃只上 chrome"+ 命令面板、以及三处**门禁级**缺陷（CHANGELOG 结构守卫抓到自己登记的那类损坏；`release-gate` 的 `unittest | tee` 在 `bash -e` 下吞掉一切断言失败；`govulncheck` 被 `go` 指令挡住），另收口 SA-007/SA-011 与看板变更名。**切版顺序（按既有约束执行）**：先折叠 CHANGELOG 与 release notes、chart 不动（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升），推 tag 并确认 `release.yml` 三段 success 之后，再随下一笔把 chart 两处升到 `1.21.0` / 逐字 `v1.21.0`。release notes 见 [`docs/release-notes/v1.21.0.md`](docs/release-notes/v1.21.0.md)。

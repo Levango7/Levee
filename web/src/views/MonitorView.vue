@@ -25,8 +25,6 @@ const autoScroll = ref(true)
 const logStreamRef = ref<HTMLElement | null>(null)
 
 // Polling interval. 2s is a reasonable trade-off between freshness and load.
-const POLL_INTERVAL_MS = 2000
-let pollTimer: ReturnType<typeof setInterval> | null = null
 
 // Batch progress is `GET /system/batch-status?run_id=…`. A change id and a run
 // id are the same key in this system (ApplyChange and GetRunReport both resolve
@@ -101,6 +99,59 @@ async function loadLogs(): Promise<void> {
   }
 }
 
+// The event stream, not a poller.
+//
+// The monitor used to poll /changes/<id>/logs every 2 seconds, so progress
+// arrived up to 2s late and every poll re-sent the whole tail. The server now
+// streams events at /changes/<id>/events (internal/grpc/sse.go), and the
+// browser subscribes with EventSource:
+//
+//   - a status change re-reads the change and the aggregates, because those
+//     two panels are snapshots the event does not carry;
+//   - the log tail is appended by the log request, which now fires on an
+//     event instead of on a timer, so no idle ticking and a gap after an
+//     event closes with one request;
+//   - a disconnect backs off and retries: EventSource does not retry by
+//     itself once closed, and a closed stream stays closed until re-opened.
+
+const retryDelay = ref(1_000)
+const eventSource = ref<EventSource | null>(null)
+
+function streamUrl(): string {
+	// The same base the axios client uses, so a stream and a request cannot
+	// drift into two prefixes (one of them being whatever a proxy strips).
+	return `/api/v1/changes/${changeId.value}/events`
+}
+
+function closeStream(): void {
+  if (eventSource.value) {
+    eventSource.value.close()
+    eventSource.value = null
+  }
+}
+
+function openStream(): void {
+  if (!changeId.value || typeof EventSource === 'undefined') return
+  closeStream()
+  const es = new EventSource(streamUrl())
+  es.onopen = () => {
+    retryDelay.value = 1_000
+  }
+  es.onerror = () => {
+    closeStream()
+    setTimeout(() => {
+      retryDelay.value = Math.min(retryDelay.value * 2, 30_000)
+      openStream()
+    }, retryDelay.value)
+  }
+  es.onmessage = () => {
+    void loadChange()
+    void loadSummary()
+    void loadLogs()
+  }
+  eventSource.value = es
+}
+
 function scrollToBottom(): void {
   const el = logStreamRef.value
   if (el) {
@@ -125,21 +176,6 @@ async function refreshAll(): Promise<void> {
   loading.value = false
 }
 
-function startPolling(): void {
-  stopPolling()
-  pollTimer = setInterval(() => {
-    void loadLogs()
-    void loadSummary()
-  }, POLL_INTERVAL_MS)
-}
-
-function stopPolling(): void {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-}
-
 // Log level → tone. Kept as a class name rather than an el-tag type because the
 // terminal panel paints its own colours (a tag's chrome would fight the pane).
 function levelClass(level: LogEntry['level']): string {
@@ -160,12 +196,18 @@ watch(autoScroll, (v) => {
   if (v) scrollToBottom()
 })
 
-onMounted(async () => {
-  await refreshAll()
-  startPolling()
+// Another run is opened in place (a link from the change list): re-subscribe
+// rather than leaving the previous change's events flowing into this view.
+watch(changeId, () => {
+  openStream()
 })
 
-onUnmounted(stopPolling)
+onMounted(async () => {
+  await refreshAll()
+  openStream()
+})
+
+onUnmounted(closeStream)
 
 const batchTotals = computed(() => {
   const s = summary.value
@@ -182,7 +224,7 @@ const batchTotals = computed(() => {
   <div class="levee-page">
     <PageHeader
       :title="change ? `执行监控 · ${change.label}` : '执行监控'"
-      description="实时日志与分批推进；进入 run 后每 2 秒轮询一次"
+      description="实时日志与分批推进；事件走 SSE 流，不再轮询"
     >
       <template #actions>
         <el-button :icon="'Refresh'" :loading="loading" @click="refreshAll">刷新</el-button>
