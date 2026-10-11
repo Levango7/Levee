@@ -21,10 +21,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi } from '@/api'
 import type { Change, ChangeStatus } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
+import StateBlock from '@/components/StateBlock.vue'
 import { remediateRollback } from '@/composables/useRollbackRemediation'
+import { useKeyboardCursor } from '@/composables/useKeyboardCursor'
 import PageHeader from '@/components/PageHeader.vue'
 import MetricCard from '@/components/MetricCard.vue'
 import { formatTimestamp, isRemediableStatus, isRetryableStatus } from '@/utils/format'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 
 const router = useRouter()
 const route = useRoute()
@@ -56,6 +60,43 @@ const changes = ref<Change[]>([])
 const total = ref(0)
 const nextPageToken = ref('')
 const selected = ref<Change[]>([])
+
+// Region state for the table area: 'ok' while rows load or are shown, and one
+// of the three terminal answers otherwise. The distinction between "no rows"
+// and "the fetch failed" was previously the table and a toast — indistinguishable
+// at a glance.
+const loadError = ref<unknown>(null)
+
+const regionTier = computed<LoadTier>(() => {
+  if (loadError.value !== null) return classifyError(loadError.value)
+  if (!loading.value && changes.value.length === 0) return 'empty'
+  return 'ok'
+})
+
+const regionMessage = computed(() => errorMessage(loadError.value, '加载变更列表失败'))
+
+// "Nothing here" means two different things depending on whether a filter is
+// narrowing the view; the empty state offers the matching next step.
+const filterActive = computed(
+  () => filter.status.length > 0 || filter.labelContains.trim() !== '',
+)
+
+// Keyboard path to the detail page (roadmap P1). The row click already existed;
+// this gives the same navigation a key, with the cursor painted on the row so
+// what Enter will open is never a guess.
+const cursor = useKeyboardCursor({
+  count: () => changes.value.length,
+  onOpen: (i) => {
+    // Same stale-index guard as the approval page: a refetched list must not
+    // turn Enter into a navigation to whatever now occupies that row.
+    const row = changes.value[i]
+    if (row) viewDetail(row)
+  },
+})
+
+function rowClass({ rowIndex }: { rowIndex: number }): string {
+  return cursor.index.value === rowIndex ? 'lv-row-clickable lv-row-cursor' : 'lv-row-clickable'
+}
 
 // Mirrors the backend status vocabulary (change_service.go). `pending_approval`
 // was listed here as a second 待审批 option that the server never returns, so
@@ -217,6 +258,7 @@ async function remediate(row: Change): Promise<void> {
 
 async function load(): Promise<void> {
   loading.value = true
+  loadError.value = null
   try {
     // Page 1 sends no token; page n reuses the token recorded when page n-1
     // was loaded. Opaque tokens cannot be computed for skipped pages, so a
@@ -237,6 +279,10 @@ async function load(): Promise<void> {
     })
     changes.value = res.items || []
     total.value = res.totalSize || 0
+    // The cursor belongs to the rows that were on screen when it moved: a new
+    // page or a narrowed filter invalidates it, and Enter on a stale index
+    // would open the wrong change.
+    cursor.reset()
     nextPageToken.value = res.nextPageToken || ''
     // Remember the token leading to the next page; drop stale deeper tokens.
     const chain = tokenChain.value.slice(0, Math.max(currentPage.value - 1, 0))
@@ -245,7 +291,11 @@ async function load(): Promise<void> {
     }
     tokenChain.value = chain
   } catch (err) {
-    ElMessage.error((err as { message?: string })?.message || '加载变更列表失败')
+    // A failed load is not a toast: the list below is where the answer belongs,
+    // because a transient message plus an unchanged table reads as "there are
+    // zero changes" — the exact conflation StateBlock exists to remove. The
+    // 403 case additionally says so in place (utils/apiState.ts).
+    loadError.value = err
   } finally {
     loading.value = false
   }
@@ -433,16 +483,41 @@ onMounted(() => {
             <el-button size="small" @click="bulkCancel">批量取消</el-button>
             <el-button size="small" @click="bulkArchive">批量归档</el-button>
           </template>
+          <!-- The keyboard path to the detail page, printed where the list is. -->
+          <span v-if="changes.length > 0" class="kbd-hint">
+            <kbd>j</kbd><kbd>k</kbd> 移动 · <kbd>Enter</kbd> 打开详情
+          </span>
         </div>
       </div>
 
-      <el-table
-        v-loading="loading"
-        :data="changes"
-        row-class-name="lv-row-clickable"
-        @selection-change="handleSelectionChange"
-        @row-click="viewDetail"
-      >
+      <StateBlock
+        v-if="regionTier === 'error' || regionTier === 'forbidden'"
+        :tier="regionTier"
+        :message="regionMessage"
+        :hint="
+          regionTier === 'forbidden'
+            ? '该账号的角色看不到变更列表，请联系管理员授权后重新登录'
+            : ''
+        "
+        @retry="load"
+      />
+      <StateBlock
+        v-else-if="regionTier === 'empty'"
+        tier="empty"
+        :hint="
+          filterActive ? '当前筛选条件下没有匹配的变更' : '还没有创建任何变更，可从模板实例化开始'
+        "
+        :action-label="filterActive ? '清除筛选条件' : '去模板管理'"
+        @action="filterActive ? resetFilter() : router.push('/templates')"
+      />
+      <template v-else>
+        <el-table
+          v-loading="loading"
+          :data="changes"
+          :row-class-name="rowClass"
+          @selection-change="handleSelectionChange"
+          @row-click="viewDetail"
+        >
         <el-table-column type="selection" width="44" />
         <el-table-column label="变更" min-width="260">
           <template #default="{ row }">
@@ -506,6 +581,7 @@ onMounted(() => {
           @size-change="handlePageSizeChange"
         />
       </div>
+      </template>
     </div>
   </div>
 </template>
@@ -641,6 +717,37 @@ html.dark .dist__seg--archived {
 
 .bulk-hint b {
   color: var(--lv-accent);
+}
+
+/* Keyboard affordance + visible row cursor. Printed rather than hidden: the
+ * j/k path to a detail page is only used if the operator can see it exists. */
+.kbd-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
+}
+
+.kbd-hint kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--lv-border);
+  border-bottom-width: 2px;
+  border-radius: var(--lv-radius-sm);
+  background: var(--lv-surface);
+  font-family: var(--lv-font-mono, inherit);
+  font-size: 11px;
+  color: var(--lv-text-2);
+}
+
+:deep(.lv-row-cursor) td {
+  box-shadow: inset 0 0 0 1px var(--lv-accent-border);
+  background: var(--lv-accent-soft);
+}
+
+:deep(.lv-row-cursor:first-child) td:first-child {
+  box-shadow: inset 2px 0 0 0 var(--lv-accent);
 }
 
 .cell-change {

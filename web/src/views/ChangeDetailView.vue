@@ -30,9 +30,12 @@ import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry, TraceEntry } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import StateBlock from '@/components/StateBlock.vue'
 import TraceTimeline from '@/components/TraceTimeline.vue'
 import { remediateRollback } from '@/composables/useRollbackRemediation'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 import {
   formatTimestamp,
   isArchivableStatus,
@@ -58,6 +61,25 @@ const batches = ref<BatchSummaryDTO | null>(null)
 const logs = ref<LogEntry[]>([])
 const logsTruncated = ref(false)
 
+// Region states (utils/apiState.ts). The page load and the log tail are two
+// fetches with two answers: one failure must not take the other's panel down
+// with it, and neither of them may masquerade as an empty change.
+const loadError = ref<unknown>(null)
+const logsError = ref<unknown>(null)
+const logsLoading = ref(false)
+
+const loadTier = computed<LoadTier>(() =>
+  loadError.value === null ? 'ok' : classifyError(loadError.value),
+)
+const loadText = computed(() => errorMessage(loadError.value, '加载变更失败'))
+
+const logsTier = computed<LoadTier>(() => {
+  if (logsError.value !== null) return classifyError(logsError.value)
+  if (!logsLoading.value && logs.value.length === 0) return 'empty'
+  return 'ok'
+})
+const logsText = computed(() => errorMessage(logsError.value, '加载日志失败'))
+
 // The timeline reads newest-first: an operator arriving at a failed change
 // wants the verdict and the last thing that happened, not the beginning.
 const timeline = computed(() => [...chain.value.entries].sort((a, b) => b.timestamp - a.timestamp))
@@ -77,6 +99,7 @@ const batchRows = computed(() =>
 async function load(): Promise<void> {
   if (!changeId.value) return
   loading.value = true
+  loadError.value = null
   try {
     const [c, t, b] = await Promise.all([
       changesApi.get(changeId.value),
@@ -87,19 +110,26 @@ async function load(): Promise<void> {
     chain.value = { valid: t.hashChainValid, entries: t.entries || [], message: t.verificationMessage || '' }
     batches.value = b
   } catch (err) {
-    ElMessage.error(`加载变更失败：${(err as { message?: string })?.message}`)
+    // A missing change stays the el-empty below (a real "nothing here"); a
+    // forbidden or broken fetch now answers in place instead of leaving a
+    // blank page under a toast that names no field.
+    loadError.value = err
   } finally {
     loading.value = false
   }
 }
 
 async function loadLogs(): Promise<void> {
+  logsLoading.value = true
+  logsError.value = null
   try {
     const res = await changesApi.logs(changeId.value, { limit: 200 })
     logs.value = res.entries || []
     logsTruncated.value = res.truncated
   } catch (err) {
-    ElMessage.error(`加载日志失败：${(err as { message?: string })?.message}`)
+    logsError.value = err
+  } finally {
+    logsLoading.value = false
   }
 }
 
@@ -283,11 +313,26 @@ onMounted(load)
           <span v-if="logsTruncated">（已截断）</span>
         </p>
         <pre v-if="logs.length > 0" class="detail__logs">{{ logs.map((l) => `${l.timestamp} [${l.level}] ${l.message}`).join('\n') }}</pre>
+        <StateBlock
+          v-else-if="logsTier === 'error' || logsTier === 'forbidden'"
+          :tier="logsTier"
+          :message="logsText"
+          :hint="logsTier === 'forbidden' ? '执行日志受角色管控，请联系管理员授权' : ''"
+          dense
+          @retry="loadLogs"
+        />
         <div v-else class="detail__dim">尚未加载。</div>
       </div>
     </div>
 
-    <el-empty v-else-if="!loading" description="找不到这个变更" :image-size="80" />
+    <el-empty v-else-if="!loading && loadTier === 'ok'" description="找不到这个变更" :image-size="80" />
+    <StateBlock
+      v-else-if="loadTier === 'error' || loadTier === 'forbidden'"
+      :tier="loadTier"
+      :message="loadText"
+      :hint="loadTier === 'forbidden' ? '该账号的角色看不到这个变更，请联系管理员授权' : ''"
+      @retry="load"
+    />
   </div>
 </template>
 

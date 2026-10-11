@@ -49,12 +49,17 @@ describe('audit view: evidence, timeline, verification', () => {
 
   it('renders the timeline through the shared component, over the same page', () => {
     expect(view).toContain("import TraceTimeline from '@/components/TraceTimeline.vue'")
-    expect(view).toContain('<TraceTimeline :entries="entries"')
+    expect(view).toContain('<TraceTimeline v-else :entries="entries"')
     // One data set, two presentations: the timeline must not fetch its own page
     // or the two views would disagree about what "current" means.
     expect(view).toContain("v-if=\"viewMode === 'timeline'\"")
     expect(view).toContain('v-else')
     expect(view, 'no local timeline rendering').not.toContain('el-timeline-item')
+    // The timeline branch carries the three region states itself (empty /
+    // error / forbidden), so switching to it while a fetch has failed must not
+    // silently render an empty timeline as if the query had succeeded.
+    const timelineBranch = view.slice(view.indexOf("v-if=\"viewMode === 'timeline'\""))
+    expect(timelineBranch.slice(0, timelineBranch.indexOf('</div>'))).toContain('StateBlock')
   })
 
   it('keeps the chain verification entry point', () => {

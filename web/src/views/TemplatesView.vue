@@ -8,7 +8,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { targetsApi, templatesApi } from '@/api'
 import type { Template } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
+import StateBlock from '@/components/StateBlock.vue'
 import { formatTimestamp } from '@/utils/format'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 import {
   blankForm,
   environmentOptions,
@@ -24,6 +27,18 @@ const loading = ref(false)
 const templates = ref<Template[]>([])
 const total = ref(0)
 const search = ref('')
+
+// Region state (utils/apiState.ts): "no templates" vs "the list failed" vs
+// "this role may not read templates" are three different operator stories.
+const loadError = ref<unknown>(null)
+
+const regionTier = computed<LoadTier>(() => {
+  if (loadError.value !== null) return classifyError(loadError.value)
+  if (!loading.value && templates.value.length === 0) return 'empty'
+  return 'ok'
+})
+
+const regionMessage = computed(() => errorMessage(loadError.value, '加载模板列表失败'))
 
 interface EditState {
   visible: boolean
@@ -110,15 +125,28 @@ function closeInstantiate(): void {
 
 async function load(): Promise<void> {
   loading.value = true
+  loadError.value = null
   try {
     const res = await templatesApi.list({ nameContains: search.value || undefined, pageSize: 100 })
     templates.value = res.items || []
     total.value = res.totalSize || 0
   } catch (err) {
-    ElMessage.error((err as { message?: string })?.message || '加载模板列表失败')
+    loadError.value = err
   } finally {
     loading.value = false
   }
+}
+
+function emptyStateAction(): void {
+  // A search that matched nothing: clear it (the name, not the reveal, is the
+  // next step). A template store that is genuinely empty: create the first
+  // one. Both answers in one handler so the template's branches stay simple.
+  if (search.value.trim() !== '') {
+    search.value = ''
+    load()
+    return
+  }
+  openCreate()
 }
 
 function openCreate(): void {
@@ -234,7 +262,25 @@ onMounted(load)
         <span class="lv-panel__hint lv-mono">共 {{ total }} 个模板</span>
       </div>
 
-      <el-table v-loading="loading" :data="templates">
+      <StateBlock
+        v-if="regionTier === 'error' || regionTier === 'forbidden'"
+        :tier="regionTier"
+        :message="regionMessage"
+        :hint="regionTier === 'forbidden' ? '模板清单受角色管控，请联系管理员授权' : ''"
+        @retry="load"
+      />
+      <StateBlock
+        v-else-if="regionTier === 'empty'"
+        tier="empty"
+        :hint="
+          search.trim() !== ''
+            ? '没有名称匹配的模板'
+            : '还没有任何模板，先创建一个工作流模板'
+        "
+        :action-label="search.trim() !== '' ? '清除搜索' : '创建模板'"
+        @action="emptyStateAction()"
+      />
+      <el-table v-else v-loading="loading" :data="templates">
         <el-table-column label="模板" min-width="240">
           <template #default="{ row }">
             <div class="cell-template">

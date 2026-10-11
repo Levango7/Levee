@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### 可视化（空 / 失败 / 权限不足三档：一次加载失败和一个空区域，此前长得完全一样）
+
+- **现象**：加载失败只有一条会过期的 toast，表格停在原处——于是"这里没数据"和"接口挂了"和"这个账号不能看"在界面上是同一件事，而只有第一件该由"去创建"回答，后两件分别该由"重试"和"找管理员"回答。`ClusterView` 与 `ConversationView` 更糟：把错误渲染成两个面板**下方**一行红字，被它作废的节点卡/会话列表还留在原处，看着像现网数据。`MobileApprovalView` 只有一个不分档的 `el-alert`，而深链页恰恰是最需要分清 403（凭据无权）与 404（变更没了）的地方。
+- **修法（判定单 owner）**：新增 `web/src/utils/apiState.ts`——`classifyError` 只把 HTTP 403/401 判为 `forbidden`（REST 网关把 grpc `PermissionDenied` 连同 handler 的原文一起映射成 403，所以权限档**引用服务端原话**而不是我们编的策略解释；其余 500/超时/离线一律收敛成 `error`，因为它们的下一步都是重试），`errorMessage` 永不为空（吃字符串、吃 `ApiError.message`、都缺才回落）。
+- **修法（一个渲染面）**：新增 `components/StateBlock.vue` 三档各一个内联 SVG 图标（不复用）、标题、服务端原文、下一步提示与动作按钮；11 个取数视图全部改走它——取数失败**落成区域状态**而不是 toast（`loadError` 等 ref + `regionTier` 计算），空态按"有没有筛选"给出匹配的下一步（清除筛选 / 去创建）。`TraceTimeline` 的空态也并进同一组件，全控制台一种"空"的长相。
+- **两处收口不是顺手**：① `MonitorView` 首次加载失败会落进"未指定变更"的提示里——id 明明指定了、只是读不出来；现在错误档插在它与"未指定"之间（`v-if change → v-else-if 错误 → v-else 未指定`），SSE 驱动的刷新按既定策略**保持静默**（面板留最后一组真数，不闪错误），`quiet` 参数把两条路径分开。② `/system` 三个面板原来各自"静默容忍失败"，容忍失败不等于把失败藏起来——每个面板现在各自带自己的错误档，一个面板读不到不再连累其他面板显示。
+- **守卫**：`web/src/utils/apiState.spec.ts`（403/401 判 forbidden、其余收敛、非 ApiError 不得冒称 forbidden、消息不得为空）+ `web/src/views/regionStates.spec.ts`（列出 11 个取数视图逐个体检：必须 import `StateBlock` 与 `apiState`、必须出现 `'forbidden'` 分支；已删除的两种旧形状不许回来——裸 `<p class="error">` 与 `el-alert` 横幅，`TemplatesView` 表单内的 warning 与 `ChangeDetailView` 的真 404 是**点名**的例外，不是类别）。**变异六条逐一变红**：403 改判 error / 改回裸段落 / 改回 el-alert / `errorMessage` 恒回落 / 新增视图不接线 / 删掉 forbidden 分支。
+- 验证：`npm run test` **227 例全绿（28 文件）**、`vue-tsc` 干净；`go test ./...` 未涉及（本批纯前端）。
+
+### 新增（全键盘路径：j/k 光标落在行上，审批三键与 Enter 走同一条链）
+
+- **现象**：Element Plus 表格是鼠标形状的——行只能点，键盘唯一的路径是在每一行的按钮之前 Tab 完前面所有列；批二十个变更等于每行二十次 Tab。`ApprovalView` 的"通过/驳回/转授权"虽是原生可聚焦按钮，但**没有光标就没有"当前行"**，快捷键无处施加。
+- **修法**：新增 `composables/useKeyboardCursor.ts`——`j`/`k`/`↑`/`↓` 移动一条**可见**行光标（`row-class-name` 上色，键位同时印在面板头部，藏起来的快捷键等于没有），`Enter`/`o` 打开光标行，各页把自己的字母映射到行动作。`ApprovalView`：`a` 通过 / `r` 驳回 / `d` 转授权 / `Enter` 展开审批链——展开走表格实例自己的 `toggleRowExpansion`，和鼠标点箭头是**同一个机制**，不另养一份展开状态。`ChangesView`：`Enter` 打开详情，与 `@row-click` 同一个 `viewDetail`。
+- **三条 fail-closed**（顺序即优先级）：修饰键组合留给应用（shell 的 Ctrl+K 不能被吞）；输入焦点里（input/textarea/select/contenteditable）按键原样键入；有 EP 遮罩层（确认框/对话框）时页面光标整体待命——否则"批准"弹出的确认框底下会再吃一次 `a`，这正是要防的重复提交。光标**在 j/k 之前不存在**（`-1`），所以不碰键盘的人看到的页面和以前逐字一致。
+- **越界即拒绝**：光标序号与"此刻屏幕上的行"只差一次重新取数，`ChangesView` 的 Enter 与 `ApprovalView` 的三个动作都重新解析行、取不到就什么都不做；列表重新加载与切 tab 都 `cursor.reset()`。在审批页对一个错行按 `a` 是快捷键唯一不能有的失败模式。
+- **守卫**：`web/src/composables/useKeyboardCursor.spec.ts` 10 例真事件（含从 input **冒泡**上来的按键——只测谓词不测处理器路径等于没测守卫本身；遮罩层打开时 `a` 不得生效；`enabled` 门；`stop()` 返回让测试能真正卸载）+ `web/src/views/keyboardCursor.spec.ts` 7 例结构（`count()` 绑的是表格同一个数组、光标类必须**从脚本区的行类函数**应用而不只是躺在样式表里、重置必须落在 `load()` 里、两个视图都不许自己 `addEventListener('keydown'`）。**变异四条逐一变红**：去掉输入态守卫 / 光标类不再应用 / 去掉 reset / 行类函数改死值。
+- 验证：`npm run test` **227 例全绿**、`vue-tsc` 干净、`golangci-lint` 与 `go test` 未涉及（本批纯前端）。
+
 ### 修复（audit 表 action/result 词表：注释里 10 个值零写入方，真实写入的 16 个不在其中；两对孪生拼写，其中一处让重试上限可被绕过）
 
 - **现象（扫出来的，不是照抄注释）**：`audit.action` 的 schema 注释写着 `plan|apply|verify|rollback|approval|lock|credential|archive|login|config`——**这些值大多没有写入方**，而真正被写的 16 个值一个都不在注释里；`audit.result` 注释写 `success|failure|denied|error`，其中 `failure`/`error` 全仓零写入，真实落进去的却是"迁移到的运行状态"以及两处散文。按注释写查询的人会一条都查不到，而且不会报错。

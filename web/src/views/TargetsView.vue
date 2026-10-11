@@ -2,11 +2,14 @@
 // TargetsView manages target hosts: list, add, remove, bulk import (CSV) and
 // connectivity check. The check result is shown inline so operators can spot
 // unreachable hosts at a glance.
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { targetsApi } from '@/api'
 import type { Target } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
+import StateBlock from '@/components/StateBlock.vue'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 
 const loading = ref(false)
 const targets = ref<Target[]>([])
@@ -15,6 +18,23 @@ const search = reactive({
   channelType: '',
   reachableOnly: false,
 })
+
+// Region state (utils/apiState.ts). The "no hosts at all" and "the fetch
+// failed" answers used to be identical: an empty table plus a toast that had
+// already timed out.
+const loadError = ref<unknown>(null)
+
+const regionTier = computed<LoadTier>(() => {
+  if (loadError.value !== null) return classifyError(loadError.value)
+  if (!loading.value && targets.value.length === 0) return 'empty'
+  return 'ok'
+})
+
+const regionMessage = computed(() => errorMessage(loadError.value, '加载目标列表失败'))
+
+const filterActive = computed(
+  () => search.channelType !== '' || search.reachableOnly,
+)
 
 interface CheckResult {
   [id: string]: { reachable: boolean; latencyMs: number; error: string; checking: boolean }
@@ -43,6 +63,7 @@ const importText = ref('')
 
 async function load(): Promise<void> {
   loading.value = true
+  loadError.value = null
   try {
     const res = await targetsApi.list({
       channelType: search.channelType || undefined,
@@ -52,7 +73,7 @@ async function load(): Promise<void> {
     targets.value = res.items || []
     total.value = res.totalSize || 0
   } catch (err) {
-    ElMessage.error((err as { message?: string })?.message || '加载目标列表失败')
+    loadError.value = err
   } finally {
     loading.value = false
   }
@@ -61,6 +82,15 @@ async function load(): Promise<void> {
 function openAdd(): void {
   add.form = { hostname: '', channelType: 'ssh', port: 22, credentialRef: '', labels: '' }
   add.visible = true
+}
+
+// Named rather than inline in the template so the empty state's action and the
+// toolbar's 查询 button cannot drift into two different definitions of
+// "no filter".
+function resetSearch(): void {
+  search.channelType = ''
+  search.reachableOnly = false
+  load()
 }
 
 async function submitAdd(): Promise<void> {
@@ -199,7 +229,25 @@ onMounted(load)
         </div>
       </div>
 
-      <el-table v-loading="loading" :data="targets" stripe>
+      <StateBlock
+        v-if="regionTier === 'error' || regionTier === 'forbidden'"
+        :tier="regionTier"
+        :message="regionMessage"
+        :hint="regionTier === 'forbidden' ? '目标清单受角色管控，请联系管理员授权' : ''"
+        @retry="load"
+      />
+      <StateBlock
+        v-else-if="regionTier === 'empty'"
+        tier="empty"
+        :hint="
+          filterActive
+            ? '当前筛选条件下没有目标机'
+            : '还没有登记任何目标机，先用「添加」或「导入」录入'
+        "
+        :action-label="filterActive ? '清除筛选条件' : '添加目标机'"
+        @action="filterActive ? resetSearch() : openAdd()"
+      />
+      <el-table v-else v-loading="loading" :data="targets" stripe>
         <el-table-column prop="id" label="ID" width="180" show-overflow-tooltip />
         <el-table-column prop="hostname" label="主机名" min-width="160" show-overflow-tooltip />
         <el-table-column prop="channelType" label="通道" width="100" />

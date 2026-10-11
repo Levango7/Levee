@@ -8,20 +8,27 @@
 // before it?". So the pair is rendered as a LINK (prev → curr) inside one cell,
 // in the mono face, rather than as two wide grey columns whose relationship you
 // have to reconstruct by eye.
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { auditApi } from '@/api'
 import type { TraceEntry } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import HashCell from '@/components/HashCell.vue'
+import StateBlock from '@/components/StateBlock.vue'
 import { formatTimestamp } from '@/utils/format'
 import TraceTimeline from '@/components/TraceTimeline.vue'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 
 const route = useRoute()
 
 const loading = ref(false)
 const entries = ref<TraceEntry[]>([])
+
+// Terminal state for the log region (see utils/apiState.ts): an audit query
+// that fails must not leave the previous page on screen.
+const loadError = ref<unknown>(null)
 
 // Table or timeline over the SAME filtered page. The table is for scanning
 // (filter, compare hashes, spot a gap); the timeline is for reading a
@@ -64,8 +71,27 @@ const verify = reactive<VerifyResult>({
   runs: [],
 })
 
+// Terminal state of the log region, shared by the table and the timeline (they
+// show the same page, so they must fail the same way).
+const regionTier = computed<LoadTier>(() => {
+  if (loadError.value !== null) return classifyError(loadError.value)
+  if (!loading.value && entries.value.length === 0) return 'empty'
+  return 'ok'
+})
+
+const regionMessage = computed(() => errorMessage(loadError.value, '加载审计日志失败'))
+
+const filterActive = computed(
+  () =>
+    filter.changeId.trim() !== '' ||
+    filter.runId.trim() !== '' ||
+    filter.actor.trim() !== '' ||
+    filter.action.trim() !== '',
+)
+
 async function load(): Promise<void> {
   loading.value = true
+  loadError.value = null
   try {
     const res = await auditApi.log({
       changeId: filter.changeId || undefined,
@@ -77,7 +103,10 @@ async function load(): Promise<void> {
     entries.value = res.items || []
     total.value = res.totalSize || 0
   } catch (err) {
-    ElMessage.error((err as { message?: string })?.message || '加载审计日志失败')
+    // The audit log IS the evidence page: a failed query must fail in place,
+    // not as a toast over a table still showing the previous page's rows
+    // (which then get read as current).
+    loadError.value = err
   } finally {
     loading.value = false
   }
@@ -150,10 +179,24 @@ onMounted(async () => {
       </div>
 
       <div v-if="viewMode === 'timeline'" class="lv-panel__body">
-        <TraceTimeline :entries="entries" empty-text="当前筛选下没有记录" />
+        <StateBlock
+          v-if="regionTier === 'error' || regionTier === 'forbidden'"
+          :tier="regionTier"
+          :message="regionMessage"
+          :hint="regionTier === 'forbidden' ? '审计日志受角色管控，请联系管理员授权' : ''"
+          @retry="load"
+        />
+        <StateBlock
+          v-else-if="regionTier === 'empty'"
+          tier="empty"
+          :hint="filterActive ? '当前筛选条件下没有审计记录' : '还没有任何审计记录'"
+          :action-label="filterActive ? '清除筛选条件' : ''"
+          @action="resetFilter"
+        />
+        <TraceTimeline v-else :entries="entries" empty-text="当前筛选下没有记录" />
       </div>
 
-      <el-table v-else v-loading="loading" :data="entries">
+      <el-table v-else-if="regionTier === 'ok'" v-loading="loading" :data="entries">
         <!-- 证据片段卡: the entry's own payload. The table proves WHERE a row
              sits in the chain; whether the change did what the plan said is in
              input/output, which the row never showed. -->
@@ -225,6 +268,23 @@ onMounted(async () => {
           </template>
         </el-table-column>
       </el-table>
+      <!-- Table mode's own terminal states. The chain above (v-if timeline /
+           v-else-if table ok / v-else here) keeps exactly one region visible. -->
+      <StateBlock
+        v-else
+        :tier="regionTier"
+        :message="regionMessage"
+        :hint="
+          regionTier === 'forbidden'
+            ? '审计日志受角色管控，请联系管理员授权'
+            : regionTier === 'empty' && filterActive
+              ? '当前筛选条件下没有审计记录'
+              : ''
+        "
+        :action-label="regionTier === 'empty' && filterActive ? '清除筛选条件' : ''"
+        @retry="load"
+        @action="resetFilter"
+      />
     </div>
 
     <!-- Verify dialog: a verdict hero, then the detail. -->

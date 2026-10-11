@@ -13,6 +13,9 @@ import { useResponsive } from '@/composables/useResponsive'
 import { changesApi, auditApi } from '@/api'
 import type { Change, TraceEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
+import StateBlock from '@/components/StateBlock.vue'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 import { STATUS_LABEL, formatTimestamp } from '@/utils/format'
 
 const route = useRoute()
@@ -24,8 +27,15 @@ const { isMobile, isTablet, isDesktop, breakpoint, gridCols } = useResponsive()
 const loading = ref(false)
 const change = ref<Change | null>(null)
 const history = ref<TraceEntry[]>([])
-const error = ref<string | null>(null)
+// The caught failure, not its string: an approval deep link is opened by
+// whoever holds the token, and "this token may not approve" (403) is a
+// different answer from "the change is gone" (404) — the old single banner
+// showed the server text for both with no way to tell them apart.
+const error = ref<unknown>(null)
 const approver = ref('operator')
+
+const errorTier = computed<LoadTier>(() => (error.value === null ? 'ok' : classifyError(error.value)))
+const errorText = computed(() => errorMessage(error.value, '加载变更失败'))
 
 // One-tap token extracted from the deep-link query string. When present the
 // page attempts the action immediately on mount.
@@ -46,7 +56,7 @@ async function loadChange(runID: string): Promise<void> {
     const res = await changesApi.get(runID)
     change.value = res
   } catch (err) {
-    error.value = (err as { message?: string })?.message || '加载变更失败'
+    error.value = err
   } finally {
     loading.value = false
   }
@@ -178,14 +188,21 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
       <StatusTag v-if="change" :status="change.status" />
     </header>
 
-    <!-- Error banner. -->
-    <el-alert
-      v-if="error"
-      :title="error"
-      type="error"
-      show-icon
-      :closable="false"
-      class="mobile-approval__error"
+    <!-- The answer, in the three tiers the desktop views use. A deep link
+         opened by whoever holds the token is the surface where "403: this
+         token may not approve" and "404: the change is gone" must be told
+         apart, so the tier rides on the HTTP code, not the prose. -->
+    <StateBlock
+      v-if="errorTier === 'error' || errorTier === 'forbidden'"
+      :tier="errorTier"
+      :message="errorText"
+      :hint="
+        errorTier === 'forbidden'
+          ? '该凭据无权审批此变更；如已通过其他渠道处理，请关闭本页。'
+          : '链接可能已过期，请重新打开或回到控制台。'
+      "
+      dense
+      @retry="loadChange(String(route.params.id || ''))"
     />
 
     <!-- Loading spinner. -->
@@ -302,10 +319,6 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
 
 .mobile-approval--mobile .mobile-approval__title {
   font-size: 18px;
-}
-
-.mobile-approval__error {
-  margin-bottom: 8px;
 }
 
 .mobile-approval__loading {

@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { conversationApi, type ConversationMessageDTO, type ConversationReplyDTO, type ConversationSessionDTO } from '@/api'
 import { sessionStateLabel } from '@/utils/session'
 import PageHeader from '@/components/PageHeader.vue'
+import StateBlock from '@/components/StateBlock.vue'
+import { classifyError, errorMessage } from '@/utils/apiState'
+import type { LoadTier } from '@/utils/apiState'
 
 const currentUserID = ref('operator')
 const sessions = ref<ConversationSessionDTO[]>([])
@@ -10,7 +13,12 @@ const activeSessionID = ref('')
 const messages = ref<ConversationMessageDTO[]>([])
 const input = ref('')
 const loading = ref(false)
-const error = ref('')
+// The caught failure, not its string: the tier (utils/apiState.ts) and the
+// server's own wording are both read off it.
+const error = ref<unknown>(null)
+
+const errorTier = computed<LoadTier>(() => (error.value === null ? 'ok' : classifyError(error.value)))
+const errorText = computed(() => errorMessage(error.value, '操作失败'))
 
 function findSession(id: string): ConversationSessionDTO | undefined {
 	return sessions.value.find(s => s.id === id)
@@ -20,18 +28,18 @@ async function refreshSessions() {
 	try {
 		sessions.value = await conversationApi.listSessions(currentUserID.value)
 	} catch (e) {
-		error.value = e instanceof Error ? e.message : String(e)
+		error.value = e
 	}
 }
 
 async function newSession() {
 	try {
-		error.value = ''
+		error.value = null
 		const sess = await conversationApi.newSession(currentUserID.value)
 		sessions.value = [sess, ...sessions.value]
 		await openSession(sess.id)
 	} catch (e) {
-		error.value = e instanceof Error ? e.message : String(e)
+		error.value = e
 	}
 }
 
@@ -50,7 +58,7 @@ async function refreshActiveSession() {
 		const idx = sessions.value.findIndex(s => s.id === sess.id)
 		if (idx >= 0) sessions.value[idx] = sess
 	} catch (e) {
-		error.value = e instanceof Error ? e.message : String(e)
+		error.value = e
 	}
 }
 
@@ -75,7 +83,7 @@ async function send() {
 		await refreshActiveSession()
 		await refreshSessions()
 	} catch (e) {
-		error.value = e instanceof Error ? e.message : String(e)
+		error.value = e
 	} finally {
 		loading.value = false
 	}
@@ -90,7 +98,7 @@ async function closeSession(id: string) {
 			messages.value = []
 		}
 	} catch (e) {
-		error.value = e instanceof Error ? e.message : String(e)
+		error.value = e
 	}
 }
 
@@ -202,7 +210,16 @@ refreshSessions()
 			</section>
 		</div>
 
-		<p v-if="error" class="error">{{ error }}</p>
+		<!-- Every failure path funnels here (sessions, send, close): the
+		     conversation is one page, so one in-place answer beats a toast that
+		     names an operation the operator has already forgotten issuing. -->
+		<StateBlock
+			v-if="errorTier === 'error' || errorTier === 'forbidden'"
+			:tier="errorTier"
+			:message="errorText"
+			:hint="errorTier === 'forbidden' ? '该账号无权访问此会话或会话列表，请联系管理员授权' : ''"
+			@retry="refreshSessions"
+		/>
 	</div>
 </template>
 
@@ -409,11 +426,5 @@ refreshSessions()
 
 .composer .el-input {
 	flex: 1;
-}
-
-.error {
-	margin-top: var(--lv-space-4);
-	color: var(--lv-bad);
-	font-size: var(--lv-text-sm);
 }
 </style>
