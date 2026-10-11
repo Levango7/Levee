@@ -13,6 +13,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { formatTimestamp } from '@/utils/format'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
+import { buildTargetMap, cellSummary, STEP_LABEL } from '@/utils/targetMap'
 
 const route = useRoute()
 
@@ -38,6 +39,30 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 // at all. Binding to the server DTO is what keeps the two vocabularies from
 // drifting.
 const summary = ref<BatchSummaryDTO | null>(null)
+// The plan's batch → host assignment, so a host that has not started still has
+// a row (and a host that ran before the plan is known is not dropped).
+const planBatches = ref<Array<{ index: number; hosts: string[] }>>([])
+// The host × batch matrix. It is composed here rather than inside the endpoint
+// because it needs both of the page's data sets: the plan says which host
+// belongs to which batch (including hosts that have not started), the step rows
+// say what each host actually did.
+
+const targetMap = computed(() =>
+  buildTargetMap(
+    planBatches.value,
+    (summary.value?.steps || []).map((s) => ({
+      host: s.host, batchNo: s.batch_no, status: s.status,
+      stepName: s.step_name, durationMs: s.duration_ms, exitCode: s.exit_code,
+    })),
+    summary.value?.batches || [],
+  ),
+)
+
+// Derived rather than piped through a watch: the rows and the batch numbers are
+// the same computation, and a second copy of them in refs is one more place the
+// two can disagree.
+const targetRows = computed(() => targetMap.value.rows)
+const targetBatchNos = computed(() => targetMap.value.batchNos)
 
 // Gate verdicts are recorded per run inside the engine's closure, but there is
 // no read route for them: `POST /gates/verify` evaluates on demand and returns
@@ -51,6 +76,14 @@ async function loadChange(): Promise<void> {
     change.value = await changesApi.get(changeId.value)
   } catch (err) {
     ElMessage.error((err as { message?: string })?.message || '加载变更失败')
+  }
+  try {
+    const plan = await changesApi.plan(changeId.value)
+    planBatches.value = plan.batches || []
+  } catch {
+    // An unplanned change legitimately has no plan: the map then renders from
+    // the step rows alone, and the untouched column is simply empty.
+    planBatches.value = []
   }
 }
 
@@ -234,6 +267,58 @@ const batchTotals = computed(() => {
           </div>
         </section>
 
+        <!-- Target map: the third view this page was missing. The batch bars say
+             "this batch is 60% accounted for"; the log says what happened last;
+             neither says WHICH host is in which state, which is the question an
+             operator opens a run with. Rows are hosts, columns are batches, and
+             a host the plan assigns but that has not started still has a row. -->
+        <section class="lv-panel" v-loading="loading">
+          <div class="lv-panel__head">
+            <span class="lv-panel__title">目标地图</span>
+            <span v-if="targetRows.length" class="lv-panel__hint lv-mono">
+              {{ targetRows.length }} 台 · {{ targetBatchNos.length }} 批
+            </span>
+          </div>
+          <div class="lv-panel__body">
+            <div v-if="targetRows.length === 0" class="lv-empty">
+              <span class="lv-empty__title">暂无目标进度</span>
+              <span>计划还没有分配到主机，或执行还没有写出第一步。</span>
+            </div>
+            <table v-else class="map">
+              <thead>
+                <tr>
+                  <th class="map__host">主机</th>
+                  <th v-for="n in targetBatchNos" :key="n" class="map__batch">批次 #{{ n }}</th>
+                  <th class="map__worst">主机结论</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in targetRows" :key="r.host">
+                  <td class="map__host lv-mono">{{ r.host }}</td>
+                  <td v-for="n in targetBatchNos" :key="n" class="map__cell">
+                    <span
+                      v-if="r.cells[n]"
+                      class="map__dot"
+                      :class="`map__dot--${r.cells[n]!.state}`"
+                      :title="cellSummary(r.cells[n]!)"
+                    ></span>
+                    <span v-else class="map__off" title="该批次未涉及此主机">—</span>
+                  </td>
+                  <td class="map__worst">
+                    <span class="map__chip" :class="`map__chip--${r.worst}`">{{ STEP_LABEL[r.worst] }}</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="map__legend">
+              <span v-for="s in ['failed', 'running', 'pending', 'skipped', 'success']" :key="s" class="map__legend-item">
+                <span class="map__dot map__dot--inline" :class="`map__dot--${s}`"></span>
+                {{ STEP_LABEL[s as 'failed'] }}
+              </span>
+            </div>
+          </div>
+        </section>
+
         <section class="lv-panel">
           <div class="lv-panel__head">
             <span class="lv-panel__title">门禁状态</span>
@@ -280,6 +365,81 @@ const batchTotals = computed(() => {
 </template>
 
 <style scoped>
+/* Target map: a dense matrix, so cells are colour + title rather than words.
+   A column of Chinese labels would be unreadable at 12 hosts × 4 batches. */
+.map {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.map__host,
+.map__batch,
+.map__worst {
+  text-align: left;
+  padding: 4px 8px;
+  color: var(--lv-text-3);
+  font-weight: 500;
+  border-bottom: 1px solid var(--lv-border-soft);
+}
+
+.map__batch {
+  width: 72px;
+  text-align: center;
+}
+
+.map__cell {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--lv-border-soft);
+  text-align: center;
+}
+
+.map__dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+.map__dot--inline {
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+}
+
+.map__dot--success { background: var(--lv-ok); }
+.map__dot--failed { background: var(--lv-bad); }
+.map__dot--running { background: var(--lv-accent); }
+.map__dot--pending { background: var(--lv-ink-400); }
+.map__dot--skipped { background: var(--lv-warn); }
+
+.map__off {
+  color: var(--lv-text-3);
+}
+
+.map__chip {
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--lv-border);
+  font-size: 11px;
+}
+
+.map__chip--success { color: var(--lv-ok); border-color: var(--lv-ok-border); }
+.map__chip--failed { color: var(--lv-bad); border-color: var(--lv-bad-border); }
+.map__chip--running { color: var(--lv-accent); }
+.map__chip--pending { color: var(--lv-text-3); }
+.map__chip--skipped { color: var(--lv-warn); border-color: var(--lv-warn-border); }
+
+.map__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--lv-space-2, 8px);
+  margin-top: var(--lv-space-2, 8px);
+  font-size: 11px;
+  color: var(--lv-text-3);
+}
+
 .monitor {
   display: grid;
   grid-template-columns: minmax(320px, 400px) minmax(0, 1fr);

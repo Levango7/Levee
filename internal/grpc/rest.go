@@ -1803,7 +1803,69 @@ func (gw *Gateway) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
 		// so the frontend can render "no batch data" uniformly.
 		summary = &state.BatchSummary{Batches: []state.BatchProgress{}}
 	}
-	writeJSON(w, summary)
+	// The per-host rows travel with the aggregates: the batch bar says "this
+	// batch is 60% accounted for", which is the one question the monitor page
+	// could not answer — WHICH host is in which state. The steps table is the
+	// only place that is written, and this is its only read path.
+	steps, serr := gw.stepRows(ctx, runID)
+	if serr != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("step rows: %v", serr))
+		return
+	}
+	writeJSON(w, batchStatusPayload{BatchSummary: summary, Steps: steps})
+}
+
+// batchStatusPayload is what /system/batch-status returns: the per-batch
+// aggregates (state.BatchSummary, exactly as the store hands them over) plus
+// the per-host rows the monitor's target map renders.
+type batchStatusPayload struct {
+	*state.BatchSummary
+	Steps []stepPayload `json:"steps,omitempty"`
+}
+
+// stepPayload is one host's row in one batch. ExitCode is omitted when the
+// engine did not record one, rather than rendered as 0 (an exit code of 0 is
+// a fact, a missing one is the absence of one).
+type stepPayload struct {
+	Host       string `json:"host"`
+	BatchNo    int    `json:"batch_no"`
+	StepName   string `json:"step_name"`
+	Status     string `json:"status"`
+	DurationMs int    `json:"duration_ms"`
+	ExitCode   *int   `json:"exit_code,omitempty"`
+}
+
+// stepRows resolves the steps table's batch_id (a row id) to the batch NUMBER
+// the rest of the payload speaks in, so a client can put a host in a column
+// without a second request. The join lives here rather than in the store
+// because the store has no step↔batch join and the monitor is the only reader.
+func (gw *Gateway) stepRows(ctx context.Context, runID string) ([]stepPayload, error) {
+	steps, err := gw.store.ListSteps(ctx, state.StepFilter{RunID: runID})
+	if err != nil {
+		return nil, err
+	}
+	if len(steps) == 0 {
+		return nil, nil
+	}
+	batches, err := gw.store.ListBatches(ctx, state.BatchFilter{RunID: runID})
+	if err != nil {
+		return nil, err
+	}
+	noOf := make(map[string]int, len(batches))
+	for _, b := range batches {
+		noOf[b.ID] = b.BatchNo
+	}
+	out := make([]stepPayload, 0, len(steps))
+	for _, st := range steps {
+		if st == nil {
+			continue
+		}
+		out = append(out, stepPayload{
+			Host: st.Host, BatchNo: noOf[st.BatchID], StepName: st.StepName,
+			Status: st.Status, DurationMs: st.DurationMs, ExitCode: st.ExitCode,
+		})
+	}
+	return out, nil
 }
 
 // backendLabel returns a human-readable backend name for the store. It defers

@@ -510,17 +510,23 @@ func (x *Template) GetUpdatedAt() int64 {
 
 // TraceEntry is a single auditable action within a run, hash-chained for tamper evidence.
 type TraceEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
-	Action        string                 `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
-	TargetHost    string                 `protobuf:"bytes,4,opt,name=target_host,json=targetHost,proto3" json:"target_host,omitempty"`
-	Input         []byte                 `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
-	Output        []byte                 `protobuf:"bytes,6,opt,name=output,proto3" json:"output,omitempty"`
-	DurationMs    int64                  `protobuf:"varint,7,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	Timestamp     int64                  `protobuf:"varint,8,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	PrevHash      string                 `protobuf:"bytes,9,opt,name=prev_hash,json=prevHash,proto3" json:"prev_hash,omitempty"`
-	CurrHash      string                 `protobuf:"bytes,10,opt,name=curr_hash,json=currHash,proto3" json:"curr_hash,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Id         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	RunId      string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	Action     string                 `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"`
+	TargetHost string                 `protobuf:"bytes,4,opt,name=target_host,json=targetHost,proto3" json:"target_host,omitempty"`
+	Input      []byte                 `protobuf:"bytes,5,opt,name=input,proto3" json:"input,omitempty"`
+	Output     []byte                 `protobuf:"bytes,6,opt,name=output,proto3" json:"output,omitempty"`
+	DurationMs int64                  `protobuf:"varint,7,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	Timestamp  int64                  `protobuf:"varint,8,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	PrevHash   string                 `protobuf:"bytes,9,opt,name=prev_hash,json=prevHash,proto3" json:"prev_hash,omitempty"`
+	CurrHash   string                 `protobuf:"bytes,10,opt,name=curr_hash,json=currHash,proto3" json:"curr_hash,omitempty"`
+	// Who acted, and the readable context (an error, or the recorder's
+	// metadata: batch number, step name). The web console has typed these two
+	// fields for months while nothing filled them for trace rows, which is why
+	// the target column showed the actor instead of the host.
+	Actor         string `protobuf:"bytes,11,opt,name=actor,proto3" json:"actor,omitempty"`
+	Detail        string `protobuf:"bytes,12,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -621,6 +627,20 @@ func (x *TraceEntry) GetPrevHash() string {
 func (x *TraceEntry) GetCurrHash() string {
 	if x != nil {
 		return x.CurrHash
+	}
+	return ""
+}
+
+func (x *TraceEntry) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *TraceEntry) GetDetail() string {
+	if x != nil {
+		return x.Detail
 	}
 	return ""
 }
@@ -5062,7 +5082,7 @@ const file_levee_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\x93\x02\n" +
+	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\xc1\x02\n" +
 	"\n" +
 	"TraceEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x15\n" +
@@ -5077,7 +5097,9 @@ const file_levee_proto_rawDesc = "" +
 	"\ttimestamp\x18\b \x01(\x03R\ttimestamp\x12\x1b\n" +
 	"\tprev_hash\x18\t \x01(\tR\bprevHash\x12\x1b\n" +
 	"\tcurr_hash\x18\n" +
-	" \x01(\tR\bcurrHash\"\x87\x01\n" +
+	" \x01(\tR\bcurrHash\x12\x14\n" +
+	"\x05actor\x18\v \x01(\tR\x05actor\x12\x16\n" +
+	"\x06detail\x18\f \x01(\tR\x06detail\"\x87\x01\n" +
 	"\bLogEntry\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\tR\ttimestamp\x12\x14\n" +

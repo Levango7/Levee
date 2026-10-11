@@ -3069,17 +3069,11 @@ func (s *ChangeService) GetTrace(ctx context.Context, req *pb.GetTraceRequest) (
 
 	entries := make([]*pb.TraceEntry, 0, len(traces))
 	for _, t := range traces {
-		entries = append(entries, &pb.TraceEntry{
-			Id:         t.ID,
-			RunId:      t.RunID,
-			Action:     t.Event,
-			TargetHost: t.Actor,
-			PrevHash:   t.PrevHash,
-			CurrHash:   t.CurrHash,
-			Timestamp:  t.Timestamp.Unix(),
-		})
+		// The shared mapping (trace_map.go): the inline copy this replaces
+		// reported the ACTOR in the target-host column, so nothing in the
+		// console could say which host a step ran on.
+		entries = append(entries, traceEntryToPB(t))
 	}
-
 	resp := &pb.GetTraceResponse{
 		RunId:   runID,
 		Entries: entries,
