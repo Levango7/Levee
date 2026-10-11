@@ -30,6 +30,7 @@ import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry, TraceEntry } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import TraceTimeline from '@/components/TraceTimeline.vue'
 import { remediateRollback } from '@/composables/useRollbackRemediation'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import {
@@ -241,23 +242,7 @@ onMounted(load)
         <p class="detail__dim">
           共 {{ chain.entries.length }} 条 trace{{ chain.message ? ` · ${chain.message}` : '' }}
         </p>
-        <el-timeline v-if="timeline.length > 0">
-          <el-timeline-item
-            v-for="e in timeline"
-            :key="e.id"
-            :timestamp="formatTimestamp(e.timestamp)"
-            placement="top"
-          >
-            <div class="tl">
-              <span class="tl__action lv-mono">{{ e.action }}</span>
-              <span v-if="e.targetHost" class="tl__host lv-mono">{{ e.targetHost }}</span>
-              <span v-if="e.actor" class="tl__host">{{ e.actor }}</span>
-              <span v-if="e.durationMs" class="detail__dim">{{ e.durationMs }} ms</span>
-            </div>
-            <div v-if="e.detail" class="tl__detail">{{ e.detail }}</div>
-          </el-timeline-item>
-        </el-timeline>
-        <el-empty v-else description="暂无 trace：该变更还没有进入执行" :image-size="60" />
+        <TraceTimeline :entries="timeline" empty-text="暂无 trace：该变更还没有进入执行" />
       </div>
 
       <!-- Batches -->
@@ -341,28 +326,6 @@ onMounted(load)
   font-family: var(--lv-font-mono, monospace);
   font-size: 12px;
   white-space: pre-wrap;
-}
-
-.tl {
-  display: flex;
-  align-items: center;
-  gap: var(--lv-space-2, 8px);
-  flex-wrap: wrap;
-}
-
-.tl__action {
-  font-weight: 600;
-}
-
-.tl__host {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.tl__detail {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-  margin-top: 2px;
 }
 
 .batches {

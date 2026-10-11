@@ -108,6 +108,14 @@
 - **顺带收口一处孪生**：⑤ 的补救流程（dry_run 预览 → 摊证据 → 确认 → 提交）从列表页抽到 `composables/useRollbackRemediation.ts`，列表与详情页共用一份——两份拷贝正是"预览与提交的配对"最容易漂的地方。原 `ChangesView.spec.ts` 里关于该流程的断言随之挪到 composable 的 spec，并新增一条"任何调用方都不得自带 rollback 序列"的守卫。
 - 验证：`npm run test` **159 例全绿（18 文件）**、`vue-tsc` 干净、`internal/web/dist` 用 LF 工作树重建刷新。真机走查（dev server + 无头 Chrome，API 请求层打桩）：详情页渲染 7 条时间线、链判定 tag、两条批次（已完成/已回滚，计数 2/2 与 1/1）、动作行只给出 `补救未完成的回滚 / 重试 / 取消 / 归档`（该状态不该有的暂停/恢复没有出现）；点"补救"**只发出 `{"dryRun":true}`** 并弹出证据对话框——与列表页同一份流程。
 
+### 新增（审计视图补齐证据片段卡与时间线；时间线渲染收成一个组件）
+
+- **缺口**：roadmap 的「审计视图：时间线 + hash 链校验按钮 + 证据片段卡」三件里只有链校验在。表格能证明**某一行在链上的位置**，却从不显示**这次变更到底做了什么**——`input`/`output`/`detail` 全仓没有任何展示面；时间线则完全没有。
+- **实现**：① **证据片段卡**——每行可展开，看到输入/输出/详情与该行的 `prev → curr` 链位（沿用 `HashCell` 的头尾省略，中间省略是为了既保留"用于跨屏比对的头部"又保留"用于区分相邻行的尾部"）；**空载荷明说**"该动作没有输入/输出"，空框会被读成加载失败。② **时间线视图**——与表格共用**同一份筛选结果**（不另发请求，否则两个视图对"当前"的理解会分叉），用本轮从详情页抽出的 `components/TraceTimeline`。
+- **时间线渲染收成一个 owner**：`TraceTimeline` 现由详情页与审计页共用（排序由调用方决定并写在组件注释里——详情页倒序是刻意的：到达失败变更的人要结论与最后发生的事）。守卫扫描 `src/views/**.vue`，**除 `MobileApprovalView` 的审批历史**（按 approve/reject 着色的决策时间线，无主机/耗时，是另一种强调）外，任何视图自带 `el-timeline-item` 都会被判红——例外登记为**具体文件名**而不是"某类视图"，新违规吸收不进来。
+- **台账补正**：roadmap 里「变更详情页」「模板实例化向导」「部分回滚补救向导」三行此前仍标未做（实际已随 #115/#113/#109 落地），一行行改写为已完成并注明 PR；**同时把两行未完成的真实缺口查清写进台账**——「审批中心卡片化」的中间态（批准人/票数/min_approvers/plan 版本）**服务端根本没有读路径**（`rest.go` 零 `approvals`、proto 无 `ListApprovals`、web 客户端无 approval API），所以那行不是纯 UI 活，需先补一条带 `view` 准入的读路径；「/monitor 三视图联动」的日志流是**轮询**（`WatchChange`/`StreamLogs` 只有 gRPC server stream，没有 SSE 路由），"目标地图"也还没定形。
+- 验证：`npm run test` **177 例全绿（20 文件）**、`vue-tsc` 干净。真机走查（dev server + 无头 Chrome、`/audit/log` 打桩）：表格 4 行、展开 `step_failed` 后证据卡三行（输入 `rpm -Uvh nginx-1.24.0`、输出 `exit status 1: package conflict`、链 `prev …aaaaa2 → curr …bbbbb2`）；切到时间线得到 4 条、动作以原始 token 呈现、表格让位。
+
 ## [v1.21.0] - 2026-10-09
 
 > **发布状态：已切版。** 附注 tag `v1.21.0`（tag 对象 `b28bbd0f`，指向合并提交 `fcac5dd3`）于 2026-10-09 推送，`release.yml` 三段（CI gate / goreleaser / container image）全部 success：GitHub Release `draft=false`、`publishedAt=2026-10-09T03:50:51Z`，资产 7 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.21.0` 按外部事实核过——`manifests/v1.21.0` 返回 **200**，`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0, v1.21.0]`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.21.0` / 逐字 `v1.21.0`（顺序不能反：规则②要求它逐字出现在 tag 集合里）。 本节共 **12** 个小节，三条主线：七批词表/判据收口（批次、分配、会话、系统页的中文标签与 owning 常量，每处都补了从常量源解析的守卫）、控制台重做与"玻璃只上 chrome"+ 命令面板、以及三处**门禁级**缺陷（CHANGELOG 结构守卫抓到自己登记的那类损坏；`release-gate` 的 `unittest | tee` 在 `bash -e` 下吞掉一切断言失败；`govulncheck` 被 `go` 指令挡住），另收口 SA-007/SA-011 与看板变更名。**切版顺序（按既有约束执行）**：先折叠 CHANGELOG 与 release notes、chart 不动（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升），推 tag 并确认 `release.yml` 三段 success 之后，再随下一笔把 chart 两处升到 `1.21.0` / 逐字 `v1.21.0`。release notes 见 [`docs/release-notes/v1.21.0.md`](docs/release-notes/v1.21.0.md)。

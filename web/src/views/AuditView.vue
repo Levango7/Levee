@@ -16,11 +16,18 @@ import type { TraceEntry } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import HashCell from '@/components/HashCell.vue'
 import { formatTimestamp } from '@/utils/format'
+import TraceTimeline from '@/components/TraceTimeline.vue'
 
 const route = useRoute()
 
 const loading = ref(false)
 const entries = ref<TraceEntry[]>([])
+
+// Table or timeline over the SAME filtered page. The table is for scanning
+// (filter, compare hashes, spot a gap); the timeline is for reading a
+// sequence, and it is the shared component the change detail page uses rather
+// than a second rendering of the same list.
+const viewMode = ref<'table' | 'timeline'>('table')
 const total = ref(0)
 
 const filter = reactive({
@@ -134,11 +141,50 @@ onMounted(async () => {
           <el-input v-model="filter.action" placeholder="动作" clearable style="width: 132px" @keyup.enter="load" />
           <el-button @click="load">查询</el-button>
           <el-button text @click="resetFilter">重置</el-button>
+          <el-radio-group v-model="viewMode" size="small">
+            <el-radio-button value="table">表格</el-radio-button>
+            <el-radio-button value="timeline">时间线</el-radio-button>
+          </el-radio-group>
         </div>
         <span class="lv-panel__hint lv-mono">共 {{ total }} 条</span>
       </div>
 
-      <el-table v-loading="loading" :data="entries">
+      <div v-if="viewMode === 'timeline'" class="lv-panel__body">
+        <TraceTimeline :entries="entries" empty-text="当前筛选下没有记录" />
+      </div>
+
+      <el-table v-else v-loading="loading" :data="entries">
+        <!-- 证据片段卡: the entry's own payload. The table proves WHERE a row
+             sits in the chain; whether the change did what the plan said is in
+             input/output, which the row never showed. -->
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="evidence">
+              <div class="evidence__row">
+                <span class="evidence__k">输入</span>
+                <pre v-if="row.input" class="evidence__v">{{ row.input }}</pre>
+                <span v-else class="evidence__empty">该动作没有输入</span>
+              </div>
+              <div class="evidence__row">
+                <span class="evidence__k">输出</span>
+                <pre v-if="row.output" class="evidence__v">{{ row.output }}</pre>
+                <span v-else class="evidence__empty">该动作没有输出</span>
+              </div>
+              <div v-if="row.detail" class="evidence__row">
+                <span class="evidence__k">详情</span>
+                <pre class="evidence__v">{{ row.detail }}</pre>
+              </div>
+              <div class="evidence__row">
+                <span class="evidence__k">链</span>
+                <span class="evidence__chain">
+                  prev <HashCell :value="row.prevHash" :width="24" />
+                  <span class="evidence__arrow">→</span>
+                  curr <HashCell :value="row.currHash" :width="24" />
+                </span>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="记录 ID" width="150">
           <template #default="{ row }">
             <span class="cell-mono" :title="row.id">{{ row.id }}</span>
@@ -230,6 +276,57 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--lv-space-2, 8px) var(--lv-space-3, 12px);
+  background: var(--el-fill-color-light);
+  border-radius: 6px;
+}
+
+.evidence__row {
+  display: flex;
+  gap: var(--lv-space-2, 8px);
+  align-items: flex-start;
+}
+
+.evidence__k {
+  flex: 0 0 42px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.evidence__v {
+  margin: 0;
+  flex: 1 1 auto;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--lv-font-mono, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.evidence__empty {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.evidence__chain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.evidence__arrow {
+  margin: 0 4px;
+}
+
 /* The filter panel and the table are block siblings here, and the generic
  * stacking margin was removed from the base layer (it broke grids) — so this
  * view states its own rhythm. */
