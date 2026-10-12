@@ -3,6 +3,17 @@
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+
+### 新增（列个性化：列显隐 + 筛选记忆；拖拽调宽刻意不做）
+
+- **做什么**：变更看板的表格现在记住两件事——藏了哪几列、上次的筛选词，刷新后都在。列选择器是工具栏一个「列」下拉，只有**范围/模板/创建时间**三列可藏，**变更/状态/操作**恒显（那是一个行"是什么"本身，藏了就成一张认不出内容的表）。
+- **规则收在一个 owner**（`web/src/utils/tablePrefs.ts`）而不是每个视图各写一遍：未知列名一律丢弃（旧版本遗留的偏好不得让改名后的列复活）、**最后一列不许藏**（没有列的表 = 空白页 = 读作"无数据"，正是这个控制台一直在修的那种混淆）、**存储读写永不抛异常**（Safari 隐私模式与某些内嵌 webview 的 localStorage 会抛，偏好不值得让页面启动崩掉）。拒绝时**说一句**「至少保留一列」——点了没反应的点击和坏页面分不清。
+- **拖拽调宽刻意不做**，理由写进 util：EP 表格没有原生列宽调整，手搓要处理指针捕获、键盘等价、触屏与 RTL，而现有 min-width + 溢出 tooltip 已经回答了横向压力。这是产品取舍，不是漏项。
+- **深链优先于记忆**：地址栏 `?q=xxx` 的显式目标压过记住的筛选词。
+- **守卫** `web/src/views/columnPrefs.spec.ts` 6 例（必须走 owner 不许直接摸 localStorage、三列身份列恒显、拒绝要有提示、无指针拖拽、存储要防御）+ `tablePrefs.spec.ts` 14 例（含 Safari 抛异常、旧版本脏数据、空列表、两个表键不串）。**双向变异逐一变红**：把「变更」列改成可藏；在视图里直接摸 localStorage。回滚后字节相等。
+- 真机验证（dev server + mock）：隐藏「模板」→ 表头即时少一列 → 偏好写入 → 刷新后保持；输入「支付」查询 → 刷新后输入框仍是「支付」。
+- 验证：`npm run test` **282 例全绿（34 文件）**、`vue-tsc` 干净、`browser-check` ALL PASS、dist LF 重建。
+
 ### 安全（两个裸奔的 REST-only 端点接上门禁；台账里"四个"是错的，实为两个）
 
 - **订正先行**：roadmap 原登记 cluster-status、batch-status、config、doctor 四个端点无门禁。逐个核 handler 后**只有两个真没门禁**——另外三个都委托给 SystemService，服务自己门禁（GetConfig 按 admin、RunDoctor 按 view、GetStatus 按可见环境收窄）。真正裸奔的是**直读 store、不经过 service** 的那两个。登记时不核实现就会把已加固的面说成缺口——这条本会话已犯过两次。

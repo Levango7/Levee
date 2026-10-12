@@ -29,6 +29,7 @@ import PageHeader from '@/components/PageHeader.vue'
 import MetricCard from '@/components/MetricCard.vue'
 import { formatTimestamp, isRemediableStatus, isRetryableStatus } from '@/utils/format'
 import { classifyError, errorMessage } from '@/utils/apiState'
+import { readPrefs, toggleColumn, writePrefs } from '@/utils/tablePrefs'
 import type { LoadTier } from '@/utils/apiState'
 
 const router = useRouter()
@@ -94,6 +95,41 @@ const cursor = useKeyboardCursor({
     if (row) viewDetail(row)
   },
 })
+
+// ---------------------------------------------------------------------------
+// Column visibility + remembered filter (roadmap's column-personalisation row).
+//
+// Only the three columns an operator can safely live without are hideable; the
+// change name, status and actions always show. The preference is read once at
+// setup and written on every change — utils/tablePrefs enforces the rules
+// (unknown names dropped, last column never hidden, storage failures ignored),
+// so this file only decides WHICH columns are optional.
+const OPTIONAL_COLUMNS = ['scope', 'template', 'created'] as const
+type OptionalColumn = (typeof OPTIONAL_COLUMNS)[number]
+
+const hiddenColumns = ref<OptionalColumn[]>([])
+
+function applies(col: OptionalColumn): boolean {
+  return !hiddenColumns.value.includes(col)
+}
+
+function toggleColumnVisibility(col: OptionalColumn): void {
+  const next = toggleColumn(OPTIONAL_COLUMNS.filter((c) => !hiddenColumns.value.includes(c)), col, OPTIONAL_COLUMNS, 1)
+  if (next.refused) {
+    // Say so: a click that does nothing is indistinguishable from a broken page.
+    ElMessage.warning('至少保留一列')
+    return
+  }
+  hiddenColumns.value = OPTIONAL_COLUMNS.filter((c) => !next.columns.includes(c))
+  persistPrefs()
+}
+
+function persistPrefs(): void {
+  writePrefs('changes', {
+    columns: OPTIONAL_COLUMNS.filter((c) => !hiddenColumns.value.includes(c)),
+    filter: filter.labelContains,
+  })
+}
 
 function rowClass({ rowIndex }: { rowIndex: number }): string {
   return cursor.index.value === rowIndex ? 'lv-row-clickable lv-row-cursor' : 'lv-row-clickable'
@@ -345,6 +381,7 @@ const trendMessage = computed(() => errorMessage(trendError.value, '加载趋势
 function applyFilter(): void {
   currentPage.value = 1
   tokenChain.value = []
+  persistPrefs()
   void load()
   void loadKpis()
 }
@@ -439,6 +476,12 @@ onMounted(() => {
   // instead of flashing the full list and re-querying.
   const q = route.query.q
   if (typeof q === 'string' && q) filter.labelContains = q
+  // Restore the operator's own preferences: which columns they hid and the
+  // filter they left applied. A deep link wins over the stored filter — an
+  // explicit target beats a remembered one.
+  const saved = readPrefs('changes', OPTIONAL_COLUMNS, OPTIONAL_COLUMNS)
+  hiddenColumns.value = OPTIONAL_COLUMNS.filter((c) => !saved.columns.includes(c))
+  if (!filter.labelContains && saved.filter) filter.labelContains = saved.filter
   void load()
   void loadKpis()
   void loadTrend()
@@ -551,6 +594,26 @@ onMounted(() => {
         </div>
 
         <div class="lv-toolbar">
+          <!-- Column visibility. A dropdown rather than per-column checkboxes in
+               a header menu: the preferences are few and the menu keeps them out
+               of the filter row. The last visible column cannot be hidden (the
+               util refuses and this says why). -->
+          <el-dropdown trigger="click" @command="toggleColumnVisibility">
+            <el-button size="small" :icon="'Grid'">列</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="col in OPTIONAL_COLUMNS"
+                  :key="col"
+                  :command="col"
+                  :disabled="applies(col) && OPTIONAL_COLUMNS.filter(applies).length <= 1"
+                >
+                  <span class="col-check">{{ applies(col) ? '✓' : '　' }}</span>
+                  {{ { scope: '范围', template: '模板', created: '创建时间' }[col] }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <template v-if="selected.length > 0">
             <span class="bulk-hint">已选 <b class="lv-mono">{{ selected.length }}</b> 项</span>
             <el-button size="small" @click="bulkPause">批量暂停</el-button>
@@ -606,7 +669,7 @@ onMounted(() => {
             <StatusTag :status="row.status" variant="plain" />
           </template>
         </el-table-column>
-        <el-table-column label="范围" width="176">
+        <el-table-column v-if="applies('scope')" label="范围" width="176">
           <template #default="{ row }">
             <div class="cell-scope">
               <span v-if="row.environment" class="cell-chip">{{ row.environment }}</span>
@@ -614,12 +677,12 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="模板" min-width="150" show-overflow-tooltip>
+        <el-table-column v-if="applies('template')" label="模板" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="lv-mono cell-template">{{ row.templateName || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="创建时间" width="170">
+        <el-table-column v-if="applies('created')" label="创建时间" width="170">
           <template #default="{ row }">
             <span class="lv-mono cell-time">{{ formatTimestamp(row.createdAt) }}</span>
           </template>
