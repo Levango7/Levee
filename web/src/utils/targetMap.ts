@@ -154,3 +154,91 @@ export function cellSummary(cell: TargetCell): string {
   if (cell.exitCode !== undefined) parts.push(`exit=${cell.exitCode}`)
   return parts.join(' · ')
 }
+
+// ---------------------------------------------------------------------------
+// Row windowing for the target map
+// ---------------------------------------------------------------------------
+
+/**
+ * The target map's cost is O(hosts × batches) DOM nodes, and it is the one
+ * surface in the console with no natural ceiling: a fleet-wide change over 2000
+ * hosts × 12 batches measured 28k cells / 56k nodes / a 61ms worst frame
+// (measured on this repo's own dev server — see the scaling table below). The
+ * list pages do not have this problem — they are paginated at ≤200 rows.
+ *
+ * So the map renders only the visible slice plus an overscan, and two spacer
+ * rows hold the scrollbar's place. The maths is here rather than in the
+ * component because "which rows are visible" is exactly the kind of thing that
+ * is wrong in a screenshot and right in a unit test.
+ *
+ * Measured on this repo's own dev server (1600px viewport, dev build, 2026-10-12):
+ * the pitch is 27px, not the 21px a quick look at the CSS suggests — a 6px
+ * miss over 300 rows is a 1800px scrollbar drift. The value is pinned in
+ * targetMap.spec.ts with the same provenance, so a CSS change that moves it
+ * fails a test rather than quietly mis-aligning the window.
+ *
+ * The OLD pitch was 64px, and that was a layout bug rather than a row height:
+ * the map used to live in the 400px side column, where twelve 72px batch
+ * columns squeezed the "主机结论" verdict column to 34px and every chip wrapped
+ * to four lines. Widening the verdict column (and the host column) took the
+ * pitch to 27px before any windowing was written.
+ */
+export const MAP_ROW_PITCH = 27
+
+/** Rows rendered above and below the viewport, so a quick flick never shows a gap. */
+export const MAP_OVERSCAN = 8
+
+export interface MapWindow {
+  /** First row index to render. */
+  start: number
+  /** Number of rows to render. */
+  count: number
+  /** Spacer heights in pixels, so the scrollbar matches the full row count. */
+  padTop: number
+  padBottom: number
+  /** True when windowing is actually active (i.e. the list exceeds the window). */
+  windowed: boolean
+}
+
+/**
+ * windowRange answers "which rows are visible" from raw scroll geometry.
+ *
+ * total is the full row count, scrollTop the container's scroll offset,
+ * viewportHeight the container's visible height. All three are plain numbers so
+ * the function is testable without a DOM — and callers that have not laid out
+ * yet (viewportHeight 0) get the first page rather than nothing, because a map
+ * that renders zero rows on first paint reads as "no targets".
+ */
+export function windowRange(
+  total: number,
+  scrollTop: number,
+  viewportHeight: number,
+  rowPitch: number = MAP_ROW_PITCH,
+  overscan: number = MAP_OVERSCAN,
+): MapWindow {
+  if (total <= 0 || rowPitch <= 0) {
+    return { start: 0, count: 0, padTop: 0, padBottom: 0, windowed: false }
+  }
+  // Not laid out yet: show the first window instead of an empty map.
+  if (viewportHeight <= 0) {
+    viewportHeight = rowPitch * 20
+  }
+  // first is clamped to the last row as well as the first: a caller that hands
+  // us a scrollTop beyond the content (a stale handler firing after the list
+  // shrank, a test) must not walk the window off the end. Without this clamp
+  // the arithmetic produced start+count past the end and a negative padBottom.
+  const first = Math.min(
+    Math.max(0, Math.floor(scrollTop / rowPitch) - overscan),
+    Math.max(0, total - 1),
+  )
+  const visible = Math.ceil(viewportHeight / rowPitch) + overscan * 2
+  const count = Math.max(1, Math.min(visible, total - first))
+  const windowed = count < total
+  return {
+    start: first,
+    count,
+    padTop: first * rowPitch,
+    padBottom: Math.max(0, (total - first - count) * rowPitch),
+    windowed,
+  }
+}

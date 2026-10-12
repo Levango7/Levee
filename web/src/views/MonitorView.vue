@@ -14,7 +14,8 @@ import PageHeader from '@/components/PageHeader.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import { formatTimestamp } from '@/utils/format'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
-import { buildTargetMap, cellSummary, STEP_LABEL } from '@/utils/targetMap'
+import { buildTargetMap, cellSummary, STEP_LABEL, windowRange, MAP_ROW_PITCH } from '@/utils/targetMap'
+import type { MapWindow } from '@/utils/targetMap'
 
 const route = useRoute()
 
@@ -80,6 +81,38 @@ const targetMap = computed(() =>
 // two can disagree.
 const targetRows = computed(() => targetMap.value.rows)
 const targetBatchNos = computed(() => targetMap.value.batchNos)
+
+// Row windowing for the map. The container's geometry is read on scroll rather
+// than from a ResizeObserver: the panel's height is driven by the layout, and a
+// scroll-driven recompute is one pure call (windowRange) per event, which is
+// cheaper than observing and re-measuring.
+const mapScrollTop = ref(0)
+const mapViewport = ref(0)
+
+function onMapScroll(e: Event): void {
+  const el = e.target as HTMLElement | null
+  if (!el) return
+  mapScrollTop.value = el.scrollTop
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- :ref's callback
+// signature is (ref, refs); the second arg is unused here, and this file's
+// sibling (ConversationView.onContainer) uses the same shape.
+function measureMapViewport(el: any): void {
+  mapViewport.value = el ? el.clientHeight : 0
+}
+
+const mapWindow = computed<MapWindow>(() =>
+  windowRange(targetRows.value.length, mapScrollTop.value, mapViewport.value, MAP_ROW_PITCH),
+)
+
+const windowed = computed(() => mapWindow.value.windowed)
+const visibleRows = computed(() => {
+  const w = mapWindow.value
+  return targetRows.value.slice(w.start, w.start + w.count)
+})
+const padTop = computed(() => mapWindow.value.padTop)
+const padBottom = computed(() => mapWindow.value.padBottom)
 
 // Gate verdicts are recorded per run inside the engine's closure, but there is
 // no read route for them: `POST /gates/verify` evaluates on demand and returns
@@ -366,67 +399,7 @@ const batchTotals = computed(() => {
           </div>
         </section>
 
-        <!-- Target map: the third view this page was missing. The batch bars say
-             "this batch is 60% accounted for"; the log says what happened last;
-             neither says WHICH host is in which state, which is the question an
-             operator opens a run with. Rows are hosts, columns are batches, and
-             a host the plan assigns but that has not started still has a row. -->
-        <section class="lv-panel" v-loading="loading">
-          <div class="lv-panel__head">
-            <span class="lv-panel__title">目标地图</span>
-            <span v-if="targetRows.length" class="lv-panel__hint lv-mono">
-              {{ targetRows.length }} 台 · {{ targetBatchNos.length }} 批
-            </span>
-          </div>
-          <div class="lv-panel__body">
-            <!-- An unread run (403) must not render as "no targets yet": the
-                 hosts exist, this principal just may not see them. -->
-            <StateBlock
-              v-if="batchTier === 'error' || batchTier === 'forbidden'"
-              :tier="batchTier"
-              :message="batchText"
-              :hint="batchTier === 'forbidden' ? '目标进度受角色管控，请联系管理员授权' : ''"
-              dense
-              @retry="loadSummary()"
-            />
-            <div v-else-if="targetRows.length === 0" class="lv-empty">
-              <span class="lv-empty__title">暂无目标进度</span>
-              <span>计划还没有分配到主机，或执行还没有写出第一步。</span>
-            </div>
-            <table v-else class="map">
-              <thead>
-                <tr>
-                  <th class="map__host">主机</th>
-                  <th v-for="n in targetBatchNos" :key="n" class="map__batch">批次 #{{ n }}</th>
-                  <th class="map__worst">主机结论</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="r in targetRows" :key="r.host">
-                  <td class="map__host lv-mono">{{ r.host }}</td>
-                  <td v-for="n in targetBatchNos" :key="n" class="map__cell">
-                    <span
-                      v-if="r.cells[n]"
-                      class="map__dot"
-                      :class="`map__dot--${r.cells[n]!.state}`"
-                      :title="cellSummary(r.cells[n]!)"
-                    ></span>
-                    <span v-else class="map__off" title="该批次未涉及此主机">—</span>
-                  </td>
-                  <td class="map__worst">
-                    <span class="map__chip" :class="`map__chip--${r.worst}`">{{ STEP_LABEL[r.worst] }}</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div class="map__legend">
-              <span v-for="s in ['failed', 'running', 'pending', 'skipped', 'success']" :key="s" class="map__legend-item">
-                <span class="map__dot map__dot--inline" :class="`map__dot--${s}`"></span>
-                {{ STEP_LABEL[s as 'failed'] }}
-              </span>
-            </div>
-          </div>
-        </section>
+
 
         <section class="lv-panel">
           <div class="lv-panel__head">
@@ -445,6 +418,78 @@ const batchTotals = computed(() => {
           </div>
         </section>
       </div>
+
+      <!-- Right column: the target map first, then the live log. The map used
+           to sit in the 400px side column, where 12 batch columns could not fit
+           and the squeezed "主机结论" chip wrapped every row to 65px — measured,
+           not guessed. A host × batch matrix needs the wide column and its own
+           horizontal scroll; a fleet of many batches scrolls instead of
+           squeezing. -->
+      <section class="lv-panel map-panel" v-loading="loading">
+        <div class="lv-panel__head">
+          <span class="lv-panel__title">目标地图</span>
+          <span v-if="targetRows.length" class="lv-panel__hint lv-mono">
+            {{ targetRows.length }} 台 · {{ targetBatchNos.length }} 批
+            <template v-if="windowed"> · 显示 {{ visibleRows.length }} 行</template>
+          </span>
+        </div>
+        <div class="lv-panel__body">
+          <!-- An unread run (403) must not render as "no targets yet": the
+               hosts exist, this principal just may not see them. -->
+          <StateBlock
+            v-if="batchTier === 'error' || batchTier === 'forbidden'"
+            :tier="batchTier"
+            :message="batchText"
+            :hint="batchTier === 'forbidden' ? '目标进度受角色管控，请联系管理员授权' : ''"
+            dense
+            @retry="loadSummary()"
+          />
+          <div v-else-if="targetRows.length === 0" class="lv-empty">
+            <span class="lv-empty__title">暂无目标进度</span>
+            <span>计划还没有分配到主机，或执行还没有写出第一步。</span>
+          </div>
+          <div v-else class="map-scroll" @scroll.passive="onMapScroll" :ref="measureMapViewport">
+            <table class="map">
+              <thead>
+                <tr>
+                  <th class="map__host">主机</th>
+                  <th v-for="n in targetBatchNos" :key="n" class="map__batch">#{{ n }}</th>
+                  <th class="map__worst">主机结论</th>
+                </tr>
+              </thead>
+              <tbody>
+                <!-- Row windowing: only the visible slice (plus overscan) is in
+                     the DOM. The two spacer rows keep the scrollbar honest about
+                     how many hosts there are, so scrolling a 2000-host fleet
+                     costs the same as scrolling a 30-host one. -->
+                <tr class="map__spacer" :style="{ height: padTop + 'px' }" aria-hidden="true"></tr>
+                <tr v-for="r in visibleRows" :key="r.host">
+                  <td class="map__host lv-mono">{{ r.host }}</td>
+                  <td v-for="n in targetBatchNos" :key="n" class="map__cell">
+                    <span
+                      v-if="r.cells[n]"
+                      class="map__dot"
+                      :class="`map__dot--${r.cells[n]!.state}`"
+                      :title="cellSummary(r.cells[n]!)"
+                    ></span>
+                    <span v-else class="map__off" title="该批次未涉及此主机">—</span>
+                  </td>
+                  <td class="map__worst">
+                    <span class="map__chip" :class="`map__chip--${r.worst}`">{{ STEP_LABEL[r.worst] }}</span>
+                  </td>
+                </tr>
+                <tr class="map__spacer" :style="{ height: padBottom + 'px' }" aria-hidden="true"></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="map__legend">
+            <span v-for="s in ['failed', 'running', 'pending', 'skipped', 'success']" :key="s" class="map__legend-item">
+              <span class="map__dot map__dot--inline" :class="`map__dot--${s}`"></span>
+              {{ STEP_LABEL[s as 'failed'] }}
+            </span>
+          </div>
+        </div>
+      </section>
 
       <!-- Right column: the live log terminal -->
       <section class="lv-panel terminal-card">
@@ -486,6 +531,30 @@ const batchTotals = computed(() => {
 <style scoped>
 /* Target map: a dense matrix, so cells are colour + title rather than words.
    A column of Chinese labels would be unreadable at 12 hosts × 4 batches. */
+
+/* The map scrolls in BOTH axes inside its own box: horizontally so a fleet
+   with many batches scrolls instead of squeezing the host/conclusion columns
+   (which used to wrap every row to 65px), and vertically with the row windowing
+   above — the vertical extent is capped so a 2000-host fleet does not produce a
+   42,000px page. */
+.map-scroll {
+  max-height: 460px;
+  overflow: auto;
+  /* The header must stay readable while the rows scroll under it. */
+  position: relative;
+}
+
+.map-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--lv-surface);
+}
+
+.map__spacer {
+  border: none;
+}
+
 .map {
   width: 100%;
   border-collapse: collapse;
@@ -502,9 +571,25 @@ const batchTotals = computed(() => {
   border-bottom: 1px solid var(--lv-border-soft);
 }
 
+/* Column widths. These are the shape of the data, not aesthetics: the HOST
+   column holds an address, the WORST column holds a 2-4 character verdict chip
+   ("部分回滚"), and a BATCH column holds one dot. When the batch columns were
+   72px each they squeezed the verdict column to 34px and every chip wrapped to
+   four lines — a 64px row pitch, measured. The verdict column keeps its width
+   and never wraps. */
+.map__host {
+  width: 132px;
+  white-space: nowrap;
+}
+
 .map__batch {
-  width: 72px;
+  width: 46px;
   text-align: center;
+}
+
+.map__worst {
+  width: 92px;
+  white-space: nowrap;
 }
 
 .map__cell {
