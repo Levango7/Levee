@@ -10,28 +10,29 @@ import (
 // the day bucketing lives in BucketRuns so the two backends cannot disagree
 // about where a day starts.
 func (s *PGStore) runTrendQuery(ctx context.Context, f RunTrendFilter, start time.Time) ([]*Run, bool, error) {
+	// Placeholders are numbered by POSITION in args, and every value binds: the
+	// only thing ever concatenated into the statement is a literal "$N"
+	// computed from len(args). The two lines that do it carry the same
+	// justification the rest of the package uses (see pgstore.go's LIMIT/OFFSET
+	// builders).
 	q := `SELECT status, created_at FROM runs WHERE created_at >= $1`
 	args := []any{start}
-	next := func() string {
-		args = append(args, nil)
-		return fmt.Sprintf("$%d", len(args))
-	}
 	if f.Env != "" {
-		// incident_id carries the change's environment (see envOf in the
-		// change service); the column is indexed on both dialects.
-		q += ` AND incident_id = ` + next()
-		args[len(args)-1] = f.Env
+		// incident_id carries the change's environment (envOf in the change
+		// service reads the same column); it is indexed on both dialects.
+		q += ` AND incident_id = $2`
+		args = append(args, f.Env)
 	}
 	if f.TenantID != "" {
-		q += ` AND tenant_id = ` + next()
-		args[len(args)-1] = f.TenantID
+		q += fmt.Sprintf(" AND tenant_id = $%d", len(args)+1) // #nosec G202 -- placeholder index computed from len(args); the tenant value binds via args
+		args = append(args, f.TenantID)
 	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = DefaultRunTrendLimit
 	}
-	q += ` ORDER BY created_at DESC LIMIT ` + next()
-	args[len(args)-1] = limit + 1
+	q += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args)+1) // #nosec G202 -- placeholder index computed from len(args); the cap binds via args
+	args = append(args, limit+1)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
