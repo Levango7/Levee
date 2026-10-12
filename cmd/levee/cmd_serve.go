@@ -829,6 +829,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 		RatePerSec:    serveOptRateLimit,
 		RateBurst:     serveOptRateBurst,
 	}, svcStore, svcs.gateSvc)
+	// The REST-only endpoints (/system/batch-status, /system/change-trend, ...)
+	// are dispatched by the gateway itself, not by a service, so the policy
+	// authorizer has to be installed on the gateway too — without this line a
+	// gated REST endpoint would judge against nil and admit everyone.
+	gw.WithAuthorizer(svcs.authzSvc)
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetMobileApproval(mobileSvc)
 	gw.SetConversationEngine(svcs.convEngine)

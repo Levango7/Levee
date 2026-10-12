@@ -35,6 +35,7 @@ import (
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/auth"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/push"
@@ -105,8 +106,15 @@ func ServeGateway(ctx context.Context, cfg ServeGatewayConfig) error {
 // Gateway is the REST-to-gRPC gateway. It holds service references and can
 // be started with Serve or manually via start().
 type Gateway struct {
-	cfg        ServeGatewayConfig
-	store      state.Store // backend store for direct queries (cluster status)
+	cfg   ServeGatewayConfig
+	store state.Store // backend store for direct queries (cluster status)
+	// authz is the policy authorizer the REST-only endpoints judge against. It
+	// is nil until WithAuthorizer is called, which is the same "no policy
+	// configured" posture the services use — an endpoint that judges without it
+	// would refuse everything. The gRPC services carry their own authorizer;
+	// the gateway needs one too because /system/batch-status and friends are
+	// handled here, not by a service.
+	authz      *authz.Authorizer
 	httpServer *http.Server
 	change     *ChangeService
 	template   *TemplateService
@@ -185,6 +193,15 @@ func NewGateway(cfg ServeGatewayConfig) *Gateway {
 		}
 	}
 	return &Gateway{cfg: cfg}
+}
+
+// WithAuthorizer installs the policy authorizer for the REST-only endpoints.
+// It mirrors the services' own WithAuthorizer: nil means "no policy
+// configured", in which case a gated endpoint admits rather than refuses (see
+// authorizeResourceRead).
+func (gw *Gateway) WithAuthorizer(a *authz.Authorizer) *Gateway {
+	gw.authz = a
+	return gw
 }
 
 // SetServices registers the in-process service implementations with the gateway.
@@ -540,6 +557,8 @@ func (gw *Gateway) dispatchOperationalRest(w http.ResponseWriter, r *http.Reques
 			gw.handleClusterStatus(w, r)
 		case path == "/system/batch-status" && method == "GET":
 			gw.handleBatchStatus(w, r)
+		case path == "/system/change-trend" && method == "GET":
+			gw.handleChangeTrend(w, r)
 		case path == "/system/config" && method == "GET":
 			gw.handleSystemConfig(w, r)
 		case path == "/system/doctor" && method == "POST":

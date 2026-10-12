@@ -278,6 +278,22 @@ func (a *Authorizer) Knows(subject string) bool {
 
 // Decide answers whether subject may perform action in env.
 //
+// ResolveEnv applies the same empty-environment fallback Decide applies
+// (permission.default_env), WITHOUT judging anything. It exists so a caller can
+// ask "which environment would this question be judged in" before it judges.
+// The trend endpoint needs exactly that: the read gate judges the resolved
+// environment, so the aggregate it then reads must be filtered by the SAME
+// environment — otherwise a caller entitled to exactly one environment gets
+// every environment's counts under a gate that only ever saw the default.
+func (a *Authorizer) ResolveEnv(env string) string {
+	if a == nil || env != "" {
+		return env
+	}
+	return a.defaultEnv
+}
+
+// Decide answers one (subject, env, action) question.
+//
 // env is the change's environment; when empty the configured default is used,
 // and with no default the request is refused — an authorisation question with
 // no environment cannot be answered against an environment-keyed policy, and

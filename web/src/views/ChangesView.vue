@@ -18,10 +18,11 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { changesApi } from '@/api'
+import { changesApi, trendApi, type TrendDTO } from '@/api'
 import type { Change, ChangeStatus } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
+import TrendChart from '@/components/TrendChart.vue'
 import { remediateRollback } from '@/composables/useRollbackRemediation'
 import { useKeyboardCursor } from '@/composables/useKeyboardCursor'
 import PageHeader from '@/components/PageHeader.vue'
@@ -301,6 +302,46 @@ async function load(): Promise<void> {
   }
 }
 
+// The trend panel: one series set per day, over the last two weeks, for the
+// environment the operator is looking at. It answers the question the KPI
+// strip cannot — "has today been bad, or is it always like this?" — and it is
+// the console's first chart.
+//
+// The timezone offset goes out with the request on purpose: the server buckets
+// days on the OPERATOR's boundary (utils/trend.ts on the backend), so an
+// operator's night work lands on their day rather than the server's.
+const trend = ref<TrendDTO | null>(null)
+const trendLoading = ref(false)
+const trendError = ref<unknown>(null)
+
+async function loadTrend(): Promise<void> {
+  trendLoading.value = true
+  trendError.value = null
+  try {
+    trend.value = await trendApi.changeTrend({
+      days: 14,
+      env: filter.status.length === 0 ? undefined : undefined,
+      tzOffset: new Date().getTimezoneOffset(),
+    })
+  } catch (err) {
+    // The panel's own failure must not take the table down with it: a chart
+    // that cannot load is a fact about the chart.
+    trendError.value = err
+  } finally {
+    trendLoading.value = false
+  }
+}
+
+// The total across the window, for the panel hint. Read from the buckets
+// rather than the DTO so the number on screen and the bars on screen are
+// computed from the same array.
+const trendTotal = computed(() => (trend.value?.buckets || []).reduce((n, b) => n + b.total, 0))
+
+// The chart's failure text, extracted here because a Vue template cannot cast
+// (no `as` in template expressions) and an inline optional chain over an
+// unknown is exactly the shape that fails to compile the moment it is needed.
+const trendMessage = computed(() => errorMessage(trendError.value, '加载趋势失败'))
+
 function applyFilter(): void {
   currentPage.value = 1
   tokenChain.value = []
@@ -400,6 +441,7 @@ onMounted(() => {
   if (typeof q === 'string' && q) filter.labelContains = q
   void load()
   void loadKpis()
+  void loadTrend()
 })
 </script>
 
@@ -446,6 +488,38 @@ onMounted(() => {
           {{ d.label }}
           <span class="dist__count lv-mono">{{ d.count }}</span>
         </span>
+      </div>
+    </div>
+
+    <!-- Trend panel: the console's first chart. The KPI strip says what is true
+         right now; this says whether it is USUAL. A chart that cannot load
+         says so in place (the same three tiers as the table), and it never
+         takes the table down with it. -->
+    <div class="lv-panel trend-panel" v-loading="trendLoading">
+      <div class="lv-panel__head">
+        <span class="lv-panel__title">近 14 天变更趋势</span>
+        <span v-if="trend" class="lv-panel__hint lv-mono">共 {{ trendTotal }} 个</span>
+      </div>
+      <div class="lv-panel__body">
+        <StateBlock
+          v-if="trendError !== null"
+          tier="error"
+          :message="trendMessage"
+          dense
+          @retry="loadTrend"
+        />
+        <StateBlock
+          v-else-if="trend && trendTotal === 0"
+          tier="empty"
+          hint="这个窗口里还没有变更"
+          dense
+        />
+        <template v-else-if="trend">
+          <TrendChart :buckets="trend.buckets" :height="180" />
+          <p v-if="trend.truncated" class="trend-panel__note">
+            窗口内变更过多，已按服务端上限截断——右侧最后一天的幅度是上限，不是数据。
+          </p>
+        </template>
       </div>
     </div>
 

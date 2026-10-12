@@ -423,6 +423,14 @@ type Store interface {
 	ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error)
 	DeleteRun(ctx context.Context, id string) error
 
+	// RunTrend returns the change-outcome trend over the window in f, bucketed
+	// by the caller's local day. The bool reports a capped row scan (see
+	// RunTrendFilter.Limit) — a trend whose right edge is a cap rather than the
+	// data must be labelled as such. Both stores implement it; TenantStore
+	// scopes it, because a trend reads every run in the window and would
+	// otherwise be the one aggregate that leaks across tenants.
+	RunTrend(ctx context.Context, filter RunTrendFilter) ([]RunTrendBucket, bool, error)
+
 	// Batch CRUD.
 	CreateBatch(ctx context.Context, batch *Batch) error
 	GetBatch(ctx context.Context, id string) (*Batch, error)

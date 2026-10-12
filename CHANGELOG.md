@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增（变更看板有了第一张图：近 14 天变更趋势）
+
+- **为什么是第一张图**：此前控制台一个图表库都没有，KPI 条只能说"此刻如何"，说不出"今天算不算正常"——而那正是运维打开看板时心里的问题。这是对前端四维评估（收益/风险/兼容/可持续）里排第一的缺口的回应：其余两项（大数据量、列个性化）是体验升级，这一项是能力缺口。
+- **不引图表库，手写 SVG**（决定写在组件注释里，也有守卫钉住）：① Palette 与字体全部来自 `styles/tokens.css`，手画的图与全站同一套设计语言，图表库自带的配色会是页面上唯一不协调的东西；② 这个控制台被 embed 进 Go 二进制、由部署方单机托管，图表库是动第一根柱子之前先付 ~1MB；③ 真正需要的只有"零基堆叠柱"一种形状，几何逻辑落在 `utils/trend.ts` 里、没有 DOM 也能测。
+- **日界归操作员，不归服务器**（这批最关键的一个技术决定，有实测支撑）：现代 sqlite 驱动把 `time.Time` 存成 RFC3339 文本，而 **SQLite 的日期函数对这种形状全部返回 NULL**（`strftime('%Y-%m-%d', created_at)` / 带偏移量 / `datetime(replace(...))` 实测皆然），只有 `substr(created_at,1,10)` 可用且只能给 **UTC 日界**。PG 侧本来能在 SQL 里做（`to_timestamp` + interval）——**两种后端若各自分桶，同一份数据的日界会不同**，而 UTC+8 的操作员 00:00–08:00 正是他们最关心的变更窗口。所以两个后端都只按窗口取行（窗口是双端都有索引的范围谓词），分桶在 Go 里按调用方时区做。
+- **端点是 REST-only，不进 proto**（沿用 `/system/batch-status` 的既有形状）：图表载荷是视图关注点，为它改一次 proto 意味着以后每次调整图表都要重跑 protoc。
+- **门禁与可见性**：`GET /system/change-trend` 走同一读规则——读要 `view`，窗口**收敛到一个环境**而非用谓词过滤（"这个主体能看哪些环境"没有枚举 API，把每个环境的计数都汇总回去，就等于以聚合形态重演读门禁要防的逐行泄漏）。空 `env` 先用 `authz.ResolveEnv` 解析成 `default_env`，**门禁判哪个环境、聚合就过滤哪个环境**——少这一步，一个只被授予单个环境的调用方会在只看过默认环境的门禁下拿到全部环境的计数。
+- **顺手补的两个接线**：`Gateway` 此前没有 authorizer（REST-only 端点由网关自分发，不经过 service），而 `/system/cluster-status`、`/system/batch-status`、`/system/config`、`/system/doctor` 四个兄弟端点**至今没有门禁**——本批只给自己要用的趋势端点接上（`gw.WithAuthorizer` + serve 接线），其余四个的加固单独立项，已在台账登记。
+- **截断如实说**：窗口内行数打到服务端上限时，响应带 `truncated`，面板明说"最后一天的幅度是上限，不是数据"——悄悄画出来的图是在数量上撒谎。
+- **守卫**：`utils/trend.spec.ts` 12 例（堆叠高度等于当日总数、段与段首尾相接、空日仍占一槽、**Y 轴必须从 0 起**、标签拥挤时抽稀、空窗口不炸）+ `views/trendChart.spec.ts` 6 例（package.json 里不得出现 echarts/chart.js/d3 等、每个 tone 必须能在 tokens.css 里解析到 token、几何必须来自纯函数、请求必须带 `tz_offset`、截断必须提示）。变异实测：把 `--lv-bad` 写成 `--lv-badd` 判红。
+- 验证：`go test ./...` 全量 EXIT=0、`golangci-lint run ./...` **0 issues**、`gofmt` 干净、`npm run test` **245 例全绿（30 文件）**、`vue-tsc` 干净、dist 从 LF 工作树重建（43 文件）。真机走查：dev server + mock 网关，堆叠柱/缺口/图例/轴刻度均如预期。
+
 ### 修复（控制台引入 Element Plus 中文语言包：空表格印 "No Data"、分页印 "Total / page"）
 
 - **渲染真机时发现**（`npm run dev` + 无头 Chrome 逐页截图，API 用本地 mock 网关顶上）：整站自有文案都是中文，而 Element Plus 的内建字符串全是它默认的英文——空表格 `No Data`、分页 `Total 42 / 20/page`、下拉无选项 `No data`。对这个要在一场事故里被人盯着看的控制台，**"半翻译"比"全英文"更糟**：它让人不确定该信哪半边。
