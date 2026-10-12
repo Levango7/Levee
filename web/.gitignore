@@ -3,3 +3,8 @@ dist/
 .env.local
 *.log
 .DS_Store
+
+# Browser-check screenshots (npm run test:browser -- --shots). Regenerated on
+# demand; they are evidence for a human, not a baseline, so they are not
+# committed and their absence is not a failure.
+.browser-shots/
