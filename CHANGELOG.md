@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 修复（控制台引入 Element Plus 中文语言包：空表格印 "No Data"、分页印 "Total / page"）
+
+- **渲染真机时发现**（`npm run dev` + 无头 Chrome 逐页截图，API 用本地 mock 网关顶上）：整站自有文案都是中文，而 Element Plus 的内建字符串全是它默认的英文——空表格 `No Data`、分页 `Total 42 / 20/page`、下拉无选项 `No data`。对这个要在一场事故里被人盯着看的控制台，**"半翻译"比"全英文"更糟**：它让人不确定该信哪半边。
+- **修法一行**：`web/src/main.ts` 引入 `element-plus/es/locale/lang/zh-cn` 并 `app.use(ElementPlus, { locale: zhCn })`。实测修复后同一页分租变成 `共 42 条 / 20条/页`。
+- **同批把"自建空态"与"组件库空态"分开记账**：列表/详情/日志区的三档空态走 `components/StateBlock.vue`（本仓自有、中文、带下一步动作），组件库剩余的内建空文本由语言包统一收口——两条路都通中文，不靠某一处碰巧。
+
+### 文档（身份与授权部署手册：三层都在，按"选认证来源 → 填三张表 → 逐条验收"写全）
+
+- **为什么写**：`docs/deployment.md` 只有令牌一段，没有 OIDC/SSO、没有权限矩阵、没有验收命令；而"身份闭环"在口头汇报里一直像个缺口。**查证结论是它不缺，缺的是一份能照着做的东西**，于是写成 `docs/identity-deployment.md`。
+- **内容**：四种凭据的**真实解析顺序**（Legacy → Named → Sessions → OIDC，读 `AuthTokens.Resolve` 逐行确认，顺序写反过一版已订正）；IdP 选型（客户有 OIDC 端点就用，只有 LDAP/AD 就在前面加一层 Keycloak 做协议转换，不为它手写 LDAP 对接）；数据目录三张表的形状与合成规则（`users.yaml` 主体 / `permissions.yaml` 矩阵说 WHERE / `roles.yaml` 角色树说 WHAT，`allowed = 矩阵放行 || (角色授予 && 团队在该环境有任一授权 && 未被 revoke)`，**revoke 压过 admin 超集**）；列表读路径**收窄而非拒绝**的理由；`levee authz status/explain` 逐条验收命令；一份三角色的最小交付样例。
+- **两条如实记账**（不藏）：① `levee audit` 的四个子命令**不支持按 action 过滤**，查 `permission.denied` 拒绝留痕得走 SQL 或 `export`——CLI 不过滤是已知缺口；② `users.yaml` 是数据目录里的本地文件，**主体→团队→角色目前手工维护，不从 IdP 组同步**，那是待办不是现状。
+- 顺手记录一条本会话的自我更正：上一轮曾把"补 SSO/RBAC"当下一步排期，查码后确认三层都已接线（`internal/auth/oidc.go` JWKS 验签 + 浏览器 PKCE 流 + `internal/permission` 全 RPC 门禁 + `internal/tenant`），已在 `docs/product-roadmap.md` 加订正行防重犯。
+
 ### 修复（错误码目录与产出方双向漂移：11 个码登记了没人报，LE102 有人报却不在目录里）
 
 - **扫出来的两个方向，各自独立**：① 目录里 35 个码有 **11 个没有任何产出方**（LE010-012 标签表达式、LE041-043 action/审批编译期校验、LE061 step 输出引用、LE071 DAG 环、LE081/LE083 回滚与不可逆校验、LE091 必需 rollback 块）——这些特性从未实现，码却躺在目录里，读起来像"编译器能报这个错"；② 反过来 **`internal/dsl/validator.go` 的 `codeFixedStepNonPositive` 一直在报 LE102**，而 LE102 恰好是前一天刚以"无产生方"为由撤回的那个码——编号被复用，用户能触发的错却不在目录里，没有严重度、没有类别、没有文档。
