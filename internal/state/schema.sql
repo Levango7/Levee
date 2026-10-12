@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS runs (
     template_name   TEXT    NOT NULL,
     params          TEXT    NOT NULL DEFAULT '{}',  -- JSON encoded parameters
     plan_hash       TEXT    NOT NULL,
-    status          TEXT    NOT NULL,                -- pending|planning|awaiting_approval|running|verifying|completed|failed|rolled_back|aborted
+    status          TEXT    NOT NULL,                -- draft|pending|planned|approved|rejected|running|paused|completed|failed|cancelled|rolled_back|rolled_back_partial|rollback_incomplete|interrupted|archived
     approval_status TEXT    NOT NULL DEFAULT 'pending', -- pending|approved|rejected (see state.ApprovalStatus*; NOT the approvals table's set)
     approval_level  TEXT    NOT NULL DEFAULT '',     -- low|medium|high|critical
     created_at      DATETIME NOT NULL,
