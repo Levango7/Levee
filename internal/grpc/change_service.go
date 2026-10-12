@@ -405,8 +405,9 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 		ApprovalStatus: state.ApprovalStatusPending,
 		// NOTE: ApprovalLevel doubles as the change's PRIORITY here, and
 		// the two are NOT the same vocabulary. priority is
-		// low/normal/high/urgent (client-supplied, mirrored back out at
-		// runToPB:169), while the approval tier is
+		// low/normal/high/urgent (client-supplied; the field is NOT validated,
+		// so any other string can arrive from an API caller, and it is mirrored
+		// back out as Change.priority in runToPB), while the approval tier is
 		// standard/high/emergency (derived server-side in kickoffApproval,
 		// which overwrites this value once a plan exists). The vocabularies
 		// overlap only at "high". Anything reading this field as a tier must
@@ -996,12 +997,16 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	// would otherwise skip.
 	//
 	// It sits after the plan-presence and plan-integrity refusals because
-	// run.ApprovalLevel only carries a tier once a plan exists: CreateChange
-	// stores the client-supplied PRIORITY (low/normal/high/urgent, and the
-	// impact table's "medium") in that same column until kickoffApproval
-	// overwrites it with the derived tier. Refusing an unplanned run for
-	// "medium-risk auto-approval" buries the actionable answer — call
-	// PlanChange — so the ordering is load-bearing, not cosmetic.
+	// run.ApprovalLevel only carries a tier once a plan exists AND an approval
+	// service is wired — kickoffApproval returns early otherwise: CreateChange
+	// stores the client-supplied PRIORITY in that same column (low/normal/high/
+	// urgent, and any other string the caller sent, since the field is not
+	// validated) until kickoffApproval overwrites it with the derived tier.
+	// Refusing an unplanned run for "medium-risk auto-approval" buries the
+	// actionable answer — call PlanChange — so the ordering is load-bearing,
+	// not cosmetic. The risk/impact table's own low|medium|high scale never
+	// reaches this column: score bands map to tiers (standard/high/emergency),
+	// which is what MaxLevel consumes.
 	if risk.AutoApproveForbidden(run.ApprovalLevel) && req.GetAutoApprove() {
 		return nil, status.Errorf(codes.PermissionDenied,
 			"change %q is a %s-risk change: auto_approve is not permitted (the spec forces auto_approve=false for high/emergency); approve the plan through the approval chain instead",
