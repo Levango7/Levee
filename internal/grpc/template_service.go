@@ -354,9 +354,15 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 		return nil, status.Errorf(codes.Internal, "generate run id: %v", err)
 	}
 
+	// Same rule as CreateChange: default to normal when unspecified, reject
+	// anything outside the declared vocabulary.
 	priority := req.Priority
 	if priority == "" {
-		priority = "normal"
+		priority = state.PriorityNormal
+	}
+	if !state.IsPriority(priority) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"invalid priority %q (allowed: %s)", priority, state.PriorityNamesJoined())
 	}
 	// Status vocabulary: normal instantiation creates a run in "pending"
 	// (awaiting approval execution flow); dry-run creates a "planned" run
@@ -380,10 +386,16 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 		Params:         paramsToJSON(req.Params),
 		Status:         runStatus,
 		ApprovalStatus: state.ApprovalStatusPending,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		Creator:        creator,
-		IncidentID:     req.Environment,
+		// Persisted because the response below echoes it. Until now this line of
+		// code computed `priority`, never stored it, and still answered the caller
+		// with the value — so an instantiated run reported a priority its row never
+		// held, and every later read of that run (board, detail, audit export) saw
+		// an empty one.
+		Priority:   priority,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Creator:    creator,
+		IncidentID: req.Environment,
 	}
 	if err := s.store.CreateRun(ctx, run); err != nil {
 		return nil, status.Errorf(codes.Internal, "create run: %v", err)

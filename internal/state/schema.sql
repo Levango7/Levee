@@ -43,7 +43,15 @@ CREATE TABLE IF NOT EXISTS runs (
     -- read is a plain indexed predicate; see Run.TenantID in store.go. NOT NULL
     -- DEFAULT '' keeps the pre-multi-tenant rows readable as "unowned", which
     -- is what the v6 migration leaves behind for tables with no run parent.
-    tenant_id       TEXT    NOT NULL DEFAULT ''
+    tenant_id       TEXT    NOT NULL DEFAULT '',
+    -- priority is the change's own urgency claim, owned by internal/state/priority.go
+    -- (v9). It is a separate column because until v9 the create path wrote these
+    -- strings into approval_level, which the approval ladder also overwrites with a
+    -- tier: one column, two vocabularies, sharing only the spelling "high".
+    -- Declared LAST deliberately — SQLite's ALTER TABLE ADD COLUMN appends, and
+    -- TestMigrate_FreshAndUpgraded_SchemaShapesMatch compares columns by cid, so a
+    -- column inserted mid-list would leave fresh and upgraded databases differing.
+    priority        TEXT    NOT NULL DEFAULT ''    -- low|normal|high|urgent
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);

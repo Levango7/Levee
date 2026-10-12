@@ -175,6 +175,7 @@ func (c *RunCloner) Clone(ctx context.Context, runID, actor string) (*CloneResul
 		Status:         runstatus.StatusDraft,
 		ApprovalStatus: state.ApprovalStatusPending,
 		ApprovalLevel:  srcRun.ApprovalLevel,
+		Priority:       srcRun.Priority,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		Creator:        actor,

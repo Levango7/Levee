@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS runs (
     -- tenant-owned table so each read is a plain indexed predicate. NOT NULL
     -- DEFAULT '' so the pre-multi-tenant rows stay readable as "unowned".
     , tenant_id     TEXT    NOT NULL DEFAULT ''
+    -- priority is the change's own urgency claim, owned by internal/state/priority.go
+    -- (v9). Separate column on purpose: until v9 the create path wrote these strings
+    -- into approval_level, which the approval ladder also overwrites with a tier —
+    -- one column, two vocabularies, sharing only the spelling "high". Declared LAST so
+    -- it matches the ALTER TABLE ADD COLUMN append order used by the v9 step, which the
+    -- fresh-vs-upgraded shape comparison depends on.
+    , priority      TEXT    NOT NULL DEFAULT ''    -- low|normal|high|urgent
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);

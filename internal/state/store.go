@@ -25,14 +25,20 @@ type Run struct {
 	// PlanJSON is the canonical JSON encoding of the generated plan.Plan
 	// ('' when no plan has been persisted). Apply refuses to execute
 	// without it and re-verifies PlanHash against it to detect drift.
-	PlanJSON       string    `json:"plan_json"`
-	Status         string    `json:"status"`
-	ApprovalStatus string    `json:"approval_status"`
-	ApprovalLevel  string    `json:"approval_level"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Creator        string    `json:"creator"`
-	IncidentID     string    `json:"incident_id"`
+	PlanJSON       string `json:"plan_json"`
+	Status         string `json:"status"`
+	ApprovalStatus string `json:"approval_status"`
+	ApprovalLevel  string `json:"approval_level"`
+	// Priority is the change's own urgency claim (see Priority* in
+	// priority.go). It exists as its own column because until schema v9 the
+	// create path stored this value in ApprovalLevel, so one column carried two
+	// vocabularies that share only the spelling "high" — see the note on
+	// ApprovalLevel in internal/grpc/change_service.go and the v9 migration step.
+	Priority   string    `json:"priority"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Creator    string    `json:"creator"`
+	IncidentID string    `json:"incident_id"`
 	// TenantID is the owning tenant. It is denormalised onto every
 	// tenant-owned table (rather than derived through runs) so that every
 	// read is a plain indexed `AND tenant_id = ?` with no join or subquery —

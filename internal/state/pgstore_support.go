@@ -281,6 +281,19 @@ $fn$ LANGUAGE plpgsql`,
 			`CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status)`,
 		},
 	},
+	{
+		// P1 (priority/tier split), PG twin of the v9 step in migrations.
+		// Same rule: only the unambiguous priority spellings are moved, and
+		// approval_level is left untouched so historical rows keep behaving
+		// exactly as they do today. IF NOT EXISTS is required here (not just
+		// polite): the replay test drives the whole ladder over a fixture that
+		// may already carry the column.
+		version: 9,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT ''`,
+			`UPDATE runs SET priority = approval_level WHERE approval_level IN ('low', 'normal', 'urgent')`,
+		},
+	},
 }
 
 // MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and

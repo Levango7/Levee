@@ -138,6 +138,12 @@ func computeRunDiffs(runA, runB *state.Run, batchesA, batchesB []*state.Batch) [
 	if runA.ApprovalLevel != runB.ApprovalLevel {
 		diffs = append(diffs, diffEntry{Field: "approval_level", A: runA.ApprovalLevel, B: runB.ApprovalLevel})
 	}
+	// A separate entry from approval_level, not a merged one: before schema v9 both
+	// lived in the tier column, so a priority change and a tier change were the same
+	// diff line and neither could be read on its own.
+	if runA.Priority != runB.Priority {
+		diffs = append(diffs, diffEntry{Field: "priority", A: runA.Priority, B: runB.Priority})
+	}
 	if runA.IncidentID != runB.IncidentID {
 		diffs = append(diffs, diffEntry{Field: "incident_id", A: runA.IncidentID, B: runB.IncidentID})
 	}

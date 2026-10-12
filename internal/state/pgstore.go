@@ -60,7 +60,7 @@ const pgBaseSchemaVersion = 1
 // dialect-specific. What must hold is that each ladder is internally gapless
 // and ends at its own current value — both are asserted by
 // TestMigrationsTable_Shape.
-const pgCurrentSchemaVersion = 8
+const pgCurrentSchemaVersion = 9
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
@@ -139,11 +139,13 @@ func (s *PGStore) CreateRun(ctx context.Context, run *Run) error {
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO runs
 		(id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		 approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		 approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
+		 priority)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		run.ID, run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.CreatedAt, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.TenantID,
+		run.Priority,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create run: %w", err)
@@ -155,13 +157,15 @@ func (s *PGStore) CreateRun(ctx context.Context, run *Run) error {
 func (s *PGStore) GetRun(ctx context.Context, id string) (*Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
 		id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id
+		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
+		priority
 		FROM runs WHERE id = $1`, id)
 	r := &Run{}
 	err := row.Scan(
 		&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 		&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 		&r.TenantID,
+		&r.Priority,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -179,11 +183,13 @@ func (s *PGStore) UpdateRun(ctx context.Context, run *Run) error {
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE runs SET
 		workflow_name=$1, template_name=$2, params=$3, plan_hash=$4, plan_json=$5, status=$6,
-		approval_status=$7, approval_level=$8, updated_at=$9, creator=$10, incident_id=$11, tenant_id=$12
-		WHERE id=$13`,
+		approval_status=$7, approval_level=$8, updated_at=$9, creator=$10, incident_id=$11, tenant_id=$12,
+		priority=$13
+		WHERE id=$14`,
 		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.TenantID,
+		run.Priority,
 		run.ID,
 	)
 	if err != nil {
@@ -302,7 +308,8 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 	}
 
 	q := `SELECT id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id
+		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
+		priority
 		FROM runs`
 	if len(clauses) > 0 {
 		q += " WHERE " + pgJoinPlaceholders(clauses)
@@ -330,6 +337,7 @@ func (s *PGStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, error
 			&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 			&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 			&r.TenantID,
+			&r.Priority,
 		); err != nil {
 			return nil, fmt.Errorf("state: list runs scan: %w", err)
 		}

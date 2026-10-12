@@ -227,6 +227,14 @@ func TestMigrate_V7ToV8_AgentsTable(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, tableExists(t, upgraded, "agents"), "fixture must start without the table")
 
+	// A database that stopped at v7 cannot already carry the v9 column, and
+	// SQLite's ALTER TABLE ... ADD COLUMN has no IF NOT EXISTS form — replaying
+	// the step onto a schema.sql-built table fails with "duplicate column name",
+	// which is a fixture lie rather than a migration bug. Same device
+	// TestMigrate_FreshAndUpgraded_SchemaShapesMatch uses for the v2/v3 columns.
+	_, err = upgraded.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN priority`)
+	require.NoError(t, err)
+
 	_, err = upgraded.DB().ExecContext(ctx, `DELETE FROM schema_version`)
 	require.NoError(t, err)
 	_, err = upgraded.DB().ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (7)`)
