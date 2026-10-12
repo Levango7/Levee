@@ -19,12 +19,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/nexus/levee/internal/grpc/pb"
-	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/state"
 )
 
 func createReq(priority string) *pb.CreateChangeRequest {

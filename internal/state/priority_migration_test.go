@@ -19,9 +19,10 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/nexus/levee/internal/dsl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/dsl"
 )
 
 // v9Stmts returns the statements of the version-9 step, failing loudly if the step is
