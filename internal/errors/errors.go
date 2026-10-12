@@ -266,11 +266,6 @@ const (
 	LE003 = "LE003" // enum value illegal
 	LE004 = "LE004" // input parameters are declared or referenced, but nothing resolves them [warning]
 
-	// Label errors (LE010-LE012)
-	LE010 = "LE010" // label expression syntax error
-	LE011 = "LE011" // label key name violates naming convention
-	LE012 = "LE012" // asset type not in whitelist
-
 	// Window errors (LE020-LE021)
 	LE020 = "LE020" // time format illegal or window empty (start == end)
 	LE021 = "LE021" // timezone not a valid IANA name
@@ -281,37 +276,17 @@ const (
 	LE033 = "LE033" // first batch exceeds 5% (canary principle) [warning]
 	LE034 = "LE034" // strategy / steps type mismatch
 
-	// Action errors (LE041-LE042)
-	LE041 = "LE041" // action module or action does not exist
-	LE042 = "LE042" // action parameters violate contract
-
-	// Approval errors (LE043-LE044)
-	LE043 = "LE043" // high level does not exclude initiator
+	// Approval errors (LE044)
 	LE044 = "LE044" // approval level illegal (not one of three tiers)
 
 	// Gate errors (LE051-LE052)
 	LE051 = "LE051" // verify / gate expression syntax error
 	LE052 = "LE052" // batches missing post_batch gate [warning]
 
-	// Reference errors (LE061)
-	LE061 = "LE061" // referenced step output does not exist or type mismatch
-	// NOTE: LE061 is registered but has NO producer. Nothing in the pipeline
-	// resolves `{{input.x}}` / step-output references at all, so there is no
-	// pass that could decide a reference is missing — see LE004, the advisory
-	// that tells the author their reference will not be substituted. A code
-	// with no producer is worse than no code (see the LE102 note below): it
-	// reads as something the compiler can emit, and it cannot.
-
-	// Dependency errors (LE071)
-	LE071 = "LE071" // DAG contains a cycle
-
-	// Rollback errors (LE081-LE083)
-	LE081 = "LE081" // rollback action not in whitelist
+	// Rollback errors (LE082)
 	LE082 = "LE082" // irreversible action not in allow_irreversible
-	LE083 = "LE083" // irreversible action present but approval level < high
 
-	// Structure errors (LE091-LE097)
-	LE091 = "LE091" // missing rollback block
+	// Structure errors (LE092-LE097)
 	LE092 = "LE092" // missing target block
 	LE093 = "LE093" // missing step block
 	LE094 = "LE094" // missing approval block (uses default standard) [warning]
@@ -325,10 +300,9 @@ const (
 	LE099 = "LE099" // run snapshot declares no paths
 	LE100 = "LE100" // invalid run snapshot type
 	LE101 = "LE101" // run snapshot path must be absolute
-	// LE102 (run snapshot + on_failure: manual) was removed in the same
-	// change that taught the manual rollback path to restore the baseline.
-	// A registered code with no producer is worse than no code: it shows up
-	// in the catalogue as something the compiler can emit, and it cannot.
+
+	// Structural errors (LE102)
+	LE102 = "LE102" // fixed step (batch steps) count is not positive
 )
 
 // CompileSeverity is the compile-time severity of an error code: either "error"
@@ -363,27 +337,16 @@ var codeCatalogue = []CodeInfo{
 	{LE002, "structure", "required field missing or name duplicated", CompileError},
 	{LE003, "type", "enum value illegal", CompileError},
 	{LE004, "type", "input parameters are declared or referenced, but nothing resolves them", CompileWarning},
-	{LE010, "label", "label expression syntax error", CompileError},
-	{LE011, "label", "label key name violates naming convention", CompileError},
-	{LE012, "label", "asset type not in whitelist", CompileError},
 	{LE020, "window", "time format illegal or window empty (start == end)", CompileError},
 	{LE021, "window", "timezone not a valid IANA name", CompileError},
 	{LE031, "batch", "percentage array not non-decreasing", CompileError},
 	{LE032, "batch", "percentage array does not end at 100", CompileError},
 	{LE033, "batch", "first batch exceeds 5% (canary principle)", CompileWarning},
 	{LE034, "batch", "strategy / steps type mismatch", CompileError},
-	{LE041, "action", "action module or action does not exist", CompileError},
-	{LE042, "action", "action parameters violate contract", CompileError},
-	{LE043, "approval", "high level does not exclude initiator", CompileError},
 	{LE044, "approval", "approval level illegal (not one of three tiers)", CompileError},
 	{LE051, "gate", "verify / gate expression syntax error", CompileError},
 	{LE052, "gate", "batches missing post_batch gate", CompileWarning},
-	{LE061, "reference", "referenced step output does not exist or type mismatch", CompileError},
-	{LE071, "dependency", "DAG contains a cycle", CompileError},
-	{LE081, "rollback", "rollback action not in whitelist", CompileError},
 	{LE082, "rollback", "irreversible action not in allow_irreversible", CompileError},
-	{LE083, "rollback", "irreversible action present but approval level < high", CompileError},
-	{LE091, "structure", "missing rollback block", CompileError},
 	{LE092, "structure", "missing target block", CompileError},
 	{LE093, "structure", "missing step block", CompileError},
 	{LE094, "structure", "missing approval block (uses default standard)", CompileWarning},
@@ -394,6 +357,7 @@ var codeCatalogue = []CodeInfo{
 	{LE099, "snapshot", "run snapshot declares no paths (nothing to capture)", CompileError},
 	{LE100, "snapshot", "invalid run snapshot type (allowed: file, config)", CompileError},
 	{LE101, "snapshot", "run snapshot path must be absolute", CompileError},
+	{LE102, "batch", "fixed step count is not positive", CompileError},
 }
 
 // Lookup returns the CodeInfo for the given code, or false if the code is not
@@ -414,3 +378,33 @@ func AllCodes() []CodeInfo {
 	copy(out, codeCatalogue)
 	return out
 }
+
+// --- Withdrawn codes --------------------------------------------------------
+//
+// LE102 was withdrawn once (a code with no producer is worse than no code:
+// it shows up in the catalogue as something the compiler can emit, and it
+// cannot) and then came BACK, because internal/dsl/validator.go had begun
+// emitting it for a fixed step count that is not positive. That round trip
+// is the reason TestEveryCatalogueCodeHasAProducer exists: the catalogue and
+// the emitters drifted apart in BOTH directions independently.
+//
+// The codes below were registered for LEVEELang features that were never
+// implemented (label expressions, DAG dependencies, step output references,
+// a required rollback block, approval-level compile checks). They are
+// withdrawn rather than kept: the spec still documents the FUTURE features
+// (marked 尚未实现), and a feature lands with its code when its emitter
+// lands. Re-adding a withdrawn code without an emitter re-creates the exact
+// drift this registry exists to prevent.
+//
+//   LE010, LE011, LE012  label expressions (no parser, no emitter)
+//   LE041, LE042, LE043  action / approval compile checks (the runtime
+//                        approval service enforces its own rules; nothing
+//                        rejects at compile time)
+//   LE061               step output references (see LE004, the advisory
+//                        that tells the author their reference will not be
+//                        substituted: nothing in the pipeline resolves it)
+//   LE071               DAG cycle detection (no depends_on in the language)
+//   LE081, LE083        rollback whitelist / irreversible-vs-level checks
+//                        (LE082 survives: allow_irreversible is wired)
+//   LE091               a required rollback block (the model is per-step
+//                        compensation; LE097 rejects workflow-level content)

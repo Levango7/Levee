@@ -160,26 +160,25 @@ func NewFailureClassifier() *FailureClassifier {
 // registerDefaults installs the default code -> category mappings. The
 // mappings follow the semantics documented in the errors package:
 //
-//   - Compile-time structural / type / label / window / batch / gate /
-//     reference / dependency errors are Fatal at runtime: they indicate a
-//     malformed plan that should not be retried.
-//   - Action errors (LE041-LE042) are ManualRetry: the action module or
-//     parameters are wrong and a human must fix the invocation.
-//   - Approval errors (LE043-LE044) are ManualRetry: the approval
-//     configuration must be corrected by a human.
-//   - Rollback errors (LE081-LE083) are Escalate: rollback itself failed
+//   - Compile-time structural / type / window / batch / gate / approval
+//     errors are Fatal or ManualRetry at runtime: a malformed plan is not
+//     retried, a wrong invocation is fixed by a human.
+//   - Approval errors (LE044) are ManualRetry: the approval level the plan
+//     declares is not one of the three tiers and must be corrected by a human.
+//     (The action and approval compile checks LE041-LE043 were withdrawn:
+//     nothing emits them, and a rule for a code nobody produces is dead
+//     configuration. See the withdrawn-codes note in internal/errors.)
+//   - Rollback errors (LE082) are Escalate: rollback itself failed
 //     and human intervention is required.
 func (c *FailureClassifier) registerDefaults() {
 	// Compile-time errors -> Fatal at runtime.
 	fatalCodes := []string{
 		errors.LE001, errors.LE002, errors.LE003,
-		errors.LE010, errors.LE011, errors.LE012,
 		errors.LE020, errors.LE021,
 		errors.LE031, errors.LE032, errors.LE033, errors.LE034,
 		errors.LE051, errors.LE052,
-		errors.LE061,
-		errors.LE071,
-		errors.LE091, errors.LE092, errors.LE093, errors.LE094, errors.LE095, errors.LE096,
+		errors.LE102,
+		errors.LE092, errors.LE093, errors.LE094, errors.LE095, errors.LE096,
 	}
 	for _, code := range fatalCodes {
 		c.rules[code] = CategoryFatal
@@ -187,8 +186,7 @@ func (c *FailureClassifier) registerDefaults() {
 
 	// Action / approval errors -> ManualRetry.
 	manualRetryCodes := []string{
-		errors.LE041, errors.LE042,
-		errors.LE043, errors.LE044,
+		errors.LE044,
 	}
 	for _, code := range manualRetryCodes {
 		c.rules[code] = CategoryManualRetry
@@ -196,7 +194,7 @@ func (c *FailureClassifier) registerDefaults() {
 
 	// Rollback errors -> Escalate.
 	escalateCodes := []string{
-		errors.LE081, errors.LE082, errors.LE083,
+		errors.LE082,
 	}
 	for _, code := range escalateCodes {
 		c.rules[code] = CategoryEscalate

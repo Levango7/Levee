@@ -62,13 +62,13 @@ func TestNewFailureClassifier_Defaults(t *testing.T) {
 	// Fatal codes (compile-time structural errors).
 	fatalCodes := []string{
 		leveeerr.LE001, leveeerr.LE002, leveeerr.LE003,
-		leveeerr.LE010, leveeerr.LE011, leveeerr.LE012,
+
 		leveeerr.LE020, leveeerr.LE021,
 		leveeerr.LE031, leveeerr.LE032, leveeerr.LE033, leveeerr.LE034,
 		leveeerr.LE051, leveeerr.LE052,
-		leveeerr.LE061,
-		leveeerr.LE071,
-		leveeerr.LE091, leveeerr.LE092, leveeerr.LE093,
+		leveeerr.LE102,
+
+		leveeerr.LE092, leveeerr.LE093,
 		leveeerr.LE094, leveeerr.LE095, leveeerr.LE096,
 	}
 	for _, code := range fatalCodes {
@@ -79,8 +79,8 @@ func TestNewFailureClassifier_Defaults(t *testing.T) {
 
 	// ManualRetry codes (action / approval errors).
 	manualRetryCodes := []string{
-		leveeerr.LE041, leveeerr.LE042,
-		leveeerr.LE043, leveeerr.LE044,
+
+		leveeerr.LE044,
 	}
 	for _, code := range manualRetryCodes {
 		err := leveeerr.New(code, "test", leveeerr.Fatal)
@@ -90,7 +90,7 @@ func TestNewFailureClassifier_Defaults(t *testing.T) {
 
 	// Escalate codes (rollback errors).
 	escalateCodes := []string{
-		leveeerr.LE081, leveeerr.LE082, leveeerr.LE083,
+		leveeerr.LE082,
 	}
 	for _, code := range escalateCodes {
 		err := leveeerr.New(code, "test", leveeerr.Fatal)
@@ -125,11 +125,12 @@ func TestFailureClassifier_NilError(t *testing.T) {
 func TestFailureClassifier_RegisterOverride(t *testing.T) {
 	c := NewFailureClassifier()
 
-	// LE081 defaults to Escalate; override it to Fatal.
-	err := leveeerr.New(leveeerr.LE081, "rollback not in whitelist", leveeerr.Fatal)
+	// LE082 defaults to Escalate; override it to Fatal. (LE081 was withdrawn:
+	// no emitter validates a rollback whitelist at compile time.)
+	err := leveeerr.New(leveeerr.LE082, "rollback not in whitelist", leveeerr.Fatal)
 	require.Equal(t, CategoryEscalate, c.Classify(err))
 
-	c.Register(leveeerr.LE081, CategoryFatal)
+	c.Register(leveeerr.LE082, CategoryFatal)
 	assert.Equal(t, CategoryFatal, c.Classify(err),
 		"registered override should take precedence over default")
 }
@@ -154,7 +155,7 @@ func TestFailureClassifier_WrappedError(t *testing.T) {
 	c := NewFailureClassifier()
 
 	// A wrapped LEVEEError should still be classified by its code.
-	inner := leveeerr.New(leveeerr.LE041, "action missing", leveeerr.Fatal)
+	inner := leveeerr.New(leveeerr.LE044, "approval level illegal", leveeerr.Fatal)
 	wrapped := &wrappedErr{msg: "dispatch failed", cause: inner}
 	assert.Equal(t, CategoryManualRetry, c.Classify(wrapped))
 }
@@ -183,10 +184,10 @@ func TestFailureClassifier_ClassifyFailure(t *testing.T) {
 	})
 
 	t.Run("LEVEE error", func(t *testing.T) {
-		err := leveeerr.New(leveeerr.LE041, "action missing", leveeerr.Fatal)
+		err := leveeerr.New(leveeerr.LE044, "approval level illegal", leveeerr.Fatal)
 		f := c.ClassifyFailure(err, 2)
 		assert.Equal(t, CategoryManualRetry, f.Category)
-		assert.Equal(t, leveeerr.LE041, f.Code)
+		assert.Equal(t, leveeerr.LE044, f.Code)
 		assert.Equal(t, err, f.Err)
 		assert.Equal(t, 2, f.Attempts)
 	})
@@ -397,7 +398,7 @@ func TestClassifyAndHandle_EndToEnd(t *testing.T) {
 	})
 
 	t.Run("action error -> manual retry", func(t *testing.T) {
-		err := leveeerr.New(leveeerr.LE041, "action missing", leveeerr.Fatal)
+		err := leveeerr.New(leveeerr.LE044, "approval level illegal", leveeerr.Fatal)
 		f := c.ClassifyFailure(err, 0)
 		a := h.Handle(ctx, f)
 		assert.Equal(t, CategoryManualRetry, a.Category)
@@ -406,7 +407,7 @@ func TestClassifyAndHandle_EndToEnd(t *testing.T) {
 	})
 
 	t.Run("rollback error -> escalate", func(t *testing.T) {
-		err := leveeerr.New(leveeerr.LE081, "rollback not whitelisted", leveeerr.Fatal)
+		err := leveeerr.New(leveeerr.LE082, "irreversible action not whitelisted", leveeerr.Fatal)
 		f := c.ClassifyFailure(err, 0)
 		a := h.Handle(ctx, f)
 		assert.Equal(t, CategoryEscalate, a.Category)
@@ -415,7 +416,7 @@ func TestClassifyAndHandle_EndToEnd(t *testing.T) {
 	})
 
 	t.Run("structural error -> fatal", func(t *testing.T) {
-		err := leveeerr.New(leveeerr.LE091, "missing rollback block", leveeerr.Fatal)
+		err := leveeerr.New(leveeerr.LE093, "missing rollback block", leveeerr.Fatal)
 		f := c.ClassifyFailure(err, 0)
 		a := h.Handle(ctx, f)
 		assert.Equal(t, CategoryFatal, a.Category)

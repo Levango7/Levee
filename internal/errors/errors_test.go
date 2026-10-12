@@ -62,10 +62,12 @@ func TestLEVEEError_Error_NoCause(t *testing.T) {
 
 func TestLEVEEError_Error_WithCause(t *testing.T) {
 	cause := fmt.Errorf("ssh: connection refused")
-	e := WrapWith(cause, LE041, "action module unreachable", Retryable)
-	assert.Contains(t, e.Error(), "LE041")
+	// LE031, not LE041: the withdrawn action/approval compile codes are gone
+	// from the catalogue, so a test that names one cannot compile.
+	e := WrapWith(cause, LE031, "percentages not increasing", Retryable)
+	assert.Contains(t, e.Error(), "LE031")
 	assert.Contains(t, e.Error(), "retryable")
-	assert.Contains(t, e.Error(), "action module unreachable")
+	assert.Contains(t, e.Error(), "percentages not increasing")
 	assert.Contains(t, e.Error(), "ssh: connection refused")
 }
 
@@ -102,10 +104,10 @@ func TestLEVEEError_NilSafe(t *testing.T) {
 // --- New / Wrap / WrapWith --------------------------------------------------
 
 func TestNew(t *testing.T) {
-	e := New(LE071, "DAG cycle", Rollback)
+	e := New(LE002, "required field missing", Rollback)
 	require.NotNil(t, e)
-	assert.Equal(t, LE071, e.Code)
-	assert.Equal(t, "DAG cycle", e.Message)
+	assert.Equal(t, LE002, e.Code)
+	assert.Equal(t, "required field missing", e.Message)
 	assert.Equal(t, Rollback, e.Severity)
 	assert.Nil(t, e.Cause)
 }
@@ -117,26 +119,26 @@ func TestWrap_NilError(t *testing.T) {
 
 func TestWrap_DerivesMessageFromCause(t *testing.T) {
 	cause := fmt.Errorf("disk full")
-	e := Wrap(cause, LE091, Fatal)
+	e := Wrap(cause, LE082, Fatal)
 	assert.Equal(t, "disk full", e.Message)
 	assert.Equal(t, cause, e.Cause)
 }
 
 func TestWrapWith_PreservesCustomMessage(t *testing.T) {
 	cause := fmt.Errorf("disk full")
-	e := WrapWith(cause, LE091, "rollback block missing", Fatal)
-	assert.Equal(t, "rollback block missing", e.Message)
+	e := WrapWith(cause, LE082, "irreversible action not in allow_irreversible", Fatal)
+	assert.Equal(t, "irreversible action not in allow_irreversible", e.Message)
 	assert.Equal(t, cause, e.Cause)
 }
 
 // --- Severity predicates ----------------------------------------------------
 
 func TestSeverityPredicates(t *testing.T) {
-	retry := New(LE041, "transient", Retryable)
-	manual := New(LE041, "host down", ManualRetry)
+	retry := New(LE001, "transient", Retryable)
+	manual := New(LE002, "host down", ManualRetry)
 	rollback := New(LE051, "gate failed", Rollback)
-	escalate := New(LE081, "rollback failed", Escalate)
-	fatal := New(LE091, "audit write failed", Fatal)
+	escalate := New(LE082, "rollback failed", Escalate)
+	fatal := New(LE093, "audit write failed", Fatal)
 
 	assert.True(t, IsRetryable(retry))
 	assert.False(t, IsRetryable(manual))
@@ -172,42 +174,44 @@ func TestSeverityOf_And_CodeOf(t *testing.T) {
 
 func TestWrappedChain_ErrorsAs(t *testing.T) {
 	inner := fmt.Errorf("io error")
-	mid := Wrap(inner, LE042, Retryable)
-	outer := Wrap(mid, LE041, ManualRetry)
+	mid := Wrap(inner, LE002, Retryable)
+	outer := Wrap(mid, LE003, ManualRetry)
 
 	// errors.As should find the LEVEEError in the chain.
 	var target *LEVEEError
 	assert.True(t, stderrors.As(outer, &target))
-	assert.Equal(t, LE041, target.Code)
+	assert.Equal(t, LE003, target.Code)
 
 	// The inner cause is also retrievable.
 	var innerTarget *LEVEEError
 	assert.True(t, stderrors.As(stderrors.Unwrap(outer), &innerTarget))
-	assert.Equal(t, LE042, innerTarget.Code)
+	assert.Equal(t, LE002, innerTarget.Code)
 }
 
 // --- Error-code catalogue ---------------------------------------------------
 
 func TestErrorCodes_Distinct(t *testing.T) {
+	// The whole catalogue, written out: a code that reaches Lookup must appear
+	// here. 2026-10-12 removed the eleven withdrawn codes (LE010-012, LE041-043,
+	// LE061, LE071, LE081, LE083, LE091) and added LE102, which production
+	// emits — see TestEveryCatalogueCodeHasAProducer for the guard that keeps
+	// this list honest in both directions.
 	codes := []string{
-		LE001, LE002, LE003,
-		LE010, LE011, LE012,
+		LE001, LE002, LE003, LE004,
 		LE020, LE021,
 		LE031, LE032, LE033, LE034,
-		LE041, LE042,
-		LE043, LE044,
+		LE044,
 		LE051, LE052,
-		LE061,
-		LE071,
-		LE081, LE082, LE083,
-		LE091, LE092, LE093, LE094, LE095, LE096, LE097,
+		LE082,
+		LE092, LE093, LE094, LE095, LE096, LE097,
+		LE098, LE099, LE100, LE101, LE102,
 	}
 	seen := make(map[string]bool, len(codes))
 	for _, c := range codes {
 		assert.False(t, seen[c], "duplicate error code: %s", c)
 		seen[c] = true
 	}
-	assert.Equal(t, 30, len(codes), "expected 30 error codes")
+	assert.Equal(t, 25, len(codes), "expected 25 error codes")
 }
 
 func TestLookup_Registered(t *testing.T) {
@@ -235,12 +239,14 @@ func TestAllCodes_CountAndImmutable(t *testing.T) {
 	// Count, not a range: this is the guard that a new code cannot be added
 	// to the constants block without also being registered in the catalogue
 	// (a constant that never reaches Lookup is a code the CLI cannot print
-	// and the docs cannot describe). LE098-LE101 took it 30 → 34; LE102 was
-	// added with the run snapshot and withdrawn again in the same day once
-	// the manual rollback path learned to restore the baseline. LE004 took it
-	// 34 → 35: the advisory for a declared/referenced input block that nothing
-	// resolves.
-	assert.Equal(t, 35, len(all))
+	// and the docs cannot describe).
+	//
+	// History of the number: 30 → 34 (LE098-LE101, run snapshot) → 35 (LE004)
+	// → 25 (2026-10-12: eleven codes with no emitter withdrawn on the LE102
+	// precedent, and LE102 re-registered because internal/dsl/validator.go had
+	// started emitting it — the two directions had drifted apart independently,
+	// which is what TestEveryCatalogueCodeHasAProducer now pins).
+	assert.Equal(t, 25, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}
