@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "type-check": "vue-tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:browser": "node scripts/browser-check.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

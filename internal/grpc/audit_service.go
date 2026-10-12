@@ -508,6 +508,19 @@ func (s *AuditService) GetRunReport(ctx context.Context, req *pb.GetRunReportReq
 // --- conversion helpers ------------------------------------------------------
 
 // auditToTraceEntry converts a state.Audit to a pb.TraceEntry.
+// auditToTraceEntry adapts an action-level audit row into a TraceEntry.
+//
+// Actor and the chain pair are carried across, not dropped: the audit view
+// renders an actor column and the prev/curr chain links for every row, and a
+// row that arrives without them shows an empty column and a broken link — the
+// panel looks broken rather than the data. They are on state.Audit (the row IS
+// a link in the global chain), so nothing needs inventing.
+//
+// Deliberately NOT carried: input / output / detail. Those live on state.Trace,
+// not on state.Audit — an action row has no payload to show. The view renders
+// them behind v-if, so an audit row simply has no evidence fragment; fabricating
+// one would be worse. The trace path (ListAuditTraces -> traceToPB) does carry
+// them, which is why the timeline view shows evidence and the log view does not.
 func auditToTraceEntry(a *state.Audit) *pb.TraceEntry {
 	if a == nil {
 		return nil
@@ -516,7 +529,10 @@ func auditToTraceEntry(a *state.Audit) *pb.TraceEntry {
 		Id:         a.ID,
 		RunId:      a.RunID,
 		Action:     a.Action,
+		Actor:      a.Actor,
 		TargetHost: a.Target,
+		PrevHash:   a.PrevHash,
+		CurrHash:   a.CurrHash,
 		Timestamp:  a.Timestamp.Unix(),
 	}
 }

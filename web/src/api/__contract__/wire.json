@@ -1,0 +1,145 @@
+{
+  "audit-log": {
+    "method": "GET",
+    "path": "/audit/log",
+    "keys": [
+      "entries",
+      "totalSize"
+    ],
+    "forbid": [
+      "Entries",
+      "NextPageToken",
+      "TotalSize"
+    ],
+    "rows": {
+      "entries": [
+        "action",
+        "actor",
+        "currHash",
+        "id",
+        "prevHash",
+        "runId",
+        "targetHost",
+        "timestamp"
+      ]
+    }
+  },
+  "batch-status": {
+    "method": "GET",
+    "path": "/system/batch-status",
+    "keys": [
+      "batches",
+      "current_batch_no",
+      "done_batches",
+      "steps",
+      "total_batches"
+    ],
+    "forbid": [
+      "Batches",
+      "CurrentBatchNo",
+      "TotalBatches",
+      "DoneBatches"
+    ],
+    "rows": {
+      "batches": [
+        "batch_no",
+        "failed",
+        "status",
+        "succeeded",
+        "total_hosts"
+      ]
+    }
+  },
+  "change": {
+    "method": "GET",
+    "path": "/changes/{id}",
+    "keys": [
+      "createdAt",
+      "createdBy",
+      "id",
+      "label",
+      "status",
+      "templateName",
+      "updatedAt",
+      "workflowFile"
+    ],
+    "forbid": [
+      "PlanHash",
+      "TemplateName",
+      "CreatedAt"
+    ]
+  },
+  "change-trend": {
+    "method": "GET",
+    "path": "/system/change-trend",
+    "keys": [
+      "buckets",
+      "series",
+      "truncated"
+    ],
+    "forbid": [
+      "Buckets",
+      "Series",
+      "Truncated"
+    ],
+    "rows": {
+      "buckets": [
+        "day",
+        "outcomes",
+        "total"
+      ]
+    }
+  },
+  "changes": {
+    "method": "GET",
+    "path": "/changes",
+    "keys": [
+      "changes",
+      "totalSize"
+    ],
+    "forbid": [
+      "Changes",
+      "NextPageToken",
+      "TotalSize"
+    ],
+    "rows": {
+      "changes": [
+        "createdAt",
+        "createdBy",
+        "id",
+        "label",
+        "status",
+        "templateName",
+        "updatedAt",
+        "workflowFile"
+      ]
+    }
+  },
+  "cluster-status": {
+    "method": "GET",
+    "path": "/system/cluster-status",
+    "keys": [
+      "backend",
+      "nodes",
+      "summary"
+    ],
+    "forbid": [
+      "Nodes",
+      "Summary",
+      "Backend"
+    ]
+  },
+  "system-status": {
+    "method": "GET",
+    "path": "/system/status",
+    "keys": [
+      "status",
+      "storeType"
+    ],
+    "forbid": [
+      "Version",
+      "Uptime",
+      "ActiveRuns"
+    ]
+  }
+}

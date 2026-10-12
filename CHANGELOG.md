@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+### 修复（DTO 契约：手写镜像漂移的三个真问题，一个都不在单侧测试的视野里）
+
+- **问题的形状**：`web/src/api/index.ts` 的 DTO 是网关 JSON 的手写镜像。镜像会静默漂移——本会话那个"目标地图幽灵第三列"就是这样来的：客户端拼 `batchNo`、线上发 `batch_no`，`undefined` 被推进 Set。两侧各自的测试全绿（Go 侧证数值、TS 侧证解析），**它们对彼此拼什么一无所知**。
+- **落地**：契约由**服务端**写下来。`internal/grpc/wire_snapshot_test.go` 用真 store 驱动真 handler，把每个端点的键集合写进 `web/src/api/__contract__/wire.json`（提交物，`UPDATE_WIRE_CONTRACT=1` 重新生成）；`web/src/api/wireContract.spec.ts` 反过来拿这张表校验 TS 侧声明。两个方向都查：客户端读的键必须在线上存在（缺一个=一个静默空白格子），线上发的每个键必须被声明或列入带理由的 `SERVER_ONLY`。**没有 proto 改动、没有新 CI 作业**——Go 测试自己比对提交物。
+- **契约第一版就抓出三个真问题**（都在单侧测试的视野之外）：
+  1. **`/system/cluster-status` 泄漏 PascalCase**：`state.AssignmentSummary` 没有 json tag，线上发 `{"summary":{"Counts":{},"NodeLoad":{},"TotalActive":0}}`，前端读 snake_case 一律读不到。同文件的 `BatchSummary` 有 tag 且注释里就写着这个失败模式——同一个仓库里，一半 Struct 有 tag，一半没有。
+  2. **`/audit/log` 的行缺演员与链哈希**：`auditToTraceEntry` 只填 5 个字段，而 `AuditView` 渲染"操作人"和"哈希链"两列——真实部署里这两列是空的。trace 路径（PR #116）修过，log 路径漏了。
+  3. **一条方法本身的系统性问题**：protojson 省略零值字段，所以夹具不填字段，快照就少报键（第一版 `/audit/log` 因此一个键都没贡献）。修正：夹具把字段种满，Go 侧空数组干脆不进契约（nil 切片序列化成 `null`，会让每个遍历它的消费者炸）。
+- **另一条如实记账**：`input`/`output`/`detail` **不**在 `/audit/log` 的键里，而且这不是 bug——它们属于 `state.Trace`，动作级审计行没有载荷。前端用 `v-if` 挡着，所以审计日志视图就是没有证据片段（时间线视图有）。已写进 `DTO_READS` 的注释与 Go 侧适配器的注释，别再"修"它。
+- **双向变异逐一变红**：改快照删掉 `total_hosts`（TS 侧红）；把 `Actor` 从适配器里删掉（Go 侧红）。回滚后字节相等。
+- 验证：`go test ./...` 全量 EXIT=0、`golangci-lint` 0 issues、`gofmt` 干净；`npm run test` **262 例全绿（32 文件）**、`vue-tsc` 干净、`node scripts/browser-check.mjs` ALL PASS。
+
+### 测试（控制台第一次有了浏览器级检查：断言驱动，不是截图驱动）
+
+- **缺口是查出来的，不是感觉出来的**：前端 31 个 spec、257 例，其中 13 个是源码解析型守卫、18 个是纯函数/逻辑单测（`api/client` 用 axios adapter 替换做真拦截器链路，`useKeyboardCursor` 发真键盘事件）——**但没有任何提交过的浏览器自动化**。于是"对一次响应的反应"这一类行为从未被覆盖：403 不得渲染成"无数据"、趋势图图例序必须与堆叠序一致、日界必须跟操作员、300 台地图的 DOM 必须恒定。这些正是会静默回归的东西——截图能看出来，可 CI 里没人截图。
+- **落地**：`web/scripts/browser-check.mjs`（真 Chrome + 本仓 dev server）与 `web/scripts/mock-gateway.mjs`（**提交进来的 fixture**，不是服务器的桩——不含任何逻辑，只是视图消费的那些 payload；形状与 `api/index.ts` 漂移时检查器会响亮失败，这就是它的意义）。`npm run test:browser` 跑断言，`--shots` 额外写 PNG 到 `web/.browser-shots/`（已 gitignore——那是给人看的证据，不是基线，缺失不算失败）。
+- **七组断言**：① 10 条路由每条都渲染外壳与数据（404 页也在内）；② **三档可区分**——同一路由在 ok/forbidden/empty 三种响应下分别给出"有行 / 没有权限 / 没有数据+下一步"；③ 趋势图段落数、五级图例的**顺序**、每段高度非零（高度 0 就是 CSS 没上到色）；④ 目标地图窗口化且滚动条诚实（DOM 行数、`scrollHeight`、行距 27px、滚到底 `padBottom=0`）；⑤ 键盘路径真的画出光标并用 Enter 打开该行；⑥ **趋势请求必须带 `tz_offset`**；⑦ 集群页对两种部署都说人话（SQLite 明说协调未启用且**不伪造节点卡**；PG 模式一节点一卡、离线节点染 bad 而非 ok）。
+- **mock 的失败模式可切**（`GET /__mode?mode=forbidden|empty|ok|cluster`，带 CORS），所以三档与两种集群部署不用起第二个服务。默认模式是 SQLite——那是默认部署，它给出的提示本身就是该测的行为，不是该跳过的用例。
+- **这个检查器自己也被测过**（写它的过程里它先抓到我五个错）：从 dev server 而不是 mock 切模式；只拦 `fetch` 而 axios 走 XHR（会静默观察到空然后**以错误的理由通过**）；导航之后才装拦截器（请求早就发了，Promise 永不 resolve 直接挂死）；拿 `.node` 选一个 SQLite 部署下**正确地**不渲染的东西；404 页的 h1 不在 `.levee-page` 下。修完再做三个变异，逐一抓红：请求不带 `tz_offset`、403 不再渲染权限档、地图退回全量渲染（rows=300）。
+- 验证：`npm run test` 257 例全绿、`vue-tsc` 干净、`node scripts/browser-check.mjs` **ALL PASS**（含 `--shots`）。本批不动 `web/src`，故 dist 不变。
+
 ### 修复（目标地图：一个布局 bug 让它每行 64px；再加行窗口化，2000 台主机的 DOM 降 40 倍）
 
 - **先量再改，而且量出来两件事**。用 mock 网关造了 300/804/2004 台主机 × 12 批的 target map，在本仓 dev server 上实测：**2004 台时 28,056 个单元格 / 56,558 个 DOM 节点 / 最差滚动帧 61ms**——列表页（分页 ≤200 行）完全无压力，全部代价集中在地图这一张 O(主机×批次) 且没有上限的面上。评估里"千行开始卡"那句原话没有凭据，实测是 2000 台才 61ms，此处一并订正。

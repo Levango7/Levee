@@ -678,10 +678,18 @@ type ClusterNode struct {
 }
 
 // AssignmentSummary aggregates run_assignment rows for the cluster status view.
+//
+// The json tags are load-bearing, exactly as on BatchSummary below: this struct
+// is marshalled verbatim by GET /system/cluster-status, and without them the
+// wire carries Go's PascalCase field names while ClusterView reads snake_case
+// ones — the panel silently shows nothing. It went unnoticed because the
+// cluster page is only part of the console and the summary is a secondary
+// block on it; the wire snapshot in internal/grpc/wire_snapshot_test.go now
+// fails on any PascalCase key at any depth, so it cannot regress quietly.
 type AssignmentSummary struct {
-	Counts      map[string]int // state -> count
-	NodeLoad    map[string]int // owner_node -> active count
-	TotalActive int
+	Counts      map[string]int `json:"counts"`    // state -> count
+	NodeLoad    map[string]int `json:"node_load"` // owner_node -> active count
+	TotalActive int            `json:"total_active"`
 }
 
 // BatchSummary is the per-batch progress of a run (cluster v2 observability).
