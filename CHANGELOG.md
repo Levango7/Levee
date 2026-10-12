@@ -3,6 +3,14 @@
 本文件记录 LEVEE 项目所有重要变更，格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
 ## [Unreleased]
+### 安全（两个裸奔的 REST-only 端点接上门禁；台账里"四个"是错的，实为两个）
+
+- **订正先行**：roadmap 原登记 cluster-status、batch-status、config、doctor 四个端点无门禁。逐个核 handler 后**只有两个真没门禁**——另外三个都委托给 SystemService，服务自己门禁（GetConfig 按 admin、RunDoctor 按 view、GetStatus 按可见环境收窄）。真正裸奔的是**直读 store、不经过 service** 的那两个。登记时不核实现就会把已加固的面说成缺口——这条本会话已犯过两次。
+- **接法**：cluster-status 按 default_env 判读（节点注册表与 groups/templates/config 同属部署级资源，不声明环境所以按 default_env 判，不靠解析地址猜）；batch-status **按 run 自己的环境判**，与所有 run 级读同一规则，于是只被授予 prod 的主体读不到 staging run 的批次进度。
+- **404 必须先于 403**：RunForGate 就是 GetRun，未知 id 返回 (nil, nil)。不查 nil 就拿去判环境，会把空环境解析成 default_env，让有全部权限的主体因**打错一个 id** 收到 403——把人引向不存在的权限问题。SSE 路由注释里写过同一个坑，现在对齐了。
+- **测试** rest_gate_test.go：无矩阵=放行、有矩阵+无授权=403、有矩阵+有授权=200、两环境只读一个、未知 id=404。请求带命名令牌——不带令牌就没有可判主体，而"无主体"按设计读放行，所以不带头令牌就观察不到门禁。
+- 验证：go test ./... EXIT=0、golangci-lint 0 issues、gofmt 干净；前端与 dist 未涉及。
+
 
 ### 修复（DTO 契约：手写镜像漂移的三个真问题，一个都不在单侧测试的视野里）
 
