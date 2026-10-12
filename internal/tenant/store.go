@@ -275,6 +275,20 @@ func (s *TenantStore) ListRuns(ctx context.Context, filter state.RunFilter) ([]*
 	return s.base.ListRuns(ctx, filter)
 }
 
+// RunTrend scopes the trend the same way ListRuns is scoped: the filter's
+// TenantID is OVERRIDDEN with the resolved tenant, never ANDed, so a caller
+// cannot widen or narrow the scope the resolver decided. Without this override
+// the trend would be the one aggregate that reads across tenants, since
+// BucketRuns works on whatever rows the store hands back.
+func (s *TenantStore) RunTrend(ctx context.Context, filter state.RunTrendFilter) ([]state.RunTrendBucket, bool, error) {
+	_, tid, err := s.scope(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	filter.TenantID = tid
+	return s.base.RunTrend(ctx, filter)
+}
+
 func (s *TenantStore) DeleteRun(ctx context.Context, id string) error {
 	ctx, tid, err := s.scope(ctx)
 	if err != nil {

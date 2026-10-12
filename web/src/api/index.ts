@@ -388,6 +388,42 @@ export const batchApi = {
 }
 
 // ---------------------------------------------------------------------------
+// Change trend (REST-only endpoint; not a proto RPC)
+// ---------------------------------------------------------------------------
+
+/** One day's counts by outcome, exactly as the endpoint returns them. */
+export interface TrendBucketDTO {
+  day: string
+  total: number
+  outcomes: Record<string, number>
+}
+
+export interface TrendDTO {
+  buckets: TrendBucketDTO[]
+  /** Legend order the chart must use, so it cannot drift per client. */
+  series: string[]
+  /** True when the window's row scan hit the server-side cap. */
+  truncated: boolean
+}
+
+export const trendApi = {
+  /**
+   * days is the window length; env scopes the trend to one environment
+   * (empty = the deployment's default_env, which is what the read gate
+   * judges); tzOffset is the browser's getTimezoneOffset() so the server
+   * buckets days on the OPERATOR's boundary rather than its own.
+   */
+  changeTrend: (opts: { days?: number; env?: string; tzOffset: number }): Promise<TrendDTO> =>
+    get<TrendDTO>('/system/change-trend', {
+      params: {
+        days: opts.days || undefined,
+        env: opts.env || undefined,
+        tz_offset: opts.tzOffset,
+      },
+    }),
+}
+
+// ---------------------------------------------------------------------------
 // ConversationService
 // ---------------------------------------------------------------------------
 
