@@ -28,7 +28,11 @@ type Run struct {
 	PlanJSON       string `json:"plan_json"`
 	Status         string `json:"status"`
 	ApprovalStatus string `json:"approval_status"`
-	ApprovalLevel  string `json:"approval_level"`
+	// ApprovalLevel is the derived approval tier (standard/high/emergency, owner
+	// internal/dsl ApprovalLevel*), written by approval kickoff. Rows that predate
+	// schema v9 can also still hold a priority word here, because that is where the
+	// create path used to put it and the v9 step rewrites nothing.
+	ApprovalLevel string `json:"approval_level"`
 	// Priority is the change's own urgency claim (see Priority* in
 	// priority.go). It exists as its own column because until schema v9 the
 	// create path stored this value in ApprovalLevel, so one column carried two

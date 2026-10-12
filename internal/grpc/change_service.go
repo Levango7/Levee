@@ -1016,15 +1016,20 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	//
 	// It sits after the plan-presence and plan-integrity refusals because
 	// run.ApprovalLevel only carries a tier once a plan exists AND an approval
-	// service is wired — kickoffApproval returns early otherwise: CreateChange
-	// stores the client-supplied PRIORITY in that same column (low/normal/high/
-	// urgent, and any other string the caller sent, since the field is not
-	// validated) until kickoffApproval overwrites it with the derived tier.
+	// service is wired — kickoffApproval returns early otherwise. Since schema v9
+	// this IS the tier column: the create path writes the client's priority to
+	// runs.priority and validates it at the entrypoint, so a priority word can only
+	// be read here on pre-v9 rows — which is why AutoApproveForbidden still accepts
+	// low/normal/urgent rather than failing closed on them. Consequence worth naming:
+	// a caller can no longer trip this refusal by sending priority "high" (it used to
+	// land in this column and read as a high tier by accident). Escalation now comes
+	// from the derived tier alone, and a plan whose floor is high or emergency is
+	// still refused.
 	// Refusing an unplanned run for "medium-risk auto-approval" buries the
 	// actionable answer — call PlanChange — so the ordering is load-bearing,
-	// not cosmetic. The risk/impact table's own low|medium|high scale never
-	// reaches this column: score bands map to tiers (standard/high/emergency),
-	// which is what MaxLevel consumes.
+	// not cosmetic. The risk/impact table's own low|medium|high scale reaches neither
+	// column: score bands map to tiers (standard/high/emergency), which is what
+	// MaxLevel consumes, and the priority vocabulary is closed by validation.
 	if risk.AutoApproveForbidden(run.ApprovalLevel) && req.GetAutoApprove() {
 		return nil, status.Errorf(codes.PermissionDenied,
 			"change %q is a %s-risk change: auto_approve is not permitted (the spec forces auto_approve=false for high/emergency); approve the plan through the approval chain instead",

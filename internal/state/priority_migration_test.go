@@ -16,7 +16,9 @@ package state
 
 import (
 	"context"
+	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -147,5 +149,86 @@ func TestV9BackfillMovesOnlyUnambiguousValues(t *testing.T) {
 		assert.Equal(t, s.expect, gotPriority, "%s (approval_level=%q): wrong priority after the backfill", s.id, s.level)
 		assert.Equal(t, s.level, gotLevel,
 			"%s: the step must not rewrite the tier column — clearing it would change what the auto-approval gate sees for historical rows", s.id)
+	}
+}
+
+// runsDeclaredColumns parses the runs CREATE TABLE block of one schema file and returns
+// its column names in declaration order. Table-level constraints and comment lines are
+// skipped, and the leading-comma style the PostgreSQL file uses for appended columns is
+// stripped so both files parse the same way.
+func runsDeclaredColumns(t *testing.T, rel string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(schemaRepoFile(t, rel))
+	require.NoError(t, err)
+	block := regexp.MustCompile(`(?ms)CREATE TABLE IF NOT EXISTS runs \(.*?\n\);`).FindString(string(raw))
+	require.NotEmpty(t, block, "could not find the runs CREATE TABLE block in %s", rel)
+
+	skip := regexp.MustCompile(`(?i)^(CREATE TABLE|\)|--|PRIMARY KEY|UNIQUE|CHECK|FOREIGN KEY|CONSTRAINT)`)
+	identifier := regexp.MustCompile(`^[a-z_]+$`)
+	var out []string
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimPrefix(strings.TrimSpace(line), ",")
+		trimmed = strings.TrimSpace(trimmed)
+		if trimmed == "" || skip.MatchString(trimmed) {
+			continue
+		}
+		field := strings.Fields(trimmed)[0]
+		if !identifier.MatchString(field) {
+			continue
+		}
+		out = append(out, field)
+	}
+	require.NotEmpty(t, out, "parsed no columns out of the runs block in %s — the DDL shape changed", rel)
+	return out
+}
+
+// TestV9PriorityIsDeclaredLastInBothSchemas turns the ordering claim written in the two
+// schema comments into something the suite checks.
+//
+// Why it needs its own assertion: the comparison those comments point at —
+// TestMigrate_FreshAndUpgraded_SchemaShapesMatch — builds SQLite stores. It is what makes
+// "declare the new column last" load-bearing on that side, and there is no PostgreSQL
+// equivalent for runs, even though ALTER TABLE ADD COLUMN appends there too. Left as a
+// comment, the claim would cite coverage the suite does not provide. So both engines are
+// checked the same way here, and against each other: two ladders whose column order
+// drifted apart is exactly the disagreement this change exists to prevent.
+func TestV9PriorityIsDeclaredLastInBothSchemas(t *testing.T) {
+	const sqliteRel = "internal/state/schema.sql"
+	const pgRel = "internal/state/pgschema.sql"
+
+	sqliteCols := runsDeclaredColumns(t, sqliteRel)
+	pgCols := runsDeclaredColumns(t, pgRel)
+
+	for _, tc := range []struct {
+		rel  string
+		cols []string
+	}{{sqliteRel, sqliteCols}, {pgRel, pgCols}} {
+		declared := 0
+		for _, c := range tc.cols {
+			if c == "priority" {
+				declared++
+			}
+		}
+		assert.Equal(t, 1, declared, "%s: runs.priority must be declared exactly once", tc.rel)
+		assert.Equal(t, "priority", tc.cols[len(tc.cols)-1],
+			`%s: runs.priority must be the LAST declared column — each ladder adds it with ALTER TABLE ADD COLUMN, which appends, so a mid-list declaration makes a fresh database differ from an upgraded one`, tc.rel)
+	}
+
+	assert.Equal(t, sqliteCols, pgCols,
+		"the runs column order differs between the two schemas; the two ladders must mean the same shape")
+
+	// The declaration only mirrors the step if the step really is an append of that column.
+	for _, tc := range []struct {
+		rel   string
+		steps []migrationStep
+	}{{sqliteRel, migrations}, {pgRel, pgMigrations}} {
+		add := ""
+		for _, s := range v9Stmts(t, tc.steps) {
+			if regexp.MustCompile(`(?i)^ALTER TABLE runs ADD COLUMN`).MatchString(s) {
+				add = s
+			}
+		}
+		require.NotEmpty(t, add, "%s: the v9 step adds no runs column", tc.rel)
+		assert.Contains(t, add, "priority", "%s: the v9 step appends something other than priority", tc.rel)
 	}
 }
