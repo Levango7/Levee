@@ -176,6 +176,32 @@
 - **前端**：`EventSource` 订阅，`onerror` 指数退避重连（EventSource close 后不会自己重连，无节制的重连在服务端故障时会打成回环）；`onUnmounted` 关闭（否则切走页面还会继续收事件）；换 run 时重订阅。聚合/变更两个面板在事件到来时重读——事件只说明"有变"，不带快照，重读是诚实的回应。
 - **验证**：`go test` 全绿、`golangci-lint` 0 issues；前端 **199 例全绿（24 文件）**、`vue-tsc` 干净、`internal/web/dist` 用 LF 工作树重建。新增守卫：SSE 四个用例（真起服务、真发事件——帧格式、两帧两事件、终态即关、**客户端断开即关**；未注册主体与不可见环境被拒、未知 id 404、POST 不得开流）+ 前端 `MonitorStream.spec.ts` 五条结构断言（`setInterval`/`POLL_INTERVAL` 不得回来、卸载必须 close、换 run 必须重订阅、退避必须存在、事件必须重读聚合）。
 
+### 修复（`runs.status` 的行内注释是第三份假词表抄件：9 个值里 4 个零产出，owner 的 15 个里 10 个缺席）
+
+- **现象（现查，不是照抄注释）**：两份引擎的建表 SQL（`internal/state/schema.sql:19`、`internal/state/pgschema.sql:23`）都把 `runs.status` 注释成
+  `pending|planning|awaiting_approval|running|verifying|completed|failed|rolled_back|aborted`。其中 **`planning` / `awaiting_approval` / `verifying` / `aborted`
+  四个拼写在非测试代码里零产出**（逐个 `git grep -c '"planning"' -- internal/ cmd/ ':!*_test.go' ':!internal/web/dist'` = 0），也没有任何 `runstatus.Status*` 常量声明它们；
+  反过来 owner `internal/runstatus` 声明的 15 个里有 **10 个不在注释上**：`draft / planned / approved / rejected / paused / cancelled / rolled_back_partial /
+  rollback_incomplete / interrupted / archived`。
+- **代价与 #91 同形，但落在被读得最多的一列**：按注释写查询的人会在四个不存在的名上得到空结果集且**不报错**；而真正会发生的终态（部分回滚、回滚未完成、被接管后中断、归档）
+  反而一个都查不到 —— 治理面板与审计导出正是靠这些值分类的。列定义是 `status TEXT NOT NULL`，**没有 DEFAULT**，所以数据库自己也不会产出任何注释里的值。
+- **修法（只动文档面，不改写入语义）**：注释改为按 owner 的 15 个常量列全。名单来自 `internal/runstatus`，不在 SQL 里发明任何新拼写。
+- **守卫** `internal/state/run_status_schema_comment_test.go`（三条）：① 名单**从 `internal/runstatus/runstatus.go` 解析**（锚定声明行，因为每个常量的文档注释里都重复这些词，不锚定会把散文也收进来），
+  并要求与注释**双向相等**、**两个文件各自独立校验**；② `require.Len(…, 15)` —— 常量块形状变了或有人加了第 16 个状态，守卫必须**自己先喊**，而不是解析成空集/半集后照样通过；
+  ③ 表块作用域专测：`runs` / `batches` / `steps` 三张表的 `status` 行**同形**（`status TEXT NOT NULL, -- …`），这条断言 runs 的列表既不等于 batches 也不等于 steps，
+  并保留只有运行状态会有的标志值（`draft`、`archived`）—— #91 就是被"按文件里第一条 status 行解析"坑过。另加一条**具名回归**测试盯着那四个幻影拼写，复发时失败信息直接点名。
+- **复用而非重写解析**：解析用本包已有的 `columnCommentList` / `schemaRepoFile`（#91 与 ZCode 的两条守卫已在用同一份），避免出现两份会各自漂移的 schema 解析式；
+  复用前先实测过它对 `runs.status` 这行确实命中（两个文件各解析出 9 个 token，正是改前那份假列表）。
+- **验证**：三条守卫绿；`go test ./internal/state/ ./internal/runstatus/` 全绿（整包 12.7s，含既有 schema 测试）；`go build ./...` 干净；`gofmt -l` 零输出。
+  **变异七条逐一由具名断言以具名原因判红**（脚本在内存造变异 → 写盘 → 跑 → 恢复 → 回读核对字节，锚点命中数≠1 直接 abort，不用 `git checkout` 恢复）：
+  SQL 侧删 `rolled_back_partial` ⇒ `omits "rolled_back_partial"` 且点名 `schema.sql`；只改 PG 侧删 `archived` ⇒ 失败信息点名 `pgschema.sql` 而**不得**出现 `schema.sql`
+  （另一侧不许代答，这条是 #91 实测过的判据写法）；PG 侧复活幻影 `aborted` ⇒ 主守卫报 `which no runstatus.Status* constant declares`、具名回归报 `lists "aborted" again`；
+  `runstatus.go` 加第 16 个常量 ⇒ 守卫自己的 `expected the fifteen declared run statuses, parsed 16` 先红；把 runs 的注释整行换成 batches 的词表 ⇒ 作用域专测报 `parsed to the BATCHES vocabulary`。
+- **本批刻意没碰的一处（已单独登记，等定夺）**：`runs.approval_level` 的注释写 `low|medium|high|critical`，而这一列实际同时被创建路径写**优先级**词（`"normal"` 等）
+  和审批路径写**档位**词（`standard|high|emergency`，owner 在 `internal/dsl/ast.go:70-72`），`medium` 属 `plan.RiskLevel`、`critical` 属告警严重度，两者都不写这列。
+  这不是"把注释列全"能收口的——它需要先决定 `pb.Change.priority` 的真实来源（现在读的是 `r.ApprovalLevel`），涉及 proto/migration，故留到方向确定之后再动。
+- **影响面**：两份 `.sql` 的注释行 + 一个测试文件 + 本节 CHANGELOG。**不动 web 源** ⇒ 无需重刷 `internal/web/dist`；**docgen 不读 schema 注释**（实测 `internal/docgen/docgen.go` 对 `schema.sql|pgschema|inline comment` 零命中）
+  ⇒ 不触 `docs regenerate check`。
 
 ## [v1.21.0] - 2026-10-09
 
