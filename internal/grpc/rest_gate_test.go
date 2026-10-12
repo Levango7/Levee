@@ -1,351 +1,135 @@
-// rest_gate_test.go pins the GateService semantics: ad-hoc checks reuse
-// the engine-grade gate constructors (cmd/probe/slo), "human" is
-// rejected as an approval-chain concern, missing runtime dependencies
-// fail closed, results are audited, and the REST endpoint answers
-// 404 without the service / 400 on bad requests.
-
 package grpc
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
-// seedGateTarget writes an inventory row with the given status.
-func seedGateTarget(t *testing.T, store state.Store, host, status string) {
+// rest_gate_test.go pins the read gates on the two REST-only endpoints that read
+// the store directly and therefore never reached a service's authorizer:
+// GET /system/cluster-status and GET /system/batch-status.
+//
+// Before this, both answered every authenticated caller, including a subject
+// whose team had no grant at all. /system/status, /system/config and
+// /system/doctor were never in that state: they delegate to SystemService,
+// which gates them itself (config at admin, doctor at view, status narrows by
+// visible environment). An earlier note in the roadmap said "four endpoints";
+// checking each handler showed it was two, and this file is why it stays two.
+
+// authorizerWith writes a users/matrix pair into a temp dir and loads it.
+func authorizerWith(t *testing.T, users, matrix, defaultEnv string) *authz.Authorizer {
 	t.Helper()
-	require.NoError(t, store.UpsertTarget(context.Background(), &state.Target{
-		ID:          "tgt-" + host,
-		Hostname:    host,
-		Port:        22,
-		ChannelType: "ssh",
-		Status:      status,
-		CreatedAt:   time.Now().UTC(),
-	}))
-}
-
-// loopbackDialer returns a dialer handing out the existing probeChannel
-// stub (Exec → exit 0, stdout "ok\n"), reusing the CheckTarget test
-// infrastructure.
-func loopbackDialer(t *testing.T) ChannelDialer {
-	t.Helper()
-	return func(ctx context.Context, host string) (channel.Channel, error) {
-		return &probeChannel{}, nil
-	}
-}
-
-// failingLoopbackDialer hands out a channel whose Exec reports a
-// non-zero exit so failure-path semantics can be pinned.
-func failingLoopbackDialer() ChannelDialer {
-	return func(ctx context.Context, host string) (channel.Channel, error) {
-		return &failingProbeChannel{}, nil
-	}
-}
-
-// failingProbeChannel is a probeChannel variant with a failing Exec.
-type failingProbeChannel struct{}
-
-func (c *failingProbeChannel) Connect(ctx context.Context) error { return nil }
-func (c *failingProbeChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult, error) {
-	return &channel.ExecResult{ExitCode: 3, Stderr: "scripted failure"}, nil
-}
-func (c *failingProbeChannel) Upload(ctx context.Context, remotePath string, content io.Reader) error {
-	return nil
-}
-func (c *failingProbeChannel) Download(ctx context.Context, remotePath string) (io.Reader, error) {
-	return nil, nil
-}
-func (c *failingProbeChannel) Close() error      { return nil }
-func (c *failingProbeChannel) IsConnected() bool { return true }
-
-// --- GateService.Verify ------------------------------------------------------
-
-func TestGateVerify_CmdCheckRequiresTarget(t *testing.T) {
-	// The verify CommandGate runs remotely over a channel by design;
-	// a targetless cmd has no channel. Refuse up front.
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "cmd",
-		Params: map[string]any{"cmd": "echo levee"},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires a target")
-}
-
-func TestGateVerify_CmdCheckFailsClosedOnExitMismatch(t *testing.T) {
-	// Through a loopback channel whose Exec reports a scripted failure:
-	// exit mismatch is an honest failure result, not an error.
-	store := newTestStore(t)
-	seedGateTarget(t, store, "lb-1", "active")
-	svc := NewGateService(store, failingLoopbackDialer(), "")
-	resp, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "cmd",
-		Target: "lb-1",
-		Params: map[string]any{"cmd": "exit 3", "expect_exit": 0},
-	})
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "users.yaml"), []byte(users), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, authz.MatrixFileName), []byte(matrix), 0o600))
+	a, err := authz.Load(dir, defaultEnv)
 	require.NoError(t, err)
-	assert.False(t, resp.Passed)
-	require.NotEmpty(t, resp.Message, "the reason must still reach the caller")
-
-	// The audit row records the outcome TOKEN; the reason lives in the
-	// response and the log, not in the column queries filter on. The old
-	// writer concatenated them ("failed: exit=3, want 0"), which the
-	// passing-side Contains() assertion next door could not tell apart.
-	rows, err := store.ListAudits(context.Background(), state.AuditFilter{Action: state.AuditActionGateVerify})
-	require.NoError(t, err)
-	require.Len(t, rows, 1, "one ad-hoc check, one audit row")
-	assert.Equal(t, state.AuditResultFailed, rows[0].Result)
+	require.True(t, a.Enforced())
+	return a
 }
 
-func TestGateVerify_CmdMissingCmdParamIsBadRequest(t *testing.T) {
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "cmd",
-		Params: map[string]any{"expect_exit": 0},
+func TestRESTGate_ClusterStatusRequiresRead(t *testing.T) {
+	// A named token for alice: without one every request carries no subject, and
+	// an unattributable caller is admitted by design (filtering it would deny
+	// everyone holding the same token). The gate can only be observed for a
+	// request that PRESENTS an identity.
+	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{
+		AuthTokens: []TokenIdentity{{Token: "alice-secret", Subject: "alice"}},
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cmd")
+	gw.SetStore(store)
+
+	// No matrix configured: nothing to judge against, so the endpoint admits.
+	// That is the posture every other gate has (and serve announces it at
+	// startup rather than deciding per request).
+	noPolicy := authedGet(t, srv.URL+"/system/cluster-status")
+	defer func() { _ = noPolicy.Body.Close() }()
+	require.Equal(t, http.StatusOK, noPolicy.StatusCode)
+
+	// A matrix that grants the subject nothing in the deployment's default
+	// environment: refused. The node registry is deployment-wide — it declares
+	// no environment — so it is judged in default_env.
+	gw.WithAuthorizer(authorizerWith(t,
+		"users:\n  - name: alice\n    team: sre\n    role: operator\n",
+		"teams:\n  - name: sre\n    environments:\n      - name: staging\n        actions: [view]\n",
+		"prod"))
+	denied := authedGet(t, srv.URL+"/system/cluster-status")
+	defer func() { _ = denied.Body.Close() }()
+	require.Equal(t, http.StatusForbidden, denied.StatusCode,
+		"an unauthorised subject must not read the node registry")
+
+	// The same subject with a grant in the default environment: admitted.
+	gw.WithAuthorizer(authorizerWith(t,
+		"users:\n  - name: alice\n    team: sre\n    role: operator\n",
+		"teams:\n  - name: sre\n    environments:\n      - name: prod\n        actions: [view]\n",
+		"prod"))
+	granted := authedGet(t, srv.URL+"/system/cluster-status")
+	defer func() { _ = granted.Body.Close() }()
+	require.Equal(t, http.StatusOK, granted.StatusCode)
 }
 
-func TestGateVerify_CmdWithTargetRequiresDialer(t *testing.T) {
-	// Fail closed: no dialer (engine not wired) ⇒ explicit error, never
-	// a silent pass or a guess.
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "cmd",
-		Target: "web-1",
-		Params: map[string]any{"cmd": "true"},
+func TestRESTGate_BatchStatusIsJudgedOnTheRunsOwnEnvironment(t *testing.T) {
+	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{
+		AuthTokens: []TokenIdentity{{Token: "alice-secret", Subject: "alice"}},
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dialer")
-}
+	gw.SetStore(store)
+	ctx := context.Background()
+	now := time.Now().UTC()
 
-func TestGateVerify_CmdWithUnknownTargetRefused(t *testing.T) {
-	store := newTestStore(t)
-	called := false
-	svc := NewGateService(store, func(ctx context.Context, host string) (channel.Channel, error) {
-		called = true
-		return nil, nil
-	}, "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "cmd",
-		Target: "ghost-1",
-		Params: map[string]any{"cmd": "true"},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in inventory")
-	assert.False(t, called, "dialer must never run for an unknown host")
-}
-
-func TestGateVerify_CmdRetiredTargetRefused(t *testing.T) {
-	store := newTestStore(t)
-	seedGateTarget(t, store, "old-1", "retired")
-	svc := NewGateService(store, func(ctx context.Context, host string) (channel.Channel, error) {
-		t.Fatal("dialer must never run for a retired host")
-		return nil, nil
-	}, "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "cmd",
-		Target: "old-1",
-		Params: map[string]any{"cmd": "true"},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "retired")
-}
-
-func TestGateVerify_ProbeCheckSelfDescribing(t *testing.T) {
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "")
-	// A tcp probe against a closed port fails honestly (the gate
-	// validates params itself; no runtime dependency needed).
-	resp, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type: "probe",
-		Params: map[string]any{
-			"kind": "tcp", "host": "127.0.0.1", "port": 1, "mode": "connect",
-		},
-	})
-	require.NoError(t, err)
-	assert.False(t, resp.Passed, "port 1 connect must fail: %s", resp.Message)
-}
-
-func TestGateVerify_SLORequiresPrometheusURL(t *testing.T) {
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "") // no Prometheus URL
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "slo",
-		Params: map[string]any{"query": "up", "threshold": 1},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Prometheus")
-}
-
-func TestGateVerify_SLORequiresQueryAndThreshold(t *testing.T) {
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "http://prom:9090")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "slo",
-		Params: map[string]any{"threshold": 1},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "query")
-
-	_, err = svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "slo",
-		Params: map[string]any{"query": "up"},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "threshold")
-}
-
-func TestGateVerify_HumanRejected(t *testing.T) {
-	// The approval chain owns human checkpoints; ad-hoc verification
-	// must not fabricate a blocking approval.
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "human",
-		Params: map[string]any{"prompt": "ok?"},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "approval chain")
-}
-
-func TestGateVerify_UnknownTypeRejected(t *testing.T) {
-	store := newTestStore(t)
-	svc := NewGateService(store, nil, "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "telepathy",
-		Params: map[string]any{},
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cmd|probe|slo")
-}
-
-func TestGateVerify_Audited(t *testing.T) {
-	store := newTestStore(t)
-	seedGateTarget(t, store, "lb-audit", "active")
-	svc := NewGateService(store, loopbackDialer(t), "")
-	_, err := svc.Verify(context.Background(), &GateVerifyRequest{
-		Type:   "cmd",
-		Target: "lb-audit",
-		RunID:  "run-audit",
-		Params: map[string]any{"cmd": "true"},
-	})
-	require.NoError(t, err)
-
-	rows, err := store.ListAudits(context.Background(), state.AuditFilter{})
-	require.NoError(t, err)
-	require.NotEmpty(t, rows)
-	var saw bool
-	for _, a := range rows {
-		if a.Action == "gate_verify" {
-			saw = true
-			assert.Equal(t, "run-audit", a.RunID)
-			// Equality, not Contains: this column is queried, and the
-			// previous writer folded the check message in here
-			// ("passed: <message>"), which Contains could not tell from
-			// the token.
-			assert.Equal(t, state.AuditResultPassed, a.Result)
+	// Two runs in two environments. The subject is granted staging only, so the
+	// caller's default environment is deliberately NOT the one the readable run
+	// lives in: a gate that judged default_env instead of the run's env would
+	// pass here by accident.
+	for _, id := range []string{"run-prod", "run-staging"} {
+		env := "prod"
+		if id == "run-staging" {
+			env = "staging"
 		}
+		require.NoError(t, store.CreateRun(ctx, &state.Run{
+			ID: id, WorkflowName: "wf", Status: runstatus.StatusRunning,
+			Creator: "liwg", CreatedAt: now, UpdatedAt: now, IncidentID: env,
+		}))
 	}
-	assert.True(t, saw, "ad-hoc verification must leave an audit row")
+
+	gw.WithAuthorizer(authorizerWith(t,
+		"users:\n  - name: alice\n    team: sre\n    role: operator\n",
+		"teams:\n  - name: sre\n    environments:\n      - name: staging\n        actions: [view]\n",
+		"prod"))
+
+	allowed := authedGet(t, srv.URL+"/system/batch-status?run_id=run-staging")
+	defer func() { _ = allowed.Body.Close() }()
+	require.Equal(t, http.StatusOK, allowed.StatusCode)
+
+	denied := authedGet(t, srv.URL+"/system/batch-status?run_id=run-prod")
+	defer func() { _ = denied.Body.Close() }()
+	require.Equal(t, http.StatusForbidden, denied.StatusCode,
+		"a run in an unreadable environment must not leak its progress")
+
+	// An unknown id is 404 BEFORE the gate: an id typo is not a policy question,
+	// and answering 403 would send the operator hunting a permission problem
+	// that does not exist (the same ordering the SSE route uses).
+	missing := authedGet(t, srv.URL+"/system/batch-status?run_id=run-nope")
+	defer func() { _ = missing.Body.Close() }()
+	require.Equal(t, http.StatusNotFound, missing.StatusCode)
 }
 
-// --- REST endpoint -----------------------------------------------------------
-
-func newGateTestGateway(t *testing.T, gateSvc gateServiceHandler) *Gateway {
+// authedGet issues a GET presenting alice's named token, so the request carries
+// a subject the policy can judge.
+func authedGet(t *testing.T, url string) *http.Response {
 	t.Helper()
-	gw := NewGateway(ServeGatewayConfig{Addr: "127.0.0.1:0"})
-	gw.SetGateService(gateSvc)
-	return gw
-}
-
-func TestGateREST_VerifyEndpoint(t *testing.T) {
-	store := newTestStore(t)
-	seedGateTarget(t, store, "lb-rest", "active")
-	gw := newGateTestGateway(t, NewGateService(store, loopbackDialer(t), ""))
-
-	body, _ := json.Marshal(GateVerifyRequest{
-		Type:   "cmd",
-		Name:   "rest-check",
-		Target: "lb-rest",
-		Params: map[string]any{"cmd": "echo ok", "expect_stdout": "ok"},
-	})
-	req := httptest.NewRequest(http.MethodPost, "/gates/verify", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	gw.handleGateVerify(rec, req)
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	var resp GateVerifyResponse
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.True(t, resp.Passed)
-	assert.Equal(t, "rest-check", resp.Gate)
-}
-
-func TestGateREST_BadJSONIs400(t *testing.T) {
-	store := newTestStore(t)
-	gw := newGateTestGateway(t, NewGateService(store, nil, ""))
-	req := httptest.NewRequest(http.MethodPost, "/gates/verify", strings.NewReader("{not json"))
-	rec := httptest.NewRecorder()
-	gw.handleGateVerify(rec, req)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-}
-
-func TestGateREST_UnconfiguredServiceIs404(t *testing.T) {
-	gw := newGateTestGateway(t, nil)
-	req := httptest.NewRequest(http.MethodPost, "/gates/verify", strings.NewReader(`{"type":"cmd"}`))
-	rec := httptest.NewRecorder()
-	gw.handleGateVerify(rec, req)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
-}
-
-func TestGateREST_UnknownTypeIs400(t *testing.T) {
-	store := newTestStore(t)
-	gw := newGateTestGateway(t, NewGateService(store, nil, ""))
-	body, _ := json.Marshal(GateVerifyRequest{Type: "vibes"})
-	req := httptest.NewRequest(http.MethodPost, "/gates/verify", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	gw.handleGateVerify(rec, req)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "cmd|probe|slo")
-}
-
-func TestGateREST_DispatchRoutesGatesBranch(t *testing.T) {
-	// The restRoute dispatcher must send /gates/verify to the gate
-	// handler and 404 unknown /gates/* paths.
-	store := newTestStore(t)
-	seedGateTarget(t, store, "lb-dispatch", "active")
-	gw := newGateTestGateway(t, NewGateService(store, loopbackDialer(t), ""))
-
-	req := httptest.NewRequest(http.MethodPost, "/gates/verify",
-		strings.NewReader(`{"type":"cmd","target":"lb-dispatch","params":{"cmd":"true"}}`))
-	rec := httptest.NewRecorder()
-	gw.restRoute().ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
-
-	req = httptest.NewRequest(http.MethodGet, "/gates/verify", nil)
-	rec = httptest.NewRecorder()
-	gw.restRoute().ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
-
-	req = httptest.NewRequest(http.MethodPost, "/gates/nonsense", nil)
-	rec = httptest.NewRecorder()
-	gw.restRoute().ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusNotFound, rec.Code)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer alice-secret")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
 }

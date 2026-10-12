@@ -1780,6 +1780,15 @@ func (gw *Gateway) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "no store configured")
 		return
 	}
+	// The node registry is deployment-wide like groups/templates/config: it
+	// declares no environment, so it is judged in permission.default_env rather
+	// than by parsing an address. Before this gate the endpoint answered every
+	// authenticated caller, because it reads the store directly and never
+	// reaches a service's authorizer.
+	if err := authorizeResourceRead(ctx, gw.authz, gw.authz.ResolveEnv(""), "GetClusterStatus"); err != nil {
+		writeJSONError(w, http.StatusForbidden, err.Error())
+		return
+	}
 
 	nodes, err := gw.store.ListClusterNodes(ctx)
 	if err != nil {
@@ -1811,6 +1820,28 @@ func (gw *Gateway) handleBatchStatus(w http.ResponseWriter, r *http.Request) {
 	runID := r.URL.Query().Get("run_id")
 	if strings.TrimSpace(runID) == "" {
 		writeJSONError(w, http.StatusBadRequest, "run_id query parameter is required")
+		return
+	}
+	// Judged on the RUN's environment, exactly like every other run-scoped read
+	// (see ChangeService.authorizeRead): a subject entitled to prod only must
+	// not read a staging run's batch progress. The gate loads the run first, so
+	// an unknown id is 404 before it is 403 — an id typo is not a policy
+	// question (the same ordering the SSE route uses).
+	run, err := gw.change.RunForGate(ctx, runID)
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	if run == nil {
+		// 404 BEFORE the gate: GetRun answers (nil, nil) for an unknown id, and
+		// judging a nil run would resolve an empty environment to default_env and
+		// refuse a subject who has every right to look — sending the operator
+		// hunting a permission problem that does not exist.
+		writeJSONError(w, http.StatusNotFound, "change "+runID+" not found")
+		return
+	}
+	if err := authorizeResourceRead(ctx, gw.authz, envOf(run), "GetBatchStatus"); err != nil {
+		writeJSONError(w, http.StatusForbidden, err.Error())
 		return
 	}
 
