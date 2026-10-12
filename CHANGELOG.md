@@ -233,10 +233,37 @@
   （另一侧不许代答，这条是 #91 实测过的判据写法）；PG 侧复活幻影 `aborted` ⇒ 主守卫报 `which no runstatus.Status* constant declares`、具名回归报 `lists "aborted" again`；
   `runstatus.go` 加第 16 个常量 ⇒ 守卫自己的 `expected the fifteen declared run statuses, parsed 16` 先红；把 runs 的注释整行换成 batches 的词表 ⇒ 作用域专测报 `parsed to the BATCHES vocabulary`。
 - **本批刻意没碰的一处（已单独登记，等定夺）**：`runs.approval_level` 的注释写 `low|medium|high|critical`，而这一列实际同时被创建路径写**优先级**词（`"normal"` 等）
-  和审批路径写**档位**词（`standard|high|emergency`，owner 在 `internal/dsl/ast.go:70-72`），`medium` 属 `plan.RiskLevel`、`critical` 属告警严重度，两者都不写这列。
+  和审批路径写**档位**词（`standard|high|emergency`，owner 在 `internal/dsl/ast.go:70-72`）。`medium` 只作为 `plan.RiskLevelMedium` 存在、`critical` 只在告警与诊断的
+  Severity 里，**引擎不会把这两个值写进这列**（10-13 更正：我原句写作"两者都不写这列"，确定性强于证据——创建路径**不校验** `priority` 取值，所以未经校验的调用方
+  仍能把任意串送进来；"引擎不产出"与"入参受约束"是两件事，当时的措辞把它们混成了一句）。本文件下面一节已把这处失实改掉。
   这不是"把注释列全"能收口的——它需要先决定 `pb.Change.priority` 的真实来源（现在读的是 `r.ApprovalLevel`），涉及 proto/migration，故留到方向确定之后再动。
 - **影响面**：两份 `.sql` 的注释行 + 一个测试文件 + 本节 CHANGELOG。**不动 web 源** ⇒ 无需重刷 `internal/web/dist`；**docgen 不读 schema 注释**（实测 `internal/docgen/docgen.go` 对 `schema.sql|pgschema|inline comment` 零命中）
   ⇒ 不触 `docs regenerate check`。
+
+### 修复（`approval_level` 的两处失实文档：一份假词表抄在两列上，另一处把不存在的产出方写了进去）
+
+- **触发**：对账"三种说法"时逐条读代码（不拿注释裁注释），发现同一件事有四份互不完全一致的描述，其中**两份失实**。核对链是：`git grep` 列该字段的全部赋值点 → 读每点的值来源表达式 → 读派生函数的映射表 → 读消费方的分支语义。
+- **失实一（schema 注释，两份引擎都中）**：`runs.approval_level` 与 `approvals.level` 都写着 `low|medium|high|critical`。真实产出方是：
+  创建路径写客户端传来的 priority（`change_service.go:416`、`template_service.go:357-359`，只把空串兜成 `"normal"`，**全仓不校验取值**），
+  审批 kickoff 写派生档位（`change_service.go:603`/`:821` 经 `risk.MaxLevel(declared, p.ApprovalFloor)`，空则 `approval.LevelStandard`）；
+  `approvals.level` 则由 `internal/approval` 写 `Level* = dsl.ApprovalLevel*`（`levels.go:40-46`），且 `Service.Create` 用 `IsLevel → dsl.IsApprovalLevel`
+  **真的拒绝**列表外的值（`service.go:285`）。⇒ 那份列表对两列都不匹配：`medium`/`critical` 在这两列**零产出**（`medium` 只在 `plan.RiskLevelMedium`，
+  `critical` 只在告警/诊断的 Severity），而 `normal`/`urgent`/`standard`/`emergency` 全部缺席。
+- **失实二（代码说明，且它描述的对象是安全门禁）**：`change_service.go` autoApprove 顺序说明里写 "CreateChange stores the client-supplied PRIORITY
+  (low/normal/high/urgent, **and the impact table's `medium`**)"。不成立：`ApprovalFloor` 是**分数带→档位词**的映射
+  （`risk.go` 0-39 standard / 40-69 high / 70+ emergency，含不可逆步骤至少 high），`MaxLevel` 消费的也是这三个档位词，
+  impact/risk 那套 `low|medium|high` 从不写这列。这句会把人引向"存在第三种产出方"的错误模型，而它紧挨着的正是一条 fail-closed 安全判据。
+- **失实三（行号引用漂了）**：同一段 NOTE 里写 "mirrored back out at `runToPB:169`"，实际映射在 `change_service.go:254` 的 `Priority: r.ApprovalLevel`。
+  改成**不带行号的锚点**（"as Change.priority in runToPB"），行号会随每次改动腐烂，而这类引用错了会让人去读错函数。
+- **改法**：两列的行内注释改为各自真实值域——`runs.approval_level` 用产品自己写入的**并集** `low|normal|high|urgent|standard|emergency`，
+  `approvals.level` 用 `standard|high|emergency`；来源、"入参不校验"、以及"只共享 `high`"这些**散文放在整行注释里**而不是接在列表尾部。
+  原因是 `columnCommentList` 的收尾规则会把列表最后一个元素只取第一个词，尾随散文会污染末位 token；把散文移到整行注释后，
+  将来接守卫时这条列表可以被直接解析，不需要为注释格式特例化解析器。
+- **刻意没做（仍等定夺）**：**不拆列**、**不给 `priority` 加校验**（加了就是行为变更，会拒掉今天能通过的调用方），
+  本批只动文档面。守卫也不在本批——本批先把"说的"改成"做的"，守卫是下一步的独立一笔。
+- **验证**：`go build ./...` 干净；`go test ./internal/state/ ./internal/dbschema/ ./internal/approval/ ./internal/risk/` 全绿
+  （`internal/state` 里含把两份 DDL 真打到 SQLite 的用例，所以"改完仍能建表、且不与 SQLite 语句切分器打架"是被测到的，不是推断）；`gofmt -l` 零输出。
+  本批**不动任何可执行语义**：`git diff` 只落在两份 `.sql` 的注释与 `change_service.go` 的注释块上。
 
 ## [v1.21.0] - 2026-10-09
 

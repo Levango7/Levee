@@ -22,7 +22,16 @@ CREATE TABLE IF NOT EXISTS runs (
     plan_hash       TEXT    NOT NULL,
     status          TEXT    NOT NULL,                -- draft|pending|planned|approved|rejected|running|paused|completed|failed|cancelled|rolled_back|rolled_back_partial|rollback_incomplete|interrupted|archived
     approval_status TEXT    NOT NULL DEFAULT 'pending', -- pending|approved|rejected (see state.ApprovalStatus*; NOT the approvals table's set)
-    approval_level  TEXT    NOT NULL DEFAULT '',     -- low|medium|high|critical
+    -- approval_level carries TWO vocabularies, told apart by who wrote the row.
+    -- The create path stores the client-supplied priority (low/normal/high/urgent,
+    -- defaulted to normal when empty and NOT validated, so an arbitrary string can
+    -- arrive from an API caller), while approval kickoff overwrites it with the
+    -- derived tier (standard/high/emergency, owner internal/dsl ApprovalLevel*).
+    -- Only "high" is shared between the two, so a reader that treats a priority word
+    -- as a tier will silently mis-classify it: fail closed on anything outside both
+    -- lists (see risk.AutoApproveForbidden). The list below is the union of what the
+    -- product itself writes; splitting the two into separate columns is the open fix.
+    approval_level  TEXT    NOT NULL DEFAULT '',     -- low|normal|high|urgent|standard|emergency
     created_at      TIMESTAMPTZ NOT NULL,
     updated_at      TIMESTAMPTZ NOT NULL,
     creator         TEXT    NOT NULL,
@@ -158,7 +167,13 @@ CREATE TRIGGER worm_prevent_trace_delete
 CREATE TABLE IF NOT EXISTS approvals (
     id         TEXT    PRIMARY KEY,
     run_id     TEXT    NOT NULL,
-    level      TEXT    NOT NULL,                     -- low|medium|high|critical
+    -- level is the approval tier this row was raised for. Its vocabulary is the
+    -- tier list, not the change's priority: approval.Service.Create refuses anything
+    -- outside standard / high / emergency (IsLevel -> dsl.IsApprovalLevel), and the
+    -- constants are internal/approval Level* aliases of internal/dsl ApprovalLevel*.
+    -- Do not copy runs.approval_level's six-value union here — that column also
+    -- carries priority words, this one never does.
+    level      TEXT    NOT NULL,                     -- standard|high|emergency
     approver   TEXT    NOT NULL,
     status     TEXT    NOT NULL,                     -- pending|approved|rejected|timeout
     comment    TEXT    NOT NULL DEFAULT '',
