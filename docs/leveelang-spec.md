@@ -321,7 +321,7 @@ LEVEELang 静态类型系统在编译期完成类型检查，运行期不做隐�
 | action_ref | 动作引用 | `mysql.pt-online-schema-change` | step action |
 | target_ref | 目标引用 | `{{target.host}}` | args 中引用目标属性 |
 | input_ref | 输入引用（**尚未实现**：不替换，按字面量传给模块；编译期 LE004 warning） | `{{input.table}}` | args 中引用输入参数 |
-| output_ref | 输出引用（**尚未实现**：同样不替换；LE061 已登记但**没有产生方**） | `{{step.migrate.output}}` | 引用前步输出 |
+| output_ref | 输出引用（**尚未实现**：同样不替换；对应的 LE061 已于 2026-10-12 撤回，见第 13 章说明） | `{{step.migrate.output}}` | 引用前步输出 |
 
 duration 字面量支持单位：`s`（秒）、`m`（分）、`h`（时）、`d`（天），如 `90s`、`5m`、`4h`、`1d`。
 
@@ -424,7 +424,7 @@ batches {
 | `emergency` | emergency change channel, fast turnaround, single approver | 1 | 30m | 自动驳回 |
 <!-- END GENERATED: approval-level -->
 
-枚举值在编译期校验合法性，非三类之一报错 LE041。
+枚举值在编译期校验合法性，非三类之一报错 LE041。（LE041 已撤回：当前实现不产出该错误，见第 13 章）
 
 ---
 
@@ -902,7 +902,7 @@ step verify {
 1. 被引用的 step 是否在当前 workflow 内声明。
 2. 被引用的 output 字段是否在该 step 的 output 块内声明。
 3. 引用类型是否与 args 期望类型匹配。
-4. 引用是否构成循环依赖（DAG 校验，循环报错 LE071）。
+4. 引用是否构成循环依赖（DAG 校验，循环报错 LE071）。（LE071 已撤回：依赖引用尚未实现，见第 13 章）
 
 ---
 
@@ -1248,7 +1248,7 @@ snapshot:
 
 1. workflow 使用不可逆动作时强制声明 `irreversible: true` 显式标记。
 2. 强制进入白名单：显式允许该不可逆动作在该 workflow 使用。
-3. 审批级别强制升高到 high（即使 workflow 声明 standard，编译期自动升高并告警 LE081）。
+3. 审批级别强制升高到 high（即使 workflow 声明 standard，编译期自动升高并告警 LE081）。（LE081 已撤回，见第 13 章）
 4. 不参与自动回滚：回滚协议跳过该动作，仅回滚可逆部分。
 5. 强制 snapshot 回滚：不可逆动作所在 workflow 的 rollback strategy 强制为 snapshot，并要求 apply 前创建完整快照。
 
@@ -1309,25 +1309,25 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | V1 | 类型检查 | 所有字段值类型与声明类型匹配 | LE001 |
 | V2 | 必需字段检查 | 必需字段是否声明 | LE002 |
 | V3 | 枚举值检查 | 枚举字段取值在允许集合内 | LE003 |
-| V4 | 标签表达式语法 | target query 语法合法、括号匹配、正则合法 | LE010 |
-| V5 | 标签键名规范 | 标签键符合命名规范（小写字母数字下划线） | LE011 |
+| V4 | 标签表达式语法 | target query 语法合法、括号匹配、正则合法 | ~~LE010~~（代码已撤回） |
+| V5 | 标签键名规范 | 标签键符合命名规范（小写字母数字下划线） | ~~LE011~~（代码已撤回） |
 | V6 | 批次定义合法性 | 百分比数组递增、末尾 100、首批 ≤5% | LE031/LE032/LE033 |
 | V7 | 批次策略一致性 | strategy 与 steps 类型匹配 | LE034 |
-| V8 | step 引用前步输出 | 被引用 step 存在、output 字段存在、类型匹配 | LE061 |
-| V9 | DAG 无环 | step 依赖不构成循环 | LE071 |
-| V10 | action 模块存在 | 引用的 module.name 在已加载清单内 | LE041 |
-| V11 | action 参数契约 | args 满足动作声明的参数契约 | LE042 |
+| V8 | step 引用前步输出 | 被引用 step 存在、output 字段存在、类型匹配 | ~~LE061~~（代码已撤回） |
+| V9 | DAG 无环 | step 依赖不构成循环 | ~~LE071~~（代码已撤回） |
+| V10 | action 模块存在 | 引用的 module.name 在已加载清单内 | ~~LE041~~（代码已撤回） |
+| V11 | action 参数契约 | args 满足动作声明的参数契约 | ~~LE042~~（代码已撤回） |
 | V12 | verify 表达式语法 | cmd / slo / probe 表达式语法合法 | LE051 |
-| V13 | rollback action 白名单 | rollback 引用的 action 在白名单内 | LE081 |
+| V13 | rollback action 白名单 | rollback 引用的 action 在白名单内 | ~~LE081~~（代码已撤回） |
 | V14 | 不可逆动作白名单 | 判定为不可逆的 action（显式 irreversible: true 或引擎固有词表命中）在 workflow 级 allow_irreversible 内；缺席的名单 = 什么都没授权 | LE082 |
-| V15 | 不可逆动作审批级别 | 含不可逆动作的 workflow approval level ≥ high | LE083 |
-| V16 | rollback 补偿声明 | 治理红线 R2：变更必须可回滚。当前实现不阻断编译——未声明补偿的 workflow 在 dry-run 预览中告警，强制落地见 docs/product-roadmap.md | LE091（规划） |
+| V15 | 不可逆动作审批级别 | 含不可逆动作的 workflow approval level ≥ high | ~~LE083~~（代码已撤回） |
+| V16 | rollback 补偿声明 | 治理红线 R2：变更必须可回滚。当前实现不阻断编译——未声明补偿的 workflow 在 dry-run 预览中告警，强制落地见 docs/product-roadmap.md | ~~LE091~~（代码已撤回）（规划） |
 | V17 | target 必需 | workflow 必须声明 target 块 | LE092 |
 | V18 | step 必需 | workflow 至少声明一个 step | LE093 |
 | V19 | window 时间合法 | start / end 均为合法 HH:MM 且 start != end；timezone 可解析；days 属于 Mon..Sun | LE020 / LE021 / LE003 |
 | V20 | timezone 合法 | timezone 为合法 IANA 时区名 | LE021 |
-| V21 | 资产类型白名单 | target.type 在资产类型白名单内 | LE012 |
-| V22 | approval 约束 | high 级别 exclude_initiator 强制 true | LE043 |
+| V21 | 资产类型白名单 | target.type 在资产类型白名单内 | ~~LE012~~（代码已撤回） |
+| V22 | approval 约束 | high 级别 exclude_initiator 强制 true | ~~LE043~~（代码已撤回） |
 | V23 | 命名唯一性 | step 名称、input 参数名在 workflow 内唯一 | LE002 |
 | V24 | rollback 归属分层 | workflow 级 rollback 仅允许 on_failure / verify_after；strategy / step / steps / snapshot_paths 必须声明在被补偿的 step 内 | LE097 |
 
@@ -1337,33 +1337,37 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 
 表：错误码定义
 
+> **代码撤回（2026-10-12）**：下表带删除线的错误码**已从实现中撤回**——它们在实现里登记了，却没有任何代码产出它们（登记一个不能产出的错误码，比不登记更糟：它会让人以为编译器能报这个错）。被撤回的是**码**，不是**特性**：标签表达式、依赖引用（DAG）、step 输出引用、action/审批的编译期校验等特性在下文仍标注为「尚未实现」，等它的产出点落地时再登记错误码。
+> 同一天 **LE102 反向落地**：`fixed step count` 非正一向由 `internal/dsl/validator.go` 报出，却不在表内——方向相反、同样是真的。守卫 `internal/errors/catalogue_producer_test.go` 现在双向钉住这件事：目录里的每个码都必须有产出方，任何产出方报的码都必须在目录里。
+> 注意：LE102 这个**编号被复用**。它最早用于 `on_failure: manual` 与快照的组合拒绝（见上文「手动回滚路径」），那条路学会恢复基线后该码被撤回；现在同一个编号给了 `fixed step count` 非正校验。两件事共用一个编号，不会同时存在，但引用旧文档时以撤回记录为准。
+
 | 错误码 | 类别 | 含义 | 严重度 |
 | --- | --- | --- | --- |
 | LE001 | 类型 | 类型不匹配 | error |
 | LE002 | 结构 | 必需字段缺失或命名重复 | error |
 | LE003 | 类型 | 枚举值非法 | error |
 | LE004 | 类型 | 声明/引用了 input 参数，但没有任何代码路径注入或替换取值 | warning |
-| LE010 | 标签 | 标签表达式语法错误 | error |
-| LE011 | 标签 | 标签键名不符合命名规范 | error |
-| LE012 | 标签 | 资产类型不在白名单 | error |
+| ~~LE010~~（代码已撤回） | 标签 | 标签表达式语法错误 | error |
+| ~~LE011~~（代码已撤回） | 标签 | 标签键名不符合命名规范 | error |
+| ~~LE012~~（代码已撤回） | 标签 | 资产类型不在白名单 | error |
 | LE020 | 窗口 | 时间格式非法或 start ≥ end | error |
 | LE021 | 窗口 | timezone 非合法 IANA 名称 | error |
 | LE031 | 批次 | 百分比数组非递增 | error |
 | LE032 | 批次 | 百分比数组末尾非 100 | error |
 | LE033 | 批次 | 首批超过 5%（金丝雀原则） | warning |
 | LE034 | 批次 | strategy 与 steps 类型不匹配 | error |
-| LE041 | 动作 | action 模块或动作不存在 | error |
-| LE042 | 动作 | action 参数不满足契约 | error |
-| LE043 | 审批 | high 级别未排除发起人 | error |
+| ~~LE041~~（代码已撤回） | 动作 | action 模块或动作不存在 | error |
+| ~~LE042~~（代码已撤回） | 动作 | action 参数不满足契约 | error |
+| ~~LE043~~（代码已撤回） | 审批 | high 级别未排除发起人 | error |
 | LE044 | 审批 | 审批级别非法（非三类之一） | error |
 | LE051 | 门禁 | verify / gate 表达式语法错误 | error |
 | LE052 | 门禁 | batches 缺省 post_batch 门禁 | warning |
-| LE061 | 引用 | 引用前步输出不存在或类型不匹配 | error |
-| LE071 | 依赖 | DAG 存在循环 | error |
-| LE081 | 回滚 | rollback action 不在白名单 | error |
+| ~~LE061~~（代码已撤回） | 引用 | 引用前步输出不存在或类型不匹配 | error |
+| ~~LE071~~（代码已撤回） | 依赖 | DAG 存在循环 | error |
+| ~~LE081~~（代码已撤回） | 回滚 | rollback action 不在白名单 | error |
 | LE082 | 回滚 | 不可逆动作不在 allow_irreversible | error |
-| LE083 | 回滚 | 含不可逆动作但审批级别 < high | error |
-| LE091 | 结构 | 缺少 rollback 块 | error |
+| ~~LE083~~（代码已撤回） | 回滚 | 含不可逆动作但审批级别 < high | error |
+| ~~LE091~~（代码已撤回） | 结构 | 缺少 rollback 块 | error |
 | LE092 | 结构 | 缺少 target 块 | error |
 | LE093 | 结构 | 缺少 step 块 | error |
 | LE094 | 结构 | 缺少 approval 块（将用缺省 standard，仅 warning） | warning |
@@ -1374,6 +1378,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | LE099 | 快照 | run 级 snapshot 未声明 paths（无可采集对象） | error |
 | LE100 | 快照 | run 级 snapshot 的 type 非法（允许：file / config） | error |
 | LE101 | 快照 | run 级 snapshot 的 path 必须是绝对路径 | error |
+| LE102 | 批次 | fixed step 数量非正 | error |
 
 严重度语义：
 
@@ -1383,7 +1388,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 错误输出格式：
 
 ```
-LE042: action 参数不满足契约
+LE042: action 参数不满足契约（代码已撤回，2026-10-12：无产生方）
   file: workflows/db-migrate.leveelang
   line: 18, column: 5
   step: migrate
@@ -2089,7 +2094,7 @@ rollback:
 | action_ref | `mysql.pt-online-schema-change` | step action |
 | target_ref | `{{target.host}}` | 引用目标属性 |
 | input_ref | `{{input.table}}` | 引用输入参数（尚未实现，LE004 warning） |
-| output_ref | `{{step.migrate.output}}` | 引用前步输出（尚未实现；LE061 无产生方） |
+| output_ref | `{{step.migrate.output}}` | 引用前步输出（尚未实现；LE061 已撤回） |
 
 ---
 
@@ -2103,27 +2108,27 @@ rollback:
 | LE002 | error | 必需字段缺失或命名重复 |
 | LE003 | error | 枚举值非法 |
 | LE004 | warning | input 参数被声明/引用但无人解析 |
-| LE010 | error | 标签表达式语法错误 |
-| LE011 | error | 标签键名不符合命名规范 |
-| LE012 | error | 资产类型不在白名单 |
+| ~~LE010~~（代码已撤回） | error | 标签表达式语法错误 |
+| ~~LE011~~（代码已撤回） | error | 标签键名不符合命名规范 |
+| ~~LE012~~（代码已撤回） | error | 资产类型不在白名单 |
 | LE020 | error | 时间格式非法或 start ≥ end |
 | LE021 | error | timezone 非合法 IANA 名称 |
 | LE031 | error | 百分比数组非递增 |
 | LE032 | error | 百分比数组末尾非 100 |
 | LE033 | warning | 首批超过 5% |
 | LE034 | error | strategy 与 steps 类型不匹配 |
-| LE041 | error | action 模块或动作不存在 |
-| LE042 | error | action 参数不满足契约 |
-| LE043 | error | high 级别未排除发起人 |
+| ~~LE041~~（代码已撤回） | error | action 模块或动作不存在 |
+| ~~LE042~~（代码已撤回） | error | action 参数不满足契约 |
+| ~~LE043~~（代码已撤回） | error | high 级别未排除发起人 |
 | LE044 | error | 审批级别非法 |
 | LE051 | error | verify / gate 表达式语法错误 |
 | LE052 | warning | batches 缺省 post_batch 门禁 |
-| LE061 | error | 引用前步输出不存在或类型不匹配 |
-| LE071 | error | DAG 存在循环 |
-| LE081 | error | rollback action 不在白名单 |
+| ~~LE061~~（代码已撤回） | error | 引用前步输出不存在或类型不匹配 |
+| ~~LE071~~（代码已撤回） | error | DAG 存在循环 |
+| ~~LE081~~（代码已撤回） | error | rollback action 不在白名单 |
 | LE082 | error | 不可逆动作不在 allow_irreversible |
-| LE083 | error | 含不可逆动作但审批级别 < high |
-| LE091 | error | 缺少 rollback 块 |
+| ~~LE083~~（代码已撤回） | error | 含不可逆动作但审批级别 < high |
+| ~~LE091~~（代码已撤回） | error | 缺少 rollback 块 |
 | LE092 | error | 缺少 target 块 |
 | LE093 | error | 缺少 step 块 |
 | LE094 | warning | 缺少 approval 块 |
@@ -2134,3 +2139,4 @@ rollback:
 | LE099 | error | run 级 snapshot 未声明 paths |
 | LE100 | error | run 级 snapshot 的 type 非法 |
 | LE101 | error | run 级 snapshot 的 path 必须是绝对路径 |
+| LE102 | error | fixed step 数量非正 |
