@@ -10,7 +10,7 @@ import type { Change, TraceEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
-import { formatTimestamp } from '@/utils/format'
+import { formatTimestamp, priorityLabel } from '@/utils/format'
 import { approvalSummary, type ApprovalChain } from '@/utils/approvalChain'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
@@ -326,7 +326,7 @@ const pendingCount = computed(() => pending.value.length)
           </el-table-column>
           <el-table-column label="优先级" width="88">
             <template #default="{ row }">
-              <span class="cell-prio" :class="`cell-prio--${row.priority}`">{{ row.priority }}</span>
+              <span class="cell-prio" :class="`cell-prio--${row.priority}`">{{ priorityLabel(row.priority) }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="team" label="团队" width="110" />

@@ -44,6 +44,7 @@ import {
   isRemediableStatus,
   isResumableStatus,
   isRetryableStatus,
+  priorityLabel,
 } from '@/utils/format'
 
 const route = useRoute()
@@ -228,7 +229,7 @@ onMounted(load)
           <el-descriptions-item label="环境">{{ change.environment || '（未声明）' }}</el-descriptions-item>
           <el-descriptions-item label="团队">{{ change.team || '—' }}</el-descriptions-item>
           <el-descriptions-item label="模板">{{ change.templateName || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="优先级">{{ change.priority }}</el-descriptions-item>
+          <el-descriptions-item label="优先级">{{ priorityLabel(change.priority) }}</el-descriptions-item>
           <el-descriptions-item label="创建人">{{ change.createdBy || change.requester || '—' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ formatTimestamp(change.createdAt) }}</el-descriptions-item>
           <el-descriptions-item label="更新时间">{{ formatTimestamp(change.updatedAt) }}</el-descriptions-item>

@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChangeStatus } from '@/types/levee'
 import {
+  PRIORITIES,
   PRIORITY_COLOR,
   PRIORITY_LABEL,
   STATUS_COLOR,
@@ -20,6 +21,7 @@ import {
   isRemediableStatus,
   isResumableStatus,
   isRetryableStatus,
+  priorityLabel,
 } from './format'
 
 describe('formatTimestamp', () => {
@@ -102,6 +104,37 @@ describe('label/color tables', () => {
     expect(Object.keys(PRIORITY_LABEL).sort()).toEqual(Object.keys(PRIORITY_COLOR).sort())
     expect(PRIORITY_COLOR.normal).toBe('')
     expect(PRIORITY_LABEL.urgent).toBe('紧急')
+  })
+
+  it('PRIORITIES is the runtime form of the same set, in urgency order', () => {
+    // The select in the instantiate wizard renders from this array. If it ever
+    // gains or loses a member against the two tables, the wizard would offer a
+    // value the console cannot label, or hide one it can.
+    expect([...PRIORITIES]).toEqual(['low', 'normal', 'high', 'urgent'])
+    expect([...PRIORITIES].sort()).toEqual(Object.keys(PRIORITY_LABEL).sort())
+    expect([...PRIORITIES].sort()).toEqual(Object.keys(PRIORITY_COLOR).sort())
+  })
+
+  it('priorityLabel renders every declared priority in Chinese', () => {
+    for (const p of PRIORITIES) {
+      expect(priorityLabel(p)).toBe(PRIORITY_LABEL[p])
+    }
+  })
+
+  it('priorityLabel says 未记录 for an absent value instead of printing nothing', () => {
+    // Not a cosmetic choice: runs.priority is '' on every row created before schema
+    // v9 whose stored value could not be attributed — "high" belongs to both the
+    // priority and the approval-tier vocabulary, and the v9 backfill refuses to
+    // guess. An empty cell reads as "this change claimed no urgency", which is a
+    // claim the stored data does not support.
+    expect(priorityLabel('')).toBe('未记录')
+  })
+
+  it('priorityLabel leaves an unknown spelling visible rather than dressing it up', () => {
+    // Only rows written before entrypoint validation can hold these. Translating
+    // one would put words in the server's mouth.
+    expect(priorityLabel('medium')).toBe('medium')
+    expect(priorityLabel('HIGH')).toBe('HIGH')
   })
 })
 

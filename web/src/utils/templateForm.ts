@@ -20,14 +20,14 @@
 //     change is then judged by that default for the rest of its life;
 //   - team is echoed but not persisted (state.Run has no team column), so the
 //     form says so instead of implying the value is recorded.
-import type { Template } from '@/types/levee'
+import type { Priority, Template } from '@/types/levee'
 
 export interface InstantiateForm {
   label: string
   params: Record<string, string>
   team: string
   environment: string
-  priority: string
+  priority: Priority
   dryRun: boolean
 }
 

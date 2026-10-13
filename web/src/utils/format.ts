@@ -58,6 +58,29 @@ export const PRIORITY_COLOR: Record<Priority, string> = {
   urgent: 'danger',
 }
 
+// PRIORITIES is the runtime form of the `Priority` union, which cannot be iterated.
+// The instantiate wizard used to hand-copy its four <el-option> lines, giving the
+// vocabulary a third owner beside the union and the two tables above; internal/state/
+// priority_web_vocabulary_test.go now parses this array as well and requires every
+// spelling (union, tables, this array, the Go constants) to be the same set.
+export const PRIORITIES: readonly Priority[] = ['low', 'normal', 'high', 'urgent']
+
+// priorityLabel renders a priority for the Chinese console. Both fallbacks are
+// deliberate:
+//   - an EMPTY value renders 未记录 rather than nothing. runs.priority is '' on every
+//     row created before schema v9 whose value could not be attributed — "high" is the
+//     one spelling the priority and the approval-tier vocabularies share, and the v9
+//     backfill left it in the tier column instead of guessing (internal/state/
+//     priority.go). An empty cell would read as "this change claimed nothing", which
+//     is a claim we cannot make from the data we hold.
+//   - a spelling outside the vocabulary stays verbatim, the way nodeStatusLabel
+//     behaves. Such rows exist only from before entrypoint validation; printing a
+//     friendlier word would hide what the server is actually storing.
+export function priorityLabel(priority: string): string {
+  if (!priority) return '未记录'
+  return PRIORITY_LABEL[priority as Priority] ?? priority
+}
+
 // Retryable statuses mirror the backend RetryChange admission set
 // (change_service.go): failed, rolled_back, interrupted — plus the two D-2 v2
 // rollback verdicts, which are failure-family terminals whose re-drive entry
