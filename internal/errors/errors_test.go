@@ -195,7 +195,8 @@ func TestErrorCodes_Distinct(t *testing.T) {
 	// here. 2026-10-12 removed the eleven withdrawn codes (LE010-012, LE041-043,
 	// LE061, LE071, LE081, LE083, LE091) and added LE102, which production
 	// emits — see TestEveryCatalogueCodeHasAProducer for the guard that keeps
-	// this list honest in both directions.
+	// this list honest in both directions. 2026-10-13 added LE103 (the undo
+	// idempotency advisory, produced by dsl.Advise).
 	codes := []string{
 		LE001, LE002, LE003, LE004,
 		LE020, LE021,
@@ -204,14 +205,14 @@ func TestErrorCodes_Distinct(t *testing.T) {
 		LE051, LE052,
 		LE082,
 		LE092, LE093, LE094, LE095, LE096, LE097,
-		LE098, LE099, LE100, LE101, LE102,
+		LE098, LE099, LE100, LE101, LE102, LE103,
 	}
 	seen := make(map[string]bool, len(codes))
 	for _, c := range codes {
 		assert.False(t, seen[c], "duplicate error code: %s", c)
 		seen[c] = true
 	}
-	assert.Equal(t, 25, len(codes), "expected 25 error codes")
+	assert.Equal(t, 26, len(codes), "expected 26 error codes")
 }
 
 func TestLookup_Registered(t *testing.T) {
@@ -246,7 +247,7 @@ func TestAllCodes_CountAndImmutable(t *testing.T) {
 	// precedent, and LE102 re-registered because internal/dsl/validator.go had
 	// started emitting it — the two directions had drifted apart independently,
 	// which is what TestEveryCatalogueCodeHasAProducer now pins).
-	assert.Equal(t, 25, len(all))
+	assert.Equal(t, 26, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}

@@ -31,6 +31,7 @@ package dsl
 import (
 	"fmt"
 	"regexp"
+	"sort"
 
 	"github.com/nexus/levee/internal/errors"
 )
@@ -58,6 +59,14 @@ const (
 	// references them with `{{input.x}}`), and NOTHING in the pipeline supplies
 	// or substitutes them — the reference reaches the module as literal text.
 	codeUnresolvedInputs = "LE004"
+	// codeNonIdempotentUndo is LE103: an undo step that does not declare
+	// `idempotent: true`. Compensation is the path that runs when something has
+	// already gone wrong, so it is the path most likely to be RE-run: a partially
+	// applied forward batch leaves the executor retrying the undo, and a
+	// non-idempotent undo run twice does the work twice. "Append the removed
+	// line" duplicates it; "delete the created file" fails the second time and
+	// surfaces as a compensation error that masks the original failure.
+	codeNonIdempotentUndo = "LE103"
 )
 
 // maxCanaryPercent is the §4.3 guidance for a first batch: 5% of the fleet.
@@ -183,7 +192,71 @@ func (v *Validator) Advise(wf *Workflow) []ValidationError {
 		})
 	}
 
+	// LE103: an undo step without `idempotent: true`.
+	//
+	// Only the undo steps are linted, not the forward ones: a forward step's
+	// non-idempotence is visible in the run (it ran once and its effect is what
+	// the operator asked for), while an undo step's is invisible until the
+	// second time it runs — and the second time is exactly the failure path,
+	// where a doubled compensation either corrupts the target or fails and
+	// hides the original cause.
+	//
+	// Warning, not error: the author may know the undo is naturally idempotent
+	// (a snapshot restore, a config revert), and forcing the declaration would
+	// break documents that compile today. The advisory asks for the annotation
+	// that makes the property checkable and visible to the approver.
+	if undo := nonIdempotentUndoSteps(wf); len(undo) > 0 {
+		// One finding per step name, so a workflow with three sloppy undo steps
+		// gets three actionable lines rather than one that names a list the
+		// author has to cross-reference by hand.
+		for _, name := range undo {
+			out = append(out, ValidationError{
+				Code:  codeNonIdempotentUndo,
+				Field: "steps." + name + ".rollback",
+				Message: fmt.Sprintf("undo step %q does not declare idempotent: true — a "+
+					"compensation that runs twice does its work twice (add idempotent: true to the "+
+					"undo step, or to the step it compensates, if re-running it is safe)", name),
+			})
+		}
+	}
+
 	return out
+}
+
+// nonIdempotentUndoSteps returns the sorted names of workflow steps whose
+// rollback block contains at least one undo step without `idempotent: true`.
+//
+// It walks the step-level rollback blocks only. Workflow-level rollback content
+// is rejected outright by LE097 before Advise runs, and the run-level snapshot
+// primitive has no undo steps to annotate, so neither can reach this.
+//
+// The per-step flag is read off BOTH the nested undo steps and the step that
+// owns them: `idempotent: true` on the forward step covers its undo block,
+// because that is how the YAML reads (the field sits on the step, not on each
+// of its rollback.steps entries).
+func nonIdempotentUndoSteps(wf *Workflow) []string {
+	var names []string
+	for i := range wf.Steps {
+		s := &wf.Steps[i]
+		if s.Rollback == nil || len(s.Rollback.Steps) == 0 {
+			continue
+		}
+		if s.Idempotent {
+			continue
+		}
+		sloppy := false
+		for j := range s.Rollback.Steps {
+			if !s.Rollback.Steps[j].Idempotent {
+				sloppy = true
+				break
+			}
+		}
+		if sloppy {
+			names = append(names, s.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // referencesInputs reports whether any step argument — forward steps AND the
