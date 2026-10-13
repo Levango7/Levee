@@ -365,6 +365,16 @@ export interface ClusterNodeDTO {
   status: string
   lastHeartbeat: string
   joinedAt: string
+  /**
+   * JSON-encoded []string of the node's declared capabilities, e.g.
+   * `["shell","pkg"]`. `[]` means the node declared none.
+   *
+   * Read-only on this surface: the cluster page shows what a node declared.
+   * Capability-based routing would change dispatcher semantics (who may run
+   * what, and what happens when a capable node is busy), so it is a separate
+   * decision rather than an implication of the column being readable.
+   */
+  capabilities: string
 }
 
 export interface AssignmentSummaryDTO {

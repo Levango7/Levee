@@ -1383,7 +1383,7 @@ func (s *PGStore) SetAssignmentResult(ctx context.Context, runID string, epoch i
 // ListClusterNodes returns every registered cluster node, ordered by id.
 func (s *PGStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, address, role, status, last_heartbeat, joined_at FROM cluster_nodes ORDER BY id`)
+		`SELECT id, address, role, status, last_heartbeat, joined_at, capabilities FROM cluster_nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("state: list cluster nodes: %w", err)
 	}
@@ -1391,7 +1391,7 @@ func (s *PGStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, error) {
 	var nodes []ClusterNode
 	for rows.Next() {
 		var n ClusterNode
-		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt, &n.Capabilities); err != nil {
 			return nil, fmt.Errorf("state: list cluster nodes scan: %w", err)
 		}
 		nodes = append(nodes, n)

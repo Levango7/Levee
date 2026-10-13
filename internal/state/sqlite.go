@@ -1422,7 +1422,7 @@ func isMissingTableError(err error) bool {
 // (nil, nil) so callers uniformly treat "no rows" as an empty cluster.
 func (s *SQLiteStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, address, role, status, last_heartbeat, joined_at FROM cluster_nodes ORDER BY id`)
+		`SELECT id, address, role, status, last_heartbeat, joined_at, capabilities FROM cluster_nodes ORDER BY id`)
 	if err != nil {
 		// The cluster_nodes table is PostgreSQL-only. Treat a missing table
 		// as an empty cluster rather than an error so the same Store
@@ -1436,7 +1436,7 @@ func (s *SQLiteStore) ListClusterNodes(ctx context.Context) ([]ClusterNode, erro
 	var nodes []ClusterNode
 	for rows.Next() {
 		var n ClusterNode
-		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.Address, &n.Role, &n.Status, &n.LastHeartbeat, &n.JoinedAt, &n.Capabilities); err != nil {
 			return nil, fmt.Errorf("state: list cluster nodes scan: %w", err)
 		}
 		nodes = append(nodes, n)

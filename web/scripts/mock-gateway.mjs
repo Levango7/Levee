@@ -87,9 +87,9 @@ const logs = {
 const cluster = {
   backend: 'sqlite',
   nodes: [
-    { id: 'node-a', role: 'master', status: 'active', address: '10.0.1.11:8080', lastHeartbeat: now - 5 },
-    { id: 'node-b', role: 'worker', status: 'active', address: '10.0.1.12:8080', lastHeartbeat: now - 8 },
-    { id: 'node-c', role: 'worker', status: 'offline', address: '10.0.1.13:8080', lastHeartbeat: now - 900 },
+      { id: 'node-a', role: 'master', status: 'active', address: '10.0.1.11:8080', lastHeartbeat: now - 5, joinedAt: now - 86400, capabilities: '["shell","pkg","file"]' },
+      { id: 'node-b', role: 'worker', status: 'active', address: '10.0.1.12:8080', lastHeartbeat: now - 8, joinedAt: now - 86400, capabilities: '["shell","file"]' },
+      { id: 'node-c', role: 'worker', status: 'offline', address: '10.0.1.13:8080', lastHeartbeat: now - 900, joinedAt: now - 3600, capabilities: '[]' },
   ],
   summary: { totalActive: 2, counts: { done: 18, interrupted: 1 } },
 }

@@ -678,13 +678,32 @@ type AssignmentFilter struct {
 // ClusterNode is the persisted view of a cluster member
 // (design-cluster-dispatch.md). Single-node (SQLite) deployments have no
 // cluster_nodes table; callers get (nil, nil) from ListClusterNodes.
+//
+// The json tags are load-bearing, exactly as on AssignmentSummary below: this
+// struct is marshalled verbatim by GET /system/cluster-status, and without them
+// the wire carried Go's PascalCase field names (ID / Address / LastHeartbeat)
+// while ClusterView reads camelCase ones — so on a PostgreSQL cluster the node
+// cards rendered with every field blank. It went unnoticed because single-node
+// SQLite deployments have no cluster_nodes table at all and show the
+// "coordination not enabled" hint instead. The wire snapshot's PascalCase guard
+// did not catch it either, because its fixture seeded no nodes; the fixture now
+// seeds one so the guard covers the nodes array too.
+//
+// Capabilities is the JSON-encoded string the cluster_nodes column has carried
+// since the PG v7 migration, read and written here for the first time: until
+// now the column existed in the DDL and in no Go struct, so nothing put a value
+// in it and nothing read one back. Surfacing it read-only (cluster page node
+// cards) is the first honest use; capability-based routing is a separate
+// decision, because it changes dispatcher semantics rather than just reading
+// them.
 type ClusterNode struct {
-	ID            string
-	Address       string
-	Role          string // master | worker
-	Status        string // active | offline
-	LastHeartbeat time.Time
-	JoinedAt      time.Time
+	ID            string    `json:"id"`
+	Address       string    `json:"address"`
+	Role          string    `json:"role"`   // master | worker
+	Status        string    `json:"status"` // active | offline
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+	JoinedAt      time.Time `json:"joined_at"`
+	Capabilities  string    `json:"capabilities"` // JSON encoded []string; '[]' = none declared
 }
 
 // AssignmentSummary aggregates run_assignment rows for the cluster status view.
