@@ -211,7 +211,8 @@ notify:
     issue_type: "Task"            # 默认: Task
     timeout: 10s
 
-  # chatops —— ChatOps 审批镜像：审批创建/决策事件投影到聊天群 webhook bot。
+  # chatops —— ChatOps 审批层：出向（审批创建/决策事件投影到聊天群 webhook bot）
+  # 与入向（聊天里 /levee approve|reject|status 直接决定，见 docs/levee-api.md §13.8）。
   # 默认关闭（零装配）；启用时至少一个 bot，且每个 bot 的 name 与 webhook_url
   # 必填（缺失会拒绝启动并指名 bot）。观察者槽位是扇出，与 jira 镜像并存不互斥。
   chatops:
@@ -220,11 +221,14 @@ notify:
     # - platform: slack           # slack | dingtalk | feishu
     #   name: ops-alerts
     #   webhook_url: "<slack-incoming-webhook-url>"
+    #   secret: "<slack-app-signing-secret>"  # 入向验签用（无则不挂入向路由，仅出向）
+    #   identity_map:             # 平台用户 id -> LEVEE 主体；缺省按原值透传
+    #     U0123ABC: liwg
     #   timeout: 10s
     # - platform: dingtalk
     #   name: dingtalk-approvals
     #   webhook_url: "<dingtalk-robot-webhook-url>"
-    #   secret: "<signing-secret>"  # 钉钉加签密钥（可选）
+    #   secret: "<signing-secret>"  # 钉钉加签密钥（同时用于入向验签）
     # - platform: feishu
     #   name: feishu-approvals
     #   webhook_url: "<feishu-bot-webhook-url>"

@@ -92,8 +92,17 @@ func doPost(ctx context.Context, client *http.Client, url string, payload []byte
 }
 
 // doOnePost performs a single HTTP POST.
+//
+// The url is always the operator-configured webhook for the bot (every
+// adapter passes cfg.WebhookURL); chat text and card payloads land in the
+// BODY, which cannot redirect the request. gosec's taint model (G704) does
+// not distinguish which part of the request a tainted value reaches, so it
+// flags these two lines once the inbound callback path feeds attacker-
+// controlled text into the package at all — see ingress.go. Suppressed per
+// line with the reason rather than by widening the CI exclusion list, which
+// would hide a real SSRF (a tainted URL) in the future.
 func doOnePost(ctx context.Context, client *http.Client, url string, payload []byte, headers map[string]string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload)) // #nosec G704 -- url is the configured webhook; tainted text is the body, not the target
 	if err != nil {
 		return fmt.Errorf("chatops: build request: %w", err)
 	}
@@ -102,7 +111,7 @@ func doOnePost(ctx context.Context, client *http.Client, url string, payload []b
 		req.Header.Set(k, v)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- same sink: tainted data is the request body, the target is operator-configured
 	if err != nil {
 		return fmt.Errorf("chatops: do request: %w", err)
 	}

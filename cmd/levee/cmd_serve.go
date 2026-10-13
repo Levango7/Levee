@@ -218,6 +218,57 @@ func resolveServeToken() string {
 	return os.Getenv("LEVEE_TOKEN")
 }
 
+// serveAuth bundles the credential sources resolved before the daemon
+// starts. Bundling them (rather than leaving six locals in runServe) is
+// what let the safety gate move out of a function that was already at its
+// complexity budget — one call, one error, no branches left behind.
+type serveAuth struct {
+	oidc     *auth.Verifier
+	github   *auth.GitHubAuthorizer
+	sessions *auth.SessionManager
+}
+
+// resolveServeAuth builds every credential source and applies the safety
+// gate: a start with no credential at all is refused unless the caller
+// explicitly opted in via --insecure, so an unauthenticated daemon cannot
+// reach production by accident.
+//
+// OIDC discovery is fetched eagerly with a short timeout so a misconfigured
+// issuer fails the start (fail-fast) instead of leaving a daemon that
+// accepts no JWTs and cannot explain why. A GitHub session manager with an
+// empty session_secret keys tokens per-process — fine for a single node,
+// not for a cluster, and said out loud when it happens.
+func resolveServeAuth(ctx context.Context, cfg *config.Config, token string, namedTokens []grpc.TokenIdentity) (*serveAuth, error) {
+	oidcVerifier, err := buildOIDCVerifier(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("oidc: %w", err)
+	}
+	if oidcVerifier.Enabled() {
+		log.Info("oidc authentication enabled", "issuer", cfg.Auth.OIDC.IssuerURL)
+	}
+
+	githubAuth, sessionMgr, err := buildGitHubAuth(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("github auth: %w", err)
+	}
+	if githubAuth.Enabled() {
+		if sessionMgr != nil && sessionMgr.Ephemeral() {
+			log.Warn("github sso enabled with an ephemeral session key: sessions die on restart and do not work across nodes; set auth.github.session_secret for multi-node deployments")
+		}
+		log.Info("github authentication enabled", "org", cfg.Auth.GitHub.Org)
+	}
+
+	// Safety gate: refuse to start with authentication disabled unless the
+	// caller explicitly opted in via --insecure. This prevents an
+	// unauthenticated daemon from reaching production by accident.
+	if token == "" && len(namedTokens) == 0 && !oidcVerifier.Enabled() &&
+		!githubAuth.Enabled() && !serveOptInsecure {
+		return nil, errors.New("refusing to start without --token (or LEVEE_TOKEN / --auth-token / auth.oidc.enabled / auth.github.enabled): all API requests would be unauthenticated. " +
+			"Pass --token <secret> for production, or --insecure to accept the risk for local development")
+	}
+	return &serveAuth{oidc: oidcVerifier, github: githubAuth, sessions: sessionMgr}, nil
+}
+
 // newServeGateway builds the REST gateway and attaches the in-process
 // services plus the tenant-scoped store.
 //
@@ -656,40 +707,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 	applySecurityConfig(cfg)
 
-	// 0b. OIDC verifier. Discovery is fetched eagerly with a short timeout
-	//     so a misconfigured issuer fails the start (fail-fast) instead of
-	//     leaving a daemon that accepts no JWTs and cannot explain why.
-	oidcVerifier, err := buildOIDCVerifier(ctx, cfg)
+	// 0b. Credential sources and the safety gate. Extracted because runServe
+	//     sits at the cyclomatic-complexity budget: every branch added here
+	//     (the ChatOps ingress mounting below, for one) comes out of the
+	//     main flow, and "resolve every credential source, then decide
+	//     whether an unauthenticated start is allowed" is one question.
+	auth0, err := resolveServeAuth(ctx, cfg, token, namedTokens)
 	if err != nil {
-		return fmt.Errorf("oidc: %w", err)
+		return err
 	}
-	if oidcVerifier.Enabled() {
-		log.Info("oidc authentication enabled", "issuer", cfg.Auth.OIDC.IssuerURL)
-	}
-
-	// 0b2. GitHub SSO. The OAuth app credentials are validated up front and
-	//      the session manager keys the local tokens minted at login. An
-	//      empty session_secret yields an ephemeral per-process key — fine
-	//      for a single node, not for a cluster.
-	githubAuth, sessionMgr, err := buildGitHubAuth(cfg)
-	if err != nil {
-		return fmt.Errorf("github auth: %w", err)
-	}
-	if githubAuth.Enabled() {
-		if sessionMgr != nil && sessionMgr.Ephemeral() {
-			log.Warn("github sso enabled with an ephemeral session key: sessions die on restart and do not work across nodes; set auth.github.session_secret for multi-node deployments")
-		}
-		log.Info("github authentication enabled", "org", cfg.Auth.GitHub.Org)
-	}
-
-	// 0c. Safety gate: refuse to start with authentication disabled unless
-	//    the caller explicitly opted in via --insecure. This prevents an
-	//    unauthenticated daemon from reaching production by accident.
-	if token == "" && len(namedTokens) == 0 && !oidcVerifier.Enabled() &&
-		!githubAuth.Enabled() && !serveOptInsecure {
-		return errors.New("refusing to start without --token (or LEVEE_TOKEN / --auth-token / auth.oidc.enabled / auth.github.enabled): all API requests would be unauthenticated. " +
-			"Pass --token <secret> for production, or --insecure to accept the risk for local development")
-	}
+	oidcVerifier, githubAuth, sessionMgr := auth0.oidc, auth0.github, auth0.sessions
 
 	// 1b. Tracing: construct the process-wide tracer from the tracing
 	//     config section (disabled by default).
@@ -844,6 +871,17 @@ func runServe(cmd *cobra.Command, args []string) error {
 	//     configured; pass --metrics-public to allow unauthenticated scraping.
 	gw.SetExtraRoute("/metrics", metrics.Default.Handler())
 
+	// 5f. ChatOps inbound path: register the approve / reject / status verbs
+	//     behind the chat cards, and mount each signed bot's webhook ingress.
+	//     The routes are PUBLIC (bearer-exempt) because the platform signs
+	//     what it sends and cannot carry a LEVEE credential — the MAC check
+	//     inside the handler is the authentication. This is what turns the
+	//     approval cards from a mirror into a place decisions can be made.
+	if err := wireServeChatOpsInbound(gw, svcs.chatOpsMgr, cfg.Notify.ChatOps,
+		svcs.approvalSvc, changeSvc); err != nil {
+		return err
+	}
+
 	// 6. Start the REST gateway on THIS instance. Start binds the port
 	//    synchronously so a bind failure fails the command instead of
 	//    leaving a half-alive daemon; serving continues in the background.
@@ -910,7 +948,7 @@ func buildServeChatOpsBots(cfg config.ChatOpsConfig) (*chatops.BotManager, error
 		switch b.Platform {
 		case "slack":
 			bot, err = chatops.NewSlackBot(chatops.SlackConfig{
-				Name: b.Name, WebhookURL: b.WebhookURL, Timeout: b.Timeout,
+				Name: b.Name, WebhookURL: b.WebhookURL, Secret: b.Secret, Timeout: b.Timeout,
 			}, mgr.Router())
 		case "dingtalk":
 			bot, err = chatops.NewDingtalkBot(chatops.DingtalkConfig{
@@ -962,6 +1000,13 @@ type serveServices struct {
 	// gateSvc is the ad-hoc gate verification service (POST
 	// /gates/verify); nil when the execution engine is not wired.
 	gateSvc *grpc.GateService
+	// approvalSvc is THE approval service the change service decides over.
+	// It is handed back so the ChatOps inbound path records decisions
+	// through the same instance — and therefore through the same
+	// DecisionObserver fan-out (the room sees "1/2 approved") — instead of
+	// a second service over the same store, which would decide without
+	// anyone being told.
+	approvalSvc *approval.Service
 	// authzSvc is the loaded policy authorizer, handed back so runServe can
 	// reconcile configured credentials against the registry (it is the only
 	// place that sees both).
@@ -1287,6 +1332,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		inventorySvc: inventorySvc, agentSvc: agentSvc,
 		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
 		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
+		approvalSvc: approvalSvc,
 	}, nil
 }
 
