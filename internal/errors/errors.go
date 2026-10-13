@@ -303,6 +303,9 @@ const (
 
 	// Structural errors (LE102)
 	LE102 = "LE102" // fixed step (batch steps) count is not positive
+
+	// Safety advisories (LE103) — CompileWarning, see dsl.Advise
+	LE103 = "LE103" // undo step does not declare idempotent: true [warning]
 )
 
 // CompileSeverity is the compile-time severity of an error code: either "error"
@@ -358,6 +361,7 @@ var codeCatalogue = []CodeInfo{
 	{LE100, "snapshot", "invalid run snapshot type (allowed: file, config)", CompileError},
 	{LE101, "snapshot", "run snapshot path must be absolute", CompileError},
 	{LE102, "batch", "fixed step count is not positive", CompileError},
+	{LE103, "safety", "undo step does not declare idempotent: true", CompileWarning},
 }
 
 // Lookup returns the CodeInfo for the given code, or false if the code is not
