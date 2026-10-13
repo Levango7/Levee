@@ -16,7 +16,8 @@ secret` 构造 1 小时容差）+ 1MB body 上限 + Feishu Events API 的 url_ve
 - **顺带补一个真缺口**：`SlackConfig` 根本没有签名字段（只有 BotToken，那是另一个凭据）——Slack 入向验签此前无材料可用，`serve` 也没往下传。补 `Secret` 并接线。
 - **非破坏选择**：没有 secret 的 bot **不挂入向路由**，出向镜像照旧，启动日志点名说明。visibility-only 部署升级不受影响；"没有入向"是说出来而不是被一次无人应答的点击发现。
 - **测试**：ingress 14 例（三平台合法/篡改/错 secret/过期/缺头 + challenge + 超大 body + 畸形 body + 时间戳 fail-closed）；决策 verbs 18 例（含一票否决、部分 quorum、非审批人被拒并回名单、发起人自审被拒、身份映射生效、未解析身份拒绝、无记录、nil 依赖、verbs 替换桩）；serve 接线 6 例 + **端到端 2 例**（签名 Slack 按钮点击 → 路由 → 决策 → run 结算；无签名回调 401 且 run 不动）。**变异逐一咬住**：Slack 验签恒真（篡改用例红）、跳过 Approve 调用（结算用例红）。
-- 验证：`go test ./...` EXIT=0、`gofmt` 干净、golangci-lint 0 issues。前端未涉及、dist 未动。
+- **CI 第一轮红在 gosec，而报告说的问题是 master 上同样存在、且同一份代码在 v2.28.0 下与 master 完全同比的 2 条 G704**：真正的原因是我的新代码**第一次把外部输入（r.Body）灌进 chatops 包**，让 taint 分析第一次把 `httpclient.go` 的两个 sink 连到污染源——sink 一直在，只是此前包内没有任何入向数据流。**判定为误报**：URL 恒为配置的 webhook（三个 adapter 都传 `cfg.WebhookURL`），聊天文本只进 POST body，改不了请求目标（Slack 的 `response_url` 只解析不使用、钉钉的 `actionURL` 只当命令文本）。处置按本仓既有惯例=**逐行 `#nosec G704` 并写明理由**，而不是把 G704 加进 CI 排除清单——那样会在将来掩护一个真实的（URL 被污染的）SSRF。诊断手法留档：`continue-on-error: true` 让报告 artifact 先传出来，看清再修、修完即撤（撤回过 1 个文件的 1 行，已核对）。
+- 验证：`go test ./...` EXIT=0、`gofmt` 干净、golangci-lint 0 issues、gosec v2.28.0 0 findings。前端未涉及、dist 未动。
 
 ### 新增（移动审批深链：重复点击返回「已由 X 批准」而不是一句 401）
 

@@ -421,7 +421,6 @@ jobs:
       - name: install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
       - name: run gosec
-        continue-on-error: true # TEMP diagnostic: let the report artifact upload
         # G104 (unhandled errors) and G307 (defer file.Close) are noisy
         # low-signal classes here; G501/G505/G601 have no hits today but
         # guard future dependency drift. G402 is NOT excluded: TLS verify
