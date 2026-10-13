@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 8
+const currentSchemaVersion = 9
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -258,6 +258,26 @@ END`,
 				`failed_tasks INTEGER NOT NULL DEFAULT 0, ` +
 				`max_concurrent INTEGER NOT NULL DEFAULT 0)`,
 			`CREATE INDEX IF NOT EXISTS idx_agents_status ON agents (status)`,
+		},
+	},
+	{
+		// P1 (priority/tier split): runs.priority holds the change's own urgency
+		// claim, so runs.approval_level can go back to holding only a tier.
+		//
+		// The backfill moves a value over ONLY where its provenance is
+		// unambiguous: low / normal / urgent are priorities and can never be a tier,
+		// so a row carrying one got it from the create path. "high" is deliberately
+		// left behind — it is the single spelling both vocabularies use, so a
+		// pre-split row holding "high" cannot be attributed without guessing, and
+		// guessing would invent a priority (or a tier) that was never recorded.
+		// approval_level is NOT cleared for the moved rows either: the auto-approve
+		// gate reads it, and leaving it as-is keeps today's behaviour for historical
+		// rows byte-for-byte. internal/state/priority_migration_test.go derives that
+		// moved set from the constants, so the literal list here cannot drift.
+		version: 9,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN priority TEXT NOT NULL DEFAULT ''`,
+			`UPDATE runs SET priority = approval_level WHERE approval_level IN ('low', 'normal', 'urgent')`,
 		},
 	},
 }

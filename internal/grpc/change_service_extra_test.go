@@ -1314,7 +1314,7 @@ func TestRunToPB_InvalidParamsJSONYieldsEmptyMap(t *testing.T) {
 	now := time.Now().UTC()
 	c := runToPB(&state.Run{
 		ID: "run-x", Params: "{not json", WorkflowName: "wf", TemplateName: "tpl",
-		ApprovalLevel: "high", CreatedAt: now, UpdatedAt: now, Creator: "op", IncidentID: "prod",
+		Priority: "high", CreatedAt: now, UpdatedAt: now, Creator: "op", IncidentID: "prod",
 	})
 	require.NotNil(t, c)
 	assert.Empty(t, c.GetParams())
@@ -1323,6 +1323,15 @@ func TestRunToPB_InvalidParamsJSONYieldsEmptyMap(t *testing.T) {
 	assert.Equal(t, "high", c.GetPriority())
 	assert.Equal(t, "prod", c.GetEnvironment())
 	assert.EqualValues(t, now.Unix(), c.GetCreatedAt())
+
+	// The two columns must stay two meanings. Before schema v9 the tier column was
+	// also the priority column, so an approval tier surfaced as the change's
+	// priority — and "high" in particular read identically either way. If this ever
+	// starts reporting "emergency" or "high" from a tier, the split has quietly
+	// reversed.
+	asTier := runToPB(&state.Run{ID: "run-y", ApprovalLevel: "emergency", CreatedAt: now, UpdatedAt: now})
+	require.NotNil(t, asTier)
+	assert.Empty(t, asTier.GetPriority(), "an approval tier leaked into Change.priority")
 }
 
 func TestPbToRunParams(t *testing.T) {

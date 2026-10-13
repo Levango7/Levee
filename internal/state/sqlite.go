@@ -153,11 +153,13 @@ func (s *SQLiteStore) CreateRun(ctx context.Context, run *Run) error {
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO runs
 		(id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		 approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
+		 priority)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		run.ID, run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.CreatedAt, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.TenantID,
+		run.Priority,
 	)
 	if err != nil {
 		return fmt.Errorf("state: create run: %w", err)
@@ -169,13 +171,15 @@ func (s *SQLiteStore) CreateRun(ctx context.Context, run *Run) error {
 func (s *SQLiteStore) GetRun(ctx context.Context, id string) (*Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
 		id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id
+		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
+		priority
 		FROM runs WHERE id = ?`, id)
 	r := &Run{}
 	err := row.Scan(
 		&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 		&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 		&r.TenantID,
+		&r.Priority,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -193,11 +197,13 @@ func (s *SQLiteStore) UpdateRun(ctx context.Context, run *Run) error {
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE runs SET
 		workflow_name=?, template_name=?, params=?, plan_hash=?, plan_json=?, status=?,
-		approval_status=?, approval_level=?, updated_at=?, creator=?, incident_id=?, tenant_id=?
+		approval_status=?, approval_level=?, updated_at=?, creator=?, incident_id=?, tenant_id=?,
+		priority=?
 		WHERE id=?`,
 		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.TenantID,
+		run.Priority,
 		run.ID,
 	)
 	if err != nil {
@@ -316,7 +322,8 @@ func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, e
 	}
 
 	q := `SELECT id, workflow_name, template_name, params, plan_hash, plan_json, status,
-		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id
+		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
+		priority
 		FROM runs`
 	if len(clauses) > 0 {
 		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
@@ -344,6 +351,7 @@ func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, e
 			&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
 			&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 			&r.TenantID,
+			&r.Priority,
 		); err != nil {
 			return nil, fmt.Errorf("state: list runs scan: %w", err)
 		}

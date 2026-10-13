@@ -266,8 +266,12 @@ func planApproveChange(t *testing.T, client pb.ChangeServiceClient, store state.
 func createChange(t *testing.T, client pb.ChangeServiceClient, label, workflowYAML string) string {
 	t.Helper()
 	resp, err := client.CreateChange(context.Background(), &pb.CreateChangeRequest{
-		Label:        label,
-		Priority:     "medium",
+		Label: label,
+		// "normal", not a stray word: CreateChange now rejects anything outside
+		// state.Priority*, and this helper used to send "medium" — a value from the
+		// impact scale, never a priority — which nothing asserted and the server
+		// silently stored.
+		Priority:     "normal",
 		WorkflowFile: workflowYAML,
 		TemplateName: "engine-exec",
 	})

@@ -873,6 +873,18 @@ RESTful 风格，支持两套路径：
 > （`cmd/levee/cmd_show.go` 读 `GetRun` / `ListBatches` / `ListSteps`），批次进度另有
 > `GET /system/batch-status?run_id=`。
 
+> **`Change.priority` 是优先级，不是审批档位。** 取值限于 `low` / `normal` / `high` / `urgent`
+> （词表由 `internal/state` 的 `Priority*` 常量声明，前端 `Priority` 联合由
+> `internal/state/priority_web_vocabulary_test.go` 钉住与之逐字相等）。`POST /changes` 与
+> `InstantiateTemplate` 现在会在入口拒绝集合外的值（`InvalidArgument`，错误文本里列出允许值，
+> 与谓词同源），空值按 `normal` 落库。
+>
+> 这一列在 schema v9 之前与 `approval_level` 共用一个字段，因此**历史行有一个已知的读法边界**：
+> 升级时只把不可能是档位的拼写（`low` / `normal` / `urgent`）迁到 `priority`，
+> 而 `high` 同时是优先级和档位的合法值，无法判定来源，故留在 `approval_level` 里、`priority`
+> 读作空。宁可显示"未知优先级"，也不替引擎宣布它没有宣布过的东西。档位（`standard` /
+> `high` / `emergency`）仍只出现在 `approval_level` 与审批链相关响应里。
+
 ### 13.3 认证
 
 Token-based 认证，三种模式：
@@ -1064,7 +1076,7 @@ airgap:
 | `output` | `color` | bool | 彩色输出 |
 | `output` | `format` | enum | table / json |
 | `output` | `quiet` | bool | 静默模式 |
-| `defaults` | `priority` | enum | 默认优先级 |
+| `defaults` | `priority` | enum | 默认优先级，取值同 `Change.priority`（见 13.2 的说明块） |
 | `defaults` | `batch_gate` | bool | 批次间默认插入门禁 |
 | `defaults` | `rollback_on_failure` | bool | 失败默认自动回滚 |
 | `defaults` | `approval_timeout` | duration | 默认审批超时 |

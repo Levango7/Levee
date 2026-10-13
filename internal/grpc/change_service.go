@@ -249,9 +249,13 @@ func runToPB(r *state.Run) *pb.Change {
 		// blob where the board prints a change's name. WorkflowFile below still
 		// carries the source verbatim; the name comes from dsl.DisplayName,
 		// which is also what the CLI prints.
-		Label:        dsl.DisplayName(r.WorkflowName),
-		Status:       r.Status,
-		Priority:     r.ApprovalLevel,
+		Label:  dsl.DisplayName(r.WorkflowName),
+		Status: r.Status,
+		// Priority comes from its own column since schema v9. A pre-v9 row whose
+		// value could not be attributed (the shared spelling "high") reads as no
+		// priority at all, which is honest: inventing one would report a state the
+		// engine never recorded.
+		Priority:     r.Priority,
 		WorkflowFile: r.WorkflowName,
 		TemplateName: r.TemplateName,
 		Params:       params,
@@ -384,10 +388,21 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	now := time.Now().UTC()
 	runID := newID("run-")
 
-	// Default priority to "normal" if not supplied.
+	// Priority defaults to "normal" when unspecified, and anything else must be
+	// one of the declared values (state.Priority*). The field used to be stored
+	// without a check, in the same column the approval ladder stores its derived
+	// tier — so an arbitrary string could sit in a tier-typed column and every
+	// reader downstream had to guess what it meant. Rejecting at the boundary is
+	// what makes the two columns mean one thing each; the allowed list is rendered
+	// from the same source the predicate consults, so the message cannot promise
+	// something the check refuses.
 	priority := req.GetPriority()
 	if priority == "" {
-		priority = "normal"
+		priority = state.PriorityNormal
+	}
+	if !state.IsPriority(priority) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"invalid priority %q (allowed: %s)", priority, state.PriorityNamesJoined())
 	}
 
 	// The creator recorded for audit and governance must be the VERIFIED
@@ -403,22 +418,20 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 		Params:         pbToRunParams(req.GetParams()),
 		Status:         "draft",
 		ApprovalStatus: state.ApprovalStatusPending,
-		// NOTE: ApprovalLevel doubles as the change's PRIORITY here, and
-		// the two are NOT the same vocabulary. priority is
-		// low/normal/high/urgent (client-supplied; the field is NOT validated,
-		// so any other string can arrive from an API caller, and it is mirrored
-		// back out as Change.priority in runToPB), while the approval tier is
-		// standard/high/emergency (derived server-side in kickoffApproval,
-		// which overwrites this value once a plan exists). The vocabularies
-		// overlap only at "high". Anything reading this field as a tier must
-		// therefore fail closed on unrecognised values — see
-		// risk.AutoApproveForbidden. Splitting them into separate columns is
-		// the real fix.
-		ApprovalLevel: priority,
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		Creator:       creator,
-		IncidentID:    req.GetEnvironment(),
+		// Priority is its own column since schema v9. Before that the create path
+		// stored it in ApprovalLevel, which the approval ladder also overwrites with
+		// the derived tier (standard/high/emergency) — two vocabularies sharing only
+		// the spelling "high", which is why a pre-v9 row holding "high" cannot be
+		// attributed and why the v9 backfill leaves that one value where it is. The
+		// tier column deliberately stays empty here: it is filled by kickoffApproval
+		// once a plan exists, and the auto-approval gate reads the tier, never this.
+		Priority: priority,
+		// ApprovalLevel is deliberately left at its zero value: it is the tier
+		// column, and the tier only exists once a plan has been derived.
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Creator:    creator,
+		IncidentID: req.GetEnvironment(),
 	}
 	if err := s.store.CreateRun(ctx, run); err != nil {
 		return nil, status.Errorf(codes.Internal, "create run: %v", err)
@@ -490,10 +503,14 @@ func (s *ChangeService) CloneChange(ctx context.Context, req *pb.CloneChangeRequ
 		Status:         "draft",
 		ApprovalStatus: state.ApprovalStatusPending,
 		ApprovalLevel:  src.ApprovalLevel,
-		CreatedAt:      now,
-		UpdatedAt:      now,
-		Creator:        creatorFromCtx(ctx),
-		IncidentID:     env,
+		// A clone is a new attempt at the same change, so it carries the source's
+		// priority claim with it; before the split this value was copied inside
+		// ApprovalLevel and the two could not be told apart afterwards.
+		Priority:   src.Priority,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+		Creator:    creatorFromCtx(ctx),
+		IncidentID: env,
 	}
 	if err := s.store.CreateRun(ctx, run); err != nil {
 		return nil, status.Errorf(codes.Internal, "create cloned run: %v", err)
@@ -588,17 +605,18 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 			run.PlanJSON = stored.JSON
 			run.PlanHash = stored.Hash
 			run.UpdatedAt = now
-			// Record the derived tier even when no approval chain is going
-			// to be created. kickoffApproval writes the tier as a side
-			// effect of creating the chain, but a deployment with an engine
-			// and no approval service never reaches that code — leaving the
-			// column holding whatever PRIORITY the client sent at
-			// CreateChange, since the two share one column. Anything that
-			// then reads it as a tier is wrong in both directions: a plan
-			// whose floor is high (irreversible) reads as auto-approvable,
-			// while an unrelated "high" priority reads as a high-tier
-			// change. Failing here is deliberate: a change whose tier
-			// cannot be recorded cannot be gated correctly either.
+			// Record the derived tier even when no approval chain is going to be
+			// created. kickoffApproval writes the tier as a side effect of
+			// creating the chain, but a deployment with an engine and no approval
+			// service never reaches that code — so without this the tier column
+			// keeps whatever it held before the plan existed ('' for a run created
+			// after schema v9, since priority moved to its own column) and the
+			// auto-approval gate at ApplyChange would see no floor and let an
+			// irreversible change through unreviewed. Failing here is deliberate:
+			// a change whose tier cannot be recorded cannot be gated correctly
+			// either. (Before the split this line also masked a second bug: the
+			// column could still be holding the client's priority, so "high" read
+			// as a tier by accident.)
 			if s.approval == nil {
 				if tier := derivedApprovalTier(run); tier != "" && run.ApprovalLevel != tier {
 					run.ApprovalLevel = tier
@@ -998,15 +1016,20 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	//
 	// It sits after the plan-presence and plan-integrity refusals because
 	// run.ApprovalLevel only carries a tier once a plan exists AND an approval
-	// service is wired — kickoffApproval returns early otherwise: CreateChange
-	// stores the client-supplied PRIORITY in that same column (low/normal/high/
-	// urgent, and any other string the caller sent, since the field is not
-	// validated) until kickoffApproval overwrites it with the derived tier.
+	// service is wired — kickoffApproval returns early otherwise. Since schema v9
+	// this IS the tier column: the create path writes the client's priority to
+	// runs.priority and validates it at the entrypoint, so a priority word can only
+	// be read here on pre-v9 rows — which is why AutoApproveForbidden still accepts
+	// low/normal/urgent rather than failing closed on them. Consequence worth naming:
+	// a caller can no longer trip this refusal by sending priority "high" (it used to
+	// land in this column and read as a high tier by accident). Escalation now comes
+	// from the derived tier alone, and a plan whose floor is high or emergency is
+	// still refused.
 	// Refusing an unplanned run for "medium-risk auto-approval" buries the
 	// actionable answer — call PlanChange — so the ordering is load-bearing,
-	// not cosmetic. The risk/impact table's own low|medium|high scale never
-	// reaches this column: score bands map to tiers (standard/high/emergency),
-	// which is what MaxLevel consumes.
+	// not cosmetic. The risk/impact table's own low|medium|high scale reaches neither
+	// column: score bands map to tiers (standard/high/emergency), which is what
+	// MaxLevel consumes, and the priority vocabulary is closed by validation.
 	if risk.AutoApproveForbidden(run.ApprovalLevel) && req.GetAutoApprove() {
 		return nil, status.Errorf(codes.PermissionDenied,
 			"change %q is a %s-risk change: auto_approve is not permitted (the spec forces auto_approve=false for high/emergency); approve the plan through the approval chain instead",

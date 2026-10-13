@@ -224,6 +224,8 @@ func TestPGMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS plan_json`)
 	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS priority`)
+	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS plan_hash`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS revision`)

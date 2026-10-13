@@ -18,15 +18,19 @@ CREATE TABLE IF NOT EXISTS runs (
     plan_hash       TEXT    NOT NULL,
     status          TEXT    NOT NULL,                -- draft|pending|planned|approved|rejected|running|paused|completed|failed|cancelled|rolled_back|rolled_back_partial|rollback_incomplete|interrupted|archived
     approval_status TEXT    NOT NULL DEFAULT 'pending', -- pending|approved|rejected (see state.ApprovalStatus*; NOT the approvals table's set)
-    -- approval_level carries TWO vocabularies, told apart by who wrote the row.
-    -- The create path stores the client-supplied priority (low/normal/high/urgent,
-    -- defaulted to normal when empty and NOT validated, so an arbitrary string can
-    -- arrive from an API caller), while approval kickoff overwrites it with the
-    -- derived tier (standard/high/emergency, owner internal/dsl ApprovalLevel*).
-    -- Only "high" is shared between the two, so a reader that treats a priority word
-    -- as a tier will silently mis-classify it: fail closed on anything outside both
-    -- lists (see risk.AutoApproveForbidden). The list below is the union of what the
-    -- product itself writes; splitting the two into separate columns is the open fix.
+    -- approval_level is the derived approval TIER column (standard/high/emergency,
+    -- owner internal/dsl ApprovalLevel*), written by approval kickoff. Since schema v9
+    -- the create path no longer writes a priority here: runs.priority carries that
+    -- value, validated at both entrypoints against state.Priority*.
+    -- The list below is still the union of both vocabularies, deliberately. v9 rewrites
+    -- no history: it copies only the spellings whose provenance is unambiguous
+    -- (low/normal/urgent) into runs.priority and leaves this column as it was, so a
+    -- pre-v9 row can still hold a priority word here -- and "high", the single spelling
+    -- the two lists share, stays exactly where it is because its provenance cannot be
+    -- recovered. A reader must therefore keep accepting the priority words and fail
+    -- closed on anything outside both lists: risk.AutoApproveForbidden's
+    -- "low"/"normal"/"urgent" branch is what lets a historical "normal" change
+    -- auto-approve, and it is not removable.
     approval_level  TEXT    NOT NULL DEFAULT '',     -- low|normal|high|urgent|standard|emergency
     created_at      DATETIME NOT NULL,
     updated_at      DATETIME NOT NULL,
@@ -43,7 +47,17 @@ CREATE TABLE IF NOT EXISTS runs (
     -- read is a plain indexed predicate; see Run.TenantID in store.go. NOT NULL
     -- DEFAULT '' keeps the pre-multi-tenant rows readable as "unowned", which
     -- is what the v6 migration leaves behind for tables with no run parent.
-    tenant_id       TEXT    NOT NULL DEFAULT ''
+    tenant_id       TEXT    NOT NULL DEFAULT '',
+    -- priority is the change's own urgency claim, owned by internal/state/priority.go
+    -- (v9). It is a separate column because until v9 the create path wrote these
+    -- strings into approval_level, which the approval ladder also overwrites with a
+    -- tier: one column, two vocabularies, sharing only the spelling "high".
+    -- Declared LAST deliberately — SQLite's ALTER TABLE ADD COLUMN appends, and
+    -- TestMigrate_FreshAndUpgraded_SchemaShapesMatch compares columns by cid, so a
+    -- column inserted mid-list would leave fresh and upgraded databases differing.
+    -- TestV9PriorityIsDeclaredLastInBothSchemas holds both DDL files to that rule,
+    -- including the PostgreSQL one, where no fresh-vs-upgraded comparison exists.
+    priority        TEXT    NOT NULL DEFAULT ''    -- low|normal|high|urgent
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);

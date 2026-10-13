@@ -21,6 +21,7 @@ package state
 //   - tenant_id on all tables (v6)
 //   - audit prev/curr_hash    (v7)
 //   - agents table            (v8, created by the step, so absent at v1)
+//   - runs.priority           (v9)
 //
 // The v1 WORM triggers are reproduced WITHOUT tenant_id on purpose: that is
 // the state a real v1 database is in, and it is what forces the v6 step to

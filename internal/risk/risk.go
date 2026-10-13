@@ -378,29 +378,29 @@ func MaxLevel(a, b string) string {
 // ApplyChange at all. Every non-empty value is classified by its actual
 // vocabulary — see below — and nothing is admitted by default.
 //
-// # Two vocabularies share this field
+// # What this field can hold: a tier, plus the history under schema v9
 //
-// CreateChange writes the client-supplied `priority` straight into
-// Run.ApprovalLevel (change_service.go: "Default priority to normal" →
-// ApprovalLevel: priority), and the frontend's Priority vocabulary is
-// low/normal/high/urgent — sharing only "high" with the approval tiers.
-// When no approval service is wired, kickoffApproval returns early and
-// never overwrites that value, so a run genuinely carries "normal" or
-// "urgent" in ApprovalLevel. This is the P1-3 word-list mismatch; the
-// real fix is splitting the two columns.
+// Since v9 CreateChange writes the client's priority into Run.Priority (validated
+// against state.Priority*) instead of into this field, so a run created now carries
+// either the empty string (no plan yet) or a derived tier here. The history is not
+// rewritten: v9 copies only the spellings whose provenance is unambiguous
+// (low/normal/urgent) into runs.priority and deliberately leaves ApprovalLevel alone,
+// so a pre-v9 run can still carry a priority word here — and "high", the one spelling
+// both vocabularies use, was left in place because which vocabulary it came from
+// cannot be recovered.
 //
-// Because the value's provenance is a priority but its name is
-// "ApprovalLevel", the two lists must be interpreted BY THEIR OWN
-// semantics rather than by a single fail-closed rule:
+// So the two lists must be interpreted BY THEIR OWN SEMANTICS rather than by a single
+// fail-closed rule:
 //
 //   - Approval tiers (standard / high / emergency) — authoritative when
 //     present. high and emergency are forbidden (§8.1); standard is not.
 //   - Priority vocabulary (low / normal / urgent) — not a tier, so no
-//     tier rule applies. These must stay allowed, or every ordinary
-//     change (the "normal" default) would be unable to auto-approve —
-//     which is precisely the regression an indiscriminate fail-closed
-//     reading caused. The residual risk is accepted and bounded: a
-//     priority-vocabulary run only reaches this point with a persisted,
+//     tier rule applies. These must stay allowed for the pre-v9 rows that
+//     still carry them here: forbidding them would leave every ordinary
+//     change created before the split (the "normal" default) unable to
+//     auto-approve — which is precisely the regression an indiscriminate
+//     fail-closed reading caused. The residual risk is accepted and bounded:
+//     a priority-vocabulary run only reaches this point with a persisted,
 //     hash-verified plan, and "urgent" carries no tier semantics here.
 //   - Anything else (unknown, future, corrupted) — fail closed: refused.
 func AutoApproveForbidden(level string) bool {
