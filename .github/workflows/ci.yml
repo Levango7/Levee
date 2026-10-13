@@ -574,6 +574,97 @@ jobs:
           test "${total}" -eq 0
 
   # ---------------------------------------------------------------------------
+  # browser-check: the console's behaviour lives in how it reacts to a response
+  # (a 403 that must not render as "no data", a day boundary that must follow the
+  # operator, a 300-host map whose DOM must stay flat). The unit tests cannot
+  # see any of that: they run without a response body and without a layout
+  # engine. This job drives a real Chrome against a real dev server wired to the
+  # committed mock gateway (web/scripts/mock-gateway.mjs) and asserts DOM,
+  # geometry and behaviour.
+  #
+  # BROWSER_CHECK_REQUIRE=1 is what makes it a gate rather than a decoration:
+  # without it the script exits 0 when it cannot find a driver or a browser, and
+  # a green build would mean "nobody ran the browser checks".
+  #
+  # Both OSes on purpose. The runner images differ in where Chrome lives and in
+  # how `npm root -g` prints paths (backslashes on Windows, which
+  # require.resolve's {paths} option rejects) — both were found by running the
+  # script here rather than by reasoning about it.
+  # ---------------------------------------------------------------------------
+  browser-check:
+    name: browser-check (Chrome on ${{ matrix.os }})
+    timeout-minutes: 25
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm ci
+        run: npm ci
+      # The driver is installed globally rather than added to package.json: it
+      # is CI tooling, not something the app ships, and the repo holds the line
+      # on minimal runtime dependencies. Same pattern as gosec's pinned
+      # `go install`.
+      - name: install puppeteer-core
+        run: npm install -g puppeteer-core@24.37.0
+      - name: start mock gateway
+        run: node scripts/mock-gateway.mjs &
+      - name: start dev server
+        run: npm run dev &
+        env:
+          VITE_API_TARGET: 'http://127.0.0.1:4599'
+      # Readiness is judged on a MODULE, not on the shell: Vite serves
+      # index.html before its transform pipeline is live, so `curl /` returns
+      # 200 while the SPA cannot render yet. The first dry run of this job
+      # polled the shell, saw "ready after 1s", and the first route rendered an
+      # empty content region. /src/main.ts only answers once the pipeline is up.
+      - name: wait for both services
+        shell: bash
+        run: |
+          set -e
+          for i in $(seq 1 90); do
+            if curl -sf "$MOCK_URL/__mode?mode=ok" > /dev/null 2>&1               && curl -sf "$BASE_URL/src/main.ts" > /dev/null 2>&1; then
+              echo "both services ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::mock gateway or dev server did not come up in 90s"
+          curl -sv "$MOCK_URL/__mode" || true
+          curl -sv "$BASE_URL/src/main.ts" || true
+          exit 1
+        env:
+          MOCK_URL: 'http://127.0.0.1:4599'
+          BASE_URL: 'http://localhost:5173'
+      - name: run browser checks
+        run: node scripts/browser-check.mjs --shots
+        env:
+          BROWSER_CHECK_REQUIRE: '1'
+          BASE_URL: 'http://localhost:5173'
+          MOCK_URL: 'http://127.0.0.1:4599'
+          SHOT_DIR: .browser-shots
+      # Screenshots are evidence for a human reading a failure, not a baseline:
+      # they are uploaded, never compared. A missing artifact is not a failure
+      # (the check itself already failed by then).
+      - name: upload screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7a6c64a875d1fc6a0a  # v7
+        with:
+          name: browser-shots-${{ matrix.os }}
+          path: web/.browser-shots
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
   # smoke: start the real binary the way the README tells operators to, and
   # keep it alive past every background interval. Package tests verify
   # packages; this is the only job that assembles the single-node daemon, so
@@ -651,7 +742,7 @@ jobs:
     name: check (all jobs passed)
     timeout-minutes: 5
     runs-on: ubuntu-latest
-    needs: [release-gate, vet, lint, frontend, test, integration, proto, docs, smoke, delivery, build, gosec, govulncheck, trivy]
+    needs: [release-gate, vet, lint, frontend, browser-check, test, integration, proto, docs, smoke, delivery, build, gosec, govulncheck, trivy]
     if: always()
     steps:
       - name: aggregate

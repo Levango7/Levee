@@ -17,28 +17,69 @@
 //   npm run test:browser            # assertions only
 //   npm run test:browser -- --shots # also write screenshots
 //
-// Requires Chrome at the path below (this repo's machines) or CHROME_PATH.
-import { spawn } from 'node:child_process'
+// Requires Chrome at CHROME_PATH, or one of the well-known locations below
+// (GitHub's ubuntu and windows runners both ship Chrome). BROWSER_CHECK_REQUIRE=1
+// turns every "cannot run" into a failure — that is what CI sets, so a missing
+// driver cannot silently pass a green build. Locally the default stays
+// skip-and-tell: these are an additional gate, not a replacement for the unit
+// tests.
+import { spawn, execSync } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 
-const CHROME = process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe'
+// Candidate paths, in order. The Linux ones come first because CI runs there;
+// the Windows default is this repo's own machine.
+const CHROME_CANDIDATES = [
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+]
+
+function resolveChrome() {
+  // An explicitly-set path that does not exist is a configuration error, not a
+  // fallback trigger: silently trying the next candidate would run the checks
+  // against a DIFFERENT browser than the one that was asked for.
+  if (process.env.CHROME_PATH) {
+    if (existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH
+    console.error('browser-check: CHROME_PATH is set but does not exist: ' + process.env.CHROME_PATH)
+    return ''
+  }
+  for (const p of CHROME_CANDIDATES) {
+    if (existsSync(p)) return p
+  }
+  // `which` catches installs outside the well-known paths.
+  for (const bin of ['google-chrome', 'chromium', 'chromium-browser', 'chrome']) {
+    try {
+      const found = execSync('which ' + bin + ' 2>/dev/null || where ' + bin + ' 2>nul', { encoding: 'utf8' })
+        .trim()
+        .split('\n')[0]
+      if (found && existsSync(found.trim())) return found.trim()
+    } catch {
+      /* not on PATH */
+    }
+  }
+  return ''
+}
+
+const REQUIRED = process.env.BROWSER_CHECK_REQUIRE === '1'
+const CHROME = resolveChrome()
 const BASE = process.env.BASE_URL || 'http://localhost:5173'
 // The mock gateway's own address: the failure modes are switched by talking to
 // it directly, because the page's origin is the dev server and /__mode exists
 // only on the mock.
 const MOCK = process.env.MOCK_URL || 'http://127.0.0.1:4599'
 const SHOTS = process.argv.includes('--shots')
-const SHOT_DIR = 'web/.browser-shots'
+const SHOT_DIR = process.env.SHOT_DIR || 'web/.browser-shots'
 
 // ESM ignores NODE_PATH, so the global install on this machine is resolved
-// explicitly: the repo's own node_modules first, then the global npm root.
-// A machine with neither skips these checks rather than failing the suite —
-// they are an additional gate, not a replacement for the unit tests.
-import { createRequire } from 'node:module'
-import { execSync } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
-
+// explicitly: the repo's own node_modules, then the global npm root. A machine
+// with neither skips these checks rather than failing the suite — unless
+// BROWSER_CHECK_REQUIRE=1, which is what CI sets.
 const require = createRequire(import.meta.url)
 // NODE_PATH is how this machine's global npm install is reachable; an explicit
 // npm root -g is tried too, because NODE_PATH is not set by default and the
@@ -75,7 +116,25 @@ for (const root of candidates) {
   }
 }
 if (!puppeteer) {
-  console.log('browser-check: puppeteer-core not found (looked in ' + candidates.join(', ') + ') — skipping')
+  const where = 'looked in ' + candidates.join(', ')
+  if (REQUIRED) {
+    // CI sets BROWSER_CHECK_REQUIRE=1: a green build must not be able to mean
+    // "nobody ran the browser checks".
+    console.error('browser-check: puppeteer-core not found (' + where + ')')
+    process.exit(1)
+  }
+  console.log('browser-check: puppeteer-core not found (' + where + ') — skipping')
+  process.exit(0)
+}
+
+if (!CHROME) {
+  const msg =
+    'no Chrome found (tried CHROME_PATH, ' + CHROME_CANDIDATES.join(', ') + ', and PATH)'
+  if (REQUIRED) {
+    console.error('browser-check: ' + msg)
+    process.exit(1)
+  }
+  console.log('browser-check: ' + msg + ' — skipping')
   process.exit(0)
 }
 
@@ -107,8 +166,20 @@ async function open(page, path, settleMs = 900) {
   // domcontentloaded, never networkidle2: the monitor's SSE stream keeps a
   // connection open, so "idle" never arrives and a networkidle wait just burns
   // the timeout.
-  await page.goto(BASE + path, { waitUntil: 'domcontentloaded', timeout: 30000 })
+  await page.goto(BASE + path, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+  // The first page a fresh dev server renders is compiled on demand: the shell
+  // can arrive before the view chunk, so a cold Vite serves a shell with an
+  // empty content region. The warm-up call below pays that cost outside the
+  // assertions.
   await sleep(settleMs)
+}
+
+// warmUp loads the shell once and throws it away, so the compile cost of the
+// first view lands here rather than inside the first assertion.
+async function warmUp(browser) {
+  const page = await browser.newPage()
+  await open(page, '/changes', 3500)
+  await page.close()
 }
 
 const text = (page, sel) => page.evaluate((s) => (document.querySelector(s)?.textContent || '').trim(), sel)
@@ -122,6 +193,8 @@ const browser = await puppeteer.default.launch({
 if (SHOTS && !existsSync(SHOT_DIR)) mkdirSync(SHOT_DIR, { recursive: true })
 
 // ---------------------------------------------------------------------------
+await warmUp(browser)
+
 console.log('\n[1] every route renders its shell and its data')
 const routes = [
   ['/changes', '变更看板', '.el-table__row'],
