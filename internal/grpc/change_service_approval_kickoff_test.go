@@ -9,6 +9,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +109,34 @@ func (a *kickoffStoreAdapter) ListPending(ctx context.Context) ([]*approval.Appr
 			Status: approval.Status(r.Status), MinApprovers: 1,
 		})
 	}
+	return out, nil
+}
+
+// ListByRun returns the run's records newest first through the SAME row
+// mapping Get uses (not the lossy projection ListPending settles for): the
+// evidence read on top of it needs the decisions, the approver list and the
+// creation times, not just the ids.
+func (a *kickoffStoreAdapter) ListByRun(ctx context.Context, runID string) ([]*approval.Approval, error) {
+	rows, err := a.store.ListApprovals(ctx, state.ApprovalFilter{RunID: runID})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*approval.Approval, 0, len(rows))
+	for _, r := range rows {
+		ap, err := approval.ApprovalFromState(r)
+		if err != nil {
+			continue // skip malformed records, like the production adapter
+		}
+		out = append(out, ap)
+	}
+	// The state store orders by timeout (the approval's own TTL), which says
+	// nothing about which record is newest.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
 	return out, nil
 }
 

@@ -12,10 +12,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { useResponsive } from '@/composables/useResponsive'
 import { changesApi, auditApi } from '@/api'
 import type { Change, TraceEntry } from '@/types/levee'
+import type { DeeplinkEvidence } from '@/api'
 import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
+import { decidedByText, readDeeplinkEvidence } from '@/utils/deeplinkEvidence'
 import { STATUS_LABEL, formatTimestamp } from '@/utils/format'
 
 const route = useRoute()
@@ -33,6 +35,11 @@ const history = ref<TraceEntry[]>([])
 // showed the server text for both with no way to tell them apart.
 const error = ref<unknown>(null)
 const approver = ref('operator')
+// Set when a one-tap link was already spent on a decided change: the server
+// answered 409 with who decided and when. It is NOT an error — it is the
+// answer to "did my click register?" — so it renders as a done notice, not
+// through the error banner, and it is what stops the second tap.
+const decided = ref<DeeplinkEvidence | null>(null)
 
 const errorTier = computed<LoadTier>(() => (error.value === null ? 'ok' : classifyError(error.value)))
 const errorText = computed(() => errorMessage(error.value, '加载变更失败'))
@@ -141,6 +148,14 @@ async function oneTap(action: 'approve' | 'reject', token: string): Promise<void
       await loadHistory(change.value.id)
     }
   } catch (err) {
+    // The token is single-use, so a second tap always fails. Answer the
+    // question that failure actually raises — "did the first one register?"
+    // — with the server's evidence, and say nothing about tokens.
+    const evidence = readDeeplinkEvidence(err)
+    if (evidence) {
+      decided.value = evidence
+      return
+    }
     ElMessage.error(`一键${action === 'approve' ? '审批' : '驳回'}失败：${(err as { message?: string })?.message}`)
   }
 }
@@ -176,6 +191,13 @@ const containerClass = computed(() => ({
 }))
 
 const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value, 2)))
+
+// The receipt sentence for an already-decided link, kept out of the template
+// so the null case has one obvious home.
+const decidedText = computed(() => (decided.value ? decidedByText(decided.value) : ''))
+const decidedWhen = computed(() =>
+  decided.value?.decided_at ? formatTimestamp(decided.value.decided_at) : '',
+)
 </script>
 
 <template>
@@ -187,6 +209,17 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
       </h1>
       <StatusTag v-if="change" :status="change.status" />
     </header>
+
+    <!-- The second-tap answer: this link was already spent on a decided
+         change. Deliberately NOT in the error banner's tier — it is a
+         receipt, not a failure, and the wording says so: the operator must
+         leave the page convinced nothing is left to click. -->
+    <section v-if="decided" class="mobile-approval__decided">
+      <h2 class="mobile-approval__subtitle">已处理，无需重复操作</h2>
+      <p class="mobile-approval__decided-line">
+        该变更{{ decidedText }}<template v-if="decidedWhen">（{{ decidedWhen }}）</template>。一次性链接只能生效一次，再次点击不会产生第二次审批。
+      </p>
+    </section>
 
     <!-- The answer, in the three tiers the desktop views use. A deep link
          opened by whoever holds the token is the surface where "403: this
@@ -353,6 +386,21 @@ const summaryCols = computed(() => (isMobile.value ? 1 : Math.min(gridCols.value
 .mobile-approval__value {
   font-size: 14px;
   font-weight: 500;
+}
+
+.mobile-approval__decided {
+  padding: 16px;
+  background: var(--lv-surface-3);
+  border: 1px solid var(--lv-border-soft);
+  border-left: 3px solid var(--el-color-success);
+  border-radius: var(--lv-radius-lg);
+}
+
+.mobile-approval__decided-line {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--el-text-color-secondary);
 }
 
 .mobile-approval__actions {

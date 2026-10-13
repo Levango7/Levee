@@ -174,6 +174,11 @@ type Store interface {
 	// terminal decision.
 	UpdateIfPending(ctx context.Context, a *Approval) (bool, error)
 	ListPending(ctx context.Context) ([]*Approval, error)
+	// ListByRun returns every approval record for one run, newest first
+	// (created_at desc, then id desc so the ordering is total). A run can
+	// accumulate records — a retry re-creates the chain — and the newest one
+	// is the record that describes what has already happened.
+	ListByRun(ctx context.Context, runID string) ([]*Approval, error)
 }
 
 // --- Sentinel errors --------------------------------------------------------
@@ -449,6 +454,21 @@ func (s *Service) Get(ctx context.Context, id string) (*Approval, error) {
 		return nil, fmt.Errorf("approval: get: %w", err)
 	}
 	return a, nil
+}
+
+// ApprovalForRun returns the newest approval record for the given run, or
+// (nil, nil) when the run has none. It answers questions about what has
+// already happened to a run — "was this approved, and by whom" — which is a
+// statement about the record, not about any particular deep-link token.
+func (s *Service) ApprovalForRun(ctx context.Context, runID string) (*Approval, error) {
+	records, err := s.store.ListByRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("approval: list by run: %w", err)
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	return records[0], nil
 }
 
 // CheckExpiry scans all pending approvals and marks those whose

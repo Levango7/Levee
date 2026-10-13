@@ -240,3 +240,106 @@ func TestGenerateShowLink_URLFormatWithoutBaseURL(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(link.URL, "levee://show/run-3?token="))
 }
+
+// --- LookupBinding ---------------------------------------------------------
+
+func TestLookupBinding_LiveTokenReportsNoSpend(t *testing.T) {
+	g := NewDeepLinkGenerator("levee", "")
+	link, err := g.GenerateApprovalLink("run-1", "alice")
+	require.NoError(t, err)
+
+	b, ok := g.LookupBinding(link.Token)
+	require.True(t, ok)
+	assert.Equal(t, "run-1", b.RunID)
+	assert.Equal(t, "alice", b.UserID)
+	assert.Equal(t, ActionApprove, b.Action)
+	assert.True(t, b.ConsumedAt.IsZero(), "a live token was never tapped")
+}
+
+func TestLookupBinding_ConsumedTokenKeepsBinding(t *testing.T) {
+	g := NewDeepLinkGenerator("levee", "")
+	link, err := g.GenerateApprovalLink("run-1", "alice")
+	require.NoError(t, err)
+	_, _, _, err = g.ValidateToken(link.Token)
+	require.NoError(t, err)
+
+	// The re-open of a spent link must still name the run it acted on: that
+	// is the whole point of keeping the binding.
+	b, ok := g.LookupBinding(link.Token)
+	require.True(t, ok)
+	assert.Equal(t, "run-1", b.RunID)
+	assert.Equal(t, "alice", b.UserID)
+	assert.False(t, b.ConsumedAt.IsZero(), "a consumed token reports when it was spent")
+}
+
+func TestLookupBinding_ExpiredTokenKeepsBinding(t *testing.T) {
+	g := NewDeepLinkGenerator("levee", "")
+	g.SetTTL(1 * time.Millisecond)
+	link, err := g.GenerateApprovalLink("run-9", "alice")
+	require.NoError(t, err)
+	time.Sleep(5 * time.Millisecond)
+
+	_, _, _, err = g.ValidateToken(link.Token)
+	assert.ErrorIs(t, err, ErrTokenExpired)
+
+	// Expired before any tap: no spend time, but the run still resolves.
+	b, ok := g.LookupBinding(link.Token)
+	require.True(t, ok)
+	assert.Equal(t, "run-9", b.RunID)
+	assert.True(t, b.ConsumedAt.IsZero(), "an expired-before-tap token has no tap time")
+}
+
+func TestLookupBinding_UnknownToken(t *testing.T) {
+	g := NewDeepLinkGenerator("levee", "")
+	_, ok := g.LookupBinding("never-issued")
+	assert.False(t, ok)
+}
+
+func TestLookupBinding_RetentionElapsedDropsBinding(t *testing.T) {
+	g := NewDeepLinkGenerator("levee", "")
+	g.SetConsumedRetention(0)
+	link, err := g.GenerateApprovalLink("run-1", "alice")
+	require.NoError(t, err)
+	_, _, _, err = g.ValidateToken(link.Token)
+	require.NoError(t, err)
+	time.Sleep(2 * time.Millisecond)
+
+	_, ok := g.LookupBinding(link.Token)
+	assert.False(t, ok, "an answer that old is worthless; the entry is dropped")
+}
+
+func TestLookupBinding_DoesNotConsume(t *testing.T) {
+	g := NewDeepLinkGenerator("levee", "")
+	link, err := g.GenerateApprovalLink("run-1", "alice")
+	require.NoError(t, err)
+
+	_, ok := g.LookupBinding(link.Token)
+	require.True(t, ok)
+	runID, _, _, err := g.ValidateToken(link.Token)
+	require.NoError(t, err, "a lookup must not spend the token")
+	assert.Equal(t, "run-1", runID)
+}
+
+// --- CleanupExpired --------------------------------------------------------
+
+func TestCleanupExpired_SweepsConsumedAfterRetention(t *testing.T) {
+	g := NewDeepLinkGenerator("levee", "")
+	g.SetConsumedRetention(0)
+	live, err := g.GenerateApprovalLink("run-live", "alice")
+	require.NoError(t, err)
+	spent, err := g.GenerateApprovalLink("run-spent", "alice")
+	require.NoError(t, err)
+	_, _, _, err = g.ValidateToken(spent.Token)
+	require.NoError(t, err)
+	time.Sleep(2 * time.Millisecond)
+
+	removed := g.CleanupExpired()
+	assert.Equal(t, 1, removed, "only the spent-and-aged entry is swept")
+
+	if _, ok := g.LookupBinding(live.Token); !ok {
+		t.Fatal("the sweep took a live token")
+	}
+	if _, ok := g.LookupBinding(spent.Token); ok {
+		t.Fatal("the sweep left an aged spent entry")
+	}
+}

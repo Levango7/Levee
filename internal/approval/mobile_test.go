@@ -333,3 +333,151 @@ func TestMobileApprovalFlow_FullCycle(t *testing.T) {
 	require.Len(t, hist, 1)
 	assert.Equal(t, ActionApprove, hist[0].Action)
 }
+
+// --- DeeplinkState ----------------------------------------------------------
+
+func TestMobileDeeplinkState_ConsumedApprovedNamesApprover(t *testing.T) {
+	mobile, _, _, _, deeplink := newMobileServiceWithPush(t)
+	ctx := bgCtx()
+
+	require.NoError(t, mobile.RequestApproval(ctx, "run-1", "alice"))
+	link, err := deeplink.GenerateApprovalLink("run-1", "alice")
+	require.NoError(t, err)
+	_, err = mobile.ApproveViaDeepLink(ctx, link.Token)
+	require.NoError(t, err)
+
+	// The second open of the spent link must answer "already approved by
+	// alice", not "invalid token".
+	st, ok, err := mobile.DeeplinkState(ctx, link.Token)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, st.Decided)
+	assert.Equal(t, "approved", st.Status)
+	assert.Equal(t, "alice", st.By)
+	assert.False(t, st.At.IsZero())
+	assert.Equal(t, "run-1", st.RunID)
+	assert.Equal(t, "approve", st.Action)
+}
+
+func TestMobileDeeplinkState_LiveTokenReportsPendingVotes(t *testing.T) {
+	mobile, _, _, _, deeplink := newMobileServiceWithPush(t)
+	ctx := bgCtx()
+
+	// A 2-of-2 chain: one vote in, still pending. The record gets a
+	// caller-chosen id so the vote can name it.
+	_, err := mobile.approvalSvc.Create(ctx, CreateRequest{
+		ID: "appr-quorum", RunID: "run-1", Level: LevelStandard,
+		Approvers: []string{"alice", "bob"}, MinApprovers: 2,
+		ExpiresAt: futureTime(),
+	})
+	require.NoError(t, err)
+	require.NoError(t, mobile.approvalSvc.Approve(ctx, "appr-quorum", "alice"))
+	link, err := deeplink.GenerateApprovalLink("run-1", "bob")
+	require.NoError(t, err)
+
+	st, ok, err := mobile.DeeplinkState(ctx, link.Token)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.False(t, st.Decided, "a partial quorum is not a decision")
+	assert.Equal(t, "pending", st.Status)
+	assert.Equal(t, 1, st.Votes)
+	assert.Equal(t, 2, st.MinApprovers)
+}
+
+func TestMobileDeeplinkState_RejectedEvidence(t *testing.T) {
+	mobile, _, _, _, deeplink := newMobileServiceWithPush(t)
+	ctx := bgCtx()
+
+	require.NoError(t, mobile.RequestApproval(ctx, "run-2", "carol"))
+	link, err := deeplink.GenerateRejectLink("run-2", "carol")
+	require.NoError(t, err)
+	_, err = mobile.RejectViaDeepLink(ctx, link.Token)
+	require.NoError(t, err)
+
+	st, ok, err := mobile.DeeplinkState(ctx, link.Token)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.True(t, st.Decided)
+	assert.Equal(t, "rejected", st.Status)
+	assert.Equal(t, "carol", st.By)
+}
+
+func TestMobileDeeplinkState_UnknownTokenDisclosesNothing(t *testing.T) {
+	mobile, _, _, _, _ := newMobileServiceWithPush(t)
+
+	st, ok, err := mobile.DeeplinkState(bgCtx(), "forged")
+	require.NoError(t, err)
+	assert.False(t, ok, "a token the server never issued must not become a probe")
+	assert.Equal(t, DeeplinkState{}, st)
+}
+
+func TestMobileDeeplinkState_TokenWithoutRecordIsUnknown(t *testing.T) {
+	mobile, _, _, _, deeplink := newMobileServiceWithPush(t)
+	ctx := bgCtx()
+
+	// A valid, spent token for a run that has no approval record at all.
+	link, err := deeplink.GenerateApprovalLink("run-ghost", "alice")
+	require.NoError(t, err)
+	_, err = mobile.ApproveViaDeepLink(ctx, link.Token)
+	require.Error(t, err, "nothing pending to approve")
+
+	st, ok, err := mobile.DeeplinkState(ctx, link.Token)
+	require.NoError(t, err)
+	require.True(t, ok, "the binding is real even though the record is gone")
+	assert.False(t, st.Decided)
+	assert.Equal(t, "unknown", st.Status)
+}
+
+func TestMobileDeeplinkState_ShowLinkCarriesNoEvidence(t *testing.T) {
+	mobile, _, _, _, deeplink := newMobileServiceWithPush(t)
+	ctx := bgCtx()
+
+	require.NoError(t, mobile.RequestApproval(ctx, "run-1", "alice"))
+	link, err := deeplink.GenerateShowLink("run-1")
+	require.NoError(t, err)
+
+	st, ok, err := mobile.DeeplinkState(ctx, link.Token)
+	require.NoError(t, err)
+	assert.False(t, ok, "a show link is not a decision to report on")
+	assert.Equal(t, DeeplinkState{}, st)
+}
+
+func TestMobileDeeplinkState_WithoutGenerator(t *testing.T) {
+	store := newMockStore()
+	mobile := NewMobileApprovalService(NewService(store), nil, nil)
+
+	_, ok, err := mobile.DeeplinkState(bgCtx(), "tok")
+	assert.ErrorIs(t, err, ErrMobilePushDisabled)
+	assert.False(t, ok)
+}
+
+func TestMobileDeeplinkState_NewestRecordWins(t *testing.T) {
+	mobile, _, store, _, deeplink := newMobileServiceWithPush(t)
+	ctx := bgCtx()
+
+	// Two records for one run (a re-plan re-creates the chain): the newest
+	// is the one that describes today.
+	base := time.Now().UTC()
+	older := base.Add(-time.Hour)
+	newer := base
+	require.NoError(t, store.Create(ctx, &Approval{
+		ID: "appr-old", RunID: "run-1", Status: StatusApproved,
+		Approvers: []string{"alice"}, MinApprovers: 1,
+		CreatedAt: older,
+		Decisions: []Decision{{Approver: "alice", Action: ActionApprove, At: older}},
+	}))
+	require.NoError(t, store.Create(ctx, &Approval{
+		ID: "appr-new", RunID: "run-1", Status: StatusPending,
+		Approvers: []string{"bob"}, MinApprovers: 1,
+		CreatedAt: newer, ExpiresAt: futureTime(),
+	}))
+	link, err := deeplink.GenerateApprovalLink("run-1", "bob")
+	require.NoError(t, err)
+
+	st, ok, err := mobile.DeeplinkState(ctx, link.Token)
+	require.NoError(t, err)
+	require.True(t, ok)
+	assert.Equal(t, "pending", st.Status, "the newest record is the live one")
+	assert.False(t, st.Decided, "a decided history must not pre-empt the live record")
+	assert.Equal(t, 1, st.MinApprovers)
+}

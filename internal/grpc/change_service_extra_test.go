@@ -985,6 +985,10 @@ func (stubApprovalStore) ListPending(context.Context) ([]*approval.Approval, err
 	return nil, nil
 }
 
+func (stubApprovalStore) ListByRun(context.Context, string) ([]*approval.Approval, error) {
+	return nil, nil
+}
+
 func TestApproveChange_NoPendingApprovalFailsPrecondition(t *testing.T) {
 	store := newTestStore(t)
 	svc := NewChangeService(store, nil, approval.NewService(stubApprovalStore{}), nil)
