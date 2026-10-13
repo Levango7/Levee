@@ -174,11 +174,26 @@ async function open(page, path, settleMs = 900) {
   await sleep(settleMs)
 }
 
-// warmUp loads the shell once and throws it away, so the compile cost of the
-// first view lands here rather than inside the first assertion.
+// warmUp loads the shell once and waits until the FIRST VIEW HAS ACTUALLY
+// RENDERED, then throws the page away. The compile cost of the first view
+// lands here rather than inside the first assertion.
+//
+// It waits for content rather than sleeping a fixed time: on a slow runner
+// (the windows CI box) Vite compiled /changes' chunk well beyond 3.5s, so the
+// FIRST route of the run then failed with an empty h1 while every later route
+// passed — the artefact looked like "two routes are broken" but it was one
+// cold transform. Waiting for the h1 makes the warm-up cost the same
+// everywhere.
 async function warmUp(browser) {
   const page = await browser.newPage()
-  await open(page, '/changes', 3500)
+  await page.goto(BASE + '/changes', { waitUntil: 'domcontentloaded', timeout: 30_000 })
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline) {
+    const h1 = await page.evaluate(() => document.querySelector('.levee-page h1')?.textContent?.trim() || '')
+    const rows = await page.evaluate(() => document.querySelectorAll('.el-table__row').length)
+    if (h1 && rows > 0) break
+    await sleep(500)
+  }
   await page.close()
 }
 
