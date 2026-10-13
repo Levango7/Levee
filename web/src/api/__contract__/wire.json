@@ -127,7 +127,18 @@
       "Nodes",
       "Summary",
       "Backend"
-    ]
+    ],
+    "rows": {
+      "nodes": [
+        "address",
+        "capabilities",
+        "id",
+        "joined_at",
+        "last_heartbeat",
+        "role",
+        "status"
+      ]
+    }
   },
   "system-status": {
     "method": "GET",

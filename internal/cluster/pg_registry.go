@@ -16,6 +16,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nexus/levee/internal/dbschema"
@@ -111,14 +112,14 @@ func upsertNode(ctx context.Context, db *sql.DB, node Node) error {
 		role = string(RoleWorker)
 	}
 	_, err := db.ExecContext(ctx, `
-INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat, joined_at)
-VALUES ($1, $2, $3, 'active', NOW(), NOW())
+INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat, joined_at, capabilities)
+VALUES ($1, $2, $3, 'active', NOW(), NOW(), $4)
 ON CONFLICT (id) DO UPDATE
 SET address = EXCLUDED.address,
     role = EXCLUDED.role,
     status = 'active',
     last_heartbeat = NOW()`,
-		node.ID, node.Address, role)
+		node.ID, node.Address, role, capabilitiesJSON(node.Capabilities))
 	if err != nil {
 		return fmt.Errorf("cluster: upsert node: %w", err)
 	}
@@ -138,11 +139,21 @@ UPDATE cluster_nodes SET last_heartbeat = NOW(), status = 'active' WHERE id = $1
 	return nil
 }
 
+// capabilitiesJSON normalises a node's declared capabilities for the
+// cluster_nodes column, whose default is '[]'. Writing the empty array
+// rather than an empty string keeps the column parseable for every reader.
+func capabilitiesJSON(caps string) string {
+	if strings.TrimSpace(caps) == "" {
+		return "[]"
+	}
+	return caps
+}
+
 // listNodes returns every node row, ordered by ID for deterministic
 // processing across nodes.
 func listNodes(ctx context.Context, db *sql.DB) ([]Node, error) {
 	rows, err := db.QueryContext(ctx, `
-SELECT id, address, role, status, last_heartbeat, joined_at
+SELECT id, address, role, status, last_heartbeat, joined_at, capabilities
 FROM cluster_nodes ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("cluster: list nodes: %w", err)
@@ -153,7 +164,8 @@ FROM cluster_nodes ORDER BY id`)
 	for rows.Next() {
 		var n Node
 		var role, status string
-		if err := rows.Scan(&n.ID, &n.Address, &role, &status, &n.LastHeartbeat, &n.JoinedAt); err != nil {
+		if err := rows.Scan(&n.ID, &n.Address, &role, &status, &n.LastHeartbeat,
+			&n.JoinedAt, &n.Capabilities); err != nil {
 			return nil, fmt.Errorf("cluster: list nodes: scan: %w", err)
 		}
 		n.Role = NodeRole(role)

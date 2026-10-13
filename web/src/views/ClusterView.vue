@@ -109,6 +109,23 @@ const nodes = computed(() => data.value?.nodes ?? [])
 const summary = computed(() => data.value?.summary)
 const backend = computed(() => data.value?.backend ?? 'unknown')
 
+// nodeCapabilities parses the node's declared-capability JSON.
+//
+// The column's default is '[]', so an absent declaration is a normal empty
+// list rather than an error to raise. An unparseable value (a column written by
+// an older shape, or a hand-edited row) yields an empty list too, and the card
+// then says "未声明能力" — which is honest about what we know, where throwing
+// would take down the whole page for one bad row.
+function nodeCapabilities(raw: string | undefined): string[] {
+	if (!raw) return []
+	try {
+		const parsed = JSON.parse(raw)
+		return Array.isArray(parsed) ? parsed.filter((c): c is string => typeof c === 'string') : []
+	} catch {
+		return []
+	}
+}
+
 const activeNodeLoad = computed(() => {
 	const load = summary.value?.nodeLoad ?? {}
 	return Object.entries(load)
@@ -193,17 +210,26 @@ const assignmentDistribution = computed(() => {
 
 			<h3 class="lv-section-title">节点</h3>
 			<div class="node-grid">
-				<div v-for="n in nodes" :key="n.id" class="lv-panel node">
-					<div class="node__head">
-						<span class="node__id lv-mono">{{ n.id }}</span>
-						<span class="lv-dot" :class="`lv-dot--${nodeStatusTone(n.status)}`" :title="nodeStatusLabel(n.status)"></span>
-					</div>
-					<div class="node__addr lv-mono">{{ n.address }}</div>
-					<div class="node__meta">
-						<span class="node__role">{{ nodeRoleLabel(n.role) }}</span>
-						<span class="node__beat">心跳 {{ lastHeartbeatRelative(n.lastHeartbeat) }}</span>
-					</div>
+			<div v-for="n in nodes" :key="n.id" class="lv-panel node">
+				<div class="node__head">
+					<span class="node__id lv-mono">{{ n.id }}</span>
+					<span class="lv-dot" :class="`lv-dot--${nodeStatusTone(n.status)}`" :title="nodeStatusLabel(n.status)"></span>
 				</div>
+				<div class="node__addr lv-mono">{{ n.address }}</div>
+				<div class="node__meta">
+					<span class="node__role">{{ nodeRoleLabel(n.role) }}</span>
+					<span class="node__beat">心跳 {{ lastHeartbeatRelative(n.lastHeartbeat) }}</span>
+				</div>
+				<!-- Declared capabilities, read-only. The cluster_nodes column has
+				     existed since the PG v7 migration and was read by nothing until
+				     now — a node's declared capabilities were written to a column
+				     no code ever looked at. This surfaces them; routing by
+				     capability is a separate (dispatcher-semantics) decision. -->
+				<div v-if="nodeCapabilities(n.capabilities).length > 0" class="node__caps">
+					<span v-for="c in nodeCapabilities(n.capabilities)" :key="c" class="node__cap lv-mono">{{ c }}</span>
+				</div>
+				<div v-else class="node__caps node__caps--none">未声明能力</div>
+			</div>
 			</div>
 
 			<div class="split">
@@ -394,6 +420,29 @@ const assignmentDistribution = computed(() => {
 .takeover__actor {
 	color: var(--lv-text-3);
 	font-size: var(--lv-text-xs);
+}
+
+/* Capability chips on a node card. Monospace because they are machine strings
+   (module names), and muted: they describe the node, they are not a status. */
+.node__caps {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: var(--lv-space-2);
+}
+
+.node__caps--none {
+	font-size: var(--lv-text-xs);
+	color: var(--lv-text-3);
+}
+
+.node__cap {
+	padding: 1px 6px;
+	border: 1px solid var(--lv-border);
+	border-radius: var(--lv-radius-sm);
+	background: var(--lv-surface-3);
+	font-size: 11px;
+	color: var(--lv-text-2);
 }
 
 .hint {

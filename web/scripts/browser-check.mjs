@@ -408,6 +408,22 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   check('cluster deployment renders one card per node', clusterCards === 3, 'cards=' + clusterCards)
   const offline = await page.evaluate(() => document.querySelectorAll('.node .lv-dot--bad').length)
   check('an offline node is coloured bad, not ok', offline === 1, 'offline=' + offline)
+
+  // Declared capabilities render on the node card — the cluster_nodes column's
+  // first reader. The PascalCase leak this fixes is why the assertion also
+  // covers the field values: a node whose id/address render but whose
+  // capabilities do not is the half-surfaced state.
+  const caps = await page.evaluate(() =>
+    [...document.querySelectorAll('.node')].map((card) => ({
+      id: card.querySelector('.node__id')?.textContent?.trim() || '',
+      caps: [...card.querySelectorAll('.node__cap')].map((c) => c.textContent?.trim() || ''),
+      none: !!card.querySelector('.node__caps--none'),
+    })),
+  )
+  const byId = Object.fromEntries(caps.map((c) => [c.id, c]))
+  check('a node renders its declared capabilities', JSON.stringify(byId['node-a'].caps) === JSON.stringify(['shell', 'pkg', 'file']), JSON.stringify(caps))
+  check('a node that declared none says so', byId['node-c'].none === true, JSON.stringify(caps))
+
   await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=ok')
   await page.close()
 }

@@ -20,6 +20,7 @@ package grpc
 // The snapshot records KEY SETS and value KINDS, not values, so it stays small
 // and does not churn with every data change.
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -85,6 +86,35 @@ func seedWireFixture(t *testing.T, store state.Store) {
 		// production internal/audit seals every row, so they are always set.
 		PrevHash: "prev-wire", CurrHash: "curr-wire",
 	}))
+	// A cluster node. The cluster_nodes table is PostgreSQL-only in production
+	// (dbschema's DDL runs on PG), so the fixture creates the same shape on the
+	// SQLite store directly — ListClusterNodes tolerates a missing table by
+	// returning (nil, nil), so WITHOUT this row the endpoint answers with
+	// nodes: null, arrayKeys returns nil, and the PascalCase guard below never
+	// inspects a single field of the nodes array. That is exactly how the third
+	// PascalCase leak survived: state.ClusterNode carried no json tags at all,
+	// so GET /system/cluster-status emitted ID/Address/LastHeartbeat while
+	// ClusterView read id/address/lastHeartbeat and every node card rendered
+	// blank on a real PG cluster.
+	if dber, ok := store.(interface{ DB() *sql.DB }); ok {
+		db := dber.DB()
+		_, err := db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS cluster_nodes (
+	id             TEXT PRIMARY KEY,
+	address        TEXT NOT NULL,
+	role           TEXT NOT NULL,
+	status         TEXT NOT NULL,
+	last_heartbeat DATETIME NOT NULL,
+	joined_at      DATETIME NOT NULL,
+	capabilities   TEXT NOT NULL DEFAULT '[]'
+)`)
+		require.NoError(t, err)
+		_, err = db.ExecContext(ctx,
+			`INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat, joined_at, capabilities)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			"node-wire", "10.0.1.11:9090", "worker", "active", now, now, `["shell","pkg"]`)
+		require.NoError(t, err)
+	}
 }
 
 // keysOf returns the sorted top-level keys of a JSON object.
