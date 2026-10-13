@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（移动审批深链：重复点击返回「已由 X 批准」而不是一句 401）
+
+- **问题**：一键审批 token 是单次的，于是「同一个链接点第二次」必然失败。而那一刻操作员真正想问的是「我第一次点成了吗」——旧实现只有一句 `401 invalid or expired deeplink token`，「已批准」和「链接过期」在响应上完全同形，移动页只能显示失败，人就会再点、再失败、开始怀疑变更有没有丢。
+- **根因在 REST 映射层，不在 token 层**：`ApproveViaDeepLink` 早在找不到 pending 记录时就返回了错误，但 `writeDeeplinkError` 把「token 失效」与「审批已由他人结算」折成同一个 401，runID 与审批记录都在，证据却被丢在桌上。
+- **落地（三层）**：
+  1. `push.DeepLinkGenerator` 消费/过期 token 时把条目转入 `consumed` 表而不是丢弃，新增 `LookupBinding`（只读、不消费）。已花掉的绑定默认再保留 24 小时（按失效时刻起算，`SetConsumedRetention` 供测试缩短），`CleanupExpired` 同一遍清扫两表——不为一次性链接把内存堆到进程寿命。
+  2. `approval.Store` 加 `ListByRun`（created_at desc、id desc 的稳定全序；state store 按 timeout 排序，说的不是「哪条最新」），服务层 `ApprovalForRun` 取其首条。三个适配器（生产 `cmd/levee`、grpc 测试、chatopsbridge 测试）各自实现，顺序在适配层钉死，证据读不依赖某个后端的默认排序。
+  3. 网关失败分支改走 `writeDeeplinkFailure`：已消费 token 仍绑定到审批已终结的 run → `409` + `{decided, decision, run_id, decided_by, decided_at}`（Unix 秒，与其余 REST 时间戳同形）；其余一律维持扁平 401。
+- **披露面不扩大，这是设计约束不是附带结果**：证据链要求持握服务端**真实签发过**的 token（无论是否已花）。从未签发的 token 走不到 `LookupBinding` 的任何命中，仍只得到扁平 401、不带任何字段——`rest_deeplink_settle_test.go` 用 `assert.Len(out, 1)` 钉住这一点：否则这条路径会变成枚举 run 状态的探针。
+- **前端把 409 当收据而不是错误**：axios 对非 2xx 走 reject，`client.ts` 的 `normalizeError` 保留整个响应体到 `details`；`utils/deeplinkEvidence.ts` 以 `decided === true`（不是 HTTP 码）为准绳取证据，`MobileApprovalView` 渲染「已处理，无需重复操作 / 该变更已由 X 批准」。特意**不走 401 分支**：`client.ts` 的响应拦截器会清 token 并跳登录页，选 409 也是为了让人看见这句话。
+- **测试**：push 7 例（活 token 无 spend、已消费保留绑定、过期保留绑定、保留期到点丢弃、只读不消费、清扫）；approval 8 例（已批准指名道姓、部分 quorum 报票数、已驳回、伪造 token 零披露、无记录 run=unknown、show 链接无证据、无生成器报 ErrMobilePushDisabled、多记录取最新）；grpc REST 6 例（双击 409 带证据、伪造 token 扁平 401 且只有一个字段、控制台先批准则指名、reject 同构、stub 证据路径与无证据路径各一）。
+- 验证：`go test ./...` EXIT=0、`gofmt` 干净、golangci-lint 0 issues；前端 300 例全绿（36 文件）、`vue-tsc` 干净。
+
 ### CI（浏览器级检查进 CI：ubuntu + windows 双 OS，并且它必须真的在跑）
 
 - **背景**：浏览器检查此前只是本地门禁——`node scripts/browser-check.mjs` 在开发机上跑，CI 里没人跑。一个不在 CI 里的检查等于没有检查。

@@ -892,6 +892,7 @@ Token-based 认证，三种模式：
 - CLI / API 客户端：Bearer token，通过 `--token` 或配置文件 `auth.token` 传入，请求头 `Authorization: Bearer <token>`。多令牌部署可用可重复的 `--auth-token name=secret`，命名令牌认证后其主体覆盖客户端自报的 `X-Acting-As`。
 - 门户（Web UI）：同源嵌入在二进制中，无需额外认证；外部调用需携带 Bearer token。
 - 移动端一键审批（deeplink）：`/changes/deeplink/approve` 与 `/changes/deeplink/reject` 不要求 Bearer 头，改以请求体中的一次性 token 作为认证凭据（`{"token": "<one-time-token>"}`）。token 由审批通知下发时生成：32 字节随机数、默认 30 分钟 TTL、单次消费、绑定 (run-id, 用户, 动作)；消费或过期后即失效。无效 / 过期 token 返回 401。该豁免仅覆盖这两个端点，其余端点仍强制 Bearer。
+  - **已决定的重复点击返回 409 并带证据**：token 单次消费意味着第二次点击同一个链接必然失败，而操作员真正想问的是「我第一次点成了吗」。当这个被消费的 token 仍绑定到一个审批记录已终结（approved / rejected）的变更时，端点返回 `409` 与结构化证据（`{"error", "decided": true, "decision", "run_id", "decided_by", "decided_at"}`，`decided_at` 为 Unix 秒），移动端据此渲染「该变更已由 X 批准，无需重复操作」而不是重试提示。**从未签发过的 token 仍只得到扁平 401、不带任何字段**：证据链要求持握服务端真实签发过的 token，否则该路径会变成枚举 run 状态的探针。已消费绑定默认保留 24 小时（按失效时刻起算），过期后同样回落为扁平 401。
 
 ### 13.4 单步验证门（POST /gates/verify）
 

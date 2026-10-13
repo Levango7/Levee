@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/state"
@@ -412,6 +413,11 @@ type stubMobileApproval struct {
 	lastAction string
 	lastToken  string
 	err        error
+	// What DeeplinkState reports. The zero value (ok=false) keeps the flat
+	// 401 answer, which is what the pins below exercise.
+	state    approval.DeeplinkState
+	stateOK  bool
+	stateErr error
 }
 
 func (s *stubMobileApproval) ApproveViaDeepLink(_ context.Context, token string) (string, error) {
@@ -424,6 +430,10 @@ func (s *stubMobileApproval) RejectViaDeepLink(_ context.Context, token string) 
 	s.lastAction = "reject"
 	s.lastToken = token
 	return "run-1", s.err
+}
+
+func (s *stubMobileApproval) DeeplinkState(_ context.Context, _ string) (approval.DeeplinkState, bool, error) {
+	return s.state, s.stateOK, s.stateErr
 }
 
 func TestDeeplinkApproveWithoutServiceIs503(t *testing.T) {

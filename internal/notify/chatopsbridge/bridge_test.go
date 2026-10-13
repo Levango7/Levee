@@ -2,6 +2,7 @@ package chatopsbridge
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -197,6 +198,27 @@ func (s *memApprovalStore) UpdateIfPending(ctx context.Context, a *approval.Appr
 
 func (s *memApprovalStore) ListPending(context.Context) ([]*approval.Approval, error) {
 	return nil, nil
+}
+
+// ListByRun returns the run's records newest first, matching the ordering
+// contract the real stores are adapted into.
+func (s *memApprovalStore) ListByRun(_ context.Context, runID string) ([]*approval.Approval, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*approval.Approval
+	for _, a := range s.recs {
+		if a.RunID == runID {
+			cp := *a
+			out = append(out, &cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
+	return out, nil
 }
 
 // TestObserverWiringPinsServiceHook pins the intended composition: the

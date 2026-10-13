@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
@@ -247,6 +248,33 @@ func (a *approvalStoreAdapter) ListPending(ctx context.Context) ([]*approval.App
 		}
 		result = append(result, ap)
 	}
+	return result, nil
+}
+
+// ListByRun returns the run's records newest first. The state store orders by
+// timeout (an approval's own TTL), which says nothing about which record is
+// newest, so the total order is established here: created_at desc, then id
+// desc. The evidence read on top of this ("the newest record is what has
+// already happened") depends on that order being stable across backends.
+func (a *approvalStoreAdapter) ListByRun(ctx context.Context, runID string) ([]*approval.Approval, error) {
+	sas, err := a.store.ListApprovals(ctx, state.ApprovalFilter{RunID: runID})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]*approval.Approval, 0, len(sas))
+	for _, sa := range sas {
+		ap, err := stateToApproval(sa)
+		if err != nil {
+			continue // skip malformed records
+		}
+		result = append(result, ap)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		}
+		return result[i].ID > result[j].ID
+	})
 	return result, nil
 }
 

@@ -65,6 +65,33 @@ function changesListQuery(params: ListChangesParams): Record<string, string | nu
   }
 }
 
+/**
+ * The 200 body of a one-tap deep-link decision. `status` is "approved" when
+ * the quorum completed, "recorded; quorum pending" when it did not (the vote
+ * is durable; the run is untouched) — never a fabricated "approved".
+ */
+export interface DeeplinkDecision {
+  status: string
+}
+
+/**
+ * The 409 body of a tap whose token was already spent on a decided change.
+ * The gateway sends it instead of a flat 401 precisely so the mobile page can
+ * say "already approved by X" rather than sending the operator round again;
+ * see utils/deeplinkEvidence.ts for how a rejected response reaches us.
+ * `decided_at` is Unix seconds, the same shape every other REST timestamp in
+ * this client carries (formatTimestamp reads it directly).
+ */
+export interface DeeplinkEvidence {
+  /** Always true in this body: the flag is what separates it from a flat 401. */
+  decided?: boolean
+  /** The record's terminal status: "approved" or "rejected". */
+  decision?: string
+  run_id?: string
+  decided_by?: string
+  decided_at?: number
+}
+
 export const changesApi = {
   list: (params: ListChangesParams): Promise<PageResult<Change>> =>
     get<RawListEnvelope>('/changes', { params: changesListQuery(params) }).then((raw) =>
@@ -90,11 +117,11 @@ export const changesApi = {
   reject: (id: string, body: { rejecter: string; reason: string }): Promise<Change> =>
     post<Change>(`/changes/${id}/reject`, body),
 
-  approveViaDeepLink: (token: string): Promise<{ status: string }> =>
-    post<{ status: string }>('/changes/deeplink/approve', { token }),
+  approveViaDeepLink: (token: string): Promise<DeeplinkDecision> =>
+    post<DeeplinkDecision>('/changes/deeplink/approve', { token }),
 
-  rejectViaDeepLink: (token: string): Promise<{ status: string }> =>
-    post<{ status: string }>('/changes/deeplink/reject', { token }),
+  rejectViaDeepLink: (token: string): Promise<DeeplinkDecision> =>
+    post<DeeplinkDecision>('/changes/deeplink/reject', { token }),
 
   pause: (id: string, reason?: string): Promise<Change> =>
     post<Change>(`/changes/${id}/pause`, { reason }),

@@ -190,6 +190,91 @@ func (s *MobileApprovalService) RejectViaDeepLink(ctx context.Context, token str
 	return runID, nil
 }
 
+// DeeplinkState is the evidence a one-tap link leaves behind once it can no
+// longer be applied. The token is single-use, so after a failed tap the
+// operator's real question is not "was the token well-formed" but "what has
+// already happened to the change it pointed at": a second tap must be
+// answerable with "already approved by X" rather than "invalid token",
+// because the second reading sends people back to click again.
+type DeeplinkState struct {
+	RunID  string `json:"run_id"`
+	Action string `json:"action"` // what the link offered: approve | reject
+	// Decided is true only for a terminal record (approved / rejected). A
+	// still-pending or unknown record is reported with Decided=false, and
+	// the caller keeps the flat "invalid or expired token" answer.
+	Decided bool      `json:"decided"`
+	Status  string    `json:"status"` // approved | rejected | pending | expired | unknown
+	By      string    `json:"by,omitempty"`
+	At      time.Time `json:"at,omitzero"`
+	// Votes and MinApprovers describe a record that is still pending: how
+	// many approvals it has collected against how many it needs. They say
+	// nothing about a decided record, so they stay zero there.
+	Votes        int `json:"votes,omitempty"`
+	MinApprovers int `json:"min_approvers,omitempty"`
+}
+
+// DeeplinkState reports the current state of the approval a deep-link token
+// points at. It never consumes anything: it is the read that answers "did my
+// tap register?" after the tap itself failed.
+//
+// The token's binding is all it may disclose, and holding that binding
+// requires a token this generator actually issued — spent or still live. A
+// token the server never saw returns (zero, false, nil): a forged string
+// must not become a way to probe which runs exist and what became of them.
+func (s *MobileApprovalService) DeeplinkState(ctx context.Context, token string) (DeeplinkState, bool, error) {
+	if s.deeplink == nil {
+		return DeeplinkState{}, false, fmt.Errorf("approval: mobile: deeplink state: %w", ErrMobilePushDisabled)
+	}
+	b, ok := s.deeplink.LookupBinding(token)
+	if !ok || b.RunID == "" {
+		return DeeplinkState{}, false, nil
+	}
+	if b.Action != push.ActionApprove && b.Action != push.ActionReject {
+		// show / list links are non-mutating; they carry no decision to
+		// report evidence about.
+		return DeeplinkState{}, false, nil
+	}
+	a, err := s.approvalSvc.ApprovalForRun(ctx, b.RunID)
+	if err != nil {
+		return DeeplinkState{}, false, err
+	}
+	st := DeeplinkState{RunID: b.RunID, Action: b.Action}
+	if a == nil {
+		st.Status = "unknown"
+		return st, true, nil
+	}
+	st.Status = string(a.Status)
+	switch a.Status {
+	case StatusApproved, StatusRejected:
+		st.Decided = true
+		if last := lastDecision(a); last != nil {
+			st.By, st.At = last.Approver, last.At
+		}
+	case StatusPending:
+		votes := 0
+		for _, d := range a.Decisions {
+			if d.Action == ActionApprove {
+				votes++
+			}
+		}
+		st.Votes, st.MinApprovers = votes, a.MinApprovers
+	}
+	return st, true, nil
+}
+
+// lastDecision returns the most recent decision on the record by recorded
+// time, or nil when none was cast. It names who closed (or is closing) the
+// approval — the name the operator needs in "already approved by X".
+func lastDecision(a *Approval) *Decision {
+	var last *Decision
+	for i := range a.Decisions {
+		if last == nil || !a.Decisions[i].At.Before(last.At) {
+			last = &a.Decisions[i]
+		}
+	}
+	return last
+}
+
 // GetApprovalHistory returns the recent mobile approval decisions for the
 // given user, most-recent first. The returned slice is a copy and may be
 // modified freely by the caller.

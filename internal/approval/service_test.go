@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -117,6 +118,29 @@ func (m *mockStore) ListPending(ctx context.Context) ([]*Approval, error) {
 			out = append(out, a)
 		}
 	}
+	return out, nil
+}
+
+// ListByRun returns the run's records newest first (created_at desc, then id
+// desc), mirroring the ordering contract the real stores are adapted into.
+func (m *mockStore) ListByRun(_ context.Context, runID string) ([]*Approval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.failOn["list-by-run"]; err != nil {
+		return nil, err
+	}
+	var out []*Approval
+	for _, a := range m.approvals {
+		if a.RunID == runID {
+			out = append(out, cloneApproval(a))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID > out[j].ID
+	})
 	return out, nil
 }
 

@@ -33,12 +33,12 @@ import (
 	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
-	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -160,13 +160,21 @@ type extraRoute struct {
 }
 
 // mobileApprovalHandler wraps the MobileApprovalService for REST routing.
-// It is an interface so we can avoid importing the approval package here.
-// The deep-link methods return the runID the token was bound to so the
-// gateway can settle the run from the approval chain state (the
-// settlement itself lives on ChangeService — this layer only routes).
+// The route layer only needs the two decision calls plus the evidence read
+// behind them, so it depends on this surface rather than on the concrete
+// service (which also owns push, history and the approval chain).
+//
+// The decision methods return the runID the token was bound to so the
+// gateway can settle the run from the approval chain state (the settlement
+// itself lives on ChangeService — this layer only routes).
 type mobileApprovalHandler interface {
 	ApproveViaDeepLink(ctx context.Context, token string) (string, error)
 	RejectViaDeepLink(ctx context.Context, token string) (string, error)
+	// DeeplinkState reports what has already happened to the approval a
+	// deep-link token points at, consuming nothing. ok is false when the
+	// token is not one this server issued: the caller must then disclose
+	// nothing beyond the flat 401, because a forged token proves nothing.
+	DeeplinkState(ctx context.Context, token string) (approval.DeeplinkState, bool, error)
 }
 
 // GatewayServices bundles the service implementations for NewGateway.
@@ -1094,7 +1102,7 @@ func (gw *Gateway) handleDeeplinkApprove(w http.ResponseWriter, r *http.Request)
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
 	runID, err := gw.mobileApproval.ApproveViaDeepLink(ctx, body.Token)
 	if err != nil {
-		writeDeeplinkError(w, err)
+		gw.writeDeeplinkFailure(w, ctx, body.Token)
 		return
 	}
 	// Settle the run from the chain state: a completed quorum moves the
@@ -1128,7 +1136,7 @@ func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) 
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
 	runID, err := gw.mobileApproval.RejectViaDeepLink(ctx, body.Token)
 	if err != nil {
-		writeDeeplinkError(w, err)
+		gw.writeDeeplinkFailure(w, ctx, body.Token)
 		return
 	}
 	// One-vote veto: settle the rejection onto the run.
@@ -1141,17 +1149,53 @@ func (gw *Gateway) handleDeeplinkReject(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]string{"status": "rejected"})
 }
 
-// writeDeeplinkError maps deep-link token validation failures to 401 so a
-// mobile client can distinguish an expired or forged one-time token from a
-// server fault. The token sentinels come from the push package and survive
-// the %w wrapping applied by MobileApprovalService. Every other error keeps
-// the standard gRPC-error mapping.
-func writeDeeplinkError(w http.ResponseWriter, err error) {
-	if errors.Is(err, push.ErrInvalidToken) || errors.Is(err, push.ErrTokenExpired) {
-		writeJSONError(w, http.StatusUnauthorized, "invalid or expired deeplink token")
+// writeDeeplinkFailure answers a one-tap whose token can no longer be
+// applied. The interesting case is the second tap: the token is single-use,
+// so the first tap already spent it, and the operator's question is whether
+// their change went through — not whether the token was well-formed. When
+// the spent token still binds to a run whose approval is terminal, the
+// answer is 409 with that evidence, which is also what stops the re-tap: the
+// mobile page renders it as a done notice instead of a retry prompt.
+//
+// Everything else keeps the flat 401 ("invalid or expired deeplink token").
+// That is not lazy: a token this server never issued proves nothing about
+// any run, so the evidence path must not double as a way to probe which runs
+// exist and what became of them. The token sentinels come from the push
+// package and survive the %w wrapping applied by MobileApprovalService.
+func (gw *Gateway) writeDeeplinkFailure(w http.ResponseWriter, ctx context.Context, token string) {
+	if gw.mobileApproval != nil {
+		if st, ok, err := gw.mobileApproval.DeeplinkState(ctx, token); err == nil && ok && st.Decided {
+			decidedAt := int64(0)
+			if !st.At.IsZero() {
+				decidedAt = st.At.Unix()
+			}
+			writeJSONStatus(w, http.StatusConflict, map[string]any{
+				"error":      "this change has already been decided",
+				"decided":    true,
+				"decision":   st.Status,
+				"run_id":     st.RunID,
+				"decided_by": st.By,
+				"decided_at": decidedAt,
+			})
+			return
+		}
+	}
+	writeJSONError(w, http.StatusUnauthorized, "invalid or expired deeplink token")
+}
+
+// writeJSONStatus writes v with an explicit status code. writeJSON is
+// hard-wired to 200 and writeJSONError to a one-line message; the deeplink
+// evidence response needs a non-2xx code AND a structured body, so neither
+// fits.
+func writeJSONStatus(w http.ResponseWriter, code int, v any) {
+	out, err := json.Marshal(v)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
 		return
 	}
-	writeGRPCError(w, err)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_, _ = w.Write(out)
 }
 
 // -----------------------------------------------------------------------
