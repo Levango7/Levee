@@ -617,42 +617,51 @@ jobs:
       # `go install`.
       - name: install puppeteer-core
         run: npm install -g puppeteer-core@24.37.0
-      - name: start mock gateway
-        run: node scripts/mock-gateway.mjs &
-      - name: start dev server
-        run: npm run dev &
-        env:
-          VITE_API_TARGET: 'http://127.0.0.1:4599'
-      # Readiness is judged on a MODULE, not on the shell: Vite serves
+      # Services, wait, and the check run in ONE shell step on purpose. GitHub
+      # Actions runs each step in its own shell, and a `&`-backgrounded child
+      # dies with it: on ubuntu it happened to survive long enough (Linux
+      # does not reap it), on windows it was gone by the next step, so the
+      # check connected to nothing. Splitting "start" from "use" is the bug,
+      # not the code in either half.
+      #
+      # Readiness is judged on a MODULE, not the shell: Vite serves
       # index.html before its transform pipeline is live, so `curl /` returns
-      # 200 while the SPA cannot render yet. The first dry run of this job
-      # polled the shell, saw "ready after 1s", and the first route rendered an
-      # empty content region. /src/main.ts only answers once the pipeline is up.
-      - name: wait for both services
+      # 200 while the SPA cannot render yet. /src/main.ts only answers once
+      # the pipeline is up (the first dry run polled the shell, saw "ready
+      # after 1s", and the first route rendered an empty content region).
+      - name: run browser checks against a live console
         shell: bash
         run: |
           set -e
+          node scripts/mock-gateway.mjs &
+          MOCK_PID=$!
+          npm run dev &
+          DEV_PID=$!
+          cleanup() {
+            kill "$MOCK_PID" "$DEV_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
           for i in $(seq 1 90); do
-            if curl -sf "$MOCK_URL/__mode?mode=ok" > /dev/null 2>&1               && curl -sf "$BASE_URL/src/main.ts" > /dev/null 2>&1; then
+            if curl -sf "http://127.0.0.1:4599/__mode?mode=ok" > /dev/null 2>&1               && curl -sf "http://localhost:5173/src/main.ts" > /dev/null 2>&1; then
               echo "both services ready after ${i}s"
-              exit 0
+              break
+            fi
+            if ! kill -0 "$MOCK_PID" 2>/dev/null; then
+              echo "::error::mock gateway died"; wait "$MOCK_PID" || true; exit 1
+            fi
+            if ! kill -0 "$DEV_PID" 2>/dev/null; then
+              echo "::error::dev server died"; wait "$DEV_PID" || true; exit 1
             fi
             sleep 1
           done
-          echo "::error::mock gateway or dev server did not come up in 90s"
-          curl -sv "$MOCK_URL/__mode" || true
-          curl -sv "$BASE_URL/src/main.ts" || true
-          exit 1
+          if ! curl -sf "http://localhost:5173/src/main.ts" > /dev/null 2>&1; then
+            echo "::error::services did not come up in 90s"
+            exit 1
+          fi
+          BROWSER_CHECK_REQUIRE=1 BASE_URL=http://localhost:5173             MOCK_URL=http://127.0.0.1:4599 SHOT_DIR=.browser-shots             node scripts/browser-check.mjs --shots
         env:
-          MOCK_URL: 'http://127.0.0.1:4599'
-          BASE_URL: 'http://localhost:5173'
-      - name: run browser checks
-        run: node scripts/browser-check.mjs --shots
-        env:
-          BROWSER_CHECK_REQUIRE: '1'
-          BASE_URL: 'http://localhost:5173'
-          MOCK_URL: 'http://127.0.0.1:4599'
-          SHOT_DIR: .browser-shots
+          VITE_API_TARGET: 'http://127.0.0.1:4599'
+
   # ---------------------------------------------------------------------------
   # smoke: start the real binary the way the README tells operators to, and
   # keep it alive past every background interval. Package tests verify
