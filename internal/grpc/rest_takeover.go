@@ -70,7 +70,7 @@ func (gw *Gateway) handleTakeoverEvents(w http.ResponseWriter, r *http.Request) 
 	}
 
 	q := r.URL.Query()
-	days := 7
+	days := defaultTakeoverWindowDays
 	if raw := strings.TrimSpace(q.Get("days")); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
@@ -147,7 +147,9 @@ func (gw *Gateway) handleTakeoverEvents(w http.ResponseWriter, r *http.Request) 
 }
 
 const (
-	// defaultTakeoverWindowDays is the window when the caller asks for none.
+	// defaultTakeoverWindowDays is the window when the caller asks for none:
+	// one week, which matches how far back an operator looks when asking "has
+	// the cluster been taking runs over?", and keeps the trace scan cheap.
 	defaultTakeoverWindowDays = 7
 	// maxTakeoverWindowDays bounds the scan: the trace table is unbounded.
 	maxTakeoverWindowDays = 90
