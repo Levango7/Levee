@@ -653,17 +653,6 @@ jobs:
           BASE_URL: 'http://localhost:5173'
           MOCK_URL: 'http://127.0.0.1:4599'
           SHOT_DIR: .browser-shots
-      # Screenshots are evidence for a human reading a failure, not a baseline:
-      # they are uploaded, never compared. A missing artifact is not a failure
-      # (the check itself already failed by then).
-      - name: upload screenshots
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7a6c64a875d1fc6a0a  # v7
-        with:
-          name: browser-shots-${{ matrix.os }}
-          path: ${{ github.workspace }}/web/.browser-shots
-          if-no-files-found: ignore
-
   # ---------------------------------------------------------------------------
   # smoke: start the real binary the way the README tells operators to, and
   # keep it alive past every background interval. Package tests verify
