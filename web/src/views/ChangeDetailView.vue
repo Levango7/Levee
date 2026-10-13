@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// Change detail: what the roadmap's P0 calls the lifecycle page — a run's
-// fingerprints (plan, approval, gates, evidence) assembled in one place,
-// instead of the list row that used to be the only entry point (and
+// Change detail: what the roadmap's P0 calls the lifecycle page — one place to
+// read a run's own fields, its approval chain, its audit trail and its batch
+// progress, instead of the list row that used to be the only entry point (and
 // /changes/:id routed straight back to the list).
 //
 // Every panel is fed by an endpoint that already existed; what was missing was
@@ -9,6 +9,14 @@
 //
 //   - changesApi.get            → the change's own fields (status, env, team,
 //                                 template, priority, creator, timestamps)
+//   - changesApi.approvals      → the approval chain(s), read-only: who must
+//                                 decide, how many votes the quorum needs, who
+//                                 has decided and on which plan version.
+//                                 Approving/rejecting stays in the approval
+//                                 centre (ApprovalView); this panel only answers
+//                                 "where is the sign-off", and derives its
+//                                 counts through utils/approvalChain rather than
+//                                 recomputing them here.
 //   - changesApi.trace(verify)  → the lifecycle timeline AND the hash-chain
 //                                 verdict in one call (the chain is the
 //                                 evidence; showing the timeline without its
@@ -17,6 +25,14 @@
 //   - batchApi.batchStatus      → per-batch progress, rendered with the batch
 //                                 vocabulary's own helpers (utils/batch.ts)
 //   - changesApi.logs           → a bounded tail, labelled as a tail
+//
+// Two fingerprints this page used to claim but cannot show yet, recorded here so
+// the next reader does not re-discover them as a surprise: the generated PLAN
+// (GetChange's `include_plan` is accepted at the REST edge but dropped in the
+// service, because pb.Change has no field for it and no path returns the stored
+// run.plan_json — it needs a proto change) and the per-GATE verdicts (the engine
+// holds verify.GateResult in memory and emits it as an event/metric, but nothing
+// persists it, so there is no history to read).
 //
 // Actions are gated by the same helpers the server's switches mirror
 // (utils/format.ts): a button appears exactly where the RPC would accept it.
@@ -33,6 +49,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import TraceTimeline from '@/components/TraceTimeline.vue'
 import { remediateRollback } from '@/composables/useRollbackRemediation'
+import { approvalSummary } from '@/utils/approvalChain'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
@@ -59,6 +76,7 @@ const chain = ref<{ valid: boolean; entries: TraceEntry[]; message: string }>({
   message: '',
 })
 const batches = ref<BatchSummaryDTO | null>(null)
+const approvals = ref<Awaited<ReturnType<typeof changesApi.approvals>>>([])
 const logs = ref<LogEntry[]>([])
 const logsTruncated = ref(false)
 
@@ -97,19 +115,27 @@ const batchRows = computed(() =>
   })),
 )
 
+// The approval chains, with the two derived facts (decided / pending) added by
+// the shared helper. Kept read-only here: the actionable card lives in
+// ApprovalView, and both go through approvalSummary so neither can drift on how
+// a vote is counted or who is still owed one.
+const approvalRows = computed(() => approvalSummary(approvals.value))
+
 async function load(): Promise<void> {
   if (!changeId.value) return
   loading.value = true
   loadError.value = null
   try {
-    const [c, t, b] = await Promise.all([
+    const [c, t, b, a] = await Promise.all([
       changesApi.get(changeId.value),
       changesApi.trace(changeId.value, { verify: true }),
       batchApi.batchStatus(changeId.value).catch(() => null),
+      changesApi.approvals(changeId.value).catch(() => []),
     ])
     change.value = c
     chain.value = { valid: t.hashChainValid, entries: t.entries || [], message: t.verificationMessage || '' }
     batches.value = b
+    approvals.value = a
   } catch (err) {
     // A missing change stays the el-empty below (a real "nothing here"); a
     // forbidden or broken fetch now answers in place instead of leaving a
@@ -276,6 +302,44 @@ onMounted(load)
         <TraceTimeline :entries="timeline" empty-text="暂无 trace：该变更还没有进入执行" />
       </div>
 
+      <!-- Approval chain: a read-only digest of where the sign-off stands. The
+           actionable card (approve / reject / delegate) lives in the approval
+           centre; here we only surface the quorum facts and who has already
+           decided, so an operator reading this page can see whether the change
+           is cleared to run without leaving it. Counts come from
+           utils/approvalChain, the same helper the card uses, so the two cannot
+           disagree on how a vote is counted or who is still owed one. -->
+      <div class="lv-panel">
+        <div class="lv-panel__head">
+          <h3 class="detail__h">审批链</h3>
+          <el-tag size="small" type="info">只读</el-tag>
+        </div>
+        <p class="detail__dim">批准 / 驳回请在「审批中心」进行，这里只回答"签核到哪一步了"。</p>
+        <div v-if="approvalRows.length === 0" class="detail__dim">暂无审批链（该变更尚未进入审批）。</div>
+        <div v-else class="chains">
+          <div v-for="c in approvalRows" :key="c.id" class="chain">
+            <div class="chain__head">
+              <span class="chain__level lv-mono">{{ c.level }}</span>
+              <span class="detail__dim">需 {{ c.minApprovers }} 票 · 已投 {{ c.decided }} 票</span>
+              <span v-if="c.pending.length" class="detail__dim">未投：{{ c.pending.join('、') }}</span>
+            </div>
+            <p v-if="c.excludeInitiator" class="detail__dim">发起人 {{ c.initiator }} 被排除，不可自批</p>
+            <p v-if="c.legacy" class="detail__dim">未绑定计划版本（旧链，任意 plan 均可结算）</p>
+            <p v-if="c.stale" class="chain__stale">该批准所依据的计划已非当前版本，需重新批准</p>
+            <ul v-if="c.decided" class="chain__decisions">
+              <li v-for="d in c.decisions" :key="d.approver">
+                <span class="lv-mono">{{ d.approver }}</span>
+                <span :class="d.action === 'approve' ? 'chain__ok' : 'chain__no'">
+                  {{ d.action === 'approve' ? '同意' : '驳回' }}
+                </span>
+                <span v-if="d.reason" class="detail__dim">{{ d.reason }}</span>
+                <span v-if="d.decidedAt" class="detail__dim lv-mono">{{ formatTimestamp(d.decidedAt) }}</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
       <!-- Batches -->
       <div class="lv-panel">
         <div class="lv-panel__head">
@@ -393,5 +457,53 @@ onMounted(load)
 
 .batch__state {
   font-size: 13px;
+}
+
+.chains {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lv-space-3, 12px);
+}
+
+.chain__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lv-space-2, 8px);
+}
+
+.chain__level {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chain__stale {
+  color: var(--el-color-danger);
+  margin: var(--lv-space-1, 4px) 0 0;
+  font-size: 12px;
+}
+
+.chain__decisions {
+  list-style: none;
+  margin: var(--lv-space-2, 8px) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chain__decisions li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lv-space-2, 8px);
+}
+
+.chain__ok {
+  color: var(--el-color-success);
+}
+
+.chain__no {
+  color: var(--el-color-danger);
 }
 </style>

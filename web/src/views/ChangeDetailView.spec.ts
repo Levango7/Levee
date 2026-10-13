@@ -106,4 +106,34 @@ describe('change detail page', () => {
     expect(sorter, 'the timeline must be ordered explicitly').toBeGreaterThan(-1)
     expect(view.slice(sorter, view.indexOf('const batchRows', sorter))).toContain('b.timestamp - a.timestamp')
   })
+
+  it('shows the approval chain read-only, sourced from the shared helper', () => {
+    // "Where is the sign-off" is a first-class part of reading a change: the
+    // quorum it needs, the votes already cast, who still owes one, and whether
+    // an approval went stale. The read route and the client method already
+    // existed; what the page lacked was calling them. Approving itself lives in
+    // the approval centre, so this panel is labelled read-only rather than
+    // offering buttons that belong elsewhere.
+    expect(view, 'must fetch the approval chain').toContain('changesApi.approvals(changeId.value)')
+    expect(view, 'must title the panel 审批链').toContain('审批链')
+    expect(view, 'must mark it read-only so it is not mistaken for the act page').toContain('只读')
+    expect(view, 'quorum needed must reach the reader').toMatch(/需 \{\{ c\.minApprovers \}\} 票/)
+    expect(view, 'votes cast must reach the reader').toMatch(/已投 \{\{ c\.decided \}\} 票/)
+    expect(view, 'who still owes a vote must reach the reader').toContain('未投：')
+    // A stale approval is void even though the run's own status still reads
+    // approved — dropping it would tell the operator the change is cleared when
+    // it is not.
+    expect(view, 'a stale approval must be surfaced, not hidden').toContain('需重新批准')
+  })
+
+  it('derives the vote tally from approvalSummary, never a local copy', () => {
+    // approvalSummary owns "how many have decided" and "who is still pending".
+    // If this view re-tallied them it could show a different quorum picture than
+    // the approval centre for the same chain — the exact drift the helper exists
+    // to prevent, and the reason it is unit-tested pure.
+    expect(view, 'must import the shared summary helper').toContain("import { approvalSummary } from '@/utils/approvalChain'")
+    expect(view, 'rows must come from the helper').toContain('approvalSummary(approvals.value)')
+    expect(view, 'no local decision count').not.toMatch(/\.decisions\.length/)
+    expect(view, 'no local pending-set derivation').not.toMatch(/new Set\(/)
+  })
 })
