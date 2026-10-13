@@ -164,6 +164,7 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 	status := get("/system/status")
 	cluster := get("/system/cluster-status")
 	detail := get("/changes/run-wire")
+	takeover := get("/system/takeover-events")
 
 	snap := map[string]dtoSnapshot{
 		"batch-status": {
@@ -205,6 +206,12 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 			Keys:   keysOf(cluster),
 			Rows:   rowsOf("nodes", cluster),
 			Forbid: []string{"Nodes", "Summary", "Backend"},
+		},
+		"takeover-events": {
+			Method: "GET", Path: "/system/takeover-events",
+			Keys:   keysOf(takeover),
+			Rows:   rowsOf("events", takeover),
+			Forbid: []string{"Events", "Days", "WindowFrom"},
 		},
 	}
 

@@ -814,6 +814,16 @@ const (
 	AssignResultFailed     = "failed"
 	AssignResultRolledBack = "rolled_back"
 
+	// Trace events: what a trace row records happened (trace.event).
+	//
+	// The trace table's event vocabulary, owned here for the same reason as the
+	// audit actions above: it was a string literal written in one place and read
+	// in none, which is how the takeover's settlement became invisible. The
+	// writer (internal/takeover) and the reader (the cluster page's takeover
+	// timeline, internal/grpc/rest_takeover.go) both reference this constant, so
+	// the two cannot drift onto different spellings of the same event.
+	EventTakeoverInterrupted = "interrupted_by_takeover"
+
 	// Audit actions: what an audit row records happened (audit.action).
 	//
 	// Swept from the writers, not copied from the schema comment: that comment

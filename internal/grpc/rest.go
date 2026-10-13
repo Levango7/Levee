@@ -559,6 +559,8 @@ func (gw *Gateway) dispatchOperationalRest(w http.ResponseWriter, r *http.Reques
 			gw.handleBatchStatus(w, r)
 		case path == "/system/change-trend" && method == "GET":
 			gw.handleChangeTrend(w, r)
+		case path == "/system/takeover-events" && method == "GET":
+			gw.handleTakeoverEvents(w, r)
 		case path == "/system/config" && method == "GET":
 			gw.handleSystemConfig(w, r)
 		case path == "/system/doctor" && method == "POST":

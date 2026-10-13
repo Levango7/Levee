@@ -264,10 +264,16 @@ func (l *Loop) settleOne(ctx context.Context, runID string) (bool, error) {
 
 	// Audit trace through the regular channel so the takeover lands in
 	// the run's hash chain.
+	//
+	// The event name is state.EventTakeoverInterrupted, not a literal: until it
+	// was named here the only writer of this event was this line and there was
+	// no reader at all, so nothing could have noticed a spelling drift between
+	// the two (the cluster page's takeover timeline reads it through the same
+	// constant).
 	_ = l.store.CreateTrace(ctx, &state.Trace{
 		ID:        fmt.Sprintf("trc-takeover-%s-%d", runID, time.Now().UTC().UnixNano()),
 		RunID:     runID,
-		Event:     "interrupted_by_takeover",
+		Event:     state.EventTakeoverInterrupted,
 		Actor:     "cluster-takeover",
 		Timestamp: time.Now().UTC(),
 	})

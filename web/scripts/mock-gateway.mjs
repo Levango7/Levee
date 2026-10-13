@@ -194,6 +194,21 @@ const server = http.createServer((req, res) => {
     return send(res, { buckets: days, series: ['success', 'active', 'rolled_back', 'failed', 'stopped'], truncated: false })
   }
 
+  // Takeover settlements: two events, one still interrupted and one since
+  // resumed, so the browser check can assert the timeline reports the run's
+  // CURRENT status rather than the moment of settlement.
+  if (u === '/api/v1/system/takeover-events') {
+    const now = Math.floor(Date.now() / 1000)
+    return send(res, {
+      events: [
+        { id: 'trc-tk-mock-2', run_id: 'run-1002', actor: 'cluster-takeover', timestamp: now - 7200, status: 'running' },
+        { id: 'trc-tk-mock-1', run_id: 'run-1003', actor: 'cluster-takeover', timestamp: now - 18000, status: 'interrupted' },
+      ],
+      days: 7,
+      window_from: now - 7 * 86400,
+    })
+  }
+
   // One change's worth of detail pages.
   if (/^\/api\/v1\/changes\/run-1000$/.test(u)) return send(res, detail)
   if (/^\/api\/v1\/changes\/run-1000\/trace/.test(u)) return send(res, trace)
