@@ -293,6 +293,36 @@ export const systemApi = {
     checkedAt: number
   }> => post('/system/doctor', {}),
   clusterStatus: (): Promise<ClusterStatus> => get<ClusterStatus>('/system/cluster-status'),
+  /**
+   * Takeover settlements over the window, newest first is the server's job —
+   * the rows arrive in whatever order the store returns and the view sorts.
+   *
+   * `status` is the run's CURRENT status, not the status at settlement time:
+   * a run the cluster interrupted and that has since been resumed is a
+   * different story from one still sitting interrupted, and a timeline that
+   * reports the latter would send the operator chasing a fixed problem.
+   */
+  takeoverEvents: (params?: {
+    days?: number
+    limit?: number
+  }): Promise<{
+    events: TakeoverEventDTO[]
+    days: number
+    window_from: number
+  }> =>
+    get('/system/takeover-events', {
+      params: { days: params?.days, limit: params?.limit },
+    }),
+}
+
+/** One cluster takeover settlement, as GET /system/takeover-events returns it. */
+export interface TakeoverEventDTO {
+  id: string
+  run_id: string
+  actor: string
+  /** Unix seconds. */
+  timestamp: number
+  status: string
 }
 
 export interface ApprovalDecision {

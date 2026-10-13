@@ -323,6 +323,30 @@ console.log('\n[4] the target map is windowed and its scrollbar is honest')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[4b] the cluster page renders takeover settlements')
+{
+  const page = await newPage(browser)
+  // The mock reports one still-interrupted run and one since resumed, so the
+  // timeline must show BOTH statuses — a timeline that stamped the settlement
+  // moment instead of the run's current status would report both as
+  // interrupted, which is the bug internal/grpc/rest_takeover.go exists to
+  // avoid.
+  await open(page, '/cluster', 2200)
+  const rows = await page.evaluate(() =>
+    [...document.querySelectorAll('.takeover')].map((li) => ({
+      run: li.querySelector('.takeover__run')?.textContent?.trim() || '',
+      status: li.querySelector('.status__label')?.textContent?.trim() || '',
+    })),
+  )
+  check('the takeover timeline renders both events', rows.length === 2, `rows=${JSON.stringify(rows)}`)
+  const byRun = Object.fromEntries(rows.map((r) => [r.run, r.status]))
+  check('a still-interrupted run reads as interrupted', byRun['run-1003'] === '已中断', JSON.stringify(byRun))
+  check('a resumed run reads as its current status', byRun['run-1002'] === '执行中', JSON.stringify(byRun))
+  if (SHOTS) await page.screenshot({ path: `${SHOT_DIR}/cluster_takeovers.png` })
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[5] the keyboard path moves a visible cursor and opens the row')
 {
   const page = await newPage(browser)

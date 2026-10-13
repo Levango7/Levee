@@ -8,14 +8,17 @@
 // Reformatting this file with spaces silently disarms that guard — change the
 // spec first if the shape ever needs to move.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { batchApi, systemApi, type BatchSummaryDTO, type ClusterStatus } from '@/api'
+import { batchApi, systemApi, type BatchSummaryDTO, type ClusterStatus, type TakeoverEventDTO } from '@/api'
+import type { ChangeStatus } from '@/types/levee'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { assignmentLabel } from '@/utils/assignment'
 import { nodeRoleLabel, nodeStatusLabel, nodeStatusTone } from '@/utils/node'
 import PageHeader from '@/components/PageHeader.vue'
 import StateBlock from '@/components/StateBlock.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
+import { formatTimestamp } from '@/utils/format'
 
 const data = ref<ClusterStatus | null>(null)
 const batchData = ref<BatchSummaryDTO | null>(null)
@@ -34,6 +37,41 @@ const batchErrorTier = computed<LoadTier>(() =>
 	batchError.value === null ? 'ok' : classifyError(batchError.value),
 )
 const batchErrorText = computed(() => errorMessage(batchError.value, '批次进度加载失败'))
+
+// Takeover settlements: the cluster page's second observability surface. Until
+// this the loop in internal/takeover wrote a trace row per settlement and
+// NOTHING read it — so an operator could not tell "the cluster interrupted this
+// run because its executor died" from "a human cancelled it".
+const takeovers = ref<TakeoverEventDTO[] | null>(null)
+const takeoverError = ref<unknown>(null)
+const takeoverLoading = ref(false)
+
+const takeoverTier = computed<LoadTier>(() => {
+	if (takeoverError.value !== null) return classifyError(takeoverError.value)
+	if (!takeoverLoading.value && takeovers.value !== null && takeovers.value.length === 0) return 'empty'
+	return 'ok'
+})
+const takeoverText = computed(() => errorMessage(takeoverError.value, '接管事件加载失败'))
+
+// Newest first, and a run's CURRENT status travels with the event: an
+// interrupted run that has since been resumed must not read as still
+// interrupted.
+const takeoverRows = computed(() =>
+	[...(takeovers.value ?? [])].sort((a, b) => b.timestamp - a.timestamp),
+)
+
+async function fetchTakeovers() {
+	takeoverLoading.value = true
+	takeoverError.value = null
+	try {
+		const res = await systemApi.takeoverEvents({ days: 7, limit: 100 })
+		takeovers.value = res.events || []
+	} catch (e) {
+		takeoverError.value = e
+	} finally {
+		takeoverLoading.value = false
+	}
+}
 
 async function fetchStatus() {
 	loading.value = true
@@ -62,6 +100,7 @@ async function fetchBatchStatus() {
 
 onMounted(() => {
 	fetchStatus()
+	fetchTakeovers()
 	timer = setInterval(fetchStatus, 30_000)
 })
 onUnmounted(() => { if (timer) clearInterval(timer) })
@@ -274,10 +313,89 @@ const assignmentDistribution = computed(() => {
 			:hint="errorTier === 'forbidden' ? '集群状态受角色管控，请联系管理员授权' : ''"
 			@retry="fetchStatus"
 		/>
+
+		<!-- Takeover timeline. Rows are settlements the cluster performed on
+		     runs whose executor died, so the row's `status` column is the run's
+		     CURRENT state: "已中断" here means nobody has resumed it yet, and a
+		     resumed run reads as whatever it is now. -->
+		<section class="lv-panel" v-loading="takeoverLoading">
+			<div class="lv-panel__head">
+				<span class="lv-panel__title">接管事件</span>
+				<span v-if="takeoverRows.length" class="lv-panel__hint lv-mono">近 7 天 {{ takeoverRows.length }} 次</span>
+			</div>
+			<div class="lv-panel__body">
+				<StateBlock
+					v-if="takeoverTier === 'error' || takeoverTier === 'forbidden'"
+					:tier="takeoverTier"
+					:message="takeoverText"
+					:hint="takeoverTier === 'forbidden' ? '接管事件受角色管控，请联系管理员授权' : ''"
+					dense
+					@retry="fetchTakeovers"
+				/>
+				<StateBlock
+					v-else-if="takeoverTier === 'empty'"
+					tier="empty"
+					hint="近 7 天没有执行器掉线被接管"
+					dense
+				/>
+				<ul v-else class="takeovers">
+					<li v-for="t in takeoverRows" :key="t.id" class="takeover">
+						<span class="takeover__time lv-mono">{{ formatTimestamp(t.timestamp) }}</span>
+						<span class="takeover__run lv-mono" :title="t.run_id">{{ t.run_id }}</span>
+						<span class="takeover__status">
+							<StatusTag :status="t.status as ChangeStatus" variant="plain" />
+						</span>
+						<span class="takeover__actor lv-mono">{{ t.actor }}</span>
+					</li>
+				</ul>
+			</div>
+		</section>
 	</div>
 </template>
 
 <style scoped>
+/* Takeover timeline rows: time, run, current status, actor — the four facts
+   that separate "the cluster noticed an executor died" from "someone
+   cancelled it". */
+.takeovers {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.takeover {
+	display: grid;
+	grid-template-columns: 150px minmax(0, 1fr) 110px 130px;
+	align-items: center;
+	gap: var(--lv-space-3);
+	padding: var(--lv-space-2) 0;
+	border-bottom: 1px solid var(--lv-border-soft);
+	font-size: var(--lv-text-sm);
+}
+
+.takeover:last-child {
+	border-bottom: none;
+}
+
+.takeover__time {
+	color: var(--lv-text-3);
+}
+
+.takeover__run {
+	color: var(--lv-text-1);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.takeover__actor {
+	color: var(--lv-text-3);
+	font-size: var(--lv-text-xs);
+}
+
 .hint {
 	display: flex;
 	align-items: flex-start;

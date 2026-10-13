@@ -141,5 +141,19 @@
       "Uptime",
       "ActiveRuns"
     ]
+  },
+  "takeover-events": {
+    "method": "GET",
+    "path": "/system/takeover-events",
+    "keys": [
+      "days",
+      "events",
+      "window_from"
+    ],
+    "forbid": [
+      "Events",
+      "Days",
+      "WindowFrom"
+    ]
   }
 }
