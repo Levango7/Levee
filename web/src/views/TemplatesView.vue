@@ -9,7 +9,7 @@ import { targetsApi, templatesApi } from '@/api'
 import type { Template } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StateBlock from '@/components/StateBlock.vue'
-import { formatTimestamp } from '@/utils/format'
+import { formatTimestamp, PRIORITIES, PRIORITY_LABEL, priorityLabel } from '@/utils/format'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
 import {
@@ -401,10 +401,11 @@ onMounted(load)
           </el-form-item>
           <el-form-item label="优先级">
             <el-select v-model="instantiate.form.priority" style="width: 160px">
-              <el-option label="低" value="low" />
-              <el-option label="中" value="normal" />
-              <el-option label="高" value="high" />
-              <el-option label="紧急" value="urgent" />
+              <!-- One owner for the vocabulary: these options used to be four
+                   hand-copied label/value lines, a third copy beside the Priority
+                   union and PRIORITY_LABEL — and the copy nothing would notice
+                   when a fifth priority arrived. -->
+              <el-option v-for="p in PRIORITIES" :key="p" :label="PRIORITY_LABEL[p]" :value="p" />
             </el-select>
           </el-form-item>
           <el-alert
@@ -436,7 +437,7 @@ onMounted(load)
               </span>
             </el-descriptions-item>
             <el-descriptions-item label="团队">{{ instantiate.form.team || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="优先级">{{ instantiate.form.priority }}</el-descriptions-item>
+            <el-descriptions-item label="优先级">{{ priorityLabel(instantiate.form.priority) }}</el-descriptions-item>
             <el-descriptions-item label="创建方式">
               {{ instantiate.form.dryRun ? '仅计划：创建 planned 变更，不执行' : '提交审批：创建 pending 变更，等待审批后执行' }}
             </el-descriptions-item>

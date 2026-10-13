@@ -6,6 +6,12 @@
 // `Record<Priority, string>` 能让"前端漏配一个标签"变成编译错误，但它看不见 Go 加了
 // 第五个值——那正是这次拆列要防的那类漂移（同一个拼写服务两套语义，或者一套语义两个拼写）。
 // 名单从 priority.go 解析、也从 TS 文件解析，两边都不复述。
+//
+// 现在有四个方向（每个都是一份独立的抄件，所以各自一条）：`Priority` 联合、
+// `PRIORITY_LABEL` / `PRIORITY_COLOR` 两张表、向导下拉实际渲染的 `PRIORITIES` 数组，
+// 以及 ApprovalView 里手写的 `.cell-prio--<拼写>` 样式规则。最后一条是拼写面：
+// 规则名对着一个引擎永远不会产出的值，就是"看起来支持"的死 CSS（同族教训见
+// internal/cluster 的节点守卫）。
 package state
 
 import (
@@ -72,5 +78,76 @@ func TestWebPriorityLabelsAndColorsCoverEveryPriority(t *testing.T) {
 	for _, value := range PriorityNames() {
 		assert.True(t, labels[value], "%q has no PRIORITY_LABEL entry — the Chinese console would render the wire spelling", value)
 		assert.True(t, colors[value], "%q has no PRIORITY_COLOR entry", value)
+	}
+}
+
+// webArrayMembers parses `export const NAME: readonly T[] = ['a', 'b']`.
+func webArrayMembers(t *testing.T, rel, name string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(repoFile(t, rel))
+	require.NoError(t, err)
+	// The class stops at "]" and the pattern is line-anchored: an unanchored
+	// `.*` would happily reach into the next declaration and report its members.
+	line := regexp.MustCompile(`(?m)^export const ` + name + `: readonly \w+\[\] = \[([^\]\n]*)\]$`).FindStringSubmatch(string(raw))
+	require.Len(t, line, 2, "could not find `export const %s: readonly …[] = [...]` in %s — its shape changed", name, rel)
+	var out []string
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(line[1], -1) {
+		out = append(out, m[1])
+	}
+	require.NotEmpty(t, out, "%s parsed empty in %s", name, rel)
+	return out
+}
+
+// TestWebPriorityRuntimeArrayMatchesTheVocabulary covers the array the instantiate
+// wizard renders its <el-option> list from. It exists because the wizard used to
+// hand-copy four option lines, which is a third owner of the vocabulary that a
+// fourth Go value would silently miss — the union cannot be iterated at runtime, so
+// an array is the only way the template can read the list from its owner.
+func TestWebPriorityRuntimeArrayMatchesTheVocabulary(t *testing.T) {
+	listed := webArrayMembers(t, "web/src/utils/format.ts", "PRIORITIES")
+	declared := PriorityNames()
+
+	require.Len(t, listed, len(declared),
+		"PRIORITIES lists %d values while internal/state declares %d — the wizard would offer or hide one", len(listed), len(declared))
+	for i, value := range declared {
+		assert.Equal(t, value, listed[i], "PRIORITIES member %d must be %q (urgency order is part of the contract)", i, value)
+	}
+
+	// The array and the label table must be the same set, or the wizard can offer a
+	// value the console then prints as a raw spelling.
+	labels := recordKeys(t, "web/src/utils/format.ts", "PRIORITY_LABEL")
+	set := map[string]bool{}
+	for _, value := range listed {
+		assert.True(t, labels[value], "PRIORITIES offers %q, which has no PRIORITY_LABEL entry", value)
+		set[value] = true
+	}
+	for value := range labels {
+		assert.True(t, set[value], "PRIORITY_LABEL covers %q, which PRIORITIES does not offer", value)
+	}
+}
+
+// TestApprovalPriorityCssClassesAreDeclaredPriorities is the spelling direction, the
+// one internal/cluster's node guard learned first: the approval queue colours the
+// priority cell with `.cell-prio--<wire spelling>` rules written by hand in the view.
+// A rule named after a value nothing produces is dead CSS that reads like support, and
+// a real fifth priority would arrive with no rule at all.
+func TestApprovalPriorityCssClassesAreDeclaredPriorities(t *testing.T) {
+	raw, err := os.ReadFile(repoFile(t, "web/src/views/ApprovalView.vue"))
+	require.NoError(t, err)
+
+	declared := map[string]bool{}
+	for _, value := range PriorityNames() {
+		declared[value] = true
+	}
+
+	found := regexp.MustCompile(`\.cell-prio--([a-zA-Z][\w-]*)`).FindAllStringSubmatch(string(raw), -1)
+	require.NotEmpty(t, found, "no `.cell-prio--*` rule found in ApprovalView.vue — the styling was renamed, and this guard went blind")
+	seen := map[string]bool{}
+	for _, m := range found {
+		name := m[1]
+		assert.True(t, declared[name],
+			"ApprovalView styles .cell-prio--%s, which no state.Priority* constant produces — dead CSS that reads like support", name)
+		assert.False(t, seen[name], ".cell-prio--%s is declared twice", name)
+		seen[name] = true
 	}
 }

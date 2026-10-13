@@ -12,7 +12,7 @@ import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import PageHeader from '@/components/PageHeader.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
-import { formatTimestamp } from '@/utils/format'
+import { formatTimestamp, priorityLabel } from '@/utils/format'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { buildTargetMap, cellSummary, STEP_LABEL, windowRange, MAP_ROW_PITCH } from '@/utils/targetMap'
 import type { MapWindow } from '@/utils/targetMap'
@@ -314,7 +314,7 @@ const batchTotals = computed(() => {
                 <div class="lv-kv__k">变更 ID</div>
                 <div class="lv-kv__v lv-mono">{{ change.id }}</div>
                 <div class="lv-kv__k">优先级</div>
-                <div class="lv-kv__v">{{ change.priority }}</div>
+                <div class="lv-kv__v">{{ priorityLabel(change.priority) }}</div>
                 <div class="lv-kv__k">环境</div>
                 <div class="lv-kv__v">{{ change.environment }}</div>
                 <div class="lv-kv__k">模板</div>
