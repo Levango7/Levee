@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### CI（浏览器级检查进 CI：ubuntu + windows 双 OS，并且它必须真的在跑）
+
+- **背景**：浏览器检查此前只是本地门禁——`node scripts/browser-check.mjs` 在开发机上跑，CI 里没人跑。一个不在 CI 里的检查等于没有检查。
+- **落地**：新增 `browser-check` 作业，矩阵 `ubuntu-latest` + `windows-latest`，挂进聚合门禁 `check` 的 `needs`。puppeteer-core 走 **CI 内全局安装并钉版本**（`npm install -g puppeteer-core@24.37.0`），不放进 `package.json`——它是 CI 工具，不是应用依赖，和 gosec 的 `go install` 同一套路。`--shots` 的截图作 artifact 上传（**只上传、永不比对**：那是给人看的证据，不是基线）。
+- **`BROWSER_CHECK_REQUIRE=1` 是这个作业的核心**：脚本默认在"找不到驱动/浏览器"时 exit 0 并打印跳过（本地合理），而 CI 里一个会静默跳过的绿色构建意味着"没人跑浏览器检查"。required 模式下两者都 exit 1。三条路径都验过：Chrome 路径不存在 + required → 1；Chrome 路径不存在 + 本地 → 0 并说明；正常 → ALL PASS。**`CHROME_PATH` 被设成不存在的路径时点名报错**，而不是静默换一个浏览器——那会让人以为测的是指定那个。
+- **顺带修了脚本的两个 CI 适配**：Chrome 解析加 Linux runner 的 `/usr/bin/google-chrome` 等候选与 PATH 查找（原先只有一条 Windows 硬编码路径，CI 上必然找不到）；Windows 下 `npm root -g` 的反斜杠路径沿用既有的归一化 + `pathToFileURL`（否则 `import()` 报 "Received protocol 'e:'"）。
+- **一次失败的如实记录**：首次本地模拟 CI 流程时 `/changes` 无 h1 无行，第二次跑又好了。**根因没能坐实**——我把预热（warm-up）去掉做变异，没能复现；真正可疑的是就绪判据：`curl /` 打中的只是静态 index.html，Vite 的模块转换管线还没起来它就返 200（那次"ready after 1s"本来就可疑）。所以做的是两处防御：就绪改判 `/src/main.ts`（模块真的被转换过才答 200），外加一次预热把首屏编译成本挪到断言之外。**没有声称预热是修复**——证据不足。
+- **跨浏览器（Firefox/WebKit）刻意不做**：要引 Playwright 并在 CI 拉 ~300MB 浏览器二进制，而该控制台的目标浏览器是 Chrome/Edge；真要做的那天，把 puppeteer-core 换成 Playwright 即可，断言不用改。记账在此。
+- **第三处同步点（聚合守卫当场抓住）**：给 workflow 的 `needs:` 加 `browser-check` 之后，`scripts/test_ci_aggregate.py` 的硬编码 JOBS 清单、聚合 step 里的 `${{ needs.browser-check.result }}` 插值，都要同步——漏一个，聚合自己判红并打印 `the aggregate list drifted from needs()`。这正是该仓防呆设计的用途：**加一个 CI 作业是三处改动，不是一个**。
+- 验证：`python scripts/test_ci_aggregate.py`、`test_release_workflow_budget.py`、`test_require_ci_release.py` 三个 workflow 守卫全过；YAML 解析通过；删除 Vite 缓存后真冷启全流程 ALL PASS；连跑两轮稳定。
+
 ### 新增（列个性化：列显隐 + 筛选记忆；拖拽调宽刻意不做）
 
 - **做什么**：变更看板的表格现在记住两件事——藏了哪几列、上次的筛选词，刷新后都在。列选择器是工具栏一个「列」下拉，只有**范围/模板/创建时间**三列可藏，**变更/状态/操作**恒显（那是一个行"是什么"本身，藏了就成一张认不出内容的表）。

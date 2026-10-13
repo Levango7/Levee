@@ -27,7 +27,8 @@ YML = REPO / ".github" / "workflows" / "ci.yml"
 
 # 与 ci.yml 里 needs(...) 清单同序；改那边必须同步改这里——而聚合步骤自带的漂移守卫
 # 正是兜住这件事的那一道，本文件最后一个用例就在验它。
-JOBS = ["release-gate", "vet", "lint", "frontend", "test", "integration", "proto",
+# 2026-10-13: browser-check 加在 frontend 之后（与 ci.yml needs: 的顺序一致）。
+JOBS = ["release-gate", "vet", "lint", "frontend", "browser-check", "test", "integration", "proto",
         "docs", "smoke", "delivery", "build", "gosec", "govulncheck", "trivy"]
 
 
