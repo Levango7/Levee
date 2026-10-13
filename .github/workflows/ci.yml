@@ -661,7 +661,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7a6c64a875d1fc6a0a  # v7
         with:
           name: browser-shots-${{ matrix.os }}
-          path: web/.browser-shots
+          path: ${{ github.workspace }}/web/.browser-shots
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
