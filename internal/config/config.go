@@ -399,6 +399,13 @@ type ChatOpsBotConfig struct {
 	WebhookURL string        `json:"webhook_url" mapstructure:"webhook_url"`
 	Secret     string        `json:"secret"      mapstructure:"secret"`
 	Timeout    time.Duration `json:"timeout"     mapstructure:"timeout"`
+	// IdentityMap maps this platform's user ids to LEVEE subjects, for the
+	// inbound decision path: a chat user's open_id / member id / staffId is
+	// what the platform signs, and the audit record must name the LEVEE
+	// subject who decided. Leave it empty when the two are already the same
+	// string (the map is then a no-op). An unmapped id is refused by the
+	// approver check, never silently adopted as a subject.
+	IdentityMap map[string]string `json:"identity_map" mapstructure:"identity_map"`
 }
 
 // WebhookConfig configures the webhook notifier.

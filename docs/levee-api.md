@@ -839,6 +839,7 @@ RESTful 风格，支持两套路径：
 | POST | `/changes/deeplink/approve` | — | 一键审批（移动端，一次性 token 认证，见 13.3） | — |
 | POST | `/changes/deeplink/reject` | — | 一键驳回（移动端，一次性 token 认证，见 13.3） | — |
 | POST | `/gates/verify` | — | 按需单步验证（cmd/probe/slo，见 13.4） | — |
+| POST | `/chatops/callback/<bot>` | — | ChatOps 入向回调（平台 MAC 验签，见 13.8） | — |
 | POST | `/templates` | `/api/v1/TemplateService/CreateTemplate` | 创建模板 | `levee template create` |
 | GET | `/templates` | `/api/v1/TemplateService/ListTemplates` | 列出模板 | `levee template list` |
 | GET | `/templates/:name` | `/api/v1/TemplateService/GetTemplate` | 查看模板 | `levee template show` |
@@ -1183,4 +1184,16 @@ airgap:
 | `levee drift scan` | 4.3 D3 状态与漂移（简化） |
 | `levee secret` | 4.8.1 凭据代理、4.8.5 凭据轮换 |
 | 第13章 REST API | 7 组件架构 L1 接入层 |
-| 第14章 配置文件 | 4.10 D12 部署形态（单机 / 集群 / 气隙 profile） |
+| 第14章 配置文件 | 4.10 D12 部署形态（单机 / 集群 / 气隙 profile） 
+### 13.8 ChatOps 入向决策（POST /chatops/callback/&lt;bot&gt;）
+
+审批事件的**出向**镜像（请求卡、决定广播）之外，ChatOps 层同时是**决策的入向入口**：聊天客户端里点「通过 / 驳回」或输入 `/levee approve <run-id>`，与在控制台、移动端深链、CLI 上操作**同一个审批状态机**。此前卡片背后的动词是命令路由器的内置空桩（回复 "no handler registered"）——点击落在无人接听的处理器上，本端点与配套接线补上这一环。
+
+**挂载与认证**：每个配置了签名 secret 的 bot 挂一条路由 `/chatops/callback/<bot 名>`（`gw.SetPublicRoute`，**免 Bearer**——平台签名是它唯一能出示的凭据）。路由内的 `chatops.CallbackHandler` 先验签再分发：Slack `X-Slack-Signature`（v0:timestamp:body 的 HMAC，5 分钟新鲜度）、钉钉 `timestamp`+`sign`、飞书 `X-Lark-Signature`+`X-Lark-Request-Timestamp`（后两者为 `timestamp
+secret` 构造，1 小时容差），body 上限 1MB，验签失败 **401 且不进入路由**。没有 secret 的 bot **不挂入向路由**（出向镜像照旧，启动日志点名说明）——一个不验签的决策端点比没有端点更糟。飞书/Events API 的 url_verification challenge 在验签通过后原样回显。
+
+**身份映射（`notify.chatops.bots[].identity_map`）**：平台签的是它自己的用户 id（飞书 open_id / Slack member id / 钉钉 staffId），而审计要记的是 LEVEE 主体。映射表按平台配置（每个 bot 一张，id 只在平台内唯一）；**未配置时按原值透传**——部署环境里两者本就同形的无需建表。**映射不到或为空一律拒绝决策**（不猜、不落到某个共享主体），真正兜底的是审批服务本身：非审批人名单内的主体投票会被 `ErrUnauthorizedApprover` 拒绝并回名单，发起人自审被 `exclude_initiator` 拒绝。也就是说聊天是**新的输入通道，不是新的权限来源**。
+
+**动词**：`approve <run-id>`（记账 + 结算 run；法定人数未到时如实回答 n/m）、`reject <run-id> --reason <原因>`（一票否决，原因必填）、`status <run-id>`（等级/所需票数/已收集票数/审批人名单/有效期）。决定先落账、run 后结算；结算失败会明说"批准已落账但变更不会自动放行"，不假装成功。
+
+|

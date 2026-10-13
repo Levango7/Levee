@@ -26,9 +26,14 @@ import (
 
 // SlackConfig is the configuration for a SlackBot.
 type SlackConfig struct {
-	Name        string        // bot name (registration key)
-	WebhookURL  string        // incoming webhook URL (required)
-	BotToken    string        // xoxb token (optional, used for chat.postMessage)
+	Name       string // bot name (registration key)
+	WebhookURL string // incoming webhook URL (required)
+	BotToken   string // xoxb token (optional, used for chat.postMessage)
+	// Secret is the Slack app's SIGNING secret — it verifies inbound
+	// callbacks (interactive buttons, slash commands). It is a different
+	// credential from BotToken: without it an ingress has nothing to check
+	// the X-Slack-Signature header against and must not be mounted at all.
+	Secret      string        // signing secret (required for the inbound ingress)
 	Timeout     time.Duration // per-request timeout
 	MaxRetries  int           // retry attempts after the initial POST
 	RetryDelay  time.Duration // delay between retries

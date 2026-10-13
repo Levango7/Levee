@@ -153,10 +153,12 @@ type Gateway struct {
 }
 
 // extraRoute pairs a mux pattern with the handler SetExtraRoute should
-// mount for it.
+// mount for it. A public route authenticates by its own means and must not
+// also demand a bearer the caller cannot hold.
 type extraRoute struct {
 	pattern string
 	handler http.Handler
+	public  bool
 }
 
 // mobileApprovalHandler wraps the MobileApprovalService for REST routing.
@@ -254,6 +256,38 @@ func (gw *Gateway) SetExtraRoute(pattern string, handler http.Handler) {
 	gw.extraRoutes = append(gw.extraRoutes, extraRoute{pattern: pattern, handler: handler})
 }
 
+// SetPublicRoute registers an extra route that is exempt from bearer auth
+// because it authenticates by its own means — a MAC over the request body
+// under a secret the caller and server share, which is the only credential
+// a chat platform callback can present (see chatops.CallbackHandler).
+//
+// The exemption is per route, not a gateway flag, and that distinction is
+// the whole point: MetricsPublic leaves EVERY extra route public at once,
+// so using it for a callback would also publish /metrics. A public route
+// that cannot verify its callers is a hole; this method is only correct for
+// handlers whose own check is unconditional.
+func (gw *Gateway) SetPublicRoute(pattern string, handler http.Handler) {
+	gw.extraMu.Lock()
+	defer gw.extraMu.Unlock()
+	gw.extraRoutes = append(gw.extraRoutes, extraRoute{pattern: pattern, handler: handler, public: true})
+}
+
+// mountExtraRoutes mounts every registered extra route on mux. It is a
+// method rather than a block inside serveOn so the auth-per-route decision
+// has one home that both the server and its tests exercise — the same
+// "one builder for both" rule dataHandler follows.
+func (gw *Gateway) mountExtraRoutes(mux *http.ServeMux) {
+	gw.extraMu.Lock()
+	defer gw.extraMu.Unlock()
+	for _, er := range gw.extraRoutes {
+		h := er.handler
+		if !er.public && !gw.cfg.MetricsPublic {
+			h = gw.authMiddleware(h)
+		}
+		mux.Handle(er.pattern, h)
+	}
+}
+
 // Stop gracefully shuts down the HTTP server.
 func (gw *Gateway) Stop(ctx context.Context) error {
 	if gw.httpServer == nil {
@@ -303,16 +337,10 @@ func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 	// Unlike /healthz, these are gated behind the same bearer auth as the API
 	// whenever any token is configured, so deployment telemetry is not
 	// publicly readable by default. Set MetricsPublic to opt out (e.g. for
-	// scraping agents that cannot send credentials).
-	gw.extraMu.Lock()
-	for _, er := range gw.extraRoutes {
-		h := er.handler
-		if !gw.cfg.MetricsPublic {
-			h = gw.authMiddleware(h)
-		}
-		mux.Handle(er.pattern, h)
-	}
-	gw.extraMu.Unlock()
+	// scraping agents that cannot send credentials). Routes registered via
+	// SetPublicRoute skip that gate individually — they carry their own
+	// authentication (the ChatOps callback verifies the platform MAC).
+	gw.mountExtraRoutes(mux)
 
 	gw.httpServer = &http.Server{
 		Handler:           mux,

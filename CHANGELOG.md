@@ -4,6 +4,20 @@
 
 ## [Unreleased]
 
+### 新增（ChatOps 入向决策闭环：聊天里点「通过」真的能批，而且只有平台签过名的才能批）
+
+- **背景**：ChatOps 层此前只有出向。审批请求卡与决定广播一直在播，但卡片背后的 `/levee approve` / `reject` 是命令路由器的内置空桩——回复是 "approve: no handler registered"。三个 adapter 的 `Parse*Callback` 解码器**零生产调用方**，bot 没有回调端点，mac 验签按各自文件注释归属的「ingress 层」从未被建。也就是说：聊天室里看得见审批，点不动。
+- **落地（四段）**：
+  1. **`internal/chatops/ingress.go`（新）**：三个平台的回调验签（Slack `v0:ts:body` HMAC 5 分钟新鲜度；钉钉/飞书 `timestamp
+secret` 构造 1 小时容差）+ 1MB body 上限 + Feishu Events API 的 url_verification challenge 回显 + `CallbackHandler`（验签通过才 parse/dispatch/ack，失败 401 且**不进路由**）。**没有 secret 的 bot 构造直接拒绝**（`ErrCallbackSecretMissing`）：一个不验签的决策端点比没有端点更糟。
+  2. **按路由的 Bearer 豁免（`SetPublicRoute`）**：平台签名是聊天回调唯一能出示的凭据，路由必须免 Bearer。但豁免做成**每路由**而非网关级——`MetricsPublic` 是全局开关，为一条回调路由打开它会同时把 `/metrics` 公开。挂载逻辑抽成 `mountExtraRoutes`，服务器与测试同一个 builder。
+  3. **`chatopsbridge/decision.go`（新）**：approve / reject / status 三个动词的真 handler，走**与控制台/CLI/移动深链同一个审批状态机**（`approval.Service`，且是 change service 决策用的那个实例——同 store 上的第二个服务会决定而不触发 Observer 扇出，房间里就看不见"1/2 已批准"）。决定先落账、run 后结算；结算失败明说"已落账但不会自动放行"，不假装成功。**原本要报的票数从决定后的新读里取**：用决定前的快照会告诉刚投完票的操作员"0/2"——本会话测试当场咬出这个 bug。
+  4. **身份映射（`notify.chatops.bots[].identity_map`）**：平台签的是它自己的用户 id（飞书 open_id / Slack member id / 钉钉 staffId），审计要记 LEVEE 主体。按平台配置、缺省透传、**映射不到或为空一律拒绝**（不猜、不落到共享主体）。兜底是审批服务本身：非审批人被 `ErrUnauthorizedApprover` 拒绝并回名单，发起人自审被 `exclude_initiator` 拒绝。**聊天是新的输入通道，不是新的权限来源**——这条是设计约束，测试对两条拒绝路径都钉死。
+- **顺带补一个真缺口**：`SlackConfig` 根本没有签名字段（只有 BotToken，那是另一个凭据）——Slack 入向验签此前无材料可用，`serve` 也没往下传。补 `Secret` 并接线。
+- **非破坏选择**：没有 secret 的 bot **不挂入向路由**，出向镜像照旧，启动日志点名说明。visibility-only 部署升级不受影响；"没有入向"是说出来而不是被一次无人应答的点击发现。
+- **测试**：ingress 14 例（三平台合法/篡改/错 secret/过期/缺头 + challenge + 超大 body + 畸形 body + 时间戳 fail-closed）；决策 verbs 18 例（含一票否决、部分 quorum、非审批人被拒并回名单、发起人自审被拒、身份映射生效、未解析身份拒绝、无记录、nil 依赖、verbs 替换桩）；serve 接线 6 例 + **端到端 2 例**（签名 Slack 按钮点击 → 路由 → 决策 → run 结算；无签名回调 401 且 run 不动）。**变异逐一咬住**：Slack 验签恒真（篡改用例红）、跳过 Approve 调用（结算用例红）。
+- 验证：`go test ./...` EXIT=0、`gofmt` 干净、golangci-lint 0 issues。前端未涉及、dist 未动。
+
 ### 新增（移动审批深链：重复点击返回「已由 X 批准」而不是一句 401）
 
 - **问题**：一键审批 token 是单次的，于是「同一个链接点第二次」必然失败。而那一刻操作员真正想问的是「我第一次点成了吗」——旧实现只有一句 `401 invalid or expired deeplink token`，「已批准」和「链接过期」在响应上完全同形，移动页只能显示失败，人就会再点、再失败、开始怀疑变更有没有丢。
