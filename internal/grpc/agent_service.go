@@ -205,7 +205,12 @@ func heartbeatUnknownAgent(id string) error {
 	return status.Errorf(codes.NotFound, "agent %q is not registered; call RegisterAgent again", id)
 }
 
-// DeregisterAgent is the agent's own goodbye.
+// DeregisterAgent is the agent's own goodbye. A clean shutdown has drained its
+// work, so refusing while the record still reports in-flight tasks costs an
+// honest caller nothing and stops the goodbye from being used as an unguarded
+// delete. Nothing in this repository calls it over gRPC yet (the only
+// MasterClient is the in-process one), so an agent-side caller added later must
+// handle FailedPrecondition: the record staying behind is the point.
 func (s *AgentService) DeregisterAgent(ctx context.Context, req *pb.DeregisterAgentRequest) (*pb.DeregisterAgentReply, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Unimplemented, "agent registry is not configured on this server")
@@ -216,6 +221,26 @@ func (s *AgentService) DeregisterAgent(ctx context.Context, req *pb.DeregisterAg
 	id := strings.TrimSpace(req.GetId())
 	if id == "" {
 		return nil, status.Error(codes.InvalidArgument, "agent id is required")
+	}
+	a, err := s.store.GetAgent(ctx, id)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "look up agent %q: %v", id, err)
+	}
+	if a == nil {
+		// Nothing to say goodbye: same outcome RemoveAgent gives for an absent
+		// record, expressed as `removed=false` rather than as a fault.
+		return &pb.DeregisterAgentReply{Removed: false}, nil
+	}
+	// The same judgement `RemoveAgent` makes, on the same field. Two doors with
+	// the same effect and only one guard is how a control becomes folklore: the
+	// caller who picks the ungated RPC gets a different answer than the one the
+	// documentation promises. A record's in-flight count is the only evidence of
+	// what is running where, and `DeregisterAgentRequest` has no force field —
+	// the override deliberately lives on the operator's door, not the agent's.
+	if a.ActiveTasks > 0 {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"agent %q reports %d in-flight task(s); DeregisterAgent cannot override that — use RemoveAgent with force",
+			id, a.ActiveTasks)
 	}
 	removed, err := s.store.DeleteAgent(ctx, id)
 	if err != nil {

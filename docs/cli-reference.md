@@ -2197,6 +2197,8 @@ levee agent remove <agent-id> [--force]
 - `--remote` 模式下 daemon **默认拒绝**删除仍报在途任务的记录（那是在跑什么、跑在哪里的唯一凭据），拒绝文案形如 `agent <id> reports <N> in-flight task(s); pass force to remove the record anyway`，`--force` 是显式覆盖。
 - 本地模式（不加 `--remote`）的进程内 `Deregister` 不检查 `ActiveTasks`，`--force` 只影响远程模式。
 - 目标不存在（含重复删除）时并非零退出，信息形如 `agent remove: agent <id> is not registered`（服务端把"没删到"表达为可读拒绝而非内部错误）。
+- **服务端两条摘除门共用同一个判定**：`RemoveAgent`（运维侧，有 `force`）与 `DeregisterAgent`（Agent 自己的告别，proto 里没有 force 字段）都对"记录仍报在途任务"说不。此前只有前者有守卫——同一个破坏效果、两扇门一套规则，走没守卫那扇的调用方拿到的答案与文档承诺相反。`DeregisterAgent` 的拒绝是 `FailedPrecondition`，文案点名改用 `RemoveAgent + force`：覆盖权刻意只放在运维那侧，不让被摘除的对象自己给自己发豁免。
+- 本地模式（不加 `--remote`）走进程内注册表，摘除不检查 `ActiveTasks`：该注册表只在同一进程内被填充，`levee agent remove` 作为独立进程调用时它对任何在册 Agent 都返回 not found，因此加一道"在途拒绝"是不可达分支（按本仓惯例：测不出的守卫等于假守卫）。
 
 **示例**
 
