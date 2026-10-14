@@ -131,6 +131,9 @@ cluster:
 
 postgres:
   # 外部 PostgreSQL（生产推荐）：填写 dsn 或 externalSecretName
+  # 单节点也生效（不再只限 mode=cluster）：DSN 落 Secret，容器读
+  # LEVEE_DATABASE_DSN → database.dsn；没写驱动时 Chart 会把
+  # config.database.driver 补成 postgres。
   dsn: ""
   # 已有 Secret（键：dsn）
   externalSecretName: ""

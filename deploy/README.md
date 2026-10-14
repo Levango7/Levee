@@ -53,6 +53,32 @@ helm template levee deploy/helm/levee --set mode=cluster \
   --set auth.namedTokens[0].name=alice --set "auth.namedTokens[0].secret=x"
 ```
 
+## 数据库后端：两条门，不要混
+
+| 形态 | 怎么选 | DSN 从哪来 | 为什么不是另一条 |
+| --- | --- | --- | --- |
+| **单节点 + SQLite**（默认） | 什么都不设 | `persistence` 卷里的 `database.path` | — |
+| **单节点 + PostgreSQL**（#47 起合法） | `postgres.dsn` / `postgres.externalSecretName` / `postgres.enabled=true` | Secret → `LEVEE_DATABASE_DSN` → 配置项 `database.dsn` | serve 在没有 `--cluster` 时**拒绝** `--pg-dsn`，那条旗标不是单节点的入口 |
+| **集群（mode=cluster）** | `mode=cluster` | Secret → `LEVEE_PG_DSN` → `--pg-dsn` 旗标 | 配置里的 `database.dsn` 若同时存在，必须与该旗标相等，否则 serve 启动失败（#47 的同一库约束） |
+
+要点：
+
+- **凭据永不进 ConfigMap**。`database.dsn` 已登记进 `internal/config` 的 `LEVEE_*` 环境绑定表，所以 Chart 只把驱动写进 `config.yaml`、DSN 留在 Secret 里注入。改这条之前先想清楚：ConfigMap 是 `kubectl get cm -o yaml` 谁都能读的对象。
+- **没写驱动时，Chart 按"你有没有要求 PostgreSQL"补 `database.driver`**；显式写了 `driver: sqlite` 又启用 PostgreSQL 是一份自相矛盾，Chart **不改写**它，交给 `config.Validate` 大声拒绝启动（`database.dsn is only used when database.driver = postgres`）。
+- 同时写了 `externalSecretName` 与 `postgres.dsn` 时，**外部 Secret 完全优先**：Chart 既不渲染同名 Secret（覆盖现场拥有的对象比少一个对象更糟），也不把 values 里的 DSN 写到任何地方。
+- 每个 Pod 都带注解 `levee.qoder/database-backend: sqlite|postgres`——"我到底连的是哪种库"应当在工作对象上一眼可见，而不是要人去比对 ConfigMap 与 Secret。
+- 试用/演示可用内嵌单副本 `postgres.enabled=true`（无 HA、无备份）。生产请用既有 PG / 云 RDS。
+
+```bash
+# 单节点 PostgreSQL（外部实例）：Secret 由现场维护，键名必须是 dsn
+helm install levee ./deploy/helm/levee \
+  --set postgres.externalSecretName=my-levee-pg-secret
+# database.driver 会被补成 postgres；Chart 不会去创建名为 levee-pg 的 Secret
+
+# 渲染出来核对（CI 里跑的是同一批断言）
+bash scripts/validate_delivery.sh
+```
+
 ## 部署前必读（安全约束，来自 docs/security-audit.md 的生产准入清单）
 
 1. **认证必须用命名令牌或 OIDC**——单令牌模式无法在审计里证明"谁做的"；

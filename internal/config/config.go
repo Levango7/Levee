@@ -983,6 +983,14 @@ func allKeys() []string {
 	return []string{
 		"server.data_dir", "server.log_level", "server.log_format",
 		"database.driver", "database.path",
+		// Bound deliberately: the DSN carries credentials, and a key that is
+		// unreachable from the environment leaves a container only one way to
+		// name its database — writing the DSN into the rendered config file,
+		// i.e. a plaintext credential in a ConfigMap. With it bound, the chart
+		// puts the driver in the ConfigMap and the DSN in a Secret. Every read
+		// surface still redacts it (state.RedactDSN, StoreLocation,
+		// `system config get database.dsn`).
+		"database.dsn",
 		"database.max_open_conns", "database.max_idle_conns",
 		"database.conn_max_lifetime",
 		"state.sqlite_synchronous",
