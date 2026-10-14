@@ -2209,7 +2209,7 @@ levee agent remove agent-web-01 --remote --force
 
 ## 第21章 tenant — 租户管理
 
-管理多租户隔离与资源配额，支持租户创建、暂停/恢复、配额管理与使用量查询。
+管理多租户隔离与资源配额，支持租户创建、暂停/恢复、配额管理、使用量查询，以及删除后回收其可删数据（`tenant purge`）。
 
 ### 21.1 tenant create
 
@@ -2340,7 +2340,8 @@ levee tenant delete <tenant-id>
 
 - 没有前置状态要求：`active` 或 `suspended` 的租户都可删除，`Delete` 不检查在途变更，也不要求先 suspend（早期文档写过"仅当 suspended 且无活跃变更时可删除"，实现中并无此守卫）。
 - 重复删除同一租户是幂等的（已 `deleted` 直接返回成功）。
-- 没有 `--force`：级联清理租户名下所有数据尚未实现，`TenantManager` 也不持有"该租户有哪些 target/run"的反查，所以没有任何东西可"强制"清理。
+- 没有 `--force`：级联清理租户名下所有数据不是一个开关能表达的——见下面 `tenant purge`，它只删证据链允许删的那部分。
+- 删除只改注册表状态，不动数据库里的任何行。要真正回收数据，删完之后再用 `levee tenant purge <tenant-id>`。
 
 **示例**
 
@@ -2348,7 +2349,48 @@ levee tenant delete <tenant-id>
 levee tenant delete t-001
 ```
 
-### 21.7 tenant quota
+### 21.7 tenant purge
+
+永久删除**已软删除租户**中"可删的那部分"数据。
+
+```text
+levee tenant purge <tenant-id> [--yes]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<tenant-id>` | 是 | 租户 ID（必须已是 `deleted` 状态） |
+| `--yes` | 非交互模式必填 | 跳过交互确认；`--json` 下没有终端可问，不给出即失败 |
+
+**删什么**
+
+- 该租户名下**终态且从未产生 trace** 的变更 run（建了、plan 了、随后放弃的那些），连同级联的 `batches` / `steps`；
+- 这些 run 的审批记录（随 `runs` 的 `ON DELETE CASCADE` 一起走）；
+- 这些 run 的 `run_assignment` 行——该表的 `run_id` 是主键而非外键，没有级联边，所以必须显式删，且先删。
+
+**不删什么（并且会照实报出来）**
+
+- **有 trace 的 run 一律保留**：`trace` / `audit` 是 append-only，schema 里的 WORM 触发器会中止删除，并且把整条语句回滚——也就是说，如果 purge 不绕开这些 run，它的表现是"什么都没删"而不是"删干净了"。删证据是另一个决定，不是这个命令的实现细节。
+- **非终态 run 一律保留**：已删除租户名下仍有 running/paused 的变更是一起待收的事故，不是可以吸走的数据。
+
+**说明**
+
+- 前置门是注册表状态：租户不是 `deleted` 时命令直接失败，一行都不动。
+- 空租户 ID 被拒绝：`tenant.enabled: false` 时所有行的 `tenant_id` 都是空串，按空串清理等于把整个单租户库删掉。
+- 一次事务：任何一条语句失败，前面的删除一起回滚——删了一半的租户比没删更糟。
+- **被删的 run 的审计行不会跟着消失**：`audit.run_id` 没有外键，因此没有任何级联能带走它；purge 之后仍能查出"这台变更存在过、由谁创建"。
+- **清理动作自己也留痕**：成功后写一条 `audit.action = tenant_purge`（`actor` = 本地 actor，`target` = 租户 ID）。计数不进审计行——`audit` 没有 detail 列，链哈希覆盖固定字段集；写审计失败只 WARN 不回滚（删除已经提交，没有回滚可给）。
+- 输出会同时给"删了 N 行"和"保留了 M 行（原因）"；什么都不删时明确说"Nothing was removable"，不让 `purged` 被读成"清空了"。
+
+**示例**
+
+```命令示例：清理已删除租户的可删数据
+levee tenant purge t-001 --yes
+```
+
+### 21.8 tenant quota
 
 查看或设置租户资源配额。
 
@@ -2384,7 +2426,7 @@ levee tenant quota t-001
 levee tenant quota t-001 --max-targets 200 --max-changes 20
 ```
 
-### 21.8 tenant usage
+### 21.9 tenant usage
 
 查看租户资源使用量。
 

@@ -110,12 +110,12 @@ func TestDefaultBackupPath(t *testing.T) {
 
 func TestConfirmProceed(t *testing.T) {
 	var buf bytes.Buffer
-	assert.True(t, confirmProceed(strings.NewReader("yes\n"), &buf))
-	assert.True(t, confirmProceed(strings.NewReader("y\n"), &buf))
-	assert.True(t, confirmProceed(strings.NewReader("YES\n"), &buf))
-	assert.False(t, confirmProceed(strings.NewReader("no\n"), &buf))
-	assert.False(t, confirmProceed(strings.NewReader("\n"), &buf))
-	assert.False(t, confirmProceed(strings.NewReader(""), &buf)) // EOF aborts
+	assert.True(t, confirmProceed(strings.NewReader("yes\n"), &buf, "确认: "))
+	assert.True(t, confirmProceed(strings.NewReader("y\n"), &buf, "确认: "))
+	assert.True(t, confirmProceed(strings.NewReader("YES\n"), &buf, "确认: "))
+	assert.False(t, confirmProceed(strings.NewReader("no\n"), &buf, "确认: "))
+	assert.False(t, confirmProceed(strings.NewReader("\n"), &buf, "确认: "))
+	assert.False(t, confirmProceed(strings.NewReader(""), &buf, "确认: ")) // EOF aborts
 }
 
 func TestPrintBackupHuman(t *testing.T) {

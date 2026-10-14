@@ -881,6 +881,7 @@ const (
 	AuditActionApprovalKickoff  = "approval_kickoff"
 	AuditActionPauseAll         = "pause_all"
 	AuditActionResumeAll        = "resume_all"
+	AuditActionTenantPurge      = "tenant_purge"
 	AuditActionPermissionDenied = "permission.denied"
 
 	// AuditTargetAll is the wildcard Target for actions that cover everything
