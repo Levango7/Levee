@@ -8,6 +8,7 @@
 // Reformatting this file with spaces silently disarms that guard — change the
 // spec first if the shape ever needs to move.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { batchApi, systemApi, type BatchSummaryDTO, type ClusterStatus, type TakeoverEventDTO } from '@/api'
 import type { ChangeStatus } from '@/types/levee'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
@@ -23,6 +24,13 @@ import { formatTimestamp } from '@/utils/format'
 const data = ref<ClusterStatus | null>(null)
 const batchData = ref<BatchSummaryDTO | null>(null)
 const selectedRunID = ref('')
+// The capability the operator is asking about, and the one the CURRENT response
+// was actually narrowed by. Both are kept because they differ while a request is
+// in flight, and a page that describes its data with the pending wording is
+// claiming to have filtered before the server agreed to.
+const capabilityFilter = ref('')
+const appliedCapability = ref('')
+const route = useRoute()
 // The caught failure itself, not a string: the tier (utils/apiState.ts) reads
 // the HTTP status off it, and the server's own wording travels with it.
 const error = ref<unknown>(null)
@@ -75,8 +83,13 @@ async function fetchTakeovers() {
 
 async function fetchStatus() {
 	loading.value = true
+	const want = capabilityFilter.value.trim()
 	try {
-		data.value = await systemApi.clusterStatus()
+		data.value = await systemApi.clusterStatus(want === '' ? undefined : { capability: want })
+		// Only what the server ANSWERED for. A page that treated the typed value
+		// as applied would explain an empty list as "no node declares pkg" while
+		// the request carrying pkg had not returned yet — or had failed.
+		appliedCapability.value = want
 		error.value = null
 	} catch (e) {
 		error.value = e
@@ -99,6 +112,14 @@ async function fetchBatchStatus() {
 }
 
 onMounted(() => {
+	// A deep-linkable filter, in the same shape the changes board's `?q=` takes:
+	// "which nodes declare pkg" is worth being able to send as a link rather than
+	// a screenshot. Seeded before the first fetch so the first request is already
+	// the narrowed one, instead of a full list followed by a second round trip.
+	const fromLink = route.query.capability
+	if (typeof fromLink === 'string' && fromLink.trim() !== '') {
+		capabilityFilter.value = fromLink.trim()
+	}
 	fetchStatus()
 	fetchTakeovers()
 	timer = setInterval(fetchStatus, 30_000)
@@ -178,6 +199,14 @@ const assignmentDistribution = computed(() => {
 	<div class="levee-page">
 		<PageHeader title="集群状态" description="节点注册、分配负载与分批推进（每 30 秒自动刷新）">
 			<template #actions>
+				<el-input
+					v-model="capabilityFilter"
+					placeholder="按能力筛选节点（如 pkg）"
+					clearable
+					style="width: 200px"
+					@change="fetchStatus"
+					@keyup.enter="fetchStatus"
+				/>
 				<el-button :icon="'Refresh'" :loading="loading" @click="fetchStatus">刷新</el-button>
 			</template>
 		</PageHeader>
@@ -191,12 +220,25 @@ const assignmentDistribution = computed(() => {
 			</span>
 		</p>
 
-		<p v-else-if="answered && nodes.length === 0" class="hint">
+		<p v-else-if="answered && nodes.length === 0 && !appliedCapability" class="hint">
 			<el-icon class="hint__icon"><InfoFilled /></el-icon>
 			<span>
 				集群协调已启用，但节点注册表为空。master 节点在启动时就会自行登记，
 				所以正常形态下这里至少有本节点：请查看 <code>levee serve</code> 日志里的 join 记录，
 				并确认 <code>cluster_nodes</code> 表没有被外部清理。
+			</span>
+		</p>
+
+		<!-- A filtered empty list is a DIFFERENT fact from an empty registry, and
+		     the page used to have only one sentence for both. Saying "no worker is
+		     registered" while the operator is looking for nodes that declare pkg
+		     sends them at the cluster instead of at the declaration. -->
+		<p v-else-if="nodes.length === 0 && appliedCapability" class="hint">
+			<el-icon class="hint__icon"><InfoFilled /></el-icon>
+			<span>
+				没有节点声明能力 <code class="lv-mono">{{ appliedCapability }}</code>。
+				这不是注册表为空——清空筛选即可查看全部节点。
+				节点要声明能力，需以 <code>levee serve --cluster --node-capabilities …</code> 启动。
 			</span>
 		</p>
 
@@ -224,7 +266,19 @@ const assignmentDistribution = computed(() => {
 				</div>
 			</div>
 
-			<h3 class="lv-section-title">节点</h3>
+			<h3 class="lv-section-title">
+				节点
+				<!-- Say what the counts next to them are NOT narrowed by. Nodes come
+				     back filtered; the assignment summary is deployment-wide on
+				     purpose, because dispatch places work by load and never by
+				     capability. Leaving that unstated would let "2 nodes" sit above
+				     "17 active assignments" and read as though the scheduler had
+				     honoured the declaration. -->
+				<span v-if="appliedCapability" class="lv-panel__hint">
+					已按能力 <code class="lv-mono">{{ appliedCapability }}</code> 筛选；
+					分配统计仍为全部署口径（派发按负载，不按能力）
+				</span>
+			</h3>
 			<div class="node-grid">
 			<div v-for="n in nodes" :key="n.id" class="lv-panel node">
 				<div class="node__head">

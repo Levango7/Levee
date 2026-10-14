@@ -339,3 +339,73 @@ func TestClusterPGStaleLockSweep(t *testing.T) {
 	defer stopCancel()
 	require.NoError(t, mgr.Stop(stopCtx))
 }
+
+// TestClusterPGRejoinRefreshesCapabilities pins the registry's promise about a
+// node's declared capabilities: the row follows the node.
+//
+// Until now the ON CONFLICT arm updated address, role, status and heartbeat but
+// not capabilities, so the value a node got was whichever join first wrote it.
+// That was harmless only because nothing could declare anything — the field had
+// no producer. With `serve --node-capabilities` it does, and a node that came
+// back with a different capability set would have kept advertising what it used
+// to be able to do, to operators filtering on exactly that.
+//
+// Requires PostgreSQL (cluster_nodes is PG-only in production); skipped
+// otherwise, which is why the CI postgres job carries ./internal/cluster.
+func TestClusterPGRejoinRefreshesCapabilities(t *testing.T) {
+	dsn := pgTestDSN()
+	if dsn == "" {
+		t.Skip("LEVEE_PG_TEST_DSN not set; skipping PostgreSQL cluster test")
+	}
+	db := openTestDB(t, dsn)
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	require.NoError(t, ensureClusterSchema(ctx, db))
+	_, err := db.ExecContext(ctx, `DELETE FROM cluster_nodes`)
+	require.NoError(t, err)
+
+	declared := func(id string) string {
+		t.Helper()
+		nodes, err := listNodes(ctx, db)
+		require.NoError(t, err)
+		for _, n := range nodes {
+			if n.ID == id {
+				return n.Capabilities
+			}
+		}
+		t.Fatalf("node %q is not in the registry table", id)
+		return ""
+	}
+
+	mgr := NewClusterManager(db, ManagerConfig{SelfID: "node-a"})
+
+	// First join: the declaration is stored canonically (sorted, deduplicated),
+	// not as the caller typed it.
+	require.NoError(t, mgr.Join(Node{ID: "node-a", Address: "a:9090", Role: RoleWorker,
+		Capabilities: `["shell","pkg","shell"]`}))
+	assert.Equal(t, `["pkg","shell"]`, declared("node-a"))
+
+	// Re-join with a changed set: the row follows. This is the assertion the old
+	// SQL failed — it would have kept ["pkg","shell"] forever.
+	require.NoError(t, mgr.Join(Node{ID: "node-a", Address: "a:9091", Role: RoleWorker,
+		Capabilities: `["file"]`}))
+	assert.Equal(t, `["file"]`, declared("node-a"),
+		"a re-join must not keep advertising the capabilities the node used to declare")
+
+	// Re-join declaring nothing: cleared, not preserved. Same contract as the
+	// agent registry's upsert, so one restart semantics covers both spaces.
+	require.NoError(t, mgr.Join(Node{ID: "node-a", Address: "a:9091", Role: RoleWorker}))
+	assert.Equal(t, "[]", declared("node-a"),
+		"nothing declared must land as the column's empty value, not the previous set")
+
+	// A value no reader can parse is refused where it is written, so the failure
+	// surfaces at startup instead of as a node that silently never matches.
+	err = mgr.Join(Node{ID: "node-b", Address: "b:9090", Capabilities: "shell,pkg"})
+	require.Error(t, err, "a comma list must not be stored in a JSON column")
+	nodes, err := listNodes(ctx, db)
+	require.NoError(t, err)
+	for _, n := range nodes {
+		assert.NotEqual(t, "node-b", n.ID,
+			"the rejected join must not have written a row")
+	}
+}

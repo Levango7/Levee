@@ -206,16 +206,33 @@ const server = http.createServer((req, res) => {
     // Three deployments the cluster page has to tell apart, and storage alone
     // does not tell them: SQLite without coordination (the default), a live
     // cluster with nodes, and a cluster whose registry is empty.
+    let body = cluster
     if (mode === 'cluster') {
-      return send(res, { ...cluster, backend: 'postgres', cluster_enabled: true })
-    }
-    if (mode === 'cluster-empty') {
-      return send(res, {
+      body = { ...cluster, backend: 'postgres', cluster_enabled: true }
+    } else if (mode === 'cluster-empty') {
+      body = {
         ...cluster, backend: 'postgres', cluster_enabled: true,
-        nodes: [], summary: { totalActive: 0, counts: {}, nodeLoad: {} },
-      })
+        // Wire spelling, not the DTO's: `total_active`/`node_load` are what the
+        // gateway actually sends (#153), and a fixture that invents a camelCase
+        // summary re-creates the silent-default bug the contract guard now catches.
+        nodes: [], summary: { total_active: 0, counts: {}, node_load: {} },
+      }
     }
-    return send(res, cluster)
+    // ?capability=<name> narrows the node list, the way the gateway does. The
+    // authority on what a declaration means is internal/capability (its Go tests
+    // pin that); this replica is here only so the browser check can watch the
+    // page ask, and can tell "registry empty" apart from "nothing declares X".
+    const want = new URL(req.url, 'http://x').searchParams.get('capability')
+    if (want === null || want.trim() === '') return send(res, body)
+    const declared = (raw) => {
+      try {
+        const parsed = JSON.parse(raw || '[]')
+        return Array.isArray(parsed) && parsed.includes(want.trim())
+      } catch {
+        return false
+      }
+    }
+    return send(res, { ...body, nodes: body.nodes.filter((n) => declared(n.capabilities)) })
   }
   if (u === '/api/v1/system/auth-info') return send(res, { oidcEnabled: false, githubEnabled: false })
   if (u === '/api/v1/system/config') {

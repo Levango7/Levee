@@ -857,6 +857,7 @@ RESTful 风格，支持两套路径：
 | GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee status` |
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | — |
 | POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | — |
+| GET | `/system/cluster-status` | —（直读 store，不经 service） | 集群注册表：`nodes` / `summary` / `backend`；`?capability=<name>` 按节点声明的能力筛 `nodes`（见下方说明） | `levee cluster status` |
 | GET | `/system/auth-info` | — | 公开认证描述符（SSO 探测，见 13.3，免 Bearer） | — |
 | POST | `/auth/github` | — | GitHub OAuth code 交换（服务端，见 13.3，免 Bearer） | — |
 
@@ -880,6 +881,8 @@ RESTful 风格，支持两套路径：
 > 直连 store（`cmd/levee/cmd_show.go` 读 `GetRun` / `ListBatches` / `ListSteps`），批次进度另有
 > `GET /system/batch-status?run_id=`。前端详情页若要显示 plan，须显式带 `?includePlan=true`
 > 并新增渲染面板（本批只做后端能力，前端未接）。
+
+> **`GET /system/cluster-status?capability=<name>` 只筛 `nodes`，不筛 `summary`。** 节点声明自己会执行哪些模块（`levee serve --cluster --node-capabilities shell,pkg` 写入 `cluster_nodes.capabilities`），这个参数回答"哪些节点声明了它"。匹配规则的唯一 owner 是 `internal/capability`（注册表写入侧与网关筛选侧共用），所以前端/客户端不要再各自解析那一列。分配统计（`summary`）**故意保持全部署口径**：`internal/dispatch` 按负载挑最闲的活跃 worker，从不按能力挑——把两者一起筛窄会让响应读起来像调度器认这些声明，而它没有。空列表在此有两种含义，控制台分别说明：未启用协调（单机形态）、与启用协调但没有节点声明该能力（声明缺口，不是注册表为空）。参数缺省时筛选分支原样返回输入（连 `nil` 性都保留），默认响应的形状由 `internal/grpc/wire_snapshot_test.go` 的 cluster-status 快照钉住——加这个参数没有动它。
 
 > **`Change.priority` 是优先级，不是审批档位。** 取值限于 `low` / `normal` / `high` / `urgent`
 > （词表由 `internal/state` 的 `Priority*` 常量声明，前端 `Priority` 联合由

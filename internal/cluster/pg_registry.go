@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nexus/levee/internal/capability"
 	"github.com/nexus/levee/internal/dbschema"
 )
 
@@ -106,20 +107,33 @@ func EnsureClusterSchemaForTest(ctx context.Context, db *sql.DB) error {
 
 // upsertNode inserts or refreshes a node row. On conflict the mutable fields
 // are updated and the heartbeat stamped; joined_at is preserved.
+//
+// capabilities is refreshed with the rest of the declaration, not preserved
+// from the first join: the value belongs to the node, and the node is speaking
+// now. Keeping the old row meant a restarted node with a changed capability set
+// advertised what it used to be able to do — invisible until someone filters on
+// it. A node that restarts declaring nothing therefore clears its list, which is
+// the same contract the agent registry has had since v8
+// (internal/state/agents_pg.go's ON CONFLICT refreshes capabilities too).
 func upsertNode(ctx context.Context, db *sql.DB, node Node) error {
 	role := string(node.Role)
 	if role == "" {
 		role = string(RoleWorker)
 	}
-	_, err := db.ExecContext(ctx, `
+	caps, err := storedCapabilities(node.Capabilities)
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `
 INSERT INTO cluster_nodes (id, address, role, status, last_heartbeat, joined_at, capabilities)
 VALUES ($1, $2, $3, 'active', NOW(), NOW(), $4)
 ON CONFLICT (id) DO UPDATE
 SET address = EXCLUDED.address,
     role = EXCLUDED.role,
     status = 'active',
+    capabilities = EXCLUDED.capabilities,
     last_heartbeat = NOW()`,
-		node.ID, node.Address, role, capabilitiesJSON(node.Capabilities))
+		node.ID, node.Address, role, caps)
 	if err != nil {
 		return fmt.Errorf("cluster: upsert node: %w", err)
 	}
@@ -139,14 +153,29 @@ UPDATE cluster_nodes SET last_heartbeat = NOW(), status = 'active' WHERE id = $1
 	return nil
 }
 
-// capabilitiesJSON normalises a node's declared capabilities for the
-// cluster_nodes column, whose default is '[]'. Writing the empty array
-// rather than an empty string keeps the column parseable for every reader.
-func capabilitiesJSON(caps string) string {
+// storedCapabilities validates and canonicalises what a caller put in
+// Node.Capabilities before it reaches the column.
+//
+// The field is typed as an already-encoded string, so nothing in the type system
+// stopped a caller from writing "shell,pkg" or "{...}" into a column whose every
+// reader expects a JSON array of names. Those used to be stored verbatim: the
+// console's card quietly rendered "未声明能力" for a row it could not parse, and
+// once the gateway could filter, a corrupt declaration would have quietly
+// excluded its own node. Refusing at the registry boundary turns that into a
+// join error — which `serve` reports at startup, before it has claimed any work.
+func storedCapabilities(caps string) (string, error) {
 	if strings.TrimSpace(caps) == "" {
-		return "[]"
+		return capability.Empty, nil
 	}
-	return caps
+	names, err := capability.Names(caps)
+	if err != nil {
+		return "", fmt.Errorf("cluster: upsert node: %w", err)
+	}
+	normalized, err := capability.Normalize(names)
+	if err != nil {
+		return "", fmt.Errorf("cluster: upsert node: %w", err)
+	}
+	return normalized, nil
 }
 
 // listNodes returns every node row, ordered by ID for deterministic

@@ -270,6 +270,15 @@ jobs:
         run: go test -race ./internal/calendar/... -count=1 -timeout 300s
       - name: go test (CLI postgres store selection, isolated step)
         run: go test -race ./cmd/levee/ -run TestPostgresConfigRoundTrips -count=1 -timeout 300s
+      # The cluster join's capability declaration, end to end: `serve` normalises
+      # what the flag gives it, the registry canonicalises on the way in, and the
+      # row that lands is what the gateway's filter later reads. Both matching
+      # tests skip without LEVEE_PG_TEST_DSN, and the claim they exist for ("the
+      # flag reaches the row") cannot be checked at all without a real
+      # server — cluster_nodes is PostgreSQL-only in production, so a SQLite-only
+      # run would pass with the declaration path entirely broken.
+      - name: go test (CLI cluster join declares capabilities, isolated step)
+        run: go test -race ./cmd/levee/ -run 'TestServeClusterJoin' -count=1 -timeout 300s
       # Backup restore drill (D-3): the drill creates/restores/drops its OWN
       # scratch databases, so it never touches the shared levee_test database;
       # kept as a separate step anyway so a drill failure is attributable.

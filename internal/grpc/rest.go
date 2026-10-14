@@ -37,6 +37,7 @@ import (
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/capability"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
@@ -1899,6 +1900,17 @@ func (gw *Gateway) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ?capability=<name> narrows the registry to the nodes that DECLARED that
+	// module. The matching rule belongs to internal/capability rather than being
+	// re-derived here: the gateway writes nothing about capabilities, and a second
+	// copy of "what counts as a match" is how a filter and a card start disagreeing.
+	//
+	// It filters the node list only. `summary` stays deployment-wide, because
+	// assignments are placed by load, not by capability — putting "3 nodes declare
+	// pkg" beside "17 active assignments" without saying so would imply the
+	// scheduler honours the declaration. It does not; see internal/dispatch.
+	nodes = filterNodesByCapability(nodes, strings.TrimSpace(r.URL.Query().Get("capability")))
+
 	// `backend` answers "which database", `cluster_enabled` answers "is
 	// coordination running". They part ways the moment a deliberate
 	// single-node PostgreSQL deployment asks, and the console has to say so:
@@ -1910,6 +1922,25 @@ func (gw *Gateway) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		"backend":         backendLabel(gw.store),
 		"cluster_enabled": gw.cfg.ClusterEnabled,
 	})
+}
+
+// filterNodesByCapability keeps the nodes that declare want. An empty want
+// returns the list untouched — nilness included — so without the parameter the
+// payload is exactly what it has always been, and the only way to be shown a
+// narrowed list is to ask for one. With the parameter the result is always a
+// slice, so "nothing matches" answers `[]` rather than null, and a client that
+// iterates the field cannot crash on a shape only the filtered path produces.
+func filterNodesByCapability(nodes []state.ClusterNode, want string) []state.ClusterNode {
+	if want == "" {
+		return nodes
+	}
+	kept := make([]state.ClusterNode, 0, len(nodes))
+	for _, n := range nodes {
+		if capability.Has(n.Capabilities, want) {
+			kept = append(kept, n)
+		}
+	}
+	return kept
 }
 
 // handleBatchStatus serves the per-batch progress of a run (cluster v2

@@ -62,6 +62,15 @@ spec:
             - $(LEVEE_NODE_ADDR)
             - --node-role
             - worker
+            {{- with .Values.cluster.nodeCapabilities }}
+            # Workers are the pods that actually receive dispatched runs, so this
+            # is where a capability declaration matters most. Rendered only when
+            # non-empty: a chart that never mentions it starts exactly as before.
+            # Same value as the master's — one declaration per chart, because the
+            # pods share an image and therefore share which modules exist.
+            - --node-capabilities
+            - {{ . | join "," | quote }}
+            {{- end }}
             - --cluster-exec-lease-ttl
             - {{ .Values.cluster.execLeaseTTL | quote }}
             {{- if .Values.auth.token }}

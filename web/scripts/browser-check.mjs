@@ -558,6 +558,39 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   const emptyCards = await page.evaluate(() => document.querySelectorAll('.lv-panel.node').length)
   check('an empty registry renders no node cards', emptyCards === 0, 'cards=' + emptyCards)
 
+  // Node cards only exist while coordination is on, so the capability axis has
+  // to be exercised in cluster mode — asserting a filter against the sqlite
+  // deployment would read `[]` and look like a working filter.
+  await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=cluster')
+
+  // Capability filtering. The registry has always STORED a per-node capability
+  // list and nothing in the product could ask about it, so "do we have any node
+  // that can run pkg" was unanswerable while looking answerable. The filter is
+  // driven through the URL (the page seeds it from ?capability=, like the changes
+  // board's ?q=), which is both shareable and free of synthetic typing.
+  await open(page, '/cluster?capability=pkg', 1800)
+  const pkgCards = await page.evaluate(() =>
+    [...document.querySelectorAll('.lv-panel.node .node__id')].map((e) => (e.textContent || '').trim()),
+  )
+  check('the capability filter narrows to the nodes declaring it',
+    JSON.stringify(pkgCards) === JSON.stringify(['node-a']), JSON.stringify(pkgCards))
+
+  // The counts next to a filtered list are NOT filtered: assignments are placed
+  // by load, never by capability. A page that left that unstated would imply the
+  // scheduler honours declarations. Scoped to the caveat span: the page has
+  // several section titles and the first one belongs to the batch panel.
+  const caveat = await text(page, '.lv-section-title .lv-panel__hint')
+  check('a filtered page says the assignment counts stay deployment-wide',
+    caveat.indexOf('全部署口径') >= 0 && caveat.indexOf('不按能力') >= 0, 'caveat=' + JSON.stringify(caveat))
+
+  await open(page, '/cluster?capability=nonexistent', 1800)
+  const noMatchHint = await text(page, '.hint')
+  check('a no-match filter is described as a declaration gap, not an empty registry',
+    noMatchHint.indexOf('没有节点声明能力') >= 0 && noMatchHint.indexOf('节点注册表为空') < 0,
+    'hint=' + JSON.stringify(noMatchHint.slice(0, 80)))
+  const noMatchCards = await page.evaluate(() => document.querySelectorAll('.lv-panel.node').length)
+  check('and shows no node cards', noMatchCards === 0, 'cards=' + noMatchCards)
+
   await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=ok')
   await page.close()
 }
