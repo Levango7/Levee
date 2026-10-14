@@ -84,14 +84,35 @@ const logs = {
   truncated: true,
 }
 
+// The cluster payload is written in the SERVER's spelling, and that is the
+// point of this fixture: /system/cluster-status is marshalled by the gateway
+// from `state.ClusterNode` / `state.AssignmentSummary` with encoding/json, so
+// the keys are those structs' json tags (`last_heartbeat`, `node_load`,
+// `total_active`) and a heartbeat is a time.Time, which reaches the wire as an
+// RFC3339 string. Measured against a real daemon:
+//
+//   {"backend":"sqlite","nodes":null,"summary":{"counts":{},"node_load":{},
+//    "total_active":0}}
+//
+// This fixture used to say `lastHeartbeat: now - 5` (camelCase, and an epoch
+// SECONDS number) with no `node_load` at all. The page then read camelCase,
+// agreed with the fixture, and stayed blank against the real server — a mock
+// that drifts from the wire does not merely fail to test the UI, it vouches
+// for a contract the product does not have.
+const rfc3339 = (epochSeconds) => new Date(epochSeconds * 1000).toISOString()
+
 const cluster = {
   backend: 'sqlite',
   nodes: [
-      { id: 'node-a', role: 'master', status: 'active', address: '10.0.1.11:8080', lastHeartbeat: now - 5, joinedAt: now - 86400, capabilities: '["shell","pkg","file"]' },
-      { id: 'node-b', role: 'worker', status: 'active', address: '10.0.1.12:8080', lastHeartbeat: now - 8, joinedAt: now - 86400, capabilities: '["shell","file"]' },
-      { id: 'node-c', role: 'worker', status: 'offline', address: '10.0.1.13:8080', lastHeartbeat: now - 900, joinedAt: now - 3600, capabilities: '[]' },
+    { id: 'node-a', role: 'master', status: 'active', address: '10.0.1.11:8080', last_heartbeat: rfc3339(now - 5), joined_at: rfc3339(now - 86400), capabilities: '["shell","pkg","file"]' },
+    { id: 'node-b', role: 'worker', status: 'active', address: '10.0.1.12:8080', last_heartbeat: rfc3339(now - 8), joined_at: rfc3339(now - 86400), capabilities: '["shell","file"]' },
+    { id: 'node-c', role: 'worker', status: 'offline', address: '10.0.1.13:8080', last_heartbeat: rfc3339(now - 900), joined_at: rfc3339(now - 3600), capabilities: '[]' },
   ],
-  summary: { totalActive: 2, counts: { done: 18, interrupted: 1 } },
+  summary: {
+    counts: { done: 18, interrupted: 1 },
+    node_load: { 'node-a': 1, 'node-b': 1 },
+    total_active: 2,
+  },
 }
 
 // A goal-sized fleet for the map's windowing check: 300 hosts x 12 batches.

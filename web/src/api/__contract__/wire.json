@@ -138,6 +138,13 @@
         "role",
         "status"
       ]
+    },
+    "objects": {
+      "summary": [
+        "counts",
+        "node_load",
+        "total_active"
+      ]
     }
   },
   "system-status": {

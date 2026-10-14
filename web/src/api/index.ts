@@ -384,14 +384,34 @@ export interface ApprovalChain {
 }
 
 // --- Cluster status types (mirror internal/state/backend) ---
+//
+// These spellings are SNAKE_CASE on purpose, and that is not a style choice:
+// /system/cluster-status is written by a hand-written gateway handler that
+// marshals `state.ClusterNode` / `state.AssignmentSummary` with encoding/json,
+// so the wire key is whatever the struct tag says (`last_heartbeat`,
+// `total_active`). The camelCase DTOs elsewhere in this file (`createdAt`,
+// `prevHash`) are protojson output, whose spelling proto-gen derives from the
+// .proto field names. Measured against a real daemon:
+//
+//   {"backend":"sqlite","nodes":null,
+//    "summary":{"counts":{},"node_load":{},"total_active":0}}
+//
+// Before this note the interfaces said `lastHeartbeat` / `joinedAt` /
+// `nodeLoad` / `totalActive` — the four keys the server never sends. A read of
+// a missing key is `undefined`, and every consumer here had a default, so the
+// cluster page rendered 心跳 as a dash, 活跃分配 as 0 and Worker 负载 as
+// "无活跃分配" on every real deployment, with no error anywhere. The committed
+// mock emitted the same camelCase as the DTOs, so the browser checks and the
+// unit tests were all internally consistent about a shape the server does not
+// produce.
 
 export interface ClusterNodeDTO {
   id: string
   address: string
   role: string
   status: string
-  lastHeartbeat: string
-  joinedAt: string
+  last_heartbeat: string
+  joined_at: string
   /**
    * JSON-encoded []string of the node's declared capabilities, e.g.
    * `["shell","pkg"]`. `[]` means the node declared none.
@@ -406,8 +426,8 @@ export interface ClusterNodeDTO {
 
 export interface AssignmentSummaryDTO {
   counts: Record<string, number>
-  nodeLoad: Record<string, number>
-  totalActive: number
+  node_load: Record<string, number>
+  total_active: number
 }
 
 export interface ClusterStatus {
