@@ -72,6 +72,18 @@
   4. 移动审批卡深链证据 → 已落地（PR #141），实际形态比原描述完整：`409 + {decided, decision, run_id, decided_by, decided_at}` 走"收据"而非错误；前端以 `decided === true` 为准绳（不走 401 分支，那会清 token 跳登录）；未签发过的 token 仍只得扁平 401——披露面不扩大由 `assert.Len(out, 1)` 钉住。
 - **判据**：账本里"待办"这类进度型条目**不是证据**，排期前逐项在当前 HEAD 复测；订正时把**取证位置（file:line 或 commit）**一起写进去，否则下一次还得重查一遍。契约型数字（如 schema 版本）可写死，进度型数字必须带"截至某 commit + 现测命令"。
 
+### 修复（集群页把「用哪个库」当成「有没有集群」：单节点 PostgreSQL 被叫去启动 worker）
+
+- **问题**：`GET /system/cluster-status` 只报 `backend`，`ClusterView.vue` 就用它回答了两个问题——`backend === 'sqlite'` 说「单节点模式，集群协调未启用」，`backend === 'postgres' && nodes.length === 0` 用**同一句话**覆盖两种部署：「未注册任何 worker 节点。集群模式下请启动 worker 加入；单节点 PostgreSQL 部署无需 worker」。而这两种部署该做的动作正好相反：一个是「什么都不用做」，另一个是「协调开着但注册表空了——这是事故」。页面拿不到区分所需的量，就只能把事故说成常态。
+- **为什么不能从 `backend` 推**：单节点 PostgreSQL（`database.driver: postgres`，无成员/无租约/无 fencing）自 #158 起是受支持形态，`backend` 只回答「哪个库在答」。反过来说 SQLite 确实永远不可能是集群，但那是 `openServeStore` 的构造结果（`--cluster` 必须有 `--pg-dsn`），不是一个字符串标签的语义。
+- **落地**：`ServeGatewayConfig.ClusterEnabled` → payload `cluster_enabled`。取值放在 `newServeGateway(..., clusterMgr)` 里按 `clusterMgr != nil` 计算，**不**写在 `runServe` 的字面量里——把「协调开没开」留成一个可以被忘记赋值的字段，正是本仓反复踩的「门在结构体里≠门在进程里」。
+- **两面测试**：`internal/grpc/rest_cluster_status_test.go` 用四例在**同一个 `backend`、同一份 registry 数据**下让 `cluster_enabled` 取到两个值（任何从 `backend` 或从 `len(nodes)` 推导的写法都会红）+ 一例钉住 payload 键集；`cmd/levee/serve_gateway_wiring_test.go` 三例咬住赋值来源（含「调用方自己写了 true 但 manager 为 nil → 必须被覆盖」）。
+- **接线也要被测到，且写清为什么只能这样测**：`runServe` 是长启动序列，单测驱动不了，所以第二个文件对 `cmd_serve.go` 做定点读取——要求 `newServeGateway` 的最后一个实参就是那个喂给 takeover/dispatch 两个循环的 `clusterMgr` 标识符，并要求它来自 `openServeStore`。这是文本断言而不是行为断言，**原因与被它放过什么**都写在文件头注释里，不留「我们有了接线测试」的错觉。
+- **前端**：DTO `ClusterStatus.cluster_enabled`（照 wire 的 snake_case 拼写——#153 的教训：客户端自创 camelCase 只会读到 undefined，而 `undefined === true` 是 false，于是每个真集群都会被永久报成「协调未启用」）；两段提示各说各的，且都要求 `answered`（`data !== null`），首帧与请求失败时不再凭空断言部署形态（旧实现在 `data` 为空时把 `backend` 默认成 `unknown` 并落进仪表盘，渲染出一屏读起来像实数据的零）。`ClusterView.spec.ts` 新增 4 例，其中「两句不许互相串」在**剥掉注释后的模板区间**上断言——本文件自己的注释引用了被退役的 `backend === 'sqlite'`，不剥就会验在散文上。
+- **浏览器级检查补上第三种部署**：`mock-gateway.mjs` 原来只有 ok/empty/forbidden/cluster 四个模式，`cluster_enabled` 加进 fixture 后新增 `cluster-empty` 模式（coordination 开 + 注册表空），`browser-check.mjs` 加 3 例：这种部署要说「注册表为空」、不许借用协调未启用那句、不渲染节点卡。默认模式的断言同时收紧——旧断言是 `单节点 || 未启用`，而新文案里两种部署都含「单节点」，宽松词表会让错误分支蒙过去。
+- **兼容性**：只加键不改键、不删键，`backend` 原样保留；控制台与二进制同仓编译（`internal/web/dist` 由 `make web` 刷新、CI 逐字节验新鲜），不存在新版页面对旧版服务的读取分歧；schema 无变化，无迁移。
+- 验证：`go test ./...` EXIT=0；`npm run test` 36 files / 306 tests 全绿；`vue-tsc --noEmit && vite build` 通过；`internal/web/dist` 按 `make web` 的删除+拷贝两步刷新（43 条路径变化：21 个改名的 view chunk + 21 个新增 + index.html）；26 个同名 chunk 与刷新前**逐字节相同**（含 `vendor-C7FidRup.js`），证明本机 Windows 构建与 CI 的 ubuntu 构建口径一致——master 的 CI 前端新鲜度门是绿的，故等价链条成立。`npm run test:browser` 本机全通过（自建 mock :4611 + vite :5188；默认端口上跑的是别人 checkout 里的 dev server，第一次的三条红是它的旧代码，不是这里的）。变异 6 个逐一咬红：payload 写死 false、从 `backend` 推、从 `len(nodes)` 推、`newServeGateway` 信任字面量、调用点传 `nil`、前端 `clusterEnabled` 改读 `backend`。
+
 ### 新增（ChatOps 入向决策闭环：聊天里点「通过」真的能批，而且只有平台签过名的才能批）
 
 - **背景**：ChatOps 层此前只有出向。审批请求卡与决定广播一直在播，但卡片背后的 `/levee approve` / `reject` 是命令路由器的内置空桩——回复是 "approve: no handler registered"。三个 adapter 的 `Parse*Callback` 解码器**零生产调用方**，bot 没有回调端点，mac 验签按各自文件注释归属的「ingress 层」从未被建。也就是说：聊天室里看得见审批，点不动。
