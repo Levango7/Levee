@@ -142,7 +142,7 @@ const DTO_READS: Record<string, DtoReads> = {
     rowKeys: ['id', 'runId', 'action', 'actor', 'targetHost', 'timestamp', 'prevHash', 'currHash'],
   },
   'cluster-status': {
-    keys: ['backend', 'nodes', 'summary'],
+    keys: ['backend', 'cluster_enabled', 'nodes', 'summary'],
     row: 'nodes',
     rowKeys: ['address', 'capabilities', 'id', 'joined_at', 'last_heartbeat', 'role', 'status'],
     dto: 'ClusterStatus',

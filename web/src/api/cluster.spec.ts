@@ -1,9 +1,10 @@
 // Unit tests for the cluster status API client wrapper. We verify the
 // contract — systemApi.clusterStatus issues GET /system/cluster-status and
-// returns the flat { nodes, summary, backend } shape — by swapping the
-// transport at the axios adapter level, exactly like client.spec.ts does for
-// the shared client. The backend handler (rest.go handleClusterStatus) writes
-// a flat JSON object with no { data, error, meta } envelope.
+// returns the flat { nodes, summary, backend, cluster_enabled } shape — by
+// swapping the transport at the axios adapter level, exactly like
+// client.spec.ts does for the shared client. The backend handler (rest.go
+// handleClusterStatus) writes a flat JSON object with no { data, error, meta }
+// envelope.
 import { AxiosError } from 'axios'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -17,6 +18,10 @@ const flatOk = {
 	nodes: [{ id: 'n1', address: '10.0.0.1:9090', role: 'master', status: 'active', last_heartbeat: '2026-10-14T09:00:00Z', joined_at: '2026-10-13T09:00:00Z' }],
 	summary: { counts: { pending: 1 }, node_load: { n1: 1 }, total_active: 1 },
 	backend: 'postgres',
+	// A PostgreSQL backend with coordination off is the single-node deployment;
+	// the two axes are separate answers and the fixture says so deliberately,
+	// because a client that conflated them would still pass a backend-only test.
+	cluster_enabled: false,
 }
 
 import { COLD_IMPORT_TIMEOUT } from '@/test/coldImport'
@@ -38,6 +43,7 @@ describe('systemApi.clusterStatus', { timeout: COLD_IMPORT_TIMEOUT }, () => {
 		expect(seen.url).toBe('/system/cluster-status')
 		expect(seen.method).toBe('get')
 		expect(result.backend).toBe('postgres')
+		expect(result.cluster_enabled).toBe(false)
 		expect(result.nodes).toHaveLength(1)
 		expect(result.nodes?.[0]?.id).toBe('n1')
 		expect(result.summary.total_active).toBe(1)

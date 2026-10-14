@@ -266,7 +266,7 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 			// summary is an object, not a list, and the page reads three numbers
 			// out of it — the level where this contract was previously blind.
 			Objects: map[string][]string{"summary": objectKeys(cluster, "summary")},
-			Forbid:  []string{"Nodes", "Summary", "Backend"},
+			Forbid:  []string{"Nodes", "Summary", "Backend", "ClusterEnabled"},
 		},
 		"takeover-events": {
 			Method: "GET", Path: "/system/takeover-events",

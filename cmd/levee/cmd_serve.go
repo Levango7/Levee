@@ -277,7 +277,17 @@ func resolveServeAuth(ctx context.Context, cfg *config.Config, token string, nam
 // verification, system views); handing it the raw store would leave those
 // paths unisolated while the service methods beside them were isolated, which
 // is the kind of half-covered boundary that is impossible to spot in review.
-func newServeGateway(gwCfg grpc.ServeGatewayConfig, svcStore state.Store, gateSvc *grpc.GateService) *grpc.Gateway {
+//
+// clusterMgr is taken as an argument rather than read off the config by the
+// caller because the gateway's announcement of coordination has to be derived
+// from the same value that drives the takeover and dispatch loops below. As a
+// config field set at the call site it was a literal somebody could leave at
+// its zero value while the loops ran; nil-ness of the manager is the one
+// statement both halves agree on, so it is computed here and checked by
+// TestNewServeGatewayAnnouncesCoordinationFromTheManager.
+func newServeGateway(gwCfg grpc.ServeGatewayConfig, svcStore state.Store, gateSvc *grpc.GateService,
+	clusterMgr *cluster.ClusterManager) *grpc.Gateway {
+	gwCfg.ClusterEnabled = clusterMgr != nil
 	gw := grpc.NewGateway(gwCfg)
 	// SetServices/SetMobileApproval/SetConversationEngine are attached by the
 	// caller immediately after this returns, because they need locals that
@@ -855,7 +865,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		MetricsPublic: serveOptMetricsPublic,
 		RatePerSec:    serveOptRateLimit,
 		RateBurst:     serveOptRateBurst,
-	}, svcStore, svcs.gateSvc)
+	}, svcStore, svcs.gateSvc, clusterMgr)
 	// The REST-only endpoints (/system/batch-status, /system/change-trend, ...)
 	// are dispatched by the gateway itself, not by a service, so the policy
 	// authorizer has to be installed on the gateway too — without this line a

@@ -434,6 +434,16 @@ export interface ClusterStatus {
   nodes: ClusterNodeDTO[]
   summary: AssignmentSummaryDTO
   backend: string
+  /** Whether THIS process runs cluster coordination (membership, leases,
+   *  dispatch). snake_case: /system/cluster-status writes it as a map key in
+   *  internal/grpc/rest.go handleClusterStatus.
+   *
+   *  It is not the same statement as `backend`. A PostgreSQL deployment can be
+   *  a deliberate single node, and a SQLite one can never be a cluster, so
+   *  reading coordination off the storage label told one group of operators to
+   *  start workers they never meant to run and told the other group nothing
+   *  was wrong when its registry was empty. */
+  cluster_enabled: boolean
 }
 
 export interface BatchProgressDTO {

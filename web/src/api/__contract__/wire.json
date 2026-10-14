@@ -120,13 +120,15 @@
     "path": "/system/cluster-status",
     "keys": [
       "backend",
+      "cluster_enabled",
       "nodes",
       "summary"
     ],
     "forbid": [
       "Nodes",
       "Summary",
-      "Backend"
+      "Backend",
+      "ClusterEnabled"
     ],
     "rows": {
       "nodes": [
