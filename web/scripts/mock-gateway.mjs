@@ -103,6 +103,10 @@ const rfc3339 = (epochSeconds) => new Date(epochSeconds * 1000).toISOString()
 
 const cluster = {
   backend: 'sqlite',
+  // Coordination is a separate axis from storage, and the fixture has to carry
+  // both: the default deployment is SQLite without coordination, and the two
+  // cluster modes below turn coordination on while only changing the registry.
+  cluster_enabled: false,
   nodes: [
     { id: 'node-a', role: 'master', status: 'active', address: '10.0.1.11:8080', last_heartbeat: rfc3339(now - 5), joined_at: rfc3339(now - 86400), capabilities: '["shell","pkg","file"]' },
     { id: 'node-b', role: 'worker', status: 'active', address: '10.0.1.12:8080', last_heartbeat: rfc3339(now - 8), joined_at: rfc3339(now - 86400), capabilities: '["shell","file"]' },
@@ -157,11 +161,15 @@ function send(res, obj, status) {
 // A switchable mode, so the browser check can exercise several behaviours
 // without a second server:
 //   ok|empty|forbidden — the three list tiers (GET /__mode?mode=...)
-//   cluster           — report the PG backend so the cluster page renders node
-//                        cards instead of the SQLite "coordination not enabled"
-//                        hint. The default is SQLite on purpose: that is the
-//                        default deployment, and the hint it shows is behaviour
-//                        worth testing rather than a case to skip.
+//   cluster           — coordination on with a populated registry: node cards.
+//   cluster-empty     — coordination on with NOTHING registered: the incident
+//                       the page could not name while it read coordination
+//                       off `backend`, because that shape is indistinguishable
+//                       from a single-node PostgreSQL deployment on the storage
+//                       axis alone.
+// The default is SQLite with coordination off on purpose: that is the default
+// deployment, and the hint it shows is behaviour worth testing rather than a
+// case to skip.
 let mode = 'ok'
 
 const server = http.createServer((req, res) => {
@@ -169,7 +177,7 @@ const server = http.createServer((req, res) => {
 
   if (u === '/__mode') {
     const m = new URL(req.url, 'http://x').searchParams.get('mode')
-    if (m === 'forbidden' || m === 'empty' || m === 'ok' || m === 'cluster') mode = m
+    if (m === 'forbidden' || m === 'empty' || m === 'ok' || m === 'cluster' || m === 'cluster-empty') mode = m
     return send(res, { mode })
   }
 
@@ -195,9 +203,19 @@ const server = http.createServer((req, res) => {
   }
   if (u === '/api/v1/system/batch-status') return send(res, fleetBatchStatus(FLEET_HOSTS_PER_BATCH))
   if (u === '/api/v1/system/cluster-status') {
-    // In cluster mode the deployment reports PG, which is what enables the node
-    // cards; in every other mode it reports SQLite and shows the hint.
-    return send(res, mode === 'cluster' ? { ...cluster, backend: 'postgres' } : cluster)
+    // Three deployments the cluster page has to tell apart, and storage alone
+    // does not tell them: SQLite without coordination (the default), a live
+    // cluster with nodes, and a cluster whose registry is empty.
+    if (mode === 'cluster') {
+      return send(res, { ...cluster, backend: 'postgres', cluster_enabled: true })
+    }
+    if (mode === 'cluster-empty') {
+      return send(res, {
+        ...cluster, backend: 'postgres', cluster_enabled: true,
+        nodes: [], summary: { totalActive: 0, counts: {}, nodeLoad: {} },
+      })
+    }
+    return send(res, cluster)
   }
   if (u === '/api/v1/system/auth-info') return send(res, { oidcEnabled: false, githubEnabled: false })
   if (u === '/api/v1/system/config') {

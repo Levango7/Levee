@@ -109,6 +109,19 @@ const nodes = computed(() => data.value?.nodes ?? [])
 const summary = computed(() => data.value?.summary)
 const backend = computed(() => data.value?.backend ?? 'unknown')
 
+// `answered` exists so the page can claim nothing before the server speaks.
+// The hint below states a fact about the deployment, and while the first
+// request is in flight (or has failed) there is no fact to state — the old
+// shape papered over it by defaulting `backend` to 'unknown', which fell
+// through to the dashboard and showed zeros that read as a live registry.
+const answered = computed(() => data.value !== null)
+
+// Whether THIS process runs cluster coordination. It is not `backend ===
+// 'postgres'`: a single-node PostgreSQL deployment is a supported shape, and
+// telling its operator to start workers was the bug. See ClusterStatus in
+// @/api for the two axes.
+const clusterEnabled = computed(() => data.value?.cluster_enabled === true)
+
 // nodeCapabilities parses the node's declared-capability JSON.
 //
 // The column's default is '[]', so an absent declaration is a normal empty
@@ -169,18 +182,21 @@ const assignmentDistribution = computed(() => {
 			</template>
 		</PageHeader>
 
-		<p v-if="backend === 'sqlite'" class="hint">
+		<p v-if="answered && !clusterEnabled" class="hint">
 			<el-icon class="hint__icon"><InfoFilled /></el-icon>
 			<span>
-				单节点模式（SQLite）：集群协调未启用。使用
-				<code>levee serve --cluster --pg-dsn …</code> 启用集群模式。
+				当前进程未启用集群协调（存储后端：<code>{{ backend }}</code>），节点注册表与分配统计在此形态下不会有数据。
+				启用集群：<code>levee serve --cluster --node-id … --node-addr … --pg-dsn …</code>。
+				单节点 PostgreSQL 是受支持的部署形态，不必为了让这张页面出数据而改成集群。
 			</span>
 		</p>
 
-		<p v-else-if="backend === 'postgres' && nodes.length === 0" class="hint">
+		<p v-else-if="answered && nodes.length === 0" class="hint">
 			<el-icon class="hint__icon"><InfoFilled /></el-icon>
 			<span>
-				未注册任何 worker 节点。集群模式下请启动 worker 加入；单节点 PostgreSQL 部署无需 worker。
+				集群协调已启用，但节点注册表为空。master 节点在启动时就会自行登记，
+				所以正常形态下这里至少有本节点：请查看 <code>levee serve</code> 日志里的 join 记录，
+				并确认 <code>cluster_nodes</code> 表没有被外部清理。
 			</span>
 		</p>
 
