@@ -150,6 +150,7 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 		log.Error("post-rollback verifier init failed; post-rollback verification disabled", "error", err)
 	}
 	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, postVerifier,
+		gateRecorderOption(store),
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			if err := inventory.ValidateNotFrozen(ctx, store, hosts); err != nil {
 				return err
@@ -998,4 +999,20 @@ func newID(prefix string) string {
 		return prefix + "0000000000000000"
 	}
 	return prefix + hex.EncodeToString(b[:])
+}
+
+// gateRecorderOption builds the audit-backed sink that records per-gate
+// verdicts and returns it as a ClosureOption. Construction fails only when the
+// store is nil; in that case it returns a no-op option rather than wrapping a
+// nil *audit.TraceRecorder in a non-nil interface, which would defeat the
+// engine's `gateRecorder == nil` guard and panic on first use. Losing recording
+// is acceptable (it is observability, not a safety property) — mirroring the
+// fail-soft posture of the post-rollback verifier just above.
+func gateRecorderOption(store state.Store) engine.ClosureOption {
+	rec, err := audit.NewTraceRecorder(store)
+	if err != nil {
+		log.Error("gate verdict recorder unavailable; gate verdicts will not be recorded", "error", err)
+		return func(*engine.ClosureRunner) {}
+	}
+	return engine.WithGateRecorder(rec)
 }

@@ -223,6 +223,22 @@ type ClosureRunner struct {
 	// would leave the operator believing rollback can restore a pre-state
 	// that was never captured.
 	runSnapshotter RunSnapshotter
+
+	// gateRecorder, when non-nil, writes one trace row per verification-gate
+	// verdict (pre-apply / post-batch / post-apply / post-rollback) into the
+	// run's audit trail. Installed via WithGateRecorder; nil means gate
+	// verdicts are computed and acted on exactly as before but not recorded —
+	// recording is observability, never a safety property, so its absence (or
+	// a write failure) must not change any verdict. See recordGateVerdicts.
+	gateRecorder GateTraceRecorder
+}
+
+// GateTraceRecorder is the engine's view of "somewhere to write gate verdicts".
+// It is an interface rather than a direct *audit.TraceRecorder dependency so the
+// engine stays decoupled from the audit package and the recorder is nil-
+// degradable and fake-testable; *audit.TraceRecorder satisfies it structurally.
+type GateTraceRecorder interface {
+	RecordGate(ctx context.Context, runID, gateName, phase string, passed bool, detail map[string]any) (*state.Trace, error)
 }
 
 // gateInitiator returns the run's recorded creator, or "" when it cannot be
@@ -240,8 +256,55 @@ func (cr *ClosureRunner) gateInitiator(ctx context.Context, runID string) string
 	return run.Creator
 }
 
-// ClosureOption configures optional ClosureRunner behaviour at construction
-// time.
+// recordGateVerdicts writes one trace row per gate result of a phase, so the
+// run's audit trail answers "which gates ran and what did each decide" instead
+// of only "the phase passed or failed". It is best-effort by construction:
+//   - a nil recorder (or empty results) is a silent no-op — recording is
+//     observability, so deployments that did not wire one are unaffected;
+//   - a write failure is logged and swallowed. It MUST NOT alter the verdict:
+//     the caller has already used the results to decide the run's fate, and a
+//     store hiccup must not rewrite a passed gate into a failed one (or the
+//     reverse). This mirrors permission.Checker's WithRecorder posture.
+//
+// gm is the GateManager that ACTUALLY ran these gates, and is where each
+// result's name is recovered by index: GateManager.RunPhase returns results
+// positionally aligned with its own Gates(phase). It must be the same manager
+// that produced results — the post-rollback verifier may hold a different
+// manager than the apply path (cr.verifier), and naming from the wrong one
+// silently mislabels which gate produced which verdict (a test that splits the
+// two managers is what pins this). The index guard below only fires if that
+// alignment ever breaks; it degrades to a positional name rather than skipping
+// the row, because a mislabelled verdict is still evidence while a missing one
+// is silence.
+//
+// phase is the verify phase token (pre_apply / post_batch / post_apply). stage
+// distinguishes the same phase reached from different run paths — the forward
+// check vs the post-rollback health check both run PhasePostApply, so they must
+// not read identically in the trail.
+func (cr *ClosureRunner) recordGateVerdicts(ctx context.Context, runID string, gm *verify.GateManager, phase verify.GatePhase, stage string, extra map[string]any, results []verify.GateResult) {
+	if cr.gateRecorder == nil || len(results) == 0 {
+		return
+	}
+	gates := gm.Gates(phase)
+	for i, gr := range results {
+		name := fmt.Sprintf("gate-%d", i)
+		if i < len(gates) {
+			name = gates[i].Name()
+		}
+		detail := map[string]any{"message": gr.Message, "latency_ms": gr.Latency.Milliseconds()}
+		for k, v := range extra {
+			detail[k] = v
+		}
+		if stage != "" {
+			detail["stage"] = stage
+		}
+		if _, err := cr.gateRecorder.RecordGate(ctx, runID, name, string(phase), gr.Passed, detail); err != nil {
+			log.Error("gate verdict trace record failed (gate verdict unaffected)",
+				"run_id", runID, "gate", name, "phase", string(phase), "error", err)
+		}
+	}
+}
+
 type ClosureOption func(*ClosureRunner)
 
 // WithGateRuntime supplies the runtime dependencies that parameterised
@@ -263,6 +326,15 @@ func WithGateRuntime(rt GateRuntime) ClosureOption {
 // execution. Omitting it disables the second check.
 func WithHostGuard(guard func(ctx context.Context, hosts []string) error) ClosureOption {
 	return func(cr *ClosureRunner) { cr.hostGuard = guard }
+}
+
+// WithGateRecorder installs the sink that records per-gate verdicts into the
+// run's audit trail (see ClosureRunner.gateRecorder). Omitting it disables
+// recording without changing any gate decision. The recorder is invoked AFTER
+// each phase runs and BEFORE its pass/fail is acted on, so a failing gate is
+// recorded as failing rather than dropped when the run aborts.
+func WithGateRecorder(rec GateTraceRecorder) ClosureOption {
+	return func(cr *ClosureRunner) { cr.gateRecorder = rec }
 }
 
 // NewClosureRunner returns a ClosureRunner wired to the given subsystems.
@@ -413,6 +485,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	}
 	preResults := cr.verifier.RunPhase(ctx, verify.PhasePreApply, preInput)
 	result.VerifyResults = append(result.VerifyResults, preResults...)
+	cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePreApply, "forward", nil, preResults)
 	if !gatesPassed(preResults) {
 		result.Phase = PhaseFailed
 		result.Error = fmt.Errorf("closure: pre-apply gate failed")
@@ -525,6 +598,8 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		}
 		postBatchResults := cr.verifier.RunPhase(ctx, verify.PhasePostBatch, postBatchInput)
 		result.VerifyResults = append(result.VerifyResults, postBatchResults...)
+		cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePostBatch, "forward",
+			map[string]any{"batch": postBatchInput.BatchID}, postBatchResults)
 		if !gatesPassed(postBatchResults) {
 			triggerRollback = true
 			rollbackReason = fmt.Sprintf("post-batch gate failed after batch %d", b.Index)
@@ -548,6 +623,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			}
 			postResults := cr.verifier.RunPhase(ctx, verify.PhasePostApply, postInput)
 			result.VerifyResults = append(result.VerifyResults, postResults...)
+			cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePostApply, "forward", nil, postResults)
 			if !gatesPassed(postResults) {
 				triggerRollback = true
 				rollbackReason = "post-apply gate failed"
@@ -662,6 +738,18 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			// mapping.
 			pv, dispatchErr := cr.postVerifier.VerifyAndGrade(ctx, rbResult, nil, pvInput)
 			result.PostVerifyResult = pv
+			// Record the post-rollback verdicts under stage="rollback" but the
+			// same post_apply phase token: this branch re-runs the PhasePostApply
+			// gates (verifyGates==nil → phase mode), so without the stage tag the
+			// trail would hold two indistinguishable post_apply rows for one run —
+			// the forward check and the "did the undo land healthy" check would
+			// read the same. Names come from the VERIFIER's own manager, which may
+			// differ from cr.verifier (that is the point of the split in
+			// newRunnerWithPostVerifier); naming from cr.verifier would label these
+			// rows with the apply-path gate names instead.
+			if pv != nil {
+				cr.recordGateVerdicts(ctx, result.RunID, cr.postVerifier.GateManager(), verify.PhasePostApply, "rollback", nil, pv.GateResults)
+			}
 			if dispatchErr != nil {
 				log.Warn("post-rollback verify: grade action dispatch failed",
 					"run_id", result.RunID,
