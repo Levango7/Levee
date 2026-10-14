@@ -68,6 +68,12 @@ function resolveChrome() {
 
 const REQUIRED = process.env.BROWSER_CHECK_REQUIRE === '1'
 const CHROME = resolveChrome()
+
+// How long a page is allowed to take to reach a settled state. This is a
+// deadline, never a wait: rendering is observed, and the deadline only bounds
+// how long we are willing to observe. It is env-overridable so the wait can be
+// proven load-bearing (BROWSER_CHECK_SETTLE_MS=1 must turn the suite red).
+const SETTLE_DEADLINE_MS = Number(process.env.BROWSER_CHECK_SETTLE_MS || 30_000)
 const BASE = process.env.BASE_URL || 'http://localhost:5173'
 // The mock gateway's own address: the failure modes are switched by talking to
 // it directly, because the page's origin is the dev server and /__mode exists
@@ -153,6 +159,7 @@ async function newPage(browser, viewport = { width: 1600, height: 1000 }) {
   const page = await browser.newPage()
   await page.setViewport(viewport)
   await page.evaluateOnNewDocument(() => localStorage.setItem('levee.token', 'browser-check'))
+  await instrument(page)
   const errors = []
   page.on('pageerror', (e) => errors.push(String(e).slice(0, 200)))
   page.on('console', (m) => {
@@ -162,16 +169,106 @@ async function newPage(browser, viewport = { width: 1600, height: 1000 }) {
   return page
 }
 
-async function open(page, path, settleMs = 900) {
+// instrument counts the page's own REST calls so a wait can be judged on
+// "the data has arrived" instead of "some milliseconds passed". It runs before
+// any page script (evaluateOnNewDocument), so the requests fired during mount
+// are counted — a counter installed afterwards observes nothing.
+//
+// Only /api traffic is counted. The monitor page holds an EventSource open for
+// its SSE stream, and a wait that includes it never settles — which is the same
+// reason open() below navigates on domcontentloaded and not networkidle2.
+// axios uses XMLHttpRequest and the mock-mode switch uses fetch, so both
+// transports are wrapped.
+function instrument(page) {
+  return page.evaluateOnNewDocument(() => {
+    window.__leveeReq = { inflight: 0, last: Date.now() }
+    // A finished request is not a painted page: axios resolves on a microtask
+    // and Vue re-renders on the next frame, so the request counter alone still
+    // lets an assertion read the pre-paint DOM. Tracking the last DOM mutation
+    // makes the settle signal "nothing is changing" — which says nothing about
+    // whether what it settled on is CORRECT, so it cannot soften any assertion.
+    window.__leveeDom = { last: Date.now() }
+    new MutationObserver(() => {
+      window.__leveeDom.last = Date.now()
+    }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true })
+    const counted = (u) => String(u).includes('/api')
+    const start = () => {
+      window.__leveeReq.inflight++
+      window.__leveeReq.last = Date.now()
+    }
+    const end = () => {
+      window.__leveeReq.inflight = Math.max(0, window.__leveeReq.inflight - 1)
+      window.__leveeReq.last = Date.now()
+    }
+    const xhrOpen = XMLHttpRequest.prototype.open
+    XMLHttpRequest.prototype.open = function () {
+      if (counted(arguments[1])) {
+        start()
+        this.addEventListener('loadend', end)
+      }
+      return xhrOpen.apply(this, arguments)
+    }
+    const nativeFetch = window.fetch
+    window.fetch = function (u) {
+      if (!counted(u)) return nativeFetch.apply(this, arguments)
+      start()
+      return nativeFetch.apply(this, arguments).finally(end)
+    }
+  })
+}
+
+// settled reports whether the view has mounted AND has no REST call outstanding.
+// It deliberately says nothing about WHAT rendered: the assertions below stay
+// the judges of correctness while this only removes the race.
+function settled(page) {
+  return page.evaluate(() => {
+    const title = document.querySelector('.levee-page h1, .levee-page h2, .not-found__title')
+    const mounted = !!((title && title.textContent) || '').trim()
+    const r = window.__leveeReq
+    const d = window.__leveeDom
+    if (!mounted || !r || !d) return false
+    // Both signals must have been quiet: the LATER of the two timestamps is
+    // when activity last happened.
+    const lastActivity = Math.max(r.last, d.last)
+    return r.inflight === 0 && Date.now() - lastActivity > 150
+  })
+}
+
+async function waitForSettled(page, label) {
+  const deadline = Date.now() + SETTLE_DEADLINE_MS
+  while (Date.now() < deadline) {
+    let done = false
+    try {
+      done = await settled(page)
+    } catch {
+      // Navigating mid-poll destroys the execution context; keep polling, the
+      // deadline is the backstop and the assertion below is the real verdict.
+      done = false
+    }
+    if (done) return true
+    await sleep(60)
+  }
+  notes.push(`settle timeout after ${SETTLE_DEADLINE_MS}ms at ${label}`)
+  console.log(`  NOTE settle timeout after ${SETTLE_DEADLINE_MS}ms at ${label} — asserting on what is on screen`)
+  return false
+}
+
+async function open(page, path) {
   // domcontentloaded, never networkidle2: the monitor's SSE stream keeps a
   // connection open, so "idle" never arrives and a networkidle wait just burns
   // the timeout.
   await page.goto(BASE + path, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  // The first page a fresh dev server renders is compiled on demand: the shell
-  // can arrive before the view chunk, so a cold Vite serves a shell with an
-  // empty content region. The warm-up call below pays that cost outside the
-  // assertions.
-  await sleep(settleMs)
+  // The former `await sleep(settleMs)` here was the suite's only synchronisation
+  // between "navigation started" and "assertions read the DOM", and it was
+  // wrong: the view's chunk is compiled on demand by Vite and its data arrives
+  // asynchronously, so on a contended runner the read happened before the
+  // paint. That is not hypothetical — three unrelated dependency bumps each went
+  // red on a DIFFERENT assertion (`rows=0`, `title=""`, an unchanged url) with
+  // the page reporting no error, on windows only, while the ubuntu leg of the
+  // same commit passed. Deleting the sleeps reproduces those exact signatures
+  // locally. Waiting for the page's own outstanding-request count removes the
+  // clock as a judge without weakening what is asserted.
+  return waitForSettled(page, path)
 }
 
 // warmUp loads the shell once and waits until the FIRST VIEW HAS ACTUALLY
@@ -187,7 +284,7 @@ async function open(page, path, settleMs = 900) {
 async function warmUp(browser) {
   const page = await browser.newPage()
   await page.goto(BASE + '/changes', { waitUntil: 'domcontentloaded', timeout: 30_000 })
-  const deadline = Date.now() + 60_000
+  const deadline = Date.now() + Math.max(SETTLE_DEADLINE_MS, 60_000)
   while (Date.now() < deadline) {
     const h1 = await page.evaluate(() => document.querySelector('.levee-page h1')?.textContent?.trim() || '')
     const rows = await page.evaluate(() => document.querySelectorAll('.el-table__row').length)
@@ -225,7 +322,7 @@ const routes = [
 ]
 for (const [path, title, rowSel] of routes) {
   const page = await newPage(browser)
-  await open(page, path, 1200)
+  await open(page, path)
   const h1 = await text(page, '.levee-page h1, .levee-page h2, .not-found__title')
   const rows = rowSel ? await page.evaluate((s) => document.querySelectorAll(s).length, rowSel) : -1
   check(`${path} renders`, h1.length > 0 && page._errors.length === 0, `h1="${h1}" errors=${JSON.stringify(page._errors)}`)
@@ -239,19 +336,19 @@ console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 {
   const page = await newPage(browser)
   // ok
-  await open(page, '/changes', 1500)
+  await open(page, '/changes')
   const okRows = await page.evaluate(() => document.querySelectorAll('.el-table__row').length)
   check('normal mode shows rows', okRows > 0, `rows=${okRows}`)
 
   // forbidden: the region answers in place, and the table is not silently empty
   await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=forbidden')
-  await open(page, '/changes', 1500)
+  await open(page, '/changes')
   const forbiddenText = await text(page, '.state__title')
   check('403 renders the forbidden tier (not "no data")', forbiddenText.includes('没有权限'), `title="${forbiddenText}"`)
 
   // empty: a genuinely empty list is its own answer
   await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=empty')
-  await open(page, '/changes', 1500)
+  await open(page, '/changes')
   const emptyText = await text(page, '.state__title')
   const emptyHint = await text(page, '.state__hint')
   check('empty list renders the empty tier', emptyText.includes('没有数据'), `title="${emptyText}"`)
@@ -265,7 +362,7 @@ console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 console.log('\n[3] the trend chart draws what the endpoint said')
 {
   const page = await newPage(browser)
-  await open(page, '/changes', 1600)
+  await open(page, '/changes')
   const segs = await page.evaluate(() => document.querySelectorAll('.trend__seg').length)
   check('the chart draws stacked segments', segs > 20, `segments=${segs}`)
   const legend = await page.evaluate(() =>
@@ -286,7 +383,7 @@ console.log('\n[3] the trend chart draws what the endpoint said')
 console.log('\n[4] the target map is windowed and its scrollbar is honest')
 {
   const page = await newPage(browser)
-  await open(page, '/monitor/run-fleet', 2600)
+  await open(page, '/monitor/run-fleet')
   const m = await page.evaluate(() => {
     const box = document.querySelector('.map-scroll')
     const rows = [...document.querySelectorAll('.map tbody tr')].filter((r) => !r.classList.contains('map__spacer'))
@@ -303,19 +400,33 @@ console.log('\n[4] the target map is windowed and its scrollbar is honest')
 
   // Scroll to the bottom: the last host in the window must be the last row of
   // the sort, and the padding must have grown to match.
-  const bottom = await page.evaluate(async () => {
-    const box = document.querySelector('.map-scroll')
-    box.scrollTop = box.scrollHeight
-    await new Promise((r) => setTimeout(r, 300))
-    const rows = [...document.querySelectorAll('.map tbody tr')].filter((r) => !r.classList.contains('map__spacer'))
-    const spacers = document.querySelectorAll('.map__spacer')
-    return {
-      rows: rows.length,
-      padTop: Math.round(spacers[0].getBoundingClientRect().height),
-      padBottom: Math.round(spacers[1].getBoundingClientRect().height),
-      last: rows[rows.length - 1].querySelector('td').textContent,
+  const bottom = await page.evaluate(async (deadlineMs) => {
+    const read = () => {
+      const rows = [...document.querySelectorAll('.map tbody tr')].filter((r) => !r.classList.contains('map__spacer'))
+      const spacers = document.querySelectorAll('.map__spacer')
+      return {
+        rows: rows.length,
+        padTop: spacers.length ? Math.round(spacers[0].getBoundingClientRect().height) : -1,
+        padBottom: spacers.length > 1 ? Math.round(spacers[1].getBoundingClientRect().height) : -1,
+        first: rows.length ? rows[0].querySelector('td').textContent : '',
+        last: rows.length ? rows[rows.length - 1].querySelector('td').textContent : '',
+      }
     }
-  })
+    const box = document.querySelector('.map-scroll')
+    const before = read().first
+    box.scrollTop = box.scrollHeight
+    // The re-windowing is a Vue reactive tick, so wait until the first visible
+    // host actually CHANGES — a settle signal that is not the value being
+    // asserted below — instead of trusting a fixed 300ms.
+    const until = Date.now() + deadlineMs
+    let cur = read()
+    while (Date.now() < until) {
+      cur = read()
+      if (cur.first !== before) break
+      await new Promise((r) => setTimeout(r, 40))
+    }
+    return cur
+  }, SETTLE_DEADLINE_MS)
   check('scrolling to the bottom lands on the last rows', bottom.padBottom === 0, `padBottom=${bottom.padBottom}`)
   check('the window shrank to what is left', bottom.rows > 0 && bottom.rows < 100, `rows=${bottom.rows}`)
   if (SHOTS) await page.screenshot({ path: `${SHOT_DIR}/monitor_fleet.png` })
@@ -331,7 +442,7 @@ console.log('\n[4b] the cluster page renders takeover settlements')
   // moment instead of the run's current status would report both as
   // interrupted, which is the bug internal/grpc/rest_takeover.go exists to
   // avoid.
-  await open(page, '/cluster', 2200)
+  await open(page, '/cluster')
   const rows = await page.evaluate(() =>
     [...document.querySelectorAll('.takeover')].map((li) => ({
       run: li.querySelector('.takeover__run')?.textContent?.trim() || '',
@@ -350,13 +461,21 @@ console.log('\n[4b] the cluster page renders takeover settlements')
 console.log('\n[5] the keyboard path moves a visible cursor and opens the row')
 {
   const page = await newPage(browser)
-  await open(page, '/changes', 1600)
+  await open(page, '/changes')
   await page.keyboard.press('j')
-  await sleep(200)
+  // Wait until the cursor EXISTS, then assert there is exactly one: waiting on
+  // presence keeps "no cursor at all" distinguishable from "two cursors", which
+  // a wait on the final count would erase.
+  await page.waitForFunction(() => document.querySelectorAll('.lv-row-cursor').length > 0,
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 }).catch(() => null)
   const cursor = await page.evaluate(() => document.querySelectorAll('.lv-row-cursor').length)
   check('j paints a row cursor', cursor === 1, `cursors=${cursor}`)
+  // The property here is "Enter navigates", so the effect is the measurement;
+  // the old 900ms sleep was a budget nobody chose, and on a contended runner the
+  // route change is still in flight when it expires. Same verdict, honest budget.
   await page.keyboard.press('Enter')
-  await sleep(900)
+  await page.waitForFunction(() => location.pathname.includes('/changes/run-'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 }).catch(() => null)
   const onDetail = page.url().includes('/changes/run-')
   check('Enter opens the cursor row', onDetail, `url=${page.url()}`)
   await page.close()
@@ -365,8 +484,9 @@ console.log('\n[5] the keyboard path moves a visible cursor and opens the row')
 // ---------------------------------------------------------------------------
 console.log('\n[6] the day boundary follows the operator, not the server')
 {
-  const page = await browser.newPage()
-  await page.setViewport({ width: 1600, height: 1000 })
+  const page = await newPage(browser)
+  // newPage installs the request counter open() waits on; this second
+  // installation wraps it and only records the trend URLs.
   // Install BEFORE the page loads: the request fires during mount, so an
   // interceptor attached afterwards observes nothing - and the check passes
   // for the wrong reason, or hangs, which is how this was found.
@@ -380,7 +500,7 @@ console.log('\n[6] the day boundary follows the operator, not the server')
       return open.apply(this, arguments)
     }
   })
-  await open(page, '/changes', 2200)
+  await open(page, '/changes')
   const seen = await page.evaluate(() => window.__trendUrls || [])
   const offset = /tz_offset=(-?[0-9]+)/
   check('the trend request carries tz_offset', seen.some((u) => offset.test(u)), JSON.stringify(seen))
@@ -393,7 +513,7 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   // Default (SQLite): the page says coordination is off instead of showing an
   // empty node list. 'Nothing here' and 'this deployment has nothing to show'
   // are different answers, and conflating them is the bug this repo keeps fixing.
-  await open(page, '/cluster', 1800)
+  await open(page, '/cluster')
   const hint = await text(page, '.hint')
   check('sqlite deployment explains that coordination is off',
     hint.indexOf('单节点') >= 0 || hint.indexOf('未启用') >= 0, 'hint=' + JSON.stringify(hint.slice(0, 60)))
@@ -403,7 +523,7 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   // Cluster mode (PG backend): one card per registered node, and an offline
   // node coloured bad rather than ok.
   await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=cluster')
-  await open(page, '/cluster', 1800)
+  await open(page, '/cluster')
   const clusterCards = await page.evaluate(() => document.querySelectorAll('.lv-panel.node').length)
   check('cluster deployment renders one card per node', clusterCards === 3, 'cards=' + clusterCards)
   const offline = await page.evaluate(() => document.querySelectorAll('.node .lv-dot--bad').length)

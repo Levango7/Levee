@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### CI（浏览器检查假红的根因坐实：判据挂在时钟上，不是挂在渲染上）
+
+- **背景**：#136 把这套检查请进 CI 时如实记了一句「**根因没能坐实**……没有声称预热是修复——证据不足」。三天后它开始付账：三条互不相关的 Go 依赖 bump（#147/#148/#149）在同一段窗口里各红在**不同**断言上——`normal mode shows rows — rows=0`、`403 renders the forbidden tier — title=""`、`Enter opens the cursor row`——且只在 `windows-latest` 红，同一提交的 ubuntu 腿全绿，页面自己 `errors=[]`。后果是安全依赖合不进去，而"红"长得像产品回归。
+- **根因（实测得出，不是推断）**：`open()` 用 `await sleep(settleMs)`（900/1200/1500/1600/2200ms 各点不一）作为"导航已完成"的唯一同步手段，11 个调用点后挂着全部断言。把这些 sleep 归零、冷缓存重跑，本机**精确复现** CI 的两条失败签名（`rows=0`、`title=""`）。断言读的是"等了多久"，不是"页面到了什么状态"。
+- **落地**：`open()` 改为等内容——每个页面在 `evaluateOnNewDocument` 里装一个只数 `/api` 的 XHR/fetch 在途计数（SSE 走 EventSource 因而不计数，理由与既有的"永不等 networkidle2"同源），外加一个 `MutationObserver` 记录最后一次 DOM 变更；就绪判据＝路由标题已挂载 **且** 在途请求归零 **且** 两者都静默 150ms。加观察器是因为请求计数不够：`loadend` 早于 axios 的 promise 落地、更早于 Vue 下一帧重渲染，只数请求仍会读到未画完的 DOM。`SETTLE_DEADLINE_MS`（默认 30s，`BROWSER_CHECK_SETTLE_MS` 可覆盖）是**上限而非等待时长**，超时不改变判据、只打一行 `NOTE settle timeout` 后照常断言。键盘与虚拟滚动两处固定 sleep 各换成对可观测状态的等待，并刻意让等待信号弱于断言：光标「先等到存在、再断言恰好一个」（否则"出现两个光标"会被等待吞掉），滚动「先等到首行主机真的变了、再断言底部留白归零」（避免同义反复）。
+- **断言没有被等待洗白（两条变异）**：① `BROWSER_CHECK_SETTLE_MS=1` → 退出 1，7 条 FAIL + 15 条 `NOTE settle timeout`——等待确实承重，且可疑处点名而不是静默读过；② 把两个期望值改错（`offline === 99`、`segs > 99999`）→ 各自判红并如实回显真实读数 `offline=1`、`segments=24`。
+- 验证：38 条断言（含循环内展开）在**冷缓存**（`rm -rf node_modules/.vite` + `vite --force`）下 ALL PASS，热态连跑两轮各 `ok=38 fail=0 note=0`。条件：本机 Chrome + node v26.8.2（CI 钉 node 20）＋自起隔离实例 mock:4699 / vite:5183，**未复用**主工作树上 10-13 起的 :5173/:4599。`go vet ./...`、`internal/docgen -check`、`scripts/test_changelog_structure.py`、`test_check_release_versions.py`、`test_ci_aggregate.py`、`test_release_workflow_budget.py` 全过（无 Go 改动，pb 未触碰）。
+- **仍未做**：runner 速度差是这份检查的固有条件，本次改的是判据不是预算。将来若有断言真的依赖"在多久之内"发生（例如 SSE 首帧），它该有一个按属性写的显式 deadline，而不是回到固定 sleep。
+
 ### 新增（ChatOps 入向决策闭环：聊天里点「通过」真的能批，而且只有平台签过名的才能批）
 
 - **背景**：ChatOps 层此前只有出向。审批请求卡与决定广播一直在播，但卡片背后的 `/levee approve` / `reject` 是命令路由器的内置空桩——回复是 "approve: no handler registered"。三个 adapter 的 `Parse*Callback` 解码器**零生产调用方**，bot 没有回调端点，mac 验签按各自文件注释归属的「ingress 层」从未被建。也就是说：聊天室里看得见审批，点不动。
