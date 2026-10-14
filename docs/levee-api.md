@@ -862,17 +862,24 @@ RESTful 风格，支持两套路径：
 
 > 说明：本节**仅列核心变更生命周期与服务端点**；凭据（secret）、用户/团队/权限、通知渠道等管理面资源未全部投影为 REST 端点，管理操作走对应 CLI 章节（第 7–9 章）。
 >
-> **`GET /changes/:id` 目前不返回执行计划，`includePlan` 是惰性参数。** `GetChangeRequest` 有
-> `include_plan` 字段，`proto/levee.proto` 的注释写着 "If true, include the latest plan and run
-> summary in the response"，但服务端没有实现：网关 `internal/grpc/rest.go:753` 确实把
-> `?includePlan=true` 转成该字段，而 `ChangeService.GetChange` 从不读它（全仓 `GetIncludePlan()`
-> 零命中）；响应类型 `rpc GetChange returns (Change)` 里的 `message Change` 只有 9 个字段
-> （id / label / status / priority / workflow_file / template_name / created_by / team / environment），
-> 本来也没有放计划的位置。现状由 `internal/grpc/rest_getchange_include_plan_test.go` 钉住——
-> 带与不带该参数的响应必须逐字节相同；**谁实现了这个参数，那条测试会变红**，届时请同步改 proto
-> 注释与本节。需要计划的等价内容：CLI `levee show <run-id>` 直连 store
-> （`cmd/levee/cmd_show.go` 读 `GetRun` / `ListBatches` / `ListSteps`），批次进度另有
-> `GET /system/batch-status?run_id=`。
+> **`GET /changes/:id?includePlan=true` 返回该 run 最新的执行计划。** `GetChangeRequest.include_plan`
+> 于 2026-10-14 落地兑现（台账 #18）：网关把 `?includePlan=true` 转成该字段（`internal/grpc/rest.go`），
+> 服务层 `ChangeService.GetChange` 从 `run.plan_json`（Planning 时持久化的 `plan.Plan` 规范 JSON）
+> 反序列化并经 `PlanToPB` 填进 `Change.plan`（`message Change` 第 13 号字段）。
+>
+> 语义口径：
+> - **默认不回显**（`includePlan` 未传或 `false` ⇒ `plan` 字段缺席，protojson 省未设置的 message
+>   字段 ⇒ 既有调用方 payload 与 wire 契约快照逐字节不变，无需 `UPDATE_WIRE_CONTRACT`）。
+> - **无 plan 或 artifact 不可解析 ⇒ `plan` 缺席而非报错**：变更本体仍可读，"还没有计划"是 draft
+>   的正常状态；伪造一个空计划等于替 store 编它没说过的形状。
+> - **ListChanges 永远不带 `plan`**：这是单条查询的选项，加宽列表响应的成本应由调用方显式承担。
+>
+> 现状由 `internal/grpc/rest_getchange_include_plan_test.go` 与服务层 `change_service_getchange_plan_test.go`
+> 共同钉住（后者含四条子测试与三条变异；REST 级断言 `?includePlan=true` 与不带时的响应**必须不同**，
+> 且带参响应含 `plan`、不带参响应不含 `plan`）。计划的另一条等价入口：CLI `levee show <run-id>`
+> 直连 store（`cmd/levee/cmd_show.go` 读 `GetRun` / `ListBatches` / `ListSteps`），批次进度另有
+> `GET /system/batch-status?run_id=`。前端详情页若要显示 plan，须显式带 `?includePlan=true`
+> 并新增渲染面板（本批只做后端能力，前端未接）。
 
 > **`Change.priority` 是优先级，不是审批档位。** 取值限于 `low` / `normal` / `high` / `urgent`
 > （词表由 `internal/state` 的 `Priority*` 常量声明，前端 `Priority` 联合由
