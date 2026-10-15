@@ -516,7 +516,7 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   await open(page, '/cluster')
   const hint = await text(page, '.hint')
   check('sqlite deployment explains that coordination is off',
-    hint.indexOf('单节点') >= 0 || hint.indexOf('未启用') >= 0, 'hint=' + JSON.stringify(hint.slice(0, 60)))
+    hint.indexOf('未启用集群协调') >= 0, 'hint=' + JSON.stringify(hint.slice(0, 60)))
   const cards = await page.evaluate(() => document.querySelectorAll('.lv-panel.node').length)
   check('and shows no fake node cards', cards === 0, 'cards=' + cards)
 
@@ -543,6 +543,20 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   const byId = Object.fromEntries(caps.map((c) => [c.id, c]))
   check('a node renders its declared capabilities', JSON.stringify(byId['node-a'].caps) === JSON.stringify(['shell', 'pkg', 'file']), JSON.stringify(caps))
   check('a node that declared none says so', byId['node-c'].none === true, JSON.stringify(caps))
+
+  // Coordination ON with an empty registry. The storage axis cannot express
+  // this deployment: postgres + no nodes looked exactly like a deliberate
+  // single-node server, so the one sentence an operator needed — "your master
+  // never registered" — was the one the wire could not carry.
+  await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=cluster-empty')
+  await open(page, '/cluster', 1800)
+  const emptyHint = await text(page, '.hint')
+  check('a cluster with an empty registry is reported as one',
+    emptyHint.indexOf('节点注册表为空') >= 0, 'hint=' + JSON.stringify(emptyHint.slice(0, 80)))
+  check('and does not borrow the coordination-off sentence',
+    emptyHint.indexOf('未启用集群协调') < 0, 'hint=' + JSON.stringify(emptyHint.slice(0, 80)))
+  const emptyCards = await page.evaluate(() => document.querySelectorAll('.lv-panel.node').length)
+  check('an empty registry renders no node cards', emptyCards === 0, 'cards=' + emptyCards)
 
   await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=ok')
   await page.close()

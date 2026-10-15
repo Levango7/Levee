@@ -92,6 +92,19 @@ type ServeGatewayConfig struct {
 	// RateBurst is the token-bucket burst size. Zero selects
 	// DefaultRateBurst. Ignored when rate limiting is disabled.
 	RateBurst int
+	// ClusterEnabled announces that THIS process runs cluster coordination: a
+	// cluster manager exists, so membership, leases and the dispatch sweep are
+	// live. The gateway cannot discover this by itself — coordination is
+	// constructed in cmd/levee, and a manager is not something the store knows
+	// about. Leaving it unset reports "not coordinating", which is the honest
+	// reading of a gateway nobody wired to a cluster.
+	//
+	// It is deliberately not derived from the backend label. Now that a
+	// single-node PostgreSQL deployment is a supported shape,
+	// backend == "postgres" reports only which database answers; reading
+	// coordination off it would tell an operator that a deliberate single node
+	// is half a cluster.
+	ClusterEnabled bool
 }
 
 // ServeGateway starts an HTTP server on cfg.Addr that proxies /api/v1/*
@@ -236,6 +249,17 @@ func (gw *Gateway) SetMobileApproval(m mobileApprovalHandler) {
 // SetStore sets the backend store the gateway queries directly for endpoints
 // that do not map to a gRPC service (e.g. cluster status).
 func (gw *Gateway) SetStore(s state.Store) { gw.store = s }
+
+// ClusterEnabled reports what this gateway announces on
+// /system/cluster-status about cluster coordination.
+//
+// The gateway's other exported members are all writers, so this reads as
+// out of place until you ask how the announcement can be trusted: `serve`
+// builds the config, and a field nothing can read back is a field nobody can
+// prove is set. cmd/levee's wiring test uses it to check that the value the
+// payload carries is the one derived from the live cluster manager rather
+// than a literal left behind when the flag was added.
+func (gw *Gateway) ClusterEnabled() bool { return gw.cfg.ClusterEnabled }
 
 // SetConversationEngine registers the ConversationEngine the gateway calls
 // directly for the session-management REST endpoints (NewSession/ListSessions
@@ -1875,10 +1899,16 @@ func (gw *Gateway) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// `backend` answers "which database", `cluster_enabled` answers "is
+	// coordination running". They part ways the moment a deliberate
+	// single-node PostgreSQL deployment asks, and the console has to say so:
+	// reading one off the other told those operators their storage was a
+	// half-built cluster.
 	writeJSON(w, map[string]any{
-		"nodes":   nodes,
-		"summary": summary,
-		"backend": backendLabel(gw.store),
+		"nodes":           nodes,
+		"summary":         summary,
+		"backend":         backendLabel(gw.store),
+		"cluster_enabled": gw.cfg.ClusterEnabled,
 	})
 }
 
