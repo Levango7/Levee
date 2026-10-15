@@ -54,6 +54,33 @@ describe('systemApi.clusterStatus', { timeout: COLD_IMPORT_TIMEOUT }, () => {
 		expect(result.nodes?.[0]?.last_heartbeat).toBe('2026-10-14T09:00:00Z')
 	})
 
+	it('carries the capability filter to the server, and carries nothing when there is none', async () => {
+		// The narrowing is the server's job (internal/capability owns what a
+		// declaration means), so the client's contract is the QUERY PARAMETER. If
+		// the wrapper dropped it, the page would show an unfiltered list under a
+		// filter label — a silently wrong answer, which is the class of bug this
+		// repo's wire contract exists to catch.
+		vi.resetModules()
+		const mod = await import('./index')
+		const client = await import('./client')
+
+		const seen: { url?: string; params?: Record<string, unknown> } = {}
+		client.axiosClient.defaults.adapter = async (config) => {
+			seen.url = config.url
+			seen.params = config.params as Record<string, unknown>
+			return { data: flatOk, status: 200, statusText: 'OK', headers: {}, config }
+		}
+
+		await mod.systemApi.clusterStatus({ capability: 'pkg' })
+		expect(seen.url).toBe('/system/cluster-status')
+		expect(seen.params?.capability).toBe('pkg')
+
+		// And the plain call must not send an empty filter: `?capability=` would
+		// ask the server for nodes declaring "", which is not "no filter".
+		await mod.systemApi.clusterStatus()
+		expect(seen.params?.capability ?? '').toBe('')
+	})
+
 	it('propagates an HTTP error as a rejected promise', async () => {
 		vi.resetModules()
 		const mod = await import('./index')

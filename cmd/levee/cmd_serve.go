@@ -48,6 +48,7 @@ import (
 	"github.com/nexus/levee/internal/auth"
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/calendar"
+	"github.com/nexus/levee/internal/capability"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
 	"github.com/nexus/levee/internal/chatops"
@@ -110,6 +111,11 @@ var (
 	serveOptNodeID   string
 	serveOptNodeAddr string
 	serveOptNodeRole string
+	// serveOptNodeCapabilities is what this node declares it can execute
+	// (module names: shell, file, pkg...). It lands in cluster_nodes.capabilities
+	// and is what `?capability=` on /system/cluster-status filters on. Declaring
+	// nothing is the default, and dispatch does not read it either way.
+	serveOptNodeCapabilities []string
 	// serveOptClusterTakeoverInterval is the failover-takeover sweep
 	// period (cluster mode). <= 0 disables the LOOP only — execution
 	// fencing (leases) stays active whenever the engine is enabled.
@@ -195,6 +201,10 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringVar(&serveOptNodeID, "node-id", "", "Cluster node ID (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeAddr, "node-addr", "", "Cluster node address (required with --cluster)")
 	cmd.Flags().StringVar(&serveOptNodeRole, "node-role", "worker", "Cluster node role: master|worker")
+	cmd.Flags().StringSliceVar(&serveOptNodeCapabilities, "node-capabilities", nil,
+		"Module names this node declares it can execute (comma-separated or repeatable, e.g. shell,pkg); "+
+			"stored in cluster_nodes.capabilities and filterable via GET /system/cluster-status?capability=<name>. "+
+			"Dispatch does not route on capabilities, so declaring none changes nothing about how work is placed")
 	cmd.Flags().DurationVar(&serveOptClusterTakeoverInterval, "cluster-takeover-interval", takeover.DefaultInterval, "Failover takeover sweep period; <=0 disables the takeover loop (fencing stays active) (cluster mode)")
 	cmd.Flags().DurationVar(&serveOptClusterExecLeaseTTL, "cluster-exec-lease-ttl", cluster.DefaultExecLeaseTTL, "Execution-lease TTL: bounds post-crash takeover detection latency; renewals run at TTL/3 (cluster mode)")
 	cmd.Flags().DurationVar(&serveOptClusterDispatchInterval, "cluster-dispatch-interval", dispatch.DefaultInterval, "Cross-node dispatch sweep period; <=0 disables the dispatch loop (cluster mode)")
@@ -1443,6 +1453,15 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 				"configuration at PostgreSQL with database.driver = postgres and database.dsn for a " +
 				"deliberate single-node PostgreSQL deployment")
 		}
+		// Same shape as the --pg-dsn refusal above: a capability declaration is a
+		// fact about cluster membership, and there is no cluster_nodes row for a
+		// single-node server to put it in. Silently dropping the flag would leave
+		// an operator believing the node had declared something.
+		if len(serveOptNodeCapabilities) > 0 {
+			return nil, nil, fmt.Errorf("--node-capabilities was given without --cluster: %v. "+
+				"Capabilities are declared into the cluster registry; add --cluster, or drop the flag",
+				serveOptNodeCapabilities)
+		}
 		store, err := openStoreFromConfig(ctx, cfg)
 		if err != nil {
 			return nil, nil, err
@@ -1461,6 +1480,12 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 	if serveOptNodeID == "" || serveOptNodeAddr == "" {
 		return nil, nil, errors.New("--cluster requires --node-id and --node-addr")
 	}
+	// Built before the database is opened: a declaration this package cannot
+	// store must fail the start without having connected anywhere.
+	self, err := clusterNodeForServe()
+	if err != nil {
+		return nil, nil, err
+	}
 	pgStore, err := state.NewPGStore(ctx, serveOptPGDSN, state.PGPoolConfig{
 		MaxOpenConns:    cfg.Database.MaxOpenConns,
 		MaxIdleConns:    cfg.Database.MaxIdleConns,
@@ -1473,12 +1498,7 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 	clusterMgr := cluster.NewClusterManager(pgStore.DB(), cluster.ManagerConfig{
 		SelfID: serveOptNodeID,
 	})
-	if err := clusterMgr.Join(cluster.Node{
-		ID:      serveOptNodeID,
-		Address: serveOptNodeAddr,
-		Status:  cluster.StatusActive,
-		Role:    cluster.NodeRole(serveOptNodeRole),
-	}); err != nil {
+	if err := clusterMgr.Join(self); err != nil {
 		_ = store.Close()
 		return nil, nil, fmt.Errorf("join cluster: %w", err)
 	}
@@ -1486,9 +1506,39 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 		_ = store.Close()
 		return nil, nil, fmt.Errorf("start cluster manager: %w", err)
 	}
-	log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr, "role", serveOptNodeRole)
+	// The declaration is printed at startup because it is the only place an
+	// operator learns what the registry recorded: a flag that reached no row, or
+	// reached it in a different shape than typed, is otherwise invisible until
+	// somebody filters on it and gets nothing.
+	log.Info("cluster mode enabled", "node_id", serveOptNodeID, "node_addr", serveOptNodeAddr,
+		"role", serveOptNodeRole, "capabilities", self.Capabilities)
 	log.Info("cluster coordination: shared storage, membership, locking; in-flight changes are fenced (run_execution leases) and the takeover loop settles crashed executors' runs to interrupted")
 	return store, clusterMgr, nil
+}
+
+// clusterNodeForServe builds the registry record this process joins with, from
+// the cluster flags.
+//
+// It is a function rather than an inline literal for two reasons. The first is
+// that the capability list has to be normalised before it reaches the column,
+// and an invalid name must refuse the start instead of writing a row no reader
+// can parse (the registry rejects such a value too; doing it here means the
+// operator hears from the command that named the flag). The second is that the
+// mapping from flags to record then has one addressable place, so the wiring
+// tests in serve_cluster_node_test.go can assert what a given set of flags
+// declares without needing a PostgreSQL to join against.
+func clusterNodeForServe() (cluster.Node, error) {
+	caps, err := capability.Normalize(serveOptNodeCapabilities)
+	if err != nil {
+		return cluster.Node{}, fmt.Errorf("--node-capabilities: %w", err)
+	}
+	return cluster.Node{
+		ID:           serveOptNodeID,
+		Address:      serveOptNodeAddr,
+		Status:       cluster.StatusActive,
+		Role:         cluster.NodeRole(serveOptNodeRole),
+		Capabilities: caps,
+	}, nil
 }
 
 // serveCredentialResolver adapts the encrypted credential store to the

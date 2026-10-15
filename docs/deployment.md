@@ -305,13 +305,15 @@ levee serve --cluster \
 
 当前能力边界：
 
+- **节点能力申报（可选）**：`--node-capabilities shell,pkg` 把"这个节点声明自己能执行哪些模块"写进 `cluster_nodes.capabilities`（启动日志打印规范化结果）。每次 join 都会刷新该列：声明属于此刻说话的这个节点，重启时不再声明即清空（与 `agents` 表同一条契约）。可查：`GET /system/cluster-status?capability=<name>`；K8s 侧由 `cluster.nodeCapabilities` 注入，master 与 worker Deployment 都吃这一个值（同一镜像＝同一批模块），留空则两个 Deployment 的 args 与加这个值之前逐字一致。**它不参与派发**——`internal/dispatch` 按负载挑最闲的活跃 worker，声明改变的是运维能否回答"这批节点里谁装了 pkg"，不改变工作落在谁身上。
 - **已具备**：
   - 共享 PostgreSQL 存储带来的数据一致性；
   - 持久化成员注册：节点写入 `cluster_nodes` 表并周期心跳（默认 10s 一次，30s 未心跳被对端标记 offline），各节点本地视图从共享表收敛，leader 按确定性策略（active master 最小 ID，缺则 active worker 最小 ID）在各节点独立收敛；
   - 租约式分布式锁（`cluster_locks` 表）：锁带租约过期时间，持有者需周期续租；持有者崩溃或失联后租约到期，其他节点可自动抢占接管，无需人工干预。每次获取/抢占携带单调递增的 fence token，供未来的接管工作做隔离校验。
-- **尚未实现**：在途变更的自动故障转移（节点崩溃时其正在执行的变更不会自动由他端续跑）、跨节点任务调度。节点角色（`--node-role master|worker`）当前主要用于标识与 leader 收敛。
+  - 跨节点任务调度：leader 的 dispatch 循环把已批准且尚无属主的 run 派给负载最低的活跃 worker（容量上限 `--cluster-dispatch-capacity`），worker 循环领取并执行；`run_assignment` 带单调 epoch，超时未领取的 pending 派发会被 leader 回收重派并围栏旧属主（`--cluster-dispatch-claim-timeout`）。两个循环都只在 `--engine-enabled` 且 `--cluster-dispatch-interval > 0` 时启动，单机模式下刻意不启动（sweep 是 leader-only 的，没有成员就无人可派）。
+- **仍在边界内**：在途变更**不会由他端续跑**。执行者崩溃后，takeover 循环把它的 run 结算为 `interrupted` 并留一条接管事件（控制台"集群状态"页的时间线可读，`GET /system/takeover-events`），恢复执行需要人重新批准或重试——这是设计取舍（半执行的变更不该被另一台机器当作可续的账），不是缺件。节点角色（`--node-role master|worker`）决定谁跑 leader-only 的循环，成员身份与派发资格并不按能力过滤。
 
-因此多节点部署应视为“共享存储 + 共享成员/锁 + 多接入点”，可用性提升依赖外部负载均衡与健康检查（`/healthz`）摘除故障节点，而非内置的在途工作自动切换。启动时的告警日志会重申这一点，请在容量与 SLO 评估中纳入。
+因此多节点部署应视为“共享存储 + 共享成员/锁 + 多接入点”，可用性提升依赖外部负载均衡与健康检查（`/healthz`）摘除故障节点，而非内置的在途工作自动切换。`serve --cluster` 的启动日志（`cluster coordination: …`）会把这条边界再说一遍，请在容量与 SLO 评估中纳入。
 
 **变更日历（冻结期）与"哪个数据库"的唯一口径**：`levee serve --cluster --pg-dsn …` 会在**它自己那个 PostgreSQL 库**上建 `calendar_windows`（PostgreSQL 形状：`TIMESTAMPTZ` 列 + `$n` 占位符）并据此强制冻结期——plan 与 apply 执行前各判一次，命中即 `FailedPrecondition` 且不留计划产物，回滚豁免（口径见 `leveelang-spec.md` §4.2b）。冻结期要拦得住，写它的进程和读它的进程必须落在同一个库，而这件事现在由**配置文件一处决定**：`database.driver` 取 `sqlite`（默认，`database.path` 那个文件）或 `postgres`（此时 `database.dsn` 必填）。所有 CLI 命令、未加 `--cluster` 的 `serve`、`system status`/`doctor` 的探活、以及 `levee calendar` 都走同一个决策函数（`cmd/levee/helpers.go` 的 `openStoreFromConfig`），不存在"这条命令连本机、那条连服务端"。因此集群部署的推荐做法是把服务端那份 `configs/config.yaml`（`driver: postgres` + `dsn`）交给运维侧使用；`calendar create --frozen` 成功后仍会在 stderr 打印它写到哪个库，`driver: sqlite` 时额外警告"这是本地文件、服务端读不到"。
 

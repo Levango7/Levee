@@ -125,6 +125,12 @@ cluster:
   dispatchClaimTimeout: 10m
   # 节点地址取值：podIP 使用 Downward API（K8s 推荐）；hostname 使用节点名
   nodeAddressFrom: podIP
+  # 这些节点声明能执行哪些模块（如 [shell, pkg, file]），写入
+  # cluster_nodes.capabilities；GET /system/cluster-status?capability=<name> 按它筛选。
+  # master 与 worker Pod 都吃这一个值（同镜像＝同一批模块）。
+  # 留空 = 不声明（默认，渲染出的 args 与加这个值之前完全一致）。
+  # 注意派发不看能力，只按负载，见 docs/deployment.md。
+  nodeCapabilities: []
   # worker 快照目录的共享卷（需 RWX，如 NFS/CephFS PVC 名称）；留空则用
   # emptyDir——Pod 重建即丢，只在回滚窗口内 Pod 不重建的约定下够用
   snapshotClaimName: ""

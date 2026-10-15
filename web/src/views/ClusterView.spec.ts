@@ -97,6 +97,68 @@ describe('ClusterView node card vocabulary', () => {
   })
 })
 
+describe('ClusterView capability filter', () => {
+  // A capability filter turns "the list is empty" into two different facts:
+  // nothing is registered, versus nothing declares what you asked for. The page
+  // had one sentence for the empty case, so the second fact would have been
+  // reported as an incident at the cluster instead of as a question about the
+  // declaration. These guards keep the two sentences apart, and keep the page
+  // honest about what the filter does NOT narrow (assignments: dispatch places
+  // work by load, never by capability).
+
+  const template = () =>
+    source.slice(source.indexOf('<template>'), source.lastIndexOf('</template>')).replace(/<!--[\s\S]*?-->/g, '')
+
+  it('asks the server to narrow, and tracks what was actually applied', () => {
+    const markup = template()
+    expect(markup).toContain('v-model="capabilityFilter"')
+    expect(markup).toContain('@change="fetchStatus"')
+    const code = scriptCode()
+    expect(code).toContain('clusterStatus(')
+    expect(code).toContain('appliedCapability.value')
+    expect(code).toMatch(/systemApi\.clusterStatus\(want === '' \? undefined : \{ capability: want \}\)/)
+  })
+
+  it('does not read a filtered list as an empty registry', () => {
+    const markup = template()
+    const registryEmpty = markup.slice(
+      markup.indexOf('v-else-if="answered && nodes.length === 0'),
+    )
+    // The condition itself must be guarded by the applied filter, or the two
+    // facts collapse back into one branch.
+    expect(registryEmpty.startsWith('v-else-if="answered && nodes.length === 0 && !appliedCapability"')).toBe(true)
+
+    const noMatch = markup.slice(markup.indexOf('v-else-if="nodes.length === 0 && appliedCapability"'))
+    expect(noMatch).not.toBe(markup)
+    const noMatchBlock = noMatch.slice(0, noMatch.indexOf('</p>'))
+    expect(noMatchBlock).toContain('没有节点声明能力')
+    expect(noMatchBlock).not.toContain('未注册任何 worker 节点')
+    expect(registryEmpty.slice(0, registryEmpty.indexOf('</p>'))).not.toContain('没有节点声明能力')
+  })
+
+  it('takes the filter from a deep link, not only from the box', () => {
+    // The changes board already seeds its search from ?q=; a capability question
+    // is worth sending as a link for the same reason. Seeding must happen BEFORE
+    // the first fetch, or the page answers with the unfiltered registry and then
+    // re-asks.
+    const code = scriptCode()
+    expect(code).toContain('useRoute')
+    expect(code).toContain('route.query.capability')
+    expect(code).toMatch(/typeof fromLink === 'string'/)
+    const mounted = code.slice(code.indexOf('onMounted('))
+    expect(mounted.indexOf('capabilityFilter.value')).toBeLessThan(mounted.indexOf('fetchStatus()'))
+  })
+
+  it('states that the assignment counts are not narrowed by the filter', () => {
+    const markup = template()
+    const caveat = markup.slice(markup.indexOf('v-if="appliedCapability"'))
+    expect(caveat).not.toBe(markup)
+    expect(caveat.slice(0, 400)).toContain('分配统计仍为全部署口径')
+    // The wording that would imply the scheduler honours declarations.
+    expect(caveat.slice(0, 400)).toContain('派发按负载，不按能力')
+  })
+})
+
 describe('ClusterView batch panel placement', () => {
   it('finds the anchors it is asserting on', () => {
     // Anchor honesty first: a renamed heading or a re-indented branch must fail
@@ -151,6 +213,11 @@ describe('ClusterView coordination hints', () => {
 		expect(markup).toContain(COORDINATION_BRANCH)
 	})
 
+	// Shared anchor for the empty-registry branch. Three tests read this exact
+	// condition, and they diverged once when #160 changed `backend === 'postgres'`
+	// to `answered` and #161 appended `!appliedCapability` — one anchor, stated here.
+	const REGISTRY_EMPTY = 'v-else-if="answered && nodes.length === 0 && !appliedCapability"'
+
 	it('claims nothing about coordination before the server has answered', () => {
 		// `data` starts null. A branch that keys only on !clusterEnabled would
 		// state "coordination is disabled" during the first request and after a
@@ -158,7 +225,7 @@ describe('ClusterView coordination hints', () => {
 		// `backend ?? 'unknown'` default.
 		const markup = templateCode()
 		expect(markup).toContain('v-if="answered && !clusterEnabled"')
-		expect(markup).toContain('v-else-if="answered && nodes.length === 0"')
+		expect(markup).toContain(REGISTRY_EMPTY)
 	})
 
 	it('keeps the two shapes in separate sentences', () => {
@@ -167,9 +234,9 @@ describe('ClusterView coordination hints', () => {
 		// return one stray character, and then every assertion below would be
 		// reading the whole page instead of one branch.
 		expect(markup).toContain('v-if="answered && !clusterEnabled"')
-		expect(markup).toContain('v-else-if="answered && nodes.length === 0"')
+		expect(markup).toContain(REGISTRY_EMPTY)
 		const off = markup.slice(markup.indexOf('v-if="answered && !clusterEnabled"'))
-		const empty = markup.slice(markup.indexOf('v-else-if="answered && nodes.length === 0"'))
+		const empty = markup.slice(markup.indexOf(REGISTRY_EMPTY))
 		expect(off.indexOf('</p>')).toBeGreaterThan(-1)
 		expect(empty.indexOf('</p>')).toBeGreaterThan(-1)
 		const offBlock = off.slice(0, off.indexOf('</p>'))

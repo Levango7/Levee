@@ -319,7 +319,21 @@ export const systemApi = {
     checks: Array<{ name: string; status: string; message: string; remediation: string }>
     checkedAt: number
   }> => post('/system/doctor', {}),
-  clusterStatus: (): Promise<ClusterStatus> => get<ClusterStatus>('/system/cluster-status'),
+  /**
+   * The cluster registry: nodes, assignment summary, which backend answers.
+   *
+   * `capability` narrows `nodes` server-side to the nodes declaring that module
+   * (`GET /system/cluster-status?capability=…`). The narrowing happens on the
+   * server because what a declaration MEANS belongs to internal/capability, which
+   * the registry also writes — a card and a filter that each parse the column
+   * their own way is exactly the drift this repo keeps paying to unwind.
+   *
+   * It narrows `nodes` ONLY. `summary` stays deployment-wide: assignments are
+   * placed by load, not by capability, so a filtered page must not present the
+   * counts as if they belonged to the filtered set.
+   */
+  clusterStatus: (params?: { capability?: string }): Promise<ClusterStatus> =>
+    get<ClusterStatus>('/system/cluster-status', { params: { capability: params?.capability } }),
   /**
    * Takeover settlements over the window, newest first is the server's job —
    * the rows arrive in whatever order the store returns and the view sorts.

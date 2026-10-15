@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS cluster_nodes (
     status          TEXT NOT NULL DEFAULT 'active',   -- active|leaving|offline
     role            TEXT NOT NULL DEFAULT 'worker',   -- master|worker
     last_heartbeat  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    capabilities    TEXT NOT NULL DEFAULT '{}',       -- JSON encoded
+    capabilities    TEXT NOT NULL DEFAULT '[]',       -- JSON encoded []string, '[]' = none declared
     joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

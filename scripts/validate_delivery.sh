@@ -217,6 +217,34 @@ require_count cluster "- --pg-dsn" 2 "both the master Deployment and the worker 
 require_count cluster "- name: LEVEE_PG_DSN" 2 "both cluster workloads need the Secret-derived env"
 refute_in cluster "- name: LEVEE_DATABASE_DSN" "cluster mode must not gain a second, overriding DSN source"
 
+render_profile cluster-caps --set mode=cluster --set 'cluster.nodeCapabilities={shell,pkg}'
+
+echo "== capability declaration reaches the container args"
+# The toggle gates an arg block, and a gated block that is never rendered is
+# never checked: an operator asking for it and getting a pod that never declares
+# anything would look like a working feature until someone filtered on it.
+# Checked PER DOCUMENT on purpose — cluster mode renders a master Deployment and
+# a separate worker Deployment, and workers are the pods that receive dispatched
+# runs. A whole-file grep would be satisfied by wiring only the master.
+caps_doc() {
+	awk -v src="levee/templates/$1" '
+		$0 == "# Source: " src { f = 1; next }
+		/^# Source: / { f = 0 }
+		f' "$WORKDIR/cluster-caps.yaml"
+}
+for doc in deployment.yaml cluster-worker.yaml; do
+	caps_doc "$doc" | grep -q -- '--node-capabilities' ||
+		fail "cluster-caps: $doc rendered no --node-capabilities, so cluster.nodeCapabilities has no effect there"
+	caps_doc "$doc" | grep -q '"shell,pkg"' ||
+		fail "cluster-caps: $doc must pass the list as one joined value, not one flag per name"
+done
+# And the default deployment is untouched: a chart that never mentions the new
+# value must start exactly as it did before it existed.
+if grep -q -- '--node-capabilities' "$WORKDIR/cluster.yaml"; then
+	grep -n -- '--node-capabilities' "$WORKDIR/cluster.yaml" >&2
+	fail "--node-capabilities appeared in the default cluster render; the block must be gated"
+fi
+
 echo "== helm package"
 # Packaging is how the chart reaches users (deploy/README.md tells them to
 # install an .tgz), and it is the only step that validates Chart.yaml's

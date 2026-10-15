@@ -102,6 +102,16 @@ spec:
             - $(LEVEE_NODE_ADDR)
             - --node-role
             - master
+            {{- with .Values.cluster.nodeCapabilities }}
+            # What this node declares it can execute, into
+            # cluster_nodes.capabilities. Rendered only when non-empty, so a chart
+            # that never mentions it starts exactly as it does today; the flag
+            # itself is checked against the binary's registered flags by
+            # TestDeliveryArtifactsPassRegisteredServeFlags, so a rename here
+            # would crash-loop every pod in CI rather than in a cluster.
+            - --node-capabilities
+            - {{ . | join "," | quote }}
+            {{- end }}
             - --cluster-exec-lease-ttl
             - {{ .Values.cluster.execLeaseTTL | quote }}
             - --cluster-takeover-interval
