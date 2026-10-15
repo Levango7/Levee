@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +15,9 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/tenant"
 )
 
@@ -34,6 +38,7 @@ var (
 
 	tenantListOptStatus    string
 	tenantSuspendOptReason string
+	tenantPurgeOptYes      bool
 )
 
 func init() {
@@ -56,6 +61,7 @@ func newTenantCmd() *cobra.Command {
 	cmd.AddCommand(newTenantSuspendCmd())
 	cmd.AddCommand(newTenantResumeCmd())
 	cmd.AddCommand(newTenantDeleteCmd())
+	cmd.AddCommand(newTenantPurgeCmd())
 	cmd.AddCommand(newTenantQuotaCmd())
 	cmd.AddCommand(newTenantUsageCmd())
 
@@ -145,6 +151,36 @@ func newTenantDeleteCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: runTenantDelete,
 	}
+}
+
+// newTenantPurgeCmd builds the `levee tenant purge <tenant-id>` sub-command.
+//
+// Purge is a separate verb rather than a flag on `delete`, for two reasons. The
+// first is that `delete` is soft and reversible-by-design in its own terms: the
+// record stays, the name is released, the quota is freed. Bolting an irreversible
+// deletion onto it would make the existing command's blast radius depend on a
+// flag nobody reads. The second is timing — a tenant deleted months ago can be
+// purged today, which a delete-time flag cannot express.
+func newTenantPurgeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "purge <tenant-id>",
+		Short: "Delete a deleted tenant's removable rows",
+		Long: "Permanently delete the data of a tenant that has already been soft-deleted:\n" +
+			"  - its TERMINAL change runs that never produced an execution trace, together with\n" +
+			"    the batches and steps that cascade with them and their approval records;\n" +
+			"  - their dispatch assignment rows.\n\n" +
+			"Everything else is KEPT and reported: runs that have trace evidence cannot be\n" +
+			"deleted at all (trace and audit are append-only — the WORM triggers abort the\n" +
+			"delete and roll the whole statement back), and non-terminal runs are left alone\n" +
+			"because an in-flight or paused change under a deleted tenant is an incident to\n" +
+			"settle, not data to vacuum.\n\n" +
+			"Irreversible. Requires --yes in non-interactive mode.",
+		Args: cobra.ExactArgs(1),
+		RunE: runTenantPurge,
+	}
+	cmd.Flags().BoolVar(&tenantPurgeOptYes, "yes", false,
+		"跳过交互确认（脚本 / 非交互模式必须提供）")
+	return cmd
 }
 
 // newTenantQuotaCmd builds the `levee tenant quota <tenant-id>` sub-command.
@@ -506,6 +542,130 @@ func runTenantDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	return printTenantIDResult(args[0], "deleted")
+}
+
+// runTenantPurge executes `levee tenant purge <tenant-id>`.
+func runTenantPurge(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	tenantID := args[0]
+
+	tm, _, err := loadTenantManager()
+	if err != nil {
+		return err
+	}
+	tt, err := tm.Get(tenantID)
+	if err != nil {
+		return err
+	}
+	// The registry is the gate. Purging an active tenant would delete live
+	// change history, and `delete` is what records the operator's intent to
+	// stop treating this tenant's data as belonging to anybody.
+	if tt.Status != tenant.TenantDeleted {
+		return fmt.Errorf("tenant %s is %s: purge only accepts a deleted tenant (run `levee tenant delete %s` first)",
+			tenantID, tt.Status, tenantID)
+	}
+
+	if !tenantPurgeOptYes {
+		if optJSON {
+			return fmt.Errorf("tenant purge permanently deletes rows: pass --yes in non-interactive mode")
+		}
+		if !confirmProceed(os.Stdin, os.Stderr, fmt.Sprintf(
+			"此操作将永久删除租户 %s 中可删除的变更数据（有执行痕迹的变更会保留）。输入 yes 确认继续: ", tenantID)) {
+			return fmt.Errorf("tenant purge aborted: confirmation not given")
+		}
+	}
+
+	// The store comes from the same decision point every other command uses:
+	// purging the local SQLite file of a PostgreSQL deployment would report
+	// success against a database that holds nothing.
+	cfg, err := loadConfigForCmd()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	store, err := openStoreFromConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	rep, err := state.PurgeTenantData(ctx, store, tenantID)
+	if err != nil {
+		return err
+	}
+
+	// The purge has to leave evidence. A destructive operator action that writes
+	// no audit row is indistinguishable, months later, from "that data was never
+	// here" — which is the exact hole this repository spent four P0s closing.
+	// Writing it cannot be fatal either way: the deletion has already committed
+	// and rolling it back is not on offer, so a failure is said out loud.
+	auditID, err := newTenantPurgeAuditID()
+	if err != nil {
+		return err
+	}
+	entry := &state.Audit{
+		ID: auditID, Action: state.AuditActionTenantPurge, Actor: currentActor(),
+		Target: tenantID, Result: state.AuditResultSuccess,
+		Timestamp: time.Now().UTC(), TenantID: tenantID,
+	}
+	if err := audit.Record(ctx, store, entry); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: purge committed but wrote no audit record: %v\n", err)
+	}
+
+	return printTenantPurgeResult(tenantID, rep)
+}
+
+// newTenantPurgeAuditID mints the audit row id for a purge.
+func newTenantPurgeAuditID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate tenant purge audit id: %w", err)
+	}
+	return "audit-tenant-purge-" + hex.EncodeToString(b), nil
+}
+
+// printTenantPurgeResult reports the removals AND the hold-backs, on both output
+// surfaces and from the same numbers. Saying only "purged" would let an operator
+// believe the tenant's data is gone when the evidence-backed majority of it is
+// deliberately still there.
+func printTenantPurgeResult(tenantID string, rep state.TenantPurgeReport) error {
+	if optJSON {
+		return PrintJSON(os.Stdout, map[string]any{
+			"data": map[string]any{
+				"action":              "purged",
+				"id":                  tenantID,
+				"runs_removed":        rep.RunsRemoved,
+				"approvals_removed":   rep.ApprovalsRemoved,
+				"assignments_removed": rep.AssignmentsRemoved,
+				"runs_held_trace":     rep.RunsHeldTrace,
+				"runs_held_active":    rep.RunsHeldActive,
+			},
+			"meta":  nil,
+			"error": nil,
+		})
+	}
+
+	if optQuiet {
+		fmt.Fprintln(os.Stdout, tenantID)
+		return nil
+	}
+
+	printTenantPurgeHuman(os.Stdout, tenantID, rep)
+	return nil
+}
+
+// printTenantPurgeHuman states the removals and the hold-backs as two separate
+// sentences. "Purged" alone reads as completion to an operator who then stops
+// looking, when the more useful fact is usually that nothing was removable.
+func printTenantPurgeHuman(w io.Writer, tenantID string, rep state.TenantPurgeReport) {
+	fmt.Fprintf(w, "Tenant %s purged: %d run(s), %d approval(s), %d assignment(s) removed\n",
+		tenantID, rep.RunsRemoved, rep.ApprovalsRemoved, rep.AssignmentsRemoved)
+	if rep.RunsHeldTrace > 0 || rep.RunsHeldActive > 0 {
+		fmt.Fprintf(w, "Held back: %d run(s) carrying trace evidence (append-only), %d non-terminal run(s)\n",
+			rep.RunsHeldTrace, rep.RunsHeldActive)
+	}
+	if rep.NothingRemoved() {
+		fmt.Fprint(w, "Nothing was removable: every run of this tenant is either evidence-backed or still in flight.\n")
+	}
 }
 
 // runTenantQuota executes the `levee tenant quota <tenant-id>` command.

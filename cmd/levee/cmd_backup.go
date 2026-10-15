@@ -181,7 +181,7 @@ func runRestore(cmd *cobra.Command, args []string) error {
 		if optJSON {
 			return fmt.Errorf("restore overwrites the live datastore: pass --yes in non-interactive mode")
 		}
-		if !confirmProceed(os.Stdin, os.Stderr) {
+		if !confirmProceed(os.Stdin, os.Stderr, "此操作将用备份覆盖当前数据。输入 yes 确认继续: ") {
 			return fmt.Errorf("restore aborted: confirmation not given")
 		}
 	}
@@ -250,9 +250,12 @@ func snapshotPreRestore(ctx context.Context, mgr *backup.Manager) (string, error
 
 // confirmProceed asks for an explicit interactive confirmation. It returns
 // true only on "yes" / "y" (case-insensitive); any other input, including
-// EOF, aborts the restore.
-func confirmProceed(r io.Reader, w io.Writer) bool {
-	fmt.Fprint(w, "此操作将用备份覆盖当前数据。输入 yes 确认继续: ")
+// EOF, aborts the operation. The warning text is a parameter because every
+// destructive command has to say what it is about to destroy — a shared
+// reader with a hardcoded restore message would put the wrong sentence in
+// front of an operator approving a `tenant purge`.
+func confirmProceed(r io.Reader, w io.Writer, prompt string) bool {
+	fmt.Fprint(w, prompt)
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
 		return false
