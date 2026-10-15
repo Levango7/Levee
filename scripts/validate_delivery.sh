@@ -100,6 +100,122 @@ render_profile cluster-no-snapshot --set mode=cluster --set engine.snapshotDir="
 render_profile ingress --set ingress.enabled=true --set ingress.host=levee.example.com
 render_profile postgres --set postgres.enabled=true
 render_profile cluster-3-workers --set mode=cluster --set cluster.workers=3
+render_profile single-postgres --set postgres.dsn="postgres://levee:ci-dsn-marker@db.internal:5432/levee"
+render_profile single-postgres-embedded --set postgres.enabled=true
+render_profile single-postgres-contradiction --set postgres.enabled=true --set config.database.driver=sqlite
+render_profile single-postgres-external-secret --set postgres.externalSecretName=ops-managed-pg
+render_profile single-postgres-external-conflict --set postgres.externalSecretName=ops-managed-pg --set postgres.dsn="postgres://levee:ignored@db:5432/levee"
+
+# Content assertions on top of "it rendered". render_profile can only check that a
+# document came out; a chart branch that renders an object nobody wires is
+# invisible to it, and that is how `postgres.enabled=true` in single mode used to
+# render NOTHING at all while the profile name promised PostgreSQL — every gate
+# in the templates was `mode == cluster`.
+require_in() {
+	local name="$1" needle="$2" why="$3"
+	grep -qF -- "$needle" "$WORKDIR/$name.yaml" || fail "profile '$name': missing [$needle] — $why"
+}
+refute_in() {
+	local name="$1" needle="$2" why="$3"
+	if grep -qF -- "$needle" "$WORKDIR/$name.yaml"; then
+		grep -nF -- "$needle" "$WORKDIR/$name.yaml" >&2
+		fail "profile '$name': found [$needle], which must not be rendered — $why"
+	fi
+}
+# A Secret is referenced by name from the Deployment whether or not it is
+# rendered, so grepping the name alone proves nothing about the object. This
+# looks for the name inside a Secret document only.
+require_secret() {
+	local name="$1" want="$2" why="$3"
+	if ! grep -A 3 -F "kind: Secret" "$WORKDIR/$name.yaml" | grep -qF -- "name: $want"; then
+		fail "profile '$name': no Secret named [$want] was rendered — $why"
+	fi
+}
+refute_secret() {
+	local name="$1" want="$2" why="$3"
+	if grep -A 3 -F "kind: Secret" "$WORKDIR/$name.yaml" | grep -qF -- "name: $want"; then
+		fail "profile '$name': rendered a Secret named [$want] — $why"
+	fi
+}
+# Occurrences, not mere presence: cluster mode passes --pg-dsn from two templates
+# (master Deployment and worker StatefulSet). Asserting "the string appears" let a
+# mutation delete it from the master while the worker's copy kept the gate green.
+require_count() {
+	local name="$1" needle="$2" want="$3" why="$4"
+	local got
+	got=$(grep -cF -- "$needle" "$WORKDIR/$name.yaml")
+	[ "$got" -ge "$want" ] || fail "profile '$name': found [$needle] $got time(s), want >= $want — $why"
+}
+
+echo "== single-node PostgreSQL wiring"
+# The DSN reaches the container through the Secret and LEVEE_DATABASE_DSN; the
+# ConfigMap carries the driver and nothing else. `database.dsn` is bound in
+# internal/config (allKeys) precisely so a credential never has to live in a
+# ConfigMap, where `kubectl get cm -o yaml` shows it to anyone who can list.
+require_in single-postgres "- name: LEVEE_DATABASE_DSN" "the pod must get its DSN from the Secret"
+require_secret single-postgres "levee-pg" "the DSN Secret must exist outside cluster mode too"
+require_in single-postgres "driver: postgres" "config.yaml must name the backend the operator asked for"
+require_in single-postgres 'levee.qoder/database-backend: "postgres"' "the workload must state the backend it actually got"
+# --pg-dsn without --cluster is a startup refusal (cmd_serve.go), so rendering it
+# here would ship a pod that CrashLoops with a message the chart could have said.
+refute_in single-postgres "- --pg-dsn" "single mode selects PostgreSQL through the configuration, not the cluster flag"
+refute_in single-postgres-embedded "- --pg-dsn" "single mode selects PostgreSQL through the configuration, not the cluster flag"
+require_in single-postgres-embedded "name: levee-postgres" "postgres.enabled must render the trial instance in single mode too"
+
+echo "== an externally managed Secret is referenced, never recreated"
+# The third PostgreSQL source. Chart-side `name: ops-managed-pg` in an env ref is
+# the whole contract here: the chart must not also render a Secret with that name
+# (it would overwrite whatever the platform owns), and the pod must still get the
+# DSN through the same env path.
+require_in single-postgres-external-secret "name: ops-managed-pg" "the external Secret must be the referenced source"
+refute_secret single-postgres-external-secret "ops-managed-pg" "the chart must not render a Secret it does not own"
+refute_secret single-postgres-external-secret "levee-pg" "no chart-created DSN Secret when an external one is named"
+require_in single-postgres-external-secret "- name: LEVEE_DATABASE_DSN" "external or not, the DSN arrives the same way"
+require_in single-postgres-external-secret "driver: postgres" "the backend is named whether the DSN is chart-made or ops-made"
+
+echo "== when both sources are named, the external Secret wins outright"
+# An operator who sets externalSecretName and leaves a postgres.dsn behind has
+# given two answers to one question. The chart resolves it by deferring to the
+# platform-owned Secret entirely: it must not render a Secret with that name
+# (overwriting an object the cluster team owns is worse than a missing one), and
+# it must not fall back to the values-side DSN.
+require_in single-postgres-external-conflict "name: ops-managed-pg" "the external Secret keeps precedence over postgres.dsn"
+refute_secret single-postgres-external-conflict "ops-managed-pg" "the chart must not render a Secret bearing the external Secret's name"
+refute_in single-postgres-external-conflict "postgres://levee:ignored@db" "the values-side DSN must not be written anywhere once an external Secret is named"
+
+echo "== the chart must not rewrite an explicit driver"
+# postgres.enabled together with `driver: sqlite` is a contradiction the operator
+# wrote. Silently coercing it to postgres would make the rendered artifact
+# disagree with the values file; the binary's config validation refuses it
+# loudly instead, so the chart leaves the value alone.
+require_in single-postgres-contradiction "driver: sqlite" "an explicit driver is never rewritten by the chart"
+require_in single-postgres-contradiction 'levee.qoder/database-backend: "sqlite"' \
+	"the annotation must report what the operator actually asked for"
+
+echo "== no PostgreSQL plumbing leaks into the plain render"
+refute_in defaults "- name: LEVEE_DATABASE_DSN" "nothing may inject a DSN the operator did not ask for"
+refute_secret defaults "levee-pg" "no DSN Secret without a PostgreSQL source"
+refute_in defaults "name: levee-postgres" "no embedded instance unless postgres.enabled"
+require_in defaults 'levee.qoder/database-backend: "sqlite"' "the default render is the SQLite shape it always was"
+
+echo "== the DSN never lands in the ConfigMap"
+# The one assertion that makes the Secret path meaningful: a plaintext credential
+# in a ConfigMap is readable by anyone who can list them, and the marker below is
+# the only place the DSN appears in the render.
+config_block="$(awk '/kind: ConfigMap/,/^---/' "$WORKDIR/single-postgres.yaml")"
+if printf '%s' "$config_block" | grep -qF "ci-dsn-marker"; then
+	fail "single-postgres: the DSN was rendered into the ConfigMap — credentials belong in the Secret only"
+fi
+dsn_hits=$(grep -cF "ci-dsn-marker" "$WORKDIR/single-postgres.yaml")
+[ "$dsn_hits" -eq 1 ] || fail "single-postgres: expected the DSN exactly once (in the Secret), found $dsn_hits"
+
+echo "== cluster mode keeps its own door"
+# --pg-dsn + LEVEE_PG_DSN is the cluster path (#47 refuses that flag without
+# --cluster). Rendering LEVEE_DATABASE_DSN there too would let the bound env
+# silently override a database.dsn the operator wrote in values.config.
+require_count cluster "- --pg-dsn" 2 "both the master Deployment and the worker template must still pass the flag"
+require_count cluster "- name: LEVEE_PG_DSN" 2 "both cluster workloads need the Secret-derived env"
+refute_in cluster "- name: LEVEE_DATABASE_DSN" "cluster mode must not gain a second, overriding DSN source"
 
 echo "== helm package"
 # Packaging is how the chart reaches users (deploy/README.md tells them to

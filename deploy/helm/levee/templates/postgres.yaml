@@ -1,8 +1,11 @@
 {{/*
   内嵌 PostgreSQL —— ⚠ 仅试用/演示：单副本、无 HA、无备份、无调优。
   生产必须使用客户既有 PG / 云 RDS（postgres.dsn 或 postgres.externalSecretName）。
+
+  不再限定 mode=cluster：单节点用 `postgres.enabled=true` 起一份 PG 做试用是合法形态
+  （#47 之后 serve/CLI 都按 database.driver + database.dsn 取同一个库）。
 */}}
-{{- if and (eq .Values.mode "cluster") .Values.postgres.enabled }}
+{{- if .Values.postgres.enabled }}
 apiVersion: v1
 kind: Secret
 metadata:

@@ -30,8 +30,12 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       annotations:
-        # 配置变更后滚动重启
-        checksum/config: {{ .Values.config | toYaml | sha256sum }}
+        # 配置变更后滚动重启。哈希取自 effectiveConfig（与 ConfigMap 同一份计算），
+        # 不是原始 values.config：Chart 补写的 database.driver 必须能触发重启。
+        checksum/config: {{ include "levee.effectiveConfig" . | sha256sum }}
+        # 这个 Pod 到底连哪种数据库——写在工作对象上，好让 `kubectl get po -o yaml`
+        # 与 CI 都能直接看到，而不必去比对 ConfigMap 与 Secret 两条线索。
+        levee.qoder/database-backend: {{ include "levee.dbDriver" . | quote }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -143,6 +147,18 @@ spec:
             {{- end }}
             {{- if eq .Values.mode "cluster" }}
             - name: LEVEE_PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "levee.pgSecretName" . }}
+                  key: dsn
+            {{- else if eq (include "levee.wantsPostgres" .) "true" }}
+            # 单节点用 PostgreSQL：DSN 只走 Secret→env，绝不写进 ConfigMap。
+            # database.dsn 在 config 的环境绑定表里（internal/config allKeys），所以
+            # serve 读到的是同一个凭据，而 `kubectl get cm -o yaml` 看到的是空的。
+            # 与 cluster 模式刻意用两个变量名：cluster 的 LEVEE_PG_DSN 喂的是
+            # `--pg-dsn` 这个旗标（serve 在没有 --cluster 时拒绝它），单节点喂的是
+            # 配置项。两者混用会让一侧的覆盖悄悄改掉另一侧的判定。
+            - name: LEVEE_DATABASE_DSN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "levee.pgSecretName" . }}

@@ -23,10 +23,19 @@ LEVEE 已部署。{{ if eq .Values.mode "single" }}（单机模式：SQLite 存�
 ⚠ 未配置任何认证：serve 默认拒绝启动。请在 values 配置 auth.token / auth.namedTokens
   （推荐命名令牌，审计里才能证明"谁做的"）或 auth.existingSecret。
 {{- end }}
-{{- if and (eq .Values.mode "cluster") .Values.postgres.enabled }}
+{{- if .Values.postgres.enabled }}
 
 ⚠ 当前使用内嵌演示 PostgreSQL（单副本、无备份）。生产请改用客户既有 PG / RDS：
   设 postgres.enabled=false 并配置 postgres.dsn 或 postgres.externalSecretName。
+{{- end }}
+
+数据面：{{ include "levee.dbDriver" . }}
+{{- if eq (include "levee.dbDriver" .) "postgres" }}
+  DSN 经 Secret {{ include "levee.pgSecretName" . }} 注入（{{ if eq .Values.mode "cluster" }}LEVEE_PG_DSN → --pg-dsn{{ else }}LEVEE_DATABASE_DSN → database.dsn{{ end }}），ConfigMap 里没有凭据。
+{{- else if eq (include "levee.wantsPostgres" .) "true" }}
+  ⚠ 已配置 PostgreSQL 来源，但 config.database.driver 显式写了 {{ include "levee.dbDriver" . }}。
+  serve 会按配置校验拒绝启动（database.dsn is only used when database.driver = postgres）——
+  这是刻意的：Chart 不替操作者改写已经写明的取值。
 {{- end }}
 {{- if eq .Values.mode "cluster" }}
 

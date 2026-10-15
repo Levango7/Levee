@@ -48,6 +48,20 @@
 - **顺带查出、登记不修**：`agent.MasterClient.Deregister` 的接口注释承诺"master 应把该 Agent 从注册表移除**并重新分配在途任务**"，而唯一实现 `InProcessMasterClient.Deregister` 只做 `registry.Deregister`，没有任何重分配（进程内注册表也不持有 assignment 存储）。这与 #85 记录的"`agent start` 仍为进程内、proto 无任务下发通道"是同一条边界——要让那句注释成立，先要有任务下发通道，不是补一句代码的事。注释保留原样（它写的是目标语义），因为它描述的字段与实现差距已在 roadmap 与本节登记，不能再被当成"已经做了"。
 - **验证**：`go build` / `go vet` / `gofmt` 干净，`go test ./...` 全绿，docgen up to date，`internal/grpc/pb/` 未改（无 proto 变更）。新增 4 例。变异三项、均为断言失败而非编译失败：抽掉 `DeregisterAgent` 的在途判定 → **2 条红**（`…RefusesInFlight`（含"记录仍在"那条断言）与 `TestBothRemovalDoorsShareTheInFlightJudgement`）；阈值从 `> 0` 改成 `> 1` → **1 条红**（双门同判，心跳报 1 的情形——单侧阈值漂移正是那条结构测试存在的理由）；把"缺记录"从 `removed=false` 改成服务端错误 → **1 条红**（`…AbsentIsNotAFault`）。
 
+### 新增（Helm 单节点 PostgreSQL 成为一等公民：DSN 走 Secret→env，凭据不必再进 ConfigMap）
+
+- **背景**：#47 让"单节点跑 PostgreSQL"成为合法形态——CLI 与 serve 都经 `database.driver` + `database.dsn` 取同一个库，`serve` 的报错原文甚至就写着"单节点请改用 database.driver + database.dsn"。但 chart 里所有 PostgreSQL 管道整块挂在 `mode == cluster` 上，单节点用户只剩一条路：把 DSN 明文写进 `config.yaml`，也就是写进 ConfigMap（`kubectl get cm -o yaml` 谁都能读）。
+- **根因在配置侧，不在模板里**：`database.dsn` 是 `DatabaseConfig` 里唯一没登记进 `LEVEE_*` 环境绑定表（`internal/config: allKeys`）的叶子。`bindEnv` 只对显式绑定过的键生效（viper 的 `Unmarshal` 走 `AllSettings`），所以 `LEVEE_DATABASE_DSN` **静默不可达**——不是"不推荐这么用"，是读不到。`ai.llm.api_key` 这类凭据早已在表里，可见这不是"凭据不走 env"的策略，是漏了一项。
+- **落地四面**：① 把 `database.dsn` 登记进绑定表；② PG 管道改为按"操作者有没有要求 PostgreSQL"启用（新 helper `levee.wantsPostgres`：`enabled` / `dsn` / `externalSecretName` 任一），不再看 `mode`；单节点注入 `LEVEE_DATABASE_DSN`，cluster 模式**原样保留** `--pg-dsn`——若两边都注入，绑定的 env 会悄悄覆盖操作者写在 `values.config` 里的 `database.dsn`；内嵌演示实例同步解禁到单节点；③ `config.yaml` 只写驱动不写凭据，没显式写驱动时按 `wantsPostgres` 补 `driver: postgres`，**显式写了就不改**；④ CI 从"能渲染"升级到"渲染内容对不对"。
+- **ConfigMap 与 rollout 哈希同取一次计算**（`levee.effectiveConfig`）：`checksum/config` 原来按原始 `values.config` 求哈希，于是"Chart 补写了 database.driver"不改变哈希、已运行的 Pod 不会因此滚动重启——同一份配置在两个地方说法不同。
+- **判据（值得复用）**：
+  - ** Chart 不替操作者改写已经写明的取值**。`driver: sqlite` 又启用 PostgreSQL 是一份自相矛盾，Chart 保持 sqlite，由 `config.Validate` 大声拒绝启动（`database.dsn is only used when database.driver = postgres`）；Chart 侧不再抄一份校验规则，免得两处判定漂移。
+  - **" Secret 的名字出现在渲染里"不等于"Secret 被渲染出来**：Deployment 的 env 引用同名对象时字符串照样出现，所以断言改成"在 `kind: Secret` 文档内找这个名字"（`require_secret`）。
+  - **出现次数而非存在性**：cluster 的 `--pg-dsn` 由两份模板分别传入（master Deployment 与 worker StatefulSet）。"字符串存在"的断言在变异删掉 master 那份后仍然绿——改成 `require_count … 2` 才抓得住。
+  - **`externalSecretName` 与 `postgres.dsn` 同时给出时外部完全优先**：既不渲染同名 Secret（覆盖现场拥有的对象比少一个对象更糟），也不把 values 侧 DSN 写到任何地方。
+- **顺带纠正一条记账不足**：NOTES.txt 里的后端说明无法在 CI 渲染（实测 helm 3.14 的 `helm template` 无 `--notes`，`helm install --dry-run=client` 仍需集群连接）。因此"这个 Pod 连的是哪种库"改为同时写成 Deployment 注解 `levee.qoder/database-backend: sqlite|postgres`——`kubectl get po -o yaml` 一眼可见，且被 CI 断言覆盖。
+- **验证**：`internal/config` 新增 6 例（reflect 遍历字段要求逐个绑定 + "至少扫到 4 项"的下限、env 覆盖文件、纯 env 选驱动、无 DSN 拒载、sqlite+DSN 拒绝、以及 Chart 不需重复校验的依据）；`go build` / `vet` / `gofmt` / `go test ./...` 全绿、`docgen -check` up to date、`internal/grpc/pb/` 未改、钉版 gosec 0 命中。`bash scripts/validate_delivery.sh` 新增 5 个渲染 profile（`single-postgres` / `-embedded` / `-contradiction` / `-external-secret` / `-external-conflict`）与四种断言原语；**变异九项逐项命中预期断言**：单节点丢 DSN env、Secret 退回 cluster-only、ConfigMap 不再补 driver、Chart 改写显式驱动、DSN 泄进 ConfigMap、cluster 丢 `--pg-dsn`、内嵌实例不在单节点渲染、DSN 管道漏进默认渲染、外部 Secret 被同名覆盖。
+
 ### 新增（ChatOps 入向决策闭环：聊天里点「通过」真的能批，而且只有平台签过名的才能批）
 
 - **背景**：ChatOps 层此前只有出向。审批请求卡与决定广播一直在播，但卡片背后的 `/levee approve` / `reject` 是命令路由器的内置空桩——回复是 "approve: no handler registered"。三个 adapter 的 `Parse*Callback` 解码器**零生产调用方**，bot 没有回调端点，mac 验签按各自文件注释归属的「ingress 层」从未被建。也就是说：聊天室里看得见审批，点不动。
