@@ -747,9 +747,15 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			// differ from cr.verifier (that is the point of the split in
 			// newRunnerWithPostVerifier); naming from cr.verifier would label these
 			// rows with the apply-path gate names instead.
-			if pv != nil {
-				cr.recordGateVerdicts(ctx, result.RunID, cr.postVerifier.GateManager(), verify.PhasePostApply, "rollback", nil, pv.GateResults)
-			}
+			//
+			// `pv` is not nil-checked here because post_verify.VerifyAndGrade
+			// documents its *PostVerifyResult return as "always non-nil" (see the
+			// "The returned *PostVerifyResult is always non-nil" contract near the
+			// top of post_verify.go). Wrapping the call in `if pv != nil` would be
+			// dead code AND push (*ClosureRunner).Run's cyclomatic complexity over
+			// the CI's gocyclo threshold (31 > 30), which is exactly the failure
+			// this replaces.
+			cr.recordGateVerdicts(ctx, result.RunID, cr.postVerifier.GateManager(), verify.PhasePostApply, "rollback", nil, pv.GateResults)
 			if dispatchErr != nil {
 				log.Warn("post-rollback verify: grade action dispatch failed",
 					"run_id", result.RunID,
