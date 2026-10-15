@@ -150,6 +150,7 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 		log.Error("post-rollback verifier init failed; post-rollback verification disabled", "error", err)
 	}
 	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, postVerifier,
+		gateRecorderOption(store, changeID),
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			if err := inventory.ValidateNotFrozen(ctx, store, hosts); err != nil {
 				return err
@@ -998,4 +999,55 @@ func newID(prefix string) string {
 		return prefix + "0000000000000000"
 	}
 	return prefix + hex.EncodeToString(b[:])
+}
+
+// gateRecorderOption builds the audit-backed sink that records per-gate verdicts
+// and returns it as a ClosureOption. Construction fails only when the store is
+// nil; in that case it returns a no-op option rather than wrapping a nil
+// *audit.TraceRecorder in a non-nil interface, which would defeat the engine's
+// `gateRecorder == nil` guard and panic on first use. Losing recording is
+// acceptable (it is observability, not a safety property) — mirroring the
+// fail-soft posture of the post-rollback verifier just above.
+//
+// changeID is not cosmetic: see gateTracer.
+func gateRecorderOption(store state.Store, changeID string) engine.ClosureOption {
+	rec, err := audit.NewTraceRecorder(store)
+	if err != nil {
+		log.Error("gate verdict recorder unavailable; gate verdicts will not be recorded", "error", err)
+		return func(*engine.ClosureRunner) {}
+	}
+	return engine.WithGateRecorder(gateTracer{rec: rec, changeID: changeID})
+}
+
+// gateTracer re-keys a gate verdict onto the change row before writing it.
+//
+// ClosureRunner.Run mints its own ephemeral id (newRunID) and hands it to every
+// subsystem as result.RunID; that id never becomes a row in `runs`, while
+// trace.run_id is `FOREIGN KEY ... REFERENCES runs (id)` (schema.sql:132) with
+// foreign keys ON. Recording under the engine's id therefore cannot land at all:
+// every insert dies on the constraint, and because a failed audit write is
+// deliberately non-fatal here, the symptom is a log line and an empty timeline
+// rather than a failure. Measured, not reasoned — internal/wiring's loopback
+// suite runs the real recorder and showed "FOREIGN KEY constraint failed" on
+// every gate of every run.
+//
+// The change id is the identity that exists in `runs` and the one every reader
+// already asks by (audit_service.go:488, change_service.go:3113, cmd_audit.go:194),
+// so it is also the only key under which a gate verdict is ever retrievable.
+// The engine's id is preserved in the row's output as exec_run_id, so a verdict
+// can still be correlated with the batches/steps evidence keyed by it.
+type gateTracer struct {
+	rec      *audit.TraceRecorder
+	changeID string
+}
+
+func (g gateTracer) RecordGate(ctx context.Context, execRunID, gateName, phase string, passed bool, detail map[string]any) (*state.Trace, error) {
+	out := make(map[string]any, len(detail)+1)
+	for k, v := range detail {
+		out[k] = v
+	}
+	if execRunID != "" {
+		out["exec_run_id"] = execRunID
+	}
+	return g.rec.RecordGate(ctx, g.changeID, gateName, phase, passed, out)
 }
