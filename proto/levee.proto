@@ -34,6 +34,11 @@ message Change {
   string created_by = 10;
   string team = 11;
   string environment = 12;
+  // The run's latest stored plan (from run.plan_json). Populated ONLY when
+  // GetChangeRequest.include_plan is true; nil otherwise, and never for
+  // ListChanges. Absent when the change has no persisted plan or the artifact
+  // is unparsable — a nil here means "no plan to show", never "plan is empty".
+  Plan plan = 13;
 }
 
 // Plan is the execution plan for a change.

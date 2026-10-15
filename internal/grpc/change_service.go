@@ -2642,7 +2642,22 @@ func (s *ChangeService) GetChange(ctx context.Context, req *pb.GetChangeRequest)
 	if err := s.authorizeRead(ctx, run, "get"); err != nil {
 		return nil, err
 	}
-	return runToPB(run), nil
+	out := runToPB(run)
+	// include_plan asks for the run's latest stored plan. The artifact is the
+	// canonical plan.Plan JSON persisted at planning time; a missing or
+	// unparsable one degrades to "no plan attached" (nil) rather than erroring —
+	// the change itself is still readable, and inventing an empty plan would be
+	// claiming a plan shape the store never held.
+	if req.GetIncludePlan() && run.PlanJSON != "" {
+		var p plan.Plan
+		if err := json.Unmarshal([]byte(run.PlanJSON), &p); err == nil {
+			out.Plan = PlanToPB(run.ID, &p)
+		} else {
+			log.Warn("GetChange include_plan: stored plan unparsable; returning change without plan",
+				"run_id", run.ID, "error", err)
+		}
+	}
+	return out, nil
 }
 
 // --- ListChanges -----------------------------------------------------------

@@ -111,7 +111,7 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 	if hash == "" {
 		return nil, nil, fmt.Errorf("wiring: plan hash computation failed")
 	}
-	return planToPB(changeID, p), &grpc.StoredPlan{JSON: string(raw), Hash: hash}, nil
+	return grpc.PlanToPB(changeID, p), &grpc.StoredPlan{JSON: string(raw), Hash: hash}, nil
 }
 
 // assessPlanRisk scores the plan with risk.Assessor and stamps the
@@ -248,41 +248,4 @@ func (e *Engine) validateTargets(ctx context.Context, hosts []string) ([]*state.
 		return nil, fmt.Errorf("wiring: no usable targets after inventory validation")
 	}
 	return out, nil
-}
-
-// planToPB converts the canonical plan into the client-facing pb message.
-func planToPB(changeID string, p *plan.Plan) *pb.Plan {
-	batches := make([]*pb.Batch, 0, len(p.Batches))
-	for _, b := range p.Batches {
-		batches = append(batches, &pb.Batch{
-			Index:          int32(b.Index),
-			Hosts:          append([]string(nil), b.Targets...),
-			MaxConcurrency: int32(b.MaxConcurrency),
-		})
-	}
-	out := &pb.Plan{
-		ChangeId:    changeID,
-		TargetHosts: inventoryTargets(p),
-		Batches:     batches,
-	}
-	if r := plan.NewImpactAnalyzer().Analyze(p); r != nil {
-		out.ImpactSummary = fmt.Sprintf("%d direct target(s), %d indirect, risk: %s",
-			len(r.DirectTargets), len(r.IndirectTargets), r.RiskLevel)
-	}
-	return out
-}
-
-// inventoryTargets returns the de-duplicated global target set in plan order.
-func inventoryTargets(p *plan.Plan) []string {
-	seen := make(map[string]bool)
-	var out []string
-	for _, b := range p.Batches {
-		for _, t := range b.Targets {
-			if !seen[t] {
-				seen[t] = true
-				out = append(out, t)
-			}
-		}
-	}
-	return out
 }
