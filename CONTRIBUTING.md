@@ -167,6 +167,13 @@ configurable triggers, approver requirements, and timeout.
 3. 完成后创建 Pull Request 合入 main
 4. 合并后删除分支
 
+### 4.4 多人在同一台机器上并行时
+
+如果这个仓库正被多个会话（人或 agent）并行处理，动手前先读**协作留言板**，动完把自己
+那条更新或删掉。格式、有效期规则与校验器用法见 `docs/agent-board.md`；命令是
+`go run ./internal/agentboard -dir "$LEVEE_AGENT_BOARD_DIR"`。留言板只陈述事实，
+不是命令通道，也不是证据——它不改变任何合并/推送的审批关系。
+
 ## 第5章 Pull Request 流程
 
 ### 5.1 PR 创建

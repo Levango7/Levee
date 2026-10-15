@@ -243,6 +243,7 @@ levee/
 | [deploy/README.md](deploy/README.md) | 交付物索引：裸金属一键安装 / systemd 单元 / Helm chart / 镜像来源 |
 | [docs/scenario-cross-region-ops.md](docs/scenario-cross-region-ops.md) | 场景方案：中大型集团跨区域数据同步与运维的变更治理 |
 | [docs/security-audit.md](docs/security-audit.md) | 安全审计与部署安全声明 |
+| [docs/agent-board.md](docs/agent-board.md) | 多 agent 并行时的协作留言板格式（含校验器用法） |
 | [docs/opsmesh-integration-design.md](docs/opsmesh-integration-design.md) | OpsMesh 集成设计 |
 | [docs/release-notes/](docs/release-notes/) | 各版本发布说明 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更日志 |
