@@ -38,6 +38,16 @@
 - **`#nosec` 不是装饰**：初版在两条拼接语句上写了 G202 豁免注释，实测该版本 gosec 对这两行**零命中**——豁免注释压住一个不存在的问题，代价是将来真出现同码问题时它会被一起静默掉。注释已删，`bind()` 自身的安全性说明留在函数注释里（它只改占位符、值仍全部绑定）。
 - **变异 11 项，全部由断言抓红、无一项以编译失败冒充**：去掉 `NOT EXISTS`（被 WORM 判错）、把非终态当可删、跳过 assignment 删除、**把 assignment 删除改序到 run 之后**（证明"先删 assignment"是承重的而非修辞）、接受空 id、不解包装饰器、抹掉 held-trace 计数、CLI 三条门禁与审计写入各一（活租户门 / `--yes` 门 / `audit.Record` 调用）、以及 `bind()` 的方言分支。
 
+### 修复（Agent 摘除的第二扇门没有守卫：两条门共用同一个判定，覆盖权只留一处）
+
+- **背景**：#85 给 `RemoveAgent`（运维侧）接了"记录仍报在途任务就拒绝、`force` 显式覆盖"。`DeregisterAgent`（Agent 自己的告别）当时**没有守卫**：拿到 id 直接 `DeleteAgent`。两个调用效果相同、判定不同——而它是注册在 proto 服务面上、admin 权限门后的公开 RPC，任何 admin 客户端都能选那扇没守卫的门。
+- **实测**（`af1d706`）：`grep -rn "DeregisterAgent" --include=*_test.go` 全仓只有**一条授权拒绝用例**，功能面零覆盖——即"这条门会不会删掉在途记录"从来没有被测过，所以缺陷不是"测出来没修"，而是"没人看过"。
+- **落地**：`DeregisterAgent` 先 `GetAgent`，`ActiveTasks > 0` 时回 `FailedPrecondition` 并在文案里点名改用 `RemoveAgent + force`；记录不存在时保持 `removed=false` 的既有可读拒绝语义（不是服务端故障）。**没有给 `DeregisterAgent` 加 force**：`DeregisterAgentRequest` 里本来就没有这个字段，加它等于让被摘除的对象给自己发豁免——覆盖权刻意只留在运维那侧。
+- **判据（值得复用）**：**同一个破坏效果有几扇门，判定就必须有几处断言**。除各自的行为用例外，加了一条 `TestBothRemovalDoorsShareTheInFlightJudgement`——同一条记录、同一个状态，先问运维门（拒绝）、再问告别门（拒绝）、确认库里记录还在，最后证明 `force` 只在一条门上生效。只测单侧，"日后把某一侧阈值改掉"依然全绿。
+- **两条登记项经实测否定**：① 「守卫应改读 pending/unclaimed assignments 而非心跳报的 `ActiveTasks`」是**身份空间混淆**——`run_assignment.owner_node` 写的是 `cluster.Node.ID`（`internal/dispatch/dispatch.go:344 workerLoads` 取自 `mgr.ActiveMastersAndWorkers()`），与 `agents` 表的 agent id 不是同一套标识，跨表核对没有共同的键。② 「本地模式 `--force` 惰性」不修——进程内 `AgentRegistry` 只在同一进程里被填充，`levee agent remove` 作为独立进程调用时对任何在册 agent 都返回 not found，在那里加在途拒绝等于加一条不可达分支（本仓惯例：测不出来的守卫是假守卫）。两条都写进了 CLI 参考 20.5，避免下次又被当成待办。
+- **顺带查出、登记不修**：`agent.MasterClient.Deregister` 的接口注释承诺"master 应把该 Agent 从注册表移除**并重新分配在途任务**"，而唯一实现 `InProcessMasterClient.Deregister` 只做 `registry.Deregister`，没有任何重分配（进程内注册表也不持有 assignment 存储）。这与 #85 记录的"`agent start` 仍为进程内、proto 无任务下发通道"是同一条边界——要让那句注释成立，先要有任务下发通道，不是补一句代码的事。注释保留原样（它写的是目标语义），因为它描述的字段与实现差距已在 roadmap 与本节登记，不能再被当成"已经做了"。
+- **验证**：`go build` / `go vet` / `gofmt` 干净，`go test ./...` 全绿，docgen up to date，`internal/grpc/pb/` 未改（无 proto 变更）。新增 4 例。变异三项、均为断言失败而非编译失败：抽掉 `DeregisterAgent` 的在途判定 → **2 条红**（`…RefusesInFlight`（含"记录仍在"那条断言）与 `TestBothRemovalDoorsShareTheInFlightJudgement`）；阈值从 `> 0` 改成 `> 1` → **1 条红**（双门同判，心跳报 1 的情形——单侧阈值漂移正是那条结构测试存在的理由）；把"缺记录"从 `removed=false` 改成服务端错误 → **1 条红**（`…AbsentIsNotAFault`）。
+
 ### 新增（ChatOps 入向决策闭环：聊天里点「通过」真的能批，而且只有平台签过名的才能批）
 
 - **背景**：ChatOps 层此前只有出向。审批请求卡与决定广播一直在播，但卡片背后的 `/levee approve` / `reject` 是命令路由器的内置空桩——回复是 "approve: no handler registered"。三个 adapter 的 `Parse*Callback` 解码器**零生产调用方**，bot 没有回调端点，mac 验签按各自文件注释归属的「ingress 层」从未被建。也就是说：聊天室里看得见审批，点不动。

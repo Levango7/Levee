@@ -340,6 +340,67 @@ func TestAgentServiceRemoveAbsentIsRefusalNotError(t *testing.T) {
 	assert.Contains(t, resp.GetRefusal(), "not registered")
 }
 
+// TestAgentServiceDeregisterRefusesInFlight covers the RPC the first pass of
+// #85 left unguarded: DeregisterAgent had no functional test at all, only an
+// authorisation denial, so the happy path and the in-flight case were both
+// unasserted while its sibling door had a guard.
+func TestAgentServiceDeregisterRefusesInFlight(t *testing.T) {
+	svc, st := newTestAgentService()
+	mustRegister(t, svc, "web-1", "h:1", nil, 2)
+	_, err := svc.AgentHeartbeat(context.Background(), &pb.AgentHeartbeatRequest{Id: "web-1", ActiveTasks: 3})
+	require.NoError(t, err)
+
+	_, err = svc.DeregisterAgent(context.Background(), &pb.DeregisterAgentRequest{Id: "web-1"})
+	require.Error(t, err, "a busy record's goodbye must be refused, not honoured")
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+	assert.Contains(t, err.Error(), "in-flight")
+	assert.Contains(t, err.Error(), "RemoveAgent", "the refusal has to name the door that can override it")
+	require.NotNil(t, st.rows["web-1"], "refusal must leave the only evidence of the running work in place")
+}
+
+func TestAgentServiceDeregisterIdleAgentRemoves(t *testing.T) {
+	svc, st := newTestAgentService()
+	mustRegister(t, svc, "web-1", "h:1", nil, 2)
+
+	resp, err := svc.DeregisterAgent(context.Background(), &pb.DeregisterAgentRequest{Id: "web-1"})
+	require.NoError(t, err)
+	assert.True(t, resp.GetRemoved())
+	assert.Empty(t, st.rows)
+}
+
+func TestAgentServiceDeregisterAbsentIsNotAFault(t *testing.T) {
+	svc, _ := newTestAgentService()
+	resp, err := svc.DeregisterAgent(context.Background(), &pb.DeregisterAgentRequest{Id: "ghost"})
+	require.NoError(t, err, "an absent record is the same outcome for both doors")
+	assert.False(t, resp.GetRemoved())
+}
+
+// TestBothRemovalDoorsShareTheInFlightJudgement is the cross-door invariant the
+// guard exists for. Each door is written to refuse a busy record, so testing
+// them one at a time would still pass if someone changed the threshold on one
+// side only — the same-value-two-answers failure this repository has been bitten
+// by before. Both doors are asked about the SAME record in the SAME state.
+func TestBothRemovalDoorsShareTheInFlightJudgement(t *testing.T) {
+	svc, st := newTestAgentService()
+	mustRegister(t, svc, "web-1", "h:1", nil, 2)
+	_, err := svc.AgentHeartbeat(context.Background(), &pb.AgentHeartbeatRequest{Id: "web-1", ActiveTasks: 1})
+	require.NoError(t, err)
+
+	removeResp, err := svc.RemoveAgent(context.Background(), &pb.RemoveAgentRequest{Id: "web-1"})
+	require.NoError(t, err)
+	assert.False(t, removeResp.GetRemoved(), "operator door refuses")
+
+	_, err = svc.DeregisterAgent(context.Background(), &pb.DeregisterAgentRequest{Id: "web-1"})
+	require.Error(t, err, "agent door must refuse the same record")
+	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.NotNil(t, st.rows["web-1"], "neither door deleted it")
+
+	// The override exists on exactly one door, and it still works.
+	forced, err := svc.RemoveAgent(context.Background(), &pb.RemoveAgentRequest{Id: "web-1", Force: true})
+	require.NoError(t, err)
+	assert.True(t, forced.GetRemoved())
+}
+
 // --- wiring invariants ------------------------------------------------------
 
 func TestAgentServiceNilStoreIsUnimplemented(t *testing.T) {
