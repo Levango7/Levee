@@ -49,6 +49,13 @@ type dtoSnapshot struct {
 	Keys   []string            `json:"keys"`
 	Forbid []string            `json:"forbid,omitempty"`
 	Rows   map[string][]string `json:"rows,omitempty"`
+	// Objects records the key set of a nested OBJECT field, for the DTOs that
+	// declare one. Without it a nested field is contract-blind: the snapshot said
+	// cluster-status has a "summary" key and stopped there, so
+	// AssignmentSummaryDTO could declare `totalActive` while the wire sent
+	// `total_active` and every guard stayed green. That is exactly the drift this
+	// pair of tests exists to catch, and it slipped through one level down.
+	Objects map[string][]string `json:"objects,omitempty"`
 }
 
 func seedWireFixture(t *testing.T, store state.Store) {
@@ -154,6 +161,27 @@ func arrayKeys(raw []byte, field string) []string {
 	return out
 }
 
+// objectKeys returns the sorted keys of a nested JSON object field — the
+// one-level-down twin of arrayKeys for payloads that embed an object rather
+// than a list. A null or non-object contributes nothing, so the contract never
+// records a shape no consumer can read.
+func objectKeys(raw []byte, field string) []string {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	nested, ok := m[field].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(nested))
+	for k := range nested {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestWireSnapshot_MatchesContract(t *testing.T) {
 	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
 	gw.SetStore(store)
@@ -233,9 +261,12 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 		},
 		"cluster-status": {
 			Method: "GET", Path: "/system/cluster-status",
-			Keys:   keysOf(cluster),
-			Rows:   rowsOf("nodes", cluster),
-			Forbid: []string{"Nodes", "Summary", "Backend"},
+			Keys: keysOf(cluster),
+			Rows: rowsOf("nodes", cluster),
+			// summary is an object, not a list, and the page reads three numbers
+			// out of it — the level where this contract was previously blind.
+			Objects: map[string][]string{"summary": objectKeys(cluster, "summary")},
+			Forbid:  []string{"Nodes", "Summary", "Backend"},
 		},
 		"takeover-events": {
 			Method: "GET", Path: "/system/takeover-events",

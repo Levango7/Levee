@@ -7,9 +7,15 @@
 import { AxiosError } from 'axios'
 import { describe, expect, it, vi } from 'vitest'
 
+// The fixture is the SERVER's spelling (see web/src/api/__contract__/wire.json,
+// produced by internal/grpc/wire_snapshot_test.go from the live handler): the
+// gateway marshals state.ClusterNode / state.AssignmentSummary with
+// encoding/json, so the keys are their json tags. It used to say `lastHeartbeat`
+// / `nodeLoad` / `totalActive`, which is why this file passed while the cluster
+// page rendered blanks on a real daemon.
 const flatOk = {
-	nodes: [{ id: 'n1', address: '10.0.0.1:9090', role: 'master', status: 'active', lastHeartbeat: '', joinedAt: '' }],
-	summary: { counts: { pending: 1 }, nodeLoad: { n1: 1 }, totalActive: 1 },
+	nodes: [{ id: 'n1', address: '10.0.0.1:9090', role: 'master', status: 'active', last_heartbeat: '2026-10-14T09:00:00Z', joined_at: '2026-10-13T09:00:00Z' }],
+	summary: { counts: { pending: 1 }, node_load: { n1: 1 }, total_active: 1 },
 	backend: 'postgres',
 }
 
@@ -34,7 +40,12 @@ describe('systemApi.clusterStatus', { timeout: COLD_IMPORT_TIMEOUT }, () => {
 		expect(result.backend).toBe('postgres')
 		expect(result.nodes).toHaveLength(1)
 		expect(result.nodes?.[0]?.id).toBe('n1')
-		expect(result.summary.totalActive).toBe(1)
+		expect(result.summary.total_active).toBe(1)
+		// The two keys the cluster page actually renders. They are asserted here
+		// because a passthrough client cannot lose a key by design — this catches
+		// a fixture that drifted from the wire, not a client that mangles one.
+		expect(result.summary.node_load).toEqual({ n1: 1 })
+		expect(result.nodes?.[0]?.last_heartbeat).toBe('2026-10-14T09:00:00Z')
 	})
 
 	it('propagates an HTTP error as a rejected promise', async () => {

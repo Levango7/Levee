@@ -127,7 +127,7 @@ function nodeCapabilities(raw: string | undefined): string[] {
 }
 
 const activeNodeLoad = computed(() => {
-	const load = summary.value?.nodeLoad ?? {}
+	const load = summary.value?.node_load ?? {}
 	return Object.entries(load)
 		.map(([id, count]) => ({ id, count }))
 		.sort((a, b) => b.count - a.count)
@@ -194,7 +194,7 @@ const assignmentDistribution = computed(() => {
 				<div class="lv-metric">
 					<span class="lv-metric__accent metric-accent--ok"></span>
 					<div class="lv-metric__label">活跃分配</div>
-					<div class="lv-metric__value">{{ summary?.totalActive ?? 0 }}</div>
+					<div class="lv-metric__value">{{ summary?.total_active ?? 0 }}</div>
 				</div>
 				<div class="lv-metric">
 					<span class="lv-metric__accent metric-accent--ok"></span>
@@ -218,7 +218,7 @@ const assignmentDistribution = computed(() => {
 				<div class="node__addr lv-mono">{{ n.address }}</div>
 				<div class="node__meta">
 					<span class="node__role">{{ nodeRoleLabel(n.role) }}</span>
-					<span class="node__beat">心跳 {{ lastHeartbeatRelative(n.lastHeartbeat) }}</span>
+					<span class="node__beat">心跳 {{ lastHeartbeatRelative(n.last_heartbeat) }}</span>
 				</div>
 				<!-- Declared capabilities, read-only. The cluster_nodes column has
 				     existed since the PG v7 migration and was read by nothing until

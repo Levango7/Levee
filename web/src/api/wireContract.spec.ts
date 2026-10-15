@@ -24,6 +24,12 @@ import { describe, expect, it } from 'vitest'
 //   2. every key the WIRE sends must be either read by the client or listed in
 //      SERVER_ONLY below with a reason (so adding a field server-side does not
 //      rot the guard, but adding one nobody notices does not pass either).
+//
+// A third direction was added after the second cluster incident, and it is the
+// one that matters most: the read set is taken from the DTO INTERFACES
+// themselves rather than from the hand-written DTO_READS lists, because a list
+// that transcribes what the client "should" read proves nothing about what it
+// actually reads.
 
 function locatePath(rel: string): string {
   let dir = process.cwd()
@@ -42,6 +48,7 @@ function locatePath(rel: string): string {
 interface WireRow {
   keys: string[]
   rows?: Record<string, string[]>
+  objects?: Record<string, string[]>
 }
 
 /** A DTO's read set: `keys` are top-level, `row`+`rowKeys` describe a page's items. */
@@ -49,6 +56,51 @@ interface DtoReads {
   row?: string
   keys?: string[]
   rowKeys?: string[]
+  /**
+   * The interface in api/index.ts that DECLARES this payload, and the ones for
+   * its `row` items and nested objects. These names let the guard read the
+   * client's real spelling out of the source instead of trusting the hand-copied
+   * `keys`/`rowKeys` lists — see 'the interfaces declare only keys the wire
+   * sends', which exists because the lists alone passed while ClusterNodeDTO
+   * spelled `lastHeartbeat` and the wire sent `last_heartbeat`.
+   */
+  dto?: string
+  rowDto?: string
+  objectDtos?: Record<string, string>
+}
+
+/**
+ * The field names an `export interface NAME` declares, read out of api/index.ts.
+ *
+ * Line-anchored rather than brace-split on values: a field is a line at the
+ * interface's own indent ending in `:`, which ignores the JSDoc blocks several
+ * of these DTOs carry. Depth tracking rather than a single `}` match keeps
+ * nested object types (`x: { a: string }`) inside the interface they belong to.
+ */
+function interfaceFields(name: string, source: string): string[] {
+  const header = new RegExp(`export interface ${name}\\s*\\{`)
+  const found = header.exec(source)
+  if (!found) throw new Error(`api/index.ts declares no "export interface ${name}"`)
+  const open = found.index + found[0].length - 1
+  let depth = 0
+  let close = -1
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === '{') depth++
+    else if (source[i] === '}') {
+      depth--
+      if (depth === 0) {
+        close = i
+        break
+      }
+    }
+  }
+  if (close < 0) throw new Error(`interface ${name} is not closed in api/index.ts`)
+  const fields: string[] = []
+  for (const line of source.slice(open + 1, close).split('\n')) {
+    const m = /^ {2}([A-Za-z_][A-Za-z0-9_]*)(\?)?:/.exec(line)
+    if (m) fields.push(m[1]!)
+  }
+  return fields
 }
 
 const wire: Record<string, WireRow> = JSON.parse(readFileSync(locatePath('src/api/__contract__/wire.json'), 'utf8'))
@@ -66,11 +118,15 @@ const DTO_READS: Record<string, DtoReads> = {
     row: 'batches',
     keys: ['batches', 'current_batch_no', 'done_batches', 'total_batches'],
     rowKeys: ['batch_no', 'status', 'total_hosts', 'succeeded', 'failed'],
+    dto: 'BatchSummaryDTO',
+    rowDto: 'BatchProgressDTO',
   },
   'change-trend': {
     row: 'buckets',
     keys: ['buckets', 'series', 'truncated'],
     rowKeys: ['day', 'total', 'outcomes'],
+    dto: 'TrendDTO',
+    rowDto: 'TrendBucketDTO',
   },
   changes: {
     row: 'changes',
@@ -89,6 +145,9 @@ const DTO_READS: Record<string, DtoReads> = {
     keys: ['backend', 'nodes', 'summary'],
     row: 'nodes',
     rowKeys: ['address', 'capabilities', 'id', 'joined_at', 'last_heartbeat', 'role', 'status'],
+    dto: 'ClusterStatus',
+    rowDto: 'ClusterNodeDTO',
+    objectDtos: { summary: 'AssignmentSummaryDTO' },
   },
 }
 
@@ -162,14 +221,52 @@ describe('DTO contract: what the client reads is what the server sends', () => {
     }
   })
 
-  it('declares its DTOs where the reader can find them', () => {
-    // The DTO_READS table is hand-written, so it must point at interfaces that
-    // actually exist: a table naming a DTO nobody declared is a lie the test
-    // would still pass.
-    for (const [name] of Object.entries(DTO_READS)) {
-      const iface = 'TrendBucketDTO'
-      expect(apiSource, `${name}'s DTO types must live in api/index.ts`).toContain('export interface')
-      expect(typeof iface).toBe('string')
+  it('the interfaces declare only keys the wire sends', () => {
+    // The direction that catches the real incident: a DTO spelling a key the
+    // server never sends reads back `undefined`, and every consumer here has a
+    // default, so the panel renders blanks and nothing errors.
+    //
+    // This reads the INTERFACES, not DTO_READS. The table is hand-written, and
+    // the previous version of this file only checked that api/index.ts contained
+    // the words "export interface" somewhere — so the table could (and did)
+    // record `last_heartbeat` while ClusterNodeDTO declared `lastHeartbeat`,
+    // and the guard passed on its own transcription. A mock that agreed with the
+    // DTO, a unit fixture that agreed with the mock, and a browser check running
+    // against that mock made four artifacts consistent with each other and wrong
+    // about the server.
+    const requireDto = (name: string, iface: string | undefined, sent: string[], where: string) => {
+      if (!iface) return
+      const declared = interfaceFields(iface, apiSource)
+      expect(declared.length, `${where}: extracted no fields from ${iface} — the check would pass on nothing`).toBeGreaterThan(0)
+      for (const field of declared) {
+        expect(sent, `${name}: ${iface} declares ${field} but the wire does not send it`).toContain(field)
+      }
+    }
+
+    let derived = 0
+    for (const [name, dto] of Object.entries(DTO_READS)) {
+      const snapshot = wire[name]!
+      if (dto.dto) derived++
+      requireDto(name, dto.dto, snapshot.keys, name)
+      if (dto.row && dto.rowDto) {
+        requireDto(name, dto.rowDto, snapshot.rows?.[dto.row] ?? [], `${name}.${dto.row}[]`)
+      }
+      for (const [field, iface] of Object.entries(dto.objectDtos ?? {})) {
+        requireDto(name, iface, snapshot.objects?.[field] ?? [], `${name}.${field}`)
+      }
+    }
+    // A floor, not a style preference: dropping the `dto` names from these
+    // entries would otherwise shrink this check to nothing without failing it.
+    expect(derived, 'too few DTOs are checked against their declarations').toBeGreaterThanOrEqual(3)
+  })
+
+  it('records nested object shapes, not just the top level', () => {
+    // Without `objects` in the snapshot the check above is blind one level down,
+    // which is exactly where the cluster DTO drifted.
+    const cluster = wire['cluster-status']!
+    expect(Object.keys(cluster.objects ?? {}), 'cluster-status must record a nested object').toContain('summary')
+    for (const [field, keys] of Object.entries(cluster.objects ?? {})) {
+      expect(keys.length, `${field} contributed no keys`).toBeGreaterThan(0)
     }
   })
 })
