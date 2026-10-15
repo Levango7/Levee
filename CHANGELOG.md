@@ -62,6 +62,16 @@
 - **顺带纠正一条记账不足**：NOTES.txt 里的后端说明无法在 CI 渲染（实测 helm 3.14 的 `helm template` 无 `--notes`，`helm install --dry-run=client` 仍需集群连接）。因此"这个 Pod 连的是哪种库"改为同时写成 Deployment 注解 `levee.qoder/database-backend: sqlite|postgres`——`kubectl get po -o yaml` 一眼可见，且被 CI 断言覆盖。
 - **验证**：`internal/config` 新增 6 例（reflect 遍历字段要求逐个绑定 + "至少扫到 4 项"的下限、env 覆盖文件、纯 env 选驱动、无 DSN 拒载、sqlite+DSN 拒绝、以及 Chart 不需重复校验的依据）；`go build` / `vet` / `gofmt` / `go test ./...` 全绿、`docgen -check` up to date、`internal/grpc/pb/` 未改、钉版 gosec 0 命中。`bash scripts/validate_delivery.sh` 新增 5 个渲染 profile（`single-postgres` / `-embedded` / `-contradiction` / `-external-secret` / `-external-conflict`）与四种断言原语；**变异九项逐项命中预期断言**：单节点丢 DSN env、Secret 退回 cluster-only、ConfigMap 不再补 driver、Chart 改写显式驱动、DSN 泄进 ConfigMap、cluster 丢 `--pg-dsn`、内嵌实例不在单节点渲染、DSN 管道漏进默认渲染、外部 Secret 被同名覆盖。
 
+### 文档（roadmap 账本四行过期已订正——防止下一次照它排期）
+
+- **动机**：本会话已经为过期账本付过一次代价（按 7 天前的基线排出的 A2 整项是幻影，`SystemView.vue` 的六个字段自 Phase 2 就在全渲染）。这四行同族：**代码已落地，账本仍写着待办**。
+- **逐行按当前 HEAD 复测后订正，并把取证位置写进账本**：
+  1. `idempotent: true` 的存量 Lint → 已落地为 **LE103**（`internal/dsl/compile_warnings.go:195-216`，warning 而非 error）；与 #79 那条口径并排写清：**前瞻步上的 `idempotent` 是 advisory，undo step 上的才是治理字段**。
+  2. 集群拓扑 + 接管事件时间线 → 已落地（`0635e76`，PR #139）：接管结算此前**零读者**，现有 gRPC 读路径与 `ClusterView.vue:42-54` 的时间线（loading/empty/error 三档齐）。遗留的 `cluster_enabled` 位单独留 A3b，别用 `backend` 当代理指标。
+  3. 深色模式、密度档位、可配置列 → **三项里两项已落地**（`useTheme.ts` 的 `light/dark/system` 挂 `<html>.dark`；`tablePrefs.ts` 的列显隐 + 筛选记忆），**只剩密度档位**，并给出判空命令（`web/src` 内 `density` 与「紧凑」零命中）。
+  4. 移动审批卡深链证据 → 已落地（PR #141），实际形态比原描述完整：`409 + {decided, decision, run_id, decided_by, decided_at}` 走"收据"而非错误；前端以 `decided === true` 为准绳（不走 401 分支，那会清 token 跳登录）；未签发过的 token 仍只得扁平 401——披露面不扩大由 `assert.Len(out, 1)` 钉住。
+- **判据**：账本里"待办"这类进度型条目**不是证据**，排期前逐项在当前 HEAD 复测；订正时把**取证位置（file:line 或 commit）**一起写进去，否则下一次还得重查一遍。契约型数字（如 schema 版本）可写死，进度型数字必须带"截至某 commit + 现测命令"。
+
 ### 新增（ChatOps 入向决策闭环：聊天里点「通过」真的能批，而且只有平台签过名的才能批）
 
 - **背景**：ChatOps 层此前只有出向。审批请求卡与决定广播一直在播，但卡片背后的 `/levee approve` / `reject` 是命令路由器的内置空桩——回复是 "approve: no handler registered"。三个 adapter 的 `Parse*Callback` 解码器**零生产调用方**，bot 没有回调端点，mac 验签按各自文件注释归属的「ingress 层」从未被建。也就是说：聊天室里看得见审批，点不动。
