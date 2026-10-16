@@ -1,5 +1,5 @@
-// priority_web_vocabulary_test.go — 变更优先级的 TS 镜像必须与 internal/state 的
-// Priority* 常量逐字相等。
+// priority_web_vocabulary_test.go — 变更优先级的 TypeScript 侧必须与 internal/state 的
+// Priority* 常量逐字相等，且只能是派生物，不能是第二份手抄。
 //
 // 为什么这条要有：`Priority` 联合（web/src/types/levee.ts）此前是**全仓唯一一份**
 // 写成清单的优先级词表，Go 侧只有散落的裸字面量（创建路径的 `"normal"`）。TS 侧的
@@ -7,11 +7,14 @@
 // 第五个值——那正是这次拆列要防的那类漂移（同一个拼写服务两套语义，或者一套语义两个拼写）。
 // 名单从 priority.go 解析、也从 TS 文件解析，两边都不复述。
 //
-// 现在有四个方向（每个都是一份独立的抄件，所以各自一条）：`Priority` 联合、
-// `PRIORITY_LABEL` / `PRIORITY_COLOR` 两张表、向导下拉实际渲染的 `PRIORITIES` 数组，
-// 以及 ApprovalView 里手写的 `.cell-prio--<拼写>` 样式规则。最后一条是拼写面：
-// 规则名对着一个引擎永远不会产出的值，就是"看起来支持"的死 CSS（同族教训见
-// internal/cluster 的节点守卫）。
+// 现在值清单只有一份，而且是 internal/docgen 从 `PriorityNames()` 生成的
+// web/src/types/vocabulary.ts；`Priority` 联合由那份数组派生，levee.ts 只再导出。
+// 所以这里的四个方向变成：生成的数组 == owner（含顺序，下拉顺序是契约的一部分）、
+// 联合是派生的、消费文件里不再有手抄拼写，以及 `PRIORITY_LABEL` / `PRIORITY_COLOR`
+// 两张表和 ApprovalView 里手写的 `.cell-prio--<拼写>` 样式规则仍然逐个覆盖。
+// 后三类是真正的第二语言产物：中文标签与 CSS 规则名没有 Go 归属，生成器产不出它们，
+// 所以只能靠断言。规则名对着一个引擎永远不会产出的值，就是"看起来支持"的死 CSS
+// （同族教训见 internal/cluster 的节点守卫）。
 package state
 
 import (
@@ -23,22 +26,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// webUnionMembers parses `export type X = 'a' | 'b' | …` out of one file.
-func webUnionMembers(t *testing.T, rel, typeName string) map[string]bool {
+// webConstListMembers extracts the quoted members of a generated
+// `export const NAME = [ 'a', 'b', … ] as const` array, in file order.
+//
+// It replaces webUnionMembers, which parsed the hand-written `Priority` union out
+// of levee.ts. Line-anchored opener and closer, and the class stops at "]": an
+// unanchored `.*` would reach into the next declaration and report its members as
+// this array's — which is how the predecessor reported a missing value as an
+// extra one.
+func webConstListMembers(t *testing.T, rel, name string) []string {
 	t.Helper()
 	raw, err := os.ReadFile(repoFile(t, rel))
 	require.NoError(t, err)
-	// `[^\n;]+`, not `[^;]+`: in Go's regexp a negated class still matches "\n",
-	// so the shorter form runs past the end of the line and swallows members of
-	// whichever declaration comes next.
-	line := regexp.MustCompile(`(?m)^export type ` + typeName + ` = ([^\n;]+)$`).FindStringSubmatch(string(raw))
-	require.Len(t, line, 2, "could not find `export type %s = …` in %s — the declaration shape changed", typeName, rel)
-	out := map[string]bool{}
-	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(line[1], -1) {
-		out[m[1]] = true
+	block := regexp.MustCompile(`(?ms)^export const ` + regexp.QuoteMeta(name) +
+		` = \[([^\]]*)\] as const`).FindStringSubmatch(string(raw))
+	require.Len(t, block, 2,
+		"could not find `export const %s = […] as const` in %s — the generator stopped emitting it, "+
+			"or its shape changed and this guard went blind", name, rel)
+	var out []string
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(block[1], -1) {
+		out = append(out, m[1])
 	}
-	require.NotEmpty(t, out, "%s parsed empty in %s", typeName, rel)
+	require.NotEmpty(t, out, "%s parsed empty in %s", name, rel)
 	return out
+}
+
+// webSource reads a checked-in TypeScript source from the repository root.
+func webSource(t *testing.T, rel string) string {
+	t.Helper()
+	raw, err := os.ReadFile(repoFile(t, rel))
+	require.NoError(t, err)
+	return string(raw)
 }
 
 // recordKeys parses the key set of `export const NAME: Record<…> = { … }`.
@@ -56,20 +74,24 @@ func recordKeys(t *testing.T, rel, name string) map[string]bool {
 	return out
 }
 
-func TestWebPriorityUnionMatchesGoPriorityConstants(t *testing.T) {
-	declared := map[string]bool{}
-	for _, value := range PriorityNames() {
-		declared[value] = true
-	}
-	ui := webUnionMembers(t, "web/src/types/levee.ts", "Priority")
+// TestWebPriorityVocabularyIsDerivedNotReSpelled is the wiring half: moving the
+// list into a generated file only kills the copy if nothing re-states it. A
+// hand-written union beside the generated one would keep the value comparison in
+// this file green while the pages read a set the engine never produces — which is
+// the failure shape this whole file family was built to stop.
+func TestWebPriorityVocabularyIsDerivedNotReSpelled(t *testing.T) {
+	vocab := webSource(t, "web/src/types/vocabulary.ts")
+	assert.Contains(t, vocab, "export type Priority = (typeof PRIORITIES)[number]",
+		"the Priority union must be derived from the generated array; a hand-written union is a second copy")
 
+	// The type every consumer imports must come from the generated file.
+	consumer := webSource(t, "web/src/types/levee.ts")
+	assert.Regexp(t, `export type \{[^}]*\bPriority\b[^}]*\} from '\./vocabulary'`, consumer,
+		"web/src/types/levee.ts must re-export Priority from the generated vocabulary")
 	for _, value := range PriorityNames() {
-		assert.True(t, ui[value], "priority %q has no entry in web/src/types/levee.ts Priority — the UI could never send or label it", value)
+		assert.NotContains(t, consumer, "'"+value+"'",
+			"web/src/types/levee.ts spells the priority %q by hand — that is the copy this file exists to remove", value)
 	}
-	for value := range ui {
-		assert.True(t, declared[value], "web Priority union lists %q, which no state.Priority* constant declares", value)
-	}
-	assert.Equal(t, len(declared), len(ui), "the two priority vocabularies differ in size, so one side has an entry the other lacks")
 }
 
 func TestWebPriorityLabelsAndColorsCoverEveryPriority(t *testing.T) {
@@ -81,30 +103,17 @@ func TestWebPriorityLabelsAndColorsCoverEveryPriority(t *testing.T) {
 	}
 }
 
-// webArrayMembers parses `export const NAME: readonly T[] = ['a', 'b']`.
-func webArrayMembers(t *testing.T, rel, name string) []string {
-	t.Helper()
-	raw, err := os.ReadFile(repoFile(t, rel))
-	require.NoError(t, err)
-	// The class stops at "]" and the pattern is line-anchored: an unanchored
-	// `.*` would happily reach into the next declaration and report its members.
-	line := regexp.MustCompile(`(?m)^export const ` + name + `: readonly \w+\[\] = \[([^\]\n]*)\]$`).FindStringSubmatch(string(raw))
-	require.Len(t, line, 2, "could not find `export const %s: readonly …[] = [...]` in %s — its shape changed", name, rel)
-	var out []string
-	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(line[1], -1) {
-		out = append(out, m[1])
-	}
-	require.NotEmpty(t, out, "%s parsed empty in %s", name, rel)
-	return out
-}
-
 // TestWebPriorityRuntimeArrayMatchesTheVocabulary covers the array the instantiate
 // wizard renders its <el-option> list from. It exists because the wizard used to
 // hand-copy four option lines, which is a third owner of the vocabulary that a
 // fourth Go value would silently miss — the union cannot be iterated at runtime, so
 // an array is the only way the template can read the list from its owner.
+//
+// The array is the generated one, so this is the check that the generator was
+// actually run: an owner value added to PriorityNames() and not regenerated lands
+// here as a length mismatch, and the wizard would silently not offer it.
 func TestWebPriorityRuntimeArrayMatchesTheVocabulary(t *testing.T) {
-	listed := webArrayMembers(t, "web/src/utils/format.ts", "PRIORITIES")
+	listed := webConstListMembers(t, "web/src/types/vocabulary.ts", "PRIORITIES")
 	declared := PriorityNames()
 
 	require.Len(t, listed, len(declared),

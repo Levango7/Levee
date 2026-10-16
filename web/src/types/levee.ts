@@ -1,25 +1,17 @@
 // Type definitions mirroring the LEVEE protobuf messages. Kept in sync with
 // proto/levee.proto so the frontend gets static typing without generating
 // TypeScript from the .proto file (which would require an extra build step).
+//
+// The two vocabularies that have Go owners (run status, priority) are NOT
+// declared here any more: they are generated into ./vocabulary.ts by
+// internal/docgen and re-exported below, so this file keeps one copy rather
+// than two. Adding a status therefore means adding it in internal/runstatus and
+// running the generator — a hand-copy here would fail
+// internal/runstatus/vocabulary_guard_test.go.
 
-export type ChangeStatus =
-  | 'draft'
-  | 'planned'
-  | 'pending'
-  | 'approved'
-  | 'rejected'
-  | 'running'
-  | 'paused'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'rolled_back'
-  | 'rolled_back_partial'
-  | 'rollback_incomplete'
-  | 'interrupted'
-  | 'archived'
+import type { ChangeStatus, Priority } from './vocabulary'
 
-export type Priority = 'low' | 'normal' | 'high' | 'urgent'
+export type { ChangeStatus, Priority }
 
 export interface Change {
   id: string

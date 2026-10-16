@@ -58,12 +58,13 @@ export const PRIORITY_COLOR: Record<Priority, string> = {
   urgent: 'danger',
 }
 
-// PRIORITIES is the runtime form of the `Priority` union, which cannot be iterated.
-// The instantiate wizard used to hand-copy its four <el-option> lines, giving the
-// vocabulary a third owner beside the union and the two tables above; internal/state/
-// priority_web_vocabulary_test.go now parses this array as well and requires every
-// spelling (union, tables, this array, the Go constants) to be the same set.
-export const PRIORITIES: readonly Priority[] = ['low', 'normal', 'high', 'urgent']
+// PRIORITIES is the runtime form of the `Priority` union, which cannot be
+// iterated. It used to be a hand-copy here (a third spelling beside the union and
+// the two tables above, after the instantiate wizard's four inline <el-option>
+// lines). It is now re-exported from the generated vocabulary, whose own source is
+// internal/state.PriorityNames() — so the accepted set, the dropdown order and the
+// Go error text come from one place and cannot disagree.
+export { PRIORITIES } from '@/types/vocabulary'
 
 // priorityLabel renders a priority for the Chinese console. Both fallbacks are
 // deliberate:

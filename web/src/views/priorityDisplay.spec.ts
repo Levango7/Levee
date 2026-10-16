@@ -19,7 +19,10 @@ import { describe, expect, it } from 'vitest'
 //      interpolation, and the instantiate wizard's four hand-copied <el-option>
 //      lines (a third owner of the vocabulary, beside the union and the table);
 //   4. the wizard's form type still carries the vocabulary rather than an open
-//      string, which is what let it build a request the entrypoint now refuses.
+//      string, which is what let it build a request the entrypoint now refuses;
+//   5. the vocabulary has exactly one home per kind: the value list is generated
+//      from internal/state.PriorityNames into src/types/vocabulary.ts, while the
+//      Chinese label/colour tables stay here because no Go owner can produce them.
 //
 // Sources are read from disk, so this cannot pass on a mock, and a missing file is
 // a hard failure (same locate idiom as the other view specs).
@@ -41,6 +44,7 @@ function locatePath(rel: string): string {
 const viewsDir = dirname(locatePath('src/views/ChangesView.vue'))
 const formatPath = locatePath('src/utils/format.ts')
 const templateFormPath = locatePath('src/utils/templateForm.ts')
+const vocabularyPath = locatePath('src/types/vocabulary.ts')
 
 // Views that put a change's priority on screen, and the expression each renders.
 // Naming the expression makes check 2 specific: the regression is this exact
@@ -117,12 +121,28 @@ describe('priority display: one owner, rendered through it', () => {
     expect(readFileSync(templateFormPath, 'utf8')).toContain('priority: Priority')
   })
 
-  it('utils/format still owns both tables, the runtime list and the label helper', () => {
+  it('the vocabulary has one home per kind: generated list, literal tables, helper', () => {
     const source = readFileSync(formatPath, 'utf8')
-    const exported = (name: string): boolean =>
+    const declared = (name: string): boolean =>
       new RegExp(`export (const|function) ${name}\\b`).test(source)
-    for (const name of ['PRIORITY_LABEL', 'PRIORITY_COLOR', 'PRIORITIES', 'priorityLabel']) {
-      expect(exported(name), `${name} must stay exported from utils/format`).toBe(true)
+    // The two tables and the helper are wording the generator cannot produce — a
+    // Chinese label has no Go owner — so they stay declared here.
+    for (const name of ['PRIORITY_LABEL', 'PRIORITY_COLOR', 'priorityLabel']) {
+      expect(declared(name), `${name} must stay declared in utils/format`).toBe(true)
     }
+    // PRIORITIES changed hands: its accepted set and its order DO have a Go owner
+    // (internal/state.PriorityNames), so format.ts must re-export the generated
+    // list instead of re-spelling it. The re-export is what keeps the existing
+    // `import { PRIORITIES } from '@/utils/format'` call sites compiling; the
+    // negative half is the point — a literal array here would be a second copy.
+    expect(
+      source,
+      "PRIORITIES must be re-exported from the generated vocabulary, not declared here",
+    ).toContain("export { PRIORITIES } from '@/types/vocabulary'")
+    expect(declared('PRIORITIES'), 'utils/format must not own a second copy of the priority list').toBe(false)
+    expect(
+      readFileSync(vocabularyPath, 'utf8'),
+      'the generated vocabulary is the only declaration of PRIORITIES',
+    ).toMatch(/export const PRIORITIES = \[/)
   })
 })

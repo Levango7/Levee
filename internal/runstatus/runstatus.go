@@ -12,10 +12,13 @@
 //
 // The rule now: no package may spell a run status as a bare string literal.
 // Reference these constants, and add a vocabulary test whenever a status is
-// introduced. The web UI cannot import Go, so web/src keeps a mirror — but
-// TestWebStatusMirrorMatches pins the two key sets together (run
-// `go test ./tests/...` or the CI `test` job; it is the same gate that already
-// guards the rollback verdicts' labels and colours).
+// introduced. The web UI cannot import Go, so its list is generated from this
+// one by internal/docgen into web/src/types/vocabulary.ts — add the status here,
+// run `go run ./internal/docgen`, and the TypeScript union follows. The mirror is
+// pinned by TestWebStatusMirrorMatchesGo in this package's vocabulary_guard_test.go
+// (run `go test ./internal/runstatus/` or the CI `test` job; it is the same gate
+// that already guards the rollback verdicts' labels and colours), and the docs
+// table by TestSpecStatusTableMatchesGo.
 package runstatus
 
 import "strings"
