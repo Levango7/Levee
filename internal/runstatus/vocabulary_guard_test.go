@@ -102,8 +102,14 @@ func TestWebStatusVocabularyIsWiredNotCopied(t *testing.T) {
 	// The type the rest of the app imports.
 	consumer, err := os.ReadFile(repoFile(t, "web/src/types/levee.ts"))
 	require.NoError(t, err)
-	assert.Regexp(t, `export type \{[^}]*\bChangeStatus\b[^}]*\} from '\./vocabulary'`, string(consumer),
-		"web/src/types/levee.ts must re-export ChangeStatus from the generated vocabulary")
+	// Matched as a property, not as one spelling: `export type { X } from '…'`
+	// alone does not bring X into the file's own scope, so the honest form is an
+	// `import type` plus an `export type` — and pinning only the re-export form
+	// failed the run that fixed it. Either shape is fine; a declaration is not.
+	assert.Regexp(t, `(?:import|export)\s+type\s*\{[^}]*\bChangeStatus\b[^}]*\}\s+from\s+'\./vocabulary'`, string(consumer),
+		"web/src/types/levee.ts must obtain ChangeStatus from the generated vocabulary (import or re-export)")
+	assert.NotRegexp(t, `export type ChangeStatus\s*=`, string(consumer),
+		"web/src/types/levee.ts declares its own ChangeStatus union beside the generated one")
 
 	// And no status spelled as a literal there: the file that re-exports the
 	// vocabulary must not also re-state it.

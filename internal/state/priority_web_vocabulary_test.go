@@ -84,10 +84,16 @@ func TestWebPriorityVocabularyIsDerivedNotReSpelled(t *testing.T) {
 	assert.Contains(t, vocab, "export type Priority = (typeof PRIORITIES)[number]",
 		"the Priority union must be derived from the generated array; a hand-written union is a second copy")
 
-	// The type every consumer imports must come from the generated file.
+	// The type every consumer imports must come from the generated file. Matched
+	// as a property rather than as one spelling: `export type { X } from '…'` does
+	// not bring X into the declaring file's own scope, so the working form here is
+	// an `import type` plus an `export type` (and pinning only the re-export shape
+	// is what made this guard fail on the run that fixed the scope).
 	consumer := webSource(t, "web/src/types/levee.ts")
-	assert.Regexp(t, `export type \{[^}]*\bPriority\b[^}]*\} from '\./vocabulary'`, consumer,
-		"web/src/types/levee.ts must re-export Priority from the generated vocabulary")
+	assert.Regexp(t, `(?:import|export)\s+type\s*\{[^}]*\bPriority\b[^}]*\}\s+from\s+'\./vocabulary'`, consumer,
+		"web/src/types/levee.ts must obtain Priority from the generated vocabulary (import or re-export)")
+	assert.NotRegexp(t, `export type Priority\s*=`, consumer,
+		"web/src/types/levee.ts declares its own Priority union beside the generated one")
 	for _, value := range PriorityNames() {
 		assert.NotContains(t, consumer, "'"+value+"'",
 			"web/src/types/levee.ts spells the priority %q by hand — that is the copy this file exists to remove", value)
