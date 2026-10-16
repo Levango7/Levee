@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [v1.22.0] - 2026-10-16
+
+> **发布状态：未切版。** 本节共 **48** 个小节，五条主线：① **交互层 P0 全部落地**——变更详情页、模板实例化三步向导、部分回滚补救（先 dry_run 摊证据）、审批中心卡片化（为此新增审批链读路径 `GET /changes/{id}/approvals`）、`/monitor` 三视图（目标地图 + SSE 事件流）、审计证据片段卡与时间线、看板第一张趋势图、列个性化、全键盘路径、空/失败/无权限三档；② **词表与判据收口**——`runs.status` 行内注释（4 个幻影拼写、owner 的 15 个里缺 10 个）、`approval_level` 两处失实、`runs.priority` 拆成独立列（schema v9）并在入口校验、`audit.action`/`result` 两对孪生拼写与三处散文、错误码目录双向漂移（撤 11 补 1）、门禁判定第一次进审计链；③ **授权与安全**——8 个写 RPC 从零准入到接权限矩阵、2 个直读 store 的 REST-only 端点接门禁、重试上限改由服务端强制、ChatOps 入向决策闭环（平台验签 + 身份映射）、移动深链重复点击返回收据、`levee tenant purge` 只回收 WORM 允许的那一半；④ **契约与交付物**——DTO 双向守卫（`wire.json` 由服务端写下、含嵌套对象键集）、`cluster_enabled` 位上 wire、节点能力申报三段管道、Helm 单节点 PostgreSQL 成为一等公民、`make web` 拒绝 CRLF 工作副本；⑤ **CI 与协作**——浏览器级检查进 CI（ubuntu + windows 双 OS）并把它假红的根因坐实为「判据挂在时钟上而不是挂在渲染上」、多 agent 协作留言板与本仓第一份 `AGENTS.md`。**切版顺序（按既有约束执行）**：先折叠 CHANGELOG 与 release notes、chart 不动（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升），推 tag 并确认 `release.yml` 三段 success 之后，再随下一笔把 chart 两处升到 `1.22.0` / 逐字 `v1.22.0`。release notes 见 [`docs/release-notes/v1.22.0.md`](docs/release-notes/v1.22.0.md)。
+
+### 依赖与 CI 工具链（三条 Go bump 合并成一笔重算，CodeQL 三条 pin 锁步）
+
+- **为什么重算而不是手抄**：dependabot 的三条 Go bump——#147 `golang.org/x/crypto v0.57.0 → v0.58.0`、#148 `github.com/aws/aws-sdk-go-v2/config v1.33.4 → v1.33.9`、#149 `github.com/aws/aws-sdk-go-v2/service/kms v1.61.1 → v1.61.4`——都在旧基线 `af1d706` 上算出，三条彼此又与并行分支相撞；它们当时各红在 browser-check 的**不同**断言上（根因见下一节），三条全部 CLOSED 未合。收进 #165 时按工具链重算（`go get <mod>@<目标版本> && go mod tidy`），不是把冲突块抄过来；产物与三条 PR 的目标版本逐字一致，锁文件其余 14 项的差异方向全是「更新」。**这三条 PR 正文与标签里都没有公告号**（`labels=[]`，无 `GO-20xx-xxxx` / CVE 引用），所以本节只记为版本 bump，不写成安全补丁。AWS SDK 在本仓的唯一消费点是 `internal/credential`。
+- **CodeQL 三条 pin 必须同版（#164）**：dependabot 把同一个 release 拆成两条单边 PR（#145 只升 `init`、#144 只升 `analyze`），而 `init` 在 job 内安装 CLI、`autobuild`/`analyze` 复用同一 runner 上已装的 CLI 与其配置版本 ⇒ 两条各自的红点都是版本对不上：#145 在 autobuild 步报 `Loaded a configuration file for version '4.38.3', but running version '4.38.2'`，#144 在 Post analyze 报反向那条。合成为一笔把 `init`/`autobuild`/`analyze` 一起钉到 `24c54180a607b1449ed407dd24f251e4e9147c8d`（v4.38.3）；tag→SHA 从上游现取且做两阶段剥离（annotated tag 的 ref 给的是 tag 对象 `cee97f8…`，再问 `git/tags/` 才拿到提交——只看第一层会以为对不上）。
+- **CI 动作 pin 同批**：`actions/checkout 4.4.0 → 7.0.1`、`actions/setup-python 5.6.0 → 7.0.0`、`actions/upload-artifact 7.0.1 → 7.0.2`。**未被一起升的一处，如实登记**：`github/codeql-action/upload-sarif` 在 ci.yml 里仍钉 v4.38.2——它不在 codeql.yml 那次 CLI 安装的同 job 闭包内（ci.yml 只用这一步传 sarif），因此不受上面那条锁步约束；写下是为了免得下一次把它当成漏项「顺手对齐」。
+- **切版基线的扫描面（取 CI 检查结论，非本机复算）**：`go 1.26.9` 未变；`govulncheck`、`trivy`、`gosec`、`lint` 四条腿在 `91a63ef` 上均 success。
+
 ### 文档（一处歧义订正 + 双语机制的定档）
 
 - **「多语言」这个词在账本里指错了东西**：`internal/docgen` 那行登记的原话是"多语言实现（把 `web/src/types/levee.ts` 那张表也生成为 TS）"，它的"语言"指的是**生成目标**，不是自然语言。实测本仓没有任何 i18n 设施：`web/src` 的 23 个 `.vue` / 62 个 `.ts` 里有 19 个文件写死中文文案，`grep` 的 `i18n/locale/intl/LanguagePack` 只命中 `main.ts` 与 `targetMap.ts` 两处无关词。措辞改成"多目标生成"，免得下一次按"国际化"排期——同一类过期/歧义账本今年已经误导过一次排期（A2 就是照过期账本排出来的幻影项）。
