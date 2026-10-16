@@ -151,6 +151,7 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 	}
 	cr := engine.NewClosureRunner(store, lockMgr, gateMgr, rollbackMgr, batchCtrl, postVerifier,
 		gateRecorderOption(store, changeID),
+		engine.WithGateObserver(changeBoundGateObserver(changeID, e.gateObserver)),
 		engine.WithHostGuard(func(ctx context.Context, hosts []string) error {
 			if err := inventory.ValidateNotFrozen(ctx, store, hosts); err != nil {
 				return err
@@ -1050,4 +1051,28 @@ func (g gateTracer) RecordGate(ctx context.Context, execRunID, gateName, phase s
 		out["exec_run_id"] = execRunID
 	}
 	return g.rec.RecordGate(ctx, g.changeID, gateName, phase, passed, out)
+}
+
+// changeBoundGateObserver stamps the persistent identity onto a verdict before
+// the deployment's sink sees it.
+//
+// The engine cannot do this itself: ClosureRunner.Run mints an ephemeral id and
+// every gate verdict it produces carries only that (see gateTracer, which has
+// the same problem for the audit row). A chat card that reads "run-9ebe7dc4…"
+// is not actionable by a human — the change is what an operator recognises and
+// what every read path keys by — so the binding happens where the change id is
+// actually in scope: here, at runner construction.
+//
+// A nil observer stays nil rather than becoming a closure that does nothing:
+// the engine treats a nil observer as "not installed", and installing a
+// non-nil one for a deployment that asked for nothing would make the
+// "announcing is off" state unobservable from the outside.
+func changeBoundGateObserver(changeID string, obs engine.GateObserver) engine.GateObserver {
+	if obs == nil {
+		return nil
+	}
+	return func(ctx context.Context, v engine.GateVerdict) {
+		v.ChangeID = changeID
+		obs(ctx, v)
+	}
 }

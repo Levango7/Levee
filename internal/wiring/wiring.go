@@ -131,6 +131,13 @@ type Engine struct {
 	// delivered — would be worse than saying so in a log line.
 	notifier *notify.NotificationManager
 
+	// gateObserver reacts to per-gate verdicts outside the audit trail — the
+	// chatops bridge today (see chatopsbridge.OnGateVerdict). Nil (the default)
+	// means verdicts are recorded and acted on exactly as before, just not
+	// announced: a deployment without a configured chat bot must not lose a
+	// verdict over a missing channel. Installed via WithGateObserver.
+	gateObserver engine.GateObserver
+
 	// postVerifyTimeout bounds one post-rollback verification. Zero means
 	// rollback.DefaultVerifyTimeout. See WithPostVerifyTimeout.
 	postVerifyTimeout time.Duration
@@ -237,6 +244,16 @@ func WithSnapshotDir(dir string) Option {
 // rather than a silent gap.
 func WithNotificationManager(m *notify.NotificationManager) Option {
 	return func(e *Engine) { e.notifier = m }
+}
+
+// WithGateObserver attaches the reaction sink for verification-gate verdicts.
+// The engine mints its own ephemeral run id, so the change identity — the one
+// every reader asks by — is added per run here rather than by the caller
+// (changeBoundGateObserver). Nil (the default) announces nothing, which is why
+// installing it is gated on notify.chatops.enabled at the serve path instead
+// of on a guess about which room a verdict belongs to.
+func WithGateObserver(obs engine.GateObserver) Option {
+	return func(e *Engine) { e.gateObserver = obs }
 }
 
 // WithPostVerifyTimeout bounds one post-rollback verification
