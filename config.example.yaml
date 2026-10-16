@@ -211,10 +211,16 @@ notify:
     issue_type: "Task"            # 默认: Task
     timeout: 10s
 
-  # chatops —— ChatOps 审批层：出向（审批创建/决策事件投影到聊天群 webhook bot）
+  # chatops —— ChatOps 审批层：出向（审批创建/决策事件，以及**门禁失败**判定，投影到聊天群 webhook bot）
   # 与入向（聊天里 /levee approve|reject|status 直接决定，见 docs/levee-api.md §13.8）。
   # 默认关闭（零装配）；启用时至少一个 bot，且每个 bot 的 name 与 webhook_url
   # 必填（缺失会拒绝启动并指名 bot）。观察者槽位是扇出，与 jira 镜像并存不互斥。
+  # 出向范围是**故意窄的**：门禁只播失败的判定，通过的判定不发——ChatOps 没有
+  # "按变更路由到某个群"的数据面（三个适配器都丢弃 channel 参数，webhook 本身就绑
+  # 一个群，state 里也没有存房间的列），所以收件人只能是"全部已配置 bot"；在这种
+  # 扇出下把每批每门禁的绿色判定都发出去，会淹掉这个群真正承载的审批请求。通过的
+  # 判定并非无处可查：它们逐条落进 run 的审计 trace（gate_check 行），控制台时间线
+  # 原样显示。
   chatops:
     enabled: false
     bots: []                      # 例（三平台各一）：

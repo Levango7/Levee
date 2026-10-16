@@ -40,6 +40,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	stderrors "errors"
 
@@ -231,7 +232,61 @@ type ClosureRunner struct {
 	// recording is observability, never a safety property, so its absence (or
 	// a write failure) must not change any verdict. See recordGateVerdicts.
 	gateRecorder GateTraceRecorder
+
+	// gateObserver, when non-nil, receives every gate verdict as a typed
+	// GateVerdict so a deployment can react to it outside the audit trail
+	// (today: the chatops bridge, which broadcasts failures). Installed via
+	// WithGateObserver. Same posture as gateRecorder — reacting is
+	// observability, and the type returns no error precisely so that this
+	// path can never become a second reason for a run to fail.
+	gateObserver GateObserver
 }
+
+// GateVerdict is one verification-gate outcome, as the engine saw it. It is
+// the engine's own vocabulary rather than a re-declared shape in each
+// consumer: the audit row's detail map and every downstream notifier are both
+// derived from this one value, so "what the trail says" and "what the chat
+// says" cannot drift on a field name.
+//
+// ExecRunID is the engine's ephemeral run id (ClosureRunner.Run mints it; it
+// is NOT a row in `runs`). ChangeID is left empty here and filled by the
+// wiring layer, which is where the persistent identity is known — see
+// wiring.changeBoundGateObserver.
+type GateVerdict struct {
+	ExecRunID string
+	ChangeID  string
+	GateName  string
+	// Phase is the verify phase token (pre_apply / post_batch / post_apply).
+	Phase string
+	// Stage separates the same phase reached from different run paths:
+	// "forward" vs "rollback". Empty when the producer has no distinction.
+	Stage   string
+	BatchID string
+	Passed  bool
+	Message string
+	Latency time.Duration
+}
+
+// AuditDetail is the trace row's detail payload for this verdict. Kept next to
+// the struct on purpose: it is the only place the audit key names
+// (message / latency_ms / stage / batch) are written, so a consumer that
+// wants the same facts reads the fields, never the map.
+func (v GateVerdict) AuditDetail() map[string]any {
+	d := map[string]any{"message": v.Message, "latency_ms": v.Latency.Milliseconds()}
+	if v.Stage != "" {
+		d["stage"] = v.Stage
+	}
+	if v.BatchID != "" {
+		d["batch"] = v.BatchID
+	}
+	return d
+}
+
+// GateObserver is the engine's view of "somewhere to react to gate verdicts".
+// A function type rather than an interface because there is exactly one thing
+// to report and no error to return: the engine must not gain a second reason
+// to fail from a notification path.
+type GateObserver func(ctx context.Context, v GateVerdict)
 
 // GateTraceRecorder is the engine's view of "somewhere to write gate verdicts".
 // It is an interface rather than a direct *audit.TraceRecorder dependency so the
@@ -280,29 +335,69 @@ func (cr *ClosureRunner) gateInitiator(ctx context.Context, runID string) string
 // phase is the verify phase token (pre_apply / post_batch / post_apply). stage
 // distinguishes the same phase reached from different run paths — the forward
 // check vs the post-rollback health check both run PhasePostApply, so they must
-// not read identically in the trail.
-func (cr *ClosureRunner) recordGateVerdicts(ctx context.Context, runID string, gm *verify.GateManager, phase verify.GatePhase, stage string, extra map[string]any, results []verify.GateResult) {
-	if cr.gateRecorder == nil || len(results) == 0 {
-		return
+// not read identically in the trail. batchID scopes a post-batch verdict to the
+// batch that produced it; pass "" for the phase-wide checks.
+func (cr *ClosureRunner) recordGateVerdicts(ctx context.Context, runID string, gm *verify.GateManager, phase verify.GatePhase, stage string, batchID string, results []verify.GateResult) {
+	for _, v := range gateVerdicts(runID, gm, phase, stage, batchID, results) {
+		cr.recordGateVerdict(ctx, v)
+		cr.notifyGateVerdict(ctx, v)
+	}
+}
+
+// gateVerdicts turns a phase's results into typed verdicts, naming each one
+// from the manager that ACTUALLY ran it (see the alignment note above). Split
+// out from the recording loop so the mapping is testable without a recorder or
+// a runner — and so the two sinks below cannot end up disagreeing about which
+// verdicts exist at all.
+func gateVerdicts(runID string, gm *verify.GateManager, phase verify.GatePhase, stage, batchID string, results []verify.GateResult) []GateVerdict {
+	if len(results) == 0 {
+		return nil
 	}
 	gates := gm.Gates(phase)
+	out := make([]GateVerdict, 0, len(results))
 	for i, gr := range results {
 		name := fmt.Sprintf("gate-%d", i)
 		if i < len(gates) {
 			name = gates[i].Name()
 		}
-		detail := map[string]any{"message": gr.Message, "latency_ms": gr.Latency.Milliseconds()}
-		for k, v := range extra {
-			detail[k] = v
-		}
-		if stage != "" {
-			detail["stage"] = stage
-		}
-		if _, err := cr.gateRecorder.RecordGate(ctx, runID, name, string(phase), gr.Passed, detail); err != nil {
-			log.Error("gate verdict trace record failed (gate verdict unaffected)",
-				"run_id", runID, "gate", name, "phase", string(phase), "error", err)
-		}
+		out = append(out, GateVerdict{
+			ExecRunID: runID,
+			GateName:  name,
+			Phase:     string(phase),
+			Stage:     stage,
+			BatchID:   batchID,
+			Passed:    gr.Passed,
+			Message:   gr.Message,
+			Latency:   gr.Latency,
+		})
 	}
+	return out
+}
+
+// recordGateVerdict writes the audit row. Best-effort: a nil recorder is a
+// no-op and a write failure is logged, never allowed to change a verdict.
+func (cr *ClosureRunner) recordGateVerdict(ctx context.Context, v GateVerdict) {
+	if cr.gateRecorder == nil {
+		return
+	}
+	if _, err := cr.gateRecorder.RecordGate(ctx, v.ExecRunID, v.GateName, v.Phase, v.Passed, v.AuditDetail()); err != nil {
+		log.Error("gate verdict trace record failed (gate verdict unaffected)",
+			"run_id", v.ExecRunID, "gate", v.GateName, "phase", v.Phase, "error", err)
+	}
+}
+
+// notifyGateVerdict hands the verdict to the installed observer. Same posture
+// as the audit write: no observer is a no-op, and a broadcast that fails (or a
+// full event channel, which the chatops layer drops by design) must not reach
+// back into the run. The engine cannot see an observer's failure — the type
+// returns nothing — so the only leak this path could have is a panic, and
+// panicking is the observer's own bug to fix, not something the run should
+// absorb silently.
+func (cr *ClosureRunner) notifyGateVerdict(ctx context.Context, v GateVerdict) {
+	if cr.gateObserver == nil {
+		return
+	}
+	cr.gateObserver(ctx, v)
 }
 
 type ClosureOption func(*ClosureRunner)
@@ -335,6 +430,13 @@ func WithHostGuard(guard func(ctx context.Context, hosts []string) error) Closur
 // recorded as failing rather than dropped when the run aborts.
 func WithGateRecorder(rec GateTraceRecorder) ClosureOption {
 	return func(cr *ClosureRunner) { cr.gateRecorder = rec }
+}
+
+// WithGateObserver installs the reaction sink for gate verdicts (see
+// GateVerdict). Like WithGateRecorder it is optional and its absence changes
+// no verdict.
+func WithGateObserver(obs GateObserver) ClosureOption {
+	return func(cr *ClosureRunner) { cr.gateObserver = obs }
 }
 
 // NewClosureRunner returns a ClosureRunner wired to the given subsystems.
@@ -485,7 +587,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 	}
 	preResults := cr.verifier.RunPhase(ctx, verify.PhasePreApply, preInput)
 	result.VerifyResults = append(result.VerifyResults, preResults...)
-	cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePreApply, "forward", nil, preResults)
+	cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePreApply, "forward", "", preResults)
 	if !gatesPassed(preResults) {
 		result.Phase = PhaseFailed
 		result.Error = fmt.Errorf("closure: pre-apply gate failed")
@@ -599,7 +701,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 		postBatchResults := cr.verifier.RunPhase(ctx, verify.PhasePostBatch, postBatchInput)
 		result.VerifyResults = append(result.VerifyResults, postBatchResults...)
 		cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePostBatch, "forward",
-			map[string]any{"batch": postBatchInput.BatchID}, postBatchResults)
+			postBatchInput.BatchID, postBatchResults)
 		if !gatesPassed(postBatchResults) {
 			triggerRollback = true
 			rollbackReason = fmt.Sprintf("post-batch gate failed after batch %d", b.Index)
@@ -623,7 +725,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			}
 			postResults := cr.verifier.RunPhase(ctx, verify.PhasePostApply, postInput)
 			result.VerifyResults = append(result.VerifyResults, postResults...)
-			cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePostApply, "forward", nil, postResults)
+			cr.recordGateVerdicts(ctx, result.RunID, cr.verifier, verify.PhasePostApply, "forward", "", postResults)
 			if !gatesPassed(postResults) {
 				triggerRollback = true
 				rollbackReason = "post-apply gate failed"
@@ -755,7 +857,7 @@ func (cr *ClosureRunner) Run(ctx context.Context, p *plan.Plan, execFn rollback.
 			// dead code AND push (*ClosureRunner).Run's cyclomatic complexity over
 			// the CI's gocyclo threshold (31 > 30), which is exactly the failure
 			// this replaces.
-			cr.recordGateVerdicts(ctx, result.RunID, cr.postVerifier.GateManager(), verify.PhasePostApply, "rollback", nil, pv.GateResults)
+			cr.recordGateVerdicts(ctx, result.RunID, cr.postVerifier.GateManager(), verify.PhasePostApply, "rollback", "", pv.GateResults)
 			if dispatchErr != nil {
 				log.Warn("post-rollback verify: grade action dispatch failed",
 					"run_id", result.RunID,

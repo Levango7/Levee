@@ -1159,6 +1159,26 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	// human-gate transport reads the same service.
 	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
 
+	// ChatOps bots (notify.chatops.*, disabled by default) are built BEFORE the
+	// engine because the gate-verdict broadcast is an engine construction
+	// option, not a post-hoc setter: a verdict only ever arrives during a run,
+	// and "which sink is installed" is fixed when the runner is constructed per
+	// change. Building here also keeps one object for both mirrors — the same
+	// bridge projects approval lifecycle events (installed below, once
+	// changeSvc exists) and gate verdicts (passed into the engine opts).
+	//
+	// Disabled installs nothing and leaves both nil, which every consumer below
+	// treats as "announce nothing" — see chatopsbridge.OnGateVerdict's guards.
+	var chatOpsMgr *chatops.BotManager
+	var chatOpsBridge *chatopsbridge.ApprovalBridge
+	if cfg.Notify.ChatOps.Enabled {
+		mgr, cerr := buildServeChatOpsBots(cfg.Notify.ChatOps)
+		if cerr != nil {
+			return serveServices{}, cerr
+		}
+		chatOpsMgr, chatOpsBridge = mgr, chatopsbridge.NewApprovalBridge(mgr)
+	}
+
 	// Execution engine (--engine-enabled, off by default). When wired, the
 	// ChangeService gains real plan generation (persisted plan artifacts)
 	// and apply execution via internal/wiring; when nil, ApplyChange keeps
@@ -1170,6 +1190,9 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard, approvalSvc)
 		if optsErr != nil {
 			return serveServices{}, optsErr
+		}
+		if chatOpsBridge != nil {
+			opts = append(opts, wiring.WithGateObserver(chatOpsBridge.OnGateVerdict))
 		}
 		eng = wiring.NewEngine(store, opts...)
 		engine = eng.Adapter()
@@ -1198,23 +1221,19 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		changeSvc.WithApprovalCreateObserver(jiraBridge.OnApprovalCreated)
 	}
 
-	// ChatOps approval mirror (notify.chatops.*): approval lifecycle events
-	// are projected onto Slack / DingTalk / Feishu webhook bots, so approvers
-	// see the ask where they already work. Disabled (the default) installs
-	// nothing. The observer slots are fan-out, so this composes with the
-	// Jira mirror instead of displacing it. Bots are started here (their
-	// event channels drop events while unstarted) and stopped by runServe's
-	// shutdown path via the manager carried back in serveServices.
-	var chatOpsMgr *chatops.BotManager
-	if cfg.Notify.ChatOps.Enabled {
-		var cerr error
-		chatOpsMgr, cerr = buildServeChatOpsBots(cfg.Notify.ChatOps)
-		if cerr != nil {
-			return serveServices{}, cerr
-		}
-		bridge := chatopsbridge.NewApprovalBridge(chatOpsMgr)
-		approvalSvc.WithDecisionObserver(bridge.OnDecision)
-		changeSvc.WithApprovalCreateObserver(bridge.OnApprovalCreated)
+	// ChatOps approval mirror: approval lifecycle events are projected onto
+	// Slack / DingTalk / Feishu webhook bots, so approvers see the ask where
+	// they already work. The bots themselves were built above (the engine
+	// needed one of their hooks at construction time); this is where the two
+	// service-side observers attach, because changeSvc did not exist yet.
+	// Disabled (the default) installs nothing. The observer slots are fan-out,
+	// so this composes with the Jira mirror instead of displacing it. Bots are
+	// started by buildServeChatOpsBots (their event channels drop events while
+	// unstarted) and stopped by runServe's shutdown path via the manager carried
+	// back in serveServices.
+	if chatOpsBridge != nil {
+		approvalSvc.WithDecisionObserver(chatOpsBridge.OnDecision)
+		changeSvc.WithApprovalCreateObserver(chatOpsBridge.OnApprovalCreated)
 		log.Info("chatops approval mirror enabled", "bots", chatOpsMgr.Names())
 	}
 
