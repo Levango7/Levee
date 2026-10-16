@@ -105,6 +105,20 @@ function interfaceFields(name: string, source: string): string[] {
 
 const wire: Record<string, WireRow> = JSON.parse(readFileSync(locatePath('src/api/__contract__/wire.json'), 'utf8'))
 const apiSource = readFileSync(locatePath('src/api/index.ts'), 'utf8')
+// Not every payload the console reads is declared here: Change, Plan and Batch
+// live in types/levee.ts. api/index.ts is searched FIRST and wins, so adding the
+// fallback cannot silently switch which declaration an existing name resolves to
+// — it only extends coverage to names the first file does not declare.
+const typesSource = readFileSync(locatePath('src/types/levee.ts'), 'utf8')
+
+/** The fields of `name`, from api/index.ts or, if only declared there, types/levee.ts. */
+function fieldsOf(name: string): string[] {
+  try {
+    return interfaceFields(name, apiSource)
+  } catch {
+    return interfaceFields(name, typesSource)
+  }
+}
 
 /**
  * What each client DTO reads, per endpoint. `row` names the array field the DTO
@@ -135,6 +149,14 @@ const DTO_READS: Record<string, DtoReads> = {
   },
   change: {
     keys: ['id', 'label', 'status', 'templateName', 'createdAt', 'updatedAt', 'createdBy', 'workflowFile'],
+  },
+  // The same endpoint one flag up. `plan` is a nested object and `plan.batches`
+  // its item array, and both are now read by the detail page — which is why they
+  // are in the contract rather than inferred from the proto: a field spelled
+  // differently one level down renders as a blank panel, not an error.
+  'change-with-plan': {
+    keys: ['id', 'label', 'status', 'templateName', 'createdAt', 'updatedAt', 'createdBy', 'workflowFile', 'plan'],
+    objectDtos: { plan: 'Plan', 'plan.batches': 'Batch' },
   },
   'audit-log': {
     row: 'entries',
@@ -236,7 +258,7 @@ describe('DTO contract: what the client reads is what the server sends', () => {
     // about the server.
     const requireDto = (name: string, iface: string | undefined, sent: string[], where: string) => {
       if (!iface) return
-      const declared = interfaceFields(iface, apiSource)
+      const declared = fieldsOf(iface)
       expect(declared.length, `${where}: extracted no fields from ${iface} — the check would pass on nothing`).toBeGreaterThan(0)
       for (const field of declared) {
         expect(sent, `${name}: ${iface} declares ${field} but the wire does not send it`).toContain(field)

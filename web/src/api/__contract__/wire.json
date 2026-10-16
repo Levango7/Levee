@@ -90,6 +90,41 @@
       ]
     }
   },
+  "change-with-plan": {
+    "method": "GET",
+    "path": "/changes/{id}?includePlan=true",
+    "keys": [
+      "createdAt",
+      "createdBy",
+      "id",
+      "label",
+      "plan",
+      "status",
+      "templateName",
+      "updatedAt",
+      "workflowFile"
+    ],
+    "forbid": [
+      "Plan",
+      "ChangeId",
+      "TargetHosts",
+      "ImpactSummary",
+      "MaxConcurrency"
+    ],
+    "objects": {
+      "plan": [
+        "batches",
+        "changeId",
+        "impactSummary",
+        "targetHosts"
+      ],
+      "plan.batches": [
+        "hosts",
+        "index",
+        "maxConcurrency"
+      ]
+    }
+  },
   "changes": {
     "method": "GET",
     "path": "/changes",

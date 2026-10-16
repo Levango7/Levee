@@ -98,7 +98,16 @@ export const changesApi = {
       toPageResult<Change>(raw, 'changes'),
     ),
 
-  get: (id: string): Promise<Change> => get<Change>(`/changes/${id}`),
+  // `includePlan` is the only way a plan comes back: the server omits the field
+  // unless the request asks (see web/src/api/__contract__/wire.json, where the
+  // no-flag response and the with-flag response are two recorded shapes).
+  // Passing it costs nothing on the default path because the flag is opt-in, but
+  // asking for it on a page that never renders the plan would widen every
+  // response for no reader — so callers that want the plan say so here.
+  get: (id: string, opts?: { includePlan?: boolean }): Promise<Change> =>
+    get<Change>(`/changes/${id}`, {
+      params: opts?.includePlan === true ? { includePlan: true } : undefined,
+    }),
 
   plan: (id: string, targetHosts?: string[], dryRun?: boolean): Promise<Plan> =>
     post<Plan>(`/changes/${id}/plan`, { targetHosts, dryRun }),

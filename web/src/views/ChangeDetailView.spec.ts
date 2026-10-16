@@ -107,6 +107,49 @@ describe('change detail page', () => {
     expect(view.slice(sorter, view.indexOf('const batchRows', sorter))).toContain('b.timestamp - a.timestamp')
   })
 
+  it('asks the read for the stored plan and never generates one to show it', () => {
+    // Two endpoints can produce a Plan object and only one of them belongs on a
+    // detail page: GET /changes/:id?includePlan=true returns the artifact the run
+    // already carries (the one plan_hash binds and the approval was voted
+    // against), while POST /changes/:id/plan GENERATES a plan. A read page that
+    // minted artifacts would change what it claims to merely display — and on a
+    // page whose whole point is "this is what was approved", that is not cosmetic.
+    expect(view, 'must fetch the change with includePlan').toContain(
+      'changesApi.get(changeId.value, { includePlan: true })',
+    )
+    expect(view, 'must not call the generating endpoint').not.toContain('changesApi.plan(')
+  })
+
+  it('renders the plan from the artifact, and names the no-plan state as a draft', () => {
+    expect(view, 'the panel must be titled').toContain('执行计划')
+    expect(view, 'batch rows must come straight from the stored plan').toContain(
+      'change.value?.plan?.batches ?? []',
+    )
+    expect(view, 'the target set must come straight from the stored plan').toContain(
+      'change.value?.plan?.targetHosts ?? []',
+    )
+    expect(view, 'the impact summary must reach the reader').toContain('change.plan.impactSummary')
+    expect(view, 'per-batch targets must reach the reader').toContain('{{ b.hosts.join')
+    // protojson omits zero values: batch 0 has no `index` key in the JSON at all,
+    // and a batch with no concurrency cap has no `maxConcurrency`. A template
+    // reading either as a number renders a blank cell — the same silent-zero
+    // family this page's contract guards exist for, so the absent case is what
+    // the markup has to handle.
+    expect(view, 'the batch ordinal must tolerate an omitted index').toContain('b.index ?? 0')
+    expect(view, 'the concurrency cap must render 不限 rather than blank').toContain("b.maxConcurrency || '不限'")
+    // "no plan" is a real state for a draft, not a failure — the server answers
+    // with no plan rather than an error, and the page must say which of the two
+    // the operator is looking at.
+    expect(view, 'the draft case must be labelled, not left blank').toContain('还没有存量计划')
+    // Three names the proto declares but the gateway never sends (zero writers in
+    // Go, so protojson omits them). Rendering one would print a permanent blank
+    // cell and read as "the plan says zero"; the types dropped them for the same
+    // reason, and this stops them creeping back.
+    for (const unreachable of ['estimatedDuration', 'potentialConflicts', 'waitAfter']) {
+      expect(view, `the plan panel must not read ${unreachable}: the wire never sends it`).not.toContain(unreachable)
+    }
+  })
+
   it('shows the approval chain read-only, sourced from the shared helper', () => {
     // "Where is the sign-off" is a first-class part of reading a change: the
     // quorum it needs, the votes already cast, who still owes one, and whether
