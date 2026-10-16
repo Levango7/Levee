@@ -20,6 +20,7 @@ package grpc
 // The snapshot records KEY SETS and value KINDS, not values, so it stays small
 // and does not churn with every data change.
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
@@ -182,6 +184,81 @@ func objectKeys(raw []byte, field string) []string {
 	return out
 }
 
+// nestedArrayKeys records the key set of an array that lives INSIDE a nested
+// object (here: plan.batches). rowsOf only reaches top-level arrays, so an item
+// shape one level down was contract-blind — the same level at which the cluster
+// DTO drifted, which is why objects/ exists at all.
+//
+// Unlike arrayKeys, this unions across every row rather than reading rows[0].
+// The difference is not cosmetic: protojson omits unset fields, so batch 0 has
+// no `index` key at all, and a first-row-only sample would have recorded an item
+// shape missing a field the wire does send. The top-level helper keeps its
+// existing behaviour because eight other entries were snapshotted under it and
+// re-driving them is a separate change with its own review.
+func nestedArrayKeys(raw []byte, field, item string) []string {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	nested, ok := m[field].(map[string]any)
+	if !ok {
+		return nil
+	}
+	rows, ok := nested[item].([]any)
+	if !ok || len(rows) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0, 8)
+	for _, row := range rows {
+		obj, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		for k := range obj {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// seedPlannedRun stores a canonical two-batch plan on run-wire so the includePlan
+// response shows its real shape.
+//
+// The two batches are the point, not decoration. protojson omits unset fields,
+// and `Batch.index` is 0 for the first batch — so with a single-batch artifact
+// the item shape would be recorded as {hosts, maxConcurrency} and the contract
+// would claim `index` is not on the wire. This is the same reason the fixture
+// above seeds one audit row instead of none: an omitted key and an empty
+// endpoint look identical from the outside, and only the seeded one tells the
+// truth. The shared testPlan() stays single-batch because other cases assert on
+// its exact counts.
+func seedPlannedRun(t *testing.T, store state.Store, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	p := &plan.Plan{
+		ID: "plan-wire-1", WorkflowName: "gateway-sync",
+		Batches: []plan.Batch{
+			{Index: 0, Targets: []string{"10.0.1.11"}, Steps: []plan.PlanStep{{Name: "restart", Module: "svc", Action: "restart"}}, MaxConcurrency: 1},
+			{Index: 1, Targets: []string{"10.0.1.12", "10.0.1.13"}, Steps: []plan.PlanStep{{Name: "verify", Module: "svc", Action: "verify"}}, MaxConcurrency: 2},
+		},
+		TotalTargets: 3,
+		CreatedAt:    time.Now().UTC(),
+	}
+	raw, err := json.Marshal(p)
+	require.NoError(t, err)
+	run, err := store.GetRun(ctx, runID)
+	require.NoError(t, err)
+	run.PlanJSON = string(raw)
+	run.PlanHash = plan.ComputeHash(p)
+	run.UpdatedAt = time.Now().UTC()
+	require.NoError(t, store.UpdateRun(ctx, run))
+}
+
 func TestWireSnapshot_MatchesContract(t *testing.T) {
 	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
 	gw.SetStore(store)
@@ -221,7 +298,18 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 	audit := get("/audit/log")
 	status := get("/system/status")
 	cluster := get("/system/cluster-status")
+	// The stored plan rides the SAME endpoint behind an opt-in, and the console
+	// now reads it — so the contract has to record it. An object nobody snapshots
+	// is a level these two guards are blind to, and that blindness is exactly what
+	// produced the batchNo/batch_no drift this file exists for.
+	//
+	// Seeded BEFORE both fetches on purpose: with a real artifact stored, the plain
+	// "change" entry below is no longer vacuous — it proves the default request
+	// does not carry a plan (protojson omits the unset field), which is the
+	// property that let #155 widen pb.Change without widening every caller.
+	seedPlannedRun(t, store, "run-wire")
 	detail := get("/changes/run-wire")
+	detailPlanned := get("/changes/run-wire?includePlan=true")
 	takeover := get("/system/takeover-events")
 
 	snap := map[string]dtoSnapshot{
@@ -247,6 +335,18 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 			Method: "GET", Path: "/changes/{id}",
 			Keys:   keysOf(detail),
 			Forbid: []string{"PlanHash", "TemplateName", "CreatedAt"},
+		},
+		"change-with-plan": {
+			Method: "GET", Path: "/changes/{id}?includePlan=true",
+			Keys: keysOf(detailPlanned),
+			// `plan` is a nested object and `plan.batches` its item array: the
+			// level one below is where the cluster DTO drifted before, so the
+			// plan's own spelling is recorded rather than inferred from proto.
+			Objects: map[string][]string{
+				"plan":         objectKeys(detailPlanned, "plan"),
+				"plan.batches": nestedArrayKeys(detailPlanned, "plan", "batches"),
+			},
+			Forbid: []string{"Plan", "ChangeId", "TargetHosts", "ImpactSummary", "MaxConcurrency"},
 		},
 		"audit-log": {
 			Method: "GET", Path: "/audit/log",
@@ -281,7 +381,37 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 	// writing an empty contract.
 	for name, s := range snap {
 		require.NotEmpty(t, s.Keys, "%s contributed no keys", name)
+		// The forbid list has been decoration until now: neither this test nor
+		// web/src/api/wireContract.spec.ts ever read it, so a PascalCase twin
+		// could (and did) appear in a payload whose entry said it must not.
+		// Checking it here is what makes the list a gate rather than a comment —
+		// and it only bites when the key really is absent, so the entries below
+		// are asserted against the payload that produced them.
+		for _, banned := range s.Forbid {
+			require.NotContains(t, s.Keys, banned,
+				"%s: %q is on the wire while the entry lists it as forbidden", name, banned)
+			for rowField, rowKeys := range s.Rows {
+				require.NotContains(t, rowKeys, banned,
+					"%s: %q is on the wire inside %s[] while the entry lists it as forbidden", name, banned, rowField)
+			}
+			for objField, objKeys := range s.Objects {
+				require.NotContains(t, objKeys, banned,
+					"%s: %q is on the wire inside %s while the entry lists it as forbidden", name, banned, objField)
+			}
+		}
 	}
+
+	// The opt-in is the only way a plan appears. Without this, "the default
+	// response has no plan key" would rest on the fixture having no stored plan
+	// rather than on the flag — and the fixture now stores one, so the check has
+	// something to rule out.
+	require.NotContains(t, keysOf(detail), "plan",
+		"GET /changes/{id} without includePlan must not carry the plan")
+	require.Contains(t, keysOf(detailPlanned), "plan",
+		"GET /changes/{id}?includePlan=true must carry the plan the run has stored")
+	require.NotEmpty(t, objectKeys(detailPlanned, "plan"), "the plan object contributed no keys")
+	require.NotEmpty(t, nestedArrayKeys(detailPlanned, "plan", "batches"),
+		"plan.batches[] contributed no keys — the item shape would be contract-blind")
 
 	live, err := json.MarshalIndent(snap, "", "  ")
 	require.NoError(t, err)
@@ -324,11 +454,16 @@ func TestWireSnapshot_NoPascalCaseLeaks(t *testing.T) {
 	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
 	gw.SetStore(store)
 	seedWireFixture(t, store)
+	// Without a stored plan the includePlan response has no `plan` subtree to
+	// walk, so the walk below would pass while saying nothing about the plan's
+	// own field spellings.
+	seedPlannedRun(t, store, "run-wire")
 
 	for _, path := range []string{
 		"/changes", "/audit/log", "/system/status", "/system/cluster-status",
 		"/system/batch-status?run_id=run-wire", "/system/change-trend",
 		"/templates", "/targets",
+		"/changes/run-wire", "/changes/run-wire?includePlan=true",
 	} {
 		resp := doReq(t, http.MethodGet, srv.URL+path, "")
 		body := make([]byte, 0, 8192)

@@ -8,7 +8,8 @@
 // the assembly:
 //
 //   - changesApi.get            → the change's own fields (status, env, team,
-//                                 template, priority, creator, timestamps)
+//                                 template, priority, creator, timestamps) and,
+//                                 asked for by name, the stored PLAN
 //   - changesApi.approvals      → the approval chain(s), read-only: who must
 //                                 decide, how many votes the quorum needs, who
 //                                 has decided and on which plan version.
@@ -26,13 +27,20 @@
 //                                 vocabulary's own helpers (utils/batch.ts)
 //   - changesApi.logs           → a bounded tail, labelled as a tail
 //
-// Two fingerprints this page used to claim but cannot show yet, recorded here so
-// the next reader does not re-discover them as a surprise: the generated PLAN
-// (GetChange's `include_plan` is accepted at the REST edge but dropped in the
-// service, because pb.Change has no field for it and no path returns the stored
-// run.plan_json — it needs a proto change) and the per-GATE verdicts (the engine
-// holds verify.GateResult in memory and emits it as an event/metric, but nothing
-// persists it, so there is no history to read).
+// The two fingerprints this page used to claim without showing are now real, by
+// different routes:
+//
+//   - the PLAN is read from the stored artifact (GetChange with includePlan=true,
+//     which #155 made honest: pb.Change gained a plan field and the service fills
+//     it from run.plan_json). Deliberately NOT from POST /changes/:id/plan — that
+//     generates a plan, and a read page must not mint artifacts.
+//   - the per-GATE verdicts arrive inside the timeline above as `gate_check`
+//     trace rows (#154 connected the engine's gate results to the audit writer),
+//     so they need no panel of their own: TraceTimeline prints the action token
+//     as the backend spells it.
+//
+// A change with no stored plan is a draft, not an error: the server answers with
+// no plan rather than a failure, and the panel below says so in those terms.
 //
 // Actions are gated by the same helpers the server's switches mirror
 // (utils/format.ts): a button appears exactly where the RPC would accept it.
@@ -121,13 +129,20 @@ const batchRows = computed(() =>
 // a vote is counted or who is still owed one.
 const approvalRows = computed(() => approvalSummary(approvals.value))
 
+// The plan the change was approved against, read from the stored artifact. The
+// batch rows and the target set come straight out of it — no counts are derived
+// here beyond the array lengths, so the panel cannot disagree with the artifact
+// the plan hash binds.
+const planRows = computed(() => change.value?.plan?.batches ?? [])
+const planTargets = computed(() => change.value?.plan?.targetHosts ?? [])
+
 async function load(): Promise<void> {
   if (!changeId.value) return
   loading.value = true
   loadError.value = null
   try {
     const [c, t, b, a] = await Promise.all([
-      changesApi.get(changeId.value),
+      changesApi.get(changeId.value, { includePlan: true }),
       changesApi.trace(changeId.value, { verify: true }),
       batchApi.batchStatus(changeId.value).catch(() => null),
       changesApi.approvals(changeId.value).catch(() => []),
@@ -340,6 +355,37 @@ onMounted(load)
         </div>
       </div>
 
+      <!-- Stored plan: what the change is going to do, read from the artifact the
+           plan hash binds — not regenerated. This is the same plan the approval
+           chain was voted against, which is why "需重新批准" above and the batch
+           list below can be read together. -->
+      <div class="lv-panel">
+        <div class="lv-panel__head">
+          <h3 class="detail__h">执行计划</h3>
+          <span v-if="change.plan" class="detail__dim">
+            {{ planRows.length }} 批 · {{ planTargets.length }} 个目标
+          </span>
+        </div>
+        <div v-if="!change.plan" class="detail__dim">
+          该变更还没有存量计划（草稿阶段的常态）；生成计划后这里显示审批所依据的那一份。
+        </div>
+        <template v-else>
+          <p v-if="change.plan.impactSummary" class="detail__dim">{{ change.plan.impactSummary }}</p>
+          <div v-if="planRows.length === 0" class="detail__dim">计划里没有任何批次</div>
+          <div v-else class="plan">
+            <!-- protojson omits zero values, so batch 0 arrives with no `index`
+                 key at all and an unlimited batch arrives with no
+                 `maxConcurrency`. Reading either as a number would print a blank
+                 cell; both are rendered from the absent case forward. -->
+            <div v-for="(b, i) in planRows" :key="b.index ?? i" class="plan__row">
+              <span class="plan__no lv-mono">#{{ b.index ?? 0 }}</span>
+              <span class="detail__dim lv-mono">{{ b.hosts.join('、') }}</span>
+              <span class="detail__dim">并发上限 {{ b.maxConcurrency || '不限' }}</span>
+            </div>
+          </div>
+        </template>
+      </div>
+
       <!-- Batches -->
       <div class="lv-panel">
         <div class="lv-panel__head">
@@ -457,6 +503,22 @@ onMounted(load)
 
 .batch__state {
   font-size: 13px;
+}
+
+/* Same row rhythm as the batch list: the plan's batches and the executed
+   batches are read side by side, so diverging shapes would read as two
+   unrelated tables. */
+.plan {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lv-space-2, 8px);
+}
+
+.plan__row {
+  display: grid;
+  grid-template-columns: 48px 1fr 140px;
+  align-items: baseline;
+  gap: var(--lv-space-2, 8px);
 }
 
 .chains {
