@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 变更（协作口径：PR 改用 rebase 落地，既有历史不改写）
+
+- **落地方式从 merge commit 换成 `gh pr merge <n> --rebase`**，规则写在 `CONTRIBUTING.md` §5.4（新增一节）。此前每个 PR 都是一个双父的 `Merge pull request #N`，而这种提交在这里不携带决策——它只是把分支名再抄一遍；squash 也不取，它会把"一笔提交＝一个决定"压掉，而分笔正是各批次把守卫与产品码分开的用意。**历史不改写**：master 上 `385d772` / `ff669ed` / `5139395f` 等合并提交仍是当时的事实，两种形状并存是预期而不是脏。
+- **这条与 §5.1 的"切 base 不补跑"是同一问题的两半**：#170 与 #172 的两份绿 CI 都不在合并那一刻的 master 上（分别跑在昨天的 base 与 `d02f379`），最后是靠 #172 合并后 master 的 push CI（24 job 全绿，含 `docs regenerate check`）才把"合并树"这件事补成证据。rebase 之后 master 上那笔提交就是 PR 里验过的同一笔内容，PR 级证据与主干级证据不再靠人去对齐。
+- **写之前先现查**：`scripts/`、`.github/`、`internal/` 里**零处**读 `mergeCommit` / `baseRefOid` / `mergedAt`，所以这一改不会静默弄坏发布或取证脚本；该负结果带正对照——同一条 grep 在 `docs/release-notes/*.md` 命中 **20** 处 `PR #` 写法（第一次只看了 `head -20` 的截断输出就写下"14 处"，复读时按实测改回），证明不是目录或 glob 写错造成的假阴性。仓库设置侧 `allow_rebase_merge=true`（现查 `gh api repos/Levango7/Levee`），不需要谁去改配置这条口径才成立。**"rebase 落地后 `mergeCommit` 返回 null"写成待实测断言**，等第一笔落地校正，不当定理用；分支保护里唯一的 required context 仍是 `check (all jobs passed)`（`enforcement_level=non_admins`，现查 `.../branches/master`）。
+- **这条口径目前没有机器守卫**，并且这是决定而不是疏漏：可以在 `ci.yml` 的 master-push 路径上断言"标记提交之后不得再出现合并提交"，但那要同步扇入的 `needs` 清单与判决字符串——本仓在扇入清单上踩过两次（`docs` 曾出现在 `needs` 而不在判决串里），所以留作另一笔单独决定。
+- **验证**：纯文档改动，零 Go 代码、零 CI 拓扑变更；`grep -c '^## 第6章 测试要求' CONTRIBUTING.md` = 1 且 `### 5.4` 落在 §5.3 与第6章之间（标题锚点改动后复读，防"编辑吃掉标题"这一类自伤）、`python -m unittest discover -s scripts` 的 CHANGELOG 结构守卫通过（`## [Unreleased]` 仍唯一且在行 5）。
+
 ### 词表单一来源的第二增量（集群 / 批次 / 派发 / 会话四套取值改由 owner 数据生成，前端与守卫都不再解析抄件）
 
 - **接上增量 1 留下的前提**：那笔登记的话是"cluster / batch / step / session 四套词表的 owner 只导出散常量、没有清单可导出，硬接 docgen 会让生成器回去解析 Go 源码＝把刚消灭的弱点搬进生成器内部"。这一笔先满足前提再接生成：`internal/cluster/vocabulary.go`（`NodeStatusNames()` / `NodeRoleNames()`）、`internal/state/vocabulary.go`（`BatchStateNames()` / `AssignmentStateNames()`）、`internal/conversation/vocabulary.go`（`SessionStateNames()`）各导出一份**带顺序的数据清单**，docgen 的 vocabulary 目标从 2 张表长到 **7 张 / 43 个取值**，`web/src/utils/{node,batch,assignment,session}.ts` 里那四份手抄数组删除、改为取值。**常量留在原地**：它们出现在 switch case 里，Go 的 case 只认常量，所以"清单只有一份"不等于"把常量改成变量"。
