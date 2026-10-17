@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（`isValidTransition` 半转换的裸状态字面量收进 `runstatus`，并补两条判据）
+
+- `internal/grpc/change_service.go:1630` 的 `isValidTransition` 里，九个 run 状态是**裸字面量**（`"paused"` / `"running"` / `"pending"` / `"approved"` / `"draft"` / `"planned"` / `"cancelled"` / `"completed"` / `"archived"`），而紧挨着它的 `archived` 那一支早已用 `runstatus.Status*` —— 一个函数里两种写法，正是"词表有第二个家"的形状（#153 与 `runs.status` 注释都为此付过账）。现在九处全部引用 `runstatus` 常量，**零行为变更**（同名字符串逐一替换）。
+- **为什么既有全仓棘轮没看见这里**：`internal/runstatus/vocabulary_guard_test.go:190` 的 `TestNoBareRunStatusLiteralsOutsideRunstatus` 刻意只扫两条下划线判决（`rolled_back_partial` / `rollback_incomplete`），因为 `draft` / `running` 这类短名会在无关上下文里冒出来。这个盲区不是缺陷而是那条注释写下的取舍——所以补的不是"把全仓扫宽"（会造噪声、逼人加豁免），而是**一条定点棘轮**：`internal/grpc/status_transition_ratchet_test.go` 直接把产品源文件里的 `isValidTransition` 函数体读出来，断言 ① 体内不含任何 `runstatus.All` 成员的引号字面量，② 体内 `runstatus.Status` 引用数 ≥ 12（这条是防空壳：只删比较臂会让 ① 变成"没有字面量的真空"，② 立刻红），③ 抽取锚点找不到函数或函数体过短就大声失败（防止签名移动后守卫读到空串还全绿）。
+- **顺手补上行为表**：该函数此前只有四对状态转移被测（`interrupted` 的四条），一次拼写改动不会惊动任何人。`TestIsValidTransition_TruthTable` 把 15 个源状态 × 8 个目标（含 `completed` / `interrupted` / 非状态串 / 空串）逐一列出期望值，**期望值是按状态机手写出来的、不是调用被测函数算出来的**（否则改代码就是改测试）。其中 `cancelled` 一支代码本身写成"拒绝列表"，所以测试里对同一支用两种读法交叉核对，而不是只信表格。
+- **变异 4 项全部被抓**（跑完 sha256 逐字节还原，`residue=False`）：把 `"paused"` 字面量放回 ⇒ 形状守卫红；把比较臂掏空（无字面量也无常量）⇒ 常量计数与行为表同时红；`approved → paused` 这条**没有任何字面量、也没有缺常量**的行为改动 ⇒ 只有行为表看得见；把签名改成 `(to, from string)` ⇒ 锚点失效即报错（同时暴露参数顺序调换本身）。
+- **验证**：`go vet ./internal/grpc/` 0、`gofmt -l` 空、`go test ./internal/grpc/ -run 'TestIsValidTransition|TestInterrupted'` 3 条全绿（含既有 `TestInterrupted_Transitions` 未受改动影响）。零 proto、零 schema、零前端变更。
+
 ### 变更（第一笔 rebase 落地后回填实测：`mergeCommit` 不为 null，而祖先关系断言失效）
 
 - **#174 已用 `--rebase` 落地**，master tip `4ab1b10`，`git rev-list --parents -1 origin/master` 实测父数 = **1** —— 线性历史从这一笔起成立，本节是它的实测回填。
