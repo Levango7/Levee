@@ -1,17 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
+import { ASSIGNMENT_STATES as ASSIGNMENT_STATES_FROM_OWNER } from '@/types/vocabulary'
+
 import { batchLabel } from './batch'
 import { ASSIGNMENT_STATES, assignmentLabel } from './assignment'
 
-// The vocabulary under test is internal/state's assignment-state group
-// (store.go:738-741), not the batch one — the two share three spellings
-// (pending / done / interrupted) and mean different things.
-
+// The vocabulary under test is internal/state's assignment-state group, not the batch
+// one — the two share three spellings (pending / done / interrupted) and mean
+// different things, which is why they are two generated tables with two type names.
+//
+// Members are no longer written down here: ./assignment.ts re-exports the array
+// internal/docgen generates from state.AssignmentStateNames(). Keeping the group
+// distinction honest is Go's job (vocabulary_ownership_test.go pins each list to its
+// own constant group, and TestAssignmentListExcludesTheResultGroup refuses the result
+// range); this case proves the wiring, which a restated literal list could not.
 describe('ASSIGNMENT_STATES', () => {
-  it('is exactly the four states internal/state declares', () => {
-    expect([...ASSIGNMENT_STATES].sort()).toEqual(
-      ['done', 'executing', 'interrupted', 'pending'].sort(),
-    )
+  it('arrives from the generated vocabulary instead of a copy in ./assignment.ts', () => {
+    expect(ASSIGNMENT_STATES).toBe(ASSIGNMENT_STATES_FROM_OWNER)
+    expect(ASSIGNMENT_STATES.length).toBeGreaterThan(0)
+    expect(new Set(ASSIGNMENT_STATES).size).toBe(ASSIGNMENT_STATES.length)
   })
 
   it('names every declared state in Chinese', () => {

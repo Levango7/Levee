@@ -1,17 +1,23 @@
-// node_vocabulary_test.go — /cluster 节点卡片用的两套词表（NodeStatus / NodeRole）
-// 必须与 web/src/utils/node.ts 的声明逐字相等，并且 node.ts 实际用到的每个圆点配色都要
-// 在 web/src/styles/base.css 里真有规则。
+// node_vocabulary_test.go — /cluster 节点卡片用的两套词表（NodeStatus / NodeRole）。
+//
+// 三件事，各自一条：① **值集合**：web/src/types/vocabulary.ts 里那两张由
+// internal/docgen 从本包 `NodeStatusNames()` / `NodeRoleNames()` 生成的数组，必须与
+// owner 的数据逐项相等（含顺序）；② **接线**：web/src/utils/node.ts 必须从生成物取值，
+// 不许在自己文件里再声明一份数组或联合；③ **没有 Go owner 的那一半**：每个状态在
+// node.ts 的配色表里真被点名，而表里用到的每个 tone 都在 web/src/styles/base.css 里
+// 真有 `.lv-dot--<tone>` 规则。
 //
 // 为什么要这条：改版前的模板写的是 `{{ n.role }}` 和 `status === 'active' ? 'ok' : 'bad'`——
 // 前者把线上拼写直接印在中文页面上；后者把三种状态压成两种颜色，于是"正在优雅下线"的节点
 // 被涂成故障色（`leaving` 在 internal/cluster 里根本没有写入方，等于替引擎宣布它没宣布过的
-// 故障）。用查表代替表达式之后，"新增状态忘了配中文/配色"是 vue-tsc 的编译错误；本文件再补
-// 上查表本身覆盖不到的两件事：镜像清单与 Go 常量是否还是同一套词表、配色名在样式表里是否
-// 真的存在（`warning` 与真名 `warn` 只差一个字母，而写错的后果是一个没有背景的圆点）。
+// 故障）。用查表代替表达式之后，"新增状态忘了配中文/配色"是 vue-tsc 的编译错误；本文件管
+// 查表本身覆盖不到的那两件事：清单与 owner 是不是同一套、配色名在样式表里是否真的存在
+// （`warning` 与真名 `warn` 只差一个字母，而写错的后果是一个没有背景的圆点）。
 //
-// 名单一律**解析**而不是在这里复述：复述会让新增常量静静通过。两个方向都查——
-// Go 有而 UI 没有 ⇒ 线上值直接怼到操作员眼前；UI 有而 Go 没有 ⇒ 前端在为一个引擎
-// 产不出的拼写配色（批次那条守卫当初抓到的就是这个形状）。
+// 这个文件不再解析 Go 常量：那份解析搬回 owner 自己包里，成了
+// vocabulary_ownership_test.go 里"清单必须覆盖 node.go 全部声明"的完整性测试。跨语言
+// 这一侧从此只比数据与产物——比抄件是 #153 的形状（守卫核对的是自己的抄写，四处产物
+// 互相自洽、一起与服务器不一致，全程没有一处报错）。
 package cluster
 
 import (
@@ -39,37 +45,6 @@ func nodeVocabRepoFile(t *testing.T, rel string) string {
 	}
 	t.Fatalf("cannot locate %s from the test working directory", rel)
 	return ""
-}
-
-// goNodeEnumValues parses declarations shaped like `StatusActive NodeStatus = "active"`
-// in internal/cluster/node.go, keyed by the type name so the two groups stay apart.
-func goNodeEnumValues(t *testing.T, typeName string) map[string]string {
-	t.Helper()
-	raw, err := os.ReadFile(nodeVocabRepoFile(t, "internal/cluster/node.go"))
-	require.NoError(t, err)
-	out := map[string]string{}
-	re := regexp.MustCompile(`(?m)^[ \t]*(\w+)[ \t]+` + typeName + `[ \t]*=[ \t]*"([^"]+)"$`)
-	for _, m := range re.FindAllStringSubmatch(string(raw), -1) {
-		out[m[1]] = m[2]
-	}
-	require.NotEmpty(t, out, "no %s constant parsed from internal/cluster/node.go — the declaration shape changed", typeName)
-	return out
-}
-
-// webNodeMirror parses `export const NODE_STATUSES = [...] as const` (or the NODE_ROLES
-// twin) out of web/src/utils/node.ts.
-func webNodeMirror(t *testing.T, decl string) map[string]bool {
-	t.Helper()
-	raw, err := os.ReadFile(nodeVocabRepoFile(t, "web/src/utils/node.ts"))
-	require.NoError(t, err)
-	line := regexp.MustCompile(`(?m)^export const ` + decl + ` = \[([^\]]*)\] as const$`).FindStringSubmatch(string(raw))
-	require.Len(t, line, 2, "could not find the `export const %s = [...] as const` declaration in web/src/utils/node.ts", decl)
-	out := map[string]bool{}
-	for _, m := range regexp.MustCompile(`['"]([^'"]+)['"]`).FindAllStringSubmatch(line[1], -1) {
-		out[m[1]] = true
-	}
-	require.NotEmpty(t, out, "%s parsed empty", decl)
-	return out
 }
 
 // webNodeStatusToneMap parses node.ts's `TONE_BY_STATUS` block and returns both sides:
@@ -110,41 +85,75 @@ func baseCSSDotTones(t *testing.T) map[string]bool {
 	return out
 }
 
-func TestWebNodeStatusMirrorMatchesGoNodeStatuses(t *testing.T) {
-	goStatuses := goNodeEnumValues(t, "NodeStatus")
-	ui := webNodeMirror(t, "NODE_STATUSES")
+// generatedVocabularyList reads one array out of the GENERATED vocabulary file.
+//
+// This is not the guard's old shape: it used to parse web/src/utils/node.ts, a
+// hand-written transcription, and compare that with the constants it also parsed —
+// a check that could only notice the copy disagreeing with the parser, never the
+// two of them disagreeing with the server (#153). The file below is written by
+// internal/docgen from this package's own data, so reading it verifies that the
+// generator ran and that the shipped bytes still say what the registry says.
+func generatedVocabularyList(t *testing.T, constName string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(nodeVocabRepoFile(t, "web/src/types/vocabulary.ts"))
+	require.NoError(t, err)
+	block := regexp.MustCompile(`(?ms)^export const ` + regexp.QuoteMeta(constName) +
+		` = \[([^\]]*)\] as const`).FindStringSubmatch(string(raw))
+	require.Len(t, block, 2,
+		"web/src/types/vocabulary.ts declares no `export const %s = […] as const` — the generator stopped emitting it, "+
+			"or its shape changed and this guard went blind", constName)
+	var out []string
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(block[1], -1) {
+		out = append(out, m[1])
+	}
+	require.NotEmpty(t, out, "%s parsed empty from the generated vocabulary", constName)
+	return out
+}
 
-	goValues := map[string]bool{}
-	for _, value := range goStatuses {
-		goValues[value] = true
-		assert.True(t, ui[value], "node status %q has no entry in web/src/utils/node.ts NODE_STATUSES — the page would fall back to the raw wire value", value)
-	}
-	for value := range ui {
-		assert.True(t, goValues[value], "web NODE_STATUSES lists %q, which no cluster.NodeStatus constant declares", value)
-	}
-	assert.Equal(t, len(goValues), len(ui), "the two status vocabularies differ in size, so one side has an entry the other lacks")
+func TestWebNodeStatusMirrorMatchesGoNodeStatuses(t *testing.T) {
+	assert.Equal(t, NodeStatusNames(), generatedVocabularyList(t, "NODE_STATUSES"),
+		"web/src/types/vocabulary.ts NODE_STATUSES has drifted from cluster.NodeStatusNames(); "+
+			"add the status to internal/cluster (node.go + vocabulary.go), then run `go run ./internal/docgen`")
 }
 
 func TestWebNodeRoleMirrorMatchesGoRoles(t *testing.T) {
-	goRoles := goNodeEnumValues(t, "NodeRole")
-	ui := webNodeMirror(t, "NODE_ROLES")
-
-	goValues := map[string]bool{}
-	for _, value := range goRoles {
-		goValues[value] = true
-		assert.True(t, ui[value], "node role %q has no entry in web/src/utils/node.ts NODE_ROLES — the Chinese page would render it verbatim", value)
-	}
-	for value := range ui {
-		assert.True(t, goValues[value], "web NODE_ROLES lists %q, which no cluster.NodeRole constant declares", value)
-	}
-	assert.Equal(t, len(goValues), len(ui), "the two role vocabularies differ in size, so one side has an entry the other lacks")
+	assert.Equal(t, NodeRoleNames(), generatedVocabularyList(t, "NODE_ROLES"),
+		"web/src/types/vocabulary.ts NODE_ROLES has drifted from cluster.NodeRoleNames(); regenerate with `go run ./internal/docgen`")
 }
 
+// TestWebNodeVocabularyIsWiredNotCopied is the half the value comparison cannot
+// see: node.ts must obtain both lists from the generated file instead of keeping a
+// transcription beside it. Moving the lists is only half of killing a copy — if the
+// page re-declared them, the check above would stay green while the UI rendered a
+// set the registry never produced.
+func TestWebNodeVocabularyIsWiredNotCopied(t *testing.T) {
+	raw, err := os.ReadFile(nodeVocabRepoFile(t, "web/src/utils/node.ts"))
+	require.NoError(t, err)
+	source := string(raw)
+
+	for _, decl := range []string{"NODE_ROLES", "NODE_STATUSES"} {
+		assert.NotRegexpf(t, `(?m)^export const `+regexp.QuoteMeta(decl)+`\s*=\s*\[`, source,
+			"web/src/utils/node.ts re-declares %s as its own array — that is the second copy this file exists to remove", decl)
+	}
+	for _, typeName := range []string{"NodeRole", "NodeStatus"} {
+		assert.NotRegexpf(t, `(?m)^export type `+regexp.QuoteMeta(typeName)+`\s*=`, source,
+			"web/src/utils/node.ts declares its own %s union beside the generated one", typeName)
+	}
+	assert.Regexp(t, `import type \{[^}]*NodeStatus[^}]*\} from '@/types/vocabulary'`, source,
+		"web/src/utils/node.ts must take NodeStatus from the generated vocabulary (import + export, so the tables below can use it)")
+	assert.Regexp(t, `(?m)^export \{[^}]*NODE_STATUSES[^}]*\}`, source,
+		"web/src/utils/node.ts must keep re-exporting NODE_STATUSES — ./node.spec.ts and the cluster page read it from here")
+}
+
+// TestNodeStatusTonesCoverEveryStateAndExistInStylesheet is what has no Go owner:
+// the tone each state gets, and whether that tone is a real rule in the stylesheet.
+// The status names now come from this package's data rather than from a parse of
+// its own source, so the check is the same claim with one fewer copy in the path.
 func TestNodeStatusTonesCoverEveryStateAndExistInStylesheet(t *testing.T) {
 	styled := baseCSSDotTones(t)
 	keys, tones := webNodeStatusToneMap(t)
 	declared := map[string]bool{}
-	for _, value := range goNodeEnumValues(t, "NodeStatus") {
+	for _, value := range NodeStatusNames() {
 		declared[value] = true
 	}
 

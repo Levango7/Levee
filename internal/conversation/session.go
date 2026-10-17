@@ -66,7 +66,7 @@ func (s SessionState) String() string {
 	case StateFailed:
 		return "failed"
 	default:
-		return "unknown"
+		return SessionStateUnknownName
 	}
 }
 

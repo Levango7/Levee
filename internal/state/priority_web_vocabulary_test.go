@@ -59,6 +59,35 @@ func webSource(t *testing.T, rel string) string {
 	return string(raw)
 }
 
+// assertWiredNotCopied is the property the batch / assignment / priority guards
+// share: a consumer file must take its list and its union from the generated
+// vocabulary instead of keeping a transcription beside it.
+//
+// Moving the lists is only half of killing a copy. Without this, a file that
+// re-declared `export const BATCH_STATES = […]` would leave every value
+// comparison green (they all read the generated file now) while the page rendered
+// a set the owner never produced — the exact shape #153 shipped with.
+//
+// Both directions are asserted: a missing import is a compile error someone
+// notices, while a re-declared name reads fine and renders the wrong words.
+func assertWiredNotCopied(t *testing.T, rel string, constNames, typeNames []string) {
+	t.Helper()
+	source := webSource(t, rel)
+
+	for _, name := range constNames {
+		assert.NotRegexpf(t, `(?m)^export const `+regexp.QuoteMeta(name)+`\s*=\s*\[`, source,
+			"%s re-declares %s as its own array — that is the second copy the generated vocabulary exists to remove", rel, name)
+		assert.Regexpf(t, `(?m)^export \{[^}]*\b`+regexp.QuoteMeta(name)+`\b[^}]*\}`, source,
+			"%s must keep re-exporting %s — the views and specs import it from here", rel, name)
+	}
+	for _, name := range typeNames {
+		assert.NotRegexpf(t, `(?m)^export type `+regexp.QuoteMeta(name)+`\s*=`, source,
+			"%s declares its own %s union beside the generated one", rel, name)
+		assert.Regexpf(t, `import type \{[^}]*\b`+regexp.QuoteMeta(name)+`\b[^}]*\} from '@/types/vocabulary'`, source,
+			"%s must take %s from the generated vocabulary (import + export, so the keyed tables in the file can use it)", rel, name)
+	}
+}
+
 // recordKeys parses the key set of `export const NAME: Record<…> = { … }`.
 func recordKeys(t *testing.T, rel, name string) map[string]bool {
 	t.Helper()

@@ -1,17 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
+import { SESSION_STATES as SESSION_STATES_FROM_OWNER } from '@/types/vocabulary'
+
 import { SESSION_STATES, sessionStateLabel, sessionTagType } from './session'
 
 // The wire value is whatever SessionState.String() returns
-// (internal/conversation/session.go:52-70). The Go half of this pin is
-// internal/conversation/session_state_vocabulary_test.go, which parses those
-// return statements rather than restating them.
-
+// (internal/conversation/session.go), and the list below is generated from that same
+// String() by internal/docgen — there is no second spelling of it in this repo for
+// this file to compare against. `unknown` is in the vocabulary because an out-of-range
+// row reaches the console as that word; it is not a state the machine enters.
+//
+// The Go half: internal/conversation/vocabulary_ownership_test.go checks the enum's
+// upper bound and that no two states share a String(), and
+// session_state_vocabulary_test.go checks the artefact plus this file's wiring.
 describe('SESSION_STATES', () => {
-  it('is exactly what SessionState.String() can emit', () => {
-    expect([...SESSION_STATES].sort()).toEqual(
-      ['diagnosing', 'done', 'executing', 'failed', 'idle', 'recommending', 'reviewing', 'unknown'].sort(),
-    )
+  it('arrives from the generated vocabulary instead of a copy in ./session.ts', () => {
+    expect(SESSION_STATES).toBe(SESSION_STATES_FROM_OWNER)
+    expect(SESSION_STATES.length).toBeGreaterThan(0)
+    expect(new Set(SESSION_STATES).size).toBe(SESSION_STATES.length)
+    expect(SESSION_STATES[SESSION_STATES.length - 1]).toBe('unknown')
   })
 
   it('names every declared state in Chinese', () => {

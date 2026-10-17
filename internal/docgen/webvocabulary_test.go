@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nexus/levee/internal/runstatus"
-	"github.com/nexus/levee/internal/state"
 )
 
 // committedWebVocabulary reads the generated target from the repository so the
@@ -31,21 +31,67 @@ func repoRootForTest(t *testing.T) string {
 	return root
 }
 
+// renderedList reads one generated `export const NAME = […] as const` array back
+// out of the renderer's output, in file order.
+//
+// It is used against renderWebVocabulary()'s own output, not against a source
+// file: the point is to compare what the generator emits with what each owner
+// exports, so the comparison stays data-to-data on both sides.
+func renderedList(t *testing.T, body, constName string) []string {
+	t.Helper()
+	block := regexp.MustCompile(`(?ms)^export const ` + regexp.QuoteMeta(constName) +
+		` = \[([^\]]*)\] as const`).FindStringSubmatch(body)
+	require.Len(t, block, 2, "the generator emitted no `export const %s = […] as const`", constName)
+	var out []string
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(block[1], -1) {
+		out = append(out, m[1])
+	}
+	require.NotEmpty(t, out, "%s rendered empty from the generator", constName)
+	return out
+}
+
 // TestWebVocabularyListsMatchTheirOwners is the direct equality check: every
-// value the owners export must appear, and nothing outside them may.
+// generated array carries exactly its owner's values, in the owner's order.
 func TestWebVocabularyListsMatchTheirOwners(t *testing.T) {
 	body := renderWebVocabulary()
 
-	for _, s := range runstatus.All {
-		assert.Containsf(t, body, "'"+s+"',", "run status %q missing from the generated vocabulary", s)
-	}
-	for _, p := range state.PriorityNames() {
-		assert.Containsf(t, body, "'"+p+"',", "priority %q missing from the generated vocabulary", p)
+	for _, v := range webVocabularies() {
+		assert.Equalf(t, v.owner(), renderedList(t, body, v.constName),
+			"%s does not equal its Go owner (order included, because the owner's order is the display order)",
+			v.constName)
 	}
 
 	// A status that was retired must not survive in the generated file either.
 	assert.NotContains(t, body, "'pending_approval'",
 		"the retired status reappeared in the generated vocabulary")
+}
+
+// TestVocabularyTableCoversTheKnownOwners is the coverage pin that keeps the table
+// above from being a self-confirming loop: webVocabularies() is what the generator
+// renders AND what the equality test iterates, so a list quietly removed from the
+// table would keep every other assertion true while the console lost its values.
+// Naming the expected set here is what turns that into a red test.
+func TestVocabularyTableCoversTheKnownOwners(t *testing.T) {
+	expected := []string{
+		"CHANGE_STATUSES", "PRIORITIES", "BATCH_STATES", "ASSIGNMENT_STATES",
+		"NODE_ROLES", "NODE_STATUSES", "SESSION_STATES",
+	}
+	var got []string
+	for _, v := range webVocabularies() {
+		got = append(got, v.constName)
+	}
+	assert.Equal(t, expected, got,
+		"the generated vocabulary table changed shape; the console's wiring and the cross-language "+
+			"guards (internal/cluster, internal/state, internal/conversation, web/src/utils) have to be updated with it")
+
+	// Each entry must actually reach the file: a name in the table with an empty
+	// owner would render an array nobody notices.
+	body := renderWebVocabulary()
+	for _, v := range webVocabularies() {
+		assert.NotEmptyf(t, v.owner(), "%s has an empty owner — the generated list would be `[]`", v.constName)
+		assert.Containsf(t, body, "export type "+v.typeName+" = (typeof "+v.constName+")[number]",
+			"%s has no derived union, so its consumers would re-declare the members by hand", v.constName)
+	}
 }
 
 // TestWebVocabularyIsStaleWhenAnOwnerGainsAValue is the positive control that
@@ -86,15 +132,13 @@ func TestRenderedBlockEqualsTheCommittedFile(t *testing.T) {
 }
 
 // TestUnionsAreDerivedNotRepeated keeps the generated block from growing a
-// second copy of its own lists: exactly one `as const` array per vocabulary and
-// one derived union per name, and no inline union member list anywhere.
+// second copy of its own lists: exactly one `as const` array per vocabulary in the
+// table, and no inline union member list anywhere.
 func TestUnionsAreDerivedNotRepeated(t *testing.T) {
 	body := renderWebVocabulary()
 
-	assert.Equal(t, 2, strings.Count(body, "] as const"),
+	assert.Equal(t, len(webVocabularies()), strings.Count(body, "] as const"),
 		"expected exactly one as-const array per generated vocabulary")
-	assert.Contains(t, body, "export type ChangeStatus = (typeof CHANGE_STATUSES)[number]")
-	assert.Contains(t, body, "export type Priority = (typeof PRIORITIES)[number]")
 	// The derived form is the only union form allowed, so a pipe-separated
 	// literal list anywhere in the block is a second copy of the same set.
 	for _, line := range strings.Split(body, "\n") {

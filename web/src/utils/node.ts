@@ -12,16 +12,25 @@
 // are spelled the same over there but describe batch/assignment rows; here
 // `active`/`leaving`/`offline` say whether a node is registered and reachable at
 // all. internal/cluster/node.go keeps them in their own typed groups (NodeStatus /
-// NodeRole), and internal/cluster/node_vocabulary_test.go pins both against the
-// lists below and checks every tone used here has a real `.lv-dot--*` rule in
-// web/src/styles/base.css — so a new node state has to be named and coloured here
-// before it can reach an operator.
+// NodeRole), and the lists below are generated from that group by
+// internal/docgen — so a new node state arrives here as a missing entry in the two
+// tables at the bottom of this file, which is a vue-tsc error rather than a node
+// rendered with no label and no dot colour.
+//
+// What remains guarded by hand, because no Go owner can produce it: the Chinese
+// wording, the tone each state gets, and the fact that every tone named here has a
+// real `.lv-dot--*` rule in web/src/styles/base.css (`warning` vs the real class
+// `warn` differ by one letter, and the consequence is a dot with no background).
+// internal/cluster/node_vocabulary_test.go checks those.
 
-export const NODE_ROLES = ['master', 'worker'] as const
-export type NodeRole = (typeof NODE_ROLES)[number]
+import type { NodeRole, NodeStatus } from '@/types/vocabulary'
+import { NODE_ROLES, NODE_STATUSES } from '@/types/vocabulary'
 
-export const NODE_STATUSES = ['active', 'leaving', 'offline'] as const
-export type NodeStatus = (typeof NODE_STATUSES)[number]
+// Re-exported, not re-declared: the members come from internal/cluster via
+// internal/docgen. The import + export pair (rather than `export … from`) is what
+// makes both names usable in the tables below.
+export { NODE_ROLES, NODE_STATUSES }
+export type { NodeRole, NodeStatus }
 
 /**
  * Dot tones available in web/src/styles/base.css. The guard test checks the subset
