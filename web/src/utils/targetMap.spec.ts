@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import { STEP_STATES, STEP_TONE, buildTargetMap, cellSummary } from './targetMap'
+// STEP_STATES is re-exported from @/types/vocabulary, which internal/docgen
+// generates from internal/state.StepStatusNames(). Asserting over that list rather
+// than a literal array here is the point: a copy in this file could only ever
+// disagree with itself.
 
 const planBatches = [
   { index: 1, hosts: ['web-01', 'web-02', 'web-03'] },
