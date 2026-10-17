@@ -21,6 +21,8 @@
 // 归属（每张表的值集合与顺序都由它自己那份 owner 决定）：
 //   internal/runstatus.All、internal/state.PriorityNames()、
 //   internal/state.BatchStateNames()、internal/state.AssignmentStateNames()、
+//   internal/state.StepStatusNames()、internal/state.ApprovalStatusNames()、
+//   internal/state.AssignResultNames()、internal/approval.StatusNames()、
 //   internal/cluster.NodeRoleNames() / NodeStatusNames()、
 //   internal/conversation.SessionStateNames()
 //
@@ -28,8 +30,10 @@
 // #153 的失败形状：守卫核对的是自己的抄写，四处产物互相自洽、一起与服务器
 // 不一致，全程没有一处报错。现在值集合只有一份，且是机器产出的。
 //
-// 同名不同物的两组（batch 与 assignment 都拼 pending / done / interrupted）
-// 刻意是两张表、两个类型名，别在这里合并——理由写在 owner 的清单注释里。
+// 同名不同物的一族（batch / assignment / step 三张表都拼 pending、running、
+// failed；两张审批表都拼 pending、approved、rejected）刻意是一张表一个类型名，
+// 别在这里合并——合并会让一张表能读出另一张表读不到的值，理由写在各自 owner 的
+// 清单注释里。
 
 /** 变更（run）状态，与 runs.status 列同源。 */
 export const CHANGE_STATUSES = [
@@ -122,5 +126,48 @@ export const SESSION_STATES = [
 
 /** SessionStateName 的成员集合，由上面那份数组派生。 */
 export type SessionStateName = (typeof SESSION_STATES)[number]
+
+/** 步骤状态（steps.status）。与 BATCH_STATES 只在拼写上重叠：步骤的终态是 success，批次的是 completed。pending / running 今天没有写入方，仍列出来是为了让未来的写入方不能给已命名的状态另造一个词。 */
+export const STEP_STATES = [
+  'pending',
+  'running',
+  'success',
+  'failed',
+  'skipped',
+] as const
+
+/** StepStatus 的成员集合，由上面那份数组派生。 */
+export type StepStatus = (typeof STEP_STATES)[number]
+
+/** RUN 行上的审批结论（runs.approval_status），按写入方清点。schema.sql 对本列注释里的 timeout / skipped 属于下面那张表，不是这里。 */
+export const RUN_APPROVAL_STATUSES = [
+  'pending',
+  'approved',
+  'rejected',
+] as const
+
+/** RunApprovalStatus 的成员集合，由上面那份数组派生。 */
+export type RunApprovalStatus = (typeof RUN_APPROVAL_STATUSES)[number]
+
+/** 审批记录自身的状态（approvals.status）。expired 目前只由 CheckExpiry 产生，而它没有生产调用方——仍列出来是接上那一路时线上格式已就位（见 internal/approval/vocabulary.go）。 */
+export const APPROVAL_STATUSES = [
+  'pending',
+  'approved',
+  'rejected',
+  'expired',
+] as const
+
+/** ApprovalStatus 的成员集合，由上面那份数组派生。 */
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number]
+
+/** 派发结果（assignments.result）。本列的 SQL 默认是 ''，那是「还没有结论」而不是第四个结论，所以不在表里：把它折进 completed 等于声称完成了没发生的工作。 */
+export const ASSIGN_RESULTS = [
+  'completed',
+  'failed',
+  'rolled_back',
+] as const
+
+/** AssignResult 的成员集合，由上面那份数组派生。 */
+export type AssignResult = (typeof ASSIGN_RESULTS)[number]
 
 // END GENERATED: vocabulary

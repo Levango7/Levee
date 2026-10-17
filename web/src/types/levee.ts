@@ -2,16 +2,23 @@
 // proto/levee.proto so the frontend gets static typing without generating
 // TypeScript from the .proto file (which would require an extra build step).
 //
-// The two vocabularies that have Go owners (run status, priority) are NOT
-// declared here any more: they are generated into ./vocabulary.ts by
-// internal/docgen and re-exported below, so this file keeps one copy rather
-// than two. Adding a status therefore means adding it in internal/runstatus and
-// running the generator — a hand-copy here would fail
-// internal/runstatus/vocabulary_guard_test.go.
+// Value vocabularies are NOT declared here any more: every one with a Go owner is
+// generated into ./vocabulary.ts by internal/docgen and re-exported below, so this
+// file keeps one copy rather than two. Adding a status therefore means adding it
+// to the owner's order list (internal/state, internal/cluster, internal/runstatus,
+// internal/conversation, internal/approval) and running the generator — a hand copy
+// here fails the generated-file comparison in internal/docgen, and a constant
+// declared without joining its owner's list fails that package's
+// vocabulary_ownership_test.go.
+//
+// Two of the re-exported names describe columns that share prose but not values:
+// RunApprovalStatus is runs.approval_status, ApprovalStatus is the approvals
+// table's own status. They are two tables on purpose; merging them would let one
+// column be rendered against a set it can never hold.
 
-import type { ChangeStatus, Priority } from './vocabulary'
+import type { ApprovalStatus, ChangeStatus, Priority, RunApprovalStatus, StepStatus } from './vocabulary'
 
-export type { ChangeStatus, Priority }
+export type { ApprovalStatus, ChangeStatus, Priority, RunApprovalStatus, StepStatus }
 
 export interface Change {
   id: string

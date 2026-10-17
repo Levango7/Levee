@@ -108,4 +108,57 @@ func TestStateNameListsAreCopies(t *testing.T) {
 	require.NotEmpty(t, assignment)
 	assignment[0] = "clobbered"
 	assert.NotEqual(t, "clobbered", AssignmentStateNames()[0], "AssignmentStateNames handed out the owner's own slice")
+
+	// The three lists added with the steps / run-approval / result tables. Same
+	// property, because docgen's output order IS this order: a caller that
+	// reordered the returned slice would rewrite the generated table's sequence.
+	for name, fn := range map[string]func() []string{
+		"StepStatusNames":     StepStatusNames,
+		"ApprovalStatusNames": ApprovalStatusNames,
+		"AssignResultNames":   AssignResultNames,
+	} {
+		got := fn()
+		require.NotEmptyf(t, got, "%s returned nothing", name)
+		got[0] = "clobbered"
+		assert.NotEqualf(t, "clobbered", fn()[0], "%s handed out the owner's own slice", name)
+	}
+}
+
+// The three groups below make the same claim as the two above, for the lists that
+// feed the generated console tables: a constant added to store.go without joining
+// its order list must fail HERE, where it is one package's own declaration, rather
+// than silently widening the wire vocabulary nobody documented.
+//
+// The run-approval case carries the extra reason these lists were swept from
+// writers: schema.sql's comment for runs.approval_status advertises `timeout` and
+// `skipped`, and neither is declared here — those spellings belong to the
+// approvals table's status column (internal/approval, which names its own list).
+// The assertion says owner list == owner constants; it does NOT agree with the
+// comment, and the divergence is stated in store.go rather than smoothed over by
+// adding a member nobody writes.
+func TestStepStatusListCoversEveryStepConstant(t *testing.T) {
+	assertListOwnsGroup(t, "stepStatusOrder", StepStatusNames(), goConstValues(t, `StepStatus\w+`))
+}
+
+func TestRunApprovalStatusListCoversEveryRunApprovalConstant(t *testing.T) {
+	assertListOwnsGroup(t, "runApprovalStatusOrder", ApprovalStatusNames(), goConstValues(t, `ApprovalStatus\w+`))
+}
+
+func TestAssignResultListCoversEveryResultConstant(t *testing.T) {
+	assertListOwnsGroup(t, "assignResultOrder", AssignResultNames(), goConstValues(t, `AssignResult\w+`))
+}
+
+// TestRunApprovalListStaysApartFromTheApprovalsTable is the boundary this batch
+// could most easily get wrong: two columns whose prose both say "status".
+// Merging them into one table would let the console render a run-side verdict
+// against a member set that column can never hold (that side names `expired`,
+// this side has no such writer), and hide that they are two vocabularies.
+func TestRunApprovalListStaysApartFromTheApprovalsTable(t *testing.T) {
+	declared := goConstValues(t, `ApprovalStatus\w+`)
+	require.Len(t, declared, 3,
+		"runs.approval_status declares %d constants; the note in store.go says three, and the fourth spelling lives in internal/approval", len(declared))
+	for _, value := range ApprovalStatusNames() {
+		assert.NotEqualf(t, "expired", value,
+			"ApprovalStatusNames carries %q, which belongs to the approvals table's status column", value)
+	}
 }
