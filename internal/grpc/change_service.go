@@ -1629,28 +1629,26 @@ func mapPauseError(err error, runID string) error {
 //	              re-drive explicitly via RetryChange
 func isValidTransition(from, to string) bool {
 	switch to {
-	case "paused":
-		return from == "running" || from == "pending"
-	case "running":
+	case runstatus.StatusPaused:
+		return from == runstatus.StatusRunning || from == runstatus.StatusPending
+	case runstatus.StatusRunning:
 		// planned/draft enter running only via ApplyChange with
 		// auto-approve; listing them here keeps Cancel/Pause-style direct
 		// transitions consistent with that vocabulary.
-		return from == "paused" || from == "pending" || from == "approved" ||
-			from == "draft" || from == "planned"
-	case "cancelled":
+		return from == runstatus.StatusPaused || from == runstatus.StatusPending ||
+			from == runstatus.StatusApproved || from == runstatus.StatusDraft ||
+			from == runstatus.StatusPlanned
+	case runstatus.StatusCancelled:
 		// interrupted is a TAKEOVER terminal: the executor died and the
 		// cluster wrote the verdict — cancelling afterwards would rewrite
 		// history the audit chain already recorded.
-		return from != "completed" && from != "cancelled" && from != "archived" &&
-			from != "interrupted"
+		return from != runstatus.StatusCompleted && from != runstatus.StatusCancelled &&
+			from != runstatus.StatusArchived && from != runstatus.StatusInterrupted
 	// archived: every terminal outcome is archivable, including the D-2 v2
 	// rollback verdicts (rolled_back_partial / rollback_incomplete) — an
 	// operator must be able to seal the history of a partially-rolled-back
 	// change exactly like a clean one.
 	case runstatus.StatusArchived:
-		// Every terminal outcome is archivable, including the D-2 v2
-		// rollback verdicts — an operator must be able to seal the history
-		// of a partially-rolled-back change exactly like a clean one.
 		return from == runstatus.StatusCompleted || from == runstatus.StatusFailed ||
 			from == runstatus.StatusCancelled || from == runstatus.StatusRolledBack ||
 			from == runstatus.StatusRolledBackPartial || from == runstatus.StatusRollbackIncomplete ||
