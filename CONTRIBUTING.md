@@ -222,6 +222,40 @@ configurable triggers, approver requirements, and timeout.
 - CI 检查全部通过（lint + test + build）
 - 无未解决的讨论
 
+### 5.4 合并方式：用 rebase 落地
+
+**PR 一律 `gh pr merge <n> --rebase`**，自 2026-10-17 起生效，本条口径自身的落地就是第一笔实践。
+在此之前 master 上每个 PR 都是一个双父的 `Merge pull request #N` 合并提交；**那段历史不改写**
+（不对 master 做 force-push），所以 `git log` 里两种形状并存是预期而不是脏——读到 `385d772`、
+`ff669ed`、`5139395f` 这些合并提交时，它们是当时的事实。
+
+换的理由三条：
+
+- **合并提交在这里不携带决策。** 本仓一个 PR 通常是一到两笔已按第3章写好 message 的提交，
+  `Merge pull request #N from <branch>` 只是把分支名再抄一遍。squash 也不取：它会把
+  "一笔提交＝一个决定"压掉，而那正是各批次把守卫与产品码分开的用意。
+- **让 PR 级证据与 master 级证据对齐。** §5.1 那条"切 base 不补跑"意味着 stacked PR 的 PR 检查
+  可能跑在旧 base 上（#170 / #172 就是这样：两份绿 CI 都不在当时的 master 上，只能靠合并后
+  master 的 push CI 补证）。rebase 落地后 master 上那笔提交就是 PR 里验过的同一笔内容，
+  追溯不必再同时读两种形状。
+- **发布说明本来就在指认合并提交**（`docs/release-notes/v1.22.0.md` 写"tag 指向 PR #168 的合并提交"
+  这一类）。改成指认"某笔提交属于 PR #N"是这次换法**有意接受**的口径变化，不是顺带发现的漂移。
+
+换法之后要留意的三条，动发布或取证脚本的人会撞到：
+
+1. `gh pr view --json mergeCommit` 对 rebase 落地的 PR **预期返回 null**（GitHub 不造合并提交）。
+   现查本仓 `scripts/`、`.github/`、`internal/` 没有任何地方读 `mergeCommit` / `baseRefOid` /
+   `mergedAt`，所以这一步不会把现有门禁弄红。**这条"预期"要在第一笔 rebase 落地后实测校正**——
+   写在这里是待查项，不是定理。
+2. 因此按 PR 号回溯提交要用 `gh pr view --json commits` 或 `git log --grep`，别假设合并提交存在。
+3. master 分支保护里唯一的 required context 仍是 `check (all jobs passed)`（现查
+   `gh api repos/Levango7/Levee/branches/master`，`enforcement_level=non_admins`），换合并方式不改变它，
+   也不改变"合与推的决定权属于仓库的人"这条边界（见 `AGENTS.md` 第 3 条不可越过的边界）。
+
+这条口径目前没有机器守卫：可以在 `ci.yml` 的 master-push 路径上加"标记提交之后不得再出现合并提交"
+的断言，但那要同步动扇入清单（`needs` 列表与判决字符串是本仓踩过两次的地方），属于另一笔决定，
+本条只把规则写清楚。
+
 ## 第6章 测试要求
 
 ### 6.1 单元测试
