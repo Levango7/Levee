@@ -32,6 +32,7 @@ package grpc
 
 import (
 	"context"
+	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -46,6 +47,53 @@ import (
 // (internal/permission/abac.go matches on target labels), so one label serves
 // both "which hosts does this policy talk about" and "who may touch them".
 const targetEnvLabelKey = "env"
+
+// TargetEnvResolver builds the target → environment lookup the diagnosis gate
+// needs, from the same host inventory every other gate reads.
+//
+// Two spellings are accepted because a diagnosis request can arrive either way:
+// as a registry id (the console's host picker) or as a bare hostname (what an
+// alert's `instance` label carries, which is how diagnosis/engine.go names its
+// target when the run is alert-driven). An id lookup wins when both could
+// match, because ids are the caller's explicit choice.
+//
+// The second result is "is this host known at all", and it is deliberately not
+// folded into the first. A host with no env label resolves to ("", true) — the
+// authorizer's own default-env rule, which is a configured answer. A host that
+// is not in the inventory resolves to ("", false), and the gate refuses: there
+// is no environment to attribute to it, so there is nothing to license running
+// commands on it with the platform's credentials. Collapsing the two would turn
+// an unregistered address into whichever environment happens to be the default,
+// which is the wrong answer in both directions.
+//
+// "Known" means known TO THIS STORE, which is the caller's decision and not a
+// detail of this function: `levee serve` hands it the tenant-wrapped store, so a
+// host belonging to another tenant resolves as unknown and is refused. That is
+// the safe reading (the matrix has no tenancy input, so resolving the real
+// environment would let a dev-`apply` caller diagnose across tenants), at the
+// price of a refusal that says "not in the inventory" where the narrower truth
+// is "not yours".
+func TargetEnvResolver(store state.Store) func(ctx context.Context, target string) (string, bool) {
+	return func(ctx context.Context, target string) (string, bool) {
+		t := strings.TrimSpace(target)
+		if t == "" || store == nil {
+			return "", false
+		}
+		if row, err := store.GetTarget(ctx, t); err == nil && row != nil {
+			return envOfTarget(row), true
+		}
+		rows, err := store.ListTargets(ctx, state.TargetFilter{})
+		if err != nil {
+			return "", false
+		}
+		for _, row := range rows {
+			if row != nil && row.Hostname == t {
+				return envOfTarget(row), true
+			}
+		}
+		return "", false
+	}
+}
 
 // envOfTarget is the environment a host inventory row declares. Empty means
 // undeclared, which authz resolves to permission.default_env — and refuses when

@@ -1016,11 +1016,15 @@ REST 网关的成功响应由 protojson（proto3 JSON 规范，默认选项）�
 
 所有走 protojson 的端点（含 AlertService / DiagnosisService / ConversationService 的 gRPC 兼容端点）统一遵循上述约定。REST-only 的对话会话端点例外见 13.7。
 
+> **2026-10-17 起这三个服务的准入状态各不相同，并且是被穷举而不是被点名的。** `DiagnosisService` 按**目标主机自己声明的环境**判：`Diagnose` 要 `apply`（判定先于任何远程采集，被拒即不执行、不花凭据、不留缓存报告），`GetDiagnosis` 要 `view`（判定在 id 解析之后，理由与代价见 `docs/identity-deployment.md` §6 第 8 条）。`ConversationService` 按 `permission.default_env` 判：`SendMessage` 要 `plan`、`SubscribeConversation` 按读要 `view`。`AlertService` **刻意不判**，见同一节第 6 条。受控面由 `cmd/levee/serve_policy_wiring_test.go` 从 proto 描述符枚举全集（现 10 个服务），每个服务必须落在受控集或例外表之一——新增一个未判定的服务会让守卫变红，而不是让清单变长。
+
 ### 13.7 对话会话端点（REST-only）
 
 `/conversation/sessions*` 一组端点不经过 gRPC（会话管理不在 ConversationService 的 proto 面内），由 REST 网关直接驱动会话引擎，因此**不遵循** 13.6 的 protojson 约定：字段为 snake_case，成功响应统一带信封——`POST /conversation/sessions` 与 `GET /conversation/sessions/{id}` 返回 `{"session": {...}}`，`GET /conversation/sessions` 返回 `{"sessions": [...]}`，`POST /conversation/sessions/{id}/messages` 返回 `{"reply": {"text": ..., "action"?: {"type", "payload"}}}`，`DELETE /conversation/sessions/{id}` 返回 204。前端在 `web/src/api/index.ts` 的 `conversationApi` 内统一拆封并摊平 reply，视图层只见扁平 DTO。
 
 所有权（P2-2）：命名令牌 / OIDC / SSO 会话的**认证主体**是会话归属的唯一依据，请求体或 query 里的 `user_id` 仅在无认证（开发模式）或旧式静态令牌（无已验证主体）时作为回退；详情 / 发消息 / 关闭对他人会话一律 403。
+
+> **2026-10-17 起这组端点先过授权、再过归属。** 它们绕过 gRPC 服务，`SendMessage` 的门禁按构造覆盖不到，于是判定收在 `dispatchConversation` 里做一次（`internal/grpc/rest.go`）：GET 按读要 `view`，POST / DELETE 要 `plan`——与对话唯一能触发的变更动作（`CreateChangeDraft` → `CreateChange`）同一个 token。会话请求不带环境，故按 `permission.default_env` 判（口径见 `docs/identity-deployment.md` §6 第 7 条）。两类 403 可分辨：策略拒绝的文案带 `action "plan"` / `action "view"` 和 `levee authz explain` 那一行，归属拒绝的文案是 `session belongs to another user`；无 `plan` 的主体在问出"这个会话属于谁"之前就被挡下。**无可归因主体沿用既有姿态**（共享令牌 / 开发模式：读放行、写 401），所以 401 与 403 在这里是两种不同的原因，不是一个的两种写法。
 
 执行语义（P2-3）：审核阶段回复「执行 / approve / yes」仅表示**确认建议**——会话保持 `reviewing`，回复文案为「建议已确认，尚未启动执行」，不会进入 `executing`（执行链接通前该状态不可达）；「拒绝 / reject / no」终止建议（`failed`），「修改 / modify」继续留在 `reviewing`。
 

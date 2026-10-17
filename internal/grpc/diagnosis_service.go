@@ -20,10 +20,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/diagnosis"
 	"github.com/nexus/levee/internal/diagnosis/llm_diag"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/permission"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -48,6 +50,20 @@ type DiagnosisService struct {
 	// log is the structured logger. When nil the package-level singleton
 	// from internal/log is used.
 	log *slog.Logger
+
+	// authorizer polices Diagnose before it runs anything. Diagnose is not a
+	// read: the engine executes commands on the requested target through the
+	// platform's own credentials (see internal/diagnosis/health_probe.go's
+	// Executor calls), so it is judged as `apply` on that target's
+	// environment — the same axis that decides whether you may change the
+	// host at all. Nil means no policy is configured and the gate short-circuits,
+	// like every other service's authorizer.
+	authorizer *authz.Authorizer
+
+	// targetEnv resolves a request's target into the environment the policy
+	// judges, reporting whether the target is known to the inventory at all.
+	// `known=false` is a refusal, not a fallback: see gateTarget.
+	targetEnv func(ctx context.Context, target string) (env string, known bool)
 
 	// mu guards reports and order.
 	mu      sync.RWMutex
@@ -84,6 +100,77 @@ func (s *DiagnosisService) WithReasoner(r *llm_diag.ReasoningEngine) *DiagnosisS
 	return s
 }
 
+// WithAuthorizer installs the policy authorizer consulted by Diagnose and
+// GetDiagnosis, matching the other services' pattern.
+func (s *DiagnosisService) WithAuthorizer(a *authz.Authorizer) *DiagnosisService {
+	s.authorizer = a
+	return s
+}
+
+// WithTargetEnvResolver installs the target → environment lookup the gate
+// needs. It is a function rather than a state.Store so this service keeps no
+// persistence dependency of its own; cmd/levee supplies one backed by the
+// target registry.
+func (s *DiagnosisService) WithTargetEnvResolver(fn func(ctx context.Context, target string) (env string, known bool)) *DiagnosisService {
+	s.targetEnv = fn
+	return s
+}
+
+// gateTarget answers the one question the resolvers cannot: whether this
+// request may act on that host at all.
+//
+// Both failure modes are refused rather than guessed, and each for its own
+// reason. An authorizer without a resolver is a wiring bug: falling back to
+// env "" would judge a prod host against permission.default_env, so an
+// operator would read a grant or a refusal about an environment nobody asked
+// about — cmd_serve takes the same line against a malformed policy file, which
+// aborts startup rather than degrading to "not enforced". A target the
+// inventory does not know is refused for the mirrored reason: we cannot
+// attribute it to an environment, so we cannot license running commands on it
+// with the platform's credentials.
+func (s *DiagnosisService) gateTarget(ctx context.Context, target, action, rpc string) error {
+	if s.authorizer == nil {
+		return nil
+	}
+	if s.targetEnv == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"%s cannot be authorized: no target→environment resolver is installed, and judging %q against the default environment would silently apply the wrong policy",
+			rpc, target)
+	}
+	env, known := s.targetEnv(ctx, target)
+	if !known {
+		return status.Errorf(codes.PermissionDenied,
+			"%s denied for target %q: the inventory does not know this host, so no environment can be attributed to it and the policy cannot license running diagnostics there",
+			rpc, target)
+	}
+	return authorizeResource(ctx, s.authorizer, env, action, rpc)
+}
+
+// gateTargetRead is the read-side twin of gateTarget: `view`, with the
+// unattributable caller admitted by the shared read rule rather than by
+// omission here.
+func (s *DiagnosisService) gateTargetRead(ctx context.Context, target, rpc string) error {
+	if s.authorizer == nil {
+		return nil
+	}
+	if s.targetEnv == nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"%s cannot be authorized: no target→environment resolver is installed, and judging %q against the default environment would silently apply the wrong policy",
+			rpc, target)
+	}
+	env, known := s.targetEnv(ctx, target)
+	if !known {
+		// An unknown target here means a cached report whose host has left the
+		// inventory. Refusing is the safe reading, and it is also the honest
+		// one: the alternative is serving a report about nobody-knows-which
+		// environment under whichever default is configured.
+		return status.Errorf(codes.PermissionDenied,
+			"%s denied for target %q: the inventory no longer knows this host, so its report cannot be attributed to an environment",
+			rpc, target)
+	}
+	return authorizeResourceRead(ctx, s.authorizer, env, rpc)
+}
+
 // --- Diagnose --------------------------------------------------------------
 
 // Diagnose runs a fresh diagnosis on the requested target. When alert_id
@@ -98,6 +185,13 @@ func (s *DiagnosisService) Diagnose(ctx context.Context, req *pb.DiagnoseRequest
 	}
 	if s.engine == nil {
 		return nil, status.Error(codes.Unimplemented, "diagnosis engine not configured")
+	}
+
+	// Authorization precedes every side effect, the same order the change
+	// writes keep: a refused diagnosis must not have run anything on the host,
+	// must not spend a stored credential, and must not leave a cached report.
+	if err := s.gateTarget(ctx, req.GetTarget(), permission.ActionApply, "Diagnose"); err != nil {
+		return nil, err
 	}
 
 	// Apply optional timeout when the caller did not set one.
@@ -168,6 +262,17 @@ func (s *DiagnosisService) GetDiagnosis(ctx context.Context, req *pb.GetDiagnosi
 	s.mu.RUnlock()
 	if !ok {
 		return nil, status.Errorf(codes.NotFound, "diagnosis report %q not found", req.GetId())
+	}
+	// The read gate runs AFTER the lookup, and the reason is stated rather than
+	// assumed: the environment being judged belongs to the report's target,
+	// which is only knowable once the id resolves. Judging env "" instead would
+	// silently fall back to permission.default_env — a refusal (or a grant)
+	// about an environment the caller never touched. The accepted cost is that
+	// a caller can tell "no such report" from "not yours to read", so report
+	// ids remain a weak existence oracle; they are engine-minted rather than
+	// enumerable, which is why that is the lesser of the two errors.
+	if err := s.gateTargetRead(ctx, r.Target, "GetDiagnosis"); err != nil {
+		return nil, err
 	}
 	return diagnosisToPB(&r), nil
 }
