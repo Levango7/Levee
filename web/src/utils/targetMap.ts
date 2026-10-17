@@ -1,24 +1,38 @@
-// Step-status vocabulary and the host × batch matrix for the monitor page.
+// The host × batch matrix for the monitor page, over the generated step vocabulary.
 //
-// Why the vocabulary lives here rather than in a switch in MonitorView: these
-// strings say what a HOST did ("this host executed the step", "this host was
-// skipped"), which is a claim about engine state and has to be testable without
-// a browser. The five spellings are the ones internal/writing writes; the Go
-// side pins this list against state.StepStatus* (see
-// internal/state/step_status_vocabulary_test.go), so the backend cannot add a
-// spelling that renders here as a grey blank.
+// Why the matrix lives here rather than in a switch in MonitorView: these strings
+// say what a HOST did ("this host executed the step", "this host was skipped"),
+// which is a claim about engine state and has to be testable without a browser.
 //
-// The matrix itself answers a question neither of the two views on this page
-// can: the batch bar says "this batch is 60% accounted for", the log says what
-// happened last — neither tells you WHICH HOST is in which state. That is the
-// view an operator opens an incident with.
-/** The five spellings a step row can carry. Source of truth below. */
-export const STEP_STATES = ['pending', 'running', 'success', 'failed', 'skipped'] as const
-export type StepState = (typeof STEP_STATES)[number]
+// The five spellings used to be a hand copy in this file, with a comment pointing at
+// `internal/state/step_status_vocabulary_test.go` as the thing pinning them. Two
+// things were wrong with that: the file it names does not exist (the real one is
+// step_approval_status_vocabulary_test.go, and it pins the WRITERS, not this copy),
+// and a copy of a list cannot be pinned by parsing the copy — that is #153's shape,
+// where four artefacts agreed with each other and disagreed with the server while
+// every guard stayed green.
+//
+// So the copy is gone. STEP_STATES is generated into ./types/vocabulary.ts from
+// internal/state.StepStatusNames() by internal/docgen, and the completeness claim
+// sits where it belongs: internal/state/vocabulary_ownership_test.go fails if
+// store.go declares a StepStatus constant that its order list does not name.
+import { STEP_STATES } from '@/types/vocabulary'
+import type { StepStatus } from '@/types/vocabulary'
+
+// The five spellings a step row can carry, GENERATED from
+// internal/state.StepStatusNames() by internal/docgen and re-exported here — the
+// import + export pair (not `export … from`) is what keeps the name usable in the
+// keyed tables below, and matches ./batch.ts and ./assignment.ts.
+//
+// Those keyed `Record`s are the reason a list and not a switch lives here: "no
+// label / no colour for the new state" is a compile error rather than a grey cell
+// with the English word on it.
+export { STEP_STATES }
+export type { StepStatus }
 
 export type CellTone = 'ok' | 'bad' | 'run' | 'wait' | 'skip'
 
-export const STEP_TONE: Record<StepState, CellTone> = {
+export const STEP_TONE: Record<StepStatus, CellTone> = {
   pending: 'wait',
   running: 'run',
   success: 'ok',
@@ -26,7 +40,7 @@ export const STEP_TONE: Record<StepState, CellTone> = {
   skipped: 'skip',
 }
 
-export const STEP_LABEL: Record<StepState, string> = {
+export const STEP_LABEL: Record<StepStatus, string> = {
   pending: '未开始',
   running: '执行中',
   success: '成功',
@@ -36,7 +50,7 @@ export const STEP_LABEL: Record<StepState, string> = {
 
 /** One host's cell in one batch. */
 export interface TargetCell {
-  state: StepState
+  state: StepStatus
   /** The step that produced this state, when the row carries one. */
   stepName: string
   durationMs: number
@@ -50,7 +64,7 @@ export interface TargetRow {
   cells: Record<number, TargetCell>
   batches: number[]
   /** Worst state this host carries, for the row summary. */
-  worst: StepState
+  worst: StepStatus
 }
 
 export interface TargetMap {
@@ -63,7 +77,7 @@ export interface TargetMap {
 
 // The severity order a row's summary uses: a host is as bad as its worst cell,
 // which is the number an operator reads first when scanning for red.
-const SEVERITY: Record<StepState, number> = {
+const SEVERITY: Record<StepStatus, number> = {
   failed: 4,
   running: 3,
   pending: 2,
@@ -109,7 +123,11 @@ export function buildTargetMap(
   for (const row of stepRows) {
     if (!cells.has(row.host)) cells.set(row.host, new Map())
     const perBatch = cells.get(row.host)!
-    const state = STEP_STATES.includes(row.status as StepState) ? (row.status as StepState) : 'pending'
+    // The row arrives as text straight off the wire, so an unrecognised spelling
+    // is possible in principle even though the writers only emit the five. It is
+    // rendered as 未开始 — a rendering choice for "nothing here yet", NOT a claim
+    // that the engine said pending; the difference is only visible in the source.
+    const state = STEP_STATES.includes(row.status as StepStatus) ? (row.status as StepStatus) : 'pending'
     perBatch.set(row.batchNo, {
       state,
       stepName: row.stepName,
@@ -127,7 +145,7 @@ export function buildTargetMap(
     if (hostBatches.length === 0) untouched.push(host)
     // A host with no row has not started, which reads as pending rather than as
     // success: "nothing happened yet" is not "everything went well".
-    let worst: StepState = 'pending'
+    let worst: StepStatus = 'pending'
     if (perBatch.size > 0) {
       // The floor is success once a host has rows: a succeeded host must not
       // be summarised as pending just because pending outranks success.

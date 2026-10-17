@@ -18,11 +18,18 @@ package state
 // test red here (vocabulary_ownership_test.go) rather than silently widening the
 // wire vocabulary nobody documented.
 //
-// Do NOT merge the two lists. `pending` / `done` / `interrupted` are spelled the
+// Do NOT merge the lists. `pending` / `done` / `interrupted` are spelled the
 // same on both sides but mean different things — a batch's `pending` is "not
 // started", an assignment's `pending` is "not yet claimed by a worker" — and the
-// result group (AssignResult*) is a third value range that this file deliberately
-// does not name.
+// result group (AssignResult*) is a separate value range, named below as its own
+// list rather than folded into either.
+//
+// The step / run-approval / result lists were added for the same reason the two
+// above were: the console renders steps.status (web/src/utils/targetMap.ts held a
+// hand copy of it) and prose elsewhere names these sets, and a hand copy checked
+// by re-parsing the copy cannot see the copy and the owner agreeing on a wrong
+// answer. Each one is still ONE list with ONE meaning; where two columns share
+// spellings they get two lists and two names, never one merged list.
 
 // batchStateOrder lists the spellings a batch row can carry. The order is the
 // monitor page's rendering order: lifecycle first, then the legacy `done`, then
@@ -58,4 +65,61 @@ func BatchStateNames() []string {
 // result is a copy and may be modified by the caller.
 func AssignmentStateNames() []string {
 	return append([]string(nil), assignmentStateOrder...)
+}
+
+// stepStatusOrder lists the spellings a steps.status row can carry, in the order
+// the monitor page renders them. Pending and running have no writer today (see the
+// note on the constants in store.go): they stay listed because the schema comment
+// names them and internal/lock's busy-host probe reads them, and a future writer
+// must not invent a third spelling for a state that is already named here.
+var stepStatusOrder = []string{
+	StepStatusPending,
+	StepStatusRunning,
+	StepStatusSuccess,
+	StepStatusFailed,
+	StepStatusSkipped,
+}
+
+// runApprovalStatusOrder lists the verdict a RUN row carries
+// (runs.approval_status). It is NOT the approvals table's status column: that one
+// has a fourth member (expired) and lives in internal/approval, which names its
+// own list. schema.sql's comment on this column advertises `timeout` and `skipped`,
+// and both belong over there — the list below was swept from the writers, not
+// copied from that comment, and the divergence is recorded rather than smoothed
+// over (see TestRunApprovalStatusListCoversEveryConstant).
+var runApprovalStatusOrder = []string{
+	ApprovalStatusPending,
+	ApprovalStatusApproved,
+	ApprovalStatusRejected,
+}
+
+// assignResultOrder lists the results assignments.result names
+// (assignments.result). The column's SQL default is ” — unset — so the empty
+// string is a value the wire can carry that is deliberately NOT in this list:
+// it means "no result recorded yet", not a fourth verdict, and a rendering that
+// folds it into `completed` would claim work that never finished. Nothing in the
+// console reads this column today (AssignmentSummary groups by state), so the list
+// exists to give the vocabulary one home before a reader appears.
+var assignResultOrder = []string{
+	AssignResultCompleted,
+	AssignResultFailed,
+	AssignResultRolledBack,
+}
+
+// StepStatusNames returns the step vocabulary in rendering order. The result is a
+// copy and may be modified by the caller.
+func StepStatusNames() []string {
+	return append([]string(nil), stepStatusOrder...)
+}
+
+// ApprovalStatusNames returns the run-side approval vocabulary in decision order.
+// The result is a copy and may be modified by the caller.
+func ApprovalStatusNames() []string {
+	return append([]string(nil), runApprovalStatusOrder...)
+}
+
+// AssignResultNames returns the assignment-result vocabulary. The result is a copy
+// and may be modified by the caller.
+func AssignResultNames() []string {
+	return append([]string(nil), assignResultOrder...)
 }

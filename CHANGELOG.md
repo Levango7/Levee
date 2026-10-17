@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（四套取值有了单一来源：steps.status / 两张审批表 / assignments.result 接进 docgen，控制台字段收成严格联合）
+
+- **补上的是 #170 / #172 那条线上的最后一块**：`web/src/types/vocabulary.ts` 此前生成 7 张表，仍有四套取值散在 owner 常量与前端手抄件之间。现在 `internal/state` 导出 `StepStatusNames()` / `ApprovalStatusNames()` / `AssignResultNames()`，`internal/approval` 导出 `StatusNames()`，docgen 的表从 7 张长到 **11 张**（`go run ./internal/docgen` 一次生成，`-check` 报 `all 2 generated targets are up to date`）。
+- **两张审批表刻意不合并**，因为它们是两列不同东西：`runs.approval_status` 三个值（pending/approved/rejected），`approvals.status` 四个（多一个 `expired`）。schema.sql 对本列的注释写着 `timeout|skipped`，那两个拼写在**任何一列都没有写入方**——清单是按写入方清点的，不是抄注释抄来的，这点连同分歧一起写进 owner 的注释，并由 `TestRunApprovalListStaysApartFromTheApprovalsTable` 钉住（它断言常量组恰为三个、且清单里不许长出 `expired`）。合并成一张表会让一列能渲染出它永远取不到的值。
+- **前端的手抄件删掉了，而它指着的是一个不存在的守卫**：`web/src/utils/targetMap.ts` 原来自己写着五个字符串，注释说"由 `internal/state/step_status_vocabulary_test.go` 对着 `state.StepStatus*` 钉住"——**那个文件不存在**（真实文件是 `step_approval_status_vocabulary_test.go`，而且它钉的是写入方，不是这份抄件）。抄件被"解析抄件"的守卫看着，正是 #153 的形状：几处产物互相自洽、一起和服务器不一致，全程没有一处报错。现在 `STEP_STATES` / `StepStatus` 由 owner 生成，targetMap 走与 `./batch.ts`、`./assignment.ts` 同样的 import + re-export 写法（不是 `export … from`，因为下面的 keyed `Record` 要用这个名字）。
+- **严格联合是实测出来的，不是自我感觉**：临时放一个 `status: 'definitely_not_a_step_status'` 的 `StepRowDTO` 进 `web/src` ⇒ `vue-tsc` 报 `TS2322: … is not assignable to type '"pending" | "running" | "failed" | "success" | "skipped"'`（错误文本里那五个成员就是生成表的内容），删掉探针后 `type-check` 回到 rc=0。`StepRowDTO.status` 与 `ApprovalChain.status` 从 `string` 收成对应联合；`STEP_TONE` / `STEP_LABEL` / `SEVERITY` 三张 keyed `Record` 因此变成穷举检查。落到产物里能看见：多出一个 `vocabulary-*.js` chunk，`MonitorView` chunk 里 `未开始` 文案仍在。
+- **4 项变异全部被抓**（跑完 sha256 逐字节还原，`residue=none`）：store.go 声明一个常量而不进清单 ⇒ owner 守卫红；从 `webVocabularies()` 删掉一张表 ⇒ 名册守卫红；owner 换个顺序而生成的 `.ts` 没重跑 ⇒ `-check` 报 `web\src\types\vocabulary.ts is out of date.`；从 `STEP_TONE` 删一个成员 ⇒ `TS2741: Property 'skipped' is missing … required in type 'Record<…, CellTone>'`。其中第二项第一次跑是**编译不过**（注释掉三行字面量的首行留下悬空 `}`）——本会话第二次栽在同一件事上，改成正则删整条目后才成为有效变异：编译失败不是被抓。
+- **顺手登记两件真实缺口（本批不改，改了就是行为变更）**：① `assignments.result` 的写入面比词表宽——`cmd/levee/grpc_change_executor.go:82-85` 的 `default:` 分支把**任意 run 状态**（`interrupted` / `rolled_back_partial` / `rollback_incomplete` / `running`）原样透传进这一列，而该列的 SQL 默认还是 `''`，所以"执行器结果"这列今天能被写成"运行状态"；把它接进渲染之前应当先收窄写入面。② `StatusExpired` 只由 `CheckExpiry` 产生，而 `CheckExpiry` **没有任何生产调用方**（全仓只有 `service_test.go` 调它）——也就是说超时的审批在跑动的系统里仍读作 `pending`。这条写成 `TestCheckExpiryIsTheOnlyProducerOfExpired`，将来谁接上驱动器它会红，并逼着注释一起更新；词表仍列出 `expired`，是为了接上那一路时线上格式已就位。
+- **验证**：`go build ./...` 0、`go vet ./...` 0、`gofmt -l internal/ cmd/ scripts/` 空、`go test ./...` **68 包 ok / 0 FAIL**、`golangci-lint run --timeout 12m ./...` **0 issues**（第一次用默认超时被 1m 掐断，报的是工具自己的 timeout，不是代码问题）、`python -m unittest discover -s scripts` **59 tests OK**、`docgen -check` 两目标均新。前端：`npm run type-check` rc=0（并跑过上面的正对照）、`npm run test` **36 文件 / 314 例全绿**、`npm run build` rc=0；`internal/web/dist` 按 CI 同法重拷后**两次构建产物逐字节相同**（`git diff --numstat` 无非重命名差异、未跟踪项 0）。零 proto、零 schema 变更。
+
 ### 门禁（§5.4 的线性落地第一次有了机器守卫，而且是在浅克隆下验过的）
 
 - `CONTRIBUTING.md` §5.4 把"PR 用 `--rebase` 落地"写成规则后，它只活在文档里：谁来合、用什么旗标合，既不在 PR 的 diff 里，`pull_request` 事件也看不见。这次补的是**唯一能证明的时刻**——push 到 master 之后，HEAD 就是落地那一笔提交。

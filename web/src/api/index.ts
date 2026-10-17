@@ -4,11 +4,13 @@
 // protobuf-style camelCase JSON used by grpc-gateway and our TS types.
 import { del, get, post, put } from './client'
 import type {
+  ApprovalStatus,
   Change,
   ChangeStatus,
   LogEntry,
   PageResult,
   Plan,
+  StepStatus,
   SystemStatus,
   Target,
   Template,
@@ -389,8 +391,11 @@ export interface ApprovalChain {
   changeId: string
   /** standard / high / emergency */
   level: string
-  /** pending / approved / rejected / timeout / skipped */
-  status: string
+  /** The approvals table's own states. `expired` is reachable only once something
+   *  drives CheckExpiry, which today has no production caller — the point of
+   *  typing this list rather than free text is that `timeout` and `skipped`,
+   *  which prose elsewhere used to advertise here, belong to no writer at all. */
+  status: ApprovalStatus
   approvers: string[]
   /** Votes the quorum needs before the run may settle. */
   minApprovers: number
@@ -486,8 +491,8 @@ export interface StepRowDTO {
    *  was camelCase for a while and read back as undefined. */
   batch_no: number
   step_name: string
-  /** pending|running|success|failed|skipped — internal/state.StepStatus* */
-  status: string
+  /** Generated from internal/state.StepStatusNames() — pending|running|success|failed|skipped. */
+  status: StepStatus
   duration_ms: number
   /** Omitted when the engine did not record one. */
   exit_code?: number

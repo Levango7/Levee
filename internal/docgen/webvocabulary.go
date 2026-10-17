@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/runstatus"
@@ -88,6 +89,23 @@ func webVocabularies() []tsVocabulary {
 		{"SESSION_STATES", "SessionStateName",
 			"会话状态，取自 SessionState.String()；末位 unknown 是越界值的兜底拼写，不是状态机里的一个状态。",
 			conversation.SessionStateNames},
+		{"STEP_STATES", "StepStatus",
+			"步骤状态（steps.status）。与 BATCH_STATES 只在拼写上重叠：步骤的终态是 success，批次的是 completed。pending / running 今天没有写入方，仍列出来是为了让未来的写入方不能给已命名的状态另造一个词。",
+			state.StepStatusNames},
+		// The two approval tables are deliberately separate, and this is the one
+		// place a reader could reasonably merge them: prose in schema.sql,
+		// pgschema.sql and proto calls the run-side state by a name the record-side
+		// column also uses. Merging would give one idea two members and let the
+		// console render a run verdict against a set that column cannot hold.
+		{"RUN_APPROVAL_STATUSES", "RunApprovalStatus",
+			"RUN 行上的审批结论（runs.approval_status），按写入方清点。schema.sql 对本列注释里的 timeout / skipped 属于下面那张表，不是这里。",
+			state.ApprovalStatusNames},
+		{"APPROVAL_STATUSES", "ApprovalStatus",
+			"审批记录自身的状态（approvals.status）。expired 目前只由 CheckExpiry 产生，而它没有生产调用方——仍列出来是接上那一路时线上格式已就位（见 internal/approval/vocabulary.go）。",
+			approval.StatusNames},
+		{"ASSIGN_RESULTS", "AssignResult",
+			"派发结果（assignments.result）。本列的 SQL 默认是 ''，那是「还没有结论」而不是第四个结论，所以不在表里：把它折进 completed 等于声称完成了没发生的工作。",
+			state.AssignResultNames},
 	}
 }
 
@@ -117,6 +135,8 @@ func renderWebVocabulary() string {
 	b.WriteString("// 归属（每张表的值集合与顺序都由它自己那份 owner 决定）：\n")
 	b.WriteString("//   internal/runstatus.All、internal/state.PriorityNames()、\n")
 	b.WriteString("//   internal/state.BatchStateNames()、internal/state.AssignmentStateNames()、\n")
+	b.WriteString("//   internal/state.StepStatusNames()、internal/state.ApprovalStatusNames()、\n")
+	b.WriteString("//   internal/state.AssignResultNames()、internal/approval.StatusNames()、\n")
 	b.WriteString("//   internal/cluster.NodeRoleNames() / NodeStatusNames()、\n")
 	b.WriteString("//   internal/conversation.SessionStateNames()\n")
 	b.WriteString("//\n")
@@ -124,8 +144,10 @@ func renderWebVocabulary() string {
 	b.WriteString("// #153 的失败形状：守卫核对的是自己的抄写，四处产物互相自洽、一起与服务器\n")
 	b.WriteString("// 不一致，全程没有一处报错。现在值集合只有一份，且是机器产出的。\n")
 	b.WriteString("//\n")
-	b.WriteString("// 同名不同物的两组（batch 与 assignment 都拼 pending / done / interrupted）\n")
-	b.WriteString("// 刻意是两张表、两个类型名，别在这里合并——理由写在 owner 的清单注释里。\n\n")
+	b.WriteString("// 同名不同物的一族（batch / assignment / step 三张表都拼 pending、running、\n")
+	b.WriteString("// failed；两张审批表都拼 pending、approved、rejected）刻意是一张表一个类型名，\n")
+	b.WriteString("// 别在这里合并——合并会让一张表能读出另一张表读不到的值，理由写在各自 owner 的\n")
+	b.WriteString("// 清单注释里。\n\n")
 
 	for _, v := range webVocabularies() {
 		writeTsList(&b, v.constName, v.typeName, v.doc, v.owner())
