@@ -54,11 +54,41 @@ jobs:
           failures=""
           python -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee /tmp/py.log \
             || failures="unittest"
-          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget test_changelog_structure test_release_gate_step; do
+          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget test_changelog_structure test_release_gate_step test_landing_shape_step; do
             grep -q "$suite" /tmp/py.log \
               || { echo "::error::discovery collected nothing for $suite (renamed or deleted?)"; failures="$failures missing:$suite"; }
           done
           [ -z "$failures" ] || { echo "::error::release-gate self-tests failed: $failures"; exit 1; }
+      - name: landing shape (master stays linear)
+        # CONTRIBUTING.md §5.4: PRs land with `gh pr merge --rebase`, so a commit
+        # on master must have exactly one parent. Only the push-to-master case can
+        # prove anything: on a pull_request run the checkout is GitHub's synthetic
+        # refs/pull/N/merge ref, which has two parents no matter how the PR will
+        # eventually land, so asserting there would be asserting nothing.
+        #
+        # The condition is on the STEP, not the job. A skipped job would hand the
+        # aggregate "no verdict" (see the unverified branch in the check job) and
+        # every PR would go red; a skipped step leaves this job's verdict intact.
+        #
+        # Count parents off the commit object itself, NOT with
+        # `git rev-list --parents -1 HEAD`: this job checks out with the default
+        # fetch-depth of 1, and in a shallow clone rev-list reports ZERO parents for
+        # a commit that really has two (measured locally: 385d772 gives rev-list 0
+        # and cat-file 2). Under a shallow checkout the rev-list form would either
+        # pass everything or, once compared against 1, fail every push to master —
+        # a guard whose input depends on how much history was fetched is not a guard.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          parents=$(git cat-file commit HEAD | grep -c '^parent ')
+          echo "HEAD=$(git rev-parse --short HEAD) parents=$parents (shallow=$(git rev-parse --is-shallow-repository))"
+          if [ "$parents" != "1" ]; then
+            # Print the commit object's own parent lines rather than `git log --format=%p`:
+            # under this job's shallow checkout git log renders the list as empty, which
+            # would make the failure message contradict the number above it.
+            git cat-file commit HEAD | grep '^parent ' | sed 's/^parent /  parent: /'
+            echo "::error::master gained a $parents-parent commit. PRs land with --rebase per CONTRIBUTING.md §5.4; if the rule changed, update §5.4 and this step together."
+            exit 1
+          fi
 
   # ---------------------------------------------------------------------------
   # vet: cheap structural checks, runs first to fail fast.

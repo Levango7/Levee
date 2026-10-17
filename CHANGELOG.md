@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 门禁（§5.4 的线性落地第一次有了机器守卫，而且是在浅克隆下验过的）
+
+- `CONTRIBUTING.md` §5.4 把"PR 用 `--rebase` 落地"写成规则后，它只活在文档里：谁来合、用什么旗标合，既不在 PR 的 diff 里，`pull_request` 事件也看不见。这次补的是**唯一能证明的时刻**——push 到 master 之后，HEAD 就是落地那一笔提交。
+- **步骤挂在 `release-gate` job 上，条件写在 step 而不是 job 上**，这一点是设计核心而不是风格：该 job 已经在扇入 `check (all jobs passed)` 的 `needs` 里，而聚合逻辑把 `skipped` 归到"produced no verdict — UNVERIFIED"并 `rc=1`（那段注释就是 2026-10-06 饿在队列里的四个 job 换来的）。把条件写成 job 级 ⇒ 每条 PR 都因一道"只在 master 才有意义"的检查变红。`scripts/test_landing_shape_step.py::test_job_level_condition_detected` 专门把这条死法钉住。
+- **差点推上去一条必红的检查**：第一版用 `git rev-list --parents -1 HEAD | awk '{print NF-1}'` 数父提交，本机全克隆下 1/2 两种形状区分得干干净净——但 `release-gate` 用默认 `fetch-depth: 1`，**浅克隆里 rev-list 对真正的双父提交报 0 个父**（实测 `385d772`：rev-list 0 / cat-file 2），于是那条比较会把每一次正常 master 推送判成违规。现在改成读提交对象本身（`git cat-file commit HEAD | grep -c '^parent '`），与历史抓取深度无关，并**新建两个浅克隆分别跑通两种判决**（merge 提示父 ⇒ rc=1 且把两个 parent 的 sha 打出来；线性提示 ⇒ rc=0）。这条教训正是本仓那条老规矩的又一形态：**CI 断言必须在 CI 环境下可满足**，本机绿不算。
+- **守卫自己的守卫**：新测试 `scripts/test_landing_shape_step.py` 断言步骤存在、`if` 仍同时限定 push 与 `refs/heads/master`、父数取自提交对象、比较对象是 `"1"`、失败路径 `exit 1`、`release-gate` 没有 job 级 `if`、并且仍在扇入 `needs` 里；`DetectorIsNotVacuousTest` 用合成文本跑同一组表达式（删步骤 / 拿掉 `if` / 放宽事件 / 改成只打印不退出 / 换成 rev-list / 加 job 级 `if`，六种都能看见）。同时把 `test_landing_shape_step` 加进 release-gate 的逐套件点名表——那张表存在是因为"discovery 收集到空套件也会 exit 0"。
+- **两处自纠，都写进代码注释而不是悄悄改掉**：① 第一版探针依赖历史深度（见上）；② 点名表断言里我最初用全文件第一个 `needs: [...]` 去做包含检查，那命中的是 CodeQL 的 `needs: [vet, lint, test]`——断言会以错误的理由通过，改为先取 `check` job 的块再读它自己的 `needs`。步骤里那句解释性注释本身含有 `git rev-list --parents` 字样，曾让新测试把自己的注释当成违规（误报），因此 `step_code()` 只取 `run:` 体内**去掉注释行**的代码来投票：注释既不能满足必需项，也不能触发禁止项。
+- **验证**：`python -m unittest discover -s scripts` **59 tests OK**（新增 11 条）；`yaml.safe_load` 能解析改后的 `ci.yml`（16 个 job）；抽取出的 run 体 `bash -n` 通过、带 `#!/usr/bin/env bash` 时 `shellcheck -S info` 干净（SC2148 只在无 shebang 的片段上出现，runner 实际以 `bash -e {0}` 执行）；两个浅克隆给出 rc=1 / rc=0 的正确区分。零 Go / 前端变更。
+
 ### 修复（`isValidTransition` 半转换的裸状态字面量收进 `runstatus`，并补两条判据）
 
 - `internal/grpc/change_service.go:1630` 的 `isValidTransition` 里，九个 run 状态是**裸字面量**（`"paused"` / `"running"` / `"pending"` / `"approved"` / `"draft"` / `"planned"` / `"cancelled"` / `"completed"` / `"archived"`），而紧挨着它的 `archived` 那一支早已用 `runstatus.Status*` —— 一个函数里两种写法，正是"词表有第二个家"的形状（#153 与 `runs.status` 注释都为此付过账）。现在九处全部引用 `runstatus` 常量，**零行为变更**（同名字符串逐一替换）。
