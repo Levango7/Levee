@@ -183,6 +183,14 @@ configurable triggers, approver requirements, and timeout.
 3. 在 GitHub 上创建 Pull Request，目标分支为 main
 4. PR 标题遵循 Conventional Commits 格式
 
+> **base 决定 CI 存不存在**。`.github/workflows/ci.yml` 的 `pull_request` 触发只列了
+> `main` / `master` / `develop`。把 base 设成另一条功能分支（stacked PR 为了 diff 只剩
+> 自己那一笔常这样做）时，`ci.yml` 的 24 个 check run（含 `check (all jobs passed)`
+> 汇总，而它正是 master 分支保护里唯一的 required context）**一个都不会跑**——挂在
+> 那种 PR 上的只有 CodeQL 两条与第三方检查。于是"这个 PR 没有红"并不等于"CI 绿了"。
+> **改 base 也不会补跑**：GitHub 把切 base 记为 `edited`，不在 `ci.yml` 声明的默认事件
+> 类型里；要拿到覆盖，必须在该 PR 上再有一次真实推送。
+
 ### 5.2 PR 描述模板
 
 ```markdown

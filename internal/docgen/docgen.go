@@ -1,5 +1,5 @@
-// Package docgen generates the reference sections of docs/leveelang-spec.md
-// from the Go packages that own each vocabulary.
+// Package docgen generates the derived artefacts of this repository from the Go
+// packages that own each vocabulary.
 //
 // It exists because hand-maintained tables rot silently. Three concrete
 // instances found on 2026-09-25, all in the same document:
@@ -18,6 +18,19 @@
 // The rule: a table whose vocabulary has a Go owner is generated, not
 // written. A table with no Go owner (module lists, narrative examples) stays
 // prose — generating prose from nothing is just inventing it.
+//
+// Targets — each is one file with its own marker style and its own locate
+// function, and -check refuses to pass if ANY of them is stale:
+//
+//   - docs/leveelang-spec.md: the reference tables of the LeveeLang spec.
+//   - web/src/types/vocabulary.ts: the TypeScript value lists the console
+//     mirrors from Go. Before this target existed, the console unions were a
+//     hand-written copy and a Go test parsed that copy to compare it against
+//     the owner (internal/runstatus/vocabulary_guard_test.go). Parsing a hand
+//     copy to check it against the owner is the same shape of mistake that made
+//     the wire-contract guard compare a hand-copied DTO_READS table with itself
+//     (#153: three cluster-page readings stuck at their defaults, and no error
+//     anywhere). The generator removes the copy rather than policing it.
 //
 // Usage:
 //
@@ -42,16 +55,24 @@ import (
 	"github.com/nexus/levee/internal/runstatus"
 )
 
-// Managed blocks are delimited by these markers in docs/leveelang-spec.md.
+// Managed blocks are delimited by these markers in their target file.
 // Everything between BEGIN and END is owned by this generator; text outside is
 // prose and is never touched.
 //
 // A missing or malformed marker is an error rather than a silent no-op: the
 // whole point is that a stale table cannot survive, and a generator that
 // quietly stops finding its anchor is the same failure wearing a disguise.
+//
+// Two marker styles exist because the targets are two languages. A markdown
+// file can carry an HTML comment; a TypeScript file that will be read by
+// vue-tsc must use a line comment, and an HTML comment in a .ts file is a
+// syntax error rather than a comment.
 const (
 	beginFmt = "<!-- BEGIN GENERATED: %s -->"
 	endFmt   = "<!-- END GENERATED: %s -->"
+
+	tsBeginFmt = "// BEGIN GENERATED: %s"
+	tsEndFmt   = "// END GENERATED: %s"
 )
 
 // block is one managed region: a stable name and the function that renders its
@@ -61,55 +82,99 @@ type block struct {
 	body func() string
 }
 
-func blocks() []block {
-	return []block{
-		{"run-status", renderRunStatus},
-		{"batch-strategy", renderBatchStrategy},
-		{"approval-level", renderApprovalLevels},
+// target is one generated file: how to find it and prove it is the real thing,
+// which marker syntax that file can carry, and which blocks live in it.
+//
+// The locate function is per-target on purpose. Each one verifies a different
+// fingerprint ("this is the LEVEE spec", "this is the generated vocabulary"),
+// and a target that cannot prove what it is should fail rather than write into
+// a same-named file belonging to something else.
+type target struct {
+	name             string
+	locate           func(root string) (genPath, error)
+	beginFmt, endFmt string
+	blocks           []block
+}
+
+func targets() []target {
+	return []target{
+		{
+			name:     "docs/leveelang-spec.md",
+			locate:   locateSpec,
+			beginFmt: beginFmt,
+			endFmt:   endFmt,
+			blocks: []block{
+				{"run-status", renderRunStatus},
+				{"batch-strategy", renderBatchStrategy},
+				{"approval-level", renderApprovalLevels},
+			},
+		},
+		{
+			name:     "web/src/types/vocabulary.ts",
+			locate:   locateWebVocabulary,
+			beginFmt: tsBeginFmt,
+			endFmt:   tsEndFmt,
+			blocks: []block{
+				{"vocabulary", renderWebVocabulary},
+			},
+		},
 	}
 }
 
 func main() {
-	check := flag.Bool("check", false, "exit 1 if the spec is out of date instead of rewriting it")
+	check := flag.Bool("check", false, "exit 1 if a generated target is out of date instead of rewriting it")
 	root := flag.String("root", ".", "repository root")
 	flag.Parse()
 
-	specPath, err := locateSpec(*root)
-	if err != nil {
-		fail("%v", err)
-	}
-	original, rerr := os.ReadFile(specPath.path)
-	if rerr != nil {
-		fail("read %s: %v", specPath, rerr)
-	}
-
-	updated := string(original)
-	for _, b := range blocks() {
-		next, rerr := replaceBlock(updated, b)
-		if rerr != nil {
-			fail("block %q: %v", b.name, rerr)
+	stale := 0
+	for _, t := range targets() {
+		path, err := t.locate(*root)
+		if err != nil {
+			fail("%v", err)
 		}
-		updated = next
+		original, rerr := os.ReadFile(path.path)
+		if rerr != nil {
+			fail("read %s: %v", path, rerr)
+		}
+
+		updated := string(original)
+		for _, b := range t.blocks {
+			next, rerr := replaceBlockMarked(updated, b, t.beginFmt, t.endFmt)
+			if rerr != nil {
+				fail("target %s block %q: %v", path, b.name, rerr)
+			}
+			updated = next
+		}
+
+		if updated == string(original) {
+			continue
+		}
+		// Counted before branching: the write path has to know it changed
+		// something, otherwise the closing line would claim every target was
+		// already up to date in the same run that just rewrote two of them.
+		stale++
+		if *check {
+			fmt.Fprintf(os.Stderr, "%s is out of date.\n", path)
+			continue
+		}
+		if werr := writeInPlace(path, []byte(updated)); werr != nil {
+			fail("write %s: %v", path, werr)
+		}
+		fmt.Printf("regenerated %d block(s) in %s\n", len(t.blocks), path)
 	}
 
 	if *check {
-		if updated != string(original) {
+		if stale > 0 {
 			fmt.Fprintf(os.Stderr,
-				"%s is out of date. Run: go run ./internal/docgen\n", specPath)
+				"%d generated target(s) are stale. Run: go run ./internal/docgen\n", stale)
 			os.Exit(1)
 		}
-		fmt.Println("spec is up to date")
+		fmt.Printf("all %d generated targets are up to date\n", len(targets()))
 		return
 	}
-
-	if updated == string(original) {
-		fmt.Println("spec already up to date")
-		return
+	if stale == 0 {
+		fmt.Println("all generated targets already up to date")
 	}
-	if err := writeInPlace(specPath, []byte(updated)); err != nil {
-		fail("write %s: %v", specPath, err)
-	}
-	fmt.Printf("regenerated %d block(s) in %s\n", len(blocks()), specPath)
 }
 
 // locateSpec resolves docs/leveelang-spec.md under root and refuses anything
@@ -121,47 +186,59 @@ func main() {
 // a real, existing spec file is both the guard and a better error message: a
 // wrong -root now says "no leveelang-spec.md under X" instead of "no such
 // file or directory".
-func locateSpec(root string) (specPath, error) {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return specPath{}, fmt.Errorf("resolve root %q: %w", root, err)
-	}
-	info, err := os.Stat(absRoot)
-	if err != nil {
-		return specPath{}, fmt.Errorf("root %q: %w", root, err)
-	}
-	if !info.IsDir() {
-		return specPath{}, fmt.Errorf("root %q is not a directory", root)
-	}
-
-	path := filepath.Join(absRoot, "docs", "leveelang-spec.md")
-	doc, err := os.ReadFile(path)
-	if err != nil {
-		return specPath{}, fmt.Errorf("no docs/leveelang-spec.md under %q: %w", root, err)
-	}
-	// Cheap sanity check that this is the spec and not some other markdown.
-	if !bytes.Contains(doc, []byte("BEGIN GENERATED: run-status")) {
-		return specPath{}, fmt.Errorf("%s does not look like the LEVEE spec (missing generated-block markers)", path)
-	}
-	return specPath{path: path}, nil
-}
-
-// specPath is a docs/leveelang-spec.md path that has already been resolved and
-// verified by locateSpec.
+// genPath is a generated target's path that has already been resolved and
+// verified by the locate function that produced it.
 //
 // The distinct type is the point: gosec's taint analysis (G703) follows the
 // -root flag through to os.WriteFile and flags it, because the function is a
 // short-lived build-time tool whose -root is supplied by a developer or by CI
 // and never by an attacker. Wrapping the verified path in a type that can only
-// be produced by locateSpec both documents the invariant and breaks the taint
-// chain at a point a reader can check — rather than suppressing the rule with
-// a comment, which would also hide a future real traversal bug.
-type specPath struct{ path string }
+// be produced by a locate function both documents the invariant and breaks the
+// taint chain at a point a reader can check — rather than suppressing the rule
+// with a comment, which would also hide a future real traversal bug.
+//
+// Every target shares this type, so a new target cannot skip verification and
+// still reach the writer: there is no way to build a genPath outside a locate.
+type genPath struct{ path string }
 
-func (s specPath) String() string { return s.path }
+func (g genPath) String() string { return g.path }
 
-// writeInPlace rewrites a verified spec file while preserving its existing
-// permissions.
+// locateSpec resolves docs/leveelang-spec.md under root and refuses anything
+// that does not land inside it.
+//
+// The -root flag is command-line input, so joining it blindly would let a
+// caller (or a mistyped CI variable) write outside the repository — gosec's
+// taint analysis flags exactly that as G703. Confirming the resolved path is
+// a real, existing spec file is both the guard and a better error message: a
+// wrong -root now says "no leveelang-spec.md under X" instead of "no such
+// file or directory".
+func locateSpec(root string) (genPath, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return genPath{}, fmt.Errorf("resolve root %q: %w", root, err)
+	}
+	info, err := os.Stat(absRoot)
+	if err != nil {
+		return genPath{}, fmt.Errorf("root %q: %w", root, err)
+	}
+	if !info.IsDir() {
+		return genPath{}, fmt.Errorf("root %q is not a directory", root)
+	}
+
+	path := filepath.Join(absRoot, "docs", "leveelang-spec.md")
+	doc, err := os.ReadFile(path)
+	if err != nil {
+		return genPath{}, fmt.Errorf("no docs/leveelang-spec.md under %q: %w", root, err)
+	}
+	// Cheap sanity check that this is the spec and not some other markdown.
+	if !bytes.Contains(doc, []byte("BEGIN GENERATED: run-status")) {
+		return genPath{}, fmt.Errorf("%s does not look like the LEVEE spec (missing generated-block markers)", path)
+	}
+	return genPath{path: path}, nil
+}
+
+// writeInPlace rewrites a verified generated target while preserving its
+// existing permissions.
 //
 // A fixed 0644 argument would be flagged by gosec (G306) and would also be
 // wrong in the other direction: it would silently reset the mode of a file
@@ -171,15 +248,16 @@ func (s specPath) String() string { return s.path }
 // The G703 suppression follows the repository convention (see
 // cmd/levee/cmd_system.go:485, the same rule on an operator-named config
 // file): -root is build-time input — a developer flag or a CI variable — and
-// locateSpec refuses any root that does not contain the real, marker-bearing
-// docs/leveelang-spec.md, which TestLocateSpecRefusesForeignRoots verifies by
-// planting a decoy file and asserting it is rejected rather than rewritten.
-func writeInPlace(s specPath, data []byte) error {
+// every locate function refuses any root that does not contain the real,
+// marker-bearing target file, which TestLocateSpecRefusesForeignRoots and
+// TestLocateWebVocabularyRefusesDecoys verify by planting a decoy file and
+// asserting it is rejected rather than rewritten.
+func writeInPlace(s genPath, data []byte) error {
 	info, err := os.Stat(s.path)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, info.Mode().Perm()) // #nosec G703 -- see func doc; -root is build-time input and locateSpec verifies it
+	return os.WriteFile(s.path, data, info.Mode().Perm()) // #nosec G703 -- see func doc; -root is build-time input and the locate function verifies it
 }
 
 func fail(format string, args ...any) {
@@ -187,9 +265,22 @@ func fail(format string, args ...any) {
 	os.Exit(1)
 }
 
-// replaceBlock swaps the body of one managed block, leaving everything else
-// byte-identical.
+// replaceBlock swaps the body of one managed block using the markdown marker
+// style. Kept as the narrow entry point the marker tests speak to.
 func replaceBlock(doc string, b block) (string, error) {
+	return replaceBlockMarked(doc, b, beginFmt, endFmt)
+}
+
+// replaceBlockMarked swaps the body of one managed block, leaving everything
+// else byte-identical, for a target that declares its own marker syntax.
+//
+// Taking the marker formats as arguments rather than reading the package
+// constants is what lets a TypeScript target share this logic: the identity of
+// a block is its name plus the comment style its file can legally contain, and
+// silently reusing the HTML form in a .ts file would produce a file that no
+// longer compiles — a generator that breaks the build is worse than one that
+// writes a stale table.
+func replaceBlockMarked(doc string, b block, beginFmt, endFmt string) (string, error) {
 	begin := fmt.Sprintf(beginFmt, b.name)
 	end := fmt.Sprintf(endFmt, b.name)
 

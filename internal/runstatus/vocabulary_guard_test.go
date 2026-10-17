@@ -1,15 +1,18 @@
 // Package runstatus_test contains the cross-language guards. A vocabulary that
-// only the Go side knows about is still a vocabulary problem: the web UI keeps
-// a hand-written TypeScript mirror (it cannot import Go), and the docs keep
-// hand-written tables. Both are copies, and copies drift — that is how the UI
-// ended up querying a `pending_approval` status the backend never produced.
+// only the Go side knows about is still a vocabulary problem: the web UI needs
+// the list in TypeScript (it cannot import Go), and the docs need a table. Both
+// used to be hand-written copies, and copies drift — that is how the UI ended up
+// querying a `pending_approval` status the backend never produced.
+//
+// The web side is no longer a copy: internal/docgen writes it from this package,
+// so the tests here check the generated artifact and the wiring around it rather
+// than re-parsing a transcription and hoping it matches.
 package runstatus_test
 
 import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"testing"
 
@@ -36,64 +39,84 @@ func repoFile(t *testing.T, rel string) string {
 	return ""
 }
 
-// tsUnionMembers extracts the quoted members of a named TypeScript union type.
+// tsGeneratedList extracts the quoted members of a generated
+// `export const NAME = [ 'a', 'b', … ] as const` array, in file order.
 //
-// A TypeScript union alias needs no terminating semicolon, so matching up to
-// the first ";" runs off the end of the declaration and swallows every type
-// that follows — this guard's first version duly reported Priority and
-// TargetType values as run statuses. Instead: take the declaration's own
-// lines (they all start with "|" after the first) and stop at the first line
-// that does not.
-func tsUnionMembers(t *testing.T, src []byte, name string) []string {
+// It replaces tsUnionMembers, which parsed the hand-written `ChangeStatus` union
+// out of levee.ts. That declaration is gone, and the parser with it: the value
+// list now has exactly one TypeScript home, and internal/docgen writes it from
+// runstatus.All. A missing declaration therefore fails loudly here rather than
+// quietly returning nothing, which is the failure this guard's predecessor had
+// when the union's shape changed under its regexp.
+func tsGeneratedList(t *testing.T, src []byte, name string) []string {
 	t.Helper()
-	text := string(src)
-	start := regexp.MustCompile(`(?m)^export type ` + regexp.QuoteMeta(name) + `\s*=`).FindStringIndex(text)
-	require.Len(t, start, 2, "could not find `export type %s =` in levee.ts", name)
+	// Anchored on the opener and the closer so the scan cannot reach into the
+	// next declaration: an unanchored `[^\]]*` would swallow a sibling array's
+	// members and report them as this one's.
+	block := regexp.MustCompile(`(?ms)^export const ` + regexp.QuoteMeta(name) +
+		` = \[([^\]]*)\] as const`).FindStringSubmatch(string(src))
+	require.Len(t, block, 2,
+		"could not find `export const %s = […] as const` in the generated vocabulary — "+
+			"either the generator stopped emitting it or its output shape changed", name)
 
 	var members []string
-	rest := text[start[1]:]
-	for _, line := range strings.Split(rest, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if !strings.HasPrefix(trimmed, "|") {
-			break
-		}
-		for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(trimmed, -1) {
-			members = append(members, m[1])
-		}
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(block[1], -1) {
+		members = append(members, m[1])
 	}
-	require.NotEmpty(t, members, "no members parsed for the %s union", name)
+	require.NotEmpty(t, members, "%s parsed empty in the generated vocabulary — the regexp is blind", name)
 	return members
 }
 
-// TestWebStatusMirrorMatchesGo is the D-3 mechanism proper: the TypeScript
-// union in web/src/types/levee.ts must carry exactly the Go vocabulary — no
-// missing status (the UI would render it unlabelled) and no extra one (the UI
-// would offer a filter that can never match, which is precisely the
-// pending_approval bug: a silently empty list, no error anywhere).
+// TestWebStatusMirrorMatchesGo is the D-3 mechanism proper, aimed at the
+// generated artifact instead of at a hand copy: the TypeScript status list must
+// carry exactly the Go vocabulary — no missing status (the UI would render it
+// unlabelled) and no extra one (the UI would offer a filter that can never
+// match, which is precisely the pending_approval bug: a silently empty list, no
+// error anywhere).
+//
+// Comparing the whole slice, order included, is what makes both directions one
+// assertion. Order is not decorative here: it is the generator copying
+// runstatus.All verbatim, so a mismatch means the file was edited by hand
+// instead of regenerated.
 func TestWebStatusMirrorMatchesGo(t *testing.T) {
-	src, err := os.ReadFile(repoFile(t, "web/src/types/levee.ts"))
+	src, err := os.ReadFile(repoFile(t, "web/src/types/vocabulary.ts"))
 	require.NoError(t, err)
 
-	tsUnion := map[string]bool{}
-	for _, m := range tsUnionMembers(t, src, "ChangeStatus") {
-		tsUnion[m] = true
-	}
-	require.NotEmpty(t, tsUnion, "ChangeStatus union parsed empty — the regexp is stale")
+	assert.Equal(t, runstatus.All, tsGeneratedList(t, src, "CHANGE_STATUSES"),
+		"web/src/types/vocabulary.ts CHANGE_STATUSES has drifted from internal/runstatus.All; "+
+			"add the status to runstatus (with its label/colour), then run `go run ./internal/docgen` — "+
+			"never edit the TypeScript list by hand, it is a generated artifact")
+}
 
-	var goSet, tsSet []string
-	goSet = append(goSet, runstatus.All...)
-	for s := range tsUnion {
-		tsSet = append(tsSet, s)
-	}
-	sort.Strings(goSet)
-	sort.Strings(tsSet)
+// TestWebStatusVocabularyIsWiredNotCopied is the other half: the consumers must
+// read the generated list rather than keep their own. It exists because moving
+// the list is only half of killing a copy — if levee.ts re-declared the union
+// beside the generated one, the guard above would stay green while the UI read a
+// value that runstatus.All never produced.
+func TestWebStatusVocabularyIsWiredNotCopied(t *testing.T) {
+	vocab, err := os.ReadFile(repoFile(t, "web/src/types/vocabulary.ts"))
+	require.NoError(t, err)
+	assert.Contains(t, string(vocab), "export type ChangeStatus = (typeof CHANGE_STATUSES)[number]",
+		"the ChangeStatus union must be derived from the generated list; a hand-written union is a second copy")
 
-	assert.Equal(t, goSet, tsSet,
-		"web/src/types/levee.ts ChangeStatus has drifted from internal/runstatus.All; "+
-			"add the status to runstatus (with its label/colour) rather than to the UI only")
+	// The type the rest of the app imports.
+	consumer, err := os.ReadFile(repoFile(t, "web/src/types/levee.ts"))
+	require.NoError(t, err)
+	// Matched as a property, not as one spelling: `export type { X } from '…'`
+	// alone does not bring X into the file's own scope, so the honest form is an
+	// `import type` plus an `export type` — and pinning only the re-export form
+	// failed the run that fixed it. Either shape is fine; a declaration is not.
+	assert.Regexp(t, `(?:import|export)\s+type\s*\{[^}]*\bChangeStatus\b[^}]*\}\s+from\s+'\./vocabulary'`, string(consumer),
+		"web/src/types/levee.ts must obtain ChangeStatus from the generated vocabulary (import or re-export)")
+	assert.NotRegexp(t, `export type ChangeStatus\s*=`, string(consumer),
+		"web/src/types/levee.ts declares its own ChangeStatus union beside the generated one")
+
+	// And no status spelled as a literal there: the file that re-exports the
+	// vocabulary must not also re-state it.
+	for _, s := range runstatus.All {
+		assert.NotContains(t, string(consumer), "'"+s+"'",
+			"web/src/types/levee.ts spells the status %q by hand — that is the copy this file exists to remove", s)
+	}
 }
 
 // TestSpecStatusTableMatchesGo checks the documentation table. Prose is the

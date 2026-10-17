@@ -2,23 +2,23 @@
 //
 // The wire value is not a string constant set: `SessionState` is an int enum and
 // the REST/JSON surface carries whatever `SessionState.String()` returns
-// (internal/conversation/session.go:52-70). That makes the mirror easy to get
-// wrong in two ways — a new enum member nobody mapped, and the `default:` branch
-// of String() ("unknown") being mistaken for a state the machine can be in.
-// internal/conversation/session_state_vocabulary_test.go parses String()'s own
-// return values rather than restating them, so both are caught.
+// (internal/conversation/session.go:52-70). That makes the mirror easy to get wrong
+// in two ways — a new enum member nobody mapped, and the `default:` branch of
+// String() ("unknown") being mistaken for a state the machine can be in. Both are
+// now pinned in the owner package: internal/conversation/vocabulary.go derives the
+// names from String() itself (so there is no second list to forget to update), and
+// vocabulary_ownership_test.go checks the enum's upper bound and that no two states
+// share a spelling. The list below is generated from that data by internal/docgen.
 
-export const SESSION_STATES = [
-  'idle',
-  'diagnosing',
-  'recommending',
-  'reviewing',
-  'executing',
-  'done',
-  'failed',
-  'unknown',
-] as const
-export type SessionStateName = (typeof SESSION_STATES)[number]
+import type { SessionStateName } from '@/types/vocabulary'
+import { SESSION_STATES } from '@/types/vocabulary'
+
+// Re-exported, not re-declared. `unknown` is in the vocabulary because a row whose
+// value is out of range reaches the console as that word — it is still not a state
+// the state machine transitions into, which is why the label below says 未知 rather
+// than naming a phase.
+export { SESSION_STATES }
+export type { SessionStateName }
 
 const LABEL_BY_STATE: Record<SessionStateName, string> = {
   idle: '等待输入',

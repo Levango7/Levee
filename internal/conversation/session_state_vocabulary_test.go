@@ -1,12 +1,16 @@
-// session_state_vocabulary_test.go — 会话状态的 UI 镜像必须与 String() 的真值一致。
+// session_state_vocabulary_test.go — 会话状态的 UI 侧必须用生成物，且标签表要覆盖每个状态。
 //
 // ConversationView 曾经把 `s.state` 的线上原值直接当文案渲染（还自带一个只认识 failed/done
-// 的三元判色），修法是 web/src/utils/session.ts 那张表。表是抄件，所以要钉回源头。
+// 的三元判色），修法是 web/src/utils/session.ts 那张表。表原本是抄件，所以要钉回源头；现在
+// 源头到前端的值是 internal/docgen 从本包 `SessionStateNames()` 生成到
+// web/src/types/vocabulary.ts 的，因此这里剩两件事可查：① 生成物与本包数据仍然逐项相等
+// （生成器跑过、产物没被手改）；② session.ts 只是接线，不再自己声明一份，而**标签表**
+// 必须覆盖每个状态——中文措辞没有 Go owner，是唯一还得手工钉的那一半。
 //
-// 源头不是一个常量组，而是 `SessionState.String()` 的 **return 语句**（session.go:52-70）：
-// 这个枚举是 int，落库/上线的是它的字符串名。因此守卫解析的就是那些 return 值——新增一个
-// 枚举成员而没有在 String() 里命名，或命名了而 UI 没配标签，都会在这里变红。复述一份清单
-// 则两种情况都抓不到。
+// 源头不是一个常量组，而是 `SessionState.String()` 的返回值（session.go:52-70）：这个枚举是
+// int，落库/上线的是它的字符串名。SessionStateNames() 直接从 String() 取值，所以没有第二份
+// 清单可忘；"枚举上界没跟着放宽"与"某个状态漏了 case（于是和越界兜底同名）"由本包的
+// vocabulary_ownership_test.go 钉住。
 package conversation
 
 import (
@@ -34,54 +38,59 @@ func sessionRepoFile(t *testing.T, rel string) string {
 	return ""
 }
 
-// stringMethodValues returns the quoted values SessionState.String() can produce,
-// in source order, by taking the body of that one method rather than every
-// `return "…"` in the file.
-func stringMethodValues(t *testing.T) []string {
+// readSessionFile returns a checked-in source file as text. Both web-side tests
+// below read the same way, so a read failure is a locate error rather than an
+// assertion about an empty string.
+func readSessionFile(t *testing.T, rel string) string {
 	t.Helper()
-	raw, err := os.ReadFile(sessionRepoFile(t, "internal/conversation/session.go"))
+	raw, err := os.ReadFile(sessionRepoFile(t, rel))
 	require.NoError(t, err)
+	return string(raw)
+}
 
-	body := regexp.MustCompile(`(?ms)^func \(s SessionState\) String\(\) string \{\n([\s\S]*?)^\}$`).FindStringSubmatch(string(raw))
-	require.Len(t, body, 2, "could not find `func (s SessionState) String() string { … }` — its shape changed")
-
+// generatedVocabularyList reads one array out of the GENERATED vocabulary file.
+//
+// Reading the shipped artefact is not the guard's old shape: it used to parse
+// session.ts, a hand-written transcription, and compare that with String()'s return
+// values it also parsed. That can only see the copy disagreeing with the parser —
+// never the two of them disagreeing with the server, which is how #153 shipped.
+func generatedVocabularyList(t *testing.T, constName string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(sessionRepoFile(t, "web/src/types/vocabulary.ts"))
+	require.NoError(t, err)
+	block := regexp.MustCompile(`(?ms)^export const ` + regexp.QuoteMeta(constName) +
+		` = \[([^\]]*)\] as const`).FindStringSubmatch(string(raw))
+	require.Len(t, block, 2,
+		"web/src/types/vocabulary.ts declares no `export const %s = […] as const` — the generator stopped emitting it, "+
+			"or its shape changed and this guard went blind", constName)
 	var out []string
-	for _, m := range regexp.MustCompile(`(?m)^[ \t]*return "([^"]+)"$`).FindAllStringSubmatch(body[1], -1) {
+	for _, m := range regexp.MustCompile(`'([^']+)'`).FindAllStringSubmatch(block[1], -1) {
 		out = append(out, m[1])
 	}
-	require.NotEmpty(t, out, "SessionState.String() has no return-with-literal lines")
+	require.NotEmpty(t, out, "%s parsed empty from the generated vocabulary", constName)
 	return out
 }
 
 func TestWebSessionMirrorMatchesStringMethodValues(t *testing.T) {
-	raw, err := os.ReadFile(sessionRepoFile(t, "web/src/utils/session.ts"))
-	require.NoError(t, err)
-	text := string(raw)
+	assert.Equal(t, SessionStateNames(), generatedVocabularyList(t, "SESSION_STATES"),
+		"web/src/types/vocabulary.ts SESSION_STATES has drifted from conversation.SessionStateNames(); "+
+			"add the state (and its String() case) in session.go, then run `go run ./internal/docgen`")
 
-	decl := regexp.MustCompile(`(?ms)^export const SESSION_STATES = \[\n?([^\]]*)\] as const$`).FindStringSubmatch(text)
-	require.Len(t, decl, 2, "could not find the `export const SESSION_STATES = [...] as const` declaration")
-	ui := map[string]bool{}
-	for _, m := range regexp.MustCompile(`['"]([^'"]+)['"]`).FindAllStringSubmatch(decl[1], -1) {
-		ui[m[1]] = true
-	}
-	require.NotEmpty(t, ui, "SESSION_STATES parsed empty")
-
-	emitted := map[string]bool{}
-	for _, v := range stringMethodValues(t) {
-		emitted[v] = true
-		assert.True(t, ui[v], "session state %q can be emitted by String() but has no entry in web/src/utils/session.ts", v)
-	}
-	for v := range ui {
-		assert.True(t, emitted[v], "web SESSION_STATES lists %q, which SessionState.String() never emits", v)
-	}
-	assert.Equal(t, len(emitted), len(ui), "the two vocabularies differ in size, so one side has an entry the other lacks")
+	source := readSessionFile(t, "web/src/utils/session.ts")
+	assert.NotRegexp(t, `(?m)^export const SESSION_STATES\s*=\s*\[`, source,
+		"web/src/utils/session.ts re-declares SESSION_STATES as its own array — that is the second copy the generated vocabulary exists to remove")
+	assert.NotRegexp(t, `(?m)^export type SessionStateName\s*=`, source,
+		"web/src/utils/session.ts declares its own SessionStateName union beside the generated one")
+	assert.Regexp(t, `import type \{[^}]*\bSessionStateName\b[^}]*\} from '@/types/vocabulary'`, source,
+		"web/src/utils/session.ts must take SessionStateName from the generated vocabulary (import + export, so the label table can use it)")
+	assert.Regexp(t, `(?m)^export \{[^}]*\bSESSION_STATES\b[^}]*\}`, source,
+		"web/src/utils/session.ts must keep re-exporting SESSION_STATES — ./session.spec.ts and ConversationView read it from here")
 }
 
 func TestWebSessionLabelsCoverEveryState(t *testing.T) {
-	raw, err := os.ReadFile(sessionRepoFile(t, "web/src/utils/session.ts"))
-	require.NoError(t, err)
+	source := readSessionFile(t, "web/src/utils/session.ts")
 
-	block := regexp.MustCompile(`(?m)^const LABEL_BY_STATE: Record<SessionStateName, string> = \{\n([\s\S]*?)^\}$`).FindStringSubmatch(string(raw))
+	block := regexp.MustCompile(`(?m)^const LABEL_BY_STATE: Record<SessionStateName, string> = \{\n([\s\S]*?)^\}$`).FindStringSubmatch(source)
 	require.Len(t, block, 2, "could not find `LABEL_BY_STATE: Record<SessionStateName, string>` — its shape changed")
 	keys := map[string]bool{}
 	for _, m := range regexp.MustCompile(`(?m)^[ \t]*(\w+):`).FindAllStringSubmatch(block[1], -1) {
@@ -89,7 +98,7 @@ func TestWebSessionLabelsCoverEveryState(t *testing.T) {
 	}
 	require.NotEmpty(t, keys, "LABEL_BY_STATE parsed empty")
 
-	for _, v := range stringMethodValues(t) {
-		assert.True(t, keys[v], "session state %q has no sessionStateLabel entry — the Chinese page would render %q verbatim", v, v)
+	for _, v := range SessionStateNames() {
+		assert.Truef(t, keys[v], "session state %q has no sessionStateLabel entry — the Chinese page would render %q verbatim", v, v)
 	}
 }

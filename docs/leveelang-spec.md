@@ -32,13 +32,13 @@
 ### 0.2 命名约定
 
 - **产品面文案、API 语义、错误信息一律用「变更 / change」**，不用「工作流」描述一次运行中的事务。`workflow` 只在三种场合出现：LEVEELang 文档里的 DSL 关键字、`workflow_file` / `workflow_content` 这类**指向定义文件**的字段名、以及"这个 DSL 定义本身叫什么"。
-- **状态词表的唯一权威**是 `internal/grpc/change_service.go` 的状态机定义。UI、REST 过滤、proto 注释、CLI 终态矩阵、metrics 标签全部由它派生，不得各自维护副本。
+- **状态词表的唯一权威**是 `internal/runstatus`（15 个状态常量与 `Terminal` / `RetryAdmitted` / `RollbackAdmitted` 等派生集合）。`change_service.go` 的状态机、UI、REST 过滤、proto 注释、CLI 终态矩阵、metrics 标签都不得各自维护另一份名字集合。
 - **枚举词表的唯一权威是对应 Go 包**（如 `dsl.BatchStrategies`、`plan` 的状态集）。解析器与执行器必须引用同一份，跨层一致性由测试钉住。
 - **治理字段必须进 plan 哈希**。任何影响"会发生什么"的声明（审批、回滚命令、快照路径、门禁、幂等声明、不可逆标记）若不在 `canonicalPlanV2` 覆盖范围内，就等于批准后可被改写。
 
 ### 0.3 run 状态词表
 
-> **权威来源**：`internal/runstatus`（Go 包）。本表由 `internal/docgen` 生成，CI 以 `go run ./internal/docgen -check` 校验（漂移即红）。Web UI 的 TypeScript 联合类型、CLI 终态矩阵、proto 注释、metrics 标签、REST 过滤都必须与它一致；`TestWebStatusMirrorMatchesGo` 另行钉住前端镜像。
+> **权威来源**：`internal/runstatus`（Go 包）。本表由 `internal/docgen` 生成，CI 以 `go run ./internal/docgen -check` 校验（漂移即红）。Web UI 的取值清单由同一台生成器写进 `web/src/types/vocabulary.ts`（2026-10-16 起，此前是手抄的 TypeScript 联合类型），`TestWebStatusMirrorMatchesGo` 钉住那份产物与 `runstatus.All` 逐项相等、`TestWebStatusVocabularyIsWiredNotCopied` 钉住消费方只再导出不再抄写；CLI 终态矩阵、proto 注释、metrics 标签、REST 过滤同样必须与它一致。
 
 <!-- BEGIN GENERATED: run-status -->
 <!-- 本表由 internal/docgen 从 internal/runstatus 生成，请勿手工编辑。 -->

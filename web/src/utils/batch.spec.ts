@@ -1,19 +1,26 @@
 import { describe, expect, it } from 'vitest'
+
+import { BATCH_STATES as BATCH_STATES_FROM_OWNER } from '@/types/vocabulary'
+
 import { BATCH_STATES, batchBarStatus, batchLabel, batchProgress, batchTagType } from './batch'
 
-// The vocabulary under test is internal/state/store.go's, not the UI's wish:
-// pending | running | completed | done | failed | rolled_back | interrupted —
-// all seven constants, listed and pinned by the first case below.
-
+// The vocabulary under test is internal/state's, not the UI's wish — and this file is
+// no longer where its members are written down: ./batch.ts re-exports the array that
+// internal/docgen generates from state.BatchStateNames(). Asserting the seven
+// spellings here again would just be a third copy.
+//
+// What the Go side now owns: a constant added to store.go without joining
+// BatchStateNames() is caught by internal/state/vocabulary_ownership_test.go, and a
+// generated file that no longer equals that list is caught by
+// batch_status_vocabulary_test.go (plus `docgen -check` in CI). What only this layer
+// can prove is the wiring — that ./batch.ts hands out the very same object instead of
+// a transcription of it. That is not a weaker claim than the old one: the literal list
+// it replaces passed happily while ./batch.ts held its own copy.
 describe('BATCH_STATES', () => {
-  it('is exactly the seven spellings internal/state declares', () => {
-    // Sorted so the assertion says something about the set, not about the order
-    // this file happens to list it in. The cross-language half of this pin lives
-    // in internal/state/batch_status_vocabulary_test.go: a constant added there
-    // without a label/colour mapping here turns that Go test red.
-    expect([...BATCH_STATES].sort()).toEqual(
-      ['completed', 'done', 'failed', 'interrupted', 'pending', 'rolled_back', 'running'].sort(),
-    )
+  it('arrives from the generated vocabulary instead of a copy in ./batch.ts', () => {
+    expect(BATCH_STATES).toBe(BATCH_STATES_FROM_OWNER)
+    expect(BATCH_STATES.length).toBeGreaterThan(0)
+    expect(new Set(BATCH_STATES).size).toBe(BATCH_STATES.length)
   })
 })
 

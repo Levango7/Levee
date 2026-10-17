@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  NODE_ROLES as NODE_ROLES_FROM_OWNER,
+  NODE_STATUSES as NODE_STATUSES_FROM_OWNER,
+} from '@/types/vocabulary'
+
+import {
   NODE_ROLES,
   NODE_STATUSES,
   nodeRoleLabel,
@@ -10,13 +15,21 @@ import {
 
 // The vocabularies under test are internal/cluster's typed groups
 // (internal/cluster/node.go) — NodeStatus and NodeRole — not the batch or assignment
-// ones the same page also renders. internal/cluster/node_vocabulary_test.go pins both
-// lists against those constants and additionally checks that every tone used here has
-// a rule in web/src/styles/base.css; this file covers the label/tone behaviour.
+// ones the same page also renders. Neither list is written down in this repo's
+// TypeScript any more: ./node.ts re-exports what internal/docgen generates from
+// cluster.NodeStatusNames() / NodeRoleNames().
+//
+// So this file does not restate members (that would be a third copy, and the copy is
+// the thing we removed). internal/cluster/node_vocabulary_test.go owns the claims it
+// used to make — the artefact equals the owner's data, node.ts is wired rather than
+// copying, and every tone used here has a real rule in web/src/styles/base.css — and
+// the cases below cover the label/tone behaviour plus the identity of the re-export.
 
 describe('NODE_ROLES', () => {
-  it('is exactly the two roles internal/cluster declares', () => {
-    expect([...NODE_ROLES].sort()).toEqual(['master', 'worker'])
+  it('arrives from the generated vocabulary instead of a copy in ./node.ts', () => {
+    expect(NODE_ROLES).toBe(NODE_ROLES_FROM_OWNER)
+    expect(NODE_ROLES.length).toBeGreaterThan(0)
+    expect(new Set(NODE_ROLES).size).toBe(NODE_ROLES.length)
   })
 
   it('names every declared role in Chinese', () => {
@@ -33,8 +46,10 @@ describe('NODE_ROLES', () => {
 })
 
 describe('NODE_STATUSES', () => {
-  it('is exactly the three states internal/cluster declares', () => {
-    expect([...NODE_STATUSES].sort()).toEqual(['active', 'leaving', 'offline'])
+  it('arrives from the generated vocabulary instead of a copy in ./node.ts', () => {
+    expect(NODE_STATUSES).toBe(NODE_STATUSES_FROM_OWNER)
+    expect(NODE_STATUSES.length).toBeGreaterThan(0)
+    expect(new Set(NODE_STATUSES).size).toBe(NODE_STATUSES.length)
   })
 
   it('names every declared state in Chinese', () => {

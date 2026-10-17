@@ -17,16 +17,23 @@
 // backend seam is pinned by internal/wiring/batch_summary_seam_test.go.
 
 import type { BatchProgressDTO } from '@/api'
+import type { BatchState } from '@/types/vocabulary'
+import { BATCH_STATES } from '@/types/vocabulary'
 
-// The seven spellings a batch row can carry. This list, and not a switch
-// statement, is the source of truth below: keyed `Record`s make "no label / no
-// colour for the new state" a compile error instead of a silent fallback, which
-// is how a finished batch came to be drawn grey with the English word on it.
-// internal/state/batch_status_vocabulary_test.go pins this list against
-// internal/state/store.go's constants, so the Go side cannot add a spelling
-// without turning a test red here.
-export const BATCH_STATES = ['pending', 'running', 'completed', 'done', 'failed', 'rolled_back', 'interrupted'] as const
-export type BatchState = (typeof BATCH_STATES)[number]
+// The seven spellings a batch row can carry. The list is GENERATED from
+// internal/state.BatchStateNames() by internal/docgen and re-exported here — the
+// import + export pair (not `export … from`) is what keeps the name usable in the
+// keyed tables below.
+//
+// This list, and not a switch statement, is still the source of truth for what
+// those tables must cover: keyed `Record`s make "no label / no colour for the new
+// state" a compile error instead of a silent fallback, which is how a finished
+// batch once came to be drawn grey with the English word on it. What changed is
+// where the members come from — internal/state/batch_status_vocabulary_test.go used
+// to parse both store.go's constants and the copy below, and parsing a copy is how
+// #153 stayed green while three readings on the cluster page sat at their defaults.
+export { BATCH_STATES }
+export type { BatchState }
 
 export type TagTone = 'success' | 'danger' | 'warning' | 'info' | 'primary'
 export type BarStatus = 'success' | 'exception' | 'warning' | undefined
