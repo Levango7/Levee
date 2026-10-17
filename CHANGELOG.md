@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 变更（第一笔 rebase 落地后回填实测：`mergeCommit` 不为 null，而祖先关系断言失效）
+
+- **#174 已用 `--rebase` 落地**，master tip `4ab1b10`，`git rev-list --parents -1 origin/master` 实测父数 = **1** —— 线性历史从这一笔起成立，本节是它的实测回填。
+- **上一节里的一条"预期"被实测否掉，收回原因写在这里而不是静默改掉**：`gh pr view 174 --json mergeCommit` 返回的是 `4ab1b10`，**不是 null**。原文按"GitHub 不造合并提交"推出"字段为空"，推错了对象——`mergeCommit` 报的是**落到 master 上的那笔提交**，与它是不是合并提交无关。影响面现查为零（`scripts/`、`.github/`、`internal/` 无任何地方读 `mergeCommit` / `baseRefOid` / `mergedAt`），所以没有门禁被这条误判掩护；但"rebase ⇒ mergeCommit 为空"这个假设本身是错的，已在 §5.4 改写。
+- **实测出来的真坑是 sha 重写**：同一笔改动 PR 侧 `841d7f0`、master 侧 `4ab1b10`，`git diff --stat 841d7f0 4ab1b10` 为空 —— **树相同、sha 不同**。于是 ① `gh pr view --json commits` 给的是 rebase 前的 sha，它不在 master 谱系上；② 本仓反复使用的 `git merge-base --is-ancestor <PR头> origin/master`（今天核 #172 / #173 用的就是它）在 rebase 落地后会**假阴性**，判据必须换成 `mergeCommit.oid` / `git log --grep` / 比树三选一。这条对本仓库的取证习惯影响比对新代码更大，因此同时写进 `CONTRIBUTING.md` §5.4。
+- **验证**：`CONTRIBUTING.md` 结构未破（`### 5.4` 与 `## 第6章 测试要求` 各计数 1）；CHANGELOG 结构守卫在内 `python -m unittest discover -s scripts` 48 tests OK；纯文档改动，无 Go / CI / 前端文件命中。
+
 ### 变更（协作口径：PR 改用 rebase 落地，既有历史不改写）
 
 - **落地方式从 merge commit 换成 `gh pr merge <n> --rebase`**，规则写在 `CONTRIBUTING.md` §5.4（新增一节）。此前每个 PR 都是一个双父的 `Merge pull request #N`，而这种提交在这里不携带决策——它只是把分支名再抄一遍；squash 也不取，它会把"一笔提交＝一个决定"压掉，而分笔正是各批次把守卫与产品码分开的用意。**历史不改写**：master 上 `385d772` / `ff669ed` / `5139395f` 等合并提交仍是当时的事实，两种形状并存是预期而不是脏。
