@@ -22,9 +22,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/permission"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,6 +42,17 @@ type ConversationService struct {
 	// log is the structured logger. When nil the package-level singleton
 	// from internal/log is used.
 	log *slog.Logger
+
+	// authorizer polices driving the remediation dialogue. It asks `plan`
+	// against the request's environment, which the conversation request does
+	// not carry — see gateConversation for why that lands on the default
+	// environment rather than being guessed. It is not redundant with the
+	// downstream check: the engine's only mutation is CreateChangeDraft,
+	// which goes through ChangeService.CreateChange and is policed again with
+	// the real environment. What this gate owns is the earlier question —
+	// whether this subject may drive the dialogue, spend the LLM budget, and
+	// have the engine run its read-only collectors at all.
+	authorizer *authz.Authorizer
 
 	// mu guards subscribers.
 	mu sync.RWMutex
@@ -71,6 +84,34 @@ func NewConversationService(engine *conversation.ConversationEngine, lg *slog.Lo
 	}
 }
 
+// WithAuthorizer installs the policy authorizer consulted by SendMessage and
+// SubscribeConversation, matching the other services' pattern.
+func (s *ConversationService) WithAuthorizer(a *authz.Authorizer) *ConversationService {
+	s.authorizer = a
+	return s
+}
+
+// gateMessage asks whether this subject may drive the remediation dialogue at
+// all. The env argument is deliberately empty: SendMessageRequest carries no
+// environment (session/user/text only), and inventing one — reading it off the
+// session's last alert, or assuming the caller's team's "main" env — would be
+// judging a fact this layer does not have. Empty means "let the authorizer
+// apply permission.default_env", the same fallback every other env-less call
+// uses, and it is the fallback the operator configured on purpose.
+//
+// The mutation this dialogue can reach is policed again where the environment
+// IS known (ChangeService.CreateChange asks `plan` with the change's own
+// environment), so a grant here never stands in for the real check.
+func (s *ConversationService) gateMessage(ctx context.Context, rpc string) error {
+	return authorizeResource(ctx, s.authorizer, "", permission.ActionPlan, rpc)
+}
+
+// gateRead is gateMessage's read twin: `view`, with the unattributable caller
+// admitted by the shared read rule rather than by this service.
+func (s *ConversationService) gateRead(ctx context.Context, rpc string) error {
+	return authorizeResourceRead(ctx, s.authorizer, "", rpc)
+}
+
 // --- SendMessage -----------------------------------------------------------
 
 // SendMessage forwards a single user message to the conversation engine
@@ -97,6 +138,9 @@ func (s *ConversationService) SendMessage(ctx context.Context, req *pb.SendMessa
 	}
 	if s.engine == nil {
 		return nil, status.Error(codes.Unimplemented, "conversation engine not configured")
+	}
+	if err := s.gateMessage(ctx, "SendMessage"); err != nil {
+		return nil, err
 	}
 
 	sessionID := req.GetSessionId()
@@ -131,6 +175,12 @@ func (s *ConversationService) SubscribeConversation(req *pb.SubscribeRequest, st
 		req = &pb.SubscribeRequest{}
 	}
 	ctx := stream.Context()
+	// A stream is a read, and an open stream keeps receiving every reply in
+	// the filtered scope — policing it once at open time is what makes
+	// "subscribe" no less a read than "list".
+	if err := s.gateRead(ctx, "SubscribeConversation"); err != nil {
+		return err
+	}
 
 	ch := make(chan *pb.ReplyMessage, 32)
 	subID := s.addSubscriber(&convSubscriber{

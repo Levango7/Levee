@@ -1333,7 +1333,17 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	if diagErr != nil {
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)
 	}
-	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default())
+	// The resolver deliberately reads the TENANT-WRAPPED store, unlike
+	// agentSvc above: a host outside this caller's tenant resolves to
+	// "not known" and Diagnose is refused, which is the safe answer. Handing it
+	// `state.Underlying(store)` would resolve the real environment instead — and
+	// a caller holding `apply` in dev could then diagnose another tenant's host,
+	// because the matrix knows nothing about tenancy and nothing downstream
+	// re-checks it. The cost is a refusal message that says the inventory does
+	// not know the host when the narrower truth is that it is not yours.
+	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default()).
+		WithAuthorizer(authzSvc).
+		WithTargetEnvResolver(grpc.TargetEnvResolver(store))
 	// Multi-turn LLM reasoning on top of the rule-based diagnosis, when the
 	// ai.llm section is enabled. A CONVERGED (corroborated) reasoning result
 	// refines the report; anything else keeps the rule-based answer.
@@ -1346,7 +1356,7 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 		}
 	}
 	convEngine := newServeConvEngine(cfg, changeSvc, buildServeKnowledgeBase(cfg, changeSvc))
-	convSvc := grpc.NewConversationService(convEngine, slog.Default())
+	convSvc := grpc.NewConversationService(convEngine, slog.Default()).WithAuthorizer(authzSvc)
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the
 	// REST gateway's /changes/deeplink/* routes work out of the box. Push

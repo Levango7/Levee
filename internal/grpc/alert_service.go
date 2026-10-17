@@ -79,6 +79,25 @@ func NewAlertService(gateway *alert.AlertGateway, lg *slog.Logger) *AlertService
 // ReceiveAlert ingests a single alert, stores it in the in-memory ring and
 // broadcasts it to all active subscribers. The alert id is taken from the
 // request when present, otherwise a fingerprint is generated.
+//
+// This service is deliberately NOT judged against the team × environment
+// policy, and the reason is a fact about the payload rather than an oversight:
+// AlertMessage carries id / source / severity / ends_at only — no team, no
+// environment, and no target whose labels could be resolved to one. There is
+// nothing for the authorizer to decide against, and two tempting shortcuts both
+// lie: judging it in permission.default_env would grant or refuse a monitoring
+// feed by whoever happens to own the default environment, and adding a
+// diagnose/alert action token would fail open on every existing matrix (an
+// unlisted action has no grant, and this deployment posture is
+// no-matrix-means-not-enforced, see authz.Authorizer.Decide).
+//
+// What guards ingestion today is authentication only: the RPC is not in
+// skipAuthMethods, so it requires a valid token, but any valid token may post
+// an alert. The open item, registered rather than papered over, is an ingress
+// identity for alert sources (per-source credential or signature, so "which
+// monitor may speak" is answerable) plus a visibility rule for GetAlertStatus /
+// SubscribeAlerts, which currently expose the alert stream to every
+// authenticated caller regardless of team.
 func (s *AlertService) ReceiveAlert(ctx context.Context, req *pb.AlertMessage) (*pb.AlertResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")

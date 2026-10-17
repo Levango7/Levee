@@ -1,6 +1,7 @@
 // serve_policy_wiring_test.go proves the property the service-level tests
 // cannot: that the process `levee serve` actually starts installs the policy
-// authorizer into every service it registers.
+// authorizer into every service it registers — and that the services it does
+// NOT police are a decision somebody wrote down.
 //
 // A gate that exists in a service struct is not a gate. Before this file, no
 // test in cmd/levee referenced the authorizer at all — `changeSvc.WithAuthorizer`
@@ -10,18 +11,39 @@
 // consequence of the wiring: a subject the matrix does not grant is refused by
 // the service the running process would use, and an unconfigured deployment is
 // not.
+//
+// The list of services is not hand-carried any more. It is enumerated from the
+// compiled proto descriptors (servedProtoServices), so a service added to
+// proto/levee*.proto has to be classified here before the suite goes green:
+// either it gets a policed probe, or it appears in the exemption table with a
+// reason. That is the failure mode this batch exists to close — alert,
+// diagnosis and conversation were served for months while the census said
+// "seven services", and nothing went red.
+//
+// The exemption table is asserted too, not just trusted: an entry needs a
+// non-empty reason AND at least one call to probe, every exempt call must
+// answer an ungranted subject and a granted subject identically (that is what
+// "not policed" means as an observable), and the two sets must be disjoint and
+// together equal the census. An exemption list that could grow silently would
+// be the same decoration the wire-contract `forbid` list was before it was
+// enforced.
 package main
 
 import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc"
@@ -62,8 +84,26 @@ users:
     role: steward
 `
 
+// protoPkg is the package the served API declares its services in; the census
+// is every service in it, whether or not this file remembers to classify them.
+const protoPkg = "levee"
+
+const (
+	svcAlert        = protoPkg + ".AlertService"
+	svcAgent        = protoPkg + ".AgentService"
+	svcAudit        = protoPkg + ".AuditService"
+	svcChange       = protoPkg + ".ChangeService"
+	svcConversation = protoPkg + ".ConversationService"
+	svcDiagnosis    = protoPkg + ".DiagnosisService"
+	svcInventory    = protoPkg + ".InventoryService"
+	svcSystem       = protoPkg + ".SystemService"
+	svcTarget       = protoPkg + ".TargetService"
+	svcTemplate     = protoPkg + ".TemplateService"
+)
+
 // newWiringServices builds the services exactly the way `levee serve` does,
-// over a throwaway data directory and store.
+// over a throwaway data directory and store, and seeds the rows the probes
+// judge: a dev run, a prod run, and a dev- labelled host.
 func newWiringServices(t *testing.T, withMatrix bool) (serveServices, state.Store) {
 	t.Helper()
 	dir := t.TempDir()
@@ -85,7 +125,26 @@ func newWiringServices(t *testing.T, withMatrix bool) (serveServices, state.Stor
 
 	svcs, err := buildServeServices(store, cfg, nil)
 	require.NoError(t, err, "buildServeServices must work on a zero config")
+	seedWiringData(t, store)
 	return svcs, store
+}
+
+func seedWiringData(t *testing.T, store state.Store) {
+	t.Helper()
+	ctx := context.Background()
+	// A dev run so the change and audit probes have something the granted
+	// subject IS entitled to; a prod run so a gate that judged the wrong
+	// environment would still be caught by the fleet-write test below.
+	require.NoError(t, store.CreateRun(ctx, &state.Run{
+		ID: "run-dev", WorkflowName: "name: dev\n", Status: "approved", IncidentID: "dev",
+	}))
+	require.NoError(t, store.CreateRun(ctx, &state.Run{
+		ID: "run-prod", WorkflowName: "name: prod\n", Status: "approved", IncidentID: "prod",
+	}))
+	require.NoError(t, store.UpsertTarget(ctx, &state.Target{
+		ID: "tgt-dev-1", Hostname: "dev-1.example", ChannelType: "ssh", Port: 22,
+		Status: "active", Labels: map[string]string{"env": "dev"}, CreatedAt: time.Now().UTC(),
+	}))
 }
 
 func deniedAs(t *testing.T, want codes.Code, err error, rpc string) {
@@ -96,44 +155,315 @@ func deniedAs(t *testing.T, want codes.Code, err error, rpc string) {
 	assert.Equal(t, want, st.Code(), "%s: %v", rpc, err)
 }
 
-// TestServeInstallsPolicyInEveryService is the wiring guard: each of the seven
-// services the process polices refuses an unknown subject, through the code
-// path a real request would take. (Alert, diagnosis and conversation are served
-// but not policed, so they are deliberately not in this list.)
-func TestServeInstallsPolicyInEveryService(t *testing.T) {
-	svcs, store := newWiringServices(t, true)
-	require.True(t, svcs.authzSvc.Enforced(), "the fixture must produce an enforced matrix")
+// servedProtoServices enumerates the universe the census has to cover, from the
+// descriptors the binary carries — not from a list this file could forget.
+func servedProtoServices(t *testing.T) []string {
+	t.Helper()
+	var names []string
+	protoregistry.GlobalFiles.RangeFilesByPackage(protoreflect.FullName(protoPkg), func(fd protoreflect.FileDescriptor) bool {
+		svcs := fd.Services()
+		for i := 0; i < svcs.Len(); i++ {
+			names = append(names, string(svcs.Get(i).FullName()))
+		}
+		return true
+	})
+	sort.Strings(names)
+	// A census that came back empty would make every assertion below vacuously
+	// true, which is the same silence this rewrite exists to remove.
+	require.NotEmpty(t, names, "no services found in proto package %q — the census would compare against nothing", protoPkg)
+	return names
+}
 
+// policedCall is one service's share of the wiring proof: a call an ungranted
+// subject must be refused on, the action the refusal must name, and the same
+// call for a subject the matrix does grant.
+type policedCall struct {
+	deny  func(ctx context.Context) error
+	allow func(ctx context.Context) error
+	via   string
+}
+
+// exemptCall is a service the policy deliberately does not judge, with the
+// reason and the calls that prove the exemption is still the truth.
+type exemptCall struct {
+	reason string
+	calls  map[string]func(ctx context.Context) error
+}
+
+func policedWiringCalls(svcs serveServices) map[string]policedCall {
+	return map[string]policedCall{
+		svcChange: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{ChangeId: "run-dev"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{ChangeId: "run-dev"})
+				return err
+			},
+			via: "apply",
+		},
+		svcTemplate: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.templateSvc.CreateTemplate(ctx, &pb.CreateTemplateRequest{Name: "t1", WorkflowContent: "x"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.templateSvc.CreateTemplate(ctx, &pb.CreateTemplateRequest{Name: "t2", WorkflowContent: "x"})
+				return err
+			},
+			via: "admin",
+		},
+		svcTarget: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.targetSvc.AddTarget(ctx, &pb.AddTargetRequest{Id: "t-mallory", Hostname: "h1.example"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.targetSvc.AddTarget(ctx, &pb.AddTargetRequest{Id: "t-dave", Hostname: "h2.example"})
+				return err
+			},
+			via: "admin",
+		},
+		svcAudit: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.auditSvc.GetRunReport(ctx, &pb.GetRunReportRequest{RunId: "run-dev"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.auditSvc.GetRunReport(ctx, &pb.GetRunReportRequest{RunId: "run-dev"})
+				return err
+			},
+			via: "view",
+		},
+		svcSystem: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.systemSvc.GetConfig(ctx, &pb.GetConfigRequest{})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.systemSvc.GetConfig(ctx, &pb.GetConfigRequest{})
+				return err
+			},
+			via: "admin",
+		},
+		svcInventory: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.inventorySvc.CreateGroup(ctx, &pb.CreateGroupRequest{Name: "g-mallory"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.inventorySvc.CreateGroup(ctx, &pb.CreateGroupRequest{Name: "g-dave"})
+				return err
+			},
+			via: "admin",
+		},
+		svcAgent: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.agentSvc.RemoveAgent(ctx, &pb.RemoveAgentRequest{Id: "ghost"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.agentSvc.RemoveAgent(ctx, &pb.RemoveAgentRequest{Id: "ghost"})
+				return err
+			},
+			via: "admin",
+		},
+		// Diagnosis is the one probe whose refusal can only come from the
+		// resolver AND the matrix both being wired: dev-1.example is registered
+		// with env=dev, so "unknown host" and "default env" are both ruled out
+		// as explanations for what comes back.
+		svcDiagnosis: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.diagSvc.Diagnose(ctx, &pb.DiagnoseRequest{Target: "dev-1.example"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.diagSvc.Diagnose(ctx, &pb.DiagnoseRequest{Target: "dev-1.example"})
+				return err
+			},
+			via: "apply",
+		},
+		svcConversation: {
+			deny: func(ctx context.Context) error {
+				_, err := svcs.convSvc.SendMessage(ctx, &pb.SendMessageRequest{UserId: "whoever", Text: "hi"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				_, err := svcs.convSvc.SendMessage(ctx, &pb.SendMessageRequest{UserId: "whoever", Text: "hi"})
+				return err
+			},
+			via: "plan",
+		},
+	}
+}
+
+func exemptWiringCalls(svcs serveServices) map[string]exemptCall {
+	return map[string]exemptCall{
+		svcAlert: {
+			reason: "AlertMessage carries no team, no environment and no resolvable " +
+				"target, so there is nothing for an environment-keyed matrix to " +
+				"decide against; ingress is guarded by authentication, and the " +
+				"open item (per-source ingress credential + alert-stream " +
+				"visibility) is recorded on ReceiveAlert in internal/grpc.",
+			calls: map[string]func(ctx context.Context) error{
+				"ReceiveAlert": func(ctx context.Context) error {
+					_, err := svcs.alertSvc.ReceiveAlert(ctx, &pb.AlertMessage{Source: "prom", Title: "cpu high"})
+					return err
+				},
+				"GetAlertStatus": func(ctx context.Context) error {
+					_, err := svcs.alertSvc.GetAlertStatus(ctx, &pb.GetAlertStatusRequest{Id: "no-such-alert"})
+					return err
+				},
+			},
+		},
+	}
+}
+
+// TestServePolicyCensusClassifiesEveryServedService is the enumeration guard:
+// the census comes from the proto descriptors, and every service in it must be
+// either policed (with a working probe) or exempt with a reason and a probe
+// that keeps the exemption honest.
+func TestServePolicyCensusClassifiesEveryServedService(t *testing.T) {
+	svcs, _ := newWiringServices(t, true)
+	census := servedProtoServices(t)
+	policed := policedWiringCalls(svcs)
+	exempt := exemptWiringCalls(svcs)
+
+	var classified []string
+	for name := range policed {
+		classified = append(classified, name)
+	}
+	for name := range exempt {
+		require.NotContains(t, policed, name, "%s cannot be policed and exempt at once", name)
+		classified = append(classified, name)
+	}
+	sort.Strings(classified)
+	assert.Equal(t, census, classified,
+		"every service the API declares must be policed or exempt-with-a-reason: %v vs %v", census, classified)
+
+	// The exemption table is not allowed to be a decorative list: each entry
+	// states why and names at least one call that shows the exemption is real.
+	// Its size is pinned as a ratchet, so a new exemption is always a decision
+	// somebody made in this file rather than a line appended somewhere else.
+	require.Len(t, exempt, 1, "exactly one service is exempt today (AlertService); changing that count must be deliberate")
+	for name, e := range exempt {
+		assert.GreaterOrEqual(t, len(strings.TrimSpace(e.reason)), 40,
+			"%s is exempt without a reason an operator could read", name)
+		assert.NotEmpty(t, e.calls, "%s is exempt but nothing probes that the exemption still holds", name)
+		for _, fn := range e.calls {
+			require.NotNil(t, fn)
+		}
+	}
+
+	// Neither side may be a stub: every policed service needs both halves, and
+	// the refusal must name the action it judged.
+	for name, p := range policed {
+		require.NotNil(t, p.deny, "%s has no ungranted-subject probe", name)
+		require.NotNil(t, p.allow, "%s has no granted-subject probe, so its refusal could be a broken service", name)
+		assert.NotEmpty(t, p.via, "%s must name the action the refusal is expected to quote", name)
+	}
+
+	// The policed set must actually be policed BY THE MATRIX, which needs the
+	// fixture to be enforced; without this the whole file could be green on a
+	// deployment that simply has no policy.
+	require.True(t, svcs.authzSvc.Enforced(), "the fixture must produce an enforced matrix")
+}
+
+// TestServePolicyRefusesEveryUngrantedCall is the wiring proof: mallory is a
+// named caller the registry does not know, and each policed service refuses her
+// through the code path a real request takes. PermissionDenied rather than
+// Unauthenticated because she IS named — it is simply not in users.yaml. The
+// anonymous case is pinned in internal/grpc/service_policy_test.go.
+func TestServePolicyRefusesEveryUngrantedCall(t *testing.T) {
+	svcs, _ := newWiringServices(t, true)
 	ctx := grpc.ContextWithSubject(context.Background(), "mallory")
 
-	// A prod run, so the audit and change paths have something real to judge.
-	require.NoError(t, store.CreateRun(context.Background(), &state.Run{
-		ID: "run-prod", WorkflowName: "name: prod\n", Status: "approved", IncidentID: "prod",
-	}))
+	calls := policedWiringCalls(svcs)
+	for _, name := range sortedNames(calls) {
+		p := calls[name]
+		err := p.deny(ctx)
+		deniedAs(t, codes.PermissionDenied, err, name)
+		assert.Contains(t, err.Error(), p.via, "%s: the refusal must name the action it judged", name)
+		assert.Contains(t, err.Error(), "mallory", "%s: the refusal must name the subject it judged", name)
+	}
+}
 
-	// Every refusal below is PermissionDenied rather than Unauthenticated
-	// because the subject IS named — it is simply not in users.yaml. "I do not
-	// know you" lands on the refusing side of an enforced matrix, and an
-	// anonymous caller (no subject at all) is the Unauthenticated case, pinned
-	// in internal/grpc/service_policy_test.go.
-	_, err := svcs.targetSvc.AddTarget(ctx, &pb.AddTargetRequest{Id: "t1", Hostname: "h1"})
-	deniedAs(t, codes.PermissionDenied, err, "TargetService.AddTarget")
-	_, err = svcs.inventorySvc.CreateGroup(ctx, &pb.CreateGroupRequest{Name: "g"})
-	deniedAs(t, codes.PermissionDenied, err, "InventoryService.CreateGroup")
-	_, err = svcs.templateSvc.CreateTemplate(ctx, &pb.CreateTemplateRequest{Name: "t", WorkflowContent: "x"})
-	deniedAs(t, codes.PermissionDenied, err, "TemplateService.CreateTemplate")
-	_, err = svcs.systemSvc.GetConfig(ctx, &pb.GetConfigRequest{})
-	deniedAs(t, codes.PermissionDenied, err, "SystemService.GetConfig")
-	_, err = svcs.auditSvc.GetRunReport(ctx, &pb.GetRunReportRequest{RunId: "run-prod"})
-	deniedAs(t, codes.PermissionDenied, err, "AuditService.GetRunReport")
-	_, err = svcs.changeSvc.ApplyChange(ctx, &pb.ApplyChangeRequest{ChangeId: "run-prod"})
-	deniedAs(t, codes.PermissionDenied, err, "ChangeService.ApplyChange")
-	_, err = svcs.agentSvc.RemoveAgent(ctx, &pb.RemoveAgentRequest{Id: "ghost"})
-	deniedAs(t, codes.PermissionDenied, err, "AgentService.RemoveAgent")
+// TestServePolicyAdmitsEveryGrantedCall is the positive control that keeps the
+// refusals above from being a broken service: dave's team holds admin in dev,
+// and no call in the census comes back as a policy answer for him. The other
+// status codes are this file's business only insofar as they are NOT a refusal.
+func TestServePolicyAdmitsEveryGrantedCall(t *testing.T) {
+	svcs, _ := newWiringServices(t, true)
+	ctx := grpc.ContextWithSubject(context.Background(), "dave")
+
+	calls := policedWiringCalls(svcs)
+	for _, name := range sortedNames(calls) {
+		err := calls[name].allow(ctx)
+		if err == nil {
+			continue
+		}
+		code := status.Code(err)
+		assert.NotEqual(t, codes.PermissionDenied, code, "%s: dave holds admin in dev, so this is a policy answer where there should be none: %v", name, err)
+		assert.NotEqual(t, codes.Unauthenticated, code, "%s: a named subject must never land on Unauthenticated: %v", name, err)
+	}
+}
+
+func sortedNames[V any](m map[string]V) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestServeExemptCallsAnswerBothSubjectsAlike is the exemption's own guard:
+// "not policed" is an observable claim, so the exempt service must answer an
+// ungranted subject and a granted subject identically, and neither answer may
+// be a policy refusal. A gate added here without updating the census turns
+// this red — which is the point: an exemption is allowed to end, but not to
+// lapse unnoticed.
+func TestServeExemptCallsAnswerBothSubjectsAlike(t *testing.T) {
+	svcs, _ := newWiringServices(t, true)
+	mallory := grpc.ContextWithSubject(context.Background(), "mallory")
+	dave := grpc.ContextWithSubject(context.Background(), "dave")
+
+	exempt := exemptWiringCalls(svcs)
+	for _, name := range sortedNames(exempt) {
+		for _, cn := range sortedNames(exempt[name].calls) {
+			fn := exempt[name].calls[cn]
+			errUngranted := fn(mallory)
+			errGranted := fn(dave)
+			assert.Equal(t, status.Code(errUngranted), status.Code(errGranted),
+				"%s.%s answered the two subjects differently, so it is policed and the census is stale", name, cn)
+			assert.NotEqual(t, codes.PermissionDenied, status.Code(errUngranted), "%s.%s: %v", name, cn, errUngranted)
+			assert.NotEqual(t, codes.Unauthenticated, status.Code(errUngranted), "%s.%s: %v", name, cn, errUngranted)
+		}
+	}
+}
+
+// TestServeAlertIngressReallyWorks is the non-vacuity control for the exemption
+// above: "mallory and dave get the same answer" is also true of a service that
+// refuses everybody, so this pins the answer itself — an ungranted subject's
+// alert is accepted and then readable, which is the documented (and registered
+// as open) posture, not an accident.
+func TestServeAlertIngressReallyWorks(t *testing.T) {
+	svcs, _ := newWiringServices(t, true)
+	ctx := grpc.ContextWithSubject(context.Background(), "mallory")
+
+	resp, err := svcs.alertSvc.ReceiveAlert(ctx, &pb.AlertMessage{Id: "al-1", Source: "prom", Title: "cpu high"})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, "accepted", resp.GetStatus(), "the exemption must be a working ingest, not a silent drop: %v", resp)
+
+	statusResp, err := svcs.alertSvc.GetAlertStatus(ctx, &pb.GetAlertStatusRequest{Id: "al-1"})
+	require.NoError(t, err, "the alert mallory posted must be readable by mallory: %v", err)
+	assert.NotEmpty(t, statusResp.GetStatus())
 }
 
 // TestServePolicyDeniesFleetWritesThatChangeGrantsAllow is the half that makes
-// the previous test more than "unknown subject is refused": alice is a real,
+// the census more than "unknown subject is refused": alice is a real,
 // registered team member whose matrix entry covers every change action, yet
 // the fleet writes still stop at her — because `admin` is what they ask for.
 func TestServePolicyDeniesFleetWritesThatChangeGrantsAllow(t *testing.T) {
@@ -164,26 +494,27 @@ func TestServePolicyDeniesFleetWritesThatChangeGrantsAllow(t *testing.T) {
 
 // TestServeWithoutMatrixKeepsPreviousBehaviour is the compatibility promise at
 // the wiring level: an operator who never wrote permissions.yaml gets the
-// binary they had yesterday, for every one of these RPCs.
+// binary they had yesterday, for every call in the census — including the ones
+// this batch put a gate behind.
 func TestServeWithoutMatrixKeepsPreviousBehaviour(t *testing.T) {
-	svcs, store := newWiringServices(t, false)
+	svcs, _ := newWiringServices(t, false)
 	require.False(t, svcs.authzSvc.Enforced())
 
 	ctx := grpc.ContextWithSubject(context.Background(), "anyone")
-	require.NoError(t, store.CreateRun(context.Background(), &state.Run{
-		ID: "run-1", WorkflowName: "name: x\n", Status: "approved",
-	}))
-
-	_, err := svcs.targetSvc.AddTarget(ctx, &pb.AddTargetRequest{Id: "t1", Hostname: "h1"})
-	require.NoError(t, err, "%v", err)
-	_, err = svcs.inventorySvc.CreateGroup(ctx, &pb.CreateGroupRequest{Name: "g"})
-	require.NoError(t, err, "%v", err)
-	_, err = svcs.templateSvc.CreateTemplate(ctx, &pb.CreateTemplateRequest{Name: "t", WorkflowContent: "x"})
-	require.NoError(t, err, "%v", err)
-	_, err = svcs.systemSvc.GetConfig(ctx, &pb.GetConfigRequest{})
-	require.NoError(t, err, "%v", err)
-	_, err = svcs.auditSvc.GetRunReport(ctx, &pb.GetRunReportRequest{RunId: "run-1"})
-	require.NoError(t, err, "%v", err)
-	_, err = svcs.agentSvc.RegisterAgent(ctx, &pb.RegisterAgentRequest{Id: "a1", Address: "10.0.0.5:9099"})
-	require.NoError(t, err, "the agent registry must follow the same compatibility promise: %v", err)
+	calls := policedWiringCalls(svcs)
+	for _, name := range sortedNames(calls) {
+		err := calls[name].deny(ctx)
+		if err == nil {
+			continue
+		}
+		code := status.Code(err)
+		assert.NotEqual(t, codes.PermissionDenied, code, "%s refused with no matrix configured: %v", name, err)
+		assert.NotEqual(t, codes.Unauthenticated, code, "%s demanded an identity with no matrix configured: %v", name, err)
+	}
+	for name, e := range exemptWiringCalls(svcs) {
+		for cn, fn := range e.calls {
+			err := fn(ctx)
+			assert.NotEqual(t, codes.PermissionDenied, status.Code(err), "%s.%s gained a gate: %v", name, cn, err)
+		}
+	}
 }

@@ -40,6 +40,7 @@ import (
 	"github.com/nexus/levee/internal/capability"
 	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -2778,6 +2779,23 @@ func (gw *Gateway) handleConversation(w http.ResponseWriter, r *http.Request, me
 func (gw *Gateway) dispatchConversation(w http.ResponseWriter, r *http.Request, method, path string) {
 	if gw.convEngine == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, "conversation engine not configured")
+		return
+	}
+	// These four handlers talk to the ConversationEngine directly because
+	// NewSession/ListSessions/GetSession/CloseSession are not part of the
+	// ConversationService gRPC API — which also means SendMessage's gate does
+	// not cover them. Judged here, once, from the same authorizer and with the
+	// same default-env fallback the gRPC side uses: a GET is a read (`view`),
+	// anything that opens or closes a session is `plan`, the token the
+	// dialogue's only mutation is policed under anyway.
+	rpc := "conversation " + strings.ToLower(method)
+	if method == http.MethodGet {
+		if err := authorizeResourceRead(r.Context(), gw.authz, gw.authz.ResolveEnv(""), rpc); err != nil {
+			writeGRPCError(w, err)
+			return
+		}
+	} else if err := authorizeResource(r.Context(), gw.authz, gw.authz.ResolveEnv(""), permission.ActionPlan, rpc); err != nil {
+		writeGRPCError(w, err)
 		return
 	}
 	// /conversation/sessions
