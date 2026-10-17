@@ -241,13 +241,20 @@ configurable triggers, approver requirements, and timeout.
 - **发布说明本来就在指认合并提交**（`docs/release-notes/v1.22.0.md` 写"tag 指向 PR #168 的合并提交"
   这一类）。改成指认"某笔提交属于 PR #N"是这次换法**有意接受**的口径变化，不是顺带发现的漂移。
 
-换法之后要留意的三条，动发布或取证脚本的人会撞到：
+换法之后要留意的三条（第 1、2 条已在第一笔 rebase 落地 `#174` 上实测，取代本节初稿里"预期返回 null"的说法）：
 
-1. `gh pr view --json mergeCommit` 对 rebase 落地的 PR **预期返回 null**（GitHub 不造合并提交）。
-   现查本仓 `scripts/`、`.github/`、`internal/` 没有任何地方读 `mergeCommit` / `baseRefOid` /
-   `mergedAt`，所以这一步不会把现有门禁弄红。**这条"预期"要在第一笔 rebase 落地后实测校正**——
-   写在这里是待查项，不是定理。
-2. 因此按 PR 号回溯提交要用 `gh pr view --json commits` 或 `git log --grep`，别假设合并提交存在。
+1. **`mergeCommit` 不会变成 null。** 实测 `gh pr view 174 --json mergeCommit` 返回 `4ab1b10`——
+   GitHub 把**落到 master 上的那笔（重写后的）提交**报在这个字段里，它不是合并提交。所以初稿
+   "预期 null"是错的；读 `mergeCommit` 的脚本不会因此坏。现查本仓 `scripts/`、`.github/`、
+   `internal/` 也没有任何地方读 `mergeCommit` / `baseRefOid` / `mergedAt`，两处结论一致。
+2. **rebase 重写 sha，这才是新的坑。** 同一笔改动在 PR 侧是 `841d7f0`、在 master 侧是 `4ab1b10`，
+   `git diff --stat 841d7f0 4ab1b10` 为空——**树相同、sha 不同**。三条推论：
+   - `gh pr view --json commits` 给的是 rebase **之前**的 sha，它**不在 master 谱系上**，
+     拿它去 master 里找提交会一无所获；
+   - 本仓一直在用的"祖先关系断言"从此失效：`git merge-base --is-ancestor <PR头> origin/master`
+     在 merge-commit 时代是真判据（今天还用它核过 #172 / #173），rebase 之后会**假阴性**。
+     改判据三选一：读 `mergeCommit.oid`、`git log --grep '<提交标题>'`、或直接比树；
+   - 落地形状可以机器核：`git rev-list --parents -1 origin/master | awk '{print NF-1}'` 应为 `1`。
 3. master 分支保护里唯一的 required context 仍是 `check (all jobs passed)`（现查
    `gh api repos/Levango7/Levee/branches/master`，`enforcement_level=non_admins`），换合并方式不改变它，
    也不改变"合与推的决定权属于仓库的人"这条边界（见 `AGENTS.md` 第 3 条不可越过的边界）。
