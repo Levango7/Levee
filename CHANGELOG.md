@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 升级（前端工具链 vitest 3→5：清掉剩余 5 条 dev-only 漏洞；连锁 vite 5→7）
+
+- **动机**：非破坏 audit fix（上一条）清完生产依赖后，剩余 5 条全在 vitest 工具链（@vitest/mocker moderate、tinypool critical——worker options 原型污染 RCE，只在跑测试时存在）。修复需要 vitest 5，破坏性升级单独立项——就是这个变更。
+- **连锁升级**：vitest 5 peer 要求 vite ≥6.4 → vite 5.2.6→7.3.7、@vitejs/plugin-vue 5→6.0.10、@types/node 20→^22（对齐运行时 Node 22）。装完 npm audit **0 vulnerabilities**。
+- **两个坑（都在 worker 启动语义上）**：
+  1. **默认池 threads→forks**：forks worker 在 drvfs/9p 挂载（WSL /mnt/f 工作区）上启动慢到撞 60s 超时，36 个测试文件全军覆没。配置钉 `pool: 'threads'`（恢复 vitest 3 行为），注释写明原因。
+  2. **TZ 钉子失效**：formatTimestamp 的 UTC 断言此前靠 spec 顶部 `process.env.TZ = 'UTC'`——vitest 3 下有效，vitest 5 的 worker 预热（环境装配/内部代码）先碰 Date，ICU 把时区缓存成宿主值（Asia/Shanghai），后设不生效；`test.env` 同样太晚。最终钉在 `vite.config.ts` 顶部（主进程求值、先于 worker 生成，threads worker 创建时快照父进程 env，必然带上）——与 CI（ubuntu, TZ=UTC）一致，也符合 roadmap 约定：UTC 存储、展示层按用户时区转换（mvp-plus1-roadmap.md「时区处理」）。
+- **dist**：vite 7 重新构建，32 个资产换哈希（vendor `Dnq1n2I3`→`sGgvVIPI`），`diff -r` 一致、embed 测试绿。
+- 验证：vitest **300/300**（36 文件）、vue-tsc 干净、`vite build` 成功、`go test ./...` EXIT=0。
+
 ### 加固（工程查漏补缺：前端生产依赖漏洞与行尾/依赖门禁）
 
 - **前端生产依赖 4 个 high 漏洞（npm audit）**：axios 1.x 12 条（原型污染/头注入/ReDoS/重定向 SSRF——控制台全部 HTTP 走它）、vue/@vue/server-renderer XSS、brace-expansion、source-map-js。`npm audit fix` 非破坏升级（axios 1.19→1.20.0、vue 3.5.41→3.5.44），按 Makefile 同一命令重建并镜像 `internal/web/dist`（vendor 块 `C7FidRup`→`Dnq1n2I3`）：`diff -r` 一致、internal/web embed 测试绿、前端 300 例全绿、vue-tsc 干净。
