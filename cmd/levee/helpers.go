@@ -306,3 +306,45 @@ func approvalToState(ap *approval.Approval) (*state.Approval, error) {
 func stateToApproval(sa *state.Approval) (*approval.Approval, error) {
 	return approval.ApprovalFromState(sa)
 }
+
+// approvalExpiryResolverFromConfig maps an approval tier to the expiry the
+// kickoff record should carry, from the deployment's approval timeouts:
+// standard → standard_timeout, high → high_timeout, emergency →
+// emergency_supplement (the documented semantics, now enforceable through
+// the serve-side expiry sweeper). An unknown level or a non-positive tier
+// timeout yields the zero time: the record never expires, which
+// approval.CheckExpiry treats as the documented skip — a deployment that
+// wants no automatic expiry sets the tier to zero, it is not guessed.
+func approvalExpiryResolverFromConfig(cfg *config.Config) func(level string) time.Time {
+	return func(level string) time.Time {
+		var d time.Duration
+		switch level {
+		case approval.LevelStandard:
+			d = cfg.Approval.StandardTimeout
+		case approval.LevelHigh:
+			d = cfg.Approval.HighTimeout
+		case approval.LevelEmergency:
+			d = cfg.Approval.EmergencySupplement
+		default:
+			return time.Time{}
+		}
+		if d <= 0 {
+			return time.Time{}
+		}
+		return time.Now().UTC().Add(d)
+	}
+}
+
+// newID mints a prefixed random identifier (same shape as the gRPC layer's
+// and wiring's local helpers, kept local so the command package does not
+// import a service package for an id). Used by the serve-side background
+// loops that write trace rows outside any RPC.
+func newID(prefix string) string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is extraordinary; fall back to a fixed
+		// suffix — collision risk is not worth a panic.
+		return prefix + "0000000000000000"
+	}
+	return prefix + hex.EncodeToString(b[:])
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/chatops"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/runstatus"
 )
 
 // ApprovalBridge fans approval lifecycle moments out to ChatOps.
@@ -58,6 +59,88 @@ func (b *ApprovalBridge) OnApprovalCreated(a *approval.Approval) {
 	if err := b.bots.BroadcastEvent(evt); err != nil {
 		log.Warn("chatops: broadcast approval_requested failed",
 			"run_id", a.RunID, "error", err)
+	}
+}
+
+// OnApprovalExpired broadcasts the approval_expired card when the serve-side
+// expiry sweeper settles a kickoff approval whose timeout passed without
+// quorum. Callers invoke it right after the durable settlement, with the
+// settled record.
+func (b *ApprovalBridge) OnApprovalExpired(a *approval.Approval) {
+	if b == nil || b.bots == nil || a == nil {
+		return
+	}
+
+	summary := "No quorum before the configured timeout; the approval is closed."
+	if !a.ExpiresAt.IsZero() {
+		summary = fmt.Sprintf("No quorum before %s; the approval is closed. Re-initiate approval to proceed.",
+			a.ExpiresAt.Format("2006-01-02 15:04 MST"))
+	}
+	evt := chatops.Event{
+		Type:      chatops.EventApprovalExpired,
+		RunID:     a.RunID,
+		ChangeID:  a.ID,
+		Title:     fmt.Sprintf("Approval expired: %s run %s", a.Level, a.RunID),
+		Summary:   summary,
+		Level:     a.Level,
+		Timestamp: time.Now().UTC(),
+	}
+	if err := b.bots.BroadcastEvent(evt); err != nil {
+		log.Warn("chatops: broadcast approval_expired failed",
+			"run_id", a.RunID, "error", err)
+	}
+}
+
+// OnRunTransition broadcasts run lifecycle events. The funnel is the run
+// event store decorator (wiring.RunEventStore): every successful status
+// transition of every run lands here, whatever flow wrote it (apply, retry,
+// takeover interrupt, pause/resume).
+//
+// The chat split is a deliberate product decision (the webhook full-stream
+// mirror is a registered follow-up — the Notifier interface exists, serve
+// ships no channel yet):
+//
+//   - "running" start and every TERMINAL status go to the room: they are
+//     the moments a human must know about without watching the console.
+//   - Intermediate hops (paused, pending_approval, ...) stay off chat —
+//     a card per hop is noise, and nothing actionable happens between
+//     start and end that the approval/gate cards do not already cover.
+func (b *ApprovalBridge) OnRunTransition(changeID, from, to string, at time.Time) {
+	if b == nil || b.bots == nil || changeID == "" || from == to {
+		return
+	}
+
+	var typ chatops.EventType
+	var title string
+	switch {
+	case to == "running":
+		typ = chatops.EventRunStarted
+		title = fmt.Sprintf("Run started: %s", changeID)
+	case to == "completed":
+		typ = chatops.EventRunCompleted
+		title = fmt.Sprintf("Run completed: %s", changeID)
+	case runstatus.IsTerminal(to):
+		// Every other terminal status is a non-completion outcome: failure,
+		// rolled back (wholly or partially), interrupted by takeover. The
+		// room gets the real status in the card, not a flattened "failed".
+		typ = chatops.EventRunFailed
+		title = fmt.Sprintf("Run %s: %s", to, changeID)
+	default:
+		return
+	}
+
+	evt := chatops.Event{
+		Type:      typ,
+		ChangeID:  changeID,
+		RunID:     changeID,
+		Title:     title,
+		Summary:   fmt.Sprintf("%s → %s", from, to),
+		Status:    to,
+		Timestamp: at,
+	}
+	if err := b.bots.BroadcastEvent(evt); err != nil {
+		log.Warn("chatops: broadcast run transition failed",
+			"change_id", changeID, "to", to, "error", err)
 	}
 }
 

@@ -228,7 +228,7 @@ func BuildCardForEvent(evt Event) *Card {
 		return BuildApprovalCard(evt)
 	case EventStateChange, EventRunStarted, EventRunCompleted, EventRunFailed, EventGateResult:
 		return BuildStatusCard(evt)
-	case EventApprovalDecision:
+	case EventApprovalDecision, EventApprovalExpired:
 		return BuildNotificationCard(evt)
 	default:
 		return BuildNotificationCard(evt)

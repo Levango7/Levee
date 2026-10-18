@@ -80,13 +80,17 @@ func TestStatusNamesIsACopy(t *testing.T) {
 
 // TestCheckExpiryIsTheOnlyProducerOfExpired records the asymmetry that makes this
 // list more than a name bag: three of the four members are written by the decision
-// path, while `expired` is produced only by CheckExpiry — and that method has no
-// production caller. Pinned as a test so the gap cannot be forgotten: if a driver
-// is ever wired up, this fails and the note in vocabulary.go gets updated with it.
+// path, while `expired` is produced only by CheckExpiry. The method's driver — the
+// serve-side expiry sweeper — landed in expiry.go after years of the gap this test
+// originally pinned ("no production caller at all"); the assertion now tracks the
+// DRIVER instead: exactly one production caller, in the sweeper. A second caller
+// (some code path expiring records behind the sweeper's back) must update this and
+// the note in vocabulary.go together, with a reason why one funnel is not enough.
 func TestCheckExpiryIsTheOnlyProducerOfExpired(t *testing.T) {
 	dir, err := os.Getwd()
 	require.NoError(t, err)
 	var sources []string
+	var lastCaller string
 	for i := 0; i < 8; i++ {
 		root := filepath.Join(dir, "internal")
 		if st, serr := os.Stat(root); serr == nil && st.IsDir() {
@@ -119,6 +123,7 @@ func TestCheckExpiryIsTheOnlyProducerOfExpired(t *testing.T) {
 				}
 				if strings.Contains(t, "CheckExpiry(") && path != filepath.Join(root, "approval", "service.go") {
 					callSites++
+					lastCaller = path
 				}
 				if strings.Contains(t, "= StatusExpired") {
 					writers++
@@ -128,6 +133,7 @@ func TestCheckExpiryIsTheOnlyProducerOfExpired(t *testing.T) {
 		})
 	}
 	assert.Equal(t, 1, writers, "StatusExpired should be assigned in exactly one place (CheckExpiry); found %d", writers)
-	assert.Equal(t, 0, callSites,
-		"CheckExpiry gained %d production caller(s) — the note in vocabulary.go says it has none, so an expired approval would now actually be reachable; update the comment and this assertion together", callSites)
+	assert.Equal(t, 1, callSites,
+		"CheckExpiry must have exactly one production caller — the expiry sweeper (expiry.go). Found %d (last: %s): a second caller expiring records behind the sweeper's back needs a reason recorded here and in vocabulary.go",
+		callSites, lastCaller)
 }

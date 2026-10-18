@@ -14,10 +14,12 @@ package approval
 // What the four members are worth to a reader is not equal, and that is recorded
 // rather than hidden: StatusApproved / StatusRejected are written by the decision
 // path, StatusPending is the initial state, and StatusExpired is produced only by
-// CheckExpiry — which today has NO production caller (repo-wide sweep: the only
-// call sites are in service_test.go). So an approval that times out keeps reading
-// `pending` until something drives expiry, which is a behaviour gap, not a
-// vocabulary gap; naming the member keeps the wire honest if that caller appears.
+// CheckExpiry — driven by the serve-side expiry sweeper (expiry.go, wired in
+// cmd/levee's buildServeServices from approval.expiry_sweep_interval). Before that
+// driver existed the method had NO production caller (repo-wide sweep: the only
+// call sites were in service_test.go), so an approval that timed out kept reading
+// `pending` forever — a behaviour gap this note used to record; the ratchet test
+// below now pins the driver instead of the gap.
 
 var statusOrder = []string{
 	string(StatusPending),

@@ -241,3 +241,117 @@ func TestObserverWiringPinsServiceHook(t *testing.T) {
 	assert.Equal(t, chatops.EventApprovalDecision, events[1].Type)
 	assert.Contains(t, events[1].Summary, "approved by dave (1/1)")
 }
+
+// =========================================================================
+// OnApprovalExpired — the expiry sweeper's broadcast
+// =========================================================================
+
+func TestBridgeOnApprovalExpiredBroadcasts(t *testing.T) {
+	bridge, bot := newBridge()
+
+	expires := time.Now().UTC().Add(-time.Hour)
+	bridge.OnApprovalExpired(&approval.Approval{
+		ID: "apr-7", RunID: "run-7", Level: "high", Status: approval.StatusExpired,
+		ExpiresAt: expires,
+	})
+
+	events := drainEvents(t, bot.eventCh, 1)
+	assert.Equal(t, chatops.EventApprovalExpired, events[0].Type)
+	assert.Equal(t, "apr-7", events[0].ChangeID)
+	assert.Equal(t, "run-7", events[0].RunID)
+	assert.Equal(t, "high", events[0].Level)
+	assert.Contains(t, events[0].Title, "Approval expired")
+	assert.Contains(t, events[0].Summary, "Re-initiate approval")
+	// The card the room renders must carry the message too, not just the
+	// struct — render it and look for the headline.
+	card := chatops.BuildCardForEvent(events[0])
+	require.NotNil(t, card)
+	assert.Contains(t, card.Title, "expired")
+}
+
+func TestBridgeOnApprovalExpiredZeroExpiryStillSaysSomething(t *testing.T) {
+	bridge, bot := newBridge()
+
+	// A record with a zero ExpiresAt can reach the sweeper only if the
+	// deployment built it that way; the card must not render a zero-time.
+	bridge.OnApprovalExpired(&approval.Approval{ID: "apr-8", RunID: "run-8", Level: "standard"})
+
+	events := drainEvents(t, bot.eventCh, 1)
+	assert.NotContains(t, events[0].Summary, "0001-01-01")
+}
+
+// =========================================================================
+// OnRunTransition — the run event funnel's chatops half
+// =========================================================================
+
+func TestBridgeOnRunTransitionMapsLifecycle(t *testing.T) {
+	bridge, bot := newBridge()
+	at := time.Now().UTC()
+
+	// Start, completion, and every non-completion terminal status map to
+	// their own event; the card carries the real status either way.
+	bridge.OnRunTransition("chg-1", "approved", "running", at)
+	bridge.OnRunTransition("chg-1", "running", "completed", at)
+	bridge.OnRunTransition("chg-2", "running", "failed", at)
+	bridge.OnRunTransition("chg-3", "running", "rolled_back", at)
+	bridge.OnRunTransition("chg-4", "running", "interrupted", at)
+
+	events := drainEvents(t, bot.eventCh, 5)
+	assert.Equal(t, chatops.EventRunStarted, events[0].Type)
+	assert.Equal(t, "chg-1", events[0].ChangeID)
+
+	assert.Equal(t, chatops.EventRunCompleted, events[1].Type)
+	assert.Equal(t, "chg-1", events[1].ChangeID)
+
+	assert.Equal(t, chatops.EventRunFailed, events[2].Type)
+	assert.Equal(t, "failed", events[2].Status)
+
+	assert.Equal(t, chatops.EventRunFailed, events[3].Type)
+	assert.Equal(t, "rolled_back", events[3].Status, "a rolled-back run must not read as a clean completion")
+
+	assert.Equal(t, chatops.EventRunFailed, events[4].Type)
+	assert.Equal(t, "interrupted", events[4].Status)
+
+	// The status card renders the transition, not a hardcoded verdict.
+	card := chatops.BuildCardForEvent(events[3])
+	require.NotNil(t, card)
+}
+
+func TestBridgeOnRunTransitionSkipsIntermediateHops(t *testing.T) {
+	bridge, bot := newBridge()
+
+	// The product decision: intermediate hops (paused, pending_approval,
+	// back to running after a pause) stay off chat — a card per hop is
+	// noise, and the actionable moments already have their own cards.
+	bridge.OnRunTransition("chg-1", "completed", "paused", time.Now().UTC())
+	bridge.OnRunTransition("chg-1", "paused", "pending_approval", time.Now().UTC())
+
+	select {
+	case evt := <-bot.eventCh:
+		t.Fatalf("intermediate transition must not broadcast, got %v", evt.Type)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestBridgeOnRunTransitionSkipsNoopAndNil(t *testing.T) {
+	bridge, bot := newBridge()
+
+	// from == to is not a transition.
+	bridge.OnRunTransition("chg-1", "running", "running", time.Now().UTC())
+	// Empty change id has nothing to name in a card.
+	bridge.OnRunTransition("", "running", "failed", time.Now().UTC())
+
+	select {
+	case evt := <-bot.eventCh:
+		t.Fatalf("no-op transition must not broadcast, got %v", evt.Type)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Nil bridge and nil bot map must be no-ops, not panics.
+	var nilBridge *ApprovalBridge
+	assert.NotPanics(t, func() {
+		nilBridge.OnRunTransition("chg-1", "running", "failed", time.Now().UTC())
+		nilBridge.OnApprovalExpired(nil)
+		bridge.OnApprovalExpired(nil)
+	})
+}

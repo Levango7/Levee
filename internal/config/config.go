@@ -309,6 +309,14 @@ type ApprovalConfig struct {
 	StandardTimeout     time.Duration `json:"standard_timeout"     mapstructure:"standard_timeout"`
 	HighTimeout         time.Duration `json:"high_timeout"         mapstructure:"high_timeout"`
 	EmergencySupplement time.Duration `json:"emergency_supplement" mapstructure:"emergency_supplement"`
+	// ExpirySweepInterval is how often the serve-side sweeper settles
+	// pending approvals whose timeout has passed (approval.CheckExpiry).
+	// Zero or negative disables the sweep entirely: timeouts then never
+	// fire and expired approvals stay pending forever — the pre-sweeper
+	// behaviour. The timeouts themselves are enforced from
+	// approval.expiry_sweep_interval = 1m by default; the interval only
+	// bounds detection latency, so a missed tick costs nothing but delay.
+	ExpirySweepInterval time.Duration `json:"expiry_sweep_interval" mapstructure:"expiry_sweep_interval"`
 }
 
 // AuditConfig controls the tamper-evident audit subsystem.
@@ -830,6 +838,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("approval.standard_timeout", "4h")
 	v.SetDefault("approval.high_timeout", "8h")
 	v.SetDefault("approval.emergency_supplement", "24h")
+	v.SetDefault("approval.expiry_sweep_interval", "1m")
 
 	// Audit
 	v.SetDefault("audit.hash_chain", true)

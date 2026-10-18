@@ -85,10 +85,15 @@ const (
 	EventStateChange       EventType = "state_change"
 	EventApprovalRequested EventType = "approval_requested"
 	EventApprovalDecision  EventType = "approval_decision"
-	EventGateResult        EventType = "gate_result"
-	EventRunStarted        EventType = "run_started"
-	EventRunCompleted      EventType = "run_completed"
-	EventRunFailed         EventType = "run_failed"
+	// EventApprovalExpired fires when the serve-side expiry sweeper settles
+	// a kickoff approval whose timeout passed without quorum. The room sees
+	// why a change stopped moving — without it, an expired approval looks
+	// identical to a still-pending one until someone reads the console.
+	EventApprovalExpired EventType = "approval_expired"
+	EventGateResult      EventType = "gate_result"
+	EventRunStarted      EventType = "run_started"
+	EventRunCompleted    EventType = "run_completed"
+	EventRunFailed       EventType = "run_failed"
 )
 
 // Event is the payload pushed into a bot's event channel. The bot renders
