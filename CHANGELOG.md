@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 加固（工程查漏补缺：前端生产依赖漏洞与行尾/依赖门禁）
+
+- **前端生产依赖 4 个 high 漏洞（npm audit）**：axios 1.x 12 条（原型污染/头注入/ReDoS/重定向 SSRF——控制台全部 HTTP 走它）、vue/@vue/server-renderer XSS、brace-expansion、source-map-js。`npm audit fix` 非破坏升级（axios 1.19→1.20.0、vue 3.5.41→3.5.44），按 Makefile 同一命令重建并镜像 `internal/web/dist`（vendor 块 `C7FidRup`→`Dnq1n2I3`）：`diff -r` 一致、internal/web embed 测试绿、前端 300 例全绿、vue-tsc 干净。
+- **遗留（dev-only，不随产物发布）**：vitest 工具链 5 条（@vitest/mocker moderate、tinypool critical——worker options 原型污染 RCE，只在跑测试时存在）。修复需要 vitest 5 破坏性升级，单独立项，不夹带在非破坏 `audit fix` 里。
+- **`.gitattributes` 漏钉 `go.mod`/`go.sum`**：其余源码全部 `text eol=lf`，这两个文件落到 `text=auto`，Windows 检出为 CRLF——`go mod tidy -diff` 报整文件 diff，把真实依赖漂移埋进行尾噪声里。补钉 + 本地工作区已归一（内容零差异）。
+- **CI vet 作业补 `go mod tidy -diff`**：vet 作业定位是「cheap structural checks, fail fast」，tidy -diff 正是这一类——依赖漂移（加了 import 没 pin checksum、删了 import 留孤儿条目）在 build/test 掩盖之前拦住；CI 检出是 Linux/LF，不受上述行尾问题影响。
+
 ### 加固（ChatOps 入向重放防护：钉钉/飞书的签名只盖时间戳，截获的 (ts, sign) 在新鲜度窗口内可换 body 重放——现已单次有效）
 
 - **问题**：三平台的回调验签强度并不相同，而 `ingress.go` 的包注释笼统写成「MAC over the request body」——那只对 Slack 成立。钉钉/飞书的构造是 `sign = HMAC(secret, ts+"\n"+secret)`，**body 不参与签名**：在 1 小时新鲜度窗口内，截获一对合法 `(ts, sign)` 后可以携带**任意 body** 重放——换成别的 run、别的 user，就是一次合法入站。Slack 的 body 入 MAC，重放只能重放同一份内容，但语义上同样是「同一签名被用第二次」。

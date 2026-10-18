@@ -112,6 +112,13 @@ jobs:
           cache: true
       - name: go vet
         run: go vet ./...
+      - name: go mod tidy
+        # Fails when go.mod/go.sum are out of sync with the imports —
+        # catches dependency drift (an added import without a pinned
+        # checksum, a removed one leaving an orphan) before build or test
+        # can paper over it. -diff prints the would-be change instead of
+        # rewriting the files.
+        run: go mod tidy -diff
 
   # ---------------------------------------------------------------------------
   # lint: golangci-lint with the project's .golangci.yml config.
