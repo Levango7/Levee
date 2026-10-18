@@ -18,6 +18,12 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.proto text eol=lf
+# The module graph files are diffed byte-for-byte by `go mod tidy -diff`;
+# left to text=auto, a Windows checkout turns them CRLF and tidy -diff
+# reports a whole-file diff, burying any real dependency drift under
+# line-ending noise.
+go.mod text eol=lf
+go.sum text eol=lf
 # The Makefile builds the artifacts the gates compare byte for byte;
 # leaving it to text=auto round-trips it through core.autocrlf, and a CRLF
 # blob turns a 12-line change into a whole-file diff.
