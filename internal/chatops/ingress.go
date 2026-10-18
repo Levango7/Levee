@@ -7,16 +7,32 @@
 // The ingress has exactly one job: prove a callback really came from the
 // platform it claims, then hand the canonical IncomingMessage to the bot
 // (which routes it through the command dispatcher and replies). The proof
-// is a MAC over the request body under the bot's signing secret:
+// is a MAC under the bot's signing secret — and the three platforms differ
+// in what the MAC covers, a difference that matters for replay:
 //
 //   - Slack     X-Slack-Signature: v0=hex(hmac_sha256("v0:"+secret, "v0:"+ts+":"+body))
+//     The request BODY is inside the MAC, so a captured (ts, signature)
+//     pair can only replay the identical body.
 //   - DingTalk  sign:              hex(hmac_sha256(secret, ts+"\n"+secret))
 //   - Feishu    X-Lark-Signature:  hex(hmac_sha256(ts+"\n"+secret, secret))
+//     These two sign ONLY the timestamp. Within the freshness window a
+//     captured pair is valid for ANY body: an observer of one legitimate
+//     callback could substitute payloads into it for up to an hour — a
+//     different run id, a different user.
+//
+// The ingress therefore makes every verified (platform, timestamp,
+// signature) triple single-use (replay.go): a replayed signature is
+// refused even when it carries the original body. The cost is bounded and
+// deliberate — a platform redelivery repeats the original ts+signature and
+// gets 401, which is safe because the first delivery either acked (the
+// platform stops there) or crashed mid-dispatch, and decision verbs are
+// idempotent at the approval state machine (ErrDuplicateDecision): the
+// recoverable action for a lost command is clicking again.
 //
 // A callback endpoint that accepts decisions without this proof would let
 // anyone who can reach the port approve changes as anyone, which is why a
 // bot with no secret REFUSES to mount an ingress rather than mounting one
-// that trusts everybody (see NewCallbackHandler).
+// that trusts everybody (see CallbackHandler).
 package chatops
 
 import (
@@ -48,6 +64,13 @@ var (
 	// is outside the freshness window. It exists so a captured callback
 	// cannot be replayed at leisure.
 	ErrCallbackStaleTimestamp = errors.New("chatops: callback timestamp outside freshness window")
+
+	// ErrCallbackReplay is returned when a (timestamp, signature) pair is
+	// presented a second time within its freshness window. DingTalk and
+	// Feishu sign the timestamp alone, so without the single-use guard a
+	// captured pair would stay valid for any body until the window closed;
+	// the guard refuses all repeats, including Slack's body-bound ones.
+	ErrCallbackReplay = errors.New("chatops: callback replay refused (signature already used)")
 )
 
 // maxCallbackBytes bounds a callback body. Platform callbacks carry a
@@ -89,14 +112,34 @@ func CallbackHandler(bot Bot, secret string, window *ingressWindow) (http.Handle
 	if window != nil {
 		w = *window
 	}
+	// Guard ttl = the longest freshness window + a minute of clock slack:
+	// an older triple fails freshness regardless, so remembering it longer
+	// is pure waste.
+	guardTTL := w.slack
+	if w.ddFeishu > guardTTL {
+		guardTTL = w.ddFeishu
+	}
+	guard := newReplayGuard(guardTTL+time.Minute, replayGuardCapacity)
+	p := bot.Platform()
 	return http.HandlerFunc(func(wr http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(http.MaxBytesReader(wr, r.Body, maxCallbackBytes))
 		if err != nil {
 			http.Error(wr, "callback too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		if err := verifyCallback(bot.Platform(), secret, w, r, body); err != nil {
+		if err := verifyCallback(p, secret, w, r, body); err != nil {
 			http.Error(wr, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		// Single-use signatures, AFTER verification: only pairs that proved
+		// themselves occupy guard slots, so an unauthenticated flood cannot
+		// evict real entries. A repeated pair is refused even with the
+		// original body — DingTalk and Feishu sign the timestamp alone, so
+		// without this a captured pair could carry substituted payloads for
+		// the whole freshness window.
+		ts, sig := callbackSignature(p, r)
+		if !guard.first(p, ts, sig) {
+			http.Error(wr, ErrCallbackReplay.Error(), http.StatusUnauthorized)
 			return
 		}
 		// Feishu (and Slack's Events API) prove endpoint ownership with a
@@ -107,7 +150,7 @@ func CallbackHandler(bot Bot, secret string, window *ingressWindow) (http.Handle
 			_, _ = wr.Write([]byte(`{"challenge":` + strconv.Quote(challenge) + `}`))
 			return
 		}
-		msg, err := parseCallback(bot.Platform(), body)
+		msg, err := parseCallback(p, body)
 		if err != nil {
 			http.Error(wr, err.Error(), http.StatusBadRequest)
 			return
@@ -133,6 +176,22 @@ func parseCallback(p Platform, body []byte) (IncomingMessage, error) {
 		return ParseFeishuCallback(body)
 	default:
 		return IncomingMessage{}, fmt.Errorf("chatops: parse callback for %q: %w", p, ErrUnknownPlatform)
+	}
+}
+
+// callbackSignature reads the (timestamp, signature) header pair a platform
+// signs with. The freshness and MAC checks in verify* and the replay guard
+// key must agree on this pair, so it is read in exactly one place.
+func callbackSignature(p Platform, r *http.Request) (ts, sig string) {
+	switch p {
+	case PlatformSlack:
+		return r.Header.Get("X-Slack-Request-Timestamp"), r.Header.Get("X-Slack-Signature")
+	case PlatformDingtalk:
+		return r.Header.Get("timestamp"), r.Header.Get("sign")
+	case PlatformFeishu:
+		return r.Header.Get("X-Lark-Request-Timestamp"), r.Header.Get("X-Lark-Signature")
+	default:
+		return "", ""
 	}
 }
 
@@ -173,8 +232,7 @@ func verifyCallback(p Platform, secret string, w ingressWindow, r *http.Request,
 // verifySlackCallback implements Slack's v0 signing scheme:
 // basestring = "v0:{timestamp}:{body}", signed with the key "v0:{secret}".
 func verifySlackCallback(secret string, window time.Duration, r *http.Request, body []byte) error {
-	ts := r.Header.Get("X-Slack-Request-Timestamp")
-	sig := r.Header.Get("X-Slack-Signature")
+	ts, sig := callbackSignature(PlatformSlack, r)
 	if ts == "" || sig == "" {
 		return fmt.Errorf("chatops: slack callback: missing signature headers")
 	}
@@ -194,8 +252,7 @@ func verifySlackCallback(secret string, window time.Duration, r *http.Request, b
 // verifyDingtalkCallback implements DingTalk's robot signature:
 // sign = hex(hmac_sha256(timestamp + "\n" + secret, secret)).
 func verifyDingtalkCallback(secret string, window time.Duration, r *http.Request) error {
-	ts := r.Header.Get("timestamp")
-	sig := r.Header.Get("sign")
+	ts, sig := callbackSignature(PlatformDingtalk, r)
 	if ts == "" || sig == "" {
 		return fmt.Errorf("chatops: dingtalk callback: missing signature headers")
 	}
@@ -215,8 +272,7 @@ func verifyDingtalkCallback(secret string, window time.Duration, r *http.Request
 // construction as DingTalk's with different header names:
 // signature = hex(hmac_sha256(timestamp + "\n" + secret, secret)).
 func verifyFeishuCallback(secret string, window time.Duration, r *http.Request) error {
-	ts := r.Header.Get("X-Lark-Request-Timestamp")
-	sig := r.Header.Get("X-Lark-Signature")
+	ts, sig := callbackSignature(PlatformFeishu, r)
 	if ts == "" || sig == "" {
 		return fmt.Errorf("chatops: feishu callback: missing signature headers")
 	}
