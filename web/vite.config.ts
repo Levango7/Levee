@@ -3,6 +3,14 @@ import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'node:path'
 
+// TZ 必须在主进程钉住（本文件在池生成前求值，threads worker 创建时快照
+// 父进程 env，必然带上 UTC）。spec 顶部 process.env.TZ 或 test.env 都在
+// vitest 5 worker 预热之后才生效——预热阶段的环境装配/内部代码先碰
+// Date，ICU 缓存宿主时区，后设不生效，formatTimestamp 的 UTC 断言随之
+// 翻车。与 CI（ubuntu, TZ=UTC）一致，也符合 roadmap 约定：UTC 存储、
+// 展示层按用户时区转换（mvp-plus1-roadmap.md「时区处理」）。
+process.env.TZ = 'UTC'
+
 // Vite configuration for the LEVEE Web UI.
 //
 // The dev server proxies API requests to the LEVEE gRPC-gateway REST endpoint
@@ -36,6 +44,16 @@ export default defineConfig(({ mode }) => {
     // the api client and SSO helpers can be exercised unmodified).
     test: {
       environment: 'jsdom',
+      // vitest 5 把默认池从 threads 换成了 forks；forks worker 在 drvfs/9p
+      // 挂载（如 WSL 的 /mnt/f 工作区）上启动慢到撞 60s 超时，全军覆没。
+      // threads 恢复 vitest 3 行为，实测 36 文件全部正常拉起。
+      pool: 'threads',
+      // TZ 的钉子在文件顶部（主进程，先于 worker 生成）：threads worker 在
+      // 创建时快照父进程 env，必然带上。不能靠 spec 顶部 process.env.TZ，
+      // 也不能靠 test.env——两者都在 vitest 5 worker 预热（环境装配/内部
+      // 代码先碰 Date、ICU 缓存宿主时区）之后才生效，formatTimestamp 的
+      // UTC 断言随之翻车。与 CI（ubuntu, TZ=UTC）一致，也符合 roadmap
+      // 约定：UTC 存储、展示层按用户时区转换（mvp-plus1-roadmap.md「时区处理」）。
       // Pin the document origin: redirect_uri construction asserts depend on
       // window.location.origin (vitest's jsdom default is :3000).
       environmentOptions: { jsdom: { url: 'http://localhost/' } },
