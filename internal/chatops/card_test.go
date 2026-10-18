@@ -161,6 +161,7 @@ func TestBuildCardForEvent_Dispatch(t *testing.T) {
 		{EventRunFailed, CardKindStatus},
 		{EventGateResult, CardKindStatus},
 		{EventApprovalDecision, CardKindNotification},
+		{EventApprovalExpired, CardKindNotification},
 		{EventType("unknown"), CardKindNotification},
 	}
 	for _, c := range cases {

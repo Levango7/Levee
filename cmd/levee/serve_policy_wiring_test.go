@@ -123,7 +123,7 @@ func newWiringServices(t *testing.T, withMatrix bool) (serveServices, state.Stor
 	cfg.Server.DataDir = dataDir
 	cfg.Permission.DefaultEnv = "dev"
 
-	svcs, err := buildServeServices(store, cfg, nil)
+	svcs, err := buildServeServices(context.Background(), store, cfg, nil)
 	require.NoError(t, err, "buildServeServices must work on a zero config")
 	seedWiringData(t, store)
 	return svcs, store

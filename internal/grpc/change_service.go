@@ -116,6 +116,14 @@ type ChangeService struct {
 	// It is lazily initialised on first subscription.
 	eventMu  sync.Mutex
 	eventBus *eventBus
+
+	// approvalExpiry maps an approval tier to the timeout stamped on the
+	// kickoff approval record (standard / high / emergency → the deployed
+	// approval timeouts). Nil keeps the historical hardcoded 24h, which is
+	// what deployments without the resolver get: a wrong-but-known value
+	// rather than a silent no-timeout. serve always installs the resolver
+	// from config.Approval, making the three documented timeouts real.
+	approvalExpiry func(level string) time.Time
 }
 
 // NewChangeService constructs a ChangeService backed by the given
@@ -152,6 +160,29 @@ func (s *ChangeService) WithApprovalCreateObserver(fn func(a *approval.Approval)
 	}
 	s.onApprovalCreate = append(s.onApprovalCreate, fn)
 	return s
+}
+
+// WithApprovalExpiryResolver installs the tier→timeout mapping used to stamp
+// ExpiresAt on kickoff approvals. Without it the kickoff keeps the legacy
+// hardcoded 24h; with it, the deployment's approval.standard_timeout /
+// high_timeout / emergency_supplement become the enforceable truth (paired
+// with the serve-side expiry sweeper, which settles records past their
+// ExpiresAt). Returning a zero time from the resolver means "no timeout"
+// for that tier: the record then never expires, which CheckExpiry treats as
+// the documented skip.
+func (s *ChangeService) WithApprovalExpiryResolver(fn func(level string) time.Time) *ChangeService {
+	s.approvalExpiry = fn
+	return s
+}
+
+// approvalExpiryFor resolves the expiry for a tier, falling back to the
+// historical hardcoded 24h when no resolver is installed (see the field
+// comment for why the fallback is a known value, not a silent zero).
+func (s *ChangeService) approvalExpiryFor(level string) time.Time {
+	if s.approvalExpiry != nil {
+		return s.approvalExpiry(level)
+	}
+	return time.Now().UTC().Add(24 * time.Hour)
 }
 
 // WithAuthorizer installs the policy authorizer consulted by the
@@ -825,7 +856,7 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) err
 		Level:            tier,
 		Approvers:        approvers,
 		MinApprovers:     minApprovers,
-		ExpiresAt:        time.Now().UTC().Add(24 * time.Hour),
+		ExpiresAt:        s.approvalExpiryFor(tier),
 		PlanHash:         run.PlanHash,
 		Initiator:        run.Creator,
 		ExcludeInitiator: excludeInitiator,

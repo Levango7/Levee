@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（审批超时闭环 + run 生命周期事件漏斗：两笔登记已久的缺口一次收口）
+
+- **审批超时从未生效过**：`approval.CheckExpiry`（扫描过期 pending 并落成 expired）自落库起**零生产调用方**——只有测试在调。三层超时配置（`approval.standard_timeout/high_timeout/emergency_supplement`，4h/8h/24h）同样是**零消费方**的装饰品；kickoff 审批一律硬编码 24h。也就是说：配置里写了 4h，线上一个超时审批永远读作 pending，`expired` 是词表里的死字。棘轮测试 `TestCheckExpiryIsTheOnlyProducerOfExpired` 为此埋了数周——本批接上驱动器时**它如约变红**，注释与断言按它要求同步更新（现在钉的是“恰好一个调用方=清扫器”，而不是当年的“零调用方”）。
+- **落地（两半）**：
+  1. **超时声明**：`ChangeService.WithApprovalExpiryResolver`——kickoff 的 `ExpiresAt` 从硬编码 24h 改为按层解析（standard→standard_timeout、high→high_timeout、emergency→emergency_supplement，即 config 注释里一直承诺的语义）。未装 resolver 的构造保持 24h 兼容（错误但已知的值，不是静默无超时）；层超时配置为非正值 → 零值 → CheckExpiry 按文档口径跳过（“想要不自动过期”是显式配置项，不是猜出来的缺省）。
+  2. **超时驱动**：`internal/approval/expiry.go` 的 `ExpirySweeper`——serve 按 `approval.expiry_sweep_interval`（新键，默认 1m，≤0 整体禁用）周期调 CheckExpiry，每批落定后：ChatOps 卡片（新事件 `approval_expired`）+ run 时间线的 `approval_expired` trace 行（控制台看得见“变更为什么停了”）。清扫是检测不是门禁：扫漏一拍只是晚一拍说真话，apply 门禁本来就不放行无有效审批的变更。
+- **run 生命周期事件漏斗（`internal/wiring/runeventstore.go`）**：run 状态写入散在四个包的六个调用点（apply 漏斗、retry、接管中断、pause/resume、CLI），这正是四个 chatops 事件类型（`run_started/completed/failed/state_change`）零 producer 的结构性原因——每条新流程都得记得播报，而没人记得。不逐点审计，漏斗下沉到 store 缝：`RunEventStore` 装饰器拦截三条状态写路径（`UpdateRunStatusIf` / `UpdateRunApprovalStatusIf` / 全行 `UpdateRun` 含状态变化时 diff 前值），每次成功迁移交给 sink。装饰器选择与 TenantStore 同缝同理；sink 的 panic 就地収容（GateObserver 同一姿态：通知路径不能成为 run 的第二种失败源），nil sink 全透传。
+- **终态播报（chatops 半边）**：`bridge.OnRunTransition` 消费漏斗——`→running` 发 run_started、`→completed` 发 run_completed、其余终态（failed / rolled_back / rolled_back_partial / rolled_back_incomplete / interrupted）发 run_failed 且**卡片携带真实状态**（部分回滚不得读作干净失败或干净完成）。**分工是产品决定**：中间跳（paused / pending_approval）不上聊天——一跳一卡是噪音，且可行动的时刻已有自己的卡片；webhook 全量镜像登记为后续（Notifier 接口在、serve 尚未配置渠道，与“无 secret 不挂入向”同一姿态：说出来而不是假装已接）。
+- **顺带登记一个真 bug（本批不修）**：`change_service` 的审批 supersession 路径直接把 state 行的 `comment` 列写成人读字符串（"superseded by re-plan"），而该列由 `staterow.go` 独占——里面是审批链的 JSON（approvers/decisions/history）。后续任何经 `ApprovalFromState` 的读取会把这笔已过期记录解码成空链：审计上“谁投过票”被抹掉。修复需要先定 comment 列的归属协议，单独立项。
+- **边界**：LEVEELang 门禁（`gate_approver`）的审批记录刻意**不带** ExpiresAt（零值 = 清扫跳过）——在途门禁阻塞的是 run 本身，过期它需要 run 级语义，另行设计；Jira 镜像暂不播报过期（登记）；`--local` 模式不装 sweeper（与 authz 的信任边界口径一致）。
+- **测试**：approval 6 例（清扫器落定+回调收全记录、空扫不触发回调、幂等、禁用区间立即返回、ctx 取消停扫、nil 接收者安全）；chatopsbridge 4 例（过期广播+卡片渲染、零过期时间不渲染零值时间、迁移映射五态、中间跳/自迁移/nil 全不播）；wiring 7 例（CAS 成功发/拒绝不发、审批结算 CAS、全行写仅真状态变化、nil sink 透传、sink panic 容纳、未知 run 透明）；chatops 卡片分发 1 例（approval_expired → Notification）；cmd 3 例（层→超时映射、零值豁免、清扫间隔默认值）。**变异咬合**：棘轮测试从“零调用方”改判“恰好一个调用方=清扫器”，第二个绕过漏斗的过期写入方会红。
+- 验证：`go test ./...` EXIT=0、`go vet` 干净、golangci-lint 0 issues、gofmt 干净。前端未涉及、dist 未动。
+
 ### 升级（前端工具链 vitest 3→5：清掉剩余 5 条 dev-only 漏洞；连锁 vite 5→7）
 
 - **动机**：非破坏 audit fix（上一条）清完生产依赖后，剩余 5 条全在 vitest 工具链（@vitest/mocker moderate、tinypool critical——worker options 原型污染 RCE，只在跑测试时存在）。修复需要 vitest 5，破坏性升级单独立项——就是这个变更。

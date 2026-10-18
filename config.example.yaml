@@ -143,6 +143,11 @@ approval:
   high_timeout: 8h
   # 紧急变更（--force）补审时限。 默认: 24h
   emergency_supplement: 24h
+  # 审批过期清扫周期：serve 侧定时把超过上述时限仍未达成 quorum 的
+  # 审批落成 expired（状态 + 审计 + ChatOps 卡片），审批超时由此真正
+  # 生效。默认: 1m；设为 0 或负值整体禁用（超时将永不触发，过期
+  # 审批永远读作 pending——即本键存在前的行为）。
+  expiry_sweep_interval: 1m
 
 # -----------------------------------------------------------------------------
 # audit —— 防篡改审计子系统（对应 AuditConfig）

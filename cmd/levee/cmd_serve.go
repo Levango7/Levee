@@ -788,7 +788,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	svcs, err := buildServeServices(svcStore, cfg, execGuard)
+	svcs, err := buildServeServices(ctx, svcStore, cfg, execGuard)
 	if err != nil {
 		return err
 	}
@@ -1130,7 +1130,16 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 // execGuard is non-nil only in cluster mode: it attaches the execution
 // fencing to the engine so cluster-mode executions register leases and
 // every write is epoch-checked.
-func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
+// ctx drives the background loops this function starts (the approval expiry
+// sweeper); it is serve's lifecycle context so a shutdown also stops them.
+func buildServeServices(ctx context.Context, store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
+	// Run lifecycle funnel first: every service below gets the decorator, so
+	// whatever writes a run status (apply, retry, takeover, pause, CLI) —
+	// the transition crosses one seam. The sink is installed later, once
+	// the ChatOps bridge exists (a nil sink drops events: the decorator is
+	// inert until then, and in deployments without chatops entirely).
+	runEvents := wiring.NewRunEventStore(store)
+	store = runEvents
 	// Credential store first: the engine (when enabled) and target probing
 	// share the encrypted store backed by LEVEE_MASTER_PASSWORD. Without it
 	// the resolver stays nil (disabled): CheckTarget probes unauthenticated
@@ -1234,8 +1243,42 @@ func buildServeServices(store state.Store, cfg *config.Config, execGuard *cluste
 	if chatOpsBridge != nil {
 		approvalSvc.WithDecisionObserver(chatOpsBridge.OnDecision)
 		changeSvc.WithApprovalCreateObserver(chatOpsBridge.OnApprovalCreated)
+		runEvents.SetSink(chatOpsBridge.OnRunTransition)
 		log.Info("chatops approval mirror enabled", "bots", chatOpsMgr.Names())
 	}
+
+	// Approval expiry sweep: the driver CheckExpiry never had (see
+	// internal/approval/expiry.go). Every sweep settles timed-out pending
+	// approvals durably, then announces them (chat card + a trace row on
+	// the run timeline, so the console shows WHY a change stopped moving).
+	// Runs regardless of chatops: expiry is governance, the card is a
+	// courtesy. The interval comes from approval.expiry_sweep_interval
+	// (<= 0 disables the sweep entirely, documented in the config).
+	expirySweeper := approval.NewExpirySweeper(approvalSvc, cfg.Approval.ExpirySweepInterval,
+		func(ctx context.Context, expired []approval.Approval) {
+			for _, a := range expired {
+				if chatOpsBridge != nil {
+					chatOpsBridge.OnApprovalExpired(&a)
+				}
+				if err := store.CreateTrace(ctx, &state.Trace{
+					ID:        newID("trc-"),
+					RunID:     a.RunID,
+					Event:     "approval_expired",
+					Actor:     "approval-sweeper",
+					Timestamp: time.Now().UTC(),
+				}); err != nil {
+					log.Warn("approval expiry: trace write failed", "approval_id", a.ID, "error", err)
+				}
+			}
+		})
+	go expirySweeper.Run(ctx)
+
+	// The three-tier approval timeouts become the kickoff record's real
+	// expiry: standard → standard_timeout, high → high_timeout, emergency →
+	// emergency_supplement (the config comments' documented semantics, now
+	// enforceable through the sweeper above). Without this resolver the
+	// kickoff keeps its legacy hardcoded 24h (see ChangeService).
+	changeSvc.WithApprovalExpiryResolver(approvalExpiryResolverFromConfig(cfg))
 
 	// OpsMesh platform integration (opsmesh.*): the outcome of ALERT-DRIVEN
 	// fixes is reported back so the platform can close its alert and train
