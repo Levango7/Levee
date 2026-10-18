@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  # Manual escape hatch, same rationale as ci.yml's: this repo has recurring
+  # episodes where GitHub silently drops push/pull_request events (no run rows
+  # at all — #140/#141/#177-#179); with dispatch, recovery is one command:
+  #   gh workflow run codeql.yml --ref <branch>
+  workflow_dispatch:
   # Weekly scheduled scan of the default branch, Mondays 06:00 UTC.
   schedule:
     - cron: '0 6 * * 1'
