@@ -8,6 +8,13 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main, master, develop]
+  # Manual escape hatch: this repo has had recurring episodes where GitHub
+  # silently drops every pull_request/push event (no run rows at all —
+  # #140/#141 needed re-trigger pushes; #177-#179 survived neither push,
+  # synchronize nor reopen events). With dispatch, recovery is one command
+  # instead of blind waiting:
+  #   gh workflow run ci.yml --ref <branch>
+  workflow_dispatch:
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
