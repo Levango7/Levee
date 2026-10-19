@@ -1401,7 +1401,16 @@ func (s *SQLiteStore) DeleteAssignment(ctx context.Context, runID string) error 
 }
 
 // SetAssignmentResult writes the terminal result onto an assignment row.
+//
+// The result must be one of the frozen assignment-result verdicts
+// (completed | failed | rolled_back): the column is the terminal outcome the
+// dispatch layer reads, and a caller leaking a run status into it (the bug this
+// guard closes) would make "done" mean something no reader knows. The empty
+// string is refused too — it is "no result recorded yet", not a verdict.
 func (s *SQLiteStore) SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error {
+	if !isAssignResult(result) {
+		return fmt.Errorf("state: set result for %q: %q is not an assignment result (%v)", runID, result, assignResultOrder)
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE run_assignment SET result=?, updated_at=? WHERE run_id=? AND epoch=?`,
 		result, time.Now().UTC(), runID, epoch)
 	if err != nil {
