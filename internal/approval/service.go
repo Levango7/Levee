@@ -121,6 +121,10 @@ type Approval struct {
 	// CAS. It is carried by the store round-trip so the CAS compares the exact
 	// record the caller read.
 	Revision int64 `json:"revision"`
+	// SupersededReason records why a pending approval was replaced by a later
+	// plan of the same run. It travels inside the chain JSON (see staterow.go);
+	// empty means the row was not superseded.
+	SupersededReason string `json:"superseded_reason,omitempty"`
 }
 
 // --- CreateRequest ----------------------------------------------------------

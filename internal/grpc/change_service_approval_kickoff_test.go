@@ -305,6 +305,14 @@ func TestApprovalRouting_RePlanSupersedesPending(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, expired, 1, "the superseded row is expired, not deleted")
+
+	// The reason is recorded inside the chain JSON, so the row still decodes:
+	// writing it onto the `comment` column would make the whole chain
+	// unreadable (see approval/staterow.go).
+	chain, err := approval.ApprovalFromState(expired[0])
+	require.NoError(t, err, "a superseded row must stay readable")
+	assert.NotEmpty(t, chain.Approvers, "superseding must not erase who was asked")
+	assert.Equal(t, "superseded by re-plan", chain.SupersededReason)
 }
 
 func TestKickoffSkipsPlanHashMismatch(t *testing.T) {

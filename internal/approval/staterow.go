@@ -13,6 +13,13 @@
 // encoding existed (or by a writer that left it empty) decodes to a chain with
 // no approvers and no decisions, which the read path reports as what it is
 // rather than failing the whole request.
+//
+// Ownership, stated as a rule: the `comment` column is the chain JSON and
+// nothing else. A lifecycle transition that wants to record a reason (the
+// supersession path is the one that does) extends the JSON via MarkSuperseded
+// instead of writing a human string to the column — a non-JSON comment makes
+// ApprovalFromState fail, so the row would disappear from every read path and
+// its approvers/decisions would be lost.
 package approval
 
 import (
@@ -36,6 +43,7 @@ func StateApproval(a *Approval) (*state.Approval, error) {
 		ExpiresAt:        a.ExpiresAt,
 		Initiator:        a.Initiator,
 		ExcludeInitiator: a.ExcludeInitiator,
+		SupersededReason: a.SupersededReason,
 	}
 	blob, err := json.Marshal(extra)
 	if err != nil {
@@ -91,6 +99,7 @@ func ApprovalFromState(sa *state.Approval) (*Approval, error) {
 		a.ExpiresAt = extra.ExpiresAt
 		a.Initiator = extra.Initiator
 		a.ExcludeInitiator = extra.ExcludeInitiator
+		a.SupersededReason = extra.SupersededReason
 	}
 	if sa.TimeoutAt != nil && a.ExpiresAt.IsZero() {
 		a.ExpiresAt = *sa.TimeoutAt
@@ -108,4 +117,38 @@ type approvalExtra struct {
 	ExpiresAt        time.Time  `json:"expires_at"`
 	Initiator        string     `json:"initiator,omitempty"`
 	ExcludeInitiator bool       `json:"exclude_initiator,omitempty"`
+	// SupersededReason is written by MarkSuperseded when a pending approval is
+	// replaced by a later plan of the same run. It lives inside the chain JSON
+	// because the column that carries the JSON has no room for free text.
+	SupersededReason string `json:"superseded_reason,omitempty"`
+}
+
+// MarkSuperseded records why a pending approval was replaced, inside the chain
+// JSON that the `comment` column carries. It is the only way to annotate a row
+// without risking the chain: the stored blob is decoded, the reason is added,
+// and the same shape is re-encoded.
+//
+// Status and ActedAt are the caller's to set — this function touches only the
+// JSON, so a caller marking a row expired does `old.Status = "expired"`,
+// `old.ActedAt = &now`, then MarkSuperseded, then UpdateApproval.
+//
+// A corrupt blob is reported rather than overwritten: the caller can log the
+// reason as lost but must still be able to expire the row.
+func MarkSuperseded(sa *state.Approval, reason string) error {
+	if sa == nil {
+		return fmt.Errorf("mark superseded: nil approval")
+	}
+	var extra approvalExtra
+	if sa.Comment != "" {
+		if err := json.Unmarshal([]byte(sa.Comment), &extra); err != nil {
+			return fmt.Errorf("approval %q has unparsable metadata (comment %q): %w", sa.ID, sa.Comment, err)
+		}
+	}
+	extra.SupersededReason = reason
+	blob, err := json.Marshal(extra)
+	if err != nil {
+		return fmt.Errorf("marshal approval extra: %w", err)
+	}
+	sa.Comment = string(blob)
+	return nil
 }

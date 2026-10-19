@@ -59,3 +59,46 @@ func TestApprovalFromState_UnparsableCommentIsReported(t *testing.T) {
 	require.Error(t, err, "a corrupt row must be identified, not silently read as empty")
 	assert.Contains(t, err.Error(), "unparsable metadata")
 }
+
+func TestMarkSuperseded_KeepsTheChainReadable(t *testing.T) {
+	// Regression: the supersession path used to write "superseded by re-plan"
+	// straight into `comment`, which made ApprovalFromState fail — the expired
+	// row lost its approvers and decisions on every read path.
+	a := &Approval{
+		ID: "app-1", RunID: "run-1", Level: LevelHigh, Status: StatusPending,
+		Approvers: []string{"bob", "carol"}, MinApprovers: 2,
+		CreatedAt: time.Now().UTC(), PlanHash: "plan-1",
+	}
+	sa, err := StateApproval(a)
+	require.NoError(t, err)
+
+	require.NoError(t, MarkSuperseded(sa, "superseded by re-plan"))
+	sa.Status = string(StatusExpired)
+
+	back, err := ApprovalFromState(sa)
+	require.NoError(t, err, "a superseded row must stay readable")
+	assert.Equal(t, []string{"bob", "carol"}, back.Approvers)
+	assert.Equal(t, 2, back.MinApprovers)
+	assert.Equal(t, "superseded by re-plan", back.SupersededReason)
+	assert.Equal(t, StatusExpired, back.Status)
+}
+
+func TestMarkSuperseded_ToleratesLegacyEmptyComment(t *testing.T) {
+	// A row with no chain JSON must still be markable: the reason is carried
+	// inside a freshly-marshalled blob rather than dropped.
+	sa := &state.Approval{ID: "legacy", RunID: "r", Status: "expired"}
+	require.NoError(t, MarkSuperseded(sa, "superseded by re-plan"))
+	back, err := ApprovalFromState(sa)
+	require.NoError(t, err)
+	assert.Empty(t, back.Approvers)
+	assert.Equal(t, "superseded by re-plan", back.SupersededReason)
+}
+
+func TestMarkSuperseded_RefusesToClobberCorruptMetadata(t *testing.T) {
+	sa := &state.Approval{ID: "x", Comment: "not json"}
+	err := MarkSuperseded(sa, "reason")
+	require.Error(t, err)
+	assert.Equal(t, "not json", sa.Comment, "a corrupt blob is reported, not overwritten")
+	err = MarkSuperseded(nil, "reason")
+	require.Error(t, err)
+}
