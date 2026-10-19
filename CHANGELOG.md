@@ -28,6 +28,14 @@
 - **单一漏斗、两个消费者**：`wiring.CombineRunEventSinks` 把 chat 投影与 webhook 镜像扇出，各自 isolate panic（一个坏消费者不能静默另一个）。serving：`notify.webhook` 管理器从 `buildEngineServeOptions` 提到 `buildServeServices` 构造，一份 manager 同时给回滚 Grader 和镜像用；engine 关闭时镜像照常工作（PlanChange/ApproveChange/pause/resume/archive 都在写 run 状态），`warnNotifyTransportWithoutEngine` 的措辞相应订正（不再是“no notification will ever be sent”）。
 - **测试**：`internal/notify` 5 例（命名时刻+时间戳/收件人、七种终态保真、中间跳与 resume 区分、nil 守卫不投递）；`internal/wiring` 3 例（扇出顺序、全 nil 返回 nil、单 sink panic 不阻断后续）。`go test ./internal/notify/ ./internal/wiring/ ./cmd/levee/` 全绿。
 
+### 新增/加固（告警接入：每源入口身份 + 按归属判可见性，例外表清空）
+
+- **登记已久的例外**：`AlertService` 自登记进 serve 起就没有策略判定，是一直写在 `docs/identity-deployment.md` 与 `docs/product-roadmap.md` 里的“刻意不接”——原因是真的：`AlertMessage` 只有 id/source/severity/ends_at，没有 team、没有 env、也没有能解析成 env 的 target，环境键控的矩阵没有可判的输入；两条捷径都在说谎（按 `permission.default_env` 判等于把监控源归给恰好拥有默认环境那支队；新增 `alert` 动作 token 在每份既有矩阵上 fail-open）。
+- **归属来自配置，不来自载荷**：新增 `<dataDir>/alert-sources.yaml`（`internal/alert/sources.go`），每条 `{name, environment, secret}`。监控源是机器、拥有一个环境；凭据证明“哪个源在说话”，登记项决定“它的告警属于哪个环境”。`ReceiveAlert` 在配置了源时要求 `x-levee-alert-source` + `x-levee-alert-token`（gRPC metadata；REST 同名头由网关桥接进同一 metadata），未登记/错凭据/无凭据一律 `Unauthenticated`（机器不是矩阵能判的主体），且被拒的告警**不进 ring、不进流**。告警的环境写进 `alert.Alert.Environment`（新增字段，仅内存域对象，不动 proto）。
+- **可见性按告警自己的环境**：`GetAlertStatus` 与 `SubscribeAlerts` 按 `alert.Environment` 要 `view`（复用 `authorizeResourceRead` / `resourceVisibility`）——流按可见环境**收窄**而非整条拒绝，与 ListChanges 同口径；调用方不能靠知道 id 扩大可见面。未配 `alert-sources.yaml` 时保持历史姿态（只认证，启动 WARN）；配置了却写坏则拒绝启动，与矩阵/策略同一规则。
+- **例外表清空**：`cmd/levee/serve_policy_wiring_test.go` 的 `exemptWiringCalls` 返回空表（机制保留、内容清空，棘轮 1→0），`AlertService` 进入受控集，探针用 prod 源发告警 + 无权主体读（`view`）、dev 源 + 有权主体读。
+- **测试**：`internal/alert` 6 例（缺文件=空注册表、解析+trim、缺 name/env/secret 各自拒绝、重名拒绝、坏 YAML 报错）；`internal/grpc` 3 例（入口身份四种情形+环境归因+拒件不入 ring、读按归属环境判且无关主体被拒、无源时保持旧姿态且告警无归属）；`cmd/levee` census/ingress 测试全绿。
+
 ### 新增（审批超时闭环 + run 生命周期事件漏斗：两笔登记已久的缺口一次收口）
 
 - **审批超时从未生效过**：`approval.CheckExpiry`（扫描过期 pending 并落成 expired）自落库起**零生产调用方**——只有测试在调。三层超时配置（`approval.standard_timeout/high_timeout/emergency_supplement`，4h/8h/24h）同样是**零消费方**的装饰品；kickoff 审批一律硬编码 24h。也就是说：配置里写了 4h，线上一个超时审批永远读作 pending，`expired` 是词表里的死字。棘轮测试 `TestCheckExpiryIsTheOnlyProducerOfExpired` 为此埋了数周——本批接上驱动器时**它如约变红**，注释与断言按它要求同步更新（现在钉的是“恰好一个调用方=清扫器”，而不是当年的“零调用方”）。

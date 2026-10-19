@@ -124,6 +124,14 @@ type Alert struct {
 	// Source identifies the adapter that produced the alert, e.g.
 	// "prometheus" or "custom".
 	Source string `json:"source"`
+	// Environment is the environment this alert belongs to, resolved from the
+	// registered alert source that authenticated the ingress (see
+	// internal/alert/sources.go). It is deliberately NOT read from the payload:
+	// ownership decided by the caller would be self-declaration. Empty means
+	// unattributed — an alert that did not arrive through a credentialed source
+	// (the in-process gateway path), which visibility treats as the default
+	// environment rather than guessing an owner.
+	Environment string `json:"environment,omitempty"`
 	// Severity is the urgency level.
 	Severity Severity `json:"severity"`
 	// Title is a short human-readable summary.

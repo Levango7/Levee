@@ -76,6 +76,16 @@ levee serve --token <共享密钥> \
 <dataDir>/permissions.yaml  矩阵：哪个团队在哪个环境能做什么（WHERE）
 <dataDir>/roles.yaml        角色树：这个角色被授予哪些权限（WHAT）
 <dataDir>/policies.yaml     ABAC 策略：带标签条件的 allow/deny（可选）
+<dataDir>/alert-sources.yaml 告警入口身份：哪个监控源在哪个环境、凭据是什么（可选）
+```
+
+`alert-sources.yaml` 与前三张表不同：它登记的不是人，而是机器（监控源）。凭据证明“哪个源在说话”，登记项决定“它的告警属于哪个环境”，因此告警流的可见性（`view`）有可判的输入。缺文件 = 告警入口退回只认证的旧姿态：
+
+```yaml
+sources:
+  - name: prometheus-prod
+    environment: prod
+    secret: <per-source-token>
 ```
 
 ### 2.1 `users.yaml`——先让人存在
@@ -252,6 +262,6 @@ roles:
 3. **`users.yaml` 是本地文件，不进 IdP。** 主体→团队→角色的对应目前在数据目录里维护；IdP 只提供"你是谁、属于哪些组"。把它做成从 IdP 组同步是一次产品决定（已列待办），当前状态是手工维护。
 4. **Audit 链能查出篡改，挡不住删除**——删中间一行会让后一行的前驱哈希无来源。WORM 触发器是配套而非冗余（`TestAuditChain_DetectsDeletion` 先摘触发器再删，验证必须报 mismatch）。
 5. **超大审计库的封链读成本**：`Seal` 每次全量读可见 audit 行（无 LIMIT），稳态只写增量，但读成本随日志增长。百万行以上的部署需要分批判封，这是已知限制。
-6. **告警入口只认证、不授权。** `AlertService.ReceiveAlert` 需要有效令牌，但**任何**有效令牌都能投告警，`GetAlertStatus` / `SubscribeAlerts` 也对所有认证调用方开放。原因是载荷里的事实而非疏漏：`AlertMessage` 只有 id / source / severity / ends_at，没有 team、没有 env、也没有能解析成 env 的 target——环境键控的矩阵没有可判的输入。两条捷径都在说谎：按 `permission.default_env` 判等于把监控源归给"恰好拥有默认环境的那支队"；新增 `alert` 动作 token 则会在每一份既有矩阵上 fail-open（未登记的动作没有授权，而本部署的口径是"无矩阵即不强制"）。每源入向凭据或签名、以及告警流的可见性规则，是已登记的待办（写在 `internal/grpc/alert_service.go` 的 `ReceiveAlert` 注释里，并由 `cmd/levee/serve_policy_wiring_test.go` 的例外表探针钉住"今天仍不受控"这一事实）。
+6. **告警入口有身份、告警流按归属判可见性。** `ReceiveAlert` 在部署了 `alert-sources.yaml` 时要求每源凭据（gRPC metadata `x-levee-alert-source` + `x-levee-alert-token`，REST 同名头），凭据证明“哪个监控在说话”，登记项决定“它的告警属于哪个环境”——归属来自注册表，不接受载荷自报；未登记 / 错凭据 / 无凭据一律 Unauthenticated，且被拒的告警不进 ring、不进流。`GetAlertStatus` / `SubscribeAlerts` 按告警**自己的**环境要 `view`（流按可见环境收窄而非整条拒绝）。为什么不由矩阵直接判载荷：`AlertMessage` 没有 team/env/可解析 target，两条捷径都在说谎（按 `permission.default_env` 判等于把监控源归给恰拥有默认环境的那支队；新增 `alert` 动作 token 在每份既有矩阵上 fail-open）。未配 `alert-sources.yaml` 时保持历史姿态（只认证、启动 WARN），配置了却写坏则拒绝启动（与矩阵/策略同口径）。例外表因此清空——`AlertService` 已归入 `cmd/levee/serve_policy_wiring_test.go` 的受控集。
 7. **没有环境的请求面按默认环境判，而且不是唯一一次判定。** 对话面的四个入口（gRPC `SendMessage` / `SubscribeConversation`，REST `/conversation/sessions*`）的请求里都不带环境，于是按 `permission.default_env` 判——这是运维在配置里刻意选的那个回退，不是猜出来的。它管的是"这个主体能不能驱动这场对话、能不能花这份 LLM 预算、能不能订阅回执"；对话唯一能触发的变更动作（`CreateChangeDraft` → `ChangeService.CreateChange`）会带着**变更自己的环境**再判一次，所以这里的放行永远替代不了真实环境上的授权。
 8. **有环境的资源按它自己声明的环境判，未登记的直接拒。** 诊断是在目标机上用平台凭据执行采集，所以 `Diagnose` 按 `labels["env"]` 解析出的那个环境要 `apply`，`GetDiagnosis` 按报告目标的环境要 `view`；不在清单里的主机**拒绝**（没有可归属的环境，就没有在它上面执行许可以），已登记但没打标签的落回默认环境（配置里的答案）。解析器没装上时返回 `FailedPrecondition` 而不是退回默认环境——半装的接线要被点名，不能悄悄按别人没问过的环境判出结论。**代价也说明白**：`GetDiagnosis` 必须先解析 id 才知道该判哪个环境，于是判定发生在查找之后，调用方能区分"没有这份报告"与"不是你能读的"——报告 id 因此是一个弱存在预言；它们是引擎自造而非可枚举的，这是两个错里较轻的那一个。
