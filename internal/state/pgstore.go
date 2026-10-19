@@ -1371,7 +1371,13 @@ func (s *PGStore) DeleteAssignment(ctx context.Context, runID string) error {
 }
 
 // SetAssignmentResult writes the terminal result onto an assignment row.
+//
+// The result must be one of the frozen assignment-result verdicts
+// (completed | failed | rolled_back); see the SQLite implementation for why.
 func (s *PGStore) SetAssignmentResult(ctx context.Context, runID string, epoch int64, result string) error {
+	if !isAssignResult(result) {
+		return fmt.Errorf("state: set result for %q: %q is not an assignment result (%v)", runID, result, assignResultOrder)
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE run_assignment SET result=$1, updated_at=NOW() WHERE run_id=$2 AND epoch=$3`,
 		result, runID, epoch)
 	if err != nil {

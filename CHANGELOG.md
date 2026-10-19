@@ -11,6 +11,14 @@
 - **corrupt blob 是「报告」不是「覆盖」**：`MarkSuperseded` 遇到非 JSON comment 返回错误（不静默改写），调用方记录原因丢失但**仍能把行标成 expired**——过期是安全属性，原因注解是审计属性，二者不能互相阻塞。
 - **测试**：`staterow_test.go` 4 例（superseded 后链仍可读且带原因、legacy 空 comment 也能标、corrupt blob 被拒且不被改写、nil 接收者安全）；`TestApprovalRouting_RePlanSupersedesPending` 加断言：supersede 之后 `ApprovalFromState` 必须成功且 `Approvers` 非空、原因落在 `SupersededReason`。
 
+### 修复（assignments.result 写入面收窄：非终态的 run 状态不再透传进结果列）
+
+- **登记过的数据卫生缺口**：`cmd/levee/grpc_change_executor.go` 的 `retry()` 在 default 分支把 `resp.GetStatus()` 原样当 assignment 结果返回。该列的词表（`state.AssignResult*`）冻结在 `completed | failed | rolled_back`，而 `running` / `interrupted` / `paused` / ... 本不是判定——于是 `state=done` 的行能带一个下游不认识的结果。设计文档 `docs/design-cluster-dispatch.md` 早就写明映射点在这里且 `apply()` 走 default 落 `failed`，只有 `retry()` 漏了。
+- **落地（两道）**：
+  1. **映射点**：`retry()` 的 default 归为 `state.AssignResultFailed`，并 `log.Warn` 点名真实的非终态 run 状态（run 行仍保留精确状态，需要区分时 JOIN 回来）；三个分支改用 `state.AssignResult*` 常量而不是字面量，`apply()` 同步。
+  2. **存储层兜底**：`SQLiteStore.SetAssignmentResult` / `PGStore.SetAssignmentResult` 在写之前用新的 `state.isAssignResult` 校验，不在词表内的值（含空串——列默认 `''` 是“尚无结果”而非第四个判定）直接返回错误。这样即便将来又有一个调用方忘了映射，坏值也进不了列。
+- **测试**：`cmd/levee` 新增 `TestExecute_RetryNonTerminalStatusMapsToFailed`（running/interrupted/paused/pending/planned/approved 六态均落 `failed`）；`internal/state` 新增 `assignment_result_write_surface_test.go`（非法值被拒且错文可读、三个合法判定不被守卫拦截）。
+
 ### 新增（审批超时闭环 + run 生命周期事件漏斗：两笔登记已久的缺口一次收口）
 
 - **审批超时从未生效过**：`approval.CheckExpiry`（扫描过期 pending 并落成 expired）自落库起**零生产调用方**——只有测试在调。三层超时配置（`approval.standard_timeout/high_timeout/emergency_supplement`，4h/8h/24h）同样是**零消费方**的装饰品；kickoff 审批一律硬编码 24h。也就是说：配置里写了 4h，线上一个超时审批永远读作 pending，`expired` 是词表里的死字。棘轮测试 `TestCheckExpiryIsTheOnlyProducerOfExpired` 为此埋了数周——本批接上驱动器时**它如约变红**，注释与断言按它要求同步更新（现在钉的是“恰好一个调用方=清扫器”，而不是当年的“零调用方”）。

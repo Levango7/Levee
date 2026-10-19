@@ -134,3 +134,26 @@ func TestExecute_RetryPartialVerdictMapsToFailed(t *testing.T) {
 		})
 	}
 }
+
+// A resume that comes back non-terminal (still running, interrupted again, or
+// anything this switch has not seen) must not leak its run status into
+// assignments.result: the vocabulary is frozen and state=done requires one of
+// its members. The run row keeps the precise status.
+func TestExecute_RetryNonTerminalStatusMapsToFailed(t *testing.T) {
+	for _, st := range []string{"running", "interrupted", "paused", "pending", "planned", "approved"} {
+		st := st
+		t.Run(st, func(t *testing.T) {
+			svc := &fakeChangeService{
+				retryResp: &pb.Change{Status: st},
+			}
+			store := newExecutorTestStore(t, &state.Run{ID: "r1", Status: "interrupted"})
+
+			ex := &grpcChangeExecutor{svc: svc, store: store}
+			result, err := ex.Execute(context.Background(), "r1")
+
+			require.NoError(t, err)
+			assert.Equal(t, state.AssignResultFailed, result,
+				"a non-terminal run status must not reach the assignment result column")
+		})
+	}
+}

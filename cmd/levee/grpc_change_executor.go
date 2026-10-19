@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
@@ -68,21 +69,30 @@ func (e *grpcChangeExecutor) retry(ctx context.Context, runID string) (string, e
 	// (completed | failed | rolled_back — design-cluster-dispatch.md), a
 	// deliberately smaller, frozen set — not run statuses.
 	case runstatus.StatusRolledBack:
-		return "rolled_back", nil
+		return state.AssignResultRolledBack, nil
 	case runstatus.StatusRolledBackPartial, runstatus.StatusRollbackIncomplete:
 		// D-2 v2: the run row keeps the precise verdict; the assignment
 		// result vocabulary (completed | failed | rolled_back) records
 		// anything that is not a clean outcome as "failed" so dispatch
 		// and operators treat it as needing attention.
-		return "failed", nil
+		return state.AssignResultFailed, nil
 	case runstatus.StatusCompleted, "done": // "done" is legacy, not a run status
-		return "completed", nil
+		return state.AssignResultCompleted, nil
 	case runstatus.StatusFailed:
-		return "failed", nil
+		return state.AssignResultFailed, nil
 	default:
-		// interrupted again or still running: surface as status for the
-		// assignment layer to handle.
-		return resp.GetStatus(), nil
+		// The resume returned a status that is not a terminal outcome:
+		// still running, interrupted again, or something this switch has
+		// not seen. The assignment-result vocabulary is frozen at
+		// completed|failed|rolled_back and `state=done` requires one of
+		// them, so leaking the run status here would put a value the
+		// console and the terminal-state recognition do not know into the
+		// column. "failed" is the only honest terminal value; the precise
+		// status stays on the run row and is named in this log so the two
+		// can be joined.
+		log.Warn("dispatch: resume returned a non-terminal run status; recording assignment as failed",
+			"run_id", runID, "status", resp.GetStatus())
+		return state.AssignResultFailed, nil
 	}
 }
 
@@ -97,11 +107,11 @@ func (e *grpcChangeExecutor) apply(ctx context.Context, runID string) (string, e
 	}
 	// The apply succeeded at the RPC level; map the outcome to a result.
 	switch {
-	case resp.GetChange().GetStatus() == "rolled_back":
-		return "rolled_back", nil
+	case resp.GetChange().GetStatus() == runstatus.StatusRolledBack:
+		return state.AssignResultRolledBack, nil
 	case resp.GetSuccess():
-		return "completed", nil
+		return state.AssignResultCompleted, nil
 	default:
-		return "failed", nil
+		return state.AssignResultFailed, nil
 	}
 }

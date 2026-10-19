@@ -123,3 +123,16 @@ func ApprovalStatusNames() []string {
 func AssignResultNames() []string {
 	return append([]string(nil), assignResultOrder...)
 }
+
+// isAssignResult reports whether name is one of the assignment-result verdicts.
+// The empty string is deliberately not a verdict (the column's SQL default means
+// "no result recorded yet"), so a caller that has no terminal outcome must say so
+// by choosing a value here rather than by writing nothing.
+func isAssignResult(name string) bool {
+	for _, r := range assignResultOrder {
+		if r == name {
+			return true
+		}
+	}
+	return false
+}
