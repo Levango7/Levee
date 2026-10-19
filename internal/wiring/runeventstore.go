@@ -66,6 +66,42 @@ func (s *RunEventStore) SetSink(fn RunEventSink) {
 	s.sink = fn
 }
 
+// CombineRunEventSinks fans one transition out to every non-nil sink, in
+// order — the seam that lets the chat room projection and the full webhook
+// mirror share the single funnel without one displacing the other. It returns
+// nil when every sink is nil, which SetSink treats as "no consumer" (the
+// decorator stays inert).
+//
+// Each sink is isolated: a panic is recovered and logged before the next sink
+// runs, so one broken consumer cannot silence another. This is narrower than
+// it sounds — a consumer that needs its events queued should queue them
+// itself; the point here is only that a panic in one must not decide whether
+// the others see the event.
+func CombineRunEventSinks(sinks ...RunEventSink) RunEventSink {
+	filtered := make([]RunEventSink, 0, len(sinks))
+	for _, s := range sinks {
+		if s != nil {
+			filtered = append(filtered, s)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return func(changeID, from, to string, at time.Time) {
+		for _, sink := range filtered {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Warn("run event sink panicked (recovered)",
+							"change_id", changeID, "to", to, "panic", r)
+					}
+				}()
+				sink(changeID, from, to, at)
+			}()
+		}
+	}
+}
+
 // emit delivers one transition. The sink must not be able to fail the write
 // that produced the event — the same posture as the engine's GateObserver,
 // whose notification path can never become a second failure reason for a

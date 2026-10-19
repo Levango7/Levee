@@ -139,9 +139,15 @@ type Recipient struct {
 type TriggerPoint string
 
 const (
-	TriggerRunStarted        TriggerPoint = "run_started"
-	TriggerRunCompleted      TriggerPoint = "run_completed"
-	TriggerRunFailed         TriggerPoint = "run_failed"
+	TriggerRunStarted   TriggerPoint = "run_started"
+	TriggerRunCompleted TriggerPoint = "run_completed"
+	TriggerRunFailed    TriggerPoint = "run_failed"
+	// TriggerRunStatusChanged is the full-stream mirror's event for a run
+	// transition that is not one of the three named lifecycle moments (draft →
+	// planned, approved, archived, ...). It carries the exact from/to pair in
+	// the message metadata; a consumer that only cares about the named moments
+	// filters on the three above.
+	TriggerRunStatusChanged  TriggerPoint = "run_status_changed"
 	TriggerStepStarted       TriggerPoint = "step_started"
 	TriggerStepCompleted     TriggerPoint = "step_completed"
 	TriggerStepFailed        TriggerPoint = "step_failed"

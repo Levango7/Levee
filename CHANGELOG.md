@@ -19,6 +19,15 @@
   2. **存储层兜底**：`SQLiteStore.SetAssignmentResult` / `PGStore.SetAssignmentResult` 在写之前用新的 `state.isAssignResult` 校验，不在词表内的值（含空串——列默认 `''` 是“尚无结果”而非第四个判定）直接返回错误。这样即便将来又有一个调用方忘了映射，坏值也进不了列。
 - **测试**：`cmd/levee` 新增 `TestExecute_RetryNonTerminalStatusMapsToFailed`（running/interrupted/paused/pending/planned/approved 六态均落 `failed`）；`internal/state` 新增 `assignment_result_write_surface_test.go`（非法值被拒且错文可读、三个合法判定不被守卫拦截）。
 
+### 新增（run 生命周期全量 webhook 镜像：chat 房间只收命名时刻，机器收全流）
+
+- **接口在、渠道在、没人投**：run 生命周期漏斗（`wiring.RunEventStore`）上一批收口后只接了一个消费者——ChatOps 房间投影，而且刻意只发 `running` 与终态（“中间跳一跳一卡是噪音”）。那条注释把 webhook 全量镜像登记为后续，并写着“serve ships no channel yet”——其实 `notify.webhook` 渠道已经接进 serve（`serve_notify.go`），只是没人给它事件。
+- **落地**：`internal/notify/run_lifecycle.go` 新增 `RunLifecycleMirror`。它按 `wiring.RunEventSink` 的形状（不 import wiring，免得回环）接收每一笔成功迁移，映射成通知消息：
+  - `paused → running` = `resumed`（先于 `run_started` 判，否则恢复会被误报成新启动）、`→ running` = `run_started`、`→ completed` = `run_completed`、其余终态（failed / 三种回滚判定 / cancelled / rejected / interrupted）= `run_failed`（LevelError，**精确状态保留在 metadata**）、`→ paused` = `paused`（LevelWarning）、其余（draft→planned / approved / archived…）= 新触发器 `run_status_changed`。
+  - 投递走 `NotificationManager.NotifyAsync`：漏斗的 sink 契约禁止在 store 写上阻塞外部 I/O，而 webhook POST 带重试正是这种 I/O。
+- **单一漏斗、两个消费者**：`wiring.CombineRunEventSinks` 把 chat 投影与 webhook 镜像扇出，各自 isolate panic（一个坏消费者不能静默另一个）。serving：`notify.webhook` 管理器从 `buildEngineServeOptions` 提到 `buildServeServices` 构造，一份 manager 同时给回滚 Grader 和镜像用；engine 关闭时镜像照常工作（PlanChange/ApproveChange/pause/resume/archive 都在写 run 状态），`warnNotifyTransportWithoutEngine` 的措辞相应订正（不再是“no notification will ever be sent”）。
+- **测试**：`internal/notify` 5 例（命名时刻+时间戳/收件人、七种终态保真、中间跳与 resume 区分、nil 守卫不投递）；`internal/wiring` 3 例（扇出顺序、全 nil 返回 nil、单 sink panic 不阻断后续）。`go test ./internal/notify/ ./internal/wiring/ ./cmd/levee/` 全绿。
+
 ### 新增（审批超时闭环 + run 生命周期事件漏斗：两笔登记已久的缺口一次收口）
 
 - **审批超时从未生效过**：`approval.CheckExpiry`（扫描过期 pending 并落成 expired）自落库起**零生产调用方**——只有测试在调。三层超时配置（`approval.standard_timeout/high_timeout/emergency_supplement`，4h/8h/24h）同样是**零消费方**的装饰品；kickoff 审批一律硬编码 24h。也就是说：配置里写了 4h，线上一个超时审批永远读作 pending，`expired` 是词表里的死字。棘轮测试 `TestCheckExpiryIsTheOnlyProducerOfExpired` 为此埋了数周——本批接上驱动器时**它如约变红**，注释与断言按它要求同步更新（现在钉的是“恰好一个调用方=清扫器”，而不是当年的“零调用方”）。
