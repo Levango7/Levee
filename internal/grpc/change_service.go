@@ -838,12 +838,16 @@ func (s *ChangeService) kickoffApproval(ctx context.Context, run *state.Run) err
 			// Mark the superseded row expired so the pending list stays
 			// clean; the audit trail keeps both (the old row is updated,
 			// not deleted). ActedAt records when the supersession
-			// happened; Comment carries the reason.
+			// happened; the reason goes INSIDE the chain JSON
+			// (MarkSuperseded), never on the comment column directly —
+			// that column is the chain's sole carrier, and a human string
+			// there makes the row decode-fail on every read path.
 			now := time.Now().UTC()
 			old.Status = "expired"
 			old.ActedAt = &now
-			if old.Comment == "" {
-				old.Comment = "superseded by re-plan"
+			if err := approval.MarkSuperseded(old, "superseded by re-plan"); err != nil {
+				log.Warn("approval kickoff: superseded row's chain metadata unreadable; reason not recorded",
+					"run_id", run.ID, "approval_id", old.ID, "error", err)
 			}
 			if err := s.store.UpdateApproval(ctx, old); err != nil {
 				log.Warn("approval kickoff: superseding old pending approval failed", "run_id", run.ID, "approval_id", old.ID, "error", err)

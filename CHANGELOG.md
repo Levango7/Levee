@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 修复（approvals.comment 归属收口：supersession 不再把链 JSON 盖成人读字符串）
+
+- **登记已久的真 bug**：上一批收口审批超时时发现的——`change_service` 的审批 supersession 路径把 `approvals.comment` 列直接写成人读字符串（`"superseded by re-plan"`），而该列由 `internal/approval/staterow.go` 独占，里面是审批链的 JSON（approvers/decisions/history）。守卫只写了「列为空才写」，而经 `approval.Create` 落库的行 comment 从不空，所以这条写路径要么是死的、要么（一旦命中）会让 `ApprovalFromState` 解析失败——`comment` 非 JSON 时它返回 `unparsable metadata` 错误，那笔已过期记录连同「谁被问过、谁投过票」一起从所有读路径消失。
+- **落地（归属协议写死，不是加一个判空）**：`comment` 列 = 链 JSON，且**只能**是链 JSON；任何要记录的原因都必须是在 JSON 里长出来的字段。`staterow.go` 新增 `MarkSuperseded(sa, reason)`——解码现有 blob、写入新字段 `superseded_reason`、按同一形状重编码；`Approval` 域对象同步暴露 `SupersededReason` 并进 `StateApproval` / `ApprovalFromState` 往返。`change_service.go` 的 supersession 改为 `old.Status="expired"` + `ActedAt` + `MarkSuperseded`，status/时间戳仍由调用方写，`MarkSuperseded` 只碰 JSON。
+- **corrupt blob 是「报告」不是「覆盖」**：`MarkSuperseded` 遇到非 JSON comment 返回错误（不静默改写），调用方记录原因丢失但**仍能把行标成 expired**——过期是安全属性，原因注解是审计属性，二者不能互相阻塞。
+- **测试**：`staterow_test.go` 4 例（superseded 后链仍可读且带原因、legacy 空 comment 也能标、corrupt blob 被拒且不被改写、nil 接收者安全）；`TestApprovalRouting_RePlanSupersedesPending` 加断言：supersede 之后 `ApprovalFromState` 必须成功且 `Approvers` 非空、原因落在 `SupersededReason`。
+
 ### 新增（审批超时闭环 + run 生命周期事件漏斗：两笔登记已久的缺口一次收口）
 
 - **审批超时从未生效过**：`approval.CheckExpiry`（扫描过期 pending 并落成 expired）自落库起**零生产调用方**——只有测试在调。三层超时配置（`approval.standard_timeout/high_timeout/emergency_supplement`，4h/8h/24h）同样是**零消费方**的装饰品；kickoff 审批一律硬编码 24h。也就是说：配置里写了 4h，线上一个超时审批永远读作 pending，`expired` 是词表里的死字。棘轮测试 `TestCheckExpiryIsTheOnlyProducerOfExpired` 为此埋了数周——本批接上驱动器时**它如约变红**，注释与断言按它要求同步更新（现在钉的是“恰好一个调用方=清扫器”，而不是当年的“零调用方”）。
