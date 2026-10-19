@@ -162,3 +162,35 @@ func TestRunEventStore_UnwrapperSeam(t *testing.T) {
 	assert.Equal(t, base, s.Underlying(), "Underlying() must hand back the wrapped store")
 	assert.Equal(t, base, state.Underlying(s), "the state walk must see through the decorator")
 }
+
+// TestCombineRunEventSinks_FansOutInOrder is the serve-time seam: the chat room
+// projection and the webhook full-stream mirror share the single funnel, and
+// neither may displace the other.
+func TestCombineRunEventSinks_FansOutInOrder(t *testing.T) {
+	var order []string
+	first := func(changeID, from, to string, at time.Time) { order = append(order, "first:"+to) }
+	second := func(changeID, from, to string, at time.Time) { order = append(order, "second:"+to) }
+
+	combined := CombineRunEventSinks(nil, first, second)
+	require.NotNil(t, combined)
+	combined("run-1", "approved", "running", time.Now())
+	assert.Equal(t, []string{"first:running", "second:running"}, order)
+}
+
+func TestCombineRunEventSinks_AllNilIsNil(t *testing.T) {
+	assert.Nil(t, CombineRunEventSinks())
+	assert.Nil(t, CombineRunEventSinks(nil, nil),
+		"a fan-out with no real consumer must leave the store decorator inert")
+}
+
+// TestCombineRunEventSinks_PanicIsContainedPerSink pins the isolation: a broken
+// consumer must not decide whether the others see the event.
+func TestCombineRunEventSinks_PanicIsContainedPerSink(t *testing.T) {
+	var reached bool
+	panicking := func(changeID, from, to string, at time.Time) { panic("boom") }
+	healthy := func(changeID, from, to string, at time.Time) { reached = true }
+
+	combined := CombineRunEventSinks(panicking, healthy)
+	require.NotPanics(t, func() { combined("run-1", "approved", "running", time.Now()) })
+	assert.True(t, reached, "the second sink must still receive the event")
+}

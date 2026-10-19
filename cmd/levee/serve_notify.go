@@ -68,12 +68,13 @@ func buildServeNotifyManager(cfg config.NotifyConfig) (*notify.NotificationManag
 }
 
 // warnNotifyTransportWithoutEngine says the quiet part out loud: rollback
-// grading is today's only producer of notifications, and it lives inside the
-// engine. An enabled webhook with the engine switched off would sit configured
-// and deliver nothing forever, so the boot states that instead of letting the
-// switch read as "we will be notified".
+// grading is the part of notification that lives inside the engine. An enabled
+// webhook with the engine switched off still mirrors run lifecycle transitions
+// (PlanChange/ApproveChange/pause/resume/archive all write run status), but no
+// rollback grade will ever be produced — so the boot states the limit instead of
+// letting the switch read as "everything will be notified".
 func warnNotifyTransportWithoutEngine(cfg *config.Config) {
 	if cfg != nil && cfg.Notify.Webhook.Enabled {
-		log.Warn("serve: notify.webhook is enabled but the execution engine is off (--engine-enabled=false); no notification will ever be sent")
+		log.Warn("serve: notify.webhook is enabled but the execution engine is off (--engine-enabled=false); run lifecycle transitions are still mirrored, but rollback grading will never fire because it lives in the engine")
 	}
 }

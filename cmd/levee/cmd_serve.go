@@ -65,6 +65,7 @@ import (
 	"github.com/nexus/levee/internal/itsm/jira"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
+	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/notify/chatopsbridge"
 	"github.com/nexus/levee/internal/opsmesh"
 	"github.com/nexus/levee/internal/pause"
@@ -1043,7 +1044,7 @@ type serveServices struct {
 // caller can refuse the boot instead of installing a channel that never delivers.
 func buildEngineServeOptions(cfg *config.Config, store state.Store,
 	credResolver *serveCredentialResolver, execGuard *cluster.ExecutionGuard,
-	approvalSvc *approval.Service) ([]wiring.Option, error) {
+	approvalSvc *approval.Service, notifyMgr *notify.NotificationManager) ([]wiring.Option, error) {
 	var opts []wiring.Option
 	if credResolver != nil {
 		opts = append(opts, wiring.WithCredentialResolver(credResolver))
@@ -1067,14 +1068,9 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 		log.Warn("execution engine snapshot dir not set; plans declaring strategy-snapshot will be rejected before apply")
 	}
 	// Outbound notification transport for rollback grading (notify.webhook).
-	// With no channel configured the grader keeps logging grades and
-	// newRunNotifySink stays nil — the honest no-transport path. An enabled
-	// but unusable webhook refuses the boot instead of pretending a channel
-	// that never delivers is installed (same rule as notify.chatops.*).
-	notifyMgr, notifyErr := buildServeNotifyManager(cfg.Notify)
-	if notifyErr != nil {
-		return nil, notifyErr
-	}
+	// The manager is built by buildServeServices to keep one object shared
+	// with the run lifecycle mirror; with no channel configured it is nil and
+	// newRunNotifySink stays nil — the honest no-transport path.
 	if notifyMgr != nil {
 		opts = append(opts, wiring.WithNotificationManager(notifyMgr))
 	}
@@ -1123,6 +1119,23 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 		opts = append(opts, wiring.WithGateApprover(approval.NewGateApprover(approvalSvc)))
 	}
 	return opts, nil
+}
+
+// installRunEventSinks wires the run lifecycle funnel's consumers: the chat
+// room projection and the full webhook mirror. Either may be nil, and
+// CombineRunEventSinks returns nil when both are, which leaves the decorator
+// inert (the pre-funnel behaviour). Kept out of buildServeServices, whose
+// cyclomatic complexity is already at the lint budget.
+func installRunEventSinks(runEvents *wiring.RunEventStore, chatOpsBridge *chatopsbridge.ApprovalBridge, notifyMgr *notify.NotificationManager) {
+	var sinks []wiring.RunEventSink
+	if chatOpsBridge != nil {
+		sinks = append(sinks, chatOpsBridge.OnRunTransition)
+	}
+	if notifyMgr != nil {
+		sinks = append(sinks, notify.NewRunLifecycleMirror(notifyMgr, webhookChannelName).OnTransition)
+		log.Info("webhook run lifecycle mirror enabled", "channel", webhookChannelName)
+	}
+	runEvents.SetSink(wiring.CombineRunEventSinks(sinks...))
 }
 
 // buildServeServices constructs the in-process service implementations,
@@ -1188,6 +1201,16 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 		chatOpsMgr, chatOpsBridge = mgr, chatopsbridge.NewApprovalBridge(mgr)
 	}
 
+	// Outbound notification transport (notify.webhook) is built here rather
+	// than inside the engine options: two consumers need the same manager —
+	// the engine's rollback grader and the run lifecycle mirror below. An
+	// enabled-but-unusable webhook refuses the boot (same rule as
+	// notify.chatops.*); disabled leaves it nil.
+	notifyMgr, notifyErr := buildServeNotifyManager(cfg.Notify)
+	if notifyErr != nil {
+		return serveServices{}, notifyErr
+	}
+
 	// Execution engine (--engine-enabled, off by default). When wired, the
 	// ChangeService gains real plan generation (persisted plan artifacts)
 	// and apply execution via internal/wiring; when nil, ApplyChange keeps
@@ -1196,7 +1219,7 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	var engine *grpc.EngineAdapter
 	var eng *wiring.Engine
 	if serveOptEngineEnabled {
-		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard, approvalSvc)
+		opts, optsErr := buildEngineServeOptions(cfg, store, credResolver, execGuard, approvalSvc, notifyMgr)
 		if optsErr != nil {
 			return serveServices{}, optsErr
 		}
@@ -1243,9 +1266,13 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	if chatOpsBridge != nil {
 		approvalSvc.WithDecisionObserver(chatOpsBridge.OnDecision)
 		changeSvc.WithApprovalCreateObserver(chatOpsBridge.OnApprovalCreated)
-		runEvents.SetSink(chatOpsBridge.OnRunTransition)
 		log.Info("chatops approval mirror enabled", "bots", chatOpsMgr.Names())
 	}
+
+	// Run lifecycle fan-out: the chat room gets the three named moments
+	// (chatOpsBridge), the webhook mirror gets the full stream including the
+	// intermediate hops the room stays silent on.
+	installRunEventSinks(runEvents, chatOpsBridge, notifyMgr)
 
 	// Approval expiry sweep: the driver CheckExpiry never had (see
 	// internal/approval/expiry.go). Every sweep settles timed-out pending

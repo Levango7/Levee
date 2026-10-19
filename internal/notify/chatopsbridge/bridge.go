@@ -96,9 +96,10 @@ func (b *ApprovalBridge) OnApprovalExpired(a *approval.Approval) {
 // transition of every run lands here, whatever flow wrote it (apply, retry,
 // takeover interrupt, pause/resume).
 //
-// The chat split is a deliberate product decision (the webhook full-stream
-// mirror is a registered follow-up — the Notifier interface exists, serve
-// ships no channel yet):
+// The chat split is a deliberate product decision; the transitions the room
+// stays silent on are not dropped — the outbound webhook mirror
+// (notify.RunLifecycleMirror) is installed beside this projection at the same
+// funnel and receives the full stream:
 //
 //   - "running" start and every TERMINAL status go to the room: they are
 //     the moments a human must know about without watching the console.

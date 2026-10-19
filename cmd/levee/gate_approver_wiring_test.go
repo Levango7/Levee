@@ -31,7 +31,7 @@ steps:
 
 func serveGateEngine(t *testing.T, store state.Store, svc *approval.Service) *wiring.Engine {
 	t.Helper()
-	opts, err := buildEngineServeOptions(&config.Config{}, store, nil, nil, svc)
+	opts, err := buildEngineServeOptions(&config.Config{}, store, nil, nil, svc, nil)
 	require.NoError(t, err)
 	return wiring.NewEngine(store, opts...)
 }
