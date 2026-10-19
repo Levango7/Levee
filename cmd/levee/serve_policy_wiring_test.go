@@ -41,10 +41,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
+	"github.com/nexus/levee/internal/alert"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -84,6 +86,28 @@ users:
     role: steward
 `
 
+// alertSourcesYAML registers two monitors, one per environment. The credential
+// proves WHICH source is speaking; the registration decides which environment
+// its alerts belong to. The census probes use the dev source (readable by the
+// granted subject) and the prod source (readable by neither fixture team, so
+// the refusal can only be the policy).
+const alertSourcesYAML = `
+sources:
+  - name: prom-dev
+    environment: dev
+    secret: secret-dev
+  - name: prom-prod
+    environment: prod
+    secret: secret-prod
+`
+
+const (
+	wiringAlertDevSource  = "prom-dev"
+	wiringAlertDevSecret  = "secret-dev"
+	wiringAlertProdSource = "prom-prod"
+	wiringAlertProdSecret = "secret-prod"
+)
+
 // protoPkg is the package the served API declares its services in; the census
 // is every service in it, whether or not this file remembers to classify them.
 const protoPkg = "levee"
@@ -114,6 +138,10 @@ func newWiringServices(t *testing.T, withMatrix bool) (serveServices, state.Stor
 		require.NoError(t, os.WriteFile(filepath.Join(dataDir, "roles.yaml"), []byte(wiringRolesYAML), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dataDir, "users.yaml"), []byte(wiringUsersYAML), 0o600))
 	}
+	// The alert-source registry is ingress configuration, not policy, so it is
+	// written in both fixtures: the gate it installs is independent of whether a
+	// permission matrix exists.
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "alert-sources.yaml"), []byte(alertSourcesYAML), 0o600))
 
 	store, err := state.NewSQLiteStore(context.Background(), filepath.Join(dir, "levee.db"))
 	require.NoError(t, err)
@@ -153,6 +181,18 @@ func deniedAs(t *testing.T, want codes.Code, err error, rpc string) {
 	st, ok := status.FromError(err)
 	require.True(t, ok, "%s: %v", rpc, err)
 	assert.Equal(t, want, st.Code(), "%s: %v", rpc, err)
+}
+
+// postAlert calls ReceiveAlert as a registered source. That is now the only way
+// an alert enters the ring: the credential authenticates the MACHINE, and the
+// alert is attributed to that source's registered environment.
+func postAlert(ctx context.Context, svc *grpc.AlertService, source, secret, id string) error {
+	ctx = metadata.NewIncomingContext(ctx, metadata.New(map[string]string{
+		alert.SourceMetadataKey: source,
+		alert.TokenMetadataKey:  secret,
+	}))
+	_, err := svc.ReceiveAlert(ctx, &pb.AlertMessage{Id: id, Source: "prom", Title: "cpu high"})
+	return err
 }
 
 // servedProtoServices enumerates the universe the census has to cover, from the
@@ -295,29 +335,40 @@ func policedWiringCalls(svcs serveServices) map[string]policedCall {
 			},
 			via: "plan",
 		},
+		// AlertService's gate is two-layered and only the second layer is the
+		// matrix: ingress is a per-source credential (a machine, not a team), and
+		// the READ side is `view` over the alert's owned environment. The census
+		// probes the read layer because that is where a subject is judged; the
+		// ingress layer has its own test below.
+		svcAlert: {
+			deny: func(ctx context.Context) error {
+				if err := postAlert(ctx, svcs.alertSvc, wiringAlertProdSource, wiringAlertProdSecret, "al-prod"); err != nil {
+					return err
+				}
+				_, err := svcs.alertSvc.GetAlertStatus(ctx, &pb.GetAlertStatusRequest{Id: "al-prod"})
+				return err
+			},
+			allow: func(ctx context.Context) error {
+				if err := postAlert(ctx, svcs.alertSvc, wiringAlertDevSource, wiringAlertDevSecret, "al-dev"); err != nil {
+					return err
+				}
+				_, err := svcs.alertSvc.GetAlertStatus(ctx, &pb.GetAlertStatusRequest{Id: "al-dev"})
+				return err
+			},
+			via: "view",
+		},
 	}
 }
 
-func exemptWiringCalls(svcs serveServices) map[string]exemptCall {
-	return map[string]exemptCall{
-		svcAlert: {
-			reason: "AlertMessage carries no team, no environment and no resolvable " +
-				"target, so there is nothing for an environment-keyed matrix to " +
-				"decide against; ingress is guarded by authentication, and the " +
-				"open item (per-source ingress credential + alert-stream " +
-				"visibility) is recorded on ReceiveAlert in internal/grpc.",
-			calls: map[string]func(ctx context.Context) error{
-				"ReceiveAlert": func(ctx context.Context) error {
-					_, err := svcs.alertSvc.ReceiveAlert(ctx, &pb.AlertMessage{Source: "prom", Title: "cpu high"})
-					return err
-				},
-				"GetAlertStatus": func(ctx context.Context) error {
-					_, err := svcs.alertSvc.GetAlertStatus(ctx, &pb.GetAlertStatusRequest{Id: "no-such-alert"})
-					return err
-				},
-			},
-		},
-	}
+// exemptWiringCalls is the table of services the policy deliberately does not
+// judge. It is empty on purpose and kept as the MECHANISM, not as content: the
+// census requires every served service to be policed or exempt-with-a-reason,
+// so a future exemption has to be declared here with a reason and a probe that
+// shows it still holds. AlertService was the last entry — it is policed now
+// (ingress identity + `view` on the alert's owned environment), so the table
+// carries nothing.
+func exemptWiringCalls(_ serveServices) map[string]exemptCall {
+	return map[string]exemptCall{}
 }
 
 // TestServePolicyCensusClassifiesEveryServedService is the enumeration guard:
@@ -346,7 +397,8 @@ func TestServePolicyCensusClassifiesEveryServedService(t *testing.T) {
 	// states why and names at least one call that shows the exemption is real.
 	// Its size is pinned as a ratchet, so a new exemption is always a decision
 	// somebody made in this file rather than a line appended somewhere else.
-	require.Len(t, exempt, 1, "exactly one service is exempt today (AlertService); changing that count must be deliberate")
+	// It is zero today: AlertService, the last exemption, is policed now.
+	require.Len(t, exempt, 0, "no service is exempt today; adding one must be a deliberate edit here, with a reason and a probe")
 	for name, e := range exempt {
 		assert.GreaterOrEqual(t, len(strings.TrimSpace(e.reason)), 40,
 			"%s is exempt without a reason an operator could read", name)
@@ -418,12 +470,12 @@ func sortedNames[V any](m map[string]V) []string {
 	return names
 }
 
-// TestServeExemptCallsAnswerBothSubjectsAlike is the exemption's own guard:
-// "not policed" is an observable claim, so the exempt service must answer an
-// ungranted subject and a granted subject identically, and neither answer may
-// be a policy refusal. A gate added here without updating the census turns
-// this red — which is the point: an exemption is allowed to end, but not to
-// lapse unnoticed.
+// TestServeExemptCallsAnswerBothSubjectsAlike is the exemption table's own
+// guard: "not policed" is an observable claim, so an exempt service must answer
+// an ungranted subject and a granted subject identically, and neither answer may
+// be a policy refusal. The table is empty today, so this loop asserts nothing —
+// it is kept because it is what makes a FUTURE exemption honest: adding one
+// without a probe that still holds turns this red.
 func TestServeExemptCallsAnswerBothSubjectsAlike(t *testing.T) {
 	svcs, _ := newWiringServices(t, true)
 	mallory := grpc.ContextWithSubject(context.Background(), "mallory")
@@ -443,23 +495,41 @@ func TestServeExemptCallsAnswerBothSubjectsAlike(t *testing.T) {
 	}
 }
 
-// TestServeAlertIngressReallyWorks is the non-vacuity control for the exemption
-// above: "mallory and dave get the same answer" is also true of a service that
-// refuses everybody, so this pins the answer itself — an ungranted subject's
-// alert is accepted and then readable, which is the documented (and registered
-// as open) posture, not an accident.
-func TestServeAlertIngressReallyWorks(t *testing.T) {
+// TestServeAlertIngressRequiresARegisteredSource is the ingress half of the
+// alert gate: with alert-sources.yaml present, an alert without a registered
+// source credential is refused (Unauthenticated), a registered one is accepted
+// and attributed to that source's environment, and the read gate then judges
+// the caller against it.
+func TestServeAlertIngressRequiresARegisteredSource(t *testing.T) {
 	svcs, _ := newWiringServices(t, true)
-	ctx := grpc.ContextWithSubject(context.Background(), "mallory")
+	dave := grpc.ContextWithSubject(context.Background(), "dave")
 
-	resp, err := svcs.alertSvc.ReceiveAlert(ctx, &pb.AlertMessage{Id: "al-1", Source: "prom", Title: "cpu high"})
-	require.NoError(t, err)
-	require.NotNil(t, resp)
-	assert.Equal(t, "accepted", resp.GetStatus(), "the exemption must be a working ingest, not a silent drop: %v", resp)
+	// No credential: refused before the alert reaches the ring.
+	_, err := svcs.alertSvc.ReceiveAlert(dave, &pb.AlertMessage{Id: "al-nocred", Source: "prom", Title: "cpu high"})
+	require.Error(t, err)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
 
-	statusResp, err := svcs.alertSvc.GetAlertStatus(ctx, &pb.GetAlertStatusRequest{Id: "al-1"})
-	require.NoError(t, err, "the alert mallory posted must be readable by mallory: %v", err)
+	// Wrong secret: refused.
+	err = postAlert(dave, svcs.alertSvc, wiringAlertDevSource, "wrong-secret", "al-badsecret")
+	require.Error(t, err)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+
+	// Unregistered source: refused.
+	err = postAlert(dave, svcs.alertSvc, "ghost-monitor", "whatever", "al-ghost")
+	require.Error(t, err)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+
+	// Registered source + correct secret: accepted, and readable by a subject
+	// entitled to its environment.
+	require.NoError(t, postAlert(dave, svcs.alertSvc, wiringAlertDevSource, wiringAlertDevSecret, "al-ok"))
+	statusResp, err := svcs.alertSvc.GetAlertStatus(dave, &pb.GetAlertStatusRequest{Id: "al-ok"})
+	require.NoError(t, err, "dave holds admin in dev and must see a dev alert: %v", err)
 	assert.NotEmpty(t, statusResp.GetStatus())
+
+	// The same alert is not visible to an ungranted subject.
+	_, err = svcs.alertSvc.GetAlertStatus(grpc.ContextWithSubject(context.Background(), "mallory"),
+		&pb.GetAlertStatusRequest{Id: "al-ok"})
+	deniedAs(t, codes.PermissionDenied, err, "GetAlertStatus (ungranted)")
 }
 
 // TestServePolicyDeniesFleetWritesThatChangeGrantsAllow is the half that makes

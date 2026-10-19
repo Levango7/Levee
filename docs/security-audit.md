@@ -526,6 +526,7 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 - **真无 env 判的 6 个均属无 env 概念的域**（agent / alert / diagnosis / conversation），按域判 admin（写）/ view（读）：AgentService 六方法全部有门禁（RegisterAgent / AgentHeartbeat / DeregisterAgent / RemoveAgent 取 admin，ListAgents / GetAgent 取 view）；AlertService.ReceiveAlert 是入站 webhook（无主体）；GetAlertStatus / Diagnose / GetDiagnosis 读告警与诊断域；ConversationService.SendMessage 只产出回复，变更创建走 CreateChange（已有 plan 门禁）。
 - **GetVersion 刻意不门禁**：探活 / 握手端点要求授权，等于让监控系统在无人授权时集体失效。
 - **修正一条过期登记**：2026-10-09 登记的「6 个写 RPC 无 authorize」在 #112 那批（2026-10-11）已收口，本条作废。
+- **2026-10-19 更正（AlertService）**：上一条把 `AlertService` 归入“真无 env 判”的那句已过期——告警现在有入口身份（`alert-sources.yaml` 的每源凭据 + 告警按源登记环境归属），`GetAlertStatus` / `SubscribeAlerts` 按告警自己的环境要 `view`；`cmd/levee/serve_policy_wiring_test.go` 的例外表已清空。上面那段作为 2026-10-11 的事实保留不动。
 
 ## 部署安全声明（2026-08-22，2026-09-06 修订）
 

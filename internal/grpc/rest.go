@@ -33,6 +33,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/nexus/levee/internal/alert"
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/auth"
@@ -2986,11 +2987,21 @@ func sessToDTO(s *conversation.Session) map[string]any {
 
 // extractAuth reads the Authorization header and returns gRPC metadata.
 func extractAuth(r *http.Request) metadata.MD {
-	auth := r.Header.Get("Authorization")
-	if auth == "" {
-		return metadata.New(nil)
+	md := metadata.MD{}
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		md.Set("authorization", auth)
 	}
-	return metadata.New(map[string]string{"authorization": auth})
+	// The alert-source ingress identity rides the same metadata as the bearer
+	// token, so the in-process AlertService reads one transport shape whether
+	// the request arrived over gRPC or through this gateway. Absent headers are
+	// simply not set: the service decides what a missing credential means.
+	if s := strings.TrimSpace(r.Header.Get(alert.SourceHeaderName)); s != "" {
+		md.Set(alert.SourceMetadataKey, s)
+	}
+	if t := r.Header.Get(alert.TokenHeaderName); t != "" {
+		md.Set(alert.TokenMetadataKey, t)
+	}
+	return md
 }
 
 // writeGRPCError maps a gRPC status error to an HTTP error response.

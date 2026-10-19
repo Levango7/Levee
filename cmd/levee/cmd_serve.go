@@ -43,6 +43,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nexus/levee/internal/alert"
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/auth"
@@ -1121,6 +1122,22 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 	return opts, nil
 }
 
+// loadAlertSources reads alert-sources.yaml and announces whether ingress
+// identity is configured. A missing file is the normal unconfigured state (no
+// error); a malformed one is a startup error. Kept out of buildServeServices,
+// whose cyclomatic complexity is already at the lint budget.
+func loadAlertSources(dataDir string) (*alert.SourceRegistry, error) {
+	sources, err := alert.LoadSources(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("load alert sources: %w", err)
+	}
+	if sources.Configured() {
+		log.Info("alert ingress identity enabled: ReceiveAlert requires a registered per-source credential",
+			"sources", len(sources.Names()))
+	}
+	return sources, nil
+}
+
 // installRunEventSinks wires the run lifecycle funnel's consumers: the chat
 // room projection and the full webhook mirror. Either may be nil, and
 // CombineRunEventSinks returns nil when both are, which leaves the decorator
@@ -1373,6 +1390,17 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 		log.Warn("authorization is NOT configured: every authenticated caller may apply changes, rewrite inventory and read the audit trail; write permissions.yaml (see `levee team add`) to enforce policy")
 	}
 
+	// Ingress identity for alerts (alert-sources.yaml): which monitor may speak,
+	// and which environment its alerts belong to. A missing file is the normal
+	// unconfigured state — ReceiveAlert keeps its historical
+	// authentication-only posture — while a malformed one stops startup rather
+	// than silently dropping the credential requirement (same rule as the matrix
+	// and policies above).
+	alertSources, err := loadAlertSources(cfg.Server.DataDir)
+	if err != nil {
+		return serveServices{}, err
+	}
+
 	templateSvc := grpc.NewTemplateService(store, nil).WithAuthorizer(authzSvc)
 	targetSvc := grpc.NewTargetService(store, nil).WithAuthorizer(authzSvc)
 	if credResolver != nil {
@@ -1398,7 +1426,9 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// Prometheus/custom adapters. Diagnosis and conversation get real engines
 	// so the corresponding RPCs are functional in serve mode instead of
 	// returning Unimplemented.
-	alertSvc := grpc.NewAlertService(nil, slog.Default())
+	alertSvc := grpc.NewAlertService(nil, slog.Default()).
+		WithAuthorizer(authzSvc).
+		WithAlertSources(alertSources)
 	diagEngine, diagErr := newServeDiagEngine(cfg)
 	if diagErr != nil {
 		log.Warn("diagnosis engine unavailable; Diagnose RPC will report Unimplemented", "error", diagErr)

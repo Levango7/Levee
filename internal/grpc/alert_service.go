@@ -15,16 +15,19 @@ package grpc
 
 import (
 	"context"
+	"crypto/subtle"
 	"log/slog"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/nexus/levee/internal/alert"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -39,6 +42,17 @@ type AlertService struct {
 
 	// gateway is an optional source of recent alerts. May be nil.
 	gateway *alert.AlertGateway
+
+	// sources is the optional ingress-identity registry (alert-sources.yaml).
+	// When configured, ReceiveAlert requires a per-source credential and the
+	// alert's environment comes from the registration; when nil/empty the
+	// historical authentication-only behaviour is kept.
+	sources *alert.SourceRegistry
+
+	// authz is the optional policy authorizer. It judges the READ side
+	// (GetAlertStatus / SubscribeAlerts) against the alert's owned environment;
+	// nil means no policy configured and reads are admitted.
+	authz *authz.Authorizer
 
 	// log is the structured logger. When nil the package-level singleton
 	// from internal/log is used.
@@ -74,30 +88,48 @@ func NewAlertService(gateway *alert.AlertGateway, lg *slog.Logger) *AlertService
 	}
 }
 
+// WithAlertSources installs the ingress-identity registry. When it has at
+// least one source, ReceiveAlert demands a matching per-source credential and
+// attributes the alert to that source's environment. A nil or empty registry
+// leaves ingress authentication-only (the pre-existing behaviour).
+func (s *AlertService) WithAlertSources(reg *alert.SourceRegistry) *AlertService {
+	s.sources = reg
+	return s
+}
+
+// WithAuthorizer installs the policy authorizer consulted by GetAlertStatus
+// and SubscribeAlerts. Nil means no policy configured; reads are then admitted
+// exactly as before.
+func (s *AlertService) WithAuthorizer(a *authz.Authorizer) *AlertService {
+	s.authz = a
+	return s
+}
+
 // --- ReceiveAlert ----------------------------------------------------------
 
 // ReceiveAlert ingests a single alert, stores it in the in-memory ring and
 // broadcasts it to all active subscribers. The alert id is taken from the
 // request when present, otherwise a fingerprint is generated.
 //
-// This service is deliberately NOT judged against the team × environment
-// policy, and the reason is a fact about the payload rather than an oversight:
+// Why an alert is NOT judged against the team × environment matrix directly:
 // AlertMessage carries id / source / severity / ends_at only — no team, no
 // environment, and no target whose labels could be resolved to one. There is
-// nothing for the authorizer to decide against, and two tempting shortcuts both
-// lie: judging it in permission.default_env would grant or refuse a monitoring
-// feed by whoever happens to own the default environment, and adding a
-// diagnose/alert action token would fail open on every existing matrix (an
+// nothing for an environment-keyed policy to decide against, and two tempting
+// shortcuts both lie: judging it in permission.default_env would grant or refuse
+// a monitoring feed by whoever happens to own the default environment, and
+// adding an `alert` action token would fail open on every existing matrix (an
 // unlisted action has no grant, and this deployment posture is
 // no-matrix-means-not-enforced, see authz.Authorizer.Decide).
 //
-// What guards ingestion today is authentication only: the RPC is not in
-// skipAuthMethods, so it requires a valid token, but any valid token may post
-// an alert. The open item, registered rather than papered over, is an ingress
-// identity for alert sources (per-source credential or signature, so "which
-// monitor may speak" is answerable) plus a visibility rule for GetAlertStatus /
-// SubscribeAlerts, which currently expose the alert stream to every
-// authenticated caller regardless of team.
+// What fills the gap is ownership from configuration, not from the payload. An
+// alert source is a machine that owns an environment (internal/alert/sources.go,
+// alert-sources.yaml): the credential proves WHICH source is speaking, and the
+// registration says what its alerts belong to. When sources are configured,
+// ReceiveAlert requires that credential and stamps the alert with the source's
+// environment; the READ side (GetAlertStatus / SubscribeAlerts) then asks the
+// matrix for `view` on that environment. A caller cannot self-declare either
+// half. Unconfigured deployments keep the historical authentication-only
+// ingress, announced at startup rather than decided silently per request.
 func (s *AlertService) ReceiveAlert(ctx context.Context, req *pb.AlertMessage) (*pb.AlertResponse, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "nil request")
@@ -132,6 +164,18 @@ func (s *AlertService) ReceiveAlert(ctx context.Context, req *pb.AlertMessage) (
 		}, nil
 	}
 
+	// Ingress identity: when sources are registered, the caller must present a
+	// registered source name and its secret, and the alert belongs to that
+	// source's environment. This is deliberately before recordAlert/broadcast —
+	// an unauthenticated alert must leave no trace in the ring or the stream.
+	if s.sources.Configured() {
+		src, err := s.authenticateSource(ctx)
+		if err != nil {
+			return nil, err
+		}
+		a.Environment = src.Environment
+	}
+
 	s.recordAlert(a)
 	s.broadcast(a)
 
@@ -157,6 +201,14 @@ func (s *AlertService) GetAlertStatus(ctx context.Context, req *pb.GetAlertStatu
 	a := s.lookupAlert(req.GetId())
 	if a == nil {
 		return nil, status.Errorf(codes.NotFound, "alert %q not found", req.GetId())
+	}
+
+	// Visibility is judged on the alert's OWNED environment, never on one the
+	// caller supplies: the ownership comes from the registered source (see
+	// internal/alert/sources.go), so a caller cannot widen its own view by
+	// naming an alert it happens to know the id of.
+	if err := authorizeResourceRead(ctx, s.authz, a.Environment, "GetAlertStatus"); err != nil {
+		return nil, err
 	}
 
 	// Zero (unset) timestamps are emitted as 0 rather than the huge
@@ -197,12 +249,21 @@ func (s *AlertService) SubscribeAlerts(req *pb.SubscribeRequest, stream pb.Alert
 	subID := s.addSubscriber(ch)
 	defer s.removeSubscriber(subID)
 
+	// Visibility narrows the stream rather than refusing it: a caller entitled
+	// to one environment must still receive that environment's alerts, and an
+	// empty stream is the honest answer for a caller entitled to none (the same
+	// rule ListChanges and the other list endpoints follow).
+	visible := resourceVisibility(ctx, s.authz)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case a := <-ch:
 			if a == nil {
+				continue
+			}
+			if visible != nil && !visible(a.Environment) {
 				continue
 			}
 			if !matchAlertFilter(a, req) {
@@ -216,6 +277,58 @@ func (s *AlertService) SubscribeAlerts(req *pb.SubscribeRequest, stream pb.Alert
 }
 
 // --- internal helpers ------------------------------------------------------
+
+// authenticateSource resolves the per-source ingress credential presented on
+// the context. It returns an Unauthenticated status (not PermissionDenied):
+// the caller failed to prove WHICH source it is, which is an authentication
+// question, and the subject is a machine rather than a team the matrix could
+// judge.
+func (s *AlertService) authenticateSource(ctx context.Context) (alert.Source, error) {
+	name, token := alertSourceCredential(ctx)
+	if name == "" {
+		return alert.Source{}, status.Errorf(codes.Unauthenticated,
+			"ReceiveAlert requires an alert source credential (metadata %q + %q); this deployment registered alert sources, so an alert without one cannot be attributed to an environment",
+			alert.SourceMetadataKey, alert.TokenMetadataKey)
+	}
+	src, ok := s.sources.Lookup(name)
+	if !ok {
+		return alert.Source{}, status.Errorf(codes.Unauthenticated,
+			"alert source %q is not registered", name)
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(src.Secret)) != 1 {
+		return alert.Source{}, status.Errorf(codes.Unauthenticated,
+			"alert source %q presented an invalid credential", name)
+	}
+	return src, nil
+}
+
+// alertSourceCredential reads the source name and token from the context
+// metadata. Both the incoming (real gRPC) and outgoing (the REST gateway calls
+// the service in-process with outgoing metadata) directions are checked, so the
+// same registry guards either transport without the service knowing which one
+// it is behind.
+func alertSourceCredential(ctx context.Context) (name, token string) {
+	pick := func(md metadata.MD) (string, string) {
+		return firstMetadataValue(md, alert.SourceMetadataKey), firstMetadataValue(md, alert.TokenMetadataKey)
+	}
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if n, t := pick(md); n != "" || t != "" {
+			return n, t
+		}
+	}
+	if md, ok := metadata.FromOutgoingContext(ctx); ok {
+		return pick(md)
+	}
+	return "", ""
+}
+
+func firstMetadataValue(md metadata.MD, key string) string {
+	vals := md.Get(key)
+	if len(vals) == 0 {
+		return ""
+	}
+	return vals[0]
+}
 
 // recordAlert stores a in the in-memory ring, evicting the oldest entry
 // when the ring is full.
