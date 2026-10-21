@@ -48,15 +48,15 @@ jobs:
           go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
         with:
           languages: ${{ matrix.language }}
       # autobuild compiles the Go module the same way `go build` would;
       # CodeQL needs a compiled database to run its queries against.
       - name: autobuild
-        uses: github/codeql-action/autobuild@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        uses: github/codeql-action/autobuild@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
       - name: analyze
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
         with:
           # Tag results per language so multi-language matrices later do not
           # overwrite each other in Code Scanning.

@@ -61,11 +61,21 @@ jobs:
           failures=""
           python -m unittest discover -s scripts -p 'test_*.py' -v 2>&1 | tee /tmp/py.log \
             || failures="unittest"
-          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget test_changelog_structure test_release_gate_step test_landing_shape_step; do
+          for suite in test_require_ci_release test_check_release_versions test_ci_aggregate test_release_workflow_budget test_changelog_structure test_release_gate_step test_landing_shape_step test_check_codeql_action_lockstep; do
             grep -q "$suite" /tmp/py.log \
               || { echo "::error::discovery collected nothing for $suite (renamed or deleted?)"; failures="$failures missing:$suite"; }
           done
           [ -z "$failures" ] || { echo "::error::release-gate self-tests failed: $failures"; exit 1; }
+      - name: codeql action lockstep
+        # All `github/codeql-action/*` references must pin ONE sha and ONE
+        # version. CodeQL refuses to run a workflow whose steps disagree:
+        # "Loaded a configuration file for version '4.38.3', but running version
+        # '4.39.0'. All steps in a workflow that use `github/codeql-action` must
+        # use the same version" — which is how the four dependabot PRs of
+        # 2026-10-19 each went red on their own, one action at a time.
+        # dependabot.yml's groups stop the next split; this step pins the
+        # result, so a hand edit cannot reintroduce it.
+        run: python scripts/check_codeql_action_lockstep.py
       - name: landing shape (master stays linear)
         # CONTRIBUTING.md §5.4: PRs land with `gh pr merge --rebase`, so a commit
         # on master must have exactly one parent. Only the push-to-master case can
@@ -612,7 +622,7 @@ jobs:
           retention-days: 14
       - name: upload to GitHub Code Scanning
         if: always() && hashFiles('trivy-results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
         with:
           sarif_file: trivy-results.sarif
       # Gate last: a red run then still leaves the artifact and the Code

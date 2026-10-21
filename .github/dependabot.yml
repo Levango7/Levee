@@ -19,6 +19,15 @@ updates:
       day: "monday"
     open-pull-requests-limit: 5
     labels: ["dependencies", "ci"]
+    groups:
+      # codeql-action must move as ONE unit: the four references in
+      # codeql.yml + ci.yml have to pin the same version, or CodeQL refuses to
+      # run the workflow. Without this group dependabot opens one PR per
+      # referenced action and every one of them is red on its own
+      # (2026-10-19: #183/#185/#186/#187, all "analyze (go)" failed).
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
   - package-ecosystem: "docker"
     directory: "/"
     schedule:

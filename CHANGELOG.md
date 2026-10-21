@@ -11,6 +11,16 @@
 - **全仓核过没有第二处吃补丁号的地方**：CI 六个作业都用 `go-version-file: go.mod`（这正是 v1.22.0 那次"stale alias"事故后换的读法），`Dockerfile` 的 `GO_VERSION=1.26` 是 major.minor 不吃补丁号；剩下两处字面 1.26.9 是 `.github/workflows/ci.yml` 里描述当时经过的注释，属于历史不该改。
 - **另一条公告不拦路，一并记录免得下次误判**：`GO-2026-5932`（`golang.org/x/crypto/openpgp` 无维护）同场出现，但 govulncheck 自己判定 "your code doesn't appear to call these" ⇒ 不可达，不进阻断集，故本笔不升 `x/crypto`。
 - **验证**：本机 `goenv` 在 WSL 下 `GOSUMDB=off` 无法自动拉 1.26.10（`verifying module: checksum database disabled`，纯本机网络限制，CI 的 setup-go 不受影响），所以本地只做了 `scripts/` 59 套件与结构守卫；编译器侧结论交给 CI。合入后以 master 的 push CI 为准。
+### 修复（codeql-action 四条引用统一升到 v4.39.0，并补上锁步守卫）
+
+- **登记过的配置债，第二次犯**：`.github/workflows/codeql.yml` 的 init / autobuild / analyze 三条与 `ci.yml` 的 `upload-sarif` 各自钉着不同的 commit SHA（三条 v4.38.3、一条 v4.38.2），而 CodeQL 硬性要求同一个 workflow 内所有 `github/codeql-action/*` 步骤版本一致。2026-10-19 Dependabot 因此开出 **四个各自只升一条** 的 PR（#183/#185/#186/#187），其中 #185 的 `analyze (go)` 直接以 CodeQL 的原始报错失败：`Loaded a configuration file for version '4.38.3', but running version '4.39.0'. All steps in a workflow that use github/codeql-action must use the same version to work correctly.`
+  - #164 那一笔做的是同一类锁步，但只覆盖了 `codeql.yml`，漏了 `ci.yml` 里那条 `upload-sarif`，且没有守卫——所以今天历史原样重演。
+- **落地（同一 SHA + 守卫 + dependabot group 三件）**：
+  1. 四处引用全部指向 `6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee`（v4.39.0），版本注释同步。dockerd 那条 #184 的 `proto regenerate check` 是 `proxy.golang.org` 网络抖动（`stream error: stream ID 25; INTERNAL_ERROR`），非代码问题，本笔不动它。
+  2. `scripts/check_codeql_action_lockstep.py` 新守卫：扫 `.github/workflows/*.yml` 的所有 `github/codeql-action/<name>@<sha>` 引用，断言只钉一个 SHA、只标一个版本号，并在你只升一条时把不一致的两行原文打进报错（不是只说"不一致"）。零引用也判红——那意味着守卫读错路径或 workflow 被人删空，两种都不许静默通过。
+  3. 挂进 `ci.yml` 的 `release-gate` job 作第 3 步（在 `landing shape` 之前），并加进发现式套件点名表——这张表本身就是本仓踩过两次的地方，漏加新套件会让它"收集了空"却 exit 0。
+- **让 Dependabot 下次不再拆开**：`.github/dependabot.yml` 的 `github-actions` 段新增 `codeql-action` group（`patterns: github/codeql-action/*`）。group 减少来源、守卫钉住结果——人手动改 workflow 的场景 group 管不到，所以两处都要有。
+- **测试**：`scripts/test_check_codeql_action_lockstep.py` 6 例（本仓现状绿、全同绿、混 SHA 红且报错含两个 sha、混版本注释红、零引用红、解析 action/sha/版本三元组）。跑法：`python scripts/check_codeql_action_lockstep.py` + `python -m unittest discover -s scripts -p 'test_*.py'`（65/65）。
 
 ### 修复（approvals.comment 归属收口：supersession 不再把链 JSON 盖成人读字符串）
 
