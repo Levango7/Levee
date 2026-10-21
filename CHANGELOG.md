@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（`go` 指令 1.26.9 → 1.26.10：收口新发布的标准库公告 GO-2026-6809）
+
+- **一刀切在所有人头上的红**：2026-10-21，PR #192（codeql-action 锁步，与 Go 毫无关系）的 `govulncheck` 失败，报 `Vulnerability #1: GO-2026-6809 — Distrust compromised intermediate certificates in crypto/x509`，`Found in: crypto/x509@go1.26.9 / Fixed in: crypto/x509@go1.26.10`，实例跟踪直指本仓代码：`internal/web/server.go:147:25: web.Start calls http.Server.Serve, which eventually calls x509.Certificate.Verify`。同日 master 上最后一次 push（`46243d7`，10-20 12:31Z）这条腿是 success ⇒ 公告是在那之后发布的，**不是任何进行中改动的回归**，但它会把此后每个 PR 都卡在 `check (all jobs passed)` 上。
+- **为什么是升 `go` 指令而不是别的**：本仓的 `govulncheck` 作业刻意按 `go.mod` 声明的工具链扫描（`docs/release-notes/v1.21.0.md` 已把这条写死：`go 1.26.6 → 1.26.9` 收的就是同类标准库公告），所以标准库类公告**只能**靠升指令收口——没有别的旋钮。改动面因此只有一行：`go 1.26.9 → 1.26.10`。
+- **全仓核过没有第二处吃补丁号的地方**：CI 六个作业都用 `go-version-file: go.mod`（这正是 v1.22.0 那次"stale alias"事故后换的读法），`Dockerfile` 的 `GO_VERSION=1.26` 是 major.minor 不吃补丁号；剩下两处字面 1.26.9 是 `.github/workflows/ci.yml` 里描述当时经过的注释，属于历史不该改。
+- **另一条公告不拦路，一并记录免得下次误判**：`GO-2026-5932`（`golang.org/x/crypto/openpgp` 无维护）同场出现，但 govulncheck 自己判定 "your code doesn't appear to call these" ⇒ 不可达，不进阻断集，故本笔不升 `x/crypto`。
+- **验证**：本机 `goenv` 在 WSL 下 `GOSUMDB=off` 无法自动拉 1.26.10（`verifying module: checksum database disabled`，纯本机网络限制，CI 的 setup-go 不受影响），所以本地只做了 `scripts/` 59 套件与结构守卫；编译器侧结论交给 CI。合入后以 master 的 push CI 为准。
+
 ### 修复（approvals.comment 归属收口：supersession 不再把链 JSON 盖成人读字符串）
 
 - **登记已久的真 bug**：上一批收口审批超时时发现的——`change_service` 的审批 supersession 路径把 `approvals.comment` 列直接写成人读字符串（`"superseded by re-plan"`），而该列由 `internal/approval/staterow.go` 独占，里面是审批链的 JSON（approvers/decisions/history）。守卫只写了「列为空才写」，而经 `approval.Create` 落库的行 comment 从不空，所以这条写路径要么是死的、要么（一旦命中）会让 `ApprovalFromState` 解析失败——`comment` 非 JSON 时它返回 `unparsable metadata` 错误，那笔已过期记录连同「谁被问过、谁投过票」一起从所有读路径消失。
