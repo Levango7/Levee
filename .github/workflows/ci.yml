@@ -144,7 +144,7 @@ jobs:
           go-version-file: go.mod  # the toolchain the module declares: setup-go's alias resolution is stale
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa  # v7
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
         with:
           # Keep in lockstep with the Makefile lint target's baseline version.
           # (v6 cannot parse v2.x tool versions; v7 is the action line built
