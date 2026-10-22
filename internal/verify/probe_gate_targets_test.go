@@ -294,3 +294,99 @@ func TestProbeRemoteContextCancelledStopsBeforeNextTarget(t *testing.T) {
 		"the loop must stop before claiming evidence it does not have")
 	assert.Zero(t, second.calls.Load())
 }
+
+// --- "{target}" in a remote http url -----------------------------------------
+//
+// The param table advertises `{target}` for `url` without qualifying it by mode,
+// remote tcp resolves the same placeholder, and direct mode expands it. Remote
+// http used to hand the placeholder to curl verbatim — so such a probe could
+// never pass, and it failed with a DNS error that named nothing about the real
+// mistake.
+
+func TestProbeRemoteHTTPExpandsTargetPlaceholder(t *testing.T) {
+	provider := &scriptedProvider{channels: map[string]*fakeChannel{
+		"web-1": newFakeChannel(execResult(0, "200")),
+	}}
+	g := NewProbeGate("http-remote-expand", PhasePostBatch, map[string]any{
+		"kind": "http",
+		"mode": "remote",
+		"url":  "http://{target}:9090/health",
+	})
+
+	res, err := g.Check(context.Background(), GateInput{
+		RunID:      "run-1",
+		TargetIDs:  []string{"web-1"},
+		ChannelFor: provider.get,
+	})
+	require.NoError(t, err)
+	assert.True(t, res.Passed, "message: %s", res.Message)
+
+	cmds := provider.channels["web-1"].commands
+	require.Len(t, cmds, 1)
+	assert.Contains(t, cmds[0], "http://web-1:9090/health",
+		"the target's own address must reach curl")
+	assert.NotContains(t, cmds[0], ProbeTargetPlaceholder,
+		"a literal {target} is a hostname curl cannot resolve")
+}
+
+// One pre-dialed channel asked about several addresses: each is asked about
+// itself and all must pass — the shape remote tcp already has.
+func TestProbeRemoteHTTPLegacyMultiAddressChecksEveryAddress(t *testing.T) {
+	ch := newFakeChannel(execResult(0, "200"), execResult(0, "204"))
+	g := NewProbeGate("http-remote-legacy-multi", PhasePostBatch, map[string]any{
+		"kind": "http",
+		"mode": "remote",
+		"url":  "http://{target}:9090/health",
+	})
+
+	res, err := g.Check(context.Background(), GateInput{
+		RunID:     "run-9",
+		Channel:   ch,
+		TargetIDs: []string{"web-1", "web-2"},
+	})
+	require.NoError(t, err)
+	assert.True(t, res.Passed, "message: %s", res.Message)
+	require.Len(t, ch.commands, 2)
+	assert.Contains(t, ch.commands[0], "http://web-1:9090/health")
+	assert.Contains(t, ch.commands[1], "http://web-2:9090/health")
+}
+
+// A failure on the second address must name it, or the operator cannot tell
+// which machine answered badly.
+func TestProbeRemoteHTTPLegacyMultiAddressNamesTheFailingTarget(t *testing.T) {
+	ch := newFakeChannel(execResult(0, "200"), execResult(0, "500"))
+	g := NewProbeGate("http-remote-legacy-bad", PhasePostBatch, map[string]any{
+		"kind": "http",
+		"mode": "remote",
+		"url":  "http://{target}:9090/health",
+	})
+
+	res, err := g.Check(context.Background(), GateInput{
+		RunID:     "run-9",
+		Channel:   ch,
+		TargetIDs: []string{"web-1", "web-2"},
+	})
+	require.NoError(t, err)
+	assert.False(t, res.Passed)
+	assert.Contains(t, res.Message, "web-2")
+}
+
+// No placeholder, one url: the command and the verdict are what they were
+// before expansion existed. This is the regression pin for the common case.
+func TestProbeRemoteHTTPWithoutPlaceholderIsUnchanged(t *testing.T) {
+	ch := newFakeChannel(execResult(0, "200"))
+	g := newHTTPRemoteGate("http-remote-plain")
+
+	res, err := g.Check(context.Background(), GateInput{
+		RunID:     "run-9",
+		Channel:   ch,
+		TargetIDs: []string{"web-1"},
+	})
+	require.NoError(t, err)
+	assert.True(t, res.Passed, "message: %s", res.Message)
+	require.Len(t, ch.commands, 1)
+	assert.Equal(t, "curl -fsS -o /dev/null -w '%{http_code}' 'http://service.local/health'", ch.commands[0],
+		"an unexpanded url must produce the same command as before")
+	assert.Contains(t, res.Message, "remote probe reported status 200",
+		"the single-url case keeps judgeRemoteHTTP's own message")
+}

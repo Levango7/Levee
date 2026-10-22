@@ -525,13 +525,48 @@ func (g *ProbeGate) checkHTTP(ctx context.Context, input GateInput, details map[
 		if res, rerr := g.missingChannelResult(input); res != nil {
 			return *res, rerr
 		}
-		cmd := fmt.Sprintf("curl -fsS -o /dev/null -w '%%{http_code}' '%s'", g.url)
-		details["command"] = cmd
-		out, res, xerr := g.execOnChannel(ctx, input.Channel, cmd)
-		if xerr != nil {
-			return *out, xerr
+		// "{target}" is expanded here for the same reason remote tcp resolves it
+		// and direct mode expands it. Leaving it literal handed curl a hostname
+		// spelled "{target}", so a remote http probe written the way the param
+		// table advertises `url` could never pass — and it failed with a DNS
+		// error that named nothing about the real mistake. Same mode, same
+		// placeholder, same treatment.
+		//
+		// The run path lands in the single-URL case below: checkAcrossTargets
+		// narrows TargetIDs to the host whose channel it just bound. A caller
+		// that hands over ONE pre-dialed channel with several addresses keeps
+		// the older single-machine shape — every address is asked about itself
+		// on that channel and all must pass, which is what remote tcp already
+		// does.
+		urls := expandTargets(g.url, input.TargetIDs)
+		var last GateResult
+		for i, u := range urls {
+			cmd := fmt.Sprintf("curl -fsS -o /dev/null -w '%%{http_code}' '%s'", u)
+			details["command"] = cmd
+			out, res, xerr := g.execOnChannel(ctx, input.Channel, cmd)
+			if xerr != nil {
+				return *out, xerr
+			}
+			judged, jerr := g.judgeRemoteHTTP(res, details)
+			if jerr != nil || !judged.Passed {
+				if len(urls) > 1 {
+					judged.Message = fmt.Sprintf("%s (target %s)", judged.Message, probeTargetLabel(i, input.TargetIDs))
+				}
+				return judged, jerr
+			}
+			last = judged
 		}
-		return g.judgeRemoteHTTP(res, details)
+		if len(urls) == 1 {
+			// One URL is the normal case: judgeRemoteHTTP's own verdict, message
+			// and evidence are returned untouched.
+			return last, nil
+		}
+		details["reason"] = "all_targets_ok"
+		return GateResult{
+			Passed:  true,
+			Message: fmt.Sprintf("probe gate %q passed: %d remote http probe(s) ok", g.name, len(urls)),
+			Details: details,
+		}, nil
 	}
 
 	// Direct mode: expand "{target}" over EVERY target so that multi-target
