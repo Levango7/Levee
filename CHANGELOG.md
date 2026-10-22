@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 测试基建（浏览器检查的假红从“盲猜”变成“自证”：超时说清三条原因之一 + 失败截图随 CI 上传）
+
+- **背景：这个 job 一轮里红了三次**（master `733e84d`、#184、#196），每次都在**互不相关**的提交上，而同提交的 ubuntu 腿是绿的；单次红是 `empty list renders the empty tier — title=""` 配一行 `NOTE settle timeout after 30000ms`。账本对它的要求正是“复发时要取到证据”，但那行 NOTE **什么原因都没说**，紧随其后的断言又只报自己的读数——于是造成超时的那个 DOM 在有人读日志时早已不存在。前两次排查都只能用断言文本反推。
+- **落地（超时自证）**：新增 `settleDiagnosis(page)`，读回 `settled()` 消费的三个输入并**指出是哪一个没被满足**：`mounted=false`（视图根本没渲染，属应用故障不是时序）、`inflight>0`（REST 调用没完成，可能挂起或重试）、`quiet<=150ms`（DOM 还在变，动画或轮询）。除原因外一并打出 `url` / `h1`（带元素类型）/ 可见的 `.state__title` / 表格行数 / 页面报错，并在 `--shots` 时**对导致超时的那个页面截图**——失败区域（test [2] 的空态）**不在** test [1] 的截图清单里，这正是前两次看不到现场的直接原因。
+- **落地（CI 保留现场）**：`ci.yml` 的 browser-check 加一步 `if: always()` 上传截图 artifact（按 OS 分名，复用仓内已钉的 `upload-artifact` SHA，`if-no-files-found: ignore`）。`always()` 而非 `failure()`：取消与超时的运行同样留下一张值得看的页面。
+- **顺带修掉两处“声明了但没人消费”（同一缺陷类）**：① `open()` 只收两个参数，而三处调用仍在传第三个（`1800`）——sleep 时代的 per-call 预算，等待改成观测后它就再也不被读，一个看着像配置、实际无效的数字；已删并在 `open()` 上写明“预算只有一个全局旋钮”。② `notes` 数组**只写不读**（收了一个失败的整个会话从来没人打印）；现在在结尾连同 FAIL 清单一起输出，因为“某条断言读到了未稳定的页面”正是判断一个红是不是产品回归的第一步。
+- **证据（本机隔离实例 mock:4699 / vite:5188，未复用任何现有端口）**：
+  - `BROWSER_CHECK_SETTLE_MS=1` 强制超时下，三类原因**逐一被正确打印**：`a REST call never finished (inflight=6, …)` / `no route title was ever rendered (the view did not mount)` / `the DOM was still changing (last mutation 6ms ago, needs >150ms of quiet)`，截图逐个落地。
+  - 正常预算：**ALL PASS**（无回归）。
+  - **A/B 对照（验证“等待仍承重”）**：原版 `exit=1 ok=4 FAIL=17 notes=15`，本笔 `exit=1 ok=3 FAIL=18 notes=15`——两者都判红且 notes 数一致，本笔没有救活任何断言。CHANGELOG 旧文里那个“7 条 FAIL”是当时断言总数下的读数，列表长到 38 条后数字自然变大，性质不变。
+- **仍未做**：跨浏览器矩阵（只有 Chrome 验证过）、以及这个 flake 本身的**根因**——本笔把“下次复发能看到什么”做成了事实，但没声称修好了它（没复现路径就不声称）。
+
 ### 修复（`go` 指令 1.26.9 → 1.26.10：收口新发布的标准库公告 GO-2026-6809）
 
 - **一刀切在所有人头上的红**：2026-10-21，PR #192（codeql-action 锁步，与 Go 毫无关系）的 `govulncheck` 失败，报 `Vulnerability #1: GO-2026-6809 — Distrust compromised intermediate certificates in crypto/x509`，`Found in: crypto/x509@go1.26.9 / Fixed in: crypto/x509@go1.26.10`，实例跟踪直指本仓代码：`internal/web/server.go:147:25: web.Start calls http.Server.Serve, which eventually calls x509.Certificate.Verify`。同日 master 上最后一次 push（`46243d7`，10-20 12:31Z）这条腿是 success ⇒ 公告是在那之后发布的，**不是任何进行中改动的回归**，但它会把此后每个 PR 都卡在 `check (all jobs passed)` 上。

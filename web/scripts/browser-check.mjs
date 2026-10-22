@@ -234,6 +234,62 @@ function settled(page) {
   })
 }
 
+// settleDiagnosis explains, in the page's own terms, why settled() said no.
+//
+// Why this exists: this suite has a documented history of going red on
+// windows-latest on a DIFFERENT assertion each time while the ubuntu leg of the
+// same commit passed (CHANGELOG: 「浏览器检查假红的根因坐实」). That fix removed
+// the sleep from the synchronisation path but left the timeout opaque — a bare
+// "settle timeout" says nothing about WHICH of settled()'s three inputs failed,
+// and the assertion that follows reports only its own reading, so the DOM that
+// produced the timeout is gone by the time anyone reads the log. Two
+// investigations have already paid for that opacity. The three inputs map to
+// three different causes:
+//   mounted=false   the view never rendered (route chunk failed to load, or the
+//                   app never booted) — an application fault, not a timing one.
+//   inflight>0      a REST call is still outstanding — a hung or retried request.
+//   quiet<=150ms    the DOM is still changing — an animation or a poll loop.
+// Reporting all three turns "it flaked again" into a fact about the page.
+async function settleDiagnosis(page) {
+  let d
+  try {
+    d = await page.evaluate(() => {
+      const titleEl = document.querySelector('.levee-page h1, .levee-page h2, .not-found__title')
+      const title = ((titleEl && titleEl.textContent) || '').trim()
+      const r = window.__leveeReq
+      const dom = window.__leveeDom
+      const now = Date.now()
+      return {
+        title,
+        selector: titleEl ? titleEl.tagName.toLowerCase() : null,
+        inflight: r ? r.inflight : null,
+        sinceReq: r && r.last ? now - r.last : -1,
+        sinceDom: dom && dom.last ? now - dom.last : -1,
+        states: [...document.querySelectorAll('.state__title')].map((e) => (e.textContent || '').trim()),
+        rows: document.querySelectorAll('.el-table__row').length,
+        url: location.pathname + location.search,
+      }
+    })
+  } catch (err) {
+    // Reading the page can fail for its own reason (mid-navigation context
+    // destruction). Say that rather than reporting a confident wrong cause.
+    return { summary: 'could not read the page at all: ' + String(err).slice(0, 120), errors: [] }
+  }
+  const cause = !d.title
+    ? 'no route title was ever rendered (the view did not mount)'
+    : d.inflight
+      ? `a REST call never finished (inflight=${d.inflight}, last activity ${d.sinceReq}ms ago)`
+      : `the DOM was still changing (last mutation ${d.sinceDom}ms ago, needs >150ms of quiet)`
+  const summary = [
+    cause,
+    `url=${d.url}`,
+    `h1=${JSON.stringify(d.title)}${d.selector ? ' (<' + d.selector + '>)' : ''}`,
+    `state titles=${JSON.stringify(d.states)}`,
+    `rows=${d.rows}`,
+  ].join('; ')
+  return { summary, errors: page._errors || [] }
+}
+
 async function waitForSettled(page, label) {
   const deadline = Date.now() + SETTLE_DEADLINE_MS
   while (Date.now() < deadline) {
@@ -248,11 +304,34 @@ async function waitForSettled(page, label) {
     if (done) return true
     await sleep(60)
   }
-  notes.push(`settle timeout after ${SETTLE_DEADLINE_MS}ms at ${label}`)
+  const diagnosis = await settleDiagnosis(page)
+  notes.push(`settle timeout at ${label} — ${diagnosis.summary}`)
   console.log(`  NOTE settle timeout after ${SETTLE_DEADLINE_MS}ms at ${label} — asserting on what is on screen`)
+  console.log(`       why: ${diagnosis.summary}`)
+  if (diagnosis.errors.length) console.log(`       page errors: ${JSON.stringify(diagnosis.errors)}`)
+  // A screenshot of the state that produced the timeout. Only taken here (and
+  // only with --shots) because the failing region is not necessarily one of the
+  // routes test [1] screenshots — the empty tier of test [2] is exactly that,
+  // which is why the previous two investigations had to reason from assertion
+  // text alone.
+  if (SHOTS) {
+    const shot = `${SHOT_DIR}/settle-timeout${label.replace(/\W+/g, '_')}.png`
+    try {
+      await page.screenshot({ path: shot })
+      console.log(`       screenshot: ${shot}`)
+    } catch (err) {
+      console.log(`       screenshot failed: ${String(err).slice(0, 120)}`)
+    }
+  }
   return false
 }
 
+// No per-call settle budget: the deadline is a single global knob
+// (SETTLE_DEADLINE_MS). The sleep era used to pass a per-call millisecond
+// count here, and three call sites still carried the argument long after the
+// wait stopped reading it — a number that looked like configuration and had no
+// effect. If a page ever genuinely needs longer, that is an argument about the
+// deadline for everyone, not a quiet per-site override.
 async function open(page, path) {
   // domcontentloaded, never networkidle2: the monitor's SSE stream keeps a
   // connection open, so "idle" never arrives and a networkidle wait just burns
@@ -549,7 +628,7 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   // single-node server, so the one sentence an operator needed — "your master
   // never registered" — was the one the wire could not carry.
   await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__mode?mode=cluster-empty')
-  await open(page, '/cluster', 1800)
+  await open(page, '/cluster')
   const emptyHint = await text(page, '.hint')
   check('a cluster with an empty registry is reported as one',
     emptyHint.indexOf('节点注册表为空') >= 0, 'hint=' + JSON.stringify(emptyHint.slice(0, 80)))
@@ -568,7 +647,7 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   // that can run pkg" was unanswerable while looking answerable. The filter is
   // driven through the URL (the page seeds it from ?capability=, like the changes
   // board's ?q=), which is both shareable and free of synthetic typing.
-  await open(page, '/cluster?capability=pkg', 1800)
+  await open(page, '/cluster?capability=pkg')
   const pkgCards = await page.evaluate(() =>
     [...document.querySelectorAll('.lv-panel.node .node__id')].map((e) => (e.textContent || '').trim()),
   )
@@ -583,7 +662,7 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   check('a filtered page says the assignment counts stay deployment-wide',
     caveat.indexOf('全部署口径') >= 0 && caveat.indexOf('不按能力') >= 0, 'caveat=' + JSON.stringify(caveat))
 
-  await open(page, '/cluster?capability=nonexistent', 1800)
+  await open(page, '/cluster?capability=nonexistent')
   const noMatchHint = await text(page, '.hint')
   check('a no-match filter is described as a declaration gap, not an empty registry',
     noMatchHint.indexOf('没有节点声明能力') >= 0 && noMatchHint.indexOf('节点注册表为空') < 0,
@@ -598,6 +677,15 @@ console.log('\n[7] the cluster page explains the deployment it is on')
 console.log(`\nbrowser-check: ${failures.length === 0 ? 'ALL PASS' : failures.length + ' FAILED'}`)
 if (failures.length) {
   for (const f of failures) console.log('  - ' + f)
+}
+// The settle notes are printed here, not only where they happen. They used to
+// be collected into an array that nothing ever read — recorded and discarded.
+// They matter most exactly when something failed: each one states that an
+// assertion downstream of it read the DOM before the page had settled, which is
+// the first thing to check before believing a failure is a product regression.
+if (notes.length) {
+  console.log(`\n${notes.length} settle note(s) — an assertion after one of these read an unsettled page:`)
+  for (const n of notes) console.log('  ' + n)
 }
 await browser.close()
 process.exit(failures.length === 0 ? 0 : 1)
