@@ -153,15 +153,16 @@ Remote behaviour is **POSIX best-effort**: remote http shells out to
 `curl -fsS -o /dev/null -w '%{http_code}' <url>` (pass = exit 0 and printed
 status starts with `2`); remote tcp uses
 `timeout 5 bash -c 'exec 3<>/dev/tcp/<host>/<port>'` (pass = exit 0).
-Both require the corresponding tools on the target. Two asymmetries to know
-about: in the run path a remote **tcp** probe is narrowed to one target per
-iteration, so each machine is asked about its own address (`port_from_target`
-and `{target}` both resolve against that single host), while a remote **http**
-probe sends the URL exactly as declared — `{target}` in a remote `url` is not
-expanded the way direct mode expands it. A caller that hands the gate one
-pre-dialed `Channel` instead of a provider keeps the older single-machine
-behaviour (that channel answers for every address listed); the run path always
-supplies a provider.
+Both require the corresponding tools on the target. In the run path a remote
+probe is narrowed to one target per iteration, so each machine is asked about
+its own address: `port_from_target` and `{target}` both resolve against that
+single host, for **tcp** and **http** alike. (Remote http used to send the URL
+exactly as declared, so `{target}` reached curl verbatim — an unresolvable
+hostname, which made a probe written the way the param table advertises `url`
+impossible to pass. It now expands into the command like remote tcp does.) A
+caller that hands the gate one pre-dialed `Channel` instead of a provider keeps
+the older single-machine behaviour: every address listed is checked on that one
+channel and all must pass; the run path always supplies a provider.
 
 ### `slo` — Prometheus threshold query (`slo_gate.go`)
 

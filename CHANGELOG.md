@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 修复（remote http 探针的 `{target}` 此前不展开：一个按文档写就永远过不了的门禁）
+
+- **现象**：`probe` 门禁在 `mode: remote` + `kind: http` 下把 `url` **原样**交给目标机上的 curl。参数表（`docs/gates.md`）把 `{target}` 当作 `url` 支持的占位符来宣传，于是按文档写的 `url: "http://{target}:9090/health"` 会把字面量 `{target}` 交给 curl，curl 拿它当主机名解析——DNS 失败，**这个探针永远不可能通过**，而且错得完全不指向真正的毛病。
+- **为何算缺陷而非语义**：同样是 `remote` 模式、同一个占位符，**remote tcp 会解析**（`port_from_target` 与 `{target}` 都对着那一台解析）、**direct 会展开**（`expandTargets`）——只有 remote http 漏调了那个已经存在的辅助函数。原登记里也把它写作“新登记的**不一致**”而非设计。
+- **定夺与方向**：**按目标展开，与 remote tcp / direct 同口径**。依据是本仓已有同形先例——“命令门禁在 run 路径中拿不到通道，因此不可执行”（原状态：任何声明 cmd 门禁的工作流必然回滚；后改为按真实退出码判定）。两者都是把一个“无论如何都失败”的检查改成**测到它声称要测的东西**，方向是让门禁可信而不是放宽它。
+- **落地**：remote http 分支改走 `expandTargets`。`input.TargetIDs` 在 run 路径已被 `checkAcrossTargets` 收窄成单台（`single.TargetIDs = []string{host}`），所以正常路径下就是一条 URL，且判定/文案/证据仍由 `judgeRemoteHTTP` 原样给出；持**预拨通道 + 列了多台**的旧形状逐台按本机地址检查、**全过才算过**（与 remote tcp 同形），失败时点名是哪一台。`docs/gates.md` 那条“两条不对称”已改写。
+- **测试**：`internal/verify` 新增 4 例——按目标展开（命令里出现 `http://web-1:9090/health` 且**不含** `{target}`）；旧形状多台逐台检查；多台时失败点名 `web-2`；**无占位符时命令逐字节不变**（回归钉子，并钉住单 URL 仍用 `judgeRemoteHTTP` 自己的文案）。**3 项变异全被抓**：把 `expandTargets` 换回 `[]string{g.url}` 后三条新用例立刻变红，报出的正是 “should not contain \"{target}\"”。
+- **验证**：`go test ./internal/verify/ -count=1` 全包绿（本机 Go 1.26.6 + `GOTOOLCHAIN=local`，临时把工作树 `go.mod` 降到 1.26.6 才能跑——本机拉不到 1.26.10 工具链；**该改动未进提交**，CI 仍按 1.26.10 复核）。
+
 ### 文档（账本四处“未解决”已过期：订正为已收口，并各自附取证）
 
 - **本仓的头号缺陷类是“过期账本误导排期”，这次又抓到四处**。全部先取证再改，不靠照推：
