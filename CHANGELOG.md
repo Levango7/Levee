@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 文档（账本四处“未解决”已过期：订正为已收口，并各自附取证）
+
+- **本仓的头号缺陷类是“过期账本误导排期”，这次又抓到四处**。全部先取证再改，不靠照推：
+  1. **`isValidTransition` 的裸状态字面量**（D-3 词表行尾登记的“同族残留”）：现测 `internal/grpc/change_service.go:1665` 起整个 switch **裸字符串零命中**、通篇 `runstatus.*`——已由 `feat/vocab-constants-and-linear-guard`（PR #176）收口。
+  2. **`runToPB` 把整份源当 `Label`**（`levee new` 行登记的“登记不修①”）：现测 `change_service.go:283` 是 `Label: dsl.DisplayName(r.WorkflowName)`，源码逐字留在 `WorkflowFile`，注释写明了这次换的理由。
+  3. **`input:` 块零读取点**（同行的“登记不修②”）：现已有两个读取点——`compile_warnings.go:184` 发 **LE004**（“声明了或引用了 input 却没人供给/替换它们，`{{input.x}}` 会以字面量进模块”）、`emit.go:71` 拒绝发射带 input 的工作流。**登记里仍然成立的那一半已保留写明**：`input:` 的值供给本身仍未实现（LE004 只说真话、不阻断），与模板 `parameters` 仍是两套并行声明，真源问题待产品定形态。
+  4. **browser-check “仍未做：CI 里跑它”**：现测它早就是 `check (all jobs passed)` 的必需腿（`ci.yml:821` 的 `needs` 点名 `browser-check`，`BROWSER_CHECK_REQUIRE=1` 让“没跑成”不能算绿）。仍真待做的两项已分开写：跳浏览器矩阵（只有 Chrome 验证过）、windows 腿的**偶发红根因**。
+- **为何四处都是“已收口但账本没跟着改”**：那些修正当时都发在其他行的 PR 里（或刻意只补代码不补账），而账本的形状是“一行一个主题”，于是“某主题下挂的旁路项被移走”在账本里不可见。本笔只改“现态声称”，**历史诊断原文一律保留**（它们是登记当时的事实，也是举证链的一部分）——这与本仓“不对 master 重写历史”的口径同源。
+- **验证**：逐条用 `grep`/`sed` 取的行号与代码摘录均在改动说明里；表格列数逐行与 `HEAD` 对比**零变化**（只改单元格文本，不动表格结构）；`## [Unreleased]` 仍恰好一个、无冲突标记。
+
 ### 测试基建（浏览器检查的假红从“盲猜”变成“自证”：超时说清三条原因之一 + 失败截图随 CI 上传）
 
 - **背景：这个 job 一轮里红了三次**（master `733e84d`、#184、#196），每次都在**互不相关**的提交上，而同提交的 ubuntu 腿是绿的；单次红是 `empty list renders the empty tier — title=""` 配一行 `NOTE settle timeout after 30000ms`。账本对它的要求正是“复发时要取到证据”，但那行 NOTE **什么原因都没说**，紧随其后的断言又只报自己的读数——于是造成超时的那个 DOM 在有人读日志时早已不存在。前两次排查都只能用断言文本反推。
