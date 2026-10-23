@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 文档（账本第五处“待做”也是过期：docgen 三组早已收口——我把它当待办排了一轮）
+
+- **这一处最值得记，因为它刚真的误导了一次排期**：账本 D-3 词表行写“`step`（5 个）/ `approval_status`（3 个）/ `AssignResult*` 三组没有前端抄件，`StepRowDTO.status` 现在是开放 `string` 加注释……属界面行为变更、需单独定”，我据此把它当作待办报给了产品并准备开做。**现测三条全不成立**：
+  - `STEP_STATES` / `RUN_APPROVAL_STATUSES` / `APPROVAL_STATUSES` / `ASSIGN_RESULTS` 全在**生成物**里（`web/src/types/vocabulary.ts:131/143/153/164`）；
+  - 由 `internal/docgen` 从 `internal/state` 的 `StepStatusNames()` / `ApprovalStatusNames()` / `AssignResultNames()`（`internal/state/vocabulary.go:111/117/123`）生成；
+  - `StepRowDTO.status` **已是联合类型** `StepStatus`（`web/src/api/index.ts` 的注释就写着 Generated from internal/state.StepStatusNames()）。
+  ⇒ **没有任何“界面行为变更”待定**，只是记账没跟上代码。原文保留（它是登记当时的事实），旁边补上现态取证。
+- **顺带修一句同样过期的生成注释**：`internal/docgen/webvocabulary.go` 里 `APPROVAL_STATUSES` 的说明写着“expired 目前只由 CheckExpiry 产生，而它**没有生产调用方**”——现测 `internal/approval/expiry.go:46` 就是那个生产调用方（serve 侧的过期扫描器），`internal/approval/vocabulary.go` 早已按此事改写而生成源没跟。已改成与之一致的说法，并按生成规则**同步改了生成物**。
+- **验证**：这是本批唯一的“手改生成物”处，所以以机器判据收口——`go run ./internal/docgen -check -root .` 报 `all 2 generated targets are up to date`（rc=0）；`./internal/docgen/` 与 `./internal/approval/` 两组测试全绿；账本表格列数逐行与 HEAD 对比零变化。
+
 ### 修复（清单侧 env 归属：重新导入不再能把已登记的 prod 主机改标成 dev）
 
 - **登记过的缺口，实测比登记写的更尖锐**。账本里那一条写的是“`labels["env"]` 对 add/import 是调用方声明，策略只能回答‘你能不能在这个环境登记主机’，回答不了‘这台机器真的属于这个环境’”。现测发现不止“新建时”：`ImportTargets` 的逐环境循环取的是**来件 row** 的 env，**从不查已存行**，而导入复用 `existing.ID` 走的是 UPDATE——于是 **admin of dev 只需重新导一份 `env: dev` 的清单，就能把一台已登记的 prod 主机改标成 dev**。
