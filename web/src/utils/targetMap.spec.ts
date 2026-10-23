@@ -105,6 +105,8 @@ describe('cellSummary', () => {
 import {
   MAP_OVERSCAN,
   MAP_ROW_PITCH,
+  MAP_ROW_PITCH_COMPACT,
+  mapRowPitch,
   windowRange,
 } from './targetMap'
 
@@ -173,5 +175,22 @@ describe('windowRange', () => {
     // moves the pitch, measure it again and update this number.
     expect(MAP_ROW_PITCH).toBe(27)
     expect(MAP_OVERSCAN).toBe(8)
+  })
+
+  it('pins the compact pitch, and derives the resolver from the two constants', () => {
+    // Compact drops the map cell's vertical padding from 4px to 2px, so the
+    // pitch loses 4px — 27 → 23. Like the comfortable number, this is NOT
+    // computed at runtime: the pitch is a measured quantity (see the note
+    // above about 27 vs the CSS's 21), so a second measured number beats a
+    // formula that is wrong. browser-check measures the real DOM at BOTH
+    // densities, which is what keeps these two in step with the stylesheet.
+    expect(MAP_ROW_PITCH_COMPACT).toBe(23)
+    expect(MAP_ROW_PITCH_COMPACT).toBe(MAP_ROW_PITCH - 4)
+
+    expect(mapRowPitch(false)).toBe(MAP_ROW_PITCH)
+    expect(mapRowPitch(true)).toBe(MAP_ROW_PITCH_COMPACT)
+    // The default keeps the comfortable value, so a caller with no opinion
+    // behaves exactly as it did before density existed.
+    expect(mapRowPitch()).toBe(MAP_ROW_PITCH)
   })
 })

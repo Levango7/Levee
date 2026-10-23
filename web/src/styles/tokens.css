@@ -166,6 +166,25 @@
   --lv-space-8: 32px;
   --lv-space-10: 40px;
 
+  /* --- density knobs ----------------------------------------------------
+   * The vertical rhythm of the list-shaped surfaces: how many rows fit on
+   * screen on a console that is left open all day.
+   *
+   * These defaults ARE the values the console shipped with, and "comfortable"
+   * is the ABSENCE of the `density-compact` class — so an operator who never
+   * opens the control sees a byte-identical layout. The compact overrides live
+   * in exactly one block at the bottom of this file.
+   *
+   * Two deliberate exclusions:
+   *   - `--lv-space-*` is NOT rescaled. Every page composes those tokens, so
+   *     halving them reflows layouts that were only ever measured at the
+   *     comfortable size — that is a second design, not a denser one.
+   *   - type sizes are NOT reduced. Compact spends whitespace, not legibility;
+   *     a console read at 3am should not shrink its text to fit more rows.
+   */
+  --lv-density-cell-pad-y: 9px;
+  --lv-density-map-cell-pad-y: 4px;
+
   /* ----------------------------------------------------------------- shape
    * Concentric scale (the Liquid Glass geometry rule): a nested radius is the
    * outer radius MINUS the gap between them, so two rounded shapes sitting
@@ -185,7 +204,7 @@
 
   /* ---------------------------------------------------------------- layout */
   --lv-rail-width: 232px;
-  --lv-rail-width-collapsed: 60px;
+    --lv-rail-width-collapsed: 60px;
   --lv-topbar-height: 56px;
   --lv-page-max: 1600px;
 
@@ -423,4 +442,39 @@ html.dark {
   --el-box-shadow-light: var(--lv-shadow-md);
   --el-box-shadow-lighter: var(--lv-shadow-sm);
   --el-mask-color: rgba(2, 5, 8, 0.66);
+}
+
+/* Compact density: the only place the knobs above change.
+ *
+ * `html.density-compact` (0,1,1) outranks `:root` (0,1,0) and this block is last
+ * in the file, so it wins on both specificity and order — no `!important`, which
+ * matters because Element Plus components read these names on the same elements.
+ *
+ * The numbers are a measured rhythm, not a ratio: table rows lose 8px of cell
+ * padding (9→5 top and bottom) and map rows lose 4px (4→2), which takes the
+ * map's row pitch from the measured 27px to 23px. Both pitches are pinned by a
+ * browser-level measurement at both densities — a pitch that exists only in a
+ * stylesheet is what made the map's scrollbar lie once already.
+ *
+ * Form controls come down to Element Plus's own "small" height. The library
+ * reads this name directly, and comfortable leaves it at the library default, so
+ * there is no second spelling to drift. */
+html.density-compact {
+  --lv-density-cell-pad-y: 5px;
+  --lv-density-map-cell-pad-y: 2px;
+  --el-component-size: 28px;
+}
+
+/* The default button is the one control that does NOT follow
+ * `--el-component-size`: Element Plus hardcodes its height at a literal 32px
+ * (only `--large`/`--small` read `--el-button-size`). Measured 2026-10-23 — the
+ * variable said 28px, the inputs followed it, and the buttons stayed at 32px.
+ *
+ * That mismatch is worse than not touching controls at all: a 28px input sitting
+ * next to a 32px button does not read as "dense", it reads as broken. So the
+ * default button is pinned to the same number, from the same variable, and the
+ * two `:not()` arms keep the library's own size variants exactly as they were —
+ * `--small` (24px) stays smaller than compact and `--large` stays large. */
+html.density-compact .el-button:not(.el-button--small):not(.el-button--large) {
+  height: var(--el-component-size);
 }

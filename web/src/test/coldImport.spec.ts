@@ -107,6 +107,7 @@ const KNOWN_REIMPORTING = [
   'api/cluster.spec.ts',
   'api/client.spec.ts',
   'composables/useTheme.spec.ts',
+  'composables/useDensity.spec.ts',
 ]
 
 describe('COLD_IMPORT_TIMEOUT ownership', () => {
@@ -119,8 +120,9 @@ describe('COLD_IMPORT_TIMEOUT ownership', () => {
   })
 
   it('every spec that re-imports the module graph applies the owned timeout', () => {
-    // Both directions: the known four are still detected as re-importing (so a
-    // parser change cannot make this vacuous), and nothing else is missed.
+    // Both directions: every known re-importer is still detected as
+    // re-importing (so a parser change cannot make this vacuous), and nothing
+    // else is missed.
     for (const known of KNOWN_REIMPORTING) {
       expect(specs.find((s) => s.path === known)?.reimports, `${known} no longer detected as re-importing`).toBe(true)
     }

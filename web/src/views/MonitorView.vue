@@ -14,7 +14,8 @@ import PageHeader from '@/components/PageHeader.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import { formatTimestamp, priorityLabel } from '@/utils/format'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
-import { buildTargetMap, cellSummary, STEP_LABEL, windowRange, MAP_ROW_PITCH } from '@/utils/targetMap'
+import { buildTargetMap, cellSummary, STEP_LABEL, windowRange, mapRowPitch } from '@/utils/targetMap'
+import { useDensity } from '@/composables/useDensity'
 import type { MapWindow } from '@/utils/targetMap'
 
 const route = useRoute()
@@ -102,8 +103,15 @@ function measureMapViewport(el: any): void {
   mapViewport.value = el ? el.clientHeight : 0
 }
 
+// The map's row pitch follows the active density, and the windowing math must
+// use the pitch the CSS is actually applying — otherwise the scrollbar describes
+// a layout that does not exist (the bug this constant was measured to fix).
+// Reading the shared density choice keeps one source for it.
+const { choice: densityChoice } = useDensity()
+const rowPitch = computed(() => mapRowPitch(densityChoice.value === 'compact'))
+
 const mapWindow = computed<MapWindow>(() =>
-  windowRange(targetRows.value.length, mapScrollTop.value, mapViewport.value, MAP_ROW_PITCH),
+  windowRange(targetRows.value.length, mapScrollTop.value, mapViewport.value, rowPitch.value),
 )
 
 const windowed = computed(() => mapWindow.value.windowed)
@@ -565,7 +573,11 @@ const batchTotals = computed(() => {
 .map__batch,
 .map__worst {
   text-align: left;
-  padding: 4px 8px;
+  /* The map's row pitch is this padding plus the line box plus the 1px border.
+   * It is the ONLY thing density changes here, and the JS windowing constant
+   * (MAP_ROW_PITCH / MAP_ROW_PITCH_COMPACT) is pinned against a real
+   * measurement at both densities — see utils/targetMap.ts. */
+  padding: var(--lv-density-map-cell-pad-y) 8px;
   color: var(--lv-text-3);
   font-weight: 500;
   border-bottom: 1px solid var(--lv-border-soft);
@@ -593,7 +605,7 @@ const batchTotals = computed(() => {
 }
 
 .map__cell {
-  padding: 4px 8px;
+  padding: var(--lv-density-map-cell-pad-y) 8px;
   border-bottom: 1px solid var(--lv-border-soft);
   text-align: center;
 }

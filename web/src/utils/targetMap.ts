@@ -203,6 +203,26 @@ export function cellSummary(cell: TargetCell): string {
  */
 export const MAP_ROW_PITCH = 27
 
+/** The same pitch under compact density.
+ *
+ * Compact drops the map cell's vertical padding from 4px to 2px (tokens.css),
+ * which is 4px off every row — so this is 27 - 4. It is NOT derived in code on
+ * purpose: the comfortable pitch is a MEASURED constant precisely because the
+ * CSS box model did not predict it (a CSS-derived estimate said 21 and the real
+ * pitch was 27). Two measured numbers beat one formula that is wrong.
+ *
+ * Both are pinned against a real DOM measurement at both densities by
+ * browser-check (`[4] the target map is windowed…`), so a stylesheet change
+ * that moves the rhythm fails there instead of silently skewing the scrollbar. */
+export const MAP_ROW_PITCH_COMPACT = 23
+
+/** mapRowPitch picks the constant for the active density. The default keeps the
+ *  comfortable value, so a caller that has no opinion (a unit test, a render
+ *  before the composable mounts) behaves exactly as it did before. */
+export function mapRowPitch(compact = false): number {
+  return compact ? MAP_ROW_PITCH_COMPACT : MAP_ROW_PITCH
+}
+
 /** Rows rendered above and below the viewport, so a quick flick never shows a gap. */
 export const MAP_OVERSCAN = 8
 

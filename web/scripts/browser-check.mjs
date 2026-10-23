@@ -513,6 +513,61 @@ console.log('\n[4] the target map is windowed and its scrollbar is honest')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[4c] both densities agree with the pitches the windowing math uses')
+{
+  // Why this is a browser check and not a unit test: MAP_ROW_PITCH{,_COMPACT}
+  // are MEASURED constants, so the unit tests can only compare them with
+  // themselves. Nothing there can tell whether the stylesheet still produces
+  // those pitches — which is exactly the drift that made the map's scrollbar
+  // lie the first time (the CSS box model said 21, reality said 27). Measuring
+  // the real DOM at BOTH densities is what keeps the two in step.
+  const measured = {}
+  for (const [density, expectedPitch, expectedCellPad] of [
+    ['comfortable', 27, '4px'],
+    ['compact', 23, '2px'],
+  ]) {
+    const page = await newPage(browser)
+    // The inline bootstrap in index.html reads this before first paint, so
+    // setting it through evaluateOnNewDocument exercises the real path rather
+    // than adding the class by hand.
+    await page.evaluateOnNewDocument((d) => localStorage.setItem('levee-density', d), density)
+    await open(page, '/monitor/run-fleet')
+    const m = await page.evaluate(() => {
+      const box = document.querySelector('.map-scroll')
+      const rows = [...document.querySelectorAll('.map tbody tr')].filter((r) => !r.classList.contains('map__spacer'))
+      const padY = getComputedStyle(document.querySelector('.map__cell')).paddingTop
+      const pitch = rows.length > 1
+        ? Math.round(rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top)
+        : 0
+      return { pitch, padY, scrollH: Math.round(box.scrollHeight), compact: document.documentElement.classList.contains('density-compact') }
+    })
+    check(`${density}: the class is ${density === 'compact' ? 'applied' : 'absent'}`,
+      m.compact === (density === 'compact'), `compact-class=${m.compact}`)
+    check(`${density}: the map cell padding is ${expectedCellPad}`, m.padY === expectedCellPad, `padding-top=${m.padY}`)
+    check(`${density}: the row pitch is the measured ${expectedPitch}px`, m.pitch === expectedPitch, `pitch=${m.pitch}`)
+    // 300 hosts in the fixture, plus the header row whose own padding follows
+    // the same knob (which is why this is a tolerance, not an equality: the
+    // header contributes 47px comfortable and 44px compact).
+    check(`${density}: the scrollbar still describes every host`,
+      Math.abs(m.scrollH - (300 * expectedPitch + 45)) < 6, `scrollHeight=${m.scrollH}`)
+    measured[density] = m.pitch
+    await page.close()
+  }
+  check('compact is denser, not merely spelled differently',
+    measured.compact < measured.comfortable, `${measured.compact} < ${measured.comfortable}`)
+
+  // Leave the shared browser context back at the default: localStorage is per
+  // profile, not per page, so every block after this one would otherwise run
+  // compact.
+  const reset = await newPage(browser)
+  await reset.evaluateOnNewDocument(() => localStorage.setItem('levee-density', 'comfortable'))
+  await open(reset, '/changes')
+  const restored = await reset.evaluate(() => document.documentElement.classList.contains('density-compact'))
+  check('the density block leaves the default behind for the rest of the run', restored === false, `still-compact=${restored}`)
+  await reset.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[4b] the cluster page renders takeover settlements')
 {
   const page = await newPage(browser)
