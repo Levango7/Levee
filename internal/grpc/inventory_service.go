@@ -138,6 +138,31 @@ func (s *InventoryService) ImportTargets(ctx context.Context, req *pb.ImportTarg
 			return nil, err
 		}
 	}
+	// The loop above judges what the FILE claims. It cannot see what the file
+	// would TAKE AWAY: a row that keeps a host's address but declares a different
+	// environment rewrites an existing row, and the environment is what the policy
+	// scopes reads and remote execution to. Without this, an admin of dev could
+	// re-import a prod host as dev and hand that machine to everyone dev licenses
+	// — using credentials the platform stores for prod. So moving a host out of an
+	// environment requires admin IN that environment.
+	//
+	// Previewed before the first write: refusing mid-import would leave the
+	// inventory half-applied, and this endpoint promises the opposite.
+	changes, err := s.importer.LabelChanges(ctx, f)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "preview import: %v", err)
+	}
+	for _, ch := range changes {
+		from, to := ch.Stored[targetEnvLabelKey], ch.Resulting[targetEnvLabelKey]
+		if from == to {
+			continue
+		}
+		if err := authorizeResource(ctx, s.authz, from, permission.ActionAdmin, "ImportTargets"); err != nil {
+			return nil, status.Errorf(status.Code(err),
+				"%s would move %s:%d out of environment %q into %q, which needs admin on %q: %v",
+				ch.Row, ch.Host, ch.Port, from, to, from, err)
+		}
+	}
 	sum, err := s.importer.Import(ctx, f, req.GetDefaultGroup())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "import: %v", err)

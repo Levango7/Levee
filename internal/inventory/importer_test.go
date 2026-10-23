@@ -158,3 +158,125 @@ func TestImportDefaultGroupAndStatusPreserved(t *testing.T) {
 	got2, _ := st.FindTargetByAddress(context.Background(), "10.9.9.9", 22)
 	assert.Equal(t, state.StatusFrozen, got2.Status)
 }
+
+// --- LabelChanges: the preview ImportTargets refuses against -----------------
+//
+// The environment label is what the policy scopes reads and remote execution
+// to, so a re-import that moves a host between environments is a scope change,
+// not a cosmetic edit. These cases pin what the preview reports — and, just as
+// importantly, what it stays quiet about, because a preview that reported every
+// re-import would make the caller judge rows it has nothing to decide about.
+
+func TestLabelChangesReportsAnEnvironmentMove(t *testing.T) {
+	st := newMemStore()
+	st.targets[hostKey("10.0.0.1", 22)] = &state.Target{
+		ID: "tgt-1", Hostname: "10.0.0.1", Port: 22, Status: state.StatusActive,
+		Labels: map[string]string{"env": "prod"},
+	}
+	f := mustParse(t, `
+targets:
+  - address: 10.0.0.1
+    labels:
+      env: dev
+`)
+
+	changes, err := NewImporter(st).LabelChanges(context.Background(), f)
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+	assert.Equal(t, "prod", changes[0].Stored["env"])
+	assert.Equal(t, "dev", changes[0].Resulting["env"])
+	assert.Equal(t, "10.0.0.1", changes[0].Host)
+	assert.Equal(t, 22, changes[0].Port)
+	assert.Equal(t, "targets[0]", changes[0].Row)
+}
+
+func TestLabelChangesIgnoresPureRedeclaration(t *testing.T) {
+	st := newMemStore()
+	st.targets[hostKey("10.0.0.1", 22)] = &state.Target{
+		ID: "tgt-1", Hostname: "10.0.0.1", Port: 22, Status: state.StatusActive,
+		Labels: map[string]string{"env": "prod"},
+	}
+	// No labels: the importer keeps the stored ones, so nothing is taken away.
+	f := mustParse(t, "targets:\n  - address: 10.0.0.1\n")
+
+	changes, err := NewImporter(st).LabelChanges(context.Background(), f)
+	require.NoError(t, err)
+	assert.Empty(t, changes, "a silent re-declaration does not change the scope")
+}
+
+func TestLabelChangesIgnoresNewHosts(t *testing.T) {
+	st := newMemStore()
+	f := mustParse(t, "targets:\n  - address: 10.0.0.9\n    labels:\n      env: dev\n")
+
+	changes, err := NewImporter(st).LabelChanges(context.Background(), f)
+	require.NoError(t, err)
+	assert.Empty(t, changes, "a new row has no stored scope to take away")
+}
+
+func TestLabelChangesReportsAClearedEnvironment(t *testing.T) {
+	st := newMemStore()
+	st.targets[hostKey("10.0.0.1", 22)] = &state.Target{
+		ID: "tgt-1", Hostname: "10.0.0.1", Port: 22, Status: state.StatusActive,
+		Labels: map[string]string{"env": "prod"},
+	}
+	// A silent declaration that ALSO changes the status is a redefinition, not a
+	// re-address: the merge drops the stored labels, which clears the env.
+	f := mustParse(t, "targets:\n  - address: 10.0.0.1\n    status: frozen\n")
+
+	changes, err := NewImporter(st).LabelChanges(context.Background(), f)
+	require.NoError(t, err)
+	require.Len(t, changes, 1)
+	assert.Equal(t, "prod", changes[0].Stored["env"])
+	assert.Empty(t, changes[0].Resulting["env"], "a cleared env is a change too")
+}
+
+func TestLabelChangesIgnoresIdenticalLabels(t *testing.T) {
+	st := newMemStore()
+	st.targets[hostKey("10.0.0.1", 22)] = &state.Target{
+		ID: "tgt-1", Hostname: "10.0.0.1", Port: 22, Status: state.StatusActive,
+		Labels: map[string]string{"env": "prod", "app": "pay"},
+	}
+	f := mustParse(t, `
+targets:
+  - address: 10.0.0.1
+    labels:
+      env: prod
+      app: pay
+`)
+
+	changes, err := NewImporter(st).LabelChanges(context.Background(), f)
+	require.NoError(t, err)
+	assert.Empty(t, changes, "restating the same labels changes nothing")
+}
+
+// The preview must agree with what the write actually does: if these two ever
+// disagree, the caller is judging a transition that does not happen (or missing
+// one that does).
+func TestLabelChangesAgreesWithImport(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		body  string
+		moved bool
+	}{
+		{"moved", "targets:\n  - address: 10.0.0.1\n    labels:\n      env: dev\n", true},
+		{"silent", "targets:\n  - address: 10.0.0.1\n", false},
+		{"restated", "targets:\n  - address: 10.0.0.1\n    labels:\n      env: prod\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := newMemStore()
+			st.targets[hostKey("10.0.0.1", 22)] = &state.Target{
+				ID: "tgt-1", Hostname: "10.0.0.1", Port: 22, Status: state.StatusActive,
+				Labels: map[string]string{"env": "prod"},
+			}
+			im := NewImporter(st)
+			changes, err := im.LabelChanges(context.Background(), mustParse(t, tc.body))
+			require.NoError(t, err)
+			assert.Equal(t, tc.moved, len(changes) > 0, "preview says moved=%v", len(changes) > 0)
+
+			_, err = im.Import(context.Background(), mustParse(t, tc.body), "")
+			require.NoError(t, err)
+			got := st.targets[hostKey("10.0.0.1", 22)].Labels["env"]
+			assert.Equal(t, tc.moved, got == "dev", "the write landed env=%q", got)
+		})
+	}
+}

@@ -540,3 +540,49 @@ func TestServicePolicy_NoAuthorizerKeepsPreviousBehaviour(t *testing.T) {
 	_, err = cfgSvc.GetStatus(asSubject("mallory"), nil)
 	require.NoError(t, err, "%v", err)
 }
+
+// TestServicePolicy_ImportCannotMoveAHostOutOfAnEnvironmentItCannotAdminister
+//
+// The per-environment loop above judges what the FILE declares. That is not
+// enough: a row that keeps a host's ADDRESS but declares a different
+// environment rewrites an existing row, and a target's environment is what the
+// policy scopes reads and remote execution to (see resource_authz.go). Without
+// the stored-environment check, an admin of dev could re-import a prod host as
+// dev and hand that machine to everyone dev licenses — using credentials the
+// platform stores for prod.
+//
+// The control case is what makes this test about the NEW check rather than
+// about the loop that was already there: the same subject, the same file, the
+// same declared environment. Only the store contents differ.
+func TestServicePolicy_ImportCannotMoveAHostOutOfAnEnvironmentItCannotAdminister(t *testing.T) {
+	bg := context.Background()
+	const file = "targets:\n  - address: prod-9\n    labels:\n      env: dev\n"
+
+	// Control: the address is not in the inventory, so nothing is taken away and
+	// the dev admin may claim it. (A separate gap — a claim about a host the
+	// platform does not hold yet — is not what this check is for.)
+	ctlStore := newTestStore(t)
+	ctl := NewInventoryService(ctlStore).WithAuthorizer(newServiceAuthorizer(t))
+	_, err := ctl.ImportTargets(asSubject("dave"), &pb.ImportTargetsRequest{YamlContent: file})
+	require.NoError(t, err, "claiming an unregistered address as dev: %v", err)
+
+	// The same file against a host the store already holds as prod.
+	store := newTestStore(t)
+	seedTarget(t, store, "tgt-prod-9", "prod-9", "prod")
+	svc := NewInventoryService(store).WithAuthorizer(newServiceAuthorizer(t))
+
+	_, err = svc.ImportTargets(asSubject("dave"), &pb.ImportTargetsRequest{YamlContent: file})
+	requireDenied(t, err, "ImportTargets (moving prod-9 into dev)")
+	assert.Contains(t, err.Error(), "prod",
+		"the refusal must name the environment being taken away, not just the one being claimed")
+
+	// The preview runs before the first write, so a refused import leaves the
+	// inventory exactly as it was — no relabelled row, and no half-applied file.
+	row, err := store.FindTargetByAddress(bg, "prod-9", 22)
+	require.NoError(t, err)
+	require.NotNil(t, row)
+	assert.Equal(t, "prod", row.Labels["env"], "a refused import must not relabel the stored row")
+	rows, err := store.ListTargets(bg, state.TargetFilter{})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1, "a refused import must not have written any row")
+}

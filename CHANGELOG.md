@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 修复（清单侧 env 归属：重新导入不再能把已登记的 prod 主机改标成 dev）
+
+- **登记过的缺口，实测比登记写的更尖锐**。账本里那一条写的是“`labels["env"]` 对 add/import 是调用方声明，策略只能回答‘你能不能在这个环境登记主机’，回答不了‘这台机器真的属于这个环境’”。现测发现不止“新建时”：`ImportTargets` 的逐环境循环取的是**来件 row** 的 env，**从不查已存行**，而导入复用 `existing.ID` 走的是 UPDATE——于是 **admin of dev 只需重新导一份 `env: dev` 的清单，就能把一台已登记的 prod 主机改标成 dev**。
+- **为何这是安全属性而非标签卫生**：目标的环境正是策略用来判**读可见性**（`ListTargets` 按可见 env 收窄）与 **`Diagnose` 的 `apply`** 的，而后者的通道用的是**存在库里的凭据**。一棵 dev 管理员 → dev `apply` 主体 → 在 prod 机器上带平台凭据执行，就这么接上了。
+- **落地（拒绝先于任何写，且预览与写入同一套规则）**：
+  - `ImportTargets` 在逐环境循环之后、**任何写之前**跑一遍 `inventory.Importer.LabelChanges`；凡会把已存目标移出原 env 的行，要求调用方**在**那个 env 上也是 `admin`，拒绝时点名**被移出的环境**（不是被声明的那个）。
+  - 预览必须先于写入：refuse 发生在一半会让清单**半落地**，而这个端点原本就承诺“文件里有一台不可达的主机，则一台也不导入”。
+  - **合并规则只有一份**：把原先内联在 `importTarget` 里的 re-import 合并逻辑抽成 `mergedLabels`（地址归一抽成 `targetAddressFor`），预览与写入**都调它**——否则预览会与真正落地的结果分歧，而那正是这类守卫最容易腐化的地方。
+- **残余已收窄，并写在代码里而非畵着**：`(hostname, port)` 唯一，所以 `AddTarget` **抢不走**平台已持有的地址（`AlreadyExists`）；能从外部改写已有行的路径只有导入，而它现在需要原 env 的 admin。残余是“对平台从未持有的地址自称 env”——见 `target_service.go` 的注释与账本。
+- **测试与变异**：`internal/inventory` 新增 6 例（移动 / 纯重声明不报 / 新主机不报 / **清空 env 也算变更** / 同标签不报 / **预览与写入结果一致**）；`internal/grpc` 新增 1 例，带**对照组**——同一主体、同一文件、同一声明环境，**只因库里有没有该主机而结果不同**，这样才能证明是**新检查**在拦而不是原有的逐环境循环。**变异**：把判定从 stored env 换成 incoming env（即旧行为）后新用例立刻红（`must not be wide open`）。
+- **验证**：`go test ./internal/inventory/ ./internal/grpc/ -count=1` 全绿；`gofmt -l` 干净；`go vet` rc=0。（本机 Go 1.26.6 + `GOTOOLCHAIN=local` 跑，临时降工作树 `go.mod`——**未进提交**，CI 仍按 1.26.10 复核。）
+
 ### 修复（remote http 探针的 `{target}` 此前不展开：一个按文档写就永远过不了的门禁）
 
 - **现象**：`probe` 门禁在 `mode: remote` + `kind: http` 下把 `url` **原样**交给目标机上的 curl。参数表（`docs/gates.md`）把 `{target}` 当作 `url` 支持的占位符来宣传，于是按文档写的 `url: "http://{target}:9090/health"` 会把字面量 `{target}` 交给 curl，curl 拿它当主机名解析——DNS 失败，**这个探针永远不可能通过**，而且错得完全不指向真正的毛病。

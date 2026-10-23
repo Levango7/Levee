@@ -107,6 +107,91 @@ type Importer struct {
 // NewImporter returns an Importer backed by store.
 func NewImporter(store Store) *Importer { return &Importer{store: store} }
 
+// LabelChange is one row of an import that would leave an EXISTING target with
+// different labels than it has stored.
+//
+// Which label matters is deliberately NOT decided here — the caller owns that
+// vocabulary. This reports the merge itself.
+type LabelChange struct {
+	Row       string // the row's label in the file, for the refusal message
+	Host      string
+	Port      int
+	Stored    map[string]string
+	Resulting map[string]string
+}
+
+// LabelChanges lists the rows that would change an existing target's labels,
+// without writing anything.
+//
+// Why a preview exists at all: labels carry the environment, and a target's
+// environment is what the policy scopes reads and remote execution to (see
+// grpc.resource_authz). A re-import that moves a prod host into dev therefore
+// hands that machine to everyone the dev environment licenses — and unlike
+// registering a new host, it rewrites a row the platform already trusts. The
+// refusal has to happen BEFORE the first write: an import that refused halfway
+// would leave the inventory half-applied, and ImportTargets promises the
+// opposite ("a file that contains one host out of reach imports none of its
+// hosts").
+//
+// The merge is computed by mergedLabels for both this pass and the write, so a
+// change to how a re-declaration is interpreted cannot make the preview
+// disagree with what actually lands.
+func (im *Importer) LabelChanges(ctx context.Context, f *File) ([]LabelChange, error) {
+	if f == nil {
+		return nil, fmt.Errorf("inventory: nil file")
+	}
+	var out []LabelChange
+	for i, td := range f.Targets {
+		host, port, err := targetAddressFor(td)
+		if err != nil {
+			// importTarget reports the malformed row; a row with no address has no
+			// stored row to relabel, so it cannot contribute a label change.
+			continue
+		}
+		status := td.Status
+		if status == "" {
+			status = state.StatusActive
+		}
+		if !validStatuses[status] {
+			continue // importTarget fails this row; it will not reach a write
+		}
+		existing, err := im.store.FindTargetByAddress(ctx, host, port)
+		if err != nil {
+			return nil, err
+		}
+		if existing == nil {
+			continue // a new row has no stored scope to take away
+		}
+		resulting := mergedLabels(td.Labels, existing.Labels, status, existing.Status)
+		if labelsEqual(existing.Labels, resulting) {
+			continue
+		}
+		out = append(out, LabelChange{
+			Row:       fmt.Sprintf("targets[%d]", i),
+			Host:      host,
+			Port:      port,
+			Stored:    existing.Labels,
+			Resulting: resulting,
+		})
+	}
+	return out, nil
+}
+
+// labelsEqual compares two label maps by value. Used only to keep the preview
+// from reporting rows that change nothing — a preview that reported every
+// re-import would make the caller judge rows it has nothing to decide about.
+func labelsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		if bv, ok := b[k]; !ok || bv != av {
+			return false
+		}
+	}
+	return true
+}
+
 // ensureGroup returns the ID of the named group, creating it when missing.
 // known maps already-seen names to IDs within this import run.
 func (im *Importer) ensureGroup(ctx context.Context, name string, known map[string]string) (string, error) {
@@ -191,17 +276,51 @@ func (im *Importer) importGroups(ctx context.Context, f *File, known map[string]
 // the existing (host,port) row — preserving credential/labels/status where
 // the re-declaration is silent — or creates a new one. Failures are
 // accumulated into sum.
-func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, defaultGroup string, known map[string]string, sum *Summary) {
+// targetAddressFor normalises one declaration's address the way every import
+// path must: the explicit `address` supplies host and port, a `port:` field
+// overrides it, and the default is 22. Extracted so the write pass and the
+// label preview cannot disagree about which stored row a declaration refers to
+// — a preview that resolved a different address would be answering about a
+// different machine.
+func targetAddressFor(td TargetDef) (string, int, error) {
 	host, port, err := splitAddress(td.Address)
 	if err != nil {
-		im.fail(sum, row, err)
-		return
+		return "", 0, err
 	}
 	if td.Port > 0 {
 		port = td.Port
 	}
 	if port == 0 {
 		port = 22
+	}
+	return host, port, nil
+}
+
+// mergedLabels returns the labels an EXISTING target carries after this
+// declaration is applied. The rule lives here, in one place, because the
+// preview (LabelChanges) and the write (importTarget) must agree: a preview
+// that computed the merge differently from the write would authorise the wrong
+// transition.
+//
+//   - a declaration that names labels REPLACES them;
+//   - a declaration that names none keeps the stored ones, but only when it also
+//     leaves the status alone. Otherwise the row is being redefined rather than
+//     merely re-addressed, and silence there must not silently preserve a scope.
+func mergedLabels(incoming, existing map[string]string, incomingStatus, existingStatus string) map[string]string {
+	if len(incoming) > 0 {
+		return incoming
+	}
+	if len(existing) > 0 && incomingStatus == existingStatus {
+		return existing
+	}
+	return nil
+}
+
+func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, defaultGroup string, known map[string]string, sum *Summary) {
+	host, port, err := targetAddressFor(td)
+	if err != nil {
+		im.fail(sum, row, err)
+		return
 	}
 	channel := td.ChannelType
 	if channel == "" {
@@ -260,9 +379,7 @@ func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, 
 		if tg.CredentialRef == "" {
 			tg.CredentialRef = existing.CredentialRef
 		}
-		if len(tg.Labels) == 0 && len(existing.Labels) > 0 && status == existing.Status {
-			tg.Labels = existing.Labels // pure address re-declaration keeps labels
-		}
+		tg.Labels = mergedLabels(td.Labels, existing.Labels, status, existing.Status)
 		if td.Status == "" && existing.Status != "" {
 			tg.Status = existing.Status // re-import never silently un-freezes
 		}
