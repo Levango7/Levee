@@ -114,10 +114,21 @@ func (s *TargetService) AddTarget(ctx context.Context, req *pb.AddTargetRequest)
 	// Judged in the environment the request DECLARES the host belongs to, so a
 	// team cannot register a prod machine by leaving the label off (that falls
 	// to the default environment, which is itself a scope) nor register one in
-	// an environment it may only look at. What this does not prove is that the
-	// label is true: `env` on an add request is caller-asserted, so the policy
-	// answers "may you claim hosts in this environment", not "is this really a
-	// prod machine". Acting ON the host stays a change-scoped decision.
+	// an environment it may only look at.
+	//
+	// What this does not prove is that the label is true: `env` on an add request
+	// is caller-asserted, so the policy answers "may you claim hosts in this
+	// environment", not "is this really a prod machine". Acting ON the host stays
+	// a change-scoped decision.
+	//
+	// What it DOES bound is who can be affected: (hostname, port) is unique, so
+	// an address the deployment already holds under another environment cannot be
+	// re-scoped from here — the upsert refuses it with AlreadyExists. The one
+	// path that can rewrite an existing row is ImportTargets, and that one now
+	// requires admin on the environment it would take the host OUT of (see its
+	// stored-environment check). The residual is therefore narrow, and worth
+	// stating plainly rather than leaving implied: a caller may still assert an
+	// environment for an address the platform has never held.
 	if err := authorizeResource(ctx, s.authz, req.Labels[targetEnvLabelKey],
 		permission.ActionAdmin, "AddTarget"); err != nil {
 		return nil, err
