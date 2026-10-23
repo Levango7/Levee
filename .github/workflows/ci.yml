@@ -259,6 +259,52 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go test -bench=. -benchtime=1x -run '^$' ./... -timeout 300s
 
+      # ---------------------------------------------------------------------
+      # Evidence for the windows crash the ledger tracks (`internal/calendar`,
+      # `exit status 0xc0000005`).
+      #
+      # Why this exists: that crash leaves NO Go-side evidence — no panic, no
+      # goroutine dump, nothing around the FAIL line — which is what made two
+      # investigations reconstruct it from attempt logs by hand. Two things it
+      # DOES leave behind are not in the test log at all:
+      #
+      #   1. An Application Error event naming the faulting module and the
+      #      exception code. Captured via `Properties` rather than `Message`
+      #      because the message TEXT IS LOCALISED (the runner is en-US; an
+      #      operator's box may not be) while the structured fields are not.
+      #   2. A repeat run of the package that crashed. The ledger asks for this
+      #      by name — `go test -count=5 -v ./internal/calendar/` — because
+      #      "deterministic or not" is the first question and nothing else
+      #      answers it.
+      #
+      # What this deliberately is NOT: a retry, a skip, or a softened
+      # assertion. It runs only AFTER a failure, `continue-on-error` keeps it
+      # from changing the verdict, and it does not touch what the leg asserts.
+      # The ledger's "复发时要取的" list is what it exists to satisfy.
+      - name: windows crash evidence (failure only)
+        if: failure() && matrix.os == 'windows-latest'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Write-Host "GOVERSION=$env:GOVERSION"
+          go version
+          Write-Host "--- Application Error / Windows Error Reporting events ---"
+          $ev = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000,1001} -MaxEvents 20 -ErrorAction SilentlyContinue
+          if (-not $ev) { Write-Host "(none)" } else {
+            foreach ($e in $ev) {
+              $vals = @($e.Properties | ForEach-Object { $_.Value })
+              "--- {0} id={1} {2}" -f $e.TimeCreated.ToString('s'), $e.Id, $e.ProviderName
+              "    " + ($vals -join ' | ')
+            }
+          }
+      - name: calendar repeat run (failure only)
+        if: failure() && matrix.os == 'windows-latest'
+        continue-on-error: true
+        shell: pwsh
+        # 2>&1 so the exit code is not the only thing the log carries when it
+        # panics; the tail keeps a green repeat from burying the crash above it.
+        run: go test -count=5 -v ./internal/calendar/ 2>&1 | Select-Object -Last 80
+
   # ---------------------------------------------------------------------------
   # integration: tagged integration suite + e2e rollback drills + PostgreSQL-
   # backed store/cluster tests. The stock unit-test matrix skips PG paths
