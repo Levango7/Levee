@@ -375,11 +375,45 @@ async function warmUp(browser) {
 
 const text = (page, sel) => page.evaluate((s) => (document.querySelector(s)?.textContent || '').trim(), sel)
 
+// How long Chrome gets to start. Deliberately a SEPARATE budget from
+// SETTLE_DEADLINE_MS, and the difference is the whole argument for one being
+// raisable and the other not:
+//
+//   - SETTLE_DEADLINE_MS gates when we stop observing the page and assert on
+//     what is there, so raising it would weaken what the assertions mean. It is
+//     a judgement proxy and stays where it is.
+//   - This one waits for an external process to print its websocket endpoint.
+//     No assertion depends on how long that takes, so a longer budget cannot
+//     turn a wrong verdict into a right one.
+//
+// puppeteer's default is 30s. A windows CI runner has exceeded it: run
+// 39949099138's sibling job died with "Timed out after 30000 ms while waiting
+// for the WS endpoint URL to appear in stdout" — Chrome never started, 38s
+// after "launching Chrome" and with no screenshot and no settle note, which is
+// a DIFFERENT failure from the settle-timeout flake this suite's notes describe.
+// Local measurement: 0.4–1.2s idle. 90s is a cold-filesystem allowance, not a
+// contended-machine estimate.
+const CHROME_LAUNCH_TIMEOUT_MS = Number(process.env.BROWSER_CHECK_LAUNCH_MS || 90_000)
+
 console.log('browser-check: launching Chrome')
-const browser = await puppeteer.default.launch({
-  executablePath: CHROME,
-  args: ['--no-sandbox', '--headless=new', '--disable-dev-shm-usage', '--hide-scrollbars', '--force-color-profile=srgb'],
-})
+let browser
+try {
+  browser = await puppeteer.default.launch({
+    executablePath: CHROME,
+    timeout: CHROME_LAUNCH_TIMEOUT_MS,
+    args: ['--no-sandbox', '--headless=new', '--disable-dev-shm-usage', '--hide-scrollbars', '--force-color-profile=srgb'],
+  })
+} catch (err) {
+  // Name which failure this is. The launcher's own message is one line that
+  // reads like an assertion failure, and the two have completely different
+  // responses: one means the console regressed, the other means the runner was
+  // slow to start a browser process.
+  console.error(
+    `browser-check: Chrome did not start within ${CHROME_LAUNCH_TIMEOUT_MS}ms. ` +
+      `This is a runner/browser-startup failure, NOT a console assertion: ${err && err.message ? err.message : err}`,
+  )
+  process.exit(1)
+}
 
 if (SHOTS && !existsSync(SHOT_DIR)) mkdirSync(SHOT_DIR, { recursive: true })
 

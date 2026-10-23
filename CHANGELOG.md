@@ -4,6 +4,25 @@
 
 ## [Unreleased]
 
+### 修复（浏览器检查在 windows 上红了：真因是 **Chrome 没起来**，不是页面没稳定）
+
+- **拿到了一次带自诊断的真实现场**（`#197` 加的那套第一次真的用上）：master `7e7b505` 的 push CI 在 `browser-check (Chrome on windows-latest)` 变红。但现场是**与账本记的不同的失败模式**——
+  - 无截图、无 `settle note`、也没走到任何断言；从 `launching Chrome` 到作业结束只过了 **38 秒**（完整跑要几分钟），日志尾部是：
+    ```
+    TimeoutError: Timed out after 30000 ms while waiting for the WS endpoint URL to appear in stdout!
+        at ChromeLauncher.launch (.../BrowserLauncher.js:181)
+        at async browser-check.mjs:379:17
+    ```
+  - 也就是说：**Chrome 进程本身没在 30 秒内就绪**，而账本登记的那个 flake 是“页面 30 秒没稳定下来后断言读到空 DOM”。**两者根因不同、处置也不同**。
+- **为何敢把超时改大，而 `SETTLE_DEADLINE_MS` 不改**：这两个预算的性质不同，而区别恰好就是理由——
+  - `SETTLE_DEADLINE_MS` 决定“何时停止观察页面并对眼前的东西下断言”，改大它等于削弱断言的含义；它是**判定代理**，不动。
+  - `CHROME_LAUNCH_TIMEOUT_MS` 只是在等一个**外部进程**打印它的 websocket 端点，没有任何断言依赖这个耗时，改大**不可能**把错的结论变成对的。
+  - puppeteer 默认 30s（为闲置开发机定的）；本机实测启动 **0.4–1.2s**。取 90s，是对“冷文件系统”的余量，不是对“竞争机器”的估值；可用 `BROWSER_CHECK_LAUNCH_MS` 覆盖。
+- **失败时把“这是哪一种失败”说出来**：启动失败被 `catch` 住并显式打印“这是 runner/浏览器启动失败，**不是**控制台断言失败”，因为启动器自己那行错误读起来像断言失败，而两者的应对完全不同（一个意味着控制台回归，另一个意味着 runner 启浏览器慢）。
+- **刻意不做**：不给启动加自动重试（与本仓不给 CI 加自动重试同口径：会把一次真问题洗成一次绿）。本笔把失败模式分开并说清，而不是把它涂掉。
+- **新增币账本一行**（原文那行讲的是另一个模式，保留不动）：两个失败模式分别登记，并各自记下“复发时要取的”。
+- **验证**：`node --check` 干净；本机完整跑一遍 `browser-check` **ALL PASS**（含 `[4c]` 与新的启动预算）。
+
 ### 新增（`--as`：本地模式给出可判路径，且本轮记下两件改变做法的事实）
 
 - **登记在账本上的缺口**：`--local` 本地模式不设策略判定（那些门禁全在 `internal/grpc/*.go`）。本笔按“加法”补：新增 `--as <subject>`，**不给就零变化**（本地照旧不判，`subject.go` 已定稿的信任边界不被推翻），给了就加载策略注册表并以该身份判定。
