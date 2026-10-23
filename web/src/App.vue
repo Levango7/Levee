@@ -19,6 +19,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { clearToken } from '@/api/client'
 import { useTheme, type ThemeChoice } from '@/composables/useTheme'
+import { useDensity, type DensityChoice } from '@/composables/useDensity'
 import CommandPalette from '@/components/CommandPalette.vue'
 
 const route = useRoute()
@@ -92,6 +93,22 @@ const THEME_OPTIONS: Array<{ value: ThemeChoice; label: string; icon: string }> 
 ]
 
 const themeIcon = computed(() => (themeResolved.value === 'dark' ? 'Moon' : 'Sunny'))
+
+// Density has its own options and its own handler rather than sharing
+// handleCommand's fallback: that fallback ends in setTheme, so routing density
+// commands through it would set the THEME to "compact". Two switches, two
+// handlers — the coupling is the kind of thing that reads as a typo forever.
+const DENSITY_OPTIONS: Array<{ value: DensityChoice; label: string; icon: string }> = [
+  { value: 'comfortable', label: '宽松', icon: 'Expand' },
+  { value: 'compact', label: '紧凑', icon: 'Fold' },
+]
+
+const { choice: densityChoice, setChoice: setDensity } = useDensity()
+const densityIcon = computed(() => (densityChoice.value === 'compact' ? 'Fold' : 'Expand'))
+
+function handleDensity(command: string): void {
+  setDensity(command as DensityChoice)
+}
 
 function handleCommand(command: string): void {
   if (command === 'logout') {
@@ -233,6 +250,29 @@ watch(
                   :key="opt.value"
                   :command="opt.value"
                   :class="{ 'is-active': themeChoice === opt.value }"
+                >
+                  <el-icon><component :is="opt.icon" /></el-icon>
+                  {{ opt.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-dropdown trigger="click" @command="handleDensity">
+            <button
+              class="topbar__icon-btn"
+              type="button"
+              :title="`行高：${DENSITY_OPTIONS.find((o) => o.value === densityChoice)?.label}`"
+            >
+              <el-icon><component :is="densityIcon" /></el-icon>
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="opt in DENSITY_OPTIONS"
+                  :key="opt.value"
+                  :command="opt.value"
+                  :class="{ 'is-active': densityChoice === opt.value }"
                 >
                   <el-icon><component :is="opt.icon" /></el-icon>
                   {{ opt.label }}

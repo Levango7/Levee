@@ -637,7 +637,10 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 }
 
 .el-table .el-table__cell {
-  padding: 9px 0;
+  /* The vertical half of the row height, and the density knob's main lever:
+   * 9px comfortable / 5px compact (see tokens.css). The horizontal padding
+   * stays at Element Plus's own so column widths do not move with density. */
+  padding: var(--lv-density-cell-pad-y) 0;
 }
 
 .el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell {
