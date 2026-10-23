@@ -13,9 +13,11 @@ import (
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -146,13 +148,61 @@ func calendarFor(ctx context.Context, store state.Store) (*calendar.CalendarServ
 }
 
 // currentActor returns the identity of the CLI user for audit purposes. It
-// checks the LEVEE_ACTOR environment variable first, then falls back to
-// "cli-user".
+// checks --as first, then the LEVEE_ACTOR environment variable, then falls back
+// to "cli-user".
+//
+// --as wins because it is the identity the policy is judging (see
+// localAuthorizer): a governance action recorded under a different name than the
+// one that authorised it is exactly the drift grpc.ContextWithSubject exists to
+// prevent, and the same argument applies one layer up.
 func currentActor() string {
+	if optAs != "" {
+		return optAs
+	}
 	if actor := os.Getenv("LEVEE_ACTOR"); actor != "" {
 		return actor
 	}
 	return "cli-user"
+}
+
+// localAuthorizer returns the authorizer local commands should judge against, or
+// nil for the historical posture (local commands run unjudged).
+//
+// It returns nil unless the operator asked otherwise, because enforcing local
+// policy by default would start refusing commands in every deployment whose
+// operator is not in the registry — a behaviour change that arrives as "the CLI
+// stopped working", not as a policy decision. --as is the opt-in.
+//
+// What --as covers, stated here so it is not mistaken for "all of local mode":
+// it reaches the actions that local commands perform THROUGH the gRPC service
+// layer (plan, apply, and the approval settle that follows a CLI vote), because
+// that is where the policy judgements live. Command paths that call a domain
+// service directly do not pass a gate and are NOT covered -- approving is the
+// one that matters, and it is documented on the command itself.
+//
+// A registry that cannot be loaded is an ERROR, not a silent nil: the operator
+// explicitly asked to be judged, so quietly running unjudged is the one outcome
+// they were trying to avoid.
+func localAuthorizer() (*authz.Authorizer, error) {
+	if optAs == "" {
+		return nil, nil
+	}
+	a, _, err := loadAuthorizerForCmd()
+	if err != nil {
+		return nil, fmt.Errorf("--as %q: load policy registry: %w", optAs, err)
+	}
+	if !a.Enforced() {
+		// A deployment with no matrix is a legitimate state (serve warns rather
+		// than refusing there too), but the operator asked for something that is
+		// not happening. Say so instead of leaving them to infer it.
+		log.Warn("--as has no permission matrix to judge against; local commands stay unjudged", "as", optAs)
+		return nil, nil
+	}
+	if !a.Knows(optAs) {
+		log.Warn("--as names a subject the registry does not know; every judged call will be refused",
+			"as", optAs, "registered", a.Registered())
+	}
+	return a.WithDefaultSubject(optAs), nil
 }
 
 // templateDir returns the base directory for the template library. It is

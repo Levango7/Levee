@@ -93,6 +93,44 @@ type Authorizer struct {
 	// not the audit log. Install it at construction time, before the authorizer
 	// is shared across goroutines — the field is not synchronised.
 	denialRecorder func(ctx context.Context, actor, action, env string)
+
+	// defaultSubject names the identity to judge when the context supplies none.
+	// ONLY local mode sets it: there the process itself is the authority on who
+	// typed the command (the seam is grpc.ContextWithSubject, whose own comment
+	// names local mode), and the CLI has one operator rather than one identity
+	// per request.
+	//
+	// It is deliberately NOT a remote-path affordance. Substituting an identity
+	// for an anonymous remote caller is the opposite of what this layer is for —
+	// it would turn "presented no credential" into "holds somebody's grant",
+	// which is the one reading the auth layer exists to refuse.
+	defaultSubject string
+}
+
+// WithDefaultSubject sets the identity judged when a context carries none.
+//
+// Empty (the default) means "never substitute", which is exactly the behaviour
+// every deployment had before this existed — so a caller that does not opt in
+// cannot be affected by it. Setting it is how local mode adopts the SAME policy
+// judgements the server would make for that operator, instead of being the one
+// path that skips them.
+func (a *Authorizer) WithDefaultSubject(subject string) *Authorizer {
+	if a == nil {
+		return a
+	}
+	a.defaultSubject = subject
+	return a
+}
+
+// subjectOr returns the identity to judge. One helper rather than three inline
+// fallbacks, so Decide / AdmitsRead / ReadFilteringActive cannot end up
+// disagreeing about when the default applies — a disagreement there would mean
+// "judged as somebody" and "filtered for nobody" in the same request.
+func (a *Authorizer) subjectOr(subject string) string {
+	if subject == "" {
+		return a.defaultSubject
+	}
+	return subject
 }
 
 // UnattributableActor is the actor an audit row carries when the refused
@@ -228,6 +266,7 @@ func (a *Authorizer) Enforced() bool {
 // Once the caller IS attributable, reads are policed exactly like writes:
 // matrix grant, role grant bounded by reachability, explicit revoke honoured.
 func (a *Authorizer) AdmitsRead(subject, env string) (allowed bool, reason string) {
+	subject = a.subjectOr(subject)
 	if !a.Enforced() {
 		return true, "no permission matrix configured (read visibility not filtered)"
 	}
@@ -249,7 +288,7 @@ func (a *Authorizer) AdmitsRead(subject, env string) (allowed bool, reason strin
 // policy: the two facts are exactly the two AdmitsRead checks that admit
 // everything.
 func (a *Authorizer) ReadFilteringActive(subject string) bool {
-	return a.Enforced() && subject != ""
+	return a.Enforced() && a.subjectOr(subject) != ""
 }
 
 // Registered returns the subject names the registry knows, for startup
@@ -299,6 +338,7 @@ func (a *Authorizer) ResolveEnv(env string) string {
 // no environment cannot be answered against an environment-keyed policy, and
 // guessing "any environment" is the one guess that must never be made.
 func (a *Authorizer) Decide(subject, env, action string) Decision {
+	subject = a.subjectOr(subject)
 	if !a.Enforced() {
 		return Decision{
 			Enforced: false, Allowed: true,
