@@ -33,11 +33,26 @@
         } catch (e) {
           /* localStorage unavailable: fall through to the light default. */
         }
+        try {
+          /* Density is applied in the same bootstrap and for the same reason:
+           * the compact overrides change panel and row heights, so applying it
+           * from the app would paint one frame at the comfortable rhythm and
+           * then jump — visible as a reflow on every navigation, and worse on
+           * the map, whose scrollbar is computed from the row pitch. Read the
+           * stored choice and add the class; "comfortable" is the absence of
+           * it. Key and class duplicated from useDensity.ts on purpose (this
+           * runs before the module graph); useDensity.spec.ts pins both ends. */
+          if (localStorage.getItem('levee-density') === 'compact') {
+            document.documentElement.classList.add('density-compact')
+          }
+        } catch (e) {
+          /* localStorage unavailable: fall through to the comfortable default. */
+        }
       })()
     </script>
-    <script type="module" crossorigin src="/assets/index-MD8eeYar.js"></script>
+    <script type="module" crossorigin src="/assets/index-BQt9No0Z.js"></script>
     <link rel="modulepreload" crossorigin href="/assets/vendor-sGgvVIPI.js">
-    <link rel="stylesheet" crossorigin href="/assets/index-DyscRKL5.css">
+    <link rel="stylesheet" crossorigin href="/assets/index-Vhern7a5.css">
   </head>
   <body>
     <div id="app"></div>
