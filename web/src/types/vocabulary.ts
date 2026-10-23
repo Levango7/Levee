@@ -149,7 +149,7 @@ export const RUN_APPROVAL_STATUSES = [
 /** RunApprovalStatus 的成员集合，由上面那份数组派生。 */
 export type RunApprovalStatus = (typeof RUN_APPROVAL_STATUSES)[number]
 
-/** 审批记录自身的状态（approvals.status）。expired 目前只由 CheckExpiry 产生，而它没有生产调用方——仍列出来是接上那一路时线上格式已就位（见 internal/approval/vocabulary.go）。 */
+/** 审批记录自身的状态（approvals.status）。expired 由 CheckExpiry 产生，而它现在有生产调用方（serve 侧的过期扫描器，见 internal/approval/expiry.go）——在它出现之前超时审批会永远停在 pending，那段空白已由自动过期收口（见 internal/approval/vocabulary.go）。 */
 export const APPROVAL_STATUSES = [
   'pending',
   'approved',
