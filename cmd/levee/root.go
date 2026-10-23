@@ -42,6 +42,12 @@ var (
 	optLocal  bool
 	optRemote bool
 	optServer string
+
+	// optAs names the identity local commands should be judged as. Empty (the
+	// default) leaves local mode exactly as it was: no policy judgement at all.
+	// Set, it makes the CLI adopt the same judgements the server would make for
+	// that operator instead of being the one path that skips them.
+	optAs string
 )
 
 // rootCmd is the cobra root command. It is exported only within the package so
@@ -79,6 +85,13 @@ func init() {
 	pf.BoolVar(&optLocal, "local", true, "本地模式，直连 store（默认）")
 	pf.BoolVar(&optRemote, "remote", false, "远程模式，通过 gRPC 连接 server")
 	pf.StringVar(&optServer, "server", "localhost:9090", "gRPC server 地址，仅 --remote 时生效")
+
+	// --as opt-in enforcement for local mode. It only means something locally:
+	// remotely the subject comes from the credential, which is the whole point of
+	// the distinction in internal/grpc/subject.go. It is NOT named --actor
+	// because the CLI already has an actor concept for audit labels, and the two
+	// are deliberately different things (see currentActor).
+	pf.StringVar(&optAs, "as", "", "本地模式下以该身份接受策略判定（默认不判；仅影响走 gRPC 层的动作）")
 
 	// Override cobra's default help / version templates so that --json produces
 	// structured output as well. The default templates are kept for the

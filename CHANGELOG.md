@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增（`--as`：本地模式给出可判路径，且本轮记下两件改变做法的事实）
+
+- **登记在账本上的缺口**：`--local` 本地模式不设策略判定（那些门禁全在 `internal/grpc/*.go`）。本笔按“加法”补：新增 `--as <subject>`，**不给就零变化**（本地照旧不判，`subject.go` 已定稿的信任边界不被推翻），给了就加载策略注册表并以该身份判定。
+- **侦察得出的两条事实，它们改变了做法（原文照排期会低估工作量）**：
+  1. **`cmd/levee/service_factory.go` 整份是死代码**：640 行，`serviceFactory` / `GetChangeService` 在文件外**零调用**。我最初把 `--as` 接在这里，发现根本不会被跑到，已**撤掉**——不给死代码添砖。
+  2. **本地命令不走 gRPC 层**：它们直接构造服务，并且把 authorizer 参数传 `nil`（`grpc.NewChangeService(store, nil, nil, nil)`）。所以“本地判权”不是开关一个开关，而是要在本地路径上找到真正的咽喉。
+- **缝**：`newCLIChangeService()`（`engine_cli.go:45`）是本地 `plan`/`apply` 的**单一构造点**，两处调用点均改为接 authorizer。为了让本地 96 处 `context.Background()` 不必逐一改，在 `authz` 加了一个**默认主体**缝：`WithDefaultSubject`（默认空 = 旧行为，`Decide`/`AdmitsRead`/`ReadFilteringActive` **共用一个替换点**，以免“按某人判定”与“为无人过滤”在同一请求里打架）；注册表**加载失败是错误而非静默退回不判**（操作员明确要求被判定，静默降级正是他要避免的结果）。
+- **边界写清楚，不宣称“本地已全面判权”**：`--as` 只到**走服务层**的动作（`plan` / `apply` / CLI 投票后的 `SettleApproval`）。**`approve`/`reject` 的实际投票走的是领域服务 `approval.Service.Decide`，那里没有 authorizer 参数，因此不受 `--as` 约束**——这句写在 `cmd_approve.go` 的函数注释里；账本同一处也登记了“要让投票也纳入判定需要给该服务加 authorizer 参数，属接口变更，另行决定”。
+- **顺带一处一致性**：`currentActor()` 现在**优先取 `--as`**（再是 `LEVEE_ACTOR`）。判定用的身份与审计记的身份必须是同一个，这与 `grpc.ContextWithSubject` 把审计标签同步成已验证主体是同一条理由，只是高一层。
+- **测试与变异**：`internal/authz` 新增 4 例——只在 ctx 无主体时替换（并断言真主体**优先**：默认是回退不是覆盖）、**读路径同样替换**（`AdmitsRead`/`ReadFilteringActive` 必须答同一个问题）、**空默认就是旧行为**（这条防的是“悄悄改变每个既有部署”）、nil 授权器安全。**变异**：把替换去掉后，两条替换用例立刻红、而“空默认”两条仍绿——正是应有的形状。`go build ./cmd/levee/` 与 `go vet` rc=0；`gofmt` 干净。
+- **过程中我弄坏过一次又改回来**：`tokens.css` 曾有括号失衡（已修）；`authz.go` 的一次 `git checkout --` 误删了未提交的改动（已按原文重做，此后改用“先复制再变异”）。
+
 ### 新增（密度档位：两档纵向节奏，实测校准并由两个密度下的真机测量钉住）
 
 - **补的是长期值守场景的诉求**（账本 P2 那条：“它是长期值守场景的诉求”），但做法刻意不是“把设计缩小一号”：

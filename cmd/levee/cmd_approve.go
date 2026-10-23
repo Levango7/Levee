@@ -67,8 +67,17 @@ func newRejectCmd() *cobra.Command {
 //
 // Prints a progress line naming the decision that was recorded when the quorum
 // is still partial (1/N), so the operator knows another vote is needed.
+// --as reaches this call (SettleApproval is a service-layer action, so it goes
+// through the policy gate) but NOT the vote itself: runApprove and runReject
+// decide through approval.Service directly, and that domain service has no
+// authorizer parameter. Saying so here rather than implying that "--as judges
+// local mode" is the difference between a boundary and a surprise.
 func settleApprovalFromCLI(ctx context.Context, store state.Store, runID, action string) error {
-	svc := grpc.NewChangeService(store, nil, nil, nil)
+	authzSvc, aerr := localAuthorizer()
+	if aerr != nil {
+		return aerr
+	}
+	svc := grpc.NewChangeService(store, nil, nil, nil).WithAuthorizer(authzSvc)
 	settled, err := svc.SettleApproval(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("settle approval: %w", err)

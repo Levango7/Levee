@@ -204,3 +204,75 @@ func TestExplainShowsBothAxes(t *testing.T) {
 	assert.Contains(t, denied, "allowed : false")
 	assert.Contains(t, denied, "not registered")
 }
+
+// --- default subject (local mode) -------------------------------------------
+//
+// Local mode has one operator and no per-request identity: every command passes
+// a bare context.Background() (see cmd/levee), so the subject reaching the
+// authorizer is always "". WithDefaultSubject is how those commands get judged
+// at all. These cases pin the two properties that make it safe: it substitutes
+// ONLY when the context supplied nothing, and an empty default is exactly the
+// behaviour every deployment had before the option existed.
+
+func TestDefaultSubjectSubstitutesOnlyWhenTheContextSuppliesNone(t *testing.T) {
+	a, _ := loadFixture(t, "dev")
+	a = a.WithDefaultSubject("alice") // sre → operator, so apply on prod is granted
+
+	d := a.Decide("", "prod", "apply")
+	assert.True(t, d.Allowed, "the default subject must actually be judged: %s", d.Reason)
+	assert.Equal(t, "alice", d.Subject, "the decision must name the identity it judged")
+
+	// A real subject wins: the default is a fallback, not an override. If it
+	// overrode, a named-token caller could be silently granted somebody else's
+	// rights.
+	//
+	// bob is dba, and the fixture gives dba prod only — so dev is the action/env
+	// pair where the two subjects differ. (Using prod/apply would have proved
+	// nothing: the fixture grants dba apply on prod outright.)
+	d = a.Decide("bob", "dev", "apply")
+	assert.False(t, d.Allowed, "the default must not lift bob into an environment he cannot reach")
+	assert.Equal(t, "bob", d.Subject, "the decision must name the subject that was actually judged")
+}
+
+func TestDefaultSubjectUnsetIsTheOldBehaviour(t *testing.T) {
+	a, _ := loadFixture(t, "dev")
+
+	// No default: an identity-less write is refused, exactly as before this
+	// option existed. This is the assertion that keeps the option from being a
+	// silent change for every deployment that never sets it.
+	d := a.Decide("", "prod", "apply")
+	assert.False(t, d.Allowed, "without a default there is nobody to judge")
+}
+
+func TestDefaultSubjectReachesTheReadPathsToo(t *testing.T) {
+	a, _ := loadFixture(t, "dev")
+	a = a.WithDefaultSubject("bob") // viewer
+
+	// AdmitsRead and ReadFilteringActive must answer for the substituted
+	// subject. If only Decide substituted, one local request could be judged as
+	// bob for its write while its read was treated as unattributable (admitted
+	// wholesale) — the same request answering two different questions about who
+	// is asking.
+	allowed, reason := a.AdmitsRead("", "prod")
+	assert.True(t, allowed, "bob can view prod: %s", reason)
+	assert.True(t, a.ReadFilteringActive(""), "bob is attributable, so lists filter for him")
+
+	// And a subject that cannot reach an environment IS refused — something the
+	// pre-substitution path (unattributable ⇒ admit) could never say.
+	//
+	// bob is dba, whose fixture entry names prod and nothing else, so dev is the
+	// refusal to assert. (ghost would not work as the example: ghost is sre, and
+	// the MATRIX grants sre view on prod regardless of the unknown role.)
+	narrow, _ := loadFixture(t, "dev")
+	narrow = narrow.WithDefaultSubject("bob")
+	allowed, _ = narrow.AdmitsRead("", "dev")
+	assert.False(t, allowed, "bob cannot reach dev, so the read must be refused")
+}
+
+func TestDefaultSubjectOnANilAuthorizerIsSafe(t *testing.T) {
+	// The local command path may hold a nil authorizer (no --as). Setting a
+	// default on it must not panic: WithAuthorizer(nil) is how the ungated
+	// posture is expressed everywhere else.
+	var a *Authorizer
+	assert.Nil(t, a.WithDefaultSubject("alice"))
+}

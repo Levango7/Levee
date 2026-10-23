@@ -57,7 +57,10 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	svc := newCLIChangeService(store)
+	svc, err := newCLIChangeService(store)
+	if err != nil {
+		return err
+	}
 	ctx = grpc.ContextWithActor(ctx, currentActor())
 
 	planMsg, err := svc.PlanChange(ctx, &pb.PlanChangeRequest{

@@ -42,7 +42,7 @@ func cliCredentialResolver(store state.Store) wiring.CredentialResolver {
 // `levee approve` would find nothing to decide on. Command code must
 // inject the actor via grpc.ContextWithActor so audits attribute to the
 // CLI user rather than the "grpc-user" fallback.
-func newCLIChangeService(store state.Store) *grpc.ChangeService {
+func newCLIChangeService(store state.Store) (*grpc.ChangeService, error) {
 	opts := []wiring.Option{wiring.WithCredentialResolver(cliCredentialResolver(store))}
 	// Same rule as serve: the calendar gates must read the database the operator's
 	// `levee calendar` commands write, and a failure to open it is reported rather
@@ -55,5 +55,13 @@ func newCLIChangeService(store state.Store) *grpc.ChangeService {
 		opts = append(opts, wiring.WithChangeCalendar(cal))
 	}
 	engine := wiring.NewEngine(store, opts...).Adapter()
-	return grpc.NewChangeService(store, engine, approval.NewService(newApprovalStoreAdapter(store)), nil)
+	// The fourth argument is the policy authorizer, and passing nil here is what
+	// made local mode the one path that skipped every judgement the server makes.
+	// localAuthorizer returns nil unless --as asked otherwise, so the default
+	// behaves exactly as before.
+	authzSvc, err := localAuthorizer()
+	if err != nil {
+		return nil, err
+	}
+	return grpc.NewChangeService(store, engine, approval.NewService(newApprovalStoreAdapter(store)), nil).WithAuthorizer(authzSvc), nil
 }
