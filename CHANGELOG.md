@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（windows 崩溃的证据面：把“复发时要取的”从手取变成自动留档，不动判定）
+
+- **背景**：账本里那条 `internal/calendar` 在 windows-latest 上以 `exit status 0xc0000005` 偶发崩溃的记录，自己就写着痛处：崩溃时 **Go runtime 一个字都没打**（无 panic、无 goroutine dump、FAIL 行前后无输出），所以前两次排查都是**按 attempt 手工取日志**重建的。
+- **两件它确实留下、而测试日志里根本没有的东西**：
+  1. **Windows 的 Application Error 事件**（Event ID 1000/1001）——它记录**故障模块与异常码**。取结构化 `Properties` 而**不是 `Message`**：后者是**本地化文本**（runner 是 en-US，开发机不一定），前者在任何语言下都是同一组字段。已在本机实跑验证命令可用。
+  2. **出事的那个包的重跑**。账本点名要 `go test -count=5 -v ./internal/calendar/`，因为“是不是确定性的”是第一个问题，而别的东西回答不了它。本机实跑 2.8s 通过，所以这是一条便宜且安全的证据步骤。
+- **刻意不是什么**：**不是重试、不是跳过、不是放宽断言**。它只在**失败之后**跑（`if: failure() && matrix.os == 'windows-latest'`），`continue-on-error: true` 保证它**不改变判定**，也不动那条腿断言的任何东西。
+- **为何这笔不算“改配置凑绿”**（账本明列不做的三件事之一）：三件事分别是不把驱动升级当修复、不加重试、不把 windows 腿从 `-cover` 摘掉——本笔三件都没做，只是**把一次复发后要取的证据变成自动的**。"未复现"这个结论本身一字未改。
+- **验证**：`ci.yml` YAML 合法且两条新步骤的 `if` / `continue-on-error` 按预期解析；`go test -count=5 -v ./internal/calendar/` 本机 rc=0（2.8s）。
+
 ### 修复（浏览器检查在 windows 上红了：真因是 **Chrome 没起来**，不是页面没稳定）
 
 - **拿到了一次带自诊断的真实现场**（`#197` 加的那套第一次真的用上）：master `7e7b505` 的 push CI 在 `browser-check (Chrome on windows-latest)` 变红。但现场是**与账本记的不同的失败模式**——
