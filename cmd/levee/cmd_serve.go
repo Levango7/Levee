@@ -1163,6 +1163,26 @@ func installRunEventSinks(runEvents *wiring.RunEventStore, chatOpsBridge *chatop
 // every write is epoch-checked.
 // ctx drives the background loops this function starts (the approval expiry
 // sweeper); it is serve's lifecycle context so a shutdown also stops them.
+// loadTargetOwnershipRegistry reads the platform-side host-ownership facts
+// (target-ownership.yaml), extracted from buildServeServices for the same
+// reason #190 pulled buildServeServices' complexity back under the gocyclo
+// gate: the loading-and-log block is one concern with its own error shape, and
+// inlining it here put the function back over 30.
+//
+// Missing file is normal (labels-only behaviour); a broken one refuses startup,
+// like the matrix and policies. A configured registry is announced with its
+// size so an operator can see the fact source took effect.
+func loadTargetOwnershipRegistry(cfg *config.Config) (*inventory.OwnershipRegistry, error) {
+	reg, err := inventory.LoadOwnership(cfg.Server.DataDir)
+	if err != nil {
+		return nil, fmt.Errorf("load target ownership: %w", err)
+	}
+	if reg.Configured() {
+		log.Info("target ownership registry loaded", "hosts", len(reg.Hostnames()))
+	}
+	return reg, nil
+}
+
 func buildServeServices(ctx context.Context, store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
 	// Run lifecycle funnel first: every service below gets the decorator, so
 	// whatever writes a run status (apply, retry, takeover, pause, CLI) —
@@ -1442,16 +1462,9 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// because the matrix knows nothing about tenancy and nothing downstream
 	// re-checks it. The cost is a refusal message that says the inventory does
 	// not know the host when the narrower truth is that it is not yours.
-	// The platform-side ownership registry (target-ownership.yaml) is the input
-	// that makes "which environment does this host belong to" a configured fact
-	// rather than a caller-asserted label. Missing file is normal (labels-only
-	// behaviour); a broken one refuses startup, like the matrix and policies.
-	ownershipReg, oerr := inventory.LoadOwnership(cfg.Server.DataDir)
+	ownershipReg, oerr := loadTargetOwnershipRegistry(cfg)
 	if oerr != nil {
-		return serveServices{}, fmt.Errorf("load target ownership: %w", oerr)
-	}
-	if ownershipReg.Configured() {
-		log.Info("target ownership registry loaded", "hosts", len(ownershipReg.Hostnames()))
+		return serveServices{}, oerr
 	}
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default()).
 		WithAuthorizer(authzSvc).
