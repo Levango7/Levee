@@ -137,6 +137,16 @@
 - **测试与变异**：`inventory` 5 例（缺失=空 / 解析+大小写归一 / 三种残缺拒绝 / 不可解析拒绝 / nil 安全）；`grpc` 4 例——**"registry 胜过 labels"**（含 id 拼写与 hostname 拼写殊途同归）、**未登记主机回落 labels**（registry 不能把它不知道的行变成未知）、**nil registry = 逐字旧 resolver**（含 unknown host 仍是 known=false 的拒绝场景）、**registry 能回答 store 里还没有的主机**（operator 先写归属、后导入清单——"还没入库"不是回落到自报的许可）。**变异**：反转优先级（labels 压过 registry）后，恰好只有"registry 胜过 labels"一条红、其余三条仍绿——正是这条守卫承重的形状。
 - **验证**：`go build ./...` rc=0；`inventory` + `grpc` 两包全绿；`gofmt` 干净。
 
+### 新增（跨浏览器矩阵：console 的行为第一次在第二个引擎上被验证）
+
+- **背景**：账本一直登记“跨浏览器矩阵（只有 Chrome 验证过）”。这块一直没做的原因是“runner 上能不能起 Firefox”无人知道——本会话先用**一次性探针**回答了它：**两个 runner 都自带 Firefox**（ubuntu-latest `/usr/bin/firefox` 157.0；windows-latest `C:\Program Files\Mozilla Firefox\firefox.exe` 158.0.1），puppeteer 都能 headless 起来并渲染页面（探针实际读了 `h1.textContent`），**不需要任何安装步骤** ⇒ 这条轴是免费的。
+- **落地**：`browser-check.mjs` 把“只有 Chrome”泛化成 `BROWSER_CHECK_BROWSER=chrome|firefox`——
+  - 浏览器候选表按引擎分表（Firefox 的 PATH 候选含 `firefox-esr`）；覆盖变量相应分开（`FIREFOX_PATH` / `CHROME_PATH`），未知值**解析回 chrome**而不是传给 puppeteer 让它在 launch 时报错；
+  - **每个引擎一套启动参数，这是本笔真正容易错的地方**：核实 `puppeteer-core` 的 `FirefoxLauncher.js`——它自己计算 `--headless` 并**把用户 args 原样追加**，所以 Chrome 专用的 `--headless=new` / `--disable-dev-shm-usage` 会被原样喂给 Firefox，一个拒绝未知选项的二进制会因此拒启。探针成功时恰好**没传任何自定义 args**，正是这个原因。Firefox 档传空数组；Chrome 档原样保留。
+  - CI 的 `browser-check` 加 `browser: [chrome, firefox]` 轴（`fail-fast: false` 保持——一个引擎红不能藏住另一个看到的），`name` 与截图 artifact 名都带上引擎（`browser-shots-<browser>-<os>`，四条腿不再互相覆盖）。
+- **验证**：`node --check` 干净；`ci.yml` YAML 合法且矩阵解析为 `browser: [chrome, firefox] × os: [ubuntu, windows]`；本机 Chrome 路径完整跑一遍 **ALL PASS**（回归无破坏）；本机无 Firefox 时**干净地 skip-and-tell**（`REQUIRED=1` 下 rc=1，CI 会硬失败而非静默绿）；Firefox 真实路径由 CI 四条腿验证（探针已证可行）。
+- **刻意不做**：不加第三引擎（webkit/Safari——GitHub runner 没有 Safari，Linux 的 webkit 需要额外依赖）；不改任何断言。若 Firefox 在某条断言上真的与 Chrome 不同，那是**产品兼容性信号**，按各自失败处理，不用“跳过 Firefox”掩盘。
+
 ### 新增（“未链入包 8→0”从手工做到变成机器守着）+ 订正一个我自己的假结论
 
 - **为何要守一个已经做到的事**：2026-09-29 那次审计找出 **8 个** internal 包没被任何东西链进 `./cmd/levee`——4,691 行非测试代码、自己的测试还都过（90.4–95.4% 覆盖），而没有任何调用方。当天清到 0，账本把这条件记作已完成。**但没有任何东西在检查它**，所以下一个“停止被链接”或“新增且从未链接”的包会静静到达，而账本会继续声称 0。
