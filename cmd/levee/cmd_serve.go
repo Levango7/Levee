@@ -1163,6 +1163,30 @@ func installRunEventSinks(runEvents *wiring.RunEventStore, chatOpsBridge *chatop
 // every write is epoch-checked.
 // ctx drives the background loops this function starts (the approval expiry
 // sweeper); it is serve's lifecycle context so a shutdown also stops them.
+// buildServeCredentialResolver wires the encrypted credential store behind
+// LEVEE_MASTER_PASSWORD, extracted from buildServeServices for the gocyclo gate
+// (same extraction round as loadTargetOwnershipRegistry). Its three-branch
+// shape (no password / store failed / ok) is one concern with three log
+// outcomes, and each outcome is an operator-facing sentence rather than a
+// decision the caller acts on: nil simply means "probe unauthenticated", which
+// is the documented serve-mode limitation.
+func buildServeCredentialResolver(store state.Store) *serveCredentialResolver {
+	mp := os.Getenv("LEVEE_MASTER_PASSWORD")
+	if mp == "" {
+		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
+			"(no resolver configured)")
+		return nil
+	}
+	credStore, err := credential.NewCredentialStore(store, mp)
+	if err != nil {
+		log.Warn("credential store unavailable; target checks will probe without credentials",
+			"error", err)
+		return nil
+	}
+	log.Info("target checks will resolve stored credentials for probes")
+	return &serveCredentialResolver{store: credStore}
+}
+
 // loadTargetOwnershipRegistry reads the platform-side host-ownership facts
 // (target-ownership.yaml), extracted from buildServeServices for the same
 // reason #190 pulled buildServeServices' complexity back under the gocyclo
@@ -1197,19 +1221,7 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// and engine channels dial targets without credentials. Documented
 	// limitation: serve mode has no other master-password source today —
 	// there is no --master-password flag or keyfile mechanism to wire instead.
-	var credResolver *serveCredentialResolver
-	if mp := os.Getenv("LEVEE_MASTER_PASSWORD"); mp != "" {
-		if credStore, err := credential.NewCredentialStore(store, mp); err != nil {
-			log.Warn("credential store unavailable; target checks will probe without credentials",
-				"error", err)
-		} else {
-			credResolver = &serveCredentialResolver{store: credStore}
-			log.Info("target checks will resolve stored credentials for probes")
-		}
-	} else {
-		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
-			"(no resolver configured)")
-	}
+	credResolver := buildServeCredentialResolver(store)
 
 	// Approval service over the same store: PlanChange kicks off the
 	// approval chain (R4 risk-tiered routing; see ChangeService.
