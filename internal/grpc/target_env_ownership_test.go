@@ -19,11 +19,11 @@ import (
 	"os"
 	"testing"
 
+	"github.com/nexus/levee/internal/inventory"
+
+	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/nexus/levee/internal/inventory"
-	"github.com/nexus/levee/internal/state"
 )
 
 // writeOwnershipYaml drops a target-ownership.yaml into dir and returns the
