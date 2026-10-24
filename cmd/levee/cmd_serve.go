@@ -63,6 +63,7 @@ import (
 	"github.com/nexus/levee/internal/dispatch"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/itsm/jira"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
@@ -1441,9 +1442,20 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// because the matrix knows nothing about tenancy and nothing downstream
 	// re-checks it. The cost is a refusal message that says the inventory does
 	// not know the host when the narrower truth is that it is not yours.
+	// The platform-side ownership registry (target-ownership.yaml) is the input
+	// that makes "which environment does this host belong to" a configured fact
+	// rather than a caller-asserted label. Missing file is normal (labels-only
+	// behaviour); a broken one refuses startup, like the matrix and policies.
+	ownershipReg, oerr := inventory.LoadOwnership(cfg.Server.DataDir)
+	if oerr != nil {
+		return serveServices{}, fmt.Errorf("load target ownership: %w", oerr)
+	}
+	if ownershipReg.Configured() {
+		log.Info("target ownership registry loaded", "hosts", len(ownershipReg.Hostnames()))
+	}
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default()).
 		WithAuthorizer(authzSvc).
-		WithTargetEnvResolver(grpc.TargetEnvResolver(store))
+		WithTargetEnvResolver(grpc.TargetEnvResolver(store, ownershipReg))
 	// Multi-turn LLM reasoning on top of the rule-based diagnosis, when the
 	// ai.llm section is enabled. A CONVERGED (corroborated) reasoning result
 	// refines the report; anything else keeps the rule-based answer.

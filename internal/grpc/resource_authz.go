@@ -38,6 +38,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
@@ -73,13 +74,22 @@ const targetEnvLabelKey = "env"
 // environment would let a dev-`apply` caller diagnose across tenants), at the
 // price of a refusal that says "not in the inventory" where the narrower truth
 // is "not yours".
-func TargetEnvResolver(store state.Store) func(ctx context.Context, target string) (string, bool) {
+func TargetEnvResolver(store state.Store, ownership *inventory.OwnershipRegistry) func(ctx context.Context, target string) (string, bool) {
 	return func(ctx context.Context, target string) (string, bool) {
 		t := strings.TrimSpace(target)
 		if t == "" || store == nil {
 			return "", false
 		}
+		// The platform's own fact wins before any lookup that could be shaped by
+		// a request. Checked on the raw target too: a hostname-spelled request
+		// hits the registry directly without needing the row beneath it.
+		if env, ok := ownership.Lookup(t); ok {
+			return env, true
+		}
 		if row, err := store.GetTarget(ctx, t); err == nil && row != nil {
+			if env, ok := ownership.Lookup(row.Hostname); ok {
+				return env, true
+			}
 			return envOfTarget(row), true
 		}
 		rows, err := store.ListTargets(ctx, state.TargetFilter{})
@@ -88,6 +98,9 @@ func TargetEnvResolver(store state.Store) func(ctx context.Context, target strin
 		}
 		for _, row := range rows {
 			if row != nil && row.Hostname == t {
+				if env, ok := ownership.Lookup(row.Hostname); ok {
+					return env, true
+				}
 				return envOfTarget(row), true
 			}
 		}
