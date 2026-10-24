@@ -108,7 +108,12 @@ const BROWSER_EXE = resolveBrowser(BROWSER)
 // how long we are willing to observe. It is env-overridable so the wait can be
 // proven load-bearing (BROWSER_CHECK_SETTLE_MS=1 must turn the suite red).
 const SETTLE_DEADLINE_MS = Number(process.env.BROWSER_CHECK_SETTLE_MS || 30_000)
-const BASE = process.env.BASE_URL || 'http://localhost:5173'
+// 127.0.0.1, not localhost: Firefox resolves localhost to ::1, and the dev
+// server binds a single stack — Chrome falls back to IPv4 and succeeds where
+// Firefox fails with "can't establish a connection" (measured 2026-10-24, the
+// firefox matrix leg's first run). The mock already binds 127.0.0.1, so the
+// page's origin is now the same address family as the API target.
+const BASE = process.env.BASE_URL || 'http://127.0.0.1:5173'
 // The mock gateway's own address: the failure modes are switched by talking to
 // it directly, because the page's origin is the dev server and /__mode exists
 // only on the mock.
