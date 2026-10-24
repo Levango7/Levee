@@ -757,7 +757,7 @@ jobs:
           }
           trap cleanup EXIT
           for i in $(seq 1 90); do
-            if curl -sf "http://127.0.0.1:4599/__mode?mode=ok" > /dev/null 2>&1               && curl -sf "http://localhost:5173/src/main.ts" > /dev/null 2>&1; then
+            if curl -sf "http://127.0.0.1:4599/__mode?mode=ok" > /dev/null 2>&1               && curl -sf "http://127.0.0.1:5173/src/main.ts" > /dev/null 2>&1; then
               echo "both services ready after ${i}s"
               break
             fi
@@ -769,11 +769,11 @@ jobs:
             fi
             sleep 1
           done
-          if ! curl -sf "http://localhost:5173/src/main.ts" > /dev/null 2>&1; then
+          if ! curl -sf "http://127.0.0.1:5173/src/main.ts" > /dev/null 2>&1; then
             echo "::error::services did not come up in 90s"
             exit 1
           fi
-          BROWSER_CHECK_REQUIRE=1 BASE_URL=http://localhost:5173             MOCK_URL=http://127.0.0.1:4599 SHOT_DIR=.browser-shots             BROWSER_CHECK_BROWSER=${{ matrix.browser }}             node scripts/browser-check.mjs --shots
+          BROWSER_CHECK_REQUIRE=1 BASE_URL=http://127.0.0.1:5173             MOCK_URL=http://127.0.0.1:4599 SHOT_DIR=.browser-shots             BROWSER_CHECK_BROWSER=${{ matrix.browser }}             node scripts/browser-check.mjs --shots
         env:
           VITE_API_TARGET: 'http://127.0.0.1:4599'
       # The screenshots (including the one the settle timeout takes of the page
