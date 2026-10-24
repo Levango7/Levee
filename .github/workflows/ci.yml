@@ -750,13 +750,7 @@ jobs:
           set -e
           node scripts/mock-gateway.mjs &
           MOCK_PID=$!
-          # --host makes vite listen on BOTH stacks (and 0.0.0.0). Without it it
-          # binds one stack of `localhost`, and which one differs by platform —
-          # Firefox resolving localhost to ::1 failed while Chrome's IPv4
-          # fallback succeeded (the firefox leg's first run); probing 127.0.0.1
-          # then failed the same way mirrored. One flag removes the dependency
-          # on resolver behaviour for every consumer at once.
-          npm run dev -- --host &
+          npm run dev &
           DEV_PID=$!
           cleanup() {
             kill "$MOCK_PID" "$DEV_PID" 2>/dev/null || true
