@@ -42,7 +42,7 @@ func seededDiagService(t *testing.T, withResolver bool) (*DiagnosisService, stat
 	svc := NewDiagnosisService(diagnosis.NewDiagEngine(diagnosis.DiagEngineConfig{}), nil).
 		WithAuthorizer(newServiceAuthorizer(t))
 	if withResolver {
-		svc.WithTargetEnvResolver(TargetEnvResolver(store))
+		svc.WithTargetEnvResolver(TargetEnvResolver(store, nil))
 	}
 	return svc, store
 }
@@ -112,7 +112,7 @@ func TestDiagnose_FailsLoudlyWhenResolverIsMissing(t *testing.T) {
 func TestDiagnose_NoAuthorizerMeansNoGate(t *testing.T) {
 	store := newTestStore(t)
 	svc := NewDiagnosisService(diagnosis.NewDiagEngine(diagnosis.DiagEngineConfig{}), nil).
-		WithTargetEnvResolver(TargetEnvResolver(store))
+		WithTargetEnvResolver(TargetEnvResolver(store, nil))
 
 	rep, err := svc.Diagnose(asSubject("whoever"), &pb.DiagnoseRequest{Target: "anywhere"})
 	require.NoError(t, err, "a deployment with no policy answers Unimplemented-free and ungated, like every other service")

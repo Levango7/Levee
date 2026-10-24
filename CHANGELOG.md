@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增（清单侧 env 归属的事实源：`target-ownership.yaml`——"这台机器真的属于这个环境"从此是配置，不是声称）
+
+- **登记的产品决定已定形**：归属采用**主机清单式**（而非凭据归属式），形态与本仓自己的先例同构——`alert-sources.yaml` 用"每源凭据证明谁在说话、登记项决定它属于哪个 env"，本笔是"清单决定这台主机属于哪个 env，而不由载荷自报"。选清单式的理由：**迁移是一份文件**（存量主机一次性导入），而凭据式要重新配发每台机器的凭据；且归属文件是 admin 面，一次审计一目了然。
+- **语义（三条，都写进了文件注释）**：
+  1. **优先级**：registry 里的归属**压过** `labels["env"]`——它是唯一一个请求中任何东西都无法断言的输入，这正是这个文件存在的全部理由；labels 降级为"registry 未登记主机时的声明"。
+  2. **未登记主机**：回落现状（labels → default_env），**不拒绝**——否则存量部署一升级就大面积失败。
+  3. **文件**：`<dataDir>/target-ownership.yaml`（与 `alert-sources.yaml` 同目录同风格）。缺失 = labels-only（可选文件姿态）；**坏文件拒绝启动**（与矩阵/策略同口径：选择了加入又写坏，静默降级正是要避免的结果）。键是 **hostname** 而非 target id：id 是生成物（`tgt-…`）、重注册会变，hostname 是操作员知道的、告警 `instance` 标签携带的、跨导入存活的那个标识。同一 hostname 声明两次是错误——"对一个主机有两个事实"正是这个文件要终结的歧义。
+- **接入缝是一个点，不散改**：`grpc.TargetEnvResolver(store, ownership)` 加了第二参（diagnosis 门禁与可见性判定的 env 来源）。解析顺序：registry（raw target 先查一次，hostname 拼写的请求不必先落库）→ 行的 labels → authz 的 default_env。`nil` registry 就是**逐字**的旧 resolver（现有测试零改语义，仅补 `nil` 实参）。
+- **serve 侧**：加载失败拒绝启动；加载成功打一行 host 数。`InventoryService` 的写路径**不变**——本笔给的是**读侧的归属事实**，不改谁能登记主机（那是 #200 已收口的另一条线）。
+- **测试与变异**：`inventory` 5 例（缺失=空 / 解析+大小写归一 / 三种残缺拒绝 / 不可解析拒绝 / nil 安全）；`grpc` 4 例——**"registry 胜过 labels"**（含 id 拼写与 hostname 拼写殊途同归）、**未登记主机回落 labels**（registry 不能把它不知道的行变成未知）、**nil registry = 逐字旧 resolver**（含 unknown host 仍是 known=false 的拒绝场景）、**registry 能回答 store 里还没有的主机**（operator 先写归属、后导入清单——"还没入库"不是回落到自报的许可）。**变异**：反转优先级（labels 压过 registry）后，恰好只有"registry 胜过 labels"一条红、其余三条仍绿——正是这条守卫承重的形状。
+- **验证**：`go build ./...` rc=0；`inventory` + `grpc` 两包全绿；`gofmt` 干净。
+
 ### 新增（“未链入包 8→0”从手工做到变成机器守着）+ 订正一个我自己的假结论
 
 - **为何要守一个已经做到的事**：2026-09-29 那次审计找出 **8 个** internal 包没被任何东西链进 `./cmd/levee`——4,691 行非测试代码、自己的测试还都过（90.4–95.4% 覆盖），而没有任何调用方。当天清到 0，账本把这条件记作已完成。**但没有任何东西在检查它**，所以下一个“停止被链接”或“新增且从未链接”的包会静静到达，而账本会继续声称 0。
