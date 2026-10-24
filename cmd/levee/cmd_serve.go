@@ -1196,13 +1196,36 @@ func buildServeCredentialResolver(store state.Store) *serveCredentialResolver {
 // Missing file is normal (labels-only behaviour); a broken one refuses startup,
 // like the matrix and policies. A configured registry is announced with its
 // size so an operator can see the fact source took effect.
-func loadTargetOwnershipRegistry(cfg *config.Config) (*inventory.OwnershipRegistry, error) {
+func loadTargetOwnershipRegistry(cfg *config.Config, store state.Store) (*inventory.OwnershipRegistry, error) {
 	reg, err := inventory.LoadOwnership(cfg.Server.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("load target ownership: %w", err)
 	}
 	if reg.Configured() {
 		log.Info("target ownership registry loaded", "hosts", len(reg.Hostnames()))
+		// The audit keeps the registry from drifting away from the rows it
+		// governs: policy resolves the REGISTRY, but the console's target
+		// table still SHOWS labels — a row saying "dev" under a registry fact
+		// of "prod" is a lie the operator can see. One WARN per conflict, or
+		// one aggregate line when there are many.
+		if rows, lerr := store.ListTargets(context.Background(), state.TargetFilter{}); lerr == nil {
+			conflicts := inventory.LabelConflicts(reg, rows)
+			switch len(conflicts) {
+			case 0:
+				log.Info("target ownership registry consistent with inventory labels")
+			case 1:
+				c := conflicts[0]
+				log.Warn("target ownership registry conflicts with inventory label (policy uses the registry; relabel the row or fix the file)",
+					"host", c.Hostname, "registry_env", c.RegistryEnv, "label_env", c.LabelEnv)
+			default:
+				hosts := make([]string, 0, len(conflicts))
+				for _, c := range conflicts {
+					hosts = append(hosts, c.Hostname+"("+c.LabelEnv+"->"+c.RegistryEnv+")")
+				}
+				log.Warn("target ownership registry conflicts with inventory labels (policy uses the registry; relabel the rows or fix the file)",
+					"count", len(conflicts), "hosts", hosts)
+			}
+		}
 	}
 	return reg, nil
 }
@@ -1474,7 +1497,7 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// because the matrix knows nothing about tenancy and nothing downstream
 	// re-checks it. The cost is a refusal message that says the inventory does
 	// not know the host when the narrower truth is that it is not yours.
-	ownershipReg, oerr := loadTargetOwnershipRegistry(cfg)
+	ownershipReg, oerr := loadTargetOwnershipRegistry(cfg, store)
 	if oerr != nil {
 		return serveServices{}, oerr
 	}

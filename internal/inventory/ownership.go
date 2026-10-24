@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nexus/levee/internal/state"
 	"gopkg.in/yaml.v3"
 )
 
@@ -129,3 +130,57 @@ func LoadOwnership(dataDir string) (*OwnershipRegistry, error) {
 	}
 	return reg, nil
 }
+
+// LabelConflict is one host whose registry fact and inventory label disagree.
+//
+// Which one "wins" at policy time is settled (the registry — see
+// grpc.TargetEnvResolver's resolution order); a conflict matters because the
+// console's target table and every labels-based filter still SHOW the label,
+// so an operator reading the inventory sees "dev" while policy judges "prod".
+// Surfacing that gap at startup is what keeps the registry from quietly
+// drifting away from the rows it governs.
+type LabelConflict struct {
+	Hostname    string
+	RegistryEnv string
+	LabelEnv    string // "" when the row declares none
+}
+
+// LabelConflicts compares the registry against an inventory snapshot and
+// returns every registered host whose row's labels["env"] disagrees (including
+// rows that declare no env at all). Registered hosts with NO inventory row are
+// not conflicts — "registered ahead of an import" is the supported flow (see
+// grpc's resolver test); the audit is about rows that exist and disagree.
+//
+// The comparison is by the resolved label value, not by map identity: a row
+// with extra labels but the same env is consistent.
+func LabelConflicts(reg *OwnershipRegistry, rows []*state.Target) []LabelConflict {
+	if reg == nil || !reg.Configured() || len(rows) == 0 {
+		return nil
+	}
+	var out []LabelConflict
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		regEnv, ok := reg.Lookup(row.Hostname)
+		if !ok {
+			continue // not ours to judge
+		}
+		labelEnv := row.Labels[targetEnvLabelKey]
+		if labelEnv == regEnv {
+			continue
+		}
+		out = append(out, LabelConflict{
+			Hostname:    row.Hostname,
+			RegistryEnv: regEnv,
+			LabelEnv:    labelEnv,
+		})
+	}
+	return out
+}
+
+// targetEnvLabelKey mirrors the label the resolver reads
+// (grpc.targetEnvLabelKey). It is re-declared here rather than imported
+// because grpc imports inventory, not the other way — and one string with a
+// test pinning both spellings is cheaper than an import cycle.
+const targetEnvLabelKey = "env"
