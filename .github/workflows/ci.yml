@@ -701,12 +701,18 @@ jobs:
   # script here rather than by reasoning about it.
   # ---------------------------------------------------------------------------
   browser-check:
-    name: browser-check (Chrome on ${{ matrix.os }})
+    name: browser-check (${{ matrix.browser }} on ${{ matrix.os }})
     timeout-minutes: 25
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # Both engines on purpose. The probe (2026-10-24) showed both runners
+        # ship Firefox and puppeteer drives it headless (ubuntu 157.0, windows
+        # 158.0.1), so no install step is needed — the axis is free.
+        # fail-fast stays false: one engine red must not hide what the other
+        # saw (the same reason the OS axis has it).
+        browser: [chrome, firefox]
         os: [ubuntu-latest, windows-latest]
     defaults:
       run:
@@ -767,7 +773,7 @@ jobs:
             echo "::error::services did not come up in 90s"
             exit 1
           fi
-          BROWSER_CHECK_REQUIRE=1 BASE_URL=http://localhost:5173             MOCK_URL=http://127.0.0.1:4599 SHOT_DIR=.browser-shots             node scripts/browser-check.mjs --shots
+          BROWSER_CHECK_REQUIRE=1 BASE_URL=http://localhost:5173             MOCK_URL=http://127.0.0.1:4599 SHOT_DIR=.browser-shots             BROWSER_CHECK_BROWSER=${{ matrix.browser }}             node scripts/browser-check.mjs --shots
         env:
           VITE_API_TARGET: 'http://127.0.0.1:4599'
       # The screenshots (including the one the settle timeout takes of the page
@@ -781,7 +787,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
-          name: browser-shots-${{ matrix.os }}
+          name: browser-shots-${{ matrix.browser }}-${{ matrix.os }}
           path: web/.browser-shots
           if-no-files-found: ignore
           retention-days: 14

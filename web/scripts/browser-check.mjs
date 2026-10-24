@@ -17,12 +17,21 @@
 //   npm run test:browser            # assertions only
 //   npm run test:browser -- --shots # also write screenshots
 //
-// Requires Chrome at CHROME_PATH, or one of the well-known locations below
-// (GitHub's ubuntu and windows runners both ship Chrome). BROWSER_CHECK_REQUIRE=1
-// turns every "cannot run" into a failure — that is what CI sets, so a missing
-// driver cannot silently pass a green build. Locally the default stays
-// skip-and-tell: these are an additional gate, not a replacement for the unit
-// tests.
+// Runs against Chrome (default) or Firefox (BROWSER_CHECK_BROWSER=firefox).
+//
+// Why a browser axis exists at all: the console's behaviour used to be verified
+// in exactly one engine, and "it works in Chrome" was quietly standing in for
+// "it works in a browser" on a page whose contract is CSS custom properties,
+// Vue 3 transitions and Element Plus components. A 2026-10-24 probe answered the
+// only question that mattered first — both GitHub runners (ubuntu-latest and
+// windows-latest) ship Firefox and puppeteer launches it headless, so no
+// installation step is needed (ubuntu: firefox 157.0, windows: 158.0.1). This
+// adds the second engine; it does not replace Chrome.
+//
+// BROWSER_CHECK_REQUIRE=1 turns every "cannot run" into a failure — that is
+// what CI sets, so a missing driver cannot silently pass a green build. Locally
+// the default stays skip-and-tell: these are an additional gate, not a
+// replacement for the unit tests.
 import { spawn, execSync } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -31,29 +40,53 @@ import { pathToFileURL } from 'node:url'
 
 // Candidate paths, in order. The Linux ones come first because CI runs there;
 // the Windows default is this repo's own machine.
-const CHROME_CANDIDATES = [
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-]
+const BROWSER_CANDIDATES = {
+  chrome: [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  ],
+  // ubuntu-latest ships /usr/bin/firefox AND /usr/lib/firefox/firefox; the
+  // former is the snap launcher and is what the probe drove successfully.
+  firefox: [
+    '/usr/bin/firefox',
+    '/usr/lib/firefox/firefox',
+    'C:/Program Files/Mozilla Firefox/firefox.exe',
+    'C:/Program Files (x86)/Mozilla Firefox/firefox.exe',
+  ],
+}
 
-function resolveChrome() {
+// Binary names to look for on PATH, per browser.
+const BROWSER_PATH_BINS = {
+  chrome: ['google-chrome', 'chromium', 'chromium-browser', 'chrome'],
+  firefox: ['firefox', 'firefox-esr'],
+}
+
+/** parseBrowserChoice narrows an arbitrary requested value. An unknown string
+ *  resolves to chrome rather than being passed through to puppeteer, which
+ *  would fail at launch with a message about an unsupported product. */
+export function parseBrowserChoice(raw) {
+  return raw === 'firefox' ? 'firefox' : 'chrome'
+}
+
+function resolveBrowser(kind) {
+  const overrideVar = kind === 'firefox' ? 'FIREFOX_PATH' : 'CHROME_PATH'
   // An explicitly-set path that does not exist is a configuration error, not a
   // fallback trigger: silently trying the next candidate would run the checks
   // against a DIFFERENT browser than the one that was asked for.
-  if (process.env.CHROME_PATH) {
-    if (existsSync(process.env.CHROME_PATH)) return process.env.CHROME_PATH
-    console.error('browser-check: CHROME_PATH is set but does not exist: ' + process.env.CHROME_PATH)
+  if (process.env[overrideVar]) {
+    if (existsSync(process.env[overrideVar])) return process.env[overrideVar]
+    console.error(`browser-check: ${overrideVar} is set but does not exist: ${process.env[overrideVar]}`)
     return ''
   }
-  for (const p of CHROME_CANDIDATES) {
+  for (const p of BROWSER_CANDIDATES[kind]) {
     if (existsSync(p)) return p
   }
   // `which` catches installs outside the well-known paths.
-  for (const bin of ['google-chrome', 'chromium', 'chromium-browser', 'chrome']) {
+  for (const bin of BROWSER_PATH_BINS[kind]) {
     try {
       const found = execSync('which ' + bin + ' 2>/dev/null || where ' + bin + ' 2>nul', { encoding: 'utf8' })
         .trim()
@@ -67,7 +100,8 @@ function resolveChrome() {
 }
 
 const REQUIRED = process.env.BROWSER_CHECK_REQUIRE === '1'
-const CHROME = resolveChrome()
+const BROWSER = parseBrowserChoice(process.env.BROWSER_CHECK_BROWSER)
+const BROWSER_EXE = resolveBrowser(BROWSER)
 
 // How long a page is allowed to take to reach a settled state. This is a
 // deadline, never a wait: rendering is observed, and the deadline only bounds
@@ -133,9 +167,10 @@ if (!puppeteer) {
   process.exit(0)
 }
 
-if (!CHROME) {
+if (!BROWSER_EXE) {
+  const overrideVar = BROWSER === 'firefox' ? 'FIREFOX_PATH' : 'CHROME_PATH'
   const msg =
-    'no Chrome found (tried CHROME_PATH, ' + CHROME_CANDIDATES.join(', ') + ', and PATH)'
+    `no ${BROWSER} found (tried ${overrideVar}, ${BROWSER_CANDIDATES[BROWSER].join(', ')}, and PATH)`
   if (REQUIRED) {
     console.error('browser-check: ' + msg)
     process.exit(1)
@@ -395,13 +430,24 @@ const text = (page, sel) => page.evaluate((s) => (document.querySelector(s)?.tex
 // contended-machine estimate.
 const CHROME_LAUNCH_TIMEOUT_MS = Number(process.env.BROWSER_CHECK_LAUNCH_MS || 90_000)
 
-console.log('browser-check: launching Chrome')
+console.log(`browser-check: launching ${BROWSER} (${BROWSER_EXE})`)
+// Per-engine args. The two engines accept disjoint flag sets: FirefoxLauncher
+// computes its own --headless and APPENDS user args verbatim (verified in
+// puppeteer-core's FirefoxLauncher.js), so Chrome-only flags would reach a
+// binary that rejects unknown options — the probe that proved firefox works
+// passed NO custom args, which is exactly why.
+const LAUNCH_ARGS = BROWSER === 'firefox'
+  ? [] // Firefox headless comes from the launcher itself; nothing to add.
+  : ['--no-sandbox', '--headless=new', '--disable-dev-shm-usage', '--hide-scrollbars', '--force-color-profile=srgb']
 let browser
 try {
   browser = await puppeteer.default.launch({
-    executablePath: CHROME,
+    // `browser` is what makes this firefox; on chrome it is a no-op. Passing it
+    // unconditionally keeps one launch site rather than two that can drift.
+    browser: BROWSER,
+    executablePath: BROWSER_EXE,
     timeout: CHROME_LAUNCH_TIMEOUT_MS,
-    args: ['--no-sandbox', '--headless=new', '--disable-dev-shm-usage', '--hide-scrollbars', '--force-color-profile=srgb'],
+    args: LAUNCH_ARGS,
   })
 } catch (err) {
   // Name which failure this is. The launcher's own message is one line that
