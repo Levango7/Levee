@@ -32,8 +32,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nexus/levee/internal/state"
 	"gopkg.in/yaml.v3"
+
+	"github.com/nexus/levee/internal/state"
 )
 
 // OwnershipFileName is the optional host-ownership registry within the LEVEE
