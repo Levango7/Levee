@@ -1381,6 +1381,17 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 		return serveServices{}, notifyErr
 	}
 
+	// Notifier plugins (the plugin system's first engine consumption
+	// point): every ENABLED plugin of type "notify" in the registry joins
+	// the same manager, so run lifecycle, drift alerts and rollback grades
+	// reach operator-installed channels exactly as they reach the webhook.
+	// The registry file being absent is the unconfigured state; a present
+	// but unusable channel refuses the boot, same as the webhook.
+	notifyMgr, pnErr := installPluginNotifiers(ctx, cfg, notifyMgr)
+	if pnErr != nil {
+		return serveServices{}, pnErr
+	}
+
 	// Execution engine (--engine-enabled, off by default). When wired, the
 	// ChangeService gains real plan generation (persisted plan artifacts)
 	// and apply execution via internal/wiring; when nil, ApplyChange keeps
