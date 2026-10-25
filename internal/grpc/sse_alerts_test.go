@@ -15,9 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/nexus/levee/internal/grpc/pb"
 )
 
 func newAlertTestService(t *testing.T) *AlertService {
