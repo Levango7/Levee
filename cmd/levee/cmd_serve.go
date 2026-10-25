@@ -1253,7 +1253,9 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// kickoffApproval) and ApproveChange/RejectChange then find real
 	// pending records. Before this wiring those RPCs only ever saw
 	// manually seeded rows. Built before the engine because the engine's
-	// human-gate transport reads the same service.
+	// human-gate transport reads the same service. Its DecisionGuard is
+	// installed further down, where the policy authorizer is loaded —
+	// until then votes are roster-judged only (the historical posture).
 	approvalSvc := approval.NewService(newApprovalStoreAdapter(store))
 
 	// ChatOps bots (notify.chatops.*, disabled by default) are built BEFORE the
@@ -1440,6 +1442,16 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// pins that this line stays next to the Load call).
 	authzSvc = authzSvc.WithDenialRecorder(audit.NewDenialRecorder(store))
 	changeSvc.WithAuthorizer(authzSvc)
+	// Same registry, same recorder, now on the votes themselves: every
+	// approval cast directly against approvalSvc (mobile deep links, and
+	// the gRPC path whose own RPC-level check this duplicates as defence in
+	// depth) is judged in the change's environment. Unenforced (no matrix)
+	// changes nothing: the guard's Decide reports Enforced=false and the
+	// vote proceeds.
+	approvalSvc.WithDecisionGuard(&grpc.ApprovalDecisionGuard{
+		Auth:  authzSvc,
+		Store: store,
+	})
 	if authzSvc.Enforced() {
 		log.Info("authorization enabled: change and fleet RPCs enforce the permission matrix",
 			"registered_subjects", len(authzSvc.Registered()),
@@ -1522,9 +1534,11 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the
 	// REST gateway's /changes/deeplink/* routes work out of the box. Push
-	// delivery stays disabled until a push manager is configured.
+	// delivery stays disabled until a push manager is configured. The
+	// service reuses approvalSvc, so deep-link votes pass the same
+	// DecisionGuard (policy matrix) as every other vote when one is loaded.
 	mobileSvc := approval.NewMobileApprovalService(
-		approval.NewService(newApprovalStoreAdapter(store)),
+		approvalSvc,
 		nil,
 		push.NewDeepLinkGenerator("levee", "https://levee.local"),
 	)

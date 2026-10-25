@@ -58,3 +58,6 @@ configs/config.local.yaml
 .env
 coverfunc.txt
 
+
+# Local agent tooling (session plans, ad-hoc scan scripts)
+/.zcode/
