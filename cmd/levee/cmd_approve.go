@@ -61,40 +61,6 @@ func newRejectCmd() *cobra.Command {
 	return cmd
 }
 
-// settleApprovalFromCLI mirrors the approval chain outcome onto the run
-// after a CLI/ChatOps decision. Decision surfaces that act directly on
-// the approval service (bypassing ChangeService.ApproveChange) must
-// still settle the run, or the run stays in draft forever and apply
-// refuses it — while the operator believes they approved it.
-//
-// Prints a progress line naming the decision that was recorded when the quorum
-// is still partial (1/N), so the operator knows another vote is needed.
-// --as reaches this call (SettleApproval is a service-layer action, so it goes
-// through the policy gate) but NOT the vote itself: runApprove and runReject
-// decide through approval.Service directly, and that domain service has no
-// authorizer parameter. Saying so here rather than implying that "--as judges
-// local mode" is the difference between a boundary and a surprise.
-func settleApprovalFromCLI(ctx context.Context, store state.Store, runID, action string) error {
-	authzSvc, aerr := localAuthorizer()
-	if aerr != nil {
-		return aerr
-	}
-	svc := grpc.NewChangeService(store, nil, nil, nil).WithAuthorizer(authzSvc)
-	settled, err := svc.SettleApproval(ctx, runID)
-	if err != nil {
-		return fmt.Errorf("settle approval: %w", err)
-	}
-	switch settled {
-	case grpc.SettlePending:
-		fmt.Fprintf(os.Stderr, "%s decision recorded; approval quorum still pending for run %s (waiting for more votes)\n", action, runID)
-	case grpc.SettleApproved:
-		fmt.Fprintf(os.Stderr, "run %s approved (quorum reached)\n", runID)
-	case grpc.SettleRejected:
-		fmt.Fprintf(os.Stderr, "run %s rejected\n", runID)
-	}
-	return nil
-}
-
 // runApprove executes the `levee approve <run-id>` command.
 func runApprove(cmd *cobra.Command, args []string) error {
 	approveOptRunID := args[0]
