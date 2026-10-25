@@ -17,6 +17,7 @@ import (
 	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
@@ -232,6 +233,31 @@ func generateRunID() (string, error) {
 // (Approvers, MinApprovers, Decisions, CreatedAt, ExpiresAt) as a JSON blob
 // in state.Approval.Comment so that they survive round-trips through the
 // state store.
+
+// newApprovalService builds the local approval service for every CLI
+// surface that casts approval votes (approve, reject, chatops approve and
+// reject, gate approve and reject). When --as put a policy registry in
+// effect, the service carries a DecisionGuard so the vote itself — not
+// just the settle that follows it — is judged in the change's environment;
+// without --as the historical unjudged posture is preserved.
+//
+// Single construction point on purpose: the vote and its gate must not be
+// able to drift apart again, and they did exactly that when each command
+// built its own service.
+func newApprovalService(store state.Store) (*approval.Service, error) {
+	authzSvc, err := localAuthorizer()
+	if err != nil {
+		return nil, err
+	}
+	svc := approval.NewService(newApprovalStoreAdapter(store))
+	if authzSvc == nil {
+		return svc, nil
+	}
+	return svc.WithDecisionGuard(&grpc.ApprovalDecisionGuard{
+		Auth:  authzSvc,
+		Store: store,
+	}), nil
+}
 
 // approvalStoreAdapter adapts state.Store to the approval.Store interface.
 type approvalStoreAdapter struct {

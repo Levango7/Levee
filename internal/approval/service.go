@@ -236,6 +236,11 @@ func casRetryBackoff(attempt int) {
 type Service struct {
 	store Store
 
+	// decisionGuard, when non-nil, is consulted before every cast vote
+	// (see DecisionGuard). Nil is the historical posture: the record's own
+	// checks alone decide.
+	decisionGuard DecisionGuard
+
 	// onDecision, when non-nil, is invoked after every successfully
 	// recorded decision (approve or reject, including partial decisions
 	// that keep the record pending). It receives the freshly updated
@@ -270,6 +275,45 @@ func (s *Service) WithDecisionObserver(fn DecisionObserver) *Service {
 		return s
 	}
 	s.onDecision = append(s.onDecision, fn)
+	return s
+}
+
+// ErrDecisionDenied wraps the refusal a DecisionGuard returned on a cast
+// vote. It is a sentinel so callers can distinguish "policy said no" from
+// the record-internal refusals (ErrUnauthorizedApprover and friends) and
+// map it to their own exit codes / gRPC codes.
+var ErrDecisionDenied = errors.New("approval: decision denied by policy")
+
+// DecisionGuard is the policy seam for cast votes. The record's own checks
+// (Approvers list, exclude_initiator, duplicate vote) answer whether this
+// ballot is WELL-FORMED for this record; the guard answers whether the
+// subject may vote on this change's environment at all — a question the
+// record cannot answer, because it lives in the permission registry, not in
+// the approval row.
+//
+// Approve and Reject are called from more surfaces than the gRPC gateway:
+// CLI (--as), ChatOps commands, human-gate decisions and mobile deep links
+// all construct this service directly. Installing the guard on the service
+// (rather than judging at each caller) is what keeps those surfaces from
+// drifting apart — the same vote, the same gate, wherever it is cast.
+//
+// Implementations must be safe for concurrent use and must treat the
+// approval record as read-only. They are consulted on every CAS retry of
+// decide, so they must be idempotent.
+type DecisionGuard interface {
+	// AuthorizeDecision reports whether subject may cast `action`
+	// ("approve" / "reject") on the run the approval belongs to. The
+	// implementation resolves the environment from the approval record.
+	// A non-nil error denies the vote; its text reaches the operator, so
+	// it should name what was judged.
+	AuthorizeDecision(ctx context.Context, subject, action string, a *Approval) error
+}
+
+// WithDecisionGuard installs the policy guard consulted before every cast
+// vote. Pass nil to remove a previously installed guard (the historical
+// posture). Returns the service for chaining at construction sites.
+func (s *Service) WithDecisionGuard(g DecisionGuard) *Service {
+	s.decisionGuard = g
 	return s
 }
 
@@ -384,6 +428,18 @@ func (s *Service) decide(ctx context.Context, id string, approver string, action
 		}
 		if !canTransition(a.Status, target) {
 			return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, a.Status, target)
+		}
+		// Policy gate, deliberately BEFORE the record-internal checks: the
+		// gRPC path judges environment policy at the RPC boundary and then
+		// falls through to these same record checks, so guard-then-record
+		// preserves that order for every other caller. The vote is refused
+		// without revealing record state to a caller the policy already
+		// refused.
+		if s.decisionGuard != nil {
+			if err := s.decisionGuard.AuthorizeDecision(ctx, approver, action, a); err != nil {
+				return fmt.Errorf("%w: %s %s on %s: %w",
+					ErrDecisionDenied, action, approver, a.RunID, err)
+			}
 		}
 		// Defensive: a legacy or malformed record with MinApprovers<=0 must
 		// not auto-approve on the first vote (countApproves(1) >= 0).

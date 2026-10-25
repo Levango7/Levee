@@ -81,7 +81,10 @@ func decideGate(runID, gate string, approve bool, reason string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	svc := approval.NewService(newApprovalStoreAdapter(store))
+	svc, err := newApprovalService(store)
+	if err != nil {
+		return err
+	}
 	id := approval.GateApprovalID(runID, gate)
 	approver := currentActor()
 
