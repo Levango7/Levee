@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nexus/levee/internal/alert"
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/conversation"
@@ -106,6 +107,9 @@ func webVocabularies() []tsVocabulary {
 		{"ASSIGN_RESULTS", "AssignResult",
 			"派发结果（assignments.result）。本列的 SQL 默认是 ''，那是「还没有结论」而不是第四个结论，所以不在表里：把它折进 completed 等于声称完成了没发生的工作。",
 			state.AssignResultNames},
+		{"ALERT_SEVERITIES", "AlertSeverity",
+			"告警级别（alert.Alert 的 Severity），按紧迫度升序：info → warning → critical。来源是各适配器（nagios/zabbix/prometheus）解析后的归一值，不是监控系统的原始措辞。",
+			alert.SeverityNames},
 	}
 }
 
