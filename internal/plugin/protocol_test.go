@@ -26,12 +26,15 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// protocolChildMain implements two child personalities:
+// protocolChildMain implements three child personalities:
 //
 //	"echo"   — a well-behaved plugin: answers "meta" with an identity and
 //	           acks "close" (then exits, as the protocol expects).
 //	"garbage"— writes a non-JSON line and exits: the host must refuse to
 //	           interpret it as a response.
+//	"notifier"— a well-behaved notifier: acks "init" (recording the config
+//	           keys), answers "notify" ok:false for a refused event and
+//	           ok:true otherwise, acks "close".
 func protocolChildMain(mode string) int {
 	scanner := bufio.NewScanner(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
@@ -42,6 +45,34 @@ func protocolChildMain(mode string) int {
 			return 1
 		}
 		switch mode {
+		case "notifier":
+			switch req.Action {
+			case "init":
+				keys := make([]string, 0, len(req.Config))
+				for k := range req.Config {
+					keys = append(keys, k)
+				}
+				_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+					Details: map[string]any{"init_keys": keys},
+				}})
+			case "notify":
+				event, _ := req.Params["event"].(string)
+				if event == "refuse_me" {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "upstream webhook returned 503"})
+					continue
+				}
+				_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+					Details: map[string]any{
+						"event": event,
+						"level": req.Params["level"],
+					},
+				}})
+			case "close":
+				_ = enc.Encode(PluginResponse{OK: true})
+				return 0
+			default:
+				_ = enc.Encode(PluginResponse{OK: false, Error: "unknown action"})
+			}
 		case "echo":
 			switch req.Action {
 			case "meta":
