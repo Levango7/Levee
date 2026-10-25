@@ -214,12 +214,14 @@ func TestGatewayRouterTablesCoverTheDocumentedServices(t *testing.T) {
 	}
 	sort.Strings(resources)
 	// groups is InventoryService's tree (the console's host-group management);
-	// agents is the agent registry's reads (the console's agent view). A family
-	// leaving this list means a route tree lost a resource; one arriving means
-	// the frontend contract grew — both need eyes here.
+	// agents is the agent registry's reads (the console's agent view); alerts
+	// is the alert SSE stream (the console's live alert feed — GetAlertStatus
+	// stays on the proto-JSON table). A family leaving this list means a route
+	// tree lost a resource; one arriving means the frontend contract grew —
+	// both need eyes here.
 	assert.Equal(t, []string{
-		"agents", "audit", "auth", "changes", "conversation", "gates", "groups",
-		"system", "targets", "templates",
+		"agents", "alerts", "audit", "auth", "changes", "conversation", "gates",
+		"groups", "system", "targets", "templates",
 	}, resources, "RESTful resource families")
 }
 

@@ -137,7 +137,7 @@ type Gateway struct {
 	target     *TargetService
 	audit      *AuditService
 	system     *SystemService
-	alert      pb.AlertServiceServer
+	alert      *AlertService
 	diag       pb.DiagnosisServiceServer
 	conv       pb.ConversationServiceServer
 	inventory  *InventoryService
@@ -233,7 +233,7 @@ func (gw *Gateway) WithAuthorizer(a *authz.Authorizer) *Gateway {
 }
 
 // SetServices registers the in-process service implementations with the gateway.
-func (gw *Gateway) SetServices(change *ChangeService, template *TemplateService, target *TargetService, audit *AuditService, system *SystemService, alert pb.AlertServiceServer, diag pb.DiagnosisServiceServer, conv pb.ConversationServiceServer) {
+func (gw *Gateway) SetServices(change *ChangeService, template *TemplateService, target *TargetService, audit *AuditService, system *SystemService, alert *AlertService, diag pb.DiagnosisServiceServer, conv pb.ConversationServiceServer) {
 	gw.change = change
 	gw.template = template
 	gw.target = target
@@ -522,6 +522,7 @@ func (gw *Gateway) restResourceHandlers() map[string]func(http.ResponseWriter, *
 		"targets":      gw.dispatchTarget,
 		"groups":       gw.dispatchInventory,
 		"agents":       gw.dispatchAgents,
+		"alerts":       gw.dispatchAlerts,
 		"conversation": gw.dispatchConversation,
 		"audit": func(w http.ResponseWriter, r *http.Request, method, path string) {
 			gw.dispatchOperationalRest(w, r, "audit", method, path)
