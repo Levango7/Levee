@@ -4,7 +4,7 @@
 // unreachable hosts at a glance.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { targetsApi } from '@/api'
+import { targetsApi, type ImportResult, type TargetHistoryEntry } from '@/api'
 import type { Target } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StateBlock from '@/components/StateBlock.vue'
@@ -60,6 +60,16 @@ const add = reactive<AddState>({
 
 const importVisible = ref(false)
 const importText = ref('')
+// YAML import (atomic, grouped, label-move-guarded) — the CSV loop below is
+// the legacy path kept for one-host paste jobs.
+const yamlImportVisible = ref(false)
+const yamlText = ref('')
+const yamlImporting = ref(false)
+const importResult = ref<ImportResult | null>(null)
+const historyVisible = ref(false)
+const historyFor = ref<Target | null>(null)
+const historyLoading = ref(false)
+const historyEntries = ref<TargetHistoryEntry[]>([])
 
 async function load(): Promise<void> {
   loading.value = true
@@ -164,6 +174,46 @@ function resultOf(id: string): { reachable: boolean; latencyMs: number; error: s
   return checkResults[id] || null
 }
 
+// YAML import through /targets/import: one atomic request. The reply's
+// created/updated/failed counts and per-row errors are shown in place instead
+// of a bare toast, because a partial import with a label-move refusal names
+// the row that was refused — hiding that behind "导入完成" would be the lie
+// the atomic endpoint exists to prevent.
+async function submitYamlImport(): Promise<void> {
+  if (!yamlText.value.trim()) return
+  yamlImporting.value = true
+  try {
+    importResult.value = await targetsApi.import(yamlText.value)
+    if (importResult.value.failed === 0 && importResult.value.errors.length === 0) {
+      ElMessage.success(`导入完成：新增 ${importResult.value.created}，更新 ${importResult.value.updated}`)
+      yamlImportVisible.value = false
+      yamlText.value = ''
+      importResult.value = null
+    }
+    load()
+  } catch (err) {
+    // Label-move refusals name the moved host and the environment it would
+    // leave — surface the server's words, not a generic failure.
+    ElMessage.error(errorMessage(err, '清单导入失败'))
+  } finally {
+    yamlImporting.value = false
+  }
+}
+
+async function openHistory(row: Target): Promise<void> {
+  historyFor.value = row
+  historyVisible.value = true
+  historyLoading.value = true
+  historyEntries.value = []
+  try {
+    historyEntries.value = await targetsApi.history(row.id, 50)
+  } catch (err) {
+    ElMessage.error(errorMessage(err, '加载主机历史失败'))
+  } finally {
+    historyLoading.value = false
+  }
+}
+
 async function submitImport(): Promise<void> {
   // CSV format: hostname,channel_type,port,credential_ref,label1=v1,label2=v2
   const lines = importText.value.split('\n').map((l) => l.trim()).filter(Boolean)
@@ -225,7 +275,8 @@ onMounted(load)
         <div class="lv-toolbar">
           <span class="lv-panel__hint lv-mono">共 {{ total }} 台</span>
           <el-button @click="bulkCheck">批量连通性检查</el-button>
-          <el-button @click="importVisible = true">导入</el-button>
+          <el-button @click="yamlImportVisible = true">导入清单（YAML）</el-button>
+          <el-button @click="importVisible = true">CSV 导入</el-button>
         </div>
       </div>
 
@@ -281,6 +332,7 @@ onMounted(load)
         <el-table-column label="操作" width="180" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" @click="check(row)">检查</el-button>
+            <el-button text type="primary" @click="openHistory(row)">历史</el-button>
             <el-button text type="danger" @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -328,6 +380,60 @@ onMounted(load)
         <el-button type="primary" @click="submitImport">导入</el-button>
       </template>
     </el-dialog>
+
+    <!-- YAML inventory import: ONE atomic request through
+         /targets/import. The backend previews label moves before writing
+         anything — a file that would move a registered host out of its
+         environment is refused whole, and the refusal names the row and the
+         environment. The result panel shows created/updated/failed and the
+         per-row errors, because "导入完成" over a partial import is the
+         lie the atomic endpoint exists to prevent. -->
+    <el-dialog v-model="yamlImportVisible" title="导入清单（YAML，原子）" width="720px">
+      <el-input
+        v-model="yamlText"
+        type="textarea"
+        :rows="12"
+        placeholder="targets:&#10;  - address: 10.0.0.1&#10;    channel_type: ssh&#10;    labels:&#10;      env: prod&#10;    group: prod/db"
+      />
+      <!-- Import result is a FORM-level outcome inside a dialog (same reason
+           TemplatesView's el-alert stays), rendered as plain text rather than
+           el-alert: regionStates.spec keeps el-alert out of views. -->
+      <div
+        v-if="importResult && (importResult.failed > 0 || importResult.errors.length > 0)"
+        class="import-result"
+      >
+        <p>新增 {{ importResult.created }}，更新 {{ importResult.updated }}，失败 {{ importResult.failed }}</p>
+        <p v-for="(e, i) in importResult.errors" :key="i" class="import-error">{{ e }}</p>
+      </div>
+      <template #footer>
+        <el-button @click="yamlImportVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="yamlImporting" @click="submitYamlImport">导入</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Host history: the runs that executed on this host. -->
+    <el-dialog
+      v-model="historyVisible"
+      :title="historyFor ? `主机历史：${historyFor.hostname}` : '主机历史'"
+      width="760px"
+    >
+      <div v-loading="historyLoading" style="min-height: 120px">
+        <el-table v-if="historyEntries.length > 0" :data="historyEntries" size="small">
+          <el-table-column prop="run_id" label="变更" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="workflow_name" label="工作流" min-width="180" show-overflow-tooltip />
+          <el-table-column label="状态" width="140">
+            <template #default="{ row }">
+              <el-tag size="small">{{ row.status }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="creator" label="发起人" width="120" />
+        </el-table>
+        <p v-else-if="!historyLoading" class="history-empty">该主机还没有执行过任何变更</p>
+      </div>
+      <template #footer>
+        <el-button @click="historyVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -338,5 +444,28 @@ onMounted(load)
   margin-left: 6px;
   color: var(--lv-bad);
   font-size: var(--lv-text-xs);
+}
+
+.import-result {
+  margin-top: 8px;
+  padding: var(--lv-space-2) var(--lv-space-3);
+  background: var(--lv-surface-3);
+  border-radius: var(--lv-radius);
+}
+
+.import-result p {
+  margin: 2px 0;
+  font-size: var(--lv-text-sm);
+}
+
+.import-error {
+  color: var(--lv-bad);
+}
+
+.history-empty {
+  padding: var(--lv-space-6) 0;
+  text-align: center;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-sm);
 }
 </style>

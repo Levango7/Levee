@@ -26,7 +26,7 @@ import type {
 // /changes -> {changes}, /templates -> {templates}, /targets -> {targets},
 // /audit/* -> {entries}. Views consume the uniform PageResult<T> shape with
 // `items`, so every list wrapper maps its raw key into `items` here.
-type RawListKey = 'changes' | 'templates' | 'targets' | 'entries'
+type RawListKey = 'changes' | 'templates' | 'targets' | 'entries' | 'agents' | 'groups'
 
 interface RawListEnvelope {
   nextPageToken?: string
@@ -268,6 +268,76 @@ export const targetsApi = {
     error: string
     checkedAt: number
   }> => post(`/targets/${id}/check`, {}, { params: { fresh, timeoutSeconds } }),
+
+  // Atomic YAML inventory import (InventoryService.ImportTargets). Unlike the
+  // legacy CSV loop below, one request carries the whole file: the backend
+  // previews label moves (a row that would leave its registered environment
+  // needs admin on THAT environment) and refuses before writing anything, so a
+  // refused file imports none of its hosts.
+  import: (yaml: string, defaultGroup?: string): Promise<ImportResult> =>
+    post<ImportResult>('/targets/import', { yaml, default_group: defaultGroup }),
+
+  // Per-host change history. The backend resolves the target id to its
+  // hostname before querying — the proto's history is keyed by ADDRESS.
+  history: (id: string, limit?: number): Promise<TargetHistoryEntry[]> =>
+    get<TargetHistoryEntry[]>(`/targets/${id}/history`, { params: { limit } }),
+
+  setStatus: (id: string, status: 'active' | 'frozen' | 'retired'): Promise<{ id: string; status: string }> =>
+    post(`/targets/${id}/status`, { status }),
+}
+
+// Host groups (InventoryService). Flat list — the backend has no paging here.
+export interface HostGroup {
+  id: string
+  name: string
+  parent_id?: string
+}
+
+export interface ImportResult {
+  created: number
+  updated: number
+  failed: number
+  errors: string[]
+}
+
+export interface TargetHistoryEntry {
+  run_id: string
+  workflow_name: string
+  status: string
+  creator: string
+  created_at: number
+}
+
+export const groupsApi = {
+  list: (): Promise<HostGroup[]> => get<HostGroup[]>('/groups'),
+  create: (name: string, parentId?: string): Promise<HostGroup> =>
+    post<HostGroup>('/groups', { name, parent_id: parentId }),
+  remove: (id: string): Promise<void> => del<void>(`/groups/${id}`),
+}
+
+// Agent registry reads (AgentService). The three protocol writes
+// (register/heartbeat/deregister) are gRPC-only by design — an agent speaks
+// gRPC with its credential; RemoveAgent IS exposed (operator-facing) but its
+// refusal comes back as 200 with removed=false plus the reason, which is why
+// this wrapper returns the whole reply instead of throwing.
+export interface AgentRecord {
+  id: string
+  address: string
+  capabilities: string[]
+  status: string
+  last_heartbeat_unix?: number
+}
+
+export interface RemoveAgentReply {
+  removed: boolean
+  refusal: string
+}
+
+export const agentsApi = {
+  list: (params?: { capability?: string; status?: string }): Promise<AgentRecord[]> =>
+    get<AgentRecord[]>('/agents', { params }),
+  get: (id: string): Promise<AgentRecord> => get<AgentRecord>(`/agents/${id}`),
+  remove: (id: string): Promise<RemoveAgentReply> => del<RemoveAgentReply>(`/agents/${id}`),
 }
 
 // ---------------------------------------------------------------------------

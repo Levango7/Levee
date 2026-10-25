@@ -484,3 +484,34 @@ func alertToPB(a *alert.Alert) *pb.AlertMessage {
 		Status:      a.Status.String(),
 	}
 }
+
+// AlertSnapshotter is the read half the SSE route needs: the recent-alerts
+// snapshot (the ring, oldest first) and a live subscription channel. Declared
+// as an interface so the HTTP layer names only what it uses, and a test can
+// hand in a stub the way the change-events tests do.
+type AlertSnapshotter interface {
+	// Snapshot returns the currently known alerts, oldest first. Implementations
+	// must return a copy: the caller renders it while the ring keeps moving.
+	Snapshot() []*alert.Alert
+	// SubscribeAlertsChan returns a buffered channel that receives every alert
+	// accepted from this point on, plus a removal func (the same contract
+	// addSubscriber/removeSubscriber give the gRPC stream).
+	SubscribeAlertsChan() (ch chan *alert.Alert, remove func())
+}
+
+// Snapshot returns the ring's current contents, oldest first, as a copy.
+func (s *AlertService) Snapshot() []*alert.Alert {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*alert.Alert, len(s.alertSeq))
+	copy(out, s.alertSeq)
+	return out
+}
+
+// SubscribeAlertsChan exposes the gRPC stream's own subscription mechanics to
+// the SSE route: same buffered channel, same remove-on-close contract.
+func (s *AlertService) SubscribeAlertsChan() (chan *alert.Alert, func()) {
+	ch := make(chan *alert.Alert, 32)
+	id := s.addSubscriber(ch)
+	return ch, func() { s.removeSubscriber(id) }
+}
