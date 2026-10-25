@@ -85,7 +85,7 @@ func TestRESTInventoryGroupLifecycle(t *testing.T) {
 	// The list handler returns the groups as a bare JSON array — the RESTful
 	// shape the frontend consumes, not the proto envelope.
 	var listed []struct {
-		Id   string `json:"id"`
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 	require.NoError(t, json.NewDecoder(listResp.Body).Decode(&listed))
@@ -96,7 +96,7 @@ func TestRESTInventoryGroupLifecycle(t *testing.T) {
 	assert.Contains(t, names, "prod/db", "the group created over REST must be visible over REST")
 
 	// Delete it.
-	delReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/groups/"+listed[0].Id, nil)
+	delReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/groups/"+listed[0].ID, nil)
 	require.NoError(t, err)
 	_ = listed // keep the id source readable
 	delResp, err := http.DefaultClient.Do(delReq)
