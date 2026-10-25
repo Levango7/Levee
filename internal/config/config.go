@@ -43,9 +43,29 @@ type Config struct {
 	Inventory  InventoryConfig  `json:"inventory"  mapstructure:"inventory"`
 	Tracing    TracingConfig    `json:"tracing"    mapstructure:"tracing"`
 	Diagnosis  DiagnosisConfig  `json:"diagnosis"  mapstructure:"diagnosis"`
+	Drift      DriftConfig      `json:"drift"      mapstructure:"drift"`
 	OpsMesh    OpsMeshConfig    `json:"opsmesh"    mapstructure:"opsmesh"`
 	Security   SecurityConfig   `json:"security"   mapstructure:"security"`
 	State      StateConfig      `json:"state"      mapstructure:"state"`
+}
+
+// DriftConfig groups drift-detection settings. The schedule subsection is
+// the serve face of the drift scheduler: `levee drift schedule add` (CLI)
+// writes job files under <dataDir>/drift/jobs and this switch decides
+// whether a serve process runs them in the background — one job store, two
+// consumers, no duplicated configuration.
+type DriftConfig struct {
+	Schedule DriftScheduleConfig `json:"schedule" mapstructure:"schedule"`
+}
+
+// DriftScheduleConfig enables the resident drift scheduler inside serve.
+// Enabled defaults to false: an existing deployment keeps behaving exactly
+// as before (drift checks only when someone runs the CLI commands), and
+// turning it on is a deliberate act. Jobs themselves are never configured
+// here — they live as files managed by `levee drift schedule add`, shared
+// with the CLI, so CLI and serve cannot disagree about what is scheduled.
+type DriftScheduleConfig struct {
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
 }
 
 // DiagnosisConfig groups the optional diagnosis-pipeline extensions.
@@ -927,6 +947,7 @@ func setDefaults(v *viper.Viper) {
 	// no error, no warning. Defaulting to openai makes that deployment fail
 	// loudly instead.
 	v.SetDefault("ai.llm.enabled", false)
+	v.SetDefault("drift.schedule.enabled", false)
 	v.SetDefault("ai.llm.provider", "openai")
 	v.SetDefault("ai.llm.api_key", "")
 	v.SetDefault("ai.llm.model", "")
@@ -1032,6 +1053,7 @@ func allKeys() []string {
 		"ai.llm.enabled", "ai.llm.provider", "ai.llm.api_key", "ai.llm.model",
 		"ai.llm.base_url", "ai.llm.max_tokens", "ai.llm.temperature",
 		"ai.llm.timeout",
+		"drift.schedule.enabled",
 		"permission.default_team", "permission.default_env",
 		"verify.prometheus_url",
 		"inventory.patrol_interval_seconds",

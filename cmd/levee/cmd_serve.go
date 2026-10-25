@@ -61,6 +61,7 @@ import (
 	"github.com/nexus/levee/internal/diagnosis/llm_diag"
 	"github.com/nexus/levee/internal/diagnosis/topology"
 	"github.com/nexus/levee/internal/dispatch"
+	"github.com/nexus/levee/internal/drift"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
@@ -608,6 +609,59 @@ func buildServeLLMClient(cfg *config.Config) recommend.LLMClient {
 	return client
 }
 
+// buildServeDriftScheduler builds the resident drift scheduler when
+// drift.schedule.enabled is set, or returns (nil, nil) for the historical
+// posture (drift checked only when a human runs the CLI). Jobs and
+// baselines are read from the same disk layout the CLI commands use
+// (<dataDir>/drift/{jobs,baselines}), so the two cannot drift apart; a
+// scheduler with zero loaded jobs is returned as-is and the caller decides
+// (and says) whether an empty schedule is worth a goroutine — it is not.
+// notif, when non-nil, becomes the detector's drift-alert notifier (the
+// job-level AlertOnDrift switch decides per job whether alerts fire).
+func buildServeDriftScheduler(cfg *config.Config, notif notify.Notifier) (*drift.DriftScheduler, error) {
+	if !cfg.Drift.Schedule.Enabled {
+		return nil, nil
+	}
+	bm, err := loadBaselinesFromDisk()
+	if err != nil {
+		return nil, fmt.Errorf("drift scheduler: load baselines: %w", err)
+	}
+	detector := drift.NewDetector(newLocalFileProber())
+	if notif != nil {
+		detector.SetNotifier(notif)
+	}
+	s := drift.NewScheduler(detector, bm)
+	if err := loadJobsFromDisk(s); err != nil {
+		return nil, fmt.Errorf("drift scheduler: load jobs: %w", err)
+	}
+	return s, nil
+}
+
+// driftNotifier adapts the serving NotificationManager to the single-channel
+// notify.Notifier the drift detector expects: every drift alert fans out to
+// whatever channels notify.webhook (or future sections) registered, async so
+// a slow receiver cannot stall a scheduled run. Nil in, nil out — a
+// deployment without notification channels keeps the reports-on-disk-only
+// posture, which the boot log states.
+func driftNotifier(mgr *notify.NotificationManager) notify.Notifier {
+	if mgr == nil {
+		return nil
+	}
+	return &driftAlertSink{mgr: mgr}
+}
+
+// driftAlertSink is the adapter half of driftNotifier.
+type driftAlertSink struct {
+	mgr *notify.NotificationManager
+}
+
+func (s *driftAlertSink) Name() string { return "drift-scheduler" }
+
+func (s *driftAlertSink) Send(ctx context.Context, msg notify.Message) error {
+	s.mgr.NotifyAsync(ctx, msg)
+	return nil
+}
+
 // setupServeTracing builds the process-wide tracer from the tracing config
 // section. Any construction error (e.g. an unsupported exporter) degrades
 // to the noop tracer with a warning instead of keeping the daemon from
@@ -804,6 +858,40 @@ func runServe(cmd *cobra.Command, args []string) error {
 	diagSvc, convSvc, mobileSvc := svcs.diagSvc, svcs.convSvc, svcs.mobileSvc
 
 	reconcileCredentialsWithRegistry(svcs.authzSvc, namedTokens)
+
+	// 3a. Resident drift scheduler (drift.schedule.enabled, default off):
+	//     the job files the CLI manages (<dataDir>/drift/jobs) run in the
+	//     background of THIS serve process. Without it, a serve deployment
+	//     only ever detects drift when a human runs the CLI — the schedule
+	//     half existed but nobody was home to fire it. Jobs stay in files
+	//     (not this config section) on purpose: one job store shared with
+	//     the CLI, so `drift schedule add` and serve cannot disagree.
+	//     Detector alerts route through the same notification manager the
+	//     engine's grader uses (hand-back in serveServices) — when no
+	//     channel is enabled the reports still land on disk where the CLI
+	//     reads them, and the boot says the limit.
+	driftSched, err := buildServeDriftScheduler(cfg, driftNotifier(svcs.notifyMgr))
+	if err != nil {
+		return err
+	}
+	if driftSched != nil {
+		jobs := driftSched.ListJobs()
+		if len(jobs) == 0 {
+			log.Warn("drift.schedule is enabled but no job files exist under <dataDir>/drift/jobs; scheduler stays stopped (create jobs with `levee drift schedule add`)")
+			driftSched = nil
+		} else {
+			if err := driftSched.Start(ctx); err != nil {
+				return fmt.Errorf("drift scheduler: start: %w", err)
+			}
+			// Stop reports whether the loop was still running; a shutdown
+			// race here would be logged by the scheduler itself, and there
+			// is no recovery a failed boot could attempt — the error is
+			// deliberately dropped, not swallowed blindly (errcheck-clean).
+			defer func() { _ = driftSched.Stop() }()
+			log.Info("drift scheduler enabled", "jobs", len(jobs),
+				"notifier", svcs.notifyMgr != nil)
+		}
+	}
 
 	// 3b. Cross-node dispatch (design-cluster-dispatch.md). In cluster mode
 	// the leader periodically assigns approved runs to idle workers and
@@ -1036,6 +1124,11 @@ type serveServices struct {
 	// reconcile configured credentials against the registry (it is the only
 	// place that sees both).
 	authzSvc *authz.Authorizer
+	// notifyMgr is the serving notification manager, handed back for the
+	// same reason as authzSvc: runServe needs it where buildServeServices
+	// cannot reach — the drift scheduler's detector alert sink. Nil unless
+	// a notify channel is enabled.
+	notifyMgr *notify.NotificationManager
 	// chatOpsMgr carries the started ChatOps bots (nil unless
 	// notify.chatops.enabled) so runServe's shutdown path can stop them.
 	chatOpsMgr *chatops.BotManager
@@ -1557,7 +1650,7 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 		inventorySvc: inventorySvc, agentSvc: agentSvc,
 		diagSvc: diagSvc, convSvc: convSvc, convEngine: convEngine, mobileSvc: mobileSvc,
 		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
-		approvalSvc: approvalSvc,
+		approvalSvc: approvalSvc, notifyMgr: notifyMgr,
 	}, nil
 }
 
