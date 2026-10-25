@@ -886,6 +886,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	gw.WithAuthorizer(svcs.authzSvc)
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
 	gw.SetInventory(svcs.inventorySvc)
+	gw.SetAgents(svcs.agentSvc)
 	gw.SetMobileApproval(mobileSvc)
 	gw.SetConversationEngine(svcs.convEngine)
 

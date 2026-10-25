@@ -141,6 +141,7 @@ type Gateway struct {
 	diag       pb.DiagnosisServiceServer
 	conv       pb.ConversationServiceServer
 	inventory  *InventoryService
+	agents     pb.AgentServiceServer
 	// convEngine is the underlying ConversationEngine, used by the REST
 	// session-management endpoints (NewSession/ListSessions/etc.) that do
 	// not map to a gRPC method. nil when conversation is not configured.
@@ -520,6 +521,7 @@ func (gw *Gateway) restResourceHandlers() map[string]func(http.ResponseWriter, *
 		"templates":    gw.dispatchTemplate,
 		"targets":      gw.dispatchTarget,
 		"groups":       gw.dispatchInventory,
+		"agents":       gw.dispatchAgents,
 		"conversation": gw.dispatchConversation,
 		"audit": func(w http.ResponseWriter, r *http.Request, method, path string) {
 			gw.dispatchOperationalRest(w, r, "audit", method, path)

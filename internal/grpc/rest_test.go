@@ -46,6 +46,12 @@ func startTestGateway(t *testing.T, cfg ServeGatewayConfig) (*Gateway, *httptest
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, nil, nil, nil)
 	gw.SetStore(store)
 	gw.SetInventory(NewInventoryService(store).WithAuthorizer(nil))
+	// The same type assertion serveAgentRegistry makes: a store that cannot
+	// persist agents stays on the Unimplemented path, and the harness must not
+	// pretend otherwise.
+	if agentStore, ok := store.(state.AgentStore); ok {
+		gw.SetAgents(NewAgentService(agentStore))
+	}
 
 	mux := http.NewServeMux()
 	// Mount production's pipeline, not a hand-copy of it: the two-_trees mount
