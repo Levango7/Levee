@@ -28,10 +28,20 @@ func init() {
 func newPluginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plugin",
-		Short: "Manage LEVEE plugins",
-		Long: "Manage the LEVEE plugin system: list, install, enable, " +
-			"disable, remove and inspect plugins. Plugins extend the " +
-			"engine with custom channels, gates, modules and notifiers.",
+		Short: "Manage the LEVEE plugin registry",
+		// The boundary is stated here rather than implied: the registry,
+		// sandbox and signature verification are operational, but the
+		// engine has no plugin consumption points yet — installing one
+		// changes no engine behaviour. To actually extend the engine
+		// today, write a compile-time channel plugin instead
+		// (docs/channel-plugins.md).
+		Long: "Manage the LEVEE plugin registry: list, install, enable, " +
+			"disable, remove and inspect plugins (registry, sandbox and " +
+			"signature verification). BOUNDARY: the execution surface is " +
+			"not enabled yet — the engine does not consume plugins, so " +
+			"installing one does not change engine behaviour. To extend " +
+			"the engine today, write a compile-time channel plugin " +
+			"instead (see docs/channel-plugins.md).",
 	}
 
 	cmd.AddCommand(newPluginListCmd())

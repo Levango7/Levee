@@ -1727,7 +1727,14 @@ levee rbac tree
 
 ## 第16章 plugin — 插件管理
 
-管理 LEVEE 插件（Channel/Gate/Module/Notifier 四类接口）。
+管理 LEVEE 插件注册表（安装/启停/移除/查询，含签名验证与沙箱配置）。
+
+> **边界（如实声明）**：插件的**执行面尚未启用**。引擎当前没有任何
+> Channel/Gate/Module/Notifier 的插件消费点——`plugin install` 之后引擎行为
+> **不变**。本章命令管理的是注册表与沙箱，为将来的执行面就绪。要在**今天**
+> 扩展引擎能力，请使用编译期通道插件（写 Go 代码实现
+> `channel.ChannelFactory` 并注册，见 [`channel-plugins.md`](channel-plugins.md)），
+> 那是另一套机制，与本章的运行时插件系统无关。
 
 ### 16.1 plugin list
 

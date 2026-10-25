@@ -54,7 +54,7 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **ITSM Jira 审批镜像**：`notify.jira.*` 配置启用后审批链开始建 Jira issue、决策自动评论（纯出站镜像，LEVEE store 仍是唯一事实来源；禁用时零外发零装配）
 - **双协议 API**：gRPC（9 个业务服务 + 标准 `grpc.health.v1`）+ REST 网关（`/api/v1/`），共享同一服务实例
 - **AI 辅助（部分能力仅库就绪，见下方"能力可达性"）**：`internal/diagnosis`（日志采集+分析、健康探测）已接入 `serve` 与 `levee diagnose`；`levee converse` / REST 对话闭环已接入，确认的建议会变成 draft 变更进治理链（不执行、不跳审批）。**LLM 全链路接线且默认关闭**：`ai.llm` 配置节（`enabled/provider/api_key/model/base_url`）同时驱动 ① `recommend` 引擎的 hybrid 模式与 ② 诊断的多轮 LLM 根因推理（`diagnosis/llm_diag`，**收敛必须跨两轮同假设确认**，结果的 `ConfidenceSource` 显式标注为模型自报——不当作已验证事实）；`serve` 与 `levee converse` 都读它，构造失败降级回知识库/规则路径并打 warn。**效果学习闭环已闭合**：应用结论（成功/失败/回滚）喂入 `recommend/feedback`，成功合成新知识库模式、与推荐引擎**共享同一 KB**，快照落盘（重启不失忆），`levee converse` 同样读取学习成果。RAG（伪向量 embedding）已按定位退役删除。
-- **多通道执行**：SSH / WinRM 无代理通道 + local 沙箱通道（CI/单机自测，程序白名单+参数策略+沙箱根三重门禁，fail-closed 默认），插件注册表开放第三方通道接入（见 `docs/channel-plugins.md`）
+- **多通道执行**：SSH / WinRM 无代理通道 + local 沙箱通道（CI/单机自测，程序白名单+参数策略+沙箱根三重门禁，fail-closed 默认）；新传输类型以**编译期通道插件**接入（实现 `channel.ChannelFactory`，见 `docs/channel-plugins.md`）。运行时插件注册表（`levee plugin`，第 16 章）管理面可用，**执行面未启用**——引擎尚不消费运行时插件
 - **快照回滚**：`rollback: {strategy: snapshot, snapshot_paths: [...]}` 声明式文件级备份——apply 前经通道采集目标机文件（base64 传输），回滚时原样恢复（与 undo-action 显式互斥）；快照按 change id 键存，手动回滚路径可达；`--engine-snapshot-dir` 一旗标启用
 - **数据库动作模块**：`mysql.query`（幂等 DDL/DML，SQL 经 base64 管道防注入）、`mysql.pt_osc`（pt-online-schema-change 在线大表变更，白名单校验 alter 子句）、`mysql.replica_switch`（主从切换编排，强制确认门）；不可逆动作（含 replica_switch/pt_osc）在 plan 生成时自动标记并路由到高危审批（R2/R4 全链路接线）
 - **资源沙箱**：Linux 下 cgroup v2 硬限制插件内存/CPU；墙钟超时全平台兜底
