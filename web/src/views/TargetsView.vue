@@ -4,7 +4,7 @@
 // unreachable hosts at a glance.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { targetsApi, type ImportResult, type TargetHistoryEntry } from '@/api'
+import { targetsApi, groupsApi, type HostGroup, type ImportResult, type TargetHistoryEntry } from '@/api'
 import type { Target } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StateBlock from '@/components/StateBlock.vue'
@@ -33,8 +33,38 @@ const regionTier = computed<LoadTier>(() => {
 const regionMessage = computed(() => errorMessage(loadError.value, '加载目标列表失败'))
 
 const filterActive = computed(
-  () => search.channelType !== '' || search.reachableOnly,
+  () => search.channelType !== '' || search.reachableOnly || groupFilter.value !== '',
 )
+
+// Group tree (groupsApi → /groups). Targets carry their group_id from the
+// stored row (proto Target.group_id), so the tree filters the LOADED page
+// locally — the list endpoint's group filter is the server-side twin for
+// paged deployments.
+const groups = ref<HostGroup[]>([])
+const groupFilter = ref('')
+const groupNameOf = computed(() => {
+  const m: Record<string, string> = {}
+  for (const g of groups.value) m[g.id] = g.name
+  return m
+})
+
+const visibleTargets = computed(() => {
+  if (groupFilter.value === '') return targets.value
+  return targets.value.filter((tg) => tg.groupId === groupFilter.value)
+})
+
+async function loadGroups(): Promise<void> {
+  try {
+    groups.value = await groupsApi.list()
+  } catch {
+    // The tree is an aid, not a gate: a failed group load keeps the flat
+    // list working and the filter hidden, which is what an operator with a
+    // broken auxiliary file needs.
+    groups.value = []
+  }
+}
+
+
 
 interface CheckResult {
   [id: string]: { reachable: boolean; latencyMs: number; error: string; checking: boolean }
@@ -250,7 +280,10 @@ async function submitImport(): Promise<void> {
   load()
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadGroups()
+})
 </script>
 
 <template>
@@ -270,6 +303,15 @@ onMounted(load)
             <el-option label="WinRM" value="winrm" />
           </el-select>
           <el-checkbox v-model="search.reachableOnly">仅可达</el-checkbox>
+          <el-select
+            v-if="groups.length > 0"
+            v-model="groupFilter"
+            placeholder="全部分组"
+            clearable
+            style="width: 160px"
+          >
+            <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
+          </el-select>
           <el-button @click="load">查询</el-button>
         </div>
         <div class="lv-toolbar">
@@ -298,12 +340,18 @@ onMounted(load)
         :action-label="filterActive ? '清除筛选条件' : '添加目标机'"
         @action="filterActive ? resetSearch() : openAdd()"
       />
-      <el-table v-else v-loading="loading" :data="targets" stripe>
+      <el-table v-else v-loading="loading" :data="visibleTargets" stripe>
         <el-table-column prop="id" label="ID" width="180" show-overflow-tooltip />
         <el-table-column prop="hostname" label="主机名" min-width="160" show-overflow-tooltip />
         <el-table-column prop="channelType" label="通道" width="100" />
         <el-table-column prop="port" label="端口" width="80" />
         <el-table-column prop="credentialRef" label="凭据" width="160" show-overflow-tooltip />
+        <el-table-column label="分组" width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span v-if="row.groupId">{{ groupNameOf[row.groupId] || row.groupId }}</span>
+            <span v-else style="color: var(--lv-text-3)">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="标签" min-width="200">
           <template #default="{ row }">
             <el-tag v-for="(v, k) in row.labels" :key="k" size="small" class="label-tag">{{ k }}={{ v }}</el-tag>

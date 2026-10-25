@@ -1375,6 +1375,10 @@ func (gw *Gateway) handleTargetList(w http.ResponseWriter, r *http.Request) {
 	if q.Get("reachableOnly") == "true" {
 		req.ReachableOnly = true
 	}
+	// groupId: the console's group tree clicks through to one group's hosts.
+	if v := q.Get("groupId"); v != "" {
+		req.GroupId = v
+	}
 	if v := q.Get("pageSize"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil {

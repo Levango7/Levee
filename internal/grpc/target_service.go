@@ -96,6 +96,7 @@ func pbFromState(t *state.Target) *pb.Target {
 		Port:          int32(t.Port),
 		CredentialRef: t.CredentialRef,
 		Labels:        labels,
+		GroupId:       t.GroupID,
 		Reachable:     t.Reachable,
 		Status:        t.Status,
 	}
@@ -227,7 +228,7 @@ func (s *TargetService) ListTargets(ctx context.Context, req *pb.ListTargetsRequ
 		return nil, err
 	}
 
-	filter := state.TargetFilter{Labels: req.LabelSelector}
+	filter := state.TargetFilter{Labels: req.LabelSelector, GroupID: req.GroupId}
 	rows, err := s.store.ListTargets(ctx, filter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list targets: %v", err)
