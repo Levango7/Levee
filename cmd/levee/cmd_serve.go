@@ -883,7 +883,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 			if err := driftSched.Start(ctx); err != nil {
 				return fmt.Errorf("drift scheduler: start: %w", err)
 			}
-			defer driftSched.Stop()
+			// Stop reports whether the loop was still running; a shutdown
+			// race here would be logged by the scheduler itself, and there
+			// is no recovery a failed boot could attempt — the error is
+			// deliberately dropped, not swallowed blindly (errcheck-clean).
+			defer func() { _ = driftSched.Stop() }()
 			log.Info("drift scheduler enabled", "jobs", len(jobs),
 				"notifier", svcs.notifyMgr != nil)
 		}
