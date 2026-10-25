@@ -885,6 +885,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// gated REST endpoint would judge against nil and admit everyone.
 	gw.WithAuthorizer(svcs.authzSvc)
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, alertSvc, diagSvc, convSvc)
+	gw.SetInventory(svcs.inventorySvc)
 	gw.SetMobileApproval(mobileSvc)
 	gw.SetConversationEngine(svcs.convEngine)
 

@@ -44,6 +44,8 @@ func startTestGateway(t *testing.T, cfg ServeGatewayConfig) (*Gateway, *httptest
 
 	gw := NewGateway(cfg)
 	gw.SetServices(changeSvc, templateSvc, targetSvc, auditSvc, systemSvc, nil, nil, nil)
+	gw.SetStore(store)
+	gw.SetInventory(NewInventoryService(store).WithAuthorizer(nil))
 
 	mux := http.NewServeMux()
 	// Mount production's pipeline, not a hand-copy of it: the two-_trees mount
