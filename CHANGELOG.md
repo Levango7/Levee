@@ -4,13 +4,22 @@
 
 ## [Unreleased]
 
-### 修复（CLI 投票走 serve 的同一条路：`--as` 现在真正约束 approve/reject，ChatOps 投票获得服务级审计）
+### 新增（审批票判定补上服务路径之外的缺口：`approval.DecisionGuard` 管 gate 投票与移动深链）
 
-- **账本登记的最后一条边界收口**：#203 写明"`--as` 只到走服务层的动作；**approve/reject 的实际投票走的是领域服务 `approval.Service.Decide`，那里没有 authorizer 参数，因此不受 `--as` 约束**——属接口变更，另行决定"。本笔按"不加接口参数"的定案收口：**CLI 投票改走 `ChangeService.ApproveChange` / `RejectChange`**（serve 的同一条路），本地上下文带 `ContextWithSubject(currentActor())` 的已验证主体——subject.go 的本地模式条款明确允许这一点（"the process itself is the authority on who typed the command"）。
-- **三处行为变化（账本预告过，全部落地）**：① 本地投票**要求已验证主体**——不给 `--as` 时投票被拒，报错与远程调用方看到的逐字相同（"a shared --token authenticates the deployment, not a person"）；**这是 breaking**：依赖匿名 `levee approve` 的脚本要么给 `--as`，要么改用远程身份。② 结算与审计**由服务完成**——旧的"decide + 第二次 settle pass"去掉了（`settleApprovalFromCLI` 不再被 approve/reject 调用，只剩 ChatOps 用），**服务级 audit 行第一次有 CLI 投票**（旧路径只有 CLI 自己的输出）。③ **`--level` 保留为预检**：服务自己选第一条 pending approval、不认档位，operator 点名档位却被静默投到别的档位上比精准拒绝更糟——预检在投票前拒绝。
-- **ChatOps 同步改造**：`chatops approve/reject` 也改走同一条路。它的身份来自平台 `identity_map`（MAC 验签的回调），**不需要 `--as`**——回调用 `ContextWithSubject` 立主体（subject.go 本地条款同款），策略接 `chatopsAuthorizer()`（矩阵缺失=WARN+不判，加载失败=WARN+不判：**让紧急 ChatOps 否决因辅助文件损坏而不可用，等于用一次有审计的决定换一次不可用**；这个取舍写在函数注释里）。输出契约保留（`approval_id` 仍先解析、`--quiet` 仍打它）。
-- **E2E 抓到一个我引入的真 bug（这条测试的价值现场）**：改造首版给 `ChangeService` 的 approval 参数传了 nil，`ApproveChange` 于是走 **legacy 直改路径——绕过 quorum 直接 approved**，`TestApproveE2E_PartialQuorumKeepsRunPending`（1/2 票不得批准）当场红。修复：CLI 与 ChatOps 都传 `approval.NewService(newApprovalStoreAdapter(store))`（与 serve/`newCLIChangeService` 相同）。**quorum 门禁从此在这条路上被服务端强制，而不是靠调用方自觉。**
-- **验证**：`go build ./cmd/levee` rc=0；`vet` rc=0；`gofmt` 干净；`cmd/levee` 全包 ok（124s，含 Approve/Reject/Settle/Chatops/Quorum E2E 全家）。`--level` 预检、quorum stderr 提示（改从返回的 run 状态判：partial quorum 留在 pre-decision 状态）、`--quiet`/`--json` 输出契约全部保留。
+- **与"CLI 投票走 serve 的同一条路"那条的关系（同题分工，不是重复实现）**：CLI/ChatOps 的投票已改走 `ChangeService.ApproveChange`/`RejectChange`（服务层判定 + quorum 服务端强制）。但仍有两处投票面**不走服务层**：`levee gate approve/reject`（human 门禁决定，直调领域服务）与**移动深链**（serve 进程内 `MobileApprovalService` 直调 `approvalSvc`——它的 REST 路由豁免网关鉴权，token 证明持有人，而绑定的 userID 此前不经注册表判定就能投出有效票）。本笔给领域服务补一个可选判定缝，把这两面收进同一张矩阵。
+- **接缝**：`approval.Service` 新增可选 `DecisionGuard` 窄接口（依赖倒置——approval 包不 import authz），`decide()` 在记录级检查**之前**先问 guard，nil guard = 逐字旧行为。guard 装在 serve 的 `approvalSvc` 上（`authz.Load` 装配点，与 `changeSvc.WithAuthorizer` 同处；钉子测试 `TestServeInstallsTheApprovalDecisionGuard` 结构断言装配行不丢——丢了不影响任何行为测试，这正是要钉子的原因），深链与 gRPC `ApproveChange` 内层的领域调用随之受判（后者是纵深防御，RPC 层判定保留在前）。gate 的 CLI 构造点改走 `newApprovalService`（helpers.go，`--as` 生效带 guard）。
+- **gate 的判定姿态与 approve/reject 刻意不同（opt-in 而非强制）**：`gate approve/reject` 是 run 执行中的人在环决定——操作者已在引擎会话内，且强制 `--as` 会 breaking 现存 gate 脚本；治理动作（approve/reject）已按前条定为强制。差异写在 `newApprovalService` 的注释里。
+- **适配器 `grpc.ApprovalDecisionGuard`**：判**投票人**于**变更的环境**（`envOf(run)` 与 `authorizeResource` 同口径；run 缺失按 `default_env` 判，不是绕过）；拒绝走 `RecordDenial`（SA-007：只存在于客户端报错里的拒绝是没法审计的拒绝）并带 `levee authz explain` 指引；store 读失败 fail-closed；`approval.Action*` 与 `permission.Action*` 同拼法零映射。
+- **行为变更（迁移说明）**：开 `permissions.yaml` 的部署里，**移动深链审批人必须进注册表**（`users.yaml`），注册表不认识的深链用户投票被拒并得到 explain 指引——这正是矩阵语义，此前是该语义的漏判。未开矩阵、CLI gate 不带 `--as` 的部署零变化。
+- **测试**：`internal/approval/service_guard_test.go` 6 例（拒绝否决且记录不动 / guard 先于名单——不在名单的人拿到的也是策略拒绝 / nil=旧行为 / 放行且参数正确 / Reject 独立动作可单独拒 / `WithDecisionGuard(nil)` 可拆装）；`internal/grpc/approval_guard_test.go` 6 例（矩阵放行 / 环境未授权拒绝带 explain 指引 / 未注册拒绝 / nil Auth=无策略姿态 / run 缺失按 default_env 判且不成为绕过 / store 读失败 fail-closed）；`cmd/levee/approval_guard_wiring_test.go` 2 例（同一 fixture 唯一差异是 `--as` 旗标）。
+- **验证**：`go build`/`go vet`/`gofmt` 干净；approval、grpc、cmd/levee 相关测试全绿。
+
+### 修复（文档与 CLI 对插件系统说了它做不到的话——"执行面未启用"从此是明说的，不是推断的）
+
+- **不实承诺的三个位置**：`levee plugin --help` 原文"Plugins extend the engine with custom channels, gates, modules and notifiers"、`docs/cli-reference.md` 第 16 章"管理 LEVEE 插件（Channel/Gate/Module/Notifier 四类接口）"、`README` "插件注册表开放第三方通道接入"——而引擎（engine/executor/channel/notify/verify 五个消费侧）没有任何插件消费点，`plugin install` 之后引擎行为**不变**。管理面（注册表/沙箱/签名验证，`internal/plugin` 2,148 行）是真实的，执行面不存在：用户可以装、可以 enable、可以在 list 里看到它，然后它什么都不做——"表面可用、实际空转"正是本仓账本反复批判的装饰性字段形态。
+- **三处改法**：CLI help 与 16 章开头改为如实声明边界（管理面可用、执行面未启用、装了不变），并把"今天就要扩展引擎"的用户指向**编译期通道插件**（`docs/channel-plugins.md`——`channel.ChannelFactory` + init 注册，那是另一套机制且真实可用）；README 那句原本就把"运行时插件注册表"与"编译期通道插件"混在一句里并引错文档，现按两套机制分述。
+- **刻意不做**：不给 help 文本加"即将支持"之类的时点承诺（执行面接入是独立决定，接入时本声明同步撤销）；不改 `internal/plugin` 代码本身——它是为执行面就绪的管理面，声明边界即可，退役与否是另一个决定。
+- **验证**：`go build ./cmd/levee/` 干净；help 文本变更不影响行为测试。
 
 ### 新增（清单侧 env 归属的事实源：`target-ownership.yaml`——"这台机器真的属于这个环境"从此是配置，不是声称）
 
