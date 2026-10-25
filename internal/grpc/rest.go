@@ -140,6 +140,7 @@ type Gateway struct {
 	alert      pb.AlertServiceServer
 	diag       pb.DiagnosisServiceServer
 	conv       pb.ConversationServiceServer
+	inventory  *InventoryService
 	// convEngine is the underlying ConversationEngine, used by the REST
 	// session-management endpoints (NewSession/ListSessions/etc.) that do
 	// not map to a gRPC method. nil when conversation is not configured.
@@ -518,6 +519,7 @@ func (gw *Gateway) restResourceHandlers() map[string]func(http.ResponseWriter, *
 		"changes":      gw.dispatchChange,
 		"templates":    gw.dispatchTemplate,
 		"targets":      gw.dispatchTarget,
+		"groups":       gw.dispatchInventory,
 		"conversation": gw.dispatchConversation,
 		"audit": func(w http.ResponseWriter, r *http.Request, method, path string) {
 			gw.dispatchOperationalRest(w, r, "audit", method, path)
@@ -772,6 +774,8 @@ func (gw *Gateway) dispatchTarget(w http.ResponseWriter, r *http.Request, method
 	switch {
 	case path == "/targets" && method == "GET":
 		gw.handleTargetList(w, r)
+	case path == "/targets/import" && method == "POST":
+		gw.handleTargetImport(w, r)
 	case path == "/targets" && method == "POST":
 		gw.handleTargetAdd(w, r)
 	default:
@@ -796,6 +800,10 @@ func (gw *Gateway) dispatchTarget(w http.ResponseWriter, r *http.Request, method
 			}
 		case "check":
 			gw.handleTargetCheck(w, r, id)
+		case "history":
+			gw.handleTargetHistory(w, r, id)
+		case "status":
+			gw.handleTargetStatus(w, r, id)
 		default:
 			writeJSONError(w, http.StatusBadRequest, "unknown target sub-path: /"+rest)
 		}

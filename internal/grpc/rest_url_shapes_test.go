@@ -213,8 +213,12 @@ func TestGatewayRouterTablesCoverTheDocumentedServices(t *testing.T) {
 		resources = append(resources, name)
 	}
 	sort.Strings(resources)
+	// groups is InventoryService's tree (the console's host-group management).
+	// A family leaving this list means a route tree lost a resource; one
+	// arriving means the frontend contract grew — both need eyes here.
 	assert.Equal(t, []string{
-		"audit", "auth", "changes", "conversation", "gates", "system", "targets", "templates",
+		"audit", "auth", "changes", "conversation", "gates", "groups", "system",
+		"targets", "templates",
 	}, resources, "RESTful resource families")
 }
 
