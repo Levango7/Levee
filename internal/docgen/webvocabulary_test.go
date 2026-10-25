@@ -76,6 +76,7 @@ func TestVocabularyTableCoversTheKnownOwners(t *testing.T) {
 		"CHANGE_STATUSES", "PRIORITIES", "BATCH_STATES", "ASSIGNMENT_STATES",
 		"NODE_ROLES", "NODE_STATUSES", "SESSION_STATES",
 		"STEP_STATES", "RUN_APPROVAL_STATUSES", "APPROVAL_STATUSES", "ASSIGN_RESULTS",
+		"ALERT_SEVERITIES",
 	}
 	var got []string
 	for _, v := range webVocabularies() {

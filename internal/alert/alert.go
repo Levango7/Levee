@@ -275,3 +275,15 @@ func (a *Alert) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(tmp)
 }
+
+// SeverityNames returns the severity vocabulary in authority order (info →
+// warning → critical), as a copy. The console's alert table renders this set;
+// it is exposed as a function rather than a slice so docgen reads the owner at
+// generate time and callers cannot mutate a shared slice.
+func SeverityNames() []string {
+	return append([]string(nil),
+		SeverityInfo.String(),
+		SeverityWarning.String(),
+		SeverityCritical.String(),
+	)
+}

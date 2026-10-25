@@ -170,4 +170,14 @@ export const ASSIGN_RESULTS = [
 /** AssignResult 的成员集合，由上面那份数组派生。 */
 export type AssignResult = (typeof ASSIGN_RESULTS)[number]
 
+/** 告警级别（alert.Alert 的 Severity），按紧迫度升序：info → warning → critical。来源是各适配器（nagios/zabbix/prometheus）解析后的归一值，不是监控系统的原始措辞。 */
+export const ALERT_SEVERITIES = [
+  'info',
+  'warning',
+  'critical',
+] as const
+
+/** AlertSeverity 的成员集合，由上面那份数组派生。 */
+export type AlertSeverity = (typeof ALERT_SEVERITIES)[number]
+
 // END GENERATED: vocabulary

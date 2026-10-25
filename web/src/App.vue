@@ -20,6 +20,7 @@ import { ElMessage } from 'element-plus'
 import { clearToken } from '@/api/client'
 import { useTheme, type ThemeChoice } from '@/composables/useTheme'
 import { useDensity, type DensityChoice } from '@/composables/useDensity'
+import { useAlertStream } from '@/composables/useAlertStream'
 import CommandPalette from '@/components/CommandPalette.vue'
 
 const route = useRoute()
@@ -63,6 +64,7 @@ const navGroups: NavGroup[] = [
     items: [
       { path: '/cluster', label: '集群状态', icon: 'Share' },
       { path: '/audit', label: '审计查询', icon: 'Tickets' },
+      { path: '/alerts', label: '告警', icon: 'Bell' },
       { path: '/system', label: '系统状态', icon: 'Cpu' },
     ],
   },
@@ -105,6 +107,11 @@ const DENSITY_OPTIONS: Array<{ value: DensityChoice; label: string; icon: string
 
 const { choice: densityChoice, setChoice: setDensity } = useDensity()
 const densityIcon = computed(() => (densityChoice.value === 'compact' ? 'Fold' : 'Expand'))
+
+// Header badge: active critical alerts from the shared alert stream. The
+// stream opens once (module refcount) and stays open while the shell lives —
+// that is what keeps the badge live on every page without a second socket.
+const { criticalCount } = useAlertStream()
 
 function handleDensity(command: string): void {
   setDensity(command as DensityChoice)
@@ -258,6 +265,11 @@ watch(
             </template>
           </el-dropdown>
 
+          <router-link to="/alerts" class="topbar__icon-btn topbar__alert" title="告警">
+            <el-badge :value="criticalCount" :hidden="criticalCount === 0" :max="99">
+              <el-icon><Bell /></el-icon>
+            </el-badge>
+          </router-link>
           <el-dropdown trigger="click" @command="handleDensity">
             <button
               class="topbar__icon-btn"

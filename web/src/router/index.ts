@@ -90,6 +90,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/SystemView.vue'),
     meta: { title: '系统状态' },
   },
+  {
+    path: '/alerts',
+    name: 'alerts',
+    component: () => import('@/views/AlertsView.vue'),
+    meta: { title: '告警' },
+  },
   // Mobile approval deeplinks (push notifications link here):
   // /m/approve/<changeId>?token=... and /m/reject/<changeId>?token=...
   {

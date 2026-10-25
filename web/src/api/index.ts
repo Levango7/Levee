@@ -340,6 +340,37 @@ export const agentsApi = {
   remove: (id: string): Promise<RemoveAgentReply> => del<RemoveAgentReply>(`/agents/${id}`),
 }
 
+// Alert service. The LIST lives on the SSE stream (/alerts/stream — ring
+// replay + live tail); GetAlertStatus is the proto-JSON shape
+// (/api/v1/AlertService/GetAlertStatus, protojson: camelCase keys).
+export interface AlertRecord {
+  id: string
+  source: string
+  severity: number | string
+  /** 0 = firing, 1 = resolved (alert.AlertStatus). json.Marshal emits the
+   *  numeric enum; the proto-JSON status replies with the string spelling. */
+  status?: number | string
+  title: string
+  description?: string
+  target?: string
+  labels?: Record<string, string>
+  starts_at?: string
+  ends_at?: string
+}
+
+export interface AlertStatusReply {
+  id: string
+  status: string
+  starts_at: string
+  ends_at: string
+  severity: string
+}
+
+export const alertsApi = {
+  status: (id: string): Promise<AlertStatusReply> =>
+    post<AlertStatusReply>('/AlertService/GetAlertStatus', { id }),
+}
+
 // ---------------------------------------------------------------------------
 // AuditService
 // ---------------------------------------------------------------------------
