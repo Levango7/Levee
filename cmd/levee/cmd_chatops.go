@@ -11,7 +11,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/approval"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/chatops"
+	"github.com/nexus/levee/internal/grpc"
+	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -205,6 +209,33 @@ func runChatopsSend(_cmd *cobra.Command, args []string) error {
 
 // runChatopsApprove 通过 ChatOps 触发审批通过。它复用 approval 服务，
 // 与 `levee approve` 命令等价，但记录执行来源为 chatops。
+// chatopsAuthorizer loads the policy registry for the ChatOps decision paths,
+// or nil (unjudged) when no matrix is configured — the callback itself is
+// already authenticated by the platform's MAC signature plus the
+// notify.chatops.bots[].identity_map binding, so unlike the --as path there is
+// no operator request to honour here: the matrix is the only input left, and
+// its absence is the documented "no policy" posture. A load FAILURE is also
+// downgraded (with a loud WARN) rather than fatal: blocking an emergency
+// ChatOps veto on a broken auxiliary file would trade an audited decision for
+// an unavailable one.
+func chatopsAuthorizer() *authz.Authorizer {
+	cfg, err := loadConfigForCmd()
+	if err != nil {
+		log.Warn("chatops: config unavailable; decision runs unjudged", "error", err)
+		return nil
+	}
+	a, err := authz.Load(cfg.Server.DataDir, cfg.Permission.DefaultEnv)
+	if err != nil {
+		log.Warn("chatops: policy registry unavailable; decision runs unjudged", "error", err)
+		return nil
+	}
+	if !a.Enforced() {
+		log.Warn("chatops: no permission matrix configured; decision runs unjudged")
+		return nil
+	}
+	return a
+}
+
 func runChatopsApprove(_cmd *cobra.Command, args []string) error {
 	changeID, err := readChangeIDArg(_cmd, args)
 	if err != nil {
@@ -223,26 +254,31 @@ func runChatopsApprove(_cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	approvalID, err := findPendingApprovalID(ctx, store, changeID, "")
+	// The pending approval id stays part of the output contract (scripts read
+	// it via --quiet), so it is resolved before the vote even though the vote
+	// itself goes through ChangeService.
+	pendingID, err := findPendingApprovalID(ctx, store, changeID, "")
 	if err != nil {
 		return err
 	}
 
-	svc := approval.NewService(newApprovalStoreAdapter(store))
-	if err := svc.Approve(ctx, approvalID, approver); err != nil {
+	// Decide through ChangeService.ApproveChange — the same path serve uses —
+	// so the ChatOps vote gets the service-level audit rows and the same
+	// quorum/settlement handling, instead of decide + a second settle pass.
+	// The callback identity comes from the platform's identity_map (verified by
+	// the MAC'd callback), so the local context carries it as the verified
+	// subject: the process is the authority on who decided, exactly as
+	// subject.go's local-mode carve-out says.
+	svc := grpc.NewChangeService(store, nil, approval.NewService(newApprovalStoreAdapter(store)), nil).
+		WithAuthorizer(chatopsAuthorizer())
+	voteCtx := grpc.ContextWithSubject(ctx, approver)
+	if _, err := svc.ApproveChange(voteCtx, &pb.ApproveRequest{ChangeId: changeID, Approver: approver}); err != nil {
 		return mapApprovalError(err)
-	}
-
-	// Settle the run from the chain state so a ChatOps approval actually
-	// moves the run (previously the decision landed on the approval row
-	// alone and the run stayed in draft, refusing every later apply).
-	if err := settleApprovalFromCLI(ctx, store, changeID, "approve"); err != nil {
-		return err
 	}
 
 	out := map[string]any{
 		"change_id":   changeID,
-		"approval_id": approvalID,
+		"approval_id": pendingID,
 		"action":      "approved",
 		"approver":    approver,
 		"source":      "chatops",
@@ -253,7 +289,7 @@ func runChatopsApprove(_cmd *cobra.Command, args []string) error {
 		return PrintJSON(os.Stdout, map[string]any{"data": out, "meta": nil, "error": nil})
 	}
 	if optQuiet {
-		fmt.Fprintln(os.Stdout, approvalID)
+		fmt.Fprintln(os.Stdout, pendingID)
 		return nil
 	}
 	fmt.Fprintf(os.Stdout, "Change %s approved by %s via ChatOps (%s)\n",
@@ -283,24 +319,22 @@ func runChatopsReject(_cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	approvalID, err := findPendingApprovalID(ctx, store, changeID, "")
+	pendingID, err := findPendingApprovalID(ctx, store, changeID, "")
 	if err != nil {
 		return err
 	}
 
-	svc := approval.NewService(newApprovalStoreAdapter(store))
-	if err := svc.Reject(ctx, approvalID, approver, chatopsOptReason); err != nil {
+	// Same path as the approve side: service-level audit + settlement in one.
+	svc := grpc.NewChangeService(store, nil, approval.NewService(newApprovalStoreAdapter(store)), nil).
+		WithAuthorizer(chatopsAuthorizer())
+	voteCtx := grpc.ContextWithSubject(ctx, approver)
+	if _, err := svc.RejectChange(voteCtx, &pb.RejectRequest{ChangeId: changeID, Rejecter: approver, Reason: chatopsOptReason}); err != nil {
 		return mapApprovalError(err)
-	}
-
-	// Settle the run (one-vote veto mirrored onto the run).
-	if err := settleApprovalFromCLI(ctx, store, changeID, "reject"); err != nil {
-		return err
 	}
 
 	out := map[string]any{
 		"change_id":   changeID,
-		"approval_id": approvalID,
+		"approval_id": pendingID,
 		"action":      "rejected",
 		"approver":    approver,
 		"reason":      chatopsOptReason,
@@ -312,7 +346,7 @@ func runChatopsReject(_cmd *cobra.Command, args []string) error {
 		return PrintJSON(os.Stdout, map[string]any{"data": out, "meta": nil, "error": nil})
 	}
 	if optQuiet {
-		fmt.Fprintln(os.Stdout, approvalID)
+		fmt.Fprintln(os.Stdout, pendingID)
 		return nil
 	}
 	fmt.Fprintf(os.Stdout, "Change %s rejected by %s via ChatOps (%s): %s\n",

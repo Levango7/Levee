@@ -1,6 +1,5 @@
-// service_factory.go implements the dual-mode Service factory that backs every
-// CLI command. Depending on the --local / --remote flag the factory returns
-// either:
+// service_factory.go implements the dual-mode Service factory and the
+// adapter interfaces behind the --local / --remote flags:
 //
 //   - modeLocal:  in-process service implementations backed directly by a
 //                 state.Store. This is the default and keeps the CLI a single
@@ -8,8 +7,21 @@
 //   - modeRemote: thin adapters around the generated gRPC clients, forwarding
 //                 every call to a remote LEVEE server over the network.
 //
-// Both modes expose the same *ServiceAdapter interfaces, so command code is
-// identical regardless of where the work actually runs.
+// IMPORTANT - what this file is TODAY, stated plainly: the REMOTE side is the
+// live half. `--remote` is documented (docs/cli-reference.md) as consumed by
+// `agent list / show / remove`; those commands call newGRPCClient directly and
+// the adapters below are the prepared translation layer for extending remote
+// mode to further commands - a registered product direction, not an accident.
+//
+// The LOCAL side is NOT the path production takes. Commands construct their
+// services directly (newCLIChangeService in engine_cli.go for plan/apply,
+// inline constructions elsewhere) because they need pieces this factory never
+// grew: the change calendar gates, the credential resolver, the --as
+// authorizer. The factory's local build therefore delegates to
+// newCLIChangeService so the two stay the same, and a drift guard in
+// grpc_client_test.go asserts that remains true. Rewriting the header to
+// claim "backs every CLI command" would be the third version of a claim the
+// code stopped carrying.
 //
 // Streaming RPCs (WatchChange, StreamLogs) are intentionally omitted from the
 // adapter interfaces: CLI commands consume state synchronously and do not
@@ -24,7 +36,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc"
@@ -83,12 +94,13 @@ type localServices struct {
 // optional; nil falls back to a store-only / reduced-functionality code path.
 type localDeps struct {
 	store          state.Store
-	engine         *grpc.EngineAdapter
-	approval       *approval.Service
 	templateLib    *template.TemplateLibrary
 	channelFactory channel.ChannelFactory
 	config         *config.Config
 	configPath     string
+	// engine and approval were removed: the change service builds its own
+	// through newCLIChangeService (the production constructor), and the
+	// factory's tests never supplied either.
 }
 
 // factoryOption configures newServiceFactory.
@@ -129,7 +141,11 @@ func newServiceFactory(mode serviceMode, remoteAddr string, token string, opts .
 		if cfg.deps == nil || cfg.deps.store == nil {
 			return nil, errors.New("service factory: local mode requires a non-nil store")
 		}
-		f.local = buildLocalServices(cfg.deps)
+		local, lerr := buildLocalServices(cfg.deps)
+		if lerr != nil {
+			return nil, lerr
+		}
+		f.local = local
 
 	case modeRemote:
 		client, err := newGRPCClient(remoteAddr, token)
@@ -147,9 +163,18 @@ func newServiceFactory(mode serviceMode, remoteAddr string, token string, opts .
 
 // buildLocalServices constructs the five in-process service implementations
 // from the supplied dependencies. Optional dependencies fall back to nil.
-func buildLocalServices(deps *localDeps) *localServices {
+func buildLocalServices(deps *localDeps) (*localServices, error) {
+	// The change service goes through the SAME constructor production uses
+	// (newCLIChangeService): the change calendar gates, the credential
+	// resolver and the --as authorizer all live there, and this factory used
+	// to build a bare service without any of them - the drift that made this
+	// file's local path diverge from what every command actually runs.
+	changeSvc, err := newCLIChangeService(deps.store)
+	if err != nil {
+		return nil, fmt.Errorf("build local change service: %w", err)
+	}
 	ls := &localServices{
-		change:   grpc.NewChangeService(deps.store, deps.engine, deps.approval, nil),
+		change:   changeSvc,
 		template: grpc.NewTemplateService(deps.store, deps.templateLib),
 		target:   grpc.NewTargetService(deps.store, deps.channelFactory),
 		audit:    grpc.NewAuditService(deps.store),
@@ -168,7 +193,7 @@ func buildLocalServices(deps *localDeps) *localServices {
 			version, commitHash, buildTime, goVersion, time.Now(),
 		)
 	}
-	return ls
+	return ls, nil
 }
 
 // Close releases any resources held by the factory. In local mode it is a

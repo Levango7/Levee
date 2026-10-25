@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（CLI 投票走 serve 的同一条路：`--as` 现在真正约束 approve/reject，ChatOps 投票获得服务级审计）
+
+- **账本登记的最后一条边界收口**：#203 写明"`--as` 只到走服务层的动作；**approve/reject 的实际投票走的是领域服务 `approval.Service.Decide`，那里没有 authorizer 参数，因此不受 `--as` 约束**——属接口变更，另行决定"。本笔按"不加接口参数"的定案收口：**CLI 投票改走 `ChangeService.ApproveChange` / `RejectChange`**（serve 的同一条路），本地上下文带 `ContextWithSubject(currentActor())` 的已验证主体——subject.go 的本地模式条款明确允许这一点（"the process itself is the authority on who typed the command"）。
+- **三处行为变化（账本预告过，全部落地）**：① 本地投票**要求已验证主体**——不给 `--as` 时投票被拒，报错与远程调用方看到的逐字相同（"a shared --token authenticates the deployment, not a person"）；**这是 breaking**：依赖匿名 `levee approve` 的脚本要么给 `--as`，要么改用远程身份。② 结算与审计**由服务完成**——旧的"decide + 第二次 settle pass"去掉了（`settleApprovalFromCLI` 不再被 approve/reject 调用，只剩 ChatOps 用），**服务级 audit 行第一次有 CLI 投票**（旧路径只有 CLI 自己的输出）。③ **`--level` 保留为预检**：服务自己选第一条 pending approval、不认档位，operator 点名档位却被静默投到别的档位上比精准拒绝更糟——预检在投票前拒绝。
+- **ChatOps 同步改造**：`chatops approve/reject` 也改走同一条路。它的身份来自平台 `identity_map`（MAC 验签的回调），**不需要 `--as`**——回调用 `ContextWithSubject` 立主体（subject.go 本地条款同款），策略接 `chatopsAuthorizer()`（矩阵缺失=WARN+不判，加载失败=WARN+不判：**让紧急 ChatOps 否决因辅助文件损坏而不可用，等于用一次有审计的决定换一次不可用**；这个取舍写在函数注释里）。输出契约保留（`approval_id` 仍先解析、`--quiet` 仍打它）。
+- **E2E 抓到一个我引入的真 bug（这条测试的价值现场）**：改造首版给 `ChangeService` 的 approval 参数传了 nil，`ApproveChange` 于是走 **legacy 直改路径——绕过 quorum 直接 approved**，`TestApproveE2E_PartialQuorumKeepsRunPending`（1/2 票不得批准）当场红。修复：CLI 与 ChatOps 都传 `approval.NewService(newApprovalStoreAdapter(store))`（与 serve/`newCLIChangeService` 相同）。**quorum 门禁从此在这条路上被服务端强制，而不是靠调用方自觉。**
+- **验证**：`go build ./cmd/levee` rc=0；`vet` rc=0；`gofmt` 干净；`cmd/levee` 全包 ok（124s，含 Approve/Reject/Settle/Chatops/Quorum E2E 全家）。`--level` 预检、quorum stderr 提示（改从返回的 run 状态判：partial quorum 留在 pre-decision 状态）、`--quiet`/`--json` 输出契约全部保留。
+
 ### 新增（清单侧 env 归属的事实源：`target-ownership.yaml`——"这台机器真的属于这个环境"从此是配置，不是声称）
 
 - **登记的产品决定已定形**：归属采用**主机清单式**（而非凭据归属式），形态与本仓自己的先例同构——`alert-sources.yaml` 用"每源凭据证明谁在说话、登记项决定它属于哪个 env"，本笔是"清单决定这台主机属于哪个 env，而不由载荷自报"。选清单式的理由：**迁移是一份文件**（存量主机一次性导入），而凭据式要重新配发每台机器的凭据；且归属文件是 admin 面，一次审计一目了然。
