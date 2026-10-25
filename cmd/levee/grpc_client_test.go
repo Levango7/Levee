@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -388,3 +389,37 @@ func TestAdapterInterfacesCompile(t *testing.T) {
 
 // silence unused-import warnings if a future refactor drops a reference.
 var _ = pb.ChangeServiceClient(nil)
+
+// TestServiceFactoryLocalUsesTheProductionChangeConstructor pins the drift
+// guard that #203's audit made necessary: buildLocalServices used to
+// construct a bare grpc.NewChangeService(store, engine, approval, nil) while
+// every command went through newCLIChangeService — which carries the change
+// calendar gates, the credential resolver and the --as authorizer. The
+// factory's local path therefore ran WITHOUT pieces production had, and
+// nothing failed: the factory had no production caller, so the divergence was
+// invisible until a hand audit. This test reads the source (the same
+// source-reading shape the status transition ratchet uses) and asserts the
+// factory delegates to the production constructor.
+//
+// Why source-reading rather than a behaviour probe: the calendar gate needs a
+// frozen window plus a matching change to observe, and a credential resolver
+// needs LEVEE_MASTER_PASSWORD — three fixtures for one structural fact. The
+// ratchet established that reading a file in the same package is a legitimate
+// guard shape when the alternative is three heavier fixtures; the
+// non-vacuity floor below keeps the read honest.
+func TestServiceFactoryLocalUsesTheProductionChangeConstructor(t *testing.T) {
+	b, err := os.ReadFile("service_factory.go")
+	require.NoError(t, err, "reading service_factory.go from the package directory")
+	src := string(b)
+
+	assert.Contains(t, src, "newCLIChangeService(deps.store)",
+		"buildLocalServices must build the change service through the production constructor "+
+			"(newCLIChangeService): it carries the change calendar gates, the credential resolver "+
+			"and the --as authorizer. A bare grpc.NewChangeService here is the drift that made "+
+			"the factory's local path diverge from every command.")
+
+	// The counterpart: the bare construction must be GONE, or the assertion
+	// above is satisfied by a file that still has both shapes (a half-edit).
+	assert.NotContains(t, src, "grpc.NewChangeService(deps.store, deps.engine",
+		"the factory still builds the change service directly — the drift is back")
+}

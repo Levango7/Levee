@@ -11,6 +11,8 @@ import (
 
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/grpc"
+	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -107,22 +109,51 @@ func runApprove(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	// 2. Find the pending approval for the given run.
+	// 2. --level stays a PRE-CHECK (the gRPC path has no level filter and the
+	//    service picks the first pending approval for the run): the operator
+	//    asked to act on a specific tier, and acting on a different tier's
+	//    approval silently would be worse than a precise refusal.
 	approvalID, err := findPendingApprovalID(ctx, store, approveOptRunID, approveOptLevel)
 	if err != nil {
 		return err
 	}
 
-	// 3. Create the approval service and record the decision.
-	svc := approval.NewService(newApprovalStoreAdapter(store))
-	if err := svc.Approve(ctx, approvalID, approver); err != nil {
+	// 3. Record the decision through ChangeService.ApproveChange — the SAME
+	//    path serve uses. That path requires a verifiable subject (subject.go:
+	//    an approval attested by a self-reported name authenticates nobody),
+	//    so the local context carries the verified --as identity; without
+	//    --as there is no subject and the vote is refused with exactly the
+	//    message a remote caller would see. This is the behaviour change the
+	//    ledger records: local votes are now judged AND attributed like serve's.
+	//
+	//    It also DE-DUPLICATES the old flow: ApproveChange decides, settles the
+	//    run from the chain state (quorum gate included) and writes the audit
+	//    rows — the old path did decide + a second settle pass and wrote no
+	//    service-level audit. The --level pre-check above remains because the
+	//    service picks the first pending approval, not the tier the operator
+	//    named.
+	authzSvc, aerr := localAuthorizer()
+	if aerr != nil {
+		return aerr
+	}
+	svc := grpc.NewChangeService(store, nil, approval.NewService(newApprovalStoreAdapter(store)), nil).
+		WithAuthorizer(authzSvc)
+	voteCtx := grpc.ContextWithSubject(ctx, currentActor())
+	change, err := svc.ApproveChange(voteCtx, &pb.ApproveRequest{
+		ChangeId: approveOptRunID,
+		Approver: currentActor(),
+		Comment:  approveOptComment,
+	})
+	if err != nil {
 		return mapApprovalError(err)
 	}
 
-	// 4. Settle the run from the chain state (quorum gate: a partial
-	//    quorum must not approve the run).
-	if err := settleApprovalFromCLI(ctx, store, approveOptRunID, "approve"); err != nil {
-		return err
+	// 4. Quorum state from the RETURNED run (the service settles and reloads
+	//    it): a partial quorum leaves the run in its pre-decision state
+	//    (draft), while a reached quorum moves it to approved — the same
+	//    stderr hint the old second pass printed, now without the second pass.
+	if change.GetStatus() == runstatus.StatusDraft {
+		fmt.Fprintf(os.Stderr, "%s decision recorded; approval quorum still pending for run %s (waiting for more votes)\n", "approve", approveOptRunID)
 	}
 
 	// 5. Output the result.
@@ -169,22 +200,29 @@ func runReject(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	// 2. Find the pending approval for the given run.
+	// 2. --level pre-check: same reasoning as approve.
 	approvalID, err := findPendingApprovalID(ctx, store, rejectOptRunID, approveOptLevel)
 	if err != nil {
 		return err
 	}
 
-	// 3. Create the approval service and record the rejection.
-	svc := approval.NewService(newApprovalStoreAdapter(store))
-	if err := svc.Reject(ctx, approvalID, approver, rejectOptReason); err != nil {
-		return mapApprovalError(err)
+	// 3. Record the rejection through ChangeService.RejectChange — the same
+	//    path serve uses, with the verified --as identity in the context (see
+	//    the approve comment for why the subject requirement is the point, and
+	//    the one-vote veto means the service settles the run itself).
+	authzSvc, aerr := localAuthorizer()
+	if aerr != nil {
+		return aerr
 	}
-
-	// Settle the run (one-vote veto: the rejection is already terminal
-	// on the chain; mirror it onto the run).
-	if err := settleApprovalFromCLI(ctx, store, rejectOptRunID, "reject"); err != nil {
-		return err
+	svc := grpc.NewChangeService(store, nil, approval.NewService(newApprovalStoreAdapter(store)), nil).
+		WithAuthorizer(authzSvc)
+	voteCtx := grpc.ContextWithSubject(ctx, currentActor())
+	if _, err := svc.RejectChange(voteCtx, &pb.RejectRequest{
+		ChangeId: rejectOptRunID,
+		Rejecter: currentActor(),
+		Reason:   rejectOptReason,
+	}); err != nil {
+		return mapApprovalError(err)
 	}
 
 	// 4. Output the result.
