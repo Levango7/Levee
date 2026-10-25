@@ -34,7 +34,7 @@ func startTestGateway(t *testing.T, cfg ServeGatewayConfig) (*Gateway, *httptest
 
 	changeSvc := NewChangeService(store, nil, nil, nil)
 	templateSvc := NewTemplateService(store, nil)
-	targetSvc := NewTargetService(newTestStore(t), nil)
+	targetSvc := NewTargetService(store, nil)
 	auditSvc := NewAuditService(store)
 	sysCfg := &config.Config{
 		Server:   config.ServerConfig{DataDir: t.TempDir(), LogLevel: "info", LogFormat: "text"},

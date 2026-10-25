@@ -73,6 +73,12 @@ message Target {
   bool reachable = 7;
   // active / frozen / retired
   string status = 8;
+  // group_id is the host group this target belongs to (inventory_groups).
+  // Empty means ungrouped. It is set by AddTarget/ImportTargets and read by
+  // the console's group tree; the field existed on the stored row since the
+  // inventory importer landed but was never carried over the wire, which is
+  // why the console's group view could not be built against the REST API.
+  string group_id = 9;
 }
 
 // Template is a reusable workflow definition.
@@ -580,6 +586,8 @@ message ListTargetsRequest {
   bool reachable_only = 3;
   int32 page_size = 4;
   string page_token = 5;
+  // Filter to one host group (inventory_groups.id). Empty means all groups.
+  string group_id = 6;
 }
 
 message ListTargetsResponse {

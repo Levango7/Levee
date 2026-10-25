@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nexus/levee/internal/state"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -159,4 +160,43 @@ func TestRESTInventoryImportAndHistoryCarryThrough(t *testing.T) {
 	require.NoError(t, err)
 	defer stResp.Body.Close()
 	assert.Equal(t, http.StatusOK, stResp.StatusCode)
+}
+
+// Group filter on the targets list: the label-selector path already filters
+// server-side; the group path is what the console's group tree clicks through
+// to, and it filters on the STORED row's group_id (the importer's group
+// resolution), not on any label the request could assert.
+func TestRESTTargetsListFiltersByGroup(t *testing.T) {
+	gw, srv, store := startTestGateway(t, ServeGatewayConfig{})
+	gw.SetInventory(NewInventoryService(store).WithAuthorizer(nil))
+
+	ctx := context.Background()
+	require.NoError(t, store.UpsertInventoryGroup(ctx, &state.InventoryGroup{
+		ID: "grp-db", Name: "prod/db",
+	}))
+	require.NoError(t, store.UpsertTarget(ctx, &state.Target{
+		ID: "tgt-in", Hostname: "10.9.1.1", Port: 22, ChannelType: "ssh",
+		GroupID: "grp-db", Status: state.StatusActive,
+	}))
+	require.NoError(t, store.UpsertTarget(ctx, &state.Target{
+		ID: "tgt-out", Hostname: "10.9.1.2", Port: 22, ChannelType: "ssh",
+		Status: state.StatusActive,
+	}))
+
+	listResp, err := http.Get(srv.URL + "/targets?groupId=grp-db")
+	require.NoError(t, err)
+	defer listResp.Body.Close()
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var listed struct {
+		Targets []struct {
+			ID string `json:"id"`
+		} `json:"targets"`
+	}
+	require.NoError(t, json.NewDecoder(listResp.Body).Decode(&listed))
+	ids := make([]string, 0, len(listed.Targets))
+	for _, tg := range listed.Targets {
+		ids = append(ids, tg.ID)
+	}
+	assert.Equal(t, []string{"tgt-in"}, ids,
+		"the group filter must narrow to the store row's group_id")
 }

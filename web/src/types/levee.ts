@@ -71,6 +71,10 @@ export interface Target {
   credentialRef: string
   labels: Record<string, string>
   reachable: boolean
+  /** Host group this target belongs to (inventory_groups). Empty = ungrouped.
+   *  snake_case on the wire: proto Target.group_id, carried since the group
+   *  tree landed — the stored row always had it, the wire did not. */
+  groupId?: string
 }
 
 export interface Template {
