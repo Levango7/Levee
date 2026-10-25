@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增（drift 常驻巡检接进 serve：`drift.schedule.enabled`——CLI 写的任务文件第一次有人在后台跑）
+
+- **补的缺口**：`DriftScheduler` 与 `levee drift schedule add/list/remove/run` 早已齐备（含 cron 解析、任务文件持久化、e2e），但 serve 从不 import drift——任务文件躺在 `<dataDir>/drift/jobs`，**没有常驻进程去跑它们**：serve 部署的漂移只在有人手动跑 CLI 时才被检测，"定时巡检"在有服务端的部署里是空转的。
+- **一个开关，一个语义**：`drift.schedule.enabled`（默认 false，既有部署逐字节不变）。开启后本 serve 进程在后台跑这些任务；**任务本身不进配置**——继续由 `levee drift schedule add` 管理，CLI 与 serve 共用同一份任务文件（one job store, two consumers），两边不可能对"调度了什么"产生分歧。这与 `ai.llm`、`diagnosis.topology` 的"配置节=开关，数据=磁盘文件"先例同构。
+- **装配三态**（`buildServeDriftScheduler` + runServe 装配点）：关闭 → 不构造（历史姿态）；开启有任务 → `Start` + defer `Stop`（进程退出前优雅停）+ 启动日志报任务数；**开启但零任务 → 调度器不启动**，WARN 点名"去 `levee drift schedule add` 建任务"——空跑一个永不触发的 goroutine 是在假装巡检。
+- **顺带修掉一个藏在集成处的真缺陷**：`DriftDetector.sendDriftAlert` 构建的告警消息**没有 Recipients**，而 `NotificationManager.Notify/NotifyAsync` 的校验对空收件人直接拒投（`ErrNoRecipients`）——即装上 notifier，任何 drift 告警也到不了任何渠道（本笔接线测试当场抓出）。修法取 `run_lifecycle` 同款先例：渠道广播语义（`RecipientChannel("drift","drift")`），漂移告警面向渠道而非个人。
+- **测试**：`cmd/levee/drift_serve_wiring_test.go` 4 例钉装配（关闭=不构造 / 开启=CLI 任务文件全部加载且 Start/Stop 真活 / 开启零任务=空调度器交由调用方决定 / **notifier 端到端**：真 NotificationManager + 计数渠道，RunOnce 一次必达）。调度器自身 cron 行为不动（`internal/drift` 已有覆盖）。
+- **验证**：`go build`/`vet`/`gofmt` 干净；cmd/levee、internal/drift、internal/config 全绿；`config.example.yaml` 新增 `drift:` 段。
+
 ### 新增（`levee plugin test`：插件链路的最小真执行——一次活的协议握手，把"装了→启用了→真的能跑"钉成可验证事实）
 
 - **与"插件执行面未启用声明"那条的关系**：那条把执行面缺位从暗雷变成明说的边界；本条在同一前提下给出最小的**真**执行——引擎消费点（gate/notifier 接入）仍是独立决定，但"安装→启用→执行"链路从此有命令可验，不再只有注册表里的元数据。

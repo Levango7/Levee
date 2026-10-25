@@ -348,6 +348,12 @@ func (d *DriftDetector) sendDriftAlert(ctx context.Context, host string, result 
 		"drift_count":  fmt.Sprintf("%d", result.DriftCount),
 		"total_checks": fmt.Sprintf("%d", result.TotalChecks),
 	}
+	// Channel-broadcast semantics (the same shape run_lifecycle uses): a
+	// drift alert addresses the delivery channels, not a person. Without a
+	// recipient NotificationManager.Notify rejects the message as
+	// ErrNoRecipients before any channel sees it — a drift alert that
+	// configured a notifier and still reaches nobody.
+	msg.Recipients = []notify.Recipient{notify.Channel("drift", "drift")}
 
 	// Detach from the caller's context so cancellation does not abort
 	// delivery. We use context.Background() for the synchronous send; the

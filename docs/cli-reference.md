@@ -2588,6 +2588,10 @@ levee drift baseline list --host web-01
 
 添加定期巡检调度任务。
 
+> **谁在跑这些任务**：任务文件由 serve 进程在后台执行的前提是配置
+> `drift.schedule.enabled: true`（默认关闭）。未开时任务只存在文件里，
+> 需要 `levee drift schedule run` 手动触发。
+
 ```text
 levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--alert] [--enabled]
 ```
