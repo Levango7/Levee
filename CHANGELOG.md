@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（插件系统的第一个引擎消费点：notifier 插件接进 serve 的通知管理器——"执行面未启用"的声明从此分型）
+
+- **兑现上笔的承诺**：上一笔把"执行面未启用"写成明说的边界，并注明"接入时本声明同步撤销"。本笔接入四类消费点里最薄的一类（notifier），声明同步分型：**notifier=活的执行面；gate/module/channel=仍是注册表管理面**（help/README/cli-reference 三处同步改写，不再是笼统的"未启用"）。
+- **接缝与语义**：serve 启动时 `buildServePluginNotifiers` 从注册表读出全部**启用状态**的 `notify` 型插件，经 `plugin.PluginNotifier` 适配成 `notify.Notifier`，注册进与 webhook 同一个管理器——run 生命周期镜像、漂移告警、回滚评级走同一路由，操作者装的通知渠道与内建渠道平权。**注册表文件本身就是开关**（安装+启用=选择加入），不另设配置节——与 alert-sources.yaml"admin 管理的文件即开关"同构。注册表文件缺失=未配置态（nil）；存在但打不开=拒绝启动（静默跳过会让投递断得无声无息）。
+- **交付一次 = 一次子进程**：每次 Send 起一个固定 argv 的短命进程（init 交注册表里存的安装时配置 → notify 交消息 → close），30 秒死限（比握手长，因为插件可能有自己的上游网络 I/O），ctx 取消与超时都会杀进程。**刻意不用 Sandbox**：沙箱的价值（崩溃监控/重启/cgroup）属于常驻进程，一次性投递用不上——与 `plugin test` 的 Probe 同一判断，本轮已把两者共用一套 `pluginProc` 运行器（protocol.go 重构，Probe 行为零变化、其测试原样通过）。
+- **boot 期与投递期的失败分级**：boot 时二进制已消失=渠道不可用，按 webhook 规则**拒绝启动并点名 + 给逃生门**（`levee plugin disable`）；boot 后的失败（上游 5xx、协议违例、进程崩溃）=**按次投递错误**，由管理器聚合上报，不拖垮 serve。gate 型插件永远不会被当成通知渠道装配（类型过滤，装配测试钉住）。
+- **消息映射**：`notify.Message` → `NotifyMessage`（插件接口的 JSON 契约原样：event/run_id/level/title/body/recipients/metadata，recipients 折叠为 ID 列表，level 用词表字符串）。
+- **测试**：`internal/plugin/notifier_test.go` 5 例（真子进程交付+config 交接 / 插件拒投浮出为错误且带插件原话 / 记录校验三态 / 二进制消失=按次错误 / 线格式映射钉死）；`cmd/levee/serve_plugin_notify_test.go` 4 例（注册表缺失=未配置 / 启用通知插件→按名装配 / gate 型被过滤 / 二进制消失→拒绝启动点名+逃生门）；protocol 重构回归 9 例全绿。
+- **验证**：`go build`/`vet`/`gofmt` 干净；`internal/plugin`、`cmd/levee` 全量绿。
+
 ### 新增（drift 常驻巡检接进 serve：`drift.schedule.enabled`——CLI 写的任务文件第一次有人在后台跑）
 
 - **补的缺口**：`DriftScheduler` 与 `levee drift schedule add/list/remove/run` 早已齐备（含 cron 解析、任务文件持久化、e2e），但 serve 从不 import drift——任务文件躺在 `<dataDir>/drift/jobs`，**没有常驻进程去跑它们**：serve 部署的漂移只在有人手动跑 CLI 时才被检测，"定时巡检"在有服务端的部署里是空转的。

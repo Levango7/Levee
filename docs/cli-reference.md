@@ -1729,14 +1729,16 @@ levee rbac tree
 
 管理 LEVEE 插件注册表（安装/启停/移除/查询，含签名验证与沙箱配置）。
 
-> **边界（如实声明）**：插件的**执行面尚未启用**。引擎当前没有任何
-> Channel/Gate/Module/Notifier 的插件消费点——`plugin install` 之后引擎行为
-> **不变**。本章命令管理的是注册表与沙箱，为将来的执行面就绪；`plugin test`
-> （16.7）提供**最小真执行**——一次活的协议握手，证明"安装→启用→执行"链路
-> 真实可用，但仍不是引擎消费。要在**今天**扩展引擎能力，请使用编译期通道
-> 插件（写 Go 代码实现 `channel.ChannelFactory` 并注册，见
-> [`channel-plugins.md`](channel-plugins.md)），那是另一套机制，与本章的
-> 运行时插件系统无关。
+> **执行面（如实声明，2026-10-26 起分型）**：**notifier 类型已接入 serve**——
+> 注册表里每个启用状态的通知插件，在 serve 启动时装配进通知管理器，成为与
+> `notify.webhook` 并列的投递渠道（run 生命周期、漂移告警、回滚评级走同一路
+> 由）；插件二进制缺失或记录不可用时**拒绝启动并点名**（与 webhook 的
+> enabled-却不可用同规则），逃生门是 `levee plugin disable <名>`。**gate /
+> module / channel 三型仍是注册表管理面**（引擎消费点未接）；`plugin test`
+> （16.7）对任意插件提供最小真执行（活的协议握手）。要在**今天**扩展引擎的
+> 执行通道，请使用编译期通道插件（写 Go 代码实现 `channel.ChannelFactory`
+> 并注册，见 [`channel-plugins.md`](channel-plugins.md)），那是另一套机制，
+> 与本章的运行时插件系统无关。
 
 ### 16.1 plugin list
 
