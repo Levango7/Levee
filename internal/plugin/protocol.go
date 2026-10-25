@@ -120,7 +120,7 @@ func Probe(ctx context.Context, binaryPath string, requests []HostRequest) ([]Pl
 	// drain from the pipe without interleaving writes and reads.
 	writeErr := make(chan error, 1)
 	go func() {
-		defer stdin.Close()
+		defer func() { _ = stdin.Close() }()
 		enc := json.NewEncoder(stdin)
 		for _, req := range requests {
 			if err := enc.Encode(req); err != nil {
