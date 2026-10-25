@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增（`levee plugin test`：插件链路的最小真执行——一次活的协议握手，把"装了→启用了→真的能跑"钉成可验证事实）
+
+- **与"插件执行面未启用声明"那条的关系**：那条把执行面缺位从暗雷变成明说的边界；本条在同一前提下给出最小的**真**执行——引擎消费点（gate/notifier 接入）仍是独立决定，但"安装→启用→执行"链路从此有命令可验，不再只有注册表里的元数据。
+- **协议落地为代码**：示例插件（`examples/plugins/http_probe`）声明的 JSON 行 stdio 协议有了宿主侧实现（`internal/plugin/protocol.go`：`HostRequest`/`PluginResponse` + `Probe`）。`Probe` 用**固定 argv** 的子进程（`&exec.Cmd{Path, Args}` 字面量、无 shell、无命令行参数——插件指令只经 stdin 传输），路径先经 `resolvePluginBinary` 收紧（绝对化 + 必须是已存在的普通文件，拒绝目录/空串）；10 秒死限，超时杀进程并报"未应答"而非挂死。
+- **刻意不用 Sandbox**：沙箱假设常驻 gRPC 形态（它丢弃 stdout）且其价值（崩溃监控/重启/cgroup）属于长生命周期进程；一次握手用固定 argv + 管道 + 死限才是诚实的工具。注释写明。
+- **CLI**：`levee plugin test <name>`——仅对 `enabled` 状态的插件（否则点名先 enable）；报告插件身份应答（meta details）与往返耗时，`--json` 同形。
+- **测试**：`internal/plugin/protocol_test.go` 4 例，其中活的握手用**测试二进制自我重执行**当子进程（环境变量选分支，与 agent 注册表双进程 E2E 同款先例）：真握手往返 / 非 JSON 输出必须被拒（不是解析成误导性零值）/ 三种不可用路径拒绝 / 握手请求形状钉死。
+- **验证**：`internal/plugin` 全包绿；`go build`/`vet`/`gofmt` 干净。
+
 ### 新增（审批票判定补上服务路径之外的缺口：`approval.DecisionGuard` 管 gate 投票与移动深链）
 
 - **与"CLI 投票走 serve 的同一条路"那条的关系（同题分工，不是重复实现）**：CLI/ChatOps 的投票已改走 `ChangeService.ApproveChange`/`RejectChange`（服务层判定 + quorum 服务端强制）。但仍有两处投票面**不走服务层**：`levee gate approve/reject`（human 门禁决定，直调领域服务）与**移动深链**（serve 进程内 `MobileApprovalService` 直调 `approvalSvc`——它的 REST 路由豁免网关鉴权，token 证明持有人，而绑定的 userID 此前不经注册表判定就能投出有效票）。本笔给领域服务补一个可选判定缝，把这两面收进同一张矩阵。

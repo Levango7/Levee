@@ -1731,10 +1731,12 @@ levee rbac tree
 
 > **边界（如实声明）**：插件的**执行面尚未启用**。引擎当前没有任何
 > Channel/Gate/Module/Notifier 的插件消费点——`plugin install` 之后引擎行为
-> **不变**。本章命令管理的是注册表与沙箱，为将来的执行面就绪。要在**今天**
-> 扩展引擎能力，请使用编译期通道插件（写 Go 代码实现
-> `channel.ChannelFactory` 并注册，见 [`channel-plugins.md`](channel-plugins.md)），
-> 那是另一套机制，与本章的运行时插件系统无关。
+> **不变**。本章命令管理的是注册表与沙箱，为将来的执行面就绪；`plugin test`
+> （16.7）提供**最小真执行**——一次活的协议握手，证明"安装→启用→执行"链路
+> 真实可用，但仍不是引擎消费。要在**今天**扩展引擎能力，请使用编译期通道
+> 插件（写 Go 代码实现 `channel.ChannelFactory` 并注册，见
+> [`channel-plugins.md`](channel-plugins.md)），那是另一套机制，与本章的
+> 运行时插件系统无关。
 
 ### 16.1 plugin list
 
@@ -1857,6 +1859,23 @@ levee plugin info <name>
 
 ```命令示例：查看插件详情
 levee plugin info http-probe
+```
+
+### 16.7 plugin test
+
+对**已启用**的插件做一次活的协议握手：执行插件二进制、经 stdin/stdout 的
+JSON 行协议发送 `meta`（身份）与 `close` 请求、报告插件应答与往返耗时。这
+是最小的**真执行**——证明注册表路径可解析、二进制可运行、插件按协议应答；
+超时 10 秒，未启用/未应答/应答非协议均显式报错。
+
+```text
+levee plugin test <name>
+```
+
+**示例**
+
+```命令示例：握手测试
+levee plugin test http-probe
 ```
 
 ## 第17章 chatops — ChatOps 机器人

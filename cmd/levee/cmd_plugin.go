@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -50,6 +51,7 @@ func newPluginCmd() *cobra.Command {
 	cmd.AddCommand(newPluginDisableCmd())
 	cmd.AddCommand(newPluginRemoveCmd())
 	cmd.AddCommand(newPluginInfoCmd())
+	cmd.AddCommand(newPluginTestCmd())
 
 	return cmd
 }
@@ -124,6 +126,23 @@ func newPluginInfoCmd() *cobra.Command {
 		Long:  "Display the full registry record for a plugin.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runPluginInfo,
+	}
+}
+
+// newPluginTestCmd builds the `levee plugin test <name>` sub-command.
+func newPluginTestCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "test <name>",
+		Short: "Run one live handshake against an enabled plugin",
+		Long: "Execute the plugin's binary once and speak the JSON-line " +
+			"stdio protocol to it: send the meta (identity) request and the " +
+			"close request, report what came back. This is the smallest " +
+			"TRUE execution of the install->enable->execute chain — it " +
+			"proves the registry path resolves, the binary runs and the " +
+			"plugin answers. It is still NOT engine consumption: see the " +
+			"plugin command's boundary note.",
+		Args: cobra.ExactArgs(1),
+		RunE: runPluginTest,
 	}
 }
 
@@ -354,7 +373,6 @@ func runPluginInfo(cmd *cobra.Command, args []string) error {
 	}
 
 	output := pluginRecordToMap(rec)
-
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  output,
@@ -460,4 +478,69 @@ func printPluginInfoHuman(w io.Writer, output map[string]any) {
 		fmt.Fprintf(tw, "Error:\t%v\n", v)
 	}
 	_ = tw.Flush()
+}
+
+// runPluginTest executes `levee plugin test <name>`: one live handshake
+// against an enabled plugin (see newPluginTestCmd for what "live" means and
+// where it stops short of engine consumption).
+func runPluginTest(cmd *cobra.Command, args []string) error {
+	ctx := context.Background()
+	mgr, cleanup, err := openPluginManager(ctx)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	rec, err := mgr.Info(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("plugin test: %w", err)
+	}
+	if rec.State != plugin.StateEnabled {
+		return fmt.Errorf("plugin test: %q is %s; enable it first (`levee plugin enable %s`)",
+			rec.Name, rec.State, rec.Name)
+	}
+
+	start := time.Now()
+	responses, probeErr := plugin.Probe(ctx, rec.BinaryPath, plugin.MetaHandshake())
+	elapsed := time.Since(start)
+	if probeErr != nil {
+		return fmt.Errorf("plugin test: handshake with %q failed: %w", rec.Name, probeErr)
+	}
+	if len(responses) == 0 || !responses[0].OK {
+		msg := "no answer"
+		if len(responses) > 0 {
+			msg = responses[0].Error
+		}
+		return fmt.Errorf("plugin test: %q answered but refused the meta request: %s", rec.Name, msg)
+	}
+
+	identity := map[string]any{"message": ""}
+	if responses[0].Result != nil {
+		identity = responses[0].Result.Details
+		if identity == nil {
+			identity = map[string]any{"message": responses[0].Result.Message}
+		}
+	}
+
+	output := map[string]any{
+		"name":     rec.Name,
+		"ok":       true,
+		"identity": identity,
+		"rounds":   len(responses),
+		"elapsed":  elapsed.String(),
+	}
+
+	if optJSON {
+		return PrintJSON(os.Stdout, map[string]any{
+			"data":  output,
+			"meta":  nil,
+			"error": nil,
+		})
+	}
+
+	fmt.Fprintf(os.Stdout, "Plugin %s answered the handshake in %s\n", rec.Name, elapsed)
+	for k, v := range identity {
+		fmt.Fprintf(os.Stdout, "  %s: %v\n", k, v)
+	}
+	return nil
 }
