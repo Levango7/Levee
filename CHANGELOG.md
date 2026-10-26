@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 新增（插件系统的第二个引擎消费点：notifier→gate，`plugin` 门禁类型接进验证链——"执行面未启用"声明二次分型）
+
+- **声明分型**：上笔把 notifier 接到通知管理器，边界声明同步改写为"notifier=活的执行面；gate/module/channel=仍是注册表管理面"。本笔兑现 gate：**notifier + gate = 活的执行面；module/channel = 仍是管理面**。help/README/cli-reference 三处边界声明同步更新。
+- **DSL 语法**：`yamlGateRaw` 新增 `plugin: {name: <插件名>}` 声明块；`convertGateCheck` 产出 `GateCheck{Type:"plugin", Plugin:<名>}`；LE051 文案加 plugin。门禁参数（params）与 probe/slo/human 同构——声明原样透传，gate 实现按自身契约 fail-closed 校验。
+- **plan hash 纳入插件名**：`canonicalGateCheck` 新增 `Plugin` 字段（omitempty，历史哈希字节不变）。审批对的是"哪个插件执行检查"——改插件名或插件后批准，计划哈希不同，`ApproveChange` 的 plan-hash 匹配不会误放行。
+- **verify.PluginGate**：实现 `verify.Gate`，`Check` 时经 resolver 解析插件名 → `plugin.Probe` 起一次子进程（init 交注册表配置 + check 交声明参数 + close），响应映射 `Result.Passed` → `GateResult.Passed`，消息/细节透传。**无 verdict 的 ok:true 判为失败**（同 cmd 门禁空输出的同类）——fail-closed 是这条链的铁律。`timeout` 声明注入 `timeout_seconds` 参数，插件自决。
+- **engine 可执行性判定**：`GateRuntime.Plugins`（resolver）是 plan 期拒绝的判据——无 resolver 时声明 plugin 门禁的计划在 GeneratePlan 即被拒（`ErrGateNotExecutable`，命名 gate 与缺失配置），同 slo 无 PrometheusURL / human 无 approver 的既有形状。`gateFromCheck` 新增 plugin 分支；default 拒绝文案加 plugin。
+- **wiring 注入**：`WithGatePluginResolver` Option + `gateRuntime()` 传参。serve 侧 `pluginGateResolverFromRegistry` 在 `buildEngineServeOptions` 装配——每次解析读注册表（插件可在计划与执行之间被启用/禁用，解析失败即按次失败，不拿 boot 时快照）。
+- **serve resolver 语义**：注册表文件缺失 = 该部署无法解析任何插件名（错误点名原因）；记录存在但类型非 gate / 未启用 / 二进制消失 = 逐项可读拒绝并给逃生门（`levee plugin enable/disable`）。这是"注册表文件即开关"的延伸——安装+启用=选择加入，与 notifier 通道同构。
+- **测试**：`internal/verify/plugin_gate_test.go` 7 例（通过/失败映射 / 拒投浮出 / 解析失败 / nil resolver / 垃圾输出拒绝 / timeout 注入钉死）；`internal/engine` 表驱动 + materialize 2 例（无 resolver 拒绝、有 resolver 注册）；`internal/dsl` plugin 门禁解析；`internal/plan` 插件名进哈希；`internal/wiring` 拒绝 + 接通对偶。protocol_test 加 checker 子进程模式。
+- **验证**：build/vet/gofmt/golangci-lint 干净；dsl/plan/verify/engine/wiring/plugin/cmd/levee 全量绿（cmd/levee 179s）。
+
 ### 新增（插件系统的第一个引擎消费点：notifier 插件接进 serve 的通知管理器——"执行面未启用"的声明从此分型）
 
 - **兑现上笔的承诺**：上一笔把"执行面未启用"写成明说的边界，并注明"接入时本声明同步撤销"。本笔接入四类消费点里最薄的一类（notifier），声明同步分型：**notifier=活的执行面；gate/module/channel=仍是注册表管理面**（help/README/cli-reference 三处同步改写，不再是笼统的"未启用"）。
