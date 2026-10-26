@@ -49,6 +49,10 @@ func probeCheck() dsl.GateCheck {
 	return dsl.GateCheck{Type: "probe", Params: map[string]any{"kind": "tcp", "host_port": "h:22"}}
 }
 
+func pluginCheck() dsl.GateCheck {
+	return dsl.GateCheck{Type: "plugin", Plugin: "http-probe", Params: map[string]any{"url": "https://example.com"}}
+}
+
 // TestExecutabilityProblemIsBidirectional pins both halves: a declaration the
 // process can honour must NOT be blocked, and one it cannot MUST be. Only the
 // refusal side was ever exercised before, so the "allowed" side had no proof
@@ -75,6 +79,10 @@ func TestExecutabilityProblemIsBidirectional(t *testing.T) {
 		// behaviour change, so their non-blocking is pinned here.
 		{name: "cmd needs no runtime", check: cmdCheck(), phase: verify.PhasePreApply, rt: GateRuntime{}, blocked: false},
 		{name: "probe needs no runtime", check: probeCheck(), phase: verify.PhasePreApply, rt: GateRuntime{}, blocked: false},
+		// plugin gates resolve their plugin name at check time against the
+		// deployment's registry; without a resolver the plan is refused.
+		{name: "plugin without resolver", check: pluginCheck(), phase: verify.PhasePostBatch, rt: GateRuntime{}, blocked: true, want: "requires a plugin resolver"},
+		{name: "plugin with resolver", check: pluginCheck(), phase: verify.PhasePostBatch, rt: GateRuntime{Plugins: func(name string) (verify.PluginSpec, error) { return verify.PluginSpec{Name: name}, nil }}, blocked: false},
 	}
 	for _, tc := range cases {
 		err := GateRuntime(tc.rt).executabilityProblem("g", tc.phase, &tc.check)

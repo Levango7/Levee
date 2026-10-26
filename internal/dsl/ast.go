@@ -255,12 +255,14 @@ type GateSpec struct {
 }
 
 // GateCheck declares a single verification check. Type is one of
-// cmd / slo / probe / human. Command holds the command to run (for cmd) or
-// the query expression (for slo). ExpectExit and ExpectStdout apply to cmd
-// checks. Source identifies the metric backend for slo checks. Params is the
-// free-form parameter mapping for parameterised checks (probe / slo / human):
-// it is passed through verbatim by the parser and validated by the gate
-// implementation at materialisation / check time (fail-closed).
+// cmd / slo / probe / human / plugin. Command holds the command to run (for
+// cmd) or the query expression (for slo). ExpectExit and ExpectStdout apply
+// to cmd checks. Source identifies the metric backend for slo checks. Plugin
+// names the enabled gate-type plugin to run the check in (for plugin).
+// Params is the free-form parameter mapping for parameterised checks (probe /
+// slo / human / plugin): it is passed through verbatim by the parser and
+// validated by the gate implementation at materialisation / check time
+// (fail-closed).
 type GateCheck struct {
 	Type         string
 	Command      string
@@ -268,5 +270,6 @@ type GateCheck struct {
 	ExpectStdout string
 	Source       string
 	Timeout      string
+	Plugin       string
 	Params       map[string]any
 }

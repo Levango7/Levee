@@ -795,3 +795,51 @@ func TestParseGateTemplates(t *testing.T) {
 		})
 	}
 }
+
+// TestParsePluginGate verifies a plugin-check declaration parses into the
+// GateCheck the engine materialises: the plugin name lands in Plugin and the
+// free-form params survive verbatim (the gate implementation validates its
+// own keys fail-closed, like probe/slo/human).
+func TestParsePluginGate(t *testing.T) {
+	src := `
+name: plugin-gate-workflow
+target:
+  hosts: [10.0.0.1]
+steps:
+  - name: deploy
+    action: shell.run
+    verify:
+      plugin:
+        name: http-probe
+      params:
+        url: "https://{target}/health"
+        expect_code: 200
+gates:
+  - position: post_batch
+    plugin:
+      name: http-probe
+    params:
+      url: "https://{target}/"
+      expect_code: 200
+      timeout_seconds: 15
+`
+	wf, err := NewParser().ParseBytes([]byte(src))
+	require.NoError(t, err)
+
+	// Step-level plugin gate.
+	require.Len(t, wf.Steps, 1)
+	g := wf.Steps[0].Gate
+	require.NotNil(t, g)
+	require.Len(t, g.Post, 1)
+	assert.Equal(t, "plugin", g.Post[0].Type)
+	assert.Equal(t, "http-probe", g.Post[0].Plugin)
+	assert.Equal(t, "https://{target}/health", g.Post[0].Params["url"])
+	assert.Equal(t, 200, g.Post[0].Params["expect_code"])
+
+	// Workflow-level plugin gate.
+	require.NotNil(t, wf.Gate)
+	require.Len(t, wf.Gate.Batch, 1)
+	assert.Equal(t, "plugin", wf.Gate.Batch[0].Type)
+	assert.Equal(t, "http-probe", wf.Gate.Batch[0].Plugin)
+	assert.Equal(t, 15, wf.Gate.Batch[0].Params["timeout_seconds"])
+}

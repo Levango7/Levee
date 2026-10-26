@@ -217,6 +217,12 @@ type canonicalGateCheck struct {
 	Source       string         `json:"source"`
 	Timeout      string         `json:"timeout"`
 	Params       map[string]any `json:"params"`
+	// Plugin is the gate-type plugin name a plugin gate executes in. It is
+	// part of the plan hash: an approved plan promises which plugin runs
+	// its checks, and a plugin added or switched after approval is a different
+	// executed object. Appended with omitempty so plans without plugin gates
+	// keep their historical hash bytes exactly.
+	Plugin string `json:"plugin,omitempty"`
 }
 
 // buildCanonicalV1 constructs the legacy execution-only representation.
@@ -392,6 +398,7 @@ func canonicalGateChecks(in []dsl.GateCheck) []canonicalGateCheck {
 			Type: check.Type, Command: check.Command, ExpectExit: check.ExpectExit,
 			ExpectStdout: check.ExpectStdout, Source: check.Source, Timeout: check.Timeout,
 			Params: canonicalArgs(check.Params),
+			Plugin: check.Plugin,
 		}
 	}
 	return out

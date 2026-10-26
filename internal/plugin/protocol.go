@@ -201,6 +201,14 @@ func Probe(ctx context.Context, binaryPath string, requests []HostRequest) ([]Pl
 	return responses, nil
 }
 
+// ParseConfigYAML parses a plugin config blob (from a registry record's
+// config_yaml) into a map. It is exported because the notifier adapter and
+// the gate-side resolver both need to hand the stored config to the plugin
+// process without depending on manager.go internals.
+func ParseConfigYAML(s string) (map[string]any, error) {
+	return parseConfigYAML(s)
+}
+
 // MetaHandshake is the request set `levee plugin test` sends: identify
 // yourself, then shut down. Two responses are expected — the identity and
 // the close acknowledgement.

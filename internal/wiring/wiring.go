@@ -116,6 +116,13 @@ type Engine struct {
 	// See WithGateApprover and engine.PlanGateBlockers.
 	gateApprover verify.HumanApprover
 
+	// gatePluginResolver resolves declared plugin-check names against the
+	// plugin registry. Nil (the default) means no plugin gates can execute,
+	// and then a plan declaring one is REFUSED at plan time — the same
+	// fail-closed shape as slo/human above. Serve installs it from the
+	// registry; `levee converse` and CLI-local runs leave it unwired and
+	// their plans are refused if they declare plugin checks.
+	gatePluginResolver verify.PluginResolver
 	// snapshotDir roots the pre-apply snapshot store. Empty (the default)
 	// disables snapshot capture/restore: workflows declaring
 	// strategy "snapshot" run with capture skipped (the pre-wiring
@@ -220,6 +227,15 @@ func WithGateApprover(a verify.HumanApprover) Option {
 	return func(e *Engine) { e.gateApprover = a }
 }
 
+// WithGatePluginResolver wires the plugin resolver behind workflow `plugin`
+// gates: map a declared plugin name to its executable spec (binary path +
+// stored config) via the deployment's plugin registry. Serve installs it from
+// the registry; without a resolver a plan declaring plugin checks is refused
+// at plan time naming the missing wiring.
+func WithGatePluginResolver(r verify.PluginResolver) Option {
+	return func(e *Engine) { e.gatePluginResolver = r }
+}
+
 // gateRuntime is the ONE view of what this process can execute for declared
 // gates. Both the plan-time refusal (engine.PlanGateBlockers) and the phase-time
 // registration (engine.WithGateRuntime) read it, so a deployment can never be
@@ -228,6 +244,7 @@ func (e *Engine) gateRuntime() engine.GateRuntime {
 	return engine.GateRuntime{
 		PrometheusURL: e.gatePrometheusURL,
 		Approver:      e.gateApprover,
+		Plugins:       e.gatePluginResolver,
 	}
 }
 

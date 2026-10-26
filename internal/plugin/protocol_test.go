@@ -26,7 +26,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// protocolChildMain implements three child personalities:
+// protocolChildMain implements four child personalities:
 //
 //	"echo"   — a well-behaved plugin: answers "meta" with an identity and
 //	           acks "close" (then exits, as the protocol expects).
@@ -35,6 +35,9 @@ func TestMain(m *testing.M) {
 //	"notifier"— a well-behaved notifier: acks "init" (recording the config
 //	           keys), answers "notify" ok:false for a refused event and
 //	           ok:true otherwise, acks "close".
+//	"checker"— a well-behaved gate plugin: acks "init", answers "check"
+//	           with a verdict driven by params["pass"] (default pass), and
+//	           acks "close".
 func protocolChildMain(mode string) int {
 	scanner := bufio.NewScanner(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
@@ -45,6 +48,43 @@ func protocolChildMain(mode string) int {
 			return 1
 		}
 		switch mode {
+		case "checker":
+			switch req.Action {
+			case "init":
+				keys := make([]string, 0, len(req.Config))
+				for k := range req.Config {
+					keys = append(keys, k)
+				}
+				_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+					Details: map[string]any{"init_keys": keys},
+				}})
+			case "check":
+				verdict := req.Params["pass"]
+				if v, ok := verdict.(string); ok && v == "false" {
+					_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+						Passed:  false,
+						Message: "checker says no",
+						Details: map[string]any{
+							"url":             req.Params["url"],
+							"timeout_seconds": req.Params["timeout_seconds"],
+						},
+					}})
+					continue
+				}
+				_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+					Passed:  true,
+					Message: "checker says yes",
+					Details: map[string]any{
+						"url":             req.Params["url"],
+						"timeout_seconds": req.Params["timeout_seconds"],
+					},
+				}})
+			case "close":
+				_ = enc.Encode(PluginResponse{OK: true})
+				return 0
+			default:
+				_ = enc.Encode(PluginResponse{OK: false, Error: "unknown action"})
+			}
 		case "notifier":
 			switch req.Action {
 			case "init":
