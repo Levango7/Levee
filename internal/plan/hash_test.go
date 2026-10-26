@@ -126,6 +126,26 @@ func TestComputeHashTargetOrderStable(t *testing.T) {
 	assert.Equal(t, h1, h3, "target order in batch must not affect hash")
 }
 
+// TestComputeHashPluginNameMatters verifies that two plans differing only in
+// the plugin name a plugin gate executes produce different hashes. An approved
+// plan promises which plugin runs its checks; changing the plugin name after
+// approval is a different executed object and must not reuse the same hash.
+func TestComputeHashPluginNameMatters(t *testing.T) {
+	step1 := PlanStep{Name: "deploy", Module: "pkg", Action: "upgrade",
+		Gate: &dsl.GateSpec{Post: []dsl.GateCheck{
+			{Type: "plugin", Plugin: "http-probe"},
+		}},
+	}
+	step2 := PlanStep{Name: "deploy", Module: "pkg", Action: "upgrade",
+		Gate: &dsl.GateSpec{Post: []dsl.GateCheck{
+			{Type: "plugin", Plugin: "smtp-check"},
+		}},
+	}
+	h1 := hashPlan("wf", []string{"host-a"}, step1)
+	h2 := hashPlan("wf", []string{"host-a"}, step2)
+	assert.NotEqual(t, h1, h2, "different plugin names must hash differently")
+}
+
 // TestComputeHashTargetOrderAcrossBatchesStable verifies that target
 // order across batches (when the partition is the same) is captured by
 // the sorted global target set, but the per-batch partition is still

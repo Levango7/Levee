@@ -102,6 +102,50 @@ func TestMaterializeStepGates_UnsupportedTypeFailsClosed(t *testing.T) {
 	assert.Empty(t, gm.Gates(verify.PhasePreApply), "nothing may be registered when materialisation fails")
 }
 
+// A plugin gate with a resolver wires the declared plugin name into the gate
+// and registers it for the phase; without a resolver materialisation fails
+// closed (the plan-time refusal already caught it, but this pins the second
+// half of the judge so the two can never disagree).
+func TestMaterializeStepGates_PluginCheckRegistersRunnableGate(t *testing.T) {
+	gm := verify.NewGateManager()
+	p := &plan.Plan{Batches: []plan.Batch{{
+		Steps: []plan.PlanStep{{
+			Name: "deploy",
+			Gate: &dsl.GateSpec{
+				Batch: []dsl.GateCheck{
+					{Type: "plugin", Plugin: "http-probe", Params: map[string]any{"url": "https://example.com"}},
+				},
+			},
+		}},
+	}}}
+	rt := GateRuntime{Plugins: func(name string) (verify.PluginSpec, error) {
+		return verify.PluginSpec{Name: name, BinaryPath: "/bin/true"}, nil
+	}}
+	require.NoError(t, materializeStepGates(gm, p, rt))
+
+	batch := gm.Gates(verify.PhasePostBatch)
+	require.Len(t, batch, 1)
+	assert.Equal(t, "step:deploy:batch:0", batch[0].Name())
+}
+
+func TestMaterializeStepGates_PluginWithoutResolverErrors(t *testing.T) {
+	gm := verify.NewGateManager()
+	p := &plan.Plan{Batches: []plan.Batch{{
+		Steps: []plan.PlanStep{{
+			Name: "deploy",
+			Gate: &dsl.GateSpec{
+				Batch: []dsl.GateCheck{
+					{Type: "plugin", Plugin: "http-probe"},
+				},
+			},
+		}},
+	}}}
+	err := materializeStepGates(gm, p, GateRuntime{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires a plugin resolver")
+	assert.Empty(t, gm.Gates(verify.PhasePostBatch), "nothing may be registered when materialisation fails")
+}
+
 // Runtime-dependent gates fail materialisation with explicit errors naming
 // the missing configuration instead of registering a gate that could only
 // guess or silently skip.

@@ -248,15 +248,20 @@ type yamlStepRaw struct {
 }
 
 type yamlGateRaw struct {
-	Position string        `yaml:"position"`
-	Cmd      *yamlCmdRaw   `yaml:"cmd"`
-	Slo      *yamlSloRaw   `yaml:"slo"`
-	Probe    *yamlProbeRaw `yaml:"probe"`
-	Human    *yamlHumanRaw `yaml:"human"`
+	Position string         `yaml:"position"`
+	Cmd      *yamlCmdRaw    `yaml:"cmd"`
+	Slo      *yamlSloRaw    `yaml:"slo"`
+	Probe    *yamlProbeRaw  `yaml:"probe"`
+	Human    *yamlHumanRaw  `yaml:"human"`
+	Plugin   *yamlPluginRaw `yaml:"plugin"`
 	// Params is the free-form parameter mapping consumed by parameterised
-	// gate types (probe / slo / human). It is passed through verbatim; each
-	// gate implementation validates its own keys fail-closed.
+	// gate types (probe / slo / human / plugin). It is passed through
+	// verbatim; each gate implementation validates its own keys fail-closed.
 	Params map[string]any `yaml:"params"`
+}
+
+type yamlPluginRaw struct {
+	Name string `yaml:"name"`
 }
 
 type yamlCmdRaw struct {
@@ -643,6 +648,11 @@ func convertGateCheck(g *yamlGateRaw) (GateCheck, error) {
 			Command: g.Probe.URL,
 			Timeout: g.Probe.Timeout,
 		}
+	case g.Plugin != nil:
+		gc = GateCheck{
+			Type:   "plugin",
+			Plugin: g.Plugin.Name,
+		}
 	case g.Human != nil:
 		gc = GateCheck{
 			Type:    "human",
@@ -651,7 +661,7 @@ func convertGateCheck(g *yamlGateRaw) (GateCheck, error) {
 		}
 	default:
 		return GateCheck{Type: "empty"}, newError("LE051", "gate",
-			"gate has no check (cmd/slo/probe/human)")
+			"gate has no check (cmd/slo/probe/human/plugin)")
 	}
 	gc.Params = g.Params
 	return gc, nil

@@ -1158,6 +1158,17 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 	} else {
 		log.Info("execution engine slo gates have no Prometheus URL: declared slo gates fail closed")
 	}
+	// Plugin gates (second execution surface): resolve declared plugin names
+	// against the deployment's registry. A missing registry file means no
+	// plugin checks can run; declared plugin gates fail closed at plan time
+	// with the resolver present but empty (the resolver itself returns the
+	// named reason at check time).
+	opts = append(opts, wiring.WithGatePluginResolver(pluginGateResolverFromRegistry(cfg)))
+	if _, statErr := os.Stat(pluginRegistryPath(cfg)); statErr != nil {
+		log.Warn("execution engine plugin gates have no registry: declared plugin gates will fail at check time with the registry reason", "registry", pluginRegistryPath(cfg))
+	} else {
+		log.Info("execution engine plugin gates will resolve plugin names against the registry", "registry", pluginRegistryPath(cfg))
+	}
 	if serveOptEngineSnapshotDir != "" {
 		opts = append(opts, wiring.WithSnapshotDir(serveOptEngineSnapshotDir))
 		log.Info("execution engine snapshot capture enabled; strategy-snapshot steps capture target files pre-apply and restore on rollback", "dir", serveOptEngineSnapshotDir)
