@@ -834,7 +834,10 @@ func TestCheckExpiry_StoreUpdateError(t *testing.T) {
 	_, err := svc.Create(ctx, CreateRequest{RunID: "r1", Level: "standard", ExpiresAt: pastTime()})
 	require.NoError(t, err)
 
-	store.failOn["update"] = errors.New("write fail")
+	// The expiry write is a CAS on "still pending" (expiry_cas_test.go), so
+	// the injected failure belongs on that method: failing the unconditional
+	// Update would no longer reach this path at all.
+	store.failOn["update-if-pending"] = errors.New("write fail")
 	_, err = svc.CheckExpiry(ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write fail")

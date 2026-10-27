@@ -535,6 +535,12 @@ func (s *Service) ApprovalForRun(ctx context.Context, runID string) (*Approval, 
 // ExpiresAt is in the past as expired. It returns the IDs of the
 // approvals that were expired by this call. Approvals with a zero
 // ExpiresAt are skipped (no timeout configured).
+//
+// The write is a compare-and-set on "still pending": a record that left
+// StatusPending after the scan is never overwritten. That covers both
+// racing writers — another replica's sweep (which would otherwise report
+// the same record twice) and a decision that lands first (which the sweep
+// must not silently undo).
 func (s *Service) CheckExpiry(ctx context.Context) ([]string, error) {
 	pending, err := s.store.ListPending(ctx)
 	if err != nil {
@@ -549,11 +555,22 @@ func (s *Service) CheckExpiry(ctx context.Context) ([]string, error) {
 		if !canTransition(a.Status, StatusExpired) {
 			continue
 		}
-		a.Status = StatusExpired
-		if err := s.store.Update(ctx, a); err != nil {
+		// Write a copy, not the scanned record: a Store is allowed to hand
+		// back the same value it holds, and mutating that in place would make
+		// the CAS below lose against its own write.
+		settled := *a
+		settled.Status = StatusExpired
+		applied, err := s.store.UpdateIfPending(ctx, &settled)
+		if err != nil {
 			return nil, fmt.Errorf("approval: update expiry: %w", err)
 		}
-		expired = append(expired, a.ID)
+		if !applied {
+			// Settled between the scan and this write: not this call's expiry
+			// to report, and never something to overwrite.
+			log.InfoCtx(ctx, "approval expiry skipped: record settled concurrently", "id", settled.ID)
+			continue
+		}
+		expired = append(expired, settled.ID)
 		log.InfoCtx(ctx, "approval expired", "id", a.ID, "expires_at", a.ExpiresAt)
 	}
 	return expired, nil
