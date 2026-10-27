@@ -154,6 +154,33 @@ func TestEmitRoundTripsAllowIrreversible(t *testing.T) {
 		"round trip must preserve the whitelist, sorted")
 }
 
+// TestValidateIrreversibleWhitelist_DeploymentVocabulary 钉住编译期 V14 认
+// 部署额外词表（插件 manifest 声明的破坏性动作）：同一插件步骤默认放行，
+// 一旦部署声明该对就必须列名 —— 这样 compile 期与 plan 期
+// （plan.NewGenerator 收到同一份词表）对插件步骤的判定不会分叉。
+func TestValidateIrreversibleWhitelist_DeploymentVocabulary(t *testing.T) {
+	wf := validWorkflow()
+	wf.Steps = []Step{{Name: "wipe", Module: "cloud-apply", Action: "destroy"}}
+
+	// 缺省 Validator（无部署词表）：插件步骤不判不可逆，因此通过 ——
+	// 这正是额外词表要补的缺口。
+	assert.Empty(t, NewValidator().Validate(wf))
+
+	// 部署声明该对后：V14 要求列名。
+	v := NewValidator("cloud-apply.destroy")
+	errs := v.Validate(wf)
+	require.Len(t, errs, 1)
+	assert.Equal(t, "LE082", errs[0].Code)
+	assert.Contains(t, errs[0].Message, "cloud-apply.destroy")
+
+	// 列名后通过。
+	wf.AllowIrreversible = []string{"cloud-apply.destroy"}
+	assert.Empty(t, v.Validate(wf))
+
+	// 畸形条目（空/无点）匹配不上任何步骤，必须被忽略而不是变成幻影命中。
+	assert.Empty(t, NewValidator("", "nodot", "  ").Validate(validWorkflow()))
+}
+
 // TestIRCarriesAllowIrreversible 钉住 `levee compile --ir` 产物记录白名单：
 // 编译产物本身就是「这次编译授权了什么」的凭证。
 func TestIRCarriesAllowIrreversible(t *testing.T) {

@@ -536,17 +536,26 @@ func buildServeTopologySource(cfg *config.Config) diagnosis.TopologySource {
 // (default) the engine runs pure knowledge-base mode, and a construction
 // error degrades the same way with a loud warning (the same contract as
 // setupServeTracing).
-func newServeConvEngine(cfg *config.Config, changeSvc *grpc.ChangeService, kb *recommend.KnowledgeBase) *conversation.ConversationEngine {
+func newServeConvEngine(cfg *config.Config, changeSvc *grpc.ChangeService, kb *recommend.KnowledgeBase) (*conversation.ConversationEngine, error) {
 	recEngine := recommend.NewRecommendEngine(recommend.RecommendEngineConfig{
 		LLMClient:     buildServeLLMClient(cfg),
 		KnowledgeBase: kb,
 		Timeout:       30 * time.Second,
 	})
+	// The conversation bridge's draft-promotion gate runs the same V14 check
+	// `levee compile` runs, so it must judge a plugin's destructive step the
+	// same way. A present-but-unreadable registry refuses the boot rather than
+	// letting the bridge judge with a narrower vocabulary than the plan path.
+	pairs, pairErr := declaredPluginIrreversiblePairs(context.Background(), cfg)
+	if pairErr != nil {
+		return nil, pairErr
+	}
 	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
-		Recommend:     recEngine,
-		ChangeCreator: grpc.NewConversationChangeCreator(changeSvc),
-		Timeout:       60 * time.Second,
-	})
+		Recommend:            recEngine,
+		ChangeCreator:        grpc.NewConversationChangeCreator(changeSvc),
+		Timeout:              60 * time.Second,
+		InherentIrreversible: pairs,
+	}), nil
 }
 
 // stopServeChatOps stops the started ChatOps bots on server exit; nil-safe
@@ -1666,7 +1675,10 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 			log.Info("diagnosis llm reasoning enabled")
 		}
 	}
-	convEngine := newServeConvEngine(cfg, changeSvc, buildServeKnowledgeBase(cfg, changeSvc))
+	convEngine, convErr := newServeConvEngine(cfg, changeSvc, buildServeKnowledgeBase(cfg, changeSvc))
+	if convErr != nil {
+		return serveServices{}, convErr
+	}
 	convSvc := grpc.NewConversationService(convEngine, slog.Default()).WithAuthorizer(authzSvc)
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the

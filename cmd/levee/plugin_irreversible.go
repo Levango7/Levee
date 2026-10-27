@@ -48,3 +48,17 @@ func declaredPluginIrreversiblePairs(ctx context.Context, cfg *config.Config) ([
 	}
 	return plugin.DeclaredDestructivePairs(records), nil
 }
+
+// declaredPluginIrreversiblePairsForCmd is the compile-class convenience:
+// `levee compile` / `new` / `import` build a dsl.Validator directly (no engine),
+// and must feed it the same vocabulary serve and `levee plan` use, or the
+// compile-time V14 gate and the plan-time LE082 gate would disagree about a
+// plugin's destructive step. It loads the configuration itself because those
+// commands did not previously need it.
+func declaredPluginIrreversiblePairsForCmd() ([]string, error) {
+	cfg, err := loadConfigForCmd()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	return declaredPluginIrreversiblePairs(context.Background(), cfg)
+}

@@ -186,7 +186,14 @@ func validateRenderedWorkflow(templateName, content string) ([]dsl.ValidationErr
 	if err != nil {
 		return nil, fmt.Errorf("template %q renders a workflow that does not parse: %w [exit=2]", templateName, err)
 	}
-	validator := dsl.NewValidator()
+	// Same deployment vocabulary as `levee compile` and the plan-time gate: a
+	// template that renders a step on a plugin's destructive action must be
+	// judged here, not only later at plan time.
+	irreversiblePairs, pairErr := declaredPluginIrreversiblePairsForCmd()
+	if pairErr != nil {
+		return nil, pairErr
+	}
+	validator := dsl.NewValidator(irreversiblePairs...)
 	if verrs := validator.Validate(wf); len(verrs) > 0 {
 		msgs := make([]string, 0, len(verrs))
 		for _, ve := range verrs {
