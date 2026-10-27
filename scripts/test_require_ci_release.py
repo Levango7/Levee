@@ -158,5 +158,73 @@ class ReleaseGateTests(unittest.TestCase):
             gate.validate(args)
 
 
+class TaggedCommitLinearityTests(unittest.TestCase):
+    """A release tag must point at a single-parent commit (CONTRIBUTING §5.4).
+
+    `ci.yml`'s landing-shape step asserts the same thing for pushes to master,
+    but its condition is push + refs/heads/master, so on a `v*` tag push the step
+    is skipped and nothing else would notice a tag cut on a merge commit.
+    """
+
+    def test_single_parent_passes(self) -> None:
+        api = CommitAPI(["b" * 40])
+        gate.assert_linear_tagged_commit(api, sha=SHA)
+        self.assertEqual(api.calls, [f"repos/acme/levee/commits/{SHA}"])
+
+    def test_merge_commit_fails(self) -> None:
+        api = CommitAPI(["b" * 40, "c" * 40])
+        with self.assertRaisesRegex(gate.GateError, "has 2 parents"):
+            gate.assert_linear_tagged_commit(api, sha=SHA)
+
+    def test_parentless_commit_fails(self) -> None:
+        api = CommitAPI([])
+        with self.assertRaisesRegex(gate.GateError, "has 0 parents"):
+            gate.assert_linear_tagged_commit(api, sha=SHA)
+
+    def run_main(self, api: "CommitAPI") -> tuple[int, list[str]]:
+        """Run main() end to end with the API and the CI wait stubbed out."""
+        order: list[str] = []
+        original_api, original_wait = gate.GitHubAPI, gate.wait_for_release_ci
+
+        class StubAPI(api.__class__):  # type: ignore[misc, valid-type]
+            def __init__(self, **_kwargs: object) -> None:
+                super().__init__(api.parents)
+
+        gate.GitHubAPI = StubAPI  # type: ignore[assignment]
+        gate.wait_for_release_ci = lambda *_a, **_k: order.append("wait")  # type: ignore[assignment]
+        try:
+            rc = gate.main([
+                "--repository", "acme/levee", "--sha", SHA, "--ref", REF,
+                "--token", "t", "--timeout", "0", "--poll", "0",
+            ])
+        finally:
+            gate.GitHubAPI, gate.wait_for_release_ci = original_api, original_wait
+        return rc, order
+
+    def test_main_refuses_merge_commit_without_waiting(self) -> None:
+        rc, order = self.run_main(CommitAPI(["b" * 40, "c" * 40]))
+        self.assertEqual(rc, 1)
+        self.assertEqual(order, [], "the CI wait must not run for a non-linear tag")
+
+    def test_main_waits_when_tag_is_linear(self) -> None:
+        # Control: without this, "wait never ran" would also pass if main() simply
+        # stopped calling the wait at all.
+        rc, order = self.run_main(CommitAPI(["b" * 40]))
+        self.assertEqual(order, ["wait"])
+
+
+class CommitAPI:
+    def __init__(self, parents: list[str]) -> None:
+        self.repository = "acme/levee"
+        self.parents = list(parents)
+        self.calls: list[str] = []
+
+    def get(self, endpoint: str) -> dict:
+        self.calls.append(endpoint)
+        if "/commits/" not in endpoint:
+            raise AssertionError(f"unexpected endpoint: {endpoint}")
+        return {"sha": SHA, "parents": [{"sha": p} for p in self.parents]}
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -48,6 +48,13 @@
 - 顺带：`TestCheckExpiry_StoreUpdateError` 的注入键从 `update` 改为 `update-if-pending`，注释说明写回已是 CAS。
 - 验证：`go test ./internal/approval/` 绿、`gofmt -l` 干净。
 
+### 修复（发布 tag 的落地形状第一次有了机器断言——`landing shape` 在 tag 路径上是 skipped）
+
+- **缺口是切 v1.23.0 时实测到的**：`ci.yml` 的 `landing shape` 步条件写在 **step** 上（`github.event_name == 'push' && github.ref == 'refs/heads/master'`）。推 `v*` tag 时 `github.ref` 是 `refs/tags/v1.23.0`，这一步 **skipped**，`release gate policy` job 的结论照样 success——`v1.23.0` 的 tag run 通过时该步就是 skipped。也就是说 §5.4「PR 以 `gh pr merge --rebase` 落地」对**发布 tag** 从来只靠流程自觉，没有任何机器兜底。
+- **落地**：`scripts/require_ci_release.py` 新增 `assert_linear_tagged_commit`，在 `main()` 里**先于**等待 tag 的 CI 运行调用。它取 `repos/<owner>/<repo>/commits/<sha>` 的 `parents`，长度不是恰好 1 就立刻失败，并打出每个父提交的短 sha 与补救口径（§5.4 / `gh pr merge --rebase`）。父数读的是 API 渲染的提交对象，不是本地 `git rev-list`——因此不受检出深度影响，与 `ci.yml` 那步读 `git cat-file commit HEAD` 同一个理由。
+- **为什么放发布门而不是 `ci.yml`**：① 语义上这是发布策略（"tag 打在哪"），不是每次 push 的策略；② 只在 tag 事件触发，**不会把历史 tag 的 CI 重跑染红**——`v1.22.0` 的 tag 指向合并提交 `5139395f`，那是 §5.4 生效前的事实，用今天的规则去追溯旧版本只会制造噪声；③ 立刻失败比等完 90 分钟的 CI 再拒更省。
+- **测试**：`scripts/test_require_ci_release.py` 新增 `TaggedCommitLinearityTests` 五例——单父通过并只打一次 `commits/<sha>`；双父拒绝；**零父拒绝**；`main()` 在双父时返回 1 且**根本不会进入等待**；对照例证明单父时确实走到了等待（否则"没等待"在 `main()` 干脆不调用等待时也会绿）。3 项变异全部被断言抓住：删掉 `main()` 里的调用 → 顺序用例红；父数判断恒假 → 3 例红；把 `!= 1` 放宽成 `> 1` → 零父用例红（证明"0 个父"这一支不是空转）。
+
 ### 加固（`run_assignment.result` 的词表从 Go 守卫下沉到数据库：迁移 v10 回填 + 双触发/CHECK，期望值从常量推导）
 
 - **上一笔只锁了一半**：`SetAssignmentResult` 的 `isAssignResult` 守卫管住了走 store 的调用方，DDL 侧没有任何约束——手工修数据、或将来某个绕过 store 的直写方，仍能把 `running` 塞进一个下游当判定读的列。本次把同一词表钉在表上。

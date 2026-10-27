@@ -5,6 +5,15 @@ A v* tag starts both CI and Release. This gate waits for the CI workflow run
 created for the exact tag + commit, then verifies that run's aggregate
 GitHub Actions check completed successfully. A successful branch check for the
 same commit is deliberately not accepted.
+
+It also asserts that the tagged commit has exactly one parent. `ci.yml`'s
+`landing shape` step makes the same assertion for pushes to master, but its
+condition is `github.event_name == 'push' && github.ref == 'refs/heads/master'` —
+on a `v*` tag push that step is skipped, so nothing in the pipeline would
+otherwise notice a tag cut on a merge commit (measured 2026-10-28, when
+v1.23.0's tag run passed with the step skipped). Checking it here costs one API
+call and fires when it matters, instead of retroactively turning old tag runs
+red.
 """
 
 from __future__ import annotations
@@ -90,6 +99,26 @@ class GitHubAPI:
         if not isinstance(value, dict):
             raise GateError(f"GitHub API returned a non-object payload for {endpoint}")
         return value
+
+
+def assert_linear_tagged_commit(api: GitHubAPI, *, sha: str) -> None:
+    """The tagged commit must have exactly one parent (CONTRIBUTING.md §5.4).
+
+    Parents come from the commit object as the API renders it, not from a local
+    `git rev-list`, so the answer does not depend on how much history a checkout
+    fetched — the same reasoning that made `ci.yml`'s landing-shape step read
+    `git cat-file commit HEAD`.
+    """
+    doc = api.get(f"repos/{api.repository}/commits/{sha}")
+    parents = doc.get("parents") or []
+    if len(parents) != 1:
+        detail = ", ".join(str((p or {}).get("sha", ""))[:12] for p in parents) or "none"
+        raise GateError(
+            f"tagged commit {sha[:12]} has {len(parents)} parents ({detail}); a release tag "
+            "must point at a single-parent commit (CONTRIBUTING.md §5.4: PRs land with "
+            "`gh pr merge --rebase`)"
+        )
+    log(f"tagged commit {sha[:12]} has exactly 1 parent")
 
 
 def wait_for_release_ci(
@@ -195,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         args = parse_args(argv)
         validate(args)
         api = GitHubAPI(repository=args.repository, token=args.token, executable=args.gh)
+        assert_linear_tagged_commit(api, sha=args.sha)
         wait_for_release_ci(
             api,
             ref=args.ref,
