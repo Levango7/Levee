@@ -3,6 +3,7 @@ package plugin
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -45,10 +46,17 @@ func TestMain(m *testing.M) {
 //	"module-noactions" — a module plugin whose meta declares no action list:
 //	           the host must refuse to register a module that accepts
 //	           nothing.
+//	"channel" — a well-behaved channel plugin (a session: many requests over
+//	           one process): meta identifies it, "connect" requires
+//	           params.host and records credential_ref, "exec" answers per cmd
+//	           (hang / die / refuse / nopayload / fail / default success),
+//	           "collect" returns base64 bytes, disconnect and close are
+//	           acknowledged.
 func protocolChildMain(mode string) int {
 	scanner := bufio.NewScanner(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
 	initialised := false
+	credRef := ""
 	for scanner.Scan() {
 		var req HostRequest
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
@@ -115,6 +123,71 @@ func protocolChildMain(mode string) int {
 						"level": req.Params["level"],
 					},
 				}})
+			case "close":
+				_ = enc.Encode(PluginResponse{OK: true})
+				return 0
+			default:
+				_ = enc.Encode(PluginResponse{OK: false, Error: "unknown action"})
+			}
+		case "channel":
+			switch req.Action {
+			case "meta":
+				_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+					Passed:  true,
+					Message: "channel-child",
+					Details: map[string]any{"name": "channel-child", "type": "channel"},
+				}})
+			case "init":
+				initialised = true
+				_ = enc.Encode(PluginResponse{OK: true})
+			case "connect":
+				host, _ := req.Params["host"].(string)
+				if host == "" {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "connect requires params.host"})
+					continue
+				}
+				// The boundary this personality pins: plaintext credentials
+				// must never reach a channel plugin, only the reference name.
+				if _, sent := req.Params["credentials"]; sent {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "plaintext credentials must not be sent to a channel plugin"})
+					continue
+				}
+				credRef, _ = req.Params["credential_ref"].(string)
+				_ = enc.Encode(PluginResponse{OK: true})
+			case "exec":
+				if !initialised {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "exec before init"})
+					continue
+				}
+				cmd, _ := req.Params["cmd"].(string)
+				switch cmd {
+				case "hang":
+					// Deliberately answer nothing: the host must kill the
+					// session rather than wait forever.
+				case "die":
+					os.Exit(3)
+				case "refuse":
+					_ = enc.Encode(PluginResponse{OK: false, Error: "target rejected the command"})
+				case "nopayload":
+					_ = enc.Encode(PluginResponse{OK: true})
+				case "fail":
+					_ = enc.Encode(PluginResponse{OK: true, Exec: &ChannelExecResult{
+						ExitCode: 2, Stderr: "command failed", Duration: 7,
+					}})
+				default:
+					_ = enc.Encode(PluginResponse{OK: true, Exec: &ChannelExecResult{
+						ExitCode: 0,
+						Stdout:   "ran " + cmd + " ref=" + credRef,
+						Duration: 3,
+					}})
+				}
+			case "collect":
+				path, _ := req.Params["path"].(string)
+				_ = enc.Encode(PluginResponse{OK: true, Collect: &CollectPayload{
+					Data: base64.StdEncoding.EncodeToString([]byte("collected:" + path)),
+				}})
+			case "disconnect":
+				_ = enc.Encode(PluginResponse{OK: true})
 			case "close":
 				_ = enc.Encode(PluginResponse{OK: true})
 				return 0

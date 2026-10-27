@@ -316,6 +316,12 @@ func (l *liveTarget) Type() string {
 
 func (l *liveTarget) Credentials() channel.CredentialRef { return l.cred }
 
+// CredentialRefName implements channel.CredentialRefNamer: it exposes the
+// inventory row's credential reference NAME, which is what a transport that
+// must not receive plaintext (a runtime channel plugin) is given instead of
+// the expanded CredentialRef.
+func (l *liveTarget) CredentialRefName() string { return l.t.CredentialRef }
+
 // errString renders err for evidence capture ("" when nil).
 func errString(err error) string {
 	if err == nil {

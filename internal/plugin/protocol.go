@@ -24,7 +24,8 @@ type HostRequest struct {
 	// Action selects the operation: "meta" (identity handshake), "init"
 	// (configuration), "check" (gate check), "notify" (deliver a
 	// notification), "validate" (module input check), "execute" (run one
-	// module action), "close" (shut down cleanly).
+	// module action), "connect" / "exec" / "collect" / "disconnect" (channel
+	// session), "close" (shut down cleanly).
 	Action string         `json:"action"`
 	Config map[string]any `json:"config,omitempty"`
 	Params map[string]any `json:"params,omitempty"`
@@ -33,14 +34,23 @@ type HostRequest struct {
 // PluginResponse is one line the plugin writes back on stdout.
 //
 // Exactly one payload field is meaningful per action: Result for "meta" and
-// "check", Module for "execute". A module that answers "execute" with ok:true
-// and no module payload has not produced a verdict and is refused by the
-// adapter — an empty success is not a success.
+// "check", Module for "execute", Exec for "exec", Collect for "collect". A
+// plugin that answers with ok:true and no payload has not produced a verdict
+// and is refused by the adapter — an empty success is not a success.
 type PluginResponse struct {
-	OK     bool          `json:"ok"`
-	Error  string        `json:"error,omitempty"`
-	Result *ProbeResult  `json:"result,omitempty"`
-	Module *ModuleResult `json:"module,omitempty"`
+	OK      bool               `json:"ok"`
+	Error   string             `json:"error,omitempty"`
+	Result  *ProbeResult       `json:"result,omitempty"`
+	Module  *ModuleResult      `json:"module,omitempty"`
+	Exec    *ChannelExecResult `json:"exec,omitempty"`
+	Collect *CollectPayload    `json:"collect,omitempty"`
+}
+
+// CollectPayload carries bytes retrieved from a channel plugin's target. The
+// JSON-line protocol is text, so the payload is base64; the host decodes it
+// and hands the caller a reader.
+type CollectPayload struct {
+	Data string `json:"data"` // base64-encoded bytes
 }
 
 // ProbeResult carries what the example protocol returns for "meta" (plugin
@@ -68,6 +78,18 @@ const notifyDeadline = 30 * time.Second
 // target — a module that routinely needs this long is misconfigured, and an
 // unbounded step would hold its batch slot forever.
 const moduleDeadline = 5 * time.Minute
+
+// sessionConnectDeadline bounds a channel plugin's connect phase — process
+// start, init and the transport dial the plugin performs. It is a cap on
+// reaching the target, not on the session's life: once connected, a session
+// lives until the run tears it down.
+const sessionConnectDeadline = 30 * time.Second
+
+// sessionTeardownDeadline bounds disconnect and close. Teardown is
+// best-effort by design: a plugin that will not acknowledge is killed rather
+// than waited on — the run is already finished with the session, and a
+// teardown that blocks would turn a clean finish into a hang.
+const sessionTeardownDeadline = 5 * time.Second
 
 // resolvePluginBinary turns a registry-stored path into something safe to
 // execute: absolute, pointing at an existing regular file. Registry rows
@@ -179,6 +201,19 @@ func (p *pluginProc) request(req HostRequest) (PluginResponse, error) {
 // paths call it best-effort: the deadline kill is the backstop.
 func (p *pluginProc) close() {
 	_, _ = p.request(HostRequest{Action: "close"})
+	p.reap()
+}
+
+// killProcess terminates the plugin process. It is the explicit form of what
+// the deadline watcher goroutine does — cancel the process context, whose
+// watcher kills the child. Safe to call more than once.
+func (p *pluginProc) killProcess() { p.cancel() }
+
+// reap closes the pipes, waits for the child and releases the process
+// context, without speaking the protocol. One-shot users reach it through
+// close (goodbye first); the session path, which sends its own goodbye, reaps
+// directly — and the failure paths reap a process that was just killed.
+func (p *pluginProc) reap() {
 	_ = p.stdin.Close()
 	_ = p.cmd.Wait()
 	p.cancel()
