@@ -1729,7 +1729,7 @@ levee rbac tree
 
 管理 LEVEE 插件注册表（安装/启停/移除/查询，含签名验证与沙箱配置）。
 
-> **执行面（如实声明，2026-10-26 起分型）**：**notifier 类型已接入 serve**——
+> **执行面（如实声明，2026-10-27 第三次分型）**：**notifier 类型已接入 serve**——
 > 注册表里每个启用状态的通知插件，在 serve 启动时装配进通知管理器，成为与
 > `notify.webhook` 并列的投递渠道（run 生命周期、漂移告警、回滚评级走同一路
 > 由）；插件二进制缺失或记录不可用时**拒绝启动并点名**（与 webhook 的
@@ -1737,7 +1737,17 @@ levee rbac tree
 > **gate 类型已接入引擎门禁体系**——workflow 声明 `plugin: {name: xxx}`
 > 门禁，计划期校验插件注册表（无 resolver 时拒绝计划）、执行期起插件子进程
 > 判 verdict（init 交配置 → check 交参数 → close），plan hash 纳入插件名。
-> **module / channel 两型仍是注册表管理面**（引擎消费点未接）；`plugin test`
+> **module 类型已接入执行器**——serve 启动时把注册表里每个启用状态的模块插件
+> 注册进进程级 executor（meta 握手声明动作表与幂等性），workflow step 的
+> `module:` 写插件名即分发（init 交配置 → validate 交动作与参数 → execute →
+> close），模块结果为 `executor.ModuleOutput`（exit_code/stdout/stderr/
+> changed/duration）。模块**自持传输**：插件模块声明 channel-free，宿主不为它
+> 拨 SSH/WinRM 会话，target 只作为寻址数据传入。**两条边界**：①插件名不得
+> 与内建模块同名（同名**拒绝启动**，不做静默覆盖）；②插件模块不在编译期
+> 「固有不可逆」词表（`internal/dsl/inherent_irreversible.go` 是静态表），
+> **破坏型插件动作须由 workflow 作者显式声明 `irreversible: true`**，否则不会
+> 触发不可逆级别的审批要求。
+> **channel 类型仍是注册表管理面**（引擎消费点未接）；`plugin test`
 > （16.7）对任意插件提供最小真执行（活的协议握手）。要在**今天**扩展引擎的
 > 执行通道，请使用编译期通道插件（写 Go 代码实现 `channel.ChannelFactory`
 > 并注册，见 [`channel-plugins.md`](channel-plugins.md)），那是另一套机制，

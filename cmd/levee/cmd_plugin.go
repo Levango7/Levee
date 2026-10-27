@@ -30,21 +30,24 @@ func newPluginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plugin",
 		Short: "Manage the LEVEE plugin registry",
-		// The boundary is stated here rather than implied: NOTIFIER
-		// plugins are a live execution surface (serve registers every
-		// enabled "notify" plugin into its notification manager), while
-		// gate/module/channel plugins remain registry-only. To extend the
-		// engine's channels today, write a compile-time channel plugin
-		// instead (docs/channel-plugins.md).
+		// The boundary is stated here rather than implied: NOTIFIER, GATE and
+		// MODULE plugins are a live execution surface (serve registers
+		// enabled "notify" plugins into its notification manager, resolves
+		// "gate" plugins at check time, and registers "module" plugins
+		// into the process-wide executor), while channel plugins remain
+		// registry-only. To extend the engine's channels today, write a
+		// compile-time channel plugin instead (docs/channel-plugins.md).
 		Long: "Manage the LEVEE plugin registry: list, install, enable, " +
 			"disable, remove, inspect and test plugins (registry, sandbox " +
 			"and signature verification). EXECUTION SURFACE: enabled " +
 			"notifier plugins are consumed by serve — they join the " +
-			"notification manager as delivery channels. Gate, module and " +
-			"channel plugins are still registry-only (no engine " +
-			"consumption); to extend the engine's channels today, write " +
-			"a compile-time channel plugin instead (see " +
-			"docs/channel-plugins.md).",
+			"notification manager as delivery channels; gate plugins are " +
+			"dispatched by a workflow's `plugin:` gates; module plugins " +
+			"are registered into the executor, so a step whose `module:` " +
+			"names the plugin runs it. Channel plugins are still " +
+			"registry-only (no engine consumption); to extend the " +
+			"engine's channels today, write a compile-time channel " +
+			"plugin instead (see docs/channel-plugins.md).",
 	}
 
 	cmd.AddCommand(newPluginListCmd())

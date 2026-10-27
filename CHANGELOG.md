@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 新增（插件系统的第三个引擎消费点：gate→module，`module` 类型接进执行器——"执行面未启用"声明三次分型）
+
+- **声明分型**：上笔把 gate 接进门禁体系，边界声明为"notifier + gate = 活的执行面；module/channel = 仍是管理面"。本笔兑现 module：**notifier + gate + module = 活的执行面；channel = 仍是管理面**。help/README/cli-reference 三处同步改写。
+- **协议扩展（向后兼容）**：`PluginResponse` 新增 `module` 字段承载 `ModuleResult`（`types.go` 里早已声明的插件侧契约：exit_code/stdout/stderr/changed/duration_ms），与 `result`（meta/check）并列；`HostRequest` 的动作集加入 `"validate"` 与 `"execute"`。**execute 回 ok:true 却不带 module 结果 = 无 verdict，判失败**——空成功不是成功（同 gate 空 verdict 的同类，fail-closed 一以贯之）。
+- **module 声明走 meta**：`details.actions`（必填，动作表）与 `details.idempotent`（可省，缺省 false）——沿用协议里 meta 的既有位置（示例插件把身份放在 `result.details`），零新增封装。**未声明动作表的模块被拒绝**：一个不接受任何动词的模块注册了也只会失败，接受它等于登记一个必然失败的能力；幂等缺省 false 是 `executor.IsIdempotent` 的既定保守口径。
+- **`plugin.PluginModule` 适配器**：把启用的 module 记录适配成 `executor.Module`——`Name()` 用注册表名、`Actions()` 用 meta 声明（未知动词在执行前被 executor 拒绝）、`Idempotent()` 用声明值、`Execute()` 起一次短命子进程（init 交安装期配置 → **validate 交动作与参数**（声明接口使 Validate 必选，插件不支持就在此拒绝而不是静默跳过）→ execute → close），5 分钟死限（比通知的 30 秒长，因为模块动作会改基础设施；仍是上限不是目标）。
+- **channel-free 模块**：`executor.ChannelFree` 可选接口（`NeedsChannel() bool`）。插件模块自持传输（厂商 API / 云控制面），`runExec.dispatchTarget` 在拨号前询问，声明 false 时**只取库存行作为寻址数据、不建会话、不解析凭据**——为一个不会用到的会话去拨号，成本是连接，风险是为一桩无关原因让步骤失败。内建模块不实现该接口，契约零变化。
+- **serve 装配**：`installPluginModules` 在 `buildServeServices` 里紧随 notifier 装配——注册表缺失=未配置态（no-op）；打不开=拒绝启动；启用的 module 插件 meta 握手失败 / 二进制消失=拒绝启动点名 + 逃生门（`levee plugin disable <名>`）。**注册是 boot 期一次性的**：executor 是静态注册表，运行中出现的模块对已声明它的 step 仍是未知模块（与 gate resolver 的"每次现读注册表"刻意不同，理由在实现里写明）。
+- **同名保护**：插件名与内建模块同名（如 `shell`）**拒绝启动**。`RegisterModule` 按设计覆盖同名项（测试靠它换模块），所以碰撞检查必须在注册之前——静默替换 `shell` 会换掉所有 workflow 赖以书写的能力。
+- **两条明写的边界**：①插件模块不在编译期「固有不可逆」词表（`internal/dsl/inherent_irreversible.go` 是静态表，插件动作在运行期才知道），**破坏型插件步骤须由作者显式 `irreversible: true`**，否则不触发不可逆级别的审批要求——这是本笔 knowingly 留下的缺口，已登记为后续项；②`agent` 型目标在远端 agent 进程里执行模块，serve 侧注册的插件模块在那里不可达。
+- **测试**：`internal/plugin/module_test.go` 8 例（记录三态拒绝 / meta 声明面读取 / 未声明动作表拒绝 / 二进制消失拒绝 / 结果映射含 changed+duration / 插件拒投浮出 / validate 前置拒绝 / 参数线格式含 target 与空输入）；`protocol_test.go` 加 `module` 与 `module-noactions` 子进程人格（init 前置条件让配置交接可观测）；`internal/wiring/exec_channel_free_test.go` 钉住三分支（声明 free / 无接口 / 未知模块）；`cmd/levee/serve_plugin_module_test.go` 5 例（缺注册表 no-op / 启用注册且声明 channel-free / 其他类型在碰二进制前被过滤 / 同名拒绝 / 二进制消失拒绝带逃生门，新增 TestMain 子进程人格）。
+- **验证**：build/vet/gofmt/golangci-lint 干净；plugin/executor/wiring/cmd/levee 全量绿。
+
 ## [v1.23.0] - 2026-10-27
 
 > **发布状态：未切版。** 本节共 **38** 个小节，六条主线：① **插件系统**走到两个真执行面（notifier 装配进通知管理器、gate 接进验证链与 plan 期可执行性判定），`plugin test` 给出最小活证据，文档与 CLI 的执行面声明二次分型；② **通知与告警链路**补齐——drift 常驻巡检接进 serve、run 生命周期全量 webhook 镜像、告警每源入口身份与按归属可见、审批超时第一次生效、门禁失败进聊天；③ **授权与安全**——`DecisionGuard` 补上两处绕行、CLI/ChatOps 投票走服务层且匿名被拒、清单 env 归属有事实源、ChatOps 重放防护、被服务而未判定的三个面穷举收口；④ **供应链与工具链**——Go 1.26.10 收口 GO-2026-6809、codeql 锁步、前端生产依赖 high 清零、vitest 3→5；⑤ **词表单一来源与控制台/CLI**——docgen 的生成表从 2 张长到 12 张（两笔增量 + 四套取值 + 告警 severity）、控制台字段收成严格联合、详情页存量计划、密度档位、`--as` 本地可判路径；⑥ **正确性、验证基建与协作口径**——`{target}` 展开、审批与结果列的数据卫生、未链入包守卫、windows 崩溃证据自动留档、浏览器假红自证、§5.4 线性落地守卫与 rebase 落地口径、账本两处订正。
