@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +55,30 @@ func TestApprovalExpiryResolverZeroMeansNoTimeout(t *testing.T) {
 		"a zero timeout tier must opt out of expiry, not fall back to a default")
 	assert.True(t, resolve("not-a-level").IsZero(),
 		"an unknown level must not guess a timeout")
+}
+
+// TestExpirySweeperNotifiesBothMirrors pins the wiring the two mirrors need put
+// back in step: the expiry callback must tell BOTH the ChatOps bridge and the
+// Jira bridge, or the un-notified one keeps showing an approval as open after
+// it timed out. runServe is a long boot sequence a unit test cannot drive, so
+// (like the other serve wiring guards) this reads cmd_serve.go and asserts both
+// calls sit inside the sweeper's announcement callback.
+func TestExpirySweeperNotifiesBothMirrors(t *testing.T) {
+	src, err := os.ReadFile("cmd_serve.go")
+	require.NoError(t, err)
+	text := string(src)
+
+	// Anchor on the sweeper's callback signature; if that moves, this guard
+	// must be re-pointed rather than pass vacuously.
+	cb := strings.Index(text, "func(ctx context.Context, expired []approval.Approval) {")
+	require.Greater(t, cb, -1,
+		"the expiry sweeper callback anchor moved; this wiring guard can no longer see it")
+	body := text[cb:]
+
+	require.Greater(t, strings.Index(body, "chatOpsBridge.OnApprovalExpired(&a)"), -1,
+		"the expiry sweeper must announce to the ChatOps mirror")
+	require.Greater(t, strings.Index(body, "jiraBridge.OnApprovalExpired(&a)"), -1,
+		"the expiry sweeper must announce to the Jira mirror (parity with the room)")
 }
 
 // TestApprovalExpirySweeperIntervalDefault pins the config default: the

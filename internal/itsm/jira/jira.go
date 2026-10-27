@@ -281,6 +281,52 @@ func (b *ApprovalBridge) OnDecision(a *approval.Approval, action string) {
 		"run_id", a.RunID, "approval_id", a.ID, "issue_key", issues[0], "action", action)
 }
 
+// OnApprovalExpired comments the timeout outcome onto the mirrored issue, so
+// the Jira record shows WHY the change stopped moving — the same moment the
+// ChatOps room gets (chatopsbridge.OnApprovalExpired). Without it the two
+// mirrors disagree: the room says "expired" while Jira still shows an open
+// approval issue with no closure note, and an operator reading Jira cannot
+// tell a timed-out approval from one still waiting.
+//
+// Same best-effort contract as the other two: a Jira outage is logged and
+// dropped, never propagated — the local chain is the system of record.
+func (b *ApprovalBridge) OnApprovalExpired(a *approval.Approval) {
+	if b == nil || b.client == nil || a == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	issues, err := b.client.searchByLabel(ctx, "approval:"+a.ID)
+	if err != nil || len(issues) == 0 {
+		if err != nil {
+			log.Warn("jira: expiry mirror lookup failed",
+				"run_id", a.RunID, "approval_id", a.ID, "error", err)
+		}
+		return
+	}
+	approved := 0
+	for _, d := range a.Decisions {
+		if d.Action == approval.ActionApprove {
+			approved++
+		}
+	}
+	when := "the configured timeout"
+	if !a.ExpiresAt.IsZero() {
+		when = a.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	body := fmt.Sprintf("LEVEE approval %s expired at %s without reaching quorum (%d/%d approved).\n"+
+		"The change is not proceeding; re-initiate approval to continue.",
+		a.ID, when, approved, a.MinApprovers)
+	if err := b.client.AddComment(ctx, issues[0], body); err != nil {
+		log.Warn("jira: expiry mirror comment failed",
+			"run_id", a.RunID, "approval_id", a.ID, "issue_key", issues[0], "error", err)
+		return
+	}
+	log.Info("jira: expiry mirrored",
+		"run_id", a.RunID, "approval_id", a.ID, "issue_key", issues[0])
+}
+
 // searchByLabel runs the JQL label search and returns the issue keys.
 func (c *Client) searchByLabel(ctx context.Context, label string) ([]string, error) {
 	jql := fmt.Sprintf("labels = %q ORDER BY created DESC", label)

@@ -197,6 +197,35 @@ func TestOnDecisionCommentsMirroredIssue(t *testing.T) {
 	assert.Contains(t, stub.comments[0].body, "alice")
 }
 
+// TestOnApprovalExpiredCommentsMirroredIssue pins the parity the expiry
+// sweeper needs: when an approval times out, the Jira mirror gets the same
+// closure note the ChatOps room gets. Without it the two mirrors disagree —
+// Jira would still show an open approval issue with no reason it stopped.
+func TestOnApprovalExpiredCommentsMirroredIssue(t *testing.T) {
+	stub, url := newJiraServer(t)
+	bridge := NewApprovalBridge(testCfg(url))
+	require.NotNil(t, bridge)
+
+	expires := time.Date(2026, 10, 27, 3, 0, 0, 0, time.UTC)
+	bridge.OnApprovalExpired(&approval.Approval{
+		ID: "ap-7", RunID: "run-7", Level: approval.LevelHigh,
+		Status: approval.StatusExpired, MinApprovers: 2,
+		Decisions: []approval.Decision{{Approver: "alice", Action: approval.ActionApprove}},
+		ExpiresAt: expires,
+	})
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	require.Len(t, stub.searches, 1)
+	assert.Contains(t, stub.searches[0], "approval:ap-7", "JQL must find the mirror by label")
+	require.Len(t, stub.comments, 1)
+	assert.Equal(t, "OPS-42", stub.comments[0].issueKey)
+	assert.Contains(t, stub.comments[0].body, "ap-7")
+	assert.Contains(t, stub.comments[0].body, "expired")
+	assert.Contains(t, stub.comments[0].body, "2026-10-27T03:00:00Z")
+	assert.Contains(t, stub.comments[0].body, "1/2", "the comment must carry the quorum shortfall")
+}
+
 func TestOnDecisionNoMirrorIssueIsSilent(t *testing.T) {
 	// A decision for an approval that never got an issue (Jira was
 	// down at kickoff): log-only, never an error path for the caller.
