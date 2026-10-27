@@ -96,9 +96,31 @@ CI 门禁（覆盖率 70%、三 OS race、lint v2.13）对插件同等生效。�
 2. 安全门禁测试（每个 fail-closed 路径一个用例，参考 `local_test.go`）
 3. 真实语义测试（至少一个端到端 Exec 往返断言）
 
-## 7. 已知限制
+## 7. 两种接入方式（编译期 / 运行期）
 
-- 通道注册是**进程级**的（`init()` 注册，无动态装卸）——动态插件加载在设计 backlog（V2），当前用编译期组合根
+本文档描述的是**编译期**通道插件：一个 Go 包 + `init()` 注册，随 LEVEE 二进制一起构建。
+适合自有传输、需要与核心同步演进的情况。
+
+**运行期**通道插件（2026-10-27 起可用）走另一条路：`internal/plugin` 的运行期插件系统
+（`levee plugin install/enable`，`type: channel`）——serve 启动时把每个**启用**的 channel 型
+插件注册进同一张 `channel.DefaultRegistry()`，注册键就是**插件名**，此后 inventory 里
+`channel_type: <插件名>` 的 target 就解析到它。**不需要重新编译 LEVEE**（这正是本节早先版本
+写作"V2 backlog"的那项能力，现已落地）。
+
+两条路的差别：
+
+| | 编译期（本文档） | 运行期（`levee plugin`） |
+|---|---|---|
+| 进程形态 | 与宿主同进程函数调用 | 常驻子进程，JSON 行协议（`internal/plugin/session.go`） |
+| 会话 | 自选（ssh 用连接池） | 每 target 每次 run 一个会话进程，connect 一次、exec 多次 |
+| 凭据 | 经 `Target.Credentials()` 拿扩写后的 `CredentialRef` | **只拿引用名**（`credential_ref`），明文永不过管道；密钥走插件自己的 `config.yaml` |
+| 能力 | 接口全集（含 Upload/Download） | connect/exec/collect；**无 upload 动词** → `file.copy` 这类推文件的步骤在运行期通道上会按名拒绝 |
+| 装卸 | 重新编译 | 安装/启用即注册；同名撞已有类型（ssh/winrm/local…）**拒绝启动** |
+
+## 8. 已知限制
+
 - `Target.Type()` 的返回值就是注册键，拼错不会报错而是静默查不到工厂（`Create` 返回 `no factory registered`）——集成测试必须覆盖 target→factory→channel 全链
-- inventory/gRPC 层的 `channel_type` 字段目前**不做枚举校验**（存什么传什么），只有到 `Create` 时未知类型才暴露——新通道的 target 数据校验靠你自己的集成测试兜底
-- 通道能力差异（如 local 无凭据、winrm 不支持流式大文件）由模块层在运行时感知，通道接口本身没有能力协商机制——模块文档需写明支持哪些通道
+- inventory/gRPC 层的 `channel_type` 字段**不做枚举校验**（存什么传什么），只有到 `Create` 时未知类型才暴露——新通道的 target 数据校验靠你自己的集成测试兜底
+- 通道能力差异（如 local 无凭据、winrm 不支持流式大文件、运行期通道无 upload）由模块层在运行时感知，通道接口本身没有能力协商机制——模块文档需写明支持哪些通道
+- 运行期通道的一个插件只提供**一种**传输类型（类型名 = 插件名）；要提供多种类型就装多个插件
+- 运行期通道的会话按"每 target 每 run 一个子进程"建立，没有跨 run 的连接池——大批量目标会产生等量的子进程
