@@ -99,6 +99,12 @@ type ChangeService struct {
 	// no-op.
 	opsMesh *opsmesh.OpsMeshClient
 
+	// opsMeshResolutionOnce keeps the "platform has no /resolution endpoint"
+	// notice to one line per process. The gap is a stable platform fact, not a
+	// per-run event: repeating it on every alert-driven run would bury real
+	// report failures under noise and read as if each run had failed.
+	opsMeshResolutionOnce sync.Once
+
 	// authz decides change-scoped governance actions against the deployment's
 	// permission matrix and role tree. Nil means the deployment declared no
 	// policy: admission then rests on authentication alone, which the serving
@@ -1351,6 +1357,17 @@ func (s *ChangeService) reportOpsMeshResult(ctx context.Context, run *state.Run,
 		Timestamp:    time.Now().UTC(),
 	}
 	if rerr := s.opsMesh.ReportResult(ctx, alertID, result); rerr != nil {
+		if errors.Is(rerr, opsmesh.ErrResolutionUnsupported) {
+			// The run's verdict is already settled; this only means the platform
+			// could not be told. Say so once, clearly, and stop: a 404 here is a
+			// known platform gap (no /resolution endpoint), not this run failing.
+			s.opsMeshResolutionOnce.Do(func() {
+				log.Info("opsmesh: platform has no alert-resolution endpoint; "+
+					"alert-driven fix outcomes are not delivered (reported once per process)",
+					"run_id", run.ID, "alert_id", alertID)
+			})
+			return
+		}
 		log.Warn("opsmesh: report result failed",
 			"run_id", run.ID, "alert_id", alertID, "error", rerr)
 	}

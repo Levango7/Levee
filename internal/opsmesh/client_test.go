@@ -167,6 +167,33 @@ func TestReportResult_HTTPError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 400")
 	assert.Contains(t, err.Error(), "bad alert")
+	// A 400 is a real request fault, not the platform-gap case: it must NOT be
+	// classified as ErrResolutionUnsupported, or callers would silence a bug.
+	assert.False(t, errors.Is(err, ErrResolutionUnsupported),
+		"a 400 must not be classified as ErrResolutionUnsupported")
+}
+
+// TestReportResult_ResolutionUnsupported pins the platform-gap classification:
+// the platform implements /alerts/{id}/ack and /silence but never
+// /resolution, so the endpoint answers 404. ReportResult must surface that as
+// the named ErrResolutionUnsupported (so callers can say "not delivered" once)
+// rather than as a generic status error that reads like a transient failure.
+func TestReportResult_ResolutionUnsupported(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	err := c.ReportResult(context.Background(), "alert-1", &FixResult{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrResolutionUnsupported),
+		"want ErrResolutionUnsupported, got %v", err)
+	assert.Equal(t, "/api/v1/alerts/alert-1/resolution", gotPath)
+	assert.Contains(t, err.Error(), "404")
 }
 
 // TestReportResult_ContextCancel verifies that a cancelled context aborts the
