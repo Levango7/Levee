@@ -1665,16 +1665,9 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 		WithAuthorizer(authzSvc).
 		WithTargetEnvResolver(grpc.TargetEnvResolver(store, ownershipReg))
 	// Multi-turn LLM reasoning on top of the rule-based diagnosis, when the
-	// ai.llm section is enabled. A CONVERGED (corroborated) reasoning result
-	// refines the report; anything else keeps the rule-based answer.
-	if llmClient := buildServeLLMClient(cfg); llmClient != nil {
-		if reasoner, rerr := llm_diag.NewReasoningEngine(llm_diag.ReasoningEngineConfig{LLM: llmClient}); rerr != nil {
-			log.Warn("llm_diag engine unavailable; diagnosis stays rule-based", "error", rerr)
-		} else {
-			diagSvc.WithReasoner(reasoner)
-			log.Info("diagnosis llm reasoning enabled")
-		}
-	}
+	// ai.llm section is enabled. Split out of this function (whose cyclomatic
+	// complexity sits at the lint budget) — see installServeDiagnosisReasoner.
+	installServeDiagnosisReasoner(diagSvc, cfg)
 	convEngine, convErr := newServeConvEngine(cfg, changeSvc, buildServeKnowledgeBase(cfg, changeSvc))
 	if convErr != nil {
 		return serveServices{}, convErr
@@ -1708,6 +1701,26 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
 		approvalSvc: approvalSvc, notifyMgr: notifyMgr,
 	}, nil
+}
+
+// installServeDiagnosisReasoner wires the LLM reasoning engine onto the
+// diagnosis service when ai.llm is configured. A CONVERGED (corroborated)
+// reasoning result refines the report; anything else keeps the rule-based
+// answer. Extracted from buildServeServices — that function's cyclomatic
+// complexity sits at the lint budget, and this block contributes two decision
+// points to it.
+func installServeDiagnosisReasoner(diagSvc *grpc.DiagnosisService, cfg *config.Config) {
+	llmClient := buildServeLLMClient(cfg)
+	if llmClient == nil {
+		return
+	}
+	reasoner, err := llm_diag.NewReasoningEngine(llm_diag.ReasoningEngineConfig{LLM: llmClient})
+	if err != nil {
+		log.Warn("llm_diag engine unavailable; diagnosis stays rule-based", "error", err)
+		return
+	}
+	diagSvc.WithReasoner(reasoner)
+	log.Info("diagnosis llm reasoning enabled")
 }
 
 // reconcileCredentialsWithRegistry reports configured credentials whose subject
