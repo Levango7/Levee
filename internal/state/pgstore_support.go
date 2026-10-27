@@ -295,14 +295,15 @@ $fn$ LANGUAGE plpgsql`,
 		},
 	},
 	{
-		// assignments.result domain (v10), the PostgreSQL half of the SQLite
-		// migration: fold rows written before the Go guard existed into
-		// 'failed', keep '' ("no verdict recorded yet"), then constrain the
-		// column. The guard on the ADD CONSTRAINT is what makes the step
+		// run_assignment.result domain (v10), the PostgreSQL half of the SQLite
+		// migration. The backfill mirrors migrate.go: the old "done" placeholder
+		// (a state name seeded into an empty result) becomes '' — finished, no
+		// verdict recorded — while leaked run statuses become 'failed'. '' stays
+		// as is. The guard on the ADD CONSTRAINT is what makes the step
 		// replay-safe: a fixture built from pgschema.sql already carries it.
 		version: 10,
 		stmts: []string{
-			`UPDATE run_assignment SET result = 'failed' WHERE result NOT IN ('', 'completed', 'failed', 'rolled_back')`,
+			`UPDATE run_assignment SET result = CASE WHEN result = 'done' THEN '' ELSE 'failed' END WHERE result NOT IN ('', 'completed', 'failed', 'rolled_back')`,
 			`DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'run_assignment_result_domain') THEN

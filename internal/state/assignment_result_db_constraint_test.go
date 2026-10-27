@@ -91,14 +91,43 @@ func TestRunAssignmentResultDomainIsEnforcedByTheDatabase(t *testing.T) {
 	assert.Contains(t, err.Error(), "is not an assignment result")
 }
 
+// TestUpdateAssignmentStateIfDoesNotSeedAResult pins the writer half: moving an
+// assignment to done must not put the state name into the result column. The
+// old code seeded "done" there and relied on a follow-up SetAssignmentResult to
+// overwrite it — the follow-up is what MarkDone skips once the state is done,
+// so a failed first write left a permanent non-verdict behind.
+func TestUpdateAssignmentStateIfDoesNotSeedAResult(t *testing.T) {
+	ctx := context.Background()
+	st, err := NewSQLiteStore(ctx, ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = st.Close() })
+
+	require.NoError(t, st.CreateAssignment(ctx, &Assignment{
+		RunID: "run-1", OwnerNode: "node-1", Epoch: 1, State: AssignStatePending,
+	}))
+
+	ok, err := st.UpdateAssignmentStateIf(ctx, "run-1", 1, AssignStatePending, AssignmentStateDone)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	a, err := st.GetAssignment(ctx, "run-1")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Equal(t, AssignmentStateDone, a.State)
+	assert.Equal(t, "", a.Result, "a state transition must not record a verdict")
+}
+
 func TestSQLiteResultDomainMigrationMatchesTheVocabulary(t *testing.T) {
 	stmts := stepStmts(t, migrations, 10)
 	require.Len(t, stmts, 3, "v10 = backfill + two triggers")
 
 	assert.Equal(t, assignmentResultDomain(t), inListFrom(t, stmts[0]),
 		"the backfill must fold exactly the values outside the vocabulary")
-	assert.Contains(t, stmts[0], "SET result = 'failed'",
-		"folded rows take the same value the executor's default branch records")
+	// The two junk kinds mean different things and must not share a fold: the
+	// old state-name placeholder means "finished, no verdict", a leaked run
+	// status means "terminal but not clean".
+	assert.Contains(t, stmts[0], "CASE WHEN result = 'done' THEN '' ELSE 'failed' END",
+		"the 'done' placeholder must become '' (no verdict), not a verdict the run never got")
 
 	for _, stmt := range stmts[1:] {
 		assert.Contains(t, stmt, "CREATE TRIGGER IF NOT EXISTS run_assignment_result_domain_",
@@ -121,6 +150,8 @@ func TestPostgresResultDomainMigrationMatchesTheVocabulary(t *testing.T) {
 
 	assert.Equal(t, assignmentResultDomain(t), inListFrom(t, stmts[0]),
 		"the PostgreSQL backfill must fold exactly the values outside the vocabulary")
+	assert.Contains(t, stmts[0], "CASE WHEN result = 'done' THEN '' ELSE 'failed' END",
+		"the PostgreSQL backfill must keep the same fold as the SQLite one")
 	assert.Contains(t, stmts[1], "ADD CONSTRAINT run_assignment_result_domain CHECK",
 		"the constraint must be the one pgschema.sql declares")
 	assert.Equal(t, assignmentResultDomain(t), inListFrom(t, stmts[1]),

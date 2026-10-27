@@ -1218,11 +1218,13 @@ func (s *PGStore) GetAssignment(ctx context.Context, runID string) (*Assignment,
 }
 
 // UpdateAssignmentStateIf is a compare-and-set on (run_id, epoch, state).
+// Like the SQLite path it leaves result untouched (see the SQLite method for
+// why the old "done" placeholder had to go).
 func (s *PGStore) UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
-		SET state=$1, result=CASE WHEN $2='done' THEN COALESCE(NULLIF(result,''), $3) ELSE result END, updated_at=NOW()
-		WHERE run_id=$4 AND epoch=$5 AND state=$6`,
-		next, next, next, runID, epoch, expected,
+		SET state=$1, updated_at=NOW()
+		WHERE run_id=$2 AND epoch=$3 AND state=$4`,
+		next, runID, epoch, expected,
 	)
 	if err != nil {
 		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)

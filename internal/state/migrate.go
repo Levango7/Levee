@@ -289,15 +289,26 @@ END`,
 		// through the store; the table itself still took any token from a
 		// manual fix-up or a future direct writer.
 		//
-		// Two halves. Rows written before the guard existed are folded into
-		// 'failed' — the same value the executor's default branch records for
-		// "terminal, but not a clean outcome" — while '' is left alone, because
-		// it is the documented "not recorded yet" state, not a fourth verdict.
-		// The triggers then hold the domain for writers that never touch the
-		// store. These are the same trigger statements as schema.sql.
+		// Two halves. Rows written before the guard existed carry one of two
+		// kinds of junk, and they do not mean the same thing:
+		//
+		//   - "done" is not a verdict anyone recorded, it is the state name the
+		//     old UpdateAssignmentStateIf seeded into an empty result while it
+		//     moved an assignment to the done state. It says "finished, no
+		//     verdict recorded", so it is folded to '' — the documented "not
+		//     recorded yet" value — rather than to a verdict the run never got.
+		//   - everything else (running / interrupted / paused / ...) is a run
+		//     status that leaked through the old pass-through, i.e. "terminal
+		//     but not a clean outcome". Those fold to 'failed', the same value
+		//     the executor's default branch records.
+		//
+		// '' is left alone: it is not a fourth verdict. The triggers then hold
+		// the domain for writers that never touch the store; they are the same
+		// trigger statements as schema.sql. The seeding writer itself is fixed
+		// in UpdateAssignmentStateIf, so nothing recreates the "done" rows.
 		version: 10,
 		stmts: []string{
-			`UPDATE run_assignment SET result = 'failed' WHERE result NOT IN ('', 'completed', 'failed', 'rolled_back')`,
+			`UPDATE run_assignment SET result = CASE WHEN result = 'done' THEN '' ELSE 'failed' END WHERE result NOT IN ('', 'completed', 'failed', 'rolled_back')`,
 			`CREATE TRIGGER IF NOT EXISTS run_assignment_result_domain_insert
 BEFORE INSERT ON run_assignment
 WHEN NEW.result NOT IN ('', 'completed', 'failed', 'rolled_back')
