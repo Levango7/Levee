@@ -21,6 +21,8 @@
 //	collect    — return bytes as `collect: {data: <base64>}`; this example
 //	             refuses it, which is the honest answer for a transport that
 //	             has no file semantics
+//	upload     — params: path / data (base64, ≤512 KiB per frame); this
+//	             example refuses it for the same reason
 //	disconnect — close the session cleanly
 //	close      — exit the process
 //
@@ -146,6 +148,11 @@ func (p *plugin) handle(req *hostRequest) pluginResponse {
 		// Honest refusal: this transport has no file semantics. The host
 		// surfaces it as the step error; it does not silently return empty.
 		return pluginResponse{OK: false, Error: "tcp-console has no file semantics; collect is not supported"}
+	case "upload":
+		// Same refusal, other direction. A transport that COULD write files
+		// would decode params.data (base64) and write it to params.path —
+		// within the 512 KiB frame the host enforces.
+		return pluginResponse{OK: false, Error: "tcp-console has no file semantics; upload is not supported"}
 	case "disconnect":
 		p.disconnect()
 		return pluginResponse{OK: true}

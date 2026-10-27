@@ -24,8 +24,8 @@ type HostRequest struct {
 	// Action selects the operation: "meta" (identity handshake), "init"
 	// (configuration), "check" (gate check), "notify" (deliver a
 	// notification), "validate" (module input check), "execute" (run one
-	// module action), "connect" / "exec" / "collect" / "disconnect" (channel
-	// session), "close" (shut down cleanly).
+	// module action), "connect" / "exec" / "collect" / "upload" /
+	// "disconnect" (channel session), "close" (shut down cleanly).
 	Action string         `json:"action"`
 	Config map[string]any `json:"config,omitempty"`
 	Params map[string]any `json:"params,omitempty"`
@@ -34,9 +34,10 @@ type HostRequest struct {
 // PluginResponse is one line the plugin writes back on stdout.
 //
 // Exactly one payload field is meaningful per action: Result for "meta" and
-// "check", Module for "execute", Exec for "exec", Collect for "collect". A
-// plugin that answers with ok:true and no payload has not produced a verdict
-// and is refused by the adapter — an empty success is not a success.
+// "check", Module for "execute", Exec for "exec", Collect for "collect"
+// ("upload" answers with ok alone). A plugin that answers with ok:true and no
+// payload where one is required has not produced a verdict and is refused by
+// the adapter — an empty success is not a success.
 type PluginResponse struct {
 	OK      bool               `json:"ok"`
 	Error   string             `json:"error,omitempty"`
@@ -90,6 +91,19 @@ const sessionConnectDeadline = 30 * time.Second
 // than waited on — the run is already finished with the session, and a
 // teardown that blocks would turn a clean finish into a hang.
 const sessionTeardownDeadline = 5 * time.Second
+
+// maxTransferPayloadBytes bounds ONE upload or collect payload, in raw bytes
+// before base64. It exists because the protocol is line-delimited JSON: both
+// directions travel inside a single JSON line, and the line readers cap a
+// line at 1 MiB — pluginProc's scanner on the response side, and the plugin's
+// own reader on the request side (a PLUGIN obligation: the examples configure
+// their scanner for 1 MiB lines, and a plugin that reads with a smaller cap
+// will drop the connection on any real transfer frame). 512 KiB of payload
+// encodes to ~683 KiB of base64, which fits that frame with room for the
+// envelope — a larger transfer must chunk or use a built-in transport, and
+// the host refuses beyond the bound BEFORE sending rather than
+// desynchronising the stream.
+const maxTransferPayloadBytes = 512 * 1024
 
 // resolvePluginBinary turns a registry-stored path into something safe to
 // execute: absolute, pointing at an existing regular file. Registry rows

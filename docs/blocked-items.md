@@ -33,8 +33,8 @@
 
 | 项 | 还差什么 | 量级 | 备注 |
 | --- | --- | --- | --- |
-| D-1b 插件动作的不可逆声明 | 插件在 meta 里按动作声明 destructive 语义，计划期喂进 IrreversibleChecker（或 DSL 侧 `plugin:` 命名空间 + 保守判定） | 中 | **当前缺口**：插件模块不在编译期「固有不可逆」词表，破坏型步骤只能靠作者显式 `irreversible: true`；两侧（serve 有注册表 / CLI 可能没有）判定口径一致性是难点 |
-| D-1c 运行期通道的 upload 动词与跨 run 连接池 | upload 动词（推文件）+ 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型 | 中 | Channel 消费点已交付（本笔）；这三项是它明说的能力差，按真实消费方出现再排 |
+| D-1b 插件动作的不可逆声明 | 插件在 meta 里按动作声明 destructive 语义，计划期喂进 IrreversibleChecker（或 DSL 侧 `plugin:` 命名空间 + 保守判定） | 中 | **PR #234 在途**（另一会话）：manifest `destructive_actions` + 注册表加列迁移 + `plan.NewGenerator` extraInherent，计划期与 `pkg.remove` 同权；compile-time（V14/LE082 纯 CLI 路径）半边待接 |
+| D-1c 运行期通道的跨 run 会话池与一插件多类型 | 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型（类型名=插件名） | 中 | upload 动词已交付（本笔，单笔 ≤512 KiB 帧上限）；池化与多类型按真实消费方出现再排 |
 | D-2 运营层资产（demo 库/角色视频/品牌 GIF） | 需要真人录制与设计，非代码工作 | 需人手 | **面向客户签单的最大缺口，建议优先安排人手** |
 
 ## E. 卡在产品决策/需求分母（明确等触发，不焦虑不硬做）

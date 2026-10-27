@@ -114,13 +114,13 @@ CI 门禁（覆盖率 70%、三 OS race、lint v2.13）对插件同等生效。�
 | 进程形态 | 与宿主同进程函数调用 | 常驻子进程，JSON 行协议（`internal/plugin/session.go`） |
 | 会话 | 自选（ssh 用连接池） | 每 target 每次 run 一个会话进程，connect 一次、exec 多次 |
 | 凭据 | 经 `Target.Credentials()` 拿扩写后的 `CredentialRef` | **只拿引用名**（`credential_ref`），明文永不过管道；密钥走插件自己的 `config.yaml` |
-| 能力 | 接口全集（含 Upload/Download） | connect/exec/collect；**无 upload 动词** → `file.copy` 这类推文件的步骤在运行期通道上会按名拒绝 |
+| 能力 | 接口全集（含 Upload/Download），无帧上限 | connect/exec/collect/upload；upload/collect 载荷**每笔 ≤512 KiB**（JSON 行帧；宿主发送/解码前拒越界。**插件必须把自己的行读取器配到 1 MiB 行上限**，示例都配了）——更大文件要分块或用内建传输 |
 | 装卸 | 重新编译 | 安装/启用即注册；同名撞已有类型（ssh/winrm/local…）**拒绝启动** |
 
 ## 8. 已知限制
 
 - `Target.Type()` 的返回值就是注册键，拼错不会报错而是静默查不到工厂（`Create` 返回 `no factory registered`）——集成测试必须覆盖 target→factory→channel 全链
 - inventory/gRPC 层的 `channel_type` 字段**不做枚举校验**（存什么传什么），只有到 `Create` 时未知类型才暴露——新通道的 target 数据校验靠你自己的集成测试兜底
-- 通道能力差异（如 local 无凭据、winrm 不支持流式大文件、运行期通道无 upload）由模块层在运行时感知，通道接口本身没有能力协商机制——模块文档需写明支持哪些通道
+- 通道能力差异（如 local 无凭据、winrm 不支持流式大文件、运行期通道单笔传输 ≤512 KiB）由模块层在运行时感知，通道接口本身没有能力协商机制——模块文档需写明支持哪些通道
 - 运行期通道的一个插件只提供**一种**传输类型（类型名 = 插件名）；要提供多种类型就装多个插件
 - 运行期通道的会话按"每 target 每 run 一个子进程"建立，没有跨 run 的连接池——大批量目标会产生等量的子进程

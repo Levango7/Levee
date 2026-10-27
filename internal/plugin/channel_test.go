@@ -8,6 +8,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -205,16 +206,6 @@ func TestPluginChannelExecWithoutPayloadIsRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "empty success is not a verdict")
 }
 
-// Upload is outside the declared ChannelPlugin contract, so the channel says
-// so by name instead of pretending to transfer.
-func TestPluginChannelUploadIsRefusedByName(t *testing.T) {
-	ch := connectFixture(t, channelTestTarget{host: "h1", port: 22, typ: "acme-rest"})
-
-	err := ch.Upload(context.Background(), "/tmp/x", io.NopCloser(nil))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "upload is not supported by plugin channels")
-}
-
 // Download maps the plugin's collect verb onto a reader over the decoded bytes.
 func TestPluginChannelDownloadDecodesCollectPayload(t *testing.T) {
 	ch := connectFixture(t, channelTestTarget{host: "h1", port: 22, typ: "acme-rest"})
@@ -267,6 +258,64 @@ func TestPluginChannelPluginDeathMarksDisconnected(t *testing.T) {
 	_, err := ch.Exec(context.Background(), "die")
 	require.Error(t, err)
 	assert.False(t, ch.IsConnected())
+}
+
+// Upload pushes the bytes through the plugin's upload verb, and a later
+// Download of the same path reads them back — content integrity across the
+// base64 frame, both directions.
+func TestPluginChannelUploadCollectRoundTrip(t *testing.T) {
+	ch := connectFixture(t, channelTestTarget{host: "h1", port: 22, typ: "acme-rest"})
+
+	content := []byte("[unit]\nmode=cluster\n")
+	require.NoError(t, ch.Upload(context.Background(), "/cfg/app.conf", bytes.NewReader(content)))
+
+	r, err := ch.Download(context.Background(), "/cfg/app.conf")
+	require.NoError(t, err)
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Equal(t, content, got)
+}
+
+// A target-side refusal surfaces as the step error with the plugin's words.
+func TestPluginChannelUploadRefusalSurfaces(t *testing.T) {
+	ch := connectFixture(t, channelTestTarget{host: "h1", port: 22, typ: "acme-rest"})
+
+	err := ch.Upload(context.Background(), "/denied", bytes.NewReader([]byte("x")))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upload refused")
+	assert.Contains(t, err.Error(), "target rejected the write")
+}
+
+// Exactly at the frame bound is legal: 512 KiB in, 512 KiB back, byte for
+// byte — the off-by-one edge of the readBounded check.
+func TestPluginChannelUploadAtFrameBoundSucceeds(t *testing.T) {
+	ch := connectFixture(t, channelTestTarget{host: "h1", port: 22, typ: "acme-rest"})
+
+	content := bytes.Repeat([]byte{0xA5}, int(maxTransferPayloadBytes))
+	require.NoError(t, ch.Upload(context.Background(), "/big.bin", bytes.NewReader(content)))
+
+	r, err := ch.Download(context.Background(), "/big.bin")
+	require.NoError(t, err)
+	got, err := io.ReadAll(r)
+	require.NoError(t, err)
+	assert.Len(t, got, int(maxTransferPayloadBytes))
+}
+
+// One byte over the bound is refused BEFORE anything reaches the pipe: the
+// stream cannot desynchronise, so the session stays alive and usable.
+func TestPluginChannelUploadOverFrameBoundRefusedBeforeSend(t *testing.T) {
+	ch := connectFixture(t, channelTestTarget{host: "h1", port: 22, typ: "acme-rest"})
+
+	oversize := bytes.Repeat([]byte{0x00}, int(maxTransferPayloadBytes)+1)
+	err := ch.Upload(context.Background(), "/too-big.bin", bytes.NewReader(oversize))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at most")
+
+	// The refusal happened host-side: the session never saw a broken line.
+	assert.True(t, ch.IsConnected(), "a host-side refusal must not kill the session")
+	res, err := ch.Exec(context.Background(), "still-fine")
+	require.NoError(t, err)
+	assert.Contains(t, res.Stdout, "ran still-fine")
 }
 
 // The channel contract explicitly allows concurrent Exec; the session

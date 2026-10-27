@@ -14,6 +14,7 @@ LEVEE 四类插件里唯一一种**会话型**消费点（`channel`）的最小�
 | `connect` | 拨号时 | 按 `host`/`port` 建 TCP 连接；**参数里没有明文凭据**，只有 `credential_ref` 引用名 |
 | `exec` | 每个步骤 | 写命令行、读到终止符；超时记 `exit_code 1`（跑了但没答），传输错记 `ok:false`（没跑成） |
 | `collect` | 取文件时 | **如实拒绝**：行协议没有文件语义 |
+| `upload` | 推文件时 | **如实拒绝**：同上（协议有这个动词、上限 512 KiB/帧，能写文件的传输应当实现它） |
 | `disconnect` / `close` | 会话收尾 | 关连接、退出 |
 
 **会话是这一档的全部意义**：宿主在 connect 时启动本进程，之后多次 `exec` 走
@@ -60,8 +61,10 @@ steps:
 1. **明文凭据永不过管道**：插件拿到的 connect 参数只有 `host`/`port`/`type` 和
    `credential_ref`（引用**名**）。要认证就在 `config.yaml` 里放密钥，或在这里
    写登录行——宿主不会把 LEVEE 凭据库里的口令交给插件。
-2. **没有 upload 动词**：宿主的运行期通道接口只有 connect/exec/collect/
-   disconnect，所以 `file.copy`、`file.template` 这类推文件的步骤在本通道上会
-   被按名拒绝（要推文件用内建 ssh/winrm，或写编译期通道插件）。
+2. **传输有帧上限**：upload/collect 的载荷在 JSON 行帧里走 base64，**每笔
+   ≤512 KiB**（宿主在发送前拒绝越界，不会撕坏流；行协议两端按约定支持 1 MiB
+   行——插件必须把自己的行读取器配到这个上限，示例都配了）。更大的文件要么
+   分块、要么用内建 ssh/winrm 或编译期通道插件。本示例没有文件语义，upload/
+   collect 都如实拒绝。
 3. **一次会话一个进程**：每个 target 每次 run 起一个本进程，会话结束后回收，
    没有跨 run 连接池。

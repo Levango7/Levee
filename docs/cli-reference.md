@@ -1752,14 +1752,18 @@ levee rbac tree
 > `channel_type`**：inventory 里写 `channel_type: <插件名>` 的 target 经它
 > 拨号，不再需要重新编译 LEVEE。会话是**常驻子进程**（`internal/plugin/
 > session.go`）：connect 一次（进程启动 → init 交配置 → connect 交
-> host/port/type + 凭据**引用名**）、exec/collect 多次、disconnect/close 收尾；
-> 请求串行化（一次一条管道），请求被取消 = 会话判死重拨，不再复用失序的流。
+> host/port/type + 凭据**引用名**）、exec/collect/upload 多次、disconnect/
+> close 收尾；请求串行化（一次一条管道），请求被取消 = 会话判死重拨，不再
+> 复用失序的流。
 > **明文凭据永不过管道**——插件只拿 `credential_ref` 名字，密钥走插件自己
 > 的安装期 `config.yaml`（与 `channel-plugins.md` 的"凭据零泄露"同规）。
+> **传输帧上限**：upload/collect 的载荷在 JSON 行帧里走 base64，**每笔
+> ≤512 KiB**——宿主在发送/解码前拒绝越界（不会撕坏流）；**插件必须把自己的
+> 行读取器配到 1 MiB**（协议行帧，示例都配了），否则真传输帧会掐断它自己的
+> 连接。更大的文件要么分块、要么用内建传输。
 > **三条边界**：①插件名撞已注册类型（ssh/winrm/local…）**拒绝启动**；
-> ②**无 upload 动词**——`file.copy` 这类推文件的步骤在运行期通道上按名
-> 拒绝（要推文件请用内建传输或编译期通道插件）；③每 target 每 run 一个
-> 会话进程，无跨 run 连接池。
+> ②单帧 512 KiB 之上的文件传输不可用（分块或内建传输）；③每 target 每 run
+> 一个会话进程，无跨 run 连接池。
 > `plugin test`（16.7）对任意插件提供最小真执行（活的协议握手）。
 > **编译期通道插件**（写 Go 代码实现 `channel.ChannelFactory` 并注册，
 > 见 [`channel-plugins.md`](channel-plugins.md)）仍是把传输编进二进制的方式，
