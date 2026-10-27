@@ -81,6 +81,13 @@ type ConversationEngineConfig struct {
 	// users get the closed loop; the bare CLI converse engine stays
 	// local-only and never silently claims to have created anything.
 	ChangeCreator ChangeCreator
+	// InherentIrreversible is the deployment's extra inherent-irreversible
+	// vocabulary ("<module>.<action>" pairs declared destructive by installed
+	// plugin manifests). The draft-promotion gate in change_bridge.go runs the
+	// same V14 check `levee compile` runs, so it must judge a plugin's
+	// destructive step exactly like a built-in one — otherwise a recommendation
+	// draft would be accepted here and only refused later at plan time.
+	InherentIrreversible []string
 	// Timeout is the wall-clock budget for a single HandleMessage call.
 	// Zero defaults to DefaultConversationTimeout.
 	Timeout time.Duration
@@ -101,7 +108,10 @@ type ConversationEngine struct {
 	closers       []io.Closer
 	log           *slog.Logger
 	timeout       time.Duration
-	mu            sync.RWMutex
+	// inherentIrreversible is read-only after construction; see
+	// ConversationEngineConfig.InherentIrreversible.
+	inherentIrreversible []string
+	mu                   sync.RWMutex
 }
 
 // NewConversationEngine creates a ConversationEngine from the given config.
@@ -123,12 +133,13 @@ func NewConversationEngine(cfg ConversationEngineConfig) *ConversationEngine {
 		lg = log.With("component", "conversation_engine")
 	}
 	return &ConversationEngine{
-		sessions:      make(map[string]*Session),
-		recommend:     cfg.Recommend,
-		diagnose:      cfg.Diagnose,
-		changeCreator: cfg.ChangeCreator,
-		log:           lg,
-		timeout:       timeout,
+		sessions:             make(map[string]*Session),
+		recommend:            cfg.Recommend,
+		diagnose:             cfg.Diagnose,
+		changeCreator:        cfg.ChangeCreator,
+		log:                  lg,
+		timeout:              timeout,
+		inherentIrreversible: append([]string(nil), cfg.InherentIrreversible...),
 	}
 }
 

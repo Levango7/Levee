@@ -82,8 +82,14 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return formatCompileError(file, err)
 	}
 
-	// 2. Basic structural validation.
-	validator := dsl.NewValidator()
+	// 2. Basic structural validation. The V14 irreversibility gate reads the
+	// deployment's plugin-declared destructive actions too, so compile time and
+	// plan time judge a plugin's destructive step identically.
+	irreversiblePairs, pairErr := declaredPluginIrreversiblePairsForCmd()
+	if pairErr != nil {
+		return pairErr
+	}
+	validator := dsl.NewValidator(irreversiblePairs...)
 	verrs := validator.Validate(wf)
 	if len(verrs) > 0 && mode == dsl.ModeStrict {
 		return formatValidationErrors(file, verrs)

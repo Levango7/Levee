@@ -78,12 +78,33 @@ func (e ValidationError) Error() string {
 }
 
 // Validator 对解析后的 Workflow AST 执行基础校验。零值不可用，
-// 请通过 NewValidator 构造。Validator 无内部状态，可并发使用。
-type Validator struct{}
+// 请通过 NewValidator 构造。Validator 构造后只读，可并发使用。
+type Validator struct {
+	// extraInherent 是本部署额外的固有不可逆词表（"<module>.<action>"）：
+	// 已安装插件 manifest 里声明的破坏性动作。它与内置词表
+	// （IsInherentIrreversible）分开存，因为它是部署事实、不是语言知识；
+	// 由调用方从插件注册表（稳定的安装期产物）读入，绝不执行插件。
+	extraInherent map[string]struct{}
+}
 
-// NewValidator 返回一个就绪的 Validator。
-func NewValidator() *Validator {
-	return &Validator{}
+// NewValidator 返回一个就绪的 Validator。extraInherent 是本部署插件声明的
+// 额外固有不可逆对（见 plugin.DeclaredDestructivePairs）；传空即只认内置词表。
+// 必须与 plan.NewGenerator 收到同一份词表，否则 compile 期与 plan 期会对
+// 「天生不可逆」产生分歧。
+func NewValidator(extraInherent ...string) *Validator {
+	extra := make(map[string]struct{}, len(extraInherent))
+	for _, key := range extraInherent {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, _, ok := splitWhitelistKey(key); !ok {
+			// 无点/空段的名字匹配不上任何步骤，登记它等于一条永远命不中的白名单。
+			continue
+		}
+		extra[key] = struct{}{}
+	}
+	return &Validator{extraInherent: extra}
 }
 
 // Validate 对 wf 执行全部基础校验，返回所有发现的错误（不短路）。
@@ -339,9 +360,11 @@ func joinAction(module, action string) string {
 // module.action 必须列在 workflow 级 allow_irreversible 白名单里。
 //
 // 判定与 executor.IrreversibleChecker.Check 的优先级一致——先看作者显式
-// 声明（irreversible: true），再看引擎固有破坏性词表
-// （DefaultIrreversibleActions，与 plan 生成器注册的是同一份）。
-// 词表只在 internal/dsl 存一份，编译期与 plan 期对「天生不可逆」的认定不可能分叉。
+// 声明（irreversible: true），再看固有破坏性词表。词表有两个来源：内置的
+// DefaultIrreversibleActions（语言知识，compile 期与 plan 期同一份）
+// 与本部署的 v.extraInherent（已安装插件声明的破坏性动作，由调用方从注册表
+// 读入）。两侧必须喂同一份 extraInherent，否则 compile 期与 plan 期会对插件
+// 步骤产生分歧。
 func (v *Validator) validateIrreversibleWhitelist(wf *Workflow) []ValidationError {
 	var errs []ValidationError
 
@@ -360,10 +383,12 @@ func (v *Validator) validateIrreversibleWhitelist(wf *Workflow) []ValidationErro
 	}
 
 	for i, s := range wf.Steps {
-		if !s.Irreversible && !IsInherentIrreversible(s.Module, s.Action) {
-			continue
-		}
 		key := s.Module + "." + s.Action
+		if !s.Irreversible && !IsInherentIrreversible(s.Module, s.Action) {
+			if _, ok := v.extraInherent[key]; !ok {
+				continue
+			}
+		}
 		if _, ok := allowed[key]; !ok {
 			errs = append(errs, ValidationError{
 				Code:    codeIrreversibleNotWhitelisted,
