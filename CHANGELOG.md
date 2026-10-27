@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（插件系统的第四个引擎消费点：module→channel，`channel` 类型接进通道注册表——"执行面未启用"声明四次分型，四类全接）
+
+- **声明分型**：上笔把 module 接进执行器，边界声明为"notifier + gate + module = 活的执行面；channel = 仍是管理面"。本笔兑现 channel：**四类全是活的执行面**。help/README/cli-reference 三处同步改写；`docs/channel-plugins.md` 第 7 节从"通道注册是进程级的、动态插件加载在设计 backlog（V2）"改写为"两种接入方式（编译期/运行期）"对照表——那句 backlog 现在已经不成立了。
+- **这是唯一一种「会话」消费点**：门禁是单次检查、模块是单次执行，通道是 connect 一次、exec/collect 多次、disconnect/close 收尾。前者用一次性子进程是对的；通道用一次性子进程会把 NETCONF 对端/跳板机刚建立的会话状态丢掉。所以新增 `internal/plugin/session.go`：常驻子进程 + 三条不变量——**请求串行化**（一条管道一次一条；Channel 契约明确允许并发 Exec，所以加锁而不是让写入交错）、**失败即判死**（超时/取消/协议违例后流无法再同步，下一次读会拿到上一题的答案，所以杀进程、IsConnected 转 false、由调用方重拨）、**收尾不等在途请求**（两把锁：请求等轮次，teardown 绝不等请求——否则一次永不回答的执行会让 Close 挂死）。
+- **协议扩展（向后兼容）**：动作集加 `connect`/`exec`/`collect`/`disconnect`；`PluginResponse` 加 `exec`（复用 `types.go` 已声明的 `ChannelExecResult`）与 `collect`（base64 载荷）。回 ok:true 却不带对应载荷 = 无 verdict，判失败。
+- **`plugin.PluginChannel`（channel.Channel）+ `PluginChannelFactory`（channel.ChannelFactory）**：Connect = 起会话 → init(安装期配置) → connect(寻址)；Exec 映射 exit/stdout/stderr/duration，**非零退出码是结果不是错误**（与 SSH 通道同口径），插件拒投/无载荷与 ctx 取消返回 `ExitCode -1`（绝不把失败伪装成 0）；Download 走 collect 解码；**Upload 按名拒绝**（声明的 ChannelPlugin 契约没有 upload 动词，`file.copy` 类步骤在运行期通道上不可用——明说，不假装）；Close 幂等且永不因收尾失败而报错。
+- **明文凭据永不过管道**：新增 `channel.CredentialRefNamer` 可选接口（`liveTarget` 实现，暴露 inventory 行的引用**名**），插件拿到的 connect 参数只有 host/port/type + `credential_ref` 名字，扩写后的 `CredentialRef`（含口令）一个字段都不传。密钥走插件自己的安装期 `config.yaml`——这正是"凭据零泄露/传输原生凭据"规则对子进程形态的落地。子进程人格在测试里对 `credentials` 键直接拒连，边界被钉住。
+- **serve 装配**：`installPluginChannels` 加入既有的 `installPluginExecutionSurfaces` 接缝（`buildServeServices` 的圈复杂度预算仍不许第三个独立分支）——注册表缺失=未配置；meta 握手失败/二进制消失=拒绝启动点名 + 逃生门；**插件名撞已注册类型（ssh/winrm/local…）=拒绝启动**（`Register` 按设计覆盖同名项，静默替换 `ssh` 会把所有写它的 workflow 引到插件上）。
+- **测试**：`internal/plugin/channel_test.go` 13 例（记录三态拒绝 / 二进制消失 / 类型名=插件名 / 寻址含引用名且不含明文 / Connect 幂等 / 未连接即拒活 / 结果映射含非零退出 / 拒投浮出并带 -1 / 无载荷拒绝 / upload 按名拒绝 / collect 解码 / Close 幂等 / **取消即判死** / **进程中途死亡即断开** / 并发 Exec 串行化且各得各答）；`protocol_test.go` 加 `channel` 子进程人格（会话型：多请求一进程）；`cmd/levee/serve_plugin_channel_test.go` 5 例；`internal/wiring` 钉住 `CredentialRefName` 暴露的是引用名而非扩写凭据。
+- **验证**：build/vet/gofmt/golangci-lint 干净；plugin/channel（含三传输）/wiring/cmd/levee 全量绿。
+
 ### 新增（插件系统的第三个引擎消费点：gate→module，`module` 类型接进执行器——"执行面未启用"声明三次分型）
 
 - **声明分型**：上笔把 gate 接进门禁体系，边界声明为"notifier + gate = 活的执行面；module/channel = 仍是管理面"。本笔兑现 module：**notifier + gate + module = 活的执行面；channel = 仍是管理面**。help/README/cli-reference 三处同步改写。

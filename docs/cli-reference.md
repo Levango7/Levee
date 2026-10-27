@@ -1729,7 +1729,7 @@ levee rbac tree
 
 管理 LEVEE 插件注册表（安装/启停/移除/查询，含签名验证与沙箱配置）。
 
-> **执行面（如实声明，2026-10-27 第三次分型）**：**notifier 类型已接入 serve**——
+> **执行面（如实声明，2026-10-27 第四次分型：四类全接）**：**notifier 类型已接入 serve**——
 > 注册表里每个启用状态的通知插件，在 serve 启动时装配进通知管理器，成为与
 > `notify.webhook` 并列的投递渠道（run 生命周期、漂移告警、回滚评级走同一路
 > 由）；插件二进制缺失或记录不可用时**拒绝启动并点名**（与 webhook 的
@@ -1747,11 +1747,23 @@ levee rbac tree
 > 「固有不可逆」词表（`internal/dsl/inherent_irreversible.go` 是静态表），
 > **破坏型插件动作须由 workflow 作者显式声明 `irreversible: true`**，否则不会
 > 触发不可逆级别的审批要求。
-> **channel 类型仍是注册表管理面**（引擎消费点未接）；`plugin test`
-> （16.7）对任意插件提供最小真执行（活的协议握手）。要在**今天**扩展引擎的
-> 执行通道，请使用编译期通道插件（写 Go 代码实现 `channel.ChannelFactory`
-> 并注册，见 [`channel-plugins.md`](channel-plugins.md)），那是另一套机制，
-> 与本章的运行时插件系统无关。
+> **channel 类型已接入通道注册表**——serve 启动时把注册表里每个启用状态的
+> 通道插件注册进 `channel.DefaultRegistry()`，**插件名就是可拨的
+> `channel_type`**：inventory 里写 `channel_type: <插件名>` 的 target 经它
+> 拨号，不再需要重新编译 LEVEE。会话是**常驻子进程**（`internal/plugin/
+> session.go`）：connect 一次（进程启动 → init 交配置 → connect 交
+> host/port/type + 凭据**引用名**）、exec/collect 多次、disconnect/close 收尾；
+> 请求串行化（一次一条管道），请求被取消 = 会话判死重拨，不再复用失序的流。
+> **明文凭据永不过管道**——插件只拿 `credential_ref` 名字，密钥走插件自己
+> 的安装期 `config.yaml`（与 `channel-plugins.md` 的"凭据零泄露"同规）。
+> **三条边界**：①插件名撞已注册类型（ssh/winrm/local…）**拒绝启动**；
+> ②**无 upload 动词**——`file.copy` 这类推文件的步骤在运行期通道上按名
+> 拒绝（要推文件请用内建传输或编译期通道插件）；③每 target 每 run 一个
+> 会话进程，无跨 run 连接池。
+> `plugin test`（16.7）对任意插件提供最小真执行（活的协议握手）。
+> **编译期通道插件**（写 Go 代码实现 `channel.ChannelFactory` 并注册，
+> 见 [`channel-plugins.md`](channel-plugins.md)）仍是把传输编进二进制的方式，
+> 与运行期通道插件并存，差别见该文档第 7 节。
 
 ### 16.1 plugin list
 

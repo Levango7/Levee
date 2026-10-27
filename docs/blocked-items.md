@@ -33,8 +33,8 @@
 
 | 项 | 还差什么 | 量级 | 备注 |
 | --- | --- | --- | --- |
-| D-1a plugin Channel 消费点 | channel 抽象层（连接池+认证+接口族）——插件实现一种新传输，宿主经它 Connect/Exec/Collect/Disconnect | 大 | Module 已交付，Channel 是最后一档；难点是子进程上的二进制载荷/流式/超时/池化契约 |
 | D-1b 插件动作的不可逆声明 | 插件在 meta 里按动作声明 destructive 语义，计划期喂进 IrreversibleChecker（或 DSL 侧 `plugin:` 命名空间 + 保守判定） | 中 | **当前缺口**：插件模块不在编译期「固有不可逆」词表，破坏型步骤只能靠作者显式 `irreversible: true`；两侧（serve 有注册表 / CLI 可能没有）判定口径一致性是难点 |
+| D-1c 运行期通道的 upload 动词与跨 run 连接池 | upload 动词（推文件）+ 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型 | 中 | Channel 消费点已交付（本笔）；这三项是它明说的能力差，按真实消费方出现再排 |
 | D-2 运营层资产（demo 库/角色视频/品牌 GIF） | 需要真人录制与设计，非代码工作 | 需人手 | **面向客户签单的最大缺口，建议优先安排人手** |
 
 ## E. 卡在产品决策/需求分母（明确等触发，不焦虑不硬做）
@@ -51,5 +51,6 @@
 - drift 常驻巡检 + 告警收件人真缺陷修复：PR #217
 - plugin `plugin test` 最小真执行 + notifier 执行面：PR #219
 - plugin gate 执行面（DSL 语法 + verify 门禁 + plan hash + engine 可执行性 + wiring 注入 + serve resolver）：PR #221
-- plugin module 执行面（协议 `validate`/`execute` + `plugin.PluginModule` 适配器 + `executor.ChannelFree` + serve 注册进进程级 executor + 同名保护）：本笔
+- plugin module 执行面（协议 `validate`/`execute` + `plugin.PluginModule` 适配器 + `executor.ChannelFree` + serve 注册进进程级 executor + 同名保护）：PR #230
+- plugin channel 执行面（会话子进程 + `connect`/`exec`/`collect`/`disconnect` + `plugin.PluginChannel`/工厂 + `channel.CredentialRefNamer` 的明文边界 + serve 注册进通道注册表 + 同名保护）：本笔
 - service_factory：并行会话已改良（remote=产品方向、local 委托单一构造点+drift guard），维持现状
