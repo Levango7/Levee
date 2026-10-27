@@ -1486,6 +1486,12 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 				if chatOpsBridge != nil {
 					chatOpsBridge.OnApprovalExpired(&a)
 				}
+				// The Jira mirror gets the same moment: an ITSM record that still
+				// shows an open approval issue after the timeout has passed is a lie
+				// the room does not tell.
+				if jiraBridge != nil {
+					jiraBridge.OnApprovalExpired(&a)
+				}
 				if err := store.CreateTrace(ctx, &state.Trace{
 					ID:        newID("trc-"),
 					RunID:     a.RunID,
