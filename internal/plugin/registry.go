@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS plugin_registry (
     state           TEXT    NOT NULL DEFAULT 'installed',
     binary_path     TEXT    NOT NULL DEFAULT '',
     config_yaml     TEXT    NOT NULL DEFAULT '',
+    destructive_actions TEXT NOT NULL DEFAULT '[]',
     signature       TEXT    NOT NULL DEFAULT '',
     installed_at    DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -85,10 +87,15 @@ type RegistryRecord struct {
 	State          PluginState `json:"state"`
 	BinaryPath     string      `json:"binary_path"`
 	ConfigYAML     string      `json:"config_yaml,omitempty"`
-	Signature      string      `json:"signature,omitempty"`
-	InstalledAt    time.Time   `json:"installed_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
-	ErrorMsg       string      `json:"error_msg,omitempty"`
+	// DestructiveActions is the module action list the manifest declared as
+	// inherently destructive (see PluginMeta.DestructiveActions). Persisted so
+	// the plan-time irreversibility gate can read it without executing the
+	// plugin.
+	DestructiveActions []string  `json:"destructive_actions,omitempty"`
+	Signature          string    `json:"signature,omitempty"`
+	InstalledAt        time.Time `json:"installed_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+	ErrorMsg           string    `json:"error_msg,omitempty"`
 }
 
 // --- Registry ---------------------------------------------------------------
@@ -116,8 +123,52 @@ func NewRegistry(ctx context.Context, dbPath string) (*Registry, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("plugin: apply registry schema: %w", err)
 	}
+	if err := ensurePluginRegistryColumns(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return &Registry{db: db}, nil
+}
+
+// ensurePluginRegistryColumns adds columns introduced after the initial
+// schema to a registry database created by an older host. CREATE TABLE IF
+// NOT EXISTS does not alter an existing table, so a new column would be
+// missing (and every INSERT/SELECT naming it would fail) until this runs.
+// The check is PRAGMA table_info rather than "ALTER and ignore the error" so
+// a real failure is not swallowed as "already there".
+func ensurePluginRegistryColumns(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(plugin_registry)")
+	if err != nil {
+		return fmt.Errorf("plugin: inspect registry schema: %w", err)
+	}
+	present := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("plugin: scan registry schema: %w", err)
+		}
+		present[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("plugin: close schema rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("plugin: read registry schema: %w", err)
+	}
+
+	const col = "destructive_actions"
+	if !present[col] {
+		if _, err := db.ExecContext(ctx,
+			"ALTER TABLE plugin_registry ADD COLUMN "+col+" TEXT NOT NULL DEFAULT '[]'"); err != nil {
+			return fmt.Errorf("plugin: migrate registry add %s: %w", col, err)
+		}
+	}
+	return nil
 }
 
 // openRegistryDB opens the SQLite database with the appropriate pragmas.
@@ -190,15 +241,24 @@ func (r *Registry) Install(ctx context.Context, meta PluginMeta, binaryPath, con
 		entry = "plugin"
 	}
 
+	destructiveJSON := "[]"
+	if len(meta.DestructiveActions) > 0 {
+		encoded, merr := json.Marshal(meta.DestructiveActions)
+		if merr != nil {
+			return nil, fmt.Errorf("plugin: encode destructive_actions: %w", merr)
+		}
+		destructiveJSON = string(encoded)
+	}
+
 	_, err := r.db.ExecContext(ctx, `
 INSERT INTO plugin_registry
     (name, version, type, author, description, entry_point,
      min_host_version, max_host_version, state, binary_path,
-     config_yaml, signature, installed_at, updated_at, error_msg)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.Name, meta.Version, string(meta.Type), meta.Author,
 		meta.Description, entry, meta.MinHostVersion, meta.MaxHostVersion,
-		string(StateInstalled), binaryPath, configYAML, sig, now, now, "",
+		string(StateInstalled), binaryPath, configYAML, destructiveJSON, sig, now, now, "",
 	)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -235,7 +295,7 @@ func (r *Registry) List(ctx context.Context, state PluginState) ([]*RegistryReco
 		rows, err = r.db.QueryContext(ctx, `
 SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg
   FROM plugin_registry WHERE state = ? ORDER BY name`, string(state))
 	}
 	if err != nil {
@@ -397,7 +457,7 @@ func isUniqueConstraint(err error) bool {
 func registrySelectSQL() string {
 	return `SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg
   FROM plugin_registry WHERE name = ?`
 }
 
@@ -405,7 +465,7 @@ func registrySelectSQL() string {
 func registrySelectAllSQL() string {
 	return `SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg
   FROM plugin_registry ORDER BY name`
 }
 
@@ -419,11 +479,12 @@ type scanner interface {
 func scanRegistryRecord(s scanner) (*RegistryRecord, error) {
 	var rec RegistryRecord
 	var typ, state string
+	var destructiveJSON string
 	var installedAt, updatedAt string
 	err := s.Scan(
 		&rec.Name, &rec.Version, &typ, &rec.Author, &rec.Description,
 		&rec.EntryPoint, &rec.MinHostVersion, &rec.MaxHostVersion,
-		&state, &rec.BinaryPath, &rec.ConfigYAML, &rec.Signature,
+		&state, &rec.BinaryPath, &rec.ConfigYAML, &destructiveJSON, &rec.Signature,
 		&installedAt, &updatedAt, &rec.ErrorMsg,
 	)
 	if err != nil {
@@ -433,6 +494,13 @@ func scanRegistryRecord(s scanner) (*RegistryRecord, error) {
 	rec.State = PluginState(state)
 	rec.InstalledAt = parseTime(installedAt)
 	rec.UpdatedAt = parseTime(updatedAt)
+	if destructiveJSON != "" && destructiveJSON != "[]" {
+		// An undecodable value leaves DestructiveActions empty; the declaration
+		// is also cross-checked against the plugin's runtime action list when
+		// the module is built, so a corrupt row surfaces there rather than
+		// silently widening or narrowing the irreversibility vocabulary.
+		_ = json.Unmarshal([]byte(destructiveJSON), &rec.DestructiveActions)
+	}
 	return &rec, nil
 }
 

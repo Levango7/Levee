@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/nexus/levee/internal/approval"
@@ -44,6 +45,22 @@ func cliCredentialResolver(store state.Store) wiring.CredentialResolver {
 // CLI user rather than the "grpc-user" fallback.
 func newCLIChangeService(store state.Store) (*grpc.ChangeService, error) {
 	opts := []wiring.Option{wiring.WithCredentialResolver(cliCredentialResolver(store))}
+	// The plan-time irreversibility gate must see the same plugin-declared
+	// destructive actions serve sees, or the verdict (and the plan hash that
+	// carries it) would depend on whether the plan came from the CLI or the
+	// server. Loading config mirrors openStore; a present-but-unreadable
+	// registry fails the command rather than judging plugin steps reversible.
+	cfg, err := loadConfigForCmd()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	pluginPairs, pairErr := declaredPluginIrreversiblePairs(context.Background(), cfg)
+	if pairErr != nil {
+		return nil, pairErr
+	}
+	if len(pluginPairs) > 0 {
+		opts = append(opts, wiring.WithInherentIrreversible(pluginPairs))
+	}
 	// Same rule as serve: the calendar gates must read the database the operator's
 	// `levee calendar` commands write, and a failure to open it is reported rather
 	// than turned into an inert gate.

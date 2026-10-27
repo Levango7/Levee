@@ -1226,6 +1226,21 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 	if approvalSvc != nil {
 		opts = append(opts, wiring.WithGateApprover(approval.NewGateApprover(approvalSvc)))
 	}
+	// Plugin-declared destructive actions join the plan-time irreversibility
+	// gate, so a step whose module is an installed plugin is refused unless
+	// the workflow lists the pair in allow_irreversible — the same judgement a
+	// built-in `pkg.remove` gets. Read from the registry (a stable install-time
+	// fact), never by executing a plugin; a present-but-unreadable registry
+	// refuses the boot rather than quietly judging plugin steps reversible.
+	pluginPairs, pairErr := declaredPluginIrreversiblePairs(context.Background(), cfg)
+	if pairErr != nil {
+		return nil, pairErr
+	}
+	if len(pluginPairs) > 0 {
+		opts = append(opts, wiring.WithInherentIrreversible(pluginPairs))
+		log.Info("serve: plugin-declared destructive actions wired into the plan-time irreversibility gate",
+			"count", len(pluginPairs))
+	}
 	return opts, nil
 }
 

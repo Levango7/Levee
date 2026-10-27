@@ -162,6 +162,13 @@ type Engine struct {
 	// WithChangeCalendar.
 	calendar *calendar.CalendarService
 
+	// inherentIrreversible is the deployment's extra inherently-irreversible
+	// vocabulary: "<module>.<action>" pairs that installed plugin manifests
+	// declared destructive (plugin.DeclaredDestructivePairs). Empty (the
+	// default) leaves the built-in vocabulary as the whole list. See
+	// WithInherentIrreversible.
+	inherentIrreversible []string
+
 	// sem is the process-wide parallel-run semaphore (capacity =
 	// maxParallelRuns). Acquire is non-blocking: beyond the cap a run
 	// fast-fails instead of queueing. Initialised in NewEngine after
@@ -187,6 +194,18 @@ func WithChangeCalendar(svc *calendar.CalendarService) Option {
 // default): channels are then dialled unauthenticated.
 func WithCredentialResolver(r CredentialResolver) Option {
 	return func(e *Engine) { e.resolver = r }
+}
+
+// WithInherentIrreversible adds the deployment's plugin-declared
+// inherently-irreversible "<module>.<action>" pairs to the plan-time
+// irreversibility gate (plan.NewGenerator). The caller reads them from the
+// plugin registry at startup — never by executing a plugin, and identically on
+// the CLI and serve plan paths, so the verdict and the plan hash that carries
+// it do not depend on where the plan was produced. Nil/empty (the default)
+// leaves the built-in vocabulary (dsl.DefaultIrreversibleActions) as the whole
+// list.
+func WithInherentIrreversible(pairs []string) Option {
+	return func(e *Engine) { e.inherentIrreversible = pairs }
 }
 
 // WithChannelRegistry overrides the channel registry (default:
