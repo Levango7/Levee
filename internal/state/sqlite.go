@@ -1253,11 +1253,20 @@ func (s *SQLiteStore) GetAssignment(ctx context.Context, runID string) (*Assignm
 // advances expected→next only while the row still matches (runID, epoch,
 // expected). It reports (true, nil) when applied and (false, nil) when the row
 // is missing or no longer matches (a concurrent actor won the race).
+//
+// It deliberately leaves result alone. It used to seed the empty result with
+// the word "done" — the state name, not a verdict — and rely on MarkDone's
+// follow-up SetAssignmentResult to overwrite it. That placeholder is outside
+// the result vocabulary and outlived its own overwrite whenever the second
+// write failed or never ran (MarkDone early-returns once state is done), so
+// "done" would read back as a result forever. Callers record the verdict
+// through SetAssignmentResult; until then the column stays empty, which is
+// "not recorded", not a verdict.
 func (s *SQLiteStore) UpdateAssignmentStateIf(ctx context.Context, runID string, epoch int64, expected, next string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `UPDATE run_assignment
-		SET state=?, result=CASE WHEN ?='done' THEN COALESCE(NULLIF(result,''), ?) ELSE result END, updated_at=?
+		SET state=?, updated_at=?
 		WHERE run_id=? AND epoch=? AND state=?`,
-		next, next, next, time.Now().UTC(), runID, epoch, expected,
+		next, time.Now().UTC(), runID, epoch, expected,
 	)
 	if err != nil {
 		return false, fmt.Errorf("state: update assignment %q: %w", runID, err)
