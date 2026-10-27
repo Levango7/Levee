@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 修复（`approval.CheckExpiry` 的写回改成 CAS：不覆写已落地的决策，并发清扫不再重复上报同一条）
+
+- **上一笔接上驱动时留下的竞争面**：`CheckExpiry` 先用 `ListPending` 扫描、再逐条 `Update` 写回，两步之间没有任何条件。两个后果都不是理论问题：①另一副本的清扫读到同一条待决记录，两边都写成功、都上报——同一次超时被播报两遍；②调用方在此期间投了票（`StatusApproved`），清扫把那笔决策无条件盖回 `expired`，等于静默撤销一个人已经做出的判定。`Approval.Store` 接口早就声明了 `UpdateIfPending`，state 层的 `UpdateApprovalIfPending` 也早已实现（`WHERE id=? AND status='pending' AND revision=?`），只是清扫器没用它。
+- **改动**：写回换成 `s.store.UpdateIfPending(ctx, &settled)`。**写的是扫描记录的一份拷贝**——Store 允许把内部持有的同一指针交出来，原地改 `Status` 会让 CAS 的 `revision` 比对撞上自己那次修改，守卫变成恒失败。CAS 返回 `false` 不是错误：记录已被别的写入方结算，这一条既不上报也不覆写，只落一行 info 说明“settled concurrently”；store 真报错仍照旧中止整批（返回 error），两者不可混为一谈。
+- **测试**：新增 `internal/approval/expiry_cas_test.go` 四例。①`decisionFirstStore` 让 CAS 首次调用先写入一个 `approved` 再返回 false —— 断言清扫**不上报**、库里仍是 `approved`（这条直接覆盖“覆盖人工决定”）；②强制 CAS 落败时静默（无 error、无上报、记录仍 pending）；③CAS 报错仍中止整批（丢 CAS 是静默，写失败不是）；④`barrierStore` 让两个清扫器**都完成扫描后**才允许任一方写入，跑两个 `SweepOnce`，断言同一条过期记录恰好上报一次。
+- **并发用例的第一版是假绿**：不加屏障时两个 goroutine 常常串行成 scan→write→scan，第二个清扫看到队列已空，于是“恰好一次”在**未修复**的代码上也能通过——它证明的是没有并发，不是修复有效。加上屏障后，旧实现如约把同一 ID 报了两遍。
+- **变异咬合**：改回无条件 `Update` → ①②④如约变红（决策被盖成 `expired`、同一 ID 上报两次）；只把拷贝改回原地修改 → 用例在 CAS 上恒失败、清扫一条都不落定，同样变红。
+- 顺带：`TestCheckExpiry_StoreUpdateError` 的注入键从 `update` 改为 `update-if-pending`，注释说明写回已是 CAS。
+- 验证：`go test ./internal/approval/` 绿、`gofmt -l` 干净。
+
 ### 加固（`run_assignment.result` 的词表从 Go 守卫下沉到数据库：迁移 v10 回填 + 双触发/CHECK，期望值从常量推导）
 
 - **上一笔只锁了一半**：`SetAssignmentResult` 的 `isAssignResult` 守卫管住了走 store 的调用方，DDL 侧没有任何约束——手工修数据、或将来某个绕过 store 的直写方，仍能把 `running` 塞进一个下游当判定读的列。本次把同一词表钉在表上。
