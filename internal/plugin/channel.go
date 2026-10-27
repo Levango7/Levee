@@ -179,15 +179,54 @@ func (c *PluginChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResu
 	}, nil
 }
 
-// Upload is not part of the declared ChannelPlugin contract, so a plugin
-// channel refuses it by name instead of pretending: steps that push files
-// (file.copy, file.template) cannot run against a plugin transport today.
+// Upload pushes one file to the target through the plugin's upload verb: the
+// content is base64-encoded into the request line and handed over whole.
+//
+// The payload is bounded by maxTransferPayloadBytes (the JSON-line frame, not
+// a policy choice) — the host refuses an oversize transfer BEFORE sending
+// rather than desynchronising the stream mid-line. Larger files must chunk or
+// use a built-in transport.
 func (c *PluginChannel) Upload(ctx context.Context, remotePath string, content io.Reader) error {
-	return wrapError(c.name, fmt.Errorf("channel: upload is not supported by plugin channels (the ChannelPlugin contract has no upload verb); use a built-in transport for file.push steps"))
+	sess := c.session()
+	if sess == nil || !sess.Alive() {
+		return wrapError(c.name, fmt.Errorf("channel: not connected"))
+	}
+
+	data, err := readBounded(content, maxTransferPayloadBytes)
+	if err != nil {
+		return wrapError(c.name, err)
+	}
+
+	resp, err := sess.Request(ctx, HostRequest{Action: "upload", Params: map[string]any{
+		"path": remotePath,
+		"data": base64.StdEncoding.EncodeToString(data),
+	}})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return wrapError(c.name, fmt.Errorf("upload refused: %s", resp.Error))
+	}
+	return nil
+}
+
+// readBounded reads r fully, failing with a named error when it exceeds cap —
+// the +1 byte is what turns "exactly at the cap" from a guess into a check.
+func readBounded(r io.Reader, cap int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, cap+1))
+	if err != nil {
+		return nil, fmt.Errorf("read upload content: %w", err)
+	}
+	if int64(len(data)) > cap {
+		return nil, fmt.Errorf("upload content is %d bytes; a plugin channel carries at most %d per transfer (the JSON-line frame) — chunk it or use a built-in transport", len(data), cap)
+	}
+	return data, nil
 }
 
 // Download retrieves a path from the target through the plugin's collect verb
-// and hands the caller a reader over the decoded bytes.
+// and hands the caller a reader over the decoded bytes. The payload bound is
+// the same frame as upload's; a plugin that answers over it fails the request
+// here with a named error instead of a scanner tear-down deeper in the pipe.
 func (c *PluginChannel) Download(ctx context.Context, remotePath string) (io.Reader, error) {
 	sess := c.session()
 	if sess == nil || !sess.Alive() {
@@ -203,6 +242,9 @@ func (c *PluginChannel) Download(ctx context.Context, remotePath string) (io.Rea
 	}
 	if resp.Collect == nil {
 		return nil, wrapError(c.name, fmt.Errorf("collect returned ok with no payload; an empty success is not a verdict"))
+	}
+	if len(resp.Collect.Data) > base64.StdEncoding.EncodedLen(int(maxTransferPayloadBytes))+64 {
+		return nil, wrapError(c.name, fmt.Errorf("collect payload is %d base64 chars; a plugin channel carries at most %d raw bytes per transfer (the JSON-line frame)", len(resp.Collect.Data), maxTransferPayloadBytes))
 	}
 	data, err := base64.StdEncoding.DecodeString(resp.Collect.Data)
 	if err != nil {

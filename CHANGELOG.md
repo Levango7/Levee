@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（运行期通道的 `upload` 动词——`file.copy` 这类推文件的步骤第一次能在插件通道上跑）
+
+- **协议**：通道会话动作集加入 `upload`（params：`path` + `data`（base64）），与既有的 `connect`/`exec`/`collect`/`disconnect` 并列。**帧上限随之成文**：`maxTransferPayloadBytes = 512 KiB`（裸字节，base64 后 ~683 KiB）——上限不是策略选择，是 JSON 行协议的物理约束（两端行读取器 1 MiB，插件侧配到这个上限是**插件的义务**，示例都配了；一个用默认 64 KiB scanner 的插件会在真传输帧上掐断自己的连接——测试子进程第一版就死在这，才把这条契约写成文字）。宿主在**发送前**拒绝越界，不会撕坏流：会话保持可用，错误点名上限与出路（分块或内建传输）。
+- **`PluginChannel.Upload`**：读内容 → 越界检查 → base64 → 一次 upload 请求。配套给 `Download`（collect）加了同帧的**载荷防御检查**——插件回了个超帧载荷时，宿主给的是点名错误而不是深处 scanner 撕流的模糊失败。
+- **能力矩阵变化**：`file.copy`/`file.template` 这类推文件的步骤在运行期通道上从"按名拒绝"变为可用（≤512 KiB/笔）。`docs/cli-reference.md` 第 16 章、`docs/channel-plugins.md` 第 7/8 节、README 的边界句同步改写；`examples/plugins/tcp_console` 显式拒绝 upload 并注明原因（行协议没有文件语义——拒绝是诚实，不是缺陷）。
+- **测试**：upload→collect 往返（内容完整性跨 base64 帧两个方向）/ 目标侧拒投浮出 / **恰好 512 KiB 边界**（off-by-one 边缘）/ **越界一字节拒发且会话存活**（宿主侧拒绝不碰管道——用随后的一次成功 exec 钉住）。子进程人格加 upload 存储（`/denied` 拒投）与 collect 回读。
+- **blocked-items**：D-1c 收窄为「跨 run 会话池 / 一插件多类型」（upload 移出）；D-1b 标注 PR #234 在途。
+
 ### 新增（插件系统的第四个引擎消费点：module→channel，`channel` 类型接进通道注册表——"执行面未启用"声明四次分型，四类全接）
 
 - **声明分型**：上笔把 module 接进执行器，边界声明为"notifier + gate + module = 活的执行面；channel = 仍是管理面"。本笔兑现 channel：**四类全是活的执行面**。help/README/cli-reference 三处同步改写；`docs/channel-plugins.md` 第 7 节从"通道注册是进程级的、动态插件加载在设计 backlog（V2）"改写为"两种接入方式（编译期/运行期）"对照表——那句 backlog 现在已经不成立了。

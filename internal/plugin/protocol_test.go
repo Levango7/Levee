@@ -50,13 +50,22 @@ func TestMain(m *testing.M) {
 //	           one process): meta identifies it, "connect" requires
 //	           params.host and records credential_ref, "exec" answers per cmd
 //	           (hang / die / refuse / nopayload / fail / default success),
-//	           "collect" returns base64 bytes, disconnect and close are
+//	           "upload" stores the base64 payload per path ("/denied"
+//	           refuses), "collect" returns that store back (or a synthetic
+//	           body for never-uploaded paths), disconnect and close are
 //	           acknowledged.
 func protocolChildMain(mode string) int {
 	scanner := bufio.NewScanner(os.Stdin)
+	// The plugin-side contract is lines up to 1 MiB (the examples set this
+	// explicitly, and the host's transfer payloads are sized to fit): without
+	// it the default 64 KiB cap would kill this child on any real upload
+	// frame, which is exactly the failure mode the oversize guard exists to
+	// avoid.
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	enc := json.NewEncoder(os.Stdout)
 	initialised := false
 	credRef := ""
+	uploaded := map[string]string{} // channel personality: path -> base64
 	for scanner.Scan() {
 		var req HostRequest
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
@@ -181,8 +190,25 @@ func protocolChildMain(mode string) int {
 						Duration: 3,
 					}})
 				}
+			case "upload":
+				if !initialised {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "upload before init"})
+					continue
+				}
+				path, _ := req.Params["path"].(string)
+				if path == "/denied" {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "target rejected the write"})
+					continue
+				}
+				data, _ := req.Params["data"].(string)
+				uploaded[path] = data
+				_ = enc.Encode(PluginResponse{OK: true})
 			case "collect":
 				path, _ := req.Params["path"].(string)
+				if up, ok := uploaded[path]; ok {
+					_ = enc.Encode(PluginResponse{OK: true, Collect: &CollectPayload{Data: up}})
+					continue
+				}
 				_ = enc.Encode(PluginResponse{OK: true, Collect: &CollectPayload{
 					Data: base64.StdEncoding.EncodeToString([]byte("collected:" + path)),
 				}})
