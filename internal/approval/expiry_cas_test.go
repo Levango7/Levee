@@ -35,7 +35,7 @@ func (s *decisionFirstStore) UpdateIfPending(ctx context.Context, a *Approval) (
 		s.mu.Unlock()
 		decided := *a
 		decided.Status = StatusApproved
-		if err := s.Store.Update(ctx, &decided); err != nil {
+		if err := s.Update(ctx, &decided); err != nil {
 			return false, err
 		}
 		return false, nil
