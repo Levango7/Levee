@@ -33,8 +33,8 @@
 
 | 项 | 还差什么 | 量级 | 备注 |
 | --- | --- | --- | --- |
-| D-1b 插件动作的不可逆声明 | 插件在 meta 里按动作声明 destructive 语义，计划期喂进 IrreversibleChecker（或 DSL 侧 `plugin:` 命名空间 + 保守判定） | 中 | **PR #234 在途**（另一会话）：manifest `destructive_actions` + 注册表加列迁移 + `plan.NewGenerator` extraInherent，计划期与 `pkg.remove` 同权；compile-time（V14/LE082 纯 CLI 路径）半边待接 |
-| D-1c 运行期通道的跨 run 会话池与一插件多类型 | 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型（类型名=插件名） | 中 | upload 动词已交付（本笔，单笔 ≤512 KiB 帧上限）；池化与多类型按真实消费方出现再排 |
+| D-1b 插件动作的不可逆声明 | **已闭环（PR #234，待评审；合入后本行移入「已交付」）**：manifest `destructive_actions` → 注册表持久化（含旧库 `ALTER TABLE` 迁移）→ **编译期**（`dsl.NewValidator(extra...)`：`levee compile`/`new`/`import` 与 serve 对话草案闸门）与**计划期**（`plan.NewGenerator(extra...)` + `wiring.WithInherentIrreversible`）两侧消费**同一份**词表 | — | 判据取**已安装产物的持久事实**、不执行插件、两侧同一份，所以不可逆判定与 `plan_hash` 不随「谁 plan」漂移（这是当初排除「未知模块一律不可逆」的原因——那会把运行时注册集合泄进 hash）。未做：插件未声明即默认不可逆的强制档（产品决定，另行拍板） |
+| D-1c 运行期通道的跨 run 会话池与一插件多类型 | 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型（类型名=插件名） | 中 | upload 动词已交付（并行会话，单笔 ≤512 KiB 帧上限）；池化与多类型按真实消费方出现再排 |
 | D-2 运营层资产（demo 库/角色视频/品牌 GIF） | 需要真人录制与设计，非代码工作 | 需人手 | **面向客户签单的最大缺口，建议优先安排人手** |
 
 ## E. 卡在产品决策/需求分母（明确等触发，不焦虑不硬做）
