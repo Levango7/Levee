@@ -268,9 +268,15 @@ configurable triggers, approver requirements, and timeout.
    `gh api repos/Levango7/Levee/branches/master`，`enforcement_level=non_admins`），换合并方式不改变它，
    也不改变"合与推的决定权属于仓库的人"这条边界（见 `AGENTS.md` 第 3 条不可越过的边界）。
 
-这条口径目前没有机器守卫：可以在 `ci.yml` 的 master-push 路径上加"标记提交之后不得再出现合并提交"
-的断言，但那要同步动扇入清单（`needs` 列表与判决字符串是本仓踩过两次的地方），属于另一笔决定，
-本条只把规则写清楚。
+这条口径的守卫现状（2026-10-28 现查）：`ci.yml` 的 `landing shape` 步数 **HEAD 自己的父数**，只在
+`push` + `refs/heads/master` 时跑——它拦得住"这一次落地是不是双父"，拦不住"标记提交之后的历史里还有
+合并提交"（后者要扫历史窗口，且要同步动扇入清单，`needs` 列表与判决字符串是本仓踩过两次的地方，
+属于另一笔决定）。**发布 tag 这条路径曾经完全没有守卫**：推 `v*` tag 时 `github.ref` 是
+`refs/tags/...`，上面那步是 skipped（2026-10-28 切 v1.23.0 时实测），所以"tag 必须打在单父提交上"
+当时只靠流程自觉。现在由 `release.yml` 的 ci-gate 兜住：`scripts/require_ci_release.py` 在等 CI
+之前先取 `commits/<sha>` 的 `parents`，不是恰好 1 个就**立刻**失败（不进入那 90 分钟的等待）。放在
+发布门里而不是 `ci.yml` 里是刻意的——它只在发布时触发，不会把历史 tag 的 CI 重跑染红（`v1.22.0` 的
+tag 指向合并提交 `5139395f`，那是本条生效前的事实）。
 
 ## 第6章 测试要求
 
