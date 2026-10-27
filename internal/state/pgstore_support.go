@@ -294,6 +294,23 @@ $fn$ LANGUAGE plpgsql`,
 			`UPDATE runs SET priority = approval_level WHERE approval_level IN ('low', 'normal', 'urgent')`,
 		},
 	},
+	{
+		// assignments.result domain (v10), the PostgreSQL half of the SQLite
+		// migration: fold rows written before the Go guard existed into
+		// 'failed', keep '' ("no verdict recorded yet"), then constrain the
+		// column. The guard on the ADD CONSTRAINT is what makes the step
+		// replay-safe: a fixture built from pgschema.sql already carries it.
+		version: 10,
+		stmts: []string{
+			`UPDATE run_assignment SET result = 'failed' WHERE result NOT IN ('', 'completed', 'failed', 'rolled_back')`,
+			`DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'run_assignment_result_domain') THEN
+        ALTER TABLE run_assignment ADD CONSTRAINT run_assignment_result_domain CHECK (result IN ('', 'completed', 'failed', 'rolled_back'));
+    END IF;
+END $$`,
+		},
+	},
 }
 
 // MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and

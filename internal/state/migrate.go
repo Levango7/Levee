@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 9
+const currentSchemaVersion = 10
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -278,6 +278,38 @@ END`,
 		stmts: []string{
 			`ALTER TABLE runs ADD COLUMN priority TEXT NOT NULL DEFAULT ''`,
 			`UPDATE runs SET priority = approval_level WHERE approval_level IN ('low', 'normal', 'urgent')`,
+		},
+	},
+	{
+		// run_assignment.result domain (v10): the column holds the frozen
+		// assignment result vocabulary (completed | failed | rolled_back) that
+		// dispatch reads as a verdict, with '' meaning "no verdict recorded
+		// yet". SetAssignmentResult has refused anything else since the write
+		// surface was narrowed, but that guard only covers callers that go
+		// through the store; the table itself still took any token from a
+		// manual fix-up or a future direct writer.
+		//
+		// Two halves. Rows written before the guard existed are folded into
+		// 'failed' — the same value the executor's default branch records for
+		// "terminal, but not a clean outcome" — while '' is left alone, because
+		// it is the documented "not recorded yet" state, not a fourth verdict.
+		// The triggers then hold the domain for writers that never touch the
+		// store. These are the same trigger statements as schema.sql.
+		version: 10,
+		stmts: []string{
+			`UPDATE run_assignment SET result = 'failed' WHERE result NOT IN ('', 'completed', 'failed', 'rolled_back')`,
+			`CREATE TRIGGER IF NOT EXISTS run_assignment_result_domain_insert
+BEFORE INSERT ON run_assignment
+WHEN NEW.result NOT IN ('', 'completed', 'failed', 'rolled_back')
+BEGIN
+    SELECT RAISE(ABORT, 'run_assignment.result is not an assignment result');
+END`,
+			`CREATE TRIGGER IF NOT EXISTS run_assignment_result_domain_update
+BEFORE UPDATE OF result ON run_assignment
+WHEN NEW.result NOT IN ('', 'completed', 'failed', 'rolled_back')
+BEGIN
+    SELECT RAISE(ABORT, 'run_assignment.result is not an assignment result');
+END`,
 		},
 	},
 }

@@ -60,7 +60,7 @@ const pgBaseSchemaVersion = 1
 // dialect-specific. What must hold is that each ladder is internally gapless
 // and ends at its own current value — both are asserted by
 // TestMigrationsTable_Shape.
-const pgCurrentSchemaVersion = 9
+const pgCurrentSchemaVersion = 10
 
 // PGPoolConfig tunes the PostgreSQL connection pool. Zero values fall back to
 // sensible defaults derived from database/sql.
