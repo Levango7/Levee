@@ -97,20 +97,23 @@ func installPluginNotifiers(ctx context.Context, cfg *config.Config, mgr *notify
 
 // installPluginExecutionSurfaces installs every plugin consumption point that
 // is active at boot: notifier plugins into the notification manager (returned,
-// possibly newly created) and module plugins into the process-wide executor.
+// possibly newly created), module plugins into the process-wide executor, and
+// channel plugins into the process-wide channel registry.
 //
 // It exists as one call because buildServeServices' cyclomatic budget is
-// already spent — two calls with two error branches would push it over the
-// lint gate. The two halves keep their own failure semantics (the notifier
-// half refuses the boot for a channel that would silently stop delivering;
-// the module half refuses it for a module that could not answer its meta
-// handshake), so this is a seam, not a merge.
+// already spent — three calls with three error branches would push it over the
+// lint gate. Each half keeps its own failure semantics (all three refuse the
+// boot for an enabled-but-unusable plugin, named, with the disable escape
+// hatch), so this is a seam, not a merge.
 func installPluginExecutionSurfaces(ctx context.Context, cfg *config.Config, mgr *notify.NotificationManager) (*notify.NotificationManager, error) {
 	mgr, err := installPluginNotifiers(ctx, cfg, mgr)
 	if err != nil {
 		return nil, err
 	}
 	if err := installPluginModules(ctx, cfg); err != nil {
+		return nil, err
+	}
+	if err := installPluginChannels(ctx, cfg); err != nil {
 		return nil, err
 	}
 	return mgr, nil

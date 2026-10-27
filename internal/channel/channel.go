@@ -55,6 +55,23 @@ type Target interface {
 	Credentials() CredentialRef
 }
 
+// CredentialRefNamer is an optional interface a Target may implement to expose
+// the NAME of the credential reference it was built from — the inventory row's
+// `credential_ref` string, before any resolver expanded it into a
+// CredentialRef.
+//
+// It exists for transports that must not receive plaintext: a runtime channel
+// plugin is handed the reference's name and resolves the secret through its
+// own mechanism (its install-time config), which is the same rule
+// plugin.ChannelPlugin already states ("plaintext credentials are never passed
+// to a channel plugin"). Built-in transports, which do hold the expanded
+// CredentialRef, simply do not implement this.
+type CredentialRefNamer interface {
+	// CredentialRefName returns the reference's name, or "" when the target
+	// was not built from a named reference.
+	CredentialRefName() string
+}
+
 // CredentialRef is a transport-agnostic credential descriptor. Only the
 // fields relevant to the chosen transport need to be populated:
 //

@@ -1,0 +1,8 @@
+name: tcp-console
+version: 1.0.0
+type: channel
+author: levee-team
+description: Channel plugin that drives a line-oriented TCP console (device, serial bridge, terminal server)
+min_host_version: "0.1.0"
+max_host_version: "2.0.0"
+entry_point: tcp-console
