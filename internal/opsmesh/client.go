@@ -40,7 +40,28 @@ var (
 	// ErrQueryFailed is returned when the platform's Prometheus proxy reports
 	// a non-success status for the query.
 	ErrQueryFailed = errors.New("opsmesh: query failed")
+	// ErrResolutionUnsupported is returned by ReportResult when the platform
+	// answers 404 for the resolution endpoint, which it does not implement:
+	// the outcome was NOT delivered, and that is a stable platform fact rather
+	// than a transient failure. Callers surface it as "not delivered" (once per
+	// process) instead of warning on every alert-driven run.
+	ErrResolutionUnsupported = errors.New("opsmesh: platform has no alert resolution endpoint")
 )
+
+// statusError is returned by send for any non-2xx platform response. It
+// carries the status code as a field so callers can branch on a specific,
+// expected rejection (e.g. a 404 from an endpoint the platform does not
+// implement) without string-matching the message.
+type statusError struct {
+	method string
+	path   string
+	code   int
+	body   string
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("opsmesh: %s %s: status %d: %s", e.method, e.path, e.code, e.body)
+}
 
 // --- Constants --------------------------------------------------------------
 
@@ -121,8 +142,11 @@ func NewOpsMeshClient(cfg OpsMeshClientConfig) *OpsMeshClient {
 // the agreed contract.
 //
 // ReportResult returns an error wrapping one of the sentinel errors
-// ErrEmptyAlertID or ErrNilResult when the inputs are invalid, and a wrapped
-// network/HTTP error when the request fails.
+// ErrEmptyAlertID or ErrNilResult when the inputs are invalid, a wrapped
+// network/HTTP error when the request fails, and ErrResolutionUnsupported when
+// the platform answers 404 for the resolution endpoint (the platform-gap case
+// above) — that last one is a stable fact, not a transient failure, so callers
+// can say "not delivered" once instead of warning on every alert-driven run.
 func (c *OpsMeshClient) ReportResult(ctx context.Context, alertID string, result *FixResult) error {
 	if alertID == "" {
 		return fmt.Errorf("opsmesh: report result: %w", ErrEmptyAlertID)
@@ -132,7 +156,16 @@ func (c *OpsMeshClient) ReportResult(ctx context.Context, alertID string, result
 	}
 
 	path := fmt.Sprintf("%s/alerts/%s/resolution", apiPrefix, url.PathEscape(alertID))
-	return c.doPost(ctx, path, result)
+	if err := c.doPost(ctx, path, result); err != nil {
+		var se *statusError
+		if errors.As(err, &se) && se.code == http.StatusNotFound {
+			return fmt.Errorf("opsmesh: report result: %w (POST %s returned 404; "+
+				"the platform implements /alerts/{id}/ack and /silence, not /resolution)",
+				ErrResolutionUnsupported, path)
+		}
+		return err
+	}
+	return nil
 }
 
 // GetTopology fetches the platform's asset/service catalog graph for a
@@ -317,7 +350,7 @@ func (c *OpsMeshClient) send(req *http.Request, path string, out ...any) error {
 		slog.Duration("duration", elapsed))
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("opsmesh: %s %s: status %d: %s", method, path, resp.StatusCode, string(raw))
+		return &statusError{method: method, path: path, code: resp.StatusCode, body: strings.TrimSpace(string(raw))}
 	}
 
 	// Only decode when a target was supplied.
