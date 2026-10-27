@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 加固（`run_assignment.result` 的词表从 Go 守卫下沉到数据库：迁移 v10 回填 + 双触发/CHECK，期望值从常量推导）
+
+- **上一笔只锁了一半**：`SetAssignmentResult` 的 `isAssignResult` 守卫管住了走 store 的调用方，DDL 侧没有任何约束——手工修数据、或将来某个绕过 store 的直写方，仍能把 `running` 塞进一个下游当判定读的列。本次把同一词表钉在表上。
+- **迁移 v10（两方言各自一步）**：先回填、再上锁。回填把 `result` 不在 `('', 'completed', 'failed', 'rolled_back')` 内的行折成 `'failed'`——与 executor default 分支对“终态但不干净”的记录同值；`''` 原样保留，它是文档化的“尚无结果”，不是第四个判定。SQLite 追加 `run_assignment_result_domain_insert` / `_update` 两个触发器（`RAISE(ABORT, 'run_assignment.result is not an assignment result')`），PostgreSQL 追加命名约束 `run_assignment_result_domain`，外层用 `pg_constraint` 存在性判断包成 `DO $$`，让这一步可重放。`currentSchemaVersion` / `pgCurrentSchemaVersion` 同步 9→10，`schema.sql` / `pgschema.sql` 已是迁移后的形状（新库不重放步骤，靠这一条）。
+- **为什么两边写法不同**：SQLite 没有 `ALTER TABLE ... ADD CONSTRAINT`，触发器是存量库上唯一可加的列级域约束；PostgreSQL 有真 CHECK，新建库写进 `pgschema.sql` 内联、存量库 `ADD CONSTRAINT`。表达的是同一个域，漂移由测试兜。
+- **测试**：新增 `internal/state/assignment_result_db_constraint_test.go` 三例。①**不经 store 的裸 SQL**：`''` 与三个合法判定放行，`running` / `interrupted` / `rolled_back_partial` / `done` / `Completed` 五个坏值在 INSERT 与 UPDATE 两条路径上都被拒且错文可读；②SQLite v10 恰好 3 条语句（回填 + 两个触发器），四处 `IN (...)` 列表全部等于 `AssignResultNames() ∪ {""}`；③PostgreSQL v10 恰好 2 条语句（回填 + 带重放守卫的 `ADD CONSTRAINT`），约束名与列表同样对常量、`pgschema.sql` 里确有同名约束。期望值全部从 `AssignResultNames()` 推导——词表加减一项，四处会一起红，而不是各自安静地持有旧副本（原始 read/write 错位就出在两个手抄列表上）。
+- **变异咬合**：删掉 `schema.sql` 的两个触发器后①如约变红（裸 INSERT `running` 成功）；把 `''` 从任一处 `IN (...)` 里拿掉后②③变红。
+- 验证：`go test ./internal/state/` 绿、`gofmt -l` 干净。
 ### 新增（运行期通道的 `upload` 动词——`file.copy` 这类推文件的步骤第一次能在插件通道上跑）
 
 - **协议**：通道会话动作集加入 `upload`（params：`path` + `data`（base64）），与既有的 `connect`/`exec`/`collect`/`disconnect` 并列。**帧上限随之成文**：`maxTransferPayloadBytes = 512 KiB`（裸字节，base64 后 ~683 KiB）——上限不是策略选择，是 JSON 行协议的物理约束（两端行读取器 1 MiB，插件侧配到这个上限是**插件的义务**，示例都配了；一个用默认 64 KiB scanner 的插件会在真传输帧上掐断自己的连接——测试子进程第一版就死在这，才把这条契约写成文字）。宿主在**发送前**拒绝越界，不会撕坏流：会话保持可用，错误点名上限与出路（分块或内建传输）。

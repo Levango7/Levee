@@ -356,6 +356,10 @@ CREATE TABLE IF NOT EXISTS run_assignment (
     epoch       BIGINT NOT NULL,
     state       TEXT NOT NULL,
     result      TEXT NOT NULL DEFAULT '',
+    -- Closed vocabulary: completed | failed | rolled_back, with '' meaning
+    -- "no verdict recorded yet". SetAssignmentResult refuses anything else in
+    -- Go; this constraint holds the same line for writers that skip the store.
+    CONSTRAINT run_assignment_result_domain CHECK (result IN ('', 'completed', 'failed', 'rolled_back')),
     assigned_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     tenant_id   TEXT        NOT NULL DEFAULT '',   -- v6: mirrors runs.tenant_id

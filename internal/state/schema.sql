@@ -355,6 +355,27 @@ CREATE INDEX IF NOT EXISTS idx_assignment_owner_state ON run_assignment (owner_n
 CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
 CREATE INDEX IF NOT EXISTS idx_assignment_tenant ON run_assignment (tenant_id);
 
+-- run_assignment.result is a closed vocabulary: completed | failed | rolled_back,
+-- with '' meaning "no verdict recorded yet". SetAssignmentResult refuses anything
+-- else in Go, but that guard only covers writers that go through the store — a
+-- manual SQL fix-up or a future caller talking to the table directly could still
+-- put an unknown token in a column three readers treat as a verdict. These
+-- triggers make the guarantee hold at the database. Added to upgraded databases
+-- by migration v10.
+CREATE TRIGGER IF NOT EXISTS run_assignment_result_domain_insert
+BEFORE INSERT ON run_assignment
+WHEN NEW.result NOT IN ('', 'completed', 'failed', 'rolled_back')
+BEGIN
+    SELECT RAISE(ABORT, 'run_assignment.result is not an assignment result');
+END;
+
+CREATE TRIGGER IF NOT EXISTS run_assignment_result_domain_update
+BEFORE UPDATE OF result ON run_assignment
+WHEN NEW.result NOT IN ('', 'completed', 'failed', 'rolled_back')
+BEGIN
+    SELECT RAISE(ABORT, 'run_assignment.result is not an assignment result');
+END;
+
 -- ---------------------------------------------------------------------------
 -- Agent registry (v8): the LEVEE agents that have registered with the master.
 --
