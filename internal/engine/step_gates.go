@@ -48,15 +48,21 @@ import (
 //   - PrometheusURL is the Prometheus HTTP API base URL
 //     (verify.prometheus_url configuration, e.g. "http://prom:9090").
 //     Required only when the plan declares slo checks.
+//   - PrometheusURL is the SLO query endpoint. Required only when the plan
+//     declares slo checks.
 //   - Approver is the human approval transport behind human gates. Required
 //     only when the plan declares human checks.
+//   - Plugins resolves declared plugin-check names to executable specs
+//     (registry lookup). Required only when the plan declares plugin checks;
+//     the plan-time refusal and materialisation both read it.
 //
-// The zero value is valid: a plan without slo/human declarations materialises
-// fine against it, and any such declaration fails closed with an explicit
-// error naming the missing configuration.
+// The zero value is valid: a plan without slo/human/plugin declarations
+// materialises fine against it, and any such declaration fails closed with an
+// explicit error naming the missing configuration.
 type GateRuntime struct {
 	PrometheusURL string
 	Approver      verify.HumanApprover
+	Plugins       verify.PluginResolver
 
 	// Channels supplies the live channel to one target, so gates that execute
 	// ON targets (cmd, probe in remote mode) can run their declared check per
@@ -204,6 +210,14 @@ func (rt GateRuntime) executabilityProblem(name string, phase verify.GatePhase, 
 		if rt.Approver == nil {
 			return fmt.Errorf("human gate %q requires an approver (supply GateRuntime.Approver via WithGateRuntime)", name)
 		}
+	case "plugin":
+		// A plugin gate resolves its plugin name at check time against the
+		// deployment's registry. Without a resolver every declared plugin
+		// check would fail at materialisation with a confusing error (or be
+		// tempting to read as a silent skip); refuse at plan time instead.
+		if rt.Plugins == nil {
+			return fmt.Errorf("plugin gate %q requires a plugin resolver (supply GateRuntime.Plugins; plugin checks execute a registered gate plugin)", name)
+		}
 	}
 	return nil
 }
@@ -285,8 +299,15 @@ func (rt GateRuntime) gateFromCheck(name string, phase verify.GatePhase, c *dsl.
 		// its schema stays the single source of truth.
 		return verify.NewHumanGate(name, string(phase), rt.Approver, c.Params), nil
 
+	case "plugin":
+		// Plugin name and params come from the declaration; the binary path
+		// and config from the resolver. A plugin whose name does not resolve
+		// at check time fails the phase with the resolution error — the
+		// same fail-closed shape as a command gate whose target dial fails.
+		return verify.NewPluginGate(name, phase, c.Plugin, c.Params, c.Timeout, rt.Plugins), nil
+
 	default:
-		return nil, fmt.Errorf("gate %q: check type %q is not executable by the engine (supported: cmd|probe|slo|human)", name, c.Type)
+		return nil, fmt.Errorf("gate %q: check type %q is not executable by the engine (supported: cmd|probe|slo|human|plugin)", name, c.Type)
 	}
 }
 

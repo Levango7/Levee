@@ -101,6 +101,22 @@ steps:
         expect_exit: 0
 `
 
+const pluginGatedWorkflow = `name: plugin-gated
+version: "1.0"
+target:
+  type: host
+  hosts: ["web-1"]
+steps:
+  - name: restart
+    action: svc.restart
+    verify:
+      plugin:
+        name: http-probe
+      params:
+        url: "https://{target}/health"
+        expect_code: 200
+`
+
 func planWorkflow(t *testing.T, src string, opts ...Option) error {
 	t.Helper()
 	_, store := newTestEngine(t, "web-1")
@@ -167,6 +183,28 @@ func TestGeneratePlan_RefusesSloAtPostBatchWithoutAnEndpoint(t *testing.T) {
 func TestGeneratePlan_CmdAndProbeGatesAreNeverRefused(t *testing.T) {
 	require.NoError(t, planWorkflow(t, cmdGatedWorkflow),
 		"a cmd gate needs no deployment capability and must plan")
+}
+
+// TestGeneratePlan_RefusesPluginGateWithoutResolver is the plugin gate's
+// plan-time refusal: without a resolver, a declared plugin check cannot
+// execute and the plan must be refused before any target is touched.
+func TestGeneratePlan_RefusesPluginGateWithoutResolver(t *testing.T) {
+	err := planWorkflow(t, pluginGatedWorkflow)
+	require.Error(t, err, "a plugin gate with no resolver must not yield a plan")
+	assert.True(t, errors.Is(err, engine.ErrGateNotExecutable),
+		"the refusal must be matchable as a class, got: %v", err)
+	assert.Contains(t, err.Error(), "requires a plugin resolver", err.Error())
+	assert.Contains(t, err.Error(), "step:restart:post:0",
+		"the refusal must name the offending gate, got: %v", err)
+}
+
+// TestGeneratePlan_AcceptsPluginGateOnceResolverIsWired is the other half of
+// the rule: with a resolver installed, the same workflow plans.
+func TestGeneratePlan_AcceptsPluginGateOnceResolverIsWired(t *testing.T) {
+	err := planWorkflow(t, pluginGatedWorkflow, WithGatePluginResolver(func(name string) (verify.PluginSpec, error) {
+		return verify.PluginSpec{Name: name, BinaryPath: "/bin/true"}, nil
+	}))
+	require.NoError(t, err, "with a plugin resolver installed the same workflow must plan")
 }
 
 // TestGeneratePlan_RefusalLeavesNoPlanArtifact pins the side-effect-free

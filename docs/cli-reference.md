@@ -1733,8 +1733,11 @@ levee rbac tree
 > 注册表里每个启用状态的通知插件，在 serve 启动时装配进通知管理器，成为与
 > `notify.webhook` 并列的投递渠道（run 生命周期、漂移告警、回滚评级走同一路
 > 由）；插件二进制缺失或记录不可用时**拒绝启动并点名**（与 webhook 的
-> enabled-却不可用同规则），逃生门是 `levee plugin disable <名>`。**gate /
-> module / channel 三型仍是注册表管理面**（引擎消费点未接）；`plugin test`
+> enabled-却不可用同规则），逃生门是 `levee plugin disable <名>`。
+> **gate 类型已接入引擎门禁体系**——workflow 声明 `plugin: {name: xxx}`
+> 门禁，计划期校验插件注册表（无 resolver 时拒绝计划）、执行期起插件子进程
+> 判 verdict（init 交配置 → check 交参数 → close），plan hash 纳入插件名。
+> **module / channel 两型仍是注册表管理面**（引擎消费点未接）；`plugin test`
 > （16.7）对任意插件提供最小真执行（活的协议握手）。要在**今天**扩展引擎的
 > 执行通道，请使用编译期通道插件（写 Go 代码实现 `channel.ChannelFactory`
 > 并注册，见 [`channel-plugins.md`](channel-plugins.md)），那是另一套机制，
