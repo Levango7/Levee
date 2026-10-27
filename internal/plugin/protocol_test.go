@@ -38,9 +38,17 @@ func TestMain(m *testing.M) {
 //	"checker"— a well-behaved gate plugin: acks "init", answers "check"
 //	           with a verdict driven by params["pass"] (default pass), and
 //	           acks "close".
+//	"module" — a well-behaved module plugin: meta declares the action list
+//	           and idempotency, "init" is required before "execute" (so the
+//	           config handoff is observable), "validate" refuses the verb
+//	           "bad_input", "execute" refuses the verb "explode".
+//	"module-noactions" — a module plugin whose meta declares no action list:
+//	           the host must refuse to register a module that accepts
+//	           nothing.
 func protocolChildMain(mode string) int {
 	scanner := bufio.NewScanner(os.Stdin)
 	enc := json.NewEncoder(os.Stdout)
+	initialised := false
 	for scanner.Scan() {
 		var req HostRequest
 		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
@@ -106,6 +114,55 @@ func protocolChildMain(mode string) int {
 						"event": event,
 						"level": req.Params["level"],
 					},
+				}})
+			case "close":
+				_ = enc.Encode(PluginResponse{OK: true})
+				return 0
+			default:
+				_ = enc.Encode(PluginResponse{OK: false, Error: "unknown action"})
+			}
+		case "module", "module-noactions":
+			switch req.Action {
+			case "meta":
+				details := map[string]any{"name": "module-child", "idempotent": true}
+				if mode == "module" {
+					details["actions"] = []any{"apply", "destroy"}
+				}
+				_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+					Passed:  true,
+					Message: "module-child",
+					Details: details,
+				}})
+			case "init":
+				initialised = true
+				keys := make([]string, 0, len(req.Config))
+				for k := range req.Config {
+					keys = append(keys, k)
+				}
+				_ = enc.Encode(PluginResponse{OK: true, Result: &ProbeResult{
+					Details: map[string]any{"init_keys": keys},
+				}})
+			case "validate":
+				if req.Params["action"] == "bad_input" {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "args missing region"})
+					continue
+				}
+				_ = enc.Encode(PluginResponse{OK: true})
+			case "execute":
+				if !initialised {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "execute before init"})
+					continue
+				}
+				if req.Params["action"] == "explode" {
+					_ = enc.Encode(PluginResponse{OK: false, Error: "upstream API returned 500"})
+					continue
+				}
+				_ = enc.Encode(PluginResponse{OK: true, Module: &ModuleResult{
+					ExitCode: 0,
+					Stdout:   "applied " + fmt.Sprint(req.Params["action"]),
+					Stderr:   "",
+					Changed:  true,
+					Duration: 42,
 				}})
 			case "close":
 				_ = enc.Encode(PluginResponse{OK: true})

@@ -1,0 +1,8 @@
+name: http-apply
+version: 1.0.0
+type: module
+author: levee-team
+description: Module plugin that applies or destroys a resource through a vendor REST API
+min_host_version: "0.1.0"
+max_host_version: "2.0.0"
+entry_point: http-apply
