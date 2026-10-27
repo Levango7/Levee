@@ -135,6 +135,22 @@ type PluginMeta struct {
 	// EntryPoint is the relative path of the plugin binary inside the
 	// plugin directory. Defaults to "plugin" when empty.
 	EntryPoint string `json:"entry_point,omitempty" yaml:"entry_point,omitempty"`
+
+	// DestructiveActions names the module actions that destroy something by
+	// their own nature (e.g. "destroy"), so the plan-time irreversibility gate
+	// treats "<name>.<action>" exactly like a built-in inherent-irreversible
+	// pair: a step using it must list the pair in the workflow-level
+	// allow_irreversible whitelist. Without it a destructive plugin step would
+	// pass the gate silently, because the built-in vocabulary never names a
+	// plugin module.
+	//
+	// It lives in the manifest rather than the meta handshake on purpose:
+	// plan time must learn the verdict WITHOUT executing the plugin binary,
+	// and the manifest is the operator-reviewable install artifact. Every
+	// entry must also be one of the runtime actions the plugin declares in its
+	// meta handshake; that subset check happens when the module is built
+	// (internal/plugin/module.go), where both lists are available.
+	DestructiveActions []string `json:"destructive_actions,omitempty" yaml:"destructive_actions,omitempty"`
 }
 
 // --- Plugin interface -------------------------------------------------------

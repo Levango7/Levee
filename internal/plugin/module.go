@@ -15,6 +15,7 @@ package plugin
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/nexus/levee/internal/executor"
@@ -23,11 +24,12 @@ import (
 // PluginModule adapts a module plugin to the executor's Module interface.
 // The zero value is not usable; construct with NewPluginModule.
 type PluginModule struct {
-	name       string
-	binaryPath string
-	configYAML string
-	actions    []string
-	idempotent bool
+	name        string
+	binaryPath  string
+	configYAML  string
+	actions     []string
+	idempotent  bool
+	destructive []string
 }
 
 // NewPluginModule builds the adapter and performs one meta handshake so the
@@ -63,14 +65,79 @@ func NewPluginModule(ctx context.Context, rec *RegistryRecord) (*PluginModule, e
 	if err != nil {
 		return nil, err
 	}
+	destructive, err := declaredDestructiveActions(rec.Name, rec.DestructiveActions, actions)
+	if err != nil {
+		return nil, err
+	}
 
 	return &PluginModule{
-		name:       rec.Name,
-		binaryPath: rec.BinaryPath,
-		configYAML: rec.ConfigYAML,
-		actions:    actions,
-		idempotent: idempotent,
+		name:        rec.Name,
+		binaryPath:  rec.BinaryPath,
+		configYAML:  rec.ConfigYAML,
+		actions:     actions,
+		idempotent:  idempotent,
+		destructive: destructive,
 	}, nil
+}
+
+// declaredDestructiveActions cross-checks the manifest's destructive_actions
+// against the actions the plugin actually declares in its meta handshake. A
+// pair the handshake does not offer can never run, so accepting it would let a
+// manifest claim a destructive action that the plugin does not implement —
+// and, worse, would put a phantom pair into the irreversibility vocabulary.
+// The declaration is returned sorted and de-duplicated so the plan-time
+// vocabulary is deterministic regardless of manifest order.
+func declaredDestructiveActions(name string, declared, actions []string) ([]string, error) {
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	known := make(map[string]struct{}, len(actions))
+	for _, a := range actions {
+		known[a] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(declared))
+	out := make([]string, 0, len(declared))
+	for _, a := range declared {
+		if _, ok := known[a]; !ok {
+			return nil, wrapError(name, fmt.Errorf(
+				"manifest destructive_actions names %q, which the plugin's meta handshake does not declare among its actions %v",
+				a, actions))
+		}
+		if _, dup := seen[a]; dup {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// DestructiveActions returns the plugin's declared inherently-destructive
+// actions (a subset of Actions()), sorted. It is empty when the manifest
+// declared none.
+func (m *PluginModule) DestructiveActions() []string {
+	return append([]string(nil), m.destructive...)
+}
+
+// DeclaredDestructivePairs returns the "<plugin>.<action>" pairs declared as
+// inherently destructive by every ENABLED module plugin in records, sorted.
+// This is the vocabulary the plan-time irreversibility gate adds on top of
+// dsl.DefaultIrreversibleActions: it is read from the registry (a stable
+// install-time fact), never by executing a plugin, so the verdict — and the
+// plan hash that carries it — is the same wherever the plan is produced.
+func DeclaredDestructivePairs(records []*RegistryRecord) []string {
+	var out []string
+	for _, rec := range records {
+		if rec == nil || rec.Type != TypeModule || rec.State != StateEnabled {
+			continue
+		}
+		for _, action := range rec.DestructiveActions {
+			out = append(out, rec.Name+"."+action)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // declaredModuleSurface reads the module declaration out of a meta response.

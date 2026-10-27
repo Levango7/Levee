@@ -111,3 +111,58 @@ func TestGeneratorRejectsUnwhitelistedIrreversible(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "LE082")
 }
+
+// TestGeneratorPluginDeclaredIrreversible pins the deployment-supplied
+// vocabulary (NewGenerator(extra...)): a plugin's declared destructive action is
+// judged exactly like a built-in one — refused at plan time unless the workflow
+// lists it in allow_irreversible, and stamped irreversible (with the whitelist
+// reason) when it is.
+func TestGeneratorPluginDeclaredIrreversible(t *testing.T) {
+	g := NewGenerator("cloud-apply.destroy")
+
+	// Not whitelisted -> refused, and the error names the plugin pair.
+	wf := irreversibleFixture("cloud-apply", "destroy", false)
+	wf.AllowIrreversible = nil
+	_, err := g.Generate(wf, []string{"h1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LE082")
+	assert.Contains(t, err.Error(), "cloud-apply.destroy")
+
+	// Whitelisted -> accepted, and the step carries the irreversibility verdict
+	// (so risk scoring and rollback gating see it) with the same reason shape a
+	// built-in whitelisted action gets.
+	p, err := g.Generate(irreversibleFixture("cloud-apply", "destroy", false), []string{"h1"})
+	require.NoError(t, err)
+	step := p.Batches[0].Steps[0]
+	assert.True(t, step.Irreversible, "plugin-declared destructive action must be stamped irreversible")
+	assert.Contains(t, step.IrreversibleReason, "whitelist")
+	assert.Contains(t, g.irreversible.Whitelist(), "cloud-apply.destroy")
+}
+
+// TestGeneratorWithoutDeclaredPairStaysReversible is the load-bearing half: the
+// SAME plugin step is reversible when the deployment did not supply the pair.
+// Without this, the test above could pass for the wrong reason (e.g. an
+// unknown-module fallback that flags everything).
+func TestGeneratorWithoutDeclaredPairStaysReversible(t *testing.T) {
+	g := NewGenerator() // no plugin declarations
+	p, err := g.Generate(irreversibleFixture("cloud-apply", "destroy", false), []string{"h1"})
+	require.NoError(t, err)
+	step := p.Batches[0].Steps[0]
+	assert.False(t, step.Irreversible,
+		"without the declaration the pair must not be swept up as irreversible")
+}
+
+// TestGeneratorIgnoresMalformedExtraPair pins robustness: an empty or
+// dot-less entry names no step, so it must be skipped rather than registered as
+// a whitelist entry that can never match (a phantom that would read as
+// coverage).
+func TestGeneratorIgnoresMalformedExtraPair(t *testing.T) {
+	g := NewGenerator("", "nodot", "  ", "cloud-apply.destroy")
+	wl := g.irreversible.Whitelist()
+	assert.Contains(t, wl, "cloud-apply.destroy")
+	assert.NotContains(t, wl, "nodot")
+
+	p, err := g.Generate(irreversibleFixture("nodot", "x", false), []string{"h1"})
+	require.NoError(t, err)
+	assert.False(t, p.Batches[0].Steps[0].Irreversible)
+}

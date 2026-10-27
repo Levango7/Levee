@@ -153,6 +153,16 @@ type Generator struct {
 	// and rollback gating (R2) consume the plan artifact rather than
 	// re-deriving the verdict.
 	irreversible *executor.IrreversibleChecker
+
+	// extraInherent is the deployment's additional inherent-irreversible
+	// vocabulary: "<module>.<action>" pairs declared by installed plugins
+	// (PluginMeta.DestructiveActions). It is separate from the built-in
+	// dsl.DefaultIrreversibleActions because it is a deployment fact, not
+	// language knowledge. Callers read it from the plugin registry (a stable
+	// install-time artifact), never by executing a plugin, so the verdict —
+	// and the plan hash that carries it — is identical wherever the plan is
+	// produced.
+	extraInherent map[string]struct{}
 }
 
 // NewGenerator returns a ready-to-use Generator with an IrreversibleChecker
@@ -161,7 +171,14 @@ type Generator struct {
 // workflow authors do not have to repeat irreversible: true on every such
 // step; an explicit author declaration still takes priority (checked
 // first).
-func NewGenerator() *Generator {
+// extraInherent names additional "<module>.<action>" pairs that are
+// irreversible by nature for this deployment — the destructive actions that
+// installed plugins declared in their manifests (see
+// plugin.DeclaredDestructivePairs). They are registered on the same checker as
+// the built-in vocabulary, so a plugin's destructive step is judged exactly
+// like `pkg.remove`: refused unless the workflow lists it in
+// allow_irreversible, and stamped irreversible into the plan artifact.
+func NewGenerator(extraInherent ...string) *Generator {
 	c := executor.NewIrreversibleChecker()
 	// The inherently destructive vocabulary has one home
 	// (dsl.DefaultIrreversibleActions). The dsl compile gate (V14/LE082)
@@ -171,7 +188,26 @@ func NewGenerator() *Generator {
 		module, action, _ := strings.Cut(key, ".")
 		c.RegisterWhitelist(module, action)
 	}
-	return &Generator{irreversible: c}
+	extra := make(map[string]struct{}, len(extraInherent))
+	for _, key := range extraInherent {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, dup := extra[key]; dup {
+			continue
+		}
+		extra[key] = struct{}{}
+		module, action, ok := strings.Cut(key, ".")
+		if !ok || module == "" || action == "" {
+			// A malformed pair names no step, so registering it would be a
+			// whitelist entry that can never match — skip it rather than let
+			// it masquerade as coverage.
+			continue
+		}
+		c.RegisterWhitelist(module, action)
+	}
+	return &Generator{irreversible: c, extraInherent: extra}
 }
 
 // Generate builds a Plan from the given Workflow and resolved target
@@ -218,10 +254,12 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		allowed[key] = struct{}{}
 	}
 	for _, s := range wf.Steps {
-		if !s.Irreversible && !dsl.IsInherentIrreversible(s.Module, s.Action) {
-			continue
-		}
 		key := s.Module + "." + s.Action
+		if !s.Irreversible && !dsl.IsInherentIrreversible(s.Module, s.Action) {
+			if _, ok := g.extraInherent[key]; !ok {
+				continue
+			}
+		}
 		if _, ok := allowed[key]; !ok {
 			return nil, errors.New(errors.LE082,
 				fmt.Sprintf("workflow %q: step %q runs irreversible action %s which is not listed in the workflow-level allow_irreversible whitelist",
