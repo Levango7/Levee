@@ -1,0 +1,5 @@
+# Read verbatim at install time (a file named config.yaml next to plugin.yaml)
+# and handed to the plugin as the `init` request's config map on every
+# execution.
+timeout_seconds: 10
+# auth_token: "<vendor API token — prefer an operator secret store over a file in git>"

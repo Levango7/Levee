@@ -67,6 +67,20 @@ type Module interface {
 
 // --- Input / Output --------------------------------------------------------
 
+// ChannelFree is an optional interface a Module may implement to declare that
+// it does not drive the target through a channel: it owns its transport (a
+// vendor API, a cloud control plane) and only needs the target as addressing.
+//
+// The dispatcher asks before dialling, so such a module neither pays for a
+// session it will not use nor fails because the inventory row happens to be
+// unreachable over SSH. Modules that do not implement the interface keep the
+// original contract: a connected Channel is handed to Execute.
+type ChannelFree interface {
+	// NeedsChannel reports whether Execute needs a live channel. Returning
+	// false means ModuleInput.Channel may be nil.
+	NeedsChannel() bool
+}
+
 // ModuleInput is the structured payload passed to Module.Execute. It carries
 // everything a module needs to act on a target: the action arguments, the
 // target descriptor and a live channel connected to it.
@@ -90,7 +104,9 @@ type ModuleInput struct {
 	Target channel.Target `json:"-"`
 
 	// Channel is the live, connected channel to Target. The executor
-	// guarantees that Channel.IsConnected() is true when Execute is called.
+	// guarantees that Channel.IsConnected() is true when Execute is called,
+	// unless the module declares ChannelFree and NeedsChannel() false — such
+	// a module drives its own transport and receives a nil Channel.
 	Channel channel.Channel `json:"-"`
 }
 

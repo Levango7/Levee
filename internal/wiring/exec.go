@@ -99,15 +99,12 @@ func (r *runExec) exec(ctx context.Context, host string, step dsl.Step) error {
 			return fmt.Errorf("wiring: step %q on %q: %w", step.Name, host, err)
 		}
 	}
-	ch, ct, err := r.channelFor(ctx, host)
+	ch, ct, err := r.dispatchTarget(ctx, host, step)
 	if err != nil {
-		return fmt.Errorf("wiring: target %q: %w", host, err)
+		return err
 	}
 
 	module := step.Module
-	if module == "" {
-		return fmt.Errorf("wiring: step %q on %q declares no module", step.Name, host)
-	}
 	out, err := executor.DefaultExecutor().Execute(ctx, module, step.Action, executor.ModuleInput{
 		Action:  step.Action,
 		Args:    step.Args,
@@ -151,6 +148,56 @@ func (r *runExec) gateChannelProvider() verify.GateChannelProvider {
 		ch, _, err := r.channelFor(ctx, host)
 		return ch, err
 	}
+}
+
+// dispatchTarget returns the channel and target descriptor one step needs.
+// A channel-free module (executor.ChannelFree declaring NeedsChannel false) is
+// handed the inventory row as addressing only: dialling a session it will not
+// use would cost a connection and could fail the step for a reason unrelated
+// to the module. Every other module keeps the connected-channel contract.
+func (r *runExec) dispatchTarget(ctx context.Context, host string, step dsl.Step) (channel.Channel, channel.Target, error) {
+	if step.Module == "" {
+		return nil, nil, fmt.Errorf("wiring: step %q on %q declares no module", step.Name, host)
+	}
+	if moduleNeedsChannel(step.Module) {
+		ch, ct, err := r.channelFor(ctx, host)
+		if err != nil {
+			return nil, nil, fmt.Errorf("wiring: target %q: %w", host, err)
+		}
+		return ch, ct, nil
+	}
+	ct, err := r.bareTarget(host)
+	if err != nil {
+		return nil, nil, fmt.Errorf("wiring: target %q: %w", host, err)
+	}
+	return nil, ct, nil
+}
+
+// moduleNeedsChannel reports whether the named module drives the target
+// through a channel. An unknown module keeps the dial: the executor's
+// unknown-module error must name the missing module rather than a target
+// that was never going to be dialled.
+func moduleNeedsChannel(name string) bool {
+	m, ok := executor.DefaultExecutor().Module(name)
+	if !ok {
+		return true
+	}
+	cf, ok := m.(executor.ChannelFree)
+	if !ok {
+		return true
+	}
+	return cf.NeedsChannel()
+}
+
+// bareTarget describes the inventory row without resolving its credential: a
+// channel-free module needs the address, not a secret, and resolving anyway
+// would make the step depend on a resolver it never uses.
+func (r *runExec) bareTarget(host string) (channel.Target, error) {
+	t, ok := r.targets[host]
+	if !ok {
+		return nil, fmt.Errorf("target %q is not registered in the inventory", host)
+	}
+	return &liveTarget{t: t}, nil
 }
 
 func (r *runExec) channelFor(ctx context.Context, host string) (channel.Channel, channel.Target, error) {

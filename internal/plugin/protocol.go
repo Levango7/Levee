@@ -23,17 +23,24 @@ import (
 type HostRequest struct {
 	// Action selects the operation: "meta" (identity handshake), "init"
 	// (configuration), "check" (gate check), "notify" (deliver a
-	// notification), "close" (shut down cleanly).
+	// notification), "validate" (module input check), "execute" (run one
+	// module action), "close" (shut down cleanly).
 	Action string         `json:"action"`
 	Config map[string]any `json:"config,omitempty"`
 	Params map[string]any `json:"params,omitempty"`
 }
 
 // PluginResponse is one line the plugin writes back on stdout.
+//
+// Exactly one payload field is meaningful per action: Result for "meta" and
+// "check", Module for "execute". A module that answers "execute" with ok:true
+// and no module payload has not produced a verdict and is refused by the
+// adapter — an empty success is not a success.
 type PluginResponse struct {
-	OK     bool         `json:"ok"`
-	Error  string       `json:"error,omitempty"`
-	Result *ProbeResult `json:"result,omitempty"`
+	OK     bool          `json:"ok"`
+	Error  string        `json:"error,omitempty"`
+	Result *ProbeResult  `json:"result,omitempty"`
+	Module *ModuleResult `json:"module,omitempty"`
 }
 
 // ProbeResult carries what the example protocol returns for "meta" (plugin
@@ -53,6 +60,14 @@ const probeDeadline = 10 * time.Second
 // I/O to its upstream (Slack webhook, SMTP relay, ...); it is still a cap,
 // not a target — a notifier that routinely needs this long is misconfigured.
 const notifyDeadline = 30 * time.Second
+
+// moduleDeadline bounds one module invocation end-to-end (init → validate →
+// execute → close). It is larger than the notification deadline because a
+// module action mutates infrastructure and may legitimately take minutes
+// (apply a cloud resource, wait for a rollout); it is still a cap, not a
+// target — a module that routinely needs this long is misconfigured, and an
+// unbounded step would hold its batch slot forever.
+const moduleDeadline = 5 * time.Minute
 
 // resolvePluginBinary turns a registry-stored path into something safe to
 // execute: absolute, pointing at an existing regular file. Registry rows

@@ -1398,7 +1398,14 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// reach operator-installed channels exactly as they reach the webhook.
 	// The registry file being absent is the unconfigured state; a present
 	// but unusable channel refuses the boot, same as the webhook.
-	notifyMgr, pnErr := installPluginNotifiers(ctx, cfg, notifyMgr)
+	// Plugin execution surfaces active at boot: enabled notifier plugins join
+	// the notification manager (run lifecycle, drift alerts and rollback
+	// grades reach operator-installed channels exactly as they reach the
+	// webhook), and enabled module plugins join the process-wide executor, so
+	// a step whose `module:` names the plugin dispatches to it. One call
+	// because this function's cyclomatic budget is already spent. Absent
+	// registry = unconfigured; a present-but-unusable plugin refuses the boot.
+	notifyMgr, pnErr := installPluginExecutionSurfaces(ctx, cfg, notifyMgr)
 	if pnErr != nil {
 		return serveServices{}, pnErr
 	}
