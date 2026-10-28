@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+### 新增（跨浏览器矩阵：console 的行为第一次在第二个引擎上被验证）
+
+- **背景**：账本一直登记“跨浏览器矩阵（只有 Chrome 验证过）”。这块一直没做的原因是“runner 上能不能起 Firefox”无人知道——本会话先用**一次性探针**回答了它：**两个 runner 都自带 Firefox**（ubuntu-latest `/usr/bin/firefox` 157.0；windows-latest `C:\Program Files\Mozilla Firefox\firefox.exe` 158.0.1），puppeteer 都能 headless 起来并渲染页面（探针实际读了 `h1.textContent`），**不需要任何安装步骤** ⇒ 这条轴是免费的。
+- **落地**：`browser-check.mjs` 把“只有 Chrome”泛化成 `BROWSER_CHECK_BROWSER=chrome|firefox`——
+  - 浏览器候选表按引擎分表（Firefox 的 PATH 候选含 `firefox-esr`）；覆盖变量相应分开（`FIREFOX_PATH` / `CHROME_PATH`），未知值**解析回 chrome**而不是传给 puppeteer 让它在 launch 时报错；
+  - **每个引擎一套启动参数，这是本笔真正容易错的地方**：核实 `puppeteer-core` 的 `FirefoxLauncher.js`——它自己计算 `--headless` 并**把用户 args 原样追加**，所以 Chrome 专用的 `--headless=new` / `--disable-dev-shm-usage` 会被原样喂给 Firefox，一个拒绝未知选项的二进制会因此拒启。探针成功时恰好**没传任何自定义 args**，正是这个原因。Firefox 档传空数组；Chrome 档原样保留。
+  - CI 的 `browser-check` 加 `browser: [chrome, firefox]` 轴（`fail-fast: false` 保持——一个引擎红不能藏住另一个看到的），`name` 与截图 artifact 名都带上引擎（`browser-shots-<browser>-<os>`，四条腿不再互相覆盖）。
+  - **dev server 与探针对齐到字面 `127.0.0.1`**：bare `vite` 绑的是 `localhost`，而 runner 上它解析成 `::1`——探针（`127.0.0.1`）对一个绑在 `::1` 的服务器就是 90 秒“services did not come up”。`npm run dev -- --host 127.0.0.1` 之后 vite 绑字面、curl 探字面、两个引擎都加载字面，DNS 从每条路径上同时消失。
+  - **mock 网关补上两个 SSE 端点**（Firefox 第一轮把矩阵挂红的真根因）：`/api/v1/alerts/stream` 与 `/changes/run-1000/events` 原来落到 404 兜底——**Chrome 把 EventSource 失败静默吞掉（网络事件，不冒泡成 page error），Firefox 冒泡成 “Firefox can’t establish a connection”**，于是 Firefox 每个页面都带着两条连接错误、`renders` 全红，而 Chrome 一直绿。这正是第二个引擎存在的意义。后端本就有这两个端点：mock 现在 frame 一次快照后**保持连接**（replay-then-tail 的产品形状），并新增 `[1b]` 断言——badge 的 critical 计数必须从 SSE 帧到达（`1`），使**Chrome 腿**也能抓住流的退化，不必等 Firefox。
+- **验证**：`node --check` 干净；`ci.yml` YAML 合法且矩阵解析为 `browser: [chrome, firefox] × os: [ubuntu, windows]`；两个 SSE 路由 curl 实测 **200 + `text/event-stream` + 帧正确 + 连接保持**（不 `end`）；本机 Chrome 路径完整跑一遍 **ALL PASS**（含新增 `[1b]` badge 断言，回归无破坏）；本机无 Firefox 时**干净地 skip-and-tell**（`REQUIRED=1` 下 rc=1，CI 会硬失败而非静默绿）；Firefox 真实路径由 CI 四条腿验证（探针已证可行，且第一轮 CI 已实战暴露了 mock 的 SSE 缺口——Firefox 报的 10 个 FAIL 是真信号，不是引擎怪癖）。
+- **刻意不做**：不加第三引擎（webkit/Safari——GitHub runner 没有 Safari，Linux 的 webkit 需要额外依赖）；不改任何断言。若 Firefox 在某条断言上真的与 Chrome 不同，那是**产品兼容性信号**，按各自失败处理，不用“跳过 Firefox”掩盘。
+
+### 新增（插件声明的破坏性动作接进编译期与计划期：破坏型插件步骤不再默认静默通过）
+
+- **缺口（D-1b；PR #234 于 2026-10-28T04:11Z 合入时没有条目，本笔补记）**：内置不可逆词表 `internal/dsl/inherent_irreversible.go` 是**静态**的，插件模块不在内——破坏型插件步骤默认静默通过，只能靠作者自觉写 `irreversible: true`。
+- **为什么不是「未知模块一律不可逆」**：不可逆判定**进 plan hash**（`internal/plan/hash.go` 的 `irreversible` / `irreversible_reason`），而「本部署注册了哪些模块」在 CLI 与 serve 上并不相同（serve 注册插件模块，CLI 不加载注册表）——同一份 workflow 会因「谁来 plan」得到不同 hash，而 plan hash 是审批绑定的产物。所以判据改成**插件自声明**：取自已安装产物的持久事实，两侧读到同一份。
+- **声明 → 持久化**：`PluginMeta.DestructiveActions`（yaml `destructive_actions`）落在 **manifest** 而不是 meta 握手——判定必须**不执行插件**就拿到，且 manifest 是运维可评审的安装产物。registry 增列 `destructive_actions`，含**旧库迁移**（`PRAGMA table_info` 预检 + `ALTER TABLE`，不吞真错误）；`Install/Get/List` 全链读写。
+- **两侧消费同一份词表**：计划期 `plan.NewGenerator(extra ...string)` 把插件对注册进**同一个** `IrreversibleChecker`（V14/LE082 判定同时认内置词表与部署词表），`wiring.WithInherentIrreversible` 由 serve 与 `levee plan` 注入；编译期 `dsl.NewValidator(extraInherent ...string)`，`levee compile` / `new` / `import` 经 `declaredPluginIrreversiblePairsForCmd()` 读注册表后注入，serve 的对话草案闸门与 `levee converse` 走 `ConversationEngineConfig.InherentIrreversible`。`NewPluginModule` 交叉校验声明必须是握手 `actions` 的子集（幻影动作会污染词表）；`DeclaredDestructivePairs` 只取 enabled + module 记录并排序去重；注册表缺失=未配置（空表）、存在但坏=报错（serve 拒绝启动）。
+- **测试与变异**：plugin（读写往返 / 旧库迁移 / 声明子集校验 / 去重排序）、plan（未进 `allow_irreversible` → LE082 且点名；进了 → 步骤被标不可逆；**同一插件对在未声明的部署上仍可逆**——承重对照）、dsl（缺省放行=缺口本身 / 声明后 LE082 / 列名后通过 / 畸形条目被忽略）。四条变异均确认承重并已还原：去掉 `Generate` 的部署词表判定、去掉 `validateIrreversibleWhitelist` 的部署词表判定、去掉子集校验、去掉 `ensurePluginRegistryColumns` 调用。
+- **明写的边界**：仍未做「插件未声明即默认不可逆」的强制档（更保守的产品决定，已登记为 `docs/blocked-items.md` E-3）；声明粒度是动作级（`<name>.<action>`），不做参数级。
+- **验证**（PR #234 内实测）：`gofmt` / `go vet` 干净；`internal/dsl` / `plugin` / `plan` / `wiring` / `conversation` / `cmd/levee` 全绿。
+
 ### 修复（`approval.CheckExpiry` 的写回改成 CAS：不覆写已落地的决策，并发清扫不再重复上报同一条）
 
 - **上一笔接上驱动时留下的竞争面**：`CheckExpiry` 先用 `ListPending` 扫描、再逐条 `Update` 写回，两步之间没有任何条件。两个后果都不是理论问题：①另一副本的清扫读到同一条待决记录，两边都写成功、都上报——同一次超时被播报两遍；②调用方在此期间投了票（`StatusApproved`），清扫把那笔决策无条件盖回 `expired`，等于静默撤销一个人已经做出的判定。`Approval.Store` 接口早就声明了 `UpdateIfPending`，state 层的 `UpdateApprovalIfPending` 也早已实现（`WHERE id=? AND status='pending' AND revision=?`），只是清扫器没用它。
@@ -137,17 +159,7 @@
 - **测试与变异**：`inventory` 5 例（缺失=空 / 解析+大小写归一 / 三种残缺拒绝 / 不可解析拒绝 / nil 安全）；`grpc` 4 例——**"registry 胜过 labels"**（含 id 拼写与 hostname 拼写殊途同归）、**未登记主机回落 labels**（registry 不能把它不知道的行变成未知）、**nil registry = 逐字旧 resolver**（含 unknown host 仍是 known=false 的拒绝场景）、**registry 能回答 store 里还没有的主机**（operator 先写归属、后导入清单——"还没入库"不是回落到自报的许可）。**变异**：反转优先级（labels 压过 registry）后，恰好只有"registry 胜过 labels"一条红、其余三条仍绿——正是这条守卫承重的形状。
 - **验证**：`go build ./...` rc=0；`inventory` + `grpc` 两包全绿；`gofmt` 干净。
 
-### 新增（跨浏览器矩阵：console 的行为第一次在第二个引擎上被验证）
-
-- **背景**：账本一直登记“跨浏览器矩阵（只有 Chrome 验证过）”。这块一直没做的原因是“runner 上能不能起 Firefox”无人知道——本会话先用**一次性探针**回答了它：**两个 runner 都自带 Firefox**（ubuntu-latest `/usr/bin/firefox` 157.0；windows-latest `C:\Program Files\Mozilla Firefox\firefox.exe` 158.0.1），puppeteer 都能 headless 起来并渲染页面（探针实际读了 `h1.textContent`），**不需要任何安装步骤** ⇒ 这条轴是免费的。
-- **落地**：`browser-check.mjs` 把“只有 Chrome”泛化成 `BROWSER_CHECK_BROWSER=chrome|firefox`——
-  - 浏览器候选表按引擎分表（Firefox 的 PATH 候选含 `firefox-esr`）；覆盖变量相应分开（`FIREFOX_PATH` / `CHROME_PATH`），未知值**解析回 chrome**而不是传给 puppeteer 让它在 launch 时报错；
-  - **每个引擎一套启动参数，这是本笔真正容易错的地方**：核实 `puppeteer-core` 的 `FirefoxLauncher.js`——它自己计算 `--headless` 并**把用户 args 原样追加**，所以 Chrome 专用的 `--headless=new` / `--disable-dev-shm-usage` 会被原样喂给 Firefox，一个拒绝未知选项的二进制会因此拒启。探针成功时恰好**没传任何自定义 args**，正是这个原因。Firefox 档传空数组；Chrome 档原样保留。
-  - CI 的 `browser-check` 加 `browser: [chrome, firefox]` 轴（`fail-fast: false` 保持——一个引擎红不能藏住另一个看到的），`name` 与截图 artifact 名都带上引擎（`browser-shots-<browser>-<os>`，四条腿不再互相覆盖）。
-  - **dev server 与探针对齐到字面 `127.0.0.1`**：bare `vite` 绑的是 `localhost`，而 runner 上它解析成 `::1`——探针（`127.0.0.1`）对一个绑在 `::1` 的服务器就是 90 秒“services did not come up”。`npm run dev -- --host 127.0.0.1` 之后 vite 绑字面、curl 探字面、两个引擎都加载字面，DNS 从每条路径上同时消失。
-  - **mock 网关补上两个 SSE 端点**（Firefox 第一轮把矩阵挂红的真根因）：`/api/v1/alerts/stream` 与 `/changes/run-1000/events` 原来落到 404 兜底——**Chrome 把 EventSource 失败静默吞掉（网络事件，不冒泡成 page error），Firefox 冒泡成 “Firefox can’t establish a connection”**，于是 Firefox 每个页面都带着两条连接错误、`renders` 全红，而 Chrome 一直绿。这正是第二个引擎存在的意义。后端本就有这两个端点：mock 现在 frame 一次快照后**保持连接**（replay-then-tail 的产品形状），并新增 `[1b]` 断言——badge 的 critical 计数必须从 SSE 帧到达（`1`），使**Chrome 腿**也能抓住流的退化，不必等 Firefox。
-- **验证**：`node --check` 干净；`ci.yml` YAML 合法且矩阵解析为 `browser: [chrome, firefox] × os: [ubuntu, windows]`；两个 SSE 路由 curl 实测 **200 + `text/event-stream` + 帧正确 + 连接保持**（不 `end`）；本机 Chrome 路径完整跑一遍 **ALL PASS**（含新增 `[1b]` badge 断言，回归无破坏）；本机无 Firefox 时**干净地 skip-and-tell**（`REQUIRED=1` 下 rc=1，CI 会硬失败而非静默绿）；Firefox 真实路径由 CI 四条腿验证（探针已证可行，且第一轮 CI 已实战暴露了 mock 的 SSE 缺口——Firefox 报的 10 个 FAIL 是真信号，不是引擎怪癖）。
-- **刻意不做**：不加第三引擎（webkit/Safari——GitHub runner 没有 Safari，Linux 的 webkit 需要额外依赖）；不改任何断言。若 Firefox 在某条断言上真的与 Chrome 不同，那是**产品兼容性信号**，按各自失败处理，不用“跳过 Firefox”掩盘。
+> **订正（2026-10-28，账本对账）**：本节此前收有「跨浏览器矩阵」一条，已原样移至 [Unreleased]。理由：该功能**不在 tag `v1.23.0` 里**——PR #208 于 2026-10-28T07:39Z 才合入，而 tag 指向的折叠提交 `f3c1eda1` 的树内 `web/scripts/browser-check.mjs` 尚无 `FIREFOX` 分支（`git merge-base --is-ancestor d723bfb6 f3c1eda1` = 1，`git show f3c1eda1:CHANGELOG.md` 的该节为 38 个小节，与本条移出后的计数一致）。发布说明不应声称 tag 里没有的行为。
 
 ### 新增（“未链入包 8→0”从手工做到变成机器守着）+ 订正一个我自己的假结论
 
