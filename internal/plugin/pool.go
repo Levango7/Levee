@@ -49,7 +49,10 @@ package plugin
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"sync"
 	"time"
@@ -327,14 +330,40 @@ func (p *sessionPool) len() int {
 	return len(p.entries)
 }
 
-// credentialFingerprint reduces the expanded credential to a stable, host-side
+// credentialFingerprint reduces the expanded credential to an opaque, host-side
 // key component. Nothing here is ever sent to the plugin; the fingerprint only
 // answers "would these two leases have authenticated the same way?".
+//
+// It is a keyed digest, not password storage: the key is random per process
+// (the pool never outlives the process, so cross-process stability buys
+// nothing, and an unkeyed digest of a secret is correlatable), and the result
+// is never logged or persisted. A password-hashing KDF would be the right tool
+// for *verifying* a secret; here the secret is already in hand and the only
+// question is equality, so scrypt/bcrypt per dial would be paid for with no
+// security property gained. Each part is length-prefixed so no two different
+// credentials can alias through concatenation.
 func credentialFingerprint(cred channel.CredentialRef) string {
-	h := sha256.New()
+	mac := hmac.New(sha256.New, fingerprintKey())
+	var size [8]byte
 	for _, part := range []string{cred.Username, cred.Password, cred.KeyPath, cred.KeyPassphrase} {
-		h.Write([]byte(part))
-		h.Write([]byte{0})
+		binary.BigEndian.PutUint64(size[:], uint64(len(part)))
+		mac.Write(size[:])
+		mac.Write([]byte(part))
 	}
-	return hex.EncodeToString(h.Sum(nil)[:16])
+	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
+
+// fingerprintKey is the per-process HMAC key for credentialFingerprint.
+// crypto/rand.Read panics on failure since Go 1.24, so there is no error path
+// to hand-fake here.
+func fingerprintKey() []byte {
+	fingerprintKeyOnce.Do(func() {
+		_, _ = rand.Read(fingerprintKeyBytes[:])
+	})
+	return fingerprintKeyBytes[:]
+}
+
+var (
+	fingerprintKeyOnce  sync.Once
+	fingerprintKeyBytes [32]byte
+)
