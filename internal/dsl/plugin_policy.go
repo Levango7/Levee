@@ -34,9 +34,14 @@ type PluginActionPolicy struct {
 
 // NewPluginActionPolicy normalizes the three declaration lists into a policy.
 // Entries are "<plugin>.<action>" pairs for destructive/reversible and bare
-// plugin names for modules. Malformed keys are dropped: a pair that names no
-// step can never match one, so keeping it would only masquerade as coverage.
+// plugin names for modules. Malformed pair keys are dropped: a pair that names
+// no step can never match one, so keeping it would only masquerade as coverage.
 // Duplicates are collapsed.
+//
+// Module names are accepted verbatim after trimming — manifest validation only
+// requires a non-empty name, so a dotted name like "com.acme.cloud" is legal.
+// Rejecting it here would silently exempt every action of that plugin from the
+// fail-closed default, which is the one outcome the policy exists to prevent.
 func NewPluginActionPolicy(destructive, reversible, modules []string) PluginActionPolicy {
 	p := PluginActionPolicy{
 		destructive: make(map[string]struct{}, len(destructive)),
@@ -55,7 +60,7 @@ func NewPluginActionPolicy(destructive, reversible, modules []string) PluginActi
 	}
 	for _, name := range modules {
 		name = strings.TrimSpace(name)
-		if name == "" || strings.Contains(name, ".") {
+		if name == "" {
 			continue
 		}
 		p.modules[name] = struct{}{}

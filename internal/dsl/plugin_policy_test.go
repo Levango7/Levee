@@ -44,19 +44,23 @@ func TestPluginActionPolicyZeroValueClaimsNothing(t *testing.T) {
 }
 
 // TestPluginActionPolicyNormalizes pins the input hygiene: whitespace is
-// trimmed, duplicates collapse, dot-less entries are dropped (they name no
-// step), and a module name must not itself contain a dot.
+// trimmed, duplicates collapse, dot-less pair keys are dropped (they name no
+// step), and a module name is kept verbatim — manifest validation only requires
+// a non-empty name, so a dotted name is legal and must not be silently dropped.
 func TestPluginActionPolicyNormalizes(t *testing.T) {
 	p := NewPluginActionPolicy(
 		[]string{" cloud.destroy ", "cloud.destroy", "nodot", ".", "cloud."},
 		[]string{"cloud.apply", "cloud.apply"},
-		[]string{"cloud", " cloud ", "", "bad.name"},
+		[]string{"cloud", " cloud ", "", "com.acme.cloud"},
 	)
 
 	assert.Equal(t, []string{"cloud.destroy"}, p.Destructive())
 	assert.Equal(t, []string{"cloud.apply"}, p.Reversible())
-	assert.Equal(t, []string{"cloud"}, p.Modules())
-	assert.False(t, p.JudgesIrreversible("bad", "name"), "a dotted module name is not a module")
+	assert.Equal(t, []string{"cloud", "com.acme.cloud"}, p.Modules())
+	assert.True(t, p.JudgesIrreversible("com.acme.cloud", "probe"),
+		"a dotted module name is still an installed module (fail-closed applies)")
+	assert.False(t, p.JudgesIrreversible("com", "acme.cloud.probe"),
+		"module matching is exact, not prefix matching")
 }
 
 // TestPluginActionPolicyDestructiveWinsOverlap pins the corrupt-record reading:
