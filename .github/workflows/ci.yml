@@ -744,13 +744,24 @@ jobs:
       # 200 while the SPA cannot render yet. /src/main.ts only answers once
       # the pipeline is up (the first dry run polled the shell, saw "ready
       # after 1s", and the first route rendered an empty content region).
+      #
+      # The dev server is pinned to 127.0.0.1 on purpose. Bare `vite` binds
+      # `localhost`, and what that resolves to is host-dependent (vite gets
+      # whatever the runner's resolver returns first — observed ::1 on the
+      # GitHub runners), while curl and the two engines each resolve the name
+      # their own way. Probing 127.0.0.1 against a ::1-bound server times out
+      # (that is exactly what 90s of "services did not come up" on 2026-10-24
+      # was), and Firefox resolving localhost to ::1 against a v4-bound server
+      # is what started the whole detour. An explicit literal removes DNS
+      # from every path at once: vite binds it, curl probes it, both engines
+      # load it, and the mock already binds the same literal.
       - name: run browser checks against a live console
         shell: bash
         run: |
           set -e
           node scripts/mock-gateway.mjs &
           MOCK_PID=$!
-          npm run dev &
+          npm run dev -- --host 127.0.0.1 &
           DEV_PID=$!
           cleanup() {
             kill "$MOCK_PID" "$DEV_PID" 2>/dev/null || true
