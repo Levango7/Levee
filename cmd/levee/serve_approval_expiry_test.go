@@ -68,17 +68,30 @@ func TestExpirySweeperNotifiesBothMirrors(t *testing.T) {
 	require.NoError(t, err)
 	text := string(src)
 
-	// Anchor on the sweeper's callback signature; if that moves, this guard
-	// must be re-pointed rather than pass vacuously.
-	cb := strings.Index(text, "func(ctx context.Context, expired []approval.Approval) {")
-	require.Greater(t, cb, -1,
-		"the expiry sweeper callback anchor moved; this wiring guard can no longer see it")
-	body := text[cb:]
+	// Anchor on the announcer the sweeper callback delegates to; if that moves,
+	// this guard must be re-pointed rather than pass vacuously. The body is
+	// bounded to that one function so a mirror call appearing elsewhere in the
+	// file cannot satisfy it.
+	start := strings.Index(text, "func announceApprovalExpiry(")
+	require.Greater(t, start, -1,
+		"the expiry announcer moved; this wiring guard can no longer see it")
+	rest := text[start:]
+	end := len(rest)
+	if next := strings.Index(rest[1:], "\nfunc "); next >= 0 {
+		end = next + 1
+	}
+	body := rest[:end]
 
-	require.Greater(t, strings.Index(body, "chatOpsBridge.OnApprovalExpired(&a)"), -1,
-		"the expiry sweeper must announce to the ChatOps mirror")
-	require.Greater(t, strings.Index(body, "jiraBridge.OnApprovalExpired(&a)"), -1,
-		"the expiry sweeper must announce to the Jira mirror (parity with the room)")
+	require.Greater(t, strings.Index(body, "chatOps.OnApprovalExpired(a)"), -1,
+		"the expiry announcer must notify the ChatOps mirror")
+	require.Greater(t, strings.Index(body, "itsm.OnApprovalExpired(a)"), -1,
+		"the expiry announcer must notify the Jira mirror (parity with the room)")
+
+	// And the sweeper must actually go through the announcer: both calls above
+	// are worthless if the callback stops calling it.
+	require.Greater(t,
+		strings.Index(text, "announceApprovalExpiry(ctx, store, chatOpsBridge, jiraBridge, &a)"), -1,
+		"the expiry sweeper callback must call the announcer")
 }
 
 // TestApprovalExpirySweeperIntervalDefault pins the config default: the

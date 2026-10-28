@@ -1286,6 +1286,31 @@ func installRunEventSinks(runEvents *wiring.RunEventStore, chatOpsBridge *chatop
 	runEvents.SetSink(wiring.CombineRunEventSinks(sinks...))
 }
 
+// announceApprovalExpiry fans one settled approval expiry out to every mirror
+// and leaves the trace row on the run timeline. The nil checks live here rather
+// than inline in buildServeServices: that function sits on its cyclomatic
+// budget (gocyclo fails above 30) and each mirror costs a branch.
+func announceApprovalExpiry(ctx context.Context, store state.Store, chatOps *chatopsbridge.ApprovalBridge, itsm *jira.ApprovalBridge, a *approval.Approval) {
+	if chatOps != nil {
+		chatOps.OnApprovalExpired(a)
+	}
+	// The Jira mirror gets the same moment: an ITSM record that still shows an
+	// open approval issue after the timeout has passed is a lie the room does
+	// not tell.
+	if itsm != nil {
+		itsm.OnApprovalExpired(a)
+	}
+	if err := store.CreateTrace(ctx, &state.Trace{
+		ID:        newID("trc-"),
+		RunID:     a.RunID,
+		Event:     "approval_expired",
+		Actor:     "approval-sweeper",
+		Timestamp: time.Now().UTC(),
+	}); err != nil {
+		log.Warn("approval expiry: trace write failed", "approval_id", a.ID, "error", err)
+	}
+}
+
 // buildServeServices constructs the in-process service implementations,
 // mirroring the CLI code paths. Split out of runServe; behaviour unchanged.
 // execGuard is non-nil only in cluster mode: it attaches the execution
@@ -1507,24 +1532,7 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	expirySweeper := approval.NewExpirySweeper(approvalSvc, cfg.Approval.ExpirySweepInterval,
 		func(ctx context.Context, expired []approval.Approval) {
 			for _, a := range expired {
-				if chatOpsBridge != nil {
-					chatOpsBridge.OnApprovalExpired(&a)
-				}
-				// The Jira mirror gets the same moment: an ITSM record that still
-				// shows an open approval issue after the timeout has passed is a lie
-				// the room does not tell.
-				if jiraBridge != nil {
-					jiraBridge.OnApprovalExpired(&a)
-				}
-				if err := store.CreateTrace(ctx, &state.Trace{
-					ID:        newID("trc-"),
-					RunID:     a.RunID,
-					Event:     "approval_expired",
-					Actor:     "approval-sweeper",
-					Timestamp: time.Now().UTC(),
-				}); err != nil {
-					log.Warn("approval expiry: trace write failed", "approval_id", a.ID, "error", err)
-				}
+				announceApprovalExpiry(ctx, store, chatOpsBridge, jiraBridge, &a)
 			}
 		})
 	go expirySweeper.Run(ctx)
