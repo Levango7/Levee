@@ -146,6 +146,41 @@ function fleetBatchStatus(per) {
   return { run_id: 'run-fleet', total_batches: FLEET_BATCHES, done_batches: 8, current_batch_no: 9, batches, steps: [] }
 }
 
+// The alert ring's snapshot, in the SSE frame's spelling: json.Marshal of
+// alert.Alert, so severity/status are the numeric enums and times are
+// RFC3339. One critical (severity 2) firing alert is what makes the header
+// badge read 1 — the browser check asserts that, because a stream that
+// connects but delivers nothing would otherwise look the same as one that
+// works.
+const alerts = [
+  {
+    id: 'alert-1', source: 'engine', severity: 2, status: 0,
+    title: '批 2 应用失败', description: 'host 10.0.1.14: connection refused (exit 1)',
+    target: 'host:10.0.1.14', starts_at: rfc3339(now - 2400), labels: { run_id: 'run-1000' },
+  },
+  {
+    id: 'alert-2', source: 'channel', severity: 1, status: 0,
+    title: 'SSH 握手缓慢', description: 'host 10.0.1.14 handshake 1.8s',
+    target: 'host:10.0.1.14', starts_at: rfc3339(now - 3000),
+  },
+]
+
+// An SSE response: default (unnamed) frames — that is what both consumers
+// listen on (useAlertStream and MonitorView use onmessage, not addEventListener)
+// — then a connection that stays open, because replay-then-tail is the
+// product's shape and closing would make EventSource reconnect forever.
+function sse(res, frames) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    // The same CORS allowance send() carries: the browser check drives /__mode
+    // from a page origin that is not the mock's.
+    'Access-Control-Allow-Origin': '*',
+  })
+  for (const f of frames) res.write(`data: ${JSON.stringify(f)}\n\n`)
+}
+
 function send(res, obj, status) {
   const body = JSON.stringify(obj)
   res.writeHead(status || 200, {
@@ -281,6 +316,20 @@ const server = http.createServer((req, res) => {
     })
   }
   if (u === '/api/v1/changes/run-fleet/plan') return send(res, fleetPlan(FLEET_HOSTS_PER_BATCH))
+
+  // The two SSE streams the console holds open. These used to fall through to
+  // the 404 below, which made every page's EventSource fail — invisibly in
+  // Chrome (an EventSource error is a network event, never a page error) and
+  // loudly in Firefox ("Firefox can’t establish a connection to the server"),
+  // which is exactly the false green a second engine exists to catch: the
+  // backend has both endpoints and the mock now does too.
+  if (u === '/api/v1/alerts/stream') return sse(res, alerts)
+  if (/^\/api\/v1\/changes\/run-1000\/events$/.test(u)) {
+    // One framed event: MonitorView answers a message by re-reading the
+    // change/summary/logs snapshots, and a single frame exercises that path
+    // without inventing a live tail for a fixture run.
+    return sse(res, [{ type: 'status', run_id: 'run-1000', status: 'running' }])
+  }
 
   send(res, { error: 'mock: no route for ' + u }, 404)
 })

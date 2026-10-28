@@ -144,7 +144,9 @@
   - 浏览器候选表按引擎分表（Firefox 的 PATH 候选含 `firefox-esr`）；覆盖变量相应分开（`FIREFOX_PATH` / `CHROME_PATH`），未知值**解析回 chrome**而不是传给 puppeteer 让它在 launch 时报错；
   - **每个引擎一套启动参数，这是本笔真正容易错的地方**：核实 `puppeteer-core` 的 `FirefoxLauncher.js`——它自己计算 `--headless` 并**把用户 args 原样追加**，所以 Chrome 专用的 `--headless=new` / `--disable-dev-shm-usage` 会被原样喂给 Firefox，一个拒绝未知选项的二进制会因此拒启。探针成功时恰好**没传任何自定义 args**，正是这个原因。Firefox 档传空数组；Chrome 档原样保留。
   - CI 的 `browser-check` 加 `browser: [chrome, firefox]` 轴（`fail-fast: false` 保持——一个引擎红不能藏住另一个看到的），`name` 与截图 artifact 名都带上引擎（`browser-shots-<browser>-<os>`，四条腿不再互相覆盖）。
-- **验证**：`node --check` 干净；`ci.yml` YAML 合法且矩阵解析为 `browser: [chrome, firefox] × os: [ubuntu, windows]`；本机 Chrome 路径完整跑一遍 **ALL PASS**（回归无破坏）；本机无 Firefox 时**干净地 skip-and-tell**（`REQUIRED=1` 下 rc=1，CI 会硬失败而非静默绿）；Firefox 真实路径由 CI 四条腿验证（探针已证可行）。
+  - **dev server 与探针对齐到字面 `127.0.0.1`**：bare `vite` 绑的是 `localhost`，而 runner 上它解析成 `::1`——探针（`127.0.0.1`）对一个绑在 `::1` 的服务器就是 90 秒“services did not come up”。`npm run dev -- --host 127.0.0.1` 之后 vite 绑字面、curl 探字面、两个引擎都加载字面，DNS 从每条路径上同时消失。
+  - **mock 网关补上两个 SSE 端点**（Firefox 第一轮把矩阵挂红的真根因）：`/api/v1/alerts/stream` 与 `/changes/run-1000/events` 原来落到 404 兜底——**Chrome 把 EventSource 失败静默吞掉（网络事件，不冒泡成 page error），Firefox 冒泡成 “Firefox can’t establish a connection”**，于是 Firefox 每个页面都带着两条连接错误、`renders` 全红，而 Chrome 一直绿。这正是第二个引擎存在的意义。后端本就有这两个端点：mock 现在 frame 一次快照后**保持连接**（replay-then-tail 的产品形状），并新增 `[1b]` 断言——badge 的 critical 计数必须从 SSE 帧到达（`1`），使**Chrome 腿**也能抓住流的退化，不必等 Firefox。
+- **验证**：`node --check` 干净；`ci.yml` YAML 合法且矩阵解析为 `browser: [chrome, firefox] × os: [ubuntu, windows]`；两个 SSE 路由 curl 实测 **200 + `text/event-stream` + 帧正确 + 连接保持**（不 `end`）；本机 Chrome 路径完整跑一遍 **ALL PASS**（含新增 `[1b]` badge 断言，回归无破坏）；本机无 Firefox 时**干净地 skip-and-tell**（`REQUIRED=1` 下 rc=1，CI 会硬失败而非静默绿）；Firefox 真实路径由 CI 四条腿验证（探针已证可行，且第一轮 CI 已实战暴露了 mock 的 SSE 缺口——Firefox 报的 10 个 FAIL 是真信号，不是引擎怪癖）。
 - **刻意不做**：不加第三引擎（webkit/Safari——GitHub runner 没有 Safari，Linux 的 webkit 需要额外依赖）；不改任何断言。若 Firefox 在某条断言上真的与 Chrome 不同，那是**产品兼容性信号**，按各自失败处理，不用“跳过 Firefox”掩盘。
 
 ### 新增（“未链入包 8→0”从手工做到变成机器守着）+ 订正一个我自己的假结论
