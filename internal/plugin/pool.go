@@ -22,9 +22,13 @@
 //   - host/port/type: the session is addressed to one target. Guessing that
 //     two rows are "the same place" is not this layer's call.
 //
-// A dead session is never handed out: the session contract is "a failed or
-// abandoned request kills the stream", so Alive() is re-checked on every
-// acquire and dead entries are dropped on sight.
+// A session marked dead is never handed out: the session contract is "a failed
+// or abandoned request kills the stream", so Alive() is re-checked on every
+// acquire and dead entries are dropped on sight. A process that exits during an
+// idle stretch is the one death the host cannot see without a request (the
+// protocol has no heartbeat): the session keeps reading Alive() until the first
+// reuse fails, which kills it exactly like any other failed request. The
+// failure is reported, never read as success, and the next run dials fresh.
 //
 // # Bounds
 //

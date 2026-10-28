@@ -10,10 +10,10 @@
 - **键**：`(插件, host, port, type, 凭据指纹)`，池在 `PluginChannelFactory` 内、按插件一个（`internal/plugin/pool.go`）。凭据取**指纹而不是引用名**：两行 inventory 可以写同一个引用名却解析出不同密钥（或跨租户同名），按名共享等于让一次 run 以别人的身份执行——这正是 `channelConnectParams` 的明文边界要防的事。指纹只在宿主侧参与键计算，永不过管道。
 - **三道上界，任一单独都不够**：每插件空闲 ≤8（超出淘汰**最久空闲**的，正在服务的不算空闲）、空闲 2 分钟回收、闲置会话最长 30 分钟（远端状态会累积）。**带租约的会话从不被任何一条回收**——把 run 正在用的会话抽走会把一次池命中变成一次失败 run，所以 age 只对空闲会话生效。
 - **并发拨号只留一条**：两个通道同时错过池、各自拨号，`publish` 让先到者入池、后来者的会话当场拆掉并改为持有胜者的租约——不会被交出一条池不知道的会话，也不会让同一个键存活两个子进程。
-- **`Close` 的语义由此改变**：只归还租约，不杀进程；池的生命周期挂在 serve 的 ctx 上（ctx 结束 → 空闲会话全部拆掉，shutdown 后新拨号明确失败而不是借用已关闭的池）。对 run 可见的契约不变：Close 后 `IsConnected()==false`、拒绝工作；死会话（插件崩溃/请求超时）由池在 acquire 时识别并丢弃，绝不交给下一次 run。
+- **`Close` 的语义由此改变**：只归还租约，不杀进程；池的生命周期挂在 serve 的 ctx 上（ctx 结束 → 空闲会话全部拆掉，shutdown 后新拨号明确失败而不是借用已关闭的池）。对 run 可见的契约不变：Close 后 `IsConnected()==false`、拒绝工作；已判死的会话（请求失败/被终止）在 acquire 时被丢弃，不会交给下一次 run。协议没有心跳，空闲期自行退出的进程要等第一次复用失败才暴露——那次请求报错、会话随即被判死，不会静默成功。
 - **测试**：`pool_test.go` 11 例用可注入时钟覆盖复用、引用计数、死会话丢弃、空闲 TTL、age 仅对空闲生效、空闲上界淘汰、publish 竞态、shutdown 语义、指纹隔离；`channel_pool_test.go` 5 例用**真实子进程**证明（子进程回答自己的 PID）：同 target+凭据跨 Close/Connect 是**同一个 PID**，换凭据是不同 PID，会话死后重拨是不同 PID，serve ctx 结束后池清空且新拨号报 `shutting down`，同步 shutdown 后子进程**已被 Wait 回收**（`ProcessState` 非空）而非仅被遗忘。
 - **变异咬合**（三条均先红后还原）：①`Close` 改成直接 `teardown` → 复用断言看到两个 PID；②池键去掉凭据指纹 → 换密钥的第二个 target 拿到第一个的 PID；③`shutdown` 只从 map 删除、不拆会话 → 两条停机断言（会话仍 Alive / 未回收）同时变红。
-- **验证**：`go test ./internal/plugin/ -race`（含本批新增用例）绿；`gofmt` / `go vet` 干净。
+- **验证**：本批新增用例在 `-race` 下绿（CGO_ENABLED=1 + mingw64）；`go test ./cmd/...` 与 `./internal/...` 全量各 rc=0；`gofmt` / `go vet` 干净。
 - **边界**：一个插件仍只提供一种传输类型（D-1c 的另一半，仍留在 `docs/blocked-items.md`）；池只存在于常驻进程里，一次性 `levee run` 不跨调用复用。
 
 ### 新增（跨浏览器矩阵：console 的行为第一次在第二个引擎上被验证）
