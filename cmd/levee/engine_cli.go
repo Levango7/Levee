@@ -54,12 +54,12 @@ func newCLIChangeService(store state.Store) (*grpc.ChangeService, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-	pluginPairs, pairErr := declaredPluginIrreversiblePairs(context.Background(), cfg)
-	if pairErr != nil {
-		return nil, pairErr
+	pluginPolicy, policyErr := declaredPluginActionPolicy(context.Background(), cfg)
+	if policyErr != nil {
+		return nil, policyErr
 	}
-	if len(pluginPairs) > 0 {
-		opts = append(opts, wiring.WithInherentIrreversible(pluginPairs))
+	if !pluginPolicy.IsEmpty() {
+		opts = append(opts, wiring.WithPluginActionPolicy(pluginPolicy))
 	}
 	// Same rule as serve: the calendar gates must read the database the operator's
 	// `levee calendar` commands write, and a failure to open it is reported rather

@@ -154,15 +154,14 @@ type Generator struct {
 	// re-deriving the verdict.
 	irreversible *executor.IrreversibleChecker
 
-	// extraInherent is the deployment's additional inherent-irreversible
-	// vocabulary: "<module>.<action>" pairs declared by installed plugins
-	// (PluginMeta.DestructiveActions). It is separate from the built-in
-	// dsl.DefaultIrreversibleActions because it is a deployment fact, not
-	// language knowledge. Callers read it from the plugin registry (a stable
-	// install-time artifact), never by executing a plugin, so the verdict —
-	// and the plan hash that carries it — is identical wherever the plan is
-	// produced.
-	extraInherent map[string]struct{}
+	// pluginPolicy is the deployment's plugin action classification (declared
+	// destructive actions, declared reversible actions, installed module
+	// names). It is separate from the built-in dsl.DefaultIrreversibleActions
+	// because it is a deployment fact, not language knowledge. Callers read it
+	// from the plugin registry (a stable install-time artifact), never by
+	// executing a plugin, so the verdict — and the plan hash that carries it —
+	// is identical wherever the plan is produced.
+	pluginPolicy dsl.PluginActionPolicy
 }
 
 // NewGenerator returns a ready-to-use Generator with an IrreversibleChecker
@@ -178,36 +177,34 @@ type Generator struct {
 // the built-in vocabulary, so a plugin's destructive step is judged exactly
 // like `pkg.remove`: refused unless the workflow lists it in
 // allow_irreversible, and stamped irreversible into the plan artifact.
+//
+// It is the destructive-only shorthand for NewGeneratorWithPluginPolicy;
+// callers that have the installed plugins' reversible declarations or module
+// names should use that constructor so plan time judges them exactly as the
+// compile gate does.
 func NewGenerator(extraInherent ...string) *Generator {
+	return NewGeneratorWithPluginPolicy(dsl.NewPluginActionPolicy(extraInherent, nil, nil))
+}
+
+// NewGeneratorWithPluginPolicy returns a Generator whose plan-time
+// irreversibility verdict follows policy: declared destructive pairs are
+// whitelisted (irreversible), installed module plugins' unclassified actions
+// are judged irreversible, and declared reversible pairs opt out of that
+// default. The checker is the same type the executor uses, so the verdict
+// stamped into the plan cannot drift from it.
+//
+// The built-in vocabulary (dsl.DefaultIrreversibleActions) is always
+// registered — the dsl compile gate (V14/LE082) judges steps against the same
+// list, so compile time and plan time cannot disagree about what is
+// irreversible by nature.
+func NewGeneratorWithPluginPolicy(policy dsl.PluginActionPolicy) *Generator {
 	c := executor.NewIrreversibleChecker()
-	// The inherently destructive vocabulary has one home
-	// (dsl.DefaultIrreversibleActions). The dsl compile gate (V14/LE082)
-	// judges steps against the same list, so compile time and plan time
-	// cannot disagree about what is irreversible by nature.
 	for _, key := range dsl.DefaultIrreversibleActions() {
 		module, action, _ := strings.Cut(key, ".")
 		c.RegisterWhitelist(module, action)
 	}
-	extra := make(map[string]struct{}, len(extraInherent))
-	for _, key := range extraInherent {
-		key = strings.TrimSpace(key)
-		if key == "" {
-			continue
-		}
-		if _, dup := extra[key]; dup {
-			continue
-		}
-		extra[key] = struct{}{}
-		module, action, ok := strings.Cut(key, ".")
-		if !ok || module == "" || action == "" {
-			// A malformed pair names no step, so registering it would be a
-			// whitelist entry that can never match — skip it rather than let
-			// it masquerade as coverage.
-			continue
-		}
-		c.RegisterWhitelist(module, action)
-	}
-	return &Generator{irreversible: c, extraInherent: extra}
+	c.RegisterPolicy(policy)
+	return &Generator{irreversible: c, pluginPolicy: policy}
 }
 
 // Generate builds a Plan from the given Workflow and resolved target
@@ -255,10 +252,9 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 	}
 	for _, s := range wf.Steps {
 		key := s.Module + "." + s.Action
-		if !s.Irreversible && !dsl.IsInherentIrreversible(s.Module, s.Action) {
-			if _, ok := g.extraInherent[key]; !ok {
-				continue
-			}
+		if !s.Irreversible && !dsl.IsInherentIrreversible(s.Module, s.Action) &&
+			!g.pluginPolicy.JudgesIrreversible(s.Module, s.Action) {
+			continue
 		}
 		if _, ok := allowed[key]; !ok {
 			return nil, errors.New(errors.LE082,

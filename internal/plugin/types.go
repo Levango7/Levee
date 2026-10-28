@@ -151,6 +151,20 @@ type PluginMeta struct {
 	// meta handshake; that subset check happens when the module is built
 	// (internal/plugin/module.go), where both lists are available.
 	DestructiveActions []string `json:"destructive_actions,omitempty" yaml:"destructive_actions,omitempty"`
+
+	// ReversibleActions names the module actions that are safe to repeat or
+	// undo. It is the other half of the classification: at plan time an action
+	// of an installed module plugin that appears in NEITHER list is treated as
+	// irreversible (fail-closed), because a manifest that did not classify it
+	// leaves the engine without an honest verdict. Declaring an action here is
+	// therefore how an author keeps a probe/read step reversible; omitting it
+	// is how the deployment opts that action into the irreversible gate.
+	//
+	// Every entry must be a runtime action the plugin declares in its meta
+	// handshake and must NOT also appear in DestructiveActions: a manifest that
+	// calls one action both safe and destructive is a contradiction, refused at
+	// module build time rather than resolved by an arbitrary side.
+	ReversibleActions []string `json:"reversible_actions,omitempty" yaml:"reversible_actions,omitempty"`
 }
 
 // --- Plugin interface -------------------------------------------------------

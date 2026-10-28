@@ -19,17 +19,20 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/executor"
+	"github.com/nexus/levee/internal/log"
 )
 
 // PluginModule adapts a module plugin to the executor's Module interface.
 // The zero value is not usable; construct with NewPluginModule.
 type PluginModule struct {
-	name        string
-	binaryPath  string
-	configYAML  string
-	actions     []string
-	idempotent  bool
-	destructive []string
+	name         string
+	binaryPath   string
+	configYAML   string
+	actions      []string
+	idempotent   bool
+	destructive  []string
+	reversible   []string
+	unclassified []string
 }
 
 // NewPluginModule builds the adapter and performs one meta handshake so the
@@ -69,14 +72,30 @@ func NewPluginModule(ctx context.Context, rec *RegistryRecord) (*PluginModule, e
 	if err != nil {
 		return nil, err
 	}
+	reversible, err := declaredReversibleActions(rec.Name, rec.ReversibleActions, actions, destructive)
+	if err != nil {
+		return nil, err
+	}
+	unclassified := unclassifiedActions(actions, destructive, reversible)
+	if len(unclassified) > 0 {
+		// Fail-closed, not fail-stop: a manifest that predates the
+		// classification (or simply missed an action) is still installable and
+		// the plugin still runs — but every unclassified action is judged
+		// irreversible at plan time. Naming them here is the operator's only
+		// cue to fix the manifest before an approval gate surprises them.
+		log.Warn("plugin module has unclassified actions; they will be judged irreversible at plan time",
+			"plugin", rec.Name, "actions", unclassified)
+	}
 
 	return &PluginModule{
-		name:        rec.Name,
-		binaryPath:  rec.BinaryPath,
-		configYAML:  rec.ConfigYAML,
-		actions:     actions,
-		idempotent:  idempotent,
-		destructive: destructive,
+		name:         rec.Name,
+		binaryPath:   rec.BinaryPath,
+		configYAML:   rec.ConfigYAML,
+		actions:      actions,
+		idempotent:   idempotent,
+		destructive:  destructive,
+		reversible:   reversible,
+		unclassified: unclassified,
 	}, nil
 }
 
@@ -113,11 +132,88 @@ func declaredDestructiveActions(name string, declared, actions []string) ([]stri
 	return out, nil
 }
 
+// declaredReversibleActions cross-checks the manifest's reversible_actions the
+// same way declaredDestructiveActions checks the destructive list — every
+// entry must be a handshake action — and additionally refuses an action that
+// appears in BOTH lists. A manifest that calls one action safe and destructive
+// is a contradiction; picking a side silently would make the plan-time verdict
+// depend on which list the code happened to consult first.
+func declaredReversibleActions(name string, declared, actions, destructive []string) ([]string, error) {
+	if len(declared) == 0 {
+		return nil, nil
+	}
+	known := make(map[string]struct{}, len(actions))
+	for _, a := range actions {
+		known[a] = struct{}{}
+	}
+	unsafe := make(map[string]struct{}, len(destructive))
+	for _, a := range destructive {
+		unsafe[a] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(declared))
+	out := make([]string, 0, len(declared))
+	for _, a := range declared {
+		if _, ok := known[a]; !ok {
+			return nil, wrapError(name, fmt.Errorf(
+				"manifest reversible_actions names %q, which the plugin's meta handshake does not declare among its actions %v",
+				a, actions))
+		}
+		if _, both := unsafe[a]; both {
+			return nil, wrapError(name, fmt.Errorf(
+				"manifest lists %q in both destructive_actions and reversible_actions; an action cannot be both",
+				a))
+		}
+		if _, dup := seen[a]; dup {
+			continue
+		}
+		seen[a] = struct{}{}
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// unclassifiedActions returns the handshake actions named by neither list.
+// The result is sorted; it drives the fail-closed plan-time default and the
+// boot warning.
+func unclassifiedActions(actions, destructive, reversible []string) []string {
+	classified := make(map[string]struct{}, len(destructive)+len(reversible))
+	for _, a := range destructive {
+		classified[a] = struct{}{}
+	}
+	for _, a := range reversible {
+		classified[a] = struct{}{}
+	}
+	var out []string
+	for _, a := range actions {
+		if _, ok := classified[a]; !ok {
+			out = append(out, a)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // DestructiveActions returns the plugin's declared inherently-destructive
 // actions (a subset of Actions()), sorted. It is empty when the manifest
 // declared none.
 func (m *PluginModule) DestructiveActions() []string {
 	return append([]string(nil), m.destructive...)
+}
+
+// ReversibleActions returns the actions the manifest declared safe to repeat
+// or undo (a subset of Actions() disjoint from DestructiveActions()), sorted.
+func (m *PluginModule) ReversibleActions() []string {
+	return append([]string(nil), m.reversible...)
+}
+
+// UnclassifiedActions returns the handshake actions the manifest assigned to
+// neither list. They are reversible nowhere in the deployment's artifact, so
+// the plan-time gate treats them as irreversible; this accessor exists so the
+// operator-facing surfaces can name them instead of leaving the verdict to be
+// discovered on the first plan.
+func (m *PluginModule) UnclassifiedActions() []string {
+	return append([]string(nil), m.unclassified...)
 }
 
 // DeclaredDestructivePairs returns the "<plugin>.<action>" pairs declared as
@@ -127,17 +223,40 @@ func (m *PluginModule) DestructiveActions() []string {
 // install-time fact), never by executing a plugin, so the verdict — and the
 // plan hash that carries it — is the same wherever the plan is produced.
 func DeclaredDestructivePairs(records []*RegistryRecord) []string {
-	var out []string
+	destructive, _, _ := DeclaredActionClassification(records)
+	return destructive
+}
+
+// DeclaredActionClassification returns the deployment's three plan-time facts
+// about installed module plugins, each sorted:
+//
+//   - destructive: "<plugin>.<action>" pairs declared unsafe;
+//   - reversible:  pairs declared safe (the exemption list for the default);
+//   - modules:     plugin module names, which is what lets the gate apply the
+//     fail-closed default (an unclassified action of a plugin module is
+//     irreversible).
+//
+// All three come from the registry (a stable install-time artifact), so the
+// verdict — and the plan hash carrying it — is identical wherever the plan is
+// produced. Only ENABLED module records contribute; notify/gate/channel
+// plugins have no actions a workflow step can name.
+func DeclaredActionClassification(records []*RegistryRecord) (destructive, reversible, modules []string) {
 	for _, rec := range records {
 		if rec == nil || rec.Type != TypeModule || rec.State != StateEnabled {
 			continue
 		}
+		modules = append(modules, rec.Name)
 		for _, action := range rec.DestructiveActions {
-			out = append(out, rec.Name+"."+action)
+			destructive = append(destructive, rec.Name+"."+action)
+		}
+		for _, action := range rec.ReversibleActions {
+			reversible = append(reversible, rec.Name+"."+action)
 		}
 	}
-	sort.Strings(out)
-	return out
+	sort.Strings(destructive)
+	sort.Strings(reversible)
+	sort.Strings(modules)
+	return destructive, reversible, modules
 }
 
 // declaredModuleSurface reads the module declaration out of a meta response.

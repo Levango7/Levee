@@ -95,12 +95,30 @@ type IrreversibleResult struct {
 }
 
 // IrreversibleChecker decides whether a step performs an irreversible action.
-// It is safe for concurrent use: the whitelist is guarded by an RWMutex so
-// that RegisterWhitelist and Check can run in parallel from multiple
-// goroutines (the planner validates steps in parallel).
+// It is safe for concurrent use: the whitelist and the plugin classification
+// are guarded by an RWMutex so that registration and Check can run in parallel
+// from multiple goroutines (the planner validates steps in parallel).
+//
+// Three registries drive the verdict, in priority order: the irreversible
+// whitelist (built-in and manifest-declared destructive pairs), the set of
+// plugin module names, and the plugin actions the manifests declared safe.
+// The last two implement the fail-closed default: an action of an installed
+// module plugin that its manifest classified as neither destructive nor
+// reversible is judged irreversible, because "unclassified" is not evidence
+// of safety.
 type IrreversibleChecker struct {
 	mu        sync.RWMutex
 	whitelist map[string]bool // "module.action" -> true
+
+	// pluginModules holds the names of installed module plugins. A step whose
+	// module is in this set and whose action is not in pluginReversible falls
+	// through to the fail-closed default.
+	pluginModules map[string]struct{}
+
+	// pluginReversible holds "module.action" pairs the manifests declared
+	// safe. It is an exemption from pluginModules' default, never a global
+	// "reversible" verdict: an explicit author declaration still wins.
+	pluginReversible map[string]struct{}
 }
 
 // NewIrreversibleChecker returns a checker with an empty whitelist. Callers
@@ -108,7 +126,11 @@ type IrreversibleChecker struct {
 // (pkg.remove, file.delete, user.remove) are registered by the engine
 // bootstrap, but tests and embedded users may start empty.
 func NewIrreversibleChecker() *IrreversibleChecker {
-	return &IrreversibleChecker{whitelist: make(map[string]bool)}
+	return &IrreversibleChecker{
+		whitelist:        make(map[string]bool),
+		pluginModules:    make(map[string]struct{}),
+		pluginReversible: make(map[string]struct{}),
+	}
 }
 
 // RegisterWhitelist adds the module.action pair to the irreversible
@@ -126,6 +148,54 @@ func (c *IrreversibleChecker) UnregisterWhitelist(module, action string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.whitelist, module+"."+action)
+}
+
+// RegisterPluginModule marks module as an installed module plugin. Together
+// with RegisterReversibleAction it turns the checker's default from
+// "reversible unless proven otherwise" to "irreversible unless the manifest
+// classified the action as safe" for that module only.
+func (c *IrreversibleChecker) RegisterPluginModule(module string) {
+	if module == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pluginModules[module] = struct{}{}
+}
+
+// RegisterReversibleAction exempts one "<module>.<action>" pair from the
+// plugin-module default. Registering it for a module that was never marked as
+// a plugin module is harmless: the whitelist signal is unchanged.
+func (c *IrreversibleChecker) RegisterReversibleAction(module, action string) {
+	if module == "" || action == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pluginReversible[module+"."+action] = struct{}{}
+}
+
+// RegisterPolicy installs a deployment's plugin action classification: every
+// destructive pair joins the whitelist, every module name joins pluginModules,
+// and every reversible pair exempts itself from the plugin-module default. It
+// is the single call a caller needs to make the checker agree with the
+// compile-time validator and the plan-time gate (dsl.PluginActionPolicy).
+//
+// A malformed or empty entry is ignored rather than rejected: the policy was
+// already normalized by its constructor, and a pair that names no step can
+// never match one.
+func (c *IrreversibleChecker) RegisterPolicy(p dsl.PluginActionPolicy) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, key := range p.Destructive() {
+		c.whitelist[key] = true
+	}
+	for _, module := range p.Modules() {
+		c.pluginModules[module] = struct{}{}
+	}
+	for _, key := range p.Reversible() {
+		c.pluginReversible[key] = struct{}{}
+	}
 }
 
 // Whitelist returns the registered irreversible actions in sorted order. The
@@ -175,11 +245,28 @@ func (c *IrreversibleChecker) Check(step Step) IrreversibleResult {
 	key := step.Module + "." + step.Action
 	c.mu.RLock()
 	matched := c.whitelist[key]
+	_, isPluginModule := c.pluginModules[step.Module]
+	_, declaredReversible := c.pluginReversible[key]
 	c.mu.RUnlock()
 	if matched {
 		return IrreversibleResult{
 			Irreversible: true,
 			Reason:       fmt.Sprintf("%s is in the irreversible whitelist", key),
+			SuggestLevel: ApprovalLevelHigh,
+		}
+	}
+
+	// Signal 3: fail-closed plugin default. A manifest that did not classify
+	// the action leaves the engine without an honest safety claim, so the step
+	// is judged irreversible — the same tier a built-in destructive action
+	// gets. Declaring it in the manifest's reversible_actions is the only way
+	// out, and that declaration is a reviewed install-time artifact.
+	if isPluginModule && !declaredReversible {
+		return IrreversibleResult{
+			Irreversible: true,
+			Reason: fmt.Sprintf("plugin action %s is not declared reversible in its manifest; "+
+				"unclassified plugin actions are irreversible by default (add it to reversible_actions to opt out)",
+				key),
 			SuggestLevel: ApprovalLevelHigh,
 		}
 	}

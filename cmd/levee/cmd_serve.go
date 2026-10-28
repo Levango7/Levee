@@ -543,18 +543,18 @@ func newServeConvEngine(cfg *config.Config, changeSvc *grpc.ChangeService, kb *r
 		Timeout:       30 * time.Second,
 	})
 	// The conversation bridge's draft-promotion gate runs the same V14 check
-	// `levee compile` runs, so it must judge a plugin's destructive step the
-	// same way. A present-but-unreadable registry refuses the boot rather than
-	// letting the bridge judge with a narrower vocabulary than the plan path.
-	pairs, pairErr := declaredPluginIrreversiblePairs(context.Background(), cfg)
-	if pairErr != nil {
-		return nil, pairErr
+	// `levee compile` runs, so it must judge a plugin's action the same way. A
+	// present-but-unreadable registry refuses the boot rather than letting the
+	// bridge judge with a narrower classification than the plan path.
+	pluginPolicy, policyErr := declaredPluginActionPolicy(context.Background(), cfg)
+	if policyErr != nil {
+		return nil, policyErr
 	}
 	return conversation.NewConversationEngine(conversation.ConversationEngineConfig{
-		Recommend:            recEngine,
-		ChangeCreator:        grpc.NewConversationChangeCreator(changeSvc),
-		Timeout:              60 * time.Second,
-		InherentIrreversible: pairs,
+		Recommend:          recEngine,
+		ChangeCreator:      grpc.NewConversationChangeCreator(changeSvc),
+		Timeout:            60 * time.Second,
+		PluginActionPolicy: pluginPolicy,
 	}), nil
 }
 
@@ -1235,20 +1235,23 @@ func buildEngineServeOptions(cfg *config.Config, store state.Store,
 	if approvalSvc != nil {
 		opts = append(opts, wiring.WithGateApprover(approval.NewGateApprover(approvalSvc)))
 	}
-	// Plugin-declared destructive actions join the plan-time irreversibility
-	// gate, so a step whose module is an installed plugin is refused unless
-	// the workflow lists the pair in allow_irreversible — the same judgement a
-	// built-in `pkg.remove` gets. Read from the registry (a stable install-time
-	// fact), never by executing a plugin; a present-but-unreadable registry
-	// refuses the boot rather than quietly judging plugin steps reversible.
-	pluginPairs, pairErr := declaredPluginIrreversiblePairs(context.Background(), cfg)
-	if pairErr != nil {
-		return nil, pairErr
+	// Installed module plugins' action classification joins the plan-time
+	// irreversibility gate: a declared destructive action is refused unless the
+	// workflow lists the pair in allow_irreversible, and an unclassified action
+	// is judged irreversible — the same judgement a built-in `pkg.remove` gets.
+	// Read from the registry (a stable install-time fact), never by executing a
+	// plugin; a present-but-unreadable registry refuses the boot rather than
+	// quietly judging plugin steps reversible.
+	pluginPolicy, policyErr := declaredPluginActionPolicy(context.Background(), cfg)
+	if policyErr != nil {
+		return nil, policyErr
 	}
-	if len(pluginPairs) > 0 {
-		opts = append(opts, wiring.WithInherentIrreversible(pluginPairs))
-		log.Info("serve: plugin-declared destructive actions wired into the plan-time irreversibility gate",
-			"count", len(pluginPairs))
+	if !pluginPolicy.IsEmpty() {
+		opts = append(opts, wiring.WithPluginActionPolicy(pluginPolicy))
+		log.Info("serve: plugin action classification wired into the plan-time irreversibility gate",
+			"destructive", len(pluginPolicy.Destructive()),
+			"reversible", len(pluginPolicy.Reversible()),
+			"modules", len(pluginPolicy.Modules()))
 	}
 	return opts, nil
 }

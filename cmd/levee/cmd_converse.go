@@ -196,17 +196,17 @@ func defaultNewConversationEngineForCLI() (*conversation.ConversationEngine, err
 		Timeout:       30 * time.Second,
 	})
 	bridge := newLazyLocalChangeCreator(openStore)
-	// Same deployment vocabulary as `levee compile` and `levee plan`, so a
-	// confirmed recommendation judged here is judged the same way at plan time.
-	pairs, pairErr := declaredPluginIrreversiblePairs(context.Background(), cfg)
-	if pairErr != nil {
-		return nil, pairErr
+	// Same classification as `levee compile` and `levee plan`, so a confirmed
+	// recommendation judged here is judged the same way at plan time.
+	pluginPolicy, policyErr := declaredPluginActionPolicy(context.Background(), cfg)
+	if policyErr != nil {
+		return nil, policyErr
 	}
 	engine := conversation.NewConversationEngine(conversation.ConversationEngineConfig{
-		Recommend:            recEngine,
-		ChangeCreator:        bridge,
-		Timeout:              60 * time.Second,
-		InherentIrreversible: pairs,
+		Recommend:          recEngine,
+		ChangeCreator:      bridge,
+		Timeout:            60 * time.Second,
+		PluginActionPolicy: pluginPolicy,
 	})
 	// The store may not exist yet; whoever closes the engine releases it.
 	engine.AddCloser(bridge)

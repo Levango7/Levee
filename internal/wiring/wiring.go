@@ -27,6 +27,7 @@ import (
 
 	"github.com/nexus/levee/internal/calendar"
 	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/state"
@@ -162,12 +163,11 @@ type Engine struct {
 	// WithChangeCalendar.
 	calendar *calendar.CalendarService
 
-	// inherentIrreversible is the deployment's extra inherently-irreversible
-	// vocabulary: "<module>.<action>" pairs that installed plugin manifests
-	// declared destructive (plugin.DeclaredDestructivePairs). Empty (the
-	// default) leaves the built-in vocabulary as the whole list. See
-	// WithInherentIrreversible.
-	inherentIrreversible []string
+	// pluginActionPolicy is the deployment's plugin action classification:
+	// destructive declarations, reversible declarations, and installed module
+	// names. The zero value (the default) leaves the built-in vocabulary as
+	// the whole list. See WithPluginActionPolicy.
+	pluginActionPolicy dsl.PluginActionPolicy
 
 	// sem is the process-wide parallel-run semaphore (capacity =
 	// maxParallelRuns). Acquire is non-blocking: beyond the cap a run
@@ -196,16 +196,27 @@ func WithCredentialResolver(r CredentialResolver) Option {
 	return func(e *Engine) { e.resolver = r }
 }
 
-// WithInherentIrreversible adds the deployment's plugin-declared
-// inherently-irreversible "<module>.<action>" pairs to the plan-time
-// irreversibility gate (plan.NewGenerator). The caller reads them from the
-// plugin registry at startup — never by executing a plugin, and identically on
-// the CLI and serve plan paths, so the verdict and the plan hash that carries
-// it do not depend on where the plan was produced. Nil/empty (the default)
+// WithPluginActionPolicy installs the deployment's plugin action
+// classification on the plan-time irreversibility gate
+// (plan.NewGeneratorWithPluginPolicy). The caller builds it from the plugin
+// registry at startup — never by executing a plugin, and identically on the
+// CLI and serve plan paths, so the verdict and the plan hash that carries it
+// do not depend on where the plan was produced. The zero policy (the default)
 // leaves the built-in vocabulary (dsl.DefaultIrreversibleActions) as the whole
 // list.
+func WithPluginActionPolicy(policy dsl.PluginActionPolicy) Option {
+	return func(e *Engine) { e.pluginActionPolicy = policy }
+}
+
+// WithInherentIrreversible is the destructive-only shorthand for
+// WithPluginActionPolicy: it installs the deployment's plugin-declared
+// inherently-irreversible "<module>.<action>" pairs. Callers that only know
+// destructive declarations keep working; callers that have the installed
+// plugins' reversible declarations or module names should use
+// WithPluginActionPolicy so unclassified actions are judged fail-closed
+// exactly as they are at compile time.
 func WithInherentIrreversible(pairs []string) Option {
-	return func(e *Engine) { e.inherentIrreversible = pairs }
+	return WithPluginActionPolicy(dsl.NewPluginActionPolicy(pairs, nil, nil))
 }
 
 // WithChannelRegistry overrides the channel registry (default:
