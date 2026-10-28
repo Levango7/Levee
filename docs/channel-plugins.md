@@ -112,7 +112,7 @@ CI 门禁（覆盖率 70%、三 OS race、lint v2.13）对插件同等生效。�
 | | 编译期（本文档） | 运行期（`levee plugin`） |
 |---|---|---|
 | 进程形态 | 与宿主同进程函数调用 | 常驻子进程，JSON 行协议（`internal/plugin/session.go`） |
-| 会话 | 自选（ssh 用连接池） | 每 target 每次 run 一个会话进程，connect 一次、exec 多次 |
+| 会话 | 自选（ssh 用连接池） | connect 一次、exec 多次；**跨 run 池化**：同一 (插件, host, port, type, 凭据指纹) 的会话在 Close 后留在 serve 进程的池里，下一次 run 直接复用（边界见 §8） |
 | 凭据 | 经 `Target.Credentials()` 拿扩写后的 `CredentialRef` | **只拿引用名**（`credential_ref`），明文永不过管道；密钥走插件自己的 `config.yaml` |
 | 能力 | 接口全集（含 Upload/Download），无帧上限 | connect/exec/collect/upload；upload/collect 载荷**每笔 ≤512 KiB**（JSON 行帧；宿主发送/解码前拒越界。**插件必须把自己的行读取器配到 1 MiB 行上限**，示例都配了）——更大文件要分块或用内建传输 |
 | 装卸 | 重新编译 | 安装/启用即注册；同名撞已有类型（ssh/winrm/local…）**拒绝启动** |
@@ -123,4 +123,5 @@ CI 门禁（覆盖率 70%、三 OS race、lint v2.13）对插件同等生效。�
 - inventory/gRPC 层的 `channel_type` 字段**不做枚举校验**（存什么传什么），只有到 `Create` 时未知类型才暴露——新通道的 target 数据校验靠你自己的集成测试兜底
 - 通道能力差异（如 local 无凭据、winrm 不支持流式大文件、运行期通道单笔传输 ≤512 KiB）由模块层在运行时感知，通道接口本身没有能力协商机制——模块文档需写明支持哪些通道
 - 运行期通道的一个插件只提供**一种**传输类型（类型名 = 插件名）；要提供多种类型就装多个插件
-- 运行期通道的会话按"每 target 每 run 一个子进程"建立，没有跨 run 的连接池——大批量目标会产生等量的子进程
+- 运行期通道的会话在 serve 进程内池化（`internal/plugin/pool.go`）：池键是 (插件, host, port, type, **凭据指纹**)，同一目标的后续 run 复用同一条会话而不是重新拨号。上界：每个插件空闲会话 ≤8（超出淘汰最久空闲的）、空闲 2 分钟回收、闲置会话最长 30 分钟；**有租约（run 正在用）的会话从不回收**，`Close` 只归还租约、不杀进程——池的生命周期挂在 serve 的 ctx 上，serve 退出即全部拆掉。一次性 CLI 进程（`levee run`）没有跨调用的池：池的意义只在常驻的 serve 里
+- 运行期通道的 `Close()` 因此与接口注释里的"拆掉传输会话"不同：它只归还租约，进程由池持有。对 run 可见的行为不变（Close 后 `IsConnected()==false`、拒绝工作），死掉的会话也绝不会被交给下一次 run
