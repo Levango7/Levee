@@ -6,9 +6,11 @@
 //
 // Unlike the other consumption points this one is a SESSION, not a one-shot:
 // the plugin process is started at Connect, served requests (exec / collect)
-// for the life of the run's channel, and torn down at Close. See session.go
-// for the process half and its two invariants (serialised requests; a failed
-// request kills the session rather than leaving the stream desynchronised).
+// for the life of the run's channel, and — since D-1c — returned to a
+// per-plugin pool instead of being killed at Close, so a later run reuses the
+// dial (pool.go holds the sharing rules and the bounds). See session.go for the
+// process half and its invariants (serialised requests; a failed request kills
+// the session rather than leaving the stream desynchronised).
 //
 // The channel type a plugin provides is its registry name: one plugin, one
 // transport type. Targets opt in by declaring that name in `channel_type`.
@@ -33,12 +35,20 @@ type PluginChannelFactory struct {
 	name       string
 	binaryPath string
 	configYAML string
+
+	// pool is process-wide for this plugin: every channel this factory builds
+	// shares it, and it outlives individual runs. The reaper goroutine stops
+	// when the factory's construction context (serve's lifecycle) ends.
+	pool *sessionPool
 }
 
 // NewPluginChannelFactory builds the factory and performs one meta handshake,
 // the same boot-time usability question the other tiers ask: an enabled
 // channel that cannot identify itself is unusable, and the caller refuses the
 // boot with this error rather than discovering it on the first dial.
+//
+// ctx is also the pool's lifetime: when serve's context ends, the reaper stops
+// and every idle pooled session is torn down.
 func NewPluginChannelFactory(ctx context.Context, rec *RegistryRecord) (*PluginChannelFactory, error) {
 	if rec == nil {
 		return nil, fmt.Errorf("plugin: channel: nil registry record")
@@ -61,11 +71,14 @@ func NewPluginChannelFactory(ctx context.Context, rec *RegistryRecord) (*PluginC
 		return nil, wrapError(rec.Name, fmt.Errorf("meta handshake returned %d responses, want 1", len(responses)))
 	}
 
-	return &PluginChannelFactory{
+	f := &PluginChannelFactory{
 		name:       rec.Name,
 		binaryPath: rec.BinaryPath,
 		configYAML: rec.ConfigYAML,
-	}, nil
+		pool:       newSessionPool(),
+	}
+	go f.pool.run(ctx, poolSweepInterval)
+	return f, nil
 }
 
 // Name returns the transport type this factory serves — the plugin's registry
@@ -79,68 +92,90 @@ func (f *PluginChannelFactory) Create(target channel.Target) (channel.Channel, e
 		return nil, wrapError(f.name, fmt.Errorf("channel: nil target"))
 	}
 	return &PluginChannel{
-		name:       f.name,
-		binaryPath: f.binaryPath,
-		configYAML: f.configYAML,
-		target:     target,
+		factory: f,
+		target:  target,
+		key: poolKey{
+			plugin: f.name,
+			host:   target.Host(),
+			port:   target.Port(),
+			typ:    target.Type(),
+			credFP: credentialFingerprint(target.Credentials()),
+		},
 	}, nil
 }
 
 // PluginChannel is one transport session implemented by a resident plugin
 // process. It implements channel.Channel; the zero value is not usable.
+//
+// The channel holds a LEASE on a pooled session, not the session's lifetime:
+// Close gives the lease back (the pool keeps the session for the next run),
+// while a dead session is dropped by the pool on sight.
 type PluginChannel struct {
-	name       string
-	binaryPath string
-	configYAML string
-	target     channel.Target
+	factory *PluginChannelFactory
+	target  channel.Target
+	key     poolKey
 
-	// mu guards sess, the session handle. Request serialisation lives on the
+	// mu guards sess, the lease handle. Request serialisation lives on the
 	// session itself; this lock only protects the handle against Connect and
 	// Close racing each other.
 	mu   sync.Mutex
-	sess *pluginSession
+	sess poolSession
 }
 
-func (c *PluginChannel) session() *pluginSession {
+func (c *PluginChannel) session() poolSession {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.sess
 }
 
-// Connect starts the plugin session and hands it the target: process start,
-// init (install-time config) and the plugin's own dial. It is idempotent by
-// contract — connecting an already-connected channel returns nil.
+// Connect acquires a session: a pooled one when the same (plugin, target,
+// credential) is already live, otherwise a fresh dial handed to the plugin
+// (process start, init with install-time config, the plugin's own connect).
+// It is idempotent by contract — connecting an already-connected channel
+// returns nil.
 func (c *PluginChannel) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.sess != nil && c.sess.Alive() {
-		return nil
-	}
 	if c.sess != nil {
-		// A previous session died (plugin crash, cancelled request). Drop the
-		// handle before re-dialling so the stale process is reaped.
-		c.sess.close()
+		if c.sess.Alive() {
+			return nil
+		}
+		// A previous session died (plugin crash, cancelled request). Hand the
+		// dead lease back so the pool drops and reaps it, then re-dial.
+		c.factory.pool.release(c.key, c.sess)
 		c.sess = nil
+	}
+
+	if sess, ok := c.factory.pool.acquire(c.key); ok {
+		c.sess = sess
+		return nil
 	}
 
 	connectCtx, cancel := context.WithTimeout(ctx, sessionConnectDeadline)
 	defer cancel()
 
-	sess, err := startPluginSession(connectCtx, c.name, c.binaryPath, c.configYAML)
+	sess, err := startPluginSession(connectCtx, c.factory.name, c.factory.binaryPath, c.factory.configYAML)
 	if err != nil {
 		return err
 	}
 	resp, err := sess.Request(connectCtx, HostRequest{Action: "connect", Params: channelConnectParams(c.target)})
 	if err != nil {
 		sess.kill()
-		return wrapError(c.name, fmt.Errorf("connect: %w", err))
+		return wrapError(c.factory.name, fmt.Errorf("connect: %w", err))
 	}
 	if !resp.OK {
 		sess.kill()
-		return wrapError(c.name, fmt.Errorf("connect refused: %s", resp.Error))
+		return wrapError(c.factory.name, fmt.Errorf("connect refused: %s", resp.Error))
 	}
-	c.sess = sess
+
+	published, ok := c.factory.pool.publish(c.key, sess)
+	if !ok {
+		// The pool was shut down while this dial was in flight; publish has
+		// already torn the session down.
+		return wrapError(c.factory.name, fmt.Errorf("connect: plugin session pool is shutting down"))
+	}
+	c.sess = published
 	return nil
 }
 
@@ -154,7 +189,7 @@ func (c *PluginChannel) Connect(ctx context.Context) error {
 func (c *PluginChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResult, error) {
 	sess := c.session()
 	if sess == nil || !sess.Alive() {
-		return nil, wrapError(c.name, fmt.Errorf("channel: not connected"))
+		return nil, wrapError(c.factory.name, fmt.Errorf("channel: not connected"))
 	}
 
 	resp, err := sess.Request(ctx, HostRequest{Action: "exec", Params: map[string]any{"cmd": cmd}})
@@ -166,10 +201,10 @@ func (c *PluginChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResu
 	if !resp.OK {
 		// -1, never a faked 0: the command did not run, and the audit trail
 		// must not read that as success.
-		return &channel.ExecResult{ExitCode: -1}, wrapError(c.name, fmt.Errorf("exec refused: %s", resp.Error))
+		return &channel.ExecResult{ExitCode: -1}, wrapError(c.factory.name, fmt.Errorf("exec refused: %s", resp.Error))
 	}
 	if resp.Exec == nil {
-		return &channel.ExecResult{ExitCode: -1}, wrapError(c.name, fmt.Errorf("exec returned ok with no result; an empty success is not a verdict"))
+		return &channel.ExecResult{ExitCode: -1}, wrapError(c.factory.name, fmt.Errorf("exec returned ok with no result; an empty success is not a verdict"))
 	}
 	return &channel.ExecResult{
 		ExitCode: resp.Exec.ExitCode,
@@ -189,12 +224,12 @@ func (c *PluginChannel) Exec(ctx context.Context, cmd string) (*channel.ExecResu
 func (c *PluginChannel) Upload(ctx context.Context, remotePath string, content io.Reader) error {
 	sess := c.session()
 	if sess == nil || !sess.Alive() {
-		return wrapError(c.name, fmt.Errorf("channel: not connected"))
+		return wrapError(c.factory.name, fmt.Errorf("channel: not connected"))
 	}
 
 	data, err := readBounded(content, maxTransferPayloadBytes)
 	if err != nil {
-		return wrapError(c.name, err)
+		return wrapError(c.factory.name, err)
 	}
 
 	resp, err := sess.Request(ctx, HostRequest{Action: "upload", Params: map[string]any{
@@ -205,7 +240,7 @@ func (c *PluginChannel) Upload(ctx context.Context, remotePath string, content i
 		return err
 	}
 	if !resp.OK {
-		return wrapError(c.name, fmt.Errorf("upload refused: %s", resp.Error))
+		return wrapError(c.factory.name, fmt.Errorf("upload refused: %s", resp.Error))
 	}
 	return nil
 }
@@ -230,7 +265,7 @@ func readBounded(r io.Reader, cap int64) ([]byte, error) {
 func (c *PluginChannel) Download(ctx context.Context, remotePath string) (io.Reader, error) {
 	sess := c.session()
 	if sess == nil || !sess.Alive() {
-		return nil, wrapError(c.name, fmt.Errorf("channel: not connected"))
+		return nil, wrapError(c.factory.name, fmt.Errorf("channel: not connected"))
 	}
 
 	resp, err := sess.Request(ctx, HostRequest{Action: "collect", Params: map[string]any{"path": remotePath}})
@@ -238,23 +273,30 @@ func (c *PluginChannel) Download(ctx context.Context, remotePath string) (io.Rea
 		return nil, err
 	}
 	if !resp.OK {
-		return nil, wrapError(c.name, fmt.Errorf("collect refused: %s", resp.Error))
+		return nil, wrapError(c.factory.name, fmt.Errorf("collect refused: %s", resp.Error))
 	}
 	if resp.Collect == nil {
-		return nil, wrapError(c.name, fmt.Errorf("collect returned ok with no payload; an empty success is not a verdict"))
+		return nil, wrapError(c.factory.name, fmt.Errorf("collect returned ok with no payload; an empty success is not a verdict"))
 	}
 	if len(resp.Collect.Data) > base64.StdEncoding.EncodedLen(int(maxTransferPayloadBytes))+64 {
-		return nil, wrapError(c.name, fmt.Errorf("collect payload is %d base64 chars; a plugin channel carries at most %d raw bytes per transfer (the JSON-line frame)", len(resp.Collect.Data), maxTransferPayloadBytes))
+		return nil, wrapError(c.factory.name, fmt.Errorf("collect payload is %d base64 chars; a plugin channel carries at most %d raw bytes per transfer (the JSON-line frame)", len(resp.Collect.Data), maxTransferPayloadBytes))
 	}
 	data, err := base64.StdEncoding.DecodeString(resp.Collect.Data)
 	if err != nil {
-		return nil, wrapError(c.name, fmt.Errorf("collect payload is not base64: %w", err))
+		return nil, wrapError(c.factory.name, fmt.Errorf("collect payload is not base64: %w", err))
 	}
 	return bytes.NewReader(data), nil
 }
 
-// Close disconnects and reaps the session. It is idempotent by contract and
-// never fails on teardown: the run is done with the session either way.
+// Close returns the lease on the pooled session. It is idempotent by contract
+// and never fails: the run is done with the channel either way.
+//
+// This is a deliberate departure from "Close tears down the transport session":
+// for a runtime plugin the session outlives the run by design (D-1c), so Close
+// ends YOUR use of it and the pool owns the lifetime — bounded by the idle TTL,
+// the max age and the pool's shutdown. The run-visible contract is unchanged:
+// after Close the channel is disconnected and refuses work, and a dead session
+// is never handed to the next run.
 func (c *PluginChannel) Close() error {
 	c.mu.Lock()
 	sess := c.sess
@@ -264,12 +306,7 @@ func (c *PluginChannel) Close() error {
 	if sess == nil {
 		return nil
 	}
-	if sess.Alive() {
-		ctx, cancel := context.WithTimeout(context.Background(), sessionTeardownDeadline)
-		_, _ = sess.Request(ctx, HostRequest{Action: "disconnect"})
-		cancel()
-	}
-	sess.close()
+	c.factory.pool.release(c.key, sess)
 	return nil
 }
 

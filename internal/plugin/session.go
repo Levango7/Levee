@@ -160,6 +160,19 @@ func (s *pluginSession) kill() {
 	s.cancel()
 }
 
+// teardown ends a session for good: the target-level goodbye (best effort),
+// then the process reap. Close used to do this inline; with the cross-run pool
+// (pool.go) the owner of the lifetime is the pool, so the goodbye lives here
+// and Close only returns its lease.
+func (s *pluginSession) teardown() {
+	if s.Alive() {
+		ctx, cancel := context.WithTimeout(context.Background(), sessionTeardownDeadline)
+		_, _ = s.Request(ctx, HostRequest{Action: "disconnect"})
+		cancel()
+	}
+	s.close()
+}
+
 // close performs the orderly goodbye when the session is still healthy: one
 // best-effort "close" under the teardown deadline, then reap. It never reports
 // an error — the caller is done with the session either way, and a teardown

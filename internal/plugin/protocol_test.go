@@ -173,6 +173,13 @@ func protocolChildMain(mode string) int {
 				case "hang":
 					// Deliberately answer nothing: the host must kill the
 					// session rather than wait forever.
+				case "pid":
+					// Answers with this process's own PID, which is what lets a
+					// test tell "the pool reused the session" apart from "the
+					// host dialled again".
+					_ = enc.Encode(PluginResponse{OK: true, Exec: &ChannelExecResult{
+						ExitCode: 0, Stdout: fmt.Sprintf("%d", os.Getpid()), Duration: 1,
+					}})
 				case "die":
 					os.Exit(3)
 				case "refuse":
