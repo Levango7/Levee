@@ -496,6 +496,34 @@ for (const [path, title, rowSel] of routes) {
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[1b] the alert stream feeds the header badge — SSE, not a request')
+{
+  const page = await newPage(browser)
+  await open(page, '/changes')
+  // The badge is fed by the SSE connection the shell opens at mount, and the
+  // request counter cannot observe EventSource — so the wait is on the badge
+  // itself. A stream that 404s (or connects and delivers nothing) leaves
+  // el-badge hidden and this fails — on BOTH engines, not just on Firefox,
+  // which is the only way Chrome's legs can catch the mock losing this
+  // endpoint again: Chrome swallows an EventSource failure silently, and the
+  // renders checks above would stay green on a broken stream.
+  const badgeText = async () =>
+    page.evaluate(() => {
+      const sup = document.querySelector('.el-badge__content')
+      if (!sup) return ''
+      return window.getComputedStyle(sup).display === 'none' ? '' : sup.textContent.trim()
+    })
+  const deadline = Date.now() + SETTLE_DEADLINE_MS
+  let badge = await badgeText()
+  while (!badge && Date.now() < deadline) {
+    await sleep(300)
+    badge = await badgeText()
+  }
+  check("the badge shows the stream's critical count", badge === '1', `badge="${badge}"`)
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 {
   const page = await newPage(browser)
