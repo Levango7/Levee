@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（`internal/diagnosis` 的耗时断言不再判时钟分辨率——windows 腿因此假红过一次）
+
+- **现象**：`PR #236`（发布 tag 单父断言）的 `test (windows-latest)` 红在 `TestProbeAllAggregation`，现场是 `health_probe_test.go:858` 的 `assert.Positive(t, report.Duration)` 报 `"0s" is not positive`；同一个探针在日志里有大量 `duration_ms=0` 的子用例。这是本窗口 52 次 windows 腿里第一次出现，与那笔改动（只动 `scripts/` 与两个 `.md`）无关。
+- **根因**：`report.Duration` 取 `time.Since(start)`，是单调钟读数；而**时钟分辨率**在虚拟化 runner 上可能比这次探测的跨度还粗，于是"探测跑完了但读数为 0"是合法结果。原断言实际判的是时钟分辨率，不是被测代码——`assert.Positive` 在这种粒度下必然偶发假红。
+- **改法**（只改测试，生产代码不动）：换成两条不依赖分辨率的性质——① `report.Duration >= 0`（跨度不倒流）；② `report.Duration <= 被测调用外层观察到的墙钟跨度`（探针跑不出它所在的那段时间）。第二条仍能抓住"耗时报成 `1h`"这类垃圾值（实测变异：`Duration: time.Hour` → 判红）。
+- **诚实的边界**：① 与 ② 都拦不住"Duration 未被赋值"——在"合法 0"与"未赋值"不可区分的前提下，没有时钟 seam 就测不出赋值本身。要测它得给 `HealthProber` 注入时钟，那是另一个决定（本笔把它写进注释而不是假装测到了）。
+- **变异**：`Duration: time.Hour` → ② 红（`"1h0m0s" is not less than or equal to "514.1383ms"`）；`Duration: -time.Second` → ① 红；文件按 `sha256` 逐字节还原，`go test ./internal/diagnosis -run TestProbeAllAggregation -count=50` 全绿。
+
 ### 新增（运行期通道的会话跨 run 池化：同目标的下一批 run 复用同一条已拨通的会话）
 
 - **缺口（D-1c 的池化半）**：运行期通道每个 target 每次 run 都起一个子进程、`Close` 一律杀掉——`channelFor` 的通道生命周期就是 run 的生命周期。对内置 `ssh` 这只是重连一次，对通道插件却是**重新付最贵的那一步**：NETCONF hello、堡垒机跳转、厂商握手，会话状态全在那条已建立的连接里。大批量目标还意味着等量子进程被反复创建/销毁。
