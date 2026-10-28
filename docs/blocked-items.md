@@ -1,4 +1,4 @@
-# LEVEE 搁置项清单（2026-10-26 定版）
+# LEVEE 搁置项清单（2026-10-26 定版；2026-10-28 对账）
 
 > 本文件是**待办搁置区**：工程侧当前无法独立完成的项目，按“卡在哪”分类，
 > 每项写明解锁条件。每完成一项就从本清单移除；新发现的搁置项追加于此。
@@ -17,9 +17,8 @@
 
 ## B. 卡在工作所有权（他人活跃工作，按 AGENTS.md 规矩不代合）
 
-| 项 | 现状 | 建议 |
-| --- | --- | --- |
-| B-1 Firefox 跨浏览器矩阵 | `feat/browser-matrix-firefox` 分支活跃迭代中（fix-revert 链未收尾） | 由该分支所有者收尾后合；合入前不在 master 另起炉灶 |
+（当前无。原 B-1「Firefox 跨浏览器矩阵」已随 PR #208 于 2026-10-28T07:39Z 合入 master，
+`feat/browser-matrix-firefox` 分支已删——`git ls-remote --heads` 实测无此分支。）
 
 ## C. 卡在未复现/无数据（证据面已建，等触发）
 
@@ -33,8 +32,7 @@
 
 | 项 | 还差什么 | 量级 | 备注 |
 | --- | --- | --- | --- |
-| D-1b 插件动作的不可逆声明 | **已闭环（PR #234，待评审；合入后本行移入「已交付」）**：manifest `destructive_actions` → 注册表持久化（含旧库 `ALTER TABLE` 迁移）→ **编译期**（`dsl.NewValidator(extra...)`：`levee compile`/`new`/`import` 与 serve 对话草案闸门）与**计划期**（`plan.NewGenerator(extra...)` + `wiring.WithInherentIrreversible`）两侧消费**同一份**词表 | — | 判据取**已安装产物的持久事实**、不执行插件、两侧同一份，所以不可逆判定与 `plan_hash` 不随「谁 plan」漂移（这是当初排除「未知模块一律不可逆」的原因——那会把运行时注册集合泄进 hash）。未做：插件未声明即默认不可逆的强制档（产品决定，另行拍板） |
-| D-1c 运行期通道的跨 run 会话池与一插件多类型 | 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型（类型名=插件名） | 中 | upload 动词已交付（并行会话，单笔 ≤512 KiB 帧上限）；池化与多类型按真实消费方出现再排 |
+| D-1c 运行期通道的跨 run 会话池与一插件多类型 | 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型（类型名=插件名） | 中 | upload 动词已交付（PR #237，并行会话，单笔 ≤512 KiB 帧上限）；池化与多类型按真实消费方出现再排 |
 | D-2 运营层资产（demo 库/角色视频/品牌 GIF） | 需要真人录制与设计，非代码工作 | 需人手 | **面向客户签单的最大缺口，建议优先安排人手** |
 
 ## E. 卡在产品决策/需求分母（明确等触发，不焦虑不硬做）
@@ -43,6 +41,7 @@
 | --- | --- |
 | E-1 自然语言双语 zh/en | 定档“现在不做”：无真实多语言客户诉求，投入只有审美分母 |
 | E-2 `notify.webhook` HMAC 签名 / 变更记录结构化导出等按需项 | 2026-09-06 拍板：只在真实消费方出现时做 |
+| E-3 插件「未声明即默认不可逆」的强制档 | 原 D-1b 的剩余半边：现在只有插件显式声明 `destructive_actions` 才判不可逆，未声明的破坏型动作仍静默通过。强制档更保守，但会改变既有插件的可用性，需产品拍板 |
 
 ## 已交付、不再登记（防混淆）
 
@@ -52,5 +51,7 @@
 - plugin `plugin test` 最小真执行 + notifier 执行面：PR #219
 - plugin gate 执行面（DSL 语法 + verify 门禁 + plan hash + engine 可执行性 + wiring 注入 + serve resolver）：PR #221
 - plugin module 执行面（协议 `validate`/`execute` + `plugin.PluginModule` 适配器 + `executor.ChannelFree` + serve 注册进进程级 executor + 同名保护）：PR #230
-- plugin channel 执行面（会话子进程 + `connect`/`exec`/`collect`/`disconnect` + `plugin.PluginChannel`/工厂 + `channel.CredentialRefNamer` 的明文边界 + serve 注册进通道注册表 + 同名保护）：本笔
+- plugin channel 执行面（会话子进程 + `connect`/`exec`/`collect`/`disconnect` + `plugin.PluginChannel`/工厂 + `channel.CredentialRefNamer` 的明文边界 + serve 注册进通道注册表 + 同名保护）：PR #232
+- plugin 破坏性动作声明（原 D-1b：manifest `destructive_actions` → registry 持久化含旧库 `ALTER TABLE` 迁移 → 编译期 `dsl.NewValidator(extra...)` 与计划期 `plan.NewGenerator(extra...)` 消费同一份词表，`plan_hash` 不随「谁 plan」漂移；**未声明即默认不可逆的强制档仍未做**，见 E-3）：PR #234
+- 跨浏览器矩阵（原 B-1：Chrome + Firefox × ubuntu/windows，mock 网关补两个 SSE 端点，`BROWSER_CHECK_BROWSER` 选引擎）：PR #208
 - service_factory：并行会话已改良（remote=产品方向、local 委托单一构造点+drift guard），维持现状
