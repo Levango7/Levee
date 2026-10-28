@@ -846,7 +846,9 @@ func TestProbeAllAggregation(t *testing.T) {
 		DefaultServices: []ServiceSpec{{Name: "web", Port: srvPort}},
 		DialTimeout:     time.Second,
 	})
+	probeStartedAt := time.Now()
 	report := p.ProbeAll(context.Background(), "127.0.0.1")
+	probeElapsed := time.Since(probeStartedAt)
 	assert.Equal(t, "127.0.0.1", report.Target)
 	assert.Equal(t, StatusHealthy, report.Status)
 	assert.Equal(t, StatusHealthy, report.Network.Status)
@@ -855,7 +857,15 @@ func TestProbeAllAggregation(t *testing.T) {
 	assert.Equal(t, StatusHealthy, report.Data.Status)
 	assert.Contains(t, report.Summary, "network=healthy")
 	assert.False(t, report.ProbedAt.IsZero())
-	assert.Positive(t, report.Duration)
+	// report.Duration 读的是单调钟，而**时钟分辨率**在虚拟化的 runner 上可能比这次
+	// 探测的跨度还粗：2026-10-28 在 windows-latest 上实测到 duration_ms=0（同一个
+	// 探针的多个子用例日志都是 0），原先的 assert.Positive(report.Duration) 因此判红
+	// ——它判的是时钟分辨率，不是被测代码。这里换成两条不依赖分辨率的性质：跨度不倒流、
+	// 且不可能超过测试自己观察到的墙钟跨度（探针跑不出它所在的那段时间）。
+	// 「Duration 确实被赋值」在「合法 0」与「未赋值」不可区分的前提下没有时钟 seam
+	// 就测不出来；要测它得给 HealthProber 注入时钟，那是另一个决定。
+	assert.GreaterOrEqual(t, report.Duration, time.Duration(0))
+	assert.LessOrEqual(t, report.Duration, probeElapsed)
 }
 
 func TestProbeAllWithUnhealthyNode(t *testing.T) {
