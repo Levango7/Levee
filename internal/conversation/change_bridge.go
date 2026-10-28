@@ -83,11 +83,12 @@ func (e *ConversationEngine) promoteRecommendation(ctx context.Context, sess *Se
 			"recommendation_id", rec.ID, "error", err)
 		return &Reply{Text: fmt.Sprintf("工作流草案解析失败，未创建变更：%v\n可回复「修改」调整建议内容。", err)}, nil
 	}
-	// Same vocabulary as `levee compile` and the plan-time gate: the
-	// deployment's plugin-declared destructive actions must be judged here too,
-	// or a draft using one would pass this gate and only be refused at plan
-	// time (a later, more expensive refusal).
-	validator := dsl.NewValidator(e.inherentIrreversible...)
+	// Same classification as `levee compile` and the plan-time gate: the
+	// deployment's plugin-declared destructive actions, declared reversible
+	// actions, and unclassified actions of installed module plugins must be
+	// judged here too, or a draft using one would pass this gate and only be
+	// refused at plan time (a later, more expensive refusal).
+	validator := dsl.NewValidatorWithPluginPolicy(e.pluginActionPolicy)
 	if verrs := validator.Validate(wf); len(verrs) > 0 {
 		var b strings.Builder
 		fmt.Fprintf(&b, "工作流草案未通过校验（%d 项），未创建变更：", len(verrs))

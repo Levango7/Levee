@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS plugin_registry (
     binary_path     TEXT    NOT NULL DEFAULT '',
     config_yaml     TEXT    NOT NULL DEFAULT '',
     destructive_actions TEXT NOT NULL DEFAULT '[]',
+    reversible_actions  TEXT NOT NULL DEFAULT '[]',
     signature       TEXT    NOT NULL DEFAULT '',
     installed_at    DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -91,11 +92,16 @@ type RegistryRecord struct {
 	// inherently destructive (see PluginMeta.DestructiveActions). Persisted so
 	// the plan-time irreversibility gate can read it without executing the
 	// plugin.
-	DestructiveActions []string  `json:"destructive_actions,omitempty"`
-	Signature          string    `json:"signature,omitempty"`
-	InstalledAt        time.Time `json:"installed_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
-	ErrorMsg           string    `json:"error_msg,omitempty"`
+	DestructiveActions []string `json:"destructive_actions,omitempty"`
+	// ReversibleActions is the manifest's declared safe-action list. Kept
+	// beside DestructiveActions because the plan-time verdict is three-state:
+	// destructive => irreversible, reversible => reversible, and anything else
+	// on an installed module plugin => irreversible (fail-closed).
+	ReversibleActions []string  `json:"reversible_actions,omitempty"`
+	Signature         string    `json:"signature,omitempty"`
+	InstalledAt       time.Time `json:"installed_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	ErrorMsg          string    `json:"error_msg,omitempty"`
 }
 
 // --- Registry ---------------------------------------------------------------
@@ -161,8 +167,10 @@ func ensurePluginRegistryColumns(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("plugin: read registry schema: %w", err)
 	}
 
-	const col = "destructive_actions"
-	if !present[col] {
+	for _, col := range []string{"destructive_actions", "reversible_actions"} {
+		if present[col] {
+			continue
+		}
 		if _, err := db.ExecContext(ctx,
 			"ALTER TABLE plugin_registry ADD COLUMN "+col+" TEXT NOT NULL DEFAULT '[]'"); err != nil {
 			return fmt.Errorf("plugin: migrate registry add %s: %w", col, err)
@@ -241,24 +249,24 @@ func (r *Registry) Install(ctx context.Context, meta PluginMeta, binaryPath, con
 		entry = "plugin"
 	}
 
-	destructiveJSON := "[]"
-	if len(meta.DestructiveActions) > 0 {
-		encoded, merr := json.Marshal(meta.DestructiveActions)
-		if merr != nil {
-			return nil, fmt.Errorf("plugin: encode destructive_actions: %w", merr)
-		}
-		destructiveJSON = string(encoded)
+	destructiveJSON, err := encodeActionList("destructive_actions", meta.DestructiveActions)
+	if err != nil {
+		return nil, err
+	}
+	reversibleJSON, err := encodeActionList("reversible_actions", meta.ReversibleActions)
+	if err != nil {
+		return nil, err
 	}
 
-	_, err := r.db.ExecContext(ctx, `
+	_, err = r.db.ExecContext(ctx, `
 INSERT INTO plugin_registry
     (name, version, type, author, description, entry_point,
      min_host_version, max_host_version, state, binary_path,
-     config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.Name, meta.Version, string(meta.Type), meta.Author,
 		meta.Description, entry, meta.MinHostVersion, meta.MaxHostVersion,
-		string(StateInstalled), binaryPath, configYAML, destructiveJSON, sig, now, now, "",
+		string(StateInstalled), binaryPath, configYAML, destructiveJSON, reversibleJSON, sig, now, now, "",
 	)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -295,7 +303,7 @@ func (r *Registry) List(ctx context.Context, state PluginState) ([]*RegistryReco
 		rows, err = r.db.QueryContext(ctx, `
 SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg
   FROM plugin_registry WHERE state = ? ORDER BY name`, string(state))
 	}
 	if err != nil {
@@ -457,7 +465,7 @@ func isUniqueConstraint(err error) bool {
 func registrySelectSQL() string {
 	return `SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg
   FROM plugin_registry WHERE name = ?`
 }
 
@@ -465,7 +473,7 @@ func registrySelectSQL() string {
 func registrySelectAllSQL() string {
 	return `SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, destructive_actions, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg
   FROM plugin_registry ORDER BY name`
 }
 
@@ -479,12 +487,12 @@ type scanner interface {
 func scanRegistryRecord(s scanner) (*RegistryRecord, error) {
 	var rec RegistryRecord
 	var typ, state string
-	var destructiveJSON string
+	var destructiveJSON, reversibleJSON string
 	var installedAt, updatedAt string
 	err := s.Scan(
 		&rec.Name, &rec.Version, &typ, &rec.Author, &rec.Description,
 		&rec.EntryPoint, &rec.MinHostVersion, &rec.MaxHostVersion,
-		&state, &rec.BinaryPath, &rec.ConfigYAML, &destructiveJSON, &rec.Signature,
+		&state, &rec.BinaryPath, &rec.ConfigYAML, &destructiveJSON, &reversibleJSON, &rec.Signature,
 		&installedAt, &updatedAt, &rec.ErrorMsg,
 	)
 	if err != nil {
@@ -501,7 +509,24 @@ func scanRegistryRecord(s scanner) (*RegistryRecord, error) {
 		// silently widening or narrowing the irreversibility vocabulary.
 		_ = json.Unmarshal([]byte(destructiveJSON), &rec.DestructiveActions)
 	}
+	if reversibleJSON != "" && reversibleJSON != "[]" {
+		_ = json.Unmarshal([]byte(reversibleJSON), &rec.ReversibleActions)
+	}
 	return &rec, nil
+}
+
+// encodeActionList renders a manifest action list as the registry's JSON
+// column value. The default is "[]", not NULL, so a query never has to
+// distinguish "unclassified" from "not stored".
+func encodeActionList(column string, actions []string) (string, error) {
+	if len(actions) == 0 {
+		return "[]", nil
+	}
+	encoded, err := json.Marshal(actions)
+	if err != nil {
+		return "", fmt.Errorf("plugin: encode %s: %w", column, err)
+	}
+	return string(encoded), nil
 }
 
 // parseTime parses a SQLite datetime value. SQLite may return the value

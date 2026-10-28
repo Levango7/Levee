@@ -83,13 +83,13 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	}
 
 	// 2. Basic structural validation. The V14 irreversibility gate reads the
-	// deployment's plugin-declared destructive actions too, so compile time and
-	// plan time judge a plugin's destructive step identically.
-	irreversiblePairs, pairErr := declaredPluginIrreversiblePairsForCmd()
-	if pairErr != nil {
-		return pairErr
+	// deployment's plugin action classification too, so compile time and plan
+	// time judge a plugin's action identically.
+	pluginPolicy, policyErr := declaredPluginActionPolicyForCmd()
+	if policyErr != nil {
+		return policyErr
 	}
-	validator := dsl.NewValidator(irreversiblePairs...)
+	validator := dsl.NewValidatorWithPluginPolicy(pluginPolicy)
 	verrs := validator.Validate(wf)
 	if len(verrs) > 0 && mode == dsl.ModeStrict {
 		return formatValidationErrors(file, verrs)

@@ -76,13 +76,14 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 		return nil, nil, err
 	}
 
-	// The generator judges inherent irreversibility against the built-in
-	// vocabulary PLUS this deployment's plugin-declared destructive actions
-	// (WithInherentIrreversible). Passing the same list here on every plan path
-	// is what keeps the LE082 verdict — and the plan hash that carries it —
-	// identical whether the plan came from gRPC PlanChange, `levee plan
-	// --local`, or the re-plan inside apply.
-	p, err := plan.NewGenerator(e.inherentIrreversible...).Generate(wf, hosts)
+	// The generator judges irreversibility against the built-in vocabulary
+	// PLUS this deployment's plugin action classification
+	// (WithPluginActionPolicy: declared destructive actions, declared
+	// reversible actions, and installed module names). Passing the same
+	// classification here on every plan path is what keeps the LE082 verdict —
+	// and the plan hash that carries it — identical whether the plan came from
+	// gRPC PlanChange, `levee plan --local`, or the re-plan inside apply.
+	p, err := plan.NewGeneratorWithPluginPolicy(e.pluginActionPolicy).Generate(wf, hosts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wiring: generate plan: %w", err)
 	}

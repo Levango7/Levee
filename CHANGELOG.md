@@ -11,6 +11,21 @@
 - **改法**（只改测试，生产代码不动）：换成两条不依赖分辨率的性质——① `report.Duration >= 0`（跨度不倒流）；② `report.Duration <= 被测调用外层观察到的墙钟跨度`（探针跑不出它所在的那段时间）。第二条仍能抓住"耗时报成 `1h`"这类垃圾值（实测变异：`Duration: time.Hour` → 判红）。
 - **诚实的边界**：① 与 ② 都拦不住"Duration 未被赋值"——在"合法 0"与"未赋值"不可区分的前提下，没有时钟 seam 就测不出赋值本身。要测它得给 `HealthProber` 注入时钟，那是另一个决定（本笔把它写进注释而不是假装测到了）。
 - **变异**：`Duration: time.Hour` → ② 红（`"1h0m0s" is not less than or equal to "514.1383ms"`）；`Duration: -time.Second` → ① 红；文件按 `sha256` 逐字节还原，`go test ./internal/diagnosis -run TestProbeAllAggregation -count=50` 全绿。
+### 新增（插件动作三态分类：未声明即默认不可逆，判定进 plan hash 且三处闸门同源）
+
+- **缺口（E-3；取代 D-1b 条目里「仍未做强制档」的边界）**：D-1b 只让**显式声明** `destructive_actions` 的插件动作进不可逆词表。一个 manifest 漏写、或根本没写这张表的插件，其破坏型动作仍会静默通过 V14/LE082——而「没声明」不是「安全」的证据。
+- **三态而非两态**：manifest 新增 `reversible_actions`。每个动作落在**破坏性 / 可逆 / 未分类**之一；只有「可逆」能在不写 `allow_irreversible` 的情况下通过，未分类的动作按不可逆处理（fail-closed）。这是本笔唯一的行为变更，也是需要产品拍板的原因：既有 manifest 里没列进两张表的动作会开始要求白名单。`NewPluginModule` 对两张表做同一套子集校验（必须是握手 `actions` 的子集），并**拒绝同时出现在两张表里的动作**——自相矛盾的分类不能由代码随便选一边。
+- **单一来源**：新增 `dsl.PluginActionPolicy`（破坏性对 / 可逆对 / 已安装模块名，构造时归一化去重）。三个消费方都从它取判定，而不是各自维护词表：
+  - 编译期 `dsl.NewValidatorWithPluginPolicy`（V14/LE082）；
+  - 计划期 `plan.NewGeneratorWithPluginPolicy` + `IrreversibleChecker.RegisterPolicy`（LE082 与步骤 `irreversible` 戳记）；
+  - 对话草案闸门 `ConversationEngineConfig.PluginActionPolicy`。
+  CLI 侧 `declaredPluginActionPolicy()` 从注册表一次读出三者（`plugin.DeclaredActionClassification`），`compile` / `new` / `import` / `converse` / `serve` / `plan --local` 全部改用它。旧入口 `NewValidator(extra...)` / `NewGenerator(extra...)` / `WithInherentIrreversible` / `InherentIrreversible` 保留为「只声明破坏性」的兼容简写，语义不变。
+- **判定进 hash**：不可逆结论本来就在 `plan_hash` 的 `irreversible` / `irreversible_reason` 里；三态分类让「同一插件动作在未分类部署上不可逆、在声明可逆的部署上可逆」成为事实，因此**同一 workflow 在不同部署会得到不同 hash 是设计预期**，不是漂移——部署事实本来就该进审批绑定的产物。
+- **可观测**：`NewPluginModule` 在发现未分类动作时打一条 warn（列出具体动作），这是运维在第一次 plan 之前修正 manifest 的唯一提示；`serve` 启动日志给出 destructive / reversible / modules 三个计数。
+- **测试**：dsl（三态语义、零值不表态、归一化、破坏性压过重叠、validator 三种状态 + 未安装模块对照）、plan（三种状态戳记、未分类无白名单 → LE082、可逆免白名单、未安装模块仍可逆、**同一 policy 两实例同 hash / 分类不同则 hash 不同**、旧构造器只认破坏性）、executor（`RegisterPolicy` 三态、显式声明优先、空 policy 不生效）、plugin（`reversible_actions` 读写往返、上一版表结构自动加列、`DeclaredActionClassification` 三输出、子集/重叠拒绝、适配器未分类视图）、wiring（`WithPluginActionPolicy` 真的进 `GeneratePlan`，含无 policy 对照与旧选项兼容）、conversation（草案三态 + 旧字段兼容）。
+- **变异咬合**（三条均先红后还原，备份在 Temp）：①去掉 `dsl.PluginActionPolicy.JudgesIrreversible` 的 fail-closed 分支 → dsl/plan/wiring/conversation 的未分类断言同时红；②`RegisterPolicy` 不登记模块名 → executor/plan/wiring 的戳记与 hash 断言红；③删掉两张表的重叠拒绝 → plugin 的构造与未分类用例红。另有一条对照：三条变异下 executor 的独立 fail-closed 逻辑仍生效，证明计划期判定不是只靠 policy 那一条路径（纵深防御）。
+- **验证**：`gofmt -l` 干净；`go vet` 对受影响包 rc=0；`go test ./...` 全量 rc=0。
+- **边界**：声明粒度仍是动作级（`<plugin>.<action>`），不做参数级；既有 manifest 未分类的动作会开始要求白名单——这是 E-3 的既定代价，升级说明写在 `docs/blocked-items.md`。
 
 ### 新增（运行期通道的会话跨 run 池化：同目标的下一批 run 复用同一条已拨通的会话）
 
