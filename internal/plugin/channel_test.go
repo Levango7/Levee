@@ -58,17 +58,8 @@ func (t namedTarget) CredentialRefName() string { return t.refName }
 
 func connectFixture(t *testing.T, target channel.Target) *PluginChannel {
 	t.Helper()
-	t.Setenv(childEnvKey, "channel")
-
-	f, err := NewPluginChannelFactory(context.Background(), channelRecord("acme-rest"))
-	require.NoError(t, err)
-
-	ch, err := f.Create(target)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = ch.Close() })
-
-	require.NoError(t, ch.Connect(context.Background()))
-	return ch.(*PluginChannel)
+	f := newChannelFixtureFactory(t)
+	return channelForTest(t, f, target)
 }
 
 // Only an enabled channel-type record can become a transport.
