@@ -93,7 +93,7 @@ func (p PluginActionPolicy) IsEmpty() bool {
 // IrreversibleChecker.Check's priority order.
 //
 // A destructive declaration returns true even when the pair also appears in
-// reversible — install-time validation refuses that overlap, and if a corrupt
+// reversible — module-build validation refuses that overlap, and if a corrupt
 // record still carries it, the destructive reading is the safe one.
 func (p PluginActionPolicy) JudgesIrreversible(module, action string) bool {
 	key := module + "." + action
