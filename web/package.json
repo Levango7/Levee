@@ -22,7 +22,7 @@
     "dayjs": "^1.11.10",
     "element-plus": "^2.7.0",
     "vue": "^3.4.21",
-    "vue-router": "^4.3.0"
+    "vue-router": "^5.4.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
