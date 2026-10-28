@@ -295,8 +295,10 @@ func (c *PluginChannel) Download(ctx context.Context, remotePath string) (io.Rea
 // for a runtime plugin the session outlives the run by design (D-1c), so Close
 // ends YOUR use of it and the pool owns the lifetime — bounded by the idle TTL,
 // the max age and the pool's shutdown. The run-visible contract is unchanged:
-// after Close the channel is disconnected and refuses work, and a dead session
-// is never handed to the next run.
+// after Close the channel is disconnected and refuses work, and a session
+// marked dead is never handed to the next run (a process that exits while idle
+// is only detectable on the first reuse — the protocol has no heartbeat; that
+// request fails and the session is killed like any other failed request).
 func (c *PluginChannel) Close() error {
 	c.mu.Lock()
 	sess := c.sess
