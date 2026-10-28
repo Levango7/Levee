@@ -650,6 +650,59 @@ export const trendApi = {
 }
 
 // ---------------------------------------------------------------------------
+// Ad-hoc gate verification (REST-only endpoint; not a proto RPC)
+// ---------------------------------------------------------------------------
+
+/**
+ * One ad-hoc verification check. The check is evaluated on demand — it is the
+ * same `verify` constructor the engine's in-plan gates use, so an operator's
+ * pre-flight check and a plan's gate can never disagree about what a check
+ * *means*; this endpoint only skips the plumbing of planning a whole change to
+ * run one check.
+ */
+export interface GateVerifyRequest {
+  /** Check type. "human" is refused: the approval chain owns that flow. */
+  type: 'cmd' | 'probe' | 'slo'
+  /** Optional label; the server defaults it to "ad-hoc". */
+  name?: string
+  /** Inventory hostname. cmd checks dial it; probe/slo carry their own target. */
+  target?: string
+  /** Optional run association, for the audit trail only. */
+  run_id?: string
+  /**
+   * Gate params, exactly as inline gate declarations carry them.
+   * cmd:   { cmd, expect_exit?, expect_stdout?, timeout_seconds? }
+   * probe: { kind: "http"|"tcp"|"script", ... } (self-describing)
+   * slo:   { query, threshold, comparison?, timeout_seconds? }
+   */
+  params: Record<string, unknown>
+}
+
+/**
+ * The verdict of one ad-hoc check. Note the snake_case field names:
+ * /gates/verify is a hand-written REST endpoint (internal/grpc/rest_gate.go)
+ * whose JSON struct tags are snake_case — NOT the protojson camelCase the rest
+ * of this client translates. Reading `latencyMs` here would silently be
+ * `undefined`, which is the exact drift this file exists to prevent.
+ */
+export interface GateVerifyResult {
+  gate: string
+  type: string
+  target?: string
+  passed: boolean
+  message: string
+  details?: Record<string, unknown>
+  latency_ms: number
+  ran_at: string
+}
+
+export const gatesApi = {
+  /** Run one check now and return its verdict (no history is kept). */
+  verify: (req: GateVerifyRequest): Promise<GateVerifyResult> =>
+    post<GateVerifyResult>('/gates/verify', req),
+}
+
+// ---------------------------------------------------------------------------
 // ConversationService
 // ---------------------------------------------------------------------------
 
