@@ -32,7 +32,7 @@
 
 | 项 | 还差什么 | 量级 | 备注 |
 | --- | --- | --- | --- |
-| D-1c 运行期通道的跨 run 会话池与一插件多类型 | 会话池（现在每 target 每 run 一个子进程）+ 一插件多类型（类型名=插件名） | 中 | upload 动词已交付（PR #237，并行会话，单笔 ≤512 KiB 帧上限）；池化与多类型按真实消费方出现再排 |
+| D-1c 运行期通道的一插件多类型 | 只剩「一插件多类型」：一个插件只能提供**一种**传输类型（类型名=插件名），要多种就装多个插件 | 中 | 会话池**已交付**（本笔）：池键 (插件, host, port, type, 凭据指纹)，每插件空闲 ≤8、空闲 2 分钟回收、闲置 ≤30 分钟、租约内不回收，挂在 serve ctx 上；upload 动词已交付（PR #237，单笔 ≤512 KiB 帧上限）。多类型按真实消费方出现再排 |
 | D-2 运营层资产（demo 库/角色视频/品牌 GIF） | 需要真人录制与设计，非代码工作 | 需人手 | **面向客户签单的最大缺口，建议优先安排人手** |
 
 ## E. 卡在产品决策/需求分母（明确等触发，不焦虑不硬做）
@@ -52,6 +52,7 @@
 - plugin gate 执行面（DSL 语法 + verify 门禁 + plan hash + engine 可执行性 + wiring 注入 + serve resolver）：PR #221
 - plugin module 执行面（协议 `validate`/`execute` + `plugin.PluginModule` 适配器 + `executor.ChannelFree` + serve 注册进进程级 executor + 同名保护）：PR #230
 - plugin channel 执行面（会话子进程 + `connect`/`exec`/`collect`/`disconnect` + `plugin.PluginChannel`/工厂 + `channel.CredentialRefNamer` 的明文边界 + serve 注册进通道注册表 + 同名保护）：PR #232
+- plugin channel 跨 run 会话池（原 D-1c 的池化半：池键含凭据指纹、空闲 ≤8/插件、空闲 TTL 2 分钟、闲置会话 age 30 分钟、租约内不回收、serve ctx 收尾；`Close` 只归还租约）：本笔（PR 待编）
 - plugin 破坏性动作声明（原 D-1b：manifest `destructive_actions` → registry 持久化含旧库 `ALTER TABLE` 迁移 → 编译期 `dsl.NewValidator(extra...)` 与计划期 `plan.NewGenerator(extra...)` 消费同一份词表，`plan_hash` 不随「谁 plan」漂移；**未声明即默认不可逆的强制档仍未做**，见 E-3）：PR #234
 - 跨浏览器矩阵（原 B-1：Chrome + Firefox × ubuntu/windows，mock 网关补两个 SSE 端点，`BROWSER_CHECK_BROWSER` 选引擎）：PR #208
 - service_factory：并行会话已改良（remote=产品方向、local 委托单一构造点+drift guard），维持现状
