@@ -55,6 +55,14 @@ const FETCHING_VIEWS = [
 // explicit list: a login page has no region to fail.
 const NON_FETCHING_VIEWS = ['LoginCallbackView.vue', 'LoginView.vue', 'NotFoundView.vue']
 
+// el-alert is a deleted REGION-STATE pattern (it once rendered one tier with no
+// retry; MobileApprovalView was its last user). It stays legal for a FORM-LEVEL
+// result inside a dialog, which is not a region state at all. This is an
+// allow-list with reasons rather than a bare "not TemplatesView" so a view
+// cannot join the exception silently — and the second loop below makes each
+// entry prove it is still needed.
+const EL_ALERT_IN_DIALOG = ['TemplatesView.vue', 'MonitorView.vue']
+
 describe('region states: the three tiers are wired everywhere', () => {
   it('pins the fetching views it claims to pin', () => {
     // If this list ever fails, the guard lost coverage of a real page: add the
@@ -100,12 +108,17 @@ describe('region states: the three tiers are wired everywhere', () => {
     // comment that explains what was removed cannot fail this check.
     for (const [name, src] of viewSources) {
       expect(src, `${name} still renders the bare error paragraph`).not.toContain('<p class="error"')
-      // The el-alert banner rendered one tier with no retry; MobileApprovalView
-      // was its last user. (TemplatesView's el-alert is a form-level warning
-      // inside a dialog, not a region state, and stays.)
-      if (name !== 'TemplatesView.vue') {
-        expect(src.includes('<el-alert'), `${name} still renders an error alert`).toBe(false)
-      }
+      if (EL_ALERT_IN_DIALOG.includes(name)) continue
+      expect(src.includes('<el-alert'), `${name} still renders an error alert`).toBe(false)
+    }
+    // The exception list must not go stale: a named view that dropped its
+    // dialog-level alert has to be removed from it (otherwise the exemption
+    // quietly outlives the reason it was granted).
+    for (const name of EL_ALERT_IN_DIALOG) {
+      expect(
+        (viewSources.get(name) ?? '').includes('<el-alert'),
+        `${name} is allow-listed for a dialog-level el-alert but no longer uses one`,
+      ).toBe(true)
     }
   })
 

@@ -6,7 +6,14 @@
 // deliberately EMPTY until gate verdicts get a read route.
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
+import {
+  batchApi,
+  changesApi,
+  gatesApi,
+  type BatchSummaryDTO,
+  type GateVerifyRequest,
+  type GateVerifyResult,
+} from '@/api'
 import type { Change, LogEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
@@ -295,6 +302,69 @@ const batchTotals = computed(() => {
     current: s.current_batch_no,
   }
 })
+
+// --- Ad-hoc single-step verification (POST /gates/verify) -------------------
+//
+// The gate panel has no historical read route, but the endpoint CAN evaluate
+// one check on demand. This is that action: the operator picks a type and a
+// host from the same matrix the page already shows, runs the check, and reads
+// the verdict in place. Nothing is persisted server-side (the response carries
+// ran_at, not a history), so the result is deliberately ephemeral — it is a
+// live answer, not a row.
+
+const verifyOpen = ref(false)
+const verifyType = ref<GateVerifyRequest['type']>('cmd')
+const verifyTarget = ref('')
+const verifyCmd = ref('')
+const verifyExpectExit = ref(0)
+const verifyURL = ref('')
+const verifyQuery = ref('')
+const verifyThreshold = ref(0)
+const verifyRunning = ref(false)
+const verifyResult = ref<GateVerifyResult | null>(null)
+const verifyError = ref<unknown>(null)
+
+// Hosts come from the matrix the page already composed, so the picker cannot
+// offer a host this change does not target.
+const verifyHosts = computed(() => targetRows.value.map((r) => r.host))
+
+function openVerify(): void {
+  verifyResult.value = null
+  verifyError.value = null
+  if (!verifyTarget.value && verifyHosts.value.length > 0) {
+    verifyTarget.value = verifyHosts.value[0] || ''
+  }
+  verifyOpen.value = true
+}
+
+function verifyParams(): Record<string, unknown> {
+  switch (verifyType.value) {
+    case 'cmd':
+      return { cmd: verifyCmd.value, expect_exit: verifyExpectExit.value }
+    case 'probe':
+      return { kind: 'http', url: verifyURL.value }
+    case 'slo':
+      return { query: verifyQuery.value, threshold: verifyThreshold.value, comparison: 'lte' }
+  }
+}
+
+async function runVerify(): Promise<void> {
+  verifyRunning.value = true
+  verifyError.value = null
+  verifyResult.value = null
+  try {
+    verifyResult.value = await gatesApi.verify({
+      type: verifyType.value,
+      target: verifyTarget.value || undefined,
+      run_id: changeId.value || undefined,
+      params: verifyParams(),
+    })
+  } catch (err) {
+    verifyError.value = err
+  } finally {
+    verifyRunning.value = false
+  }
+}
 </script>
 
 <template>
@@ -412,6 +482,7 @@ const batchTotals = computed(() => {
         <section class="lv-panel">
           <div class="lv-panel__head">
             <span class="lv-panel__title">门禁状态</span>
+            <el-button size="small" @click="openVerify">单步验证…</el-button>
           </div>
           <div class="lv-panel__body">
             <div class="lv-empty">
@@ -424,6 +495,69 @@ const batchTotals = computed(() => {
               </span>
             </div>
           </div>
+
+          <!-- The one thing this panel CAN do: evaluate a single check now.
+               Kept inside the panel that explains the endpoint, and additive
+               to the empty state above (which stays put — it is the accurate
+               answer for "what did the gates decide", a different question). -->
+          <el-dialog v-model="verifyOpen" title="单步验证" width="560px" append-to-body>
+            <el-form label-width="96px" @submit.prevent>
+              <el-form-item label="检查类型">
+                <el-select v-model="verifyType" style="width: 220px">
+                  <el-option label="cmd（远端命令）" value="cmd" />
+                  <el-option label="probe（http 探针）" value="probe" />
+                  <el-option label="slo（Prometheus 指标）" value="slo" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="verifyType === 'cmd'" label="目标机">
+                <el-select
+                  v-model="verifyTarget"
+                  filterable
+                  allow-create
+                  style="width: 100%"
+                  placeholder="inventory 主机名"
+                >
+                  <el-option v-for="h in verifyHosts" :key="h" :label="h" :value="h" />
+                </el-select>
+              </el-form-item>
+              <el-form-item v-if="verifyType === 'cmd'" label="命令">
+                <el-input v-model="verifyCmd" placeholder="systemctl is-active nginx" />
+              </el-form-item>
+              <el-form-item v-if="verifyType === 'cmd'" label="期望退出码">
+                <el-input-number v-model="verifyExpectExit" :min="0" />
+              </el-form-item>
+              <el-form-item v-if="verifyType === 'probe'" label="URL">
+                <el-input v-model="verifyURL" placeholder="http://web-1:8080/health" />
+              </el-form-item>
+              <el-form-item v-if="verifyType === 'slo'" label="PromQL">
+                <el-input v-model="verifyQuery" placeholder="rate(errors[5m])" />
+              </el-form-item>
+              <el-form-item v-if="verifyType === 'slo'" label="阈值 (≤)">
+                <el-input-number v-model="verifyThreshold" :step="0.01" />
+              </el-form-item>
+            </el-form>
+
+            <el-alert
+              v-if="verifyError"
+              type="error"
+              :closable="false"
+              show-icon
+              :title="errorMessage(verifyError, '验证请求失败')"
+            />
+            <el-alert
+              v-else-if="verifyResult"
+              :type="verifyResult.passed ? 'success' : 'error'"
+              :closable="false"
+              show-icon
+              :title="verifyResult.passed ? '通过' : '未通过'"
+              :description="verifyResult.message + '（' + verifyResult.latency_ms + ' ms，' + verifyResult.gate + '）'"
+            />
+
+            <template #footer>
+              <el-button @click="verifyOpen = false">关闭</el-button>
+              <el-button type="primary" :loading="verifyRunning" @click="runVerify">立即验证</el-button>
+            </template>
+          </el-dialog>
         </section>
       </div>
 
