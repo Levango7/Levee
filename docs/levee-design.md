@@ -554,9 +554,18 @@ LEVEELang 提供原生原语，非模板字符串：
 
 ### 4.6 D6 双触发（简化）
 
-#### 4.6.1 计划触发
+#### 4.6.1 计划触发（**2026-10-28 定档：不做**）
 
-`levee schedule` 按 cron 表达式定时触发 workflow，用于常规变更窗口（如每周六 02:00 打补丁）。
+原设计：`levee schedule` 按 cron 表达式定时触发 workflow，用于常规变更窗口（如每周六 02:00 打补丁）。
+
+**定档为不做，理由两条：**
+
+1. **产品定位**（`docs/product-positioning.md` §2）：LEVEE 是**高危变更治理控制平面**，明确写着「**不是** generic workflow / DAG 调度器」。触发一个流程属于平台侧（OpsMesh 已有 schedules、K8s 有 CronJob、CI 有 schedule）；LEVEE 拥有的是「被触发的这次变更如何受治理」。
+2. **治理那一半已经在**：`window`（变更窗口，plan 期阻断）+ `calendar`（冻结期）已经实现——它们回答的是「什么时候**允许**改」，这正是治理侧的职责；而「什么时候**发起**」是别人的活。
+
+先例：`internal/scheduler`（agent 任务派发）曾因与已接入的 `internal/dispatch` 职责重叠而被**整包退役**——同一个形状的漂移不在本仓重演。
+
+> 若未来出现**真实消费方**且要求在 LEVEE 内发起定时变更，正确的形态不是 cron 调度器，而是「受治理的定时变更」：外部触发 + LEVEE 强制窗口/审批/审计。届时另立项。
 
 #### 4.6.2 webhook 触发
 

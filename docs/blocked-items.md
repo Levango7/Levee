@@ -41,6 +41,8 @@
 | --- | --- |
 | E-1 自然语言双语 zh/en | 定档“现在不做”：无真实多语言客户诉求，投入只有审美分母 |
 | E-2 `notify.webhook` HMAC 签名 / 变更记录结构化导出等按需项 | 2026-09-06 拍板：只在真实消费方出现时做 |
+| E-3 插件「未声明即默认不可逆」的强制档 | 原 D-1b 的剩余半边：现在只有插件显式声明 `destructive_actions` 才判不可逆，未声明的破坏型动作仍静默通过。强制档更保守，但会改变既有插件的可用性，需产品拍板 |
+| E-4 `levee schedule`（cron 定时触发变更） | **2026-10-28 定档：不做**。定位明言「不是调度器」（`product-positioning.md` §2）；触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），LEVEE 拥有的是**受治理的变更**；治理那一半（`window` 窗口阻断 + `calendar` 冻结）已实现。先例：`internal/scheduler` 因与已接入的 `dispatch` 职责重叠被整包退役。详见 `levee-design.md` §4.6.1。 |
 
 ## 已交付、不再登记（防混淆）
 
