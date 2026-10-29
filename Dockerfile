@@ -21,8 +21,8 @@ ARG GO_VERSION=1.26
 # Go series) instead of pinning an alpine-patch combo that only exists for
 # whichever alpine the Go image happened to track when it was built
 # ("1.25-alpine3.20" never existed and broke the trivy image scan).
-ARG ALPINE_VERSION=3.22
-ARG NODE_VERSION=20-alpine
+ARG ALPINE_VERSION=3.24
+ARG NODE_VERSION=24-alpine
 
 # ---------------------------------------------------------------------------
 # Stage 1: node — build frontend assets
