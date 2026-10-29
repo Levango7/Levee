@@ -68,15 +68,10 @@ func NewPluginModule(ctx context.Context, rec *RegistryRecord) (*PluginModule, e
 	if err != nil {
 		return nil, err
 	}
-	destructive, err := declaredDestructiveActions(rec.Name, rec.DestructiveActions, actions)
+	destructive, reversible, unclassified, err := classifyActions(rec.Name, actions, rec.DestructiveActions, rec.ReversibleActions)
 	if err != nil {
 		return nil, err
 	}
-	reversible, err := declaredReversibleActions(rec.Name, rec.ReversibleActions, actions, destructive)
-	if err != nil {
-		return nil, err
-	}
-	unclassified := unclassifiedActions(actions, destructive, reversible)
 	if len(unclassified) > 0 {
 		// Fail-closed, not fail-stop: a manifest that predates the
 		// classification (or simply missed an action) is still installable and
@@ -97,6 +92,67 @@ func NewPluginModule(ctx context.Context, rec *RegistryRecord) (*PluginModule, e
 		reversible:   reversible,
 		unclassified: unclassified,
 	}, nil
+}
+
+// ModuleSurface is what one meta handshake plus the installed manifest say
+// about a module plugin's actions. It is the same computation
+// NewPluginModule runs before registering the plugin, exposed so an
+// operator-facing command can report the classification without building (or
+// registering) a module.
+type ModuleSurface struct {
+	// Actions is the verb list the plugin declared in its meta handshake.
+	Actions []string
+	// Idempotent is the handshake's idempotency claim (absent means false).
+	Idempotent bool
+	// Destructive and Reversible are the manifest declarations cross-checked
+	// against Actions; both are sorted and de-duplicated.
+	Destructive []string
+	Reversible  []string
+	// Unclassified is Actions minus both declarations. Those are the verbs the
+	// plan-time gate will judge irreversible.
+	Unclassified []string
+}
+
+// ClassifyModuleSurface reads a module plugin's action classification from one
+// meta response and the installed record. It refuses, rather than guessing,
+// the two shapes that would corrupt the governance vocabulary: an action named
+// by the manifest that the handshake does not offer (a phantom pair that can
+// never run), and an action named in BOTH lists (a contradiction — choosing a
+// side would make the verdict depend on which list the code consulted first).
+func ClassifyModuleSurface(rec *RegistryRecord, meta PluginResponse) (ModuleSurface, error) {
+	if rec == nil {
+		return ModuleSurface{}, fmt.Errorf("plugin: classify: nil registry record")
+	}
+	actions, idempotent, err := declaredModuleSurface(rec.Name, meta)
+	if err != nil {
+		return ModuleSurface{}, err
+	}
+	destructive, reversible, unclassified, err := classifyActions(rec.Name, actions, rec.DestructiveActions, rec.ReversibleActions)
+	if err != nil {
+		return ModuleSurface{}, err
+	}
+	return ModuleSurface{
+		Actions:      actions,
+		Idempotent:   idempotent,
+		Destructive:  destructive,
+		Reversible:   reversible,
+		Unclassified: unclassified,
+	}, nil
+}
+
+// classifyActions splits one plugin's handshake verbs into the three
+// governance states. It is the single implementation behind both NewPluginModule
+// (which refuses a module it cannot classify) and ClassifyModuleSurface.
+func classifyActions(name string, actions, declaredDestructive, declaredReversible []string) (destructive, reversible, unclassified []string, err error) {
+	destructive, err = declaredDestructiveActions(name, declaredDestructive, actions)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	reversible, err = declaredReversibleActions(name, declaredReversible, actions, destructive)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return destructive, reversible, unclassifiedActions(actions, destructive, reversible), nil
 }
 
 // declaredDestructiveActions cross-checks the manifest's destructive_actions

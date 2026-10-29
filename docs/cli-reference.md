@@ -1886,6 +1886,18 @@ levee plugin info <name>
 |------|------|------|
 | `<name>` | 是 | 插件名称 |
 
+**模块插件的动作声明**
+
+`type: module` 的记录额外携带 manifest 的两张动作表（`--json` 下为
+`destructive_actions` / `reversible_actions`，人类可读输出为同名两行）；其余
+三种类型（gate/channel/notifier）没有可被步骤引用的动作，因此**不输出**这两项，
+以免"空白"被误读成"声明了没有破坏性动作"。这些字段只来自注册表：`info` **不执行**
+插件二进制，所以在插件文件已被移除的机器上照样能读到治理声明。
+
+两行都没点名的动作，计划期按**不可逆**处理（fail-closed）；`info` 会紧接着说明
+这一点，并指向 `plugin test` 去看具体是哪几个动词——manifest 单独回答不了，
+需要握手的动作清单。
+
 **示例**
 
 ```命令示例：查看插件详情
@@ -1898,6 +1910,13 @@ levee plugin info http-probe
 JSON 行协议发送 `meta`（身份）与 `close` 请求、报告插件应答与往返耗时。这
 是最小的**真执行**——证明注册表路径可解析、二进制可运行、插件按协议应答；
 超时 10 秒，未启用/未应答/应答非协议均显式报错。
+
+`type: module` 的插件额外做一次**分类核对**：把握手声明的动词清单与 manifest
+的两张动作表对齐，输出三行——`destructive` / `reversible` / `unclassified (judged
+irreversible at plan time)`（`--json` 下在 `data.classification`）。未分类那一行
+即使为空也打印 `(none)`：运维要的正是"有没有"这一句。核对不过会**直接报错**，
+与 `serve` 装配该模块时的拒绝一致——幻影动作（manifest 点了握手不提供的动词）
+与自相矛盾（同一动词进两张表）都不会被"测试通过"掩盖。
 
 ```text
 levee plugin test <name>
