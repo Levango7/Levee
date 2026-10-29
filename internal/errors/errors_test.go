@@ -196,9 +196,12 @@ func TestErrorCodes_Distinct(t *testing.T) {
 	// LE061, LE071, LE081, LE083, LE091) and added LE102, which production
 	// emits — see TestEveryCatalogueCodeHasAProducer for the guard that keeps
 	// this list honest in both directions. 2026-10-13 added LE103 (the undo
-	// idempotency advisory, produced by dsl.Advise).
+	// idempotency advisory, produced by dsl.Advise). 2026-10-28 WITHDREW LE004:
+	// input resolution shipped, so "input declared/referenced but unresolved" no
+	// longer describes a real condition — the two failure cases are plan-time
+	// errors under dsl.ErrInput*, not a compile code.
 	codes := []string{
-		LE001, LE002, LE003, LE004,
+		LE001, LE002, LE003,
 		LE020, LE021,
 		LE031, LE032, LE033, LE034,
 		LE044,
@@ -212,7 +215,7 @@ func TestErrorCodes_Distinct(t *testing.T) {
 		assert.False(t, seen[c], "duplicate error code: %s", c)
 		seen[c] = true
 	}
-	assert.Equal(t, 26, len(codes), "expected 26 error codes")
+	assert.Equal(t, 25, len(codes), "expected 25 error codes")
 }
 
 func TestLookup_Registered(t *testing.T) {
@@ -246,8 +249,10 @@ func TestAllCodes_CountAndImmutable(t *testing.T) {
 	// → 25 (2026-10-12: eleven codes with no emitter withdrawn on the LE102
 	// precedent, and LE102 re-registered because internal/dsl/validator.go had
 	// started emitting it — the two directions had drifted apart independently,
-	// which is what TestEveryCatalogueCodeHasAProducer now pins).
-	assert.Equal(t, 26, len(all))
+	// which is what TestEveryCatalogueCodeHasAProducer now pins) → 25 again
+	// (2026-10-28: LE004 withdrawn with the input-resolution feature it described
+	// as missing).
+	assert.Equal(t, 25, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}
