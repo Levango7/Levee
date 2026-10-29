@@ -278,6 +278,40 @@ configurable triggers, approver requirements, and timeout.
 发布门里而不是 `ci.yml` 里是刻意的——它只在发布时触发，不会把历史 tag 的 CI 重跑染红（`v1.22.0` 的
 tag 指向合并提交 `5139395f`，那是本条生效前的事实）。
 
+### 5.5 把 rebase-only 从纪律升级为机制
+
+**规则陈述**：master 只接受单父落地。这条本身不新（就是 §5.4），本条新增的是**执行机制**。
+
+**为什么需要机制**：2026-10-29 同日两笔违规——#244（`742b7c7`）与 #246（`de620bd9`）都以双父合并提交落地。
+两笔都是合并者在网页/CLI 上选错合并方式，不是规则有歧义。`landing shape` 是**事后**判决（HEAD-based，
+见上节"守卫现状"）：它判红时提交已在 master 上、不可改写，master 只能等下一笔单父落地自愈。
+纪律拦不住手滑，所以把同一规则上移到平台层，让违规**在发生前就不可执行**。
+
+**三级机制**（互相独立，可单独部署，逐级加固）：
+
+1. **禁用 merge-commit 合并方式**（Settings → General → Pull Requests）：只留 "Allow rebase merging"，
+   取消 "Allow merge commits" 与 "Allow squash merging"（squash 不取的理由见 §5.4 换法理由）。
+   违规从"选错按钮"变成"没有这个按钮"。一次设置，无需改代码、无需 CI；随时可改回。
+2. **branch protection 要求 linear history**（master 保护规则里勾选 "Require linear history"）：
+   即使合并方式设置被改回，双父提交仍进不了受保护分支，与第 1 条互为冗余。
+   现状衔接：master 已有保护、唯一 required context 仍是 `check (all jobs passed)`（§5.4 第 3 条），
+   加 linear-history 不动 required context、不动执法对象。
+3. **保留 `landing shape` 作为第三层**（defense in depth）：HEAD-based 的单父判决、master 红可自愈，
+   即使上面两层被绕过或回滚，它仍能在事后判红并指认。本条不是替代它，是给它兜底。
+
+**不变的边界**：
+
+- 合与推的决定权仍属于仓库的人（`AGENTS.md` 第 3 条）；本机制只约束"落地形状"，不改变谁有权合并。
+  第 1、2 条都是管理员动作，Agent 无权也**不应**代为执行。
+- 规则本身未变（仍是 rebase-only），所以 §5.4 正文、`ci.yml` 的 `landing shape` 步、`release.yml` 的
+  ci-gate **都无需改动**。`landing shape` 错误文案里"若规则改了，§5.4 与本步要一起改"指的是规则**若要
+  改变**时的一致性要求，本机制不触发那条——它加固规则，不改规则。
+- master 已有的合并提交（含 `742b7c7`、`de620bd9`、以及 §5.4 开头列的那批）是既成事实、不改写；
+  机制只防未来。
+
+**落地后的核验**：设置生效后确认网页合并按钮只剩 Rebase；每笔落地后仍用 §5.4 已记的机器核——
+`git rev-list --parents -1 origin/master | awk '{print NF-1}'` 应为 `1`。
+
 ## 第6章 测试要求
 
 ### 6.1 单元测试
