@@ -705,6 +705,141 @@ console.log('\n[4b] the cluster page renders takeover settlements')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[4d] the gate panel: one ad-hoc check, three outcomes kept apart')
+{
+  const page = await newPage(browser)
+  await open(page, '/monitor/run-1000')
+  await waitForSettled(page, 'gate panel')
+
+  // The trigger is the panel head's 单步验证… button and el-dialog teleports
+  // to <body> (append-to-body), so every dialog selector below addresses the
+  // document, not the panel. [@ELEMENT_PLUS: el-input spreads $attrs onto the
+  // native input (inheritAttrs:false), so the 命令 field is found by its
+  // placeholder, which lands on the <input> itself.]
+  const openDialog = async () => {
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button')]
+        .find((b) => (b.textContent || '').trim() === '单步验证…')
+      if (!btn) throw new Error('the 单步验证… trigger is not on the page')
+      btn.click()
+    })
+    await page.waitForFunction(
+      () => {
+        const t = document.querySelector('.el-dialog__title')
+        return !!t && t.textContent.trim() === '单步验证'
+      },
+      { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+    ).catch(() => null)
+  }
+  const closeDialog = async () => {
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.el-dialog__footer button')]
+        .find((b) => (b.textContent || '').trim() === '关闭')
+      if (btn) btn.click()
+    })
+    // el-dialog hides its overlay rather than unmounting it (destroyOnClose is
+    // off), so "gone" means the overlay is display:none, not "no .el-dialog".
+    await page.waitForFunction(
+      () => {
+        const o = document.querySelector('.el-overlay')
+        return !o || getComputedStyle(o).display === 'none'
+      },
+      { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+    ).catch(() => null)
+  }
+  const fillCmd = async (text) => {
+    await page.waitForFunction(
+      () => !!document.querySelector('input[placeholder="systemctl is-active nginx"]'),
+      { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+    ).catch(() => null)
+    await page.evaluate((t) => {
+      const inp = document.querySelector('input[placeholder="systemctl is-active nginx"]')
+      if (!inp) throw new Error('the 命令 field did not render (is the dialog on cmd?)')
+      inp.value = t
+      inp.dispatchEvent(new Event('input', { bubbles: true }))
+    }, text)
+  }
+  const runCheck = async () => {
+    await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.el-dialog__footer button')]
+        .find((b) => (b.textContent || '').trim() === '立即验证')
+      if (!btn) throw new Error('the 立即验证 button is not in the dialog footer')
+      btn.click()
+    })
+  }
+  const alertState = () =>
+    page.evaluate(() => {
+      const a = document.querySelector('.el-dialog__body .el-alert')
+      if (!a) return { kind: '', title: '', desc: '' }
+      return {
+        kind: a.classList.contains('el-alert--success')
+          ? 'success'
+          : a.classList.contains('el-alert--error')
+            ? 'error'
+            : 'other',
+        title: (a.querySelector('.el-alert__title')?.textContent || '').trim(),
+        desc: (a.querySelector('.el-alert__description')?.textContent || '').trim(),
+      }
+    })
+  const awaitTitle = (want) =>
+    page.waitForFunction(
+      (w) => {
+        const a = document.querySelector('.el-dialog__body .el-alert')
+        if (!a) return false
+        return (a.querySelector('.el-alert__title')?.textContent || '').trim() === w
+      },
+      { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+      want,
+    ).catch(() => null)
+
+  // 1) a check that ran and passed: a success alert titled 通过, whose
+  //    description carries the snake_case fields actually read (latency_ms
+  //    and the gate name) — the DOM-level proof of the wire contract.
+  await openDialog()
+  await fillCmd('ok:systemctl is-active nginx')
+  await runCheck()
+  await awaitTitle('通过')
+  let a = await alertState()
+  check('a passed check renders 通过 with its latency and gate',
+    a.kind === 'success' && a.title === '通过' && /\d+\s*ms/.test(a.desc) && a.desc.includes('ad-hoc'),
+    JSON.stringify(a))
+
+  // 2) a check that ran and FAILED: still a 200 — a verdict, not a rejection.
+  //    Conflating the two would claim the engine judged a check it never ran.
+  // Reopening between runs gives each request a dialog with no prior verdict.
+  await closeDialog()
+  await openDialog()
+  await fillCmd('fail:systemctl status nx')
+  await runCheck()
+  await awaitTitle('未通过')
+  a = await alertState()
+  check('a failed check renders 未通过 (a verdict, not a rejection)',
+    a.kind === 'error' && a.title === '未通过' && /\d+\s*ms/.test(a.desc),
+    JSON.stringify(a))
+
+  // 3) a request the system cannot honestly execute: 400, rendered as a
+  //    request error — never as a gate verdict. The mock's refusal text
+  //    starting with "gate verify:" is the marker the assertion keys on.
+  await closeDialog()
+  await openDialog()
+  await fillCmd('reject:true')
+  await runCheck()
+  await page.waitForFunction(
+    () => !!document.querySelector('.el-dialog__body .el-alert--error'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  a = await alertState()
+  check('a refused request renders an error, not 未通过',
+    a.kind === 'error' && a.title.startsWith('gate verify:') && a.title !== '未通过',
+    JSON.stringify(a))
+  await closeDialog()
+
+  check('no page errors during gate verify', page._errors.length === 0, JSON.stringify(page._errors))
+  if (SHOTS) await page.screenshot({ path: `${SHOT_DIR}/monitor_gate_verify.png` })
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[5] the keyboard path moves a visible cursor and opens the row')
 {
   const page = await newPage(browser)

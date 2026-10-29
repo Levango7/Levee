@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（`#244` 的单步验证补齐行为覆盖：mock 网关三态 + browser-check 驱动弹窗）
+
+- **缺口**：`#244`（门禁面板「单步验证」弹窗，接 `POST /gates/verify`）合并时**没有**碰 `web/scripts/mock-gateway.mjs` 与 `web/scripts/browser-check.mjs`，所以那个新交互在 mock 模式下调不通（端点 404），也没有任何行为级覆盖。它最值得钉的语义——**200 + `passed:false` 是判决，400 是请求被拒绝，两者不能混为一谈**（混了等于声称引擎评判了一个它从未执行的检查）——只有跑在真浏览器里才算被验证过。
+- **落地**（零产品源码改动，只加测试基建）：
+  - `mock-gateway.mjs` 新增 `handleGateVerify`，镜像真实端点的**诚实三态**而非恒绿：未知类型 / cmd 无目标 / 标记 `reject:` → 400；标记 `fail:` → 200 `passed:false`（真判决）；其余 → 200 `passed:true`。cmd 走命令文本标记（`ok:`/`fail:`/`reject:`），因为 cmd 是弹窗的**默认类型**——不碰类型选择器、直接落在操作员真的会看到的那条路径上；probe 仍按 URL 标记走。**一个永远通过的 mock 会让「判决 vs 拒绝」的区分静默退化**。
+  - `browser-check.mjs` 新增 `[4d]`：打开 `/monitor/run-1000` → 唤出弹窗 → 填命令 → 立即验证，把**三种结果各驱动一遍**：通过（success alert + 描述里带 `ms` 与 gate 名 = snake_case 字段确实被读到了）、未通过（error alert 但标题恰为「未通过」= 判决）、拒绝（error alert 标题以 mock 的 `gate verify:` 拒绝文案开头且**不是**「未通过」）。每次运行之间关弹窗重开，让每条请求都从无旧判决的状态出发。
+- **两个本机踩到并已落注释的坑**：① `el-input` 是 `inheritAttrs:false`，`$attrs`（含 `placeholder`、以及任何 `data-testid`）被铺到**内部原生 `<input>`** 而非包裹 div（element-plus 2.14.7 `input.vue` 源码核实），所以按 `placeholder` 选字段是对的、写 `[data-testid=x] 内层控件` 永远找不到；② `el-dialog` 关闭时是**隐藏而非卸载**（`destroyOnClose` 默认关），“弹窗已关”必须判 `.el-overlay` 的 `display:none`，不能判 `.el-dialog` 是否存在。
+- **验证**：mock 端点 curl 六条路径（200 通过 / 200 未通过 / 400 拒绝 / probe fail / 未知类型 / cmd 无目标）全部符合契约；本机 Chrome 用隔离端口（5173→5273、4599→4699，避让他人 dev server）实跑全套 browser-check **ALL PASS**（新增 4 条断言、回归无破坏；含 `[4d]` 三态）。两个引擎的覆盖由 CI 四条腿复核。
+- **边界**：mock 把真实端点「引擎未挂载时的 404」塌缩成 400——被测属性是「拒绝 ≠ 判决」，不是拒绝用哪个状态码到达。本笔不触碰 `#244` 的任何产品源码与既有 spec；`internal/web/dist` 无需重建（无产品改动）。
+
 ### 修复（`internal/diagnosis` 的耗时断言不再判时钟分辨率——windows 腿因此假红过一次）
 
 - **现象**：`PR #236`（发布 tag 单父断言）的 `test (windows-latest)` 红在 `TestProbeAllAggregation`，现场是 `health_probe_test.go:858` 的 `assert.Positive(t, report.Duration)` 报 `"0s" is not positive`；同一个探针在日志里有大量 `duration_ms=0` 的子用例。这是本窗口 52 次 windows 腿里第一次出现，与那笔改动（只动 `scripts/` 与两个 `.md`）无关。
