@@ -37,6 +37,18 @@
 - **验证**：`gofmt -l` 干净；`go vet` 对受影响包 rc=0；`go test ./...` 全量 rc=0。
 - **边界**：声明粒度仍是动作级（`<plugin>.<action>`），不做参数级；既有 manifest 未分类的动作会开始要求白名单——这是 E-3 的既定代价，升级说明写在 `docs/blocked-items.md`。
 
+### 新增（插件动作分类透出到 CLI：`plugin info` 读声明、`plugin test` 点名未分类动词）
+
+- **缺口（E-3 的运维半边）**：分类落进注册表与 `plan_hash` 之后，运维侧唯一的提示是 `serve` 启动时的一条 warn。`levee plugin info` 打印的是记录字段，`plugin list` 亦然——也就是说「我这个插件哪些动词会被当成不可逆」在第一次被 LE082 拒掉之前**没有任何命令能回答**。
+- **`plugin info` / `plugin list`：只读注册表，不执行插件**。`type: module` 的记录额外带 `destructive_actions` / `reversible_actions`（`--json` 是同名两字段，人类可读输出是同名两行），其余三类型**不输出**这两项：gate/channel/notifier 没有可被步骤引用的动词，打两行空值会把「不适用」渲染成「声明了没有破坏性动作」。这一条有反向用例钉住（`TestPluginInfoOmitsClassificationForNonModule`、`TestPluginRecordToMapModuleOnly`）。
+- **`plugin test`：把握手动词与 manifest 两张表对齐**，输出三行 `destructive` / `reversible` / `unclassified (judged irreversible at plan time)`（`--json` 落在 `data.classification`）。未分类那一行**即使为空也打印 `(none)`**——「没有」就是要的答案，省略等于把问题留回给第一次失败的 plan。核对不过**直接报错**，与 `serve` 装配该模块时的拒绝一致：幻影动作（manifest 点了握手不提供的动词）与自相矛盾（同一动词进两张表）都不许被「测试通过」掩盖。
+- **单一实现**：新增 `plugin.ClassifyModuleSurface(rec, meta)` + 包内 `classifyActions`，`NewPluginModule` 改用它——CLI 看到的分箱与启动期算的是同一份，不可能分叉；`TestClassifyModuleSurfaceMatchesNewPluginModule` 用真子进程握手把两侧逐字段对齐（actions / destructive / reversible / unclassified）。
+- **测试**：internal/plugin 7 例（三态、全分类、幻影动作两路、重叠、meta 不可用三路、nil 记录、与 `NewPluginModule` 等价）；cmd/levee 8 例（install→info JSON/human 走真注册表、非 module 不输出、list JSON 携带、渲染两态、以及一条「读声明不需要执行插件」的性质用例）。
+- **变异咬合**（四条均先红后按 sha256 逐字节还原，备份在 Temp）：①去掉 `pluginRecordToMap` 的类型门槛 → 两条「非 module 不输出」断言红；②删掉 fail-closed 说明两行 → info 人类输出用例红；③`unclassified` 改为空时不打印 → 两条渲染用例红；④`classifyActions` 把重叠校验旁路 → 重叠拒绝与 `NewPluginModule` 用例红。②③最初写成含转义的补丁导致编译错（「编不过」不算断言生效），改用行替换后重做并取得真红。
+- **未覆盖的诚实边界**：`plugin test` 里「调用分类器」这一小段装配没有端到端用例——cmd 包内无法起会讲 JSON 行协议的假二进制（`internal/plugin` 的子进程人格不跨包可见）；分类逻辑与渲染分别在其 owning 包内被覆盖，调用点是三行直筒代码。
+- **文档**：`docs/cli-reference.md` 16.6 / 16.7 两节改写，写明只读语义、非 module 不输出、未分类即不可逆的默认，以及 `plugin test` 会因分类不过而报错。
+- **验证**：`gofmt -l` 干净；`go vet ./cmd/... ./internal/...` rc=0；`go test ./...` 全量 rc=0（68 个包，基线 `de620bd` 复跑）。
+
 ### 新增（运行期通道的会话跨 run 池化：同目标的下一批 run 复用同一条已拨通的会话）
 
 - **缺口（D-1c 的池化半）**：运行期通道每个 target 每次 run 都起一个子进程、`Close` 一律杀掉——`channelFor` 的通道生命周期就是 run 的生命周期。对内置 `ssh` 这只是重连一次，对通道插件却是**重新付最贵的那一步**：NETCONF hello、堡垒机跳转、厂商握手，会话状态全在那条已建立的连接里。大批量目标还意味着等量子进程被反复创建/销毁。

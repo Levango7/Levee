@@ -10,6 +10,7 @@ package plugin
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -174,4 +175,126 @@ func TestPluginModuleUnclassifiedActions(t *testing.T) {
 	_, err = NewPluginModule(context.Background(), rec)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot be both")
+}
+
+// metaResponse builds the meta answer a module plugin would return, so the
+// classifier can be tested without spawning a binary.
+func metaResponse(actions ...string) PluginResponse {
+	if actions == nil {
+		actions = []string{}
+	}
+	return PluginResponse{OK: true, Result: &ProbeResult{Details: map[string]any{
+		"actions":    actions,
+		"idempotent": true,
+	}}}
+}
+
+// moduleRec builds the enabled module record the classifier consumes.
+func moduleRec(destructive, reversible []string) *RegistryRecord {
+	return &RegistryRecord{
+		Name:               "cloud-apply",
+		Type:               TypeModule,
+		State:              StateEnabled,
+		DestructiveActions: destructive,
+		ReversibleActions:  reversible,
+	}
+}
+
+// TestClassifyModuleSurfaceThreeStates pins the exported classifier the CLI
+// uses: the same three buckets NewPluginModule computes at boot, from one
+// handshake answer plus the installed manifest.
+func TestClassifyModuleSurfaceThreeStates(t *testing.T) {
+	got, err := ClassifyModuleSurface(
+		moduleRec([]string{"destroy"}, []string{"apply"}),
+		metaResponse("apply", "destroy", "status"),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"apply", "destroy", "status"}, got.Actions)
+	assert.True(t, got.Idempotent)
+	assert.Equal(t, []string{"destroy"}, got.Destructive)
+	assert.Equal(t, []string{"apply"}, got.Reversible)
+	assert.Equal(t, []string{"status"}, got.Unclassified,
+		"the verb in neither list is the one the plan-time gate will refuse")
+}
+
+// TestClassifyModuleSurfaceFullyClassified is the clean-manifest case: an empty
+// Unclassified must be a real answer, not a missing computation.
+func TestClassifyModuleSurfaceFullyClassified(t *testing.T) {
+	got, err := ClassifyModuleSurface(
+		moduleRec([]string{"destroy"}, []string{"apply"}),
+		metaResponse("apply", "destroy"),
+	)
+	require.NoError(t, err)
+	assert.Empty(t, got.Unclassified)
+}
+
+// TestClassifyModuleSurfaceRefusesPhantomAction pins the shared refusal: an
+// action named by the manifest but absent from the handshake cannot run, so it
+// must not enter the vocabulary. `plugin test` reports the same refusal serve
+// would hit at boot.
+func TestClassifyModuleSurfaceRefusesPhantomAction(t *testing.T) {
+	_, err := ClassifyModuleSurface(moduleRec([]string{"nuke"}, nil), metaResponse("apply"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nuke")
+
+	_, err = ClassifyModuleSurface(moduleRec(nil, []string{"nuke"}), metaResponse("apply"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nuke")
+}
+
+// TestClassifyModuleSurfaceRefusesOverlap pins the contradiction refusal.
+func TestClassifyModuleSurfaceRefusesOverlap(t *testing.T) {
+	_, err := ClassifyModuleSurface(moduleRec([]string{"apply"}, []string{"apply"}), metaResponse("apply"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be both")
+}
+
+// TestClassifyModuleSurfaceRefusesUnusableMeta pins that a handshake which does
+// not answer the surface question is an error, not an empty surface: reporting
+// "no actions" for a plugin that refused meta would understate the vocabulary.
+func TestClassifyModuleSurfaceRefusesUnusableMeta(t *testing.T) {
+	_, err := ClassifyModuleSurface(moduleRec(nil, nil), PluginResponse{OK: false, Error: "plugin crashed"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "meta refused")
+
+	_, err = ClassifyModuleSurface(moduleRec(nil, nil), PluginResponse{OK: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no result block")
+
+	_, err = ClassifyModuleSurface(moduleRec(nil, nil), PluginResponse{OK: true, Result: &ProbeResult{Details: map[string]any{}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "declares no actions")
+}
+
+// TestClassifyModuleSurfaceNilRecord pins the guard: the classifier is called
+// from a command path, where a missing record must fail loudly.
+func TestClassifyModuleSurfaceNilRecord(t *testing.T) {
+	_, err := ClassifyModuleSurface(nil, metaResponse("apply"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil registry record")
+}
+
+// TestClassifyModuleSurfaceMatchesNewPluginModule is the single-source proof:
+// the CLI's classifier and the boot path must not be able to disagree, so the
+// same inputs must produce the same buckets. The child personality under test
+// offers apply + destroy.
+func TestClassifyModuleSurfaceMatchesNewPluginModule(t *testing.T) {
+	t.Setenv(childEnvKey, "module")
+
+	rec := moduleRec([]string{"destroy"}, nil)
+	rec.BinaryPath = os.Args[0]
+
+	m, err := NewPluginModule(context.Background(), rec)
+	require.NoError(t, err)
+
+	responses, err := Probe(context.Background(), rec.BinaryPath, []HostRequest{{Action: "meta"}})
+	require.NoError(t, err)
+	require.Len(t, responses, 1)
+
+	viaCLI, err := ClassifyModuleSurface(rec, responses[0])
+	require.NoError(t, err)
+	assert.Equal(t, m.Actions(), viaCLI.Actions)
+	assert.Equal(t, m.DestructiveActions(), viaCLI.Destructive)
+	assert.Equal(t, m.ReversibleActions(), viaCLI.Reversible)
+	assert.Equal(t, m.UnclassifiedActions(), viaCLI.Unclassified)
 }

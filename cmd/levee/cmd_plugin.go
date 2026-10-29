@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -128,9 +129,12 @@ func newPluginInfoCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "info <name>",
 		Short: "Show plugin details",
-		Long:  "Display the full registry record for a plugin.",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runPluginInfo,
+		Long: "Display the full registry record for a plugin. For a module " +
+			"plugin this includes the manifest's destructive_actions and " +
+			"reversible_actions declarations read from the registry — no " +
+			"plugin binary is executed.",
+		Args: cobra.ExactArgs(1),
+		RunE: runPluginInfo,
 	}
 }
 
@@ -141,7 +145,11 @@ func newPluginTestCmd() *cobra.Command {
 		Short: "Run one live handshake against an enabled plugin",
 		Long: "Execute the plugin's binary once and speak the JSON-line " +
 			"stdio protocol to it: send the meta (identity) request and the " +
-			"close request, report what came back. This is the smallest " +
+			"close request, report what came back. For a module plugin the " +
+			"answer is also cross-checked against the manifest's action " +
+			"declarations, so the output names the verbs the manifest left " +
+			"unclassified — the ones the plan-time gate will judge " +
+			"irreversible. This is the smallest " +
 			"TRUE execution of the install->enable->execute chain — it " +
 			"proves the registry path resolves, the binary runs and the " +
 			"plugin answers. It is still NOT engine consumption: see the " +
@@ -420,6 +428,14 @@ func pluginRecordToMap(rec *plugin.RegistryRecord) map[string]any {
 	if rec.ConfigYAML != "" {
 		m["config_yaml"] = rec.ConfigYAML
 	}
+	// Only a module plugin has actions a workflow step can name, so the
+	// classification is reported for that type alone — a gate/channel/notifier
+	// record showing empty action lists would read as "declared nothing
+	// destructive" when the truth is "has no actions at all".
+	if rec.Type == plugin.TypeModule {
+		m["destructive_actions"] = rec.DestructiveActions
+		m["reversible_actions"] = rec.ReversibleActions
+	}
 	if rec.Signature != "" {
 		m["signature"] = rec.Signature
 	}
@@ -483,6 +499,36 @@ func printPluginInfoHuman(w io.Writer, output map[string]any) {
 		fmt.Fprintf(tw, "Error:\t%v\n", v)
 	}
 	_ = tw.Flush()
+
+	// The classification lines follow the table instead of sitting inside it:
+	// an empty declaration is the common case, and "declared nothing" only
+	// means something for a module plugin (the only type whose actions a
+	// workflow step can name).
+	if typ, _ := output["type"].(string); typ == string(plugin.TypeModule) {
+		printModuleClassificationHint(w, output)
+	}
+}
+
+// printModuleClassificationHint reports what the registry says about this
+// module's actions, and — the part a manifest alone cannot answer — which
+// verbs are still unclassified. Unclassified means the plan-time gate judges
+// them irreversible, so an operator who expects a read-only verb to pass
+// without allow_irreversible has to see this before the first refused plan.
+func printModuleClassificationHint(w io.Writer, output map[string]any) {
+	fmt.Fprintf(w, "Destructive actions:\t%s\n", joinActions(output["destructive_actions"], "(none declared)"))
+	fmt.Fprintf(w, "Reversible actions:\t%s\n", joinActions(output["reversible_actions"], "(none declared)"))
+	fmt.Fprintln(w, "Actions in neither list are judged irreversible at plan time.")
+	fmt.Fprintln(w, "Run `levee plugin test <name>` to list them against the plugin's declared verbs.")
+}
+
+// joinActions renders a declaration list for a human reader, substituting a
+// placeholder when the manifest declared nothing.
+func joinActions(v any, empty string) string {
+	items, ok := v.([]string)
+	if !ok || len(items) == 0 {
+		return empty
+	}
+	return strings.Join(items, ", ")
 }
 
 // runPluginTest executes `levee plugin test <name>`: one live handshake
@@ -535,6 +581,27 @@ func runPluginTest(cmd *cobra.Command, args []string) error {
 		"elapsed":  elapsed.String(),
 	}
 
+	// A module plugin's handshake verb list is the only place the full action
+	// surface exists, so this is where an operator can see which verbs the
+	// manifest left unclassified — i.e. which ones the plan-time gate will
+	// judge irreversible. A refusal here is the same refusal `serve` makes when
+	// it builds the module, so `plugin test` cannot report a plugin as usable
+	// that the engine will not load.
+	var surface plugin.ModuleSurface
+	if rec.Type == plugin.TypeModule {
+		s, err := plugin.ClassifyModuleSurface(rec, responses[0])
+		if err != nil {
+			return fmt.Errorf("plugin test: %w", err)
+		}
+		surface = s
+		output["classification"] = map[string]any{
+			"actions":      surface.Actions,
+			"destructive":  surface.Destructive,
+			"reversible":   surface.Reversible,
+			"unclassified": surface.Unclassified,
+		}
+	}
+
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  output,
@@ -547,5 +614,17 @@ func runPluginTest(cmd *cobra.Command, args []string) error {
 	for k, v := range identity {
 		fmt.Fprintf(os.Stdout, "  %s: %v\n", k, v)
 	}
+	if rec.Type == plugin.TypeModule {
+		printModuleSurface(os.Stdout, surface)
+	}
 	return nil
+}
+
+// printModuleSurface renders the classification block of `plugin test`. The
+// unclassified line is printed even when empty: "none" is the answer the
+// operator is looking for, and omitting it would leave "did you check?" open.
+func printModuleSurface(w io.Writer, s plugin.ModuleSurface) {
+	fmt.Fprintf(w, "  destructive: %s\n", joinActions(s.Destructive, "(none)"))
+	fmt.Fprintf(w, "  reversible: %s\n", joinActions(s.Reversible, "(none)"))
+	fmt.Fprintf(w, "  unclassified (judged irreversible at plan time): %s\n", joinActions(s.Unclassified, "(none)"))
 }
