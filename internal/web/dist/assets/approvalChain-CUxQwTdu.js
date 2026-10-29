@@ -1,0 +1,1 @@
+function e(e){return e.map(e=>{let t=e.decisions.length,n=new Set(e.decisions.map(e=>e.approver));return{...e,decided:t,pending:e.approvers.filter(e=>!n.has(e))}})}export{e as t};

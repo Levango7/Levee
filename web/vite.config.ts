@@ -25,7 +25,7 @@ export default defineConfig(({ mode }) => {
     plugins: [vue()],
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src'),
+        '@': resolve(import.meta.dirname, 'src'),
       },
     },
     server: {
@@ -72,8 +72,15 @@ export default defineConfig(({ mode }) => {
       // small and stable across releases.
       rollupOptions: {
         output: {
-          manualChunks: {
-            vendor: ['vue', 'vue-router', 'element-plus', '@element-plus/icons-vue', 'axios', 'dayjs'],
+          // Vite 8 builds with rolldown, whose manualChunks only accepts a
+          // function (the rollup object form is rejected at build time).
+          // Same intent as before: the framework + UI-kit graph lands in one
+          // chunk; anything else stays with the lazily loaded views.
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return
+            const vendor = ['vue', 'vue-router', '@vue/', 'element-plus', '@element-plus/', 'axios', 'dayjs']
+            const path = id.slice(id.lastIndexOf('node_modules/') + 'node_modules/'.length)
+            return vendor.some((pkg) => path === pkg || path.startsWith(pkg)) ? 'vendor' : undefined
           },
         },
       },

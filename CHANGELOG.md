@@ -13,6 +13,17 @@
 - **两个本机踩到并已落注释的坑**：① `el-input` 是 `inheritAttrs:false`，`$attrs`（含 `placeholder`、以及任何 `data-testid`）被铺到**内部原生 `<input>`** 而非包裹 div（element-plus 2.14.7 `input.vue` 源码核实），所以按 `placeholder` 选字段是对的、写 `[data-testid=x] 内层控件` 永远找不到；② `el-dialog` 关闭时是**隐藏而非卸载**（`destroyOnClose` 默认关），“弹窗已关”必须判 `.el-overlay` 的 `display:none`，不能判 `.el-dialog` 是否存在。
 - **验证**：mock 端点 curl 六条路径（200 通过 / 200 未通过 / 400 拒绝 / probe fail / 未知类型 / cmd 无目标）全部符合契约；本机 Chrome 用隔离端口（5173→5273、4599→4699，避让他人 dev server）实跑全套 browser-check **ALL PASS**（新增 4 条断言、回归无破坏；含 `[4d]` 三态）。两个引擎的覆盖由 CI 四条腿复核。
 - **边界**：mock 把真实端点「引擎未挂载时的 404」塌缩成 400——被测属性是「拒绝 ≠ 判决」，不是拒绝用哪个状态码到达。本笔不触碰 `#244` 的任何产品源码与既有 spec；`internal/web/dist` 无需重建（无产品改动）。
+### 变更（前端工具链换代：Node 24 + Vite 8 + vue-tsc 3 + jsdom 30；TypeScript 留在 5.9）
+
+- **触发**：`jsdom@30` 的 `engines` 是 `^22.22.2 || ^24.15.0 || >=26`，`vite@8` 是 `^20.19.0 || >=22.12.0`，而 CI 与镜像都钉在 Node 20（`node-version: '20'` 两处、`ARG NODE_VERSION=20-alpine`）。Node 20 已过维护期，继续留在 20 就只能永远不升这两个包。
+- **Node 24（两处 CI + 镜像）**：`ci.yml` 的 frontend 与 browser-check 两个 job 改成 `node-version: '24'`；`Dockerfile` 的 `ARG NODE_VERSION=24-alpine`、`ARG ALPINE_VERSION=3.24`（运行时镜像）。三个镜像 tag 在本机实测可拉起：`node:24-alpine` = v24.22.2、`golang:1.26-alpine` = go1.26.10（与 `go.mod` 一致）、`alpine:3.24` = 3.24.3。
+- **Vite 8 的两个必要适配**：rolldown 的 `manualChunks` **只接受函数**（rollup 的对象写法在建置期直接 `TypeError: manualChunks is not a function`），按原意图改成包前缀匹配（框架 + UI kit 图 → `vendor`，其余随懒加载视图）；`__dirname` 在 `configLoader: 'native'` 下会告警，改用 `import.meta.dirname`。
+- **vue-tsc 3**：`vue-tsc --noEmit` 零改动通过（38 文件 / 327 用例的单测同批通过）。
+- **TypeScript 刻意不升 7**：`typescript@7.0.2`（原生编译器）移除了 `./lib/tsc` 子路径，`vue-tsc@3.3.13` 直接 `ERR_PACKAGE_PATH_NOT_EXPORTED` 起不来——实测复现，不是推断。上到 TS 7 要先等 `@vue/language-core` 换到原生 API，因此本轮把 `typescript` 钉在 `^5.9.3`（同时满足 vitest 与 vue-tsc 的 peer 范围）。
+- **dist 的一致性证据**：本机（Windows / node 26）重建与 `node:24-alpine` 容器内 `npm ci && npm run build` 的产物 `diff -r` 为**空**，说明提交的 `internal/web/dist` 对 CI 的 Node 24 也是新鲜的，不是"本机碰巧过"。
+- **产物变化**：vendor chunk 1,237,049 → 1,215,229 字节（gzip 394→385 kB）；构建耗时 40s → 5.7s（rolldown）。
+- **本地验证**：`vue-tsc --noEmit` rc=0；`vitest` 38 文件 / 327 用例全过；`vite build` 成功；`go build ./...`、`go vet ./...`、`gofmt -l` 干净；`go test ./...` 全量 rc=0；`docgen -check` 两个目标 up to date；`python -m unittest discover -s scripts` 70 tests OK；`docker build --target node` 在 node:24-alpine 上完整跑通。
+- **边界**：本机 Docker 容器到 `proxy.golang.org` 被网络策略拒绝，因此完整镜像构建的 `go mod download` 这一步只能在 CI 的 trivy 腿（`docker build -t levee:scan .`）上验证；`web/node_modules` 未入库，`npm ci` 走锁文件。
 
 ### 修复（`internal/diagnosis` 的耗时断言不再判时钟分辨率——windows 腿因此假红过一次）
 
