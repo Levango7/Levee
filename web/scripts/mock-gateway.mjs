@@ -207,6 +207,107 @@ function send(res, obj, status) {
 // case to skip.
 let mode = 'ok'
 
+// Reads one JSON body from a request stream. The mock's other routes ignore
+// the body entirely; POST routes need this. Resolves {} for an empty body so
+// callers do not have to distinguish "nothing was sent" from "sent {}".
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let raw = ''
+    req.on('data', (chunk) => { raw += chunk })
+    req.on('end', () => {
+      if (!raw) return resolve({})
+      try {
+        resolve(JSON.parse(raw))
+      } catch {
+        reject(new Error('invalid JSON body: ' + raw.slice(0, 120)))
+      }
+    })
+    req.on('error', reject)
+  })
+}
+
+// The ad-hoc single-step check (POST /gates/verify), added to the web console
+// by PR #244. It mirrors the real endpoint's honest outcomes instead of always
+// passing, because the console's dialog has to tell them apart and a mock that
+// only ever says "passed" would let that distinction regress silently:
+//   - unknown type / cmd without target → 400: the request cannot honestly be
+//     executed (the real handler's compileGate refuses both);
+//   - a probe whose url carries a marker → 200 passed:false (a check that RAN
+//     and failed — a verdict, not a rejection) or 400 (a refused request);
+//   - the cmd text carries the same ok:/fail:/reject: markers, because cmd is
+//     the dialog's DEFAULT type: driving the three outcomes without touching
+//     the type select keeps the suite on the path an operator actually lands
+//     on. The mock has no channel to any target, so a plain command still
+//     answers as the real handler does when the dialer refuses — 200 with a
+//     verdict, never a silent pass.
+// The mock collapses the real endpoint's 404 (engine not mounted) into 400
+// here: the property under test is "refused ≠ verdict", not which status code
+// the refusal arrives with.
+async function handleGateVerify(req, res) {
+  let body = {}
+  try {
+    body = await readJsonBody(req)
+  } catch (err) {
+    return send(res, { error: String((err && err.message) || err) }, 400)
+  }
+  if (!['cmd', 'probe', 'slo'].includes(body.type)) {
+    return send(res, { error: `gate verify: unknown check type ${JSON.stringify(body.type)} (supported: cmd|probe|slo)` }, 400)
+  }
+  if (body.type === 'cmd' && !body.target) {
+    return send(res, { error: 'gate verify: cmd check requires a target' }, 400)
+  }
+  const params = body.params || {}
+  const name = body.name || 'ad-hoc'
+  const ranAt = new Date().toISOString()
+  if (body.type === 'probe') {
+    const url = String(params.url || '')
+    if (url.includes('reject')) {
+      return send(res, { error: `gate verify: probe refused: no channel dialer configured (serve must wire the engine registry); refusing to dial ${JSON.stringify(url)}` }, 400)
+    }
+    if (url.includes('fail')) {
+      return send(res, {
+        gate: name, type: 'probe', target: body.target, passed: false,
+        message: 'probe failed: connection refused',
+        details: { kind: params.kind || 'http', url, error: 'ECONNREFUSED' },
+        latency_ms: 12, ran_at: ranAt,
+      })
+    }
+    return send(res, {
+      gate: name, type: 'probe', target: body.target, passed: true,
+      message: 'probe ok: 200 in 4ms',
+      details: { kind: params.kind || 'http', url, status: 200 },
+      latency_ms: 4, ran_at: ranAt,
+    })
+  }
+  if (body.type === 'slo') {
+    if (!params.query) return send(res, { error: 'gate verify: slo check requires a "query" param' }, 400)
+    return send(res, {
+      gate: name, type: 'slo', target: body.target, passed: true,
+      message: 'slo ok: value within threshold',
+      details: { query: params.query, value: 0.004, threshold: params.threshold ?? 0.01 },
+      latency_ms: 18, ran_at: ranAt,
+    })
+  }
+  const cmd = String(params.cmd || '')
+  if (cmd.startsWith('reject:')) {
+    return send(res, { error: `gate verify: cmd refused: no channel to target ${JSON.stringify(body.target)} is available (serve must wire the engine registry)` }, 400)
+  }
+  if (cmd.startsWith('fail:')) {
+    return send(res, {
+      gate: name, type: 'cmd', target: body.target, passed: false,
+      message: 'cmd failed: exit 2',
+      details: { cmd: cmd.slice(5), exit_code: 2 },
+      latency_ms: 9, ran_at: ranAt,
+    })
+  }
+  return send(res, {
+    gate: name, type: 'cmd', target: body.target, passed: true,
+    message: 'cmd ok: exit 0',
+    details: { cmd, exit_code: 0 },
+    latency_ms: 7, ran_at: ranAt,
+  })
+}
+
 const server = http.createServer((req, res) => {
   const u = req.url.split('?')[0]
 
@@ -329,6 +430,12 @@ const server = http.createServer((req, res) => {
     // change/summary/logs snapshots, and a single frame exercises that path
     // without inventing a live tail for a fixture run.
     return sse(res, [{ type: 'status', run_id: 'run-1000', status: 'running' }])
+  }
+
+  // The ad-hoc single-step check (see handleGateVerify above for why the mock
+  // answers with three honest outcomes instead of always passing).
+  if (u === '/api/v1/gates/verify' && req.method === 'POST') {
+    return handleGateVerify(req, res)
   }
 
   send(res, { error: 'mock: no route for ' + u }, 404)
