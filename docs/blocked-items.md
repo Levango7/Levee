@@ -1,4 +1,4 @@
-# LEVEE 搁置项清单（2026-10-26 定版；2026-10-28 对账）
+# LEVEE 搁置项清单（2026-10-26 定版；2026-10-28 对账；2026-10-29 增设 F 节「卡在上游发布」）
 
 > 本文件是**待办搁置区**：工程侧当前无法独立完成的项目，按“卡在哪”分类，
 > 每项写明解锁条件。每完成一项就从本清单移除；新发现的搁置项追加于此。
@@ -43,6 +43,13 @@
 | E-2 `notify.webhook` HMAC 签名 / 变更记录结构化导出等按需项 | 2026-09-06 拍板：只在真实消费方出现时做 |
 | E-3 插件「未声明即默认不可逆」的强制档 | 原 D-1b 的剩余半边：现在只有插件显式声明 `destructive_actions` 才判不可逆，未声明的破坏型动作仍静默通过。强制档更保守，但会改变既有插件的可用性，需产品拍板 |
 | E-4 `levee schedule`（cron 定时触发变更） | **2026-10-28 定档：不做**。定位明言「不是调度器」（`product-positioning.md` §2）；触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），LEVEE 拥有的是**受治理的变更**；治理那一半（`window` 窗口阻断 + `calendar` 冻结）已实现。先例：`internal/scheduler` 因与已接入的 `dispatch` 职责重叠被整包退役。详见 `levee-design.md` §4.6.1。 |
+
+## F. 卡在上游发布（第三方工具链还没提供可装版本，不是本仓工作量）
+
+| 项 | 卡在哪 | 复测触发条件 |
+| --- | --- | --- |
+| F-1 `typescript` 5.9 → 7 | **本仓已实测确认无解**：TS 7（原生编译器）移除了 `./lib/tsc` 子路径，`vue-tsc` 在 `resolveTscPath` 直接抛 `ERR_PACKAGE_PATH_NOT_EXPORTED`，类型检查门跑不起来。上游的支持在 Vue Language Tools **4.0** 这条线上——`@vue/language-core@4.0.0-alpha.2` 的 peer 已写成 `typescript: ">=7.1.0-beta"`，而 TS 侧当前稳定版是 7.0.2、7.1 只有 beta/dev 构建；`vue-tsc` 的已发布版本停在 3.3.14，没有 4.x 也没有 alpha tag。⇒ 2026-10-29 的 PR #247 把 `typescript` 钉在 `^5.9.3`（同时满足 vitest 5 与 vue-tsc 3 的 peer 范围） | **`vue-tsc` 出现 4.x（或其 alpha）且 peer 允许已发布的稳定 TS** 时，单独一个 PR 处理：按 #247 的同一条证据路径验（本机重建 + `node:<ver>-alpine` 容器内构建后 `diff -r internal/web/dist` 为空，再让 CI 的 `frontend` 与 `browser-check` 四条腿定案）。收益只有类型检查速度（本仓 `frontend` 腿现为 27–34 秒），所以不值得为它换掉检查器或放宽门禁 |
+
 
 ## 已交付、不再登记（防混淆）
 
