@@ -260,11 +260,14 @@ func CodeOf(err error) string {
 // appendix C. They are grouped by category for readability.
 
 const (
-	// Type errors (LE001-LE004)
+	// Type errors (LE001-LE003)
 	LE001 = "LE001" // type mismatch
 	LE002 = "LE002" // required field missing or name duplicated
 	LE003 = "LE003" // enum value illegal
-	LE004 = "LE004" // input parameters are declared or referenced, but nothing resolves them [warning]
+	// LE004 (input parameters declared/referenced but unresolved) was WITHDRAWN
+	// when input resolution shipped: the condition it described no longer exists.
+	// The two real failure cases are plan-time errors under dsl.ErrInputMissing /
+	// ErrInputUndeclared / ErrInputType, not a compile-time code.
 
 	// Window errors (LE020-LE021)
 	LE020 = "LE020" // time format illegal or window empty (start == end)
@@ -339,7 +342,6 @@ var codeCatalogue = []CodeInfo{
 	{LE001, "type", "type mismatch", CompileError},
 	{LE002, "structure", "required field missing or name duplicated", CompileError},
 	{LE003, "type", "enum value illegal", CompileError},
-	{LE004, "type", "input parameters are declared or referenced, but nothing resolves them", CompileWarning},
 	{LE020, "window", "time format illegal or window empty (start == end)", CompileError},
 	{LE021, "window", "timezone not a valid IANA name", CompileError},
 	{LE031, "batch", "percentage array not non-decreasing", CompileError},
@@ -404,9 +406,10 @@ func AllCodes() []CodeInfo {
 //   LE041, LE042, LE043  action / approval compile checks (the runtime
 //                        approval service enforces its own rules; nothing
 //                        rejects at compile time)
-//   LE061               step output references (see LE004, the advisory
-//                        that tells the author their reference will not be
-//                        substituted: nothing in the pipeline resolves it)
+//   LE061               step output references (nothing in the pipeline
+//                        resolves `{{step.x.output}}`; unlike workflow inputs,
+//                        which plan-time resolution now substitutes, outputs
+//                        have no producer at all)
 //   LE071               DAG cycle detection (no depends_on in the language)
 //   LE081, LE083        rollback whitelist / irreversible-vs-level checks
 //                        (LE082 survives: allow_irreversible is wired)

@@ -165,6 +165,15 @@ func assessPlanRisk(p *plan.Plan) {
 // surfaced — so a corrupt inline document reports the parse failure, not a
 // misleading "not a file".
 func resolveWorkflow(run *state.Run) (*dsl.Workflow, error) {
+	wf, err := parseWorkflowSource(run)
+	if err != nil {
+		return nil, err
+	}
+	return resolveRunInputs(run, wf)
+}
+
+// parseWorkflowSource parses the run's workflow source without resolving inputs.
+func parseWorkflowSource(run *state.Run) (*dsl.Workflow, error) {
 	src := strings.TrimSpace(run.WorkflowName)
 	if src == "" {
 		return nil, fmt.Errorf("wiring: change %q has no workflow source", run.ID)
@@ -186,6 +195,54 @@ func resolveWorkflow(run *state.Run) (*dsl.Workflow, error) {
 		return nil, fmt.Errorf("wiring: parse workflow file %q for change %q: %w", src, run.ID, err)
 	}
 	return wf, nil
+}
+
+// resolveRunInputs substitutes the run's parameter values into the workflow's
+// `{{input.x}}` references (docs/leveelang-spec.md §2.1).
+//
+// It runs HERE — inside the one funnel every plan path goes through
+// (gRPC PlanChange, `levee plan --local`, and the re-plan inside apply) — on
+// purpose: the resolved values end up in the plan's step args, so plan_hash
+// binds the exact values that were approved. The same workflow with different
+// input values is therefore a DIFFERENT plan that must be approved again, which
+// is the semantics a governed change wants.
+func resolveRunInputs(run *state.Run, wf *dsl.Workflow) (*dsl.Workflow, error) {
+	if run == nil {
+		return wf, nil
+	}
+	params, err := runParamStrings(run.Params)
+	if err != nil {
+		return nil, fmt.Errorf("wiring: change %q has an unreadable parameter blob: %w", run.ID, err)
+	}
+	resolved, err := dsl.ResolveInputs(wf, params)
+	if err != nil {
+		return nil, fmt.Errorf("wiring: resolve inputs for change %q: %w", run.ID, err)
+	}
+	return resolved, nil
+}
+
+// runParamStrings decodes the run's parameter JSON (run.Params, a JSON object)
+// into the string map input resolution reads. Non-string scalars are
+// stringified: the RPC boundary carries map<string,string>, so anything else
+// here was stored locally, and dropping it would silently starve an input that
+// actually has a value.
+func runParamStrings(raw string) (map[string]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	var anyParams map[string]any
+	if err := json.Unmarshal([]byte(raw), &anyParams); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(anyParams))
+	for k, v := range anyParams {
+		if s, ok := v.(string); ok {
+			out[k] = s
+			continue
+		}
+		out[k] = fmt.Sprintf("%v", v)
+	}
+	return out, nil
 }
 
 // looksLikeWorkflowPath reports whether the workflow source plausibly

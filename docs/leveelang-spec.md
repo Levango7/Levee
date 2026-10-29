@@ -129,7 +129,7 @@ LEVEELang 的顶层结构是 `workflow` 声明块，一个文件可包含一个�
 
 workflow 声明块包含以下子块，顺序建议但不强制：
 
-1. `input`：参数声明块（可选）。**尚未实现**——声明会被解析、类型校验并进 IR（因此进计划哈希），但没有任何代码路径注入取值或替换 `{{input.x}}`：该引用会作为字面量传给模块（对 `shell.exec` 就是一条没人写过的命令）。编译期以 **LE004 warning** 提示；参数化请走模板实例化（它替换 `{{.name}}`）。
+1. `input`：参数声明块（可选）。声明会被解析、类型校验并进 IR（因此进计划哈希）；取值在**计划期**解析（`dsl.ResolveInputs`）：声明的参数从本次运行的参数袋（`create` 的 `params` / CLI）取值，缺失则用声明默认值，两者都无则报错。`{{input.x}}` 会被替换成具体值——**解析后的值进计划哈希**，因此同一 workflow 不同取值是不同的计划、需重新审批。未声明引用 / 必填缺失 / 类型不符在 plan 期报错（`ErrInputUndeclared` / `ErrInputMissing` / `ErrInputType`）；绝不让字面量进模块。模板实例化的 `{{.name}}` 是**打包层**的另一套替换，二者刻意分开。编译期不再有 input 告警（LE004 已撤回）。
 2. `target`：目标集声明块（必需）。
 3. `window`：变更窗口声明块（可选）。
 4. `batches`：批次声明块（可选，缺省单批）。
@@ -202,7 +202,7 @@ workflow <name> {
 | 关键字 | 语义 | 必需 | 示例 |
 | --- | --- | --- | --- |
 | workflow | 声明一个工作流，后接 name | 是 | `workflow db-migrate { }` |
-| input | 声明 workflow 输入参数（**尚未实现**，编译期 LE004 warning） | 否 | `input { table: string }` |
+| input | 声明 workflow 输入参数（**计划期**解析 `{{input.x}}`） | 否 | `input { table: string }` |
 | target | 声明目标集 | 是 | `target { type: "mysql" }` |
 | window | 声明变更窗口 | 否 | `window { start: "02:00" }` |
 | batches | 声明批次策略 | 否 | `batches { strategy: "percent" }` |
@@ -320,7 +320,7 @@ LEVEELang 静态类型系统在编译期完成类型检查，运行期不做隐�
 | approval_level | 审批枚举 | `standard` / `high` / `emergency` | approval level |
 | action_ref | 动作引用 | `mysql.pt-online-schema-change` | step action |
 | target_ref | 目标引用 | `{{target.host}}` | args 中引用目标属性 |
-| input_ref | 输入引用（**尚未实现**：不替换，按字面量传给模块；编译期 LE004 warning） | `{{input.table}}` | args 中引用输入参数 |
+| input_ref | 输入引用（计划期替换为具体值；未声明 / 未供给 / 类型不符则报错） | `{{input.table}}` | args 中引用输入参数 |
 | output_ref | 输出引用（**尚未实现**：同样不替换；对应的 LE061 已于 2026-10-12 撤回，见第 13 章说明） | `{{step.migrate.output}}` | 引用前步输出 |
 
 duration 字面量支持单位：`s`（秒）、`m`（分）、`h`（时）、`d`（天），如 `90s`、`5m`、`4h`、`1d`。
@@ -1099,7 +1099,7 @@ grace_period 配置：
 - `wait` 字段声明 grace period 时长，缺省 5m。
 - grace period 内不查询，仅等待，避免变更刚结束指标抖动误判。
 - grace period 结束后查询，失败触发回滚。
-- grace period **设计上**可被 workflow input 参数化：`wait: "{{input.grace_period}}"`——但该替换尚未实现（见 LE004），当前写法会把字面量当等待时长。
+- grace period 可由 workflow input 参数化：`wait: "{{input.grace_period}}"` 会在计划期被替换为具体时长（见 §2.1）。
 
 重试与超时（对应设计文档 4.4.5.3）：
 
@@ -1339,6 +1339,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 
 > **代码撤回（2026-10-12）**：下表带删除线的错误码**已从实现中撤回**——它们在实现里登记了，却没有任何代码产出它们（登记一个不能产出的错误码，比不登记更糟：它会让人以为编译器能报这个错）。被撤回的是**码**，不是**特性**：标签表达式、依赖引用（DAG）、step 输出引用、action/审批的编译期校验等特性在下文仍标注为「尚未实现」，等它的产出点落地时再登记错误码。
 > 同一天 **LE102 反向落地**：`fixed step count` 非正一向由 `internal/dsl/validator.go` 报出，却不在表内——方向相反、同样是真的。守卫 `internal/errors/catalogue_producer_test.go` 现在双向钉住这件事：目录里的每个码都必须有产出方，任何产出方报的码都必须在目录里。
+> **2026-10-28 撤回 LE004**：input 计划期解析（`dsl.ResolveInputs`）落地后，「声明/引用但无人解析」不再是一个真实条件——两类失败（未声明引用、必填/类型不符）改为 plan 期的具名错误（`dsl.ErrInput*`），不再是编译期 code。
 > 注意：LE102 这个**编号被复用**。它最早用于 `on_failure: manual` 与快照的组合拒绝（见上文「手动回滚路径」），那条路学会恢复基线后该码被撤回；现在同一个编号给了 `fixed step count` 非正校验。两件事共用一个编号，不会同时存在，但引用旧文档时以撤回记录为准。
 
 | 错误码 | 类别 | 含义 | 严重度 |
@@ -1346,7 +1347,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | LE001 | 类型 | 类型不匹配 | error |
 | LE002 | 结构 | 必需字段缺失或命名重复 | error |
 | LE003 | 类型 | 枚举值非法 | error |
-| LE004 | 类型 | 声明/引用了 input 参数，但没有任何代码路径注入或替换取值 | warning |
+| ~~LE004~~（代码已撤回） | 类型 | 声明/引用了 input 参数，但没有任何代码路径注入或替换取值（2026-10-28 撤回：input 计划期解析已落地，该条件不再存在） | — |
 | ~~LE010~~（代码已撤回） | 标签 | 标签表达式语法错误 | error |
 | ~~LE011~~（代码已撤回） | 标签 | 标签键名不符合命名规范 | error |
 | ~~LE012~~（代码已撤回） | 标签 | 资产类型不在白名单 | error |
@@ -1401,7 +1402,7 @@ LE042: action 参数不满足契约（代码已撤回，2026-10-12：无产生�
 
 ## 第9章 完整示例
 
-> **状态（2026-10）**：本章示例中的 `input` 声明与 `{{input.x}}` 引用**尚未实现**——声明会被解析、类型校验并进 IR/计划哈希，但取值不会被注入，引用不会替换，编译期以 LE004 warning 提示。示例保留原样是为了记录目标形态；可直接运行请以模板实例化（`{{.name}}`）参数化。
+> **状态（2026-10-28）**：本章示例中的 `input` 声明与 `{{input.x}}` 引用**已实现**——取值在计划期从本次运行的参数袋解析（缺失则用声明默认值），替换后的值进计划哈希。
 
 ### 9.1 示例：补丁灰度
 
@@ -2046,7 +2047,7 @@ rollback:
 | 关键字 | 类别 | 出现位置 | 简述 |
 | --- | --- | --- | --- |
 | workflow | 声明 | 顶层 | 声明工作流 |
-| input | 声明 | workflow 内 | 声明输入参数（尚未实现，LE004 warning） |
+| input | 声明 | workflow 内 | 声明输入参数（计划期解析取值） |
 | target | 声明 | workflow 内 | 声明目标集 |
 | window | 声明 | workflow 内 | 声明变更窗口 |
 | batches | 声明 | workflow 内 | 声明批次策略 |
@@ -2093,7 +2094,7 @@ rollback:
 | approval_level | `standard` / `high` / `emergency` | approval level |
 | action_ref | `mysql.pt-online-schema-change` | step action |
 | target_ref | `{{target.host}}` | 引用目标属性 |
-| input_ref | `{{input.table}}` | 引用输入参数（尚未实现，LE004 warning） |
+| input_ref | `{{input.table}}` | 引用输入参数（计划期替换为具体值） |
 | output_ref | `{{step.migrate.output}}` | 引用前步输出（尚未实现；LE061 已撤回） |
 
 ---
@@ -2107,7 +2108,7 @@ rollback:
 | LE001 | error | 类型不匹配 |
 | LE002 | error | 必需字段缺失或命名重复 |
 | LE003 | error | 枚举值非法 |
-| LE004 | warning | input 参数被声明/引用但无人解析 |
+| ~~LE004~~（代码已撤回） | — | input 参数被声明/引用但无人解析（2026-10-28 撤回：计划期解析已落地） |
 | ~~LE010~~（代码已撤回） | error | 标签表达式语法错误 |
 | ~~LE011~~（代码已撤回） | error | 标签键名不符合命名规范 |
 | ~~LE012~~（代码已撤回） | error | 资产类型不在白名单 |

@@ -55,10 +55,6 @@ const (
 	// codeMissingPostBatchGate is LE052: a batches block with no between-batches
 	// check, so nothing can stop the next batch.
 	codeMissingPostBatchGate = "LE052"
-	// codeUnresolvedInputs is LE004: the document declares input parameters (or
-	// references them with `{{input.x}}`), and NOTHING in the pipeline supplies
-	// or substitutes them — the reference reaches the module as literal text.
-	codeUnresolvedInputs = "LE004"
 	// codeNonIdempotentUndo is LE103: an undo step that does not declare
 	// `idempotent: true`. Compensation is the path that runs when something has
 	// already gone wrong, so it is the path most likely to be RE-run: a partially
@@ -162,35 +158,13 @@ func (v *Validator) Advise(wf *Workflow) []ValidationError {
 		}
 	}
 
-	// LE004: the input block is declaration-only. It is parsed, its types are
-	// validated, and it is lowered into the IR (so it is inside the plan hash) —
-	// but no code path supplies values or substitutes `{{input.x}}`: a grep for
-	// the reference shape finds it in the spec and in fixtures, never in the
-	// planner or the executor, and there is no RPC field or CLI flag that
-	// carries input values.
-	//
-	// The advisory fires on the DECLARATION or the REFERENCE, because either one
-	// on its own says the author expects substitution:
-	//   - declared: the document promises a parameter interface nothing honours;
-	//   - referenced: the literal text reaches the module. For `shell.exec` that
-	//     is not merely useless, it is a command nobody wrote ("{{input.table}}"
-	//     is passed through, and shells may expand braces), which is why the
-	//     message names the consequence rather than the syntax.
-	//
-	// It is a warning, not an error, because the remedy is authoring-level and
-	// the channel's contract is that an advisory never blocks (see the package
-	// comment): documents that compile today must keep compiling, and the ones
-	// that intend to parameterise are told how to do it for real.
-	if len(wf.Inputs) > 0 || referencesInputs(wf) {
-		out = append(out, ValidationError{
-			Code:  codeUnresolvedInputs,
-			Field: "input",
-			Message: "input parameters are declared or referenced, but nothing supplies or " +
-				"substitutes them: `{{input.x}}` reaches the module as that literal text (declaring " +
-				"input values is not implemented; parameterise with template instantiation, which " +
-				"fills `{{.name}}`, or with a workflow that hardcodes the value)",
-		})
-	}
+	// LE004 ("input parameters are declared or referenced, but nothing resolves
+	// them") was WITHDRAWN when input resolution shipped: the advisory described a
+	// gap that no longer exists, and an advisory that fires on every legitimate
+	// use is noise. Inputs are now resolved at plan time (dsl.ResolveInputs), and
+	// the two failure cases — an undeclared reference and an unsatisfied or
+	// mistyped value — are plan-time errors, not advisories. Do not re-add a
+	// compile-time input advisory here; see inputs.go.
 
 	// LE103: an undo step without `idempotent: true`.
 	//
