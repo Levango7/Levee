@@ -253,6 +253,56 @@ func TestGenerateMultiStep(t *testing.T) {
 	assert.Equal(t, "exec", plan.Batches[0].Steps[1].Action)
 }
 
+// TestGenerateOrdersStepsByDependsOn closes the gap where depends_on was
+// declared but never consumed: the plan must carry the dependency order, not
+// the declaration order.
+func TestGenerateOrdersStepsByDependsOn(t *testing.T) {
+	steps := []dsl.Step{
+		{Name: "apply", Module: "pkg", Action: "upgrade", DependsOn: []string{"scan"}},
+		{Name: "scan", Module: "shell", Action: "exec"},
+	}
+	wf := makeWorkflow("wf-deps", dsl.BatchConfig{Strategy: "serial"}, steps...)
+
+	plan, err := NewGenerator().Generate(wf, []string{"host-a"})
+	require.NoError(t, err)
+	require.Len(t, plan.Batches, 1)
+	got := make([]string, len(plan.Batches[0].Steps))
+	for i, s := range plan.Batches[0].Steps {
+		got[i] = s.Name
+	}
+	assert.Equal(t, []string{"scan", "apply"}, got)
+}
+
+// TestGenerateRejectsUnknownDependsOn: the server path (wiring.GeneratePlan)
+// has no validator in between, so the generator must fail closed on a typo'd
+// dependency rather than run in declaration order.
+func TestGenerateRejectsUnknownDependsOn(t *testing.T) {
+	steps := []dsl.Step{
+		{Name: "apply", Module: "pkg", Action: "upgrade", DependsOn: []string{"ghost"}},
+		{Name: "scan", Module: "shell", Action: "exec"},
+	}
+	wf := makeWorkflow("wf-deps-bad", dsl.BatchConfig{Strategy: "serial"}, steps...)
+
+	plan, err := NewGenerator().Generate(wf, []string{"host-a"})
+	require.Error(t, err)
+	require.Nil(t, plan)
+	assert.Contains(t, err.Error(), "LE104")
+}
+
+// TestGenerateRejectsDependencyCycle: a cycle can never be ordered.
+func TestGenerateRejectsDependencyCycle(t *testing.T) {
+	steps := []dsl.Step{
+		{Name: "a", Module: "shell", Action: "exec", DependsOn: []string{"b"}},
+		{Name: "b", Module: "shell", Action: "exec", DependsOn: []string{"a"}},
+	}
+	wf := makeWorkflow("wf-dep-cycle", dsl.BatchConfig{Strategy: "serial"}, steps...)
+
+	plan, err := NewGenerator().Generate(wf, []string{"host-a"})
+	require.Error(t, err)
+	require.Nil(t, plan)
+	assert.Contains(t, err.Error(), "LE071")
+}
+
 // TestGenerateEmptyTargets verifies that an empty resolved target list
 // produces an error.
 func TestGenerateEmptyTargets(t *testing.T) {

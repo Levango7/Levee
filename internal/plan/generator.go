@@ -270,10 +270,22 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 		return nil, err
 	}
 
+	// Step dependencies (depends_on): order the steps so every dependency
+	// precedes its dependent, and fail closed on an unknown reference or a
+	// cycle. This is the same defense-in-depth shape as the LE097/LE082 gates
+	// above and below: `levee compile` reports these through the validator,
+	// but wiring.GeneratePlan parses the document and calls the generator
+	// directly, without the validator in between.
+	orderedSteps, depErrs := dsl.OrderStepsByDependsOn(wf.Steps)
+	if len(depErrs) > 0 {
+		return nil, errors.New(depErrs[0].Code,
+			fmt.Sprintf("workflow %q: %s", wf.Meta.Name, depErrs[0].Message), errors.Fatal)
+	}
+
 	// Convert workflow steps to plan steps once; every batch shares
 	// the same step sequence. The conversion also stamps the
 	// irreversible verdict onto each step.
-	planSteps := g.convertSteps(wf.Steps)
+	planSteps := g.convertSteps(orderedSteps)
 
 	// Build batches with consecutive 0-based indices.
 	batches := make([]Batch, 0, len(batchTargets))

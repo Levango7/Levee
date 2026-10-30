@@ -10,7 +10,8 @@ package dsl
 //   - 批次声明合法性：percent steps ∈ [1,100]；fixed steps > 0；serial /
 //     one-per-target 无需 steps。strategy 枚举一律引用 dsl.BatchStrategies，
 //     本文件不再自带副本。
-//   - step：name 与 action 非空；action 必须是 module.action 形式
+//   - step：name 与 action 非空；action 必须是 module.action 形式；
+//     depends_on 引用的 step 必须存在且不构成循环（LE071 / LE104）
 //   - target：静态 target 必须有 hosts 或 query 至少一个
 //   - rollback 归属：workflow 级回滚声明只允许运行态策略（on_failure /
 //     verify_after）；strategy / steps / snapshot_paths 必须声明在 step 内（LE097）
@@ -154,6 +155,13 @@ func (v *Validator) Validate(wf *Workflow) []ValidationError {
 
 	// 6. step 校验：name/action 非空、action 必须是 module.action 形式。
 	errs = append(errs, v.validateSteps(wf.Steps)...)
+
+	// 6b. step 依赖校验（V9）：depends_on 引用的 step 必须存在、依赖不能成环。
+	// 依赖排序（把声明顺序整理成依赖顺序）由 plan 生成器消费；这里只把非法
+	// 的图报出来，与生成器的判定同一份实现（dsl.OrderStepsByDependsOn）。
+	if _, depErrs := OrderStepsByDependsOn(wf.Steps); len(depErrs) > 0 {
+		errs = append(errs, depErrs...)
+	}
 
 	// 7. approval level 校验。
 	errs = append(errs, v.validateApproval(wf.Approval)...)
