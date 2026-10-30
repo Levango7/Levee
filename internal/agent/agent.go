@@ -27,8 +27,14 @@ type MasterClient interface {
 	Register(ctx context.Context, info AgentInfo) error
 
 	// Deregister informs the master that this agent is going away
-	// permanently. The master should remove the agent from its
-	// registry and reassign any in-flight tasks.
+	// permanently. The master removes the agent from its registry.
+	//
+	// It does NOT reassign in-flight tasks: the proto has no master->agent
+	// task-dispatch channel, so `levee agent start` still registers
+	// in-process and the only implementation
+	// (InProcessMasterClient.Deregister) just drops the record from the
+	// in-process registry. This boundary is tracked in
+	// docs/cli-reference.md §20.5.
 	Deregister(ctx context.Context, agentID string) error
 
 	// SendHeartbeat delivers a heartbeat to the master. It is

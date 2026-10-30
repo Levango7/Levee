@@ -1179,7 +1179,8 @@ airgap:
 | `levee status` | 系统状态 | 9 |
 | `levee doctor` | 环境检查 | 9 |
 | `levee run --shell <cmd>` | 本地直跑一条命令（调试逃生口，不经治理链） | 9 |
-| `levee schedule` | 按 cron 定时触发变更（**V1**，尚未实现；当前定时能力仅为 `levee drift schedule` 的漂移巡检） | V1 |
+
+> `levee schedule`（cron 定时触发变更）已于 2026-10-28 **定档为不做**，故不在上表：LEVEE 定位为变更治理控制平面而非调度器（`docs/product-positioning.md` §2），触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），治理侧由 `window`（变更窗口阻断）与 `calendar`（冻结期）承担。当前定时能力仅为 `levee drift schedule` 的漂移巡检。详见 `docs/levee-design.md` §4.6.1 与 `docs/blocked-items.md` E-4。
 
 ---
 
