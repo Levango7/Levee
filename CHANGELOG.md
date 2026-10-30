@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 测试（`target-ownership.yaml` 的 serve 侧：加载 / 拒启 / 审计非致命 + 接线守卫）
+
+- **缺口**：`internal/inventory` 只测了比较函数 `LabelConflicts`；从文件到进程的那一段**零测试**——`loadTargetOwnershipRegistry` 的坏文件、冲突是否影响启动、以及 `buildServeServices` 是否真把加载值交给 `TargetEnvResolver`，删掉任何一环都不会有测试变红。而这条链决定 authz 判 prod 还是 dev（`TargetEnvResolver` 的 registry-first 规则），属「函数正确≠被调用」的典型缺口。
+- **落地（只加测试，产品代码零改动）**：
+  - 缺失文件 = 文档化的 labels-only 姿态：不报错、注册表未配置；
+  - 坏文件四态（YAML 不合法 / 缺 `environment` / 缺 `hostname` / 同一主机声明两次）一律**拒绝启动**，错误串点名事实源（`target ownership`），而不是静默退回调用方可声明的 labels；
+  - 冲突**是审计不是故障**：启动继续，WARN 行必须同时给出主机名、注册表的 `prod` 与行的 `dev`；同一份注册表 + 不一致的 `labels["env"]` 下，按 target id 解析必须得到注册表的 `prod`（安全相关的那一半）；一致清单只打 `consistent`、不许 WARN（审计噪音会训练运维忽略它）；
+  - 接线守卫：`cmd_serve.go` 必须 `ownershipReg, oerr := loadTargetOwnershipRegistry(cfg, store)`、`oerr` 必须中止构造、加载值必须以 `ownershipReg` 原样交给 `TargetEnvResolver`，且两者之间不许重新赋值——编译器已经挡住「传 nil 再留个未用变量」，剩下的可乘之机正是中途换成另一个注册表。
+- **变异咬合（四条，均先红后还原；`cmd_serve.go` 还原后与 HEAD 逐字节相同）**：① 加载错误改成 `return reg, nil` → 坏文件四条子用例全红；② 丢弃 `LabelConflicts` 的结果 → 冲突用例红而「一致不告警」仍绿（窄射程）；③ 在加载与解析器之间插入 `ownershipReg = &inventory.OwnershipRegistry{}` → 接线用例红；④ `return serveServices{}, oerr` 改成 `nil` → 接线用例红。
+- **验证**：新文件 5 个用例全过；`gofmt -l` 干净；`go vet ./cmd/levee` rc=0；`go test ./cmd/levee` 全包 ok（127s）。
+- **边界**：日志断言靠 `log.InitLoggerWithWriter` 临时替换进程单例并在 `t.Cleanup` 还原——本包没有 `t.Parallel` 用例，窗口不被共享；接线守卫是定点读调用点（与 `serve_gateway_wiring_test.go` 同一取舍），`buildServeServices` 的长启动序列单测驱动不了。
+
 ### 新增（`#244` 的单步验证补齐行为覆盖：mock 网关三态 + browser-check 驱动弹窗）
 
 - **缺口**：`#244`（门禁面板「单步验证」弹窗，接 `POST /gates/verify`）合并时**没有**碰 `web/scripts/mock-gateway.mjs` 与 `web/scripts/browser-check.mjs`，所以那个新交互在 mock 模式下调不通（端点 404），也没有任何行为级覆盖。它最值得钉的语义——**200 + `passed:false` 是判决，400 是请求被拒绝，两者不能混为一谈**（混了等于声称引擎评判了一个它从未执行的检查）——只有跑在真浏览器里才算被验证过。
