@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（step `depends_on` 从「被解析却没人消费」变成真依赖顺序 + 未知/成环拒绝）
+
+- **缺口（本仓头号缺陷类的又一实例）**：`depends_on` 被解析（`parser.go`）、登上 AST/IR、被 `emit.go` 回写、被交付示例（`examples/workflows/batch-update.yaml` 等三份）使用——但**没有任何代码消费它**。执行总是按声明顺序，于是 `steps: [b(depends_on a), a]` 会先跑 b 再跑 a，**静默违反声明的依赖**；错误码表甚至把撤回的 LE071 描述成「no depends_on in the language」，与解析器的事实相反。
+- **落地**：新增 `dsl.OrderStepsByDependsOn`——按 `depends_on` 做**稳定拓扑排序**（依赖已满足的步骤保持声明顺序，因此按依赖书写的 workflow 逐字节不变，现有示例零影响），并把两类非法图报出来：引用不存在的 step（**新增 LE104**）、依赖成环（**LE071 重新登记**：2026-10-12 因无产出方被撤回，现在有了产出方）。编译期 `dsl.Validator` 与计划期 `plan.Generator`（`wiring.GeneratePlan` 不经 validator 的那条路）**共用同一份实现**，两端结论不可能分叉。
+- **边界如实**：消费的是**依赖顺序**这一半；并行调度与 `{{step.x.output}}` 输出引用仍是 V1 项（`docs/mvp-tasks.md` N-18）。规范 §4.5 / §8.1 V9 / §8.2 同步更新。
+- **测试**：dsl 10 例（乱序重排、稳定、无依赖不变、未知引用、环、自依赖、重复边算一条、坏图仍返回全序、validator 报错）；plan 3 例（生成器按依赖排序、未知引用 LE104 拒绝、环 LE071 拒绝）；`internal/errors` 目录计数 25→27 与 `TestEveryCatalogueCodeHasAProducer` 双向守卫自动覆盖；`TestShippedExamplesCompile` 保持绿。
+- **验证**：`gofmt -l` 干净；`go test -count=1 ./internal/dsl/ ./internal/errors/ ./internal/plan/` 全绿。
+
 ### 测试（`target-ownership.yaml` 的 serve 侧：加载 / 拒启 / 审计非致命 + 接线守卫）
 
 - **缺口**：`internal/inventory` 只测了比较函数 `LabelConflicts`；从文件到进程的那一段**零测试**——`loadTargetOwnershipRegistry` 的坏文件、冲突是否影响启动、以及 `buildServeServices` 是否真把加载值交给 `TargetEnvResolver`，删掉任何一环都不会有测试变红。而这条链决定 authz 判 prod 还是 dev（`TargetEnvResolver` 的 registry-first 规则），属「函数正确≠被调用」的典型缺口。

@@ -691,7 +691,7 @@ approval {
 
 ### 4.5 step 块
 
-step 块声明一个变更步骤，是 workflow 的必需块，可声明多个。step 之间按 DAG 编排（对应设计文档 4.5.2），支持并行与依赖声明，不支持循环。
+step 块声明一个变更步骤，是 workflow 的必需块，可声明多个。step 之间按 DAG 编排（对应设计文档 4.5.2）：`depends_on` 会被消费为依赖顺序（稳定拓扑排序，`dsl.OrderStepsByDependsOn`），引用不存在的 step 报 LE104、依赖成环报 LE071；当前执行模型仍是步骤间串行，并行调度与 `{{step.x.output}}` 输出引用仍属 V1（见 `docs/mvp-tasks.md` N-18）。
 
 表：step 字段定义
 
@@ -902,7 +902,7 @@ step verify {
 1. 被引用的 step 是否在当前 workflow 内声明。
 2. 被引用的 output 字段是否在该 step 的 output 块内声明。
 3. 引用类型是否与 args 期望类型匹配。
-4. 引用是否构成循环依赖（DAG 校验，循环报错 LE071）。（LE071 已撤回：依赖引用尚未实现，见第 13 章）
+4. 引用是否构成循环依赖（DAG 校验，循环报错 LE071）。（2026-10-31 起 LE071 已重新登记：`depends_on` 的依赖顺序由 `dsl.OrderStepsByDependsOn` 消费；本节的 `{{step.x.output}}` 输出引用本身仍未实现，见第 13 章）
 
 ---
 
@@ -1314,7 +1314,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | V6 | 批次定义合法性 | 百分比数组递增、末尾 100、首批 ≤5% | LE031/LE032/LE033 |
 | V7 | 批次策略一致性 | strategy 与 steps 类型匹配 | LE034 |
 | V8 | step 引用前步输出 | 被引用 step 存在、output 字段存在、类型匹配 | ~~LE061~~（代码已撤回） |
-| V9 | DAG 无环 | step 依赖不构成循环 | ~~LE071~~（代码已撤回） |
+| V9 | 依赖引用与无环 | `depends_on` 引用的 step 必须存在（LE104），依赖不构成循环（LE071）；顺序由 `dsl.OrderStepsByDependsOn` 稳定生成 | LE071 / LE104 |
 | V10 | action 模块存在 | 引用的 module.name 在已加载清单内 | ~~LE041~~（代码已撤回） |
 | V11 | action 参数契约 | args 满足动作声明的参数契约 | ~~LE042~~（代码已撤回） |
 | V12 | verify 表达式语法 | cmd / slo / probe 表达式语法合法 | LE051 |
@@ -1340,6 +1340,7 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 > **代码撤回（2026-10-12）**：下表带删除线的错误码**已从实现中撤回**——它们在实现里登记了，却没有任何代码产出它们（登记一个不能产出的错误码，比不登记更糟：它会让人以为编译器能报这个错）。被撤回的是**码**，不是**特性**：标签表达式、依赖引用（DAG）、step 输出引用、action/审批的编译期校验等特性在下文仍标注为「尚未实现」，等它的产出点落地时再登记错误码。
 > 同一天 **LE102 反向落地**：`fixed step count` 非正一向由 `internal/dsl/validator.go` 报出，却不在表内——方向相反、同样是真的。守卫 `internal/errors/catalogue_producer_test.go` 现在双向钉住这件事：目录里的每个码都必须有产出方，任何产出方报的码都必须在目录里。
 > **2026-10-28 撤回 LE004**：input 计划期解析（`dsl.ResolveInputs`）落地后，「声明/引用但无人解析」不再是一个真实条件——两类失败（未声明引用、必填/类型不符）改为 plan 期的具名错误（`dsl.ErrInput*`），不再是编译期 code。
+> **2026-10-31 重新登记 LE071 + 新增 LE104**：`depends_on` 此前被解析、登上 AST/IR、被交付示例使用，却没有任何消费点——plan 按声明顺序执行，声明在前的依赖被静默违反。`dsl.OrderStepsByDependsOn` 现在按依赖稳定排序（对已按依赖书写的 workflow 逐字节不变），LE071（环）因此有了产出方而重新登记，并新增 LE104（引用了不存在的 step）。
 > 注意：LE102 这个**编号被复用**。它最早用于 `on_failure: manual` 与快照的组合拒绝（见上文「手动回滚路径」），那条路学会恢复基线后该码被撤回；现在同一个编号给了 `fixed step count` 非正校验。两件事共用一个编号，不会同时存在，但引用旧文档时以撤回记录为准。
 
 | 错误码 | 类别 | 含义 | 严重度 |
@@ -1364,7 +1365,8 @@ LEVEELang 编译为 IR（中间表示）时执行以下编译期校验，全部�
 | LE051 | 门禁 | verify / gate 表达式语法错误 | error |
 | LE052 | 门禁 | batches 缺省 post_batch 门禁 | warning |
 | ~~LE061~~（代码已撤回） | 引用 | 引用前步输出不存在或类型不匹配 | error |
-| ~~LE071~~（代码已撤回） | 依赖 | DAG 存在循环 | error |
+| LE071 | 依赖 | step 依赖构成循环 | error |
+| LE104 | 依赖 | step 的 `depends_on` 引用了不存在的 step | error |
 | ~~LE081~~（代码已撤回） | 回滚 | rollback action 不在白名单 | error |
 | LE082 | 回滚 | 不可逆动作不在 allow_irreversible | error |
 | ~~LE083~~（代码已撤回） | 回滚 | 含不可逆动作但审批级别 < high | error |

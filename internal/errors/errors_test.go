@@ -200,22 +200,26 @@ func TestErrorCodes_Distinct(t *testing.T) {
 	// input resolution shipped, so "input declared/referenced but unresolved" no
 	// longer describes a real condition — the two failure cases are plan-time
 	// errors under dsl.ErrInput*, not a compile code.
+	// 2026-10-31 RE-ADDED LE071 (DAG cycle) and added LE104 (unknown depends_on
+	// reference): dsl.OrderStepsByDependsOn now consumes depends_on and produces
+	// both, so LE071 is no longer withdrawn.
 	codes := []string{
 		LE001, LE002, LE003,
 		LE020, LE021,
 		LE031, LE032, LE033, LE034,
 		LE044,
 		LE051, LE052,
+		LE071,
 		LE082,
 		LE092, LE093, LE094, LE095, LE096, LE097,
-		LE098, LE099, LE100, LE101, LE102, LE103,
+		LE098, LE099, LE100, LE101, LE102, LE103, LE104,
 	}
 	seen := make(map[string]bool, len(codes))
 	for _, c := range codes {
 		assert.False(t, seen[c], "duplicate error code: %s", c)
 		seen[c] = true
 	}
-	assert.Equal(t, 25, len(codes), "expected 25 error codes")
+	assert.Equal(t, 27, len(codes), "expected 27 error codes")
 }
 
 func TestLookup_Registered(t *testing.T) {
@@ -251,8 +255,9 @@ func TestAllCodes_CountAndImmutable(t *testing.T) {
 	// started emitting it — the two directions had drifted apart independently,
 	// which is what TestEveryCatalogueCodeHasAProducer now pins) → 25 again
 	// (2026-10-28: LE004 withdrawn with the input-resolution feature it described
-	// as missing).
-	assert.Equal(t, 25, len(all))
+	// as missing) → 27 (2026-10-31: LE071 re-registered and LE104 added when
+	// dsl.OrderStepsByDependsOn began consuming depends_on).
+	assert.Equal(t, 27, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}

@@ -286,6 +286,13 @@ const (
 	LE051 = "LE051" // verify / gate expression syntax error
 	LE052 = "LE052" // batches missing post_batch gate [warning]
 
+	// Dependency errors (LE071, LE104) — step-level depends_on ordering.
+	// LE071 was withdrawn on 2026-10-12 for lack of a producer and came back on
+	// 2026-10-31 when dsl.OrderStepsByDependsOn began producing it (see the
+	// withdrawn-codes note below).
+	LE071 = "LE071" // step depends_on forms a cycle
+	LE104 = "LE104" // step depends_on references a step that does not exist
+
 	// Rollback errors (LE082)
 	LE082 = "LE082" // irreversible action not in allow_irreversible
 
@@ -351,6 +358,8 @@ var codeCatalogue = []CodeInfo{
 	{LE044, "approval", "approval level illegal (not one of three tiers)", CompileError},
 	{LE051, "gate", "verify / gate expression syntax error", CompileError},
 	{LE052, "gate", "batches missing post_batch gate", CompileWarning},
+	{LE071, "dependency", "step depends_on forms a cycle", CompileError},
+	{LE104, "dependency", "step depends_on references a step that does not exist", CompileError},
 	{LE082, "rollback", "irreversible action not in allow_irreversible", CompileError},
 	{LE092, "structure", "missing target block", CompileError},
 	{LE093, "structure", "missing step block", CompileError},
@@ -395,12 +404,19 @@ func AllCodes() []CodeInfo {
 // the emitters drifted apart in BOTH directions independently.
 //
 // The codes below were registered for LEVEELang features that were never
-// implemented (label expressions, DAG dependencies, step output references,
-// a required rollback block, approval-level compile checks). They are
-// withdrawn rather than kept: the spec still documents the FUTURE features
-// (marked 尚未实现), and a feature lands with its code when its emitter
-// lands. Re-adding a withdrawn code without an emitter re-creates the exact
-// drift this registry exists to prevent.
+// implemented (label expressions, step output references, a required rollback
+// block, approval-level compile checks). They are withdrawn rather than kept:
+// the spec still documents the FUTURE features (marked 尚未实现), and a feature
+// lands with its code when its emitter lands. Re-adding a withdrawn code
+// without an emitter re-creates the exact drift this registry exists to
+// prevent.
+//
+// LE071 came BACK on 2026-10-31, the same round-trip LE102 had: depends_on was
+// parsed, carried on the AST/IR, emitted and used by shipped examples, but no
+// code consumed it, so a workflow could declare a dependency its declaration
+// order silently violated. dsl.OrderStepsByDependsOn now orders the steps and
+// produces LE071 (cycle) and the new LE104 (unknown reference) — an emitter
+// landed, so the code is re-registered.
 //
 //   LE010, LE011, LE012  label expressions (no parser, no emitter)
 //   LE041, LE042, LE043  action / approval compile checks (the runtime
@@ -410,7 +426,6 @@ func AllCodes() []CodeInfo {
 //                        resolves `{{step.x.output}}`; unlike workflow inputs,
 //                        which plan-time resolution now substitutes, outputs
 //                        have no producer at all)
-//   LE071               DAG cycle detection (no depends_on in the language)
 //   LE081, LE083        rollback whitelist / irreversible-vs-level checks
 //                        (LE082 survives: allow_irreversible is wired)
 //   LE091               a required rollback block (the model is per-step
