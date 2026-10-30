@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [v1.24.0] - 2026-10-31
+
+> **发布状态：未切版。** tag `v1.24.0` 尚未推送。Helm chart 的 `appVersion` / `values.image.tag` 刻意留在 `1.23.0` / `v1.23.0`：`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在远端 tag 集合里，tag 存在之前升档会让 `helm install` 的默认值拉一个从未构建过的镜像（v1.19.0 就停过在那个状态）。两处指针随切版之后的第二笔升代，并把这句状态改写成外部事实。
+
 ### 修复（step `depends_on` 从「被解析却没人消费」变成真依赖顺序 + 未知/成环拒绝）
 
 - **缺口（本仓头号缺陷类的又一实例）**：`depends_on` 被解析（`parser.go`）、登上 AST/IR、被 `emit.go` 回写、被交付示例（`examples/workflows/batch-update.yaml` 等三份）使用——但**没有任何代码消费它**。执行总是按声明顺序，于是 `steps: [b(depends_on a), a]` 会先跑 b 再跑 a，**静默违反声明的依赖**；错误码表甚至把撤回的 LE071 描述成「no depends_on in the language」，与解析器的事实相反。
