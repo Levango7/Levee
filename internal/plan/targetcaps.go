@@ -15,7 +15,8 @@ package plan
 // Why the generator and not the validator: the spec says the check happens at
 // PLAN time, and only the generator knows the resolved target set. The
 // validator (compile time) has no targets yet, so it can only refuse a
-// meaningless DECLARATION (LE107) — see validateTargetCaps in dsl.
+// meaningless DECLARATION — see docs/blocked-items.md E-3 (LE107 withdrawn
+// 2026-10-31; will be re-registered when dsl.validateTargetCaps lands).
 //
 // Counting rule, stated plainly because the alternative is a guess:
 //

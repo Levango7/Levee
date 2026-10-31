@@ -257,7 +257,7 @@ func TestAllCodes_CountAndImmutable(t *testing.T) {
 	// (2026-10-28: LE004 withdrawn with the input-resolution feature it described
 	// as missing) → 27 (2026-10-31: LE071 re-registered and LE104 added when
 	// dsl.OrderStepsByDependsOn began consuming depends_on).
-	assert.Equal(t, 27, len(all))
+	assert.Equal(t, 29, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}
