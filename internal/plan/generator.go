@@ -215,7 +215,8 @@ func NewGeneratorWithPluginPolicy(policy dsl.PluginActionPolicy) *Generator {
 // Returns an error when:
 //   - wf is nil;
 //   - resolvedTargets is empty;
-//   - the batch strategy is unknown.
+//   - the batch strategy is unknown;
+//   - a declared target-group size bound (min_count / max_count) is not met.
 //
 // The division is total: every resolved target appears in exactly one
 // batch.
@@ -280,6 +281,14 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 	if len(depErrs) > 0 {
 		return nil, errors.New(depErrs[0].Code,
 			fmt.Sprintf("workflow %q: %s", wf.Meta.Name, depErrs[0].Message), errors.Fatal)
+	}
+
+	// Target-group size bounds (min_count / max_count, LE105/LE106). Same
+	// defense-in-depth shape as the gates around it: the validator refuses a
+	// meaningless DECLARATION, but only the generator knows the resolved set,
+	// and wiring.GeneratePlan reaches it without the validator in between.
+	if err := checkTargetCaps(wf, resolvedTargets); err != nil {
+		return nil, err
 	}
 
 	// Convert workflow steps to plan steps once; every batch shares

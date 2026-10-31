@@ -293,6 +293,11 @@ const (
 	LE071 = "LE071" // step depends_on forms a cycle
 	LE104 = "LE104" // step depends_on references a step that does not exist
 
+	// Target-group size bounds (plan phase) — see plan/targetcaps.go.
+	LE105 = "LE105" // target group resolved fewer hosts than min_count
+	LE106 = "LE106" // target group resolved more hosts than max_count
+	LE107 = "LE107" // min_count / max_count declaration is not a positive, ordered pair
+
 	// Rollback errors (LE082)
 	LE082 = "LE082" // irreversible action not in allow_irreversible
 
@@ -360,6 +365,9 @@ var codeCatalogue = []CodeInfo{
 	{LE052, "gate", "batches missing post_batch gate", CompileWarning},
 	{LE071, "dependency", "step depends_on forms a cycle", CompileError},
 	{LE104, "dependency", "step depends_on references a step that does not exist", CompileError},
+	{LE105, "target", "target group resolved fewer hosts than min_count", CompileError},
+	{LE106, "target", "target group resolved more hosts than max_count", CompileError},
+	{LE107, "target", "min_count/max_count must be positive and min_count <= max_count", CompileError},
 	{LE082, "rollback", "irreversible action not in allow_irreversible", CompileError},
 	{LE092, "structure", "missing target block", CompileError},
 	{LE093, "structure", "missing step block", CompileError},
