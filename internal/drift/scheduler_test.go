@@ -3,6 +3,7 @@ package drift
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,7 +233,7 @@ func TestRunOnce(t *testing.T) {
 	items := []BaselineItem{
 		{CheckName: "a", Type: CheckTypeFile, Path: "/a", ExpectedValue: "1"},
 	}
-	_, err := bm.GenerateFromSnapshot("web-01", "run-1", items)
+	_, err := bm.GenerateFromSnapshot("web-01", DefaultBaselineName, "run-1", items)
 	require.NoError(t, err)
 
 	prober := &mockStateProber{}
@@ -257,7 +258,7 @@ func TestRunOnce_WithDrift(t *testing.T) {
 	items := []BaselineItem{
 		{CheckName: "a", Type: CheckTypeFile, Path: "/a", ExpectedValue: "1"},
 	}
-	_, err := bm.GenerateFromSnapshot("web-01", "run-1", items)
+	_, err := bm.GenerateFromSnapshot("web-01", DefaultBaselineName, "run-1", items)
 	require.NoError(t, err)
 
 	prober := &mockStateProber{
@@ -279,6 +280,75 @@ func TestRunOnce_WithDrift(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, report)
 	assert.Equal(t, 1, report.TotalDrifts)
+}
+
+// --- pinned baseline version ------------------------------------------------
+
+// pinnedActualProber answers every check with one fixed actual value, so
+// whether a run reports drift is decided by the expected values of whichever
+// baseline version the job resolved. A mock that mirrors the checks would make
+// every version look identical and the pin would pass without being read.
+type pinnedActualProber struct {
+	actual string
+	calls  atomic.Int64
+}
+
+func (p *pinnedActualProber) Probe(_ context.Context, _ string, checks []Check) ([]StateItem, error) {
+	p.calls.Add(1)
+	items := make([]StateItem, len(checks))
+	for i, c := range checks {
+		items[i] = StateItem{CheckName: c.Name, ActualValue: p.actual, ExpectedValue: c.ExpectedValue}
+	}
+	return items, nil
+}
+
+func TestRunOnce_PinnedBaselineVersion(t *testing.T) {
+	bm := NewBaselineManager()
+	_, err := bm.GenerateFromSnapshot("web-01", "", "run-1",
+		[]BaselineItem{{CheckName: "a", Type: CheckTypeFile, Path: "/a", ExpectedValue: "1"}})
+	require.NoError(t, err)
+	_, err = bm.GenerateFromSnapshot("web-01", "cis", "run-1",
+		[]BaselineItem{{CheckName: "a", Type: CheckTypeFile, Path: "/a", ExpectedValue: "hardened"}})
+	require.NoError(t, err)
+
+	// The host is in the state the "cis" version describes.
+	prober := &pinnedActualProber{actual: "hardened"}
+	s := NewScheduler(NewDetector(prober), bm)
+
+	unpinned := addTestJob(s, DriftJob{Name: "unpinned", CronExpr: "0 * * * *", Hosts: []string{"web-01"}})
+	report, err := s.RunOnce(context.Background(), unpinned)
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.TotalDrifts,
+		"a job with no pin checks the default version")
+
+	pinned := addTestJob(s, DriftJob{Name: "pinned", CronExpr: "0 * * * *", Hosts: []string{"web-01"}, BaselineName: "cis"})
+	report, err = s.RunOnce(context.Background(), pinned)
+	require.NoError(t, err)
+	assert.Equal(t, 0, report.TotalDrifts,
+		"the pinned version is the one this host satisfies")
+}
+
+// TestRunOnce_InvalidPinnedNameProbesNothing: an unusable version label fails
+// the whole run before any host is touched. Half a fleet checked against the
+// wrong expected state is the outcome the early refusal exists to prevent;
+// RunOnce keeps its documented contract of not returning run errors, so the
+// observable property is that nothing was probed and nothing was reported.
+func TestRunOnce_InvalidPinnedNameProbesNothing(t *testing.T) {
+	bm := NewBaselineManager()
+	_, err := bm.GenerateFromSnapshot("web-01", DefaultBaselineName, "run-1",
+		[]BaselineItem{{CheckName: "a", Type: CheckTypeFile, Path: "/a", ExpectedValue: "1"}})
+	require.NoError(t, err)
+
+	prober := &pinnedActualProber{actual: "1"}
+	s := NewScheduler(NewDetector(prober), bm)
+	jobID := addTestJob(s, DriftJob{
+		Name: "bad-pin", CronExpr: "0 * * * *", Hosts: []string{"web-01"}, BaselineName: "CIS",
+	})
+
+	report, err := s.RunOnce(context.Background(), jobID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, report.TotalHosts, "the run produced no per-host results")
+	assert.Zero(t, prober.calls.Load(), "no host was probed")
 }
 
 func TestRunOnce_JobNotFound(t *testing.T) {
@@ -313,7 +383,7 @@ func TestRunOnce_NoBaseline(t *testing.T) {
 func TestRunOnce_UpdatesTimestamps(t *testing.T) {
 	bm := NewBaselineManager()
 	items := []BaselineItem{{CheckName: "a", Type: CheckTypeFile, Path: "/a", ExpectedValue: "1"}}
-	_, err := bm.GenerateFromSnapshot("web-01", "run-1", items)
+	_, err := bm.GenerateFromSnapshot("web-01", DefaultBaselineName, "run-1", items)
 	require.NoError(t, err)
 
 	d := NewDetector(&mockStateProber{})
@@ -341,7 +411,7 @@ func TestRunOnce_UpdatesTimestamps(t *testing.T) {
 func TestGetHistory(t *testing.T) {
 	bm := NewBaselineManager()
 	items := []BaselineItem{{CheckName: "a", Type: CheckTypeFile, Path: "/a", ExpectedValue: "1"}}
-	_, err := bm.GenerateFromSnapshot("web-01", "run-1", items)
+	_, err := bm.GenerateFromSnapshot("web-01", DefaultBaselineName, "run-1", items)
 	require.NoError(t, err)
 
 	d := NewDetector(&mockStateProber{})

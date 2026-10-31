@@ -491,7 +491,10 @@ levee tenant resume <tenant-id>
 检测和管理配置漂移，定期巡检目标机配置一致性：
 
 ```命令示例：从最近 apply 自动生成基线
-levee drift baseline auto --host web-01
+levee drift baseline auto --host web-01 --run <run-id>
+
+命令示例：把同一份快照另存为命名版本，供对照
+levee drift baseline auto --host web-01 --run <run-id> --baseline-name cis
 ```
 
 检测漂移：

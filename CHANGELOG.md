@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+### 新增（漂移基线命名多版本：主键从 host 改成 (host, name)，`default` 是没被点名时读的那一份）
+
+- **缺口（roadmap:43）**：`BaselineManager` 以 host 为唯一主键，一台主机至多一份基线，`set` / `auto` 都是覆盖写。文档曾承诺 `--name`，后来因为"命名多版本要改的是存储主键和取用规则、不是加旗标"而**删掉了那句承诺**（原登记原话）。本笔按那句话把它做成事实。
+- **键与取用规则**：`drift.Baseline` 新增 `Name`，管理器键从 `host` 改成 `(host, name)`。保留名 `default` 是**所有没被点名的消费方**读的那一份——`detect --baseline auto`、`baseline show` / `delete`、以及没钉版本的巡检任务都落在它上面。语义是**同名覆盖、异名并存**：覆盖 `default` 就是"刷新当前期望状态"那条路径，另存一个名字不动它。`Delete` 一次只删一个版本、绝不连带清同主机的其他版本（`--baseline-name` 打错字最多删错一份，不会把该主机当前的期望状态一起带走）；`Get` 未命中时把该主机**实际存在的版本名**写进错误串——"没有基线"是死胡同，"它有的是 cis、prod"才是能照着改的提示。
+- **`Set` 的键只能来自记录本身**：旧签名 `Set(host, *Baseline)` 让键和记录各说一遍、两者可以不一致而没人管；改成 `Set(*Baseline)`，host/name 一律从记录取并规范化。本仓反复出现的那类"平行词表"在键上同样是缺陷。
+- **兼容性不做迁移**：`default` 的文件名沿用 `<dataDir>/drift/baselines/<host>.json`，命名版本另起一个 `<host>.<name>.json`；旧记录没有 `name` 字段 ⇒ 装载时归 `default`。因此升级不改变任何运维动作，`--json` 只多出一个 `name` 键。
+- **名字规则刻意收紧，是拒绝不是巧合**：小写字母/数字开头，其后允许 `._-`，总长 ≤64。**不接受大写**——名字要进文件名，而大小写不敏感的文件系统会把 `Prod` 与 `prod` 合成同一份基线。主机名与版本名两处一起拒路径分隔符与 `.` / `..`（`syncJSONDir` 原有的那道守卫保留，纵深防御）。
+- **最容易被顺手做坏的是"整目录对账"**：`saveBaselinesToDisk` 写期望集合、并删掉目录里其余所有 `*.json`。而 (host, name) → 文件名**不是内射**：主机 `web-01` 的版本 `prod` 与主机 `web-01.prod` 的 `default` 都要占 `web-01.prod.json`。碰撞时**整批写入拒绝**、一个字节都不落——否则一次平常的 `baseline set` 会把另一份当陈旧文件删了。
+- **钉名是被消费的字段，不是装饰**：`DriftJob.BaselineName` 由 `runDetection` 在探测**任何主机之前**解析；名字不可用 ⇒ 整轮不探测（不允许半张舰队按错误的期望状态被检查）。CLI 在建任务时就校验并规范化，不让它活到每天 02:00 静默失败。`--json` 里的 `baseline_name` 是文件里的原值：旧任务文件是空串（按 `default` 解析），把空串显示成 `default` 等于声称有一份从没被选择过的版本。
+- **`--baseline-name` 与 `--baseline <file>` 互斥**：文件本身就是一份完整基线，同时给等于悄悄丢掉一个，因此直接拒绝（`--baseline-name applies only to --baseline auto`）。
+- **可观测**：`baseline list` 增加 `NAME` 列（先按主机、再按版本名字典序，`default` 不置顶）；`show` / `delete` 输出点名版本；`delete --json` 除被删版本外还给 `remaining_for_host`，人类可读输出删除后列出该主机仍存着的版本名；`schedule add` 多一行 `Baseline version: <name>`；调度日志的 `get baseline failed` 带上 `baseline_name`。
+- **测试**：
+  - `internal/drift/baseline_test.go`：命名版本并存且默认版本不被顶掉、空名归一为 `default`、`NormalizeBaselineName` 12 条形状子用例（含大写 / 分隔符 / 内含空格 / 前导标点 / `..` / 65 字符拒 / 64 字符收）、主机形状拒绝（分隔符与点名）、未命中错误列出其他版本且顺序稳定、`Set` 的键取自记录、`ListHost`、`List` 按 (host, name) 稳定排序 + 防御拷贝、删除只动一个版本、并发用例改成两个**不同版本**写入（避免 last-writer-wins 掩盖竞态）。
+  - `internal/drift/scheduler_test.go` 2 例 + 一个专用替身：同一个主机同一份实际状态，只有钉的版本不同 ⇒ 未钉报 1 处漂移、钉 `cis` 报 0（"镜像 checks 的 mock"会让每个版本看起来一样，故新写 `pinnedActualProber`）；不可用的钉名 ⇒ `TotalHosts==0` 且**一次都没探测**。
+  - `cmd/levee/cmd_drift_baseline_name_test.go`（新文件，7 例）：旧格式文件读作 `default` **并在无关写入后仍存在于磁盘**、两个版本各自落盘且删一个不动另一个（含 `remaining_for_host`）、`detect --baseline-name` 真的决定漂移结论、文件来源与钉名互斥、非法名字写入即拒且磁盘零残留、任务钉名往返 + 旧任务文件空串原样报出、stem 碰撞整批拒绝且两份原文件都还在。
+  - 既有 drift 用例（`TestDriftE2E_*`、serve 侧 scheduler 装配 5 例）**一行未改全绿**——兼容性的实际验收。
+- **变异咬合（5 条，均先红后还原；三个源文件还原后与改前 `sha256` 逐字节相同）**：① 去掉 `saveBaselinesToDisk` 的碰撞拒绝 → 碰撞用例红（"expected an error, got nil"）；② 让 `default` 不再沿用 `<host>` 文件名 → 升级用例红在"legacy 文件应存活"那条断言上（即真实数据丢失）；③ 去掉版本名校验 → drift 的 5 条命名用例 + CLI 的写入拒绝用例同时红；④ `runDetection` 忽略任务钉名 → 钉名用例红（漂移结论翻转），"不探测"用例两条断言都红；⑤ `Delete` 改成清掉同主机所有版本 → drift 一条红，CLI 一条红在 `remaining_for_host`（说 1 实际 0）。**诚实标注射程**：③ 之下 drift 的"不探测"用例仍绿——它测的是"不探测"而不是"校验"，两条性质不重叠，不能拿③当它的反证。
+- **顺带订正两处文档说谎**：`docs/cli-reference.md` 22.1 原写 `--baseline` 接受"基线 ID"且"必填"（实际默认 `auto`、其余取值是 YAML 文件路径，**从不接受 ID**），22.3 示例漏掉必填的 `--run`（`docs/quickstart.md` 同一处同漏）；`drift baseline show` / `delete` 此前**整章没有章节**，现补齐——第 22 章因此重编号至 22.11（此前无任何外部文档引用过 22.x 小节号，实测 `grep` 无命中）。
+- **登记不修**：`docs/levee-api.md` 第 6 章把 `levee drift scan --target …` 与 `levee drift show <report-id>` 写成产品命令并配了选项表，实际注册表里只有 `detect` / `baseline{set,auto,list,show,delete}` / `schedule{add,list,remove,run}` / `report`；`docs/review-report.md:167` 还把这一对判成"一致"。已进 roadmap 新行，改法要单独定夺（那是 API 参考文档的口径问题，不是本笔的键控改动）。
+- **清理**：`drift.ErrBaselineExists` 是零消费者的死哨兵（注释承诺"覆盖未明示意图时返回"，代码从来没有那条路径），随重新键控一并删除。
+- **边界（仍未做，写在文档里而不是假装覆盖）**：① 没有 `promote` / `export`——要把命名版本变成 `default`，目前只能再 `set --file` 或 `auto` 一次；② 一个任务只有一个版本名、作用于其全部主机，按主机分别钉名要拆成多个任务；③ 版本没有历史链、保留策略与自动淘汰，存几份由操作者自己删；④ 粒度到 `(host, name)` 为止，不做参数级。
+- **验证**：`gofmt -l internal/drift cmd/levee` 空输出；`go vet ./internal/drift/... ./cmd/levee/...` rc=0；`go test -count=1 ./...` rc=0（68 个包 `ok`，零 `FAIL`；`cmd/levee` 196.6s、`internal/drift` 23.4s）；`go test -race -count=2 ./internal/drift` rc=0（`CGO_ENABLED=1` + mingw64 在 PATH，覆盖"同一主机两个版本并发写入"那条用例）；`drift` 包 99 条顶层用例 + 12 条子用例全过；`python scripts/test_changelog_structure.py` 7 tests OK（本条目落在唯一且居首的 `[Unreleased]` 下）；**真二进制走通产品路径**（不是只靠单测）：`levee drift baseline set --host web-01` 与 `--baseline-name pre-migration` 之后，磁盘上同时存在 `web-01.json` 与 `web-01.pre-migration.json`，`drift baseline list --host web-01` 出两行、`NAME` 列分别为 `default` / `pre-migration`。
+
 ## [v1.24.0] - 2026-10-31
 
 > **发布状态：未切版。** tag `v1.24.0` 尚未推送。Helm chart 的 `appVersion` / `values.image.tag` 刻意留在 `1.23.0` / `v1.23.0`：`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在远端 tag 集合里，tag 存在之前升档会让 `helm install` 的默认值拉一个从未构建过的镜像（v1.19.0 就停过在那个状态）。两处指针随切版之后的第二笔升代，并把这句状态改写成外部事实。

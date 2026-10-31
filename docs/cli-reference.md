@@ -2534,42 +2534,66 @@ levee tenant usage t-001
 
 检测目标机配置漂移、管理漂移基线、调度定期巡检与查看漂移报告。
 
+> **基线是 (主机, 版本名) 的二维键**：一台主机可以同时存多份基线，每份一个版本名。
+> 保留名 `default` 是**没有被点名时所有消费方读取的那一份**——`drift detect`（不给
+> `--baseline-name`）、`baseline show` / `delete`、以及没有钉版本的巡检任务，都落在它上面。
+> 命名版本（`cis`、`pre-migration` 这类标签）用来并存与对照，不会顶掉 `default`。
+>
+> **落盘形状**：`<dataDir>/drift/baselines/<host>.json` 存该主机的 `default` 版本，与命名
+> 版本引入之前的布局一致，因此老部署无需迁移；每个命名版本另起一个文件
+> `<host>.<name>.json`。版本名规则：以小写字母或数字开头，其后允许 `._-`，总长 ≤64。
+> **刻意不接受大写**：名字要进文件名，而大小写不敏感的文件系统会把 `Prod` 与 `prod` 合成
+> 同一份基线——那必须是拒绝，不能是巧合。
+>
+> **写盘是整目录对账**（不在期望集合里的 `*.json` 会被删除）。因此若两个 (主机, 版本名)
+> 映射到同一个文件名——例如主机 `web-01` 的版本 `prod` 与主机 `web-01.prod` 的 `default`
+> 都要占 `web-01.prod.json`——这次写入**整体拒绝**、一个字节都不落，而不是让"胜者"顺手把
+> 另一份当陈旧文件删掉。
+
 ### 22.1 drift detect
 
 检测目标机配置漂移。
 
 ```text
-levee drift detect --host <host> [--baseline <baseline-id>|auto]
+levee drift detect --host <host> [--baseline <file>|auto] [--baseline-name <name>]
+levee drift detect --hosts <h1,h2,...> [--baseline <file>|auto] [--baseline-name <name>]
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--host` | | 目标主机名（必填） |
-| `--baseline` | | 基线 ID 或 `auto`（必填，`auto` 表示从最近 apply 自动生成） |
+| `--host` | | 单台目标主机 |
+| `--hosts` | | 逗号分隔的目标主机列表 |
+| `--baseline` | `auto` | `auto` = 用磁盘上存好的基线；其他值 = 基线 YAML 文件路径 |
+| `--baseline-name` | `default` | `auto` 时取该主机的哪个版本；省略即 `default` |
 
 **说明**
 
 - 对比目标机当前实际状态与基线状态，输出漂移项列表
 - 漂移项包含文件路径、期望内容哈希、实际内容哈希、差异类型
 - 无漂移时退出码 0，存在漂移时退出码 0 并打印漂移列表
+- `--baseline-name` 只对 `auto` 有意义：文件路径本身就是一份完整基线，两者同时给出会被拒绝（`--baseline-name applies only to --baseline auto`），而不是悄悄丢掉其中一个
+- 点名的版本不存在时直接失败，并把该主机**实际存在的版本名列出来**——"没有基线"是死胡同，"它有的是 cis、prod"才是能照着改的提示；也不会退回去用 `default` 凑一次检测
 
 **示例**
 
-```命令示例：使用自动基线检测漂移
+```命令示例：用默认版本检测漂移
 levee drift detect --host web-01 --baseline auto
 
-命令示例：使用指定基线检测漂移
-levee drift detect --host web-01 --baseline base-001
+命令示例：用命名版本检测漂移
+levee drift detect --host web-01 --baseline-name cis
+
+命令示例：临时拿一份 YAML 文件当基线
+levee drift detect --host web-01 --baseline ./baselines/web-20261031.yaml
 ```
 
 ### 22.2 drift baseline set
 
-手动设置漂移基线。
+从 YAML 文件设置漂移基线。
 
 ```text
-levee drift baseline set --host <host> --file <path>
+levee drift baseline set --host <host> --file <path> [--baseline-name <name>]
 ```
 
 **选项**
@@ -2577,24 +2601,29 @@ levee drift baseline set --host <host> --file <path>
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--host` | | 目标主机名（必填） |
-| `--file` | | 基线文件路径（必填，YAML 或 JSON） |
+| `--file` | | 基线文件路径（必填，YAML：`check_name`/`type`/`path`/`expected_value` 的列表，或带 `items:` 键的对象） |
+| `--baseline-name` | `default` | 存成该主机的哪个版本 |
 
 **说明**
 
-- 基线以 **host 为主键**，一台主机同时只保留一份基线：再次 `set` 会覆盖该机现有基线。因此没有 `--name`——命名多版本基线需要改动存储主键（`BaselineManager` 按 host 索引），不是加个旗标就能得到的。
+- **同名覆盖、异名并存**：不带 `--baseline-name` 的 `set` 覆盖该主机 `default` 版本（这就是"刷新当前期望状态"的路径）；带名字则只覆盖那个名字，同主机其他版本不受影响
+- 版本名非法（大写、含路径分隔符、超 64 字符等）时整次写入拒绝，磁盘上不会留下半条记录
 
 **示例**
 
-```命令示例：手动设置基线
-levee drift baseline set --host web-01 --file baseline.json
+```命令示例：设置默认版本
+levee drift baseline set --host web-01 --file baseline.yaml
+
+命令示例：并存一份合规基线而不顶掉默认版本
+levee drift baseline set --host web-01 --baseline-name cis --file cis-baseline.yaml
 ```
 
 ### 22.3 drift baseline auto
 
-从目标机最近一次 apply 的预期状态自动生成基线。
+从某次 apply 的快照自动生成基线。
 
 ```text
-levee drift baseline auto --host <host> --run <run-id>
+levee drift baseline auto --host <host> --run <run-id> [--baseline-name <name>]
 ```
 
 **选项**
@@ -2603,15 +2632,20 @@ levee drift baseline auto --host <host> --run <run-id>
 |------|--------|------|
 | `--host` | | 目标主机名（必填） |
 | `--run` | | 取该 run 的 apply 快照作为基线来源（必填） |
+| `--baseline-name` | `default` | 存成该主机的哪个版本 |
 
 **说明**
 
-- 与 `set` 一样按 host 覆盖既有基线；来源 run 记录在 `source_run_id` 字段，`list`/`show` 可见。
+- 与 `set` 一样按 (主机, 版本名) 覆盖；来源 run 记录在 `source_run_id` 字段，`list`/`show` 可见
+- 来源快照取自 `<dataDir>/drift/snapshots/<run-id>/<host>.json`，缺该文件时报"空基线"而不是造一份
 
 **示例**
 
-```命令示例：自动生成基线
-levee drift baseline auto --host web-01
+```命令示例：把这次变更的结果收作新的默认期望状态
+levee drift baseline auto --host web-01 --run run-7f3c
+
+命令示例：另存一份版本用于对照
+levee drift baseline auto --host web-01 --run run-7f3c --baseline-name pre-migration
 ```
 
 ### 22.4 drift baseline list
@@ -2626,7 +2660,11 @@ levee drift baseline list [--host <host>]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--host` | | 只列出该主机的基线；省略则列出全部。因一台主机至多一份基线，命中时最多一行 |
+| `--host` | | 只列出该主机的基线；省略则列出全部。一台主机有 N 个版本就出 N 行 |
+
+**输出**
+
+人类可读表格列为 `HOST / NAME / ID / RUN / ITEMS`；`--json` 每行含 `host`、`name`、`id`、`source_run_id`、`created_at`、`items`。排序稳定：先按主机，再按版本名字典序（`default` 不特殊置顶）。
 
 **示例**
 
@@ -2634,7 +2672,58 @@ levee drift baseline list [--host <host>]
 levee drift baseline list --host web-01
 ```
 
-### 22.5 drift schedule add
+### 22.5 drift baseline show
+
+查看某主机的一个基线版本（含每一项期望值）。
+
+```text
+levee drift baseline show --host <host> [--baseline-name <name>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | | 目标主机名（必填） |
+| `--baseline-name` | `default` | 看哪个版本 |
+
+**示例**
+
+```命令示例：看默认版本
+levee drift baseline show --host web-01
+
+命令示例：看命名版本
+levee drift baseline show --host web-01 --baseline-name cis
+```
+
+### 22.6 drift baseline delete
+
+删除**一个**基线版本。
+
+```text
+levee drift baseline delete --host <host> [--baseline-name <name>]
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--host` | | 目标主机名（必填） |
+| `--baseline-name` | `default` | 删哪个版本 |
+
+**说明**
+
+- 一次调用只删一个版本，绝不连带删除同主机的其他版本——要清掉多个就按名字各删一次。这样 `--baseline-name` 打错字最多删错一份，不会把该主机当前的期望状态一起带走
+- `--json` 输出除被删版本的 `host`/`name`/`baseline_id` 外还给 `remaining_for_host`：该主机还剩几个版本
+- 人类可读输出在删除后列出该主机仍存着的版本名
+
+**示例**
+
+```命令示例：删掉对照用的命名版本
+levee drift baseline delete --host web-01 --baseline-name pre-migration
+```
+
+### 22.7 drift schedule add
 
 添加定期巡检调度任务。
 
@@ -2643,7 +2732,7 @@ levee drift baseline list --host web-01
 > 需要 `levee drift schedule run` 手动触发。
 
 ```text
-levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--alert] [--enabled]
+levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--baseline-name <name>] [--alert] [--enabled]
 ```
 
 **选项**
@@ -2653,16 +2742,26 @@ levee drift schedule add --name <name> --cron <expr> --hosts <hosts> [--alert] [
 | `--name` | | 调度任务名称（必填） |
 | `--cron` | | 5 字段 cron 表达式（必填，如 `0 2 * * *`） |
 | `--hosts` | | 目标主机列表，逗号分隔（必填） |
+| `--baseline-name` | `default` | 每次巡检把各主机比对该主机的哪个基线版本 |
 | `--alert` | `true` | 检测到漂移时是否告警 |
 | `--enabled` | `true` | 创建后是否立即启用该任务 |
+
+**说明**
+
+- **一个任务只有一个版本名，作用于该任务的所有主机**：要按主机分别比对不同版本，就拆成多个任务。任务里某主机没有这个版本时，该主机本轮检查记为失败并留 warn 日志，其余主机照常
+- 版本名在**写入时**就校验：一个永远解析不出来的名字宁可拒绝建任务，也不要每天 02:00 静默失败
+- `--json` 的 `baseline_name` 是任务文件里存的原值。经 CLI 新建的任务一定带规范化后的名字；早于该字段存在的任务文件里是空串，空串按 `default` 解析——把空串显示成 `default` 等于声称有一份从没被选择过的版本
 
 **示例**
 
 ```命令示例：添加每日凌晨巡检
 levee drift schedule add --name daily-check --cron "0 2 * * *" --hosts web-01,web-02
+
+命令示例：每晚比对合规基线版本
+levee drift schedule add --name cis-nightly --cron "0 2 * * *" --hosts web-01 --baseline-name cis
 ```
 
-### 22.6 drift schedule list
+### 22.8 drift schedule list
 
 列出所有定期巡检调度任务。
 
@@ -2676,7 +2775,7 @@ levee drift schedule list
 levee drift schedule list
 ```
 
-### 22.7 drift schedule remove
+### 22.9 drift schedule remove
 
 移除定期巡检调度任务。
 
@@ -2696,7 +2795,7 @@ levee drift schedule remove <schedule-id>
 levee drift schedule remove sched-001
 ```
 
-### 22.8 drift schedule run
+### 22.10 drift schedule run
 
 立即触发一次巡检（不等 cron 时刻）。
 
@@ -2716,7 +2815,7 @@ levee drift schedule run <schedule-id>
 levee drift schedule run sched-001
 ```
 
-### 22.9 drift report
+### 22.11 drift report
 
 查看漂移报告与趋势分析。
 

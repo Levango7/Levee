@@ -78,6 +78,9 @@ func resetDriftFlags() {
 	driftOptFile = ""
 	driftOptRunID = ""
 	driftOptName = ""
+	// Cobra keeps the last parsed value in the bound variable, so a
+	// --baseline-name from an earlier command would answer for the next one.
+	driftOptBaselineName = ""
 	driftOptCron = ""
 	driftOptDays = 30
 	driftOptAlert = true
