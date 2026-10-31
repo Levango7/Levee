@@ -64,6 +64,12 @@ type DriftJob struct {
 	// detected. When true the detector's notifier (if configured) is
 	// invoked.
 	AlertOnDrift bool `json:"alert_on_drift"`
+	// BaselineName pins the named baseline version this job probes against.
+	// Empty means drift.DefaultBaselineName, so jobs written before named
+	// versions existed keep using the host's current expected state. One name
+	// applies to every host in Hosts: a job that needs per-host versions is
+	// several jobs, not a map here.
+	BaselineName string `json:"baseline_name"`
 	// LastRun is the time of the most recent execution (zero before the
 	// first run).
 	LastRun time.Time `json:"last_run"`
@@ -350,11 +356,20 @@ func (s *DriftScheduler) runDetection(ctx context.Context, job *DriftJob) ([]*Dr
 		firstErr error
 	)
 
+	// Resolve the pinned baseline version once, before any host is probed:
+	// an unusable name fails the whole run rather than leaving a per-host
+	// mystery in the log while half the fleet is checked against the wrong
+	// expected state.
+	baselineName, err := NormalizeBaselineName(job.BaselineName)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, host := range job.Hosts {
 		wg.Add(1)
 		go func(h string) {
 			defer wg.Done()
-			baseline, err := s.baselineMgr.Get(h)
+			baseline, err := s.baselineMgr.Get(h, baselineName)
 			if err != nil {
 				mu.Lock()
 				if firstErr == nil {
@@ -363,6 +378,7 @@ func (s *DriftScheduler) runDetection(ctx context.Context, job *DriftJob) ([]*Dr
 				log.Warn("drift: get baseline failed",
 					"job_id", job.ID,
 					"host", h,
+					"baseline_name", baselineName,
 					"err", err)
 				mu.Unlock()
 				return

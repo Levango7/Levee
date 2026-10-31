@@ -2,23 +2,27 @@
 //
 // This file implements the `levee drift` command tree:
 //
-//   levee drift detect --host <host> [--baseline <file|auto>]
-//   levee drift detect --hosts <h1,h2,...> [--baseline <file|auto>]
-//   levee drift baseline set --host <host> --file <baseline.yaml>
-//   levee drift baseline auto --host <host> --run <run-id>
-//   levee drift baseline list
-//   levee drift baseline show --host <host>
-//   levee drift baseline delete --host <host>
-//   levee drift schedule add --name <name> --cron <expr> --hosts <h1,h2,...>
+//   levee drift detect --host <host> [--baseline <file|auto>] [--baseline-name <name>]
+//   levee drift detect --hosts <h1,h2,...> [--baseline <file|auto>] [--baseline-name <name>]
+//   levee drift baseline set --host <host> --file <baseline.yaml> [--baseline-name <name>]
+//   levee drift baseline auto --host <host> --run <run-id> [--baseline-name <name>]
+//   levee drift baseline list [--host <host>]
+//   levee drift baseline show --host <host> [--baseline-name <name>]
+//   levee drift baseline delete --host <host> [--baseline-name <name>]
+//   levee drift schedule add --name <name> --cron <expr> --hosts <h1,h2,...> [--baseline-name <name>]
 //   levee drift schedule list
 //   levee drift schedule remove <job-id>
 //   levee drift schedule run <job-id>
 //   levee drift report --host <host> [--days <n>]
 //
 // Baselines and jobs are persisted as JSON files under <dataDir>/drift/ so
-// they survive across CLI invocations. The detector uses a local-file prober
-// that reads file content from the local filesystem; remote probing (SSH /
-// WinRM) is left as a future enhancement.
+// they survive across CLI invocations. A baseline is keyed by (host, name):
+// the name is the version label, and the reserved name "default" is what
+// every command that is not given --baseline-name resolves to. The file stem
+// for a host's default version stays "<host>" so deployments written before
+// named versions keep loading, and named versions add one file per name.
+// The detector uses a local-file prober that reads file content from the local
+// filesystem; remote probing (SSH / WinRM) is left as a future enhancement.
 
 package main
 
@@ -40,16 +44,17 @@ import (
 
 // drift command option variables.
 var (
-	driftOptHost     string
-	driftOptHosts    string
-	driftOptBaseline string // "auto" or a file path
-	driftOptFile     string // baseline file for `baseline set`
-	driftOptRunID    string // run id for `baseline auto`
-	driftOptName     string
-	driftOptCron     string
-	driftOptDays     int
-	driftOptAlert    bool
-	driftOptEnabled  bool
+	driftOptHost         string
+	driftOptHosts        string
+	driftOptBaseline     string // "auto" or a file path
+	driftOptFile         string // baseline file for `baseline set`
+	driftOptRunID        string // run id for `baseline auto`
+	driftOptName         string
+	driftOptBaselineName string // baseline version label ("" = drift.DefaultBaselineName)
+	driftOptCron         string
+	driftOptDays         int
+	driftOptAlert        bool
+	driftOptEnabled      bool
 )
 
 func init() {
@@ -73,6 +78,21 @@ func newDriftCmd() *cobra.Command {
 	return cmd
 }
 
+// --- --baseline-name --------------------------------------------------------
+
+// baselineNameFlag registers the baseline version label on cmd. Every
+// sub-command that stores, reads or deletes a baseline carries it, and the
+// wording lives here once because four copies of one sentence is how the
+// documented default starts disagreeing with the code. It binds the shared
+// option variable like every other drift flag, so the test harness's
+// resetDriftFlags restores it — a flag value survives between in-process
+// executions of the command tree, which is how one test's --baseline-name
+// would otherwise answer for the next test's command.
+func baselineNameFlag(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&driftOptBaselineName, "baseline-name", "",
+		"Stored baseline version label (empty = \""+drift.DefaultBaselineName+"\")")
+}
+
 // --- detect -----------------------------------------------------------------
 
 // newDriftDetectCmd builds the `levee drift detect` sub-command.
@@ -83,13 +103,17 @@ func newDriftDetectCmd() *cobra.Command {
 		Long: "Run drift detection on one or more hosts against a baseline. " +
 			"Use --host for a single host or --hosts for a comma-separated " +
 			"list. --baseline accepts 'auto' (use the stored baseline for " +
-			"the host) or a path to a baseline YAML file.",
+			"the host) or a path to a baseline YAML file. --baseline-name " +
+			"picks which stored version 'auto' means; without it the host's " +
+			"'default' version is used. A file path is already a complete " +
+			"baseline, so --baseline-name cannot be combined with one.",
 		Args: cobra.NoArgs,
 		RunE: runDriftDetect,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Single target host")
 	cmd.Flags().StringVar(&driftOptHosts, "hosts", "", "Comma-separated target hosts")
 	cmd.Flags().StringVar(&driftOptBaseline, "baseline", "auto", "Baseline source: 'auto' or file path")
+	baselineNameFlag(cmd)
 	return cmd
 }
 
@@ -105,6 +129,13 @@ func runDriftDetect(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("drift detect: no hosts specified (use --host or --hosts) [exit=2]")
 	}
 
+	// --baseline-name selects which stored version to use. A file path is
+	// already a complete baseline, so accepting both would silently drop one
+	// of them — name the conflict instead.
+	if driftOptBaselineName != "" && driftOptBaseline != "auto" && driftOptBaseline != "" {
+		return fmt.Errorf("drift detect: --baseline-name applies only to --baseline auto [exit=2]")
+	}
+
 	// Load baselines from disk.
 	bm, err := loadBaselinesFromDisk()
 	if err != nil {
@@ -118,7 +149,7 @@ func runDriftDetect(cmd *cobra.Command, args []string) error {
 	// Resolve baseline for each host and run detection.
 	var results []*drift.DriftResult
 	for _, host := range hosts {
-		baseline, err := resolveBaseline(_ctx, bm, host, driftOptBaseline)
+		baseline, err := resolveBaseline(_ctx, bm, host, driftOptBaseline, driftOptBaselineName)
 		if err != nil {
 			return fmt.Errorf("drift detect: resolve baseline for %q: %w", host, err)
 		}
@@ -172,12 +203,16 @@ func newDriftBaselineSetCmd() *cobra.Command {
 		Short: "Set a baseline from a YAML file",
 		Long: "Set the drift baseline for a host from a YAML file. The file " +
 			"must contain a list of baseline items (check_name, type, path, " +
-			"expected_value).",
+			"expected_value). --baseline-name stores it as one version of that " +
+			"host; omitting it replaces the host's \"" + drift.DefaultBaselineName +
+			"\" version, which is what detect and scheduled jobs use unless " +
+			"they name another.",
 		Args: cobra.NoArgs,
 		RunE: runDriftBaselineSet,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
 	cmd.Flags().StringVar(&driftOptFile, "file", "", "Baseline YAML file (required)")
+	baselineNameFlag(cmd)
 	_ = cmd.MarkFlagRequired("host")
 	_ = cmd.MarkFlagRequired("file")
 	return cmd
@@ -189,12 +224,15 @@ func newDriftBaselineAutoCmd() *cobra.Command {
 		Use:   "auto",
 		Short: "Auto-generate a baseline from an apply snapshot",
 		Long: "Auto-generate the drift baseline for a host from the most " +
-			"recent apply snapshot of the given run.",
+			"recent apply snapshot of the given run. With --baseline-name the " +
+			"snapshot is stored as that version and the host's existing " +
+			"versions stay available for comparison.",
 		Args: cobra.NoArgs,
 		RunE: runDriftBaselineAuto,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
 	cmd.Flags().StringVar(&driftOptRunID, "run", "", "Source run ID (required)")
+	baselineNameFlag(cmd)
 	_ = cmd.MarkFlagRequired("host")
 	_ = cmd.MarkFlagRequired("run")
 	return cmd
@@ -209,7 +247,8 @@ func newDriftBaselineListCmd() *cobra.Command {
 		RunE:  runDriftBaselineList,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "",
-		"Restrict to one host (empty = every stored baseline)")
+		"Restrict to one host (empty = every stored baseline); a host with "+
+			"named versions yields one row each")
 	return cmd
 }
 
@@ -217,11 +256,12 @@ func newDriftBaselineListCmd() *cobra.Command {
 func newDriftBaselineShowCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show",
-		Short: "Show the baseline for a host",
+		Short: "Show one stored baseline of a host",
 		Args:  cobra.NoArgs,
 		RunE:  runDriftBaselineShow,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
+	baselineNameFlag(cmd)
 	_ = cmd.MarkFlagRequired("host")
 	return cmd
 }
@@ -230,11 +270,16 @@ func newDriftBaselineShowCmd() *cobra.Command {
 func newDriftBaselineDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete",
-		Short: "Delete the baseline for a host",
-		Args:  cobra.NoArgs,
-		RunE:  runDriftBaselineDelete,
+		Short: "Delete one stored baseline of a host",
+		Long: "Delete a single stored baseline. Without --baseline-name it " +
+			"deletes the host's \"" + drift.DefaultBaselineName + "\" version; " +
+			"the host's other versions are never removed as a side effect, so " +
+			"dropping several takes one call per name.",
+		Args: cobra.NoArgs,
+		RunE: runDriftBaselineDelete,
 	}
 	cmd.Flags().StringVar(&driftOptHost, "host", "", "Target host (required)")
+	baselineNameFlag(cmd)
 	_ = cmd.MarkFlagRequired("host")
 	return cmd
 }
@@ -251,7 +296,7 @@ func runDriftBaselineSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("drift baseline set: load baselines: %w", err)
 	}
 
-	baseline, err := bm.GenerateFromSnapshot(driftOptHost, "", items)
+	baseline, err := bm.GenerateFromSnapshot(driftOptHost, driftOptBaselineName, "", items)
 	if err != nil {
 		return fmt.Errorf("drift baseline set: %w", err)
 	}
@@ -271,7 +316,7 @@ func runDriftBaselineSet(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stdout, baseline.ID)
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "Baseline set for host %s\n", driftOptHost)
+	fmt.Fprintf(os.Stdout, "Baseline set for host %s as version %s\n", baseline.Host, baseline.Name)
 	fmt.Fprintf(os.Stdout, "  ID: %s\n", baseline.ID)
 	fmt.Fprintf(os.Stdout, "  Items: %d\n", len(baseline.Items))
 	return nil
@@ -293,7 +338,7 @@ func runDriftBaselineAuto(cmd *cobra.Command, args []string) error {
 	drift.SetSnapshotSource(src)
 	defer drift.SetSnapshotSource(nil)
 
-	baseline, err := bm.AutoGenerate(driftOptHost, driftOptRunID)
+	baseline, err := bm.AutoGenerate(driftOptHost, driftOptBaselineName, driftOptRunID)
 	if err != nil {
 		return fmt.Errorf("drift baseline auto: %w", err)
 	}
@@ -313,7 +358,8 @@ func runDriftBaselineAuto(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stdout, baseline.ID)
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "Baseline auto-generated for host %s from run %s\n", driftOptHost, driftOptRunID)
+	fmt.Fprintf(os.Stdout, "Baseline auto-generated for host %s as version %s from run %s\n",
+		baseline.Host, baseline.Name, driftOptRunID)
 	fmt.Fprintf(os.Stdout, "  ID: %s\n", baseline.ID)
 	fmt.Fprintf(os.Stdout, "  Items: %d\n", len(baseline.Items))
 	return nil
@@ -358,10 +404,10 @@ func runDriftBaselineList(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(os.Stdout, "No baselines found.")
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "%-20s %-24s %-12s %-8s\n", "HOST", "ID", "RUN", "ITEMS")
+	fmt.Fprintf(os.Stdout, "%-20s %-16s %-24s %-12s %-8s\n", "HOST", "NAME", "ID", "RUN", "ITEMS")
 	for _, b := range baselines {
-		fmt.Fprintf(os.Stdout, "%-20s %-24s %-12s %-8d\n",
-			b.Host, b.ID, b.SourceRunID, len(b.Items))
+		fmt.Fprintf(os.Stdout, "%-20s %-16s %-24s %-12s %-8d\n",
+			b.Host, b.Name, b.ID, b.SourceRunID, len(b.Items))
 	}
 	return nil
 }
@@ -373,7 +419,7 @@ func runDriftBaselineShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("drift baseline show: load baselines: %w", err)
 	}
 
-	baseline, err := bm.Get(driftOptHost)
+	baseline, err := bm.Get(driftOptHost, driftOptBaselineName)
 	if err != nil {
 		return fmt.Errorf("drift baseline show: %w", err)
 	}
@@ -386,6 +432,7 @@ func runDriftBaselineShow(cmd *cobra.Command, args []string) error {
 		})
 	}
 	fmt.Fprintf(os.Stdout, "Host: %s\n", baseline.Host)
+	fmt.Fprintf(os.Stdout, "Name: %s\n", baseline.Name)
 	fmt.Fprintf(os.Stdout, "ID: %s\n", baseline.ID)
 	fmt.Fprintf(os.Stdout, "Source Run: %s\n", baseline.SourceRunID)
 	fmt.Fprintf(os.Stdout, "Created: %s\n", baseline.CreatedAt.Format(time.RFC3339))
@@ -404,7 +451,11 @@ func runDriftBaselineDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("drift baseline delete: load baselines: %w", err)
 	}
 
-	if err := bm.Delete(driftOptHost); err != nil {
+	baseline, err := bm.Get(driftOptHost, driftOptBaselineName)
+	if err != nil {
+		return fmt.Errorf("drift baseline delete: %w", err)
+	}
+	if err := bm.Delete(baseline.Host, baseline.Name); err != nil {
 		return fmt.Errorf("drift baseline delete: %w", err)
 	}
 
@@ -414,12 +465,25 @@ func runDriftBaselineDelete(cmd *cobra.Command, args []string) error {
 
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
-			"data":  map[string]any{"host": driftOptHost, "deleted": true},
+			"data": map[string]any{
+				"host":               baseline.Host,
+				"name":               baseline.Name,
+				"baseline_id":        baseline.ID,
+				"remaining_for_host": len(bm.ListHost(baseline.Host)),
+				"deleted":            true,
+			},
 			"meta":  nil,
 			"error": nil,
 		})
 	}
-	fmt.Fprintf(os.Stdout, "Baseline deleted for host %s\n", driftOptHost)
+	fmt.Fprintf(os.Stdout, "Baseline deleted for host %s version %s\n", baseline.Host, baseline.Name)
+	if remaining := bm.ListHost(baseline.Host); len(remaining) > 0 {
+		names := make([]string, 0, len(remaining))
+		for _, b := range remaining {
+			names = append(names, b.Name)
+		}
+		fmt.Fprintf(os.Stdout, "  Still stored for this host: %s\n", strings.Join(names, ", "))
+	}
 	return nil
 }
 
@@ -444,14 +508,20 @@ func newDriftScheduleAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Add a scheduled drift detection job",
-		Args:  cobra.NoArgs,
-		RunE:  runDriftScheduleAdd,
+		Long: "Add a scheduled drift detection job. Each run probes every " +
+			"host in --hosts against that host's stored baseline version; " +
+			"--baseline-name pins which version, and without it the job uses " +
+			"the \"" + drift.DefaultBaselineName + "\" version. One name applies " +
+			"to every host in the job.",
+		Args: cobra.NoArgs,
+		RunE: runDriftScheduleAdd,
 	}
 	cmd.Flags().StringVar(&driftOptName, "name", "", "Job name (required)")
 	cmd.Flags().StringVar(&driftOptCron, "cron", "", "5-field cron expression (required)")
 	cmd.Flags().StringVar(&driftOptHosts, "hosts", "", "Comma-separated target hosts (required)")
 	cmd.Flags().BoolVar(&driftOptAlert, "alert", true, "Alert on drift")
 	cmd.Flags().BoolVar(&driftOptEnabled, "enabled", true, "Enable the job")
+	baselineNameFlag(cmd)
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("cron")
 	_ = cmd.MarkFlagRequired("hosts")
@@ -495,6 +565,14 @@ func runDriftScheduleAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("drift schedule add: no hosts specified [exit=2]")
 	}
 
+	// Validate the pinned baseline version at write time. A job whose version
+	// can never resolve is worse than a refused add: it would fail quietly at
+	// 3am every night instead of here.
+	baselineName, err := drift.NormalizeBaselineName(driftOptBaselineName)
+	if err != nil {
+		return fmt.Errorf("drift schedule add: %w", err)
+	}
+
 	bm, err := loadBaselinesFromDisk()
 	if err != nil {
 		return fmt.Errorf("drift schedule add: load baselines: %w", err)
@@ -514,6 +592,7 @@ func runDriftScheduleAdd(cmd *cobra.Command, args []string) error {
 		Hosts:        hosts,
 		Enabled:      driftOptEnabled,
 		AlertOnDrift: driftOptAlert,
+		BaselineName: baselineName,
 	}
 	added, err := scheduler.AddJob(job)
 	if err != nil {
@@ -541,6 +620,7 @@ func runDriftScheduleAdd(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "  Name: %s\n", added.Name)
 	fmt.Fprintf(os.Stdout, "  Cron: %s\n", added.CronExpr)
 	fmt.Fprintf(os.Stdout, "  Hosts: %s\n", strings.Join(added.Hosts, ","))
+	fmt.Fprintf(os.Stdout, "  Baseline version: %s\n", added.BaselineName)
 	fmt.Fprintf(os.Stdout, "  Next run: %s\n", added.NextRun.Format(time.RFC3339))
 	return nil
 }
@@ -816,7 +896,12 @@ func loadBaselinesFromDisk() (*drift.BaselineManager, error) {
 		if err := json.Unmarshal(data, &baseline); err != nil {
 			continue // skip malformed files
 		}
-		if err := bm.Set(baseline.Host, &baseline); err != nil {
+		// The file's own record is the truth: a baseline written before named
+		// versions existed has no name field and lands on the default
+		// version. Two files claiming the same (host, name) collapse to the
+		// one stored last, in ReadDir (lexical) order — and re-save as a
+		// single file, which is the only shape that can round-trip.
+		if err := bm.Set(&baseline); err != nil {
 			continue
 		}
 	}
@@ -824,8 +909,8 @@ func loadBaselinesFromDisk() (*drift.BaselineManager, error) {
 }
 
 // saveBaselinesToDisk writes all baselines to the baselines directory as
-// individual JSON files keyed by host, deleting files whose host no longer
-// has a baseline (otherwise `baseline delete` would leave the file behind
+// individual JSON files keyed by (host, name), deleting files whose baseline
+// no longer exists (otherwise `baseline delete` would leave the file behind
 // and every later command would resurrect the baseline from disk).
 func saveBaselinesToDisk(bm *drift.BaselineManager) error {
 	bd, err := baselinesDir()
@@ -833,15 +918,43 @@ func saveBaselinesToDisk(bm *drift.BaselineManager) error {
 		return err
 	}
 
-	desired := make(map[string][]byte, 0)
-	for _, b := range bm.List() {
+	listing := bm.List()
+	owner := make(map[string]*drift.Baseline, len(listing))
+	desired := make(map[string][]byte, len(listing))
+	for _, b := range listing {
+		stem := baselineFileStem(b.Host, b.Name)
+		// The directory is reconciled by deleting every *.json it was not
+		// asked to keep, so two versions that land on one stem do more than
+		// overwrite each other — the loser is removed from disk as stale.
+		// Refuse the whole write instead of guessing which version survives.
+		if other, taken := owner[stem]; taken {
+			return fmt.Errorf("drift: baselines %s/%s and %s/%s both map to file %q.json; rename one with --baseline-name",
+				other.Host, other.Name, b.Host, b.Name, stem)
+		}
+		owner[stem] = b
 		data, err := json.MarshalIndent(b, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal baseline: %w", err)
 		}
-		desired[b.Host] = data
+		desired[stem] = data
 	}
 	return syncJSONDir(bd, desired)
+}
+
+// baselineFileStem maps a (host, name) pair to the stem of its JSON file. The
+// default version keeps the pre-naming layout, "<host>", so an existing
+// deployment loads and re-saves without a migration step; each named version
+// adds one file, "<host>.<name>".
+//
+// The mapping is not injective — host "web-01" with version "prod" and host
+// "web-01.prod" with the default version both give "web-01.prod". saveBaselines
+// checks for that and refuses rather than letting one version silently delete
+// the other.
+func baselineFileStem(host string, name string) string {
+	if name == drift.DefaultBaselineName {
+		return host
+	}
+	return host + "." + name
 }
 
 // syncJSONDir reconciles dir with the desired set of entries, writing each
@@ -982,15 +1095,19 @@ func loadBaselineYAML(path string) ([]drift.BaselineItem, error) {
 
 // resolveBaseline returns the baseline for the given host. When source is
 // "auto" it loads the stored baseline; otherwise it loads from a YAML file.
-func resolveBaseline(_ctx context.Context, bm *drift.BaselineManager, host string, source string) (*drift.Baseline, error) {
+func resolveBaseline(_ctx context.Context, bm *drift.BaselineManager, host string, source string, name string) (*drift.Baseline, error) {
 	if source == "auto" || source == "" {
-		return bm.Get(host)
+		// An empty name is the manager's cue for the default version.
+		return bm.Get(host, name)
 	}
 	// Load from file.
 	items, err := loadBaselineYAML(source)
 	if err != nil {
 		return nil, fmt.Errorf("load baseline file: %w", err)
 	}
+	// A file source is a complete baseline handed over ad hoc. It is never
+	// stored, so it carries no version label — inventing one here would make
+	// the output claim a stored version that does not exist.
 	return &drift.Baseline{
 		ID:        "adhoc",
 		Host:      host,
@@ -1084,6 +1201,7 @@ func baselineToMap(b *drift.Baseline) map[string]any {
 	return map[string]any{
 		"id":            b.ID,
 		"host":          b.Host,
+		"name":          b.Name,
 		"source_run_id": b.SourceRunID,
 		"created_at":    b.CreatedAt.Format(time.RFC3339),
 		"items":         items,
@@ -1099,6 +1217,11 @@ func jobToMap(j *drift.DriftJob) map[string]any {
 		"hosts":          j.Hosts,
 		"enabled":        j.Enabled,
 		"alert_on_drift": j.AlertOnDrift,
+		// The stored value verbatim: jobs written before named versions
+		// existed have no pin, and an empty pin means the default version.
+		// Rendering it as "default" here would claim a stored choice nobody
+		// made — `levee drift schedule add` writes the normalized label.
+		"baseline_name": j.BaselineName,
 	}
 	if !j.LastRun.IsZero() {
 		m["last_run"] = j.LastRun.Format(time.RFC3339)
