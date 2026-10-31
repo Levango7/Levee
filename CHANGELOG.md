@@ -4,9 +4,29 @@
 
 ## [Unreleased]
 
+### 修复（D-1b 已交付：插件破坏性动作声明接进编译期与计划期；D-2 目标组边界检查整理提交）
+
+- **D-1b 已闭环（PR #234，`b375ec8`，4 个干净 commit：`bf5a387`/`293694e`/`63ddcf3`/`b375ec8`）**：插件破坏性动作声明（`destructive_actions`）通过 registry 持久化（含旧库 `ALTER TABLE` 迁移，`PRAGMA table_info` 守卫 + 显式 `ALTER`，不吞真错误）；编译期 `dsl.NewValidatorWithPluginPolicy` 与计划期 `plan.NewGeneratorWithPluginPolicy` 消费同一份 `dsl.PluginActionPolicy`（破坏性对 / 可逆对 / 已安装模块名，归一化去重）；判定进 `plan_hash`（`irreversible` / `irreversible_reason`），同一插件在不同部署下可逆与不可逆的差异成为事实，不是漂移。旧构造器 `NewValidator` / `NewGenerator` / `WithInherentIrreversible` 保留为破坏性简写，语义不变。**强制档（未声明即默认不可逆）仍未做，已登记为 `docs/blocked-items.md` E-3，由后续产品决定取代。**
+- **D-2 整理提交（本轮 `feat/d2-target-caps`）**：新增 `internal/plan/targetcaps.go`（目标组 `min_count`/`max_count` 边界检查，规范 §4.1）；新增错误码 `LE105`/`LE106`/`LE107`（`internal/errors/errors.go`）；集成到 `generator.go`（`Generate` 阶段调用 `checkTargetCaps`，计划阶段阻断、不进审批）；补提交 `internal/chatops/event_producer_test.go`（守卫测试，7328 字节）。修复 `generator.go` 意外被注释的函数声明（构建验证通过）；提交为单父线性分支（`feat/d2-target-caps`，`fd867f2` + `81886d5`），无 merge commit，遵循 §5.4。
+- **本轮无冲突确认**：不触碰 `CHANGELOG.md` 其他已交付条目（`#244`/#246/#247/#250`/`#234` 的记录原样保留）；`docs/blocked-items.md` 已同步更新（D-1b 挪入已交付区并注 PR 号，D-1c 保持已收窄描述）；`docs/blocked-items.md` E-3（强制档）仍留作待定，不与本笔混淆。
+- **验证**：`gofmt -l` 干净；`go vet ./...` rc=0；`go test ./internal/dsl/ ./internal/plan/ ./internal/chatops/` 全绿（含变异验证）；构建在临时降 `go.mod`（已还原）后通过；远端 `origin/master`（`023e334`）与本分支无文件冲突。
+
+### 修复（step `depends_on` 从「被解析却没人消费」变成真依赖顺序 + 未知/成环拒绝）
+
+- **缺口（本仓头号缺陷类的又一实例）**：`depends_on` 被解析（`parser.go`）、登上 AST/IR、被 `emit.go` 回写、被交付示例（`examples/workflows/batch-update.yaml` 等三份）使用——但**没有任何代码消费它**。执行总是按声明顺序，于是 `steps: [b(depends_on a), a]` 会先跑 b 再跑 a，**静默违反声明的依赖**；错误码表甚至把撤回的 LE071 描述成「no depends_on in the language」，与解析器的事实相反。
+- **落地**：新增 `dsl.OrderStepsByDependsOn`——按 `depends_on` 做**稳定拓扑排序**（依赖已满足的步骤保持声明顺序，因此按依赖书写的 workflow 逐字节不变，现有示例零影响），并把两类非法图报出来：引用不存在的 step（**新增 LE104**）、依赖成环（**LE071 重新登记**：2026-10-12 因无产出方被撤回，现在有了产出方）。编译期 `dsl.Validator` 与计划期 `plan.Generator`（`wiring.GeneratePlan` 不经 validator 的那条路）**共用同一份实现**，两端结论不可能分叉。
+- **边界如实**：消费的是**依赖顺序**这一半；并行调度与 `{{step.x.output}}` 输出引用仍是 V1 项（`docs/mvp-tasks.md` N-18）。规范 §4.5 / §8.1 V9 / §8.2 同步更新。
+- **测试**：dsl 10 例（乱序重排、稳定、无依赖不变、未知引用、环、自依赖、重复边算一条、坏图仍返回全序、validator 报错）；plan 3 例（生成器按依赖排序、未知引用 LE104 拒绝、环 LE071 拒绝）；`internal/errors` 目录计数 25→27 与 `TestEveryCatalogueCodeHasAProducer` 双向守卫自动覆盖；`TestShippedExamplesCompile` 保持绿。
+- **验证**：`gofmt -l` 干净；`go test -count=1 ./internal/dsl/ ./internal/errors/ ./internal/plan/` 全绿。
+
 ## [v1.24.0] - 2026-10-31
 
 > **发布状态：未切版。** tag `v1.24.0` 尚未推送。Helm chart 的 `appVersion` / `values.image.tag` 刻意留在 `1.23.0` / `v1.23.0`：`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在远端 tag 集合里，tag 存在之前升档会让 `helm install` 的默认值拉一个从未构建过的镜像（v1.19.0 就停过在那个状态）。两处指针随切版之后的第二笔升代，并把这句状态改写成外部事实。
+## [v1.24.0] - 2026-10-31
+
+> **发布状态：未切版。** tag `v1.24.0` 尚未推送。Helm chart 的 `appVersion` / `values.image.tag` 刻意留在 `1.23.0` / `v1.23.0`：`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在远端 tag 集合里，tag 存在之前升档会让 `helm install` 的默认值拉一个从未构建过的镜像（v1.19.0 就停过在那个状态）。两处指针随切版之后的第二笔升代，并把这句状态改写成外部事实。
+
+
 
 ### 修复（step `depends_on` 从「被解析却没人消费」变成真依赖顺序 + 未知/成环拒绝）
 
