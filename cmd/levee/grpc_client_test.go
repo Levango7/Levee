@@ -287,7 +287,7 @@ func TestServiceModeString(t *testing.T) {
 // resolveServiceMode (root flag → serviceMode)
 // =========================================================================
 
-func TestResolveServiceMode_DefaultLocal(t *testing.T) {
+func TestResolveServiceMode_ExplicitLocalFlag(t *testing.T) {
 	defer resetRootFlags()
 	optLocal = true
 	optRemote = false

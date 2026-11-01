@@ -15,8 +15,8 @@
 | `--timeout` | | `30m` | 单命令超时，超时退出码 8 |
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
-| `--local` | | `true` | 本地模式（默认），直连本地 store |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。当前由 `agent list / show / remove` 消费（读取 daemon 的注册表），其余命令仍按本地语义执行 |
+| `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前只有 `agent list / show / remove` 消费它**（读取 daemon 的注册表）；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
