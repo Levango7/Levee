@@ -253,6 +253,31 @@ func TestCheckStrictReturnsFirstError(t *testing.T) {
 	assert.NotEmpty(t, err.Error())
 }
 
+// --- file.copy signature ----------------------------------------------------
+
+// TestFileCopySignatureUsesRuntimeArgName pins the file.copy signature to the
+// arg name the runtime module actually reads.
+//
+// The signature table used to say "dst" while the module reads "dest"
+// (internal/executor/modules/file/file.go). Every shipped workflow writes
+// "dest", so the mismatch was invisible in the assets — but the table was
+// advertising a parameter that does not exist, and the real one was not in the
+// table at all. A workflow written with "dst" would pass strict type checking
+// and then fail on the target with "missing argument dest": the "compiles
+// green, explodes at run time" class this repo keeps hunting.
+//
+// The runtime half of the same contract is pinned by
+// TestFileCopyRuntimeArgNameMatchesSignature (external test package — it
+// needs the executor modules, and internal/executor imports internal/dsl, so
+// from inside package dsl it would close an import cycle).
+func TestFileCopySignatureUsesRuntimeArgName(t *testing.T) {
+	sig, ok := actionSignatures["file.copy"]
+	require.True(t, ok, "file.copy must have a signature")
+	assert.Contains(t, sig, "dest", "the signature must name the arg the module reads")
+	assert.Contains(t, sig, "src", "the signature must name the arg the module reads")
+	assert.NotContains(t, sig, "dst", "no workflow or module uses dst; it is a name that only ever existed here")
+}
+
 // --- Registry integration --------------------------------------------------
 
 func TestCheckWithRegistryAlias(t *testing.T) {
