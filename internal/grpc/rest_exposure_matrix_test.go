@@ -52,7 +52,7 @@ import (
 var rpcExemptFromREST = map[string]string{
 	"ChangeService.WatchChange":                 "gRPC server stream; the SSE route /changes/{id}/events carries the same fan-out",
 	"ChangeService.StreamLogs":                  "gRPC server stream; log tailing is served by the SSE routes and GetLogs paging",
-	"AlertService.SubscribeAlerts":              "gRPC server stream; the gateway answers 501 for it (see handleAlert) — SSE route is the ledger's open item",
+	"AlertService.SubscribeAlerts":              "gRPC server stream; the gateway answers 501 for it (see handleAlert) — the console's live feed is the SSE route /alerts/stream (sse_alerts.go)",
 	"AlertService.ReceiveAlert":                 "machine-to-machine ingress; the per-source credential headers are defined on the gRPC path",
 	"AgentService.RegisterAgent":                "agent-protocol write: an agent speaks gRPC with its credential, not a browser",
 	"AgentService.AgentHeartbeat":               "agent-protocol write: same trust boundary as RegisterAgent",
