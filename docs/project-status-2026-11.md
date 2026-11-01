@@ -35,13 +35,17 @@
 go: golang.org/toolchain@v0.0.1-go1.26.10.windows-amd64: verifying module: checksum database disabled by GOSUMDB=off
 ```
 
-**现象是任何 `go` 命令都报这一行**，包括 `go version`（在仓库目录里）。**解法**（本轮实测可用）：
+**现象是任何 `go` 命令都报这一行**，包括 `go version`（在仓库目录里）。**解法**（本轮实测可用，并已**在本机修好**）：
 
 ```powershell
-$env:GOSUMDB="sum.golang.org"; $env:GOTOOLCHAIN="go1.26.10+auto"
+go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version 直接报 1.26.10
 ```
 
-`GOPROXY` 已是 `https://goproxy.cn,direct`，goproxy.cn 的 sumdb 代理可用，工具链能下下来并缓存。**在本仓库目录下跑任何 go 命令前先设这两行**，否则会误以为是代码坏了。
+`GOPROXY` 已是 `https://goproxy.cn,direct`，goproxy.cn 的 sumdb 代理可用，工具链能下下来并缓存。**`GOPRIVATE` / `GONOSUMDB` 对工具链无效**——Go 的工具链路径不接受豁免（两者都实测过，仍报同一错），只能给一个真实 sumdb。
+
+附带的好处：`GOSUMDB=off` 原本意味着普通依赖**只信 go.sum、不查校验库**；改成 `sum.golang.org` 后依赖也纳入校验库验证（经 goproxy.cn 的 sumdb 代理），这是一次安全侧的加固而不是纯粹绕过。
+
+**已同步写入 `AGENTS.md` 的「本机上已经付过代价的几件事」**，让别的机器上的 agent 也少踩一次。
 
 > 这条本该进 `AGENTS.md` 的「本机上已经付过代价的几件事」——那节记的正是这类机器特有的坑。**本轮未改 `AGENTS.md`**（不在本次范围，且它是给所有 agent 看的公共契约，改动宜由仓库的人拍板）。
 
@@ -93,7 +97,7 @@ $env:GOSUMDB="sum.golang.org"; $env:GOTOOLCHAIN="go1.26.10+auto"
 | 不是 | CMDB / 日志平台 / 告警引擎 / Agent 常驻纳管平台——**那些归 OpsMesh** |
 | 不是 | ArgoCD / Flux 的替代：集群内声明式交付归它们，集群外命令式高危变更归 LEVEE |
 
-一句话：**workflow 是 LEVEE 的内部实现，Change 才是它的公开主语**（53 个 RPC 里 22 个挂在 `ChangeService`，九个已注册服务中最大）。
+一句话：**workflow 是 LEVEE 的内部实现，Change 才是它的公开主语**（60 个 RPC 里 23 个挂在 `ChangeService`，十个已注册服务中最大——数字已于 2026-11-01 按当前 `proto/` 订正，见 §7 第 5 条）。
 
 ### 4.2 对定位的评估
 
@@ -143,6 +147,8 @@ $env:GOSUMDB="sum.golang.org"; $env:GOTOOLCHAIN="go1.26.10+auto"
 **⇒ 继续加代码功能的边际收益，低于把上面第一、二行补上。** 现在最值得投入的是「让这套东西能被签出去」，而不是「让它多一个功能」。
 
 需要说清的边界：本仓自己的门禁仍很强（本轮在 `origin/master` @ `482af47` 上实跑：`go build ./...` exit 0 · `go vet ./...` exit 0 · `go test ./... -count=1` **72 包（68 ok / 4 个无测试文件）0 FAIL** · `golangci-lint run ./...` **0 issues** 且 rc=0；CI 侧另有 govulncheck / gosec / trivy / CodeQL / 4 腿 browser-check / `landing shape` 全绿），**这不是"功能做完了所以该去做市场"的局面，而是"代码侧确实到了这一轮的边界"**——两者不能混为一谈。
+
+**本轮还把一直挂着的 PG 盲区补上了**（见 §9）：本机 `postgres:16-alpine` 容器起在 `localhost:25433`，设 `LEVEE_PG_TEST_DSN` 后 `-p 1` 串行跑，**`internal/state` 412 条用例全 PASS、0 SKIP**（此前无 DSN 时 28 条 PG 用例是 skip 的），`internal/cluster` / `internal/takeover` / `internal/calendar` / `internal/backup` / `cmd/levee` / `tests/integration` 六个包也全绿——其中 `internal/state` 的 `TestPGStore_AuditChainSealAndWORM` 与 `TestPGStore_ListAuditChainPage_OrderCursorAndTenant` 是**在真实 PostgreSQL 16.15 上**跑的 audit WORM 触发器与全局链。
 
 ---
 
@@ -204,8 +210,8 @@ $env:GOSUMDB="sum.golang.org"; $env:GOTOOLCHAIN="go1.26.10+auto"
 ## 9. 本文的验证盲区（照实登记）
 
 0. **本轮实跑过的**（`origin/master` @ `482af47`，需先按 §2.1b 设 `GOSUMDB`）：`go build ./...` exit 0 · `go vet ./...` exit 0 · `go test ./... -count=1` 72 包 0 FAIL（68 ok / 4 无测试文件）· `golangci-lint run ./...` **0 issues** 且 rc=0 · `python scripts/test_changelog_structure.py` 7 tests OK · `python scripts/test_landing_shape_step.py` 11 tests OK · 留言板校验器实跑两次（清理前 exit 1、清理后 exit 0）· `git worktree`/分支/远端删除的每一步都有回显。**§7 的五处漂移是读代码 + grep 复核**，不是行为复现。
-1. **本机无 PostgreSQL**（`LEVEE_PG_TEST_DSN` 未设），PG 相关用例全部 skip。凡涉及 PG 的结论，本文只引用**代码与迁移文本**，未执行。
-2. **本文不含任何"跑过"的说法，除非给了命令与输出。** §7 第 2、4 项涉及运行时行为（serve 启动告警、calendar gate 拦截），若要作为"已闭环"的最终依据，宜在 CI 的 postgres 腿补一条行为断言。
+1. **PostgreSQL 侧本轮已实跑，不再是盲区。** 起 `postgres:16-alpine` 容器（`localhost:25433`，凭据 `levee`/`levee-ci`/库 `levee_test`），设 `LEVEE_PG_TEST_DSN` 后按 `AGENTS.md` 的要求 `-p 1` 串行跑：`internal/state` **412 条 PASS / 0 SKIP**，`internal/cluster` / `internal/takeover` / `internal/calendar` / `internal/backup` / `cmd/levee` / `tests/integration` 全绿。**§7 第 2、4 项涉及 PG 行为的部分（calendar 的 PG 方言、audit 链的 PG 触发器）因此有了真机依据**——但其余 CI 专有的组合（PG 与集群、PG 与备份的联合腿）仍只由 CI 承担。
+2. **§7 的五处漂移仍是「读代码 + grep 复核」**（除第 1 条 PG 部分已实跑外）。第 2、4 项虽在本机 PG 上有相关用例通过，但那些用例验的是 WORM 触发器与链的**行为**，不是"台账那句话现在对不对"——后者只能靠比对代码与文档，仍未变。
 3. **PR #263 的 CI 在本文写作时仍在跑**，结论只到"已开、CI 正常触发"，未到"全绿"。
-4. **本文基于 `origin/master` @ `482af47`**，master 后续前进后需重新核对——尤其 §5.1 的"几乎全部 ✅"是按该 commit 数的。
+4. **本文基于 `origin/master` @ `482af47`**，master 后续前进后需重新核对——尤其 §5.1 的"几乎全部 ✅"是按该 commit 数的。**注意本文自己就是一次教训**：写作时我按十月的认知描述了 audit 链的封链行为，而上游早已把它改成 keyset 分页并加了"内容被改即拒绝重链"的规则——写完复核时才发现，已在 §8.3 按当前代码订正。
 5. **本地是浅克隆**，本文未做 `git fetch --unshallow`（会拉全量历史、耗时不可控）；§2.2 的谱系判断依据是内容比对与 `CONTRIBUTING.md` 自述，不是祖先关系。
