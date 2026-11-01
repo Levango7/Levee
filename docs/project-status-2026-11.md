@@ -5,7 +5,7 @@
 | 文档类型 | 现状盘点 + 评估 + 规划 |
 | 基线 | `origin/master` @ `482af47`（v1.24.0 已切版，2026-10-31） |
 | 撰写 | agent `mcode-status`（留言板条目 `mcode-status.md`，工作树 `F:/Nexus/levee-wt-ms1`） |
-| 取证口径 | 每条结论附 `file:line` 或本机实测输出。**不采信台账行文本身**——本轮复核出的 4 处漂移全部是台账写错、代码已做的方向 |
+| 取证口径 | 每条结论附 `file:line` 或本机实测输出。**不采信台账行文本身**——本轮复核出的 5 处漂移全部是台账写错、代码已做的方向 |
 | 适用范围 | 面向下一个接手本仓的 agent 与仓库的人 |
 
 ---
@@ -23,7 +23,7 @@
 | 项 | 事实 |
 | --- | --- |
 | 上游 | `origin/master` @ `482af47`（v1.24.0 已切版：tag `v1.24.0`、GitHub Release 7 个资产、镜像 `ghcr.io/levango7/levee:v1.24.0` 多架构） |
-| `F:\Nexus\levee` | **别人的 checkout**，停在 `docs/restore-213-changelog`（2026-10-26）。该分支的 CHANGELOG 恢复条目**已在 master 的 v1.23.0 段**（`origin/master:CHANGELOG.md:270`），故这个 checkout 可视为可回收 |
+| `F:\Nexus\levee` | 原来是**别人的 checkout**，停在 `docs/restore-213-changelog`（2026-10-26）。该分支的 CHANGELOG 恢复条目**已在 master 的 v1.23.0 段**（`origin/master:CHANGELOG.md:270`，落在 `## [v1.23.0]`（209 行）与 `## [v1.22.0]`（618 行）之间）——**本轮已回收**：切回 master、删本地与远端同名分支 |
 | 推送通道 | https 直连 github **不通**（实测 `Recv failure: Connection was reset`）；必须走 `ssh://git@ssh.github.com:443/Levango7/Levee`。ssh 也时通时断（实测一次 21s 超时） |
 | 本地是浅克隆 | `.git/shallow` 存在 |
 
@@ -45,9 +45,9 @@ go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version �
 
 附带的好处：`GOSUMDB=off` 原本意味着普通依赖**只信 go.sum、不查校验库**；改成 `sum.golang.org` 后依赖也纳入校验库验证（经 goproxy.cn 的 sumdb 代理），这是一次安全侧的加固而不是纯粹绕过。
 
-**已同步写入 `AGENTS.md` 的「本机上已经付过代价的几件事」**，让别的机器上的 agent 也少踩一次。
+**已同步写入 `AGENTS.md` 的「本机上已经付过代价的几件事」**，让别的机器上的 agent 也少踩一次（同一笔提交 `ec06e30`）。
 
-> 这条本该进 `AGENTS.md` 的「本机上已经付过代价的几件事」——那节记的正是这类机器特有的坑。**本轮未改 `AGENTS.md`**（不在本次范围，且它是给所有 agent 看的公共契约，改动宜由仓库的人拍板）。
+> 补一句来由：这条**原本**是打算只写进本文、不动 `AGENTS.md` 的——理由是 `AGENTS.md` 是给所有 agent 看的公共契约，改动宜由仓库的人拍板。后来仓库的人明确让「解决一下配置」，就顺势补进去了；`AGENTS.md` 的两段写法与本文一致（机器级 `go env -w`，不是每次设环境变量），免得下一个 agent 以为自己得记得设变量。
 
 ### 2.2 两个会误导人的信号（先知道再用这些命令）
 
@@ -162,7 +162,7 @@ go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version �
 | 2 | `product-roadmap.md` | 「清单与 labels 不一致…**未加一致性审计**——那是下一笔的候选」 | `internal/inventory/ownership.go:157` 的 `inventory.LabelConflicts` 逐行比对 registry 与存储 label；`cmd/levee/cmd_serve.go:1370` 在 serve 启动时对每处冲突 WARN，冲突时 registry 压过 labels | 改写为已落地并给出 file:line；**同时把真正残留写准**：写入路径（`ImportTargets` / `AddTarget`）仍只看 labels、不查 registry，故不一致只能被报出来、不能被拒掉 |
 | 3 | `product-roadmap.md` | 「`human` 门禁的 approver 传输**仍未实现**（改为 plan 期拒绝）」 | `internal/approval/gate_approver.go` 实现 `verify.HumanApprover`；`cmd/levee/cmd_serve.go:1236` 经 `wiring.WithGateApprover` 装进 `buildEngineServeOptions`，其生产调用点 `cmd/levee/cmd_serve.go:1473` | 标题改为「✅ 已落地（v1.20.0，#84）」；正文的「全仓实现数 = 0」标注为登记当时的事实并给出订正 |
 | 4 | `product-roadmap.md` | 「组织级变更日历至今**整条链路无人消费**」及其 ①②③④ 四小项 | ① `cmd/levee/cmd_serve.go:51` import `internal/calendar`，`:1203` 的 `calendarFor` 按 store 类型选方言，`:1207` 装 `wiring.WithChangeCalendar`；② 日历表已有 PG 形状；③ 判定函数的生产调用点在 `internal/wiring/calendar_gate.go:95/107/162`，`internal/wiring/calendar_gate_test.go:340` 的 `TestCalendarGateIsForwardOnly` 钉住回滚豁免；④ 冻结语义进了 `docs/leveelang-spec.md` §4.2b | 四小项逐条改写为已落地并附证据 |
-| 5 | `product-positioning.md` | 「53 个 RPC（`levee.proto` 40 个 + `levee_extra.proto` 13 个）…**22 个**挂在 `ChangeService`，是**九个**已注册服务中最大的一个」 | 实测 `proto/`：**60 个**（41 + 19），`ChangeService` **23 个**，服务 **10 个**（`AgentService` 是之后加的） | 三个数字全部按实测订正，并标注订正日期与来源 |
+| 5 | `product-positioning.md` | 「53 个 RPC（`levee.proto` 40 个 + `levee_extra.proto` 13 个）…**22 个**挂在 `ChangeService`，是**九个**已注册服务中最大的一个」 | 实测 `proto/`：**60 个**（`levee.proto` **41** + `levee_extra.proto` **19**），`ChangeService` **23 个**，服务 **10 个**（`AgentService` 是之后加的）；生产注册点 10 处（`internal/grpc/server.go:292/305/306/307/308` 五个 + `cmd/levee/cmd_serve.go:949` 一个 + `internal/grpc/extra_services.go:60/66/72/78` 四个） | 三个数字全部按实测订正，并标注订正日期与来源 |
 
 `docs/security-audit.md` 与 `docs/blocked-items.md` 无同类陈述——漂移集中在 `product-roadmap.md`（4 处）与 `product-positioning.md`（1 处）。
 
@@ -178,10 +178,10 @@ go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version �
 
 | 项 | 内容 | 备注 |
 | --- | --- | --- |
-| PR #262 | `qoder-a26` 的 G-06 修复，CI 已全绿 → **评审并合入** | 它的板声明 16:54 到期；合入权在仓库的人手里 |
-| PR #263 | 告警 SSE 路由守卫，CI 跑完即可评审 | 板上无声明——合入前顺手问一句作者 |
-| 台账 4 处漂移 | 本轮已改，待评审合入 | 见 §7 |
-| 回收 checkout | `F:\Nexus\levee` 停在已落地内容上，可让主人回收 | — |
+| PR #262 | `qoder-a26` 的 G-06 修复 → **rebase 到新 master 后合入** | 原 PR 与 master 冲突（双方都在 `CHANGELOG.md` 的 `[Unreleased]` 顶部追加 `###` 小节）；解法是**两侧小节全保留**、G-06 置顶。它的板声明 16:54 到期；合入权在仓库的人手里 |
+| PR #263 | 告警 SSE 路由守卫 → **评审并合入** | 板上无声明——合入前顺手问一句作者。它能干净地 rebase 到本 PR 之上（已实测） |
+| 台账 5 处漂移 | 本轮已改（§7） | 与本文同笔 PR |
+| 回收 checkout | `F:\Nexus\levee` 停在已落地内容上 → **本轮已回收**：切回 master、删本地与远端陈旧分支 | 删前实测：工作树干净、无 stash、无进程占用、分支内容逐行已在 master |
 
 ### 8.2 需要人（**这是当前最大的杠杆**）
 
@@ -202,7 +202,7 @@ go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version �
 
 ### 8.4 机制建议（可选，非当前必需）
 
-- **把「台账声称未做/已做」变成可机器校验的东西。** 本轮 4 处漂移全部是同一种形状，且**没有任何 CI 能发现它**——CI 能校验代码，不能校验"账本说的事与代码一致"。一个低成本的形态：给 `docs/product-roadmap.md` 的每条"已落地/仍未做"断言配一个 `file:line` 锚点，由一个测试检查锚点存在且该处含关键字。**本轮未做**——它要动的是 CI 与全表，属于独立立项。
+- **把「台账声称未做/已做」变成可机器校验的东西。** 本轮 5 处漂移全部是同一种形状，且**没有任何 CI 能发现它**——CI 能校验代码，不能校验"账本说的事与代码一致"。一个低成本的形态：给 `docs/product-roadmap.md` 的每条"已落地/仍未做"断言配一个 `file:line` 锚点，由一个测试检查锚点存在且该处含关键字。**本轮未做**——它要动的是 CI 与全表，属于独立立项。
 - **板机制加一条"开 PR 前必须先有板条目"的约定。** §3.3 的观察：板能报重叠，不能发现漏声明。
 
 ---
@@ -213,5 +213,5 @@ go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version �
 1. **PostgreSQL 侧本轮已实跑，不再是盲区。** 起 `postgres:16-alpine` 容器（`localhost:25433`，凭据 `levee`/`levee-ci`/库 `levee_test`），设 `LEVEE_PG_TEST_DSN` 后按 `AGENTS.md` 的要求 `-p 1` 串行跑：`internal/state` **412 条 PASS / 0 SKIP**，`internal/cluster` / `internal/takeover` / `internal/calendar` / `internal/backup` / `cmd/levee` / `tests/integration` 全绿。**§7 第 2、4 项涉及 PG 行为的部分（calendar 的 PG 方言、audit 链的 PG 触发器）因此有了真机依据**——但其余 CI 专有的组合（PG 与集群、PG 与备份的联合腿）仍只由 CI 承担。
 2. **§7 的五处漂移仍是「读代码 + grep 复核」**（除第 1 条 PG 部分已实跑外）。第 2、4 项虽在本机 PG 上有相关用例通过，但那些用例验的是 WORM 触发器与链的**行为**，不是"台账那句话现在对不对"——后者只能靠比对代码与文档，仍未变。
 3. **PR #263 的 CI 在本文写作时仍在跑**，结论只到"已开、CI 正常触发"，未到"全绿"。
-4. **本文基于 `origin/master` @ `482af47`**，master 后续前进后需重新核对——尤其 §5.1 的"几乎全部 ✅"是按该 commit 数的。**注意本文自己就是一次教训**：写作时我按十月的认知描述了 audit 链的封链行为，而上游早已把它改成 keyset 分页并加了"内容被改即拒绝重链"的规则——写完复核时才发现，已在 §8.3 按当前代码订正。
+4. **本文基于 `origin/master` @ `482af47`**，master 后续前进后需重新核对——尤其 §5.1 的"几乎全部 ✅"是按该 commit 数的。**注意本文自己就是一次教训**：写作时我按十月的认知描述了 audit 链的封链行为，而上游早已把它改成 keyset 分页（`internal/audit/auditchain.go:137-139`）、`Seal` 增加"内容被改即拒绝重链"（`:184`/`:226` 的 `ErrChainBroken`）、并留了 `Rebuild` 管理口（`:247`）。**本文正文并没有断言封链语义**（唯一涉及 audit 链的表述是 §6 与 §7 第 4 项提到的 PG WORM 触发器用例名），所以正文无需改动——但这一条要记下来：**写作时的认知会过期，本文引用 `482af47` 的每处行号都需要按该 commit 复核**。顺带记一条**上游尚未解决**的问题：`walkChain` 的读放大仍在（`auditchain.go:138` 自述"sealing still walks every visible row, and Record calls it per write"），分页没有去掉"每次写入都全量走一遍"的成本。
 5. **本地是浅克隆**，本文未做 `git fetch --unshallow`（会拉全量历史、耗时不可控）；§2.2 的谱系判断依据是内容比对与 `CONTRIBUTING.md` 自述，不是祖先关系。
