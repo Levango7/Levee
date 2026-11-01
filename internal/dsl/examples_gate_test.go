@@ -54,8 +54,14 @@ func TestShippedExamplesCompile(t *testing.T) {
 		return nil
 	}))
 
-	assert.GreaterOrEqual(t, len(checked), 4,
-		"at least the four workflow examples must be covered — a classification rule that skips "+
+	// The count is pinned to the current inventory (6 shipped workflow
+	// documents) rather than being a lower bound: a bound would still be
+	// satisfied by a classification rule that quietly stops covering a file,
+	// and the number of shipped documents is itself part of what this gate
+	// promises. Adding a shipped workflow means bumping this number in the
+	// same change.
+	assert.Equal(t, 6, len(checked),
+		"every shipped workflow example must be covered — a classification rule that skips "+
 			"everything would make this gate vacuously green")
 	t.Logf("compiled %d example(s); skipped %d non-workflow document(s): %v",
 		len(checked), len(skipped), strings.Join(skipped, ", "))
@@ -105,6 +111,8 @@ func TestShippedLabWorkflowsCompile(t *testing.T) {
 		return nil
 	}))
 
-	assert.GreaterOrEqual(t, len(checked), 3,
-		"all three lab workflows must be covered — the runbook's commands are only as real as these files")
+	// Pinned to the current inventory (6 lab workflows), same reasoning as
+	// the examples gate above: the count is part of the promise.
+	assert.Equal(t, 6, len(checked),
+		"all lab workflows must be covered — the runbook's commands are only as real as these files")
 }
