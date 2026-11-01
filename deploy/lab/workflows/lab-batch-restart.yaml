@@ -24,11 +24,19 @@ approval:
   level: standard
 
 steps:
+  # 重启与"服务是否活着"分两步：shell.exec 的命令体受运行期白名单约束，
+  # `&&` 会被拒（internal/executor/modules/shell/shell.go）。拆成两步后，
+  # "重启成功"和"重启后是活的"分别留下两条证据。
   - name: restart-app
     action: shell.exec
     args:
-      cmd: "systemctl restart lab-app && systemctl is-active lab-app"
+      cmd: "systemctl restart lab-app"
     idempotent: true
+    verify:
+      cmd:
+        run: "systemctl is-active lab-app"
+        expect_exit: 0
+        expect_stdout: "active"
     # 补偿归属在本步（LE097：workflow 级只放运行态策略）
     rollback:
       strategy: undo-action

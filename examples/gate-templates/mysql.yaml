@@ -32,10 +32,16 @@ batches:
 steps:
   # Post-change command gate: mysqld must answer a ping and print the
   # canonical "mysqld is alive" line.
+  #
+  # The FLUSH needs a quoted SQL argument, which shell.exec's runtime
+  # allowlist rejects (letters, digits and - _ . / = plus spaces only —
+  # see internal/executor/modules/shell/shell.go), so the statement runs
+  # through shell.script, whose body is executed by sh on the target.
   - name: flush-binlog
-    action: shell.exec
+    action: shell.script
     args:
-      cmd: "mysql -e 'FLUSH BINARY LOGS'"
+      script: |
+        mysql -e 'FLUSH BINARY LOGS'
     idempotent: true
     verify:
       cmd:

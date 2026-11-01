@@ -46,6 +46,9 @@ batches:
 
 approval:
   level: high
+  # high 档要两个互相独立的批准，且发起人不能投（internal/approval/levels.go）。
+  # 不声明 approvers 的话，计划期就被"approval under-provisioned"拒掉。
+  approvers: [alice, bob]
 
 # V14 whitelist (LE082): the one irreversible step this workflow runs is the
 # declared shell.exec upgrade; any other irreversible action would be
@@ -54,11 +57,22 @@ allow_irreversible:
   - shell.exec
 
 steps:
+  # The upgrade and the restart are two steps, not one `&&` chain: shell.exec's
+  # runtime allowlist rejects '&' (letters, digits and - _ . / = plus spaces
+  # only — see internal/executor/modules/shell/shell.go). Splitting them also
+  # gives the ledger two distinct pieces of evidence: the package was updated,
+  # and the service came back up.
   - name: upgrade-redis
     action: shell.exec
     args:
-      cmd: "yum update -y redis && systemctl restart redis"
+      cmd: "yum update -y redis"
     irreversible: true
+
+  - name: restart-redis
+    action: svc.restart
+    args:
+      name: redis
+    depends_on: ["upgrade-redis"]
     verify:
       cmd:
         run: "redis-cli ping"

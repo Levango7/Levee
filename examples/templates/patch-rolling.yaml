@@ -44,6 +44,9 @@ batches:
 
 approval:
   level: high
+  # high 档要两个互相独立的批准，且发起人不能投（internal/approval/levels.go）。
+  # 不声明 approvers 的话，计划期就被"approval under-provisioned"拒掉。
+  approvers: [alice, bob]
 
 steps:
   - name: scan
@@ -61,9 +64,12 @@ steps:
         run: "systemctl is-active nginx"
         expect_exit: 0
     rollback:
-      action: shell.exec
-      args:
-        cmd: "yum downgrade -y {{.package}}"
+      strategy: undo-action
+      step:
+        name: downgrade-package
+        action: shell.exec
+        args:
+          cmd: "yum downgrade -y {{.package}}"
 
 rollback:
   on_failure: auto

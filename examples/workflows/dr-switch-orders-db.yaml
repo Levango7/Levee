@@ -41,6 +41,9 @@ batches:
 
 approval:
   level: high
+  # high 档要两个互相独立的批准，且发起人不能投（internal/approval/levels.go）。
+  # 不声明 approvers 的话，计划期就被"approval under-provisioned"拒掉。
+  approvers: [alice, bob]
 
 # V14 白名单：本工作流授权的不可逆动作。未列名的不可逆动作（显式声明或
 # 引擎固有能力）会在编译期被 LE082 拒绝——白名单缺席等于什么都没授权。
@@ -48,15 +51,20 @@ allow_irreversible:
   - mysql.replica_switch
 
 steps:
+  # 复制状态预检：需要引号与管道，走 shell.script 而不是 shell.exec——
+  # shell.exec 的命令体受运行期白名单约束（只允许字母数字与 - _ . / = 和
+  # 空格，引号与 | 会被拒，见 internal/executor/modules/shell/shell.go），
+  # 脚本体不受该白名单限制，由目标机上的 sh 执行。
   - name: precheck-replication
-    action: shell.exec
+    action: shell.script
     args:
-      cmd: "mysql -e \"SHOW SLAVE STATUS\\G\" | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'"
+      script: |
+        mysql -e "SHOW SLAVE STATUS\G" | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'
 
   - name: switch-primary
     action: mysql.replica_switch
     args:
-      new_primary: "{{.new_primary}}"
+      new_primary: "{{input.new_primary}}"
       confirm: "yes"
     irreversible: true
     depends_on: ["precheck-replication"]
