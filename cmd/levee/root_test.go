@@ -24,7 +24,7 @@ func resetRootFlags() {
 	optTimeout = "30m"
 	optAPIURL = ""
 	optAPIToken = ""
-	optLocal = true
+	optLocal = false
 	optRemote = false
 	optServer = "localhost:9090"
 }

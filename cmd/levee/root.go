@@ -34,11 +34,12 @@ var (
 	optAPIURL     string
 	optAPIToken   string
 
-	// Dual-mode flags. --local (default) makes the CLI talk to an in-process
-	// store; --remote flips it to gRPC client mode talking to a server
-	// reachable at --server. --token supplies the Bearer token used by both
-	// the legacy --api path and the new --remote path; it is shared so that
-	// users only have one auth flag to remember.
+	// Dual-mode flags. The CLI is local (single zero-dependency binary, talks to
+	// an in-process store) unless --remote says otherwise. Neither flag is on by
+	// default: naming both is an error, naming neither means local. That is what
+	// makes `--remote` usable on its own — when --local defaulted to true, every
+	// `--remote` invocation also set --local and the mutual-exclusion check could
+	// never be wired up without refusing the documented agent commands.
 	optLocal  bool
 	optRemote bool
 	optServer string
@@ -78,13 +79,20 @@ func init() {
 	pf.StringVar(&optAPIURL, "api", "", "后端 API 地址，用于 CLI 直连集群形态 server")
 	pf.StringVar(&optAPIToken, "token", "", "API token，CLI 认证用")
 
-	// Dual-mode flags. --local is the default and keeps the CLI a single
-	// zero-dependency binary; --remote switches to gRPC client mode. The
-	// two are mutually exclusive; resolveServiceMode validates this at run
-	// time. --server is only consulted in remote mode.
-	pf.BoolVar(&optLocal, "local", true, "本地模式，直连 store（默认）")
-	pf.BoolVar(&optRemote, "remote", false, "远程模式，通过 gRPC 连接 server")
+	// Dual-mode flags. Naming neither means local (the default, zero-dependency
+	// path); naming both is rejected by resolveServiceMode. --server is only
+	// consulted in remote mode.
+	pf.BoolVar(&optLocal, "local", false, "本地模式，直连 store（与 --remote 二选一；两者都不给时为本地）")
+	pf.BoolVar(&optRemote, "remote", false, "远程模式，通过 gRPC 连接 server（当前仅 agent list/show/remove）")
 	pf.StringVar(&optServer, "server", "localhost:9090", "gRPC server 地址，仅 --remote 时生效")
+
+	// Refuse --remote on commands that do not consume it. Without this the flag
+	// is accepted, ignored, and the command quietly operates on the local store —
+	// which looks like success and leaves the operator's changes in a database
+	// the server never reads.
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		return validateServiceMode(cmd)
+	}
 
 	// --as opt-in enforcement for local mode. It only means something locally:
 	// remotely the subject comes from the credential, which is the whole point of
@@ -269,4 +277,51 @@ func resolveServiceMode() (serviceMode, error) {
 		return modeRemote, nil
 	}
 	return modeLocal, nil
+}
+
+// remoteCapableCommands lists the command paths that actually dial the server
+// when --remote is set. Everything else runs against the local store, so the
+// flag there is refused rather than ignored (see validateServiceMode).
+//
+// Keep this in step with the commands that read optRemote: today that is the
+// three registry readers in cmd_agent_remote.go. TestRemoteCapabilityListResolves
+// fails if an entry here stops naming a real command, so a renamed command
+// cannot leave the allowlist pointing at nothing.
+var remoteCapableCommands = []string{
+	"levee agent list",
+	"levee agent show",
+	"levee agent remove",
+}
+
+// validateServiceMode is the PersistentPreRunE guard. It resolves the mode once
+// and refuses --remote on commands that do not consume it.
+//
+// It runs before any RunE, which is the point: a refused command never loads the
+// configuration and never opens a store, so "the operator asked for the server
+// but the command wrote to the local database" cannot happen silently.
+func validateServiceMode(cmd *cobra.Command) error {
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return err
+	}
+	if mode != modeRemote {
+		return nil
+	}
+	// Parent commands and the generated help/completion commands print text and
+	// touch nothing; refusing them would be noise, not safety.
+	if cmd.Run == nil && cmd.RunE == nil {
+		return nil
+	}
+	if cmd.Name() == "help" || cmd.Name() == "completion" {
+		return nil
+	}
+	path := cmd.CommandPath()
+	for _, supported := range remoteCapableCommands {
+		if path == supported {
+			return nil
+		}
+	}
+	return fmt.Errorf(
+		"--remote is not wired for `%s`: only %s read the remote server, every other command runs against the local store; run it without --remote [exit=2]",
+		path, strings.Join(remoteCapableCommands, ", "))
 }
