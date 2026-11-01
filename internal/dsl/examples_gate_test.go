@@ -84,35 +84,47 @@ func isTemplateEnvelope(t *testing.T, src []byte) bool {
 // deploy/lab runbook teaches operators commands against these workflows, so
 // a drift there would teach a vocabulary the compiler refuses. Same rules as
 // the shipped examples: parse, validate, type-check in strict mode.
+//
+// Two roots are covered: deploy/lab/workflows (the four customer-facing demo
+// scenarios) and deploy/lab/container-lab/workflows (the local Docker lab's own
+// three scenarios). The container-lab root also holds the nginx .conf payloads
+// used by the file.copy steps — the .yaml/.yml filter leaves them out, they are
+// not workflow documents.
 func TestShippedLabWorkflowsCompile(t *testing.T) {
-	const root = "../../deploy/lab/workflows"
+	roots := []string{
+		"../../deploy/lab/workflows",
+		"../../deploy/lab/container-lab/workflows",
+	}
 
 	var checked []string
-	require.NoError(t, filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+	for _, root := range roots {
+		require.NoError(t, filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".yml") {
+				return nil
+			}
+			src, rerr := os.ReadFile(path)
+			require.NoError(t, rerr)
+
+			t.Run(filepath.ToSlash(path), func(t *testing.T) {
+				wf, perr := NewParser().ParseBytes(src)
+				require.NoError(t, perr, "lab workflow must parse")
+				verrs := NewValidator().Validate(wf)
+				assert.Empty(t, verrs, "lab workflow must validate")
+				checker := NewTypeChecker(NewTypeRegistry(), path)
+				terrs := checker.CheckWithMode(wf, ModeStrict)
+				assert.Empty(t, terrs, "lab workflow must type-check in strict mode")
+			})
+			checked = append(checked, path)
 			return nil
-		}
-		src, rerr := os.ReadFile(path)
-		require.NoError(t, rerr)
+		}))
+	}
 
-		t.Run(filepath.ToSlash(path), func(t *testing.T) {
-			wf, perr := NewParser().ParseBytes(src)
-			require.NoError(t, perr, "lab workflow must parse")
-			verrs := NewValidator().Validate(wf)
-			assert.Empty(t, verrs, "lab workflow must validate")
-			checker := NewTypeChecker(NewTypeRegistry(), path)
-			terrs := checker.CheckWithMode(wf, ModeStrict)
-			assert.Empty(t, terrs, "lab workflow must type-check in strict mode")
-		})
-		checked = append(checked, path)
-		return nil
-	}))
-
-	// Pinned to the current inventory (6 lab workflows), same reasoning as
-	// the examples gate above: the count is part of the promise.
-	assert.Equal(t, 6, len(checked),
+	// Pinned to the current inventory (6 lab workflows + 3 container-lab
+	// workflows), same reasoning as the examples gate above: the count is
+	// part of the promise.
+	assert.Equal(t, 9, len(checked),
 		"all lab workflows must be covered — the runbook's commands are only as real as these files")
 }
