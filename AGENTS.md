@@ -54,4 +54,17 @@ notes: 正在给 cluster-status 加能力过滤
   Win32_Process` 看命令行），或用 `MOCK_PORT` / `VITE_API_TARGET` / `BASE_URL` /
   `MOCK_URL` 换到自己的端口。浏览器检查不会自己起服务。
 - **推送只走** `ssh://git@ssh.github.com:443/Levango7/Levee`（https 直连会失败）。
+- **Go 工具链：`go.mod` 要求 Go ≥ 本机版本时，先修 `GOSUMDB`**。本机装的是 go1.26.6，
+  而 `go.mod` 要求 1.26.10，`GOTOOLCHAIN=auto` 会去下载 `go1.26.10`——但 Go 对
+  **工具链模块强制要求校验数据库确认**，`GOSUMDB=off` 会让它直接失败，报
+  `verifying module: checksum database disabled by GOSUMDB=off`。**这个错误出现在
+  任何 go 命令上**（含 `go version`），容易被误判成代码坏了。修法（机器级、一次）：
+  `go env -w GOSUMDB=sum.golang.org`（`GOPROXY` 已是 `https://goproxy.cn,direct`，
+  goproxy.cn 提供 sumdb 代理，下载与校验都通）。**注意 `GOPRIVATE` / `GONOSUMDB`
+  对工具链无效**——Go 的工具链路径不接受豁免，只能给一个真实 sumdb。
 - PostgreSQL 相关测试包必须 `-p 1` 串行跑，否则它们会互删数据，症状是一个无关包 panic。
+- **本机有可用容器底座**：`docker` 可用（29.9.2）；镜像里已有
+  `ghcr.io/levango7/levee:v1.24.0`、`postgres:16` / `postgres:16-alpine`、
+  `node:24-alpine`。**`LEVEE_PG_TEST_DSN` 未设时那 28 个 PG 用例是 skip 的**，
+  起一个 PG 容器就能把它们真跑起来（起容器前先确认 5432 端口归属，本机有多个
+  已停的 postgres 容器占过 25499 / 5432）。
