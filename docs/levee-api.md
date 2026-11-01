@@ -836,6 +836,8 @@ RESTful 风格，支持两套路径：
 | POST | `/changes/:id/archive` | `/api/v1/ChangeService/ArchiveChange` | 归档 | `levee archive` |
 | GET | `/changes/:id/logs` | `/api/v1/ChangeService/GetLogs` | 查看日志 | `levee logs` |
 | GET | `/changes/:id/trace` | `/api/v1/ChangeService/GetTrace` | 查看 trace | `levee trace` |
+| GET | `/changes/:id/events` | —（SSE；与 `WatchChange` 同源同序） | 实时事件流（`text/event-stream`，终态即收流，见 13.2b） | — |
+| GET | `/alerts/stream` | —（SSE；与 `SubscribeAlerts` 同源） | 告警实时流（环快照先回放再转实时，见 13.2b） | — |
 | POST | `/changes/deeplink/approve` | — | 一键审批（移动端，一次性 token 认证，见 13.3） | — |
 | POST | `/changes/deeplink/reject` | — | 一键驳回（移动端，一次性 token 认证，见 13.3） | — |
 | POST | `/gates/verify` | — | 按需单步验证（cmd/probe/slo，见 13.4） | — |
@@ -904,6 +906,32 @@ RESTful 风格，支持两套路径：
 > 而 `high` 同时是优先级和档位的合法值，无法判定来源，故留在 `approval_level` 里、`priority`
 > 读作空。宁可显示"未知优先级"，也不替引擎宣布它没有宣布过的东西。档位（`standard` /
 > `high` / `emergency`）仍只出现在 `approval_level` 与审批链相关响应里。
+
+### 13.2b SSE 实时事件流（`/changes/:id/events` 与 `/alerts/stream`）
+
+控制台的实时面板不轮询，走两条 `text/event-stream` 路由（浏览器唯一的原生推流传输）：
+
+- `GET /changes/:id/events`——一个变更的事件流，与 gRPC 的 `WatchChange` **同源同序**（同一个
+  `publishEvent` 扇出），并且在同一个位置收流：收到终态状态即结束（`runstatus.IsTerminal`）。
+  两条传输因此不可能对「变更结束了没有」给出不同答案。`MonitorView` 用 `EventSource` 订阅它，
+  此前的 2 秒轮询已删除。
+- `GET /alerts/stream`——告警流，对应 `SubscribeAlerts`（该 gRPC 流在网关的 protojson 表里答
+  501）。与变更流的差别：先**回放环（ring）快照**再转实时尾随——环是「已经响过什么」的唯一
+  记录，不回放会让订阅者错过操作员正看着的一切；重复（回放与实时之间到达的告警）可接受，
+  客户端按 `alert.id` 去重。
+
+两条路由的公共契约：
+
+- **鉴权只判一次**（流是长生命期，逐事件重判既费又可能中途翻转）：变更流按该变更的读门禁；
+  告警流按每条告警**自己登记的环境**（与 `GetAlertStatus` / `SubscribeAlerts` 同一谓词）。
+  未知变更先答 404（不是权限问题），未授权主体答 403。
+- **保活**：空闲流按 `SSEKeepAliveInterval`（15s）发一条注释帧（`: ping` / `: keep-alive`），
+  否则中间设备会把静默当死连接。
+- **不缓冲**：响应带 `X-Accel-Buffering: no`，否则一帧可能停在反向代理里，端点就失去了意义。
+
+守卫：`internal/grpc/sse_test.go`（帧形状、终态收流、客户端断开即停、读门禁）、
+`sse_alerts_test.go`（环回放、实时尾随、`dispatchAlerts` 路由分发）。前端「不许回退到轮询」
+由 `web/src/views/MonitorStream.spec.ts` 钉住。
 
 ### 13.3 认证
 

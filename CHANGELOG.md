@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（`/monitor` 实时流账本过期订正 + 告警 SSE 路由分发守卫）
+
+- **缺口类型（本仓头号缺陷类：账本没跟上代码）**：`docs/product-roadmap.md` 的 `/monitor` 三视图联动行登记「日志流是轮询不是真流」「目标地图仍缺」「真流需补网关路由」，而三条**都早已落地**——SSE 路由（`internal/grpc/sse.go` 的 `/changes/{id}/events`、`sse_alerts.go` 的 `/alerts/stream`、`sse_route.go`）、目标地图（#118 的 host × batch 矩阵，`utils/targetMap.ts`）、前端订阅（`MonitorView.vue` 用 `EventSource`，2 秒轮询已删，`MonitorStream.spec.ts` 钉住）。`internal/grpc/rest_exposure_matrix_test.go` 的 `SubscribeAlerts` 豁免理由同样过期（写「SSE route is the ledger's open item」）。
+- **真缺口（代码侧）**：`dispatchAlerts` **零测试覆盖**——`sse_alerts_test.go` 此前直接调 `handleAlertsStream`，绕过了 `/alerts/stream` 的路由分发；删掉那个 case 现有测试全绿。（changes 侧的分发已被 `sse_test.go` 的 `dispatchChange` 钉住。）
+- **落地**：① 新增 `TestAlertsStreamRouteIsWired`——经 `dispatchAlerts` 走真实 HTTP，断言 `/alerts/stream` 到达流处理（环回放证明）且未知子路径得到指向真路由的 400；② 订正 `rest_exposure_matrix_test.go` 的过期理由；③ 订正 roadmap 的 `/monitor` 行（保留原文仅作历史）；④ `docs/levee-api.md` 补记两条 SSE 路由并新增 13.2b 节（鉴权只判一次 / 保活 / 不缓冲三条公共契约）。
+- **验证**：`gofmt` 干净；`go build ./internal/grpc/` rc=0；`go test -count=1 -run 'TestAlertsStream|TestServeChangeEvents|TestHandleChangeEvents|TestEveryRPCHasADocumentedRESTAnswer' ./internal/grpc/` ok；`golangci-lint run ./internal/grpc/`（v2.13.2 与 CI 同版）0 issues。
+- **边界**：`levee logs -f`（CLI）仍是每 2 秒轮询（`cmd/levee/cmd_logs.go`），本笔不动它——那是 CLI 的既有实现，不是控制台 SSE 那一条；控制台的实时流才是本行订正的对象。
+
 ### 新增（漂移基线命名多版本：主键从 host 改成 (host, name)，`default` 是没被点名时读的那一份）
 
 - **缺口（roadmap:43）**：`BaselineManager` 以 host 为唯一主键，一台主机至多一份基线，`set` / `auto` 都是覆盖写。文档曾承诺 `--name`，后来因为"命名多版本要改的是存储主键和取用规则、不是加旗标"而**删掉了那句承诺**（原登记原话）。本笔按那句话把它做成事实。

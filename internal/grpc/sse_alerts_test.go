@@ -9,6 +9,7 @@ package grpc
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,6 +74,41 @@ func readAlertStream(t *testing.T, url string, d time.Duration) string {
 		}
 	}
 	return out.String()
+}
+
+// TestAlertsStreamRouteIsWired pins the route-table entry that makes
+// /alerts/stream reachable. The other cases in this file drive
+// handleAlertsStream directly, so removing the `case path == "/alerts/stream"`
+// branch in dispatchAlerts — or the "alerts" family entry in the gateway's
+// resource table — would drop the console's live alert feed and leave every
+// existing test green. The ledger records the SSE stream as landed
+// (docs/product-roadmap.md, rest_exposure_matrix_test.go); this is the
+// code-side half of that claim, and it fails the moment the route is unwired.
+func TestAlertsStreamRouteIsWired(t *testing.T) {
+	svc := newAlertTestService(t)
+	ingestAlert(t, svc, "a-wired", "critical")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gw := &Gateway{alert: svc, authz: svc.authz}
+		gw.dispatchAlerts(w, r, r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	out := readAlertStream(t, srv.URL+"/alerts/stream", 700*time.Millisecond)
+	assert.Contains(t, out, `"id":"a-wired"`,
+		"GET /alerts/stream must reach the stream handler through dispatchAlerts (the ring replay proves it)")
+
+	// An unknown path under the family must get the pointer error, not a bare
+	// 400 — the message is what keeps an integration from scraping a guessed
+	// route instead of subscribing to the real one.
+	resp, err := http.Get(srv.URL + "/alerts/nope")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "/alerts/stream",
+		"the unknown-path error must point at the real stream route")
 }
 
 func TestAlertsStreamReplaysRing(t *testing.T) {
