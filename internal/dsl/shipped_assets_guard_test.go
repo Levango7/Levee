@@ -79,12 +79,19 @@ type shippedDoc struct {
 }
 
 // shippedDocs collects every shipped workflow document: examples/** (minus
-// the plugin manifests, which are a different document kind) and
-// deploy/lab/workflows/**.
+// the plugin manifests, which are a different document kind),
+// deploy/lab/workflows/** and deploy/lab/container-lab/workflows/**.
+//
+// The container-lab workflows are shipped assets too — they are the ones the
+// local Docker lab actually executes — so they are held to the same six
+// document-level rules (G1/G2/G3/G5/G6/G7). They are deliberately NOT part of
+// G4's index alignment: G4 maps DEMOS.md's scenario rows onto the customer
+// demo workflows, while the container lab has its own index (its README
+// table), and there is no scenario-row vocabulary for it.
 func shippedDocs(t *testing.T) []shippedDoc {
 	t.Helper()
 	var docs []shippedDoc
-	for _, root := range []string{"examples", "deploy/lab/workflows"} {
+	for _, root := range []string{"examples", "deploy/lab/workflows", "deploy/lab/container-lab/workflows"} {
 		dir := filepath.Join(repoRoot, filepath.FromSlash(root))
 		require.NoError(t, filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
