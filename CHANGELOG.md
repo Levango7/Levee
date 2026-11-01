@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 修复（发布门禁 G-06：「跑成」与「不超时」是两件事，必须都判）
+
+- **缺陷**：`scripts/release_gate.sh` 的 G-06 写成 `go test ./... -count=1 > /dev/null 2>&1 || true`，然后**只**比较计时与 600s 预算。`|| true` 把退出码丢掉之后，"测试根本没跑起来"与"跑得很快的绿"在门禁眼里是同一件事。
+- **本机实测过的假阳性**（2026-10-31 切 v1.24.0 前）：`GOSUMDB=off` 挡住 `go.mod` 声明的 1.26.10 工具链切换，那次报告里 G-01/02/03/07 **全红**（`go: go.mod requires go >= 1.26.10 …`），而同一张表里 G-06 是 **PASS (1s)**。一条会给坏状态背书的门比没有门更糟：它把"没跑到"翻译成了"跑到且不超时"。
+- **修法**：`|| RC_G6=$?` 捕获退出码，判定改成三条分支——rc≠0 先判红并在报告里点明"测试没跑成或跑红，先修这个再谈时长"；rc=0 且 `> 600s` 判超时红；否则绿。计时预算那条分支原样保留（它仍量它名字里那件事）。
+- **运行证据（替身 `go`，四组样本都要有）**：旧脚本 + `go` 返 1 → **PASS**（缺陷复现，整表只因别的门红而 FAILED）；新脚本 + 返 1 → **FAIL**（`go test rc=1`）；新脚本 + 返 0 → **PASS**（不过度判红）；把预算临时改成 `-gt -1` 的可执行副本 + 返 0 → **FAIL**（`0s > 600s`，证明时长分支仍可达、没被我改成 rc 独占判定后饿死）。
+- **回归守卫**（扩在既有套件 `scripts/test_release_gate_step.py` 里，该套件已在 ci.yml 的 release-gate 点名清单中，不新增点名项）：新增 `g06_block()` / `g06_problems()`，对 `release_gate.sh` 的 G-06 段判四件事——不许出现 `|| true`、必须捕获 `|| NAME=$?`、必须在 `if` 里按该变量 `-ne/-eq 0` 分支、必须仍把 `DURATION_G6` 与一个数值预算比较；锚点找不到直接 `AssertionError`（会沉默的守卫等于给损坏背书）。检测器自证 5 组样本：修好的形状绿、`|| true` 旧形状红、捕获了但不判定红、预算丢失红、**注释里引用 `|| true` 不红**（最后这条是被自己咬出来后补的反例：本笔写的说明注释里引用了旧写法，判据一度把一段**解释**当成**缺陷**）。真实变异用整段回退到旧 `release_gate.sh` 做在**仓库文件**上（不是夹具）→ 守卫红，还原后与原文件 sha256 逐字节相同。
+- **边界**：G-06 不判"有没有测试被跑到"（全 `t.Skip` 仍算跑成）——那属于覆盖率类门禁，不在本笔；也不改 CI 的 test 腿。`scripts/` 自测由 70 例增至 **77** 例全绿。
+
 ### 修复（`/monitor` 实时流账本过期订正 + 告警 SSE 路由分发守卫）
 
 - **缺口类型（本仓头号缺陷类：账本没跟上代码）**：`docs/product-roadmap.md` 的 `/monitor` 三视图联动行登记「日志流是轮询不是真流」「目标地图仍缺」「真流需补网关路由」，而三条**都早已落地**——SSE 路由（`internal/grpc/sse.go` 的 `/changes/{id}/events`、`sse_alerts.go` 的 `/alerts/stream`、`sse_route.go`）、目标地图（#118 的 host × batch 矩阵，`utils/targetMap.ts`）、前端订阅（`MonitorView.vue` 用 `EventSource`，2 秒轮询已删，`MonitorStream.spec.ts` 钉住）。`internal/grpc/rest_exposure_matrix_test.go` 的 `SubscribeAlerts` 豁免理由同样过期（写「SSE route is the ledger's open item」）。
