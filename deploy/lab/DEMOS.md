@@ -1,0 +1,286 @@
+# LEVEE 演示库（demo library）—— 场景索引
+
+这份文档把「客户要看的四个场景」映射到「可以直接跑的工作流文件」。每个场景回答三件事：
+
+1. **它证明什么能力**（不是「跑通了」，是「哪条治理语义被看见了」）
+2. **跑之前要准备什么**（少一条就会跑到一半失败）
+3. **验收看哪条证据**（屏幕上出现什么才算演成了）
+
+与 [README.md](README.md) 的分工：README 是**安装与运维手册**（怎么把实验室搭起来），
+本文是**演示脚本**（怎么在客户面前演、演完拿什么当证据）。两者不重复。
+
+> **仓库守卫**：`internal/dsl/shipped_assets_guard_test.go` 的
+> `TestLabDemoIndexMatchesLabWorkflows` 强制本文与 `deploy/lab/workflows/`
+> 双向对齐——索引里漏掉一个工作流文件、或索引指向不存在的文件，CI 直接红。
+> 索引与实物不会各走各的。
+
+## 0. 前置条件
+
+实验室怎么搭见 [README.md](README.md) §1–§3（bootstrap、清单导入、凭据）。演示额外要这几样：
+
+| 前置 | 为什么 | 缺了会怎样 |
+| --- | --- | --- |
+| `levee serve --engine-enabled` | 执行引擎：没有它 `apply` 只改状态不改机器 | apply 报 `FailedPrecondition`（status-only 模式） |
+| `levee serve --engine-enabled --engine-snapshot-dir <目录>` | 快照补偿的基线目录 | 声明了 `strategy: snapshot` 的步骤在执行期被直接拒绝（fail-closed，`internal/wiring/run.go`） |
+| 清单里至少 2 台 `role=web` 的机器（`.15` / `.16`） | A2 金丝雀灰度要两台才切得出批 | `min_count: 2` 在计划期就拒（LE105） |
+| 目标机上装好 `nginx`（A2）与 `lab-app` 单元（A3） | 场景的验证门禁要跑真命令 | 门禁红 → 回滚 → 演示变成"回滚演示" |
+| MySQL 8 主从 + 目标机的 MySQL 账号（A1） | `mysql.replica_switch` 在**目标机上**跑 mysql 客户端（经 ssh 通道下发），用的是目标机自己的账号与复制账号 `rpl_user` | 预检步骤失败 |
+| PostgreSQL + `--cluster` 集群形态（A4） | 接管只在集群模式发生 | 单机 SQLite 没有 worker 可杀 |
+| 控制端本地的两份配置文件：`lab-site.conf`（A2）、`lab-app.conf`（A3） | `file.copy` 的 `src` 是**控制端**本地路径 | 读不到文件 |
+
+A2/A3/A4 用的是覆盖全天的窗口（`00:00`–`23:59` UTC），现场随时能跑；
+"窗外拒绝"由 B2 单独承担。
+
+## 1. 三步运行法
+
+每个场景都是这三步，只有参数不同。
+
+```sh
+# ① 注册模板：把工作流文件登记成模板，并声明参数。
+#    参数名必须与工作流里的 input: 一致（模板层与语言层各声明一次同一个名字）。
+levee -c /etc/levee/config.yaml template create \
+  --name lab-nginx-canary \
+  --content "$(cat deploy/lab/workflows/lab-nginx-canary.yaml)" \
+  --params '[{"name":"site_config_src","type":"string","required":true}]'
+
+# ② 建 run：参数在这里传。
+levee -c /etc/levee/config.yaml new lab-nginx-canary \
+  --params site_config_src=./lab-site.conf        # → 打印 run-id
+
+# ③ 看计划：--targets 必填，且顺序决定批次切分（见下方"目标从哪来"）。
+levee -c /etc/levee/config.yaml plan <run-id> \
+  --targets 192.168.56.15,192.168.56.16 --dry-run
+```
+
+确认无误后去掉 `--dry-run` 真跑一遍，再审批、执行：
+
+```sh
+levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.15,192.168.56.16
+levee -c /etc/levee/config.yaml approve <run-id> --comment "lab drill"
+levee -c /etc/levee/config.yaml apply <run-id> --engine-enabled
+levee -c /etc/levee/config.yaml audit verify <run-id>
+```
+
+**目标从哪来**：`plan --targets` 收的是**清单里的主机名**（导入时主机名就是地址，
+`inventory.example.yaml` 没有单独的 hostname 字段）。工作流里的 `target.query`
+目前**不参与选目标**——它只是给人看的选择说明；计划期真正切批的是 `--targets`
+给出的顺序，`min_count`/`max_count` 用来卡这个集合的大小
+（`internal/plan/targetcaps.go`）。所以流程是：
+
+```sh
+levee -c /etc/levee/config.yaml target list     # 看清单与标签
+# 人工挑出 env=lab AND svc=web 的两台，按你想要的顺序传给 --targets
+```
+
+**审批人数**：`standard` 档 1 人；`high` 档要 **2 个不同身份**且**发起人不能投**
+（`internal/approval/levels.go`）。两个要点：
+
+1. **工作流必须声明 `approval.approvers`**。不声明的话计划期就被拒——实测报错
+   `approval under-provisioned: high-level change needs 2 independent approver(s)
+   but the workflow declares 0 votable ([])`。本目录里 A1/A2 的工作流已经声明了
+   `approvers: [alice, bob]`（换成你们实验室的两个人即可）。
+2. **发起人不能是审批人之一**：发起人从可投票名单里被剔除，所以建 run 的身份要
+   另换一个（下面的 `carol`）。
+
+```sh
+levee --as carol new lab-replica-switch --params new_primary=192.168.56.12:3306  # 发起人
+levee --as alice approve <run-id> --comment "lab drill"
+levee --as bob   approve <run-id> --comment "lab drill"   # 第二票到齐 → run 进入 approved
+```
+
+在 PowerShell 上读文件进参数用 `Get-Content -Raw`：
+
+```powershell
+$content = Get-Content deploy/lab/workflows/lab-nginx-canary.yaml -Raw
+levee -c C:\levee\config.yaml template create --name lab-nginx-canary --content $content --params '[{"name":"site_config_src","type":"string","required":true}]'
+```
+
+## 2. 场景索引
+
+| 场景 | 证明什么 | 工作流 | 前置 | 验收看哪条证据 |
+| --- | --- | --- | --- | --- |
+| A1 | MySQL 主从切换：不可逆动作要编译期白名单（LE082）+ 运行期 confirm + 两人审批 + 逐台切换后核复制状态 | deploy/lab/workflows/lab-replica-switch.yaml | 两台副本 + MySQL 凭据 | 计划里 `irreversible` 标记与批次=逐台；审计链里 `confirm=yes` 与两票批准 |
+| A2 | nginx 灰度：**分批 + 批间门禁**；配置正确性由 `nginx -t` 判定而不是"reload 没报错"；改前快照、失败按快照还原 | deploy/lab/workflows/lab-nginx-canary.yaml | 两台 web + nginx + 快照目录 | `plan --dry-run` 输出两批（先 1 台后 2 台）；第二批被批间探针阻断时的门禁记录 |
+| A3 | web 配置回滚：失败被门禁**观测到**（不是忽略）；回滚是**按改动前的快照还原**而不是重发旧包；回滚后再验证一次 | deploy/lab/workflows/lab-web-config-rollback.yaml | 一台 web + `lab-app` 单元 + 快照目录 | 回滚账本里这一步是「已补偿」；回滚后复核（`verify_after: true`）的通过记录 |
+| A4 | 集群接管：执行节点中途死掉，变更**收敛到 interrupted** 而不是永远卡 running；接管**不重跑副作用** | deploy/lab/workflows/lab-cluster-takeover.yaml | PostgreSQL + `--cluster` 集群形态 | `levee cluster status` 里的接管事件；run 状态 `interrupted`；第一步仍是 `completed` |
+| B1 | 分批重启 + 故意失败：回滚账本如实区分「未执行」与「已补偿」 | deploy/lab/workflows/lab-batch-restart.yaml | 两台 `role=app` + 一个被 mask 的 `lab-app` | 账本两列的差别；`on_failure: auto` 自动触发补偿 |
+| B2 | 变更窗口强制：窗外 plan 被拒、窗内放行；时钟/时区写错在编译期就被拒 | deploy/lab/workflows/lab-window-test.yaml | 无（执行体只是 `uptime`，零副作用） | 两次 plan 的相反结果 |
+
+### A1 · MySQL 主从切换
+
+```sh
+levee -c /etc/levee/config.yaml template create \
+  --name lab-replica-switch \
+  --content "$(cat deploy/lab/workflows/lab-replica-switch.yaml)" \
+  --params '[{"name":"new_primary","type":"string","required":true}]'
+
+levee --as carol new lab-replica-switch --params new_primary=192.168.56.12:3306
+levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.13
+levee --as alice approve <run-id> --comment "lab drill"
+levee --as bob   approve <run-id> --comment "lab drill"
+levee -c /etc/levee/config.yaml apply <run-id> --engine-enabled
+```
+
+讲什么：
+
+- **不可逆要先授权**：`mysql.replica_switch` 在工作流的 `allow_irreversible` 里。
+  把那一行删掉再 `levee compile`，编译期就被 LE082 拒——白名单缺席等于什么都没授权。
+- **运行期还要再确认一次**：`confirm: "yes"` 改成别的值，执行期被确认硬门拒。
+- **值进计划哈希**：`new_primary` 是语言层 input，取值在**计划期**从参数袋解析，
+  解析后的值进 plan hash。换一台主库就是另一个计划，需要重新审批
+  （`docs/leveelang-spec.md` §2.1）。
+- **逐台推进**：`one-per-target` 每批一台，每台切换后用 verify 门禁核对复制状态
+  才继续。
+
+### A2 · nginx 灰度
+
+```sh
+levee -c /etc/levee/config.yaml template create \
+  --name lab-nginx-canary \
+  --content "$(cat deploy/lab/workflows/lab-nginx-canary.yaml)" \
+  --params '[{"name":"site_config_src","type":"string","required":true}]'
+
+levee -c /etc/levee/config.yaml new lab-nginx-canary --params site_config_src=./lab-site.conf
+levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.15,192.168.56.16 --dry-run
+# A2 是 high 档：两票 + 发起人另算（见 §1「审批人数」）
+levee --as alice approve <run-id> --comment "lab drill"
+levee --as bob   approve <run-id> --comment "lab drill"
+```
+
+讲什么：
+
+- **灰度是分批 + 批间门禁**：第一批（金丝雀）跑完必须过 HTTP 探针门禁，
+  不过就阻断第二批并触发回滚（`docs/gates.md` 的 post_batch 语义）。
+- **配置正确性由语法判定**：`nginx -t` 是独立的一步，配置写坏了这一步就红，
+  而不是等 nginx 起不来才发现。
+- **改坏了能还原**：改配置前先快照该文件，失败时按快照还原（不是"重装一遍"）。
+- **金丝雀是哪台**：由批次策略按 `--targets` 的顺序切出（`percent 50/100` →
+  先 1 台后 2 台）。`by-tag` 批次策略已从词表移除（`docs/leveelang-spec.md` §593），
+  清单里的 `tier` 标签只是给人看的标注。**以 `plan --dry-run` 输出的每批目标为准**。
+
+### A3 · web 配置回滚
+
+```sh
+# 故意写坏一份配置（少一个分号），重启就会失败
+cp lab-app.conf lab-app-broken.conf
+
+levee -c /etc/levee/config.yaml template create \
+  --name lab-web-config-rollback \
+  --content "$(cat deploy/lab/workflows/lab-web-config-rollback.yaml)" \
+  --params '[{"name":"app_config_src","type":"string","required":true}]'
+
+levee -c /etc/levee/config.yaml new lab-web-config-rollback --params app_config_src=./lab-app-broken.conf
+levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.16
+levee -c /etc/levee/config.yaml approve <run-id> --comment "lab drill"
+levee -c /etc/levee/config.yaml apply <run-id> --engine-enabled
+```
+
+讲什么：
+
+- **失败是被观测到的**：配置写坏 → 重启失败 → verify 门禁红 → 触发
+  `on_failure: auto` 的补偿。
+- **回滚是按快照还原**：快照在 apply 前采集，补偿挂在它撤销的那一步上
+  （LE097：补偿必须归属到具体的前向步骤）。不是"再部署一次旧版本"。
+- **回滚后再验证一次**（`verify_after: true`）：账本说的"已补偿"要能被复核，
+  不靠记账自证。
+- 换成正常的 `lab-app.conf` 再跑一遍，对比"没出事"的账本。
+
+### A4 · 集群接管
+
+```sh
+# 集群形态：核心机（master）+ worker 节点，见 README §4
+levee -c /etc/levee/config.yaml serve --engine-enabled \
+  --cluster --pg-dsn "$PG_DSN" --node-id node-a --node-addr 192.168.56.10:9090 --node-role master
+# worker 节点同理（--node-role worker）
+
+levee -c /etc/levee/config.yaml template create \
+  --name lab-cluster-takeover \
+  --content "$(cat deploy/lab/workflows/lab-cluster-takeover.yaml)" \
+  --params '[]'
+
+levee -c /etc/levee/config.yaml new lab-cluster-takeover
+levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.10
+levee -c /etc/levee/config.yaml approve <run-id> --comment "lab drill"
+levee -c /etc/levee/config.yaml apply <run-id> --engine-enabled
+# —— 在 hold 步骤执行期间，kill -9 执行节点 ——
+levee -c /etc/levee/config.yaml cluster status --pg-dsn "$PG_DSN"
+levee -c /etc/levee/config.yaml retry <run-id>
+```
+
+讲什么：
+
+- **不会永远卡 running**：leader 的接管循环把在途变更收敛到 `interrupted`
+  终态，并留一条接管事件（`docs/deployment.md` 的"执行围栏与故障接管"）。
+- **接管不重跑副作用**：已完成的步骤保持 `completed`，正在执行的记为 `unknown`。
+  `retry` 重新驱动时，第一步（落标记文件）**不会**被重跑。
+- **恢复执行要人来驱动**：这是设计取舍——半执行的变更不该被另一台机器当作
+  可续的账（`docs/design-cluster-failover.md` §7.5 Q1）。
+- 接管**不做远端补偿**（快照在死者本地盘），所以工作流声明 `on_failure: manual`。
+
+### B1 · 分批重启 + 故意失败
+
+```sh
+# 在其中一台目标上制造失败：把单元 mask 掉，restart 必然失败
+ssh root@192.168.56.11 systemctl mask lab-app
+
+levee -c /etc/levee/config.yaml new lab-batch-restart
+levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.11,192.168.56.14
+levee -c /etc/levee/config.yaml approve <run-id> --comment "lab drill"
+levee -c /etc/levee/config.yaml apply <run-id> --engine-enabled
+```
+
+讲什么：回滚账本如实区分「未执行」（NotExecuted）与「已补偿」（Compensated）；
+`on_failure: auto` 触发补偿而不是把机器留在改坏的状态等人来救。
+
+### B2 · 变更窗口强制
+
+```sh
+# 把窗口改成「当前时间 +10 分钟」到「+20 分钟」（UTC）
+vi deploy/lab/workflows/lab-window-test.yaml
+levee -c /etc/levee/config.yaml compile deploy/lab/workflows/lab-window-test.yaml
+levee -c /etc/levee/config.yaml new lab-window-test
+levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.10    # 到点前：被窗外阻断拒绝
+# 进入窗口后再 plan —— 通过
+```
+
+讲什么：窗口是**计划期**的硬门（窗外 plan 直接被拒，不进审批）；时钟/时区写错
+（如 `25:00`）在编译期就被 LE020/LE021 拒。
+
+## 3. 证据怎么收
+
+每个场景演完，收这几样，它们合起来就是第一份试点案例材料：
+
+| 证据 | 命令 | 说明 |
+| --- | --- | --- |
+| 计划输出 | `levee plan <run-id> --targets ... --dry-run` | 批次切分、目标、风险等级——证明"分批"是真的 |
+| 计划哈希 | run 详情里的 `plan_hash` | 换参数 → 换哈希 → 证明"审批绑定的是这一个计划" |
+| 审计链校验 | `levee audit verify <run-id>` | 哈希链完整性的结论 |
+| 可离线阅读的报告 | `levee audit report --output lab-audit.html` | 审批链、哈希链校验结论、回滚记录都在里面 |
+| 回滚账本 | `levee logs <run-id>` / 报告里的补偿段 | 「未执行」与「已补偿」的差别 |
+| 接管事件 | `levee cluster status --pg-dsn ...` | A4 专用 |
+
+把 `lab-audit.html` 拷给一位"内审同事"离线打开——他能自己读出审批链与回滚记录，
+这是这份材料最值钱的地方。
+
+## 4. 诚实边界
+
+这一节写的是**本仓库交付时实际验证到哪一步**，不是话术：
+
+- **只验证到计划层**：两个新场景（A2、A3）与集群接管（A4）的**执行**与
+  **快照回滚**没有在本机实跑过——本机没有 4~7 台 VM，也没有 PostgreSQL 集群。
+  已实测的是：真二进制 + 真实 SQLite + 假清单下，`template create → new --params
+  → plan` 全链可行；同一模板换参数后 plan_hash 变化（取值确实进计划哈希）。
+  **不要把"plan 通过"说成"apply 通过"。**
+- **A1/B1/B2 的执行路径沿用既有 lab 演练**，同样没有在本机实跑；
+  它们的价值在于把既有手册的流程固化成可编译、可校验的文件。
+- **命令策略是本笔新增的门禁**：已发布工作流里原先有 7 处 `shell.exec` 命令
+  含 `&&`、引号或重定向——它们**编译期一律放行**（编译层不校验命令体），
+  但运行期会被 shell 模块的白名单直接拒（`internal/executor/modules/shell/shell.go`）。
+  这些命令已改为「拆成多步」或「改用 `shell.script`」，并由
+  `TestShippedWorkflowCommandsMatchRuntimePolicy` 守住。
+- **审批人声明同样是本笔修掉的**：高危档工作流若不声明 `approval.approvers`，
+  计划期就被拒（实测 `approval under-provisioned`）。已发布工作流里原先有 5 处
+  命中，已补声明并由 `TestShippedWorkflowsDeclareApproversForHighTier` 守住。
+- **`target.query` 不参与选目标**：见 §1"目标从哪来"。工作流里写查询串是给人看的，
+  真正生效的是 `--targets`。这是当前实现的边界，不是本文的简化。
+- **A4 需要集群形态**：单机 SQLite 没有 worker 可杀，接管循环也不启动。
