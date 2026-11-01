@@ -1,0 +1,8 @@
+# 本地靶场跑出来的产物，一律不入库。
+run/config.yaml
+run/data/
+run/snapshots/
+run/known_hosts
+levee.exe
+levee
+__pycache__/

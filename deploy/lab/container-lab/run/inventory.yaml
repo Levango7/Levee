@@ -1,0 +1,32 @@
+# LEVEE 本地容器靶场清单
+#
+# 三台 alpine+sshd 容器，用不同的 loopback 地址避开「目标按 hostname 唯一索引」
+# 的冲突（internal/wiring/exec.go 的 byHost 映射）：同一个 hostname 出现两次，
+# 只有第一台会被选中。
+#
+# 用 `levee target import --file run/inventory.yaml` 导入（幂等，按 address 匹配）。
+groups:
+  - name: lab-web
+  - name: lab-app
+
+targets:
+  - address: 127.0.0.11
+    port: 2201
+    channel_type: ssh
+    group: lab-web
+    credential_ref: ssh-lab
+    labels: {env: lab, role: web, tier: canary}
+
+  - address: 127.0.0.12
+    port: 2202
+    channel_type: ssh
+    group: lab-web
+    credential_ref: ssh-lab
+    labels: {env: lab, role: web, tier: regular}
+
+  - address: 127.0.0.13
+    port: 2203
+    channel_type: ssh
+    group: lab-app
+    credential_ref: ssh-lab
+    labels: {env: lab, role: app}

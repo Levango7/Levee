@@ -1,0 +1,48 @@
+name: lab-smoke-fail
+version: "1.0"
+description: >
+  容器靶场失败路径：中间一步故意失败（退出码非 0），
+  引擎必须触发自动回滚，把已执行的步骤按逆序补偿掉
+  （svc.start 的补偿是 undo-action → svc.stop）。
+  验收：失败后目标机上的 nginx 必须已经停掉。
+
+target:
+  name: lab-web-frontends
+  type: host
+  query: "env=lab AND role=web"
+  min_count: 1
+
+window:
+  start: "00:00"
+  end: "23:59"
+  timezone: UTC
+
+approval:
+  level: standard
+  approvers: [alice, bob]
+
+steps:
+  - name: start-nginx
+    action: svc.start
+    args:
+      name: nginx
+    rollback:
+      strategy: undo-action
+      steps:
+        - name: undo-start-nginx
+          action: svc.stop
+          idempotent: true
+          args:
+            name: nginx
+
+  # 故意失败：shell.exec 的命令体只能用字母数字与 - _ . / = 和空格，
+  # 失败要靠退出码，不是靠元字符。`false` 的退出码是 1。
+  - name: deliberate-failure
+    action: shell.exec
+    args:
+      cmd: "false"
+    depends_on: ["start-nginx"]
+
+rollback:
+  on_failure: auto
+  verify_after: false
