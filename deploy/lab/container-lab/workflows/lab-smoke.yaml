@@ -1,0 +1,89 @@
+name: lab-smoke
+version: "1.0"
+description: >
+  容器靶场冒烟（成功路径）：证明 SSH 执行、文件下发、服务管理、
+  批间 HTTP 探针门禁、分批执行与证据落库在本机靶场真跑得通。
+  本版本**不声明 snapshot 补偿**——CLI 本地 apply 没有快照库，
+  声明了会被 fail-closed 拒绝（见 lab-smoke-snap.yaml）。
+
+target:
+  name: lab-web-frontends
+  type: host
+  query: "env=lab AND role=web"
+  min_count: 2
+
+window:
+  start: "00:00"
+  end: "23:59"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [50, 100]
+  max_concurrency: 1
+  gate:
+    probe: {}
+    params:
+      kind: http
+      mode: direct
+      url: "http://{target}/nginx-status"
+      expect_status: "200-299"
+      timeout_seconds: 10
+
+approval:
+  level: standard
+  approvers: [alice, bob]
+
+steps:
+  # svc 模块：init 系统探测 + openrc sysvinit 兜底分支。
+  # 补偿用 undo-action（内嵌撤销步骤），不是快照——快照要 --engine-snapshot-dir。
+  - name: start-nginx
+    action: svc.start
+    args:
+      name: nginx
+    rollback:
+      strategy: undo-action
+      steps:
+        - name: undo-start-nginx
+          action: svc.stop
+          idempotent: true
+          args:
+            name: nginx
+
+  # file 模块：控制端本地文件 → 目标机路径（sha256 比对后上传）。
+  # src 是**相对路径**，相对的是**执行 levee 那个进程的工作目录**
+  # （靶场根目录，即 labdrive.py 启动 levee 时的 cwd），不是相对本文件、
+  # 也不是相对配置文件。绝对路径与 ../ 逃逸都被拒，要读别处就把它所在的
+  # 目录加进 LEVEE_FILE_MODULE_EXTRA_DIRS。
+  - name: deploy-site-config
+    action: file.copy
+    args:
+      src: "workflows/lab-site.conf"
+      dest: /etc/nginx/http.d/lab-site.conf
+    depends_on: ["start-nginx"]
+
+  # shell 模块：命令体受运行期白名单约束，只能是字母数字与 - _ . / = 和空格。
+  - name: check-nginx-config
+    action: shell.exec
+    args:
+      cmd: "nginx -t"
+    depends_on: ["deploy-site-config"]
+
+  # svc.reload + 步骤级 verify 门禁（cmd 门禁在目标机上跑）。
+  - name: reload-nginx
+    action: svc.reload
+    args:
+      name: nginx
+    depends_on: ["check-nginx-config"]
+    verify:
+      cmd:
+        # 用 service 而不是 pgrep：Alpine 的 busybox 把 pgrep 做成了 pkill 的别名，
+        # `pgrep nginx` 会**杀掉**匹配进程（连执行它的 shell 一起杀）。
+        # service 在 systemd 与 openrc 上语义一致（active 时退出码 0）。
+        run: "service nginx status"
+        expect_exit: 0
+        timeout: 30s
+
+rollback:
+  on_failure: auto
+  verify_after: true

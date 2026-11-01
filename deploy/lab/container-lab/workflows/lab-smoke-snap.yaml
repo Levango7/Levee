@@ -1,0 +1,47 @@
+name: lab-smoke-snap
+version: "1.0"
+description: >
+  容器靶场快照回滚路径：先把目标文件改掉，随后一步故意失败，
+  引擎必须按快照把文件**还原成改动前的内容**。
+  快照补偿是 fail-closed 的：没有 --engine-snapshot-dir 的执行器
+  会在动任何目标之前直接拒绝这个计划（CLI 本地 apply 就会拒）。
+
+target:
+  name: lab-web-frontends
+  type: host
+  query: "env=lab AND role=web"
+  min_count: 1
+
+window:
+  start: "00:00"
+  end: "23:59"
+  timezone: UTC
+
+approval:
+  level: standard
+  approvers: [alice, bob]
+
+steps:
+  # 这一步改目标文件；补偿契约挂在它身上：改之前先把该文件快照下来。
+  # src 相对的是**执行 levee 那个进程的工作目录**（靶场根目录），
+  # 不是相对本文件 —— 见 lab-smoke.yaml 里的同一条说明。
+  - name: deploy-site-config
+    action: file.copy
+    args:
+      src: "workflows/lab-site-snap.conf"
+      dest: /etc/nginx/http.d/lab-site.conf
+    rollback:
+      strategy: snapshot
+      snapshot_paths:
+        - /etc/nginx/http.d/lab-site.conf
+
+  # 故意失败，触发自动回滚 → 快照还原。
+  - name: deliberate-failure
+    action: shell.exec
+    args:
+      cmd: "false"
+    depends_on: ["deploy-site-config"]
+
+rollback:
+  on_failure: auto
+  verify_after: false

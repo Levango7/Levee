@@ -1,0 +1,53 @@
+# LEVEE 本地容器靶场配置（模板）
+#
+# labdrive.py 首次运行时会把本文件复制成 run/config.yaml，并把 {{LAB_DIR}}
+# 换成本目录的绝对路径。所以这里写占位符，不要写死路径。
+#
+# 注意 channel.ssh.* 这一段：**CLI 本地路径读不到它**（README §4.1）——
+# 全仓只有 `levee serve` 会把配置接到 SSH 传输层上。本地 plan/apply 一律走
+# 包默认值：严格主机密钥校验 + ~/.ssh/known_hosts。留着这一段是为了标明
+# 靶场本来的意思：生产必须 strict_host_check: true。
+server:
+  data_dir: "{{LAB_DIR}}/run/data"
+  log_level: info
+  log_format: text
+
+database:
+  driver: sqlite
+  path: "{{LAB_DIR}}/run/data/levee.db"
+
+channel:
+  ssh:
+    port: 22
+    auth_method: password
+    key_path: ""
+    # 本地路径不读这一项（README §4.1）：真正生效的是 ~/.ssh/known_hosts，
+    # 主机密钥按 README §2 写进那个文件。
+    known_hosts: "{{LAB_DIR}}/run/known_hosts"
+    # 靶场是本机临时容器，主机密钥每次重建都变；生产必须保持 true。
+    strict_host_check: false
+    connect_timeout: 10s
+    pool_size: 4
+    become_method: ""
+    become_user: ""
+
+credential:
+  storage: local
+  encryption: aes256-gcm
+  key_derivation: argon2id
+
+executor:
+  default_concurrency: 10
+  connect_timeout: 10s
+  exec_timeout: 120s
+
+verify:
+  prometheus_url: ""
+
+notify:
+  webhook:
+    enabled: false
+  jira:
+    enabled: false
+  chatops:
+    enabled: false

@@ -266,11 +266,27 @@ levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.10    # 到�
 
 这一节写的是**本仓库交付时实际验证到哪一步**，不是话术：
 
-- **只验证到计划层**：两个新场景（A2、A3）与集群接管（A4）的**执行**与
-  **快照回滚**没有在本机实跑过——本机没有 4~7 台 VM，也没有 PostgreSQL 集群。
-  已实测的是：真二进制 + 真实 SQLite + 假清单下，`template create → new --params
-  → plan` 全链可行；同一模板换参数后 plan_hash 变化（取值确实进计划哈希）。
-  **不要把"plan 通过"说成"apply 通过"。**
+- **执行期已在「本地容器靶场」实跑，真 VM 实验室仍未实跑**：
+  靶场见 `deploy/lab/container-lab/`（3 台 alpine+sshd+nginx 容器顶 VM）。
+  已实测：① 成功路径 8 个步骤（`svc.start` / `file.copy` / `shell.exec` /
+  `svc.reload` × 2 台）全部 success，输出是目标机真实回显；② `percent 50/100`
+  切出 2 批各 1 台；③ 步骤级 cmd 门禁与批间 HTTP 探针门禁均通过；
+  ④ 失败路径（退出码 1）触发自动回滚，`undo-action` 补偿步真把目标机 nginx
+  停掉（目标机实测 `status: stopped`）；⑤ 快照路径（`levee serve
+  --engine-snapshot-dir` + REST gateway）实测：正向写入 `listen 8091` →
+  故意失败 → 快照还原 → 目标机文件回到 `listen 8090`，快照库落地
+  `meta.json` / `paths.json` / 载荷三件套。
+  ⑥ **两条失败路径的终态都是 `rolled_back_partial`，不是 `rolled_back`**：
+  故意失败的那一步自己没声明补偿契约，它的副作用没被撤销 ⇒ 回滚没完全收敛，
+  引擎于是不声称"干净回滚"（`internal/engine/closure.go:96-101`；引擎自己的回归
+  测试 `internal/wiring/exec_run_test.go:351-357` 钉的就是这一条）。
+  快照那条的还原步是 `success`、目标机文件确实回到 `listen 8090`，但 run 终态
+  仍是 `rolled_back_partial`——**"文件回来了"不等于"回滚干净了"**，这两件事要分开说。
+  **仍未实跑**：A1（MySQL 主从切换，无 MySQL 集群）、A4（集群接管，无 PG 集群
+  与第二节点）、以及真 VM 上的 systemd 服务语义（靶机走的是 openrc 分支）。
+  另外，计划层的老结论仍然成立：真二进制 + 真实 SQLite 下
+  `template create → new --params → plan` 全链可行，换参数后 plan_hash 变化。
+  **不要把"容器靶场跑通"说成"客户现场跑通"。**
 - **A1/B1/B2 的执行路径沿用既有 lab 演练**，同样没有在本机实跑；
   它们的价值在于把既有手册的流程固化成可编译、可校验的文件。
 - **命令策略是本笔新增的门禁**：已发布工作流里原先有 7 处 `shell.exec` 命令
@@ -284,3 +300,31 @@ levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.10    # 到�
 - **`target.query` 不参与选目标**：见 §1"目标从哪来"。工作流里写查询串是给人看的，
   真正生效的是 `--targets`。这是当前实现的边界，不是本文的简化。
 - **A4 需要集群形态**：单机 SQLite 没有 worker 可杀，接管循环也不启动。
+
+### 4.1 实跑才知道的操作事实
+
+这五条是在容器靶场实跑时撞出来的，每条都有本机实测支撑，
+写在这里是为了让下一个人不用再踩一遍（细节与复现步骤见
+`deploy/lab/container-lab/README.md`）：
+
+- **CLI 本地路径不读 `channel.ssh.*` 配置**：`ssh.SetDefaultConfig(...)` 全仓
+  只有 `cmd/levee/cmd_serve.go:954` 一处调用，所以 `levee plan` /
+  `levee apply --engine-enabled` 一律按包默认值走——**严格主机密钥校验**、
+  读 `~/.ssh/known_hosts`。配置里写 `strict_host_check: false` 对本地路径
+  **无效**。要在本地连没登记过的机器，先把主机密钥写进 `~/.ssh/known_hosts`
+  （非 22 端口写 `[host]:port` 形式）。
+- **快照补偿在 CLI 本地 apply 上不可用**：`--engine-snapshot-dir` 只有
+  `levee serve` 有。本地 apply 遇到声明 `rollback.strategy: snapshot` 的计划
+  会在动任何目标之前 fail-closed 拒绝：
+  `declares snapshot rollback but no snapshot store is configured
+  (--engine-snapshot-dir)`。要实跑快照补偿，走 serve。
+- **`file.copy` 的 `src` 不能是绝对路径**：文件模块只读**控制端工作目录内**
+  的源文件（防"任意文件读"），绝对路径与 `../` 逃逸都被拒；要读别处，把该
+  目录加进 `LEVEE_FILE_MODULE_EXTRA_DIRS`。相对 `src` 是相对**执行 levee
+  那个进程的工作目录**，不是相对配置文件。
+- **别用 `pgrep` 做存活探测**：Alpine 的 busybox 把 `pgrep` 实现成了
+  `pkill` 的别名，`pgrep nginx` 是"按名字杀进程"（实测把执行它的 shell 一起
+  杀了）。用 `service nginx status`（systemd 与 openrc 语义一致）。
+- **`levee target check` 在 CLI 本地模式下探不了**：本地路径不装通道工厂，
+  恒返回 `no channel available (neither ch nor factory configured)`。
+  连通性探测要在 serve 下做，或直接看 apply 的步骤证据。
