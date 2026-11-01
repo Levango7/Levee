@@ -1,0 +1,83 @@
+# LEVEE 实验室工作流 —— 演练 7：web 配置回滚（deploy/lab/DEMOS.md 场景 A4）
+#
+# 讲三件事：
+#   * 配置回滚不是"再部署一次旧版本"，而是**按改之前的快照还原**——
+#     快照必须在改动前采集，补偿挂在它撤销的那一步上
+#   * 失败后自动回滚（on_failure: auto），且回滚后**再验证一次**
+#     （verify_after: true）：账本说的"已补偿"要能被复核
+#   * 失败本身是被观测到的：配置写坏 → 重启失败 → 门禁红 → 回滚
+#
+# 演示方式（DEMOS.md 场景 A4 有完整步骤）：把 app_config_src 指到一份
+# **故意写坏的**配置（少一个分号之类），重启就会失败，然后看它自动还原。
+#
+# 前提：
+#   * serve 启了 --engine-snapshot-dir（快照补偿 fail-closed，见
+#     internal/wiring/run.go:677）
+#   * 目标机上装好 lab-app 这个 systemd 单元
+#   * app_config_src 指向**控制端本地**的一份应用配置文件
+#   * 目标集合由 `levee plan <run-id> --targets ...` 给出：target.query
+#     不参与选目标（只作选择说明，见 internal/plan/targetcaps.go）
+name: lab-web-config-rollback
+version: "1.0"
+description: >
+  web 应用配置下发后失败，按改动前的快照自动还原并复核：
+  失败是被门禁观测到的，回滚是按快照还原而不是重发一遍旧包。
+
+input:
+  - name: app_config_src
+    type: string
+    required: true
+    description: 控制端本地的应用配置文件路径，如 ./lab-app.conf
+
+target:
+  name: lab-web-frontends
+  type: host
+  query: "env=lab AND svc=web"
+  min_count: 1
+
+# 演示用窗口覆盖全天，便于现场随时跑。
+window:
+  start: "00:00"
+  end: "23:59"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [100]
+  max_concurrency: 1
+
+approval:
+  level: standard
+
+steps:
+  # 下发配置 + 采集补偿基线。snapshot_paths 声明的是**这一步改动的
+  # 文件**，快照在 apply 前采集，回滚时按它还原。
+  - name: deploy-app-config
+    action: file.copy
+    args:
+      src: "{{input.app_config_src}}"
+      dest: /etc/lab-app/site.conf
+    rollback:
+      strategy: snapshot
+      snapshot_paths:
+        - /etc/lab-app/site.conf
+
+  # 重启应用。配置写坏时这一步会失败——失败不是被忽略掉的，
+  # 而是触发 workflow 级 on_failure: auto 的回滚。
+  - name: restart-app
+    action: svc.restart
+    args:
+      name: lab-app
+    depends_on: ["deploy-app-config"]
+    verify:
+      cmd:
+        run: "systemctl is-active lab-app"
+        expect_exit: 0
+        expect_stdout: "active"
+        timeout: 30s
+
+rollback:
+  # auto：失败即自动补偿（而不是把机器留在改坏的状态等人来救）
+  on_failure: auto
+  # 回滚之后再跑一次校验：账本说"已补偿"要能被复核，不靠记账自证。
+  verify_after: true

@@ -6,6 +6,11 @@
 # labels 是查询选择的依据：演练工作流用
 #   env=lab AND role=app                       （演练 2/3：批量重启、窗口）
 #   env=lab AND role=replica AND cluster=orders-db（演练 1：副本切换）
+#   env=lab AND role=web                       （演练 6/7：nginx 灰度、web 配置回滚）
+#
+# tier 标签是**给人看的标注**：引擎不按标签选目标——by-tag 批次策略已从词表
+# 移除（docs/leveelang-spec.md §593），灰度的金丝雀批由批次策略按清单查询
+# 顺序切出来。哪台落在第一批，以 `levee plan --dry-run` 的输出为准。
 groups:
   - name: lab-core
   - name: lab-dc-a
@@ -46,3 +51,18 @@ targets:
     channel_type: ssh
     group: lab-dc-b
     labels: {env: lab, dc: dc-b, role: app}
+
+  # —— web 前端层（演练 6/7 专用，可选）——
+  # 这两台装 nginx 与 lab-app 服务单元（演练 6 改 nginx 站点配置、
+  # 演练 7 改应用配置并看失败回滚）。不装这两个场景就跳过这两台，
+  # 其余演练不受影响。
+  - address: 192.168.56.15
+    port: 22
+    channel_type: ssh
+    group: lab-dc-a
+    labels: {env: lab, dc: dc-a, role: web, tier: canary}
+  - address: 192.168.56.16
+    port: 22
+    channel_type: ssh
+    group: lab-dc-b
+    labels: {env: lab, dc: dc-b, role: web, tier: regular}

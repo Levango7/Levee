@@ -1,0 +1,70 @@
+# LEVEE 实验室工作流 —— 演练 8：集群故障接管（deploy/lab/DEMOS.md 场景 A4）
+#
+# 这是给客户看的演示场景，讲三件事：
+#   * 执行节点中途死掉时，变更不会永远卡在 running——leader 的接管循环把它
+#     收敛到 interrupted 终态，并留一条接管事件（docs/deployment.md §「执行
+#     围栏与故障接管」）
+#   * 接管**不重跑副作用**：已完成的步骤保持 completed，正在执行的记为
+#     unknown，绝不会被另一台机器当成可续的账再跑一遍
+#   * 恢复执行需要人重新驱动（RetryChange / `levee retry`），且已完成步骤
+#     不会被重跑——半执行的变更不该由他端悄悄续上
+#
+# 演示编排（前置见 DEMOS.md §0，步骤见 DEMOS.md §2 场景 A4）：
+#   1. 用**集群形态**跑这个工作流（单机 SQLite 没有 worker 可杀）：核心机
+#      起 PostgreSQL，worker 以 --cluster --node-role worker 加入
+#   2. run 跑起来后，第一步 write-marker 很快完成，第二步 hold 睡 5 分钟
+#   3. 在 hold 期间 kill -9 执行节点（worker 进程）
+#   4. 观察 `levee cluster_status` 与 `GET /system/takeover-events`：
+#      run 从 running 收敛到 interrupted，接管事件可读
+#   5. `levee retry <run-id>` 重新驱动：write-marker **不会**被重跑
+#
+# 说明：接管只做状态收敛与告警，**不做远端补偿**（快照在死者本地盘，
+# 跨节点回滚不在本期设计内，见 docs/design-cluster-failover.md §2 R2），
+# 所以本工作流声明 on_failure: manual——不要指望失败时自动还原。
+name: lab-cluster-takeover
+version: "1.0"
+description: >
+  集群故障接管演练：一个长任务，在执行节点被 kill -9 后由 leader 的接管
+  循环收敛到 interrupted，已完成步骤不被重跑，恢复执行需要人重新驱动。
+
+target:
+  name: lab-one
+  type: host
+  query: "env=lab AND dc=core"
+  min_count: 1
+
+# 演示用窗口覆盖全天，便于现场随时跑。要演示"窗外拒绝"请用
+# lab-window-test.yaml（演练 B2）。
+window:
+  start: "00:00"
+  end: "23:59"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [100]
+  max_concurrency: 1
+
+approval:
+  level: standard
+
+steps:
+  # 第一步：落一个可核对的标记。它很快完成，于是"已完成步骤不被重跑"
+  # 这条验收点有明确的对象——kill 之后看它仍是 completed、时间戳没变。
+  - name: write-marker
+    action: shell.exec
+    args:
+      cmd: "touch /tmp/levee-takeover-marker.txt"
+
+  # 第二步：长睡，给你在执行中途 kill -9 执行节点的窗口。sleep 只含
+  # 字母数字与空格，符合 shell.exec 的运行期白名单。
+  - name: hold
+    action: shell.exec
+    args:
+      cmd: "sleep 300"
+    depends_on: ["write-marker"]
+
+rollback:
+  # manual：接管不做远端补偿（快照在死者本地盘，跨节点回滚不在本期设计内），
+  # 这里如实声明，不给客户"失败会自动还原"的错觉。
+  on_failure: manual

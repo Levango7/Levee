@@ -1,0 +1,120 @@
+# LEVEE 实验室工作流 —— 演练 6：nginx 灰度（deploy/lab/DEMOS.md 场景 A2）
+#
+# 这是给客户看的演示场景，讲三件事：
+#   * 灰度不是"先切一部分再切剩下的"这么简单——是**分批 + 批间门禁**：
+#     第一批（金丝雀）跑完必须过探针门禁，不过就阻断第二批
+#   * 配置改动的正确性由 `nginx -t` 判定（配置语法错 = 门禁红），不是由
+#     "reload 没报错"判定
+#   * 改坏了能还原：改配置前先快照该文件，失败时按快照回滚（不是"重装一遍"）
+#
+# 目标集合由 `levee plan <run-id> --targets ...` 给出：工作流里的
+# target.query 目前**不参与选目标**（计划期按 --targets 给出的顺序切批，
+# 校验器只拿 min_count/max_count 去卡这个集合的大小，见
+# internal/plan/targetcaps.go），它是给人看的选择说明——实验室清单里
+# env=lab AND svc=web 的那两台。percent 50/100 的切法是
+# 「第一批 1 台（金丝雀）→ 第二批 2 台（全量）」。
+#
+# **金丝雀是哪台由批次策略按 --targets 的顺序切出来，不按标签选**——by-tag
+# 批次策略已从词表移除（docs/leveelang-spec.md §593，规划这类 workflow 会
+# Fatal LE034），tier 标签只是给人看的标注。以 `levee plan --dry-run` 输出的
+# 每批目标为准。
+#
+# 前提（少一条就跑到一半会失败，DEMOS.md §0 有完整清单）：
+#   * serve 启了 --engine-snapshot-dir（快照补偿 fail-closed，没有它
+#     执行期直接拒绝，见 internal/wiring/run.go:677）
+#   * 目标机上装好 nginx，且 /etc/nginx/conf.d/ 存在
+#   * site_config_src 指向**控制端本地**的一份 nginx 站点配置（file.copy
+#     的 src 是本地路径，dest 才是目标机路径）
+#   * plan 时给足两台目标（--targets），min_count: 2 会卡这个集合
+name: lab-nginx-canary
+version: "1.0"
+description: >
+  nginx 配置灰度：金丝雀批先上、批间探针门禁不过就阻断全量批、
+  nginx -t 判定配置正确性、改动前快照以便失败回滚。
+
+input:
+  - name: site_config_src
+    type: string
+    required: true
+    description: 控制端本地的 nginx 站点配置文件路径，如 ./lab-site.conf
+
+target:
+  name: lab-web-frontends
+  type: host
+  query: "env=lab AND svc=web"
+  min_count: 2
+
+# 演示用窗口覆盖全天，便于现场随时跑。要演示"窗外拒绝"请用
+# lab-window-test.yaml（演练 3）。
+window:
+  start: "00:00"
+  end: "23:59"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [50, 100]
+  max_concurrency: 1
+  # 批间门禁：每批跑完，对**这一批的每个目标**发一次 HTTP 探针。
+  # 不过就阻断下一批并触发回滚（docs/gates.md 的 post_batch 语义）。
+  # 灰度的"金丝雀先验证"靠的就是这一行。
+  gate:
+    probe: {}
+    params:
+      kind: http
+      mode: direct
+      url: "http://{target}/nginx-status"
+      expect_status: "200-299"
+      timeout_seconds: 10
+
+approval:
+  level: high
+  # high 档要两个互相独立的批准，且**发起人不能投**（internal/approval/levels.go）。
+  # 不声明 approvers 的话，计划期就被拒：实测报错
+  # "approval under-provisioned: high-level change needs 2 independent
+  # approver(s) but the workflow declares 0 votable ([])"。
+  # 实验室里用 `--as alice` / `--as bob` 各批一次；建 run 的身份不能是这两人之一。
+  approvers: [alice, bob]
+
+steps:
+  # 下发新配置。补偿契约在这一步：改之前把目标文件快照下来，
+  # 失败时按快照还原（LE097：补偿必须挂在它撤销的那个前向步骤上，
+  # workflow 级只放运行态策略）。
+  - name: deploy-site-config
+    action: file.copy
+    args:
+      src: "{{input.site_config_src}}"
+      dest: /etc/nginx/conf.d/lab-site.conf
+    rollback:
+      strategy: snapshot
+      snapshot_paths:
+        - /etc/nginx/conf.d/lab-site.conf
+
+  # 语法先验：配置写坏了这一步就红，而不是等 nginx 起不来才发现。
+  # `nginx -t` 单独成步而不是接在 reload 后面——shell.exec 的命令体受
+  # 运行期白名单约束（只允许字母数字与 - _ . / = 和空格，&
+  # 与 | 等元字符一律拒绝，见 internal/executor/modules/shell/shell.go），
+  # 所以"先验语法再 reload"必须拆成两步，两步各自留证据。
+  - name: check-nginx-config
+    action: shell.exec
+    args:
+      cmd: "nginx -t"
+    depends_on: ["deploy-site-config"]
+
+  # 再 reload。用 svc 模块而不是 shell：svc.reload 幂等、失败有明确退出码，
+  # 而且"reload 之后服务是否真的活着"由下面的 verify 门禁给出证据。
+  - name: reload-nginx
+    action: svc.reload
+    args:
+      name: nginx
+    depends_on: ["check-nginx-config"]
+    verify:
+      cmd:
+        run: "systemctl is-active nginx"
+        expect_exit: 0
+        expect_stdout: "active"
+        timeout: 30s
+
+rollback:
+  on_failure: auto
+  verify_after: true
