@@ -10,7 +10,7 @@
 #   G-03  go vet 无问题   go vet ./...
 #   G-04  gofmt 格式正确  gofmt -l .
 #   G-05  E2E 测试通过    go test -tags e2e ./tests/e2e/... -count=1
-#   G-06  测试门禁 10 分钟  计时 go test ./... -count=1 <= 600s
+#   G-06  测试门禁 10 分钟  go test ./... -count=1 跑成(rc=0) 且 <= 600s
 #   G-07  二进制可构建    go build -o /tmp/levee ./cmd/levee/
 #
 # 退出码:
@@ -92,17 +92,27 @@ else
 fi
 
 # --- G-06: 测试门禁 10 分钟 ---------------------------------------------------
+#
+# 判据是两条，不是一条：测试必须**跑成**（rc=0）才算数，然后才谈时长预算。
+# 这里原先写成 `go test … || true` 再只比计时，于是"根本没跑起来"也能报 PASS。
+# 2026-10-31 本机实测过一次：GOSUMDB=off 挡住 go.mod 声明的 1.26.10 工具链切换，
+# G-01/02/03/07 全红，同一张报告里 G-06 是 PASS（1s）。一条会给坏状态背书的门
+# 比没有门更糟——它把"没跑到"翻译成了"跑到且不超时"。
 
 START_G6=$(date +%s)
-go test ./... -count=1 > /dev/null 2>&1 || true
+RC_G6=0
+go test ./... -count=1 > /dev/null 2>&1 || RC_G6=$?
 END_G6=$(date +%s)
 DURATION_G6=$((END_G6 - START_G6))
-if [[ $DURATION_G6 -le 600 ]]; then
-    PASS=$((PASS + 1))
-    RESULTS+=("PASS  G-06 测试门禁 10 分钟 (${DURATION_G6}s)")
-else
+if [[ $RC_G6 -ne 0 ]]; then
+    FAIL=$((FAIL + 1))
+    RESULTS+=("FAIL  G-06 测试门禁 10 分钟 (go test rc=${RC_G6}，测试没跑成或跑红——先修这个再谈时长)")
+elif [[ $DURATION_G6 -gt 600 ]]; then
     FAIL=$((FAIL + 1))
     RESULTS+=("FAIL  G-06 测试门禁 10 分钟 (${DURATION_G6}s > 600s)")
+else
+    PASS=$((PASS + 1))
+    RESULTS+=("PASS  G-06 测试门禁 10 分钟 (${DURATION_G6}s)")
 fi
 
 # --- G-07: 二进制可构建 -------------------------------------------------------

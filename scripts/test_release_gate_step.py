@@ -145,5 +145,143 @@ class DetectorIsNotVacuousTest(unittest.TestCase):
             pipefail_problems("jobs:\n  release-gate:\n    steps:\n      - name: x\n        run: echo hi\n")
 
 
+
+G06_START = "# --- G-06"
+G06_NEXT = re.compile(r"^# --- G-0", re.M)
+
+
+def g06_block(text: str) -> str:
+    """Slice the G-06 section out of release_gate.sh.
+
+    锚点找不到必须响：一个只会对"没找到"保持沉默的检测器，会在脚本改名的那天
+    变成一条永远为真的断言（比没有门禁更糟，因为它会替损坏的状态背书）。
+    """
+    norm = _norm(text)
+    m = re.search(rf"^{re.escape(G06_START)}", norm, re.M)
+    assert m, "release_gate.sh has no `# --- G-06` section -- re-derive this guard"
+    nxt = G06_NEXT.search(norm, m.end() + 1)
+    end = nxt.start() if nxt else len(norm)
+    return norm[m.start():end]
+
+
+def _code_only(block: str) -> str:
+    """Drop comment-only lines before scanning.
+
+    G-06 自己就踩过这个：修好之后写的那段说明里引用了旧写法 `go test … || true`，
+    于是一条**解释**被判成了**缺陷**。判据必须只看会被 shell 执行的那些行——否则下一个
+    在门禁脚本里写注释的人会得到一条与自己无关的红。
+    """
+    kept = [ln for ln in block.splitlines() if not ln.lstrip().startswith("#")]
+    return "\n".join(kept)
+
+
+def g06_problems(text: str) -> list[str]:
+    """This G-06 could report PASS for a test run that never happened -- here is why."""
+    block = _code_only(g06_block(text))
+    problems: list[str] = []
+
+    captured = re.findall(r"\|\|\s*([A-Za-z_][A-Za-z0-9_]*)=\$\?", block)
+    if re.search(r"\|\|\s*true\b", block):
+        problems.append("`|| true` in G-06 discards `go test`'s exit status")
+    if not captured:
+        problems.append("G-06 never captures `go test`'s exit status (`|| NAME=$?`), "
+                        "so a run that did not happen is indistinguishable from a fast one")
+
+    budget = re.search(r"\$\{?DURATION_G6\}?\s*-(?:gt|ge|le|lt)\s*\d+", block)
+    if not budget:
+        problems.append("G-06 no longer compares the measured duration against a budget "
+                        "-- the gate lost the dimension it is named after")
+
+    name = captured[0] if captured else None
+    judged = name is not None and re.search(
+        r"\$\{?" + re.escape(name) + r"\}?\s*-(?:ne|eq)\s*0", block)
+    if name is not None and not judged:
+        problems.append(f"G-06 captures {name} but never branches on it: timing still decides "
+                        "the verdict, which is the false-positive this gate exists to close")
+    return problems
+
+
+G06_GOOD = """# --- G-06: 测试门禁 10 分钟 ---------------------------------------------------
+
+START_G6=$(date +%s)
+RC_G6=0
+go test ./... -count=1 > /dev/null 2>&1 || RC_G6=$?
+END_G6=$(date +%s)
+DURATION_G6=$((END_G6 - START_G6))
+if [[ $RC_G6 -ne 0 ]]; then
+    FAIL=$((FAIL + 1))
+elif [[ $DURATION_G6 -gt 600 ]]; then
+    FAIL=$((FAIL + 1))
+else
+    PASS=$((PASS + 1))
+fi
+
+# --- G-07: 二进制可构建 -------------------------------------------------------
+"""
+
+G06_BAD_MASKED = """# --- G-06: 测试门禁 10 分钟 ---------------------------------------------------
+
+START_G6=$(date +%s)
+go test ./... -count=1 > /dev/null 2>&1 || true
+END_G6=$(date +%s)
+DURATION_G6=$((END_G6 - START_G6))
+if [[ $DURATION_G6 -le 600 ]]; then
+    PASS=$((PASS + 1))
+fi
+
+# --- G-07: 二进制可构建 -------------------------------------------------------
+"""
+
+G06_BAD_UNJUDGED = G06_GOOD.replace("if [[ $RC_G6 -ne 0 ]]; then", "if false; then")
+G06_BAD_NO_BUDGET = G06_GOOD.replace("elif [[ $DURATION_G6 -gt 600 ]]; then", "elif false; then")
+
+
+class G06JudgesRunNotOnlyClockTest(unittest.TestCase):
+    """G-06 必须"跑成且计时"，不能只计时。
+
+    本仓 2026-10-31 实测过的假阳性：`GOSUMDB=off` 挡住 go.mod 声明的 1.26.10 工具链
+    切换时，同一张报告里 G-01/02/03/07 全红而 G-06 是 PASS（1s）。用替身 `go` 现场
+    复现过四组：旧脚本 + go_rc=1 → PASS（ bug ）；新脚本 + go_rc=1 → FAIL(rc=1)；
+    新脚本 + go_rc=0 → PASS；把预算改成 -1 → FAIL(时长分支仍可达)。
+    """
+
+    def test_the_real_gate_cannot_pass_a_run_that_did_not_happen(self):
+        gate = REPO / "scripts" / "release_gate.sh"
+        problems = g06_problems(gate.read_text(encoding="utf-8"))
+        self.assertEqual([], problems, "G-06 会对没跑成的测试报 PASS：" + "; ".join(problems))
+
+    def test_masked_exit_status_is_flagged(self):
+        problems = g06_problems(G06_BAD_MASKED)
+        self.assertTrue(any("|| true" in p for p in problems), problems)
+        self.assertTrue(any("exit status" in p for p in problems), problems)
+
+    def test_captured_but_unjudged_status_is_flagged(self):
+        problems = g06_problems(G06_BAD_UNJUDGED)
+        self.assertTrue(any("branches on it" in p for p in problems), problems)
+
+    def test_lost_time_budget_is_flagged(self):
+        problems = g06_problems(G06_BAD_NO_BUDGET)
+        self.assertTrue(any("budget" in p for p in problems), problems)
+
+    def test_hardened_shape_is_clean(self):
+        self.assertEqual([], g06_problems(G06_GOOD))
+
+    def test_prose_mentioning_the_bad_token_is_not_flagged(self):
+        """注释里出现 `|| true` 不算缺陷。
+
+        反向样本：把旧写法的**引用**作为注释加进已经修好的形状，判据必须仍给绿。
+        没有这一条，检测器就退化成子串扫描器——而它第一个咬到的就是本笔自己的说明注释。
+        """
+        commented = G06_GOOD.replace(
+            "START_G6=$(date +%s)",
+            "# 这里原先写成 `go test … || true`，现在改成捕获 rc 再判。\nSTART_G6=$(date +%s)",
+            1,
+        )
+        self.assertEqual([], g06_problems(commented))
+
+    def test_missing_anchor_fails_loudly(self):
+        with self.assertRaises(AssertionError):
+            g06_problems("#!/bin/bash\necho nothing here\n")
+
 if __name__ == "__main__":
     unittest.main()
