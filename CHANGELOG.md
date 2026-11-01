@@ -67,6 +67,7 @@
   - `deploy/lab/README.md` 的命令序列订正（见下一节）。
 - **守卫**：`internal/dsl/shipped_assets_guard_test.go` 七条（G1–G7），其中 **G4 强制 `DEMOS.md` 与 `deploy/lab/workflows/` 双向对齐**——每个工作流文件被恰好一个场景行认领、每个场景行指向的文件真实存在、A1–A4 必须齐。这是本仓头号缺陷类（台账/文档与实物流离）的机器化拦截：索引漏一个文件或指向不存在的文件，CI 直接红。
 - **本机实测口径（只跑到计划层，不外推）**：本机没有 4~7 台 VM、没有 PG 集群 ⇒ **apply 执行与快照回滚未实跑**。已实测的是：真二进制 + 真实 SQLite + 假清单下 `template create → new --params → plan` 全链可行；nginx 灰度 plan 出**两批**（先 1 台金丝雀、后 1 台），web 回滚与集群接管各 1 批；同一模板换参数后 **plan_hash 变化**（`v2:1b17ebfe…` vs `v2:271e2c96…`，取值确实进计划哈希）。这条边界已写进 `DEMOS.md` §4，不写成"已跑通"。
+- **口径订正（2026-11-02）**：上一条里的「apply 执行与快照回滚未实跑」**已被后来的容器靶场实跑取代**——执行期路径与快照采集/还原现已在本机跑通（见下文「容器靶场」一节），仍然没跑的是**真 VM 实验室**与**集群形态**（MySQL 主从、PG 集群接管）。本条其余内容（计划层口径、plan_hash 随参数变化）不变。
 
 ### 修复（已发布工作流的四类"编译绿、计划期/运行期才炸"）
 
@@ -79,7 +80,83 @@
 - **变异验证（7/7，先红后绿，文件逐字节还原）**：① 把 `{{input.package}}` 改回 `{{.package}}` → G1 红；② 引用一个未声明的 `{{input.bogus}}` → G2 红；③ 在 step 级 `rollback` 里塞一个不认识的键 → G3 红；④ 从 `DEMOS.md` 删掉 B1 行 → G4 红；⑤ 把动作改成幽灵动作 `file.write` → G5 红；⑥ 把 `&&` 放回命令体 → G6 红；⑦ 删掉 `approvers` → G7 红。每条还原后守卫复绿，且被改文件与改前逐字节相同。
 - **验证**：`gofmt -l internal/ cmd/` 空输出；`go build ./...` rc=0；`go vet ./internal/dsl/... ./internal/executor/...` rc=0；`go test -count=1 ./...` **rc=0，68 个包全 ok、零 FAIL**（`cmd/levee` 93.4s、`internal/grpc` 107.3s、`internal/credential` 67.2s）；`golangci-lint run`（本机 v2.13.2，与 CI 钉的 `version: v2.13` 同线）对改动包 **rc=0 / 0 issues**；真二进制端到端见上。
 - **边界（不外推）**：本笔只把 demo 库的场景脚本与已发布工作流的上述四类缺陷做到"可编译、可校验、计划层可跑"。**apply 的执行期路径、快照采集与回滚、集群接管三条没有在本机实跑**（无 VM、无 PG 集群），已逐条登记在 `deploy/lab/DEMOS.md` §4；守卫 G7 覆盖的是**静态可判**的两档（声明档位 + 不可逆红线），风险分带出的更高下限是计划期值，文件级守卫看不见——那一档仍由引擎在计划期拒绝。
+- **边界订正（2026-11-02）**：上一条里的「apply 执行期路径、快照采集与回滚没有实跑」已不成立——容器靶场实跑后这两条已跑通（真 SSH 上的模块分发、门禁判定、批次切分、失败回滚、快照采集与还原，证据见下文「容器靶场」一节）。**仍未跑**的是集群接管（需 PG 集群与第二节点）与真 VM 实验室；DEMOS.md §4 已按此改写。
 
+
+### 新增（容器靶场：把执行期路径在没有 VM 的机器上也实跑一遍）
+
+- **动机**：上一笔交付的诚实边界写着「apply 的执行期路径、快照采集与回滚没有在本机实跑」——因为本机没有 4~7 台 VM。这个缺口不是"加台机器"能补的（那是采购与运维），于是本笔用**Docker 容器顶替实验室 VM**，把执行期路径真正跑通。
+- **新增 `deploy/lab/container-lab/`**：
+  - `Dockerfile`——靶机镜像（alpine 3.24 + openssh + nginx + openrc）。两个必须记的坑都写进注释：openrc 在没 boot 过的容器里要 `touch /run/openrc/softlevel`；openrc 的 pidfile（`/run/nginx/nginx.pid`）与 nginx 默认写的（`/run/nginx.pid`）不一致时 `service nginx status` 恒报 `crashed`，svc 模块的 `isActive` 判据就废了，所以镜像里把 nginx.conf 的 `pid` 指令改到 openrc 期望的路径。
+  - `workflows/` 三条可跑工作流：成功路径（`svc.start`/`file.copy`/`shell.exec`/`svc.reload` + 步骤级门禁 + 批间 HTTP 探针门禁 + `percent 50/100` 分批）、失败路径（退出码非 0 → 自动回滚 → `undo-action` 补偿）、快照路径（`rollback.strategy: snapshot`）。两份站点配置是**故意不同的**（8090 与 8091）——否则"还原成功"与"什么都没发生"分不开。
+  - `README.md`——完整配方与七条实跑事实。
+  - `run/config.template.yaml` + `run/inventory.yaml` + `run/credential-value.json`——
+    配置模板、目标清单与靶场凭据值。`run/config.yaml` 是**生成物**（不入库）：
+    `labdrive.py` 首次运行时从模板生成，把 `{{LAB_DIR}}` 换成本目录的绝对路径。
+  - `labdrive.py`——驱动脚本。**它不是便利包装，是"能不能复现"的关键**：PowerShell
+    传多行 YAML 会把参数按行拆散，传带双引号的 JSON 会把双引号吃掉（不报错，
+    解析回退后整段被当成口令 ⇒ 一次莫名其妙的认证失败）；脚本用 Python 的
+    `subprocess.run([...])` 列表形式传参，并固定工作目录 = 靶场根目录
+    （`file.copy` 的相对 `src` 相对的就是它）、`LEVEE_FILE_MODULE_EXTRA_DIRS`
+    与 `LEVEE_MASTER_PASSWORD`。
+- **实测证据（本机，3 台容器）**：① 成功路径 8 个步骤全 `success`，输出是目标机真实回显（`uploaded 132 bytes to '/etc/nginx/http.d/lab-site.conf'`、`nginx: the configuration file /etc/nginx/nginx.conf syntax is ok`、`* Reloading nginx configuration ... [ ok ]`），`percent 50/100` 切出 2 批各 1 台，步骤级 cmd 门禁与批间 HTTP 探针门禁均通过；② 失败路径 `deliberate-failure` `exit_code=1` → 补偿步 `undo-start-nginx`（`svc.stop`）`success` → 目标机独立复核 `service nginx status` = **stopped**；③ 快照路径经 `levee serve --engine-snapshot-dir` + REST gateway（`POST /api/v1/changes/<id>/apply`）：正向 `file.copy` 上传 132 字节（写入 `listen 8091`）→ 故意失败 → `snapshot:deploy-site-config` 还原 `success` → 目标机文件回到 **`listen 8090`**，快照库落地 `meta.json` / `paths.json` / 载荷三件套。
+  **终态照实写**：成功路径 `completed`；**两条失败路径都是 `rolled_back_partial` 而不是 `rolled_back`**——故意失败的那一步自己没声明补偿契约，它的副作用没被撤销，回滚没完全收敛，引擎于是不声称"干净回滚"（`internal/engine/closure.go:96-101`，引擎自己的回归测试 `internal/wiring/exec_run_test.go:351-357` 钉的就是这一条）。快照那条的还原步是 `success`、文件确实回到 `listen 8090`，但 run 终态仍是 `rolled_back_partial`——**"文件回来了"不等于"回滚干净了"**。
+- **入库后按配方复验（干净目录，本机 Docker 靶场）**：把 `deploy/lab/container-lab/`
+  原样复制到一个空目录，按 README §5.1 的命令序列重跑——① 成功路径 run
+  `run-8b33517b724b7e34` 终态 **`completed`**（2 批各 1 台、8 个步骤全 `success`），
+  目标机独立复核 `service nginx status` = started、站点文件 = `listen 8090`；
+  ② 失败路径 run `run-9670144f78b0a818` 终态 **`rolled_back_partial`**、exit=1，
+  补偿步 `undo-start-nginx`（`svc.stop`）`success`，目标机独立复核
+  `service nginx status` = **stopped**。
+  **复验抓到配方本身的两个缺口并已补**：① `run/data/` 不存在时 sqlite 报
+  `unable to open database file (14)`——报错看着像权限问题，其实是目录没建
+  （`labdrive.py` 现在会建 `run/data/` 与 `run/snapshots/`）；② 配置里的绝对路径
+  不能入库，所以拆成 `run/config.template.yaml`（占位符 `{{LAB_DIR}}`）+
+  运行时生成不入库的 `run/config.yaml`。
+- **实跑查出并写进文档的五条操作事实**（`DEMOS.md` §4.1 与 `container-lab/README.md` §4）：① **CLI 本地路径不读 `channel.ssh.*` 配置**——`ssh.SetDefaultConfig(...)` 全仓只有 `cmd/levee/cmd_serve.go:954` 一处调用，`levee plan` / `levee apply --engine-enabled` 一律按包默认值走（严格主机密钥校验 + `~/.ssh/known_hosts`），配置里的 `strict_host_check: false` 对本地路径**无效**；② **快照补偿在 CLI 本地 apply 上不可用**（`--engine-snapshot-dir` 只有 serve 有），声明快照的计划在动任何目标之前 fail-closed 拒绝：`declares snapshot rollback but no snapshot store is configured (--engine-snapshot-dir)`；③ **`file.copy` 的 `src` 不能是绝对路径**，只能在控制端工作目录内（或 `LEVEE_FILE_MODULE_EXTRA_DIRS` 白名单），相对 `src` 是相对**执行 levee 那个进程的工作目录**；④ **别用 `pgrep` 做存活探测**——Alpine 的 busybox 把 `pgrep` 实现成了 `pkill` 的别名，`pgrep nginx` 会按名字杀进程（实测把执行它的 shell 一起杀了），要用 `service nginx status`；⑤ **`levee target check` 在 CLI 本地模式下探不了**（恒返回 `no channel available`），连通性探测要在 serve 下做。
+- **守卫覆盖同步**：`shipped_assets_guard_test.go` 的 `shippedDocs` 根目录增加 `deploy/lab/container-lab/workflows`，使这三条新工作流同样受 G1/G2/G3/G5/G6/G7 约束（G4 的索引对齐**不**覆盖它们——G4 映射的是 `DEMOS.md` 的场景行与客户演示工作流，容器靶场有自己的索引，即它 README 里那张表）。
+- **边界（不外推）**：容器靶场证明的是**引擎的执行期路径**（SSH 认证、模块分发、门禁判定、批次切分、失败回滚、快照采集与还原、证据落库）。它**不**证明真 VM 上的 systemd 服务语义（靶机走 openrc 的 sysvinit 分支）、MySQL 主从切换（无 MySQL 集群）、集群接管（无 PG 集群与第二节点）、以及真实 nginx 灰度的流量效果（探针是固定 URL，没有真实负载）。这些仍要按 `DEMOS.md` 的实验室环境做。
+
+### 修复（`file.copy` 的编译期签名与运行期契约对不上）
+
+- **原缺陷**：编译期签名表 `internal/dsl/typechecker.go` 的 `actionSignatures["file.copy"]`
+  声明的参数名是 **`dst`**，而运行期模块读的是 **`dest`**
+  （`internal/executor/modules/file/file.go:182`）。全仓 `grep '"dst"'` **只命中签名表这一行**
+  ——没有任何工作流、模块或测试用 `dst`；所有已发布工作流（`deploy/lab/workflows/` 的
+  `lab-nginx-canary.yaml`、`lab-web-config-rollback.yaml`，以及本笔新增的三条容器靶场工作流）
+  写的都是 `dest`。
+- **危害**：签名表在对外宣告一个**运行期不存在的参数名**，而真正的参数名根本不在表里。
+  照着签名表写工作流的人会写 `dst:`——它能过严格类型检查（这个键确实在表里），
+  然后在目标机上炸：`file.copy: missing argument "dest"`。这正是本仓在猎的
+  「编译绿、运行期才炸」那一类。
+- **改法**：`dst` → `dest`（一个词的订正）。**没有**动检查器的其他行为。
+- **顺带订正一条说谎的注释**：`checkStepArgs` 的注释原写「未知参数在宽松模式被忽略、
+  在严格模式被报告」——代码里根本没有这个分支，未知参数在**两种模式下都不报**
+  （`checkStepArgs` 只遍历签名表里有的键）。注释已按代码实况改写，并写明为什么不能改成
+  「严格模式报未知参数」：签名表是**故意不完整的**（只列了 MVP 动作），而模块还接受表里
+  没写的可选参数（`file.copy` 的 `owner`/`group`，运行期对非字符串是跳过而非报错），
+  一旦报未知参数就会把运行期本来能跑的工作流挡在编译期。
+- **新守卫（两侧都钉住）**：`internal/dsl/typechecker_test.go` 的
+  `TestFileCopySignatureUsesRuntimeArgName`（内部测试包，直接断言签名表里有 `dest`、
+  没有 `dst`）+ `internal/dsl/action_signature_contract_test.go` 的
+  `TestFileCopyRuntimeArgNameMatchesSignature`（外部测试包，断言运行期模块：缺 `dest` 拒、
+  给 `dst` 也拒、给 `dest` 才放行）。后者必须放外部包——`internal/executor` 导入
+  `internal/dsl`（`executor/irreversible.go`），放在内部测试包里会成环。
+- **编译门扩面**：`TestShippedLabWorkflowsCompile` 原来只覆盖
+  `deploy/lab/workflows/`（6 个文件），本笔把 `deploy/lab/container-lab/workflows/`
+  （3 个文件）也纳入，计数 6 → **9**（计数是钉死的，不是下界——按仓库既有约定，
+  新增已发布工作流必须同笔更新这个数）。
+- **残留缺口（不外推）**：本笔**没有**堵住「未知参数一律放过」这个口子，所以照旧可以
+  写一个 `dst:` 的工作流骗过编译期。要真堵住，得先把签名表补全到每个模块的完整参数集
+  （含 `owner`/`group` 这类可选参数），那是另一件事，本笔不做、也没假装做了。
+
+### 本笔的变异验证（7/7，先红后绿，文件逐字节还原）
+
+① 容器靶场工作流里塞打包层槽位 `{{.slot}}` → G1 红；② 命令体放回 `&&` → G5 红；
+③ 高危档删掉 `approvers` → G6 红；④ 动作改成幽灵动作 `bogus.action` → G3 红；
+⑤ 批次策略改成非法值 `bogus` → 编译门红；⑥ 签名表的 `dest` 退回 `dst` → 签名守卫红；
+⑦ file 模块改读 `dst` → 运行期契约守卫红。每条还原后守卫复绿，且被改文件与改前逐字节相同
+（容器靶场目录尚未纳入版本控制，所以还原是按字节写回，不是 `git checkout`）。
 
 ## [v1.24.0] - 2026-10-31
 
