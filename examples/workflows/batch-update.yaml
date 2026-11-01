@@ -8,12 +8,16 @@
 #   * a step-level verify gate and a step-level compensation (LE097:
 #     compensation belongs to the step it undoes; the workflow-level block
 #     only carries runtime policy such as on_failure)
-#   * an input declaration for the templated argument
+#   * an input declaration for the parameterised argument. The value is
+#     resolved at PLAN time from the run's parameter bag and enters the plan
+#     hash, so the same workflow with a different package is a different
+#     plan and needs its own approval (docs/leveelang-spec.md §2.1)
 name: batch-update
 version: "1.0"
 description: >
-  Rolling yum update of {{.package}} over the production web fleet, 1% canary
-  first, inside the 02:00-04:00 UTC maintenance window.
+  Rolling yum update of the package named by the `package` input over the
+  production web fleet, 1% canary first, inside the 02:00-04:00 UTC
+  maintenance window.
 
 input:
   - name: package
@@ -39,32 +43,44 @@ batches:
 
 approval:
   level: high
+  # high 档要两个互相独立的批准，且发起人不能投（internal/approval/levels.go）。
+  # 不声明 approvers 的话，计划期就被"approval under-provisioned"拒掉。
+  approvers: [alice, bob]
 
 steps:
+  # 预检需要管道与 &&，因此走 shell.script：shell.exec 的命令体受运行期
+  # 白名单约束（只允许字母数字与 - _ . / = 和空格，& 与引号会被拒，
+  # 见 internal/executor/modules/shell/shell.go），脚本体不受该限制。
   - name: pre-check
-    action: shell.exec
+    action: shell.script
     args:
-      cmd: "uptime && df -h"
+      script: |
+        uptime && df -h
 
   - name: update
     action: shell.exec
     args:
-      cmd: "yum update -y {{.package}}"
+      cmd: "yum update -y {{input.package}}"
     depends_on: ["pre-check"]
     verify:
       cmd:
         run: "systemctl is-active nginx"
         expect_exit: 0
     rollback:
-      action: shell.exec
-      args:
-        cmd: "yum downgrade -y {{.package}}"
+      strategy: undo-action
+      step:
+        name: downgrade-package
+        action: shell.exec
+        args:
+          cmd: "yum downgrade -y {{input.package}}"
     irreversible: false
 
+  # 追加一行日志需要重定向（>），同样只有 script 能表达。
   - name: report
-    action: shell.exec
+    action: shell.script
     args:
-      cmd: "echo 'update complete' >> /var/log/levee.log"
+      script: |
+        echo 'update complete' >> /var/log/levee.log
     depends_on: ["update"]
 
 rollback:

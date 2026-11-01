@@ -154,6 +154,14 @@ func stringArg(args map[string]any, key string) (string, error) {
 	return s, nil
 }
 
+// ValidateCommand reports whether cmd satisfies the shell module's runtime
+// command policy (see validateShellCommand). It is exported for the same
+// reason verify.ValidateGateCommand is: the runtime check lives at execute
+// time, which is far too late for a workflow that has already been approved
+// and paid for. Compile-time gates use it to reject commands the runtime
+// would refuse.
+func ValidateCommand(cmd string) error { return validateShellCommand(cmd) }
+
 // validateShellCommand checks that a command does not contain shell
 // metacharacters that could be used for command injection. This is a
 // conservative safety net; the remote channel executor may still interpret

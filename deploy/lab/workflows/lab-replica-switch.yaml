@@ -1,12 +1,20 @@
 # LEVEE 实验室工作流 —— 演练 1：跨区域副本切换（deploy/lab/README.md §4）
 #
-# 与 examples/workflows/dr-switch-orders-db.yaml 同形，但目标查询指向实验室
-# 清单（env=lab）。覆盖四个验收点：
+# 与 examples/workflows/dr-switch-orders-db.yaml 同形，但 target.query 指向
+# 实验室清单（env=lab）作为选择说明。注意：查询串本身**不参与选目标**，
+# 计划期的目标集合来自 `levee plan <run-id> --targets ...`（见
+# internal/plan/targetcaps.go：校验器只用 min_count/max_count 卡这个集合
+# 的大小）。覆盖四个验收点：
 #   * mysql.replica_switch 已列入 allow_irreversible 白名单（V14/LE082；
 #     把这一行删掉再 compile，即可看到编译期拒绝）
 #   * 运行时 confirm=yes 硬门（把 confirm 改成别的值执行，运行期拒绝）
 #   * one-per-target 严格逐台 + 每台切换后 verify
 #   * 失败不自动回滚（on_failure: manual），按演练手册决策
+#
+# new_primary 是**语言层的 input**（`{{input.new_primary}}`），取值在计划期
+# 从运行的参数袋解析，解析后的值进 plan hash——换一台主库就是另一个计划，
+# 需要重新审批。注册与运行方式见 deploy/lab/DEMOS.md §1（先 template create
+# 再 new --params，plan 不收参数）。
 name: lab-replica-switch
 version: "1.0"
 description: >
@@ -35,20 +43,30 @@ batches:
 
 approval:
   level: high
+  # high 档要两个互相独立的批准，且**发起人不能投**（internal/approval/levels.go）。
+  # 不声明 approvers 的话，计划期就被拒（实测 "approval under-provisioned:
+  # high-level change needs 2 independent approver(s) but the workflow
+  # declares 0 votable ([])"）。
+  approvers: [alice, bob]
 
 allow_irreversible:
   - mysql.replica_switch
 
 steps:
+  # 复制状态预检：需要引号与管道，走 shell.script 而不是 shell.exec——
+  # shell.exec 的命令体受运行期白名单约束（只允许字母数字与 - _ . / = 和
+  # 空格，引号与 | 会被拒，见 internal/executor/modules/shell/shell.go），
+  # 脚本体不受该白名单限制，由目标机上的 sh 执行。
   - name: precheck-replication
-    action: shell.exec
+    action: shell.script
     args:
-      cmd: "mysql -e \"SHOW SLAVE STATUS\\G\" | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'"
+      script: |
+        mysql -e "SHOW SLAVE STATUS\G" | grep -E 'Slave_IO_Running|Slave_SQL_Running|Seconds_Behind_Master'
 
   - name: switch-primary
     action: mysql.replica_switch
     args:
-      new_primary: "{{.new_primary}}"
+      new_primary: "{{input.new_primary}}"
       confirm: "yes"
     irreversible: true
     depends_on: ["precheck-replication"]
