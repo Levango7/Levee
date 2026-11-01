@@ -531,29 +531,32 @@ levee audit verify run-20260815-001
 
 ## 第6章 漂移检测命令
 
-对应 D3 状态与漂移（简化）：不做主动漂移检测，只读漂移报告。
+对应 D3 状态与漂移（简化）。
 
-命令示例：触发漂移扫描
+> **本节命令形式已于 2026-11-01 按实际注册的 CLI 订正**：此前写作 `levee drift scan` / `levee drift show`，而仓里注册的是 `drift detect`（`cmd/levee/cmd_drift.go:101`）与 `drift report`（`cmd/levee/cmd_drift.go:754`）；目标用 `--host/--hosts` 指定，不存在 `--target` 标签表达式与 `--depth`。旧写法照着敲会直接报 unknown command / unknown flag。
 
-```bash
-levee drift scan --target group=web --baseline ./baselines/web-20260801.yaml
-```
-
-对指定目标集做一次性比对，产出报告，不自动纠正。报告含：每台目标机的期望状态、实际状态、差异项、严重级别。
-
-命令示例：查看漂移报告
+命令示例：触发漂移检测
 
 ```bash
-levee drift show drift-20260815-001
+levee drift detect --hosts web-01,web-02 --baseline ./baselines/web-20260801.yaml
 ```
 
-表：drift scan 选项参数说明表
+对指定主机做一次性比对，产出报告，不自动纠正。报告含：每台目标机的期望状态、实际状态、差异项、严重级别。
+
+命令示例：查看漂移报告与趋势
+
+```bash
+levee drift report --host web-01 --days 30
+```
+
+表：drift detect 选项参数说明表
 
 | 选项 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `--target <label>` | label | 是 | 目标集标签表达式 |
-| `--baseline <file>` | path | 是 | 基线状态文件 |
-| `--depth shallow|deep` | enum | 否 | shallow 仅比对关键项，deep 全量比对，默认 shallow |
+| `--host <host>` | string | 否 | 单台目标主机（与 `--hosts` 可叠加） |
+| `--hosts <a,b>` | string | 否 | 逗号分隔的目标主机列表 |
+| `--baseline <auto\|file>` | string | 否 | 基线来源，默认 `auto`（用已存基线）；给路径则用该文件 |
+| `--baseline-name <name>` | string | 否 | `--baseline auto` 时选哪个已存版本，默认 `default` |
 
 ---
 
@@ -1198,7 +1201,7 @@ airgap:
 | `levee template list/show/create/validate/update/delete/version` | 模板管理 | 3 |
 | `levee target list/check/import/remove/unmanage` | 目标管理 | 4 |
 | `levee audit list/show/export/verify` | 审计合规 | 5 |
-| `levee drift scan/show` | 漂移检测 | 6 |
+| `levee drift detect/baseline/report/schedule` | 漂移检测 | 6 |
 | `levee secret list/add/rotate/revoke/show` | 凭据管理 | 7 |
 | `levee user list/add` | 用户管理 | 8 |
 | `levee team list/add` | 团队管理 | 8 |
@@ -1233,7 +1236,7 @@ airgap:
 | `levee rollback` / `rollback-all` | 4.4.6 回滚协议 |
 | `levee trace` | 4.7.1 变更审计 trace |
 | `levee audit verify` | 4.7.1 哈希链、4.7.2 哈希链分片 |
-| `levee drift scan` | 4.3 D3 状态与漂移（简化） |
+| `levee drift detect` | 4.3 D3 状态与漂移（简化） |
 | `levee secret` | 4.8.1 凭据代理、4.8.5 凭据轮换 |
 | 第13章 REST API | 7 组件架构 L1 接入层 |
 | 第14章 配置文件 | 4.10 D12 部署形态（单机 / 集群 / 气隙 profile） 

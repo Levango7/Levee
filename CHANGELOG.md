@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（活台账锚点活性门：`scripts/check_doc_anchors.py` + 6 处死锚点订正）
+
+- **缺口**：台账里的 `path:line` 锚点是下一个 agent 照着走的落点，但它们**没有任何门**。11-01 的一轮复核翻出 5 处账本与代码脱节（`docs/project-status-2026-11.md` §7），全部只能靠人读代码发现——CI 校验代码，不校验"文档指向的那一行还在不在"。第一版扫描口径（全 `docs/`）会大量误报：冻结快照（`docs/quality-hardening-2026-09.md` 等）的锚点本来就该烂，裸文件名（`store.go:12`）在仓里对应十几个包。
+- **落地**：① `scripts/check_doc_anchors.py` 把作用域做成**声明式**（`LIVE_DOCS` 六篇：product-roadmap / blocked-items / levee-api / product-positioning / AGENTS / CONTRIBUTING），锚点必须带路径分隔符，校验文件存在 / 行号 ≤ EOF / 区间不倒置；围栏内的示例不算引用；`MIN_ANCHORS=20` 防"扫了个寂寞"；退出码 0/1/2 区分"干净 / 有问题 / 扫不了"（把"读不到文档"报成"全是死锚点"会把人引到错的修法上）。② 修掉 `docs/product-roadmap.md` 的 6 处死锚点：`compat/executor.go:4-7` 与 `rag/embedding.go:7-10` 指向 2026-10-03 已删的包 ⇒ 改写为明确的历史陈述（不带行号，不再冒充锚点）；`approval/service.go:258`、`grpc/change_service.go:116`、`executor/irreversible.go:188`、`wiring/plan.go:119` 是包在、行号漂 ⇒ 重指到当前实现（`internal/approval/service.go:259`、`internal/grpc/change_service.go:90`、`internal/executor/irreversible.go:287`、`internal/wiring/plan.go:150`）。③ 随行订正 `docs/levee-api.md` 第 6 章的 drift 命令：文档写 `drift scan` / `drift show --target`，仓里注册的是 `drift detect` / `drift report`（`cmd/levee/cmd_drift.go:101` / `:754`），目标是 `--host/--hosts`，不存在 `--target` 与 `--depth`——旧写法照着敲直接报 unknown command。
+- **证据（变异打在仓库真实文件上，不是夹具）**：把一个锚点改成 `:99999` → 红并点名 `line 99999 is past EOF (cmd/levee/cmd_drift.go has 1287 lines)`；把一个锚点指向不存在的 `plan2.go` → 红并点名 `no such file`；两次都从备份还原，还原后两份文件 `sha256` 与变异前**逐字节相同**、检查器回绿（27 个锚点 / 6 篇活台账）。检测器自证 7 组样本：缺文件、超 EOF、区间倒置、活锚点对照、裸文件名不算锚点、围栏内豁免双向、声明文档缺失是 exit 2 而非通过。`test_this_suite_is_named_in_the_release_gate_list` 有**先红后绿**的实样：加进 ci.yml 点名清单之前它确实报 `'test_doc_anchors' not found`。
+- **边界**：本门只证"锚点还指向某处"，**不证锚点周围那句话还对**——语义复核仍归人（§7 那 5 处漂移是读代码定的，不是这门发现的）。作用域固定六篇；`docs/security-audit.md`、`docs/review-report.md` 等 9 月快照刻意不扫，它们的锚点属于冻结记录。`scripts/` 自测 77 → **87** 例。
+
 ### 修复（发布门禁 G-06：「跑成」与「不超时」是两件事，必须都判）
 
 - **缺陷**：`scripts/release_gate.sh` 的 G-06 写成 `go test ./... -count=1 > /dev/null 2>&1 || true`，然后**只**比较计时与 600s 预算。`|| true` 把退出码丢掉之后，"测试根本没跑起来"与"跑得很快的绿"在门禁眼里是同一件事。
