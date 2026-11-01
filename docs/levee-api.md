@@ -852,12 +852,24 @@ RESTful 风格，支持两套路径：
 | GET | `/targets/:id` | `/api/v1/TargetService/GetTarget` | 查看目标机 | — |
 | DELETE | `/targets/:id` | `/api/v1/TargetService/RemoveTarget` | 移除目标机 | `levee target remove` |
 | POST | `/targets/:id/check` | `/api/v1/TargetService/CheckTarget` | 连通性检查 | `levee target check` |
+| GET | `/targets/:id/history` | —（`TargetHistory`，按主机名键） | 目标机变更历史 | — |
+| POST | `/targets/:id/status` | —（`SetTargetStatus`） | 冻结 / 解冻目标机 | — |
+| POST | `/targets/import` | —（`ImportTargets`） | 从 YAML 批量导入目标机 | — |
+| GET | `/groups` | —（`ListGroups`） | 列主机分组 | — |
+| POST | `/groups` | —（`CreateGroup`） | 创建分组 | — |
+| DELETE | `/groups/:id` | —（`DeleteGroup`） | 删除分组 | — |
+| GET | `/agents` | —（`ListAgents`；`?capability=` / `?status=` 服务端筛） | 列已注册 agent | `levee agent list` |
+| GET | `/agents/:id` | —（`GetAgent`） | 单个 agent | `levee agent show` |
+| DELETE | `/agents/:id` | —（`RemoveAgent`） | 移除 agent（拒绝是**回复字段**而非状态码：200 + `removed:false` + 理由，`--force` 只在 CLI） | `levee agent remove` |
 | GET | `/audit/log` | `/api/v1/AuditService/GetAuditLog` | 列出审计记录 | `levee audit list` |
 | GET | `/audit/traces` | `/api/v1/AuditService/ListAuditTraces` | 审计 trace | — |
 | GET | `/audit/verify` | `/api/v1/AuditService/VerifyHashChain` | 哈希链校验（按 run 的 trace 链 + 全局 audit 链） | `levee audit verify` |
 | GET | `/system/version` | `/api/v1/SystemService/GetVersion` | 系统版本 | — |
 | GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee status` |
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | — |
+| GET | `/system/batch-status` | —（直读 store，不经 service） | 按 run 的批次进度（按该 run 自己的环境判 `view`，见 13.5 门禁口径） | — |
+| GET | `/system/change-trend` | —（REST-only，不进 proto） | 变更趋势（按日分桶，需 `tz_offset`；受 `view` 准入） | — |
+| GET | `/system/takeover-events` | —（REST-only） | 集群接管事件时间线 | — |
 | POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | — |
 | GET | `/system/cluster-status` | —（直读 store，不经 service） | 集群注册表：`nodes` / `summary` / `backend`；`?capability=<name>` 按节点声明的能力筛 `nodes`（见下方说明） | `levee cluster status` |
 | GET | `/system/auth-info` | — | 公开认证描述符（SSO 探测，见 13.3，免 Bearer） | — |
