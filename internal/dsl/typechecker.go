@@ -200,8 +200,14 @@ func (c *TypeChecker) checkSteps(steps []Step) []TypeError {
 }
 
 // checkStepArgs validates the args of a single step against the action
-// signature table. Unknown args are ignored in lenient mode and reported in
-// strict mode.
+// signature table.
+//
+// Only the args the table declares are checked; args outside the table are
+// skipped, in both modes. The table is deliberately partial ("Only the
+// well-known MVP actions are listed"), and the modules accept optional args
+// it does not mention (file.copy's owner/group, which the runtime tolerates
+// when they are not strings), so reporting unknown args as errors would
+// refuse workflows the runtime would have run.
 func (c *TypeChecker) checkStepArgs(base string, s Step) []TypeError {
 	sig, ok := actionSignatures[s.Module+"."+s.Action]
 	if !ok {
@@ -366,7 +372,7 @@ var actionSignatures = map[string]map[string]Type{
 	},
 	"file.copy": {
 		"src":  TypeString{},
-		"dst":  TypeString{},
+		"dest": TypeString{},
 		"mode": TypeString{},
 	},
 	"svc.restart": {
