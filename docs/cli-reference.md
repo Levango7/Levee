@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list`（读服务端模板库）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list`（读服务端模板库）、`target list`（读服务端库存）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -777,20 +777,33 @@ levee template delete nginx-reload
 
 ### 6.1 target list
 
-列出已知目标主机。
+列出持久库存里的目标主机（含分组、标签与生命周期状态）。
 
 ```text
-levee target list
+levee target list [--group NAME] [--status STATUS]
 ```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--group` | | 按**分组名**过滤（如 `prod/db`）；名字不存在时报 `group "x" not found`，而不是返回空列表 |
+| `--status` | | 按状态过滤：`active` / `frozen` / `retired` |
+| `--format` | | 输出格式（当前仅 `text`） |
 
 **说明**
 
-- 从历史变更 run 的 step 记录中收集去重后的主机列表
+- 数据来自 inventory 存储（`targets` 表），按 `hostname, port` 排序；不是从历史 run 的 step 记录里反推的
+- 加全局 `--remote` 时读**服务端**库存（`TargetService.ListTargets`），列与本地一致：ADDRESS / PORT / CHANNEL / STATUS / LABELS
+- `--group` 在远程模式下按名字发给服务端解析（`ListTargetsRequest.group_name`），未知分组同样报 `group "x" not found`；`--status` 在客户端过滤（RPC 无该字段）
+- 人类输出的 LABELS 列按标签名排序（本地与远程都如此），重复执行输出稳定
+- **精度差异（如实标注）**：`--json` 的 `created_at` / `last_checked_at` 在本地保留亚秒精度，远程只到秒（线上是 int64 秒）
 
 **示例**
 
 ```命令示例：列出目标主机
 levee target list
+levee --remote --server localhost:9090 target list --group prod/db
 ```
 
 ### 6.2 target import

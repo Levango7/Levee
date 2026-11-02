@@ -99,7 +99,20 @@ func pbFromState(t *state.Target) *pb.Target {
 		GroupId:       t.GroupID,
 		Reachable:     t.Reachable,
 		Status:        t.Status,
+		CreatedAt:     t.CreatedAt.Unix(),
+		LastCheckedAt: lastCheckedUnix(t.LastCheckedAt),
+		TenantId:      t.TenantID,
 	}
+}
+
+// lastCheckedUnix encodes the nullable last_checked_at column: 0 means the
+// host has never been probed, so the CLI can rebuild a nil pointer (the
+// local path omits the field for exactly that state).
+func lastCheckedUnix(at *time.Time) int64 {
+	if at == nil || at.IsZero() {
+		return 0
+	}
+	return at.Unix()
 }
 
 // AddTarget registers a new target host in the persistent inventory. When
@@ -228,7 +241,23 @@ func (s *TargetService) ListTargets(ctx context.Context, req *pb.ListTargetsRequ
 		return nil, err
 	}
 
-	filter := state.TargetFilter{Labels: req.LabelSelector, GroupID: req.GroupId}
+	// group_id wins when both are set: the ID is what authorization and the
+	// stored row use, so an explicit ID must not be overridden by a name.
+	groupID := req.GroupId
+	if groupID == "" && req.GroupName != "" {
+		g, gerr := s.store.GetInventoryGroupByName(ctx, req.GroupName)
+		if gerr != nil {
+			return nil, status.Errorf(codes.Internal, "resolve group: %v", gerr)
+		}
+		if g == nil {
+			// Same refusal the local CLI gives. Answering an empty list here
+			// would make a typo indistinguishable from a group with no hosts.
+			return nil, status.Errorf(codes.NotFound, "group %q not found", req.GroupName)
+		}
+		groupID = g.ID
+	}
+
+	filter := state.TargetFilter{Labels: req.LabelSelector, GroupID: groupID}
 	rows, err := s.store.ListTargets(ctx, filter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list targets: %v", err)

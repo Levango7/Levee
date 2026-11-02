@@ -350,7 +350,18 @@ type Target struct {
 	// the console's group tree; the field existed on the stored row since the
 	// inventory importer landed but was never carried over the wire, which is
 	// why the console's group view could not be built against the REST API.
-	GroupId       string `protobuf:"bytes,9,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
+	GroupId string `protobuf:"bytes,9,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
+	// created_at is the row's creation time in Unix seconds. It was not on the
+	// wire before, so `levee target list --remote` had no value for the JSON
+	// field the local path prints (state.Target.created_at). Seconds rather
+	// than a google.protobuf.Timestamp to match the other timestamps here; the
+	// sub-second part the local store keeps is therefore not representable.
+	CreatedAt int64 `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	// last_checked_at is the last reachability probe in Unix seconds; 0 means
+	// "never checked" (the stored column is nullable).
+	LastCheckedAt int64 `protobuf:"varint,11,opt,name=last_checked_at,json=lastCheckedAt,proto3" json:"last_checked_at,omitempty"`
+	// tenant_id is the owning tenant. Empty for rows that predate tenancy.
+	TenantId      string `protobuf:"bytes,12,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -444,6 +455,27 @@ func (x *Target) GetStatus() string {
 func (x *Target) GetGroupId() string {
 	if x != nil {
 		return x.GroupId
+	}
+	return ""
+}
+
+func (x *Target) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Target) GetLastCheckedAt() int64 {
+	if x != nil {
+		return x.LastCheckedAt
+	}
+	return 0
+}
+
+func (x *Target) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -3719,7 +3751,13 @@ type ListTargetsRequest struct {
 	PageSize      int32  `protobuf:"varint,4,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	PageToken     string `protobuf:"bytes,5,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	// Filter to one host group (inventory_groups.id). Empty means all groups.
-	GroupId       string `protobuf:"bytes,6,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
+	GroupId string `protobuf:"bytes,6,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
+	// group_name filters by the group's path-style name ("prod/db") for callers
+	// that only know what the operator typed. The server resolves it to an ID
+	// and answers NotFound when no such group exists — the same refusal the
+	// local CLI gives, so a typo cannot look like an empty inventory. group_id
+	// wins when both are set.
+	GroupName     string `protobuf:"bytes,7,opt,name=group_name,json=groupName,proto3" json:"group_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3792,6 +3830,13 @@ func (x *ListTargetsRequest) GetPageToken() string {
 func (x *ListTargetsRequest) GetGroupId() string {
 	if x != nil {
 		return x.GroupId
+	}
+	return ""
+}
+
+func (x *ListTargetsRequest) GetGroupName() string {
+	if x != nil {
+		return x.GroupName
 	}
 	return ""
 }
@@ -5130,7 +5175,7 @@ const file_levee_proto_rawDesc = "" +
 	"\x05hosts\x18\x02 \x03(\tR\x05hosts\x12'\n" +
 	"\x0fmax_concurrency\x18\x03 \x01(\x05R\x0emaxConcurrency\x12\x1d\n" +
 	"\n" +
-	"wait_after\x18\x04 \x01(\x03R\twaitAfter\"\xd1\x02\n" +
+	"wait_after\x18\x04 \x01(\x03R\twaitAfter\"\xb5\x03\n" +
 	"\x06Target\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12!\n" +
@@ -5140,7 +5185,12 @@ const file_levee_proto_rawDesc = "" +
 	"\x06labels\x18\x06 \x03(\v2\x19.levee.Target.LabelsEntryR\x06labels\x12\x1c\n" +
 	"\treachable\x18\a \x01(\bR\treachable\x12\x16\n" +
 	"\x06status\x18\b \x01(\tR\x06status\x12\x19\n" +
-	"\bgroup_id\x18\t \x01(\tR\agroupId\x1a9\n" +
+	"\bgroup_id\x18\t \x01(\tR\agroupId\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\n" +
+	" \x01(\x03R\tcreatedAt\x12&\n" +
+	"\x0flast_checked_at\x18\v \x01(\x03R\rlastCheckedAt\x12\x1b\n" +
+	"\ttenant_id\x18\f \x01(\tR\btenantId\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xca\x02\n" +
@@ -5421,7 +5471,7 @@ const file_levee_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\";\n" +
 	"\x13RemoveTargetRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
-	"\x05force\x18\x02 \x01(\bR\x05force\"\xcc\x02\n" +
+	"\x05force\x18\x02 \x01(\bR\x05force\"\xeb\x02\n" +
 	"\x12ListTargetsRequest\x12S\n" +
 	"\x0elabel_selector\x18\x01 \x03(\v2,.levee.ListTargetsRequest.LabelSelectorEntryR\rlabelSelector\x12!\n" +
 	"\fchannel_type\x18\x02 \x01(\tR\vchannelType\x12%\n" +
@@ -5429,7 +5479,9 @@ const file_levee_proto_rawDesc = "" +
 	"\tpage_size\x18\x04 \x01(\x05R\bpageSize\x12\x1d\n" +
 	"\n" +
 	"page_token\x18\x05 \x01(\tR\tpageToken\x12\x19\n" +
-	"\bgroup_id\x18\x06 \x01(\tR\agroupId\x1a@\n" +
+	"\bgroup_id\x18\x06 \x01(\tR\agroupId\x12\x1d\n" +
+	"\n" +
+	"group_name\x18\a \x01(\tR\tgroupName\x1a@\n" +
 	"\x12LabelSelectorEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x85\x01\n" +
