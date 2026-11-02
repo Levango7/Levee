@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/state"
 )
@@ -149,9 +154,28 @@ func newTargetCheckCmd() *cobra.Command {
 func runTargetList(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
 
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return err
+	}
+
+	var targets []*state.Target
+	if mode == modeRemote {
+		targets, err = listTargetsRemote(ctx)
+	} else {
+		targets, err = listTargetsLocal(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	return printTargetList(targets)
+}
+
+// listTargetsLocal reads the inventory from the local store.
+func listTargetsLocal(ctx context.Context) ([]*state.Target, error) {
 	store, err := openStore(ctx)
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return nil, fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
@@ -159,19 +183,118 @@ func runTargetList(cmd *cobra.Command, args []string) error {
 	if targetListGroupFilter != "" {
 		g, err := store.GetInventoryGroupByName(ctx, targetListGroupFilter)
 		if err != nil {
-			return fmt.Errorf("resolve group: %w", err)
+			return nil, fmt.Errorf("resolve group: %w", err)
 		}
 		if g == nil {
-			return fmt.Errorf("group %q not found", targetListGroupFilter)
+			return nil, fmt.Errorf("group %q not found", targetListGroupFilter)
 		}
 		filter.GroupID = g.ID
 	}
 
 	targets, err := store.ListTargets(ctx, filter)
 	if err != nil {
-		return fmt.Errorf("list targets: %w", err)
+		return nil, fmt.Errorf("list targets: %w", err)
+	}
+	return targets, nil
+}
+
+// targetPageSize matches the server's maxPageSize: the largest page keeps the
+// loop to one round trip for any realistic inventory.
+const targetPageSize = 1000
+
+// listTargetsRemote answers from the SERVER's inventory.
+//
+// The rows rebuilt here are the same state.Target the local path reads: the
+// wire now carries created_at / last_checked_at / tenant_id, and the request
+// accepts a group NAME so `--group` does not require knowing an internal ID.
+// --status is filtered client-side because ListTargetsRequest has no status
+// field; the page loop already materializes the whole (bounded) result.
+func listTargetsRemote(ctx context.Context) ([]*state.Target, error) {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetTargetService()
+	if err != nil {
+		return nil, err
+	}
+	return listAllRemoteTargets(ctx, svc, targetListGroupFilter, targetPageSize)
+}
+
+// listAllRemoteTargets pages through ListTargets and converts the wire rows.
+// pageSize is a parameter so the loop itself can be exercised with tiny pages.
+func listAllRemoteTargets(ctx context.Context, svc targetServiceAdapter, groupName string, pageSize int32) ([]*state.Target, error) {
+	var targets []*state.Target
+	token := ""
+	for {
+		resp, lerr := svc.ListTargets(ctx, &pb.ListTargetsRequest{
+			GroupName: groupName,
+			PageSize:  pageSize,
+			PageToken: token,
+		})
+		if lerr != nil {
+			// The server resolves --group and answers NotFound for a typo.
+			// Its message is the local refusal verbatim, so pass it through
+			// instead of nesting an "rpc error" wrapper around it.
+			if grpcstatus.Code(lerr) == codes.NotFound {
+				return nil, fmt.Errorf("%s", grpcstatus.Convert(lerr).Message())
+			}
+			return nil, fmt.Errorf("list targets: %w", lerr)
+		}
+		for _, t := range resp.GetTargets() {
+			targets = append(targets, stateTargetFromPB(t))
+		}
+		token = resp.GetNextPageToken()
+		if token == "" {
+			break
+		}
 	}
 
+	if targetListStatusFilter != "" {
+		filtered := targets[:0]
+		for _, t := range targets {
+			if t.Status == targetListStatusFilter {
+				filtered = append(filtered, t)
+			}
+		}
+		targets = filtered
+	}
+	return targets, nil
+}
+
+// stateTargetFromPB rebuilds the row the local path renders. An empty labels
+// map becomes nil so `omitempty` suppresses the key exactly as it does when
+// the store hands back a row that never had labels.
+func stateTargetFromPB(t *pb.Target) *state.Target {
+	out := &state.Target{
+		ID:            t.GetId(),
+		Hostname:      t.GetHostname(),
+		Port:          int(t.GetPort()),
+		ChannelType:   t.GetChannelType(),
+		CredentialRef: t.GetCredentialRef(),
+		GroupID:       t.GetGroupId(),
+		Status:        t.GetStatus(),
+		Reachable:     t.GetReachable(),
+		TenantID:      t.GetTenantId(),
+	}
+	if len(t.GetLabels()) > 0 {
+		out.Labels = t.GetLabels()
+	}
+	if sec := t.GetCreatedAt(); sec != 0 {
+		out.CreatedAt = time.Unix(sec, 0).UTC()
+	}
+	if sec := t.GetLastCheckedAt(); sec != 0 {
+		at := time.Unix(sec, 0).UTC()
+		out.LastCheckedAt = &at
+	}
+	return out
+}
+
+// printTargetList renders the three output shapes (JSON / quiet / human) once,
+// so the local and remote paths cannot drift apart.
+func printTargetList(targets []*state.Target) error {
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  targets,
@@ -372,6 +495,9 @@ func printTargetListHuman(w io.Writer, targets []*state.Target) {
 		for k, v := range t.Labels {
 			labels = append(labels, k+"="+v)
 		}
+		// Map iteration order is random; sorting is what lets the same rows
+		// render identically in both modes (and across repeated runs).
+		sort.Strings(labels)
 		fmt.Fprintf(w, "%-28s %-6d %-7s %-8s %s\n",
 			t.Hostname, t.Port, t.ChannelType, t.Status, strings.Join(labels, ","))
 	}

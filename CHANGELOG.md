@@ -15,8 +15,16 @@
 - **验证**：纳入后从 24 红到 0 红；`go build`/`go vet` rc=0；`gofmt` 干净；`go test -count=1 ./cmd/levee/` 全包 ok（84.9s）；`golangci-lint run ./cmd/levee/`（v2.13.2 与 CI 同版）0 issues；`scripts/test_changelog_structure.py` 与 `test_doc_anchors.py` OK。
 - **变异**：把第 114 行改回 `--target group=web` → 守卫立刻红并点名（`levee list: target — documented but not registered` 同时列出 list 的真实旗标全集）；还原后绿。
 - **如实边界**：附录 A 的「其他域」表只列 41 条命令，而 cobra 顶层有 54 条（`agent`/`alert`/`system`/`tenant`/`web` 等族整体未列）。本笔**不做反向穷举**——该表自称"速查"，漏列与 cli_reference_flags_test.go 对旗标的口径一致（可以少记，不许记错）；守卫的方向因此是单向的。
+### 新增（`target list --remote`：线上补字段 + 分组按名字解析）
 
-### 修复（`--remote` 的帮助文本对操作员说谎：名单早就是六个，帮助还写"当前仅"三个）
+- **为什么不能直接接（两类缺口）**：本地 `target list` 渲染的是完整的 `state.Target`——`--json` 里带 `created_at` / `last_checked_at` / `tenant_id`，而 `pb.Target` 三个字段都没有；`--group` 接受的是分组**名字**（`prod/db`），本地用 `GetInventoryGroupByName` 解析成 ID，而 `ListTargetsRequest` 只认 `group_id`，线上根本没有按名字查组的 RPC。硬接会做出「远程少三列、`--group` 只能填内部 ID」的版本。
+- **补线上字段**：`pb.Target` 新增 `created_at`（10）、`last_checked_at`（11，0 表示从未探测，对应可空列）、`tenant_id`（12）；`ListTargetsRequest` 新增 `group_name`（7），服务端用 `GetInventoryGroupByName` 解析，**`group_id` 优先**。未知分组返回 `NotFound` 且消息与本地逐字一致（`group "x" not found`）——返回空列表会让拼错的分组名看起来像「这个组没有主机」。生成仍用仓库钉住的 protoc v27.0 工具链，**改前先做对照重建**（未改 proto 时 `git diff` 为空）。
+- **接线**：`runTargetList` 先 `resolveServiceMode()`；远程经工厂 `GetTargetService()`、按 `PageSize=1000` 翻页取全量、`--status` 客户端过滤（RPC 无该字段），再经 `stateTargetFromPB` 还原成 `state.Target`，与本地**共用同一个渲染函数**。空 `labels` 映射归一为 `nil`，让 `omitempty` 在两种模式下都省略该键。
+- **顺带修正人类输出的不确定性**：标签列表原先按 map 迭代顺序拼接（每次运行都可能不同），现在排序——否则「两种模式逐字节相同」这个断言本身就是随机的，只能靠运气绿。这也让重复执行本地命令的输出稳定。
+- **证据**：`target_remote_test.go` 7 个用例（三形状是同一用例里的三个子测试）。①②③ 同一库存、两种模式、**逐字节相同**（human / `--quiet` / `--json`）；④ `--status frozen` 两边同结果；⑤ `--group prod/db` 两边同结果（走 `group_name`）；⑥ 未知分组**两边报同一句话**；⑦ 每页 2 条跑 3 条数据，证明翻页真的交接了 token；⑧ 远程不建本地库；⑨ 指向死端口时**报错且无输出**——两种模式读同一份库时，只有这一条能证明远程分支真的在拨号，而不是悄悄退回本地。**变异（还原后 `sha256` 逐字节相同）**：转换器去掉 `CreatedAt` → JSON 等价用例红；去掉 `LastCheckedAt` → 同上；服务端不解析 `group_name` → 分组用例红；删掉翻页循环里的 token 交接 → 分页用例红；把未知组改成返回空列表 → 拒绝用例红；把远程分支短路成本地（`&& false`）→ 「远程不建本地库」用例红（同时说明等价用例本身分不出这两种模式读同一份库）。
+- **如实标注的一处差异**：`--json` 的 `created_at` / `last_checked_at` 本地含亚秒、远程只到秒（线上是 int64 秒）。等价测试用整秒时间戳规避这一维，避免把「精度差异」当成「接线差异」；该差异写进 `docs/cli-reference.md` §6.1。
+- **仍不接**：`template show`、`audit verify`、`system status`，阻塞点同前，见 `docs/blocked-items.md`。
+`--remote` 的帮助文本对操作员说谎：名单早就是六个，帮助还写"当前仅"三个）
 
 - **症状**：`cmd/levee/root.go` 的 `--remote` flag 用法写死「当前仅 agent list/show/remove」，而 `remoteCapableCommands` 早已长到六条（`version` / `system version` / `template list` 于 2026-11-02 两笔落地）。`docs/cli-reference.md` 的全局选项表是对的，`levee --help` 是错的——**操作员先读的是帮助文本**。
 - **根因（本仓头号缺陷类的又一实例）**：名单有两条测试死死钉住（`TestRemoteCapabilityListResolves` / `TestRemoteCapabilityListIsExactlyThese`），帮助文本却是一份手写的副本。副本不会跟着名单长。

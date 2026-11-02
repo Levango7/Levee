@@ -79,6 +79,17 @@ message Target {
   // inventory importer landed but was never carried over the wire, which is
   // why the console's group view could not be built against the REST API.
   string group_id = 9;
+  // created_at is the row's creation time in Unix seconds. It was not on the
+  // wire before, so `levee target list --remote` had no value for the JSON
+  // field the local path prints (state.Target.created_at). Seconds rather
+  // than a google.protobuf.Timestamp to match the other timestamps here; the
+  // sub-second part the local store keeps is therefore not representable.
+  int64 created_at = 10;
+  // last_checked_at is the last reachability probe in Unix seconds; 0 means
+  // "never checked" (the stored column is nullable).
+  int64 last_checked_at = 11;
+  // tenant_id is the owning tenant. Empty for rows that predate tenancy.
+  string tenant_id = 12;
 }
 
 // Template is a reusable workflow definition.
@@ -597,6 +608,12 @@ message ListTargetsRequest {
   string page_token = 5;
   // Filter to one host group (inventory_groups.id). Empty means all groups.
   string group_id = 6;
+  // group_name filters by the group's path-style name ("prod/db") for callers
+  // that only know what the operator typed. The server resolves it to an ID
+  // and answers NotFound when no such group exists — the same refusal the
+  // local CLI gives, so a typo cannot look like an empty inventory. group_id
+  // wins when both are set.
+  string group_name = 7;
 }
 
 message ListTargetsResponse {
