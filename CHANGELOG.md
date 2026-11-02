@@ -15,6 +15,17 @@
 - **变异（四条均先红后还原）**：① 渲染串多提一个 `target list` → 反向断言红；② 渲染串漏掉名单末条 → 正向断言红（点名 `template list`）；③ cli-reference 的共享组 `agent list / show / remove` 改成 `/ show` → 红（点名 `agent remove`）；④ 同表多提一条 `target list` → 红。
 - **如实边界**：`--remote` 的消费面还会长（#272 在飞：target list / audit verify / template show）。届时 `remoteCapableCommands` 一改，`root.go` 的渲染**自动跟上**，但 `docs/cli-reference.md` 仍要人改——守卫会把漏改变红，这是它存在的理由，不是遗留缺陷。
 
+### 文档（`project-status-2026-11.md` 追加 §10 复核：基线推到 9974b44，四个数字复测、两处表述要限定）
+
+- **写法**：带日期的快照**只追加不重写**——§1–§9 原文一字未改，新增 §10 写明基线（`482af47` → `9974b44`，前进 **21** 笔）、复测命令与实测值，失准处单列"要限定/收回的表述"。这条写法本身作为机制样本收进 §10 末。
+- **复测（都是本轮命令输出，不是引用）**：`go test -count=1 ./...` rc=0，**72** 个包 = 68 `ok` + 4 `[no test files]`，`^FAIL` 0；`golangci-lint run ./...` rc=0 / `0 issues.`（本机 v2.13.2，CI 钉 `v2.13`，权威仍是 CI 的 `lint` job）；RPC 计数独立复算 **60** = `levee.proto` **41** + `levee_extra.proto` **19**、服务 **10**、`ChangeService` **23** ⇒ §7 第 5 条的订正仍成立；浅克隆 `git rev-parse --is-shallow-repository` = true（主检出与本工作树都是）⇒ §2.2 前提未变；blocked-items 逐类 A 5 / B 0 / C 3 / D 活跃 2 / E 3 / F 1 ⇒ §5.2 那张表准确。
+- **PG 那条从"自报"升级成实测**：另起容器 `qcn-recheck-pg`（`postgres:16-alpine`，`127.0.0.1:55442`）而不是复用 §9.1 那台共享库——本机此刻跑着别人的一批容器（kind 集群、`levee-lab-1..3`），共用端口或库会把别人的状态卷进我的结论。实测 `internal/state` 单独 **412** 个 PASS（顶层 217 + 子用例 195）、**0 SKIP**、0 FAIL（44.6s），带 `internal/cluster` 合计 462（cluster 9.5s）。§9.1 那句"412 PASS / 0 SKIP"**逐位复现**，含它的计数口径。
+- **新增一条以前没记的事实**：全量测试的墙钟几乎全在两个包里——`internal/grpc` **98.9s** + `cmd/levee` **82.7s**，其余包都在 9s 以内。估 CI 等待时别按平均包耗时摊。
+- **两处表述要限定（旧条目保留原文）**：① §8.1 的 PR #262 / #263 **均已合入**（`03849c9`、`3386213`），不再是待办；② §5.2 末句"唯一真正未开工的代码项是 D-1c"在 `blocked-items` 的 D 类里成立，**作为全局陈述不成立**——roadmap 第 27 行那条 P0（ABAC **写侧** env 归属强制）从未开工，`#272` 的 `--remote` 系列也在推进同一批文件；准确措辞是"搁置项里唯一未开工的代码项"。
+- **顺带把本轮另一件事接上账**：§8.3 那一问「清单写侧是否按 registry 强制」现在有 ADR-008（`docs/adr/ADR-008-abac-write-side-env-ownership.md`）承接四候选与五问，并收回了它的定级基础（条件策略 labels 由被判定 env 现造，`internal/authz/authz.go:435` ⇒ 不构成权限逃逸）。
+- **本轮验证盲区照实登记**：没跑前端腿（`web/` vitest 与 `browser-check`）、没跑全量 `-race`、PG 用的是新建空库（覆盖同一套测试代码而非同一份数据）、浅克隆未 unshallow。
+- **验证**：`python scripts/check_doc_anchors.py` PASSED（27 锚点 × 6 本活账本）；`python scripts/test_changelog_structure.py` 7 tests OK。零产品代码改动。
+
 ### 文档（audit 链封链读放大：量化 + 定档「维持现状」，并给出重新立项条件）
 
 - **起因**：`internal/audit/auditchain.go` 的 `walkChain` 注释长期登记「sealing still walks every visible row, and Record calls it per write … a change to what a broken chain means, so it is not folded in here」——这句话**从未被量化**，也没有任何基准或测试钉住它。

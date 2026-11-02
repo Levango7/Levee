@@ -228,3 +228,44 @@ go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version �
 3. **PR #263 的 CI 在本文写作时仍在跑**，结论只到"已开、CI 正常触发"，未到"全绿"。
 4. **本文基于 `origin/master` @ `482af47`**，master 后续前进后需重新核对——尤其 §5.1 的"几乎全部 ✅"是按该 commit 数的。**注意本文自己就是一次教训**：写作时我按十月的认知描述了 audit 链的封链行为，而上游早已把它改成 keyset 分页（`internal/audit/auditchain.go:137-139`）、`Seal` 增加"内容被改即拒绝重链"（`:184`/`:226` 的 `ErrChainBroken`）、并留了 `Rebuild` 管理口（`:247`）。**本文正文并没有断言封链语义**（唯一涉及 audit 链的表述是 §6 与 §7 第 4 项提到的 PG WORM 触发器用例名），所以正文无需改动——但这一条要记下来：**写作时的认知会过期，本文引用 `482af47` 的每处行号都需要按该 commit 复核**。顺带记一条**上游尚未解决**的问题：`walkChain` 的读放大仍在（`auditchain.go:138` 自述"sealing still walks every visible row, and Record calls it per write"），分页没有去掉"每次写入都全量走一遍"的成本。
 5. **本地是浅克隆**，本文未做 `git fetch --unshallow`（会拉全量历史、耗时不可控）；§2.2 的谱系判断依据是内容比对与 `CONTRIBUTING.md` 自述，不是祖先关系。
+
+---
+
+## 10. 2026-11-03 复核（追加，不改写上面任何一节）
+
+**基线推进**：本文正文的基线是 `origin/master @ 482af47`（§9.4 自己写了"master 后续前进后需重新核对"）。本轮复核时的 master 是 `9974b44`，**前进 21 笔**。上面各节凡是按 `482af47` 写的结论，本轮重新核了一遍，核出的两处需要限定的表述见"要限定/收回的表述"。
+
+### 复测结果（命令 + 实测，不是引用）
+
+| 项 | 命令 | 实测 | 对本文的影响 |
+| --- | --- | --- | --- |
+| 全量测试 | `go test -count=1 ./...`（`GOSUMDB=sum.golang.org`，见 §2.1b） | rc=**0**；**72** 个包 = 68 `ok` + 4 `[no test files]`；`^FAIL` 行 **0** | §9.0 的自报数字**仍成立**，无需订正 |
+| 墙钟大头 | 同上输出按包耗时排序 | `internal/grpc` **98.9s**、`cmd/levee` **82.7s**，其余均在 9s 以内 | 新增事实：全量的等待几乎全部来自这两个包，估 CI 排队时间时别按平均值摊 |
+| RPC 计数 | `grep -c '^\s*rpc ' proto/levee.proto proto/levee_extra.proto` | **60** 个 RPC = `levee.proto` **41** + `levee_extra.proto` **19**；`^service` **10** 个；`ChangeService` **23** 个 | §7 第 5 条（那三个数字的订正）**独立复算一致**，仍成立 |
+| 浅克隆 | `git rev-parse --is-shallow-repository` | 主检出与本工作树都是 **true** | §2.2 与 §9.5 的谱系类判断**前提未变** |
+| 搁置项分类行数 | 逐类数 `docs/blocked-items.md` | A **5**、B **0**、C **3**、D 活跃 **2**（D-1c / D-2）、E **3**（三条都已定档）、F **1** | §5.2 那张表**仍准确** |
+| 静态检查 | `golangci-lint run --timeout 9m ./...`（本机 v2.13.2，CI 钉 `version: v2.13`；私有 `TMP` 与 `GOLANGCI_LINT_CACHE` 避开同机并发锁） | rc=**0**、`0 issues.`（一次跑完，`--timeout` 未触发） | §9.0 的 lint 自报**复现**；注意本机补丁版 ≠ CI 钉版，结论仍以 CI 的 `lint` job 为权威 |
+| PostgreSQL 腿 | `LEVEE_PG_TEST_DSN=… go test -count=1 -v ./internal/state/... ./internal/cluster/...`，容器 `qcn-recheck-pg`（`postgres:16-alpine`，`127.0.0.1:55442`） | rc=**0**；`internal/state` **单独** 412 个 PASS（顶层 217 + 子用例 195）、**0 SKIP**、0 FAIL，44.6s；再带 `internal/cluster` 时合计 462 个 PASS（顶层 267 + 子 195），cluster 9.5s | §9.1 那句"412 PASS / 0 SKIP"**逐位复现**（含它的计数口径：顶层 + 子用例），所以那条从"自报"升级成本轮实测 |
+
+PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:25433`：本机此刻跑着别人的一批容器（kind 集群、`levee-lab-1..3`），共用端口或共用库都会把别人的状态卷进我的结论。代价是这只是一份**空的新库**，覆盖的是同一套测试代码、不是同一份数据。
+
+### 要限定/收回的表述
+
+1. **§8.1 的 PR #262 与 #263 都已合入**，不再是待办：#262 → `03849c9`（G-06 判定修复）、#263 → `3386213`（告警 SSE 路由守卫）。该表两行保留原文，状态以本节为准。
+2. **§5.2 末句"唯一真正未开工的代码项是 D-1c"要限定范围**。它在 `docs/blocked-items.md` 的 D 类里成立，但作为**全局陈述不成立**：`docs/product-roadmap.md` 第 27 行那条 P0（ABAC **写侧** env 归属强制）从未开工，而 `#272` 的 `--remote` 系列正在推进同一批文件。准确的措辞是"搁置项（blocked-items）里唯一未开工的代码项"。
+
+### 本轮新增的可认领项（都是"要人表态"，不是"要人写码"）
+
+- **ADR-008**（`docs/adr/ADR-008-abac-write-side-env-ownership.md`）把 §8.3 那一问「清单写侧是否按 registry 强制」写成四个候选 + 五个问题，并**收回了它的定级基础**：条件策略层的 labels 是用**被判定的那个 env** 现造的（`internal/authz/authz.go:435`），不读库存行 ⇒ 假 label 换不到额外许可，"dev 能接走 prod 机器"这种逃逸不成立；真实失真面是"门禁按自报 env 判定"（`internal/grpc/target_service.go:133`）与"清单行可对平台自己的权威事实说谎"。**所以这条还要不要挂 P0，是 owner 的决定，不是代码的决定。**
+- §8.3 的 `docs/levee-api.md` 第 6 章那一问已进 `docs/product-roadmap.md`（P2，登记不修）：文档写的 `drift scan` / `drift show <report-id>` 实际不存在，而改法有两个相反方向（把文档改成现实 vs 真做这两条接口），需要定夺。
+
+### 本轮的验证盲区（照实登记）
+
+- 没跑前端腿（`web/` 的 vitest 与 `browser-check`），本轮零前端改动。
+- 没跑全量 `-race`；只在 `internal/drift` 上跑过 `-race -count=2`（那是上一笔改动的验收，不在本轮）。
+- PG 复测用的是新建空容器，与 §9.1 那台的凭据与库名不同：结论是"这套 PG 用例在 `9974b44` 上仍通过"，不是"那台库仍然好"。
+- 浅克隆未 `--unshallow`，谱系类判断仍只能靠内容比对。
+
+### 一条机制建议（不新增门禁，只提写法）
+
+带日期的快照文档要**只追加、不重写**：每轮复核另起一节，写明"基线 sha + 复测日期 + 命令"，上面旧条目原文保留，失准处单列"要限定/收回的表述"。本节的写法就是这条建议的第一个样本——反过来做（直接改旧条目）会让"当时的判断"消失，而后一轮的人最需要的往往正是那个。
