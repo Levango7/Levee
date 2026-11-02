@@ -161,15 +161,20 @@ func TestServiceFactoryLocal(t *testing.T) {
 	assert.NotNil(t, f.local)
 
 	// All five adapters should be non-nil and report the local mode.
-	cs := f.GetChangeService()
+	cs, err := f.GetChangeService()
+	require.NoError(t, err)
 	require.NotNil(t, cs)
-	ts := f.GetTemplateService()
+	ts, err := f.GetTemplateService()
+	require.NoError(t, err)
 	require.NotNil(t, ts)
-	tg := f.GetTargetService()
+	tg, err := f.GetTargetService()
+	require.NoError(t, err)
 	require.NotNil(t, tg)
-	as := f.GetAuditService()
+	as, err := f.GetAuditService()
+	require.NoError(t, err)
 	require.NotNil(t, as)
-	ss := f.GetSystemService()
+	ss, err := f.GetSystemService()
+	require.NoError(t, err)
 	require.NotNil(t, ss)
 
 	// Exercise a real call through the local adapter to confirm wiring.
@@ -180,16 +185,42 @@ func TestServiceFactoryLocal(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestServiceFactoryLocal_RequiresStore(t *testing.T) {
-	// nil deps → error.
-	_, err := newServiceFactory(modeLocal, "", "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "non-nil store")
+// TestServiceFactoryLocal_StoreOnlyWhereNeeded pins the lazy build: constructing
+// a local factory must not require a store, because a command that reads
+// nothing but build information (`system version`) would otherwise open — and
+// create — a database as a side effect of asking its own version. The services
+// that read the store are the ones that refuse without it.
+func TestServiceFactoryLocal_StoreOnlyWhereNeeded(t *testing.T) {
+	f, err := newServiceFactory(modeLocal, "", "")
+	require.NoError(t, err, "本地工厂不该在门口要求 store")
+	t.Cleanup(func() { _ = f.Close() })
 
-	// deps with nil store → error.
-	_, err = newServiceFactory(modeLocal, "", "", WithFactoryDeps(&localDeps{}))
+	ss, err := f.GetSystemService()
+	require.NoError(t, err, "system 服务不读 store（GetVersion 用构建变量）")
+	_, err = ss.GetVersion(context.Background(), &emptypb.Empty{})
+	require.NoError(t, err)
+
+	for name, get := range map[string]func() error{
+		"change": func() error { _, err := f.GetChangeService(); return err },
+		"target": func() error { _, err := f.GetTargetService(); return err },
+		"audit":  func() error { _, err := f.GetAuditService(); return err },
+	} {
+		err := get()
+		require.Error(t, err, "%s 服务没有 store 时必须报错，不能半可用", name)
+		assert.Contains(t, err.Error(), "store")
+	}
+
+	// An empty deps bag is the same situation as nil deps: no store, so the
+	// same three refuse.
+	empty, err := newServiceFactory(modeLocal, "", "", WithFactoryDeps(&localDeps{}))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = empty.Close() })
+	_, err = empty.GetAuditService()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "non-nil store")
+
+	// The template adapter is satisfied by either a store or a file library.
+	_, err = f.GetTemplateService()
+	require.Error(t, err, "既无 store 又无 library 时 template 也不可用")
 }
 
 // =========================================================================
@@ -212,7 +243,8 @@ func TestServiceFactoryRemote(t *testing.T) {
 	require.NoError(t, f.remote.waitForReady(ctx))
 
 	// Exercise a real call through the remote adapter.
-	ss := f.GetSystemService()
+	ss, err := f.GetSystemService()
+	require.NoError(t, err)
 	require.NotNil(t, ss)
 	resp, err := ss.GetVersion(ctx, &emptypb.Empty{})
 	require.NoError(t, err)
@@ -233,7 +265,8 @@ func TestServiceFactoryRemote_WithToken(t *testing.T) {
 	defer cancel()
 	require.NoError(t, f.remote.waitForReady(ctx))
 
-	ss := f.GetSystemService()
+	ss, err := f.GetSystemService()
+	require.NoError(t, err)
 	resp, err := ss.GetVersion(ctx, &emptypb.Empty{})
 	require.NoError(t, err)
 	assert.Equal(t, "test", resp.Version)
@@ -254,7 +287,8 @@ func TestServiceFactoryRemote_BadTokenRejected(t *testing.T) {
 	// the RPC itself should fail with Unauthenticated.
 	_ = f.remote.waitForReady(ctx)
 
-	ss := f.GetSystemService()
+	ss, err := f.GetSystemService()
+	require.NoError(t, err)
 	_, err = ss.GetVersion(ctx, &emptypb.Empty{})
 	require.Error(t, err)
 	// Assert the CAUSE, not merely that something failed. `require.Error`
@@ -412,8 +446,8 @@ func TestServiceFactoryLocalUsesTheProductionChangeConstructor(t *testing.T) {
 	require.NoError(t, err, "reading service_factory.go from the package directory")
 	src := string(b)
 
-	assert.Contains(t, src, "newCLIChangeService(deps.store)",
-		"buildLocalServices must build the change service through the production constructor "+
+	assert.Contains(t, src, "newCLIChangeService(ls.deps.store)",
+		"the factory's change service must be built through the production constructor "+
 			"(newCLIChangeService): it carries the change calendar gates, the credential resolver "+
 			"and the --as authorizer. A bare grpc.NewChangeService here is the drift that made "+
 			"the factory's local path diverge from every command.")

@@ -172,14 +172,13 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print LEVEE version information",
 		Long: "Print the LEVEE binary version, build time, commit hash and Go " +
-			"toolchain version. With --json the output is a structured document.",
+			"toolchain version. With --json the output is a structured document. " +
+			"With --remote it reports the SERVER's build instead of this binary's.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			info := versionInfo{
-				Version:    version,
-				BuildTime:  buildTime,
-				GoVersion:  goVersion,
-				CommitHash: commitHash,
+			info, err := fetchVersionInfo(agentRunContext(cmd))
+			if err != nil {
+				return err
 			}
 			if optJSON {
 				return PrintJSON(os.Stdout, map[string]any{
@@ -200,6 +199,11 @@ type versionInfo struct {
 	BuildTime  string `json:"build_time"`
 	GoVersion  string `json:"go_version"`
 	CommitHash string `json:"commit_hash"`
+	// Source is "server <addr>" in remote mode and empty locally. Excluded from
+	// JSON on purpose: the --json document is a contract scripts already parse
+	// (four keys), and a human reading the banner is the one who needs to know
+	// these numbers came from another machine.
+	Source string `json:"-"`
 }
 
 // printVersionHuman writes the human-readable version banner.
@@ -208,6 +212,9 @@ func printVersionHuman(w io.Writer, info versionInfo) {
 	fmt.Fprintf(w, "  build:    %s\n", info.BuildTime)
 	fmt.Fprintf(w, "  commit:   %s\n", info.CommitHash)
 	fmt.Fprintf(w, "  go:       %s\n", info.GoVersion)
+	if info.Source != "" {
+		fmt.Fprintf(w, "  source:   %s\n", info.Source)
+	}
 }
 
 // buildHelpJSON produces a structured representation of a cobra command and its
@@ -279,18 +286,22 @@ func resolveServiceMode() (serviceMode, error) {
 	return modeLocal, nil
 }
 
-// remoteCapableCommands lists the command paths that actually dial the server
-// when --remote is set. Everything else runs against the local store, so the
-// flag there is refused rather than ignored (see validateServiceMode).
+// remoteCapableCommands lists the command paths that actually consult the
+// server when --remote is set. Everything else runs against the local store, so
+// the flag there is refused rather than ignored (see validateServiceMode).
 //
-// Keep this in step with the commands that read optRemote: today that is the
-// three registry readers in cmd_agent_remote.go. TestRemoteCapabilityListResolves
-// fails if an entry here stops naming a real command, so a renamed command
-// cannot leave the allowlist pointing at nothing.
+// Today: the three registry readers in cmd_agent_remote.go (which dial the
+// gRPC client directly) plus `version` / `system version` (which go through
+// service_factory). Keep this in step with both; TestRemoteCapabilityListResolves
+// fails if an entry stops naming a real command, and
+// TestRemoteCapabilityListIsExactlyThese pins the membership so a removed
+// command cannot leave its coverage silently smaller.
 var remoteCapableCommands = []string{
 	"levee agent list",
 	"levee agent show",
 	"levee agent remove",
+	"levee version",
+	"levee system version",
 }
 
 // validateServiceMode is the PersistentPreRunE guard. It resolves the mode once

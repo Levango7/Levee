@@ -66,4 +66,4 @@
 - plugin 破坏性动作声明（原 D-1b：manifest `destructive_actions` → registry 持久化含旧库 `ALTER TABLE` 迁移 → 编译期 `dsl.NewValidator(extra...)` 与计划期 `plan.NewGenerator(extra...)` 消费同一份词表，`plan_hash` 不随「谁 plan」漂移；**当时「未声明即默认不可逆」的强制档仍未做**，已由下一条取代）：PR #234
 - plugin 动作三态分类（原 E-3，取代上一条的「仍未做」：manifest 新增 `reversible_actions`，动作落破坏性/可逆/未分类，未分类对已安装模块按不可逆处理；`dsl.PluginActionPolicy` 单一来源，编译期/计划期/对话草案三处闸门同源，判定进 `plan_hash`；旧构造器与 `WithInherentIrreversible` 保留为破坏性简写）：本笔
 - 跨浏览器矩阵（原 B-1：Chrome + Firefox × ubuntu/windows，mock 网关补两个 SSE 端点，`BROWSER_CHECK_BROWSER` 选引擎）：PR #208
-- service_factory：并行会话已改良（remote=产品方向、local 委托单一构造点+drift guard），维持现状
+- service_factory：**已接线（2026-11-02）**——`version` / `system version` 两种模式都经工厂取构建信息（local 读二进制变量、remote 问服务端 `GetVersion`），`--remote` 白名单随之扩到这两条；工厂的本地构建改成**按需**（不再在门口强制要 store，所以 `version` 不会顺带创建数据库）。原句「remote=产品方向、维持现状」到此为止。**其余只读命令族不是缺工厂，是缺线上字段**：`template list` 读文件库而 `serve` 用 `NewTemplateService(store, nil)`（远端列的是库里模板）；`target list` 渲染的 `state.Target` 字段多于 `pb.Target`，且 `ListTargets` 会分页并按环境过滤；`audit verify` 本地给每条 failure 的 index 与哈希，`VerifyHashChain` 只回首处断点；`system status` 报 config 路径与库位置，`GetStatus` 报运行计数——这四条各自要决定「加宽 proto」还是「接受远程显示更少」，登记在此待决。

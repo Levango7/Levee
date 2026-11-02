@@ -11,6 +11,7 @@ import (
 	"github.com/nexus/levee/internal/config"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/nexus/levee/internal/state"
 )
@@ -49,14 +50,14 @@ func newSystemVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print LEVEE version information",
 		Long: "Print the LEVEE binary version, build time, commit hash and Go " +
-			"toolchain version. With --json the output is a structured document.",
+			"toolchain version. With --json the output is a structured document. " +
+			"With --remote it reports the SERVER's build instead of this binary's — " +
+			"which is the usual question for a deployment.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			info := versionInfo{
-				Version:    version,
-				BuildTime:  buildTime,
-				GoVersion:  goVersion,
-				CommitHash: commitHash,
+			info, err := fetchVersionInfo(agentRunContext(cmd))
+			if err != nil {
+				return err
 			}
 			if optJSON {
 				return PrintJSON(os.Stdout, map[string]any{
@@ -69,6 +70,48 @@ func newSystemVersionCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// fetchVersionInfo asks the ACTIVE MODE for build information.
+//
+// Local mode answers from the build variables linked into this binary; remote
+// mode asks the server. Both go through the service factory, which is the one
+// place that decides which side answers — that is what wiring it buys. Local
+// mode needs no store: GetVersion never reads one, and the factory builds local
+// services on demand precisely so that asking for a version cannot create a
+// database as a side effect.
+func fetchVersionInfo(ctx context.Context) (versionInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return versionInfo{}, err
+	}
+	f, err := newServiceFactory(mode, optServer, optAPIToken)
+	if err != nil {
+		return versionInfo{}, err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetSystemService()
+	if err != nil {
+		return versionInfo{}, err
+	}
+	v, err := svc.GetVersion(ctx, &emptypb.Empty{})
+	if err != nil {
+		return versionInfo{}, fmt.Errorf("get version: %w", err)
+	}
+	info := versionInfo{
+		Version:    v.GetVersion(),
+		BuildTime:  v.GetBuildDate(),
+		GoVersion:  v.GetGoVersion(),
+		CommitHash: v.GetGitCommit(),
+	}
+	if mode == modeRemote {
+		info.Source = "server " + optServer
+	}
+	return info, nil
 }
 
 // newSystemStatusCmd builds the `levee system status` sub-command.
