@@ -40,15 +40,21 @@ func TestRemoteCapabilityListResolves(t *testing.T) {
 	}
 }
 
-// TestRemoteCapabilityListIsExactlyTheseThree is the independent expectation.
+// TestRemoteCapabilityListIsExactlyThese is the independent expectation.
 // Iterating over the production slice alone cannot catch an entry being removed:
 // the loop simply runs one fewer time and still reports green (measured — that
 // is how this test came to exist).
-func TestRemoteCapabilityListIsExactlyTheseThree(t *testing.T) {
+func TestRemoteCapabilityListIsExactlyThese(t *testing.T) {
 	assert.Equal(t,
-		[]string{"levee agent list", "levee agent show", "levee agent remove"},
+		[]string{
+			"levee agent list",
+			"levee agent show",
+			"levee agent remove",
+			"levee version",
+			"levee system version",
+		},
 		remoteCapableCommands,
-		"名单与 cmd_agent_remote.go 里读 optRemote 的命令不一致时，这里必须红")
+		"名单变了就要在这里说清楚：谁能真的走 --remote，谁只是被误加进来")
 }
 
 func TestValidateServiceModeAllowsRemoteCapableCommands(t *testing.T) {
@@ -64,12 +70,12 @@ func TestValidateServiceModeAllowsRemoteCapableCommands(t *testing.T) {
 
 func TestValidateServiceModeRefusesLocalOnlyCommand(t *testing.T) {
 	defer resetRootFlags()
-	cmd := findCommand(t, "levee version")
+	cmd := findCommand(t, "levee list")
 	optRemote = true
 
 	err := validateServiceMode(cmd)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not wired for `levee version`")
+	assert.Contains(t, err.Error(), "not wired for `levee list`")
 	assert.Contains(t, err.Error(), "[exit=2]")
 	assert.Equal(t, 2, exitCodeFor(err))
 }

@@ -7,21 +7,32 @@
 //   - modeRemote: thin adapters around the generated gRPC clients, forwarding
 //                 every call to a remote LEVEE server over the network.
 //
-// IMPORTANT - what this file is TODAY, stated plainly: the REMOTE side is the
-// live half. `--remote` is documented (docs/cli-reference.md) as consumed by
-// `agent list / show / remove`; those commands call newGRPCClient directly and
-// the adapters below are the prepared translation layer for extending remote
-// mode to further commands - a registered product direction, not an accident.
+// IMPORTANT - what this file is TODAY, stated plainly:
 //
-// The LOCAL side is NOT the path production takes. Commands construct their
-// services directly (newCLIChangeService in engine_cli.go for plan/apply,
-// inline constructions elsewhere) because they need pieces this factory never
-// grew: the change calendar gates, the credential resolver, the --as
-// authorizer. The factory's local build therefore delegates to
-// newCLIChangeService so the two stay the same, and a drift guard in
-// grpc_client_test.go asserts that remains true. Rewriting the header to
-// claim "backs every CLI command" would be the third version of a claim the
-// code stopped carrying.
+//   - LIVE callers: `agent list / show / remove` do NOT go through here (they
+//     call newGRPCClient directly; see cmd_agent_remote.go), and neither do
+//     plan/apply. The commands wired through this factory are `version` and
+//     `system version`, in both modes: local answers from the build variables,
+//     remote asks the server. That is the first case where "one place decides
+//     which side answers" is actually exercised in production, and it is what
+//     keeps the two modes from growing separate renderers.
+//   - The remaining read-only families (template / target / audit / system
+//     status) are NOT wired, and not for lack of a factory: their local output
+//     is derived from models the wire does not carry. `template list` reads the
+//     FILE library while serve builds TemplateService with a nil lib, so the
+//     server would list DB templates instead; `target list` renders
+//     state.Target rows whose fields exceed pb.Target, and the RPC paginates and
+//     env-filters; `audit verify` reports every failure with index and hashes
+//     while VerifyHashChain returns only the first broken entry; `system status`
+//     reports config path and DB location, which GetStatus does not. Each of
+//     those needs a per-command decision (widen the proto, or accept "remote
+//     shows less"), so wiring them is product work, not plumbing.
+//   - The change service's local build delegates to newCLIChangeService, which
+//     carries the change calendar gates, the credential resolver and the --as
+//     authorizer; a drift guard in grpc_client_test.go asserts that stays true.
+//
+// Services are built on demand (see localServices): a local build no longer
+// requires a store, so asking for a version cannot create a database.
 //
 // Streaming RPCs (WatchChange, StreamLogs) are intentionally omitted from the
 // adapter interfaces: CLI commands consume state synchronously and do not
@@ -78,15 +89,74 @@ type serviceFactory struct {
 	remote *grpcClient
 }
 
-// localServices bundles the in-process service implementations. Each field is
-// backed by the same state.Store so that a CLI process sees a single
-// consistent view.
+// localServices holds the local-mode dependencies and builds the in-process
+// service implementations on demand.
+//
+// On demand, not at construction: a factory built eagerly required a store for
+// every service, so wiring a command that needs no store at all (`system
+// version` reads build variables) would have opened a database as a side
+// effect. A store-less request now fails only where it would be a lie — at the
+// service that actually reads the store — instead of at the factory door.
 type localServices struct {
-	change   *grpc.ChangeService
-	template *grpc.TemplateService
-	target   *grpc.TargetService
-	audit    *grpc.AuditService
-	system   *grpc.SystemService
+	deps localDeps
+}
+
+// errLocalStoreRequired is returned for a service that cannot work without a
+// store. Callers hand it up unchanged so the message names the missing piece.
+var errLocalStoreRequired = errors.New("service factory: local mode needs a store for this service")
+
+// change builds the change service through the SAME constructor production
+// uses (newCLIChangeService): the change calendar gates, the credential
+// resolver and the --as authorizer all live there, and this factory used to
+// build a bare service without any of them - the drift that made this file's
+// local path diverge from what every command actually runs.
+func (ls *localServices) change() (*grpc.ChangeService, error) {
+	if ls.deps.store == nil {
+		return nil, errLocalStoreRequired
+	}
+	svc, err := newCLIChangeService(ls.deps.store)
+	if err != nil {
+		return nil, fmt.Errorf("build local change service: %w", err)
+	}
+	return svc, nil
+}
+
+// template works with either the file library or the store: the service prefers
+// the library when it is set and falls back to stored templates otherwise.
+func (ls *localServices) template() (*grpc.TemplateService, error) {
+	if ls.deps.store == nil && ls.deps.templateLib == nil {
+		return nil, errLocalStoreRequired
+	}
+	return grpc.NewTemplateService(ls.deps.store, ls.deps.templateLib), nil
+}
+
+func (ls *localServices) target() (*grpc.TargetService, error) {
+	if ls.deps.store == nil {
+		return nil, errLocalStoreRequired
+	}
+	return grpc.NewTargetService(ls.deps.store, ls.deps.channelFactory), nil
+}
+
+func (ls *localServices) audit() (*grpc.AuditService, error) {
+	if ls.deps.store == nil {
+		return nil, errLocalStoreRequired
+	}
+	return grpc.NewAuditService(ls.deps.store), nil
+}
+
+// system needs no store: GetVersion is answered from the build variables baked
+// into this binary, and the store is only consulted by GetStatus.
+func (ls *localServices) system() *grpc.SystemService {
+	cfg := ls.deps.config
+	if cfg == nil {
+		// Without a config the service still answers GetVersion; the rest of
+		// its surface degrades to "store not configured" instead of panicking.
+		cfg = &config.Config{}
+	}
+	return grpc.NewSystemService(
+		ls.deps.store, cfg, ls.deps.configPath,
+		version, commitHash, buildTime, goVersion, time.Now(),
+	)
 }
 
 // localDeps carries the optional internal dependencies that the local service
@@ -121,8 +191,9 @@ func WithFactoryDeps(deps *localDeps) factoryOption {
 
 // newServiceFactory builds a serviceFactory for the requested mode.
 //
-//   - modeLocal:  requires a non-nil store (via deps); constructs the five
-//     in-process service implementations.
+//   - modeLocal:  builds in-process services from the supplied deps. The store
+//     is required only by the services that read it (see localServices), so a
+//     caller that needs nothing but build information does not open a database.
 //   - modeRemote: dials remoteAddr and builds a grpcClient. token may be empty
 //     to disable authentication.
 //
@@ -138,14 +209,11 @@ func newServiceFactory(mode serviceMode, remoteAddr string, token string, opts .
 
 	switch mode {
 	case modeLocal:
-		if cfg.deps == nil || cfg.deps.store == nil {
-			return nil, errors.New("service factory: local mode requires a non-nil store")
+		deps := localDeps{}
+		if cfg.deps != nil {
+			deps = *cfg.deps
 		}
-		local, lerr := buildLocalServices(cfg.deps)
-		if lerr != nil {
-			return nil, lerr
-		}
-		f.local = local
+		f.local = &localServices{deps: deps}
 
 	case modeRemote:
 		client, err := newGRPCClient(remoteAddr, token)
@@ -159,41 +227,6 @@ func newServiceFactory(mode serviceMode, remoteAddr string, token string, opts .
 	}
 
 	return f, nil
-}
-
-// buildLocalServices constructs the five in-process service implementations
-// from the supplied dependencies. Optional dependencies fall back to nil.
-func buildLocalServices(deps *localDeps) (*localServices, error) {
-	// The change service goes through the SAME constructor production uses
-	// (newCLIChangeService): the change calendar gates, the credential
-	// resolver and the --as authorizer all live there, and this factory used
-	// to build a bare service without any of them - the drift that made this
-	// file's local path diverge from what every command actually runs.
-	changeSvc, err := newCLIChangeService(deps.store)
-	if err != nil {
-		return nil, fmt.Errorf("build local change service: %w", err)
-	}
-	ls := &localServices{
-		change:   changeSvc,
-		template: grpc.NewTemplateService(deps.store, deps.templateLib),
-		target:   grpc.NewTargetService(deps.store, deps.channelFactory),
-		audit:    grpc.NewAuditService(deps.store),
-	}
-	if deps.config != nil {
-		ls.system = grpc.NewSystemService(
-			deps.store, deps.config, deps.configPath,
-			version, commitHash, buildTime, goVersion, time.Now(),
-		)
-	} else {
-		// Without a config we still construct a SystemService so that
-		// `levee system version` works in degraded mode; pass an empty
-		// config and path.
-		ls.system = grpc.NewSystemService(
-			deps.store, &config.Config{}, "",
-			version, commitHash, buildTime, goVersion, time.Now(),
-		)
-	}
-	return ls, nil
 }
 
 // Close releases any resources held by the factory. In local mode it is a
@@ -241,11 +274,15 @@ type changeServiceAdapter interface {
 }
 
 // GetChangeService returns a ChangeService adapter for the active mode.
-func (f *serviceFactory) GetChangeService() changeServiceAdapter {
+func (f *serviceFactory) GetChangeService() (changeServiceAdapter, error) {
 	if f.mode == modeRemote {
-		return &remoteChangeAdapter{client: f.remote.change}
+		return &remoteChangeAdapter{client: f.remote.change}, nil
 	}
-	return &localChangeAdapter{svc: f.local.change}
+	svc, err := f.local.change()
+	if err != nil {
+		return nil, err
+	}
+	return &localChangeAdapter{svc: svc}, nil
 }
 
 // localChangeAdapter wraps a *grpc.ChangeService to satisfy
@@ -398,11 +435,15 @@ type templateServiceAdapter interface {
 }
 
 // GetTemplateService returns a TemplateService adapter for the active mode.
-func (f *serviceFactory) GetTemplateService() templateServiceAdapter {
+func (f *serviceFactory) GetTemplateService() (templateServiceAdapter, error) {
 	if f.mode == modeRemote {
-		return &remoteTemplateAdapter{client: f.remote.template}
+		return &remoteTemplateAdapter{client: f.remote.template}, nil
 	}
-	return &localTemplateAdapter{svc: f.local.template}
+	svc, err := f.local.template()
+	if err != nil {
+		return nil, err
+	}
+	return &localTemplateAdapter{svc: svc}, nil
 }
 
 type localTemplateAdapter struct {
@@ -457,11 +498,15 @@ type targetServiceAdapter interface {
 }
 
 // GetTargetService returns a TargetService adapter for the active mode.
-func (f *serviceFactory) GetTargetService() targetServiceAdapter {
+func (f *serviceFactory) GetTargetService() (targetServiceAdapter, error) {
 	if f.mode == modeRemote {
-		return &remoteTargetAdapter{client: f.remote.target}
+		return &remoteTargetAdapter{client: f.remote.target}, nil
 	}
-	return &localTargetAdapter{svc: f.local.target}
+	svc, err := f.local.target()
+	if err != nil {
+		return nil, err
+	}
+	return &localTargetAdapter{svc: svc}, nil
 }
 
 type localTargetAdapter struct {
@@ -515,11 +560,15 @@ type auditServiceAdapter interface {
 }
 
 // GetAuditService returns an AuditService adapter for the active mode.
-func (f *serviceFactory) GetAuditService() auditServiceAdapter {
+func (f *serviceFactory) GetAuditService() (auditServiceAdapter, error) {
 	if f.mode == modeRemote {
-		return &remoteAuditAdapter{client: f.remote.audit}
+		return &remoteAuditAdapter{client: f.remote.audit}, nil
 	}
-	return &localAuditAdapter{svc: f.local.audit}
+	svc, err := f.local.audit()
+	if err != nil {
+		return nil, err
+	}
+	return &localAuditAdapter{svc: svc}, nil
 }
 
 type localAuditAdapter struct {
@@ -566,12 +615,14 @@ type systemServiceAdapter interface {
 	RunDoctor(ctx context.Context, req *emptypb.Empty) (*pb.DoctorReport, error)
 }
 
-// GetSystemService returns a SystemService adapter for the active mode.
-func (f *serviceFactory) GetSystemService() systemServiceAdapter {
+// GetSystemService returns a SystemService adapter for the active mode. Local
+// mode never needs a store here: GetVersion answers from the build variables,
+// and the store-reading methods degrade to "store not configured".
+func (f *serviceFactory) GetSystemService() (systemServiceAdapter, error) {
 	if f.mode == modeRemote {
-		return &remoteSystemAdapter{client: f.remote.system}
+		return &remoteSystemAdapter{client: f.remote.system}, nil
 	}
-	return &localSystemAdapter{svc: f.local.system}
+	return &localSystemAdapter{svc: f.local.system()}, nil
 }
 
 type localSystemAdapter struct {

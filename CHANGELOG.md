@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增（service_factory 接线：`version` / `system version` 两种模式同一个入口）
+
+- **背景**：`cmd/levee/service_factory.go` 是双模式（`--local` / `--remote`）的适配层，但**非测试代码零调用**——它维护着五套适配器而生产一个都没走。本笔把第一个真实调用点接上，并顺手把工厂改成**按需构造**。
+- **为什么先接这两条**：它们与线上类型是**无损对应**的——`VersionInfo` 的四个字段正好是 `version` / `build time` / `commit` / `go version`。远程模式回答的也是操作者真正会问的问题：「server 跑的是哪个构建？」其余只读命令族**不是缺工厂而是缺线上字段**（`template list` 读文件库而 serve 的 TemplateService 用 nil lib；`target list` 渲染的字段多于 `pb.Target` 且 RPC 会分页+环境过滤；`audit verify` 本地给每条 failure 的 index/哈希而 `VerifyHashChain` 只回首处断点；`system status` 报 config 路径/库位置而 `GetStatus` 报运行计数）。硬接会做出「远程显示一个更少的版本」而不自知，所以逐条登记在 `docs/blocked-items.md`，不在这笔里凑数。
+- **工厂改为按需构造**：`localServices` 不再在 `newServiceFactory` 时把五个服务全建出来，而是每个 `Get*Service` 现建现用；store 只在**真正读它的服务**上要求（`change` / `target` / `audit`），`system` 与「有 library 的 template」不需要。否则接 `version` 会顺带打开并创建本地 SQLite——打印四个字符串不该有数据库副作用。
+- **接线**：`fetchVersionInfo(ctx)` 先 `resolveServiceMode()`，再向工厂要 `GetSystemService()`，local 读二进制变量、remote 走 `GetVersion`；根命令 `levee version` 与 `levee system version` 共用它。`--remote` 白名单（`remoteCapableCommands`）相应加上 `levee version` / `levee system version`。
+- **证据**：`version_remote_test.go` 4 例 + 工厂 2 例。① 端到端起真实 gRPC server（版本串 `test` / commit `test-commit`），断言 `--remote version` 与 `--remote system version` 报**服务端**的值、且**不含**本地构建变量（测试里是 `unknown`）；② `--json` 逐字段核对；③ `--remote version` 在临时 data_dir 下**不创建** `levee.db`；④ 本地模式仍报本二进制。**变异两处（还原后 `sha256` 逐字节相同）**：把 `fetchVersionInfo` 的 mode 参数硬编码成 `modeLocal` → 远程用例红并打印出本地构建信息；让 `GetSystemService` 也要求 store → `TestServiceFactoryLocal_StoreOnlyWhereNeeded` 红。`go test ./cmd/levee/ -count=1` 全绿（91s）。
+- **边界**：`--remote` 的支持面从 3 条扩到 5 条命令，其余命令仍以 `[exit=2]` 拒绝（上一笔的 fail-fast 保持不变）；本笔不碰 change 的写路径，也不改 proto。
+
 ### 新增（活台账锚点活性门：`scripts/check_doc_anchors.py` + 6 处死锚点订正）
 
 - **缺口**：台账里的 `path:line` 锚点是下一个 agent 照着走的落点，但它们**没有任何门**。11-01 的一轮复核翻出 5 处账本与代码脱节（`docs/project-status-2026-11.md` §7），全部只能靠人读代码发现——CI 校验代码，不校验"文档指向的那一行还在不在"。第一版扫描口径（全 `docs/`）会大量误报：冻结快照（`docs/quality-hardening-2026-09.md` 等）的锚点本来就该烂，裸文件名（`store.go:12`）在仓里对应十几个包。
