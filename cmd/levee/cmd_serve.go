@@ -77,6 +77,7 @@ import (
 	"github.com/nexus/levee/internal/recommend/feedback"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/takeover"
+	"github.com/nexus/levee/internal/template"
 	"github.com/nexus/levee/internal/tenant"
 	"github.com/nexus/levee/internal/tracing"
 	"github.com/nexus/levee/internal/wiring"
@@ -1634,7 +1635,18 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 		return serveServices{}, err
 	}
 
-	templateSvc := grpc.NewTemplateService(store, nil).WithAuthorizer(authzSvc)
+	// The template service serves the FILE library the CLI writes to. It used
+	// to be built with a nil library, which left it with an empty in-memory
+	// registry filled only by CreateTemplate RPCs: `levee template create` (the
+	// command people actually use) writes files, so a remote list would have
+	// answered "no templates" to an operator who had several. Opening the same
+	// directory the CLI opens is what makes the remote answer mean the same
+	// thing as the local one.
+	tmplLib, err := template.NewTemplateLibrary(templateDir(cfg))
+	if err != nil {
+		return serveServices{}, fmt.Errorf("open template library: %w", err)
+	}
+	templateSvc := grpc.NewTemplateService(store, tmplLib).WithAuthorizer(authzSvc)
 	targetSvc := grpc.NewTargetService(store, nil).WithAuthorizer(authzSvc)
 	if credResolver != nil {
 		// Credential-aware probing: CheckTarget probes targets with their

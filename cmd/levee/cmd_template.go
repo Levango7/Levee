@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/template"
 )
 
@@ -118,14 +120,22 @@ func openTemplateLibrary(_ctx context.Context) (*template.TemplateLibrary, error
 
 // runTemplateList executes the `levee template list` command.
 func runTemplateList(cmd *cobra.Command, args []string) error {
-	_ctx := context.Background()
+	ctx := context.Background()
 
-	lib, err := openTemplateLibrary(_ctx)
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return err
+	}
+	if mode == modeRemote {
+		return runTemplateListRemote(ctx)
+	}
+
+	lib, err := openTemplateLibrary(ctx)
 	if err != nil {
 		return fmt.Errorf("open template library: %w", err)
 	}
 
-	templates, err := lib.List(_ctx)
+	templates, err := lib.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list templates: %w", err)
 	}
@@ -135,9 +145,10 @@ func runTemplateList(cmd *cobra.Command, args []string) error {
 		templates = filterTemplatesByTag(templates, tplListOptTag)
 	}
 
-	// Build output.
 	rows := make([]map[string]any, 0, len(templates))
+	names := make([]string, 0, len(templates))
 	for _, tmpl := range templates {
+		names = append(names, tmpl.Name)
 		rows = append(rows, map[string]any{
 			"id":          tmpl.ID,
 			"name":        tmpl.Name,
@@ -145,7 +156,88 @@ func runTemplateList(cmd *cobra.Command, args []string) error {
 			"created_at":  tmpl.CreatedAt,
 		})
 	}
+	return printTemplateListRows(rows, names)
+}
 
+// templatePageSize matches the server's maxPageSize: asking for the largest
+// page keeps the loop to one round trip for any realistic library.
+const templatePageSize = 1000
+
+// runTemplateListRemote answers from the SERVER's template library.
+//
+// Same four columns as the local path — id / name / description / created_at —
+// because the wire now carries id and tags (pb.Template.id/tags). Before that,
+// the ID column had no source and `--tag` had nothing to filter on, which is
+// why this command could not be wired honestly.
+func runTemplateListRemote(ctx context.Context) error {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetTemplateService()
+	if err != nil {
+		return err
+	}
+
+	var templates []*pb.Template
+	token := ""
+	for {
+		resp, lerr := svc.ListTemplates(ctx, &pb.ListTemplatesRequest{
+			PageSize:  templatePageSize,
+			PageToken: token,
+		})
+		if lerr != nil {
+			return fmt.Errorf("list templates: %w", lerr)
+		}
+		templates = append(templates, resp.GetTemplates()...)
+		token = resp.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+
+	if tplListOptTag != "" {
+		templates = filterRemoteTemplatesByTag(templates, tplListOptTag)
+	}
+
+	rows := make([]map[string]any, 0, len(templates))
+	names := make([]string, 0, len(templates))
+	for _, tmpl := range templates {
+		names = append(names, tmpl.GetName())
+		rows = append(rows, map[string]any{
+			"id":          tmpl.GetId(),
+			"name":        tmpl.GetName(),
+			"description": tmpl.GetDescription(),
+			// time.Time, like the local path: the JSON shape is part of the
+			// output contract and must not differ by mode.
+			"created_at": time.Unix(tmpl.GetCreatedAt(), 0).UTC(),
+		})
+	}
+	return printTemplateListRows(rows, names)
+}
+
+// filterRemoteTemplatesByTag is filterTemplatesByTag over the wire type.
+func filterRemoteTemplatesByTag(templates []*pb.Template, tagExpr string) []*pb.Template {
+	parts := strings.SplitN(tagExpr, "=", 2)
+	if len(parts) != 2 {
+		return templates
+	}
+	key, val := parts[0], parts[1]
+
+	var filtered []*pb.Template
+	for _, tmpl := range templates {
+		if v, ok := tmpl.GetTags()[key]; ok && v == val {
+			filtered = append(filtered, tmpl)
+		}
+	}
+	return filtered
+}
+
+// printTemplateListRows renders the three output shapes (JSON / quiet / human)
+// once, so local and remote cannot drift apart.
+func printTemplateListRows(rows []map[string]any, names []string) error {
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  rows,
@@ -153,14 +245,12 @@ func runTemplateList(cmd *cobra.Command, args []string) error {
 			"error": nil,
 		})
 	}
-
 	if optQuiet {
-		for _, tmpl := range templates {
-			fmt.Fprintln(os.Stdout, tmpl.Name)
+		for _, name := range names {
+			fmt.Fprintln(os.Stdout, name)
 		}
 		return nil
 	}
-
 	printTemplateListHuman(os.Stdout, rows)
 	return nil
 }

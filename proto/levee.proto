@@ -89,6 +89,15 @@ message Template {
   repeated string required_params = 4;
   int64 created_at = 5;
   int64 updated_at = 6;
+  // id is the stable identifier ("tmpl-" + hex) the file library assigns on
+  // first save, preserved across updates. `levee template list` has always
+  // printed it; it was simply not carried over the wire, so the same column
+  // could not be filled for a remote server.
+  string id = 7;
+  // tags is the free-form categorization map and the only thing `--tag`
+  // filters on. Dropping it over the wire is what made the filter impossible
+  // to honour remotely.
+  map<string, string> tags = 8;
 }
 
 // TraceEntry is a single auditable action within a run, hash-chained for tamper evidence.

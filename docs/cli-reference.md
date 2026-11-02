@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）与 `version` / `system version`（报服务端构建）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list`（读服务端模板库）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -680,7 +680,7 @@ levee link run-abc123 --incident INC-20260816-001
 
 ### 5.1 template list
 
-列出所有模板。
+列出所有模板。加 `--remote` 时列出**服务端**模板库里的模板（同一组列：NAME / ID / DESCRIPTION），`--tag` 同样生效。
 
 ```text
 levee template list [--tag key=value]
@@ -699,7 +699,12 @@ levee template list
 
 命令示例：按 tag 过滤
 levee template list --tag category=web
+
+命令示例：列出 server 的模板库
+levee --remote --server localhost:9090 template list
 ```
+
+> **远程模式的精度差异**：`--json` 里的 `created_at` 在本地是完整时间戳（含亚秒），远程只到**秒**——线上字段是 int64 秒。逐字段比较的脚本要按秒对齐，逐字节比较两个模式的输出则会在这一列上不同。
 
 ### 5.2 template show
 
