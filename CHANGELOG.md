@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 文档（audit 链封链读放大：量化 + 定档「维持现状」，并给出重新立项条件）
+
+- **起因**：`internal/audit/auditchain.go` 的 `walkChain` 注释长期登记「sealing still walks every visible row, and Record calls it per write … a change to what a broken chain means, so it is not folded in here」——这句话**从未被量化**，也没有任何基准或测试钉住它。
+- **量化（本机 SQLite，2026-11-02，`internal/audit/benchmark_audit_seal_test.go`）**：稳态链上 `audit.Record`（插入+封链）100 行 **0.53ms** → 1000 行 **3.41ms** → 5000 行 **18.34ms**，线性 ~3.5µs/行；其中 `Seal` 占 51%/70%/**95%**——**瓶颈是封链不是插入**。外推 1 万行 35ms、10 万行 350ms。审计写不是冷路径（审批/apply/pause/登录/凭据轮换/目标机变更都写），所以这是一条「越用越慢」的写路径。
+- **为什么不能顺手增量**：`Seal` 的篡改判定 `ComputeAuditHash(a, a.PrevHash) == a.CurrHash` 是**单点性质**（只用行自身 prev，不需顺序累积）⇒ **跳过已封前缀 = 跳过对前缀内每行的写时篡改校验**。WORM 触发器（`internal/audit/worm.go`）是数据库层第一道防线，Seal 是纵深防御；把它从「每次写」降为「只在 Verify 时」属安全姿态变更，不该由一次性能 PR 做掉。
+- **顺带排除「窄投影读」方案**：稳态判定第一支是 `a.PrevHash == prev && a.CurrHash == want`，而 `want` 是对**内容字段**算的哈希——不算它就无法判定稳态、也算不出下一行的 prev，所以内容列一行都省不掉。
+- **定档**：维持现状。交付 ① `internal/audit/benchmark_audit_seal_test.go`（把数字固化为可复现输出，非 CI 门禁——CI runner 测的是 runner；但其**线性形状**是结论的一部分）；② `docs/audit-chain-scale-design.md`（量化、四方案对比、定档理由、C/D 的 5 条重新立项触发条件、已知边界）；③ `walkChain` 注释改为指向该文档并保留一句话事实，避免两处各自过期。
+- **行为变更：无。** `Seal`/`Record`/`Verify`/`Rebuild` 语义逐字未动，仅新增基准与文档、一处注释。
+- **验证**：`go vet` rc=0；`gofmt` 干净；`go test -count=1 ./internal/audit/` 全绿；`golangci-lint run ./internal/audit/`（v2.13.2，与 CI 同版，`--allow-parallel-runners` 绕开他人在跑的全局锁）0 issues；`go run ./internal/docgen -check` up to date；`scripts/test_doc_anchors.py` 与 `test_changelog_structure.py` OK。
+
 ### 新增（`template list --remote`：先把线上字段补齐，再接线）
 
 - **为什么不能直接接**：本地 `template list` 打印 `id / name / description / created_at`，而 `pb.Template` **不携带 id 与 tags**——ID 列没有来源，`--tag` 没有可过滤的东西。更糟的是 `serve` 用 `NewTemplateService(store, nil)` 建服务，那份「内存注册表」只被 RPC 的 `CreateTemplate` 填过，而 `levee template create` 写的是**文件库**：直接接上去，远端会对着一个有几份模板的部署回答「没有模板」。
