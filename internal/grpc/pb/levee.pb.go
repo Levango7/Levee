@@ -457,8 +457,17 @@ type Template struct {
 	RequiredParams  []string               `protobuf:"bytes,4,rep,name=required_params,json=requiredParams,proto3" json:"required_params,omitempty"`
 	CreatedAt       int64                  `protobuf:"varint,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	UpdatedAt       int64                  `protobuf:"varint,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// id is the stable identifier ("tmpl-" + hex) the file library assigns on
+	// first save, preserved across updates. `levee template list` has always
+	// printed it; it was simply not carried over the wire, so the same column
+	// could not be filled for a remote server.
+	Id string `protobuf:"bytes,7,opt,name=id,proto3" json:"id,omitempty"`
+	// tags is the free-form categorization map and the only thing `--tag`
+	// filters on. Dropping it over the wire is what made the filter impossible
+	// to honour remotely.
+	Tags          map[string]string `protobuf:"bytes,8,rep,name=tags,proto3" json:"tags,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Template) Reset() {
@@ -531,6 +540,20 @@ func (x *Template) GetUpdatedAt() int64 {
 		return x.UpdatedAt
 	}
 	return 0
+}
+
+func (x *Template) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Template) GetTags() map[string]string {
+	if x != nil {
+		return x.Tags
+	}
+	return nil
 }
 
 // TraceEntry is a single auditable action within a run, hash-chained for tamper evidence.
@@ -5120,7 +5143,7 @@ const file_levee_proto_rawDesc = "" +
 	"\bgroup_id\x18\t \x01(\tR\agroupId\x1a9\n" +
 	"\vLabelsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd2\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xca\x02\n" +
 	"\bTemplate\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12)\n" +
@@ -5129,7 +5152,12 @@ const file_levee_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x05 \x01(\x03R\tcreatedAt\x12\x1d\n" +
 	"\n" +
-	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\"\xc1\x02\n" +
+	"updated_at\x18\x06 \x01(\x03R\tupdatedAt\x12\x0e\n" +
+	"\x02id\x18\a \x01(\tR\x02id\x12-\n" +
+	"\x04tags\x18\b \x03(\v2\x19.levee.Template.TagsEntryR\x04tags\x1a7\n" +
+	"\tTagsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc1\x02\n" +
 	"\n" +
 	"TraceEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x15\n" +
@@ -5580,7 +5608,7 @@ func file_levee_proto_rawDescGZIP() []byte {
 	return file_levee_proto_rawDescData
 }
 
-var file_levee_proto_msgTypes = make([]protoimpl.MessageInfo, 75)
+var file_levee_proto_msgTypes = make([]protoimpl.MessageInfo, 76)
 var file_levee_proto_goTypes = []any{
 	(*Change)(nil),                     // 0: levee.Change
 	(*Plan)(nil),                       // 1: levee.Plan
@@ -5652,127 +5680,129 @@ var file_levee_proto_goTypes = []any{
 	(*DoctorCheck)(nil),                // 67: levee.DoctorCheck
 	nil,                                // 68: levee.Change.ParamsEntry
 	nil,                                // 69: levee.Target.LabelsEntry
-	nil,                                // 70: levee.CreateChangeRequest.ParamsEntry
-	nil,                                // 71: levee.CloneChangeRequest.ParamsEntry
-	nil,                                // 72: levee.InstantiateTemplateRequest.ParamsEntry
-	nil,                                // 73: levee.AddTargetRequest.LabelsEntry
-	nil,                                // 74: levee.ListTargetsRequest.LabelSelectorEntry
-	(*emptypb.Empty)(nil),              // 75: google.protobuf.Empty
+	nil,                                // 70: levee.Template.TagsEntry
+	nil,                                // 71: levee.CreateChangeRequest.ParamsEntry
+	nil,                                // 72: levee.CloneChangeRequest.ParamsEntry
+	nil,                                // 73: levee.InstantiateTemplateRequest.ParamsEntry
+	nil,                                // 74: levee.AddTargetRequest.LabelsEntry
+	nil,                                // 75: levee.ListTargetsRequest.LabelSelectorEntry
+	(*emptypb.Empty)(nil),              // 76: google.protobuf.Empty
 }
 var file_levee_proto_depIdxs = []int32{
 	68, // 0: levee.Change.params:type_name -> levee.Change.ParamsEntry
 	1,  // 1: levee.Change.plan:type_name -> levee.Plan
 	2,  // 2: levee.Plan.batches:type_name -> levee.Batch
 	69, // 3: levee.Target.labels:type_name -> levee.Target.LabelsEntry
-	70, // 4: levee.CreateChangeRequest.params:type_name -> levee.CreateChangeRequest.ParamsEntry
-	71, // 5: levee.CloneChangeRequest.params:type_name -> levee.CloneChangeRequest.ParamsEntry
-	0,  // 6: levee.ApplyResponse.change:type_name -> levee.Change
-	1,  // 7: levee.ApplyResponse.plan:type_name -> levee.Plan
-	0,  // 8: levee.RollbackResponse.change:type_name -> levee.Change
-	0,  // 9: levee.ListChangesResponse.changes:type_name -> levee.Change
-	6,  // 10: levee.GetLogsResponse.entries:type_name -> levee.LogEntry
-	5,  // 11: levee.GetTraceResponse.entries:type_name -> levee.TraceEntry
-	37, // 12: levee.ApprovalInfo.decisions:type_name -> levee.ApprovalDecision
-	36, // 13: levee.GetApprovalsResponse.approvals:type_name -> levee.ApprovalInfo
-	4,  // 14: levee.ListTemplatesResponse.templates:type_name -> levee.Template
-	72, // 15: levee.InstantiateTemplateRequest.params:type_name -> levee.InstantiateTemplateRequest.ParamsEntry
-	73, // 16: levee.AddTargetRequest.labels:type_name -> levee.AddTargetRequest.LabelsEntry
-	74, // 17: levee.ListTargetsRequest.label_selector:type_name -> levee.ListTargetsRequest.LabelSelectorEntry
-	3,  // 18: levee.ListTargetsResponse.targets:type_name -> levee.Target
-	3,  // 19: levee.CheckTargetResponse.target:type_name -> levee.Target
-	5,  // 20: levee.GetAuditLogResponse.entries:type_name -> levee.TraceEntry
-	5,  // 21: levee.ListAuditTracesResponse.entries:type_name -> levee.TraceEntry
-	60, // 22: levee.VerifyHashChainResponse.runs:type_name -> levee.RunVerification
-	63, // 23: levee.RunReport.host_results:type_name -> levee.HostResult
-	6,  // 24: levee.RunReport.logs:type_name -> levee.LogEntry
-	67, // 25: levee.DoctorReport.checks:type_name -> levee.DoctorCheck
-	10, // 26: levee.ChangeService.CreateChange:input_type -> levee.CreateChangeRequest
-	11, // 27: levee.ChangeService.CloneChange:input_type -> levee.CloneChangeRequest
-	12, // 28: levee.ChangeService.PlanChange:input_type -> levee.PlanChangeRequest
-	13, // 29: levee.ChangeService.ApplyChange:input_type -> levee.ApplyChangeRequest
-	15, // 30: levee.ChangeService.PauseChange:input_type -> levee.PauseRequest
-	15, // 31: levee.ChangeService.ResumeChange:input_type -> levee.PauseRequest
-	16, // 32: levee.ChangeService.PauseAll:input_type -> levee.PauseAllRequest
-	16, // 33: levee.ChangeService.ResumeAll:input_type -> levee.PauseAllRequest
-	18, // 34: levee.ChangeService.CancelChange:input_type -> levee.CancelRequest
-	19, // 35: levee.ChangeService.RetryChange:input_type -> levee.RetryRequest
-	20, // 36: levee.ChangeService.RetryHost:input_type -> levee.RetryHostRequest
-	21, // 37: levee.ChangeService.RollbackChange:input_type -> levee.RollbackRequest
-	23, // 38: levee.ChangeService.ApproveChange:input_type -> levee.ApproveRequest
-	24, // 39: levee.ChangeService.RejectChange:input_type -> levee.RejectRequest
-	25, // 40: levee.ChangeService.GetChange:input_type -> levee.GetChangeRequest
-	26, // 41: levee.ChangeService.ListChanges:input_type -> levee.ListChangesRequest
-	28, // 42: levee.ChangeService.ArchiveChange:input_type -> levee.ArchiveRequest
-	29, // 43: levee.ChangeService.GetLogs:input_type -> levee.GetLogsRequest
-	31, // 44: levee.ChangeService.GetDiff:input_type -> levee.GetDiffRequest
-	33, // 45: levee.ChangeService.GetTrace:input_type -> levee.GetTraceRequest
-	35, // 46: levee.ChangeService.GetApprovals:input_type -> levee.GetApprovalsRequest
-	39, // 47: levee.ChangeService.WatchChange:input_type -> levee.WatchChangeRequest
-	40, // 48: levee.ChangeService.StreamLogs:input_type -> levee.StreamLogsRequest
-	41, // 49: levee.TemplateService.CreateTemplate:input_type -> levee.CreateTemplateRequest
-	42, // 50: levee.TemplateService.GetTemplate:input_type -> levee.GetTemplateRequest
-	43, // 51: levee.TemplateService.ListTemplates:input_type -> levee.ListTemplatesRequest
-	45, // 52: levee.TemplateService.DeleteTemplate:input_type -> levee.DeleteTemplateRequest
-	46, // 53: levee.TemplateService.InstantiateTemplate:input_type -> levee.InstantiateTemplateRequest
-	47, // 54: levee.TargetService.AddTarget:input_type -> levee.AddTargetRequest
-	48, // 55: levee.TargetService.RemoveTarget:input_type -> levee.RemoveTargetRequest
-	49, // 56: levee.TargetService.ListTargets:input_type -> levee.ListTargetsRequest
-	51, // 57: levee.TargetService.GetTarget:input_type -> levee.GetTargetRequest
-	52, // 58: levee.TargetService.CheckTarget:input_type -> levee.CheckTargetRequest
-	54, // 59: levee.AuditService.GetAuditLog:input_type -> levee.GetAuditLogRequest
-	56, // 60: levee.AuditService.ListAuditTraces:input_type -> levee.ListAuditTracesRequest
-	58, // 61: levee.AuditService.VerifyHashChain:input_type -> levee.VerifyHashChainRequest
-	61, // 62: levee.AuditService.GetRunReport:input_type -> levee.GetRunReportRequest
-	75, // 63: levee.SystemService.GetVersion:input_type -> google.protobuf.Empty
-	75, // 64: levee.SystemService.GetStatus:input_type -> google.protobuf.Empty
-	64, // 65: levee.SystemService.GetConfig:input_type -> levee.GetConfigRequest
-	75, // 66: levee.SystemService.RunDoctor:input_type -> google.protobuf.Empty
-	0,  // 67: levee.ChangeService.CreateChange:output_type -> levee.Change
-	0,  // 68: levee.ChangeService.CloneChange:output_type -> levee.Change
-	1,  // 69: levee.ChangeService.PlanChange:output_type -> levee.Plan
-	14, // 70: levee.ChangeService.ApplyChange:output_type -> levee.ApplyResponse
-	0,  // 71: levee.ChangeService.PauseChange:output_type -> levee.Change
-	0,  // 72: levee.ChangeService.ResumeChange:output_type -> levee.Change
-	17, // 73: levee.ChangeService.PauseAll:output_type -> levee.PauseAllResponse
-	17, // 74: levee.ChangeService.ResumeAll:output_type -> levee.PauseAllResponse
-	0,  // 75: levee.ChangeService.CancelChange:output_type -> levee.Change
-	0,  // 76: levee.ChangeService.RetryChange:output_type -> levee.Change
-	0,  // 77: levee.ChangeService.RetryHost:output_type -> levee.Change
-	22, // 78: levee.ChangeService.RollbackChange:output_type -> levee.RollbackResponse
-	0,  // 79: levee.ChangeService.ApproveChange:output_type -> levee.Change
-	0,  // 80: levee.ChangeService.RejectChange:output_type -> levee.Change
-	0,  // 81: levee.ChangeService.GetChange:output_type -> levee.Change
-	27, // 82: levee.ChangeService.ListChanges:output_type -> levee.ListChangesResponse
-	0,  // 83: levee.ChangeService.ArchiveChange:output_type -> levee.Change
-	30, // 84: levee.ChangeService.GetLogs:output_type -> levee.GetLogsResponse
-	32, // 85: levee.ChangeService.GetDiff:output_type -> levee.GetDiffResponse
-	34, // 86: levee.ChangeService.GetTrace:output_type -> levee.GetTraceResponse
-	38, // 87: levee.ChangeService.GetApprovals:output_type -> levee.GetApprovalsResponse
-	7,  // 88: levee.ChangeService.WatchChange:output_type -> levee.ChangeEvent
-	6,  // 89: levee.ChangeService.StreamLogs:output_type -> levee.LogEntry
-	4,  // 90: levee.TemplateService.CreateTemplate:output_type -> levee.Template
-	4,  // 91: levee.TemplateService.GetTemplate:output_type -> levee.Template
-	44, // 92: levee.TemplateService.ListTemplates:output_type -> levee.ListTemplatesResponse
-	75, // 93: levee.TemplateService.DeleteTemplate:output_type -> google.protobuf.Empty
-	0,  // 94: levee.TemplateService.InstantiateTemplate:output_type -> levee.Change
-	3,  // 95: levee.TargetService.AddTarget:output_type -> levee.Target
-	75, // 96: levee.TargetService.RemoveTarget:output_type -> google.protobuf.Empty
-	50, // 97: levee.TargetService.ListTargets:output_type -> levee.ListTargetsResponse
-	3,  // 98: levee.TargetService.GetTarget:output_type -> levee.Target
-	53, // 99: levee.TargetService.CheckTarget:output_type -> levee.CheckTargetResponse
-	55, // 100: levee.AuditService.GetAuditLog:output_type -> levee.GetAuditLogResponse
-	57, // 101: levee.AuditService.ListAuditTraces:output_type -> levee.ListAuditTracesResponse
-	59, // 102: levee.AuditService.VerifyHashChain:output_type -> levee.VerifyHashChainResponse
-	62, // 103: levee.AuditService.GetRunReport:output_type -> levee.RunReport
-	8,  // 104: levee.SystemService.GetVersion:output_type -> levee.VersionInfo
-	9,  // 105: levee.SystemService.GetStatus:output_type -> levee.SystemStatus
-	65, // 106: levee.SystemService.GetConfig:output_type -> levee.Config
-	66, // 107: levee.SystemService.RunDoctor:output_type -> levee.DoctorReport
-	67, // [67:108] is the sub-list for method output_type
-	26, // [26:67] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	70, // 4: levee.Template.tags:type_name -> levee.Template.TagsEntry
+	71, // 5: levee.CreateChangeRequest.params:type_name -> levee.CreateChangeRequest.ParamsEntry
+	72, // 6: levee.CloneChangeRequest.params:type_name -> levee.CloneChangeRequest.ParamsEntry
+	0,  // 7: levee.ApplyResponse.change:type_name -> levee.Change
+	1,  // 8: levee.ApplyResponse.plan:type_name -> levee.Plan
+	0,  // 9: levee.RollbackResponse.change:type_name -> levee.Change
+	0,  // 10: levee.ListChangesResponse.changes:type_name -> levee.Change
+	6,  // 11: levee.GetLogsResponse.entries:type_name -> levee.LogEntry
+	5,  // 12: levee.GetTraceResponse.entries:type_name -> levee.TraceEntry
+	37, // 13: levee.ApprovalInfo.decisions:type_name -> levee.ApprovalDecision
+	36, // 14: levee.GetApprovalsResponse.approvals:type_name -> levee.ApprovalInfo
+	4,  // 15: levee.ListTemplatesResponse.templates:type_name -> levee.Template
+	73, // 16: levee.InstantiateTemplateRequest.params:type_name -> levee.InstantiateTemplateRequest.ParamsEntry
+	74, // 17: levee.AddTargetRequest.labels:type_name -> levee.AddTargetRequest.LabelsEntry
+	75, // 18: levee.ListTargetsRequest.label_selector:type_name -> levee.ListTargetsRequest.LabelSelectorEntry
+	3,  // 19: levee.ListTargetsResponse.targets:type_name -> levee.Target
+	3,  // 20: levee.CheckTargetResponse.target:type_name -> levee.Target
+	5,  // 21: levee.GetAuditLogResponse.entries:type_name -> levee.TraceEntry
+	5,  // 22: levee.ListAuditTracesResponse.entries:type_name -> levee.TraceEntry
+	60, // 23: levee.VerifyHashChainResponse.runs:type_name -> levee.RunVerification
+	63, // 24: levee.RunReport.host_results:type_name -> levee.HostResult
+	6,  // 25: levee.RunReport.logs:type_name -> levee.LogEntry
+	67, // 26: levee.DoctorReport.checks:type_name -> levee.DoctorCheck
+	10, // 27: levee.ChangeService.CreateChange:input_type -> levee.CreateChangeRequest
+	11, // 28: levee.ChangeService.CloneChange:input_type -> levee.CloneChangeRequest
+	12, // 29: levee.ChangeService.PlanChange:input_type -> levee.PlanChangeRequest
+	13, // 30: levee.ChangeService.ApplyChange:input_type -> levee.ApplyChangeRequest
+	15, // 31: levee.ChangeService.PauseChange:input_type -> levee.PauseRequest
+	15, // 32: levee.ChangeService.ResumeChange:input_type -> levee.PauseRequest
+	16, // 33: levee.ChangeService.PauseAll:input_type -> levee.PauseAllRequest
+	16, // 34: levee.ChangeService.ResumeAll:input_type -> levee.PauseAllRequest
+	18, // 35: levee.ChangeService.CancelChange:input_type -> levee.CancelRequest
+	19, // 36: levee.ChangeService.RetryChange:input_type -> levee.RetryRequest
+	20, // 37: levee.ChangeService.RetryHost:input_type -> levee.RetryHostRequest
+	21, // 38: levee.ChangeService.RollbackChange:input_type -> levee.RollbackRequest
+	23, // 39: levee.ChangeService.ApproveChange:input_type -> levee.ApproveRequest
+	24, // 40: levee.ChangeService.RejectChange:input_type -> levee.RejectRequest
+	25, // 41: levee.ChangeService.GetChange:input_type -> levee.GetChangeRequest
+	26, // 42: levee.ChangeService.ListChanges:input_type -> levee.ListChangesRequest
+	28, // 43: levee.ChangeService.ArchiveChange:input_type -> levee.ArchiveRequest
+	29, // 44: levee.ChangeService.GetLogs:input_type -> levee.GetLogsRequest
+	31, // 45: levee.ChangeService.GetDiff:input_type -> levee.GetDiffRequest
+	33, // 46: levee.ChangeService.GetTrace:input_type -> levee.GetTraceRequest
+	35, // 47: levee.ChangeService.GetApprovals:input_type -> levee.GetApprovalsRequest
+	39, // 48: levee.ChangeService.WatchChange:input_type -> levee.WatchChangeRequest
+	40, // 49: levee.ChangeService.StreamLogs:input_type -> levee.StreamLogsRequest
+	41, // 50: levee.TemplateService.CreateTemplate:input_type -> levee.CreateTemplateRequest
+	42, // 51: levee.TemplateService.GetTemplate:input_type -> levee.GetTemplateRequest
+	43, // 52: levee.TemplateService.ListTemplates:input_type -> levee.ListTemplatesRequest
+	45, // 53: levee.TemplateService.DeleteTemplate:input_type -> levee.DeleteTemplateRequest
+	46, // 54: levee.TemplateService.InstantiateTemplate:input_type -> levee.InstantiateTemplateRequest
+	47, // 55: levee.TargetService.AddTarget:input_type -> levee.AddTargetRequest
+	48, // 56: levee.TargetService.RemoveTarget:input_type -> levee.RemoveTargetRequest
+	49, // 57: levee.TargetService.ListTargets:input_type -> levee.ListTargetsRequest
+	51, // 58: levee.TargetService.GetTarget:input_type -> levee.GetTargetRequest
+	52, // 59: levee.TargetService.CheckTarget:input_type -> levee.CheckTargetRequest
+	54, // 60: levee.AuditService.GetAuditLog:input_type -> levee.GetAuditLogRequest
+	56, // 61: levee.AuditService.ListAuditTraces:input_type -> levee.ListAuditTracesRequest
+	58, // 62: levee.AuditService.VerifyHashChain:input_type -> levee.VerifyHashChainRequest
+	61, // 63: levee.AuditService.GetRunReport:input_type -> levee.GetRunReportRequest
+	76, // 64: levee.SystemService.GetVersion:input_type -> google.protobuf.Empty
+	76, // 65: levee.SystemService.GetStatus:input_type -> google.protobuf.Empty
+	64, // 66: levee.SystemService.GetConfig:input_type -> levee.GetConfigRequest
+	76, // 67: levee.SystemService.RunDoctor:input_type -> google.protobuf.Empty
+	0,  // 68: levee.ChangeService.CreateChange:output_type -> levee.Change
+	0,  // 69: levee.ChangeService.CloneChange:output_type -> levee.Change
+	1,  // 70: levee.ChangeService.PlanChange:output_type -> levee.Plan
+	14, // 71: levee.ChangeService.ApplyChange:output_type -> levee.ApplyResponse
+	0,  // 72: levee.ChangeService.PauseChange:output_type -> levee.Change
+	0,  // 73: levee.ChangeService.ResumeChange:output_type -> levee.Change
+	17, // 74: levee.ChangeService.PauseAll:output_type -> levee.PauseAllResponse
+	17, // 75: levee.ChangeService.ResumeAll:output_type -> levee.PauseAllResponse
+	0,  // 76: levee.ChangeService.CancelChange:output_type -> levee.Change
+	0,  // 77: levee.ChangeService.RetryChange:output_type -> levee.Change
+	0,  // 78: levee.ChangeService.RetryHost:output_type -> levee.Change
+	22, // 79: levee.ChangeService.RollbackChange:output_type -> levee.RollbackResponse
+	0,  // 80: levee.ChangeService.ApproveChange:output_type -> levee.Change
+	0,  // 81: levee.ChangeService.RejectChange:output_type -> levee.Change
+	0,  // 82: levee.ChangeService.GetChange:output_type -> levee.Change
+	27, // 83: levee.ChangeService.ListChanges:output_type -> levee.ListChangesResponse
+	0,  // 84: levee.ChangeService.ArchiveChange:output_type -> levee.Change
+	30, // 85: levee.ChangeService.GetLogs:output_type -> levee.GetLogsResponse
+	32, // 86: levee.ChangeService.GetDiff:output_type -> levee.GetDiffResponse
+	34, // 87: levee.ChangeService.GetTrace:output_type -> levee.GetTraceResponse
+	38, // 88: levee.ChangeService.GetApprovals:output_type -> levee.GetApprovalsResponse
+	7,  // 89: levee.ChangeService.WatchChange:output_type -> levee.ChangeEvent
+	6,  // 90: levee.ChangeService.StreamLogs:output_type -> levee.LogEntry
+	4,  // 91: levee.TemplateService.CreateTemplate:output_type -> levee.Template
+	4,  // 92: levee.TemplateService.GetTemplate:output_type -> levee.Template
+	44, // 93: levee.TemplateService.ListTemplates:output_type -> levee.ListTemplatesResponse
+	76, // 94: levee.TemplateService.DeleteTemplate:output_type -> google.protobuf.Empty
+	0,  // 95: levee.TemplateService.InstantiateTemplate:output_type -> levee.Change
+	3,  // 96: levee.TargetService.AddTarget:output_type -> levee.Target
+	76, // 97: levee.TargetService.RemoveTarget:output_type -> google.protobuf.Empty
+	50, // 98: levee.TargetService.ListTargets:output_type -> levee.ListTargetsResponse
+	3,  // 99: levee.TargetService.GetTarget:output_type -> levee.Target
+	53, // 100: levee.TargetService.CheckTarget:output_type -> levee.CheckTargetResponse
+	55, // 101: levee.AuditService.GetAuditLog:output_type -> levee.GetAuditLogResponse
+	57, // 102: levee.AuditService.ListAuditTraces:output_type -> levee.ListAuditTracesResponse
+	59, // 103: levee.AuditService.VerifyHashChain:output_type -> levee.VerifyHashChainResponse
+	62, // 104: levee.AuditService.GetRunReport:output_type -> levee.RunReport
+	8,  // 105: levee.SystemService.GetVersion:output_type -> levee.VersionInfo
+	9,  // 106: levee.SystemService.GetStatus:output_type -> levee.SystemStatus
+	65, // 107: levee.SystemService.GetConfig:output_type -> levee.Config
+	66, // 108: levee.SystemService.RunDoctor:output_type -> levee.DoctorReport
+	68, // [68:109] is the sub-list for method output_type
+	27, // [27:68] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_levee_proto_init() }
@@ -5786,7 +5816,7 @@ func file_levee_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_levee_proto_rawDesc), len(file_levee_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   75,
+			NumMessages:   76,
 			NumExtensions: 0,
 			NumServices:   5,
 		},

@@ -52,6 +52,7 @@ func TestRemoteCapabilityListIsExactlyThese(t *testing.T) {
 			"levee agent remove",
 			"levee version",
 			"levee system version",
+			"levee template list",
 		},
 		remoteCapableCommands,
 		"名单变了就要在这里说清楚：谁能真的走 --remote，谁只是被误加进来")

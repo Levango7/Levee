@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（`template list --remote`：先把线上字段补齐，再接线）
+
+- **为什么不能直接接**：本地 `template list` 打印 `id / name / description / created_at`，而 `pb.Template` **不携带 id 与 tags**——ID 列没有来源，`--tag` 没有可过滤的东西。更糟的是 `serve` 用 `NewTemplateService(store, nil)` 建服务，那份「内存注册表」只被 RPC 的 `CreateTemplate` 填过，而 `levee template create` 写的是**文件库**：直接接上去，远端会对着一个有几份模板的部署回答「没有模板」。
+- **补线上字段**：`pb.Template` 新增 `string id = 7` 与 `map<string,string> tags = 8`（`proto/levee.proto`），`domainTemplateToPB` 随之带出。生成用仓库钉住的 protoc v27.0 + protoc-gen-go v1.36.12 + protoc-gen-go-grpc v1.6.2 重跑 `scripts/gen-proto.sh`；**先做了对照**：未改 proto 时重新生成 `git diff` 为空，证明本机工具链与签入文件可复现。
+- **修服务端读错源**：`serve` 改为 `template.NewTemplateLibrary(templateDir(cfg))` 并交给 `grpc.NewTemplateService(store, tmplLib)`——从此服务端读的就是 CLI 写的那份目录。附带的行为变化：**RPC 建的模板现在落盘**（此前只在内存里，重启即失忆），`InstantiateTemplate` 也走文件库分支（它本来就按 `s.lib != nil` 分支，只是以前永远是 nil）。
+- **接线**：`template list` 先 `resolveServiceMode()`；远程分支按 `PageSize=1000` 翻页取全量、`--tag` 在客户端按 `tags` 过滤，三种输出形状（human / `--quiet` / `--json`）与本地**共用同一个渲染函数**，避免两边各写一份。`--remote` 白名单扩到 6 条。
+- **证据**：`template_remote_test.go` 4 例。①②③ 同一份文件库、两种模式、**逐字节相同**（human / quiet / json 三种形状各一条）；④ `--tag tier=prod` 两边都只剩同一条。另加两处结构守卫：`TestServeServesTheFileLibrary` 读 `cmd_serve.go`，钉住「必须打开 CLI 那份目录、不许回到 `NewTemplateService(store, nil)`」——等价测试自己给服务器传了 library，看不见 serve 的这一半；`TestTemplateListRemoteCreatesNoLocalDatabase` 断言远程不建本地库。**变异三处（还原后 `sha256` 逐字节相同）**：转换器去掉 `Id` → human/json 等价用例红；去掉 `Tags` → `--tag` 用例红；把 serve 改回 `nil` → 结构守卫红。
+- **如实标注的一处差异**：`--json` 的 `created_at` 本地是含亚秒的完整时间戳，远程只到秒（线上是 int64 秒）。等值测试用整秒的 `CreatedAt` 规避这一维，避免把「格式差异」当成「接线差异」；该差异已写进 `docs/cli-reference.md` §5.1。
+- **仍不接**：`template show`——线上只有 `required_params`（丢了可选参数、类型、默认值与描述），照着渲染会静默少一半内容；`target list` / `audit verify` / `system status` 的阻塞点同前一笔，一并登记在 `docs/blocked-items.md`。
+
 ### 新增（service_factory 接线：`version` / `system version` 两种模式同一个入口）
 
 - **背景**：`cmd/levee/service_factory.go` 是双模式（`--local` / `--remote`）的适配层，但**非测试代码零调用**——它维护着五套适配器而生产一个都没走。本笔把第一个真实调用点接上，并顺手把工厂改成**按需构造**。

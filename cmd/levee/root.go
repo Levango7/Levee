@@ -302,6 +302,7 @@ var remoteCapableCommands = []string{
 	"levee agent remove",
 	"levee version",
 	"levee system version",
+	"levee template list",
 }
 
 // validateServiceMode is the PersistentPreRunE guard. It resolves the mode once

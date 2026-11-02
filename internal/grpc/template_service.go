@@ -444,10 +444,17 @@ func domainTemplateToPB(t *template.Template) *pb.Template {
 		return nil
 	}
 	pbTmpl := &pb.Template{
+		Id:              t.ID,
 		Name:            t.Name,
 		Description:     t.Description,
 		WorkflowContent: t.Content,
 		CreatedAt:       t.CreatedAt.Unix(),
+	}
+	if len(t.Tags) > 0 {
+		pbTmpl.Tags = make(map[string]string, len(t.Tags))
+		for k, v := range t.Tags {
+			pbTmpl.Tags[k] = v
+		}
 	}
 	if t.UpdatedAt != nil {
 		pbTmpl.UpdatedAt = t.UpdatedAt.Unix()
