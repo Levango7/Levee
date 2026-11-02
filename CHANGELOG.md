@@ -22,6 +22,15 @@
 - **接线**：`fetchVersionInfo(ctx)` 先 `resolveServiceMode()`，再向工厂要 `GetSystemService()`，local 读二进制变量、remote 走 `GetVersion`；根命令 `levee version` 与 `levee system version` 共用它。`--remote` 白名单（`remoteCapableCommands`）相应加上 `levee version` / `levee system version`。
 - **证据**：`version_remote_test.go` 4 例 + 工厂 2 例。① 端到端起真实 gRPC server（版本串 `test` / commit `test-commit`），断言 `--remote version` 与 `--remote system version` 报**服务端**的值、且**不含**本地构建变量（测试里是 `unknown`）；② `--json` 逐字段核对；③ `--remote version` 在临时 data_dir 下**不创建** `levee.db`；④ 本地模式仍报本二进制。**变异两处（还原后 `sha256` 逐字节相同）**：把 `fetchVersionInfo` 的 mode 参数硬编码成 `modeLocal` → 远程用例红并打印出本地构建信息；让 `GetSystemService` 也要求 store → `TestServiceFactoryLocal_StoreOnlyWhereNeeded` 红。`go test ./cmd/levee/ -count=1` 全绿（91s）。
 - **边界**：`--remote` 的支持面从 3 条扩到 5 条命令，其余命令仍以 `[exit=2]` 拒绝（上一笔的 fail-fast 保持不变）；本笔不碰 change 的写路径，也不改 proto。
+### 测试（把 deployment.md 纳入旗标守卫 + 把 conversation 会话路由钉成三重事实）
+
+- **缺口一：一句没有读者的强断言。** `docs/deployment.md` 前言写着「所有旗标与配置键均与当前代码实现核对，未包含未实现的能力」，而 `cmd/levee/cli_reference_flags_test.go` 只扫 `cli-reference.md` 与 `quickstart.md`——那句话无人验证。它的调用就是普通 `levee serve --flag` 行，本来就在 `docUsageRE` 的匹配形态内，扩一个文档路径即可纳入。
+- **缺口二：REST-only 端点不在任何 proto 驱动守卫的射程内。** §13.7 的五个 conversation 会话端点不经过 gRPC，因此 `rest_exposure_matrix_test.go`（从 proto 描述符枚举 RPC）与 `rest_endpoint_table_test.go`（对账 §13.2 表与 `restResourceHandlers`）都看不到它们；最近的 `rest_conversation_owner_test.go` 只断言**所有权**结果——路由悄悄不再被路由时它不红（它期望的 403 与路由不存在时的 404 在"没拿到我要的会话"这一点上不可分辨），且它从不读文档。
+- **落地**：① flag 守卫的文档列表加 `docs/deployment.md`（纳入后 521 处旗标引用全对得上，证明那句当前不是说谎——**本笔是预防性守卫，不是修漂移**）；② 新增 `internal/grpc/rest_conversation_route_test.go`，三条腿各自独立：**源码腿**（`dispatchConversation` 必须含每条形状的字面量，因为它是路径字符串运算、没有可枚举的路由表）、**文档腿**（§13.7 必须描述每条 backticked 调用）、**线上腿**（对真实 session 断言成功码，再用「未知 sub-path 404 且消息点名路径」+「错误动词 405」这一对把 "routed" 钉住）。
+- **写线上腿时发现自己两个错**（已写进测试注释，供下一个人别再犯）：① `docAnchor` 曾把 METHOD 放在反引号外，而 §13.7 实际把整段包在一个反引号里，五条全红；② 断言「非 404 即路由存在」是**错的**——dispatcher 对未知路径答 404，handler 对不存在的 session 也答 404，而 `DELETE /conversation/sessions/{不存在}` 正是会 404 的合法请求；改成对真实 session 断言成功码才成立。
+- **验证**：`go vet` rc=0；`go fmt` 干净；`go test -count=1 ./internal/grpc/`（89.7s）与 `./cmd/levee/`（90.9s）全绿；`golangci-lint run`（v2.13.2 与 CI 同版，`--allow-parallel-runners` 绕开他人在跑的全局锁）0 issues；`scripts/test_changelog_structure.py` 与 `test_doc_anchors.py` OK。
+- **变异（均先红后还原）**：`dispatchConversation` 的 `/messages` 改成不可达 → 源码腿与线上腿同时红；删文档里 `DELETE /conversation/sessions/{id}` 的描述 → 文档腿红。
+- **如实边界**：反向不在守卫范围——在 §13.7 写一条不存在的端点不会变红（实测确认），它只保证「真实路由同时被代码与文档记住」。
 
 ### 新增（活台账锚点活性门：`scripts/check_doc_anchors.py` + 6 处死锚点订正）
 
