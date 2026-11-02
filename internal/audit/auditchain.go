@@ -142,6 +142,17 @@ func ComputeAuditHash(a *state.Audit, prevHash string) string {
 // way to tell a mid-chain hole from a merely new tail (an index over unsealed
 // rows, say) — a change to what a broken chain means, so it is not folded in
 // here.
+//
+// That cost is now measured rather than asserted: see
+// docs/audit-chain-scale-design.md (~3.5 µs per row per write, measured on
+// SQLite; 95% of Record's time at 5k rows is this walk). The same document
+// records why the tempting shortcuts are not taken — in particular that the
+// per-row tamper check below is a SELF-CONTAINED judgement (it hashes against
+// the row's own stored PrevHash, not a sequentially accumulated one), so
+// skipping a sealed prefix would skip the write-time check for every row in it.
+// Reproduce the number with:
+//
+//	go test -run XXX -bench 'BenchmarkAuditRecordSealsWholeChain' -benchtime 20x ./internal/audit/
 func (b *AuditChainBuilder) walkChain(ctx context.Context, fn func(a *state.Audit) error) error {
 	limit := b.pageSize
 	if limit <= 0 {
