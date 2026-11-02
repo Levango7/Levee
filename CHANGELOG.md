@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 修复（`--remote` 的帮助文本对操作员说谎：名单早就是六个，帮助还写"当前仅"三个）
+
+- **症状**：`cmd/levee/root.go` 的 `--remote` flag 用法写死「当前仅 agent list/show/remove」，而 `remoteCapableCommands` 早已长到六条（`version` / `system version` / `template list` 于 2026-11-02 两笔落地）。`docs/cli-reference.md` 的全局选项表是对的，`levee --help` 是错的——**操作员先读的是帮助文本**。
+- **根因（本仓头号缺陷类的又一实例）**：名单有两条测试死死钉住（`TestRemoteCapabilityListResolves` / `TestRemoteCapabilityListIsExactlyThese`），帮助文本却是一份手写的副本。副本不会跟着名单长。
+- **修法（单一来源，不是同步两份）**：`remoteFlagUsage()` 从 `remoteCapableCommands` 渲染用法串，且刻意**不写"当前仅"也不写数量**——集合会长，写死的排他句是今天真、下周假的形状。
+- **守卫（三条，把两处现场都钉住）**：① `TestRemoteFlagHelpStaysAlignedWithTheCapabilityList`——渲染串必须点名名单里每一条，且不许点名名单外的命令（解析"当前由 … 消费"段反向对账），并不许回到"当前仅"式措辞；② `TestRemoteConsumersInCliReferenceMatchTheList`——把 `docs/cli-reference.md` 的全局选项表也纳入同一套双向对账（该表是手写的第二现场，#272 落地时它一定会被改，守卫让"忘了同步"变红而不是留一条注释）；③ 解析器自带形状过滤（`--server` / `[exit=2]` / `false` 这些非命令记号不会被当成命令）。
+- **顺带订正一处账本漂移**：`docs/product-roadmap.md` 的 `service_factory` 行仍写「P2 维持现状（非阻塞）；『接线 or 退役』仍属可选决定」，而 `docs/blocked-items.md` 同一条已写「已接线（2026-11-02）」。两处对同一事实给出了相反答案——按代码事实（`e5f1587` version/system version、`22a7153` template list 均已经工厂）订正 roadmap 行，并保留真正仍是可选决定的那一半（`buildLocalServices` 覆盖的其余服务尚未全部迁到工厂）。
+- **验证**：`go build` / `go vet` rc=0；`gofmt` 干净；`go test -count=1 ./cmd/levee/` 全包 ok（61.5s）；`golangci-lint run ./cmd/levee/`（v2.13.2 与 CI 同版，`--allow-parallel-runners`）0 issues；`scripts/test_changelog_structure.py` 与 `test_doc_anchors.py` OK。
+- **变异（四条均先红后还原）**：① 渲染串多提一个 `target list` → 反向断言红；② 渲染串漏掉名单末条 → 正向断言红（点名 `template list`）；③ cli-reference 的共享组 `agent list / show / remove` 改成 `/ show` → 红（点名 `agent remove`）；④ 同表多提一条 `target list` → 红。
+- **如实边界**：`--remote` 的消费面还会长（#272 在飞：target list / audit verify / template show）。届时 `remoteCapableCommands` 一改，`root.go` 的渲染**自动跟上**，但 `docs/cli-reference.md` 仍要人改——守卫会把漏改变红，这是它存在的理由，不是遗留缺陷。
+
 ### 文档（audit 链封链读放大：量化 + 定档「维持现状」，并给出重新立项条件）
 
 - **起因**：`internal/audit/auditchain.go` 的 `walkChain` 注释长期登记「sealing still walks every visible row, and Record calls it per write … a change to what a broken chain means, so it is not folded in here」——这句话**从未被量化**，也没有任何基准或测试钉住它。
