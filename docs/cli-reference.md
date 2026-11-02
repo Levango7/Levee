@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list`（读服务端模板库）、`target list`（读服务端库存）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -876,12 +876,15 @@ levee audit verify <run-id>
 **说明**
 
 - 验证通过返回退出码 0
-- 验证失败返回退出码 6，输出被篡改的记录信息
+- 验证失败返回退出码 6，逐条输出被篡改的记录：`trace` / `index` / `type`（`--json` 另含 recomputed 与 stored 两对哈希）
+- 加全局 `--remote` 时由**服务端**的 store 验证（`AuditService.VerifyHashChain`），逐条 failure、`count`、`valid` 与本地完全一致；run 不存在或没有 trace 时两种模式报同一句 `verify chain: audit: no traces found for run`
+- 远端结果受服务端策略约束（例如按环境可见性）：没有 `--token` 时与本地同权
 
 **示例**
 
 ```命令示例：验证哈希链
 levee audit verify run-abc123
+levee --remote --server localhost:9090 audit verify run-abc123
 ```
 
 ### 7.2 audit export

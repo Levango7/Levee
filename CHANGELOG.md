@@ -35,6 +35,15 @@
 - **变异（四条均先红后还原）**：① 渲染串多提一个 `target list` → 反向断言红；② 渲染串漏掉名单末条 → 正向断言红（点名 `template list`）；③ cli-reference 的共享组 `agent list / show / remove` 改成 `/ show` → 红（点名 `agent remove`）；④ 同表多提一条 `target list` → 红。
 - **如实边界**：`--remote` 的消费面还会长（#272 在飞：target list / audit verify / template show）。届时 `remoteCapableCommands` 一改，`root.go` 的渲染**自动跟上**，但 `docs/cli-reference.md` 仍要人改——守卫会把漏改变红，这是它存在的理由，不是遗留缺陷。
 
+### 新增（`audit verify --remote`：线上不再只报第一条篡改）
+
+- **为什么不能直接接（两处）**：① 本地逐条打印每个被篡改记录（`trace` / `index` / `type`，`--json` 还带 recomputed 与 stored 两对哈希），而 `VerifyHashChain` 只把 `failures[0]` 塞进 `broken_entry_id` / `broken_reason`——**多行篡改在远端会看起来像单行**，这是安全判定，不是显示差异；② 服务端「验证全部 run」时会把没有 trace 的 run 直接跳过，对**具名 run** 的请求就退化成 `valid=true, 0 条`，而本地对同一输入报 `ErrNoTraces`——远端等于宣布一条不存在的链是完好的。
+- **补线上字段**：`pb.RunVerification` 新增 `repeated AuditChainFailure failures = 6`，字段与 `audit.ChainFailure` 一一对应（`trace_id` / `index` / `expected` / `actual` / `prev_expected` / `prev_actual` / `type`）。`type` 用**数字**而不是字符串，因为本地 `--json` 打印的就是 `ChainFailure.Type` 的整数值（没有自定义 marshaler），字符串会逼出一个有损的反查表。`broken_entry_id` / `broken_reason` 保留为「首条」以兼容既有消费者。生成仍用钉住的 protoc v27.0 工具链。
+- **服务端**：为每个 run 填**全部** `Failures`（不再只取 `[0]`）。
+- **接线**：`runAuditVerify` 先 `resolveServiceMode()`；远程经工厂 `GetAuditService().VerifyHashChain`，把响应还原成 `audit.VerifyResult`，与本地**共用同一个渲染函数**（JSON 信封、human 行、`[exit=6]` 文案全在一处）。空 `runs` 还原成 `verify chain: audit: no traces found for run`，与本地逐字一致。`--remote` 白名单扩到 8 条。
+- **证据**：`audit_remote_test.go` 6 个用例。① 完好链三形状（human / `--quiet` / `--json`）**逐字节相同**；② **同时伪造两行**内容：两边都报 `2 of 3 records tampered`、逐条 failure 逐字节相同、stdout+stderr+error 三方相等——只伪造一行的测试会被「只回首条」的实现骗绿；③ 删除中间一行（`prev_hash_mismatch`，type=1）：覆盖 `type/index/prev_*` 这些在内容篡改里恰好等于零值的字段；④ run 不存在/没有 trace：两边报同一句 `ErrNoTraces`；⑤ 死端口必须报错（等价用例读同一份库，分不出走的是哪条路）；⑥ 远程不建本地库。**变异（还原后 `sha256` 逐字节相同）**：服务端只保留首条失败 → ② 红；丢掉 `Type` → ③ 红（`"Type":1` 变 0）；丢掉 `PrevExpected` → ③ 红；跳过空 `runs` 的拒绝 → ④ 红；把远程分支短路成本地 → ⑤ 红。
+- **仍不接**：`template show`、`system status`，阻塞点见 `docs/blocked-items.md`。
+
 ### 文档（`project-status-2026-11.md` 追加 §10 复核：基线推到 9974b44，四个数字复测、两处表述要限定）
 
 - **写法**：带日期的快照**只追加不重写**——§1–§9 原文一字未改，新增 §10 写明基线（`482af47` → `9974b44`，前进 **21** 笔）、复测命令与实测值，失准处单列"要限定/收回的表述"。这条写法本身作为机制样本收进 §10 末。

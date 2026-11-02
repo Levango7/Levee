@@ -382,6 +382,7 @@ func (s *AuditService) VerifyHashChain(ctx context.Context, req *pb.VerifyHashCh
 			RunId:           rid,
 			Valid:           result.Valid,
 			EntriesVerified: int64(result.Count),
+			Failures:        make([]*pb.AuditChainFailure, 0, len(result.Failures)),
 		}
 		if !result.Valid && len(result.Failures) > 0 {
 			f := result.Failures[0]
@@ -392,6 +393,19 @@ func (s *AuditService) VerifyHashChain(ctx context.Context, req *pb.VerifyHashCh
 				resp.BrokenEntryId = f.TraceID
 				resp.BrokenReason = f.Type.String()
 			}
+		}
+		// Every tampered record, not just the first: the CLI prints the whole
+		// list locally, and `--json` distinguishes rows by index/hashes.
+		for _, f := range result.Failures {
+			rv.Failures = append(rv.Failures, &pb.AuditChainFailure{
+				TraceId:      f.TraceID,
+				Index:        int32(f.Index),
+				Expected:     f.Expected,
+				Actual:       f.Actual,
+				PrevExpected: f.PrevExpected,
+				PrevActual:   f.PrevActual,
+				Type:         int32(f.Type),
+			})
 		}
 		resp.Runs = append(resp.Runs, rv)
 		resp.EntriesVerified += rv.EntriesVerified
