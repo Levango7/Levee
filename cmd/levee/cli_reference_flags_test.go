@@ -48,6 +48,12 @@ func TestDocumentedFlagsAreRegistered(t *testing.T) {
 	for _, doc := range []string{
 		filepath.Join("..", "..", "docs", "cli-reference.md"),
 		filepath.Join("..", "..", "docs", "quickstart.md"),
+		// deployment.md claims in its own preamble that "every flag and config
+		// key below has been checked against the implementation" — a claim with
+		// no reader. Its invocations are ordinary `levee serve --flag` lines, so
+		// they fall into the same shape as the references; leaving the file out
+		// would keep that sentence unverifiable.
+		filepath.Join("..", "..", "docs", "deployment.md"),
 	} {
 		src, err := os.ReadFile(doc)
 		require.NoError(t, err, "the docs the gate reads must exist: %s", doc)
