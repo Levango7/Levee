@@ -26,6 +26,16 @@
 - **本轮验证盲区照实登记**：没跑前端腿（`web/` vitest 与 `browser-check`）、没跑全量 `-race`、PG 用的是新建空库（覆盖同一套测试代码而非同一份数据）、浅克隆未 unshallow。
 - **验证**：`python scripts/check_doc_anchors.py` PASSED（27 锚点 × 6 本活账本）；`python scripts/test_changelog_structure.py` 7 tests OK。零产品代码改动。
 
+### 新增（ADR-008：ABAC 清单侧 env 归属**写侧**强制的裁决材料——四候选、一推荐、五问待 owner）
+
+- **认领的是 roadmap 里那条 P0 的"仍待做"半边**（写入路径不按 `target-ownership.yaml` 强制）。本笔**只出材料、不动产品代码**：`docs/adr/ADR-008-abac-write-side-env-ownership.md`。
+- **最重要的发现是这条的定级基础站不住**：本行原暗示"dev 能把 prod 机器接走"级别的逃逸，实测**不成立**——条件策略层的 labels 由被判定的 env 现造（`internal/authz/authz.go:435`），不读库存行，所以假 label 换不到额外许可。真实失真面只有两处：门禁按**自报** env 判定（`internal/grpc/target_service.go:133`），以及清单行可以对平台自己的权威事实说谎（读侧注册表压过 labels，`internal/grpc/resource_authz.go:86`）。另一条限制作用面：写侧强制只在注册表**声明过**的主机上有意义，而注册表覆盖率本机无真实 inventory 可测。
+- **已吃掉的一半写清了**：`ImportTargets` 不但判文件声明的每个 env，还先预览再要求"把主机从哪个 env 拿走"需要那个 env 的 admin，且首个写入前拒绝（`internal/grpc/inventory_service.go:151-165`）——所以残余确实只剩"首次写入时的 label 选择"。
+- **四候选 + 推荐**：A 写入即拒绝（fail-closed，但会把历史失真变成"今天起改不动"，例行 import 会被挡）；B 按注册表静默纠正（**明确不推荐**，理由写进 ADR：它让 env 同时活在两处，合并规则从读侧一条扩散成读写各一条，正是本仓反复出现的平行词表缺陷）；C 只在写入时告警（把 boot-time 那一次提醒搬到每次写入，适合当第一跳不适合当终态）；**D＝A + 调用方点名的豁免字段**（与本仓既有姿态同源：`RemoveAgent` 的 refusal、E-3 的 `allow_irreversible` 白名单）。
+- **五问待答**（不定级不实现）：① P0 还是降 P1；② A 还是 D，C 是否可作第一跳；③ 存量冲突行只挡新写还是同时普查报数；④ 注册表是否为 env 的唯一权威（若是，`labels["env"]` 该不该降级成派生值——那是数据模型变更，ADR 不主张但要表态）；⑤ 豁免给不给单主机 `AddTarget`（倾向只给批量 import）。
+- **与并行线的关系写在文档里**：本议题的三处线头中 `internal/grpc/target_service.go` 在 qoder-a26 在途 PR #272 的**实际 diff**里，`cmd/levee/cmd_serve.go:1650`/`:1657` 与 `cmd/levee/service_factory.go:137` 在它的 **owns 声明**里（后者刚被 #270 动过）。所以实现另开 PR、且接线部分等 #272 落地后 rebase。
+- **验证**：`python scripts/check_doc_anchors.py` PASSED（30 条锚点 × 6 本活账本仍可解析——本笔往 `docs/product-roadmap.md` 第 27 行追加的那三处 `file:line` 在其中）；ADR 引用的**全部**代码锚点逐条按 `9974b44` 复核行号（初稿是从停在 `dcfa951` 的主检出抄的，`cmd/levee/cmd_serve.go` 与 `cmd/levee/service_factory.go` 三处已漂并改回）。产品代码零改动，因此不跑测试套件。
+
 ### 文档（audit 链封链读放大：量化 + 定档「维持现状」，并给出重新立项条件）
 
 - **起因**：`internal/audit/auditchain.go` 的 `walkChain` 注释长期登记「sealing still walks every visible row, and Record calls it per write … a change to what a broken chain means, so it is not folded in here」——这句话**从未被量化**，也没有任何基准或测试钉住它。
