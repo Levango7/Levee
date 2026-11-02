@@ -717,6 +717,27 @@ message RunVerification {
   int64 entries_verified = 3;
   string broken_entry_id = 4;
   string broken_reason = 5;
+  // failures lists EVERY tampered record, in chain order. Before this field
+  // the RPC reported only failures[0] (broken_entry_id/broken_reason), so a
+  // multi-row tamper looked like a single-row one on the wire while the CLI
+  // printed all of them locally. broken_entry_id stays as "first failure"
+  // for consumers that only ever read those two fields.
+  repeated AuditChainFailure failures = 6;
+}
+
+// AuditChainFailure is one tampered record. It mirrors audit.ChainFailure
+// field-for-field — including the numeric type, because that is what
+// `levee audit verify --json` prints for the local path (ChainFailure has no
+// custom marshaller). type is audit.FailureType:
+// 0 = hash_mismatch, 1 = prev_hash_mismatch, 2 = empty_hash.
+message AuditChainFailure {
+  string trace_id = 1;
+  int32 index = 2;
+  string expected = 3;
+  string actual = 4;
+  string prev_expected = 5;
+  string prev_actual = 6;
+  int32 type = 7;
 }
 
 message GetRunReportRequest {

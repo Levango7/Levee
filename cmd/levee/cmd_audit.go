@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -101,22 +102,97 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	auditVerifyOptRunID = args[0]
 	ctx := context.Background()
 
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return err
+	}
+
+	var result *audit.VerifyResult
+	if mode == modeRemote {
+		result, err = verifyAuditRemote(ctx)
+	} else {
+		result, err = verifyAuditLocal(ctx)
+	}
+	if err != nil {
+		return err
+	}
+	return renderAuditVerify(result)
+}
+
+// verifyAuditLocal verifies the run's trace chain in the local store.
+func verifyAuditLocal(ctx context.Context) (*audit.VerifyResult, error) {
 	store, err := openStore(ctx)
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return nil, fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
 	verifier, err := audit.NewChainVerifier(store)
 	if err != nil {
-		return fmt.Errorf("create chain verifier: %w", err)
+		return nil, fmt.Errorf("create chain verifier: %w", err)
 	}
 
 	result, err := verifier.Verify(ctx, auditVerifyOptRunID)
 	if err != nil {
-		return fmt.Errorf("verify chain: %w", err)
+		return nil, fmt.Errorf("verify chain: %w", err)
+	}
+	return result, nil
+}
+
+// verifyAuditRemote asks the server to verify the run's chain.
+//
+// The response now carries every tampered record (pb.RunVerification.failures),
+// so the result rebuilt here is the same audit.VerifyResult the local path
+// produces: same four JSON fields, same human rows, same exit=6 path below.
+func verifyAuditRemote(ctx context.Context) (*audit.VerifyResult, error) {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetAuditService()
+	if err != nil {
+		return nil, err
 	}
 
+	resp, err := svc.VerifyHashChain(ctx, &pb.VerifyHashChainRequest{RunId: auditVerifyOptRunID})
+	if err != nil {
+		return nil, fmt.Errorf("verify chain: %w", err)
+	}
+	// The server skips runs that have no traces — that is how "verify
+	// everything" walks a deployment. For a NAMED run the local verifier
+	// refuses with ErrNoTraces, and "0 records, valid" would announce an
+	// intact chain that does not exist.
+	if len(resp.GetRuns()) == 0 {
+		return nil, fmt.Errorf("verify chain: %w", audit.ErrNoTraces)
+	}
+	rv := resp.GetRuns()[0]
+
+	var failures []audit.ChainFailure
+	for _, f := range rv.GetFailures() {
+		failures = append(failures, audit.ChainFailure{
+			TraceID:      f.GetTraceId(),
+			Index:        int(f.GetIndex()),
+			Expected:     f.GetExpected(),
+			Actual:       f.GetActual(),
+			PrevExpected: f.GetPrevExpected(),
+			PrevActual:   f.GetPrevActual(),
+			Type:         audit.FailureType(f.GetType()),
+		})
+	}
+	return &audit.VerifyResult{
+		RunID:    rv.GetRunId(),
+		Valid:    rv.GetValid(),
+		Count:    int(rv.GetEntriesVerified()),
+		Failures: failures,
+	}, nil
+}
+
+// renderAuditVerify prints the result and raises the exit=6 error on tamper.
+// Both modes go through here so the JSON envelope, the human rows and the
+// failure exit code cannot drift apart.
+func renderAuditVerify(result *audit.VerifyResult) error {
 	output := map[string]any{
 		"run_id":   result.RunID,
 		"valid":    result.Valid,
@@ -136,7 +212,7 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(os.Stderr, "ERROR: hash chain verification failed")
 		}
 		return fmt.Errorf("chain verification failed for run %q: %d of %d records tampered [exit=6]",
-			auditVerifyOptRunID, len(result.Failures), result.Count)
+			result.RunID, len(result.Failures), result.Count)
 	}
 
 	if optJSON {
@@ -148,7 +224,7 @@ func runAuditVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	if optQuiet {
-		fmt.Fprintln(os.Stdout, auditVerifyOptRunID)
+		fmt.Fprintln(os.Stdout, result.RunID)
 		return nil
 	}
 
