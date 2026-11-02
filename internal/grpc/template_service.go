@@ -460,6 +460,13 @@ func domainTemplateToPB(t *template.Template) *pb.Template {
 		pbTmpl.UpdatedAt = t.UpdatedAt.Unix()
 	}
 	for _, p := range t.Parameters {
+		pbTmpl.Parameters = append(pbTmpl.Parameters, &pb.TemplateParameter{
+			Name:        p.Name,
+			Description: p.Description,
+			Required:    p.Required,
+			Default:     p.Default,
+			Type:        p.Type,
+		})
 		if p.Required {
 			pbTmpl.RequiredParams = append(pbTmpl.RequiredParams, p.Name)
 		}

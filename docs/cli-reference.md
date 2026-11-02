@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -720,10 +720,17 @@ levee template show <name>
 |------|------|------|
 | `<name>` | 是 | 模板名称 |
 
+**说明**
+
+- 输出模板的完整定义：ID / 名称 / 描述 / 创建与更新时间 / 标签 / **全部参数声明**（名称、类型、必填与否、默认值、描述）/ 工作流内容
+- 加全局 `--remote` 时读**服务端**模板库（`TemplateService.GetTemplate`），三种输出形状与本地逐字节一致；模板不存在时两种模式都报 `get template: template: template not found`
+- **精度差异（如实标注）**：`--json` 的 `created_at` / `updated_at` 本地含亚秒，远程只到秒；人类输出用 RFC3339（不带亚秒），两种模式相同
+
 **示例**
 
 ```命令示例：查看模板详情
 levee template show nginx-reload
+levee --remote --server localhost:9090 template show nginx-reload
 ```
 
 ### 5.3 template create
