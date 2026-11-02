@@ -15,16 +15,8 @@
 - **验证**：纳入后从 24 红到 0 红；`go build`/`go vet` rc=0；`gofmt` 干净；`go test -count=1 ./cmd/levee/` 全包 ok（84.9s）；`golangci-lint run ./cmd/levee/`（v2.13.2 与 CI 同版）0 issues；`scripts/test_changelog_structure.py` 与 `test_doc_anchors.py` OK。
 - **变异**：把第 114 行改回 `--target group=web` → 守卫立刻红并点名（`levee list: target — documented but not registered` 同时列出 list 的真实旗标全集）；还原后绿。
 - **如实边界**：附录 A 的「其他域」表只列 41 条命令，而 cobra 顶层有 54 条（`agent`/`alert`/`system`/`tenant`/`web` 等族整体未列）。本笔**不做反向穷举**——该表自称"速查"，漏列与 cli_reference_flags_test.go 对旗标的口径一致（可以少记，不许记错）；守卫的方向因此是单向的。
-### 新增（`target list --remote`：线上补字段 + 分组按名字解析）
 
-- **为什么不能直接接（两类缺口）**：本地 `target list` 渲染的是完整的 `state.Target`——`--json` 里带 `created_at` / `last_checked_at` / `tenant_id`，而 `pb.Target` 三个字段都没有；`--group` 接受的是分组**名字**（`prod/db`），本地用 `GetInventoryGroupByName` 解析成 ID，而 `ListTargetsRequest` 只认 `group_id`，线上根本没有按名字查组的 RPC。硬接会做出「远程少三列、`--group` 只能填内部 ID」的版本。
-- **补线上字段**：`pb.Target` 新增 `created_at`（10）、`last_checked_at`（11，0 表示从未探测，对应可空列）、`tenant_id`（12）；`ListTargetsRequest` 新增 `group_name`（7），服务端用 `GetInventoryGroupByName` 解析，**`group_id` 优先**。未知分组返回 `NotFound` 且消息与本地逐字一致（`group "x" not found`）——返回空列表会让拼错的分组名看起来像「这个组没有主机」。生成仍用仓库钉住的 protoc v27.0 工具链，**改前先做对照重建**（未改 proto 时 `git diff` 为空）。
-- **接线**：`runTargetList` 先 `resolveServiceMode()`；远程经工厂 `GetTargetService()`、按 `PageSize=1000` 翻页取全量、`--status` 客户端过滤（RPC 无该字段），再经 `stateTargetFromPB` 还原成 `state.Target`，与本地**共用同一个渲染函数**。空 `labels` 映射归一为 `nil`，让 `omitempty` 在两种模式下都省略该键。
-- **顺带修正人类输出的不确定性**：标签列表原先按 map 迭代顺序拼接（每次运行都可能不同），现在排序——否则「两种模式逐字节相同」这个断言本身就是随机的，只能靠运气绿。这也让重复执行本地命令的输出稳定。
-- **证据**：`target_remote_test.go` 7 个用例（三形状是同一用例里的三个子测试）。①②③ 同一库存、两种模式、**逐字节相同**（human / `--quiet` / `--json`）；④ `--status frozen` 两边同结果；⑤ `--group prod/db` 两边同结果（走 `group_name`）；⑥ 未知分组**两边报同一句话**；⑦ 每页 2 条跑 3 条数据，证明翻页真的交接了 token；⑧ 远程不建本地库；⑨ 指向死端口时**报错且无输出**——两种模式读同一份库时，只有这一条能证明远程分支真的在拨号，而不是悄悄退回本地。**变异（还原后 `sha256` 逐字节相同）**：转换器去掉 `CreatedAt` → JSON 等价用例红；去掉 `LastCheckedAt` → 同上；服务端不解析 `group_name` → 分组用例红；删掉翻页循环里的 token 交接 → 分页用例红；把未知组改成返回空列表 → 拒绝用例红；把远程分支短路成本地（`&& false`）→ 「远程不建本地库」用例红（同时说明等价用例本身分不出这两种模式读同一份库）。
-- **如实标注的一处差异**：`--json` 的 `created_at` / `last_checked_at` 本地含亚秒、远程只到秒（线上是 int64 秒）。等价测试用整秒时间戳规避这一维，避免把「精度差异」当成「接线差异」；该差异写进 `docs/cli-reference.md` §6.1。
-- **仍不接**：`template show`、`audit verify`、`system status`，阻塞点同前，见 `docs/blocked-items.md`。
-`--remote` 的帮助文本对操作员说谎：名单早就是六个，帮助还写"当前仅"三个）
+### 修复（`--remote` 的帮助文本对操作员说谎：名单早就是六个，帮助还写"当前仅"三个）
 
 - **症状**：`cmd/levee/root.go` 的 `--remote` flag 用法写死「当前仅 agent list/show/remove」，而 `remoteCapableCommands` 早已长到六条（`version` / `system version` / `template list` 于 2026-11-02 两笔落地）。`docs/cli-reference.md` 的全局选项表是对的，`levee --help` 是错的——**操作员先读的是帮助文本**。
 - **根因（本仓头号缺陷类的又一实例）**：名单有两条测试死死钉住（`TestRemoteCapabilityListResolves` / `TestRemoteCapabilityListIsExactlyThese`），帮助文本却是一份手写的副本。副本不会跟着名单长。
@@ -35,6 +27,16 @@
 - **变异（四条均先红后还原）**：① 渲染串多提一个 `target list` → 反向断言红；② 渲染串漏掉名单末条 → 正向断言红（点名 `template list`）；③ cli-reference 的共享组 `agent list / show / remove` 改成 `/ show` → 红（点名 `agent remove`）；④ 同表多提一条 `target list` → 红。
 - **如实边界**：`--remote` 的消费面还会长（#272 在飞：target list / audit verify / template show）。届时 `remoteCapableCommands` 一改，`root.go` 的渲染**自动跟上**，但 `docs/cli-reference.md` 仍要人改——守卫会把漏改变红，这是它存在的理由，不是遗留缺陷。
 
+### 新增（`template show --remote`：先把参数声明补全，再接线）
+
+- **为什么不能直接接**：本地 `template show` 打印**全部**参数声明——名称、类型、必填与否、默认值、描述，`--json` 直接输出 `template.Template`。而 `pb.Template.required_params` 只带必填参数的**名字**：可选参数、类型、默认值与描述在线上根本不存在。照着渲染会静默少一半内容。
+- **补线上字段**：`pb.Template` 新增 `repeated TemplateParameter parameters = 9`，镜像 `template.TemplateParam`（name / description / required / default / type）；`domainTemplateToPB` 填它，`required_params` 保留兼容既有消费者。生成仍用钉住的 protoc v27.0 工具链。
+- **渲染收成一份**：`internal/template` 导出 `FormatShow`（`Show` 改调它），CLI 两种模式都走它——远程 `GetTemplate` 的响应经 `templateFromPB` 还原成 `template.Template` 后，与本地 `lib.Get` 的结果共用 JSON / quiet / human 三个渲染分支。空 tags/parameters 归一为 `nil` 保持 `omitempty` 一致。
+- **错误也要一致**：服务端对缺失模板回 `NotFound`，CLI 把它映射回 `template.ErrTemplateNotFound`——两种模式都输出 `get template: template: template not found`，而不是让远端多一个 `rpc error: code = NotFound` 前缀。
+- **证据**：`template_show_remote_test.go` 4 个用例。① 参数丰富与裸模板各跑 human / `--quiet` / `--json` 六组，**逐字节相同**（裸模板专门抓「空 map/slice 被转成非空」导致的 JSON 差异）；② 缺失模板两边同一条错误；③ 死端口必须报错（等价用例读同一份库内容，分不出走的是哪条路）；④ 远程不建本地库。①里还带一条夹具自证：human 输出必须真的含 `replicas (int, optional) default="2"`，否则「相同」可能只是两边都缺。**变异（还原后 `sha256` 逐字节相同）**：服务端不带 `parameters` → 等价与自证红；丢掉 `updated_at` → JSON 等价红；CLI 去掉 NotFound 映射 → 错误一致性红；把远程分支短路成本地 → 死端口用例红。
+- **如实标注**：`--json` 的 `created_at` / `updated_at` 本地含亚秒、远程只到秒；人类输出用 RFC3339，两种模式相同（写进 `docs/cli-reference.md` §5.2）。
+- **仍不接**：只剩 `system status`（与 `GetStatus` 语义不同），见 `docs/blocked-items.md`。
+
 ### 新增（`audit verify --remote`：线上不再只报第一条篡改）
 
 - **为什么不能直接接（两处）**：① 本地逐条打印每个被篡改记录（`trace` / `index` / `type`，`--json` 还带 recomputed 与 stored 两对哈希），而 `VerifyHashChain` 只把 `failures[0]` 塞进 `broken_entry_id` / `broken_reason`——**多行篡改在远端会看起来像单行**，这是安全判定，不是显示差异；② 服务端「验证全部 run」时会把没有 trace 的 run 直接跳过，对**具名 run** 的请求就退化成 `valid=true, 0 条`，而本地对同一输入报 `ErrNoTraces`——远端等于宣布一条不存在的链是完好的。
@@ -43,6 +45,16 @@
 - **接线**：`runAuditVerify` 先 `resolveServiceMode()`；远程经工厂 `GetAuditService().VerifyHashChain`，把响应还原成 `audit.VerifyResult`，与本地**共用同一个渲染函数**（JSON 信封、human 行、`[exit=6]` 文案全在一处）。空 `runs` 还原成 `verify chain: audit: no traces found for run`，与本地逐字一致。`--remote` 白名单扩到 8 条。
 - **证据**：`audit_remote_test.go` 6 个用例。① 完好链三形状（human / `--quiet` / `--json`）**逐字节相同**；② **同时伪造两行**内容：两边都报 `2 of 3 records tampered`、逐条 failure 逐字节相同、stdout+stderr+error 三方相等——只伪造一行的测试会被「只回首条」的实现骗绿；③ 删除中间一行（`prev_hash_mismatch`，type=1）：覆盖 `type/index/prev_*` 这些在内容篡改里恰好等于零值的字段；④ run 不存在/没有 trace：两边报同一句 `ErrNoTraces`；⑤ 死端口必须报错（等价用例读同一份库，分不出走的是哪条路）；⑥ 远程不建本地库。**变异（还原后 `sha256` 逐字节相同）**：服务端只保留首条失败 → ② 红；丢掉 `Type` → ③ 红（`"Type":1` 变 0）；丢掉 `PrevExpected` → ③ 红；跳过空 `runs` 的拒绝 → ④ 红；把远程分支短路成本地 → ⑤ 红。
 - **仍不接**：`template show`、`system status`，阻塞点见 `docs/blocked-items.md`。
+
+### 新增（`target list --remote`：线上补字段 + 分组按名字解析）
+
+- **为什么不能直接接（两类缺口）**：本地 `target list` 渲染的是完整的 `state.Target`——`--json` 里带 `created_at` / `last_checked_at` / `tenant_id`，而 `pb.Target` 三个字段都没有；`--group` 接受的是分组**名字**（`prod/db`），本地用 `GetInventoryGroupByName` 解析成 ID，而 `ListTargetsRequest` 只认 `group_id`，线上根本没有按名字查组的 RPC。硬接会做出「远程少三列、`--group` 只能填内部 ID」的版本。
+- **补线上字段**：`pb.Target` 新增 `created_at`（10）、`last_checked_at`（11，0 表示从未探测，对应可空列）、`tenant_id`（12）；`ListTargetsRequest` 新增 `group_name`（7），服务端用 `GetInventoryGroupByName` 解析，**`group_id` 优先**。未知分组返回 `NotFound` 且消息与本地逐字一致（`group "x" not found`）——返回空列表会让拼错的分组名看起来像「这个组没有主机」。生成仍用仓库钉住的 protoc v27.0 工具链，**改前先做对照重建**（未改 proto 时 `git diff` 为空）。
+- **接线**：`runTargetList` 先 `resolveServiceMode()`；远程经工厂 `GetTargetService()`、按 `PageSize=1000` 翻页取全量、`--status` 客户端过滤（RPC 无该字段），再经 `stateTargetFromPB` 还原成 `state.Target`，与本地**共用同一个渲染函数**。空 `labels` 映射归一为 `nil`，让 `omitempty` 在两种模式下都省略该键。
+- **顺带修正人类输出的不确定性**：标签列表原先按 map 迭代顺序拼接（每次运行都可能不同），现在排序——否则「两种模式逐字节相同」这个断言本身就是随机的，只能靠运气绿。这也让重复执行本地命令的输出稳定。
+- **证据**：`target_remote_test.go` 7 个用例（三形状是同一用例里的三个子测试）。①②③ 同一库存、两种模式、**逐字节相同**（human / `--quiet` / `--json`）；④ `--status frozen` 两边同结果；⑤ `--group prod/db` 两边同结果（走 `group_name`）；⑥ 未知分组**两边报同一句话**；⑦ 每页 2 条跑 3 条数据，证明翻页真的交接了 token；⑧ 远程不建本地库；⑨ 指向死端口时**报错且无输出**——两种模式读同一份库时，只有这一条能证明远程分支真的在拨号，而不是悄悄退回本地。**变异（还原后 `sha256` 逐字节相同）**：转换器去掉 `CreatedAt` → JSON 等价用例红；去掉 `LastCheckedAt` → 同上；服务端不解析 `group_name` → 分组用例红；删掉翻页循环里的 token 交接 → 分页用例红；把未知组改成返回空列表 → 拒绝用例红；把远程分支短路成本地（`&& false`）→ 「远程不建本地库」用例红（同时说明等价用例本身分不出这两种模式读同一份库）。
+- **如实标注的一处差异**：`--json` 的 `created_at` / `last_checked_at` 本地含亚秒、远程只到秒（线上是 int64 秒）。等价测试用整秒时间戳规避这一维，避免把「精度差异」当成「接线差异」；该差异写进 `docs/cli-reference.md` §6.1。
+- **仍不接**：`template show`、`audit verify`、`system status`，阻塞点同前，见 `docs/blocked-items.md`。
 
 ### 文档（`project-status-2026-11.md` 追加 §10 复核：基线推到 9974b44，四个数字复测、两处表述要限定）
 

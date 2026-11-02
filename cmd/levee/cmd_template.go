@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -258,18 +260,102 @@ func printTemplateListRows(rows []map[string]any, names []string) error {
 // runTemplateShow executes the `levee template show <name>` command.
 func runTemplateShow(cmd *cobra.Command, args []string) error {
 	tplShowOptName = args[0]
-	_ctx := context.Background()
+	ctx := context.Background()
 
-	lib, err := openTemplateLibrary(_ctx)
+	mode, err := resolveServiceMode()
 	if err != nil {
-		return fmt.Errorf("open template library: %w", err)
+		return err
 	}
 
-	tmpl, err := lib.Get(_ctx, tplShowOptName)
+	var tmpl *template.Template
+	if mode == modeRemote {
+		tmpl, err = templateShowRemote(ctx, tplShowOptName)
+	} else {
+		tmpl, err = templateShowLocal(ctx, tplShowOptName)
+	}
 	if err != nil {
-		return fmt.Errorf("get template: %w", err)
+		return err
+	}
+	return printTemplateShow(tmpl)
+}
+
+// templateShowLocal reads the template from the CLI's file library.
+func templateShowLocal(ctx context.Context, name string) (*template.Template, error) {
+	lib, err := openTemplateLibrary(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open template library: %w", err)
+	}
+	tmpl, err := lib.Get(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("get template: %w", err)
+	}
+	return tmpl, nil
+}
+
+// templateShowRemote reads the template from the SERVER's library.
+//
+// The response now carries the full parameter declarations (pb.Template
+// .parameters) plus id/tags/updated_at, so the template rebuilt here is the
+// same value the local path gets — and printTemplateShow renders both.
+func templateShowRemote(ctx context.Context, name string) (*template.Template, error) {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetTemplateService()
+	if err != nil {
+		return nil, err
 	}
 
+	resp, err := svc.GetTemplate(ctx, &pb.GetTemplateRequest{Name: name})
+	if err != nil {
+		// A missing template must read the same in both modes; the local
+		// path says "template: template not found", not an rpc error.
+		if grpcstatus.Code(err) == codes.NotFound {
+			return nil, fmt.Errorf("get template: %w", template.ErrTemplateNotFound)
+		}
+		return nil, fmt.Errorf("get template: %w", err)
+	}
+	return templateFromPB(resp), nil
+}
+
+// templateFromPB rebuilds the domain value the local path loads from disk.
+// Empty maps/slices stay nil so the JSON shape (omitempty) is identical.
+func templateFromPB(p *pb.Template) *template.Template {
+	tmpl := &template.Template{
+		ID:          p.GetId(),
+		Name:        p.GetName(),
+		Description: p.GetDescription(),
+		Content:     p.GetWorkflowContent(),
+	}
+	if len(p.GetTags()) > 0 {
+		tmpl.Tags = p.GetTags()
+	}
+	if sec := p.GetCreatedAt(); sec != 0 {
+		tmpl.CreatedAt = time.Unix(sec, 0).UTC()
+	}
+	if sec := p.GetUpdatedAt(); sec != 0 {
+		at := time.Unix(sec, 0).UTC()
+		tmpl.UpdatedAt = &at
+	}
+	var params []template.TemplateParam
+	for _, p := range p.GetParameters() {
+		params = append(params, template.TemplateParam{
+			Name:        p.GetName(),
+			Description: p.GetDescription(),
+			Required:    p.GetRequired(),
+			Default:     p.GetDefault(),
+			Type:        p.GetType(),
+		})
+	}
+	tmpl.Parameters = params
+	return tmpl
+}
+
+// printTemplateShow renders the three output shapes once, for both modes.
+func printTemplateShow(tmpl *template.Template) error {
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  tmpl,
@@ -283,11 +369,7 @@ func runTemplateShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	humanStr, err := lib.Show(_ctx, tplShowOptName)
-	if err != nil {
-		return fmt.Errorf("show template: %w", err)
-	}
-	fmt.Fprint(os.Stdout, humanStr)
+	fmt.Fprint(os.Stdout, template.FormatShow(tmpl))
 	return nil
 }
 

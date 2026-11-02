@@ -109,6 +109,22 @@ message Template {
   // filters on. Dropping it over the wire is what made the filter impossible
   // to honour remotely.
   map<string, string> tags = 8;
+  // parameters is the full declaration of every placeholder. required_params
+  // (4) only carries the NAMES of the required ones, so a remote
+  // `template show` could not print optional parameters, their types,
+  // defaults or descriptions — half the detail was missing.
+  repeated TemplateParameter parameters = 9;
+}
+
+// TemplateParameter is one declared placeholder of a template. Mirrors
+// template.TemplateParam field-for-field.
+message TemplateParameter {
+  string name = 1;
+  string description = 2;
+  bool required = 3;
+  string default = 4;
+  // string / int / bool / list; empty means string.
+  string type = 5;
 }
 
 // TraceEntry is a single auditable action within a run, hash-chained for tamper evidence.

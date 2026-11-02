@@ -313,7 +313,14 @@ func (l *TemplateLibrary) Show(ctx context.Context, name string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	return formatTemplate(tmpl), nil
+	return FormatShow(tmpl), nil
+}
+
+// FormatShow renders the human-readable `template show` view. Exported so the
+// CLI can render a template that arrived over the wire with exactly the same
+// layout as one read from disk (Show uses it too).
+func FormatShow(t *Template) string {
+	return formatTemplate(t)
 }
 
 // Update applies the given non-nil field updates to the template identified
