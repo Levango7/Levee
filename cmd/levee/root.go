@@ -83,7 +83,7 @@ func init() {
 	// path); naming both is rejected by resolveServiceMode. --server is only
 	// consulted in remote mode.
 	pf.BoolVar(&optLocal, "local", false, "本地模式，直连 store（与 --remote 二选一；两者都不给时为本地）")
-	pf.BoolVar(&optRemote, "remote", false, "远程模式，通过 gRPC 连接 server（当前仅 agent list/show/remove）")
+	pf.BoolVar(&optRemote, "remote", false, remoteFlagUsage())
 	pf.StringVar(&optServer, "server", "localhost:9090", "gRPC server 地址，仅 --remote 时生效")
 
 	// Refuse --remote on commands that do not consume it. Without this the flag
@@ -284,6 +284,27 @@ func resolveServiceMode() (serviceMode, error) {
 		return modeRemote, nil
 	}
 	return modeLocal, nil
+}
+
+// remoteFlagUsage renders the --remote flag's help from the capability list
+// rather than restating it. The list is the source the mode guard and two
+// tests already pin (TestRemoteCapabilityListResolves,
+// TestRemoteCapabilityListIsExactlyThese's sibling below); a hand-written usage
+// string is a second copy of the same fact, and this repo has paid repeatedly
+// for exactly that ("the flag only works on agent list/show/remove" was still
+// printed three commands after the list gained version, system version and
+// template list — cli-reference.md had it right, the help text did not).
+//
+// It deliberately does not say "only" or enumerate a count: the set grows, and
+// a sentence that is true today and false next week is worse than one that
+// stays true by construction.
+func remoteFlagUsage() string {
+	consumers := make([]string, 0, len(remoteCapableCommands))
+	for _, p := range remoteCapableCommands {
+		consumers = append(consumers, strings.TrimPrefix(p, "levee "))
+	}
+	return "远程模式：通过 gRPC 连接 server（当前由 " + strings.Join(consumers, "、") +
+		" 消费；其余命令带 --remote 会被拒绝而不是静默按本地语义执行）"
 }
 
 // remoteCapableCommands lists the command paths that actually consult the
