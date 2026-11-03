@@ -54,6 +54,15 @@ func TestDocumentedFlagsAreRegistered(t *testing.T) {
 		// they fall into the same shape as the references; leaving the file out
 		// would keep that sentence unverifiable.
 		filepath.Join("..", "..", "docs", "deployment.md"),
+		// levee-api.md is the API reference, and its worked examples are the
+		// ones a reader is most likely to copy verbatim — yet it was outside this
+		// scan, which is how it came to carry `levee delegate …`, `levee
+		// rollback-all …`, and `levee config get/set` / `levee status` /
+		// `levee doctor` as top-level commands that the binary does not register
+		// (delegate and rollback-all do not exist at all; the other three are
+		// `system` sub-commands). Same shape as the references: a `levee …`
+		// command line. See TestDocumentedCommandsExist for the table rows.
+		filepath.Join("..", "..", "docs", "levee-api.md"),
 	} {
 		src, err := os.ReadFile(doc)
 		require.NoError(t, err, "the docs the gate reads must exist: %s", doc)
