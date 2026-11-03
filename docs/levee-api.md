@@ -111,7 +111,7 @@ levee show run-20260815-001
 命令示例：列出变更
 
 ```bash
-levee list --status running,approved --target group=web --limit 20
+levee list --status running,approved --template group-web --limit 20
 ```
 
 表：list 命令选项参数说明表
@@ -146,7 +146,9 @@ levee reject run-20260815-001 --reason "未提供回滚演练记录，驳回重�
 命令示例：转授权
 
 ```bash
-levee delegate run-20260815-001 --to user-b --reason "出差，转 user-b 审批"
+# 转授权（delegate）尚无 CLI 入口：命令未实现，也未在任何已发布版本登记。
+# 需要他人代签时，当前可用做法是把 `--as <subject>`（见全局选项表）交由具备审批权限的本人执行，
+# 或直接由该审批人自己执行 approve。本节保留是为了让读者知道这里**没有**一条命令。
 ```
 
 表：审批命令选项参数说明表
@@ -155,7 +157,7 @@ levee delegate run-20260815-001 --to user-b --reason "出差，转 user-b 审批
 | --- | --- | --- | --- |
 | `approve` | `--comment <text>` | 否 | 审批意见，留痕 |
 | `reject` | `--reason <text>` | 是 | 驳回理由，发起人基于理由修改重提 |
-| `delegate` | `--to <user>` | 是 | 被转授权人，须有审批权限，不能再转 |
+| ~~`delegate`~~ | — | — | **未实现**：命令不存在；让审批人本人执行 approve，或用 `--as` 代签 |
 
 高危审批要求至少 2 人审批且不能是发起人，第二审批人通过同一 `approve` 命令追加审批。紧急审批通道超时自动驳回并升级 oncall。
 
@@ -256,7 +258,7 @@ levee retry-host run-20260815-001 web-03.example.com
 命令示例：按批回滚
 
 ```bash
-levee rollback run-20260815-001 --batch 3
+levee rollback run-20260815-001 --force
 ```
 
 回滚指定批次（按批逆序，从第 3 批向前回滚到指定点）。回滚不受原 workflow 变更窗口约束。
@@ -264,7 +266,9 @@ levee rollback run-20260815-001 --batch 3
 命令示例：全量回滚
 
 ```bash
-levee rollback-all run-20260815-001
+levee rollback run-20260815-001
+# 注：没有 `rollback-all` 这条命令；一次 run 的回滚已覆盖它声明的全部批次。
+# 跨 run 批量回滚由调用方按 run-id 循环 `levee rollback`。
 ```
 
 回滚所有批次，按批逆序逐批回滚，每批回滚后做回滚后验证。回滚完成后不自动归档，需人工确认（对应 4.4.6.6）。
@@ -284,7 +288,7 @@ levee rollback-all run-20260815-001
 命令示例：查看变更日志
 
 ```bash
-levee logs run-20260815-001 -f --target web-03.example.com --step migrate
+levee logs run-20260815-001 -f --target web-03.example.com
 ```
 
 表：logs 命令选项参数说明表
@@ -333,7 +337,7 @@ levee archive run-20260815-001
 命令示例：关联 ITSM / Jira 工单
 
 ```bash
-levee link run-20260815-001 --itsm CHG-2026-0815 --jira INFRA-1234
+levee link run-20260815-001 --incident CHG-2026-0815
 ```
 
 对应 D4 操作全集（4.4.8）中的 link，关联变更与 incident / 工单，用于审批留痕同步与复盘。
@@ -356,7 +360,7 @@ levee link run-20260815-001 --itsm CHG-2026-0815 --jira INFRA-1234
 命令示例：列出模板
 
 ```bash
-levee template list --tag db --limit 50
+levee template list --tag db
 ```
 
 命令示例：查看模板详情
@@ -370,7 +374,7 @@ levee template show db-migrate
 命令示例：创建模板
 
 ```bash
-levee template create --file ./templates/db-migrate.yaml --name db-migrate
+levee template create --content ./templates/db-migrate.yaml --name db-migrate
 ```
 
 命令示例：校验模板
@@ -402,7 +406,7 @@ levee template validate db-migrate
 命令示例：列出目标机
 
 ```bash
-levee target list --label group=web --label az=a --status reachable
+levee target list --group web --status reachable
 ```
 
 表：target list 选项参数说明表
@@ -425,7 +429,7 @@ levee target check web-03.example.com --timeout 10s
 命令示例：导入主机清单
 
 ```bash
-levee target import --file ./hosts.yaml --merge
+levee target import --file ./hosts.yaml --default-group web
 ```
 
 表：target import 选项参数说明表
@@ -444,7 +448,7 @@ levee target import --file ./hosts.yaml --merge
 命令示例：移除目标机并清理相关状态
 
 ```bash
-levee target remove <host> [--force]
+levee target remove <host>
 ```
 
 表：target remove 选项参数说明表
@@ -489,7 +493,7 @@ levee target unmanage <host>
 命令示例：列出审计记录
 
 ```bash
-levee audit list --from 2026-08-01 --to 2026-08-15 --who user-a --action apply
+levee audit list
 ```
 
 表：audit list 选项参数说明表
@@ -514,7 +518,7 @@ levee audit show run-20260815-001
 命令示例：导出审计记录
 
 ```bash
-levee audit export --format json --from 2026-08-01 --to 2026-08-15 -o ./audit-202608.json
+levee audit export --format json > ./audit-202608.json
 ```
 
 支持 json / csv 两种格式，用于合规报送与外部审计平台对接。
@@ -569,13 +573,13 @@ levee drift report --host web-01 --days 30
 命令示例：列出凭据引用
 
 ```bash
-levee secret list --type ssh-key --team infra
+levee secret list
 ```
 
 命令示例：注册凭据引用
 
 ```bash
-levee secret add --name web-ssh-key --type ssh-key --file ~/.ssh/web_id_ed25519 --team infra
+levee secret add --name web-ssh-key --type ssh-key --value "$(cat ~/.ssh/web_id_ed25519.pub)"
 ```
 
 `--file` 内容上传至凭据代理，本地不留存。LEVEE 仅记录引用句柄，不存明文。
@@ -605,7 +609,7 @@ levee secret rotate --name web-ssh-key
 命令示例：列出用户
 
 ```bash
-levee user list --team infra
+levee user list
 ```
 
 命令示例：添加用户
@@ -623,7 +627,7 @@ levee team list
 命令示例：添加团队
 
 ```bash
-levee team add --name infra --env prod --approver user-b
+levee team add --name infra --env prod
 ```
 
 表：角色权限对照表
@@ -650,14 +654,14 @@ levee version
 命令示例：读写配置
 
 ```bash
-levee config get server.url
-levee config set output.color false
+levee system config get server.url
+levee system config set output.color false
 ```
 
 命令示例：系统状态
 
 ```bash
-levee status
+levee system status
 ```
 
 输出系统状态：部署形态、store 类型与连通性、进行中 run 数、近期成功率、凭据代理连通性、集成（Prometheus / ITSM / Vault）连通性。
@@ -665,7 +669,7 @@ levee status
 命令示例：环境检查
 
 ```bash
-levee doctor
+levee system doctor
 ```
 
 检查运行环境：配置文件合法性、store 连通性、凭据代理可达性、通道插件加载、网络隔离区跳板机配置、WORM 存储可写性。用于安装后自检与故障排查。
@@ -868,12 +872,12 @@ RESTful 风格，支持两套路径：
 | GET | `/audit/traces` | `/api/v1/AuditService/ListAuditTraces` | 审计 trace | — |
 | GET | `/audit/verify` | `/api/v1/AuditService/VerifyHashChain` | 哈希链校验（按 run 的 trace 链 + 全局 audit 链） | `levee audit verify` |
 | GET | `/system/version` | `/api/v1/SystemService/GetVersion` | 系统版本 | — |
-| GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee status` |
-| GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | — |
+| GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee system status` |
+| GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | `levee system config get` |
 | GET | `/system/batch-status` | —（直读 store，不经 service） | 按 run 的批次进度（按该 run 自己的环境判 `view`，见 13.5 门禁口径） | — |
 | GET | `/system/change-trend` | —（REST-only，不进 proto） | 变更趋势（按日分桶，需 `tz_offset`；受 `view` 准入） | — |
 | GET | `/system/takeover-events` | —（REST-only） | 集群接管事件时间线 | — |
-| POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | — |
+| POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | `levee system doctor` |
 | GET | `/system/cluster-status` | —（直读 store，不经 service） | 集群注册表：`nodes` / `summary` / `backend`；`?capability=<name>` 按节点声明的能力筛 `nodes`（见下方说明） | `levee cluster status` |
 | GET | `/system/auth-info` | — | 公开认证描述符（SSO 探测，见 13.3，免 Bearer） | — |
 | POST | `/auth/github` | — | GitHub OAuth code 交换（服务端，见 13.3，免 Bearer） | — |
@@ -1189,7 +1193,7 @@ airgap:
 | `levee list` | 列出变更 | 2.3 |
 | `levee approve` | 通过审批 | 2.4 |
 | `levee reject` | 驳回审批 | 2.4 |
-| `levee delegate` | 转授权 | 2.4 |
+| ~~`levee delegate`~~ | **转授权（未实现，无 CLI 入口；替代做法见 2.4）** | 2.4 |
 | `levee apply` | 执行变更 | 2.5 |
 | `levee pause` | 暂停单条 | 2.6 |
 | `levee resume` | 恢复单条 | 2.6 |
@@ -1199,7 +1203,7 @@ airgap:
 | `levee retry` | 重试失败批次 | 2.7 |
 | `levee retry-host` | 单台重跑 | 2.7 |
 | `levee rollback` | 按批回滚 | 2.8 |
-| `levee rollback-all` | 全量回滚 | 2.8 |
+| `levee rollback <run-id>` | 按批回滚（覆盖该 run 的全部批次） | 2.8 |
 | `levee logs` | 查看日志 | 2.9 |
 | `levee diff` | 变更 diff | 2.9 |
 | `levee trace` | 执行 trace | 2.9 |
@@ -1218,9 +1222,9 @@ airgap:
 | `levee user list/add` | 用户管理 | 8 |
 | `levee team list/add` | 团队管理 | 8 |
 | `levee version` | 查看版本 | 9 |
-| `levee config get/set` | 读写配置 | 9 |
-| `levee status` | 系统状态 | 9 |
-| `levee doctor` | 环境检查 | 9 |
+| `levee system config get/set` | 读写配置 | 9 |
+| `levee system status` | 系统状态 | 9 |
+| `levee system doctor` | 环境检查 | 9 |
 | `levee run --shell <cmd>` | 本地直跑一条命令（调试逃生口，不经治理链） | 9 |
 
 > `levee schedule`（cron 定时触发变更）已于 2026-10-28 **定档为不做**，故不在上表：LEVEE 定位为变更治理控制平面而非调度器（`docs/product-positioning.md` §2），触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），治理侧由 `window`（变更窗口阻断）与 `calendar`（冻结期）承担。当前定时能力仅为 `levee drift schedule` 的漂移巡检。详见 `docs/levee-design.md` §4.6.1 与 `docs/blocked-items.md` E-4。
@@ -1239,7 +1243,7 @@ airgap:
 | `levee new <template>` | 4.2.3 模板实例化 |
 | `levee clone` | 4.2.3 变更克隆 |
 | `ChangeService/PlanChange`（无独立 CLI 子命令，apply 内部调用） | 4.4.2 plan 阶段、4.2.4 dry-run |
-| `levee approve` / `reject` / `delegate` | 4.4.3 审批阶段（分级 / 超时 / 驳回 / 转授权） |
+| `levee approve` / `reject` | 4.4.3 审批阶段（分级 / 超时 / 驳回）；转授权未实现，见 2.4 |
 | `levee apply` | 4.4.4 apply 阶段（哈希校验 / 快照 / 分批 / 重启处理） |
 | `levee pause` / `resume` | 4.4.4.4 主动暂停与恢复 |
 | `levee pause-all` / `resume-all` | 4.4.7 全局暂停 |

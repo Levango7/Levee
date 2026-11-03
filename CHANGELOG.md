@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 修复（`docs/levee-api.md` 的 20 处 CLI 示例与假命令：照着敲会 unknown command / unknown flag）
+
+- **根因（一个此前没人读它的文档面）**：`cmd/levee/cli_reference_flags_test.go` 的扫描列表只有 `cli-reference.md`、`quickstart.md`、`deployment.md`——**`levee-api.md` 从来不在其中**。于是一整本 API 参考的 CLI 示例章没有任何守卫，它的假命令/假旗标从未被 CI 发现。
+- **症状（把该文档纳入守卫后一次暴露 24 处红，24 处全部订正）**：
+  - **根本不存在的命令**：`levee delegate`（转授权）与 `levee rollback-all`——grep 全仓、CHANGELOG、blocked-items、cli-reference、`git log -S` **均无**，即它们从未实现过、也从未登记为不做。已在示例、2.4 选项表、附录 A、附录 B 四处标注"未实现"并给出替代做法（`--as` 代签 / 审批人本人 approve / 按 run-id 循环 rollback）。
+  - **层级写错**：`levee config get/set` / `levee status` / `levee doctor` 实际是 `levee system config|status|doctor` 子命令。示例、端点表「对应 CLI」列、附录 A 一并订正。
+  - **不存在的旗标**：`list --target`、`rollback --batch`、`logs --step`、`link --itsm/--jira`、`template list --limit`、`template create --file`、`target list --label`、`target import --merge`、`target remove [--force]`、`audit list --from/--to/--who/--action`、`audit export --from/--to/-o`、`secret list --type/--team`、`secret add --file/--team`、`user list --team`、`team add --approver`。逐个按真实 flag 订正（`--content` 而非 `--file`、`--value "$(cat …)"` 而非 `--file`、`--group` 而非 `--label`、`--incident` 而非 `--itsm/--jira`、`--default-group` 而非 `--merge`；无对应能力的则删条件并注明，如 audit 过滤无 CLI 入口、重定向代替 `-o`）。
+- **落地**：`cli_reference_flags_test.go` 的扫描列表加 `docs/levee-api.md`（附为何它此前在外的注释）。
+- **验证**：纳入后从 24 红到 0 红；`go build`/`go vet` rc=0；`gofmt` 干净；`go test -count=1 ./cmd/levee/` 全包 ok（84.9s）；`golangci-lint run ./cmd/levee/`（v2.13.2 与 CI 同版）0 issues；`scripts/test_changelog_structure.py` 与 `test_doc_anchors.py` OK。
+- **变异**：把第 114 行改回 `--target group=web` → 守卫立刻红并点名（`levee list: target — documented but not registered` 同时列出 list 的真实旗标全集）；还原后绿。
+- **如实边界**：附录 A 的「其他域」表只列 41 条命令，而 cobra 顶层有 54 条（`agent`/`alert`/`system`/`tenant`/`web` 等族整体未列）。本笔**不做反向穷举**——该表自称"速查"，漏列与 cli_reference_flags_test.go 对旗标的口径一致（可以少记，不许记错）；守卫的方向因此是单向的。
+
 ### 修复（`--remote` 的帮助文本对操作员说谎：名单早就是六个，帮助还写"当前仅"三个）
 
 - **症状**：`cmd/levee/root.go` 的 `--remote` flag 用法写死「当前仅 agent list/show/remove」，而 `remoteCapableCommands` 早已长到六条（`version` / `system version` / `template list` 于 2026-11-02 两笔落地）。`docs/cli-reference.md` 的全局选项表是对的，`levee --help` 是错的——**操作员先读的是帮助文本**。
