@@ -285,7 +285,7 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 
 **为什么又有这一节**：§10 结尾我自己写了"下一轮复核应以 `e6f6f34` 为新基线重测"。去兑的时候 master 已经是 `e848f79`——自 §10 的基线 `9974b44` 以来前进 **10** 笔（其中三笔是 §10 自己那批：`65bdf8e` / `4a35a4d` / `274fcda`；另有 `1d8e511` 把 API 参考纳入 CLI 示例守卫并订正 20 处假命令、`e848f79` 收口 `levee-api` 第 6 章并加注 §11）。所以本轮基线是 **`e848f79`**（本笔最终落在 `4c0b42db` 之上 = 自 `9974b44` 起 **15** 笔；测量两次：`8ab41428` 时 11 笔、`4c0b42db` 时 15 笔，`git rev-list --count`）。
 
-> 和 §10 一模一样的情形又发生了一次，而且这次连发生了**两轮**：本 PR 第一次 rebase 时 master 前进一笔（`8ab41428`，pi 的旗标守卫扩面），第二次 rebase 时又前进五笔（base = `4c0b42db`，含 ADR-008 写侧实现与 #280 落地），**这两轮之后我都没有重跑全量 / lint / PG**——下面那张测量表里的 72 包、412+50 个 PG PASS、60 个 RPC、lint `0 issues.` 仍属 `e848f79`，下一轮复核请以当时的 live master 为准，别拿本节当"最新"。
+> 和 §10 一模一样的情形又发生了一次，而且这次连发生了**两轮**：本 PR 第一次 rebase 时 master 前进一笔（`8ab41428`，pi 的旗标守卫扩面），第二次 rebase 时 base 又连走四笔（累计自 `e848f79` 起 5 笔，base = `4c0b42db`，含 ADR-008 写侧实现与 #280 落地），**这两轮之后我都没有重跑全量 / lint / PG**——下面那张测量表里的 72 包、412+50 个 PG PASS、60 个 RPC、lint `0 issues.` 仍属 `e848f79`，下一轮复核请以当时的 live master 为准，别拿本节当"最新"。
 >
 > 但**指向别人的坐标必须按 base 复算**，否则一落地就是假话：推送前我在 `8ab41428` 上逐条重读了本节引用的 `file:line` 与 PR 状态，改四处——① 旗标守卫的行号 `:49`/`:65` → `:54`/`:73`；② "identity-deployment.md 正在另一条线上接" → 已落在 base；③ "`#272` 还没进 master" → **错了**，`74653e18` 是本基线的祖先（不过它新增 RPC 为 0，计数不受影响）；④ 板面成员与派单号那两条按复读时刻改写。这四条都不是墙钟类测量，重读即可判定，所以不受上一句"没有重跑"的限制。
 
@@ -298,7 +298,7 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 | `proto/levee.proto` RPC | 41 | **41** | `grep -c '^\s*rpc '`（`3be8895` 只动 `levee_extra.proto`） |
 | `proto/levee_extra.proto` RPC | 19 | **19** | 同上——它 +6 行是 `allow_env_conflict` 的 message 字段，不是新 RPC |
 | `^service` | 5 + 5 = 10 | **5 + 5 = 10** | 同上 |
-| `blocked-items` 分类 | A5 / B0 / C3 / D3 / E3 / F1 | **同** | 按 `^| [A-F]-\d` 行计数 |
+| `blocked-items` 分类 | A5 / B0 / C3 / D3 / E3 / F1 | **同** | 按 `^\| [A-F]-\d` 行计数 |
 | roadmap `^\| P` 行 | 47 | **47** | 本节"未决行数"那张表的分母 |
 | roadmap 被引行号 | :26/:28/:29/:30/:31/:32/:36/:43/:46/:80/:96–:98 | **逐行回读一致** | 每条按内容核对（删除线 / 优先级格 `✅` / 尾列 `✅` / 「已修」/ 两列表） |
 | 旗标守卫锚点 | :54/:55/:61/:73/:80 | **同** | `git diff --name-only 8ab4142 4c0b42d` 不含 `cli_reference_flags_test.go` |
@@ -312,9 +312,9 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 | 全量测试 | `go test -count=1 ./...` | rc=**0**；**72** 个包 = 68 `ok` + 4 `[no test files]`；`^FAIL` 行 **0** | 包数与结论**不变**（§10 也是 68 ok / 0 FAIL） |
 | 静态检查 | `golangci-lint run --timeout 9m ./...`（v2.13.2，私有 `TMP`/`GOLANGCI_LINT_CACHE`） | rc=**0**、`0 issues.` | 不变 |
 | PostgreSQL 腿 | 新建容器 `qcn12-pg`（`postgres:16-alpine`，`127.0.0.1:55443`），`LEVEE_PG_TEST_DSN` 指向它 | `internal/state`：**412** 个 PASS（顶层 217 + 子用例 195）、**0 SKIP**、0 FAIL，48.1s；`internal/cluster`：50 个 PASS、0 SKIP、0 FAIL，8.2s ⇒ 合计 **462** | 与 §10 逐项相同 ⇒ state/cluster 的用例数这半月**一格未动**（这本身值得记：这两块没被测面扩张） |
-| proto 计数 | `grep -c '^\s*rpc ' proto/*.proto` | **60** = `levee.proto` **41** + `levee_extra.proto` **19**；`^service` **10** | 不变。**收回本节初稿的一条**：初稿写"`#272` 那条链在扩 proto，但还没进 master"——按 base 复算，#272 的合并 commit `74653e18`（2026-11-03T23:13Z）**已是 `e848f79` 的祖先**，"还没进"是错的；但它对 `proto/levee.proto` 的 54 行改动**新增 RPC 数为 0**（`git show 74653e18 -- proto/levee.proto | grep -c '^+.*rpc '` = 0，改的是 message 字段），所以 41/19/60 这三个数不受它影响，也不因它而过期 |
+| proto 计数 | `grep -c '^\s*rpc ' proto/*.proto` | **60** = `levee.proto` **41** + `levee_extra.proto` **19**；`^service` **10** | 不变。**收回本节初稿的一条**：初稿写"`#272` 那条链在扩 proto，但还没进 master"——按 base 复算，#272 的合并 commit `74653e18`（2026-11-03T23:13Z）**已是 `e848f79` 的祖先**，"还没进"是错的；但它对 `proto/levee.proto` 的 54 行改动**新增 RPC 数为 0**（`git show 74653e18 -- proto/levee.proto \| grep -c '^+.*rpc '` = 0，改的是 message 字段），所以 41/19/60 这三个数不受它影响，也不因它而过期 |
 | 搁置项分类 | 数 `docs/blocked-items.md` 各节表行 | A **5**、B **0**、C **3**、D **3**（其中 D-1b 已交付 ⇒ 活跃 2）、E **3**（全部已定档）、F **1** | 不变 |
-| 守卫扫描面 | 读 `cmd/levee/cli_reference_flags_test.go`（**按本笔 base `8ab41428` 重读**） | 扫描面 **5** 本文档：`docs/cli-reference.md`（:54）、`quickstart.md`（:55）、`deployment.md`（:61）、`docs/levee-api.md`（:73）、`docs/identity-deployment.md`（:80） | **比 §10 多两本**。本节初稿写的是 `e848f79` 上的 `:49`/`:65` 与"`identity-deployment.md` 正在另一条线上接"——推送前按 base 复算时两处都已过期（行号漂到 :54/:73，那一笔已落在 base）。这是 §7 那类"文档说假话"从被查得到查不到的边界 |
+| 守卫扫描面 | 读 `cmd/levee/cli_reference_flags_test.go`（按 base 重读两次：`8ab41428` 与 `4c0b42db`，结果一致） | 扫描面 **5** 本文档：`docs/cli-reference.md`（:54）、`quickstart.md`（:55）、`deployment.md`（:61）、`docs/levee-api.md`（:73）、`docs/identity-deployment.md`（:80） | **比 §10 多两本**。本节初稿写的是 `e848f79` 上的 `:49`/`:65` 与"`identity-deployment.md` 正在另一条线上接"——推送前按 base 复算时两处都已过期（行号漂到 :54/:73，那一笔已落在 base）。这是 §7 那类"文档说假话"从被查得到查不到的边界 |
 
 ### 一条挡住本轮落地的环境事实：macOS **arm64** 池容量（本轮实测，非转述）
 
