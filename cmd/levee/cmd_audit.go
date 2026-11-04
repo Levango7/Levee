@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -237,15 +238,13 @@ func runAuditExport(cmd *cobra.Command, args []string) error {
 	auditExportOptRunID = args[0]
 	ctx := context.Background()
 
-	store, err := openStore(ctx)
+	mode, err := resolveServiceMode()
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return err
 	}
-	defer func() { _ = store.Close() }()
-
-	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: auditExportOptRunID})
+	traces, err := fetchTraces(ctx, mode, auditExportOptRunID)
 	if err != nil {
-		return fmt.Errorf("list traces: %w", err)
+		return err
 	}
 
 	switch strings.ToLower(auditExportOptFormat) {
@@ -261,15 +260,13 @@ func runAuditList(cmd *cobra.Command, args []string) error {
 	auditListOptRunID = args[0]
 	ctx := context.Background()
 
-	store, err := openStore(ctx)
+	mode, err := resolveServiceMode()
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return err
 	}
-	defer func() { _ = store.Close() }()
-
-	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: auditListOptRunID})
+	traces, err := fetchTraces(ctx, mode, auditListOptRunID)
 	if err != nil {
-		return fmt.Errorf("list traces: %w", err)
+		return err
 	}
 
 	rows := make([]map[string]any, 0, len(traces))
@@ -299,6 +296,98 @@ func runAuditList(cmd *cobra.Command, args []string) error {
 
 	printAuditListHuman(os.Stdout, rows)
 	return nil
+}
+
+// fetchTraces returns a run's trace rows in the mode the operator asked for.
+// Both modes hand back []*state.Trace, so the JSON / quiet / human branches
+// above are shared and cannot drift apart per mode.
+func fetchTraces(ctx context.Context, mode serviceMode, runID string) ([]*state.Trace, error) {
+	if mode != modeRemote {
+		return listTracesLocal(ctx, runID)
+	}
+	return listTracesRemote(ctx, runID)
+}
+
+// listTracesLocal reads the run's rows straight from the store.
+func listTracesLocal(ctx context.Context, runID string) ([]*state.Trace, error) {
+	store, err := openStore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: runID})
+	if err != nil {
+		return nil, fmt.Errorf("list traces: %w", err)
+	}
+	return traces, nil
+}
+
+// auditTracesPageSize is the server's maximum wire page. The CLI keeps pulling
+// until the server stops issuing a token, because locally these are whole-run
+// commands — a page boundary must not decide how many rows the operator sees.
+const auditTracesPageSize = 1000
+
+// listTracesRemote asks the server for the run's rows.
+func listTracesRemote(ctx context.Context, runID string) ([]*state.Trace, error) {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetAuditService()
+	if err != nil {
+		return nil, err
+	}
+	return listAllRemoteTraces(ctx, svc, runID, auditTracesPageSize)
+}
+
+// listAllRemoteTraces walks every page of the run's traces.
+//
+// The row order is the store's (timestamp, id) on both sides, so the rebuilt
+// slice is the same sequence the local path returns — not merely the same set.
+func listAllRemoteTraces(ctx context.Context, svc auditServiceAdapter, runID string, pageSize int32) ([]*state.Trace, error) {
+	var traces []*state.Trace
+	token := ""
+	for {
+		resp, err := svc.ListAuditTraces(ctx, &pb.ListAuditTracesRequest{
+			RunIds:    []string{runID},
+			PageSize:  pageSize,
+			PageToken: token,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list traces: %w", err)
+		}
+		for _, e := range resp.GetEntries() {
+			traces = append(traces, traceFromPB(e))
+		}
+		token = resp.GetNextPageToken()
+		if token == "" {
+			break
+		}
+	}
+	return traces, nil
+}
+
+// traceFromPB rebuilds a stored trace row from its wire entry.
+//
+// Detail comes from stored_detail rather than field detail, which is a human
+// projection ("error: …" or the recorder's metadata). The CLI prints the stored
+// bytes — they are what the hash chain covers — so projecting them here would
+// make `audit export` disagree with the ledger it is exporting.
+func traceFromPB(e *pb.TraceEntry) *state.Trace {
+	return &state.Trace{
+		ID:        e.GetId(),
+		RunID:     e.GetRunId(),
+		Event:     e.GetAction(),
+		Actor:     e.GetActor(),
+		Detail:    e.GetStoredDetail(),
+		PrevHash:  e.GetPrevHash(),
+		CurrHash:  e.GetCurrHash(),
+		Timestamp: time.Unix(e.GetTimestamp(), 0).UTC(),
+		TenantID:  e.GetTenantId(),
+	}
 }
 
 // runAuditShow executes the `levee audit show <trace-id>` command.

@@ -696,8 +696,17 @@ type TraceEntry struct {
 	// metadata: batch number, step name). The web console has typed these two
 	// fields for months while nothing filled them for trace rows, which is why
 	// the target column showed the actor instead of the host.
-	Actor         string `protobuf:"bytes,11,opt,name=actor,proto3" json:"actor,omitempty"`
-	Detail        string `protobuf:"bytes,12,opt,name=detail,proto3" json:"detail,omitempty"`
+	Actor  string `protobuf:"bytes,11,opt,name=actor,proto3" json:"actor,omitempty"`
+	Detail string `protobuf:"bytes,12,opt,name=detail,proto3" json:"detail,omitempty"`
+	// The stored detail column verbatim. Field 12 is a human projection of it
+	// ("error: …" or the recorder's metadata), so a caller that has to reproduce
+	// the row byte-for-byte — `levee audit export`, `levee audit show` — needs
+	// the original JSON. That JSON is also what the hash chain covers.
+	StoredDetail string `protobuf:"bytes,13,opt,name=stored_detail,json=storedDetail,proto3" json:"stored_detail,omitempty"`
+	// Owning tenant; empty when tenancy is off. The CLI prints the stored row
+	// including this column, so it belongs on the wire rather than being
+	// invented per mode.
+	TenantId      string `protobuf:"bytes,14,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -812,6 +821,20 @@ func (x *TraceEntry) GetActor() string {
 func (x *TraceEntry) GetDetail() string {
 	if x != nil {
 		return x.Detail
+	}
+	return ""
+}
+
+func (x *TraceEntry) GetStoredDetail() string {
+	if x != nil {
+		return x.StoredDetail
+	}
+	return ""
+}
+
+func (x *TraceEntry) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -5417,7 +5440,7 @@ const file_levee_proto_rawDesc = "" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1a\n" +
 	"\brequired\x18\x03 \x01(\bR\brequired\x12\x18\n" +
 	"\adefault\x18\x04 \x01(\tR\adefault\x12\x12\n" +
-	"\x04type\x18\x05 \x01(\tR\x04type\"\xc1\x02\n" +
+	"\x04type\x18\x05 \x01(\tR\x04type\"\x83\x03\n" +
 	"\n" +
 	"TraceEntry\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x15\n" +
@@ -5434,7 +5457,9 @@ const file_levee_proto_rawDesc = "" +
 	"\tcurr_hash\x18\n" +
 	" \x01(\tR\bcurrHash\x12\x14\n" +
 	"\x05actor\x18\v \x01(\tR\x05actor\x12\x16\n" +
-	"\x06detail\x18\f \x01(\tR\x06detail\"\x87\x01\n" +
+	"\x06detail\x18\f \x01(\tR\x06detail\x12#\n" +
+	"\rstored_detail\x18\r \x01(\tR\fstoredDetail\x12\x1b\n" +
+	"\ttenant_id\x18\x0e \x01(\tR\btenantId\"\x87\x01\n" +
 	"\bLogEntry\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x1c\n" +
 	"\ttimestamp\x18\x02 \x01(\tR\ttimestamp\x12\x14\n" +
