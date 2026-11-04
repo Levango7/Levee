@@ -1141,9 +1141,15 @@ type ImportTargetsRequest struct {
 	YamlContent string                 `protobuf:"bytes,1,opt,name=yaml_content,json=yamlContent,proto3" json:"yaml_content,omitempty"`
 	// DefaultGroup optionally assigns every imported target lacking an
 	// explicit group to this group name (created when missing).
-	DefaultGroup  string `protobuf:"bytes,2,opt,name=default_group,json=defaultGroup,proto3" json:"default_group,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	DefaultGroup string `protobuf:"bytes,2,opt,name=default_group,json=defaultGroup,proto3" json:"default_group,omitempty"`
+	// AllowEnvConflict lets THIS import write labels that contradict
+	// target-ownership.yaml. Default false: the registry is the platform-side
+	// fact, and a bulk sync must not silently disagree with it. The override is
+	// audited. There is deliberately no serve-level equivalent — a permanent
+	// switch would make the check decorative.
+	AllowEnvConflict bool `protobuf:"varint,3,opt,name=allow_env_conflict,json=allowEnvConflict,proto3" json:"allow_env_conflict,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ImportTargetsRequest) Reset() {
@@ -1188,6 +1194,13 @@ func (x *ImportTargetsRequest) GetDefaultGroup() string {
 		return x.DefaultGroup
 	}
 	return ""
+}
+
+func (x *ImportTargetsRequest) GetAllowEnvConflict() bool {
+	if x != nil {
+		return x.AllowEnvConflict
+	}
+	return false
 }
 
 type ImportTargetsResponse struct {
@@ -2323,10 +2336,11 @@ const file_levee_extra_proto_rawDesc = "" +
 	"\x06groups\x18\x01 \x03(\v2\f.levee.GroupR\x06groups\"$\n" +
 	"\x12DeleteGroupRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x15\n" +
-	"\x13DeleteGroupResponse\"^\n" +
+	"\x13DeleteGroupResponse\"\x8c\x01\n" +
 	"\x14ImportTargetsRequest\x12!\n" +
 	"\fyaml_content\x18\x01 \x01(\tR\vyamlContent\x12#\n" +
-	"\rdefault_group\x18\x02 \x01(\tR\fdefaultGroup\"{\n" +
+	"\rdefault_group\x18\x02 \x01(\tR\fdefaultGroup\x12,\n" +
+	"\x12allow_env_conflict\x18\x03 \x01(\bR\x10allowEnvConflict\"{\n" +
 	"\x15ImportTargetsResponse\x12\x18\n" +
 	"\acreated\x18\x01 \x01(\x05R\acreated\x12\x18\n" +
 	"\aupdated\x18\x02 \x01(\x05R\aupdated\x12\x16\n" +

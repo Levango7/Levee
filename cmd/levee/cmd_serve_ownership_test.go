@@ -200,6 +200,27 @@ func TestServeWiresOwnershipRegistryIntoTheDiagnosisResolver(t *testing.T) {
 		"the registry handed to the resolver must be the value the loader returned, not one re-derived in between")
 	assert.NotContains(t, between, "ownershipReg=",
 		"reassigning ownershipReg between the load and the resolver would silently replace the fact source")
+
+	// The WRITE side must consume the same value, and both write services must
+	// get it. Without this, the resolver could be wired while AddTarget and
+	// ImportTargets kept judging caller-asserted labels — the exact asymmetry
+	// ADR-008 exists to end, and one no runtime test of either service can see,
+	// because a service that was never handed a registry simply behaves like the
+	// historical build.
+	assert.Contains(t, compact, "targetSvc.WithOwnershipRegistry(ownershipReg)",
+		"AddTarget must judge the platform-side fact; an unwired TargetService silently restores caller-asserted env")
+	assert.Contains(t, compact, "inventorySvc.WithOwnershipRegistry(ownershipReg)",
+		"ImportTargets must judge the platform-side fact; an unwired InventoryService silently restores caller-asserted env")
+
+	// Both write-side wirings must sit AFTER the load and use the loaded value,
+	// which is what "the same fact source" means in one sentence.
+	for _, wantWire := range []string{
+		"targetSvc.WithOwnershipRegistry(ownershipReg)",
+		"inventorySvc.WithOwnershipRegistry(ownershipReg)",
+	} {
+		at := strings.Index(compact, wantWire)
+		require.Greater(t, at, end, "%s must be wired after the registry is loaded", wantWire)
+	}
 }
 
 // ownershipCallSite returns the text starting at the ownership load and

@@ -815,28 +815,51 @@ levee --remote --server localhost:9090 target list --group prod/db
 
 ### 6.2 target import
 
-从文件导入目标主机。
+从 YAML 清单导入分组与目标主机。导入是幂等的：按地址（hostname + port）匹配已有行，重复导入更新而不重复创建。
 
 ```text
-levee target import --file PATH
+levee target import --file PATH [--default-group NAME] [--allow-env-conflict]
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--file` | | 输入文件路径（必填，每行一个主机名） |
+| `--file` | | 输入文件路径（必填，YAML 清单） |
+| `--default-group` | | 未显式声明 `group` 的目标归入此分组（不存在时创建） |
+| `--allow-env-conflict` | `false` | 允许导入与该主机在 `target-ownership.yaml` 中的环境不一致的 `labels.env`；覆盖会写审计并打印警告 |
 
-**说明**
+**文件格式**
 
-- 文件格式为每行一个主机名
-- 以 `#` 开头的行视为注释并跳过
-- 空行自动跳过
+```yaml
+groups:
+  - name: web
+targets:
+  - address: web-01.example.com
+    port: 22
+    channel_type: ssh
+    group: web
+    labels:
+      env: prod
+    credential_ref: cred-a1b2c3
+```
+
+- `targets` 必填；`address` 必填，可写 `host` 或 `host:port`
+- `port` 省略时按 `channel_type` 取默认值（ssh 22 / winrm 5985）
+- `labels` 省略时保留已存在行的标签（仅当 `status` 也未变化）；否则清空
+- 未知键会被拒绝（`KnownFields`），拼错的字段不会静默变成标签
+
+**环境归属检查**
+
+若 `<dataDir>/target-ownership.yaml` 声明了某台主机的环境，而文件会把它的 `env` 写成另一个值，导入默认失败（点名主机、两侧环境与注册表文件）。确认要按文件入库时必须显式加 `--allow-env-conflict`；豁免只作用于本次调用，并写一条 `import_env_conflict` 审计。
+
+注册表未声明的主机不受此检查影响。
 
 **示例**
 
-```命令示例：导入主机列表
-levee target import --file hosts.txt
+```bash
+levee target import --file hosts.yaml --default-group web
+levee target import --file hosts.yaml --allow-env-conflict
 ```
 
 ### 6.3 target check

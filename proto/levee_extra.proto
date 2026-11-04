@@ -191,6 +191,12 @@ message ImportTargetsRequest {
   // DefaultGroup optionally assigns every imported target lacking an
   // explicit group to this group name (created when missing).
   string default_group = 2;
+  // AllowEnvConflict lets THIS import write labels that contradict
+  // target-ownership.yaml. Default false: the registry is the platform-side
+  // fact, and a bulk sync must not silently disagree with it. The override is
+  // audited. There is deliberately no serve-level equivalent — a permanent
+  // switch would make the check decorative.
+  bool allow_env_conflict = 3;
 }
 
 message ImportTargetsResponse {

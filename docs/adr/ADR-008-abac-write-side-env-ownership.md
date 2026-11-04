@@ -1,13 +1,13 @@
-# ADR-008: ABAC 清单侧 env 归属的**写侧**强制（裁决材料，未拍板）
+# ADR-008: ABAC 清单侧 env 归属的**写侧**强制
 
 | 字段 | 内容 |
 |------|------|
 | 编号 | ADR-008 |
 | 标题 | 写入路径是否必须服从 `target-ownership.yaml` 的 env 归属 |
-| 状态 | **待决**（本文只出材料与推荐，不改产品代码） |
-| 日期 | 2026-11-03 |
-| 关联 | `docs/product-roadmap.md` 第 27 行（P0 / ABAC 服务层准入，"仍待做"那一半） |
-| 依据版本 | `origin/master @ 9974b44` |
+| 状态 | **已定案并实现**（方案 D，P1；见文末"裁决与实现"） |
+| 日期 | 2026-11-03（材料）/ 2026-11-04（裁决） |
+| 关联 | `docs/product-roadmap.md` 的 ABAC 服务层准入行（"仍待做"那一半） |
+| 依据版本 | 材料基于 `origin/master @ 9974b44`；实现基于 `e848f79` |
 
 ## 上下文
 
@@ -59,7 +59,7 @@
 A 的判定 + 一条明确的逃生门：默认拒绝，`ImportTargetsRequest` 增加 `allow_env_conflict`（gRPC 字段，REST 同名键，CLI `--allow-env-conflict`），豁免必须**调用方点名**才生效，且豁免生效时写一条 audit/trace 说明"按调用方声明入库、与注册表不一致"。
 
 - 为什么推荐：既解决"门禁判错对象"（默认路径不再接受假 label），又不把例行 `import` 变成阻塞；豁免是显式决定而不是代码里偷偷放宽，与本仓既有姿态同源（`ImportTargets` 的 stored-env 检查、`RemoveAgent` 的 refusal、E-3 的 `allow_irreversible` 白名单都是"默认拒 + 点名豁免"）。
-- 代价：`proto/levee.proto` + 重新生成的 `pb` 要动（一次 proto 变更，`proto regenerate check` 那道门会要求同步），且新增字段必须被消费（否则就是本仓点名的"假字段"）。
+- 代价：`proto/levee_extra.proto` + 重新生成的 `pb` 要动（一次 proto 变更，`proto regenerate check` 那道门会要求同步），且新增字段必须被消费（否则就是本仓点名的"假字段"）。
 - 未定的子问题（要 owner 表态）：豁免是**每次调用**给，还是允许 serve 配置里长期打开？后者的正确回答大概是"不许长期打开"，因为长期打开等于没有判定。
 
 ## 需要 owner 回答
@@ -78,6 +78,34 @@ A 的判定 + 一条明确的逃生门：默认拒绝，`ImportTargetsRequest` �
 - 没跑存量库普查：本机没有真实 inventory 数据，冲突量级是空的。
 - 没核 REST 侧映射：新错误码/字段若要透出，`rest_endpoint_table_test.go` 那张路由表需要同步（本文不改动它）。
 
+## 裁决与实现（2026-11-04）
+
+owner 的五条回答，按顺序：
+
+1. **定级：P1。** 依据是"实测事实 3"——不构成权限逃逸，但构成门禁输入失真。P1 不改变"要做"，只改变排序。
+2. **选 D。** 默认拒绝 + 显式豁免；C 不作为独立终态。
+3. **只挡新写。** 存量冲突行的普查是另一条读路径，本笔不提供。启动时的冲突 WARN 仍然保留（`loadTargetOwnershipRegistry`）。
+4. **注册表是它声明过的主机的唯一权威。** `labels["env"]` 不降级为派生值（那是数据模型变更，本 ADR 不主张）；对注册表**未声明**的主机，labels/默认 env 继续是唯一事实。因此写侧强制的作用面上界就是注册表的覆盖率。
+5. **豁免只给 `ImportTargets`。** `AddTarget` 没有豁免字段，也没有 flag；单主机登记若与注册表冲突，只能改对或先改注册表。
+
+实现的落点（与上面的候选方案对应）：
+
+| 面 | 改动 |
+|----|------|
+| 判定 | `internal/inventory/ownership.go`：`EnvConflict`、`(*Importer).EnvConflicts`。判定的是**写入后会留下的** env（对已存在的行走 `mergedLabels`，所以"不带 labels 的再导入"不能把旧值保留成假事实），不是只看文件字面声明。 |
+| `AddTarget` | `internal/grpc/target_service.go`：`WithOwnershipRegistry`；授权之后、写库之前判冲突，`codes.FailedPrecondition`。无豁免。 |
+| `ImportTargets` | `internal/grpc/inventory_service.go`：`WithOwnershipRegistry`；在 stored-env 检查之后判冲突。`allow_env_conflict` 为假则拒绝，为真则导入并在成功后写一条 `audit.action=import_env_conflict`（`Target` 是冲突主机清单，最多列 8 个）。豁免**不绕过**原 stored-env admin 检查。 |
+| proto | `proto/levee_extra.proto`：`bool allow_env_conflict = 3`（`ImportTargetsRequest`），重新生成 `pb`。 |
+| REST | `internal/grpc/rest_inventory.go`：同名 JSON 键 `allow_env_conflict`；`FailedPrecondition` 经既有映射是 HTTP 412。 |
+| CLI | `cmd/levee/cmd_target.go`：`--allow-env-conflict`。本地导入直连 importer，必须同一判定，否则它就是绕过口；豁免同样写审计（`audit-import-*`）。 |
+| serve | `cmd/levee/cmd_serve.go`：把已经加载的 `ownershipReg` 交给 `targetSvc` / `inventorySvc`；`cmd_serve_ownership_test.go` 钉住这条接线。 |
+| 审计词表 | `internal/state/store.go` 的 action 常量 + 两份 schema 的注释清单（`audit_vocabulary_test.go` 强制同步）。 |
+| 测试 | `internal/inventory/ownership_write_test.go`、`internal/grpc/ownership_write_test.go`、`internal/grpc/rest_inventory_test.go`、`cmd/levee/cmd_target_ownership_test.go`；每个拒绝用例都配一个"注册表未声明/无注册表时行为不变"的控制组。 |
+
+仍未覆盖（与"未核清单"一致，不是回归）：真实部署的注册表覆盖率、控制台其余以 `labels["env"]` 为输入的下钻、存量冲突行普查。写侧强制只对注册表声明过的主机生效。
+
 ## 边界
 
-本文不改任何产品代码，也不主张实现顺序先于 `#272`（qoder-a26 的在途 PR）：本议题要接的三处线头里，`internal/grpc/target_service.go` 在 **`#272` 的实际 diff**（+30/−1，改在 `pbFromState` 与 `ListTargets` 两个 hunk），`cmd/levee/cmd_serve.go` 与 `cmd/levee/service_factory.go` 在它的 **owns 声明**（后者刚被它上一笔 `#270` 动过并合并）。实现另开 PR：先做不与这三处重叠的部分（判定函数 + 两服务各自的入口方法），三处接线等 `#272` 落地后 rebase 再做。
+本文的材料部分（候选 A–D）写于 `#272` 在飞期间，当时的建议是"先做判定函数 + 两服务入口，接线等 rebase"。实现时 `#272` 已合并（`e848f79`），三处线头不再冲突，因此判定、两个服务入口与 serve 接线在同一笔里落地。
+
+`service_factory.go` 的本地 `TargetService` 没有接线：它没有生产调用方（CLI 的本地导入走 `cmd_target.go` 直连 importer，已加同一判定），给它加一个永远不会被读到的注册表字段，就是本文反对的那种"装饰字段"。若将来有本地服务调用方，再加接线并补一条与 serve 同形的守卫。

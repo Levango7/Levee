@@ -113,8 +113,9 @@ func (gw *Gateway) handleTargetImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		YamlContent  string `json:"yaml"`
-		DefaultGroup string `json:"default_group,omitempty"`
+		YamlContent      string `json:"yaml"`
+		DefaultGroup     string `json:"default_group,omitempty"`
+		AllowEnvConflict bool   `json:"allow_env_conflict,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
@@ -125,8 +126,9 @@ func (gw *Gateway) handleTargetImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := inv.ImportTargets(metadata.NewOutgoingContext(r.Context(), extractAuth(r)), &pb.ImportTargetsRequest{
-		YamlContent:  body.YamlContent,
-		DefaultGroup: body.DefaultGroup,
+		YamlContent:      body.YamlContent,
+		DefaultGroup:     body.DefaultGroup,
+		AllowEnvConflict: body.AllowEnvConflict,
 	})
 	if err != nil {
 		writeGRPCError(w, err)
