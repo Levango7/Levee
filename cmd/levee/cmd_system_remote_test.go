@@ -12,6 +12,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -103,8 +104,21 @@ func TestSystemStatusRemoteCreatesNoLocalDatabase(t *testing.T) {
 		"--remote system status 不该打开（或创建）本地库：它回答的是服务端的事实")
 }
 
+// TestSystemStatusRemoteUnreachableServerFails pins the fail-fast contract.
+//
+// The address is one we bound and closed ourselves rather than a hard-coded
+// 127.0.0.1:1. Both denote "nothing listens here", but port 1 is only unused by
+// convention — it is an assumption about the runner, not about the code — and
+// a refused connection is the one failure mode that resolves immediately on
+// every platform, so the assertion cannot turn into a connect timeout on a
+// runner whose stack treats the address differently.
 func TestSystemStatusRemoteUnreachableServerFails(t *testing.T) {
-	_, _, err := runSplit(t, "--remote", "--server", "127.0.0.1:1", "system", "status")
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := lis.Addr().String()
+	require.NoError(t, lis.Close())
+
+	_, _, err = runSplit(t, "--remote", "--server", addr, "system", "status")
 	require.Error(t, err, "连不上 server 时必须报错，而不是回退到本地状态")
 	assert.Contains(t, err.Error(), "get version")
 }
