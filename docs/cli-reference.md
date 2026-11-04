@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -1193,22 +1193,31 @@ levee --remote --server localhost:9090 system version
 
 ### 10.2 system status
 
-查看系统状态。
+查看系统状态。**本地模式与远程模式回答的不是同一个问题**：本地报“这台机器的配置指向哪个库、库是否可达”，远程报“server 进程本身是否健康”。
 
 ```text
-levee system status
+levee system status [--remote --server <addr>]
 ```
 
-**输出**
+**本地输出**
 
 包含版本号、配置文件路径，以及**本机这一份配置所指向的那个数据库**的连接状态：`db_driver`（`sqlite` / `postgres`）、`db_location`（SQLite 是文件路径，PostgreSQL 是 `postgres@host:port/db` 的脱敏端点）、`db_status`（`ok` / `unreachable`），SQLite 形态下另附历史字段 `db_path`。
 
 `db_path` 在 PostgreSQL 部署下**不输出**：一个名叫 path 的键偶尔装着连接串，比少一个键更糟——探活打的是哪个库，运维必须能从字段名读出来，而不是靠猜当前驱动。同理 `db_location` 永不含凭据。
 
+**远程输出（`--remote`）**
+
+只报服务端 `GetStatus` 真正携带的运行事实：`mode`（`remote`）、`server`、`version`（服务端构建）、`status`（`healthy` / `degraded` / `unhealthy`）、`active_runs`、`paused_runs`、`uptime_seconds`、`store_type`、`warnings`，外加 `local_only` 数组列出远程不报的本地字段。
+
+`config_path`、`db_status`、`db_driver`、`db_location`、`db_path` **在远程模式下不出现**，这是刻意的：`GetStatus` 只做认证、**不做策略判定**（REST `/system/status` 同样如此；配置了 token 时仍要求 Bearer，但任何通过认证的调用方都能读到完整响应），而配置路径与数据库端点是部署拓扑；同一类数据在 `GetConfig` 里是 `ActionAdmin` 门禁的。把它们加进 `GetStatus`，等于让每次监控抓取都顺带做一次拓扑发现。需要看服务端配置时走 `levee system config get <key>`（带 admin 凭据）。
+
+`--quiet` 在本地打印 `db_status`（`ok` / `unreachable`），在远程打印服务端 `status`（`healthy` / `degraded` / `unhealthy`）；两者语义不同，脚本不要混用。
+
 **示例**
 
-```命令示例：查看系统状态
+```bash
 levee system status
+levee system status --remote --server levee.internal:9090
 ```
 
 ### 10.3 system config get

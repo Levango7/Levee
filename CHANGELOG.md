@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增（`system status --remote`：按「远程只报运行事实」定案——GetStatus 不做策略判定，不放部署拓扑）
+
+- **缺口**：`system status` 此前只有本地语义：报 `config_path` 与 `db_status` / `db_driver` / `db_location`，而远端 `GetStatus` 只有运行计数、`store_type` 与 warnings；两者被当成「同一命令的两种模式」会误导——本地探的是 CLI 自己的库，远程问的是 server 进程。
+- **定案**：远程只报服务端 `GetStatus` 真正携带的运行事实（`status` / `active_runs` / `paused_runs` / `uptime_seconds` / `store_type` / `warnings`）加服务端 `version`，并用 `local_only` 数组明确列出 `config_path` / `db_status` / `db_driver` / `db_location` / `db_path` 不报。**不加宽 proto**：`GetStatus` 与 REST `/system/status` 都只做认证、不做策略判定，配置路径与数据库端点是部署拓扑，`GetConfig` 对这类数据有 `ActionAdmin` 门禁。
+- **接线**：`system status` 进 `remoteCapableCommands`（第 10 条）；远程路径经 service_factory 只调 `GetVersion` + `GetStatus`，不加载本地配置、不打开本地库。`--quiet` 本地打印 `db_status`，远程打印服务端 `status`，文档写明二者语义不同。
+- **测试**：`cmd_system_remote_test.go` 4 个用例——人类输出与 JSON 形状（含 `local_only` 五字段）、`--remote` 不创建本地库、连不上 server 必报错；`remote_mode_guard_test.go` 的固定名单同步到十条。
+- **文档**：`cli-reference.md` §10.2 与 `--remote` 全局行、`levee-api.md` 第 9 章改为实际本地/远程两套输出，并订正同章两条不可执行的 config 示例（`server.url` 不可读、`output.color` 不在 5 键可写白名单）；`blocked-items.md` 的「仍待决」改为已收口。
+- **验证**：`go test ./cmd/levee/ -run 'TestSystemStatusRemote|TestRemoteCapabilityList|TestValidateServiceMode|TestRemoteConsumersInCliReference' -count=1` 全绿。
+
 ### 测试（旗标守卫扩面：`identity-deployment.md` 入扫，并修掉一个会让新文档一入扫就假红的行首匹配）
 
 - **缺口**：`cmd/levee/cli_reference_flags_test.go` 的扫描名单收着 cli-reference / quickstart / deployment / levee-api 四本，而 `docs/identity-deployment.md`——SSO 与命名令牌的部署指南，其 §4 自称「三条命令，逐条可复现」——一直在名单外。它与 levee-api.md 同形状（裸 `levee …` 行、操作者照敲），却没有任何 CI 打开过它。
