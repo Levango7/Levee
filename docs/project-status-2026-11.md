@@ -283,9 +283,11 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 
 ## 12. 2026-11-05 复核（追加，不改写 §1–§11）
 
-**为什么又有这一节**：§10 结尾我自己写了"下一轮复核应以 `e6f6f34` 为新基线重测"。去兑的时候 master 已经是 `e848f79`——自 §10 的基线 `9974b44` 以来前进 **10** 笔（其中三笔是 §10 自己那批：`65bdf8e` / `4a35a4d` / `274fcda`；另有 `1d8e511` 把 API 参考纳入 CLI 示例守卫并订正 20 处假命令、`e848f79` 收口 `levee-api` 第 6 章并加注 §11）。所以本轮基线是 **`e848f79`**。
+**为什么又有这一节**：§10 结尾我自己写了"下一轮复核应以 `e6f6f34` 为新基线重测"。去兑的时候 master 已经是 `e848f79`——自 §10 的基线 `9974b44` 以来前进 **10** 笔（其中三笔是 §10 自己那批：`65bdf8e` / `4a35a4d` / `274fcda`；另有 `1d8e511` 把 API 参考纳入 CLI 示例守卫并订正 20 处假命令、`e848f79` 收口 `levee-api` 第 6 章并加注 §11）。所以本轮基线是 **`e848f79`**（本笔最终落在 `8ab41428` 之上 = 自 `9974b44` 起 **11** 笔；两处的差是 1 笔，实测 `git rev-list --count`）。
 
-> 和 §10 一模一样的情形又发生了一次：本 PR 在 rebase 时 master 又前进一笔（`8ab41428`，pi 的旗标守卫扩面），**那一笔之后我没有重跑**——下表所有数字仍属 `e848f79`，下一轮复核请以当时的 live master 为准，别拿本节当"最新"。
+> 和 §10 一模一样的情形又发生了一次：本 PR 在 rebase 时 master 又前进一笔（`8ab41428`，pi 的旗标守卫扩面），**那一笔之后我没有重跑全量 / lint / PG**——下面那张测量表里的 72 包、412+50 个 PG PASS、60 个 RPC、lint `0 issues.` 仍属 `e848f79`，下一轮复核请以当时的 live master 为准，别拿本节当"最新"。
+>
+> 但**指向别人的坐标必须按 base 复算**，否则一落地就是假话：推送前我在 `8ab41428` 上逐条重读了本节引用的 `file:line` 与 PR 状态，改四处——① 旗标守卫的行号 `:49`/`:65` → `:54`/`:73`；② "identity-deployment.md 正在另一条线上接" → 已落在 base；③ "`#272` 还没进 master" → **错了**，`74653e18` 是本基线的祖先（不过它新增 RPC 为 0，计数不受影响）；④ 板面成员与派单号那两条按复读时刻改写。这四条都不是墙钟类测量，重读即可判定，所以不受上一句"没有重跑"的限制。
 
 ### 复测（命令 + 实测，本轮全部重跑）
 
@@ -294,9 +296,9 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 | 全量测试 | `go test -count=1 ./...` | rc=**0**；**72** 个包 = 68 `ok` + 4 `[no test files]`；`^FAIL` 行 **0** | 包数与结论**不变**（§10 也是 68 ok / 0 FAIL） |
 | 静态检查 | `golangci-lint run --timeout 9m ./...`（v2.13.2，私有 `TMP`/`GOLANGCI_LINT_CACHE`） | rc=**0**、`0 issues.` | 不变 |
 | PostgreSQL 腿 | 新建容器 `qcn12-pg`（`postgres:16-alpine`，`127.0.0.1:55443`），`LEVEE_PG_TEST_DSN` 指向它 | `internal/state`：**412** 个 PASS（顶层 217 + 子用例 195）、**0 SKIP**、0 FAIL，48.1s；`internal/cluster`：50 个 PASS、0 SKIP、0 FAIL，8.2s ⇒ 合计 **462** | 与 §10 逐项相同 ⇒ state/cluster 的用例数这半月**一格未动**（这本身值得记：这两块没被测面扩张） |
-| proto 计数 | `grep -c '^\s*rpc ' proto/*.proto` | **60** = `levee.proto` **41** + `levee_extra.proto` **19**；`^service` **10** | 不变（`#272` 那条链在扩 proto，但还没进 master） |
+| proto 计数 | `grep -c '^\s*rpc ' proto/*.proto` | **60** = `levee.proto` **41** + `levee_extra.proto` **19**；`^service` **10** | 不变。**收回本节初稿的一条**：初稿写"`#272` 那条链在扩 proto，但还没进 master"——按 base 复算，#272 的合并 commit `74653e18`（2026-11-03T23:13Z）**已是 `e848f79` 的祖先**，"还没进"是错的；但它对 `proto/levee.proto` 的 54 行改动**新增 RPC 数为 0**（`git show 74653e18 -- proto/levee.proto | grep -c '^+.*rpc '` = 0，改的是 message 字段），所以 41/19/60 这三个数不受它影响，也不因它而过期 |
 | 搁置项分类 | 数 `docs/blocked-items.md` 各节表行 | A **5**、B **0**、C **3**、D **3**（其中 D-1b 已交付 ⇒ 活跃 2）、E **3**（全部已定档）、F **1** | 不变 |
-| 守卫扫描面 | 读 `cmd/levee/cli_reference_flags_test.go` | 已从 `docs/cli-reference.md`（:49）扩到 `docs/levee-api.md`（:65）；`docs/identity-deployment.md` 正在另一条线上接 | **扩张中**：这是 §7 那类"文档说假话"从被查得到查不到的边界 |
+| 守卫扫描面 | 读 `cmd/levee/cli_reference_flags_test.go`（**按本笔 base `8ab41428` 重读**） | 扫描面 **5** 本文档：`docs/cli-reference.md`（:54）、`quickstart.md`（:55）、`deployment.md`（:61）、`docs/levee-api.md`（:73）、`docs/identity-deployment.md`（:80） | **比 §10 多两本**。本节初稿写的是 `e848f79` 上的 `:49`/`:65` 与"`identity-deployment.md` 正在另一条线上接"——推送前按 base 复算时两处都已过期（行号漂到 :54/:73，那一笔已落在 base）。这是 §7 那类"文档说假话"从被查得到查不到的边界 |
 
 ### 要收回的一条：§10 的"墙钟大头"排法本身是错的
 
@@ -325,10 +327,10 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 
 ### 分工与我自己那两条的状态
 
-- 板面三条 active：`opencode` 两条（`feat/abac-write-side-env-ownership` = **ADR-008 的实现**；`feat/system-status-remote` = PR **#280**），`pi` 一条（`test/flag-guard-identity-deployment`，把旗标守卫再扩一个文档）。
+- 板面（本节初稿按 `e848f79` 读，**推送前于 2026-11-05T02:58+08:00 复读**）：`opencode` 两条（`feat/abac-write-side-env-ownership` = **ADR-008 的实现**；`feat/system-status-remote` = PR **#280**）、`qoder` 一条（`feat/remote-read-audit-group`）、本线一条。初稿里的 `pi` 那条（`test/flag-guard-identity-deployment`，把旗标守卫再扩一个文档）**已落在本笔 base `8ab41428`**，不再是 active。`feat/system-status-remote` 的声明 ttl 240 分钟已在 02:10 到期但分支仍在跑 CI——按板纪律我只报不删。
 - **ADR-008 的五个问题已由 owner 定案**（写在派单引用 `PI-LEVEE-005` 里）：定级降 **P1**；取**方案 D**（默认拒绝，豁免只给 `ImportTargets`、按次调用 `allow_env_conflict`）；**只挡新写**，存量冲突普查另开；注册表是 env 的权威，`labels["env"]` 只对未声明主机生效。⇒ §8.3 那一问从"待定夺"进入"实现中"，本笔不改 `blocked-items.md`（它在另一条线的 owns 里），状态以此处为准。
 - 我在 roadmap 登记过的 `levee-api` 第 6 章缺陷**已由 §11 收口**，本轮复核确认：正文已改成实际注册的 `drift detect` / `drift report`，`drift scan` / `drift show` 只作为被取代的历史口径留在订正注里。
-- **协调面的一条观察**：`PI-LEVEE-004` / `PI-LEVEE-005` 这类派单号**不在仓里、也不在板目录里**（`/f/Nexus/agent-board/levee/` 只有三条声明文件，那两个号只作为引用出现在声明正文）。结果是：**看板上没有待办 ≠ 项目没有待办**——只靠板找活的人会得出错结论。这是 §8.4 那条"板机制能报重叠、不能发现漏声明"的同一类缺口的另一面。
+- **协调面的一条观察**：`PI-LEVEE-004` / `PI-LEVEE-005` 这类派单号**不在仓里、也不在板目录里**（`/f/Nexus/agent-board/levee/` 里只有各线自己的声明文件，那两个号只作为引用出现在声明正文；板成员随时间变，本条只依赖"那两个号从不作为独立声明文件存在"这一点）。结果是：**看板上没有待办 ≠ 项目没有待办**——只靠板找活的人会得出错结论。这是 §8.4 那条"板机制能报重叠、不能发现漏声明"的同一类缺口的另一面。
 
 ### 本轮验证盲区
 
