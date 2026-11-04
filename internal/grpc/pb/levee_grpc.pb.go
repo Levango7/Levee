@@ -1531,6 +1531,7 @@ const (
 	AuditService_ListAuditTraces_FullMethodName = "/levee.AuditService/ListAuditTraces"
 	AuditService_VerifyHashChain_FullMethodName = "/levee.AuditService/VerifyHashChain"
 	AuditService_GetRunReport_FullMethodName    = "/levee.AuditService/GetRunReport"
+	AuditService_GetAuditTrace_FullMethodName   = "/levee.AuditService/GetAuditTrace"
 )
 
 // AuditServiceClient is the client API for AuditService service.
@@ -1541,6 +1542,10 @@ type AuditServiceClient interface {
 	ListAuditTraces(ctx context.Context, in *ListAuditTracesRequest, opts ...grpc.CallOption) (*ListAuditTracesResponse, error)
 	VerifyHashChain(ctx context.Context, in *VerifyHashChainRequest, opts ...grpc.CallOption) (*VerifyHashChainResponse, error)
 	GetRunReport(ctx context.Context, in *GetRunReportRequest, opts ...grpc.CallOption) (*RunReport, error)
+	// One trace row by its own id — `levee audit show <trace-id>`.
+	// ListAuditTraces filters by run, so a caller that holds only a trace id
+	// would otherwise have to walk every run to reach a row it already named.
+	GetAuditTrace(ctx context.Context, in *GetAuditTraceRequest, opts ...grpc.CallOption) (*TraceEntry, error)
 }
 
 type auditServiceClient struct {
@@ -1591,6 +1596,16 @@ func (c *auditServiceClient) GetRunReport(ctx context.Context, in *GetRunReportR
 	return out, nil
 }
 
+func (c *auditServiceClient) GetAuditTrace(ctx context.Context, in *GetAuditTraceRequest, opts ...grpc.CallOption) (*TraceEntry, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TraceEntry)
+	err := c.cc.Invoke(ctx, AuditService_GetAuditTrace_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuditServiceServer is the server API for AuditService service.
 // All implementations must embed UnimplementedAuditServiceServer
 // for forward compatibility.
@@ -1599,6 +1614,10 @@ type AuditServiceServer interface {
 	ListAuditTraces(context.Context, *ListAuditTracesRequest) (*ListAuditTracesResponse, error)
 	VerifyHashChain(context.Context, *VerifyHashChainRequest) (*VerifyHashChainResponse, error)
 	GetRunReport(context.Context, *GetRunReportRequest) (*RunReport, error)
+	// One trace row by its own id — `levee audit show <trace-id>`.
+	// ListAuditTraces filters by run, so a caller that holds only a trace id
+	// would otherwise have to walk every run to reach a row it already named.
+	GetAuditTrace(context.Context, *GetAuditTraceRequest) (*TraceEntry, error)
 	mustEmbedUnimplementedAuditServiceServer()
 }
 
@@ -1620,6 +1639,9 @@ func (UnimplementedAuditServiceServer) VerifyHashChain(context.Context, *VerifyH
 }
 func (UnimplementedAuditServiceServer) GetRunReport(context.Context, *GetRunReportRequest) (*RunReport, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRunReport not implemented")
+}
+func (UnimplementedAuditServiceServer) GetAuditTrace(context.Context, *GetAuditTraceRequest) (*TraceEntry, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAuditTrace not implemented")
 }
 func (UnimplementedAuditServiceServer) mustEmbedUnimplementedAuditServiceServer() {}
 func (UnimplementedAuditServiceServer) testEmbeddedByValue()                      {}
@@ -1714,6 +1736,24 @@ func _AuditService_GetRunReport_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuditService_GetAuditTrace_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAuditTraceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuditServiceServer).GetAuditTrace(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuditService_GetAuditTrace_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuditServiceServer).GetAuditTrace(ctx, req.(*GetAuditTraceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuditService_ServiceDesc is the grpc.ServiceDesc for AuditService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1736,6 +1776,10 @@ var AuditService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRunReport",
 			Handler:    _AuditService_GetRunReport_Handler,
+		},
+		{
+			MethodName: "GetAuditTrace",
+			Handler:    _AuditService_GetAuditTrace_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

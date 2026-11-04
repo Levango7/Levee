@@ -60,6 +60,7 @@ func TestRemoteCapabilityListIsExactlyThese(t *testing.T) {
 			"levee audit verify",
 			"levee audit list",
 			"levee audit export",
+			"levee audit show",
 		},
 		remoteCapableCommands,
 		"名单变了就要在这里说清楚：谁能真的走 --remote，谁只是被误加进来")

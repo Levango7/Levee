@@ -49,6 +49,9 @@ func traceEntryToPB(t *state.Trace) *pb.TraceEntry {
 		PrevHash:  t.PrevHash,
 		CurrHash:  t.CurrHash,
 		Timestamp: t.Timestamp.Unix(),
+		// The row's fraction goes with its seconds, or a caller rebuilding the
+		// stored row prints a timestamp the ledger does not contain.
+		TimestampNanos: int32(t.Timestamp.Nanosecond()),
 		// The projection below is for the console. A CLI that re-prints the row
 		// needs the stored column itself, so it goes on the wire too.
 		StoredDetail: t.Detail,

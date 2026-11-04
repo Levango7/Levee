@@ -32,7 +32,12 @@ func seedTracesForRemote(t *testing.T, e *cliEnv, runID string, n int) {
 	store := e.open(t)
 	defer func() { _ = store.Close() }()
 
-	base := time.Now().UTC().Truncate(time.Second)
+	// A deliberately awkward instant: odd nanoseconds, and fixed rather than
+	// time.Now() so the two modes are compared against the same bytes every run.
+	// The fraction is the point — `audit list` (human and --json) and
+	// `audit export --json` all print it, so a wire mapping that dropped it would
+	// make those comparisons fail instead of passing on rows that never had one.
+	base := time.Date(2024, 3, 17, 8, 5, 3, 123456789, time.UTC)
 	for i := range n {
 		// One row carries a tenant: state.Trace prints tenant_id with omitempty,
 		// so an all-empty fixture would leave that column's mapping untested in

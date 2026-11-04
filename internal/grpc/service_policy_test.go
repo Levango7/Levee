@@ -458,6 +458,20 @@ func TestServicePolicy_AuditReadsAreScopedPerRun(t *testing.T) {
 	_, err = svc.ListAuditTraces(asSubject("alice"), &pb.ListAuditTracesRequest{RunIds: []string{"run-prod"}})
 	requireDenied(t, err, "ListAuditTraces (prod run named)")
 
+	// One row by its own id is scoped the same way, and it must not turn
+	// "outside your view" into "does not exist": a NotFound for a row that IS
+	// there would make the error a probe for which trace ids the ledger holds.
+	_, err = svc.GetAuditTrace(asSubject("alice"), &pb.GetAuditTraceRequest{TraceId: "trc-run-prod"})
+	requireDenied(t, err, "GetAuditTrace (prod run's row, named by id)")
+	one, err := svc.GetAuditTrace(asSubject("alice"), &pb.GetAuditTraceRequest{TraceId: "trc-run-dev"})
+	require.NoError(t, err, "%v", err)
+	assert.Equal(t, "trc-run-dev", one.GetId())
+
+	_, err = svc.GetAuditTrace(asSubject("alice"), &pb.GetAuditTraceRequest{TraceId: "trc-absent"})
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, codeOf(t, err),
+		"a row that is not there says so; that answer is not the refusal above: %v", err)
+
 	// Integrity checking is scoped too: alice verifies the runs she may see,
 	// and naming a run she may not is a refusal rather than a silent skip.
 	all, err := svc.VerifyHashChain(asSubject("alice"), &pb.VerifyHashChainRequest{})

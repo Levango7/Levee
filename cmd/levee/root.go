@@ -314,8 +314,8 @@ func remoteFlagUsage() string {
 // Today: the three registry readers in cmd_agent_remote.go (which dial the
 // gRPC client directly) plus `version` / `system version` / `system status` /
 // `template list` / `template show` / `target list` / `audit verify` /
-// `audit list` / `audit export` (which go through service_factory). Keep this
-// in step with both;
+// `audit list` / `audit export` / `audit show` (which go through
+// service_factory). Keep this in step with both;
 // TestRemoteCapabilityListResolves fails if an entry stops naming a real
 // command, and TestRemoteCapabilityListIsExactlyThese pins the membership so a
 // removed command cannot leave its coverage silently smaller.
@@ -332,6 +332,7 @@ var remoteCapableCommands = []string{
 	"levee audit verify",
 	"levee audit list",
 	"levee audit export",
+	"levee audit show",
 }
 
 // validateServiceMode is the PersistentPreRunE guard. It resolves the mode once
