@@ -9,6 +9,8 @@
 | 审核维度 | 内容完整性 / 内部一致性 / 技术正确性 / 可执行性 / 格式规范 |
 | 审核结论 | 有条件通过（1 个 P0 必须修，10 个 P1 建议修，10 个 P2 可选修） |
 
+> **2026-11-04 复核订正**：本报告写于 2026-08-15，审核对象是当时的 `levee-api.md` v0.1；其中第 2.3 节与 3.2 节写作 `drift scan` / `drift show`，而当前注册的 CLI 是 `drift detect` / `drift report`（`cmd/levee/cmd_drift.go:101` / `:754`），`scan` / `show <report-id>` **从未注册**。`docs/levee-api.md` 第 6 章已于 2026-11-01 按实际 CLI 订正；下表相关行已加 2026-11-04 注记，原文保留为历史记录。
+
 ---
 
 ## 第1章 审核概要
@@ -99,7 +101,7 @@ DSL 规范格式规范：H1-H4 标题层级正确，代码块标注规范（leve
 | 第3章 模板管理命令 | 完整 | list/show/create/validate/update/delete/version |
 | 第4章 目标管理命令 | 不完整 | 缺 remove/unmanage 命令（见问题 4） |
 | 第5章 审计与合规命令 | 完整 | list/show/export/verify |
-| 第6章 漂移检测命令 | 完整 | scan/show |
+| 第6章 漂移检测命令 | 完整 | scan/show（2026-11-04 复核：实际为 detect/report；原文保留） |
 | 第7章 凭据管理命令 | 完整 | list/add/rotate/revoke/show |
 | 第8章 权限管理命令 | 完整 | user/team + 角色权限 |
 | 第9章 系统管理命令 | 完整 | version/config/status/doctor |
@@ -164,7 +166,7 @@ MVP 任务格式规范：H1-H3 标题层级正确，表格格式规范，无 emo
 | levee retry --target（单台重跑） | 2.7 retry-host | 不一致（见问题 3） |
 | levee rollback | 2.8 | 一致 |
 | levee logs / trace / diff / archive / link | 2.9 / 2.10 | 一致 |
-| levee drift report | 6.1 drift scan | 一致（report 细化为 scan/show） |
+| levee drift report | 6.1 drift scan | 一致（report 细化为 scan/show）（2026-11-04 复核：实际命令为 drift detect / drift report；scan/show 从未注册；原文保留） |
 | levee schedule（D6.1 计划触发） | 缺失 | 不一致（见问题 5） |
 | remove / unmanage（D3.2） | 缺失 | 不一致（见问题 4） |
 | 模板实例化 --set | API 用 --params | 不一致（见问题 2） |

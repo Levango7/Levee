@@ -271,3 +271,10 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 ### 一条机制建议（不新增门禁，只提写法）
 
 带日期的快照文档要**只追加、不重写**：每轮复核另起一节，写明"基线 sha + 复测日期 + 命令"，上面旧条目原文保留，失准处单列"要限定/收回的表述"。本节的写法就是这条建议的第一个样本——反过来做（直接改旧条目）会让"当时的判断"消失，而后一轮的人最需要的往往正是那个。
+
+## 11. 2026-11-04 追加：`docs/levee-api.md` 第 6 章 drift 文档项收口
+
+- **结论**：§8.3 与 §10 提到的「第 6 章写 `drift scan` / `drift show`」已在 2026-11-01 的文档订正中改为实际注册的 `drift detect` / `drift report`；2026-11-04 复核确认正文、选项表与 `cmd/levee/cmd_drift.go` 的 `Use:` 清单一致（`detect` :101、`report` :754）。
+- **本次补的收尾**：`docs/review-report.md` 2026-08-15 的两处旧口径加注为历史记录；`docs/product-roadmap.md` 第 36 行从「登记不修」改为「已修」；`docs/mvp-plus1-roadmap.md` 的 F10 行把 `drift scan` 改为 `drift detect` / `drift report`；`docs/levee-api.md` 第 6 章补了 `drift report` 的 `--host` / `--days` 说明，并把 `drift baseline` / `drift schedule` 的完整旗标指向 `docs/cli-reference.md` 第 22 章（避免 API 参考与 CLI 参考各抄一份）。
+- **仍未做**：`drift scan` 与 `drift show <report-id>` 没有实现；若将来要新增这两个接口，需要新的报告 ID 存储与读路径，另开产品/接口项，不在本次文档订正范围内。
+- **验证**：`go test ./cmd/levee/ -run TestDocumentedFlagsAreRegistered -count=1`、`python scripts/check_doc_anchors.py`、`python scripts/test_changelog_structure.py` 均通过。

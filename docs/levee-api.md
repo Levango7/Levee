@@ -539,6 +539,8 @@ levee audit verify run-20260815-001
 
 > **本节命令形式已于 2026-11-01 按实际注册的 CLI 订正**：此前写作 `levee drift scan` / `levee drift show`，而仓里注册的是 `drift detect`（`cmd/levee/cmd_drift.go:101`）与 `drift report`（`cmd/levee/cmd_drift.go:754`）；目标用 `--host/--hosts` 指定，不存在 `--target` 标签表达式与 `--depth`。旧写法照着敲会直接报 unknown command / unknown flag。
 
+本章只展开 `detect` 与 `report` 两条读取路径；`drift baseline`（基线管理）与 `drift schedule`（定时巡检）的完整语法、旗标与示例见 `docs/cli-reference.md` 第 22 章（22.2–22.10），此处不重复抄一份。
+
 命令示例：触发漂移检测
 
 ```bash
@@ -553,6 +555,13 @@ levee drift detect --hosts web-01,web-02 --baseline ./baselines/web-20260801.yam
 levee drift report --host web-01 --days 30
 ```
 
+表：drift report 选项参数说明表
+
+| 选项 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `--host <host>` | string | 是 | 目标主机 |
+| `--days <n>` | int | 否 | 趋势窗口天数，默认 30 |
+
 表：drift detect 选项参数说明表
 
 | 选项 | 类型 | 必填 | 说明 |
@@ -560,7 +569,7 @@ levee drift report --host web-01 --days 30
 | `--host <host>` | string | 否 | 单台目标主机（与 `--hosts` 可叠加） |
 | `--hosts <a,b>` | string | 否 | 逗号分隔的目标主机列表 |
 | `--baseline <auto\|file>` | string | 否 | 基线来源，默认 `auto`（用已存基线）；给路径则用该文件 |
-| `--baseline-name <name>` | string | 否 | `--baseline auto` 时选哪个已存版本，默认 `default` |
+| `--baseline-name <name>` | string | 否 | `--baseline auto` 时选哪个已存版本，默认 `default`；与文件路径形式的 `--baseline` 互斥 |
 
 ---
 
@@ -1217,7 +1226,8 @@ airgap:
 | `levee template list/show/create/validate/update/delete/version` | 模板管理 | 3 |
 | `levee target list/check/import/remove/unmanage` | 目标管理 | 4 |
 | `levee audit list/show/export/verify` | 审计合规 | 5 |
-| `levee drift detect/baseline/report/schedule` | 漂移检测 | 6 |
+| `levee drift detect/report` | 漂移检测与趋势 | 6 |
+| `levee drift baseline/schedule` | 基线管理 / 定时巡检 | `cli-reference.md` 第22章 |
 | `levee secret list/add/rotate/revoke/show` | 凭据管理 | 7 |
 | `levee user list/add` | 用户管理 | 8 |
 | `levee team list/add` | 团队管理 | 8 |
