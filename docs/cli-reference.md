@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）、`audit list` / `audit export`（读服务端 trace 行）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -946,6 +946,12 @@ levee audit export run-abc123
 levee audit export run-abc123 --format csv
 ```
 
+**远程模式**
+
+- 加全局 `--remote` 时导出**服务端**的 trace 行（与 `audit list` 同一条取数路径 `AuditService.ListAuditTraces`，按页拉全量），表头与列序与本地逐字节一致。
+- `--format json` 打的是**入库原文** `detail`——也就是封链覆盖的那份 JSON——而不是控制台用的投影；线上为此单列了一个字段，两边才不会各说各话。
+- 精度差异同 `audit list`：`--format json` 的 `timestamp` 本地含亚秒、远程只到**秒**；`--format csv` 的格式本来就精确到秒，两种模式逐字节相同。
+
 ### 7.3 audit list
 
 列出 run 的所有 trace 记录。
@@ -965,6 +971,12 @@ levee audit list <run-id>
 ```命令示例：列出 trace 记录
 levee audit list run-abc123
 ```
+
+**远程模式**
+
+- 加全局 `--remote` 时读**服务端** trace 行（`AuditService.ListAuditTraces`）。CLI 按页拉到没有游标为止，再与本地共用同一渲染：人类表格、`--quiet` 的 ID 清单、`--json` 的行序（`timestamp, id` 升序）逐字节一致。
+- 服务端按调用方的可见环境**收窄**结果，本地模式不判权。所以带策略的部署里 `--remote` 可能比本地少行——那不是丢数据，是本来看不到这个环境。
+- **精度差异**：`--json` 的 `timestamp` 本地含亚秒，远程只到**秒**（线上字段是 int64 秒）。
 
 ### 7.4 audit show
 

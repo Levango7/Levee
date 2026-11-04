@@ -771,6 +771,12 @@ func (s *SQLiteStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Tr
 	if filter.Limit > 0 {
 		q += " LIMIT ?"
 		args = append(args, filter.Limit)
+		// SQLite only accepts OFFSET next to LIMIT, so the two travel together
+		// rather than as independent clauses.
+		if filter.Offset > 0 {
+			q += " OFFSET ?"
+			args = append(args, filter.Offset)
+		}
 	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)

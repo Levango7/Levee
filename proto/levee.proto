@@ -145,6 +145,15 @@ message TraceEntry {
   // the target column showed the actor instead of the host.
   string actor = 11;
   string detail = 12;
+  // The stored detail column verbatim. Field 12 is a human projection of it
+  // ("error: …" or the recorder's metadata), so a caller that has to reproduce
+  // the row byte-for-byte — `levee audit export`, `levee audit show` — needs
+  // the original JSON. That JSON is also what the hash chain covers.
+  string stored_detail = 13;
+  // Owning tenant; empty when tenancy is off. The CLI prints the stored row
+  // including this column, so it belongs on the wire rather than being
+  // invented per mode.
+  string tenant_id = 14;
 }
 
 // LogEntry is a single log line, used both in batched responses and streaming.

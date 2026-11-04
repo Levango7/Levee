@@ -746,6 +746,10 @@ func (s *PGStore) ListTraces(ctx context.Context, filter TraceFilter) ([]*Trace,
 		args = append(args, filter.Limit)
 		q += fmt.Sprintf(" LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
 	}
+	if filter.Offset > 0 {
+		args = append(args, filter.Offset)
+		q += fmt.Sprintf(" OFFSET $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
+	}
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

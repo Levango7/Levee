@@ -243,43 +243,9 @@ func (s *AuditService) ListAuditTraces(ctx context.Context, req *pb.ListAuditTra
 	visible := resourceVisibility(ctx, s.authz)
 	scopes := newAuditRunScopes(s.store)
 
-	var allTraces []*state.Trace
-	if len(runIDs) > 0 {
-		for _, rid := range runIDs {
-			traces, err := s.store.ListTraces(ctx, state.TraceFilter{RunID: rid, Limit: maxPageSize})
-			if err != nil {
-				return nil, status.Errorf(codes.Internal, "list traces for run %q: %v", rid, err)
-			}
-			allTraces = append(allTraces, traces...)
-		}
-	} else {
-		traces, err := s.store.ListTraces(ctx, state.TraceFilter{Limit: maxPageSize})
-		if err != nil {
-			return nil, status.Errorf(codes.Internal, "list traces: %v", err)
-		}
-		allTraces = traces
-	}
-
-	// Convert and apply time-range filter.
-	entries := make([]*pb.TraceEntry, 0, len(allTraces))
-	for _, t := range allTraces {
-		if visible != nil {
-			scope := scopes.lookup(ctx, t.RunID)
-			if !scope.known || !visible(scope.env) {
-				continue
-			}
-		}
-		ts := t.Timestamp.Unix()
-		if req.Since > 0 && ts < req.Since {
-			continue
-		}
-		if req.Until > 0 && ts > req.Until {
-			continue
-		}
-		entries = append(entries, traceToPB(t))
-	}
-
-	// Pagination.
+	// Pagination is decided here rather than after materialising one page,
+	// because the walk below has to visit every matching row anyway to report an
+	// exact total_size.
 	pageSize := int(req.PageSize)
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
@@ -292,20 +258,69 @@ func (s *AuditService) ListAuditTraces(ctx context.Context, req *pb.ListAuditTra
 		return nil, err
 	}
 
-	total := len(entries)
-	if offset > total {
-		offset = total
+	entries := make([]*pb.TraceEntry, 0, pageSize)
+	total := 0 // global count of filtered rows
+
+	// Walk every matching row a store page at a time. This handler used to read
+	// only the first maxPageSize rows and then page over that slice, so rows
+	// past the cap were unreachable on the wire: `levee audit list <run>` showed
+	// fewer rows than the same command against the local store, which reads
+	// unbounded. GetAuditLog above already walks this way.
+	named := runIDs
+	if len(named) == 0 {
+		named = []string{""} // one pass over the whole table
 	}
-	end := offset + pageSize
-	if end > total {
-		end = total
+	for _, rid := range named {
+		storeOffset := 0
+		for {
+			traces, terr := s.store.ListTraces(ctx, state.TraceFilter{
+				RunID:  rid,
+				Limit:  auditStorePageSize,
+				Offset: storeOffset,
+			})
+			if terr != nil {
+				return nil, status.Errorf(codes.Internal, "list traces for run %q: %v", rid, terr)
+			}
+
+			for _, t := range traces {
+				if visible != nil {
+					scope := scopes.lookup(ctx, t.RunID)
+					if !scope.known || !visible(scope.env) {
+						continue
+					}
+				}
+				ts := t.Timestamp.Unix()
+				if req.Since > 0 && ts < req.Since {
+					continue
+				}
+				if req.Until > 0 && ts > req.Until {
+					continue
+				}
+				total++
+				switch {
+				case total <= offset:
+					// Returned by an earlier page.
+				case len(entries) < pageSize:
+					entries = append(entries, traceToPB(t))
+				}
+			}
+
+			if len(traces) < auditStorePageSize {
+				break // store exhausted for this run — the count is now exact
+			}
+			storeOffset += len(traces)
+		}
 	}
-	page := entries[offset:end]
+
+	consumed := offset + len(entries)
+	if consumed > total {
+		consumed = total
+	}
 
 	return &pb.ListAuditTracesResponse{
-		Entries:       page,
+		Entries:       entries,
 		TotalSize:     int32(total),
-		NextPageToken: buildPageToken(end, total),
+		NextPageToken: buildPageToken(consumed, total),
 	}, nil
 }
 

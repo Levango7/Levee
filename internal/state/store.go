@@ -250,6 +250,7 @@ type TraceFilter struct {
 	RunID    string
 	Event    string
 	Limit    int
+	Offset   int // pairs with Limit; the listing is ordered by (timestamp, id), so a page boundary is stable
 	TenantID string
 }
 

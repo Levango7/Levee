@@ -49,6 +49,10 @@ func traceEntryToPB(t *state.Trace) *pb.TraceEntry {
 		PrevHash:  t.PrevHash,
 		CurrHash:  t.CurrHash,
 		Timestamp: t.Timestamp.Unix(),
+		// The projection below is for the console. A CLI that re-prints the row
+		// needs the stored column itself, so it goes on the wire too.
+		StoredDetail: t.Detail,
+		TenantId:     t.TenantID,
 	}
 	detail := traceRowDetail{}
 	if t.Detail != "" {

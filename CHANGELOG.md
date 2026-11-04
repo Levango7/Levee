@@ -20,6 +20,15 @@
 - **改动**：只订正这一句散文，改用**文件 + 符号**级引用（不新增会腐烂的行号）。要不要接线或删除该字段是独立决定，本笔不动产品代码。
 - **验证**：`python scripts/check_doc_anchors.py`、`python scripts/test_changelog_structure.py`、`python -m unittest discover -s scripts` 全过。
 
+### 新增（`audit list` / `audit export` 接 `--remote`：先把「1000 行静默截断」修掉）
+
+- **为什么不能直接接（两处）**：① 服务端 `ListAuditTraces` 把存储读取钉在 `Limit: maxPageSize`（=1000）再在这份切片上分页，**超过 1000 行的 run 在线上根本取不到**——本地 `ListTraces` 无上限，于是远程会「少给但不报错」，翻页游标也在截断后的集合上算，第 1001 行永远翻不到；② `pb.TraceEntry.detail` 是给人看的**投影**（`error: …` 或 recorder 的 metadata），而 `audit export` / `audit show` 打的是**入库原文**（正是封链覆盖的那份 JSON），照投影还原等于让导出与自己导出的账本不一致。
+- **修法（服务端）**：`ListAuditTraces` 改成同文件 `GetAuditLog` 早已在用的形状——按 `auditStorePageSize` 一块块走存储、在过滤后的流上数出精确的 `total_size`、按游标取页。`state.TraceFilter` 因此新增 `Offset`（SQLite 与 PostgreSQL 双引擎；SQLite 侧 OFFSET 与 LIMIT 同进同出，因为该方言不接受裸 OFFSET）。具名 run 与全局枚举都不再在页上限处静默收尾。
+- **补线上字段**：`pb.TraceEntry` 新增 `stored_detail`（13，入库原文）与 `tenant_id`（14），`traceEntryToPB` 填它俩；`detail`（12）保持原投影不动既有消费者。生成仍用钉住的 protoc v27.0 工具链——改前先做「未改即重建」对照，产物零差异才动手。
+- **接线**：`runAuditList` / `runAuditExport` 先 `resolveServiceMode()`，远程经工厂 `GetAuditService().ListAuditTraces` 按页拉全量并还原成 `[]*state.Trace`，与本地**共用同一渲染**（人类表格 / `--quiet` 的 ID 清单 / `--json` / CSV 表头与列序）。行序两边都是存储的 `(timestamp, id)`，所以是同一序列而不只是同一集合。`--remote` 白名单扩到 12 条（master 侧刚合的 `system status` 是第 10 条），帮助文本与 `docs/cli-reference.md` 的全局选项表由既有双向守卫逼着同步。
+- **精度与可见性差异（照实说）**：`--json` 的 `timestamp` 本地含亚秒、远程只到**秒**（线上字段是 int64 秒）；`--format csv` 的格式本就精确到秒，两种模式逐字节相同。服务端还按调用方可见环境**收窄** trace 行，本地不判权——带策略的部署里远程可能少几行，那是本来看不到那个环境，不是丢数据。
+- **证据（11 个用例）**：服务端 3 条——按 `auditStorePageSize+7` = 1007 行播种，具名 run 与全局枚举各取全量且顺序等于存储序；`total_size` 断言为过滤后的全量而非本页条数；`stored_detail` 与投影分开断言（含 `tenant_id`，空租户列会让这条映射没人查）。存储层 2 条——按页拼接不重不漏（**故意写成有界循环**：若 OFFSET 被忽略，每页都返回同样三行，有界循环立刻报「第 N 页行数不对」，而「循环到页不满」会转圈到测试超时，症状看起来像 hang 不像红）；无 LIMIT 时 OFFSET 不参与构造 SQL。CLI 6 条——三种输出形状**逐字节相同**、未知 run 两边同报 `No traces found.`、export 的 json 与 csv 各逐字节相同且先断言导出里真有入库原文（夹具自证：投影不含 `web-01`，两边同时丢也拦得住）、每页 2 条驱动翻页抓游标交接、死端口必须报错（等价用例两边读同一份库，分不出走的是哪条路）、远程不建本地库。
+- **变异（9 条全部先红，还原后 `sha256` 逐字节相同）**：① 服务端只走一个存储页（即修复前的截断）→ 跨上限用例红；② `total_size` 改报本页条数 → 计数用例红；③ 服务端不带 `stored_detail` → 服务端与 CLI export 同时红；④ CLI 还原时取投影字段而非原文 → export 等价红（这条是「字段选错」，与 ③ 的「字段缺失」不同形）；⑤ CLI 不交接游标 → 翻页用例红；⑥ 远程分支短路成本地 → 死端口用例红；⑦⑧ 服务端 / CLI 分别丢掉 `tenant_id` → 两条都红；⑨ SQLite 不认 `Offset` → 存储层用例红。
 ### 测试（账本断言机器化：`check_doc_anchors.py` 增加声明式 `CLAIMS`，把「锚点还指向某处」升级到「那句话还成立」）
 
 - **缺口**：`scripts/check_doc_anchors.py` 只证 **liveness**——锚点能被解析、行号不越过 EOF。`docs/project-status-2026-11.md` §8.4 记的机制建议（「把「台账声称未做/已做」变成可机器校验的东西」）从未落地，所以一条账本句子可以一边锚点解析得到、一边与代码矛盾，而 CI 全绿。
