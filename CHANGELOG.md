@@ -13,6 +13,16 @@
 - **文档**：`cli-reference.md` §10.2 与 `--remote` 全局行、`levee-api.md` 第 9 章改为实际本地/远程两套输出，并订正同章两条不可执行的 config 示例（`server.url` 不可读、`output.color` 不在 5 键可写白名单）；`blocked-items.md` 的「仍待决」改为已收口。
 - **验证**：`go test ./cmd/levee/ -run 'TestSystemStatusRemote|TestRemoteCapabilityList|TestValidateServiceMode|TestRemoteConsumersInCliReference' -count=1` 全绿。
 
+### 新增（ABAC 清单侧 env 归属的**写侧**强制：默认拒绝，仅 `ImportTargets` 可点名豁免）
+
+- **缺口**：`env` 在清单里有两个身份——策略谈的是哪些主机，也是谁能碰它们。读侧早已是 `target-ownership.yaml` 压过 `labels["env"]`（`internal/grpc/resource_authz.go` 三处 `ownership.Lookup`），但写侧（`AddTarget` / `ImportTargets`）一直按请求/文件**自报**的 env 判定门禁，从不问注册表。后果不是权限逃逸（策略层拿到的 labels 是用被判定的 env 现造的，不读库存行），而是门禁判错了对象、且按 env 过滤的主机视图读到假值。
+- **定案（ADR-008，方案 D，P1）**：`AddTarget` 与注册表冲突即 `FailedPrecondition`，**无豁免**；`ImportTargets` 默认同样拒绝，只有 `allow_env_conflict` 点名才按文件写入，并写一条 `audit.action=import_env_conflict`。豁免**不绕过**原有 stored-env admin 检查。只挡新写；存量冲突行普查另开，启动时的冲突 WARN 保留。
+- **判定位置**：`internal/inventory` 的 `EnvConflicts` 判的是**这次写入之后行上会留下的** env（对已存在行走 `mergedLabels`），所以「不带 labels 的再导入」也会按保留下来的值判——否则一条假 label 能靠沉默永远续命。地址/状态/通道会让 importer 直接失败的行不参与判定。
+- **表面**：`proto/levee_extra.proto` 加 `bool allow_env_conflict = 3` 并重新生成；REST `POST /targets/import` 用同名 JSON 键，`FailedPrecondition` 映射 HTTP 412；CLI `levee target import --allow-env-conflict`（本地导入直连 importer，缺了它就是有记录的绕过口，豁免同样写审计）；serve 把已加载的注册表交给两个服务。
+- **作用面上界**：注册表声明过的主机。未声明的主机继续按 labels/默认 env，每个拒绝用例都配了「未声明/无注册表时行为不变」的控制组。
+- **文档订正（相邻缺陷）**：`cli-reference.md` §6.2 原写「每行一个主机名 / `#` 注释」，实际解析的是 YAML 清单；`levee-api.md` 的 `target import` 表里 `--merge` / `--replace` / `--dry-run`、`target list` 表里 `--label` / `--channel` / `--limit` 在 CLI 均不存在，`--status` 的合法值也不是 `reachable|unreachable|unknown`——已逐条按 `cmd_target.go` 的真实旗标订正。
+- **验证**：`go test ./internal/inventory/ ./internal/grpc/ ./internal/state/ ./cmd/levee/ -count=1` 全绿；`golangci-lint run` 0 issues；`go vet` rc=0；`test_doc_anchors` 10 tests OK、`test_changelog_structure` 7 tests OK。
+
 ### 测试（旗标守卫扩面：`identity-deployment.md` 入扫，并修掉一个会让新文档一入扫就假红的行首匹配）
 
 - **缺口**：`cmd/levee/cli_reference_flags_test.go` 的扫描名单收着 cli-reference / quickstart / deployment / levee-api 四本，而 `docs/identity-deployment.md`——SSO 与命名令牌的部署指南，其 §4 自称「三条命令，逐条可复现」——一直在名单外。它与 levee-api.md 同形状（裸 `levee …` 行、操作者照敲），却没有任何 CI 打开过它。
