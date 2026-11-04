@@ -48,6 +48,16 @@
 - **变异（两条，均先红后还原）**：① 正则退回无边界形状 → 41–43 行假阳性红复现（证明文档确已入扫、边界修复承重）；② 往文档注入 `--resolution-hint` 假旗标 → 门在该行红并列出 `authz explain` 的真实旗标全集（证明真命令行也在扫，不只是 YAML 键那条路）。
 - **如实边界**：续行命令（`levee serve --token <密钥> \` 接下一行 `--auth-token …`）只有首行入扫，续行旗标不在检查面——方向与该门「可以少记、不许记错」的既定口径一致（漏检在安全侧），本笔不收窄。
 
+### 文档（`project-status-2026-11.md` 追加 §12：基线推到 e848f79 重测，并收回我上一批发布的一个排序错误）
+
+- **兑的是自己的账**：§10 结尾写着"下一轮复核应以 `e6f6f34` 为新基线重测"，去兑时 master 已 `e848f79`——自 §10 基线 `9974b44` 前进 **10 笔**。§1–§11 原文一字不改，只追加 §12。
+- **复测（全部本轮重跑）**：`go test -count=1 ./...` rc=0、72 包 = 68 `ok` + 4 `[no test files]`、0 FAIL；`golangci-lint run ./...` rc=0 / `0 issues.`；PG（新建容器 `qcn12-pg`，跑完已 `docker rm`）`internal/state` **412** PASS（顶层 217 + 子 195）/ 0 SKIP / 0 FAIL / 48.1s，`internal/cluster` 50 PASS / 8.2s；proto **60** RPC（41 + 19）/ 10 service；blocked-items A5 / B0 / C3 / D3（活跃 2）/ E3 / F1；旗标守卫扫描面已从 `cli-reference.md` 扩到 `levee-api.md`。
+- **收回一条**：§10 那行（`docs/project-status-2026-11.md:245`）写"其余均在 9s 以内"，**这个结论是排序方法错的产物**——我用 `sort -r` 对时长列做字符串倒序，于是 `"9.4s"` 排在 `"98.9s"` 之前、`"8.6s"` 能排到顶上。按数值排序的真实前三：`cmd/levee` **118.4s**、`internal/grpc` **113.0s**、**`internal/credential` 66.4s**（各包之和 664.4s，它一家占十分之一；该包密钥派生走 argon2id，见 `internal/credential/store.go:7`，但我没做逐用例计时，这条只到包级）。教训写进 §12：计数文档里"其余都在 X 以内"这类断言必须能按数值自己复算。
+- **新登记的缺陷（只记不改，`roadmap.md` 此刻在别人 owns 里）**：`docs/product-roadmap.md` 的"未决行数"**不可机器复算**——同一份 47 行表，判据 A（优先级格有闭合标记）给 **11**、判据 B（任一格有标记）给 **1**、判据 C（B + 标题删除线视为已闭）给 **1**，人工逐行回读是 **6**。根因是闭合状态有四种互不兼容写法：优先级格 `✅ 已落地（…）`、**尾列** `✅ 已落地`、标题 `~~划掉~~`、以及 `:36` 的「已修」（不在任何词表里）。更严重的是结构性漏项：**运营层那张表行首不是 `| P<n>`**（`:96`–`:98` 是两列 `| 项 | 目标 |`），任何 `^| P` 统计整类看不见这三行——我自己就先按"6 行"报过一次，回读才发现其中三行从来不在统计面上。最小修法（留给后续，需要动的文件正在被并行线改）：闭合状态收成固定一列取值 `open|closed|blocked-on:<谁>`、词表单一来源、脚本门禁数 `open` 并钉"每行必须有这格"，运营层表并入同一形状。
+- **状态同步**：ADR-008 的五问已由 owner 定案——降 **P1**、取**方案 D**（默认拒绝，豁免只给 `ImportTargets` 且按次 `allow_env_conflict`）、只挡新写、存量普查另开、注册表为 env 权威、`labels["env"]` 仅对未声明主机生效；实现由另一条线在飞（板声明 owns 已含 `internal/grpc/target_service.go`、`proto/levee_extra.proto` 等）。我在 roadmap 登记的 `levee-api` 第 6 章缺陷已由 §11 收口，本轮复核确认正文已改成 `drift detect` / `drift report`。
+- **协调面观察**：派单号 `PI-LEVEE-004/005` 既不在仓里也不在板目录里（板只有三条声明，那两个号只作为引用出现在正文）⇒ **"看板上没有待办"不等于"项目没有待办"**，只读板找活的人会得出错结论。
+- **验证**：`python scripts/test_changelog_structure.py` 7 tests OK；`python scripts/check_doc_anchors.py` PASSED；零产品代码改动 ⇒ 不动测试套件（上表的全量/lint/PG 是**为核对文档数字**而跑的，不是本笔代码的验收）。
+
 ### 文档（`levee-api.md` 第 6 章 drift 命令口径收口：正文早已订正，补掉仍在引用旧 `scan/show` 的台账）
 
 - **缺口**：`docs/levee-api.md` 第 6 章正文已于 2026-11-01 按实际 CLI 订正为 `drift detect` / `drift report`，但 `docs/review-report.md` 仍把第 6 章写成 `scan/show` 并判「一致」，`docs/product-roadmap.md` 也还挂着「登记不修」，`docs/mvp-plus1-roadmap.md` 的 F10 行还用 `drift scan` 指代已有能力——同一条旧口径被三处台账继续背书。
