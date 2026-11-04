@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 文档（`levee-api.md` 第 6 章 drift 命令口径收口：正文早已订正，补掉仍在引用旧 `scan/show` 的台账）
+
+- **缺口**：`docs/levee-api.md` 第 6 章正文已于 2026-11-01 按实际 CLI 订正为 `drift detect` / `drift report`，但 `docs/review-report.md` 仍把第 6 章写成 `scan/show` 并判「一致」，`docs/product-roadmap.md` 也还挂着「登记不修」，`docs/mvp-plus1-roadmap.md` 的 F10 行还用 `drift scan` 指代已有能力——同一条旧口径被三处台账继续背书。
+- **改动**：① `review-report.md` 的两处旧口径加 2026-11-04 注记（保留 2026-08-15 审核原文）；② `product-roadmap.md` 第 36 行改为「已修」并写明实际命令与旗标；③ `mvp-plus1-roadmap.md` 的 F10 行把 `drift scan` 改为 `drift detect` / `drift report`；④ `levee-api.md` 第 6 章补 `drift report --host/--days` 说明，并把 `drift baseline` / `drift schedule` 的完整旗标指向 `cli-reference.md` 第 22 章；⑤ `project-status-2026-11.md` 追加 §11 收口记录。
+- **未做**：`drift scan` / `drift show <report-id>` 没有实现；要新增这两个接口需要报告 ID 存储与读路径，另开接口项。
+- **验证**：`go test ./cmd/levee/ -run TestDocumentedFlagsAreRegistered -count=1`、`python scripts/check_doc_anchors.py`、`python scripts/test_changelog_structure.py` 均通过。
+
 ### 文档（`AGENTS.md` 补两条本机已付代价的坑：`--unshallow` 后的假红 fsck、浅克隆的假祖先判据）
 
 - **缺口**：`AGENTS.md` 的「本机上已经付过代价的几件事」收了 7 条，但**解浅这一条没写**。2026-11-04 做远端分支对账时按规矩先 `git fetch --unshallow`（浅克隆下 `git rev-list --left-right --count` 会把已完成的分支报成 `ahead=700+`，`git branch --no-merged` 也是假阳性），解浅后 `git fsck` 立刻红：5 个 `Could not read <sha>` 与 `failed to parse commit … from object database for commit-graph`。**症状极像仓库损坏**，最容易被误处置成重新 clone。
