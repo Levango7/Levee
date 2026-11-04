@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 文档（`AGENTS.md` 补两条本机已付代价的坑：`--unshallow` 后的假红 fsck、浅克隆的假祖先判据）
+
+- **缺口**：`AGENTS.md` 的「本机上已经付过代价的几件事」收了 7 条，但**解浅这一条没写**。2026-11-04 做远端分支对账时按规矩先 `git fetch --unshallow`（浅克隆下 `git rev-list --left-right --count` 会把已完成的分支报成 `ahead=700+`，`git branch --no-merged` 也是假阳性），解浅后 `git fsck` 立刻红：5 个 `Could not read <sha>` 与 `failed to parse commit … from object database for commit-graph`。**症状极像仓库损坏**，最容易被误处置成重新 clone。
+- **定性三步（这才是本条真正想留下的东西）**：① `git rev-list --objects HEAD` rc=0 且无 `missing` ⇒ master 全史对象齐；② `git cat-file -e <sha>` rc=1 ⇒ 它本来就不在对象库里；③ `gh api repos/Levango7/Levee/compare/<sha>...master` 报 `diverged` / `behind_by=1` ⇒ 那 5 个全是当年没合进来的 dependabot PR 头，**历史没有洞**。三步走完才能说"这是缓存"，不是"看起来不像丢东西"。
+- **修法与边界**：删 `.git/objects/info/commit-graphs/`（split 链）或 `.git/objects/info/commit-graph`，再 `git commit-graph write --reachable`；复验 `git commit-graph verify` 与 `git fsck` 均 rc=0（本机实测如此）。commit-graph 只是加速缓存，删掉后 git 回落到 pack index——代价是日志查询变慢，不是数据风险。
+- **顺带把"假祖先判据"独立成一条**：解浅只解决"数得对"，不解决"判得对"。rebase 落地会重写 sha，`git merge-base --is-ancestor` 于是假阴性；**真判据是 `git cherry <base> <branch>` 的 `+`**（补丁等价，改 sha 也不误判）。这一条与 `docs/project-status-2026-11.md` §2.2 的观察同源，但那段是快照、下一个 agent 未必读；`AGENTS.md` 是他动手前必读的那一页。
+- **验证**：`python scripts/check_doc_anchors.py` PASSED（30 锚点 × 6 本活账本，`AGENTS.md` 在扫描范围内）；`python scripts/test_changelog_structure.py` 7 tests OK。纯文档，无产品代码与生成物改动。
+
 ### 修复（`docs/levee-api.md` 的 20 处 CLI 示例与假命令：照着敲会 unknown command / unknown flag）
 
 - **根因（一个此前没人读它的文档面）**：`cmd/levee/cli_reference_flags_test.go` 的扫描列表只有 `cli-reference.md`、`quickstart.md`、`deployment.md`——**`levee-api.md` 从来不在其中**。于是一整本 API 参考的 CLI 示例章没有任何守卫，它的假命令/假旗标从未被 CI 发现。
