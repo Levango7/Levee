@@ -119,8 +119,12 @@ func newSystemStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show system status",
-		Long: "Display system status including database connectivity, " +
-			"configuration path, and version information.",
+		Long: "Display system status. Local mode reports the configuration path and " +
+			"the connectivity of the database this machine's config points at. " +
+			"With --remote it reports the server's runtime health (status, run " +
+			"counts, uptime, store type, warnings) and names the fields the " +
+			"GetStatus RPC does not carry (config path and database location, " +
+			"which GetConfig gates behind admin).",
 		Args: cobra.NoArgs,
 		RunE: runSystemStatus,
 	}
@@ -183,6 +187,21 @@ func newSystemDoctorCmd() *cobra.Command {
 
 // runSystemStatus executes the `levee system status` command.
 func runSystemStatus(cmd *cobra.Command, args []string) error {
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return err
+	}
+	if mode == modeRemote {
+		return runRemoteSystemStatus(cmd.Context())
+	}
+	return runLocalSystemStatus()
+}
+
+// runLocalSystemStatus probes the database this machine's configuration points
+// at. It must not run under --remote: the CLI's database and the server's
+// database are different facts, and reporting the former as the latter is how
+// `system status` once stayed green for a PostgreSQL deployment.
+func runLocalSystemStatus() error {
 	cfg, err := loadConfigForCmd()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -243,6 +262,108 @@ func runSystemStatus(cmd *cobra.Command, args []string) error {
 
 	printSystemStatusHuman(os.Stdout, output)
 	return nil
+}
+
+// remoteLocalOnlyStatusFields names the keys local `system status` reports that
+// the remote GetStatus RPC deliberately does not carry.
+//
+// GetStatus performs NO authorization check: the REST gateway routes
+// /system/status through bearer authentication only (when a token is
+// configured), and the gRPC method has no policy gate either. A config path and
+// a database endpoint are deployment topology, not health; GetConfig gates
+// exactly that class of data behind ActionAdmin. Widening SystemStatus with
+// these fields would put topology on every monitoring scrape, so the remote
+// surface stays counts-only and the CLI names the difference instead of
+// silently omitting keys.
+var remoteLocalOnlyStatusFields = []string{
+	"config_path",
+	"db_status",
+	"db_driver",
+	"db_location",
+	"db_path",
+}
+
+// runRemoteSystemStatus asks the server for its build and runtime health.
+// It never loads the local config or opens the local store: the whole point of
+// --remote is that the answers describe the other machine.
+func runRemoteSystemStatus(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetSystemService()
+	if err != nil {
+		return err
+	}
+	info, err := svc.GetVersion(ctx, &emptypb.Empty{})
+	if err != nil {
+		return fmt.Errorf("get version: %w", err)
+	}
+	status, err := svc.GetStatus(ctx, &emptypb.Empty{})
+	if err != nil {
+		return fmt.Errorf("get status: %w", err)
+	}
+
+	warnings := status.GetWarnings()
+	if warnings == nil {
+		warnings = []string{}
+	}
+	output := map[string]any{
+		"mode":           "remote",
+		"server":         optServer,
+		"version":        info.GetVersion(),
+		"status":         status.GetStatus(),
+		"active_runs":    status.GetActiveRuns(),
+		"paused_runs":    status.GetPausedRuns(),
+		"uptime_seconds": status.GetUptimeSeconds(),
+		"store_type":     status.GetStoreType(),
+		"warnings":       warnings,
+		"local_only":     remoteLocalOnlyStatusFields,
+	}
+
+	if optJSON {
+		return PrintJSON(os.Stdout, map[string]any{
+			"data":  output,
+			"meta":  nil,
+			"error": nil,
+		})
+	}
+
+	if optQuiet {
+		fmt.Fprintln(os.Stdout, status.GetStatus())
+		return nil
+	}
+
+	printRemoteSystemStatusHuman(os.Stdout, output)
+	return nil
+}
+
+// printRemoteSystemStatusHuman renders the reduced remote schema. The last line
+// is not decoration: without it, an operator comparing local and remote output
+// sees missing keys and cannot tell "the server does not report this" from
+// "--remote was ignored".
+func printRemoteSystemStatusHuman(w io.Writer, output map[string]any) {
+	fmt.Fprintf(w, "levee %s (server %s)\n", output["version"], output["server"])
+	fmt.Fprintf(w, "  status:    %v\n", output["status"])
+	fmt.Fprintf(w, "  runs:      %v active, %v paused\n", output["active_runs"], output["paused_runs"])
+	fmt.Fprintf(w, "  uptime:    %vs\n", output["uptime_seconds"])
+	fmt.Fprintf(w, "  store:     %v\n", output["store_type"])
+	warnings, _ := output["warnings"].([]string)
+	if len(warnings) == 0 {
+		fmt.Fprintln(w, "  warnings:  none")
+	} else {
+		fmt.Fprintf(w, "  warnings:  %d\n", len(warnings))
+		for _, warning := range warnings {
+			fmt.Fprintf(w, "    - %s\n", warning)
+		}
+	}
+	fmt.Fprintf(w, "  local-only: %s (the GetStatus RPC does not report these)\n",
+		strings.Join(remoteLocalOnlyStatusFields, ", "))
 }
 
 // runSystemConfigGet executes the `levee system config get <key>` command.

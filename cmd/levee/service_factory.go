@@ -16,17 +16,18 @@
 //     remote asks the server. That is the first case where "one place decides
 //     which side answers" is actually exercised in production, and it is what
 //     keeps the two modes from growing separate renderers.
-//   - The remaining read-only families (template / target / audit / system
-//     status) are NOT wired, and not for lack of a factory: their local output
-//     is derived from models the wire does not carry. `template list` reads the
-//     FILE library while serve builds TemplateService with a nil lib, so the
-//     server would list DB templates instead; `target list` renders
-//     state.Target rows whose fields exceed pb.Target, and the RPC paginates and
-//     env-filters; `audit verify` reports every failure with index and hashes
-//     while VerifyHashChain returns only the first broken entry; `system status`
-//     reports config path and DB location, which GetStatus does not. Each of
-//     those needs a per-command decision (widen the proto, or accept "remote
-//     shows less"), so wiring them is product work, not plumbing.
+//   - The remaining read-only families were each settled by a per-command
+//     decision rather than by plumbing: where local output exceeded the wire,
+//     the proto grew (`template list` needed the file library on the serve side
+//     plus id/tags; `target list` needed created_at/last_checked_at/tenant_id
+//     and group_name; `audit verify` needed every failure, not just the first;
+//     `template show` needed parameters). `system status` took the other
+//     branch — "remote shows less": GetStatus authenticates but performs no
+//     policy check, so its payload stays runtime counts/uptime/store type/
+//     warnings, and config_path plus the db_* fields remain local-only. The CLI
+//     names those fields explicitly so a reduced remote answer cannot be
+//     mistaken for a local one (see remoteLocalOnlyStatusFields in
+//     cmd_system.go).
 //   - The change service's local build delegates to newCLIChangeService, which
 //     carries the change calendar gates, the credential resolver and the --as
 //     authorizer; a drift guard in grpc_client_test.go asserts that stays true.

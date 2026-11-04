@@ -663,17 +663,24 @@ levee version
 命令示例：读写配置
 
 ```bash
-levee system config get server.url
-levee system config set output.color false
+levee system config get server.data_dir
+levee system config set log.level debug
 ```
+
+`system config get` 接受 `server.*` / `database.*` / `log.*` / `permission.*` 下的只读键（`database.dsn` 以脱敏形式返回）；`system config set` 只接受 5 个可写键：`server.log_level` / `server.log_format` / `log.level` / `log.format` / `log.output`。不在白名单内的键会明确报错，而不是静默写进一个没人读的字段。
 
 命令示例：系统状态
 
 ```bash
 levee system status
+levee system status --remote --server levee.internal:9090
 ```
 
-输出系统状态：部署形态、store 类型与连通性、进行中 run 数、近期成功率、凭据代理连通性、集成（Prometheus / ITSM / Vault）连通性。
+本地模式输出：`version`、`config_path`、`db_status`（`ok` / `unreachable`）、`db_driver`（`sqlite` / `postgres`）、`db_location`（脱敏端点），SQLite 形态另附 `db_path`；`db_error` 仅在探活失败时出现。
+
+远程模式只输出服务端 `GetStatus` 携带的运行事实：`mode`（`remote`）、`server`、`version`（服务端构建）、`status`、`active_runs`、`paused_runs`、`uptime_seconds`、`store_type`、`warnings`，并用 `local_only` 列出不报的字段（`config_path` / `db_status` / `db_driver` / `db_location` / `db_path`）。配置路径与数据库端点不在远程输出里，因为 `GetStatus` 只做认证、不做策略判定，而 `GetConfig` 把这类部署拓扑放在 admin 门禁之后；需要服务端配置时用 `levee system config get <key>`（带 admin 凭据）。
+
+`--quiet`：本地打印 `db_status`（`ok` / `unreachable`），远程打印服务端 `status`（`healthy` / `degraded` / `unhealthy`）。
 
 命令示例：环境检查
 
