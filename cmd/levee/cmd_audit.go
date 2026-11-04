@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -376,6 +378,10 @@ func listAllRemoteTraces(ctx context.Context, svc auditServiceAdapter, runID str
 // projection ("error: …" or the recorder's metadata). The CLI prints the stored
 // bytes — they are what the hash chain covers — so projecting them here would
 // make `audit export` disagree with the ledger it is exporting.
+//
+// The timestamp is rebuilt from seconds plus their nanosecond remainder, for the
+// same reason: the recorder stamps rows with time.Now() and the store keeps the
+// fraction, so seconds alone would print a timestamp no row ever had.
 func traceFromPB(e *pb.TraceEntry) *state.Trace {
 	return &state.Trace{
 		ID:        e.GetId(),
@@ -385,9 +391,62 @@ func traceFromPB(e *pb.TraceEntry) *state.Trace {
 		Detail:    e.GetStoredDetail(),
 		PrevHash:  e.GetPrevHash(),
 		CurrHash:  e.GetCurrHash(),
-		Timestamp: time.Unix(e.GetTimestamp(), 0).UTC(),
+		Timestamp: time.Unix(e.GetTimestamp(), int64(e.GetTimestampNanos())).UTC(),
 		TenantID:  e.GetTenantId(),
 	}
+}
+
+// fetchTrace returns one trace row in the mode the operator asked for. Both
+// modes hand back *state.Trace, so the JSON / quiet / human branches of
+// `audit show` are shared and cannot drift apart per mode.
+func fetchTrace(ctx context.Context, mode serviceMode, traceID string) (*state.Trace, error) {
+	if mode != modeRemote {
+		return getTraceLocal(ctx, traceID)
+	}
+	return getTraceRemote(ctx, traceID)
+}
+
+// getTraceLocal reads the row straight from the store.
+func getTraceLocal(ctx context.Context, traceID string) (*state.Trace, error) {
+	store, err := openStore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	trace, err := store.GetTrace(ctx, traceID)
+	if err != nil {
+		return nil, fmt.Errorf("get trace: %w", err)
+	}
+	if trace == nil {
+		return nil, fmt.Errorf("trace %q not found", traceID)
+	}
+	return trace, nil
+}
+
+// getTraceRemote asks the server for the row by its own id.
+func getTraceRemote(ctx context.Context, traceID string) (*state.Trace, error) {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetAuditService()
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := svc.GetAuditTrace(ctx, &pb.GetAuditTraceRequest{TraceId: traceID})
+	if err != nil {
+		// A missing row must read the same in both modes; the local path says
+		// `trace "x" not found`, not an rpc error (see templateShowRemote).
+		if grpcstatus.Code(err) == codes.NotFound {
+			return nil, fmt.Errorf("trace %q not found", traceID)
+		}
+		return nil, err
+	}
+	return traceFromPB(entry), nil
 }
 
 // runAuditShow executes the `levee audit show <trace-id>` command.
@@ -395,18 +454,13 @@ func runAuditShow(cmd *cobra.Command, args []string) error {
 	auditShowOptTraceID = args[0]
 	ctx := context.Background()
 
-	store, err := openStore(ctx)
+	mode, err := resolveServiceMode()
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return err
 	}
-	defer func() { _ = store.Close() }()
-
-	trace, err := store.GetTrace(ctx, auditShowOptTraceID)
+	trace, err := fetchTrace(ctx, mode, auditShowOptTraceID)
 	if err != nil {
-		return fmt.Errorf("get trace: %w", err)
-	}
-	if trace == nil {
-		return fmt.Errorf("trace %q not found", auditShowOptTraceID)
+		return err
 	}
 
 	if optJSON {

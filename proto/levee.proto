@@ -154,6 +154,14 @@ message TraceEntry {
   // including this column, so it belongs on the wire rather than being
   // invented per mode.
   string tenant_id = 14;
+  // The sub-second remainder of field 8, in nanoseconds [0, 999999999] — the
+  // split google.protobuf.Timestamp uses. The recorder stamps rows with
+  // time.Now() and both dialects keep the fraction (SQLite nanoseconds,
+  // PostgreSQL microseconds), so a caller rebuilding the stored row from
+  // seconds alone prints a timestamp the ledger does not contain. Field 8
+  // stays seconds: every existing reader keeps its meaning, and one that has
+  // not learned this field loses the fraction exactly as it does today.
+  int32 timestamp_nanos = 15;
 }
 
 // LogEntry is a single log line, used both in batched responses and streaming.
@@ -679,6 +687,10 @@ service AuditService {
   rpc ListAuditTraces(ListAuditTracesRequest) returns (ListAuditTracesResponse);
   rpc VerifyHashChain(VerifyHashChainRequest) returns (VerifyHashChainResponse);
   rpc GetRunReport(GetRunReportRequest) returns (RunReport);
+  // One trace row by its own id — `levee audit show <trace-id>`.
+  // ListAuditTraces filters by run, so a caller that holds only a trace id
+  // would otherwise have to walk every run to reach a row it already named.
+  rpc GetAuditTrace(GetAuditTraceRequest) returns (TraceEntry);
 }
 
 message GetAuditLogRequest {
@@ -716,6 +728,10 @@ message ListAuditTracesResponse {
   repeated TraceEntry entries = 1;
   string next_page_token = 2;
   int32 total_size = 3;
+}
+
+message GetAuditTraceRequest {
+  string trace_id = 1;
 }
 
 message VerifyHashChainRequest {

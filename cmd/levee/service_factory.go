@@ -558,6 +558,7 @@ type auditServiceAdapter interface {
 	ListAuditTraces(ctx context.Context, req *pb.ListAuditTracesRequest) (*pb.ListAuditTracesResponse, error)
 	VerifyHashChain(ctx context.Context, req *pb.VerifyHashChainRequest) (*pb.VerifyHashChainResponse, error)
 	GetRunReport(ctx context.Context, req *pb.GetRunReportRequest) (*pb.RunReport, error)
+	GetAuditTrace(ctx context.Context, req *pb.GetAuditTraceRequest) (*pb.TraceEntry, error)
 }
 
 // GetAuditService returns an AuditService adapter for the active mode.
@@ -592,6 +593,9 @@ func (a *localAuditAdapter) VerifyHashChain(ctx context.Context, req *pb.VerifyH
 func (a *localAuditAdapter) GetRunReport(ctx context.Context, req *pb.GetRunReportRequest) (*pb.RunReport, error) {
 	return a.svc.GetRunReport(ctx, req)
 }
+func (a *localAuditAdapter) GetAuditTrace(ctx context.Context, req *pb.GetAuditTraceRequest) (*pb.TraceEntry, error) {
+	return a.svc.GetAuditTrace(ctx, req)
+}
 
 func (a *remoteAuditAdapter) GetAuditLog(ctx context.Context, req *pb.GetAuditLogRequest) (*pb.GetAuditLogResponse, error) {
 	return a.client.GetAuditLog(ctx, req)
@@ -604,6 +608,9 @@ func (a *remoteAuditAdapter) VerifyHashChain(ctx context.Context, req *pb.Verify
 }
 func (a *remoteAuditAdapter) GetRunReport(ctx context.Context, req *pb.GetRunReportRequest) (*pb.RunReport, error) {
 	return a.client.GetRunReport(ctx, req)
+}
+func (a *remoteAuditAdapter) GetAuditTrace(ctx context.Context, req *pb.GetAuditTraceRequest) (*pb.TraceEntry, error) {
+	return a.client.GetAuditTrace(ctx, req)
 }
 
 // --- SystemService adapter --------------------------------------------------

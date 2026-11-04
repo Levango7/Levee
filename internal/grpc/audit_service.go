@@ -324,6 +324,50 @@ func (s *AuditService) ListAuditTraces(ctx context.Context, req *pb.ListAuditTra
 	}, nil
 }
 
+// GetAuditTrace returns one trace row by its own id — the wire behind
+// `levee audit show <trace-id>`. ListAuditTraces filters by run, so a caller
+// holding only a trace id would otherwise have to walk every run to reach a row
+// it already named.
+//
+// Existence is answered before visibility, the order GetRunReport uses: a row
+// that is not there says so, and a row that IS there but belongs to a run
+// outside the caller's view is refused rather than reported absent — otherwise
+// "not found" would be a probe for which trace ids exist.
+func (s *AuditService) GetAuditTrace(ctx context.Context, req *pb.GetAuditTraceRequest) (*pb.TraceEntry, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "nil request")
+	}
+	if req.TraceId == "" {
+		return nil, status.Error(codes.InvalidArgument, "trace_id is required")
+	}
+	if s.store == nil {
+		return nil, status.Error(codes.FailedPrecondition, "store not configured")
+	}
+
+	t, err := s.store.GetTrace(ctx, req.TraceId)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get trace: %v", err)
+	}
+	if t == nil {
+		return nil, status.Errorf(codes.NotFound, "trace %q not found", req.TraceId)
+	}
+
+	// Scope is the row's run, because every row in this service is about a run
+	// (see WithAuthorizer). trace.run_id is NOT NULL with a FOREIGN KEY … ON
+	// DELETE CASCADE on both dialects, so the run is there whenever the row is;
+	// a store error reading it is an error rather than a guess at the
+	// environment, which is what an unreadable scope would amount to.
+	run, err := s.store.GetRun(ctx, t.RunID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get run for trace %q: %v", req.TraceId, err)
+	}
+	if err := authorizeResourceRead(ctx, s.authz, envOf(run), "GetAuditTrace"); err != nil {
+		return nil, err
+	}
+
+	return traceToPB(t), nil
+}
+
 // VerifyHashChain verifies the integrity of the hash chain for the given run
 // (or all runs when RunId is empty). It delegates to audit.ChainVerifier.
 func (s *AuditService) VerifyHashChain(ctx context.Context, req *pb.VerifyHashChainRequest) (*pb.VerifyHashChainResponse, error) {
@@ -563,6 +607,10 @@ func auditToTraceEntry(a *state.Audit) *pb.TraceEntry {
 		PrevHash:   a.PrevHash,
 		CurrHash:   a.CurrHash,
 		Timestamp:  a.Timestamp.Unix(),
+		// Filled for the same reason the trace mapper fills it: the field means
+		// "this row's sub-second remainder", and a row that silently reported
+		// zero would be a lie on this path only.
+		TimestampNanos: int32(a.Timestamp.Nanosecond()),
 	}
 }
 
