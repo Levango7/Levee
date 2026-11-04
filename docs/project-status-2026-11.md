@@ -278,3 +278,62 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 - **本次补的收尾**：`docs/review-report.md` 2026-08-15 的两处旧口径加注为历史记录；`docs/product-roadmap.md` 第 36 行从「登记不修」改为「已修」；`docs/mvp-plus1-roadmap.md` 的 F10 行把 `drift scan` 改为 `drift detect` / `drift report`；`docs/levee-api.md` 第 6 章补了 `drift report` 的 `--host` / `--days` 说明，并把 `drift baseline` / `drift schedule` 的完整旗标指向 `docs/cli-reference.md` 第 22 章（避免 API 参考与 CLI 参考各抄一份）。
 - **仍未做**：`drift scan` 与 `drift show <report-id>` 没有实现；若将来要新增这两个接口，需要新的报告 ID 存储与读路径，另开产品/接口项，不在本次文档订正范围内。
 - **验证**：`go test ./cmd/levee/ -run TestDocumentedFlagsAreRegistered -count=1`、`python scripts/check_doc_anchors.py`、`python scripts/test_changelog_structure.py` 均通过。
+
+---
+
+## 12. 2026-11-05 复核（追加，不改写 §1–§11）
+
+**为什么又有这一节**：§10 结尾我自己写了"下一轮复核应以 `e6f6f34` 为新基线重测"。去兑的时候 master 已经是 `e848f79`——自 §10 的基线 `9974b44` 以来前进 **10** 笔（其中三笔是 §10 自己那批：`65bdf8e` / `4a35a4d` / `274fcda`；另有 `1d8e511` 把 API 参考纳入 CLI 示例守卫并订正 20 处假命令、`e848f79` 收口 `levee-api` 第 6 章并加注 §11）。所以本轮基线是 **`e848f79`**。
+
+> 和 §10 一模一样的情形又发生了一次：本 PR 在 rebase 时 master 又前进一笔（`8ab41428`，pi 的旗标守卫扩面），**那一笔之后我没有重跑**——下表所有数字仍属 `e848f79`，下一轮复核请以当时的 live master 为准，别拿本节当"最新"。
+
+### 复测（命令 + 实测，本轮全部重跑）
+
+| 项 | 命令 | 实测 | 与 §10 的差 |
+| --- | --- | --- | --- |
+| 全量测试 | `go test -count=1 ./...` | rc=**0**；**72** 个包 = 68 `ok` + 4 `[no test files]`；`^FAIL` 行 **0** | 包数与结论**不变**（§10 也是 68 ok / 0 FAIL） |
+| 静态检查 | `golangci-lint run --timeout 9m ./...`（v2.13.2，私有 `TMP`/`GOLANGCI_LINT_CACHE`） | rc=**0**、`0 issues.` | 不变 |
+| PostgreSQL 腿 | 新建容器 `qcn12-pg`（`postgres:16-alpine`，`127.0.0.1:55443`），`LEVEE_PG_TEST_DSN` 指向它 | `internal/state`：**412** 个 PASS（顶层 217 + 子用例 195）、**0 SKIP**、0 FAIL，48.1s；`internal/cluster`：50 个 PASS、0 SKIP、0 FAIL，8.2s ⇒ 合计 **462** | 与 §10 逐项相同 ⇒ state/cluster 的用例数这半月**一格未动**（这本身值得记：这两块没被测面扩张） |
+| proto 计数 | `grep -c '^\s*rpc ' proto/*.proto` | **60** = `levee.proto` **41** + `levee_extra.proto` **19**；`^service` **10** | 不变（`#272` 那条链在扩 proto，但还没进 master） |
+| 搁置项分类 | 数 `docs/blocked-items.md` 各节表行 | A **5**、B **0**、C **3**、D **3**（其中 D-1b 已交付 ⇒ 活跃 2）、E **3**（全部已定档）、F **1** | 不变 |
+| 守卫扫描面 | 读 `cmd/levee/cli_reference_flags_test.go` | 已从 `docs/cli-reference.md`（:49）扩到 `docs/levee-api.md`（:65）；`docs/identity-deployment.md` 正在另一条线上接 | **扩张中**：这是 §7 那类"文档说假话"从被查得到查不到的边界 |
+
+### 要收回的一条：§10 的"墙钟大头"排法本身是错的
+
+§10 的"墙钟大头"那行（`docs/project-status-2026-11.md:245`）实测格写的是：「`internal/grpc` **98.9s**、`cmd/levee` **82.7s**，其余均在 9s 以内」，并据此下了结论「全量的等待几乎全部来自这两个包」。**两个数值是真的，"其余均在 9s 以内"是我排序方法错的产物**：我用 `sort -r` 对 `go test` 输出的时长列做**字符串**倒序，于是 `"9.4s"` 会排在 `"98.9s"` 前面、`"8.6s"` 又能排到最顶上。按数值排序的真实前三是：
+
+- `cmd/levee` **118.4s**
+- `internal/grpc` **113.0s**
+- `internal/credential` **66.4s** ← 这条在 §10 的说法里根本不该存在，而它单独占了全量墙钟（各包之和 **664.4s**）的十分之一
+
+它慢有来由：该包的密钥派生走 argon2id（`internal/credential/store.go:7`），测试要付真实 KDF 成本——但这条我只到"包级 66.4s + 代码里是 argon2id"为止，**没有逐用例计时**，要把成本归到具体测试得再跑一次带计时的 `-v`。**订正只落在本节**：§10 原文不改，按本文的追加式口径，收回原因写在这里——教训是"给计数文档定排名时，排序必须按数值，且断言'其余都在 X 以内'要能自己复算"。
+
+### 一个新发现：`roadmap` 的"未决行数"当前不可机器复算
+
+同一份 `docs/product-roadmap.md`（**47** 行表），三种都能跑通的判据给出三个数：
+
+| 判据 | 判为未决 |
+| --- | --- |
+| A：优先级格含闭合标记（`✅`/已落地/已完成/已定案/不做/维持现状/登记不修/已修…） | **11** |
+| B：任一格含上述标记 | **1** |
+| C：B 再加"标题整条 `~~划掉~~` 视为已闭" | **1** |
+| 人工逐行回读 | **6** |
+
+差异不是理解问题，是**闭合状态有四种互不兼容的写法**：`roadmap.md:32` 把 `✅ 已落地（2026-10-12，PR #137）` 写在优先级格；`:43`/`:46` 把 `✅ 已落地` 写在**尾列**；`:26`/`:28`/`:29`/`:30`/`:31`/`:80` 只在标题上打删除线（部分同时在他格带标记）；`:36` 用「已修」——而「已修」不在任何词表里（它是 §11 刚把"登记不修"改过来的）。**最严重的一条不是判据分歧，是结构性漏项**：运营层那张表的行首根本不是 `| P<n>`（`:96`–`:98` 是 `| 项 | 目标 |` 两列），所以任何 `^| P` 统计**整类看不见这三行未决项**。本轮我自己就先按"6 行"报了，人工回读才发现其中三行从来不在统计面上。
+
+按本文的追加口径，这条只登记事实，不动 `roadmap.md`（它此刻在别的线的 owns 里）。要做成可机器判的东西，最小形状是：闭合状态收成**一个显式单元格**（例如固定第 N 列取值 `open` / `closed` / `blocked-on:<谁>`），词表单一来源，加一条脚本门禁数出 `open` 行数并钉住"每行必须有这个格"——顺带把运营层表也纳入同一形状。**它需要的文件正在被并行线改**，所以排到那几条落地之后。
+
+### 分工与我自己那两条的状态
+
+- 板面三条 active：`opencode` 两条（`feat/abac-write-side-env-ownership` = **ADR-008 的实现**；`feat/system-status-remote` = PR **#280**），`pi` 一条（`test/flag-guard-identity-deployment`，把旗标守卫再扩一个文档）。
+- **ADR-008 的五个问题已由 owner 定案**（写在派单引用 `PI-LEVEE-005` 里）：定级降 **P1**；取**方案 D**（默认拒绝，豁免只给 `ImportTargets`、按次调用 `allow_env_conflict`）；**只挡新写**，存量冲突普查另开；注册表是 env 的权威，`labels["env"]` 只对未声明主机生效。⇒ §8.3 那一问从"待定夺"进入"实现中"，本笔不改 `blocked-items.md`（它在另一条线的 owns 里），状态以此处为准。
+- 我在 roadmap 登记过的 `levee-api` 第 6 章缺陷**已由 §11 收口**，本轮复核确认：正文已改成实际注册的 `drift detect` / `drift report`，`drift scan` / `drift show` 只作为被取代的历史口径留在订正注里。
+- **协调面的一条观察**：`PI-LEVEE-004` / `PI-LEVEE-005` 这类派单号**不在仓里、也不在板目录里**（`/f/Nexus/agent-board/levee/` 只有三条声明文件，那两个号只作为引用出现在声明正文）。结果是：**看板上没有待办 ≠ 项目没有待办**——只靠板找活的人会得出错结论。这是 §8.4 那条"板机制能报重叠、不能发现漏声明"的同一类缺口的另一面。
+
+### 本轮验证盲区
+
+- 没跑前端腿（`web/` vitest、`browser-check`），本轮零前端改动。
+- 没跑全量 `-race`。
+- PG 用的是新建空容器（跑完已 `docker rm`），与 §9.1 / §10 那两台共享库无关：覆盖同一套测试代码，不是同一份数据。
+- 浅克隆仍未 unshallow（`git rev-parse --is-shallow-repository` = true），谱系类判断继续只靠内容比对。
+- "真未决 6 行"是**人工判读**，不是机器判据产物——上面那三种机器判据没有一种能复现它，这正是本节要登记的问题本身。
