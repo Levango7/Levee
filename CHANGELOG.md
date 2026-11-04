@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 测试（CHANGELOG 结构门补两条：`[Unreleased]` 小节标题查重 + 标题行不许粘行）
+
+- **缺口**：`scripts/test_changelog_structure.py` 的 7 例只查 `## [Unreleased]` 唯一、首个 `## ` 段是 `[Unreleased]`、未发布内容必须分组进 `### ` 小节、`## [tag]` 版本标题唯一——**[Unreleased] 块内 `### ` 小节标题的重复、以及标题行粘行，从来没有检查**。那正是 2026-10-31 双 agent 同锚点手术真实产出过的两个形态（重复节靠人工 python 断言兜住，粘行靠当场目测），两者都能让整套 CI 全绿。
+- **为什么是现在**：今天板面上 5 个 agent 同时往同一个 `## [Unreleased]` 插节（opencode ×2、qoder ×2、本笔），同锚点手术面只会更大。重复标题对读者不可见（读起来就是一个正常条目）、对下一个复盘「已经写了什么」的 agent 是纯负债。
+- **改动**：① `test_no_duplicate_unreleased_subsection_titles`——块内 `### ` 标题逐个建行号表，重名即报出两处行号（精确匹配：近义标题是作者的判断，不是机器的判决）；② `test_subsection_headings_are_not_glued`——标题行剥掉反引号代码段后不得再含 `### ` / `## `（粘行的孪生节会被读成一个标题叫「甲### 乙」的节，任何按节数做的检查都看不见这种丢失；标题里**示例性引用**标题是合法散文，所以先剥代码段）。
+- **验证**：套件 7→14 例全绿；`unittest discover -s scripts` 87→94 例全绿；`check_doc_anchors` 30 锚点 × 6 本活账本 PASSED；真实 CHANGELOG（25 节）零重复、零粘行。**变异（在真实文件上做，做完逐字节还原）**：① 复制一个真实小节标题 → 查重断言红并点名该标题与两处行号；② 把两个真实标题行粘成一行 → 粘行断言红并报行号。合成夹具另覆盖：好夹具过、重复夹具红、**远距重复也红**（块内 200 行之深，对应真实事故里孪生节不相邻的形状）、粘行夹具红、标题里反引号引用 `### 甲` 不算粘行。
+- **如实边界**：查重只覆盖 `[Unreleased]` 块——版本段内的历史小节不在手术面上，不纳入；CI 的 release-gate 逐套件点名是按文件名 `grep -q test_changelog_structure`，本笔只加方法、不动套件名，**ci.yml 无需改动**。
+
 ### 新增（`system status --remote`：按「远程只报运行事实」定案——GetStatus 不做策略判定，不放部署拓扑）
 
 - **缺口**：`system status` 此前只有本地语义：报 `config_path` 与 `db_status` / `db_driver` / `db_location`，而远端 `GetStatus` 只有运行计数、`store_type` 与 warnings；两者被当成「同一命令的两种模式」会误导——本地探的是 CLI 自己的库，远程问的是 server 进程。
@@ -148,6 +156,7 @@
 - **接线**：`fetchVersionInfo(ctx)` 先 `resolveServiceMode()`，再向工厂要 `GetSystemService()`，local 读二进制变量、remote 走 `GetVersion`；根命令 `levee version` 与 `levee system version` 共用它。`--remote` 白名单（`remoteCapableCommands`）相应加上 `levee version` / `levee system version`。
 - **证据**：`version_remote_test.go` 4 例 + 工厂 2 例。① 端到端起真实 gRPC server（版本串 `test` / commit `test-commit`），断言 `--remote version` 与 `--remote system version` 报**服务端**的值、且**不含**本地构建变量（测试里是 `unknown`）；② `--json` 逐字段核对；③ `--remote version` 在临时 data_dir 下**不创建** `levee.db`；④ 本地模式仍报本二进制。**变异两处（还原后 `sha256` 逐字节相同）**：把 `fetchVersionInfo` 的 mode 参数硬编码成 `modeLocal` → 远程用例红并打印出本地构建信息；让 `GetSystemService` 也要求 store → `TestServiceFactoryLocal_StoreOnlyWhereNeeded` 红。`go test ./cmd/levee/ -count=1` 全绿（91s）。
 - **边界**：`--remote` 的支持面从 3 条扩到 5 条命令，其余命令仍以 `[exit=2]` 拒绝（上一笔的 fail-fast 保持不变）；本笔不碰 change 的写路径，也不改 proto。
+
 ### 测试（把 deployment.md 纳入旗标守卫 + 把 conversation 会话路由钉成三重事实）
 
 - **缺口一：一句没有读者的强断言。** `docs/deployment.md` 前言写着「所有旗标与配置键均与当前代码实现核对，未包含未实现的能力」，而 `cmd/levee/cli_reference_flags_test.go` 只扫 `cli-reference.md` 与 `quickstart.md`——那句话无人验证。它的调用就是普通 `levee serve --flag` 行，本来就在 `docUsageRE` 的匹配形态内，扩一个文档路径即可纳入。
@@ -164,6 +173,7 @@
 - **落地**：① `scripts/check_doc_anchors.py` 把作用域做成**声明式**（`LIVE_DOCS` 六篇：product-roadmap / blocked-items / levee-api / product-positioning / AGENTS / CONTRIBUTING），锚点必须带路径分隔符，校验文件存在 / 行号 ≤ EOF / 区间不倒置；围栏内的示例不算引用；`MIN_ANCHORS=20` 防"扫了个寂寞"；退出码 0/1/2 区分"干净 / 有问题 / 扫不了"（把"读不到文档"报成"全是死锚点"会把人引到错的修法上）。② 修掉 `docs/product-roadmap.md` 的 6 处死锚点：`compat/executor.go:4-7` 与 `rag/embedding.go:7-10` 指向 2026-10-03 已删的包 ⇒ 改写为明确的历史陈述（不带行号，不再冒充锚点）；`approval/service.go:258`、`grpc/change_service.go:116`、`executor/irreversible.go:188`、`wiring/plan.go:119` 是包在、行号漂 ⇒ 重指到当前实现（`internal/approval/service.go:259`、`internal/grpc/change_service.go:90`、`internal/executor/irreversible.go:287`、`internal/wiring/plan.go:150`）。③ 随行订正 `docs/levee-api.md` 第 6 章的 drift 命令：文档写 `drift scan` / `drift show --target`，仓里注册的是 `drift detect` / `drift report`（`cmd/levee/cmd_drift.go:101` / `:754`），目标是 `--host/--hosts`，不存在 `--target` 与 `--depth`——旧写法照着敲直接报 unknown command。
 - **证据（变异打在仓库真实文件上，不是夹具）**：把一个锚点改成 `:99999` → 红并点名 `line 99999 is past EOF (cmd/levee/cmd_drift.go has 1287 lines)`；把一个锚点指向不存在的 `plan2.go` → 红并点名 `no such file`；两次都从备份还原，还原后两份文件 `sha256` 与变异前**逐字节相同**、检查器回绿（27 个锚点 / 6 篇活台账）。检测器自证 7 组样本：缺文件、超 EOF、区间倒置、活锚点对照、裸文件名不算锚点、围栏内豁免双向、声明文档缺失是 exit 2 而非通过。`test_this_suite_is_named_in_the_release_gate_list` 有**先红后绿**的实样：加进 ci.yml 点名清单之前它确实报 `'test_doc_anchors' not found`。
 - **边界**：本门只证"锚点还指向某处"，**不证锚点周围那句话还对**——语义复核仍归人（§7 那 5 处漂移是读代码定的，不是这门发现的）。作用域固定六篇；`docs/security-audit.md`、`docs/review-report.md` 等 9 月快照刻意不扫，它们的锚点属于冻结记录。`scripts/` 自测 77 → **87** 例。
+
 ### 变更（`--remote` 在只有本地语义的命令上 fail-fast，不再静默写本地库）
 
 - **缺陷（静默谎言，且带数据后果）**：`--remote` 是全局旗标，但只有 `agent list / show / remove` 读它。其余命令带着 `--remote` 照常执行——打开**本地** store，把变更、审批、冻结期写进一个 server 永远不读的数据库，然后正常退出。操作者以为在跟 server 说话，实际没有；`docs/cli-reference.md` 当时把这写成"其余命令仍按本地语义执行"，等于把缺陷写成了说明书。
@@ -211,6 +221,7 @@
 - **清理**：`drift.ErrBaselineExists` 是零消费者的死哨兵（注释承诺"覆盖未明示意图时返回"，代码从来没有那条路径），随重新键控一并删除。
 - **边界（仍未做，写在文档里而不是假装覆盖）**：① 没有 `promote` / `export`——要把命名版本变成 `default`，目前只能再 `set --file` 或 `auto` 一次；② 一个任务只有一个版本名、作用于其全部主机，按主机分别钉名要拆成多个任务；③ 版本没有历史链、保留策略与自动淘汰，存几份由操作者自己删；④ 粒度到 `(host, name)` 为止，不做参数级。
 - **验证**：`gofmt -l internal/drift cmd/levee` 空输出；`go vet ./internal/drift/... ./cmd/levee/...` rc=0；`go test -count=1 ./...` rc=0（68 个包 `ok`，零 `FAIL`；`cmd/levee` 196.6s、`internal/drift` 23.4s）；`go test -race -count=2 ./internal/drift` rc=0（`CGO_ENABLED=1` + mingw64 在 PATH，覆盖"同一主机两个版本并发写入"那条用例）；`drift` 包 99 条顶层用例 + 12 条子用例全过；`python scripts/test_changelog_structure.py` 7 tests OK（本条目落在唯一且居首的 `[Unreleased]` 下）；`golangci-lint run ./internal/drift/... ./cmd/levee/...` **rc=0 / `0 issues.`**（本机 v2.13.2 与 CI 钉的 `version: v2.13` 同线，私有 `TMP`/`GOLANGCI_LINT_CACHE` 隔离同机并发的全局锁；第一次跑打印了 `0 issues.` 却以 **rc=4 超时**结束——那**不算通过**，故把 `--timeout` 抬到 570s 重跑到 rc=0，冷缓存 67s）；`golangci-lint run ./internal/drift/... ./cmd/levee/...`（本机 v2.13.2，与 CI 钉的 `version: v2.13` 同线；私有 `TMP` + 私有 `GOLANGCI_LINT_CACHE` 绕开全局锁）**`0 issues.` 且 rc=0**（67s）——第一次带 300s 超时跑时冷缓存打出 `0 issues.` 却以 **rc=4（超时）** 结束，那种组合不是"lint 通过"，故重试到真退码为止；**真二进制走通产品路径**（不是只靠单测）：`levee drift baseline set --host web-01` 与 `--baseline-name pre-migration` 之后，磁盘上同时存在 `web-01.json` 与 `web-01.pre-migration.json`，`drift baseline list --host web-01` 出两行、`NAME` 列分别为 `default` / `pre-migration`。
+
 ### 修复（D-1b 已交付：插件破坏性动作声明接进编译期与计划期；D-2 目标组边界检查整理提交）
 
 - **D-1b 已闭环（PR #234，`b375ec8`，4 个干净 commit：`bf5a387`/`293694e`/`63ddcf3`/`b375ec8`）**：插件破坏性动作声明（`destructive_actions`）通过 registry 持久化（含旧库 `ALTER TABLE` 迁移，`PRAGMA table_info` 守卫 + 显式 `ALTER`，不吞真错误）；编译期 `dsl.NewValidatorWithPluginPolicy` 与计划期 `plan.NewGeneratorWithPluginPolicy` 消费同一份 `dsl.PluginActionPolicy`（破坏性对 / 可逆对 / 已安装模块名，归一化去重）；判定进 `plan_hash`（`irreversible` / `irreversible_reason`），同一插件在不同部署下可逆与不可逆的差异成为事实，不是漂移。旧构造器 `NewValidator` / `NewGenerator` / `WithInherentIrreversible` 保留为破坏性简写，语义不变。**强制档（未声明即默认不可逆）仍未做，已登记为 `docs/blocked-items.md` E-3，由后续产品决定取代。**
@@ -242,7 +253,6 @@
 - **验证**：`gofmt -l internal/ cmd/` 空输出；`go build ./...` rc=0；`go vet ./internal/dsl/... ./internal/executor/...` rc=0；`go test -count=1 ./...` **rc=0，68 个包全 ok、零 FAIL**（`cmd/levee` 93.4s、`internal/grpc` 107.3s、`internal/credential` 67.2s）；`golangci-lint run`（本机 v2.13.2，与 CI 钉的 `version: v2.13` 同线）对改动包 **rc=0 / 0 issues**；真二进制端到端见上。
 - **边界（不外推）**：本笔只把 demo 库的场景脚本与已发布工作流的上述四类缺陷做到"可编译、可校验、计划层可跑"。**apply 的执行期路径、快照采集与回滚、集群接管三条没有在本机实跑**（无 VM、无 PG 集群），已逐条登记在 `deploy/lab/DEMOS.md` §4；守卫 G7 覆盖的是**静态可判**的两档（声明档位 + 不可逆红线），风险分带出的更高下限是计划期值，文件级守卫看不见——那一档仍由引擎在计划期拒绝。
 - **边界订正（2026-11-02）**：上一条里的「apply 执行期路径、快照采集与回滚没有实跑」已不成立——容器靶场实跑后这两条已跑通（真 SSH 上的模块分发、门禁判定、批次切分、失败回滚、快照采集与还原，证据见下文「容器靶场」一节）。**仍未跑**的是集群接管（需 PG 集群与第二节点）与真 VM 实验室；DEMOS.md §4 已按此改写。
-
 
 ### 新增（容器靶场：把执行期路径在没有 VM 的机器上也实跑一遍）
 
