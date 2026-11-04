@@ -22,6 +22,7 @@ import (
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/grpc/pb"
+	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
@@ -43,10 +44,11 @@ type CredentialResolver interface {
 type TargetService struct {
 	pb.UnimplementedTargetServiceServer
 
-	store    state.Store
-	factory  channel.ChannelFactory
-	resolver CredentialResolver // optional; nil disables credential resolution
-	authz    *authz.Authorizer  // optional; nil means no policy configured
+	store     state.Store
+	factory   channel.ChannelFactory
+	resolver  CredentialResolver           // optional; nil disables credential resolution
+	authz     *authz.Authorizer            // optional; nil means no policy configured
+	ownership *inventory.OwnershipRegistry // optional; nil/empty means labels are the only fact
 }
 
 // WithAuthorizer installs the policy authorizer that decides which environment
@@ -56,6 +58,16 @@ type TargetService struct {
 // replays per request.
 func (s *TargetService) WithAuthorizer(a *authz.Authorizer) *TargetService {
 	s.authz = a
+	return s
+}
+
+// WithOwnershipRegistry installs the platform-side ownership facts
+// (target-ownership.yaml). For a host the registry declares, AddTarget must
+// declare the same environment; a nil or empty registry leaves the historical
+// labels-only behaviour untouched, because "no file" means the deployment has
+// not opted into this fact source, not that every write should be refused.
+func (s *TargetService) WithOwnershipRegistry(reg *inventory.OwnershipRegistry) *TargetService {
+	s.ownership = reg
 	return s
 }
 
@@ -142,7 +154,11 @@ func (s *TargetService) AddTarget(ctx context.Context, req *pb.AddTargetRequest)
 	// requires admin on the environment it would take the host OUT of (see its
 	// stored-environment check). The residual is therefore narrow, and worth
 	// stating plainly rather than leaving implied: a caller may still assert an
-	// environment for an address the platform has never held.
+	// environment for an address the platform has never held. The ownership
+	// registry closes that residual for every host it declares (see
+	// WithOwnershipRegistry); hosts it does not declare keep the
+	// labels-and-default-env behaviour above, so the registry's coverage is the
+	// bound of this check — not a claim that every label is now true.
 	if err := authorizeResource(ctx, s.authz, req.Labels[targetEnvLabelKey],
 		permission.ActionAdmin, "AddTarget"); err != nil {
 		return nil, err
@@ -158,6 +174,25 @@ func (s *TargetService) AddTarget(ctx context.Context, req *pb.AddTargetRequest)
 			port = 5985
 		default:
 			port = 22
+		}
+	}
+
+	// Single-host registration has no env-conflict exemption: an exemption here
+	// would be a per-request bypass of the very gate this closes, while a bulk
+	// import has a legitimate "sync the file as written" use case. The check is
+	// after authorization so an unauthorized caller learns nothing about the
+	// registry, and before any store write so a refusal leaves no row behind.
+	if regEnv, ok := s.ownership.Lookup(req.Hostname); ok {
+		declared := req.Labels[targetEnvLabelKey]
+		if declared != regEnv {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"AddTarget refused: %s (single-host registration has no env-conflict exemption)",
+				inventory.EnvConflict{
+					Host:        req.Hostname,
+					Port:        port,
+					RegistryEnv: regEnv,
+					DeclaredEnv: declared,
+				}.String())
 		}
 	}
 

@@ -8,13 +8,16 @@ package grpc
 import (
 	"context"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
@@ -23,9 +26,10 @@ import (
 type InventoryService struct {
 	pb.UnimplementedInventoryServiceServer
 
-	store    state.Store
-	importer *inventory.Importer
-	authz    *authz.Authorizer // optional; nil means no policy configured
+	store     state.Store
+	importer  *inventory.Importer
+	authz     *authz.Authorizer            // optional; nil means no policy configured
+	ownership *inventory.OwnershipRegistry // optional; nil/empty means labels are the only fact
 }
 
 // WithAuthorizer installs the policy authorizer. Groups and bulk imports are
@@ -33,6 +37,16 @@ type InventoryService struct {
 // resource_authz.go for the whole posture.
 func (s *InventoryService) WithAuthorizer(a *authz.Authorizer) *InventoryService {
 	s.authz = a
+	return s
+}
+
+// WithOwnershipRegistry installs the platform-side ownership facts. A bulk
+// import must not silently write labels that contradict a host's registered
+// environment; the one escape is the request's allow_env_conflict, which is
+// explicit per call and audited. Nil or empty keeps the historical behaviour,
+// because no target-ownership.yaml means "not opted in", not "refuse imports".
+func (s *InventoryService) WithOwnershipRegistry(reg *inventory.OwnershipRegistry) *InventoryService {
+	s.ownership = reg
 	return s
 }
 
@@ -163,9 +177,29 @@ func (s *InventoryService) ImportTargets(ctx context.Context, req *pb.ImportTarg
 				ch.Row, ch.Host, ch.Port, from, to, from, err)
 		}
 	}
+	// The loops above judge the FILE's declaration and the row's OLD env. This
+	// judges the env the import would LEAVE: for an existing row that is the
+	// merged label set (a labels-free re-import preserves it), for a new row it
+	// is what the file declares. The registry is the platform's own fact, so a
+	// write that would contradict it is refused unless the caller names the
+	// exemption for THIS call. There is deliberately no serve-level switch: one
+	// that stayed on would make the check decorative.
+	conflicts, err := s.importer.EnvConflicts(ctx, s.ownership, f)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "check target ownership: %v", err)
+	}
+	overrideEnvConflict := len(conflicts) > 0 && req.GetAllowEnvConflict()
+	if len(conflicts) > 0 && !overrideEnvConflict {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"ImportTargets refused: %s; pass allow_env_conflict to import the file as declared (the override is audited)",
+			inventory.FormatEnvConflicts(conflicts))
+	}
 	sum, err := s.importer.Import(ctx, f, req.GetDefaultGroup())
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "import: %v", err)
+	}
+	if overrideEnvConflict {
+		s.recordEnvConflictOverride(ctx, conflicts)
 	}
 	return &pb.ImportTargetsResponse{
 		Created: int32(sum.Created),
@@ -173,6 +207,31 @@ func (s *InventoryService) ImportTargets(ctx context.Context, req *pb.ImportTarg
 		Failed:  int32(sum.Failed),
 		Errors:  sum.Errors,
 	}, nil
+}
+
+// recordEnvConflictOverride writes the evidence for an explicit
+// allow_env_conflict import. It runs AFTER the import committed, so a failed
+// audit never unwinds rows that are already written — the same posture as
+// ChangeService.recordAudit. The gap is logged rather than silently discarded.
+func (s *InventoryService) recordEnvConflictOverride(ctx context.Context, conflicts []inventory.EnvConflict) {
+	id, err := generateID("aud-")
+	if err != nil {
+		log.Warn("audit id generation failed; env-conflict override left unaudited",
+			"conflicts", len(conflicts), "error", err)
+		return
+	}
+	entry := &state.Audit{
+		ID:        id,
+		Action:    state.AuditActionImportEnvConflict,
+		Actor:     SubjectFromContext(ctx),
+		Target:    inventory.EnvConflictHosts(conflicts),
+		Result:    state.AuditResultSuccess,
+		Timestamp: time.Now().UTC(),
+	}
+	if err := audit.Record(ctx, s.store, entry); err != nil {
+		log.Warn("audit write failed",
+			"action", entry.Action, "conflicts", len(conflicts), "error", err)
+	}
 }
 
 func (s *InventoryService) SetTargetStatus(ctx context.Context, req *pb.SetTargetStatusRequest) (*pb.SetTargetStatusResponse, error) {

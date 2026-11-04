@@ -8,7 +8,10 @@
 // the missing input, named in the ledger as needing a platform-side ownership
 // fact source; the shape follows alert-sources.yaml, the repo's precedent: a
 // registration decides what a thing belongs to, and nothing in a request can
-// override it.
+// override it. The ONE exception is deliberate and per-call: ImportTargets can
+// carry allow_env_conflict, which writes the file's declaration anyway and
+// leaves an audit row. There is no serve-level switch, because one that stayed
+// on would make the check decorative.
 //
 // The file lives in the data directory (not the main config, which gets pasted
 // into tickets and reviews) and is OPTIONAL: no file means "the platform has no
@@ -27,6 +30,7 @@
 package inventory
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -178,6 +182,142 @@ func LabelConflicts(reg *OwnershipRegistry, rows []*state.Target) []LabelConflic
 		})
 	}
 	return out
+}
+
+// EnvConflict is one target declaration whose environment would disagree with
+// the platform-side ownership fact.
+//
+// Row is the declaration's position in the inventory file ("targets[2]"), kept
+// because a hostname alone does not tell an operator which line to fix when a
+// file bundles many hosts. DeclaredEnv is the value the write would LEAVE on
+// the row — for an existing target that is the merged result (see
+// mergedLabels), not merely what this file spells out, so a labels-free
+// re-import that preserves a stale value is judged like one that writes it.
+type EnvConflict struct {
+	Row         string
+	Host        string
+	Port        int
+	RegistryEnv string
+	DeclaredEnv string
+}
+
+// String renders one conflict as an operator-facing sentence. The empty
+// declared value is spelled out rather than left as `""`, because "the row
+// carries no env at all" is a distinct (and common) way to disagree with the
+// registry.
+func (c EnvConflict) String() string {
+	declared := c.DeclaredEnv
+	if declared == "" {
+		declared = "(none)"
+	}
+	prefix := ""
+	if c.Row != "" {
+		prefix = c.Row + " "
+	}
+	return fmt.Sprintf("%s%s:%d would carry env %q but %s registers it as %q",
+		prefix, c.Host, c.Port, declared, OwnershipFileName, c.RegistryEnv)
+}
+
+// FormatEnvConflicts renders a refusal message without letting one bad file
+// produce an unbounded error string. The cap is the same "name enough to act,
+// count the rest" shape used elsewhere in the repo's refusal messages.
+func FormatEnvConflicts(conflicts []EnvConflict) string {
+	const max = 5
+	parts := make([]string, 0, len(conflicts))
+	for i, c := range conflicts {
+		if i == max {
+			parts = append(parts, fmt.Sprintf("and %d more", len(conflicts)-max))
+			break
+		}
+		parts = append(parts, c.String())
+	}
+	return strings.Join(parts, "; ")
+}
+
+// EnvConflictHosts renders a bounded host:port list for an audit row's Target
+// column — the only place the audit schema can name WHICH hosts an override
+// covered, since it has no detail column. A large import must not produce an
+// unbounded string, so the tail is a count.
+func EnvConflictHosts(conflicts []EnvConflict) string {
+	const max = 8
+	parts := make([]string, 0, len(conflicts))
+	for i, c := range conflicts {
+		if i == max {
+			parts = append(parts, fmt.Sprintf("+%d more", len(conflicts)-max))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%s:%d", c.Host, c.Port))
+	}
+	return strings.Join(parts, ",")
+}
+
+// EnvConflicts reports every declaration whose resulting env label would
+// contradict target-ownership.yaml.
+//
+// Why the merge is applied first: an import that omits labels still writes
+// whatever mergedLabels preserves, so judging only td.Labels would miss the
+// stale row a "labels-free" re-import keeps alive. Rows the importer will fail
+// (bad address or status) are skipped for the same reason LabelChanges skips
+// them: they reach no write.
+//
+// A nil or empty registry returns nil. No registry means the deployment has
+// not opted into platform-side ownership facts, and this check must not invent
+// one from labels or the default environment.
+func (im *Importer) EnvConflicts(ctx context.Context, reg *OwnershipRegistry, f *File) ([]EnvConflict, error) {
+	if f == nil {
+		return nil, fmt.Errorf("inventory: nil file")
+	}
+	if !reg.Configured() {
+		return nil, nil
+	}
+	var out []EnvConflict
+	for i, td := range f.Targets {
+		host, port, err := targetAddressFor(td)
+		if err != nil {
+			continue
+		}
+		regEnv, ok := reg.Lookup(host)
+		if !ok {
+			continue // the registry does not declare this host; labels remain the only fact
+		}
+		status := td.Status
+		if status == "" {
+			status = state.StatusActive
+		}
+		if !validStatuses[status] {
+			continue
+		}
+		// A row the importer will reject for its channel reaches no write
+		// either; reporting it as an ownership conflict would blame the wrong
+		// field and block the rest of the file.
+		channel := td.ChannelType
+		if channel == "" {
+			channel = "ssh"
+		}
+		if !validChannels[channel] {
+			continue
+		}
+		resulting := td.Labels
+		existing, err := im.store.FindTargetByAddress(ctx, host, port)
+		if err != nil {
+			return nil, err
+		}
+		if existing != nil {
+			resulting = mergedLabels(td.Labels, existing.Labels, status, existing.Status)
+		}
+		declared := resulting[targetEnvLabelKey]
+		if declared == regEnv {
+			continue
+		}
+		out = append(out, EnvConflict{
+			Row:         fmt.Sprintf("targets[%d]", i),
+			Host:        host,
+			Port:        port,
+			RegistryEnv: regEnv,
+			DeclaredEnv: declared,
+		})
+	}
+	return out, nil
 }
 
 // targetEnvLabelKey mirrors the label the resolver reads

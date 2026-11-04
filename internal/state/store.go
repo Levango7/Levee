@@ -883,6 +883,11 @@ const (
 	AuditActionResumeAll        = "resume_all"
 	AuditActionTenantPurge      = "tenant_purge"
 	AuditActionPermissionDenied = "permission.denied"
+	// AuditActionImportEnvConflict records a bulk import that was allowed to
+	// contradict target-ownership.yaml because the caller passed
+	// allow_env_conflict. The row is the evidence that the contradiction was an
+	// explicit, per-call decision rather than a silent default.
+	AuditActionImportEnvConflict = "import_env_conflict"
 
 	// AuditTargetAll is the wildcard Target for actions that cover everything
 	// rather than one row (a bulk pause summary, a denial with no run).

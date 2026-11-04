@@ -1693,6 +1693,15 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	diagSvc := grpc.NewDiagnosisService(diagEngine, slog.Default()).
 		WithAuthorizer(authzSvc).
 		WithTargetEnvResolver(grpc.TargetEnvResolver(store, ownershipReg))
+	// The WRITE side of the same facts. Reading policy already prefers the
+	// registry (the resolver above); without this, a write could still assert an
+	// environment the platform says is false, and the gate would judge the
+	// claim instead of the machine. Wired here rather than at the construction
+	// sites above so the load has exactly one value handed to every consumer —
+	// cmd/levee/cmd_serve_ownership_test.go pins that the resolver gets the
+	// loader's value, and the same variable feeds these two calls.
+	targetSvc.WithOwnershipRegistry(ownershipReg)
+	inventorySvc.WithOwnershipRegistry(ownershipReg)
 	// Multi-turn LLM reasoning on top of the rule-based diagnosis, when the
 	// ai.llm section is enabled. Split out of this function (whose cyclomatic
 	// complexity sits at the lint budget) — see installServeDiagnosisReasoner.

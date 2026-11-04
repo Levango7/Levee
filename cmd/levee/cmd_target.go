@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
@@ -21,14 +24,15 @@ import (
 
 // Target command option variables.
 var (
-	targetListOptFormat    string
-	targetImportOptFile    string
-	targetImportOptGroup   string
-	targetCheckOptTarget   string
-	targetStatusOptTarget  string
-	targetHistOptLimit     int
-	targetListGroupFilter  string
-	targetListStatusFilter string
+	targetListOptFormat             string
+	targetImportOptFile             string
+	targetImportOptGroup            string
+	targetImportOptAllowEnvConflict bool
+	targetCheckOptTarget            string
+	targetStatusOptTarget           string
+	targetHistOptLimit              int
+	targetListGroupFilter           string
+	targetListStatusFilter          string
 )
 
 func init() {
@@ -83,6 +87,8 @@ func newTargetImportCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&targetImportOptFile, "file", "", "YAML inventory file path (required)")
 	cmd.Flags().StringVar(&targetImportOptGroup, "default-group", "", "Assign targets without an explicit group to this group")
+	cmd.Flags().BoolVar(&targetImportOptAllowEnvConflict, "allow-env-conflict", false,
+		"Import even when a host's env label contradicts target-ownership.yaml; the override is printed and counted")
 	_ = cmd.MarkFlagRequired("file")
 	return cmd
 }
@@ -333,9 +339,39 @@ func runTargetImport(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("parse inventory yaml: %w", err)
 	}
 
-	sum, err := inventory.NewImporter(store).Import(ctx, f, targetImportOptGroup)
+	importer := inventory.NewImporter(store)
+
+	// The local path writes the SAME rows as InventoryService.ImportTargets (it
+	// calls the importer directly), so leaving the ownership check only on the
+	// service would make `levee target import` the bypass. Same rule, same flag
+	// name, same default-refuse posture.
+	cfg, err := loadConfigForCmd()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	reg, err := inventory.LoadOwnership(cfg.Server.DataDir)
+	if err != nil {
+		return fmt.Errorf("load target ownership: %w", err)
+	}
+	conflicts, err := importer.EnvConflicts(ctx, reg, f)
+	if err != nil {
+		return fmt.Errorf("check target ownership: %w", err)
+	}
+	if len(conflicts) > 0 && !targetImportOptAllowEnvConflict {
+		return fmt.Errorf("target import refused: %s; pass --allow-env-conflict to import the file as declared (the override is audited)",
+			inventory.FormatEnvConflicts(conflicts))
+	}
+
+	sum, err := importer.Import(ctx, f, targetImportOptGroup)
 	if err != nil {
 		return fmt.Errorf("import: %w", err)
+	}
+	if len(conflicts) > 0 {
+		fmt.Fprintf(os.Stderr, "warning: imported %d host(s) whose env contradicts %s: %s\n",
+			len(conflicts), inventory.OwnershipFileName, inventory.FormatEnvConflicts(conflicts))
+		if err := recordTargetImportEnvConflict(ctx, store, conflicts); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to write target-import env-conflict audit: %v\n", err)
+		}
 	}
 
 	output := map[string]any{
@@ -352,6 +388,36 @@ func runTargetImport(cmd *cobra.Command, args []string) error {
 
 	printTargetImportHuman(os.Stdout, output)
 	return nil
+}
+
+// recordTargetImportEnvConflict writes the local half of the
+// --allow-env-conflict audit. The import has already committed, so a failure
+// here is a warning rather than an undo — the same posture as every other CLI
+// audit writer (see cmd_cancel).
+func recordTargetImportEnvConflict(ctx context.Context, store state.Store, conflicts []inventory.EnvConflict) error {
+	id, err := newTargetImportAuditID()
+	if err != nil {
+		return err
+	}
+	return audit.Record(ctx, store, &state.Audit{
+		ID:        id,
+		Action:    state.AuditActionImportEnvConflict,
+		Actor:     currentActor(),
+		Target:    inventory.EnvConflictHosts(conflicts),
+		Result:    state.AuditResultSuccess,
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+// newTargetImportAuditID mints an unpredictable identity for the override row.
+// A timestamp-derived id would be guessable, which the other CLI audit writers
+// already refuse.
+func newTargetImportAuditID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate target-import audit id: %w", err)
+	}
+	return "audit-import-" + hex.EncodeToString(b), nil
 }
 
 // runTargetSetStatus applies a lifecycle status transition to a target.

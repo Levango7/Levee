@@ -19,13 +19,17 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -161,6 +165,65 @@ func TestRESTInventoryImportAndHistoryCarryThrough(t *testing.T) {
 	require.NoError(t, err)
 	defer stResp.Body.Close()
 	assert.Equal(t, http.StatusOK, stResp.StatusCode)
+}
+
+// The REST surface carries the same ownership check as the gRPC one, and it
+// carries the override through a different key. This file pins the REST half:
+// the JSON key `allow_env_conflict` must reach the service, and the refusal
+// must surface as 412 (FailedPrecondition) rather than a swallowed 500.
+func TestRESTInventoryImportRespectsOwnershipRegistry(t *testing.T) {
+	gw, srv, store := startTestGateway(t, ServeGatewayConfig{})
+
+	// The registry is read from the data directory in production; the test
+	// materialises the same file rather than inventing a second constructor.
+	dataDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dataDir, inventory.OwnershipFileName),
+		[]byte("hosts:\n  - hostname: 10.9.0.1\n    environment: prod\n"), 0o600))
+	reg, err := inventory.LoadOwnership(dataDir)
+	require.NoError(t, err)
+	require.True(t, reg.Configured(), "the fixture must opt in, or the test proves nothing")
+	gw.SetInventory(NewInventoryService(store).WithAuthorizer(nil).WithOwnershipRegistry(reg))
+
+	// Refused by default.
+	resp, err := http.Post(srv.URL+"/targets/import", "application/json",
+		strings.NewReader(`{"yaml":"targets:\n  - address: 10.9.0.1\n    labels:\n      env: dev\n"}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusPreconditionFailed, resp.StatusCode,
+		"an env conflict must surface as 412, the REST mapping of FailedPrecondition")
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "10.9.0.1")
+	assert.Contains(t, string(body), "allow_env_conflict",
+		"the refusal must tell the caller the override key exists")
+
+	rows, lerr := store.ListTargets(context.Background(), state.TargetFilter{})
+	require.NoError(t, lerr)
+	assert.Empty(t, rows, "a refused import must not write a row")
+
+	// With the key set, the file imports as declared.
+	okResp, err := http.Post(srv.URL+"/targets/import", "application/json",
+		strings.NewReader(`{"yaml":"targets:\n  - address: 10.9.0.1\n    labels:\n      env: dev\n","allow_env_conflict":true}`))
+	require.NoError(t, err)
+	defer okResp.Body.Close()
+	require.Equal(t, http.StatusOK, okResp.StatusCode)
+	var imported struct {
+		Created int32 `json:"created"`
+	}
+	require.NoError(t, json.NewDecoder(okResp.Body).Decode(&imported))
+	assert.Equal(t, int32(1), imported.Created, "the explicit override must write")
+
+	row, ferr := store.FindTargetByAddress(context.Background(), "10.9.0.1", 22)
+	require.NoError(t, ferr)
+	require.NotNil(t, row)
+	assert.Equal(t, "dev", row.Labels["env"], "the override writes the file as declared")
+
+	// …and it is evidence.
+	entries, err := store.ListAudits(context.Background(), state.AuditFilter{
+		Action: state.AuditActionImportEnvConflict,
+	})
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "a REST override must leave the same audit row the RPC path does")
 }
 
 // Group filter on the targets list: the label-selector path already filters

@@ -406,17 +406,16 @@ levee template validate db-migrate
 命令示例：列出目标机
 
 ```bash
-levee target list --group web --status reachable
+levee target list --group web --status active
 ```
 
 表：target list 选项参数说明表
 
 | 选项 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `--label key=val` | label | 否 | 按标签过滤，可多次指定 |
-| `--status <s>` | enum | 否 | reachable / unreachable / unknown |
-| `--channel <type>` | enum | 否 | ssh / winrm / agent / api / interactive |
-| `--limit <n>` | int | 否 | 返回条数 |
+| `--group <name>` | string | 否 | 按分组名过滤 |
+| `--status <s>` | enum | 否 | active / frozen / retired |
+| `--format <fmt>` | string | 否 | 输出格式（text） |
 
 命令示例：目标机连通性检查
 
@@ -437,9 +436,12 @@ levee target import --file ./hosts.yaml --default-group web
 | 选项 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `--file <path>` | path | 是 | 主机清单 YAML 文件 |
-| `--merge` | bool | 否 | 合并模式，已存在主机更新标签，不删除 |
-| `--replace` | bool | 否 | 替换模式，未在清单中的主机标记为 unmanaged |
-| `--dry-run` | bool | 否 | 仅展示变更不落库 |
+| `--default-group <name>` | string | 否 | 未声明 `group` 的主机归入此分组（不存在时创建） |
+| `--allow-env-conflict` | bool | 否 | 允许写入与该主机在 `target-ownership.yaml` 中环境不一致的 `labels.env`；覆盖写审计并打印警告 |
+
+导入按地址（hostname + port）幂等：已存在的主机更新，新主机创建，清单中缺失的主机不会被删除。
+
+**环境归属检查**：`<dataDir>/target-ownership.yaml` 声明过的主机，若清单会把它的 `env` 写成另一个值，导入默认失败并点名两侧环境。豁免只作用于本次调用（`--allow-env-conflict`），对应 REST `POST /targets/import` 的 `allow_env_conflict` 与 gRPC `ImportTargetsRequest.allow_env_conflict`；`AddTarget` 没有豁免。注册表未声明的主机不受影响。
 
 ### 4.4 target remove
 
