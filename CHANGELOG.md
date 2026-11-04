@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 测试（旗标守卫扩面：`identity-deployment.md` 入扫，并修掉一个会让新文档一入扫就假红的行首匹配）
+
+- **缺口**：`cmd/levee/cli_reference_flags_test.go` 的扫描名单收着 cli-reference / quickstart / deployment / levee-api 四本，而 `docs/identity-deployment.md`——SSO 与命名令牌的部署指南，其 §4 自称「三条命令，逐条可复现」——一直在名单外。它与 levee-api.md 同形状（裸 `levee …` 行、操作者照敲），却没有任何 CI 打开过它。
+- **入扫后第一条红不是文档错，是门自己的假阳性**：`role_map` 的 YAML 键 `levee-admins: sre` / `levee-operators: operator` / `levee-viewers: viewer`（该文档 41–43 行）被 `^\s*levee(.*)$` 当成命令行，报出三个「文档写了不存在的命令」。命令行的形状是 `levee` 后接空白或行尾——永远不会是 `levee-` 或 `levee:`，故给正则补上尾部边界。
+- **顺带修一条陈旧注释**：扫描名单的注释写着「表格行见 TestDocumentedCommandsExist」，而该测试**全仓不存在**——不存在的命令一直由本测试的 `cmd == nil` 分支负责报。留着这个引用只会让下一个人去找一个不存在的测试。
+- **验证**：入扫 + 边界修复后 **583 处旗标引用对 cobra 树全绿**（门自带 ≥40 的地板断言，扫不到东西不会是绿）。文档内 5 条命令（`serve --token` / `authz status --json` / `authz explain` ×3）逐条真实注册，**文档一个字都不用改**。
+- **变异（两条，均先红后还原）**：① 正则退回无边界形状 → 41–43 行假阳性红复现（证明文档确已入扫、边界修复承重）；② 往文档注入 `--resolution-hint` 假旗标 → 门在该行红并列出 `authz explain` 的真实旗标全集（证明真命令行也在扫，不只是 YAML 键那条路）。
+- **如实边界**：续行命令（`levee serve --token <密钥> \` 接下一行 `--auth-token …`）只有首行入扫，续行旗标不在检查面——方向与该门「可以少记、不许记错」的既定口径一致（漏检在安全侧），本笔不收窄。
+
 ### 文档（`levee-api.md` 第 6 章 drift 命令口径收口：正文早已订正，补掉仍在引用旧 `scan/show` 的台账）
 
 - **缺口**：`docs/levee-api.md` 第 6 章正文已于 2026-11-01 按实际 CLI 订正为 `drift detect` / `drift report`，但 `docs/review-report.md` 仍把第 6 章写成 `scan/show` 并判「一致」，`docs/product-roadmap.md` 也还挂着「登记不修」，`docs/mvp-plus1-roadmap.md` 的 F10 行还用 `drift scan` 指代已有能力——同一条旧口径被三处台账继续背书。

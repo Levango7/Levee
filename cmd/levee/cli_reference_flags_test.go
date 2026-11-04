@@ -30,8 +30,13 @@ import (
 var docFlagRE = regexp.MustCompile(`--([a-z0-9][a-z0-9-]*)`)
 
 // docUsageRE matches a command line inside the references: it must start with
-// `levee` at the beginning of a line or after a backtick.
-var docUsageRE = regexp.MustCompile(`(?m)^\s*(?:\$\s*)?levee([^\n]*)$`)
+// `levee` at the beginning of a line, followed by whitespace or the end of the
+// line. The trailing boundary is load-bearing: without it, YAML keys such as
+// `levee-admins: sre` (role_map entries in identity-deployment.md) and prose
+// keys like `levee:` are read as invocations, and the gate reports a command
+// that was never documented as a command. An invocation is `levee` (bare) or
+// `levee <args>` — never `levee` glued to a hyphen or a colon.
+var docUsageRE = regexp.MustCompile(`(?m)^\s*(?:\$\s*)?levee(?:[ \t]([^\n]*))?$`)
 
 func TestDocumentedFlagsAreRegistered(t *testing.T) {
 	require.NotNil(t, rootCmd)
@@ -61,8 +66,18 @@ func TestDocumentedFlagsAreRegistered(t *testing.T) {
 		// `levee doctor` as top-level commands that the binary does not register
 		// (delegate and rollback-all do not exist at all; the other three are
 		// `system` sub-commands). Same shape as the references: a `levee …`
-		// command line. See TestDocumentedCommandsExist for the table rows.
+		// command line. A command line that does not resolve is reported by this
+		// same test (the cmd == nil branch below) — there is no second,
+		// table-row-shaped test in this package despite an older comment here
+		// claiming one; that stale reference was removed with this scan entry.
 		filepath.Join("..", "..", "docs", "levee-api.md"),
+		// identity-deployment.md is the deployment guide operators follow when
+		// turning on SSO or named-token auth, and its §4 is explicitly a set of
+		// copy-paste acceptance commands ("三条命令，逐条可复现"). It was outside
+		// this scan while the API reference and the quickstart were in — the
+		// same shape as levee-api.md: bare `levee …` invocations a reader runs
+		// verbatim, with nothing in CI ever opening the file.
+		filepath.Join("..", "..", "docs", "identity-deployment.md"),
 	} {
 		src, err := os.ReadFile(doc)
 		require.NoError(t, err, "the docs the gate reads must exist: %s", doc)
