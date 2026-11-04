@@ -283,11 +283,27 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 
 ## 12. 2026-11-05 复核（追加，不改写 §1–§11）
 
-**为什么又有这一节**：§10 结尾我自己写了"下一轮复核应以 `e6f6f34` 为新基线重测"。去兑的时候 master 已经是 `e848f79`——自 §10 的基线 `9974b44` 以来前进 **10** 笔（其中三笔是 §10 自己那批：`65bdf8e` / `4a35a4d` / `274fcda`；另有 `1d8e511` 把 API 参考纳入 CLI 示例守卫并订正 20 处假命令、`e848f79` 收口 `levee-api` 第 6 章并加注 §11）。所以本轮基线是 **`e848f79`**（本笔最终落在 `8ab41428` 之上 = 自 `9974b44` 起 **11** 笔；两处的差是 1 笔，实测 `git rev-list --count`）。
+**为什么又有这一节**：§10 结尾我自己写了"下一轮复核应以 `e6f6f34` 为新基线重测"。去兑的时候 master 已经是 `e848f79`——自 §10 的基线 `9974b44` 以来前进 **10** 笔（其中三笔是 §10 自己那批：`65bdf8e` / `4a35a4d` / `274fcda`；另有 `1d8e511` 把 API 参考纳入 CLI 示例守卫并订正 20 处假命令、`e848f79` 收口 `levee-api` 第 6 章并加注 §11）。所以本轮基线是 **`e848f79`**（本笔最终落在 `4c0b42db` 之上 = 自 `9974b44` 起 **15** 笔；测量两次：`8ab41428` 时 11 笔、`4c0b42db` 时 15 笔，`git rev-list --count`）。
 
-> 和 §10 一模一样的情形又发生了一次：本 PR 在 rebase 时 master 又前进一笔（`8ab41428`，pi 的旗标守卫扩面），**那一笔之后我没有重跑全量 / lint / PG**——下面那张测量表里的 72 包、412+50 个 PG PASS、60 个 RPC、lint `0 issues.` 仍属 `e848f79`，下一轮复核请以当时的 live master 为准，别拿本节当"最新"。
+> 和 §10 一模一样的情形又发生了一次，而且这次连发生了**两轮**：本 PR 第一次 rebase 时 master 前进一笔（`8ab41428`，pi 的旗标守卫扩面），第二次 rebase 时又前进五笔（base = `4c0b42db`，含 ADR-008 写侧实现与 #280 落地），**这两轮之后我都没有重跑全量 / lint / PG**——下面那张测量表里的 72 包、412+50 个 PG PASS、60 个 RPC、lint `0 issues.` 仍属 `e848f79`，下一轮复核请以当时的 live master 为准，别拿本节当"最新"。
 >
 > 但**指向别人的坐标必须按 base 复算**，否则一落地就是假话：推送前我在 `8ab41428` 上逐条重读了本节引用的 `file:line` 与 PR 状态，改四处——① 旗标守卫的行号 `:49`/`:65` → `:54`/`:73`；② "identity-deployment.md 正在另一条线上接" → 已落在 base；③ "`#272` 还没进 master" → **错了**，`74653e18` 是本基线的祖先（不过它新增 RPC 为 0，计数不受影响）；④ 板面成员与派单号那两条按复读时刻改写。这四条都不是墙钟类测量，重读即可判定，所以不受上一句"没有重跑"的限制。
+
+### 第二轮 rebase（base `4c0b42db`）后的复算：可机器判的那批全部未变
+
+第二轮把 base 又推了 4 笔（`91a7509d` 测试选址、`7c191fc7` = PR #280、`3be8895` ADR-008 写侧实现、`4c0b42db` 其 CHANGELOG 补节），**这批改动碰了产品代码与 proto**，所以本节所有可机器复算的计数在新 base 上重跑一遍：
+
+| 计数 | `e848f79` | `4c0b42db` | 判据 |
+| --- | --- | --- | --- |
+| `proto/levee.proto` RPC | 41 | **41** | `grep -c '^\s*rpc '`（`3be8895` 只动 `levee_extra.proto`） |
+| `proto/levee_extra.proto` RPC | 19 | **19** | 同上——它 +6 行是 `allow_env_conflict` 的 message 字段，不是新 RPC |
+| `^service` | 5 + 5 = 10 | **5 + 5 = 10** | 同上 |
+| `blocked-items` 分类 | A5 / B0 / C3 / D3 / E3 / F1 | **同** | 按 `^| [A-F]-\d` 行计数 |
+| roadmap `^\| P` 行 | 47 | **47** | 本节"未决行数"那张表的分母 |
+| roadmap 被引行号 | :26/:28/:29/:30/:31/:32/:36/:43/:46/:80/:96–:98 | **逐行回读一致** | 每条按内容核对（删除线 / 优先级格 `✅` / 尾列 `✅` / 「已修」/ 两列表） |
+| 旗标守卫锚点 | :54/:55/:61/:73/:80 | **同** | `git diff --name-only 8ab4142 4c0b42d` 不含 `cli_reference_flags_test.go` |
+
+墙钟类（72 包 / 412+50 PG PASS / lint `0 issues.`）**没有**重跑——那要四十分钟以上，而本笔零产品代码改动，它们的归属仍按上面那条按语算作 `e848f79`。
 
 ### 复测（命令 + 实测，本轮全部重跑）
 
@@ -299,6 +315,13 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 | proto 计数 | `grep -c '^\s*rpc ' proto/*.proto` | **60** = `levee.proto` **41** + `levee_extra.proto` **19**；`^service` **10** | 不变。**收回本节初稿的一条**：初稿写"`#272` 那条链在扩 proto，但还没进 master"——按 base 复算，#272 的合并 commit `74653e18`（2026-11-03T23:13Z）**已是 `e848f79` 的祖先**，"还没进"是错的；但它对 `proto/levee.proto` 的 54 行改动**新增 RPC 数为 0**（`git show 74653e18 -- proto/levee.proto | grep -c '^+.*rpc '` = 0，改的是 message 字段），所以 41/19/60 这三个数不受它影响，也不因它而过期 |
 | 搁置项分类 | 数 `docs/blocked-items.md` 各节表行 | A **5**、B **0**、C **3**、D **3**（其中 D-1b 已交付 ⇒ 活跃 2）、E **3**（全部已定档）、F **1** | 不变 |
 | 守卫扫描面 | 读 `cmd/levee/cli_reference_flags_test.go`（**按本笔 base `8ab41428` 重读**） | 扫描面 **5** 本文档：`docs/cli-reference.md`（:54）、`quickstart.md`（:55）、`deployment.md`（:61）、`docs/levee-api.md`（:73）、`docs/identity-deployment.md`（:80） | **比 §10 多两本**。本节初稿写的是 `e848f79` 上的 `:49`/`:65` 与"`identity-deployment.md` 正在另一条线上接"——推送前按 base 复算时两处都已过期（行号漂到 :54/:73，那一笔已落在 base）。这是 §7 那类"文档说假话"从被查得到查不到的边界 |
+
+### 一条挡住本轮落地的环境事实：macOS **arm64** 池容量（本轮实测，非转述）
+
+- **现象**：#282 自己那笔 run `41874663901` 与 master 的 `41885083482` 都变红，但**除聚合器外只有一条 macos 腿不是 success**——前者 22 条 success + `build (macos-latest/arm64)` cancelled + `check (all jobs passed)` failure，后者同一形态（`test (macos-latest)` cancelled）。
+- **根因有出处**：run `41885083482` 的 job `126767273532` 是 `conclusion=cancelled` 且 **`runner=null`**（从未被任何 runner 领取），注解原文 `The job was not acquired by Runner of type hosted even after multiple attempts`，同批还有 GitHub 自己的公告 `Due to capacity constraints, jobs targeting macOS arm64 runners may experience longer queue times.` ⇒ **不是内容红，是池子没接活**；聚合器把 cancelled 计成 failure，所以一条基础设施抖动会伪装成门禁红。
+- **恢复判据**：本轮挂一个只读看守，每 600s 采最近若干笔已完成 run 的 macos 腿，判据是"有 macos 腿且零 cancelled"。实测 18:57Z 那一轮 8 条腿里 3 条 cancelled；21:53Z 最近 3 笔的 9 条腿全 success ⇒ 判恢复后才推送。
+- **省事的办法不是重跑整条流水线**：先取证（`runner` 是不是 null、注解原文说什么），再决定**等池子缓过来**还是用 `gh run rerun --failed` 只重放失败腿——上一批 #274 那笔就是靠后者从 attempt 3 转绿的（run `41481819152`，`attempt=3`、`conclusion=success` 实测）。本轮没有需要重放的内容红，所以等恢复后一次性推送。
 
 ### 要收回的一条：§10 的"墙钟大头"排法本身是错的
 
@@ -327,8 +350,8 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 
 ### 分工与我自己那两条的状态
 
-- 板面（本节初稿按 `e848f79` 读，**推送前于 2026-11-05T02:58+08:00 复读**）：`opencode` 两条（`feat/abac-write-side-env-ownership` = **ADR-008 的实现**；`feat/system-status-remote` = PR **#280**）、`qoder` 一条（`feat/remote-read-audit-group`）、本线一条。初稿里的 `pi` 那条（`test/flag-guard-identity-deployment`，把旗标守卫再扩一个文档）**已落在本笔 base `8ab41428`**，不再是 active。`feat/system-status-remote` 的声明 ttl 240 分钟已在 02:10 到期但分支仍在跑 CI——按板纪律我只报不删。
-- **ADR-008 的五个问题已由 owner 定案**（写在派单引用 `PI-LEVEE-005` 里）：定级降 **P1**；取**方案 D**（默认拒绝，豁免只给 `ImportTargets`、按次调用 `allow_env_conflict`）；**只挡新写**，存量冲突普查另开；注册表是 env 的权威，`labels["env"]` 只对未声明主机生效。⇒ §8.3 那一问从"待定夺"进入"实现中"，本笔不改 `blocked-items.md`（它在另一条线的 owns 里），状态以此处为准。
+- 板面（**按本笔 base `4c0b42db` 于 2026-11-05T06:31+08:00 复读**；初稿那次是 02:58，中间隔了 3.4 小时）：`pi` 一条（`test/changelog-subsection-uniqueness` = 派单 `PI-LEVEE-006`，给 `scripts/test_changelog_structure.py` 补 `[Unreleased]` 内 `###` 小节标题去重 + 粘行断言）、`qoder` 一条（`feat/remote-read-audit-group`）、本线一条。初稿里的 `opencode` 两条**都已落地并撤了声明**：ADR-008 写侧实现 = `3be8895`(02:50+08) + `4c0b42d`(03:54+08)，`system status --remote` = PR **#280**（MERGED 2026-11-04T20:30Z）；`pi` 的另一条（旗标守卫扩面）落在上一版 base `8ab41428`。**这份清单三小时内换了一轮，所以它只承担"本轮复核时刻谁在动"，不要当实时状态读。**
+- **ADR-008 已落地，不再是"实现中"**：owner 五问答完（降 **P1**、方案 **D**、只挡新写、注册表为其声明过的主机的唯一权威、豁免只给 `ImportTargets`），ADR 的状态行现已是「**已定案并实现**」（`docs/adr/ADR-008-abac-write-side-env-ownership.md:7`，落点表在文末 `:81` 起）。⇒ §8.3 那一问走完"待定夺 → 材料 → 实现"三段；权威口径以那份 ADR 为准，本笔不改 `blocked-items.md`。我这条线在 #274 只交付裁决材料，实现由另一条线完成——**这条链是本仓少见的完整闭环：一个 P0/P1 议题从登记到落地用了两天。**
 - 我在 roadmap 登记过的 `levee-api` 第 6 章缺陷**已由 §11 收口**，本轮复核确认：正文已改成实际注册的 `drift detect` / `drift report`，`drift scan` / `drift show` 只作为被取代的历史口径留在订正注里。
 - **协调面的一条观察**：`PI-LEVEE-004` / `PI-LEVEE-005` 这类派单号**不在仓里、也不在板目录里**（`/f/Nexus/agent-board/levee/` 里只有各线自己的声明文件，那两个号只作为引用出现在声明正文；板成员随时间变，本条只依赖"那两个号从不作为独立声明文件存在"这一点）。结果是：**看板上没有待办 ≠ 项目没有待办**——只靠板找活的人会得出错结论。这是 §8.4 那条"板机制能报重叠、不能发现漏声明"的同一类缺口的另一面。
 
