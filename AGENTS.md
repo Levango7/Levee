@@ -62,6 +62,22 @@ notes: 正在给 cluster-status 加能力过滤
   `go env -w GOSUMDB=sum.golang.org`（`GOPROXY` 已是 `https://goproxy.cn,direct`，
   goproxy.cn 提供 sumdb 代理，下载与校验都通）。**注意 `GOPRIVATE` / `GONOSUMDB`
   对工具链无效**——Go 的工具链路径不接受豁免，只能给一个真实 sumdb。
+- **浅克隆上做 `git fetch --unshallow` 之后，`git fsck` 会红——那是 commit-graph 缓存过期，
+  不是仓库坏了**（本机 2026-11-04 实测，git 2.56.0.windows.2）。症状：
+  `git fsck` / `git commit-graph verify` 打出若干 `Could not read <sha>` 与
+  `failed to parse commit <sha> from object database for commit-graph`（那次是 5 个）。
+  **别急着重新 clone**，先按三步定性：① `git rev-list --objects HEAD`（rc=0 且无 `missing` ⇒
+  master 全史对象齐）；② `git cat-file -e <那个 sha>`（rc=1 ⇒ 它本来就不在对象库里）；
+  ③ `gh api repos/Levango7/Levee/compare/<sha>...master`（那次 5 个全是 `diverged` /
+  `behind_by=1`，即当年没合进来的 dependabot PR 头 ⇒ **历史没有洞**）。定性为缓存后，修法：
+  删 `.git/objects/info/commit-graphs/`（split 链）或 `.git/objects/info/commit-graph`，
+  再 `git commit-graph write --reachable`；复验 `git commit-graph verify` 与 `git fsck` 都要 rc=0。
+  **为什么值得先读这条**：commit-graph 只是加速缓存，删掉 git 会回落到 pack index，代价是日志查询变慢；
+  而"fsck 红"看起来像数据损坏，很容易被误处置成重新 clone 或者不敢推。
+- **顺着上一条**：浅克隆还会让 `git rev-list --left-right --count` 与 `git branch --no-merged`
+  给出**假数**（本机实测解浅前把已完成的分支报成 `ahead=700+`）。要按祖先关系下结论
+  （"这条分支还有没有未落地的东西"），先 `--unshallow`，再按补丁等价判——`git cherry <base> <branch>`
+  的 `+` 才是"master 里没有"的真判据，rebase 落地改写过 sha 也不会误判。
 - PostgreSQL 相关测试包必须 `-p 1` 串行跑，否则它们会互删数据，症状是一个无关包 panic。
 - **本机有可用容器底座**：`docker` 可用（29.9.2）；镜像里已有
   `ghcr.io/levango7/levee:v1.24.0`、`postgres:16` / `postgres:16-alpine`、
