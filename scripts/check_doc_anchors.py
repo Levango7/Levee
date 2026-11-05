@@ -185,11 +185,84 @@ CLAIMS: tuple[Claim, ...] = (
         '"scan"',
         mode="absent",
     ),
+    # --- second round: the anchors the roadmap already cites, made checkable ---
+    Claim(
+        "docs/product-roadmap.md",
+        "window.max_concurrency 是 DSL 接受的字段（存在但无消费）",
+        "internal/dsl/parser.go",
+        "max_concurrency",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "runToPB 的 Label 改用 dsl.DisplayName（不再是整段源）",
+        "internal/grpc/change_service.go",
+        "dsl.DisplayName",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "buildEngineServeOptions 是引擎 serve 选项的生产构造点",
+        "cmd/levee/cmd_serve.go",
+        "buildEngineServeOptions",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "取库决策收敛到 openStoreFromConfig 一处",
+        "cmd/levee/helpers.go",
+        "openStoreFromConfig",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "窗口关闭以 ErrWindowClosed 作为 deliberate refusal 传出",
+        "internal/dsl/window.go",
+        "ErrWindowClosed",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "CheckWindowForPlan 有生产调用点（plan 期消费窗口）",
+        "internal/wiring/calendar_gate.go",
+        "CheckWindowForPlan",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "状态词表 owner 导出 StepStatusNames（供 docgen 生成 TS）",
+        "internal/state/vocabulary.go",
+        "StepStatusNames",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "集群接管时间线消费 TakeoverEventDTO",
+        "web/src/views/ClusterView.vue",
+        "TakeoverEventDTO",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "插件破坏性动作声明已持久化（D-1b）",
+        "internal/plugin/registry.go",
+        "DestructiveActions",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "运行期通道 upload 动词已落地（D-1c）",
+        "internal/plugin/protocol.go",
+        "upload",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "human 门禁的 quorum 字段在（MinApprovers / ExcludeInitiator）",
+        "internal/verify/human_gate.go",
+        "ExcludeInitiator",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "docgen 生成 web/src/types/vocabulary.ts",
+        "internal/docgen/docgen.go",
+        "vocabulary.ts",
+    ),
 )
 
-# Airbag, same idea as MIN_ANCHORS: with the floor at 10 against ~13 rows, a
-# refactor that silently stops collecting claims cannot turn into a green run.
-MIN_CLAIMS = 10
+# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (20 of
+# ~25) is a ratchet — dropping assertions is possible, but only on purpose.
+MIN_CLAIMS = 20
 
 
 class ScopeError(RuntimeError):
