@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -441,20 +442,66 @@ func runTargetSetStatus(status string) error {
 	return nil
 }
 
+// remoteTargetHistoryLocalOnlyFields names the keys local `target history
+// --json` reports that the TargetHistory RPC deliberately does not carry.
+//
+// The wire row is five fields (run_id / workflow_name / status / creator /
+// created_at) while the local path hands back the whole state.Run — fifteen
+// keys, plan_json among them. Shipping those on a history LIST would overturn
+// the boundary the proto already states for pb.Change.plan ("Populated ONLY
+// when include_plan is true … and never for ListChanges"), so the remote rows
+// stay five-wide and the CLI names the ten it is not reporting rather than
+// letting an absent key read as "this change has no plan".
+var remoteTargetHistoryLocalOnlyFields = []string{
+	"template_name",
+	"params",
+	"plan_hash",
+	"plan_json",
+	"approval_status",
+	"approval_level",
+	"priority",
+	"updated_at",
+	"incident_id",
+	"tenant_id",
+}
+
+// targetHistoryRow is what the human table prints. Both modes fill it, so the
+// table cannot grow a second, mode-specific rendering — the divergence between
+// the modes is confined to --json, where it is declared.
+type targetHistoryRow struct {
+	RunID     string
+	Workflow  string
+	Status    string
+	CreatedAt time.Time
+}
+
 // runTargetHistory executes the `levee target history <host>` command.
 func runTargetHistory(cmd *cobra.Command, args []string) error {
 	host := args[0]
 	ctx := context.Background()
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return err
+	}
+
+	limit := targetHistOptLimit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	if mode == modeRemote {
+		return runRemoteTargetHistory(ctx, host, limit)
+	}
+	return runLocalTargetHistory(ctx, host, limit)
+}
+
+func runLocalTargetHistory(ctx context.Context, host string, limit int) error {
 	store, err := openStore(ctx)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
-	limit := targetHistOptLimit
-	if limit <= 0 {
-		limit = 20
-	}
 	steps, err := store.ListSteps(ctx, state.StepFilter{Host: host, Limit: limit * 10})
 	if err != nil {
 		return fmt.Errorf("list steps: %w", err)
@@ -480,17 +527,101 @@ func runTargetHistory(cmd *cobra.Command, args []string) error {
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{"data": entries, "meta": nil, "error": nil})
 	}
-	if len(entries) == 0 {
-		fmt.Fprintf(os.Stdout, "No changes recorded on %s.\n", host)
-		return nil
-	}
-	fmt.Fprintf(os.Stdout, "Recent changes on %s:\n\n%-22s %-20s %-10s %-12s\n",
-		host, "RUN", "WORKFLOW", "STATUS", "CREATED")
+
+	rows := make([]*targetHistoryRow, 0, len(entries))
 	for _, r := range entries {
-		fmt.Fprintf(os.Stdout, "%-22s %-20s %-10s %-12s\n",
-			r.ID, workflowDisplay(r.WorkflowName), r.Status, r.CreatedAt.Format("2006-01-02"))
+		rows = append(rows, &targetHistoryRow{
+			RunID: r.ID, Workflow: r.WorkflowName, Status: r.Status, CreatedAt: r.CreatedAt,
+		})
 	}
+	printTargetHistoryHuman(os.Stdout, host, rows)
 	return nil
+}
+
+func runRemoteTargetHistory(ctx context.Context, host string, limit int) error {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetInventoryService()
+	if err != nil {
+		return err
+	}
+	// The wire field is int32 while --limit is an unbounded int. Without this
+	// clamp, `--limit 3000000000` would ask the server for a different — and
+	// when the truncation lands negative, silently reformatted to 20 — number of
+	// rows than the operator typed. Capping at MaxInt32 instead keeps the
+	// request honest for every limit the store could actually satisfy.
+	wireLimit := limit
+	if wireLimit > math.MaxInt32 {
+		wireLimit = math.MaxInt32
+	}
+
+	resp, err := svc.TargetHistory(ctx, &pb.TargetHistoryRequest{Host: host, Limit: int32(wireLimit)})
+	if err != nil {
+		return err
+	}
+
+	entries := resp.GetEntries()
+	rows := make([]*targetHistoryRow, 0, len(entries))
+	for _, e := range entries {
+		rows = append(rows, &targetHistoryRow{
+			RunID:    e.GetRunId(),
+			Workflow: e.GetWorkflowName(),
+			Status:   e.GetStatus(),
+			// The wire carries an instant in seconds; this renders it UTC. The
+			// local path renders whatever zone its store hands back — UTC on
+			// SQLite, the session zone on PostgreSQL — so the two can show a
+			// different DAY for the same instant on a PostgreSQL deployment.
+			// That is registered as an open decision, not papered over here.
+			CreatedAt: time.Unix(e.GetCreatedAt(), 0).UTC(),
+		})
+	}
+
+	if optJSON {
+		// The keys and the timestamp spelling are local `--json`'s, narrowed to
+		// what the wire carries: `id` (not the RPC's run_id) because that is the
+		// name state.Run marshals under, and RFC3339 because a bare second-count
+		// would make every consumer of `--json | jq` branch on --remote. A
+		// reader that tolerates the missing keys needs no other change.
+		out := make([]map[string]any, 0, len(entries))
+		for _, e := range entries {
+			out = append(out, map[string]any{
+				"id":            e.GetRunId(),
+				"workflow_name": e.GetWorkflowName(),
+				"status":        e.GetStatus(),
+				"creator":       e.GetCreator(),
+				"created_at":    time.Unix(e.GetCreatedAt(), 0).UTC().Format(time.RFC3339Nano),
+			})
+		}
+		return PrintJSON(os.Stdout, map[string]any{
+			"data": out,
+			"meta": map[string]any{
+				"mode":       "remote",
+				"server":     optServer,
+				"local_only": remoteTargetHistoryLocalOnlyFields,
+			},
+			"error": nil,
+		})
+	}
+
+	printTargetHistoryHuman(os.Stdout, host, rows)
+	return nil
+}
+
+func printTargetHistoryHuman(w io.Writer, host string, rows []*targetHistoryRow) {
+	if len(rows) == 0 {
+		fmt.Fprintf(w, "No changes recorded on %s.\n", host)
+		return
+	}
+	fmt.Fprintf(w, "Recent changes on %s:\n\n%-22s %-20s %-10s %-12s\n",
+		host, "RUN", "WORKFLOW", "STATUS", "CREATED")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%-22s %-20s %-10s %-12s\n",
+			r.RunID, workflowDisplay(r.Workflow), r.Status, r.CreatedAt.Format("2006-01-02"))
+	}
 }
 
 // runTargetCheck executes the `levee target check <host>` command.

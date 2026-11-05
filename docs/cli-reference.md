@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`group list`（读服务端分组）、`audit verify`（在服务端 store 上验链）、`audit list / export / show`（读服务端 trace 行；show 按 id 取单条）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`target history`（读服务端近期变更；`--json` 少 10 个键并由 `meta.local_only` 点名）、`group list`（读服务端分组）、`audit verify`（在服务端 store 上验链）、`audit list / export / show`（读服务端 trace 行；show 按 id 取单条）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -885,6 +885,50 @@ levee target check <host>
 
 ```命令示例：预检主机
 levee target check web01.prod
+```
+
+### 6.4 target history
+
+列出某台主机近期发生过的变更：按该主机的 step 记录找到所属 run，再按 run 去重。
+
+```text
+levee target history <host> [--limit N]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<host>` | 是 | 目标主机名，匹配 `steps.host` |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--limit` | `20` | 最多显示多少条（传 ≤0 按 20 处理） |
+
+**说明**
+
+- 列为 RUN / WORKFLOW / STATUS / CREATED，CREATED 精确到日期
+- WORKFLOW 显示的是解析出的工作流名：`runs.workflow_name` 存的是工作流**原文**，经 `dsl.DisplayName` 取声明名；原文解析不出名字时原样显示
+- 本地模式读本地库的 `steps` + `runs`；`--json` 输出完整的 run 对象，`meta` 为 `null`
+
+**远程模式**
+
+- 加全局 `--remote` 时走 `InventoryService.TargetHistory`，由服务端查它自己的库
+- 人类表格两种模式**逐字节相同**：两个模式填同一个 `targetHistoryRow`、共用同一个渲染函数
+- **`--json` 是本地键集合的子集**，这是本系列里唯一一处远程比本地少字段。原因是线上的 `TargetHistoryEntry` 只带 run_id / workflow_name / status / creator / created_at 五个字段，而 `params`、`plan_json` 这类大字段按本仓既定边界不进列表 RPC——同一判据写在 `proto/levee.proto` 的 `Change.plan` 注释里（"never for ListChanges"）
+- 缺的键由输出自己点名，不静默省略：`--json` 的 `meta.local_only` 列出 `template_name`、`params`、`plan_hash`、`plan_json`、`approval_status`、`approval_level`、`priority`、`updated_at`、`incident_id`、`tenant_id`，并带 `meta.mode` / `meta.server`。这个形状与 `system status` 远程模式的做法一致
+- 保留的键**名字和形态与本地一致**：主键仍叫 `id`（不是线上字段名 `run_id`），`created_at` 仍是 RFC3339 字符串（不是裸的秒计数）。消费方只需容忍少键，不需要按模式分支
+- `--limit` 会发到服务端；超过 `int32` 上限时按上限请求，避免把操作员输入的数字悄悄换成另一个
+- 服务端按调用方的部署命名空间读权限过滤可见 run（本地模式没有这一步）
+- **两处未消除的差异（在册待决，见 docs/blocked-items.md）**：线上 `created_at` 只有整秒；且本地 PostgreSQL 路径把库里的时刻解成会话时区、SQLite 解成 UTC，而远程固定按 UTC 渲染——在 PostgreSQL 部署上同一 run 的 CREATED 列可能与本地差一天
+
+**示例**
+
+```命令示例：查某主机近期变更
+levee target history db-01.prod --limit 5
+levee --remote --server localhost:9090 target history db-01.prod --json
 ```
 
 ## 第7章 审计管理
