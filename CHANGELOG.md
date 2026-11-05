@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 文档（`product-roadmap.md` 订正一处失实断言：`window.max_concurrency` 不是「已不存在」，是「存在但无读取方」）
+
+- **失实**：`docs/product-roadmap.md` 第 37 行记「`Window.MaxConcurrency` **已不存在** … DSL 的 Window 类型里没有这个字段」，并断言原登记的「仍无人读取」是过期信息。
+- **复核（2026-11-05，代码级 + 实测）**：`ChangeWindow.MaxConcurrency`（`internal/dsl/ast.go`）自 initial commit 起就在；`internal/dsl/parser.go` 的 `yamlWindowRaw` 读 `max_concurrency` 并赋给 `wf.Window`；`internal/dsl/emit.go` 回写。一份带 `window.max_concurrency: 5` 的工作流 `levee compile` 报 `val_errs=0 type_errs=0`，与不含该字段的对照组逐项相同 ⇒ 字段在 DSL 里存在且被接受。
+- **真相**：消费面为空——`ChangeWindow.Check()` 只校验 start/end/timezone/days，plan/apply 都不读它，规范 §4.2 的 window 字段表也没有它。所以原登记的「仍无人读取」**成立、并未过期**；失实的是「已不存在」那半句。
+- **改动**：只订正这一句散文，改用**文件 + 符号**级引用（不新增会腐烂的行号）。要不要接线或删除该字段是独立决定，本笔不动产品代码。
+- **验证**：`python scripts/check_doc_anchors.py`、`python scripts/test_changelog_structure.py`、`python -m unittest discover -s scripts` 全过。
+
 ### 测试（账本断言机器化：`check_doc_anchors.py` 增加声明式 `CLAIMS`，把「锚点还指向某处」升级到「那句话还成立」）
 
 - **缺口**：`scripts/check_doc_anchors.py` 只证 **liveness**——锚点能被解析、行号不越过 EOF。`docs/project-status-2026-11.md` §8.4 记的机制建议（「把「台账声称未做/已做」变成可机器校验的东西」）从未落地，所以一条账本句子可以一边锚点解析得到、一边与代码矛盾，而 CI 全绿。
