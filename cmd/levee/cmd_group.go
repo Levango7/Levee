@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -109,15 +111,13 @@ func runGroupAdd(cmd *cobra.Command, args []string) error {
 
 func runGroupList(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
-	store, err := openStore(ctx)
+	mode, err := resolveServiceMode()
 	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return err
 	}
-	defer func() { _ = store.Close() }()
-
-	groups, err := store.ListInventoryGroups(ctx)
+	groups, err := fetchGroups(ctx, mode)
 	if err != nil {
-		return fmt.Errorf("list groups: %w", err)
+		return err
 	}
 
 	if optJSON {
@@ -126,6 +126,68 @@ func runGroupList(cmd *cobra.Command, args []string) error {
 
 	printGroupListHuman(os.Stdout, groups)
 	return nil
+}
+
+// fetchGroups returns the group rows in the mode the operator asked for. Both
+// modes hand back []*state.InventoryGroup, so the --json and human renderers
+// below are shared and cannot drift apart per mode.
+func fetchGroups(ctx context.Context, mode serviceMode) ([]*state.InventoryGroup, error) {
+	if mode != modeRemote {
+		return listGroupsLocal(ctx)
+	}
+	return listGroupsRemote(ctx)
+}
+
+func listGroupsLocal(ctx context.Context) ([]*state.InventoryGroup, error) {
+	store, err := openStore(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	groups, err := store.ListInventoryGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list groups: %w", err)
+	}
+	return groups, nil
+}
+
+func listGroupsRemote(ctx context.Context) ([]*state.InventoryGroup, error) {
+	f, err := newServiceFactory(modeRemote, optServer, optAPIToken)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	svc, err := f.GetInventoryService()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := svc.ListGroups(ctx, &pb.ListGroupsRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*state.InventoryGroup, 0, len(resp.GetGroups()))
+	for _, g := range resp.GetGroups() {
+		out = append(out, groupFromPB(g))
+	}
+	return out, nil
+}
+
+// groupFromPB rebuilds the row the local path hands to the same renderer. The
+// instant is rebuilt from BOTH wire fields: the column is stamped with
+// time.Now() and both dialects keep the fraction, so a seconds-only rebuild
+// would differ from the local output on every row rather than only on rows that
+// happened to land on a whole second.
+func groupFromPB(g *pb.Group) *state.InventoryGroup {
+	return &state.InventoryGroup{
+		ID:        g.GetId(),
+		Name:      g.GetName(),
+		ParentID:  g.GetParentId(),
+		CreatedAt: time.Unix(g.GetCreatedAt(), int64(g.GetCreatedAtNanos())).UTC(),
+		TenantID:  g.GetTenantId(),
+	}
 }
 
 func printGroupListHuman(w io.Writer, groups []*state.InventoryGroup) {

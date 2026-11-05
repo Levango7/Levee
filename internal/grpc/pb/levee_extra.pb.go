@@ -864,10 +864,24 @@ func (x *ReplyMessage) GetSessionId() string {
 
 // Group is a hierarchical inventory group. Names are unique and path-style.
 type Group struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	ParentId      string                 `protobuf:"bytes,3,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Id       string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name     string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	ParentId string                 `protobuf:"bytes,3,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
+	// created_at is split the way google.protobuf.Timestamp splits it: int64
+	// seconds plus the sub-second remainder in nanoseconds [0, 999999999].
+	// `levee group list --json` prints the stored state.InventoryGroup, whose
+	// created_at has no omitempty, and the column is stamped with time.Now() —
+	// so seconds alone would make the remote output differ from the local one on
+	// every row rather than only on rows whose instant is second-aligned. The
+	// split keeps field 4 readable as plain seconds for anyone who has not
+	// learned field 5, exactly as TraceEntry.timestamp does.
+	CreatedAt      int64 `protobuf:"varint,4,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	CreatedAtNanos int32 `protobuf:"varint,5,opt,name=created_at_nanos,json=createdAtNanos,proto3" json:"created_at_nanos,omitempty"`
+	// tenant_id participates for the same reason: it is omitempty on the local
+	// struct, so a row that has one prints it, and a mapping that dropped it
+	// would be invisible on any fixture that left the column empty.
+	TenantId      string `protobuf:"bytes,6,opt,name=tenant_id,json=tenantId,proto3" json:"tenant_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -919,6 +933,27 @@ func (x *Group) GetName() string {
 func (x *Group) GetParentId() string {
 	if x != nil {
 		return x.ParentId
+	}
+	return ""
+}
+
+func (x *Group) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Group) GetCreatedAtNanos() int32 {
+	if x != nil {
+		return x.CreatedAtNanos
+	}
+	return 0
+}
+
+func (x *Group) GetTenantId() string {
+	if x != nil {
+		return x.TenantId
 	}
 	return ""
 }
@@ -2323,11 +2358,15 @@ const file_levee_extra_proto_rawDesc = "" +
 	"session_id\x18\x04 \x01(\tR\tsessionId\x1a@\n" +
 	"\x12ActionPayloadEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"H\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xae\x01\n" +
 	"\x05Group\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
-	"\tparent_id\x18\x03 \x01(\tR\bparentId\"E\n" +
+	"\tparent_id\x18\x03 \x01(\tR\bparentId\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\x04 \x01(\x03R\tcreatedAt\x12(\n" +
+	"\x10created_at_nanos\x18\x05 \x01(\x05R\x0ecreatedAtNanos\x12\x1b\n" +
+	"\ttenant_id\x18\x06 \x01(\tR\btenantId\"E\n" +
 	"\x12CreateGroupRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1b\n" +
 	"\tparent_id\x18\x02 \x01(\tR\bparentId\"\x13\n" +

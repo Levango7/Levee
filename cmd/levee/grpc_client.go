@@ -47,13 +47,14 @@ const defaultConnectTimeout = 10 * time.Second
 // All fields are read-only after construction; the type is safe for concurrent
 // use because the underlying *grpc.ClientConn is.
 type grpcClient struct {
-	conn     *grpc.ClientConn
-	change   pb.ChangeServiceClient
-	template pb.TemplateServiceClient
-	target   pb.TargetServiceClient
-	audit    pb.AuditServiceClient
-	agent    pb.AgentServiceClient
-	system   pb.SystemServiceClient
+	conn      *grpc.ClientConn
+	change    pb.ChangeServiceClient
+	template  pb.TemplateServiceClient
+	target    pb.TargetServiceClient
+	audit     pb.AuditServiceClient
+	agent     pb.AgentServiceClient
+	system    pb.SystemServiceClient
+	inventory pb.InventoryServiceClient
 
 	// token is retained for diagnostic output (never logged in full).
 	token string
@@ -100,14 +101,15 @@ func newGRPCClient(addr string, token string, _opts ...grpcClientOption) (*grpcC
 	}
 
 	return &grpcClient{
-		conn:     conn,
-		change:   pb.NewChangeServiceClient(conn),
-		template: pb.NewTemplateServiceClient(conn),
-		target:   pb.NewTargetServiceClient(conn),
-		audit:    pb.NewAuditServiceClient(conn),
-		system:   pb.NewSystemServiceClient(conn),
-		agent:    pb.NewAgentServiceClient(conn),
-		token:    token,
+		conn:      conn,
+		change:    pb.NewChangeServiceClient(conn),
+		template:  pb.NewTemplateServiceClient(conn),
+		target:    pb.NewTargetServiceClient(conn),
+		audit:     pb.NewAuditServiceClient(conn),
+		system:    pb.NewSystemServiceClient(conn),
+		agent:     pb.NewAgentServiceClient(conn),
+		inventory: pb.NewInventoryServiceClient(conn),
+		token:     token,
 	}, nil
 }
 
