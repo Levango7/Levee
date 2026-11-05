@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 测试（`CLAIMS` 表第二轮：13 → 25 条，把 roadmap/blocked-items 已在引用的符号变成机器断言；下限抬到 20）
+
+- **起因**：上一笔（`3f60a79`）建了 `CLAIMS` 机制并种 13 条。本轮继续登记——凡账本**已经用 `path:line` 引用、但引用之外没有任何守卫**的断言，只要形状可机器校验，就进表。
+- **新增 12 条 present**：① `window.max_concurrency` 是 DSL 接受的字段（`internal/dsl/parser.go`）——正对上一笔刚订正的那句；② `runToPB` 的 Label 用 `dsl.DisplayName`（`internal/grpc/change_service.go`）；③ `buildEngineServeOptions` 是引擎 serve 选项的生产构造点（`cmd/levee/cmd_serve.go`）；④ 取库决策收敛到 `openStoreFromConfig`（`cmd/levee/helpers.go`）；⑤ 窗口关闭以 `ErrWindowClosed` 传出（`internal/dsl/window.go`）；⑥ `CheckWindowForPlan` 有生产调用点（`internal/wiring/calendar_gate.go`）；⑦ 词表 owner 导出 `StepStatusNames`（`internal/state/vocabulary.go`）；⑧ 集群接管时间线消费 `TakeoverEventDTO`（`web/src/views/ClusterView.vue`）；⑨ 插件破坏性动作声明持久化（`internal/plugin/registry.go` 的 `DestructiveActions`，D-1b）；⑩ 运行期通道 `upload` 动词（`internal/plugin/protocol.go`，D-1c）；⑪ human 门禁 quorum 字段 `ExcludeInitiator`（`internal/verify/human_gate.go`）；⑫ docgen 生成 `web/src/types/vocabulary.ts`（`internal/docgen/docgen.go`）。
+- **下限**：`MIN_CLAIMS` 10 → **20**（棘轮：表当前位置 25 条，删断言需要连下限一起动）。
+- **验证**：`check_doc_anchors` 27 锚点 + **25 claims**；套件 18 例；变异（把新行的 keyword 改错 → 红并点名 `internal/dsl/parser.go` 那条）。
+- **如实边界（承上一笔）**：本轮只加 present 断言。负断言仍只有 `drift scan` 一条——稳健的负断言要求“若实现，符号一定落在某已知文件里”，多数“从未实现／定档不做”的命令级断言不满足这个形状（实现可能落在新文件），需目录级扫描才可靠，留作后续。
+
 ### 文档（`product-roadmap.md` 订正一处失实断言：`window.max_concurrency` 不是「已不存在」，是「存在但无读取方」）
 
 - **失实**：`docs/product-roadmap.md` 第 37 行记「`Window.MaxConcurrency` **已不存在** … DSL 的 Window 类型里没有这个字段」，并断言原登记的「仍无人读取」是过期信息。
