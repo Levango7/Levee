@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 文档（`product-roadmap.md` 闭合状态收成一列 `状态` + 门禁：把「未决行数」从五种写法变成一个答案）
+
+- **缺口（qoder 在 `docs/project-status-2026-11.md` §12 登记为「只记不改」）**：roadmap 的「未决行数」**没有唯一答案**——同一张表，按优先级格有无闭合标记数是 **11**、按任一格是否有标记是 **1**、再加标题删除线是 **1**，人工回读是 **6**，三个判据各自可复现。根因是闭合状态有 **5 种互不兼容写法**（优先级格 `✅已落地` / 尾列 `✅已落地` / 标题 `~~划掉~~` / 优先级格 `已修`·`已定案并落地`·`已接线` / 正文 `已完成`）。
+- **实测比登记更糟：是 53 条数据行，不是 47。** `^| P` 扫描漏掉 2 条 `~~P1~~` 开头行、1 条 `| — |` 身份层订正行、以及**整张运营层表**（`| 项 | 目标 |`，行首没有 `P`）——即登记里点名的「结构性漏项」。
+- **改动**：
+  - 4 张 item 表各加一列 **`状态`**，取值**单一来源**：`closed`（已完成，或已定档不做）/ `open`（未完成，含「未复现·待复发观察」）/ `decided`（产品决定已下且记了结果）/ `blocked-on:<谁>`（等一个点名的外部对象）。状态**只从行末格读**——因为表格本身是 ragged 的（有的行少一格、有的正文里有未转义的 `|`、有的行跨 4 个物理行）。
+  - 新增门禁 `scripts/check_roadmap_status.py`：**每条数据行必须恰有一格且取值合法**（第五种写法再也进不来），并**打印计数**——「唯一答案」由此而来。含两个防空转断言：行数下限（50/53）与「**运营层表必须被识别**」（它正是被漏掉的那张，识别不到就 ScopeError 而不是静默少算）。
+  - `scripts/test_roadmap_status.py` 11 例（多行行、缺列、坏取值、空 `blocked-on:`、运营层计数、缺运营层表→ScopeError、下限）+ 点名断言；ci.yml 的 release-gate 点名表加 `test_roadmap_status`。
+- **现状计数**：**closed=47 / open=2（L56 calendar `0xc0000005`、L59 browser-check windows，均「未复现」）/ decided=1（L35 双语定档不做）/ blocked-on:人手=3（运营层 demo 录像、角色视频、品牌资产）**。
+- **验证**：`check_roadmap_status` PASSED（53 行）；本套件 11 例全绿；`unittest discover -s scripts` 全绿；`check_doc_anchors`（27 锚点 + 29 claims）、`test_changelog_structure` 全过。**变异三条**：① 状态改 `done` → 红并点名行；② 删掉运营层表 → **ScopeError（exit 2）**；③ 删掉某行状态格 → 红并读出原末格。
+- **如实边界**：本笔**只加列与门禁，正文一字未改**（某格若判错，改一格即可，信息零丢失）；**不修表格本身的 raggedness**（少格/未转义 `|`/多行行），那是另一件事。状态词表当前无 `blocked-on` 之外的子类。
+
 ### 测试（命令树负断言守卫：`levee schedule` / `drift scan` / `drift show` 这类「必须不存在」的命令路径变成机器可查）
 
 - **缺口**：`cli_reference_flags_test.go` 只查文档→树的一个方向——文档点名的命令/旗标必须存在。账本里还有另一种断言：**命令路径必须不存在**，此前无任何门禁。其中两条是**关键词搜索做不到**的（同一个词在别处合法存在）：`levee schedule`（`docs/blocked-items.md` E-4 定档不做）——但 `schedule` 作为 `drift schedule` 存在；`drift show <report-id>`（`docs/levee-api.md` §6 从未注册）——但 `show` 作为 `drift baseline show` 存在。只有 cobra 树能区分顶层与嵌套。
