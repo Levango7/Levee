@@ -166,6 +166,20 @@ message Group {
   string id = 1;
   string name = 2;
   string parent_id = 3;
+  // created_at is split the way google.protobuf.Timestamp splits it: int64
+  // seconds plus the sub-second remainder in nanoseconds [0, 999999999].
+  // `levee group list --json` prints the stored state.InventoryGroup, whose
+  // created_at has no omitempty, and the column is stamped with time.Now() —
+  // so seconds alone would make the remote output differ from the local one on
+  // every row rather than only on rows whose instant is second-aligned. The
+  // split keeps field 4 readable as plain seconds for anyone who has not
+  // learned field 5, exactly as TraceEntry.timestamp does.
+  int64 created_at = 4;
+  int32 created_at_nanos = 5;
+  // tenant_id participates for the same reason: it is omitempty on the local
+  // struct, so a row that has one prints it, and a mapping that dropped it
+  // would be invisible on any fixture that left the column empty.
+  string tenant_id = 6;
 }
 
 message CreateGroupRequest {

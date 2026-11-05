@@ -28,7 +28,16 @@
 - **真相**：消费面为空——`ChangeWindow.Check()` 只校验 start/end/timezone/days，plan/apply 都不读它，规范 §4.2 的 window 字段表也没有它。所以原登记的「仍无人读取」**成立、并未过期**；失实的是「已不存在」那半句。
 - **改动**：只订正这一句散文，改用**文件 + 符号**级引用（不新增会腐烂的行号）。要不要接线或删除该字段是独立决定，本笔不动产品代码。
 - **验证**：`python scripts/check_doc_anchors.py`、`python scripts/test_changelog_structure.py`、`python -m unittest discover -s scripts` 全过。
+### 新增（`group list` 接 `--remote`：按「逐字节相同」补三个线上字段）
 
+- **缺口是实的，不是防御性加字段**：本地 `group list --json` 直接 marshal `state.InventoryGroup`，其中 `created_at`（`json` 无 `omitempty`）**每一行都打**、`tenant_id`（有 `omitempty`）在分组真带租户时才打；而 `pb.Group` 原来只有 `id` / `name` / `parent_id`。照线上重建，远程会给**每一行**打出 `"created_at":"0001-01-01T00:00:00Z"` 并丢掉租户列——不是「少一点精度」，是每行都不一样。`UpsertInventoryGroup` 盖的是 `time.Now().UTC()`（`internal/state/inventory_sqlite.go`），所以时间戳带完整纳秒。
+- **修法（加宽线上，不按模式分叉输出）**：`pb.Group` 补 `created_at`（4，int64 秒）、`created_at_nanos`（5，纳秒余数）、`tenant_id`（6）。前两个是 `google.protobuf.Timestamp` 那种秒/纳秒拆分，与上一笔给 `TraceEntry.timestamp_nanos` 的口径一致：字段 4 单独看仍是秒，没学会 5 的读者丢失余数的方式与今天完全一致。`groupToPB` 三处都填，`ListGroups` 与 `CreateGroup` 共用这一个映射；CLI 的 `groupFromPB` 用 `time.Unix(sec, nanos).UTC()` 重建——只取秒就和上一笔修掉的 `traceFromPB` 是同一个缺陷。
+- **适配器镜像全部 6 条 RPC**（ListGroups / CreateGroup / DeleteGroup / ImportTargets / SetTargetStatus / TargetHistory），不只接用得上的那条。理由与既有写法一致：`targetServiceAdapter` 连 AddTarget / RemoveTarget 都镜像了。半镜像的接口正是下一个命令被写成「只有一种模式能用」的原因，而那种代码在评审里看不出来。`TestInventoryAdapterMirrorsTheWholeRPCSet` 用反射把这条口径变成断言（跳过 `mustEmbedUnimplemented…`，并带「比到的方法数 ≥ 6」的底数，免得底数变成零时断言空转）。
+- **可见性照实说**：`ListGroups` 按**部署范围的命名空间**判读权限（分组不声明环境，名字里的 `prod/db` 是命名习惯而不是策略能依据的事实），所以带策略的部署里远程可能被拒；本地不判权。这条不是本笔引入的，是本笔第一次让 CLI 走到它。
+- **证据（6 个用例）**：三种输出形状逐字节相同（人类与 `--json`，且 `--json` 那条先自证本地输出真有 `.123456789` 与租户 `t-a`，否则比较只是在测自己）；空分组两边同报 `No groups.`；死端点必须报错（等价用例两边读同一份库，分不出走的是哪条路）；远程不建本地库；解析 `--json` 信封后**点名两个有损映射**（租户列、亚秒余数）——逐字节相等也可能两边同时丢掉同一件东西；以及上面那条反射守卫。测试 server 建在自己的文件里（`pb.RegisterInventoryServiceServer(srv.GrpcServer(), …)`），**没有改共享的 `grpc_client_test.go`**，也没有把这个服务塞进 `startTestServer` 去改变其余远程测试的对话对象。
+- **变异（4 条全部先红在预期位，还原后 `sha256` 逐字节相同）**：① `groupToPB` 不填 `created_at_nanos` → `--json` 等价与信封断言同时红；② `groupToPB` 不填 `tenant_id` → 两条都红；③ **CLI 退回 `time.Unix(sec, 0)`** → 等价红（与上一笔同一类缺陷，这次是新代码里没有它）；④ 远程分支短路成本地 → 死端点用例红。
+- **口径说明（与仓里另三处不一致，是 owner 的选择）**：`docs/cli-reference.md` 的 §5.1 `template list`、§5.2 `template show`、§6.1 `target list` 仍写着「远程 `--json` 只到秒」——那三处是**如实标注的已知差异**，不是假成功。本笔按 owner 2026-11-05 的指令，把 `group list` 放进「两种模式逐字节相同」这一档。于是同一个 `--json` 精度现在有两档保证，把另三处补齐是另一个决定（要动 `pb.Template` / `pb.Target` 并改三处已成文的契约），本笔不做。
+- **门禁**：`gofmt -l ./cmd ./internal` 空输出；`go build ./...` / `go vet ./...` rc=0；`go test ./... -count=1` 全包 ok；`scripts/gen-proto.sh`（钉住的 protoc v27.0）重生成后 `git diff --exit-code -- internal/grpc/pb/` rc=0；`check_doc_anchors` / `test_changelog_structure` / `test_doc_anchors` 全过。
 ### 新增（`audit show` 接 `--remote`：按 trace ID 取单条的新 RPC；顺带修掉上一笔留下的亚秒丢失）
 
 - **为什么不能复用现成的 RPC**：`ListAuditTraces` 只按 **run** 过滤，而 `audit show` 的入参是一个 **trace ID**。照现有面走，操作者拿着一个已经点名的行 ID，却要先枚举所有 run、逐 run 翻页去找那一行——那不是"接上远程"，是把一次点查做成全表扫描。故新增 `AuditService.GetAuditTrace(GetAuditTraceRequest) returns (TraceEntry)`。

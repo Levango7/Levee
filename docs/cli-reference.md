@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`audit verify`（在服务端 store 上验链）、`audit list / export / show`（读服务端 trace 行；show 按 id 取单条）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`group list`（读服务端分组）、`audit verify`（在服务端 store 上验链）、`audit list / export / show`（读服务端 trace 行；show 按 id 取单条）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -3400,6 +3400,13 @@ levee group list
 ```命令示例：列出分组
 levee group list
 ```
+
+**远程模式**
+
+- 加全局 `--remote` 时读**服务端**的分组表（`InventoryService.ListGroups`）。人类表格与 `--json` 都由同一份 `[]*state.InventoryGroup` 渲染，所以两种模式**逐字节相同**，不存在按模式分叉的输出。
+- `--json` 里每行都带 `created_at`（本地结构体上这个字段没有 `omitempty`），它是 `time.Now()` 盖的、带亚秒。线上按 `google.protobuf.Timestamp` 的拆法分成 `Group.created_at`（int64 秒）与 `Group.created_at_nanos`（纳秒余数）两个字段，CLI 重建行时把两者合起来——所以逐字节比较成立，脚本不必按秒对齐。
+- `tenant_id` 同样上线了（`Group.tenant_id`）。它在本地结构体上是 `omitempty`，所以只有在分组真有租户时才会出现在 `--json` 里——夹具留空的分组查不出这条映射。
+- 服务端按部署范围的命名空间判定读权限（分组不声明环境，名字里的 `prod/db` 是命名习惯而不是策略可以依据的事实），所以带策略的部署里远程可能被拒绝；本地不判权。
 
 ## 第28章 backup / restore — 数据备份与恢复
 

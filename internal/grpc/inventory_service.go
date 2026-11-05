@@ -74,7 +74,18 @@ func isUniqueViolation(err error) bool {
 }
 
 func groupToPB(g *state.InventoryGroup) *pb.Group {
-	return &pb.Group{Id: g.ID, Name: g.Name, ParentId: g.ParentID}
+	return &pb.Group{
+		Id:        g.ID,
+		Name:      g.Name,
+		ParentId:  g.ParentID,
+		CreatedAt: g.CreatedAt.Unix(),
+		// The row's fraction goes with its seconds, or a CLI rebuilding the
+		// stored row prints a timestamp the ledger does not contain.
+		CreatedAtNanos: int32(g.CreatedAt.Nanosecond()),
+		// omitempty on the local struct, so a row that has a tenant prints it;
+		// dropping it here would be invisible on any fixture that left it empty.
+		TenantId: g.TenantID,
+	}
 }
 
 func (s *InventoryService) ListGroups(ctx context.Context, _ *pb.ListGroupsRequest) (*pb.ListGroupsResponse, error) {

@@ -145,6 +145,13 @@ func (ls *localServices) audit() (*grpc.AuditService, error) {
 	return grpc.NewAuditService(ls.deps.store), nil
 }
 
+func (ls *localServices) inventory() (*grpc.InventoryService, error) {
+	if ls.deps.store == nil {
+		return nil, errLocalStoreRequired
+	}
+	return grpc.NewInventoryService(ls.deps.store), nil
+}
+
 // system needs no store: GetVersion is answered from the build variables baked
 // into this binary, and the store is only consulted by GetStatus.
 func (ls *localServices) system() *grpc.SystemService {
@@ -611,6 +618,79 @@ func (a *remoteAuditAdapter) GetRunReport(ctx context.Context, req *pb.GetRunRep
 }
 func (a *remoteAuditAdapter) GetAuditTrace(ctx context.Context, req *pb.GetAuditTraceRequest) (*pb.TraceEntry, error) {
 	return a.client.GetAuditTrace(ctx, req)
+}
+
+// --- InventoryService adapter -----------------------------------------------
+
+// inventoryServiceAdapter unifies local and remote InventoryService. It mirrors
+// the whole RPC surface, not just ListGroups: the target adapter above does the
+// same with AddTarget/RemoveTarget, and a half-mirrored interface is how the
+// next command ends up written against one mode only.
+type inventoryServiceAdapter interface {
+	ListGroups(ctx context.Context, req *pb.ListGroupsRequest) (*pb.ListGroupsResponse, error)
+	CreateGroup(ctx context.Context, req *pb.CreateGroupRequest) (*pb.Group, error)
+	DeleteGroup(ctx context.Context, req *pb.DeleteGroupRequest) (*pb.DeleteGroupResponse, error)
+	ImportTargets(ctx context.Context, req *pb.ImportTargetsRequest) (*pb.ImportTargetsResponse, error)
+	SetTargetStatus(ctx context.Context, req *pb.SetTargetStatusRequest) (*pb.SetTargetStatusResponse, error)
+	TargetHistory(ctx context.Context, req *pb.TargetHistoryRequest) (*pb.TargetHistoryResponse, error)
+}
+
+// GetInventoryService returns an InventoryService adapter for the active mode.
+func (f *serviceFactory) GetInventoryService() (inventoryServiceAdapter, error) {
+	if f.mode == modeRemote {
+		return &remoteInventoryAdapter{client: f.remote.inventory}, nil
+	}
+	svc, err := f.local.inventory()
+	if err != nil {
+		return nil, err
+	}
+	return &localInventoryAdapter{svc: svc}, nil
+}
+
+type localInventoryAdapter struct {
+	svc *grpc.InventoryService
+}
+
+type remoteInventoryAdapter struct {
+	client pb.InventoryServiceClient
+}
+
+func (a *localInventoryAdapter) ListGroups(ctx context.Context, req *pb.ListGroupsRequest) (*pb.ListGroupsResponse, error) {
+	return a.svc.ListGroups(ctx, req)
+}
+func (a *localInventoryAdapter) CreateGroup(ctx context.Context, req *pb.CreateGroupRequest) (*pb.Group, error) {
+	return a.svc.CreateGroup(ctx, req)
+}
+func (a *localInventoryAdapter) DeleteGroup(ctx context.Context, req *pb.DeleteGroupRequest) (*pb.DeleteGroupResponse, error) {
+	return a.svc.DeleteGroup(ctx, req)
+}
+func (a *localInventoryAdapter) ImportTargets(ctx context.Context, req *pb.ImportTargetsRequest) (*pb.ImportTargetsResponse, error) {
+	return a.svc.ImportTargets(ctx, req)
+}
+func (a *localInventoryAdapter) SetTargetStatus(ctx context.Context, req *pb.SetTargetStatusRequest) (*pb.SetTargetStatusResponse, error) {
+	return a.svc.SetTargetStatus(ctx, req)
+}
+func (a *localInventoryAdapter) TargetHistory(ctx context.Context, req *pb.TargetHistoryRequest) (*pb.TargetHistoryResponse, error) {
+	return a.svc.TargetHistory(ctx, req)
+}
+
+func (a *remoteInventoryAdapter) ListGroups(ctx context.Context, req *pb.ListGroupsRequest) (*pb.ListGroupsResponse, error) {
+	return a.client.ListGroups(ctx, req)
+}
+func (a *remoteInventoryAdapter) CreateGroup(ctx context.Context, req *pb.CreateGroupRequest) (*pb.Group, error) {
+	return a.client.CreateGroup(ctx, req)
+}
+func (a *remoteInventoryAdapter) DeleteGroup(ctx context.Context, req *pb.DeleteGroupRequest) (*pb.DeleteGroupResponse, error) {
+	return a.client.DeleteGroup(ctx, req)
+}
+func (a *remoteInventoryAdapter) ImportTargets(ctx context.Context, req *pb.ImportTargetsRequest) (*pb.ImportTargetsResponse, error) {
+	return a.client.ImportTargets(ctx, req)
+}
+func (a *remoteInventoryAdapter) SetTargetStatus(ctx context.Context, req *pb.SetTargetStatusRequest) (*pb.SetTargetStatusResponse, error) {
+	return a.client.SetTargetStatus(ctx, req)
+}
+func (a *remoteInventoryAdapter) TargetHistory(ctx context.Context, req *pb.TargetHistoryRequest) (*pb.TargetHistoryResponse, error) {
+	return a.client.TargetHistory(ctx, req)
 }
 
 // --- SystemService adapter --------------------------------------------------
