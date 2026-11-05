@@ -6,7 +6,7 @@
 
 ## [v1.25.0] - 2026-11-06
 
-> **发布状态：未切版。** tag `v1.25.0` 尚未推送。Helm chart 的 `appVersion` / `values.image.tag` 刻意留在 `1.24.0` / `v1.24.0`：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在远端 tag 集合里，tag 之前升档会让 `helm install` 的默认值去拉一个从未构建过的镜像；升代与发布状态改写随切版后的第二笔。本节共 **36** 个小节，主题分布与行为变更见 [`docs/release-notes/v1.25.0.md`](docs/release-notes/v1.25.0.md)。
+> **发布状态：已切版。** 附注 tag `v1.25.0`（tag 对象 `44749a1c271a`，指向折叠提交 `334bf2c`——单父、以 `--rebase` 落地）于 2026-11-05T20:15Z 推送，且是在该折叠提交自己的 `master` push run 全绿之后才打的：run `42097852339` 26/26 job 全 success，含聚合门 `check (all jobs passed)`。`release.yml` 三段（CI gate / goreleaser / container image，run `42101719313`，20:15:40Z → 21:03:16Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `42101719312`（`head_branch=v1.25.0`，20:46:14Z success，26/26）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-05T20:50:45Z`（11-06 04:50:45 +0800），资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.25.0` 按外部事实核过——`manifests/v1.25.0` 返回 **200**（同一次探测里 `v1.24.0` → 200、不存在的 `v1.25.99` → 404，证明探针有分辨力；`Accept` 必须带多架构 index 媒体类型，否则连已存在的 tag 也会读成 404），index 内是 `linux/amd64` + `linux/arm64` 两个平台（另两条 `unknown/unknown` 是构建 attestation）。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.25.0` / 逐字 `v1.25.0`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **36** 个小节，主题分布与行为变更见 [`docs/release-notes/v1.25.0.md`](docs/release-notes/v1.25.0.md)。
 
 ### 测试（`CLAIMS` 第三轮：目录级扫描 + `gone` 模式，把「从未实现／整包退役」也变成机器断言；下限 20 → 25）
 
