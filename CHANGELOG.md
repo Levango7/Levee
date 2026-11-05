@@ -14,6 +14,23 @@
 - **验证**：`python scripts/test_changelog_structure.py` OK；`python scripts/check_doc_anchors.py` PASSED（27 锚点 + 29 claims）；`python scripts/check_roadmap_status.py` PASSED；零产品代码改动 ⇒ 不动测试套件。§12 已随 **v1.25.0**（折叠提交 `334bf2c`）发布，故本节按追加式口径只订正、不回改旧节。
 
 
+### 新增（`target history` 接 `--remote`：本系列里唯一一处「远程显示更少」，缺的键由输出自己点名）
+
+- **方案由 owner 2026-11-06 拍板**：`InventoryService.TargetHistory` **早就存在**，本笔不新增 RPC；要做的是把 CLI 接上去，并处理「线上的字段比本地少」这件事。三条路里选了一条：
+  - **补齐线上**（加宽 `TargetHistoryEntry` 到 15 个字段）——被本仓自己写下的边界否掉。`proto/levee.proto` 的 `Change.plan` 注释明言计划正文「never for `ListChanges`」，而缺的 10 个键里 `params` 与 `plan_json` 正是同类大字段；`runToPB` 也不映射 `PlanJSON`。把这条边界为了一致性推翻，代价比收益大。
+  - **收窄本地**（本地也只打 5 个键）——等于把已经发出去的 `--json` 形状改契约，现有消费方会掉字段。
+  - **远程显示更少 + 公开点名**（选这条）——沿用 `system status` 远程模式已经落地的先例（`remoteLocalOnlyStatusFields`）：远程打出线上真带的那 5 个键，并把这个缺口写进输出，而不是静默省略。
+- **缺口是量出来的，不是估计的**：`state.Run` 有 15 个 json 标签，`TargetHistoryEntry` 有 5 个字段，差 10 个 —— `template_name` / `params` / `plan_hash` / `plan_json` / `approval_status` / `approval_level` / `priority` / `updated_at` / `incident_id` / `tenant_id`。这份名单写进 `remoteTargetHistoryLocalOnlyFields`，并出现在 `--json` 的 `meta.local_only`（同批还有 `meta.mode` / `meta.server`；本地的 `meta` 仍是 `null`，所以「服务器什么也没告诉我」与「服务器告诉我这是子集」两种情形分得开）。
+- **保留的键沿用本地的名字与形态，这一点比少几个键更要紧**：主键叫 `id`（不是线上字段名 `run_id`），`created_at` 是 RFC3339 字符串（不是裸的 int64 秒计数）。否则消费方要按 `--remote` 分支处理键名与时间格式，而「少几个键」本来只需容忍即可。
+- **人类表格仍逐字节相同**：两个模式填同一张 `targetHistoryRow`、共用 `printTargetHistoryHuman`，所以这一档的差异只可能出现在 `--json`，且出现在那里是申报过的。渲染逻辑与 `8ef53b8` 上的原实现逐字对齐（`%-22s %-20s %-10s %-12s` + `workflowDisplay` + `2006-01-02`），本地路径的行为一个字节都没动。
+- **顺手堵掉一个本仓 CLI 里第一次出现的窄化**：`--limit` 是 `int`，`TargetHistoryRequest.limit` 是 `int32`。此前 CLI 没有任何整型窄化（`grep int32( cmd/levee/*.go` 只有这一处），不做钳位时 `--limit 3000000000` 会**静默变成一个不同的数**——截断成负数还会被服务端兜成 20，等于操作员输入的数字和服务端执行的数字不是一回事，正是这一系列要消灭的那类缺陷。现按 `math.MaxInt32` 钳。
+- **`local_only` 不靠注释自觉**：`TestTargetHistoryRemoteJSONIsDeclaredSubsetOfLocal` 读两边的**实际输出**求键集差，声明与实测不符就红。夹具因此必须带 `tenant_id`——它 `omitempty`，空租户会让**本地**也不打这个键，于是「声明里多写了 `tenant_id`」这种错就测不出来（第一版就是这么红的，报的是 9 个而不是 10 个）。反向也断言：远程不许出现本地没有的键。
+- **证据（8 个新用例）**：人类表格逐字节相同（并单独断言远程行真过了 `workflowDisplay`——两边同时是垃圾也能通过相等比较，所以另断言表格里不出现 YAML 原文）；空答案两边同一条 `No changes recorded on <host>.`；`--json` 子集契约（键集差＝声明、共有键同值、`created_at` 按时刻比较）；`meta.local_only` / `mode` / `server` 三项且先断言 `local_only` 非空；`--limit 1` 确实穿到服务端（前置断言默认 limit 下本地有 2 行，否则这条只在测 limit 本身）；**钳位走线上时确实是 `MaxInt32`**（用一个记录请求的 `InventoryServiceServer` 假实现读 `req.GetLimit()`，不靠读代码）；死端点必须报错（等价用例两边读同一份库，分不出走的是哪条路）；远程不建本地库。测试复用 ② 的 `startGroupTestServer`（`TargetHistory` 与 `ListGroups` 同属 `InventoryService`），没有第三次注册这个服务，也没有改共享的 `startTestServer`。
+- **`--remote` 白名单 14 → 15**：`root.go` 与 `TestRemoteCapabilityListIsExactlyThese` 同步；文档全局选项表由 `TestRemoteConsumersInCliReferenceMatchTheList` 逼着同步（第一次跑就红在「文档没写 `target history`」，是这条守卫在本笔的第二次真实射程）。`docs/cli-reference.md` 补了 **§6.4**——`target history` 此前在参考手册里**完全没有条目**（第 6 章只有 list / import / check；`freeze` / `unfreeze` / `retire` 同样缺，本笔不代做，如实登记）。
+- **两处未修、如实登记**：① `TargetHistoryEntry.workflow_name` 存的是工作流**原文**（`runs.workflow_name` 即渲染后的 YAML），所以这条列表 RPC 会把整份文档发给每个调用方——显示两侧都过 `workflowDisplay` 所以无碍，但载荷偏重，与 `Change.plan` 那条边界同一理由，将来该只带声明名；② 本地 PostgreSQL 路径把库里的时刻解成**会话时区**、SQLite 解成 UTC，远程只能固定按 UTC 渲染，所以在 PG 部署上同一 run 的 CREATED 列可能与本地**差一天**——已登记为 `docs/blocked-items.md` 的 **D-3**，并据此把 ② 那句「逐字节相同」的适用范围收窄为「SQLite 部署上成立」。
+- **变异（6 条全部先红在预期位，还原后逐文件 `sha256` 与注入前相同）**：① 声明表去掉 `tenant_id` → 子集用例红（键集差＝9 而非 10）；② 远程主键 `id` 改回 `run_id` → 红（既撞「远程不许有本地没有的键」，也撞「主键仍叫 id」）；③ `created_at` 退回裸 int64 秒 → 红（`time.Time` 解不开一个数）；④ **钳位掏空**（`_ = math.MaxInt32`，其余接线不动）→ **只有那条记录请求的用例红**，证明承重的是那条用例而不是别的顺带效应；⑤ **远程分支短路回本地读取** → 5 条红，但**人类表格与空答案两条等价用例仍然绿**——这是「双模式等价测试必须配死端点对照」的又一次实测：两边读同一份库时，短路成本地根本分不出来；⑥ 服务端不再把 `run.Creator` 放上线 → 本笔的 CLI 子集用例红。**⑥ 的另一半结论要如实说**：`internal/grpc` 里既有那两条服务端用例（`TestInventoryTargetHistory`、`TestServicePolicy_TargetHistoryShowsOnlyVisibleRuns`）对这条变异**没有反应**——它们不检查 `creator`，所以线上第 5 个字段的承重证据目前只在 CLI 侧。本笔不改别人的测试文件，只登记。
+- **门禁**（在下面这棵 rebase 后的树上复跑，而不是改动前那棵）：`gofmt -l ./cmd ./internal` 空输出；`go build ./...` / `go vet ./...` rc=0；`go test ./... -count=1` 全包 rc=0；`go test ./cmd/levee/ ./internal/grpc/ -count=1` 变异还原后双 ok；`check_doc_anchors` 27 锚点 + **29 claims** PASSED；`check_roadmap_status` PASSED（53 行）；`test_changelog_structure` 14 tests OK；`test_doc_anchors` 24 tests OK；`python -m unittest discover -s scripts` **119** tests OK。claims / 例数比上一笔记下的 25 与 18 多，是 master 这两轮自己长的（`CLAIMS` 第三轮 + 命令树负断言守卫），本笔没有新增 `path:line` 引用，也没有改动任何下限。
+
 ### 文档（`product-roadmap.md` 闭合状态收成一列 `状态` + 门禁：把「未决行数」从五种写法变成一个答案）
 
 - **缺口（qoder 在 `docs/project-status-2026-11.md` §12 登记为「只记不改」）**：roadmap 的「未决行数」**没有唯一答案**——同一张表，按优先级格有无闭合标记数是 **11**、按任一格是否有标记是 **1**、再加标题删除线是 **1**，人工回读是 **6**，三个判据各自可复现。根因是闭合状态有 **5 种互不兼容写法**（优先级格 `✅已落地` / 尾列 `✅已落地` / 标题 `~~划掉~~` / 优先级格 `已修`·`已定案并落地`·`已接线` / 正文 `已完成`）。
@@ -46,6 +63,7 @@
 - **下限**：`MIN_CLAIMS` 20 → **25**（表当前 29 条）。
 - **验证**：套件 18 → **24** 例全绿（新增目录扫描 present、目录跳 `_test.go`、空目录 ScopeError、`gone` 三态）；`check_doc_anchors` 27 锚点 + **29 claims**。**变异**：① 新建 `cmd/levee/zz_probe_mut.go` 写 `"rollback-all"` → 负断言红并点名该文件；② 复建 `internal/scheduler/` → `gone` 断言红（「exists again」）。
 - **如实边界**：目录扫描跳过 `_test.go` 是刻意的（有专测）；`gone` 的父目录守卫防的是末段笔误、不防整条路径写错（那需要更粗的锚）。仍未覆盖：像 `drift schedule` 那种「同名字符串已存在于别处」的**顶层**命令负断言——关键词区分不了层级，需要更强的作用域表达，留作后续。
+
 
 ### 测试（`CLAIMS` 表第二轮：13 → 25 条，把 roadmap/blocked-items 已在引用的符号变成机器断言；下限抬到 20）
 

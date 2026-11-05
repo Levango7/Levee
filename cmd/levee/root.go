@@ -313,12 +313,18 @@ func remoteFlagUsage() string {
 //
 // Today: the three registry readers in cmd_agent_remote.go (which dial the
 // gRPC client directly) plus `version` / `system version` / `system status` /
-// `template list` / `template show` / `target list` / `group list` /
-// `audit verify` / `audit list` / `audit export` / `audit show` (which go
-// through service_factory). Keep this in step with both;
+// `template list` / `template show` / `target list` / `target history` /
+// `group list` / `audit verify` / `audit list` / `audit export` / `audit show`
+// (which go through service_factory). Keep this in step with both;
 // TestRemoteCapabilityListResolves fails if an entry stops naming a real
 // command, and TestRemoteCapabilityListIsExactlyThese pins the membership so a
 // removed command cannot leave its coverage silently smaller.
+//
+// Being listed here means only that the command dials the server. It is not a
+// promise that the two modes print the same bytes, and `target history` is the
+// entry that says so out loud rather than by implication: its remote rows are a
+// documented subset of the local ones, named in
+// remoteTargetHistoryLocalOnlyFields.
 var remoteCapableCommands = []string{
 	"levee agent list",
 	"levee agent show",
@@ -329,6 +335,7 @@ var remoteCapableCommands = []string{
 	"levee template list",
 	"levee template show",
 	"levee target list",
+	"levee target history",
 	"levee group list",
 	"levee audit verify",
 	"levee audit list",
