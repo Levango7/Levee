@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 测试（账本断言机器化：`check_doc_anchors.py` 增加声明式 `CLAIMS`，把「锚点还指向某处」升级到「那句话还成立」）
+
+- **缺口**：`scripts/check_doc_anchors.py` 只证 **liveness**——锚点能被解析、行号不越过 EOF。`docs/project-status-2026-11.md` §8.4 记的机制建议（「把「台账声称未做/已做」变成可机器校验的东西」）从未落地，所以一条账本句子可以一边锚点解析得到、一边与代码矛盾，而 CI 全绿。
+- **改动**：新增声明式 `CLAIMS` 表，每行 = (ledger, what, path, keyword, mode)。`check_claims()` 逐条检查 `keyword` 在 `path` 里 **present**（账本说「已落地」）或 **absent**（账本说「未实现／已删除」）。未知 `mode`、或 `ledger` 不在 `LIVE_DOCS` 里，是 **ScopeError（exit 2）**——那是声明写错、不是代码漂移，读的人该修表而不是修码。加 `MIN_CLAIMS` 安全垫（同 `MIN_ANCHORS` 之意）。`check()` 把两半合流，`main` 的通过行同时报锚点与断言数。
+- **种子（13 条，全部现测为真）**：12 条 present + 1 条 absent，取自三本活账本——回滚后验证装配（`internal/wiring/run.go` 的 `NewPostRollbackVerifier`）、registry/labels 冲突检出（`internal/inventory/ownership.go` 的 `LabelConflicts`）、日历装进 serve（`cmd/levee/cmd_serve.go` 的 `WithChangeCalendar`）、日历门禁 plan+apply（`internal/wiring/calendar_gate.go` 的 `AssertNotFrozen`）、回滚豁免结构测试、观察者扇出、LE103、human 门禁 approver、插件执行面接缝、input 取值供给、`drift detect` 已注册；负断言是 `drift scan` 从未注册（`cmd/levee/cmd_drift.go` 不含 `"scan"`）。
+- **验证**：`test_doc_anchors.py` 18 例全绿（新增 8 例：present/absent 的满足与违反各有配对样本、target 缺失、未知 mode、非活账本 ledger 是 ScopeError、表下限与真实条数挂钩）；`unittest discover -s scripts` 94→102 例全绿。**变异三条（先红后还原）**：① present 关键字改成不存在 → 红并点名 `docs/product-roadmap.md` 那条与文件/关键字；② 负断言的 keyword 改成 `"detect"` → 红并说 "negative claim is stale"；③ `MIN_CLAIMS` 抬到 999 → 下限红。
+- **如实边界**：`CLAIMS` 是**声明式子集**，不是从散文刮出来的（刮会按句子猜关键字，两个方向都可能猜错）；`ledger`/`what` 只进报错文案，不与账本里的 `path:line` 做精确匹配——行号会腐烂，那是 liveness 半部的职责。CI 无需改：套件名不变，release-gate 本就点名 `test_doc_anchors`，而它调用 `check()`。
+
 ### 测试（CHANGELOG 结构门补两条：`[Unreleased]` 小节标题查重 + 标题行不许粘行）
 
 - **缺口**：`scripts/test_changelog_structure.py` 的 7 例只查 `## [Unreleased]` 唯一、首个 `## ` 段是 `[Unreleased]`、未发布内容必须分组进 `### ` 小节、`## [tag]` 版本标题唯一——**[Unreleased] 块内 `### ` 小节标题的重复、以及标题行粘行，从来没有检查**。那正是 2026-10-31 双 agent 同锚点手术真实产出过的两个形态（重复节靠人工 python 断言兜住，粘行靠当场目测），两者都能让整套 CI 全绿。

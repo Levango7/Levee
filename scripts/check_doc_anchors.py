@@ -8,6 +8,14 @@ code, and none of them could have been caught by CI — CI checks code, not
 documentation.  This is the cheap half of that gap: it proves an anchor still
 *points somewhere*, not that the sentence around it is still *true*.
 
+The other half lives in `CLAIMS` below.  For the assertions someone has curated,
+it also proves the *sentence* — "X landed in file F", "Y is not implemented" —
+still matches the code, by requiring a named token to be present (or absent) in
+the named file.  Liveness and truth are separate because they fail for different
+reasons and send the reader to different fixes: a dead anchor means the ledger
+points at nothing, a broken claim means the code moved out from under a sentence
+that reads as current.
+
 Scope is declared, not discovered.  Scanning every markdown file under docs/
 sounds better than it is: dated snapshots (docs/quality-hardening-2026-09.md,
 docs/review-report.md, ...) are frozen records whose anchors are expected to rot,
@@ -37,6 +45,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 # The ledgers an agent actually steers by. Adding one here is the whole scope
 # change; keep MIN_ANCHORS in step with it or the floor stops being meaningful.
@@ -63,6 +72,124 @@ FENCE = re.compile(r"^\s*(```|~~~)")
 # Airbag: the live set currently carries ~27 anchors. If a refactor silently
 # stops matching them, "no problems" must not be the verdict.
 MIN_ANCHORS = 20
+
+
+class Claim(NamedTuple):
+    """One ledger assertion about the code, checkable by a token search.
+
+    `ledger` and `what` are for the failure message — which live doc makes the
+    claim, and what it asserts.  They are not themselves checked: a claim is
+    *declared* here, not scraped from prose (scraping would guess a keyword per
+    sentence and get the wrong one in both directions).  `path` is the file the
+    claim turns on; `keyword` is the token that must appear in it when
+    `mode == "present"`, or must not appear when `mode == "absent"`.
+
+    A NamedTuple rather than a dataclass on purpose: the guard is loaded by
+    tests through `importlib` under a name that is not in `sys.modules`, and a
+    frozen dataclass then crashes in `dataclasses._is_type` reaching for the
+    module it cannot find.
+    """
+
+    ledger: str
+    what: str
+    path: str
+    keyword: str
+    mode: str = "present"
+
+
+# The curated half.  Every row was true when it was added and is re-checked on
+# every CI run; a row going red means the code changed under a sentence the
+# ledgers still read as current.  This is deliberately a subset of the ledgers'
+# assertions — extend it as more claims acquire a machine-checkable shape.
+#
+# `drift scan` is the one negative row: `docs/levee-api.md` §6 and
+# `docs/product-roadmap.md` both record that it was never registered, and the
+# gate now fails if a `scan` command ever appears without the ledgers moving.
+CLAIMS: tuple[Claim, ...] = (
+    Claim(
+        "docs/product-roadmap.md",
+        "rollback 后验证已装配到每次 run",
+        "internal/wiring/run.go",
+        "NewPostRollbackVerifier",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "registry 与库存 labels 的不一致可被检出",
+        "internal/inventory/ownership.go",
+        "LabelConflicts",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "变更日历已装进 serve",
+        "cmd/levee/cmd_serve.go",
+        "WithChangeCalendar",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "日历门禁在 plan 与 apply 两处前向路径消费",
+        "internal/wiring/calendar_gate.go",
+        "AssertNotFrozen",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "回滚路径刻意豁免日历门禁（结构测试钉住）",
+        "internal/wiring/calendar_gate_test.go",
+        "TestCalendarGateIsForwardOnly",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "approval 观察者改为扇出（不再互相挤掉）",
+        "internal/grpc/change_service.go",
+        "WithApprovalCreateObserver",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "LE103：未声明幂等的 undo 步骤发编译期提示",
+        "internal/dsl/compile_warnings.go",
+        "codeNonIdempotentUndo",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "human 门禁的 approver 已装进 serve",
+        "cmd/levee/cmd_serve.go",
+        "WithGateApprover",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "插件执行面接缝存在（notifier/module/channel 共用）",
+        "cmd/levee/cmd_serve.go",
+        "installPluginExecutionSurfaces",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "input 取值供给已实现（LE004 随之撤回）",
+        "internal/dsl/inputs.go",
+        "func ResolveInputs",
+    ),
+    Claim(
+        "docs/levee-api.md",
+        "drift detect 是已注册命令",
+        "cmd/levee/cmd_drift.go",
+        '"detect"',
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "通道插件会话池已交付",
+        "internal/plugin/session.go",
+        "startPluginSession",
+    ),
+    Claim(
+        "docs/levee-api.md",
+        "drift scan 从未注册（负断言）",
+        "cmd/levee/cmd_drift.go",
+        '"scan"',
+        mode="absent",
+    ),
+)
+
+# Airbag, same idea as MIN_ANCHORS: with the floor at 10 against ~13 rows, a
+# refactor that silently stops collecting claims cannot turn into a green run.
+MIN_CLAIMS = 10
 
 
 class ScopeError(RuntimeError):
@@ -109,8 +236,8 @@ def scan_text(text: str, *, root: Path) -> list[str]:
     return problems
 
 
-def check(root: Path, docs: tuple[str, ...] = LIVE_DOCS) -> tuple[list[str], int]:
-    """Return (problems, anchors found). Raises ScopeError when it cannot scan."""
+def check_anchors(root: Path, docs: tuple[str, ...] = LIVE_DOCS) -> tuple[list[str], int]:
+    """Liveness: Return (problems, anchors found). Raises ScopeError when it cannot scan."""
     problems: list[str] = []
     seen = 0
     for rel in docs:
@@ -127,6 +254,48 @@ def check(root: Path, docs: tuple[str, ...] = LIVE_DOCS) -> tuple[list[str], int
             "the scan has stopped seeing the references it exists to protect"
         )
     return problems, seen
+
+
+def check_claims(root: Path, claims: tuple[Claim, ...] = CLAIMS) -> tuple[list[str], int]:
+    """Truth: Return (problems, claims checked). Raises ScopeError on a malformed row.
+
+    A row that names an unknown mode or a doc outside LIVE_DOCS is a declaration
+    bug, not a code drift — that is why it is a ScopeError (exit 2), not a found
+    problem (exit 1): the reader must fix the table, not the code.
+    """
+    problems: list[str] = []
+    for claim in claims:
+        if claim.mode not in ("present", "absent"):
+            raise ScopeError(f"claim mode must be 'present' or 'absent', got {claim.mode!r}: {claim.what}")
+        if claim.ledger not in LIVE_DOCS:
+            raise ScopeError(f"claim names a ledger outside LIVE_DOCS: {claim.ledger!r} ({claim.what})")
+        target = root / claim.path
+        if not target.is_file():
+            problems.append(f"[claim] {claim.ledger}: {claim.what!r} — target file missing: {claim.path}")
+            continue
+        found = claim.keyword in target.read_text(encoding="utf-8", errors="replace")
+        if claim.mode == "present" and not found:
+            problems.append(
+                f"[claim] {claim.ledger}: {claim.what!r} — {claim.path} no longer contains {claim.keyword!r}"
+            )
+        elif claim.mode == "absent" and found:
+            problems.append(
+                f"[claim] {claim.ledger}: {claim.what!r} — {claim.path} now contains {claim.keyword!r}, "
+                "so the negative claim is stale"
+            )
+    if len(claims) < MIN_CLAIMS:
+        problems.append(
+            f"only {len(claims)} claims declared (floor is {MIN_CLAIMS}) — the claim table has stopped "
+            "carrying the assertions it exists to protect"
+        )
+    return problems, len(claims)
+
+
+def check(root: Path, docs: tuple[str, ...] = LIVE_DOCS) -> tuple[list[str], int]:
+    """Both halves: (problems, anchors found). Raises ScopeError when it cannot scan."""
+    anchor_problems, seen = check_anchors(root, docs)
+    claim_problems, _ = check_claims(root)
+    return anchor_problems + claim_problems, seen
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,7 +316,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {problem}", file=sys.stderr)
         return 1
 
-    print(f"DOC ANCHOR CHECK PASSED: {seen} anchors across {len(LIVE_DOCS)} live docs still resolve")
+    print(
+        f"DOC ANCHOR CHECK PASSED: {seen} anchors across {len(LIVE_DOCS)} live docs still resolve; "
+        f"{len(CLAIMS)} claims still hold"
+    )
     return 0
 
 
