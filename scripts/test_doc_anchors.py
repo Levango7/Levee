@@ -7,6 +7,12 @@ text that must not be, so "it returned []" cannot pass by looking at nothing.
 The rule that needed a sample of its own is the fenced-code exemption: samples
 inside ``` fences are illustrations, not references.  Without a test, that rule is
 one refactor away from silently swallowing every anchor in the file.
+
+The checker has two halves and both are exercised here: `scan_text`/`check_anchors`
+(liveness — an anchor must still resolve) and `check_claims` (truth — a declared
+assertion's token must still be present, or still absent, in the code it names).
+Each detector has a paired satisfied sample, so a green run cannot come from
+checking nothing.
 """
 
 import importlib.util
@@ -96,6 +102,83 @@ class DetectorSeesDamageTest(unittest.TestCase):
     def test_missing_live_doc_is_a_scope_error_not_a_pass(self):
         with self.assertRaises(anchors.ScopeError):
             anchors.check(self.root, docs=("docs/does-not-exist.md",))
+
+
+class ClaimsAreCheckedTest(unittest.TestCase):
+    """The truth half: a declared claim must match the code it names.
+
+    Each detector assertion has a paired sample (a satisfied claim that must stay
+green, a broken one that must go red), so "it returned []" cannot pass by
+    checking nothing.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "code").mkdir()
+        (self.root / "code" / "present.go").write_text("package x\nfunc Want() {}\n", encoding="utf-8")
+        (self.root / "code" / "absent.go").write_text("package x\n// nothing declared here\n", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _claim(self, **kw):
+        base = dict(
+            ledger="docs/product-roadmap.md",
+            what="synthetic",
+            path="code/present.go",
+            keyword="func Want",
+            mode="present",
+        )
+        base.update(kw)
+        return anchors.Claim(**base)
+
+    def _filled(self, *first):
+        """`first`, padded with satisfied fillers to clear the table floor."""
+        fillers = tuple(self._claim() for _ in range(anchors.MIN_CLAIMS - len(first)))
+        return tuple(first) + fillers
+
+    def test_present_claim_satisfied(self):
+        problems, checked = anchors.check_claims(self.root, claims=self._filled())
+        self.assertEqual([], problems, problems)
+        self.assertEqual(anchors.MIN_CLAIMS, checked)
+
+    def test_present_claim_violated_is_flagged(self):
+        bad = self._claim(keyword="func Missing")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(bad))
+        self.assertTrue(any("no longer contains" in p for p in problems), problems)
+
+    def test_absent_claim_satisfied(self):
+        ok = self._claim(path="code/absent.go", keyword="Oops", mode="absent")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(ok))
+        self.assertEqual([], problems, problems)
+
+    def test_absent_claim_violated_is_flagged(self):
+        bad = self._claim(path="code/present.go", keyword="func Want", mode="absent")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(bad))
+        self.assertTrue(any("negative claim is stale" in p for p in problems), problems)
+
+    def test_missing_target_is_flagged(self):
+        bad = self._claim(path="code/nope.go")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(bad))
+        self.assertTrue(any("target file missing" in p for p in problems), problems)
+
+    def test_unknown_mode_is_a_scope_error(self):
+        bad = self._claim(mode="maybe")
+        with self.assertRaises(anchors.ScopeError):
+            anchors.check_claims(self.root, claims=self._filled(bad))
+
+    def test_claim_naming_a_foreign_ledger_is_a_scope_error(self):
+        bad = self._claim(ledger="docs/not-live.md")
+        with self.assertRaises(anchors.ScopeError):
+            anchors.check_claims(self.root, claims=self._filled(bad))
+
+    def test_live_claim_table_holds_and_clears_the_floor(self):
+        problems, checked = anchors.check_claims(REPO)
+        self.assertEqual([], problems, "声明的 CLAIMS 里有断言已不成立")
+        self.assertLessEqual(
+            anchors.MIN_CLAIMS, checked, f"下限 {anchors.MIN_CLAIMS} 高于真实条数 {checked} 会让门禁永远红"
+        )
 
 
 class ReleaseGateRunsThisSuiteTest(unittest.TestCase):
