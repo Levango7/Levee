@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 测试（命令树负断言守卫：`levee schedule` / `drift scan` / `drift show` 这类「必须不存在」的命令路径变成机器可查）
+
+- **缺口**：`cli_reference_flags_test.go` 只查文档→树的一个方向——文档点名的命令/旗标必须存在。账本里还有另一种断言：**命令路径必须不存在**，此前无任何门禁。其中两条是**关键词搜索做不到**的（同一个词在别处合法存在）：`levee schedule`（`docs/blocked-items.md` E-4 定档不做）——但 `schedule` 作为 `drift schedule` 存在；`drift show <report-id>`（`docs/levee-api.md` §6 从未注册）——但 `show` 作为 `drift baseline show` 存在。只有 cobra 树能区分顶层与嵌套。
+- **改动**：新增 `cmd/levee/command_tree_test.go`——一张声明的 `commandClaims` 表（ledger/what/path/absent），用同包既有的 `childByName` 逐段解析 `rootCmd`：present 断言路径必须解析得到、absent 必须解析不到。含**成对样本自检**（同一词嵌套存在、顶层不存在）与条数下限，让解析器恒真/恒假也被抓住。
+- **覆盖 9 条**：present 4（`drift detect` / `drift report` / `drift baseline list` / `drift schedule run`）；absent 5（顶层 `schedule`、`delegate`、`rollback-all`，`drift scan`，`drift show`）。
+- **验证**：两条测试全绿；`gofmt` 干净、`go vet ./cmd/levee/` rc=0。**变异**：① present 路径改成不存在的子命令 → 红并点名；② absent 路径改成 `drift schedule`（存在）→ 红。
+- **如实边界**：本表只管**命令路径**的存在性；与 Python `CLAIMS` 里 `cmd/levee` 目录级的 absent（`"rollback-all"` / `"delegate"` 任何出现即红）互补——前者查注册、后者查字符串出现。
+
 ## [v1.25.0] - 2026-11-06
 
 > **发布状态：未切版。** tag `v1.25.0` 尚未推送。Helm chart 的 `appVersion` / `values.image.tag` 刻意留在 `1.24.0` / `v1.24.0`：`scripts/check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在远端 tag 集合里，tag 之前升档会让 `helm install` 的默认值去拉一个从未构建过的镜像；升代与发布状态改写随切版后的第二笔。本节共 **36** 个小节，主题分布与行为变更见 [`docs/release-notes/v1.25.0.md`](docs/release-notes/v1.25.0.md)。
