@@ -118,6 +118,16 @@ green, a broken one that must go red), so "it returned []" cannot pass by
         (self.root / "code").mkdir()
         (self.root / "code" / "present.go").write_text("package x\nfunc Want() {}\n", encoding="utf-8")
         (self.root / "code" / "absent.go").write_text("package x\n// nothing declared here\n", encoding="utf-8")
+        # A package whose marker lives in a non-test file, plus a test file that
+        # also carries a marker: directory scans must see the first and skip the
+        # second.
+        (self.root / "pkg").mkdir()
+        (self.root / "pkg" / "real.go").write_text("package pkg\n// Marker is live\n", encoding="utf-8")
+        (self.root / "pkg" / "real_test.go").write_text(
+            "package pkg\n// only-in-a-fixture marker\n", encoding="utf-8")
+        # For `gone`: parentdir exists, its child does not; emptydir has no files.
+        (self.root / "parentdir").mkdir()
+        (self.root / "emptydir").mkdir()
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -161,7 +171,7 @@ green, a broken one that must go red), so "it returned []" cannot pass by
     def test_missing_target_is_flagged(self):
         bad = self._claim(path="code/nope.go")
         problems, _ = anchors.check_claims(self.root, claims=self._filled(bad))
-        self.assertTrue(any("target file missing" in p for p in problems), problems)
+        self.assertTrue(any("target missing" in p for p in problems), problems)
 
     def test_unknown_mode_is_a_scope_error(self):
         bad = self._claim(mode="maybe")
@@ -170,6 +180,42 @@ green, a broken one that must go red), so "it returned []" cannot pass by
 
     def test_claim_naming_a_foreign_ledger_is_a_scope_error(self):
         bad = self._claim(ledger="docs/not-live.md")
+        with self.assertRaises(anchors.ScopeError):
+            anchors.check_claims(self.root, claims=self._filled(bad))
+
+    def test_directory_scope_searches_every_non_test_file(self):
+        ok = self._claim(path="pkg", keyword="Marker is live")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(ok))
+        self.assertEqual([], problems, problems)
+
+    def test_directory_scope_skips_test_files(self):
+        # The marker exists, but only inside a `_test.go` fixture: a present
+        # claim over the directory must fail and an absent claim must pass.
+        present = self._claim(path="pkg", keyword="only-in-a-fixture", mode="present")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(present))
+        self.assertTrue(any("no longer contains" in p for p in problems), problems)
+
+        absent = self._claim(path="pkg", keyword="only-in-a-fixture", mode="absent")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(absent))
+        self.assertEqual([], problems, problems)
+
+    def test_empty_directory_scope_is_a_scope_error(self):
+        bad = self._claim(path="emptydir", keyword="anything")
+        with self.assertRaises(anchors.ScopeError):
+            anchors.check_claims(self.root, claims=self._filled(bad))
+
+    def test_gone_claim_is_satisfied_when_the_path_is_absent(self):
+        ok = self._claim(path="parentdir/child", keyword="", mode="gone")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(ok))
+        self.assertEqual([], problems, problems)
+
+    def test_gone_claim_is_violated_when_the_path_exists_again(self):
+        bad = self._claim(path="parentdir", keyword="", mode="gone")
+        problems, _ = anchors.check_claims(self.root, claims=self._filled(bad))
+        self.assertTrue(any("exists again" in p for p in problems), problems)
+
+    def test_gone_claim_with_a_missing_parent_is_a_scope_error(self):
+        bad = self._claim(path="nodir/child", keyword="", mode="gone")
         with self.assertRaises(anchors.ScopeError):
             anchors.check_claims(self.root, claims=self._filled(bad))
 
