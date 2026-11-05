@@ -80,9 +80,13 @@ class Claim(NamedTuple):
     `ledger` and `what` are for the failure message — which live doc makes the
     claim, and what it asserts.  They are not themselves checked: a claim is
     *declared* here, not scraped from prose (scraping would guess a keyword per
-    sentence and get the wrong one in both directions).  `path` is the file the
-    claim turns on; `keyword` is the token that must appear in it when
-    `mode == "present"`, or must not appear when `mode == "absent"`.
+    sentence and get the wrong one in both directions).
+
+    `path` is a file OR a directory (a directory is searched recursively; see
+    `scope_files`).  `keyword` is the token that must appear in the scope when
+    `mode == "present"`, must not appear when `mode == "absent"`, and is
+    unused ("") when `mode == "gone"` (the assertion there is about the scope's
+    existence, not its contents).
 
     A NamedTuple rather than a dataclass on purpose: the guard is loaded by
     tests through `importlib` under a name that is not in `sys.modules`, and a
@@ -258,11 +262,48 @@ CLAIMS: tuple[Claim, ...] = (
         "internal/docgen/docgen.go",
         "vocabulary.ts",
     ),
+    # --- third round: the negatives a whole-directory scope makes checkable ---
+    # `levee delegate` / `levee rollback-all` were never implemented AND never
+    # registered as not-done (docs/levee-api.md records both).  A file-level
+    # check cannot hold this — the command, if ever written, lands in a NEW file
+    # under cmd/levee — so these ride the directory scope and fail the moment
+    # either string appears anywhere in the package.
+    Claim(
+        "docs/levee-api.md",
+        "levee rollback-all 从未实现（整个 cmd/levee 无此命令）",
+        "cmd/levee",
+        '"rollback-all"',
+        mode="absent",
+    ),
+    Claim(
+        "docs/levee-api.md",
+        "levee delegate 从未实现（整个 cmd/levee 无此命令）",
+        "cmd/levee",
+        '"delegate"',
+        mode="absent",
+    ),
+    # Packages the roadmap records as retired.  `gone` catches a re-add, which
+    # is the mirror of the class the ledger keeps paying for ("says removed,
+    # still present" and "says present, already removed").
+    Claim(
+        "docs/product-roadmap.md",
+        "internal/scheduler 整包退役（与 dispatch 职责重叠）",
+        "internal/scheduler",
+        "",
+        mode="gone",
+    ),
+    Claim(
+        "docs/product-roadmap.md",
+        "internal/recommend/rag 整包退役（FNV-1a 伪向量）",
+        "internal/recommend/rag",
+        "",
+        mode="gone",
+    ),
 )
 
-# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (20 of
-# ~25) is a ratchet — dropping assertions is possible, but only on purpose.
-MIN_CLAIMS = 20
+# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (25 of
+# ~29) is a ratchet — dropping assertions is possible, but only on purpose.
+MIN_CLAIMS = 25
 
 
 class ScopeError(RuntimeError):
@@ -329,32 +370,73 @@ def check_anchors(root: Path, docs: tuple[str, ...] = LIVE_DOCS) -> tuple[list[s
     return problems, seen
 
 
+MODES = ("present", "absent", "gone")
+
+
+def scope_files(target: Path) -> list[Path]:
+    """Files a keyword search runs over: a file is itself, a directory recurses.
+
+    Directory scans skip `*_test.go`: a claim about what the product registers or
+    exports must not be defeated — or satisfied — by a test fixture.  Name a
+    test file explicitly as `path` if you mean to search one.
+    """
+    if target.is_file():
+        return [target]
+    return sorted(p for p in target.rglob("*") if p.is_file() and not p.name.endswith("_test.go"))
+
+
 def check_claims(root: Path, claims: tuple[Claim, ...] = CLAIMS) -> tuple[list[str], int]:
     """Truth: Return (problems, claims checked). Raises ScopeError on a malformed row.
 
-    A row that names an unknown mode or a doc outside LIVE_DOCS is a declaration
-    bug, not a code drift — that is why it is a ScopeError (exit 2), not a found
-    problem (exit 1): the reader must fix the table, not the code.
+    Modes:
+      present — `path` exists (file or directory) and its scope holds `keyword`.
+      absent  — `path` exists and its scope does NOT hold `keyword`.
+      gone    — `path` does NOT exist (a retired package, file or directory), and
+                its parent directory does, so a typo in the last segment cannot
+                pass silently.
+
+    A row that names an unknown mode, a doc outside LIVE_DOCS, a directory scope
+    with no files, or a `gone` path whose parent is missing is a declaration bug,
+    not a code drift — a ScopeError (exit 2), so the reader fixes the table rather
+    than the code.
     """
     problems: list[str] = []
     for claim in claims:
-        if claim.mode not in ("present", "absent"):
-            raise ScopeError(f"claim mode must be 'present' or 'absent', got {claim.mode!r}: {claim.what}")
+        if claim.mode not in MODES:
+            raise ScopeError(f"claim mode must be one of {MODES}, got {claim.mode!r}: {claim.what}")
         if claim.ledger not in LIVE_DOCS:
             raise ScopeError(f"claim names a ledger outside LIVE_DOCS: {claim.ledger!r} ({claim.what})")
         target = root / claim.path
-        if not target.is_file():
-            problems.append(f"[claim] {claim.ledger}: {claim.what!r} — target file missing: {claim.path}")
+
+        if claim.mode == "gone":
+            if target.exists():
+                problems.append(
+                    f"[claim] {claim.ledger}: {claim.what!r} — {claim.path} exists again "
+                    "(the ledger records it as removed)"
+                )
+            elif not target.parent.is_dir():
+                raise ScopeError(
+                    f"gone-claim scope has no parent directory (likely a typo): {claim.path} ({claim.what})"
+                )
             continue
-        found = claim.keyword in target.read_text(encoding="utf-8", errors="replace")
-        if claim.mode == "present" and not found:
+
+        if not target.exists():
+            problems.append(f"[claim] {claim.ledger}: {claim.what!r} — target missing: {claim.path}")
+            continue
+        files = scope_files(target)
+        if not files:
+            raise ScopeError(f"claim scope has no files (likely a wrong path): {claim.path} ({claim.what})")
+        hits = [p for p in files if claim.keyword in p.read_text(encoding="utf-8", errors="replace")]
+
+        if claim.mode == "present" and not hits:
             problems.append(
                 f"[claim] {claim.ledger}: {claim.what!r} — {claim.path} no longer contains {claim.keyword!r}"
             )
-        elif claim.mode == "absent" and found:
+        elif claim.mode == "absent" and hits:
+            where = ", ".join(str(p.relative_to(root)) for p in hits[:3])
             problems.append(
-                f"[claim] {claim.ledger}: {claim.what!r} — {claim.path} now contains {claim.keyword!r}, "
-                "so the negative claim is stale"
+                f"[claim] {claim.ledger}: {claim.what!r} — {claim.path} now contains {claim.keyword!r} "
+                f"(in {where}), so the negative claim is stale"
             )
     if len(claims) < MIN_CLAIMS:
         problems.append(

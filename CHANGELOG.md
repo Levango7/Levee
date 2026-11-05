@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 测试（`CLAIMS` 第三轮：目录级扫描 + `gone` 模式，把「从未实现／整包退役」也变成机器断言；下限 20 → 25）
+
+- **起因**：上两轮把表建起来并扩到 25 条，但只加 present。**负断言**仍只有 `drift scan` 一条——稳健的负断言要么要求「若实现，符号一定落在某已知文件里」（命令级断言不满足：实现会落在新文件），要么要求「路径应当不存在」（删除类断言）。本轮把这两种形状都补上。
+- **机制（两点）**：① `path` 现在可以是**目录** → 递归搜索，**跳过 `*_test.go`**（关于产品注册/导出了什么的断言，不该被测试夹具满足或推翻；要查测试文件就把该文件写成 `path`）；空目录 = ScopeError（防空转）而不是绿。② 新增 `mode="gone"`：路径必须**不存在**、且**父目录必须存在**（防末段笔误静默变绿）——对应「整包退役删除」那类账本断言。
+- **新增 4 条**：`docs/levee-api.md` 的「`levee rollback-all` 从未实现」→ `cmd/levee` 目录 absent `"rollback-all"`；「`levee delegate` 从未实现」→ 同法 absent `"delegate"`；`docs/product-roadmap.md` 的「`internal/scheduler` 整包退役」与「`internal/recommend/rag` 整包退役」→ `gone`。
+- **下限**：`MIN_CLAIMS` 20 → **25**（表当前 29 条）。
+- **验证**：套件 18 → **24** 例全绿（新增目录扫描 present、目录跳 `_test.go`、空目录 ScopeError、`gone` 三态）；`check_doc_anchors` 27 锚点 + **29 claims**。**变异**：① 新建 `cmd/levee/zz_probe_mut.go` 写 `"rollback-all"` → 负断言红并点名该文件；② 复建 `internal/scheduler/` → `gone` 断言红（「exists again」）。
+- **如实边界**：目录扫描跳过 `_test.go` 是刻意的（有专测）；`gone` 的父目录守卫防的是末段笔误、不防整条路径写错（那需要更粗的锚）。仍未覆盖：像 `drift schedule` 那种「同名字符串已存在于别处」的**顶层**命令负断言——关键词区分不了层级，需要更强的作用域表达，留作后续。
+
 ### 测试（`CLAIMS` 表第二轮：13 → 25 条，把 roadmap/blocked-items 已在引用的符号变成机器断言；下限抬到 20）
 
 - **起因**：上一笔（`3f60a79`）建了 `CLAIMS` 机制并种 13 条。本轮继续登记——凡账本**已经用 `path:line` 引用、但引用之外没有任何守卫**的断言，只要形状可机器校验，就进表。
