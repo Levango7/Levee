@@ -335,3 +335,71 @@ func TestRegistryInstallUpdatesTimestamps(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, rec2.UpdatedAt.After(rec.UpdatedAt) || rec2.UpdatedAt.Equal(rec.UpdatedAt))
 }
+
+// D-1c: extra channel types round-trip through the registry, so serve can
+// register them without executing the plugin.
+func TestRegistryChannelTypesRoundTrip(t *testing.T) {
+	r := newTestRegistry(t)
+	ctx := context.Background()
+	bin := writeTempBinary(t, "binary")
+	want := []string{"device-console", "terminal-server"}
+
+	rec, err := r.Install(ctx, PluginMeta{
+		Name: "tcp-console", Version: "1.0.0", Type: TypeChannel, ChannelTypes: want,
+	}, bin, "", false)
+	require.NoError(t, err)
+	assert.Equal(t, want, rec.ChannelTypes)
+
+	got, err := r.Get(ctx, "tcp-console")
+	require.NoError(t, err)
+	assert.Equal(t, want, got.ChannelTypes)
+
+	list, err := r.List(ctx, StateInstalled)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, want, list[0].ChannelTypes)
+}
+
+func TestRegistryUndeclaredChannelTypesIsEmpty(t *testing.T) {
+	r := newTestRegistry(t)
+	bin := writeTempBinary(t, "binary")
+	rec, err := r.Install(context.Background(), PluginMeta{Name: "one-type", Version: "1.0.0", Type: TypeChannel}, bin, "", false)
+	require.NoError(t, err)
+	assert.Empty(t, rec.ChannelTypes, "an undeclared plugin keeps the one-type behaviour")
+}
+
+func TestValidateChannelTypes(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*PluginMeta)
+		wantErr string
+	}{
+		{"empty is fine", func(*PluginMeta) {}, ""},
+		{"valid list", func(m *PluginMeta) { m.ChannelTypes = []string{"a-b", "c2"} }, ""},
+		{"non-channel refused", func(m *PluginMeta) { m.Type = TypeGate; m.ChannelTypes = []string{"x"} }, "channel_types but its type"},
+		{"bad token", func(m *PluginMeta) { m.ChannelTypes = []string{"Bad"} }, "must match"},
+		{"duplicate", func(m *PluginMeta) { m.ChannelTypes = []string{"x", "x"} }, "duplicate"},
+		{"repeats name", func(m *PluginMeta) { m.ChannelTypes = []string{"acme"} }, "duplicate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := PluginMeta{Name: "acme", Type: TypeChannel}
+			tc.mutate(&m)
+			err := validateChannelTypes(m)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestRegistryInstallRefusesChannelTypesOnNonChannel(t *testing.T) {
+	r := newTestRegistry(t)
+	bin := writeTempBinary(t, "binary")
+	_, err := r.Install(context.Background(), PluginMeta{Name: "g", Version: "1", Type: TypeGate, ChannelTypes: []string{"x"}}, bin, "", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "channel_types")
+}

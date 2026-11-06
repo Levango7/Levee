@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS plugin_registry (
     config_yaml     TEXT    NOT NULL DEFAULT '',
     destructive_actions TEXT NOT NULL DEFAULT '[]',
     reversible_actions  TEXT NOT NULL DEFAULT '[]',
+    channel_types       TEXT NOT NULL DEFAULT '[]',
     signature       TEXT    NOT NULL DEFAULT '',
     installed_at    DATETIME NOT NULL DEFAULT (datetime('now')),
     updated_at      DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -97,11 +98,15 @@ type RegistryRecord struct {
 	// beside DestructiveActions because the plan-time verdict is three-state:
 	// destructive => irreversible, reversible => reversible, and anything else
 	// on an installed module plugin => irreversible (fail-closed).
-	ReversibleActions []string  `json:"reversible_actions,omitempty"`
-	Signature         string    `json:"signature,omitempty"`
-	InstalledAt       time.Time `json:"installed_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	ErrorMsg          string    `json:"error_msg,omitempty"`
+	ReversibleActions []string `json:"reversible_actions,omitempty"`
+	// ChannelTypes is the additional set of transport type names this channel
+	// plugin answers to (see PluginMeta.ChannelTypes). Persisted so serve can
+	// register each name without executing the plugin.
+	ChannelTypes []string  `json:"channel_types,omitempty"`
+	Signature    string    `json:"signature,omitempty"`
+	InstalledAt  time.Time `json:"installed_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	ErrorMsg     string    `json:"error_msg,omitempty"`
 }
 
 // --- Registry ---------------------------------------------------------------
@@ -167,7 +172,7 @@ func ensurePluginRegistryColumns(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("plugin: read registry schema: %w", err)
 	}
 
-	for _, col := range []string{"destructive_actions", "reversible_actions"} {
+	for _, col := range []string{"destructive_actions", "reversible_actions", "channel_types"} {
 		if present[col] {
 			continue
 		}
@@ -233,6 +238,9 @@ func (r *Registry) Install(ctx context.Context, meta PluginMeta, binaryPath, con
 	if !meta.Type.Validate() {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidPluginType, meta.Type)
 	}
+	if err := validateChannelTypes(meta); err != nil {
+		return nil, err
+	}
 
 	sig := ""
 	if verifySignature {
@@ -257,16 +265,20 @@ func (r *Registry) Install(ctx context.Context, meta PluginMeta, binaryPath, con
 	if err != nil {
 		return nil, err
 	}
+	channelTypesJSON, err := encodeActionList("channel_types", meta.ChannelTypes)
+	if err != nil {
+		return nil, err
+	}
 
 	_, err = r.db.ExecContext(ctx, `
 INSERT INTO plugin_registry
     (name, version, type, author, description, entry_point,
      min_host_version, max_host_version, state, binary_path,
-     config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     config_yaml, destructive_actions, reversible_actions, channel_types, signature, installed_at, updated_at, error_msg)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		meta.Name, meta.Version, string(meta.Type), meta.Author,
 		meta.Description, entry, meta.MinHostVersion, meta.MaxHostVersion,
-		string(StateInstalled), binaryPath, configYAML, destructiveJSON, reversibleJSON, sig, now, now, "",
+		string(StateInstalled), binaryPath, configYAML, destructiveJSON, reversibleJSON, channelTypesJSON, sig, now, now, "",
 	)
 	if err != nil {
 		if isUniqueConstraint(err) {
@@ -303,7 +315,7 @@ func (r *Registry) List(ctx context.Context, state PluginState) ([]*RegistryReco
 		rows, err = r.db.QueryContext(ctx, `
 SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, reversible_actions, channel_types, signature, installed_at, updated_at, error_msg
   FROM plugin_registry WHERE state = ? ORDER BY name`, string(state))
 	}
 	if err != nil {
@@ -465,7 +477,7 @@ func isUniqueConstraint(err error) bool {
 func registrySelectSQL() string {
 	return `SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, reversible_actions, channel_types, signature, installed_at, updated_at, error_msg
   FROM plugin_registry WHERE name = ?`
 }
 
@@ -473,7 +485,7 @@ func registrySelectSQL() string {
 func registrySelectAllSQL() string {
 	return `SELECT name, version, type, author, description, entry_point,
        min_host_version, max_host_version, state, binary_path,
-       config_yaml, destructive_actions, reversible_actions, signature, installed_at, updated_at, error_msg
+       config_yaml, destructive_actions, reversible_actions, channel_types, signature, installed_at, updated_at, error_msg
   FROM plugin_registry ORDER BY name`
 }
 
@@ -487,12 +499,12 @@ type scanner interface {
 func scanRegistryRecord(s scanner) (*RegistryRecord, error) {
 	var rec RegistryRecord
 	var typ, state string
-	var destructiveJSON, reversibleJSON string
+	var destructiveJSON, reversibleJSON, channelTypesJSON string
 	var installedAt, updatedAt string
 	err := s.Scan(
 		&rec.Name, &rec.Version, &typ, &rec.Author, &rec.Description,
 		&rec.EntryPoint, &rec.MinHostVersion, &rec.MaxHostVersion,
-		&state, &rec.BinaryPath, &rec.ConfigYAML, &destructiveJSON, &reversibleJSON, &rec.Signature,
+		&state, &rec.BinaryPath, &rec.ConfigYAML, &destructiveJSON, &reversibleJSON, &channelTypesJSON, &rec.Signature,
 		&installedAt, &updatedAt, &rec.ErrorMsg,
 	)
 	if err != nil {
@@ -511,6 +523,12 @@ func scanRegistryRecord(s scanner) (*RegistryRecord, error) {
 	}
 	if reversibleJSON != "" && reversibleJSON != "[]" {
 		_ = json.Unmarshal([]byte(reversibleJSON), &rec.ReversibleActions)
+	}
+	if channelTypesJSON != "" && channelTypesJSON != "[]" {
+		// A corrupt row leaves ChannelTypes empty, which reproduces the
+		// pre-D-1c behaviour (only the plugin's own name is registered): the
+		// failure mode is a missing alias, not a wrong one.
+		_ = json.Unmarshal([]byte(channelTypesJSON), &rec.ChannelTypes)
 	}
 	return &rec, nil
 }
