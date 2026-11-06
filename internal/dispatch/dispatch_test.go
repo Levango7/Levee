@@ -388,3 +388,39 @@ func TestDispatchOnce_PendingCountsAgainstCapacity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, a, "no assignment may be created for the saturated cluster")
 }
+
+// clockSkewStore hands the reclaim comparison a store clock that is ahead of
+// the process clock. It exists to prove reclaimStale reads "now" from the
+// store (where assignment rows are stamped) rather than the process.
+type clockSkewStore struct {
+	*state.SQLiteStore
+	now time.Time
+}
+
+func (c *clockSkewStore) StoreNow(context.Context) (time.Time, error) { return c.now, nil }
+
+// TestReclaimOnce_UsesStoreClockNotProcessClock pins G-2's fix: an assignment
+// that is fresh by the process clock is reclaimed once the store clock says it
+// is past the timeout — the comparison must run on the clock that stamped the
+// row (PostgreSQL NOW()), not the application host's.
+func TestReclaimOnce_UsesStoreClockNotProcessClock(t *testing.T) {
+	ctx := context.Background()
+	store := newDispatchStore(t)
+	mgr := twoNodeManager(t, "node-leader", "node-worker")
+	seedApprovedRun(t, store, "run-fresh")
+	// One minute old: far inside DefaultClaimTimeout (10m) by the process clock.
+	seedPending(t, store, "run-fresh", "node-dead", time.Minute)
+
+	control := NewLoop(mgr, store, "node-leader", time.Second, 4, DefaultClaimTimeout)
+	n, err := control.ReclaimOnce(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "a 1-minute-old assignment is not stale by the process clock")
+
+	// The store's clock is 30 minutes ahead: the same row is now past the
+	// timeout and must be reclaimed.
+	skewed := &clockSkewStore{SQLiteStore: store, now: time.Now().UTC().Add(30 * time.Minute)}
+	loop := NewLoop(mgr, skewed, "node-leader", time.Second, 4, DefaultClaimTimeout)
+	n, err = loop.ReclaimOnce(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "reclaim must compare against the store clock, not the process clock")
+}

@@ -669,6 +669,25 @@ type RunStatusPrevReader interface {
 	UpdateRunReturningPrevStatus(ctx context.Context, run *Run) (prevStatus string, err error)
 }
 
+// ClockReader is an OPTIONAL Store capability: the store's own notion of
+// "now". Run-assignment timestamps are stamped by the *backend* clock
+// (PostgreSQL writes updated_at=NOW()), while the dispatcher's staleness
+// decision subtracts against the *process* clock. On a cluster whose database
+// host and application hosts have skewed clocks the age is wrong by that skew,
+// which shifts the reclaim verdict: one end snatches an assignment that is
+// still being claimed (epoch fencing catches the late owner), the other never
+// reclaims a real orphan. Reading "now" back from the store makes both ends of
+// the subtraction the same clock.
+//
+// Optional for the same reason as RunStatusPrevReader: a test double or a
+// non-SQL backend keeps the process clock, and the caller type-asserts.
+type ClockReader interface {
+	// StoreNow returns the store's current time, in UTC. On SQLite the
+	// database is the same host as the process, so this is the process
+	// clock; on PostgreSQL it is the server's NOW().
+	StoreNow(ctx context.Context) (time.Time, error)
+}
+
 // Assignment is the cross-node dispatch assignment for a run
 // (design-cluster-dispatch.md). One active assignment per run (run_id PK).
 // The epoch increases on every reassignment so a stale scheduler can detect
