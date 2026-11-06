@@ -281,6 +281,36 @@ func TestRollbackCmdJSONOutput(t *testing.T) {
 	assert.NotEmpty(t, env.Data.Message)
 }
 
+// TestRollbackCmdJSONEmptyHostListsAreArrays pins the envelope's shape for
+// the empty case: an empty host list is `[]`, not `null`.
+//
+// The envelope declares both fields as lists. A consumer that iterates one
+// must not have to tell "no host was skipped" apart from "this field was not
+// there" — and `null` is the shape that makes that distinction necessary
+// (a `for x in list` over `null` raises in every language that has one).
+func TestRollbackCmdJSONEmptyHostListsAreArrays(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-json-empty", runstatus.StatusRolledBackPartial)
+
+	stubRollbackEngine(t, grpc.RollbackOutcome{}, nil)
+
+	out, err := execKeepCfg(t, cfgPath, "rollback", "run-rb-json-empty", "--dry-run", "--json")
+	require.NoError(t, err, "cli output: %s", out)
+
+	// Read the raw values: unmarshalling into a []string cannot tell `null`
+	// from `[]` apart, so the distinction has to be made on the raw JSON.
+	var raw struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &raw))
+
+	for _, key := range []string{"rolled_back_hosts", "skipped_hosts"} {
+		require.Contains(t, raw.Data, key, "the envelope must carry %s", key)
+		assert.Equal(t, "[]", string(raw.Data[key]),
+			"%s must be an empty array, not null", key)
+	}
+}
+
 // TestRollbackCmdPreviewDoesNotClaimItCompensated pins the wording of a
 // preview: it compensated nothing, so a label reading "Compensated hosts"
 // would state the opposite of what happened — the same class of defect as a
