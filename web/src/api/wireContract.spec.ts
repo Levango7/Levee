@@ -46,9 +46,11 @@ function locatePath(rel: string): string {
 }
 
 interface WireRow {
-  keys: string[]
+  keys?: string[]
   rows?: Record<string, string[]>
   objects?: Record<string, string[]>
+  /** Element key set for endpoints whose payload is a bare ARRAY. */
+  items?: string[]
 }
 
 /** A DTO's read set: `keys` are top-level, `row`+`rowKeys` describe a page's items. */
@@ -56,6 +58,12 @@ interface DtoReads {
   row?: string
   keys?: string[]
   rowKeys?: string[]
+  /**
+   * The interface for the ELEMENTS when the payload itself is an array
+   * (/agents, /groups). Those responses have no envelope, so `dto` and
+   * `rowDto` describe nothing and the element shape would go unchecked.
+   */
+  rootDto?: string
   /**
    * The interface in api/index.ts that DECLARES this payload, and the ones for
    * its `row` items and nested objects. These names let the guard read the
@@ -185,6 +193,34 @@ const DTO_READS: Record<string, DtoReads> = {
     keys: ['change', 'rollbackRunId', 'success', 'rolledBackHosts', 'skippedHosts', 'message'],
     dto: 'RollbackResponseDTO',
   },
+  // The five endpoints the console calls that the snapshot covered later.
+  // /agents and /groups have no envelope: their elements are the payload.
+  agents: {
+    rootDto: 'AgentRecord',
+  },
+  groups: {
+    rootDto: 'HostGroup',
+  },
+  // protojson, so camelCase — the same spelling TraceEntry declares.
+  'audit-traces': {
+    row: 'entries',
+    keys: ['entries', 'nextPageToken', 'totalSize'],
+    rowKeys: [
+      'id', 'runId', 'action', 'targetHost', 'input', 'output', 'durationMs',
+      'timestamp', 'prevHash', 'currHash', 'actor', 'detail',
+    ],
+    rowDto: 'TraceEntry',
+  },
+  'system-version': {
+    keys: ['version', 'gitCommit', 'buildDate', 'goVersion'],
+    dto: 'VersionInfo',
+  },
+  'conversation-sessions': {
+    row: 'sessions',
+    keys: ['sessions'],
+    rowKeys: ['id', 'user_id', 'alert_id', 'state', 'messages', 'created_at', 'updated_at'],
+    rowDto: 'ConversationSessionDTO',
+  },
 }
 
 /**
@@ -201,6 +237,17 @@ const SERVER_ONLY: Record<string, string[]> = {
   'cluster-status': [],
   // Every key of the rollback response is read by the remediation wizard.
   rollback: [],
+  // The registry reports its own load counters; the console reads status and
+  // the heartbeat only, so these are sent but not consumed (yet).
+  agents: ['active_tasks', 'completed_tasks', 'failed_tasks', 'max_concurrent', 'registered_at_unix'],
+  // The group list is a projection for host pickers: the timestamps and tenant
+  // belong to `levee group list`, which reads the stored row over the CLI.
+  groups: ['created_at', 'created_at_nanos', 'tenant_id'],
+  // Evidence and tenancy columns exist for `audit show` / `audit export`; the
+  // timeline renders detail and the chain pair, not the stored JSON verbatim.
+  'audit-traces': ['storedDetail', 'tenantId', 'timestampNanos'],
+  'system-version': [],
+  'conversation-sessions': [],
 }
 
 describe('DTO contract: what the client reads is what the server sends', () => {
@@ -215,7 +262,13 @@ describe('DTO contract: what the client reads is what the server sends', () => {
   it('reads no key the wire does not have', () => {
     for (const [name, dto] of Object.entries(DTO_READS)) {
       const snapshot = wire[name]!
-      const wireKeys = snapshot.keys
+      const wireKeys = snapshot.keys ?? []
+      if (dto.rootDto) {
+        expect(
+          snapshot.items?.length,
+          `${name}: the snapshot must carry element keys for a bare array`,
+        ).toBeGreaterThan(0)
+      }
       for (const key of dto.keys ?? []) {
         expect(wireKeys, `${name} reads top-level ${key}`).toContain(key)
       }
@@ -232,14 +285,23 @@ describe('DTO contract: what the client reads is what the server sends', () => {
   it('accounts for every key the wire sends', () => {
     for (const [name, dto] of Object.entries(DTO_READS)) {
       const read = new Set([...(dto.keys ?? []), ...(dto.rowKeys ?? [])])
+      // A bare-array payload has no hand list: its read set IS the element
+      // DTO's declaration, so derive it from the interface rather than
+      // duplicating the field names here (a copy would drift silently).
+      if (dto.rootDto) {
+        for (const field of fieldsOf(dto.rootDto)) read.add(field)
+      }
       const known = new Set([...read, ...(SERVER_ONLY[name] ?? [])])
-      for (const k of wire[name]!.keys) {
+      for (const k of wire[name]!.keys ?? []) {
         expect(known, `${name}: wire key ${k} is declared nowhere`).toContain(k)
       }
       if (dto.row) {
         for (const k of wire[name]!.rows?.[dto.row] ?? []) {
           expect(known, `${name}: ${dto.row}[].${k} is declared nowhere`).toContain(k)
         }
+      }
+      for (const k of wire[name]!.items ?? []) {
+        expect(known, `${name}: item key ${k} is declared nowhere`).toContain(k)
       }
     }
   })
@@ -248,8 +310,11 @@ describe('DTO contract: what the client reads is what the server sends', () => {
     // The Go side's own guard covers this; repeating it here means a TS-side
     // reader cannot "fix" a mismatch by declaring the PascalCase spelling.
     for (const [name, entry] of Object.entries(wire)) {
-      for (const forbidden of entry.keys) {
+      for (const forbidden of entry.keys ?? []) {
         expect(/^[A-Z]/.test(forbidden), `${name}: ${forbidden} is PascalCase`).toBe(false)
+      }
+      for (const item of entry.items ?? []) {
+        expect(/^[A-Z]/.test(item), `${name}: item key ${item} is PascalCase`).toBe(false)
       }
       for (const keys of Object.values(entry.rows ?? {})) {
         for (const k of keys) {
@@ -285,9 +350,12 @@ describe('DTO contract: what the client reads is what the server sends', () => {
     for (const [name, dto] of Object.entries(DTO_READS)) {
       const snapshot = wire[name]!
       if (dto.dto) derived++
-      requireDto(name, dto.dto, snapshot.keys, name)
+      requireDto(name, dto.dto, snapshot.keys ?? [], name)
       if (dto.row && dto.rowDto) {
         requireDto(name, dto.rowDto, snapshot.rows?.[dto.row] ?? [], `${name}.${dto.row}[]`)
+      }
+      if (dto.rootDto) {
+        requireDto(name, dto.rootDto, snapshot.items ?? [], `${name}.items[]`)
       }
       for (const [field, iface] of Object.entries(dto.objectDtos ?? {})) {
         requireDto(name, iface, snapshot.objects?.[field] ?? [], `${name}.${field}`)

@@ -47,11 +47,10 @@
 | E-2 `notify.webhook` HMAC 签名 / 变更记录结构化导出等按需项 | 2026-09-06 拍板：只在真实消费方出现时做 |
 | E-4 `levee schedule`（cron 定时触发变更） | **2026-10-28 定档：不做**。定位明言「不是调度器」（`product-positioning.md` §2）；触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），LEVEE 拥有的是**受治理的变更**；治理那一半（`window` 窗口阻断 + `calendar` 冻结）已实现。先例：`internal/scheduler` 因与已接入的 `dispatch` 职责重叠被整包退役。详见 `levee-design.md` §4.6.1。 |
 
-## G. 2026-11-06 四维自查的遗留项（工程侧可做但各自是设计取舍，均在审计中实证成立、未动手）
+## G. 2026-11-06 四维自查的遗留项（工程侧可做但各自是设计取舍，均在审计中实证成立）
 
-| 项 | 证据 | 为什么没顺手做 | 解锁/触发 |
-| --- | --- | --- | --- |
-| G-4 wire 契约夹具未覆盖 5 个前端实调端点（`/agents` `/groups` `/audit/traces` `/system/version` `/conversation/sessions`） | `internal/grpc/wire_snapshot_test.go` 只驱动 10 条路径；历史上三次 PascalCase 泄漏（ClusterNode/AssignmentSummary 同型）都是夹具盲区钻过来的 | 是测试资产补齐不是缺陷修复；每条端点要 seed 对应表/行型，工作量大但无风险 | 下一轮前端契约工时；优先 `/agents`（`Agent` 无 tag 靠 `agentRecordToPB` 兜着，转换一旦漏字段就又是泄漏） |
+（当前无。G-1 / G-3 于 2026-11-07 定档（维持现状 / 不提供人工修复入口），
+G-2 / G-5 已交付，G-4 已于 2026-11-07 随 wire 契约夹具补齐交付——四项全部出清。）
 
 ## F. 卡在上游发布（第三方工具链还没提供可装版本，不是本仓工作量）
 
@@ -62,6 +61,7 @@
 
 ## 已交付、不再登记（防混淆）
 
+- 原 **G-4**（wire 契约夹具未覆盖 5 个前端实调端点）：`internal/grpc/wire_snapshot_test.go` 现在驱动 `/agents`、`/groups`、`/audit/traces`、`/system/version`、`/conversation/sessions` 五条路径，快照从 10 条涨到 15 条（外加 PR #304 补的 `POST /changes/{id}/rollback`）。`/agents` 与 `/groups` 返回**裸数组**，快照新增 `items`（元素键集合）并让它与 `keys`/`rows` 一样进入逐键对账与 PascalCase 防线；TS 侧新增 `rootDto`，裸数组的读取集直接从接口声明推导（不再维护第二份手写名单）。于是 `HostGroup`、`AgentRecord`、`TraceEntry`、`VersionInfo`、`ConversationSessionDTO` 五个 DTO 的拼写第一次被服务端产物验证过——这正是历史上三次 PascalCase 泄漏（ClusterNode / AssignmentSummary 同型）钻过来的那种夹具盲区。本笔只加夹具、**不改服务端行为**：五个端点的键集是记录下来的既有产物。
 - 原 **G-3**（`plan.Plan` 持久化无 json tag）：**定档「维持现状」（2026-11-07，是决策不是交付）**。`runs.plan_json` 是 Go 内部工件——写入是 `internal/wiring/plan.go` 的 `json.Marshal(p)`，**全部**读取方 `json.Unmarshal` 回同一 struct，且 `plan_hash` 走独立的 canonical 结构，所以「混合拼写」当前无损；台账原先的触发条件「有非 Go 消费方要读 plan_json」**未到**。补 tag 会改变已落库字节，在滚动升级期间让新旧进程**互读不了**（带 tag 的代码按 snake_case 读、读不到旧的 PascalCase；旧代码读不到新的 snake_case），换来只是「好看」＋一个不存在的消费方。故**不改格式**，只在写入点加注释说明这是有意为之（`internal/wiring/plan.go`）。将来真出现非 Go 消费方，做法是加 tag **并**自定义 `UnmarshalJSON` 同时接受旧 PascalCase（dual-key），不是裸加 tag。
 - 原 **G-1**（audit `BuildForce` / `Rebuild` 无生产调用方、无 operator 命令）：**定档「不提供人工修复入口」（2026-11-07，是决策不是交付）**。审计链对**合法写**造成的断裂由下一次 `Seal` 自愈，对**内容篡改**由 `Seal` / `Verify` 报 `ErrChainBroken` 而**不静默重链**；`Rebuild` / `BuildForce` 是刻意另起的方法名、write path 一个都不调用，保留作内部 / 测试与「确认篡改后的恢复」原语。**不新增 `levee audit verify --rebuild`**——那是一个会动 WORM 邻域的新操作面，而该邻域已有 WORM 触发器 + Seal + Verify 三道防线；用一个不可达、又无法从 CLI 触发的“修复”路径去补洞，比洞本身更糟（`Seal` 的注释早已记下这条）。将来真需要人工恢复，按 G-1 行内取证另立产品项。决定写进 `internal/audit/auditchain.go`（`Rebuild`）与 `hashchain.go`（`BuildForce`）的注释。
 - 原 **G-2**（assignment 陈旧度判定的时钟源）：新增可选接口 `state.ClockReader`（`StoreNow`）——PostgreSQL 返回服务器 `NOW()`、SQLite 返回本机时钟（与它落的库同机）；`dispatch.reclaimStale` 改用它作为比较用 `now`（经 `state.Underlying` 找到底层 store，拿不到就回退进程时钟并 WARN）。这样「写 `updated_at` 的时钟」与「算 age 的时钟」在异构部署下是同一个，reclaim 判定不再被库/应用时钟差整体平移。：本笔

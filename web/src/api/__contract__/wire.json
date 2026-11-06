@@ -1,4 +1,32 @@
 {
+  "agents": {
+    "method": "GET",
+    "path": "/agents",
+    "items": [
+      "active_tasks",
+      "address",
+      "capabilities",
+      "completed_tasks",
+      "failed_tasks",
+      "id",
+      "last_heartbeat_unix",
+      "max_concurrent",
+      "registered_at_unix",
+      "status"
+    ],
+    "forbid": [
+      "Id",
+      "Address",
+      "Capabilities",
+      "Status",
+      "LastHeartbeatUnix",
+      "ActiveTasks",
+      "CompletedTasks",
+      "FailedTasks",
+      "MaxConcurrent",
+      "RegisteredAtUnix"
+    ]
+  },
   "audit-log": {
     "method": "GET",
     "path": "/audit/log",
@@ -19,6 +47,52 @@
         "id",
         "prevHash",
         "runId",
+        "targetHost",
+        "timestamp"
+      ]
+    }
+  },
+  "audit-traces": {
+    "method": "GET",
+    "path": "/audit/traces",
+    "keys": [
+      "entries",
+      "nextPageToken",
+      "totalSize"
+    ],
+    "forbid": [
+      "Entries",
+      "NextPageToken",
+      "TotalSize",
+      "Id",
+      "RunId",
+      "Action",
+      "TargetHost",
+      "Input",
+      "Output",
+      "DurationMs",
+      "Timestamp",
+      "PrevHash",
+      "CurrHash",
+      "Actor",
+      "Detail",
+      "StoredDetail",
+      "TenantId",
+      "TimestampNanos"
+    ],
+    "rows": {
+      "entries": [
+        "action",
+        "actor",
+        "currHash",
+        "detail",
+        "durationMs",
+        "id",
+        "input",
+        "output",
+        "prevHash",
+        "runId",
+        "storedDetail",
         "targetHost",
         "timestamp"
       ]
@@ -184,6 +258,50 @@
       ]
     }
   },
+  "conversation-sessions": {
+    "method": "GET",
+    "path": "/conversation/sessions?user_id={user}",
+    "keys": [
+      "sessions"
+    ],
+    "forbid": [
+      "Sessions",
+      "UserID",
+      "AlertID",
+      "CreatedAt",
+      "UpdatedAt"
+    ],
+    "rows": {
+      "sessions": [
+        "alert_id",
+        "created_at",
+        "id",
+        "messages",
+        "state",
+        "updated_at",
+        "user_id"
+      ]
+    }
+  },
+  "groups": {
+    "method": "GET",
+    "path": "/groups",
+    "items": [
+      "created_at",
+      "created_at_nanos",
+      "id",
+      "name",
+      "parent_id"
+    ],
+    "forbid": [
+      "Id",
+      "Name",
+      "ParentId",
+      "CreatedAt",
+      "CreatedAtNanos",
+      "TenantId"
+    ]
+  },
   "rollback": {
     "method": "POST",
     "path": "/changes/{id}/rollback",
@@ -215,6 +333,22 @@
       "Version",
       "Uptime",
       "ActiveRuns"
+    ]
+  },
+  "system-version": {
+    "method": "GET",
+    "path": "/system/version",
+    "keys": [
+      "buildDate",
+      "gitCommit",
+      "goVersion",
+      "version"
+    ],
+    "forbid": [
+      "Version",
+      "GitCommit",
+      "BuildDate",
+      "GoVersion"
     ]
   },
   "takeover-events": {

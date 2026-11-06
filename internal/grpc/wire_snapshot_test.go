@@ -34,6 +34,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nexus/levee/internal/conversation"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/runstatus"
@@ -48,9 +49,15 @@ const snapshotRelPath = "web/src/api/__contract__/wire.json"
 // plus the keys that must NOT appear (the PascalCase twins Go marshalling
 // produces when a type has no json tags).
 type dtoSnapshot struct {
-	Method string              `json:"method"`
-	Path   string              `json:"path"`
-	Keys   []string            `json:"keys"`
+	Method string   `json:"method"`
+	Path   string   `json:"path"`
+	Keys   []string `json:"keys,omitempty"`
+	// Items records the key set of the ELEMENTS when the payload itself is an
+	// array (GET /agents, GET /groups). keysOf unmarshals into a map and sees
+	// nothing for a bare list, so without this field those two payloads would
+	// be contract-blind while still passing the "contributed something" check
+	// below if it only looked at Keys.
+	Items  []string            `json:"items,omitempty"`
 	Forbid []string            `json:"forbid,omitempty"`
 	Rows   map[string][]string `json:"rows,omitempty"`
 	// Objects records the key set of a nested OBJECT field, for the DTOs that
@@ -126,6 +133,66 @@ CREATE TABLE IF NOT EXISTS cluster_nodes (
 			"node-wire", "10.0.1.11:9090", "worker", "active", now, now, `["shell","pkg"]`)
 		require.NoError(t, err)
 	}
+
+	// --- endpoints the console calls that this contract never recorded ---
+
+	// /agents returns a bare []*pb.AgentRecord marshalled by encoding/json, so
+	// omitempty drops every zero-valued field per row. Seeding them non-zero is
+	// what makes the recorded key set one a live registry actually produces.
+	agentStore, ok := store.(state.AgentStore)
+	require.True(t, ok, "the wire fixture needs a store with the agent registry; the served path is what is under contract")
+	require.NoError(t, agentStore.UpsertAgent(ctx, &state.Agent{
+		ID: "agent-wire", Address: "10.0.1.11:7000",
+		Capabilities: []string{"shell", "pkg"}, Status: "idle",
+		LastHeartbeat: now, RegisteredAt: now,
+		ActiveTasks: 1, CompletedTasks: 2, FailedTasks: 1, MaxConcurrent: 4,
+	}))
+
+	// Two groups, because parent_id and created_at_nanos are omitempty: a lone
+	// root row would record a shape that drops the very keys `levee group list`
+	// prints for a nested group.
+	require.NoError(t, store.UpsertInventoryGroup(ctx, &state.InventoryGroup{
+		ID: "grp-wire", Name: "prod", CreatedAt: now,
+	}))
+	require.NoError(t, store.UpsertInventoryGroup(ctx, &state.InventoryGroup{
+		ID: "grp-wire-db", Name: "db", ParentID: "grp-wire",
+		CreatedAt: now.Add(time.Nanosecond),
+	}))
+
+	// Traces carry their payload inside Detail, and /audit/traces decodes it into
+	// target/input/output/duration. protojson omits every one of those keys when
+	// the JSON is empty — a bare row would record an entry shape no recorded
+	// step produces. Both rows carry the payload for the same reason: the
+	// snapshot reads rows[0], and ordering is the store's business.
+	traceDetail := `{"target":"host:10.0.1.11","input":{"cmd":"uptime"},"output":{"ok":"true"},"duration_ms":42,"metadata":{"batch":"1"}}`
+	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
+		ID: "tr-wire", RunID: "run-wire", Event: "apply", Actor: "liwg",
+		Detail: traceDetail, PrevHash: "prev-wire", CurrHash: "curr-wire",
+		Timestamp: now,
+	}))
+	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
+		ID: "tr-wire-2", RunID: "run-wire", Event: "verify", Actor: "liwg",
+		Detail: traceDetail, PrevHash: "prev-wire-2", CurrHash: "curr-wire-2",
+		Timestamp: now.Add(time.Second),
+	}))
+}
+
+// wireTestServices registers the three services the newly covered endpoints
+// need. startTestGatewayFull serves /agents and /groups as 503 until these are
+// set, and the conversation session endpoints read the engine directly rather
+// than the gRPC service — so a test that only builds the default gateway would
+// record a shape produced by an error path.
+func wireTestServices(t *testing.T, gw *Gateway, store state.Store) {
+	t.Helper()
+	agentStore, ok := store.(state.AgentStore)
+	require.True(t, ok, "the wire fixture needs a store with the agent registry")
+	gw.SetAgents(NewAgentService(agentStore))
+	gw.SetInventory(NewInventoryService(store))
+
+	engine := conversation.NewConversationEngine(conversation.ConversationEngineConfig{})
+	_, err := engine.NewSession("dev-user")
+	require.NoError(t, err)
+	gw.SetConversationEngine(engine)
 }
 
 // keysOf returns the sorted top-level keys of a JSON object.
@@ -181,6 +248,36 @@ func objectKeys(raw []byte, field string) []string {
 	out := make([]string, 0, len(nested))
 	for k := range nested {
 		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// itemKeys returns the union of keys across the elements of a JSON array — the
+// root-array twin of arrayKeys, for endpoints that return a bare list.
+//
+// Union rather than rows[0]: /agents and /groups marshal generated structs with
+// encoding/json, whose omitempty drops zero-valued fields per row. A first-row
+// sample would record a shape missing keys the endpoint does send as soon as
+// that row happened to carry a zero.
+func itemKeys(raw []byte) []string {
+	var rows []any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0, 8)
+	for _, row := range rows {
+		obj, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		for k := range obj {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -326,6 +423,7 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
 	gw.SetStore(store)
 	seedWireFixture(t, store)
+	wireTestServices(t, gw, store)
 
 	get := func(path string) []byte {
 		t.Helper()
@@ -388,6 +486,14 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 		"a preview mints no rollback run")
 	require.Contains(t, keysOf(rbCommit), "rollbackRunId",
 		"a commit names the rollback run it minted")
+	agents := get("/agents")
+	groups := get("/groups")
+	// pageSize=1 against two seeded traces: protojson omits an empty
+	// next_page_token, so a single-page request would record an envelope with
+	// no token key at all — and the console's toPageResult reads that key.
+	traces := get("/audit/traces?pageSize=1")
+	version := get("/system/version")
+	sessions := get("/conversation/sessions?user_id=dev-user")
 
 	snap := map[string]dtoSnapshot{
 		"batch-status": {
@@ -456,13 +562,52 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 			Keys:   rbKeys,
 			Forbid: []string{"Change", "RollbackRunId", "Success", "RolledBackHosts", "SkippedHosts", "Message"},
 		},
+		// The five endpoints the console calls that had no recorded shape.
+		// /agents and /groups return a bare array: their keys live on the
+		// elements, which is what Items exists for.
+		"agents": {
+			Method: "GET", Path: "/agents",
+			Items: itemKeys(agents),
+			Forbid: []string{"Id", "Address", "Capabilities", "Status", "LastHeartbeatUnix",
+				"ActiveTasks", "CompletedTasks", "FailedTasks", "MaxConcurrent", "RegisteredAtUnix"},
+		},
+		"groups": {
+			Method: "GET", Path: "/groups",
+			Items:  itemKeys(groups),
+			Forbid: []string{"Id", "Name", "ParentId", "CreatedAt", "CreatedAtNanos", "TenantId"},
+		},
+		"audit-traces": {
+			Method: "GET", Path: "/audit/traces",
+			Keys: keysOf(traces),
+			Rows: rowsOf("entries", traces),
+			Forbid: []string{"Entries", "NextPageToken", "TotalSize",
+				"Id", "RunId", "Action", "TargetHost", "Input", "Output", "DurationMs",
+				"Timestamp", "PrevHash", "CurrHash", "Actor", "Detail", "StoredDetail",
+				"TenantId", "TimestampNanos"},
+		},
+		"system-version": {
+			Method: "GET", Path: "/system/version",
+			Keys:   keysOf(version),
+			Forbid: []string{"Version", "GitCommit", "BuildDate", "GoVersion"},
+		},
+		"conversation-sessions": {
+			Method: "GET", Path: "/conversation/sessions?user_id={user}",
+			Keys:   keysOf(sessions),
+			Rows:   rowsOf("sessions", sessions),
+			Forbid: []string{"Sessions", "UserID", "AlertID", "CreatedAt", "UpdatedAt"},
+		},
 	}
 
 	// The snapshot must be non-trivial: an endpoint that contributed nothing
 	// (a route that moved, a payload that changed shape) fails here rather than
 	// writing an empty contract.
 	for name, s := range snap {
-		require.NotEmpty(t, s.Keys, "%s contributed no keys", name)
+		// Array-rooted payloads contribute Items instead of Keys; everything
+		// else must contribute at least one top-level key. An entry that
+		// contributes nothing is a route that moved or a payload that changed
+		// shape, and it must fail here rather than write an empty contract.
+		require.True(t, len(s.Keys)+len(s.Items)+len(s.Rows)+len(s.Objects) > 0,
+			"%s contributed nothing", name)
 		// The forbid list has been decoration until now: neither this test nor
 		// web/src/api/wireContract.spec.ts ever read it, so a PascalCase twin
 		// could (and did) appear in a payload whose entry said it must not.
@@ -480,6 +625,8 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 				require.NotContains(t, objKeys, banned,
 					"%s: %q is on the wire inside %s while the entry lists it as forbidden", name, banned, objField)
 			}
+			require.NotContains(t, s.Items, banned,
+				"%s: %q is on the wire inside an array element while the entry lists it as forbidden", name, banned)
 		}
 	}
 
@@ -540,6 +687,7 @@ func TestWireSnapshot_NoPascalCaseLeaks(t *testing.T) {
 	// walk, so the walk below would pass while saying nothing about the plan's
 	// own field spellings.
 	seedPlannedRun(t, store, "run-wire")
+	wireTestServices(t, gw, store)
 
 	// A PascalCase key at any depth is a Go struct marshalled without json
 	// tags — the frontend cannot read it, and it used to mean a silent zero.
@@ -568,6 +716,10 @@ func TestWireSnapshot_NoPascalCaseLeaks(t *testing.T) {
 		"/system/batch-status?run_id=run-wire", "/system/change-trend",
 		"/templates", "/targets",
 		"/changes/run-wire", "/changes/run-wire?includePlan=true",
+		// The endpoints the console calls, including the two bare arrays whose
+		// element spellings would otherwise be walked by nothing at all.
+		"/agents", "/groups", "/audit/traces", "/system/version",
+		"/conversation/sessions?user_id=dev-user",
 	} {
 		resp := doReq(t, http.MethodGet, srv.URL+path, "")
 		body := make([]byte, 0, 8192)
