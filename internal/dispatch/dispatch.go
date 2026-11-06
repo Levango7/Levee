@@ -247,7 +247,7 @@ func (l *Loop) reclaimStale(ctx context.Context, workers []workerLoad) (int, err
 		return 0, err
 	}
 
-	now := time.Now().UTC()
+	now := l.storeNow(ctx)
 	reclaimed := 0
 	for _, a := range pending {
 		since := a.UpdatedAt
@@ -301,6 +301,26 @@ func (l *Loop) reclaimStale(ctx context.Context, workers []workerLoad) (int, err
 			"stale_owner", a.OwnerNode, "age", age.String())
 	}
 	return reclaimed, nil
+}
+
+// storeNow is the clock the staleness comparison runs on: the store's own
+// clock when it can report one, so a backend that stamps assignment rows with
+// its clock (PostgreSQL writes updated_at=NOW()) and this process agree even
+// when the database host and the application hosts have skewed clocks. A
+// skewed comparison shifts every reclaim verdict — one end snatches a live
+// assignment (epoch fencing catches the late owner), the other never reclaims
+// a real orphan. It falls back to the process clock (and logs) when the store
+// cannot answer, so a test double or a transient read failure never stops
+// reclaim.
+func (l *Loop) storeNow(ctx context.Context) time.Time {
+	if cr, ok := state.Underlying(l.store).(state.ClockReader); ok {
+		t, err := cr.StoreNow(ctx)
+		if err == nil {
+			return t.UTC()
+		}
+		log.Warn("dispatch: store clock unavailable; using process clock", "error", err)
+	}
+	return time.Now().UTC()
 }
 
 // candidates returns the runs that are approved and have no active

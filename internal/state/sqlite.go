@@ -190,6 +190,14 @@ func (s *SQLiteStore) GetRun(ctx context.Context, id string) (*Run, error) {
 	return r, nil
 }
 
+// StoreNow implements state.ClockReader. The SQLite database is a local file
+// on the same host as the process, so the process clock and the database clock
+// are one and the same — returning it here keeps every comparison against a
+// row this store stamped using the same clock.
+func (s *SQLiteStore) StoreNow(_ context.Context) (time.Time, error) {
+	return time.Now().UTC(), nil
+}
+
 // UpdateRun overwrites all mutable columns of an existing run.
 func (s *SQLiteStore) UpdateRun(ctx context.Context, run *Run) error {
 	if run == nil {

@@ -176,6 +176,18 @@ func (s *PGStore) GetRun(ctx context.Context, id string) (*Run, error) {
 	return r, nil
 }
 
+// StoreNow implements state.ClockReader: the PostgreSQL server's clock, which
+// is what stamps run_assignment.updated_at (NOW()). The dispatcher must compare
+// against this, not the application host's clock, or a skewed database host
+// shifts every staleness verdict.
+func (s *PGStore) StoreNow(ctx context.Context) (time.Time, error) {
+	var now time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT NOW()`).Scan(&now); err != nil {
+		return time.Time{}, fmt.Errorf("state: read store clock: %w", err)
+	}
+	return now.UTC(), nil
+}
+
 // UpdateRun overwrites all mutable columns of an existing run.
 func (s *PGStore) UpdateRun(ctx context.Context, run *Run) error {
 	if run == nil {

@@ -5,6 +5,15 @@
 ## [Unreleased]
 
 
+### 修复（dispatch 的 assignment 陈旧度改按 store 时钟比较，消除库/应用时钟差对 reclaim 判定的平移）
+
+- **缺陷**：`run_assignment.updated_at` 由**后端时钟**盖章——PostgreSQL 的 `CreateAssignment` / `UpdateAssignmentState*` / `ReclaimAssignment` / `SetAssignmentResult` 写的是 `NOW()`；而 `dispatch.reclaimStale` 算 `age` 用的是**进程时钟** `time.Now().UTC()`。集群里库主机与应用主机时钟一旦有偏差，同一个 `age` 就被整体平移：一端会把还在被认领的 assignment 当陈旧抢走（`epoch` fencing 兜住迟到的 owner，不至于双执行），另一端永不复现的真孤儿则不回收。**同机测试环境永不复现**，只在异构部署显形。这是 `docs/blocked-items.md` 的 **G-2**。
+- **修法**：新增可选接口 `state.ClockReader`（`StoreNow(ctx) (time.Time, error)`）——**PostgreSQL** 返回服务器 `SELECT NOW()`，**SQLite** 返回本机时钟（它与数据库同机，本就是同一时钟）。`dispatch.reclaimStale` 用它作为比较用的 `now`（经 `state.Underlying` 穿透 `TenantStore`/`RunEventStore` 装饰器找到底层 store）；store 没有这个能力（测试替身）或读取失败时回退到进程时钟并 `WARN`，reclaim 不会因读时钟失败而停摆。
+- **历史行不回填**：不需要。PostgreSQL 的历史行本来就是库时钟落的，改用库时钟比较反而与它们一致；SQLite 的库时钟即本机时钟。所以没有一次性迁移，只把“比较用的时钟”对齐到“盖章用的时钟”。
+- **验证**：新增 3 例——`state` 的 SQLite / PostgreSQL `StoreNow`（后者在真容器 `postgres:16-alpine` 上跑过），`dispatch` 的 **时钟分离**（1 分钟旧的 assignment 在进程时钟下不陈旧、在 store 时钟`+30min` 下陈旧且被 reclaim；**变异**：把 `l.storeNow(ctx)` 改回 `time.Now().UTC()` → 该用例红，还原后绿）。既有 `internal/dispatch` 全包与 `internal/state`（含 PG）全绿；`golangci-lint v2.13.2` 0 issues。
+- **如实边界**：只改了 **staleness 比较**的时钟；fresh claim 路径传给 `CreateAssignment` 的 `AssignedAt/UpdatedAt` 未动（PostgreSQL 那边本就忽略它们、一律 `NOW()`；SQLite 那边本机时钟即库时钟）。`state.Store` 接口未加宽，只有 SQLite / PostgreSQL 两个实现提供该能力。
+
+
 ### 修复（`RunEventStore.UpdateRun` 的读-改-写竞态：并发全行写会把错的 `from` 播给 ChatOps/webhook）
 
 - **缺陷**：`internal/wiring/runeventstore.go` 的 `UpdateRun` 拦截全行写（pause/resume、archive 这些路径带状态变化），做法是「先 `GetRun` 读旧 status → `UpdateRun` 写 → 用读到的旧 status 当 `from` 播事件」。读与写是两条语句：两个并发的全行写交错时，后完成者的 `from` 可以是它**从未覆盖过**的状态——run 实际走了 `running → paused → resumed`，而事件里会出现一条 `running → resumed`（ChatOps 卡片与 webhook 全量镜像直接照抄这个 `from`）。测试只在单线程跑，所以一直绿。这正是 `docs/blocked-items.md` 的 **G-5**。
