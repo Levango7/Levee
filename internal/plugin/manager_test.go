@@ -55,6 +55,12 @@ func writePluginDir(t *testing.T, meta PluginMeta, configYAML string) string {
 	if meta.MaxHostVersion != "" {
 		manifest += "max_host_version: " + meta.MaxHostVersion + "\n"
 	}
+	if len(meta.ChannelTypes) > 0 {
+		manifest += "channel_types:\n"
+		for _, ct := range meta.ChannelTypes {
+			manifest += "  - " + ct + "\n"
+		}
+	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o644))
 
 	// Write the binary / entry-point script.
@@ -430,4 +436,78 @@ func TestWrapError(t *testing.T) {
 
 func TestWrapErrorNil(t *testing.T) {
 	assert.Nil(t, wrapError("test", nil))
+}
+
+// D-1c: the manifest-load path validates channel_types on its own. These
+// cases call loadManifest directly, because Install() also validates at the
+// registry — going through Install would let the registry check mask a
+// missing manifest check.
+func TestLoadManifestRejectsChannelTypesOnNonChannel(t *testing.T) {
+	m := setupManager(t)
+	t.Cleanup(func() { _ = m.Close(context.Background()) })
+
+	dir := writePluginDir(t, PluginMeta{
+		Name: "notachannel", Version: "1.0.0", Type: TypeModule,
+		ChannelTypes: []string{"console"},
+	}, "")
+
+	_, _, _, err := m.loadManifest(dir)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidPluginType)
+	assert.Contains(t, err.Error(), "channel_types")
+}
+
+// A manifest whose alias repeats the plugin name is refused at load time.
+func TestLoadManifestRejectsChannelTypeRepeatingPluginName(t *testing.T) {
+	m := setupManager(t)
+	t.Cleanup(func() { _ = m.Close(context.Background()) })
+
+	dir := writePluginDir(t, PluginMeta{
+		Name: "multi", Version: "1.0.0", Type: TypeChannel,
+		ChannelTypes: []string{"multi"},
+	}, "")
+
+	_, _, _, err := m.loadManifest(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate")
+}
+
+// A malformed alias is refused at load time, before it can become a
+// registry row or a channel type name.
+func TestLoadManifestRejectsMalformedChannelType(t *testing.T) {
+	m := setupManager(t)
+	t.Cleanup(func() { _ = m.Close(context.Background()) })
+
+	dir := writePluginDir(t, PluginMeta{
+		Name: "multi", Version: "1.0.0", Type: TypeChannel,
+		ChannelTypes: []string{"Not A Type"},
+	}, "")
+
+	_, _, _, err := m.loadManifest(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must match")
+}
+
+// A channel plugin may declare extra transport types; the manifest path
+// accepts them and Install carries them into the registry row.
+func TestManagerInstallCarriesChannelTypes(t *testing.T) {
+	m := setupManager(t)
+	t.Cleanup(func() { _ = m.Close(context.Background()) })
+
+	dir := writePluginDir(t, PluginMeta{
+		Name: "multi", Version: "1.0.0", Type: TypeChannel,
+		ChannelTypes: []string{"console", "terminal"},
+	}, "")
+
+	meta, _, _, err := m.loadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"console", "terminal"}, meta.ChannelTypes)
+
+	rec, err := m.Install(context.Background(), dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"console", "terminal"}, rec.ChannelTypes)
+
+	got, err := m.Registry().Get(context.Background(), "multi")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"console", "terminal"}, got.ChannelTypes)
 }

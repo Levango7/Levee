@@ -123,6 +123,11 @@ func TestInstallPluginChannelsRegistersDeclaredExtraTypes(t *testing.T) {
 // is refused before ANY of the plugin's types are registered, so a rejected
 // alias cannot leave the plugin half-installed.
 func TestInstallPluginChannelsRefusesExtraTypeCollision(t *testing.T) {
+	// The child persona lets the plugin factory actually be built. Without it
+	// the factory construction would fail first (handshake), and the
+	// "own name must not be registered" assertion below could never fire —
+	// it would be vacuous rather than load-bearing.
+	t.Setenv(serveModuleChildEnv, "1")
 	_, ok := channel.DefaultRegistry().Factory("ssh")
 	require.True(t, ok, "precondition: the built-in ssh transport is registered in this binary")
 
