@@ -153,7 +153,7 @@ func runRollback(cmd *cobra.Command, args []string) error {
 	} else if optQuiet {
 		fmt.Fprintln(os.Stdout, runID)
 	} else {
-		printRollbackHuman(resp, actor, finalStatus)
+		printRollbackHuman(resp, actor, finalStatus, rollbackOptDryRun)
 	}
 
 	// An incomplete rollback is an OUTCOME, not a crash: the service reports
@@ -168,7 +168,11 @@ func runRollback(cmd *cobra.Command, args []string) error {
 
 // printRollbackHuman renders the outcome of a rollback (or of a preview) for a
 // terminal.
-func printRollbackHuman(resp *pb.RollbackResponse, actor, finalStatus string) {
+//
+// A preview gets its own wording: it compensated nothing, so a label that
+// reads "Compensated hosts" would state the opposite of what happened — the
+// same class of defect as a document promising a rollback that never ran.
+func printRollbackHuman(resp *pb.RollbackResponse, actor, finalStatus string, preview bool) {
 	if resp.GetChange() != nil && resp.GetChange().GetId() != "" {
 		fmt.Fprintf(os.Stdout, "Run %s rollback by %s\n", resp.GetChange().GetId(), actor)
 	} else {
@@ -177,25 +181,29 @@ func printRollbackHuman(resp *pb.RollbackResponse, actor, finalStatus string) {
 
 	compensated := resp.GetRolledBackHosts()
 	skipped := resp.GetSkippedHosts()
-	label := "Compensated hosts"
-	if resp.GetRollbackRunId() == "" && len(compensated) == 0 && len(skipped) == 0 {
-		// A preview mints no rollback run and changes nothing; say so with the
-		// same words the service used, so the two surfaces cannot disagree.
-		label = "Would compensate hosts"
+	compensatedLabel := "Compensated hosts"
+	skippedLabel := "Skipped hosts"
+	if preview {
+		compensatedLabel = "Would compensate hosts"
+		skippedLabel = "Would skip hosts"
 	}
 	if len(compensated) > 0 {
-		fmt.Fprintf(os.Stdout, "  %s: %s\n", label, strings.Join(compensated, ", "))
+		fmt.Fprintf(os.Stdout, "  %s: %s\n", compensatedLabel, strings.Join(compensated, ", "))
 	} else {
-		fmt.Fprintf(os.Stdout, "  %s: (none)\n", label)
+		fmt.Fprintf(os.Stdout, "  %s: (none)\n", compensatedLabel)
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(os.Stdout, "  Skipped hosts: %s\n", strings.Join(skipped, ", "))
+		fmt.Fprintf(os.Stdout, "  %s: %s\n", skippedLabel, strings.Join(skipped, ", "))
 	}
 	if resp.GetRollbackRunId() != "" {
 		fmt.Fprintf(os.Stdout, "  Rollback run: %s\n", resp.GetRollbackRunId())
 	}
 	if finalStatus != "" {
-		fmt.Fprintf(os.Stdout, "  Status: %s\n", finalStatus)
+		if preview {
+			fmt.Fprintf(os.Stdout, "  Status: %s (unchanged by the preview)\n", finalStatus)
+		} else {
+			fmt.Fprintf(os.Stdout, "  Status: %s\n", finalStatus)
+		}
 	}
 	if msg := resp.GetMessage(); msg != "" {
 		fmt.Fprintf(os.Stdout, "  %s\n", msg)

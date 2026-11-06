@@ -281,6 +281,30 @@ func TestRollbackCmdJSONOutput(t *testing.T) {
 	assert.NotEmpty(t, env.Data.Message)
 }
 
+// TestRollbackCmdPreviewDoesNotClaimItCompensated pins the wording of a
+// preview: it compensated nothing, so a label reading "Compensated hosts"
+// would state the opposite of what happened — the same class of defect as a
+// document promising a rollback that never ran.
+func TestRollbackCmdPreviewDoesNotClaimItCompensated(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-wording", runstatus.StatusRolledBackPartial)
+
+	stubRollbackEngine(t, grpc.RollbackOutcome{
+		RolledBackHosts: []string{"web-1"},
+		SkippedHosts:    []string{"web-2"},
+	}, nil)
+
+	out, err := execKeepCfg(t, cfgPath, "rollback", "run-rb-wording", "--dry-run")
+	require.NoError(t, err, "cli output: %s", out)
+
+	assert.Contains(t, out, "Would compensate hosts: web-1")
+	assert.Contains(t, out, "Would skip hosts: web-2")
+	assert.NotContains(t, out, "Compensated hosts",
+		"a preview must not word its output as if the hosts had been compensated")
+	assert.Contains(t, out, "unchanged by the preview",
+		"a preview must say that the run's status was not rewritten")
+}
+
 // TestRollbackExitCode pins the exit-code contract of the service refusals.
 func TestRollbackExitCode(t *testing.T) {
 	assert.Equal(t, 4, rollbackExitCode(status.Error(codes.FailedPrecondition, "nope")))
