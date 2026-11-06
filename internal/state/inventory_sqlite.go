@@ -252,6 +252,10 @@ func (s *SQLiteStore) ListTargets(ctx context.Context, filter TargetFilter) ([]*
 
 	q := `SELECT ` + sqliteTargetColumns + ` FROM targets`
 	if len(clauses) > 0 {
+		// Only static fragments get concatenated: every clause above is a
+		// compile-time constant with placeholders bound via args (the one
+		// caller-controlled piece, the label path, goes in as a bound param).
+		// #nosec G202 -- clause fragments are static; values bind via args
 		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
 	q += " ORDER BY hostname, port"
