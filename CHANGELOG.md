@@ -10,12 +10,14 @@
 - **背景**：2026-11-06 晚起，CI 的 `trivy` 腿（`check (all jobs passed)` 的必需腿）扫出 blocking finding **CVE-2026-78661**（HIGH）：`usr/local/bin/levee` 里的 `golang.org/x/net` v0.60.0（indirect）——`golang.org/x/net/html: Denial of Service via crafted HTML input`，fixed version **0.62.0**。这条腿红的这段时间，**任何** PR 与 master push 都合不进去（与具体改动无关）。
 - **改动**：`go get golang.org/x/net@v0.62.0` + `go mod tidy`，只动 `go.mod` 一行与 `go.sum` 两处。其余 `golang.org/x/*` 版本不变。
 - **验证**：`go build ./...` rc=0；`go vet ./...` rc=0；`internal/state` / `internal/auth` / `internal/notify` / `internal/chatops` 全绿；trivy 复扫以本 PR 的 CI 为准。
+
+
 ### 测试（wire 契约夹具补齐 5 个前端实调端点：裸数组有了 `items` 形状，DTO 对账也覆盖它们）
 
 - **缺口**：`internal/grpc/wire_snapshot_test.go` 只驱动 10 条路径，而控制台实际调用 `/agents`、`/groups`、`/audit/traces`、`/system/version`、`/conversation/sessions` 时没有任何形状记录——`web/src/api/wireContract.spec.ts` 的两向守卫对它们全盲，`HostGroup`、`AgentRecord`、`TraceEntry`、`VersionInfo`、`ConversationSessionDTO` 五个 DTO 的拼写从未被服务端产物验证过。历史上三次 PascalCase 泄漏（ClusterNode / AssignmentSummary 同型）都是从这种夹具盲区钻过来的。
 - **改动**：夹具播种补齐（一条 agent 记录、父子两个 group、两条带 Detail 的 trace、一个会话）。`/agents` 与 `/groups` 返回**裸数组**，快照新增 `items`（元素键集合），并让它和 `keys`/`rows` 一样进入逐键对账与 PascalCase 防线；`/audit/traces` 用 `pageSize=1` 对两条 trace 逼出 `nextPageToken`（protojson 会省略空 token，而控制台的 `toPageResult` 要读它）。TS 侧新增 `rootDto` 与 5 个 `DTO_READS` 条目；裸数组的读取集直接从接口声明推导，不再维护第二份手写名单。
-- **验证**：`UPDATE_WIRE_CONTRACT=1` 重生成快照后，快照断言与 PascalCase 扫描双绿，TS 6 例全绿。**红样本三条**：① 服务端把 `sessToDTO` 的 `user_id` 改成 `userId` → Go 快照断言点名该键（还原后 `sha256sum -c` 一致）；② 把快照里的 `user_id` 改成 `userId` → TS「接口声明了线上没有的键」红；③ 往 `agents.items` 塞 `Id` → TS 的 items PascalCase 断言红。另外第一次跑 TS 时它确实红在 `agents: item key address is declared nowhere`，证明裸数组元素的逐键对账不是装饰。
-- **边界**：本笔**只加夹具、不改服务端行为**——五个端点的键集是**记录**下来的既有产物，不是新造的形状。`/audit/traces` 的 `input`/`output`/`detail` 由 trace 的 Detail JSON 解码而来，夹具已播种真实形状；Detail 为空的行仍会省略这些键（protojson 语义），夹具不替它伪造。`docs/blocked-items.md` 的 G-4 行在本笔中标为**已交付**（#301 已落地，那行本就在 master 上）。
+- **验证**：`UPDATE_WIRE_CONTRACT=1` 重生成快照后，快照断言与 PascalCase 扫描双绿，TS 6 例全绿。**红样本四条（接管后独立复现，不采信上一轮的自述）**：① 把 `conversation-sessions` 的 forbid 列表加上 `UserId`（它确实在线上）→ Go 侧 `JSONEq` 红并点名 `UserId`；② 往 `agents.items` 塞 `Id` → TS 的 items PascalCase 断言红（`agents: item key Id is PascalCase`），且同时触发「declared nowhere」；③ 把快照里的 `user_id` 改成 `userId` → TS **三个方向同时红**（客户端读了线上没有的键 / 线上有键没人声明 / 接口声明了线上没发的键）；④ 把**服务端** `sessToDTO` 的 `user_id` 改成 `userId` → Go 快照红并给出「the wire shape changed: re-run with UPDATE_WIRE_CONTRACT=1」。四条均已还原，`gofmt` 干净、快照与提交版逐字节一致。另外第一次跑 TS 时它确实红在 `agents: item key address is declared nowhere`，证明裸数组元素的逐键对账不是装饰。
+- **边界**：本笔**只加夹具、不改服务端行为**——五个端点的键集是**记录**下来的既有产物，不是新造的形状。`/audit/traces` 的 `input`/`output`/`detail` 由 trace 的 Detail JSON 解码而来，夹具已播种真实形状；Detail 为空的行仍会省略这些键（protojson 语义），夹具不替它伪造。`docs/blocked-items.md` 的 G-4 行在本笔中从待办表**移出**、进「已交付、不再登记」节（沿用 #307 对 G-1 / G-3 的同一写法）；G 类因此空了，按 `check_blocked_items` 的口径显式写「当前无」——空分类必须说明是空的，否则「少了表」会静默通过。
 
 
 ### 决策（`blocked-items.md` 的 G-1 / G-3 定档：两项都是「不做行为变更」，只落账与注释）
