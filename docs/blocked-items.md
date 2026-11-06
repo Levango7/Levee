@@ -55,7 +55,6 @@
 | G-2 SQLite 写应用时钟 / PG 写 `NOW()`，而 dispatch 用应用时钟算 assignment 陈旧度 | `internal/state/sqlite.go` vs `pgstore.go`；`dispatch.go` 的 `age` 判断。库与应用时钟差会把 reclaim 判定整体平移：一端抢活着的 assignment（epoch fencing 兜底），另一端真孤儿永不回收。**测试环境同机永不复现，只在异构部署显形** | 统一时钟源会改变已落库行的可比性（历史行按旧口径写的），要连同一笔回填/口径说明；属跨后端契约变更 | 多节点 PG 部署上线前必须定；建议两侧统一走 DB 时钟并在迁移说明里写清 |
 | G-3 `plan.Plan` 持久化无 json tag，`runs.plan_json` 落混合拼写文档 | `internal/wiring/plan.go` 直接 `json.Marshal(p)`；读取方全部 `json.Unmarshal` 回同一 struct 所以**当前无损**，但它是唯一「持久化 wire = Go struct 直出」的工件，非 Go 消费者不可读，且 `TestWireSnapshot_NoPascalCaseLeaks` 看不见它（`PlanToPB` 出境前已转换） | 补 tag 会改变 `plan_json` 的历史字节形态；`ComputeHash` 走独立 canonical 结构不受影响，但直接读该列的既有消费者（导出/审计报告）要同步 | 有非 Go 消费方要读 plan_json 时；或一次性迁移脚本就绪时 |
 | G-4 wire 契约夹具未覆盖 5 个前端实调端点（`/agents` `/groups` `/audit/traces` `/system/version` `/conversation/sessions`） | `internal/grpc/wire_snapshot_test.go` 只驱动 10 条路径；历史上三次 PascalCase 泄漏（ClusterNode/AssignmentSummary 同型）都是夹具盲区钻过来的 | 是测试资产补齐不是缺陷修复；每条端点要 seed 对应表/行型，工作量大但无风险 | 下一轮前端契约工时；优先 `/agents`（`Agent` 无 tag 靠 `agentRecordToPB` 兜着，转换一旦漏字段就又是泄漏） |
-| G-5 `RunEventStore.UpdateRun` 的读-改-写竞态（prev 与写入两条语句） | `internal/wiring/runeventstore.go:148`：两个并发 `UpdateRun`（pause/resume、archive）交错时，后完成者 emit 一个它从未覆盖过的 `from`，ChatOps 卡片/webhook 报文把 `paused → resumed` 报成 `running → resumed` | 修法是给 CAS 加旧值条件或同事务读，要动 store 层语义 | 与 G-2 的 store 层整理同一批做 |
 
 ## F. 卡在上游发布（第三方工具链还没提供可装版本，不是本仓工作量）
 
@@ -66,6 +65,7 @@
 
 ## 已交付、不再登记（防混淆）
 
+- 原 **G-5**（`RunEventStore.UpdateRun` 的读-改-写竞态）：新增可选接口 `state.RunStatusPrevReader`——`UpdateRunReturningPrevStatus` 在**同一步**里写全行并回报被覆盖的旧 status（SQLite 走 `BEGIN IMMEDIATE` 单连接事务，PostgreSQL 走 `SELECT … FOR UPDATE`），`RunEventStore.UpdateRun` 优先走它、无能力的 store 保留读-再-写回退。于是并发 `UpdateRun` 不可能再 emit 一个它从未覆盖过的 `from`：本笔
 - 审批票判定全链（服务路径 + gate/深链 DecisionGuard）：PR #214
 - 仓库卫生（删 gosec 产物/内网探测报告/.zcode）：PR #214
 - drift 常驻巡检 + 告警收件人真缺陷修复：PR #217

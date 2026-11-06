@@ -644,6 +644,31 @@ type Store interface {
 	Close() error
 }
 
+// RunStatusPrevReader is an OPTIONAL Store capability: apply a full-row run
+// update and report the status the row held *before* the write, in one atomic
+// step. It exists because the run-event funnel (wiring.RunEventStore) emits a
+// from→to transition per full-row write and must name an accurate `from`: a
+// plain GetRun-then-UpdateRun read-modify-write lets two concurrent full-row
+// writes (pause/resume, archive) interleave, so the answer that lands last can
+// name a `from` it never covered — the ChatOps card then reports
+// `paused → resumed` for a run that actually went `running → resumed`.
+//
+// It is deliberately NOT part of Store: a test double or a non-SQL backend
+// keeps the read-then-write fallback, and the decorator type-asserts instead
+// of every implementation having to widen. Only the SQLite and PostgreSQL
+// stores provide the atomic path.
+//
+// A caller that does not type-assert gets no atomicity guarantee — the base
+// UpdateRun remains a plain overwrite.
+type RunStatusPrevReader interface {
+	// UpdateRunReturningPrevStatus overwrites all mutable columns exactly
+	// like UpdateRun, and additionally returns the run's status as it stood
+	// before this write. The atomicity is what makes the returned value
+	// trustworthy under concurrent writers. It returns the same
+	// "not found" error as UpdateRun when the row does not exist.
+	UpdateRunReturningPrevStatus(ctx context.Context, run *Run) (prevStatus string, err error)
+}
+
 // Assignment is the cross-node dispatch assignment for a run
 // (design-cluster-dispatch.md). One active assignment per run (run_id PK).
 // The epoch increases on every reassignment so a stale scheduler can detect

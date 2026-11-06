@@ -201,6 +201,47 @@ func (s *PGStore) UpdateRun(ctx context.Context, run *Run) error {
 	return nil
 }
 
+// UpdateRunReturningPrevStatus is UpdateRun plus the row's pre-write status,
+// read and updated in one transaction under SELECT ... FOR UPDATE. The row
+// lock serialises concurrent full-row writers (on this node or another cluster
+// member), so the returned status is the one this write actually superseded.
+// See state.RunStatusPrevReader for why the run-event funnel needs it.
+func (s *PGStore) UpdateRunReturningPrevStatus(ctx context.Context, run *Run) (string, error) {
+	if run == nil {
+		return "", fmt.Errorf("state: update run: nil run")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("state: update run %q: begin: %w", run.ID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var prev string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=$1 FOR UPDATE`, run.ID).Scan(&prev); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("state: update run %q: not found", run.ID)
+		}
+		return "", fmt.Errorf("state: update run %q: read status: %w", run.ID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE runs SET
+		workflow_name=$1, template_name=$2, params=$3, plan_hash=$4, plan_json=$5, status=$6,
+		approval_status=$7, approval_level=$8, updated_at=$9, creator=$10, incident_id=$11, tenant_id=$12,
+		priority=$13
+		WHERE id=$14`,
+		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
+		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
+		run.TenantID,
+		run.Priority,
+		run.ID,
+	); err != nil {
+		return "", fmt.Errorf("state: update run %q: %w", run.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("state: update run %q: commit: %w", run.ID, err)
+	}
+	return prev, nil
+}
+
 // UpdateRunStatusIf atomically transitions a run's status from `from` to
 // `to`, stamping updated_at. It returns (false, nil) when the run does not
 // exist or its current status is not `from`, leaving the row untouched.
