@@ -7,6 +7,7 @@ package grpc
 
 import (
 	"context"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -159,6 +160,18 @@ func TestListChanges_Empty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetChanges())
 	assert.Equal(t, int32(0), resp.GetTotalSize())
+}
+
+// TestListChanges_PageSizeClamped pins that an absurd pageSize from the wire
+// cannot drive an equally absurd slice capacity. Before the clamp this made
+// `make([]*pb.Change, 0, req.GetPageSize())` a host-controlled memory sink.
+func TestListChanges_PageSizeClamped(t *testing.T) {
+	svc, _ := newTestChangeService(t)
+	ctx := context.Background()
+
+	resp, err := svc.ListChanges(ctx, &pb.ListChangesRequest{PageSize: math.MaxInt32})
+	require.NoError(t, err, "an oversized pageSize must be clamped, not fatal")
+	assert.Empty(t, resp.GetChanges())
 }
 
 func TestListChanges_WithChanges(t *testing.T) {

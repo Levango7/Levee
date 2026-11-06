@@ -43,6 +43,20 @@ func encodeLabels(labels map[string]string) (string, error) {
 	return string(b), nil
 }
 
+// jsonPathKey turns a caller-provided label key into a JSON path expression
+// for SQLite's JSON1 `json_extract`. json.Marshal is the exact escaping a path
+// needs, so the result is safe to pass as a bound parameter: `a` → `$."a"`,
+// `a"b` → `$."a\"b"`. Keys that are not valid JSON map keys (surrogates are
+// replaced rather than rejected) fail closed instead of producing a syntax
+// error that would surface as an internal error and leak the payload shape.
+func jsonPathKey(k string) string {
+	b, err := json.Marshal(k)
+	if err != nil {
+		return "$.\""
+	}
+	return "$." + string(b)
+}
+
 func decodeLabels(s string) (map[string]string, error) {
 	out := map[string]string{}
 	if s == "" || s == "{}" {
@@ -219,8 +233,15 @@ func (s *SQLiteStore) ListTargets(ctx context.Context, filter TargetFilter) ([]*
 		args = append(args, filter.Status)
 	}
 	for k, v := range filter.Labels {
-		clauses = append(clauses, fmt.Sprintf("json_extract(labels, '$.%s') = ?", k))
-		args = append(args, v)
+		// The key is CALLER-PROVIDED (the REST gateway passes `?labelSelector=`
+		// straight through as a string map) and is used as a JSON path, so it
+		// goes in as a BOUND PARAMETER, not in the SQL text. The path is
+		// `'$."<json-escaped key>"'` — json.Marshal is exactly the escaping a
+		// JSON path wants, so quotes and backslashes in a key are data, not
+		// syntax. An unescaped key used to be concatenated into the statement,
+		// which made `labels["x' or 1=1 --"] = ...` a real breakout.
+		clauses = append(clauses, "json_extract(labels, ?) = ?")
+		args = append(args, jsonPathKey(k), v)
 	}
 	// Tenant predicate. Appended LAST so the placeholder numbering matches the
 	// append order regardless of which optional filters were set.
@@ -231,7 +252,7 @@ func (s *SQLiteStore) ListTargets(ctx context.Context, filter TargetFilter) ([]*
 
 	q := `SELECT ` + sqliteTargetColumns + ` FROM targets`
 	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
+		q += " WHERE " + strings.Join(clauses, " AND ")
 	}
 	q += " ORDER BY hostname, port"
 	if filter.Limit > 0 {
