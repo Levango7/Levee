@@ -94,8 +94,51 @@ func TestInstallPluginChannelsRefusesBuiltinCollision(t *testing.T) {
 
 	err := installPluginChannels(context.Background(), cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "collides with an already-registered channel type")
+	assert.Contains(t, err.Error(), `would register channel type "ssh", which is already registered`)
 	assert.Contains(t, err.Error(), "levee plugin disable ssh")
+}
+
+// D-1c: a channel plugin that declares extra types is registered under its own
+// name AND each declared type, all pointing at the one factory.
+func TestInstallPluginChannelsRegistersDeclaredExtraTypes(t *testing.T) {
+	t.Setenv(serveModuleChildEnv, "1")
+	const name = "serve-test-multi"
+	cfg := pluginNotifyFixture(t, func(reg *plugin.Registry) {
+		seedEnabledPlugin(t, reg, &plugin.RegistryRecord{
+			Name: name, Type: plugin.TypeChannel, BinaryPath: os.Args[0],
+			ChannelTypes: []string{"serve-test-multi-alias", "serve-test-multi-alias2"},
+		})
+	})
+
+	require.NoError(t, installPluginChannels(context.Background(), cfg))
+	for _, typ := range []string{name, "serve-test-multi-alias", "serve-test-multi-alias2"} {
+		t.Cleanup(func() { channel.DefaultRegistry().Unregister(typ) })
+		f, ok := channel.DefaultRegistry().Factory(typ)
+		require.True(t, ok, "type %q must be dialable", typ)
+		assert.Equal(t, name, f.(*plugin.PluginChannelFactory).Name(), "every type shares the one plugin factory")
+	}
+}
+
+// An extra type that would shadow a registered transport (or another plugin)
+// is refused before ANY of the plugin's types are registered, so a rejected
+// alias cannot leave the plugin half-installed.
+func TestInstallPluginChannelsRefusesExtraTypeCollision(t *testing.T) {
+	_, ok := channel.DefaultRegistry().Factory("ssh")
+	require.True(t, ok, "precondition: the built-in ssh transport is registered in this binary")
+
+	const name = "serve-test-alias-clash"
+	cfg := pluginNotifyFixture(t, func(reg *plugin.Registry) {
+		seedEnabledPlugin(t, reg, &plugin.RegistryRecord{
+			Name: name, Type: plugin.TypeChannel, BinaryPath: os.Args[0],
+			ChannelTypes: []string{"ssh"},
+		})
+	})
+
+	err := installPluginChannels(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `would register channel type "ssh", which is already registered`)
+	_, registered := channel.DefaultRegistry().Factory(name)
+	assert.False(t, registered, "the plugin's own name must not be registered when an alias collides")
 }
 
 // An enabled channel whose binary vanished is unusable: the boot is refused

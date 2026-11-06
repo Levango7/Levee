@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 // --- Plugin type & state ----------------------------------------------------
@@ -165,6 +166,55 @@ type PluginMeta struct {
 	// calls one action both safe and destructive is a contradiction, refused at
 	// module build time rather than resolved by an arbitrary side.
 	ReversibleActions []string `json:"reversible_actions,omitempty" yaml:"reversible_actions,omitempty"`
+
+	// ChannelTypes names the transport types a channel plugin serves IN
+	// ADDITION to its own name. It exists because one binary often speaks one
+	// protocol that several target vocabularies name differently (a TCP console
+	// bridge that is also a device console and a terminal server). Without it
+	// that binary had to be installed once per target name, which multiplies
+	// registry rows, config files and enable/disable steps for no runtime
+	// benefit.
+	//
+	// The plugin's own Name is always registered, so an empty list reproduces
+	// the pre-D-1c behaviour (one plugin, one transport type). Every entry must
+	// match the plugin-name pattern (^[a-z][a-z0-9-]*$), be unique, and not
+	// repeat Name; a collision with an already-registered or built-in transport
+	// (ssh, winrm, local, ...) is still refused at serve boot, per type.
+	//
+	// The type a target declared arrives at the plugin in its Target, so a
+	// plugin that must behave differently per name can branch on it; a plugin
+	// that does not care simply serves them all identically. Only meaningful on
+	// a channel plugin — declaring it on any other type is refused at install.
+	ChannelTypes []string `json:"channel_types,omitempty" yaml:"channel_types,omitempty"`
+}
+
+// pluginNameRE is the token pattern a plugin name and every extra channel type
+// must match: lowercase, starts with a letter, hyphen-separated. It mirrors the
+// rule documented on PluginMeta.Name.
+var pluginNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+// validateChannelTypes enforces the ChannelTypes contract: channel-only, valid
+// tokens, unique, and not repeating the plugin's own name (which is registered
+// unconditionally). It is checked at manifest load and again at the registry
+// persistence boundary, so a direct Registry.Install cannot bypass it.
+func validateChannelTypes(meta PluginMeta) error {
+	if len(meta.ChannelTypes) == 0 {
+		return nil
+	}
+	if meta.Type != TypeChannel {
+		return fmt.Errorf("%w: %q declares channel_types but its type is %q, not %q", ErrInvalidPluginType, meta.Name, meta.Type, TypeChannel)
+	}
+	seen := map[string]bool{meta.Name: true}
+	for _, t := range meta.ChannelTypes {
+		if !pluginNameRE.MatchString(t) {
+			return fmt.Errorf("plugin: %q channel_types %q: must match ^[a-z][a-z0-9-]*$", meta.Name, t)
+		}
+		if seen[t] {
+			return fmt.Errorf("plugin: %q channel_types %q: duplicate (or repeats the plugin name)", meta.Name, t)
+		}
+		seen[t] = true
+	}
+	return nil
 }
 
 // --- Plugin interface -------------------------------------------------------

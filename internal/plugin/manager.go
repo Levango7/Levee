@@ -190,6 +190,9 @@ func (m *PluginManager) loadManifest(sourcePath string) (PluginMeta, string, str
 	if !meta.Type.Validate() {
 		return PluginMeta{}, "", "", fmt.Errorf("%w: %q", ErrInvalidPluginType, meta.Type)
 	}
+	if err := validateChannelTypes(meta); err != nil {
+		return PluginMeta{}, "", "", err
+	}
 
 	// Resolve the binary path.
 	entry := meta.EntryPoint
@@ -278,6 +281,7 @@ func (m *PluginManager) Enable(ctx context.Context, name string) error {
 			MinHostVersion: rec.MinHostVersion,
 			MaxHostVersion: rec.MaxHostVersion,
 			EntryPoint:     rec.EntryPoint,
+			ChannelTypes:   rec.ChannelTypes,
 		},
 		sandbox: sb,
 		config:  config,

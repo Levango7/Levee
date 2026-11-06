@@ -112,10 +112,11 @@ func TestBuildServePluginNotifiersRefusesUnusableChannel(t *testing.T) {
 // persists.
 func pluginMetaFor(rec *plugin.RegistryRecord) plugin.PluginMeta {
 	return plugin.PluginMeta{
-		Name:        rec.Name,
-		Version:     "1.0.0",
-		Type:        rec.Type,
-		Description: "test fixture",
+		Name:         rec.Name,
+		Version:      "1.0.0",
+		Type:         rec.Type,
+		Description:  "test fixture",
+		ChannelTypes: rec.ChannelTypes,
 	}
 }
 

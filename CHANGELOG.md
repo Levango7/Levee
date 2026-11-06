@@ -11,6 +11,15 @@
 - **改动**：`go get golang.org/x/net@v0.62.0` + `go mod tidy`，只动 `go.mod` 一行与 `go.sum` 两处。其余 `golang.org/x/*` 版本不变。
 - **验证**：`go build ./...` rc=0；`go vet ./...` rc=0；`internal/state` / `internal/auth` / `internal/notify` / `internal/chatops` 全绿；trivy 复扫以本 PR 的 CI 为准。
 
+### 新增（运行期通道插件「一插件多类型」：manifest 声明 `channel_types`，D-1c）
+
+- **缺口**：一个运行期 channel 插件只能提供**一种**传输类型，且类型名就是插件名——同一个二进制要服务几个 target 词汇（如一个 TCP 控制台桥同时是设备控制台和终端服务器）时，只能把它按不同名字装多份，注册表行、config、enable/disable 都跟着翻倍，运行时毫无好处。这正是 `docs/blocked-items.md` 的 **D-1c**（也是项目现状里“唯一未开工的代码项”）。
+- **修法**：`PluginMeta` 新增可选 `channel_types: [别名…]`。`serve` 启动时把一个插件工厂按**插件名 + 每个声明类型**全部注册进 `channel.DefaultRegistry()`（共享同一个插件进程与会话池）；任一类型与内建传输（ssh/winrm/local…）或别的插件重名，则在**注册之前整体拒绝**——先查全部再注册，不留半装。`PluginMeta.Name` 仍无条件注册，所以**空声明＝D-1c 之前的“一插件一类型”行为**，既有 manifest 与旧注册表行不受影响。插件从 `Target.Type()` 拿到被声明的那个类型，需要按类型分派时据此分支。
+- **持久化**：`plugin_registry` 新增 `channel_types TEXT NOT NULL DEFAULT '[]'`（与 `destructive_actions`/`reversible_actions` 同一套幂等 `ALTER TABLE` 迁移）；`Registry.Install`/`Get`/`List` 全链携带。坏列解析为空 → 退回“只注册插件名”。校验（仅限 channel 型、`^[a-z][a-z0-9-]*$`、不重复、不重复插件名）在 manifest 载入与 `Registry.Install` 两处，直接调 Registry 也绕不过。
+- **验证**：`registry` 新增 4 例（往返 / 空声明为空 / `validateChannelTypes` 六表 / 非 channel 型被拒）、`serve` 新增 2 例（多类型都注册到同一工厂 / 别名撞内建则整体拒绝且插件名也不注册），并修正既有的撞名断言与 `pluginMetaFor` 测试夹具。`go build` + `go test ./internal/plugin/ ./cmd/levee/`（定向）全绿；`golangci-lint v2.13.2` 0 issues。示例 `examples/plugins/tcp_console/plugin.yaml` 与 `docs/channel-plugins.md` §7/§8 同步。
+- **如实边界**：只扩了**运行期**通道插件（D-1c 的原文范围）；编译期通道插件不受影响；类型别名只是一个“同一二进制可被多个名字解析到”的声明，不改变插件协议或沙箱，也不做类型→行为的自动分派（那由插件读 `Target.Type()` 自己决定）。
+- **依赖**：本笔 rebase 在 `golang.org/x/net` v0.62.0（CVE-2026-78661 修复）之上；不引入新依赖。
+
 
 ### 测试（wire 契约夹具补齐 5 个前端实调端点：裸数组有了 `items` 形状，DTO 对账也覆盖它们）
 

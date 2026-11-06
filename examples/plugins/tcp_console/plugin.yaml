@@ -6,3 +6,9 @@ description: Channel plugin that drives a line-oriented TCP console (device, ser
 min_host_version: "0.1.0"
 max_host_version: "2.0.0"
 entry_point: tcp-console
+# D-1c: this one binary also answers to these transport type names, so targets
+# can declare device-console or terminal-server instead of installing the plugin
+# three times. An empty list reproduces the one-name behaviour.
+channel_types:
+  - device-console
+  - terminal-server
