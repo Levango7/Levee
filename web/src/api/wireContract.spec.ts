@@ -171,6 +171,20 @@ const DTO_READS: Record<string, DtoReads> = {
     rowDto: 'ClusterNodeDTO',
     objectDtos: { summary: 'AssignmentSummaryDTO' },
   },
+  // The rollback POST — the shape the partial-rollback remediation wizard
+  // reads its evidence from. It was the one endpoint the contract could not
+  // see (the snapshot covered GET endpoints only), which is exactly why
+  // `skippedHosts` could go missing from the server without anything here
+  // failing: the panel would render blank and no error would be raised.
+  //
+  // The recorded keys are the union of the preview's and the commit's: the
+  // server omits the unset fields (protojson), so a preview carries no
+  // `rollbackRunId` while a commit does. The union is what the browser may
+  // read from this endpoint.
+  rollback: {
+    keys: ['change', 'rollbackRunId', 'success', 'rolledBackHosts', 'skippedHosts', 'message'],
+    dto: 'RollbackResponseDTO',
+  },
 }
 
 /**
@@ -185,6 +199,8 @@ const SERVER_ONLY: Record<string, string[]> = {
   change: [],
   'audit-log': [],
   'cluster-status': [],
+  // Every key of the rollback response is read by the remediation wizard.
+  rollback: [],
 }
 
 describe('DTO contract: what the client reads is what the server sends', () => {

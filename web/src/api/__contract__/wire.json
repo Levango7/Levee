@@ -184,6 +184,26 @@
       ]
     }
   },
+  "rollback": {
+    "method": "POST",
+    "path": "/changes/{id}/rollback",
+    "keys": [
+      "change",
+      "message",
+      "rollbackRunId",
+      "rolledBackHosts",
+      "skippedHosts",
+      "success"
+    ],
+    "forbid": [
+      "Change",
+      "RollbackRunId",
+      "Success",
+      "RolledBackHosts",
+      "SkippedHosts",
+      "Message"
+    ]
+  },
   "system-status": {
     "method": "GET",
     "path": "/system/status",

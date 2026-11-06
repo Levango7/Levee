@@ -515,10 +515,11 @@ levee retry-host run-abc123 web01.prod
 
 ### 3.10 rollback
 
-手动触发回滚。
+回滚一条变更 run。命令走的是服务端同一套 `RollbackChange` 服务（控制台调用的也是它），
+因此准入检查、风险门禁、补偿派发、终态与审计行都与服务端一致。
 
 ```text
-levee rollback <run-id> [--force]
+levee rollback <run-id> [--dry-run]
 ```
 
 **参数**
@@ -531,22 +532,28 @@ levee rollback <run-id> [--force]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--force` | `false` | 强制回滚，忽略状态检查 |
+| `--dry-run` | `false` | 预览：只报告「会补偿哪些主机、会跳过哪些主机」，不补偿任何主机、不改写任何记录、不写审计行 |
 
 **说明**
 
-- 不加 `--force` 时，仅 `running`、`completed` 或 `failed` 状态可回滚
-- 回滚按执行 batch 的逆序执行 rollback 步骤
-- 回滚完成后运行 post-rollback 验证确认目标状态健康
-- run 状态转为 `rolling_back`
+- 仅 `completed`、`failed`、`rolled_back_partial` 或 `rollback_incomplete` 状态可回滚；
+  其余状态服务端拒绝（退出码 4），命令不改写 run
+- 回滚按执行 batch 的逆序、batch 内步骤的逆序执行各步骤声明的 rollback 步骤
+- 回滚完成后 run 状态转为三种回滚结论之一：`rolled_back`（补偿齐备）、
+  `rolled_back_partial`（部分补偿完成）、`rollback_incomplete`（没有补偿完成）
+- 手动回滚**不**运行 post-rollback 验证：`verify_after` 是前向执行路径上的门禁，
+  手动回滚路径不经过闭包执行器
+- `--dry-run` 是只读的：它不改写 run 状态、不写审计行、不恢复快照、不派发补偿
+- 旧的 `--force` 选项已移除：它只能绕过 CLI 自己那份状态检查，而放行后的唯一结果是
+  把 run 写进一个没有任何组件消费的状态（详见 CHANGELOG 同名条目）
 
 **示例**
 
 ```命令示例：回滚 run
 levee rollback run-abc123
 
-命令示例：强制回滚
-levee rollback run-abc123 --force
+命令示例：先预览再回滚
+levee rollback run-abc123 --dry-run
 ```
 
 ## 第4章 观察性

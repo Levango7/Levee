@@ -141,7 +141,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 // "running", drives the closure synchronously and writes the terminal
 // status; this function only maps the outcome to CLI conventions.
 func runApplyWithEngine(ctx context.Context, store state.Store, run *state.Run) error {
-	svc, err := newCLIChangeService(store)
+	svc, err := cliChangeServiceFactory(store)
 	if err != nil {
 		return err
 	}

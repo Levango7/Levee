@@ -34,6 +34,14 @@ func cliCredentialResolver(store state.Store) wiring.CredentialResolver {
 	return &serveCredentialResolver{store: cs}
 }
 
+// cliChangeServiceFactory builds the ChangeService the CLI's engine-backed
+// commands use (apply, rollback). It is a variable rather than a direct call
+// so a test can substitute a service wired to a stub engine: these commands
+// end up executing on hosts, and a command that can only be exercised against
+// a real host is a command nobody tests. Production always uses
+// newCLIChangeService.
+var cliChangeServiceFactory = newCLIChangeService
+
 // newCLIChangeService builds the in-process ChangeService with a real
 // engine adapter attached: PlanChange persists plan artifacts and
 // ApplyChange executes them through the closure machinery. The approval

@@ -255,31 +255,38 @@ levee retry-host run-20260815-001 web-03.example.com
 
 对应 D4 回滚协议（4.4.6）：白名单 + 快照 + 按批逆序。
 
-命令示例：按批回滚
-
-```bash
-levee rollback run-20260815-001 --force
-```
-
-回滚指定批次（按批逆序，从第 3 批向前回滚到指定点）。回滚不受原 workflow 变更窗口约束。
-
-命令示例：全量回滚
+命令示例：回滚一条变更
 
 ```bash
 levee rollback run-20260815-001
-# 注：没有 `rollback-all` 这条命令；一次 run 的回滚已覆盖它声明的全部批次。
-# 跨 run 批量回滚由调用方按 run-id 循环 `levee rollback`。
 ```
 
-回滚所有批次，按批逆序逐批回滚，每批回滚后做回滚后验证。回滚完成后不自动归档，需人工确认（对应 4.4.6.6）。
+命令示例：先预览（只读，不补偿任何主机）
+
+```bash
+levee rollback run-20260815-001 --dry-run
+```
+
+CLI 走的是服务端同一套 `RollbackChange` 服务：准入检查、风险门禁、补偿派发、终态与审计行
+都与控制台调用的是同一条路径。回滚按执行 batch 的逆序、batch 内步骤的逆序执行各步骤声明的
+rollback 步骤；一条 run 的回滚已覆盖它声明的全部批次（没有 `rollback-all` 这条命令；跨 run
+批量回滚由调用方按 run-id 循环 `levee rollback`）。回滚不受原 workflow 的变更窗口约束
+（冻结期门禁管的是 plan/apply，不管回滚）。
+
+**订正（2026-11-07）**：本节此前描述的 `--batch <n>`（仅回滚到第 n 批）与 `--force`
+（跳过回滚后验证）两条选项从来不存在于 CLI——二进制里没有注册这两个 flag，表格写的是
+一份没有实现的接口。同样地，「每批回滚后做回滚后验证」也不成立：手动回滚不经过闭包
+执行器，`verify_after` 是前向执行路径上的门禁。
 
 表：rollback 命令选项参数说明表
 
 | 选项 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `<change-id>` | string | 是 | 变更 run-id |
-| `--batch <n>` | int | 否 | 仅回滚到第 n 批，省略则全量回滚 |
-| `--force` | bool | 否 | 跳过回滚后验证，需管理员权限，留痕 |
+| `<run-id>` | string | 是 | 变更 run-id |
+| `--dry-run` | bool | 否 | 预览：只报告会补偿与会跳过的主机，不补偿主机、不改写记录、不写审计行 |
+
+> REST 侧另有 `POST /changes/{id}/rollback`，请求体支持 `runId` / `dryRun` / `autoApprove`，
+> 响应含 `rolledBackHosts` / `skippedHosts`（见 §13 `dry_run` 语义）。
 
 ### 2.9 日志与诊断
 

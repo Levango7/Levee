@@ -94,6 +94,27 @@ export interface DeeplinkEvidence {
   decided_at?: number
 }
 
+/**
+ * The rollback response — the one shape the partial-rollback remediation
+ * wizard depends on: it reads the two host lists out of it to tell the
+ * operator which hosts would be compensated and which would be left alone.
+ *
+ * `rollbackRunId` is absent from a PREVIEW (the server mints no rollback run
+ * for one), which is why the console reads it defensively. The declared key
+ * set is pinned against the server's own snapshot in
+ * api/__contract__/wire.json (the "rollback" entry) — that entry records the
+ * union of the preview's and the commit's keys, because protojson omits the
+ * unset fields and the two answers are not the same shape.
+ */
+export interface RollbackResponseDTO {
+  change: Change
+  rollbackRunId: string
+  success: boolean
+  rolledBackHosts: string[]
+  skippedHosts: string[]
+  message: string
+}
+
 export const changesApi = {
   list: (params: ListChangesParams): Promise<PageResult<Change>> =>
     get<RawListEnvelope>('/changes', { params: changesListQuery(params) }).then((raw) =>
@@ -146,14 +167,8 @@ export const changesApi = {
   retry: (id: string, body: { replan?: boolean; targetHosts?: string[] }): Promise<Change> =>
     post<Change>(`/changes/${id}/retry`, body),
 
-  rollback: (id: string, body: { runId?: string; dryRun?: boolean; autoApprove?: boolean }): Promise<{
-    change: Change
-    rollbackRunId: string
-    success: boolean
-    rolledBackHosts: string[]
-    skippedHosts: string[]
-    message: string
-  }> => post(`/changes/${id}/rollback`, body),
+  rollback: (id: string, body: { runId?: string; dryRun?: boolean; autoApprove?: boolean }): Promise<RollbackResponseDTO> =>
+    post<RollbackResponseDTO>(`/changes/${id}/rollback`, body),
 
   archive: (id: string, purgeArtifacts?: boolean): Promise<Change> =>
     post<Change>(`/changes/${id}/archive`, { purgeArtifacts }),

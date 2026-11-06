@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -118,7 +119,9 @@ func TestIsTerminalStatus(t *testing.T) {
 		{"running", false},
 		{"pending", false},
 		{"paused", false},
-		{"rolling_back", false},
+		// The legacy status the retired CLI rollback wrote: not terminal, so
+		// `levee logs` would keep waiting on a run stranded in it.
+		{runstatus.StatusRollingBackLegacy, false},
 	}
 
 	for _, tc := range cases {

@@ -164,7 +164,7 @@ MVP 任务格式规范：H1-H3 标题层级正确，表格格式规范，无 emo
 | levee pause / resume / pause-all / resume-all | 2.6 | 一致 |
 | levee cancel / retry | 2.7 | 一致 |
 | levee retry --target（单台重跑） | 2.7 retry-host | 不一致（见问题 3） |
-| levee rollback | 2.8 | 一致 |
+| levee rollback | 2.8 | 一致（2026-11-07 复核订正：原文判"一致"，实际两端都不符——§2.8 当时写着 CLI 从未注册的 `--batch`/`--force`，而 CLI 只把 run 状态改写成无人消费的 `rolling_back`，不执行任何补偿；现 §2.8 已订正，CLI 走服务端同一套 `RollbackChange` 并新增 `--dry-run` 预览） |
 | levee logs / trace / diff / archive / link | 2.9 / 2.10 | 一致 |
 | levee drift report | 6.1 drift scan | 一致（report 细化为 scan/show）（2026-11-04 复核：实际命令为 drift detect / drift report；scan/show 从未注册；原文保留） |
 | levee schedule（D6.1 计划触发） | 缺失 | 不一致（见问题 5） |
