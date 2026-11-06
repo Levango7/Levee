@@ -255,6 +255,14 @@ func (b *AuditChainBuilder) Seal(ctx context.Context) (int, error) {
 // the table. Against a tampered row this is exactly the operation SA-002 warns
 // about, which is why it is a differently-named method that nothing on the write
 // path calls, rather than a flag on Seal.
+//
+// DECISION (2026-11-07, docs/blocked-items.md 原 G-1): there is intentionally NO
+// operator command that calls this. Legal-write breaks heal on the next Seal;
+// tampering is reported, never silently relinked. Keeping a WORM-adjacent
+// rebuild off the CLI is the point — an unreachable "repair" path is worse than
+// the hole it closes (see the comment on Seal). If a real operational need for
+// manual recovery appears, it is a new product item with its own evidence, not
+// a flag added here.
 func (b *AuditChainBuilder) Rebuild(ctx context.Context) (int, error) {
 	written := 0
 	prev := ""

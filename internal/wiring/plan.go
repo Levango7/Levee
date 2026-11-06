@@ -110,6 +110,17 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 	// declaration and this floor).
 	assessPlanRisk(p)
 
+	// plan_json is deliberately the Go struct's direct JSON — mixed spelling
+	// (PascalCase for untagged fields, snake_case where tags happen to exist).
+	// It is an INTERNAL artifact: every reader unmarshals it back into plan.Plan,
+	// and plan_hash is computed from the separate canonical structure, so the
+	// spelling is invisible on the wire and lossless today. Do NOT "tidy" it by
+	// adding json tags: that changes the persisted bytes and breaks cross-version
+	// reads during a rolling upgrade (tagged code can no longer read the old
+	// PascalCase rows, and old code cannot read the new snake_case ones) for no
+	// consumer's benefit. If a non-Go consumer ever needs plan_json, add tags
+	// AND a dual-key UnmarshalJSON that still accepts PascalCase — not tags
+	// alone. Decision recorded in docs/blocked-items.md (原 G-3).
 	raw, err := json.Marshal(p)
 	if err != nil {
 		return nil, nil, fmt.Errorf("wiring: marshal plan: %w", err)

@@ -51,8 +51,6 @@
 
 | 项 | 证据 | 为什么没顺手做 | 解锁/触发 |
 | --- | --- | --- | --- |
-| G-1 审计链 `BuildForce` / `Rebuild` 无生产调用方、无 operator 命令 | `internal/audit`：链断了之后「等下一条正常写入补上」之外没有可执行修复入口，而 Seal 的自洽重链分支又会把合法写造成的断裂修掉——人工路径既不可达又不必要（本仓早有结论） | 给 `levee audit verify --rebuild` 加命令=新增一个动 WORM 邻域的操作面；宣布废弃=改文档口径。两条都是产品语气，不是 bug 修复 | 用户裁决：加命令还是宣布废弃 |
-| G-3 `plan.Plan` 持久化无 json tag，`runs.plan_json` 落混合拼写文档 | `internal/wiring/plan.go` 直接 `json.Marshal(p)`；读取方全部 `json.Unmarshal` 回同一 struct 所以**当前无损**，但它是唯一「持久化 wire = Go struct 直出」的工件，非 Go 消费者不可读，且 `TestWireSnapshot_NoPascalCaseLeaks` 看不见它（`PlanToPB` 出境前已转换） | 补 tag 会改变 `plan_json` 的历史字节形态；`ComputeHash` 走独立 canonical 结构不受影响，但直接读该列的既有消费者（导出/审计报告）要同步 | 有非 Go 消费方要读 plan_json 时；或一次性迁移脚本就绪时 |
 | G-4 wire 契约夹具未覆盖 5 个前端实调端点（`/agents` `/groups` `/audit/traces` `/system/version` `/conversation/sessions`） | `internal/grpc/wire_snapshot_test.go` 只驱动 10 条路径；历史上三次 PascalCase 泄漏（ClusterNode/AssignmentSummary 同型）都是夹具盲区钻过来的 | 是测试资产补齐不是缺陷修复；每条端点要 seed 对应表/行型，工作量大但无风险 | 下一轮前端契约工时；优先 `/agents`（`Agent` 无 tag 靠 `agentRecordToPB` 兜着，转换一旦漏字段就又是泄漏） |
 
 ## F. 卡在上游发布（第三方工具链还没提供可装版本，不是本仓工作量）
@@ -64,6 +62,8 @@
 
 ## 已交付、不再登记（防混淆）
 
+- 原 **G-3**（`plan.Plan` 持久化无 json tag）：**定档「维持现状」（2026-11-07，是决策不是交付）**。`runs.plan_json` 是 Go 内部工件——写入是 `internal/wiring/plan.go` 的 `json.Marshal(p)`，**全部**读取方 `json.Unmarshal` 回同一 struct，且 `plan_hash` 走独立的 canonical 结构，所以「混合拼写」当前无损；台账原先的触发条件「有非 Go 消费方要读 plan_json」**未到**。补 tag 会改变已落库字节，在滚动升级期间让新旧进程**互读不了**（带 tag 的代码按 snake_case 读、读不到旧的 PascalCase；旧代码读不到新的 snake_case），换来只是「好看」＋一个不存在的消费方。故**不改格式**，只在写入点加注释说明这是有意为之（`internal/wiring/plan.go`）。将来真出现非 Go 消费方，做法是加 tag **并**自定义 `UnmarshalJSON` 同时接受旧 PascalCase（dual-key），不是裸加 tag。
+- 原 **G-1**（audit `BuildForce` / `Rebuild` 无生产调用方、无 operator 命令）：**定档「不提供人工修复入口」（2026-11-07，是决策不是交付）**。审计链对**合法写**造成的断裂由下一次 `Seal` 自愈，对**内容篡改**由 `Seal` / `Verify` 报 `ErrChainBroken` 而**不静默重链**；`Rebuild` / `BuildForce` 是刻意另起的方法名、write path 一个都不调用，保留作内部 / 测试与「确认篡改后的恢复」原语。**不新增 `levee audit verify --rebuild`**——那是一个会动 WORM 邻域的新操作面，而该邻域已有 WORM 触发器 + Seal + Verify 三道防线；用一个不可达、又无法从 CLI 触发的“修复”路径去补洞，比洞本身更糟（`Seal` 的注释早已记下这条）。将来真需要人工恢复，按 G-1 行内取证另立产品项。决定写进 `internal/audit/auditchain.go`（`Rebuild`）与 `hashchain.go`（`BuildForce`）的注释。
 - 原 **G-2**（assignment 陈旧度判定的时钟源）：新增可选接口 `state.ClockReader`（`StoreNow`）——PostgreSQL 返回服务器 `NOW()`、SQLite 返回本机时钟（与它落的库同机）；`dispatch.reclaimStale` 改用它作为比较用 `now`（经 `state.Underlying` 找到底层 store，拿不到就回退进程时钟并 WARN）。这样「写 `updated_at` 的时钟」与「算 age 的时钟」在异构部署下是同一个，reclaim 判定不再被库/应用时钟差整体平移。：本笔
 - 原 **G-5**（`RunEventStore.UpdateRun` 的读-改-写竞态）：新增可选接口 `state.RunStatusPrevReader`——`UpdateRunReturningPrevStatus` 在**同一步**里写全行并回报被覆盖的旧 status（SQLite 走 `BEGIN IMMEDIATE` 单连接事务，PostgreSQL 走 `SELECT … FOR UPDATE`），`RunEventStore.UpdateRun` 优先走它、无能力的 store 保留读-再-写回退。于是并发 `UpdateRun` 不可能再 emit 一个它从未覆盖过的 `from`：本笔
 - 审批票判定全链（服务路径 + gate/深链 DecisionGuard）：PR #214
