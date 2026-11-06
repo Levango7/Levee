@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 文档（`CONTRIBUTING.md` §5.1 补 CI 等待的第二种「零 check」来源：base 前进导致的 DIRTY）
+
+- **缺口**：§5.1 已有的 callout 只写了一条触发路径——把 PR 的 **base 设成别的分支**时 `ci.yml` 一条 check 都不生成，并落下原则「"这个 PR 没有红"并不等于"CI 绿了"」。但**同一个症状还有第二条路径没被登记**：base 自己往前走路导致 PR 变 `CONFLICTING`（`mergeStateStatus=DIRTY`）时，`ci.yml` 同样不生成 check。缺这一条的代价不是文档不好看，而是**等待循环会读错**：未完成的 check 数停住不动，与 runner 积压的形状完全相同。
+- **两笔实测**（就是本条存在的理由）：`#285` 的哨兵只数 `pending`，磨到自设的 90 轮上限仍未收口，报的是 `TIMEOUT`——而那时候候选早已 DIRTY；`#295` 的循环每轮同时采 `mergeable` / `mergeStateStatus`，第 16 轮就报出 `NEEDS_REBASE`，其间该 SHA 上的 check run 总数与未完成数都卡住不动。
+- **改动**：只往既有 callout 追加一段，写清第二种触发条件、判据（**每轮同时读两个字段，读到 DIRTY 就停下来先 rebase、再在新头上重跑**）与上面两笔实测。**不重述「可合 = 哪个 context 绿」**——那条口径已经在 §5.4 第 3 条，本条只以引用衔接（同一个结论写两遍就会漏改一半）。也不新增 `path:line` 式锚点：PR 编号与章节号稳定，行号会腐烂。
+- **验证**：`check_doc_anchors` 27 锚点 + 29 claims PASSED，但**这条只是回归哨，不是对本段的覆盖证明**——`CONTRIBUTING.md` 虽在它扫的 6 本活账本里，全书却只有裸文件路径、**0 个 `path:line` 形状锚点**（实测数过），所以本段的追加不会动那 27 这个数。`test_changelog_structure` / `test_doc_anchors` / `check_roadmap_status` 全过；追加的 10 行每行都带 `> ` 前缀，逐行核过没把 blockquote 断成普通段落。
+- **顺带核实与顺带存疑**：本段赖以成立的「`ci.yml` 的 `pull_request` 触发只列 `main` / `master` / `develop`」现查 `.github/workflows/ci.yml` 仍在（`branches: [main, master, develop]`），未被这段改动影响；而 DIRTY 那条机制**不是从触发器推出来的**，是今天两笔 PR 上直接观测到的。**但**同一句里既有的「`ci.yml` 的 **24 个** check run」这个计数我**没能核实**：`ci.yml` 顶层 job 实测是 16 个，加上 matrix 展开与第三方检查后与 24 对不对得上没算过——那是另一处文档漂移，不在本笔顺手改，登记给下一次专门核计数的人。
+- **如实边界**：本条讲的是「为什么等不到 check 收敛」，**不给**新的执法机制。把 DIRTY 识别变成机器门禁（例如让等待脚本本身成为被检对象）是另一件事，本笔不做。
+
 ### 文档（`project-status-2026-11.md` 追加 §13：订正 §12 的「47 行表」读数口径，并记录 #293 已消解判据分歧）
 
 - **订正的是什么**：§12 写「同一份 **47** 行表」——47 是 `^| P` 判据下的行数，读起来却像表的规模。路线图**逻辑数据行实为 53**：47 + 2 条 `~~P1~~`/`~~P2~~` 开头 + 1 条身份层 `| — |` + 运营层表 3 条（正是 §12 点名的结构性漏项）。权威出处是实测：`python scripts/check_roadmap_status.py` ⇒ `ROADMAP STATUS CHECK PASSED: 53 rows, blocked-on:人手=3, closed=47, decided=1, open=2`（跑在 `d1a3d76`）。

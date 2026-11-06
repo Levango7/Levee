@@ -190,6 +190,16 @@ configurable triggers, approver requirements, and timeout.
 > 那种 PR 上的只有 CodeQL 两条与第三方检查。于是"这个 PR 没有红"并不等于"CI 绿了"。
 > **改 base 也不会补跑**：GitHub 把切 base 记为 `edited`，不在 `ci.yml` 声明的默认事件
 > 类型里；要拿到覆盖，必须在该 PR 上再有一次真实推送。
+>
+> **同一个症状还有第二个来源：base 自己往前走了**。PR 一旦变成 `CONFLICTING`
+> （`mergeStateStatus` 报 `DIRTY`），`ci.yml` 同样是**一条 check 都不生成**。这时
+> 未完成的 check 数不是慢慢降，而是**停住不动**——读数形状与 runner 积压完全一样，
+> 只有 `mergeable` / `mergeStateStatus` 能把两者分开。所以盯 CI 的循环必须**每轮同时采
+> 这两个字段**，读到 DIRTY 就停下来先 rebase、再在新头上重跑，而不是继续等下一轮。
+> 两笔实测：`#285` 的等待循环只数 pending，磨到 90 轮自停仍未收口，而那时候选早已
+> DIRTY；`#295` 的循环补上了这两个字段，第 16 轮就报出 `NEEDS_REBASE`——期间该 SHA 上
+> 的 check run 总数与未完成数都卡住不动，与「跑得慢」毫无二致。判「可合」仍以 §5.4 第 3
+> 条点名的那个 required context 为准，本条只讲「为什么等不到 check 收敛」。
 
 ### 5.2 PR 描述模板
 
