@@ -16,9 +16,10 @@
 - **缺口**：一个运行期 channel 插件只能提供**一种**传输类型，且类型名就是插件名——同一个二进制要服务几个 target 词汇（如一个 TCP 控制台桥同时是设备控制台和终端服务器）时，只能把它按不同名字装多份，注册表行、config、enable/disable 都跟着翻倍，运行时毫无好处。这正是 `docs/blocked-items.md` 的 **D-1c**（也是项目现状里“唯一未开工的代码项”）。
 - **修法**：`PluginMeta` 新增可选 `channel_types: [别名…]`。`serve` 启动时把一个插件工厂按**插件名 + 每个声明类型**全部注册进 `channel.DefaultRegistry()`（共享同一个插件进程与会话池）；任一类型与内建传输（ssh/winrm/local…）或别的插件重名，则在**注册之前整体拒绝**——先查全部再注册，不留半装。`PluginMeta.Name` 仍无条件注册，所以**空声明＝D-1c 之前的“一插件一类型”行为**，既有 manifest 与旧注册表行不受影响。插件从 `Target.Type()` 拿到被声明的那个类型，需要按类型分派时据此分支。
 - **持久化**：`plugin_registry` 新增 `channel_types TEXT NOT NULL DEFAULT '[]'`（与 `destructive_actions`/`reversible_actions` 同一套幂等 `ALTER TABLE` 迁移）；`Registry.Install`/`Get`/`List` 全链携带。坏列解析为空 → 退回“只注册插件名”。校验（仅限 channel 型、`^[a-z][a-z0-9-]*$`、不重复、不重复插件名）在 manifest 载入与 `Registry.Install` 两处，直接调 Registry 也绕不过。
-- **验证**：`registry` 新增 4 例（往返 / 空声明为空 / `validateChannelTypes` 六表 / 非 channel 型被拒）、`serve` 新增 2 例（多类型都注册到同一工厂 / 别名撞内建则整体拒绝且插件名也不注册），并修正既有的撞名断言与 `pluginMetaFor` 测试夹具。`go build` + `go test ./internal/plugin/ ./cmd/levee/`（定向）全绿；`golangci-lint v2.13.2` 0 issues。示例 `examples/plugins/tcp_console/plugin.yaml` 与 `docs/channel-plugins.md` §7/§8 同步。
-- **如实边界**：只扩了**运行期**通道插件（D-1c 的原文范围）；编译期通道插件不受影响；类型别名只是一个“同一二进制可被多个名字解析到”的声明，不改变插件协议或沙箱，也不做类型→行为的自动分派（那由插件读 `Target.Type()` 自己决定）。
+- **验证**：`registry` 新增 4 例（往返 / 空声明为空 / `validateChannelTypes` 六表 / 非 channel 型被拒）、`serve` 新增 2 例（多类型都注册到同一工厂 / 别名撞内建则整体拒绝且插件名也不注册）、`manager` 新增 4 例（manifest 载入路径：非 channel 型 / 别名重名 / 非法 token 被拒 + 合法声明一路带到 registry 行），并修正既有的撞名断言与 `pluginMetaFor` 测试夹具。`go build` + `go test ./internal/plugin/ ./cmd/levee/`（定向）全绿；`golangci-lint v2.13.2` 0 issues。示例 `examples/plugins/tcp_console/plugin.yaml` 与 `docs/channel-plugins.md` §7/§8 同步。
+- **变异验证（7 条，全红）**：① serve 不注册别名 → 2 例红；② serve 先注册插件名再查冲突 → 「自己的名字不能被注册」红（**这条断言原先是空转的**：撞名用例没设 `serveModuleChildEnv`，工厂根本建不起来，于是断言永远不可能触发——已补上 child persona 让它真承重）；③ `validateChannelTypes` 整个短路 → 2 例红；④ registry 落库丢掉 `channel_types` → 往返例红；⑤ 迁移列表去掉 `channel_types` → 旧表迁移守卫红（`no such column: channel_types`）；⑥ 去掉 manifest 载入处的校验 → 3 例红（**注**：一开始这三条走 `Install()` 写，registry 那道校验会兜底，变异不红——改为直接调 `loadManifest` 才真正隔离 manifest 这一层）。
 - **依赖**：本笔 rebase 在 `golang.org/x/net` v0.62.0（CVE-2026-78661 修复）之上；不引入新依赖。
+- **如实边界**：只扩了**运行期**通道插件（D-1c 的原文范围）；编译期通道插件不受影响；类型别名只是一个“同一二进制可被多个名字解析到”的声明，不改变插件协议或沙箱，也不做类型→行为的自动分派（那由插件读 `Target.Type()` 自己决定）。
 
 
 ### 测试（wire 契约夹具补齐 5 个前端实调端点：裸数组有了 `items` 形状，DTO 对账也覆盖它们）
