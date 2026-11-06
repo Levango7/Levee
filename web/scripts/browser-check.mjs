@@ -977,6 +977,90 @@ console.log('\n[7] the cluster page explains the deployment it is on')
   await page.close()
 }
 
+// ---------------------------------------------------------------------------
+console.log('\n[8] the remediation wizard previews first and commits only on confirmation')
+{
+  const page = await newPage(browser)
+  // A clean log, so the counts below are this scenario's and not a previous
+  // run's leftovers.
+  await page.evaluate((u) => fetch(u, { mode: 'cors' }), MOCK + '/__rollback-log?reset=1')
+  await open(page, '/changes/run-1001')
+
+  const rollbackLog = async () =>
+    page.evaluate(async (u) => (await fetch(u, { mode: 'cors' })).json(), MOCK + '/__rollback-log')
+  const kinds = async () => (await rollbackLog()).calls.map((c) => c.kind)
+  const clickButton = async (label) => {
+    await page.evaluate((t) => {
+      const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === t)
+      if (!btn) throw new Error('the ' + t + ' button is not on the page')
+      btn.click()
+    }, label)
+  }
+  const waitForBox = async () => {
+    await page.waitForFunction(
+      () => !!document.querySelector('.el-message-box'),
+      { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+    ).catch(() => null)
+  }
+  const boxText = async () => text(page, '.el-message-box')
+
+  // The button is offered only where the server would accept a rollback
+  // (isRemediableStatus: rolled_back_partial / rollback_incomplete).
+  const offered = await page.evaluate(() =>
+    [...document.querySelectorAll('button')].some((b) => (b.textContent || '').trim() === '补救未完成的回滚'))
+  check('a change whose rollback did not finish offers the remediation', offered, 'no 补救未完成的回滚 button')
+
+  // First click: the wizard asks for a PREVIEW and shows the evidence.
+  await clickButton('补救未完成的回滚')
+  await waitForBox()
+  const dialog = await boxText()
+  check('the dialog names the hosts that would be compensated',
+    dialog.indexOf('2 台待补偿') >= 0 && dialog.indexOf('10.0.1.11') >= 0,
+    'dialog=' + JSON.stringify(dialog.slice(0, 160)))
+  check('the dialog names the hosts that would be left alone',
+    dialog.indexOf('1 台将跳过') >= 0 && dialog.indexOf('10.0.1.13') >= 0,
+    'dialog=' + JSON.stringify(dialog.slice(0, 160)))
+
+  // THE assertion this scenario exists for: showing the evidence must not
+  // have performed the rollback. Before the server honoured dry_run, the
+  // preview dispatched the compensations and then the dialog reported the
+  // already-executed hosts as "still to do".
+  const afterPreview = await kinds()
+  check('the preview did not commit', afterPreview.filter((k) => k === 'commit').length === 0,
+    'calls=' + JSON.stringify(afterPreview))
+  check('the endpoint was asked for a preview', afterPreview.filter((k) => k === 'preview').length === 1,
+    'calls=' + JSON.stringify(afterPreview))
+
+  // Cancelling must leave nothing behind either.
+  await clickButton('取消')
+  await page.waitForFunction(
+    () => !document.querySelector('.el-message-box'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  const afterCancel = await kinds()
+  check('cancelling the dialog commits nothing',
+    afterCancel.filter((k) => k === 'commit').length === 0,
+    'calls=' + JSON.stringify(afterCancel))
+
+  // And confirming commits — once, as a call AFTER the preview.
+  await clickButton('补救未完成的回滚')
+  await waitForBox()
+  await clickButton('现在补')
+  await page.waitForFunction(
+    () => !document.querySelector('.el-message-box'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  const afterConfirm = await kinds()
+  check('confirming commits exactly once',
+    afterConfirm.filter((k) => k === 'commit').length === 1,
+    'calls=' + JSON.stringify(afterConfirm))
+  check('the commit came after a preview, never instead of one',
+    afterConfirm.length === 3 && afterConfirm[0] === 'preview' && afterConfirm[2] === 'commit',
+    'calls=' + JSON.stringify(afterConfirm))
+  if (SHOTS) await page.screenshot({ path: `${SHOT_DIR}/rollback_remediation.png` })
+  await page.close()
+}
+
 console.log(`\nbrowser-check: ${failures.length === 0 ? 'ALL PASS' : failures.length + ' FAILED'}`)
 if (failures.length) {
   for (const f of failures) console.log('  - ' + f)

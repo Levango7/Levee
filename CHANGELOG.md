@@ -4,6 +4,7 @@
 
 ## [Unreleased]
 
+
 ### 测试（`blocked-items.md` 结构与分类计数门禁：每类几项从文件本身算，不再只有快照）
 
 - **缺口**：`docs/blocked-items.md` 把搁置项分成 A–F 六类，「每类有几项」只出现在 `docs/project-status-2026-11.md` 的**快照**里（§12 写 `A5 / B0 / C3 / D3 / E3 / F1`）——没有任何门禁从文件本身算，所以快照会悄悄过期；分类结构（项归错类、ID 重复、某类被清空）也无人守。
@@ -11,6 +12,23 @@
 - **改动**：新增 `scripts/check_blocked_items.py`，从文件解析 A–F 六节，打印每类计数，并校验四条不变量：① 每行 ID 的前缀必须等于其所在节的字母（`C-9` 落在 D 类 → 红）；② 全文件 ID 不重复；③ 每节要么有表、要么显式写「当前无」（少了表变静默 → 红）；④ 行数下限（12/16）。`scripts/test_blocked_items.py` 11 例；`ci.yml` 的 release-gate 点名表加 `test_blocked_items`。
 - **验证**：`check_blocked_items` PASSED（16 项）；本套件 11 例全绿；`check_roadmap_status`、`check_doc_anchors`、`test_changelog_structure`、`unittest discover -s scripts` 全过。**变异三条**：① 一行 ID 改成 `Z-1` → 红并点名「letter must match its category」；② 复制 `C-1` → 红并指出两处行号；③ 去掉 B 节的「当前无」注 → 红并说「must be either populated or explicitly empty」。
 - **如实边界**：本门禁只校验**结构与计数**，不判「活跃 vs 已交付」——D-1b 带「（已交付）」标记仍算一行。要分开那两类需要给 blocked-items 也加状态列，是另一件事。
+
+### 修复（`RollbackChange` 的 `dry_run` 从未被兑现：控制台的回滚「预览」会真的执行回滚）
+
+- **缺陷**：proto 的 `RollbackRequest.dry_run` 写着「只模拟回滚并报告将要发生什么」，REST 层也老老实实把 `dryRun` 解出来传进了请求——但 `ChangeService.RollbackChange` **从头到尾没有读过 `req.GetDryRun()`**。于是控制台「部分回滚补救」向导（`web/src/composables/useRollbackRemediation.ts`）那一步 `changesApi.rollback(id, { dryRun: true })` 拿到的不是预览，而是**一次真的回滚**：补偿派发到生产主机、run 状态被改写成 `rolled_back`、审计链留下一条 `rollback` 记录。操作员随后看到的对话框把**刚刚已经执行掉的主机**列成「待补偿」，而真正点「现在补」的那一次又因为状态已变成 `rolled_back`（不在 `runstatus.RollbackAdmitted` 里）被准入检查拒绝。**净效果：破坏性动作在操作员确认之前就发生了，之后还报一个他读不懂的错。**
+- **为什么能发布出去**：这个向导是**已交付**功能——`docs/product-roadmap.md` 的 P0 条目写着「先 `dry_run` 摊证据（待补偿/将跳过/服务端消息）再问『现在补吗』」，`docs/release-notes/v1.22.0.md` 也记着同一条。证据只到过 vitest（对着 mock 的 API）与人工点击，没有一条端到端路径把「预览」和「真的执行」分开：**修复前** `web/scripts/mock-gateway.mjs` **根本没有 rollback 端点**，所以浏览器级检查（`browser-check.mjs`）覆盖不到这条流；后端则**连一个 `dry_run` 的测试都没有**。
+- **同类的另外两个洞（一起收口，否则下一次还会漏）**：proto 里共 5 个 `dry_run` 字段——兑现 2 个（`PlanChange`、`InstantiateTemplate`）、**空转但契约成立** 1 个（`CreateChange`：它只建 draft 等审批，本来就不应用，所以「只计划并返回、不应用」这条契约无论如何都成立）、**被忽略** 2 个（`ApplyChange`：proto 写着「只打印计划并退出」，REST `/changes/:id/apply` 又把 `dryRun` 透传进去，于是「我要预览」得到的是一次**真的 apply**；`RollbackChange`：本文的主角）。忽略一个声明过的字段，比没有这个字段更糟：调用方会以为自己在预览。
+- **修法（三层，各自有闸）**：
+  - **回滚管理器自己知道它在预览**：`internal/rollback` 新增 `WithDryRun` 与 `StepRollbackResult.DryRun`。补偿步骤照走（这才算得出「会动哪些」），但**快照恢复被拒绝**——`strategy: "snapshot"` 的步骤会把采集到的前状态写回目标机，是回滚能做的最破坏性动作，而回调明明是接好的；`execFn == nil` 的既有分支（manager 早就写着「useful for dry-run invocations」）补上 `DryRun` 标记，让「本来会跑」与「因证据被跳过」这两件事在结果里分得开。
+  - **接缝变成一个带参数的闭合**：`EngineAdapter.Rollback` 加 `dryRun bool`，返回 `RollbackOutcome{RunID, RolledBackHosts, SkippedHosts, Gaps}`。预览与提交**共用同一段实现**（`wiring.Engine.rollbackChange`）：一个可能与提交对不上的预览比没有预览更糟。
+  - **服务层兑现契约**：`RollbackChange` 在 `dry_run` 时**什么都不落盘**（不改 run 状态、不写审计、不发事件、不铸 run id），原样回报两个主机列表与一条说明三类主机的 message；`skipped_hosts` 这个 proto 里早就存在、却**从未被赋值**的字段现在第一次有值。`ApplyChange` 则**明确拒绝** `dry_run=true`（`FailedPrecondition`，并点名「要预览请用 `PlanChange`，它的 `dry_run` 是兑现的」）——宁可拒绝，也不能在操作员说「预览」的时候执行。
+- **三类主机分开报**：待补偿（会动）、将跳过（前向没跑 / 已被补偿，不需要）、**缺口**（有步骤没有可用补偿动作：没声明补偿、被策略拒绝、undo 无法安全重排）。第三类**不是**「将跳过」——它是需要人的洞，所以单列并在 message 里点名，而不是塞进那两个列表之一。**「待补偿」与「缺口」可以重叠**：一台主机的某个步骤有可用补偿、另一个步骤没有补偿动作时，回滚**会动它**、同时**也补不全它**——两个事实操作员都要知道，所以两栏都列；「将跳过」则是独占的（一台有缺口的主机绝不会被说成「不需要处理」，那正好是反话）。
+- **验证（Go 侧）**：新增 **13 例**（`internal/rollback/manager_dryrun_test.go` 3、`internal/wiring/rollback_dryrun_test.go` 5、`internal/grpc/rollback_dryrun_test.go` 5）。wiring 层用真的通道记录器断言「预览一条 undo 命令都没派发」「预览没把基线写回目标机」「已补偿的主机落在 skipped 而不是待补偿」「既有可补偿步骤又有无补偿步骤的主机**同时**落在待补偿与缺口两栏」；grpc 层断言「flag 确实传到了引擎」「run 状态与审计链零变化」「真实回滚仍然执行并留证」「无引擎时预览不把 run 标成 `rolled_back`」「`ApplyChange` 拒绝 `dry_run` 且不派发」，外加一条**线协议级**的断言：驱动真的 REST handler，把 JSON 解析出来，钉住 `rolledBackHosts` / `skippedHosts` 两个键**存在且拼写正确**（且预览里没有 `rollbackRunId`）——已提交的 wire 契约快照只覆盖 GET 端点，而 rollback 是 POST，所以这两个键此前**没有任何一处被机器校验过**；`skippedHosts` 更是一个服务端从未发过的键。
+- **验证（浏览器级，补上这条缺陷得以发布的根因）**：`web/scripts/mock-gateway.mjs` 新增 rollback 端点，**把预览与提交分成两次不同的调用**并记录调用日志（`GET /__rollback-log`）；`web/scripts/browser-check.mjs` 新增场景 **[8]**：在一条 `rolled_back_partial` 的变更上点「补救未完成的回滚」，断言对话框点名了待补偿与将跳过的主机、**预览没有提交**、取消也不提交、确认后**恰好提交一次**且提交发生在预览之后。没有这一步，mock 根本没有 rollback 端点，浏览器检查永远覆盖不到这条流。
+- **变异（证明新检查有牙，不是装饰）**：① 把客户端的 `dryRun: true` 去掉（模拟「预览即提交」）→ 场景 [8] **5 条断言变红**（`calls=["commit"]`）；② 把服务端的 `SkippedHosts` 赋值去掉 → **2 条 Go 测试变红**（`expected ["10.0.1.12"], actual nil`）。两处都已还原，`gofmt` 干净。
+- **同类洞的全文复核（CONTRIBUTING §5.2：一条声称被推翻时，它的每一处都要重新审）**：本笔使「部分回滚补救已先 `dry_run` 摊证据再确认」这条声称**从假变真**——凡是写着我这条结论的地方，全部重新审过，共 4 处命中：① `docs/product-roadmap.md:84`（活账本 P0 行）——现在标注了「2026-10-10 落地时**只有 UI 那一半**」，否则读者会以为那天起预览就是安全的；② `docs/release-notes/v1.22.0.md:25`（v1.22.0 发布说明）——按仓里既有的勘误写法（`v1.20.0.md:48` 的「更正一处」）加了一段 `> 更正一处（2026-11-06 补）`；③ `CHANGELOG.md` 的 v1.22.0 小节摘要（按 v1.23.0 小节「订正（账本对账）」的写法）加了同一条订正；④ `docs/leveelang-spec.md:1324`（V16 补偿声明，LE091 已撤回、状态为「规划」）——说的是**编译期不阻断**与 plan dry-run 的告警，与本笔的 `RollbackChange.dry_run` 不是同一条路，**不改**。另两处是描述而非声称，不动：`docs/ui-blueprint.md:181`（设计蓝图里的补救闭环）与 `docs/product-positioning.md:47`（角色定位「接管 partial rollback 的补救」）。**发布说明不应声称 tag 里没有的行为**——v1.22.0 发布当时服务端没有这个能力，说明却写着有，这三处订正就是补这笔账。
+- **如实边界**：**proto 一行未改**（`dry_run` 与 `skipped_hosts` 字段本来就存在，这笔是让实现追上契约，不是加字段），所以线协议、生成代码与 `proto regenerate check` 都不受影响；CLI 没有 `rollback --dry-run`，CLI 路径不受影响；**前端业务代码一行未改**——它本来就是照着正确的契约写的，是后端违约；本笔改的前端文件只有测试夹具（`web/scripts/mock-gateway.mjs`、`web/scripts/browser-check.mjs`）。**没做的**：把 rollback 响应并进已提交的 wire 契约快照（`web/src/api/__contract__/wire.json`）——那份快照只覆盖 GET 端点，纳入 POST 需要复制整套网关夹具，本笔改用上面那条线协议级 Go 测试达到同一目的；CLI 仍然没有 `rollback --dry-run`（预览只在控制台暴露）。
+nge 的 dry_run——预览不再真的执行回滚)
 
 ### 文档（`product-roadmap.md` 表格规整化：5 处畸形行修好，`状态` 列现在真的会渲染 + 门禁要求格数匹配）
 
@@ -1067,6 +1085,14 @@
 ## [v1.22.0] - 2026-10-16
 
 > **发布状态：已切版。** 附注 tag `v1.22.0`（tag 对象 `b0f54d33`，两阶段剥离后指向合并提交 `5139395f`，即 PR #168 的合并）于 2026-10-16 推送；`release.yml` 三段（CI gate / goreleaser / container image，run `38839860583`）全部 success：GitHub Release `draft=false`、`publishedAt=2026-10-16T02:34:38Z`（10:34:38 +0800），资产 7 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.22.0` 按外部事实核过——`manifests/v1.22.0` 返回 **200**（同一次探测里 `v1.21.0` → 200、不存在的 tag → 404，证明这个探针有分辨力），`tags/list` = `[v1.18.0, latest, v1.19.0, v1.20.0, v1.21.0, v1.22.0]`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.22.0` / 逐字 `v1.22.0`（顺序不能反：规则②要求它逐字出现在 tag 集合里）。 本节共 **48** 个小节，五条主线：① **交互层 P0 全部落地**——变更详情页、模板实例化三步向导、部分回滚补救（先 dry_run 摊证据）、审批中心卡片化（为此新增审批链读路径 `GET /changes/{id}/approvals`）、`/monitor` 三视图（目标地图 + SSE 事件流）、审计证据片段卡与时间线、看板第一张趋势图、列个性化、全键盘路径、空/失败/无权限三档；② **词表与判据收口**——`runs.status` 行内注释（4 个幻影拼写、owner 的 15 个里缺 10 个）、`approval_level` 两处失实、`runs.priority` 拆成独立列（schema v9）并在入口校验、`audit.action`/`result` 两对孪生拼写与三处散文、错误码目录双向漂移（撤 11 补 1）、门禁判定第一次进审计链；③ **授权与安全**——8 个写 RPC 从零准入到接权限矩阵、2 个直读 store 的 REST-only 端点接门禁、重试上限改由服务端强制、ChatOps 入向决策闭环（平台验签 + 身份映射）、移动深链重复点击返回收据、`levee tenant purge` 只回收 WORM 允许的那一半；④ **契约与交付物**——DTO 双向守卫（`wire.json` 由服务端写下、含嵌套对象键集）、`cluster_enabled` 位上 wire、节点能力申报三段管道、Helm 单节点 PostgreSQL 成为一等公民、`make web` 拒绝 CRLF 工作副本；⑤ **CI 与协作**——浏览器级检查进 CI（ubuntu + windows 双 OS）并把它假红的根因坐实为「判据挂在时钟上而不是挂在渲染上」、多 agent 协作留言板与本仓第一份 `AGENTS.md`。**切版顺序（按既有约束执行）**：先折叠 CHANGELOG 与 release notes、chart 不动（`check_release_versions.py` 规则②要求 `image.tag` **逐字**出现在 tag 集合里，tag 存在之前不能升），推 tag 并确认 `release.yml` 三段 success 之后，再随下一笔把 chart 两处升到 `1.22.0` / 逐字 `v1.22.0`。release notes 见 [`docs/release-notes/v1.22.0.md`](docs/release-notes/v1.22.0.md)。
+
+> **订正（2026-11-06，发布实况）**：本节摘要 ① 里的「部分回滚补救（先 dry_run 摊证据）」，
+> 在 v1.22.0 发布时**只做到了 UI 那一半**：控制台的补救向导确实先发 `dry_run` 预览再问
+> 「现在补吗」，但服务端 `ChangeService.RollbackChange` **从未读过 `req.GetDryRun()`**——
+> 所谓预览**真的执行了回滚**（补偿派发到生产主机、run 状态被改写成 `rolled_back`、审计链留下
+> 一条 `rollback` 记录），而真正点「现在补」的那一次又因状态已变成 `rolled_back` 被准入检查
+> 拒绝。**该契约直到 2026-11-06 才兑现**（见本文件 [Unreleased] 与 `docs/levee-api.md` §13）。
+> 发布说明不应声称 tag 里还没有的行为；此处按实况订正，原文不抹。
 
 ### 依赖与 CI 工具链（三条 Go bump 合并成一笔重算，CodeQL 三条 pin 锁步）
 

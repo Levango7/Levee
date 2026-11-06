@@ -198,6 +198,15 @@ type StepRollbackResult struct {
 	// reported as not-fully-rolled-back and needs operator inspection.
 	SideEffectsUnknown bool
 
+	// DryRun marks a step that WAS selected for compensation but was not
+	// applied because the manager was in preview mode (WithDryRun). It is
+	// the difference between "this step would have run" and "this step was
+	// skipped for an evidence reason" (never ran, already compensated, no
+	// compensation declared): a preview that cannot tell them apart cannot
+	// answer the operator's question, which is exactly what the console's
+	// remediation wizard asks it.
+	DryRun bool
+
 	// SkipReason is a human-readable explanation when Skipped is true. It
 	// is empty for executed steps.
 	SkipReason string
@@ -229,6 +238,16 @@ type Manager struct {
 	// its closure run id when assembling the rollback manager.
 	snapshotRestore SnapshotRestoreFunc
 	runID           string
+
+	// dryRun puts the manager in preview mode (see WithDryRun). The
+	// compensation walk still happens — that is how the caller learns what
+	// WOULD run — but nothing is applied to a target: the execute
+	// function is expected to be nil (the manager records each step as
+	// "would have run") and the snapshot restore is refused even when a
+	// restore callback is wired, because writing the captured state back
+	// is a mutation and a preview that restores a snapshot is not a
+	// preview.
+	dryRun bool
 }
 
 // ManagerOption configures a Manager at construction time.
@@ -283,6 +302,27 @@ func WithConcurrency(n int) ManagerOption {
 func WithStopOnError(b bool) ManagerOption {
 	return func(m *Manager) {
 		m.stopOnError = b
+	}
+}
+
+// WithDryRun puts the manager in preview mode: no target is touched.
+//
+// The walk is unchanged — every step is still evaluated against the
+// whitelist and the execution ledger — so the caller learns exactly what a
+// real rollback would do. What changes is that nothing is applied:
+//
+//   - the compensation steps expect a nil execute function; each one is
+//     recorded with DryRun set, so the caller can tell "this step would
+//     have run" from "this step was skipped for an evidence reason";
+//   - the strategy-"snapshot" restore is refused even when a restore
+//     callback is wired. The restore writes the captured pre-apply state
+//     back over the target: that is the most destructive thing a rollback
+//     can do, and a preview must not do it.
+//
+// A preview is therefore read-only by construction, not by convention.
+func WithDryRun(on bool) ManagerOption {
+	return func(m *Manager) {
+		m.dryRun = on
 	}
 }
 
@@ -712,6 +752,15 @@ func (m *Manager) restoreSnapshotStep(ctx context.Context, target string, ps pla
 		sr.SkipReason = "snapshot restore not wired"
 		return sr
 	}
+	if m.dryRun {
+		// The restore writes the captured pre-apply state back over the
+		// target. A preview must not do that, so the step is recorded as
+		// "would have run" instead of being applied.
+		sr.Skipped = true
+		sr.DryRun = true
+		sr.SkipReason = "dry-run: snapshot restore not applied"
+		return sr
+	}
 	if m.runID == "" {
 		sr.Skipped = true
 		sr.SkipReason = "snapshot restore without run id"
@@ -748,9 +797,12 @@ func (m *Manager) executeRollbackStep(ctx context.Context, target, origStepName 
 	}
 
 	// nil execFn: dry-run mode. Record as skipped so callers can see what
-	// would have run without actually running it.
+	// would have run without actually running it. DryRun marks it as
+	// "selected but not applied" — the difference between a step a real
+	// rollback would compensate and a step skipped for an evidence reason.
 	if execFn == nil {
 		sr.Skipped = true
+		sr.DryRun = true
 		sr.SkipReason = "no execute function"
 		return sr
 	}

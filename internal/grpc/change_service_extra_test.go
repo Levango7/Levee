@@ -42,6 +42,7 @@ type recordingEngine struct {
 	planErr    error
 	rollbackID string
 	rbHosts    []string
+	rbSkipped  []string
 	rbErr      error
 	retryErr   error
 
@@ -52,6 +53,7 @@ type recordingEngine struct {
 
 	lastAutoApprove bool
 	lastHosts       []string
+	lastDryRun      bool
 }
 
 func (e *recordingEngine) adapter() *EngineAdapter {
@@ -69,12 +71,13 @@ func (e *recordingEngine) adapter() *EngineAdapter {
 			}
 			return e.plan, e.stored, nil
 		},
-		Rollback: func(_ context.Context, _, _ string, _ bool) (string, []string, error) {
+		Rollback: func(_ context.Context, _, _ string, _ bool, dryRun bool) (RollbackOutcome, error) {
 			atomic.AddInt32(&e.rollbackCalled, 1)
+			e.lastDryRun = dryRun
 			if e.rbErr != nil {
-				return "", nil, e.rbErr
+				return RollbackOutcome{}, e.rbErr
 			}
-			return e.rollbackID, e.rbHosts, nil
+			return RollbackOutcome{RunID: e.rollbackID, RolledBackHosts: e.rbHosts, SkippedHosts: e.rbSkipped}, nil
 		},
 		Retry: func(_ context.Context, _ string, _ bool, hosts []string) error {
 			atomic.AddInt32(&e.retryCalled, 1)

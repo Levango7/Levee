@@ -215,7 +215,7 @@ func TestRollbackChange_SkipsAlreadyCompensatedStep(t *testing.T) {
 	seedEvidenceStep(t, store, "run-rb-twice", "web-1", "undo-work", "success")
 	cmdsBefore := len(rec.snapshotCmds())
 
-	_, _, err := e.rollbackChange(context.Background(), "run-rb-twice", "", true)
+	_, err := e.rollbackChange(context.Background(), "run-rb-twice", "", true, false)
 	require.NoError(t, err)
 
 	after := rec.snapshotCmds()[cmdsBefore:]
@@ -249,7 +249,7 @@ func TestRollbackChange_RetriesFailedCompensation(t *testing.T) {
 	seedEvidenceStep(t, store, "run-rb-retry", "web-1", "undo-work", "failed")
 	cmdsBefore := len(rec.snapshotCmds())
 
-	_, _, err := e.rollbackChange(context.Background(), "run-rb-retry", "", true)
+	_, err := e.rollbackChange(context.Background(), "run-rb-retry", "", true, false)
 	require.NoError(t, err)
 
 	cmds := rec.snapshotCmds()[cmdsBefore:]

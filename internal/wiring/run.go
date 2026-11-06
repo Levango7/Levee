@@ -549,16 +549,23 @@ func (e *Engine) reenterApprovalFlow(ctx context.Context, run *state.Run) error 
 // stored plan with rollback.Manager (the same machinery the closure path
 // uses on failure) and persists the undo evidence. The RPC handler owns
 // the run's rolled_back status.
-func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool) (string, []string, error) {
+//
+// With dryRun set it is a PREVIEW: the same plan is walked against the same
+// execution ledger, but nothing is applied — no compensation runs, no
+// snapshot is restored, no evidence is persisted and no run id is minted.
+// The outcome names the hosts that WOULD be compensated and the hosts that
+// would be left alone, which is what the console shows the operator before
+// asking "now remediate?".
+func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool, dryRun bool) (grpc.RollbackOutcome, error) {
 	release, err := e.acquire(changeID)
 	if err != nil {
-		return "", nil, err
+		return grpc.RollbackOutcome{}, err
 	}
 	defer release()
 
 	p, err := e.loadStoredPlan(ctx, changeID)
 	if err != nil {
-		return "", nil, err
+		return grpc.RollbackOutcome{}, err
 	}
 
 	// Manual rollback is deliberately OUTSIDE the fencing perimeter
@@ -569,7 +576,7 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 	// operator can simply re-issue the rollback.
 	rx, err := newRunExec(ctx, e, nil)
 	if err != nil {
-		return "", nil, err
+		return grpc.RollbackOutcome{}, err
 	}
 	defer rx.close()
 
@@ -577,6 +584,13 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		rollback.WithWhitelistAll(),
 		rollback.WithConcurrency(e.rollbackConcurrency),
 		rollback.WithStopOnError(false),
+	}
+	if dryRun {
+		// The manager must know it is previewing: a strategy-"snapshot"
+		// step would otherwise restore the captured pre-apply state over
+		// the target, and a preview that restores a snapshot is not a
+		// preview.
+		mgrOpts = append(mgrOpts, rollback.WithDryRun(true))
 	}
 	// Manual rollback shares the snapshot store: strategy-"snapshot"
 	// steps restore their pre-apply capture (keyed by the CHANGE id, so
@@ -610,9 +624,28 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 	// back to the whole plan would restore the pre-D-2 over-broad undo.
 	ledger, lerr := e.ledgerFromStoredSteps(ctx, changeID, p)
 	if lerr != nil {
-		return "", nil, lerr
+		return grpc.RollbackOutcome{}, lerr
 	}
-	res := mgr.RollbackWithLedger(ctx, p, rx.executeFunc(), ledger)
+
+	// A preview executes nothing: the manager gets a nil execute function,
+	// so every compensation step is recorded as "would have run" and the
+	// snapshot restore is refused (WithDryRun above).
+	var execFn rollback.ExecuteFunc
+	if !dryRun {
+		execFn = rx.executeFunc()
+	}
+	res := mgr.RollbackWithLedger(ctx, p, execFn, ledger)
+
+	compensated, skipped, gaps := rollbackHostBuckets(res)
+	if dryRun {
+		// A preview persists NOTHING: no run id, no evidence rows, no
+		// baseline restore. It answers the operator's question and stops.
+		return grpc.RollbackOutcome{
+			RolledBackHosts: compensated,
+			SkippedHosts:    skipped,
+			Gaps:            gaps,
+		}, nil
+	}
 
 	// Run-level baseline restore, after the compensations for the same
 	// reason as on the closure path: the run's pre-state is the last word on
@@ -623,7 +656,7 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 	// restore failed" would hide that — while reporting only success would
 	// hide the baseline. The operator needs both facts, in that order.
 	if runSnap != nil && p.RunSnapshot != nil {
-		if rsErr := runSnap.RestoreRun(ctx, changeID, rolledBackHosts(res), p.RunSnapshot); rsErr != nil {
+		if rsErr := runSnap.RestoreRun(ctx, changeID, compensated, p.RunSnapshot); rsErr != nil {
 			log.Error("manual rollback: run baseline restore failed; baseline may not be back on the targets",
 				"change_id", changeID, "error", rsErr)
 			res.Error = errors.Join(res.Error,
@@ -634,7 +667,7 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 
 	rbID := newID("rb-")
 	persistErr := e.persistRollbackResults(ctx, changeID, res, rx.snapshotOutputs())
-	hosts := rolledBackHosts(res)
+	hosts := compensated
 
 	if !res.Success {
 		cause := res.Error
@@ -648,12 +681,14 @@ func (e *Engine) rollbackChange(ctx context.Context, changeID, _ string, _ bool)
 		// rollback.ErrIncomplete is what lets the transport report an outcome
 		// (Success=false, rollback_incomplete) instead of a server fault, while
 		// the joined cause still names what failed.
-		return rbID, hosts, fmt.Errorf("%w: %w", rollback.ErrIncomplete, cause)
+		return grpc.RollbackOutcome{RunID: rbID, RolledBackHosts: hosts, SkippedHosts: skipped, Gaps: gaps},
+			fmt.Errorf("%w: %w", rollback.ErrIncomplete, cause)
 	}
 	if persistErr != nil {
-		return rbID, hosts, fmt.Errorf("wiring: rollback succeeded but persisting evidence failed: %w", persistErr)
+		return grpc.RollbackOutcome{RunID: rbID, RolledBackHosts: hosts, SkippedHosts: skipped, Gaps: gaps},
+			fmt.Errorf("wiring: rollback succeeded but persisting evidence failed: %w", persistErr)
 	}
-	return rbID, hosts, nil
+	return grpc.RollbackOutcome{RunID: rbID, RolledBackHosts: hosts, SkippedHosts: skipped, Gaps: gaps}, nil
 }
 
 // planNeedsSnapshot reports whether any step of p declares the
@@ -965,29 +1000,76 @@ func globalTargets(p *plan.Plan) []string {
 	return out
 }
 
-// rolledBackHosts lists the distinct hosts whose undo steps ran (skipped
-// steps do not count).
-func rolledBackHosts(res *rollback.RollbackResult) []string {
+// rollbackHostBuckets sorts the hosts of a rollback into three buckets:
+//
+//   - compensated: the hosts whose compensation ran — or, in a preview, would
+//     run. A commit changed these;
+//   - skipped: the hosts the rollback deliberately left alone, because their
+//     forward step never ran or an earlier rollback already compensated
+//     them. These need nothing;
+//   - gaps: the hosts with at least one step that has NO usable compensation
+//     — none declared, refused by policy, or an undo that cannot be ordered
+//     safely against a prior one. Those steps cannot be undone by any
+//     rollback, so they need a human.
+//
+// The buckets are read off the step results rather than off a second
+// execution: a preview and a commit walk the same plan against the same
+// execution ledger, so their answers differ only in what was applied. That
+// is what lets the console show the preview and then commit the same thing.
+//
+// A host may be in compensated AND gaps at once: one of its steps has a
+// usable compensation (so the rollback WILL touch it) and another has none
+// (so part of it stays changed no matter what). Folding that into one bucket
+// would either hide the gap or hide the touch, and the operator needs both —
+// so the buckets overlap rather than compete.
+//
+// skipped is the only exclusive bucket: a host lands there only when nothing
+// would run AND nothing is missing. A host with a gap is never "skipped",
+// because "skipped" means "needs nothing" and a gap means the opposite.
+func rollbackHostBuckets(res *rollback.RollbackResult) (compensated, skipped, gaps []string) {
 	if res == nil {
-		return nil
+		return nil, nil, nil
 	}
-	seen := make(map[string]bool)
-	var hosts []string
+	seenCompensated := make(map[string]bool)
+	seenSkipped := make(map[string]bool)
+	seenGap := make(map[string]bool)
 	for _, br := range res.BatchResults {
 		for _, tr := range br.TargetResults {
-			ran := false
+			host := tr.Target
+			wouldRun, gap := false, false
 			for _, sr := range tr.StepResults {
-				if !sr.Skipped {
-					ran = true
+				switch {
+				case sr.DryRun:
+					// Selected for compensation, stopped by the preview.
+					wouldRun = true
+				case sr.AlreadyCompensated || sr.NotExecuted:
+					// Benign evidence skip: nothing to undo here.
+				case sr.Skipped:
+					// The step ran but no compensation could be applied.
+					gap = true
+				default:
+					// Executed: the compensation ran.
+					wouldRun = true
 				}
 			}
-			if ran && !seen[tr.Target] {
-				seen[tr.Target] = true
-				hosts = append(hosts, tr.Target)
+			if gap && !seenGap[host] {
+				seenGap[host] = true
+				gaps = append(gaps, host)
+			}
+			if wouldRun {
+				if !seenCompensated[host] {
+					seenCompensated[host] = true
+					compensated = append(compensated, host)
+				}
+				continue
+			}
+			if !gap && !seenSkipped[host] {
+				seenSkipped[host] = true
+				skipped = append(skipped, host)
 			}
 		}
 	}
-	return hosts
+	return compensated, skipped, gaps
 }
 
 // newID mints a prefixed random identifier (same shape as the gRPC layer's

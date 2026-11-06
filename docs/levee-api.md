@@ -902,6 +902,13 @@ RESTful 风格，支持两套路径：
 
 > 说明：本节**仅列核心变更生命周期与服务端点**；凭据（secret）、用户/团队/权限、通知渠道等管理面资源未全部投影为 REST 端点，管理操作走对应 CLI 章节（第 7–9 章）。
 >
+> **`dry_run` 的口径（请求体字段 `dryRun`）。** proto 里有 5 个 `dry_run` 字段，**兑现情况不一样**，调用方必须知道哪个是哪个，否则会以为自己在预览：
+> - **`POST /changes/:id/plan`**（`PlanChange`）：兑现。`dryRun:true` 只产出计划、不持久化，apply 在此之前会拒绝执行（CLI 对应 `levee plan --dry-run`）。
+> - **`POST /templates/instantiate`**（`InstantiateTemplate`）：兑现。`dryRun:true` 只创建 `planned` 状态的变更，不进入审批流。
+> - **`POST /changes/:id/rollback`**（`RollbackChange`）：兑现（2026-11-06 起）。`dryRun:true` 是**只读预览**：不改 run 状态、不写审计链、不发事件、不铸 rollback run id，也不派发任何补偿、不恢复任何快照；响应回报 `rolledBackHosts`（**会**补偿的主机）、`skippedHosts`（前向没跑或已被补偿、**不需要**的主机）与一条 message（message 另会点名**缺口**主机：前向跑了却无可用补偿动作，需要人工）。预览与真正的提交走**同一段实现**，所以两者可以逐字段对照。
+> - **`POST /changes/:id/apply`**（`ApplyChange`）：**不兑现，故明确拒绝**（`FailedPrecondition`，message 点名「要预览请用 `PlanChange`」）。proto 说这一档是「只打印计划并退出」，而打印计划是 `PlanChange` 的职责；这里若照旧执行，操作员说「预览」就会真的 apply 一条生产变更。
+> - **`POST /changes`**（`CreateChange`）：`dryRun` **空转但契约成立**——create 只建 draft 等审批，本来就不应用，所以「只计划并返回、不应用」这条语义无论如何都成立。
+>
 > **`GET /changes/:id?includePlan=true` 返回该 run 最新的执行计划。** `GetChangeRequest.include_plan`
 > 于 2026-10-14 落地兑现（台账 #18）：网关把 `?includePlan=true` 转成该字段（`internal/grpc/rest.go`），
 > 服务层 `ChangeService.GetChange` 从 `run.plan_json`（Planning 时持久化的 `plan.Plan` 规范 JSON）

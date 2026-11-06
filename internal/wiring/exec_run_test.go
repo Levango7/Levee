@@ -541,10 +541,10 @@ func TestRollbackChange_ManualUndo(t *testing.T) {
 	// the steps-table evidence says ran. This run was NEVER applied — no
 	// forward rows exist — so nothing may be dispatched: undoing state
 	// that was never changed is the P0-3 bug this ledger exists to stop.
-	rbID, hosts, err := e.rollbackChange(context.Background(), "run-manual-rb", "", true)
+	out, err := e.rollbackChange(context.Background(), "run-manual-rb", "", true, false)
 	require.NoError(t, err, "a no-evidence rollback is a clean no-op, not an error")
-	assert.Contains(t, rbID, "rb-")
-	assert.Empty(t, hosts, "never-applied run: nothing to compensate")
+	assert.Contains(t, out.RunID, "rb-")
+	assert.Empty(t, out.RolledBackHosts, "never-applied run: nothing to compensate")
 
 	cmds := rec.snapshotCmds()
 	assert.NotContains(t, cmds, "web-1\x00undo-command",
@@ -649,10 +649,10 @@ func TestRollbackChange_ManualLedgerFromPartialEvidence(t *testing.T) {
 		Status:   "success",
 	}))
 
-	rbID, hosts, err := e.rollbackChange(context.Background(), "run-partial-ev", "", true)
+	out, err := e.rollbackChange(context.Background(), "run-partial-ev", "", true, false)
 	require.NoError(t, err, "the evidenced compensation completes cleanly")
-	assert.Contains(t, rbID, "rb-")
-	assert.Equal(t, []string{"web-1"}, hosts, "only the evidenced host may be reported rolled back")
+	assert.Contains(t, out.RunID, "rb-")
+	assert.Equal(t, []string{"web-1"}, out.RolledBackHosts, "only the evidenced host may be reported rolled back")
 
 	cmds := rec.snapshotCmds()
 	assert.Contains(t, cmds, "web-1\x00undo-command", "web-1's evidenced step must be compensated")

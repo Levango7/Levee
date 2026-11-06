@@ -414,6 +414,13 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
 	}
+	// req.dry_run is deliberately NOT consulted here, and that is not an
+	// oversight: the proto says "only plan and return without applying",
+	// and this RPC never applies anything — it creates a draft that waits
+	// for a plan and an approval. The flag is therefore vacuous rather
+	// than ignored, and its contract holds with or without it. (ApplyChange
+	// is the opposite case: there the flag would change what runs, so it is
+	// refused instead of silently executing — see ApplyChange.)
 	// Creating a change takes the same pair InstantiateTemplate judges: the
 	// change-scoped `plan` action and the environment the request declares
 	// (empty falls back to permission.default_env inside Decide, and a
@@ -999,6 +1006,18 @@ func verifyStoredPlanHash(run *state.Run) error {
 func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
+	}
+
+	// dry_run on this RPC is refused rather than ignored. The proto says
+	// "only print the plan and exit", and the plan-printing path is
+	// PlanChange — whose dry_run IS honoured. Honouring the flag here
+	// would mean either executing while the caller asked for a preview,
+	// or silently dropping it; both lie to the caller, and the first one
+	// executes a production change. A refusal names the endpoint that
+	// does answer the question.
+	if req.GetDryRun() {
+		return nil, status.Error(codes.FailedPrecondition,
+			"ApplyChange does not support dry_run: use PlanChange (whose dry_run is honoured) to preview the plan, or apply for real")
 	}
 
 	run, err := s.store.GetRun(ctx, req.GetChangeId())
@@ -2133,7 +2152,7 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 
 	// Delegate to the engine when available.
 	if s.engine != nil && s.engine.Rollback != nil {
-		rollbackRunID, hosts, err := s.engine.Rollback(ctx, req.GetChangeId(), req.GetRunId(), req.GetAutoApprove())
+		out, err := s.engine.Rollback(ctx, req.GetChangeId(), req.GetRunId(), req.GetAutoApprove(), req.GetDryRun())
 		// An incomplete rollback is an OUTCOME, not a server fault. Before this
 		// branch existed every non-nil error became codes.Internal and the run was
 		// never rewritten — so a manual attempt that dispatched compensations and
@@ -2144,6 +2163,24 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		incomplete := errors.Is(err, rollback.ErrIncomplete)
 		if err != nil && !incomplete {
 			return nil, status.Errorf(codes.Internal, "engine rollback: %v", err)
+		}
+		if req.GetDryRun() {
+			// A preview persists NOTHING: no run status rewrite, no audit
+			// row, no event. It answers "what would this do?" and stops.
+			//
+			// This branch exists because the flag used to be ignored
+			// altogether: the console's remediation wizard asked the
+			// endpoint for a preview and got a real rollback — the
+			// compensations ran on production hosts BEFORE the operator
+			// was asked to confirm, and the dialog then reported the
+			// already-executed hosts as "still to do".
+			return &pb.RollbackResponse{
+				Change:          runToPB(run),
+				Success:         true,
+				RolledBackHosts: out.RolledBackHosts,
+				SkippedHosts:    out.SkippedHosts,
+				Message:         rollbackPreviewMessage(out),
+			}, nil
 		}
 		newStatus := runstatus.StatusRolledBack
 		message := "rollback completed"
@@ -2164,7 +2201,7 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 			RunID:     run.ID,
 			Action:    state.AuditActionRollback,
 			Actor:     actorFromCtx(ctx),
-			Target:    rollbackRunID,
+			Target:    out.RunID,
 			Result:    newStatus,
 			Timestamp: now,
 		})
@@ -2180,14 +2217,27 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 
 		return &pb.RollbackResponse{
 			Change:          runToPB(run),
-			RollbackRunId:   rollbackRunID,
+			RollbackRunId:   out.RunID,
 			Success:         !incomplete,
-			RolledBackHosts: hosts,
+			RolledBackHosts: out.RolledBackHosts,
+			SkippedHosts:    out.SkippedHosts,
 			Message:         message,
 		}, nil
 	}
 
 	// Fallback: just mark the run as rolled_back.
+	if req.GetDryRun() {
+		// No engine is wired, so there is no plan to walk and no
+		// compensation to dispatch. A preview can only say that the
+		// commit would change the record and touch no host — and it must
+		// not change the record itself: a preview that rewrites the run
+		// is the very bug this branch exists to end.
+		return &pb.RollbackResponse{
+			Change:  runToPB(run),
+			Success: true,
+			Message: "rollback preview: no execution engine is wired, so the rollback would only mark the change rolled back; no host would be compensated",
+		}, nil
+	}
 	run.Status = "rolled_back"
 	run.UpdatedAt = now
 	if err := s.store.UpdateRun(ctx, run); err != nil {
@@ -2227,6 +2277,30 @@ func (s *ChangeService) RollbackChange(ctx context.Context, req *pb.RollbackRequ
 		Success:       true,
 		Message:       "rollback completed (no engine; status only)",
 	}, nil
+}
+
+// rollbackPreviewMessage renders a rollback preview's three buckets into one
+// line the console can show verbatim: the hosts that would be compensated,
+// the hosts that would be left alone, and the hosts with steps that have no
+// usable compensation.
+//
+// The third group is named separately because it is neither of the other
+// two: a step with no declared compensation (or one the policy refuses) is
+// not "skipped" — it cannot be undone by ANY rollback, so reporting it as
+// skipped would tell the operator it needs nothing.
+//
+// The wording says "steps", not "hosts", on purpose: a host can be in both
+// the compensated list and the gap list (one of its steps has a usable
+// compensation, another has none), so the count is of hosts carrying at
+// least one such step — and the rollback still touches those hosts for the
+// other steps.
+func rollbackPreviewMessage(out RollbackOutcome) string {
+	msg := fmt.Sprintf("rollback preview: %d host(s) would be compensated, %d would be left alone",
+		len(out.RolledBackHosts), len(out.SkippedHosts))
+	if len(out.Gaps) > 0 {
+		msg += fmt.Sprintf(", %d host(s) carry steps with no usable compensation (the rollback cannot undo those steps — they need a human)", len(out.Gaps))
+	}
+	return msg
 }
 
 // --- approval settlement ----------------------------------------------------
