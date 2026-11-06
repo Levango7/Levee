@@ -5,6 +5,15 @@
 ## [Unreleased]
 
 
+### 文档（`CONTRIBUTING.md` §5.1 的 `ci.yml` check-run 计数订正：`24` → 实测 `26`）
+
+- **缺口**：§5.1 讲「stacked PR 的 base 不在 `main`/`master`/`develop` 时 `ci.yml` 一条 check 都不生成」时，引用的计数是 **24 个 check run**——那是更早的 job 集留在文本里的旧数。上一笔（`e0b3353`）自己留了话：「`ci.yml` 的 **24 个** check run 这个计数本笔没核实（顶层 job 实测 16 个），登记给下一次专门核计数的人」。
+- **实测（2026-11-06）**：读 PR `#300`（head `89c120ef`）的 check-runs API，该 PR 共 **30 条** check run = `ci.yml` **26** + `codeql.yml` 2（`CodeQL` / `analyze (go)`）+ 第三方 2（`Macroscope - Correctness Check` skipped、`Trivy`）。`ci.yml` 的 26 = **16 个顶层 job**（13 个单实例 + `test`×3 + `build`×6 + `browser-check`×4）。
+- **改动**：只订正 §5.1 那一句，把 `24` 换成 `26` 并写出 16→26 的矩阵展开与实测出处，另把「只有 CodeQL 两条与第三方检查」补成能对上的口径（`codeql.yml` 两条 + 第三方）。**不改 CHANGELOG 里已发布小节的同形旧数**（那是当时的事实快照，按本仓「发布说明不重写」的口径保留）。
+- **验证**：`python scripts/test_changelog_structure.py`、`python scripts/check_doc_anchors.py`、`python scripts/test_doc_anchors.py` 全过；纯文档改动，不动 Go/前端，故不跑构建与测试。
+- **如实边界**：这个数是**拼写说明、不是门禁**——没有脚本从 `ci.yml` 反算它（矩阵形态多样，反算器一旦漏看一处就静默少数；宁可不设这道门）。所以 `ci.yml` 增删 job 时仍要靠人同步，文本里已写清怎么重算。
+
+
 ### 测试（`blocked-items.md` 结构与分类计数门禁：每类几项从文件本身算，不再只有快照）
 
 - **缺口**：`docs/blocked-items.md` 把搁置项分成 A–F 六类，「每类有几项」只出现在 `docs/project-status-2026-11.md` 的**快照**里（§12 写 `A5 / B0 / C3 / D3 / E3 / F1`）——没有任何门禁从文件本身算，所以快照会悄悄过期；分类结构（项归错类、ID 重复、某类被清空）也无人守。
