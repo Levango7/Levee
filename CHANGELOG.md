@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 测试（`blocked-items.md` 结构与分类计数门禁：每类几项从文件本身算，不再只有快照）
+
+- **缺口**：`docs/blocked-items.md` 把搁置项分成 A–F 六类，「每类有几项」只出现在 `docs/project-status-2026-11.md` 的**快照**里（§12 写 `A5 / B0 / C3 / D3 / E3 / F1`）——没有任何门禁从文件本身算，所以快照会悄悄过期；分类结构（项归错类、ID 重复、某类被清空）也无人守。
+- **实测当下就是过期的**：本门禁算出 **16 项 — A=5 B=0 C=3 D=4 E=3 F=1**，而 §12 快照写的是 `D3`——**D 类现在有 4 行**。
+- **改动**：新增 `scripts/check_blocked_items.py`，从文件解析 A–F 六节，打印每类计数，并校验四条不变量：① 每行 ID 的前缀必须等于其所在节的字母（`C-9` 落在 D 类 → 红）；② 全文件 ID 不重复；③ 每节要么有表、要么显式写「当前无」（少了表变静默 → 红）；④ 行数下限（12/16）。`scripts/test_blocked_items.py` 11 例；`ci.yml` 的 release-gate 点名表加 `test_blocked_items`。
+- **验证**：`check_blocked_items` PASSED（16 项）；本套件 11 例全绿；`check_roadmap_status`、`check_doc_anchors`、`test_changelog_structure`、`unittest discover -s scripts` 全过。**变异三条**：① 一行 ID 改成 `Z-1` → 红并点名「letter must match its category」；② 复制 `C-1` → 红并指出两处行号；③ 去掉 B 节的「当前无」注 → 红并说「must be either populated or explicitly empty」。
+- **如实边界**：本门禁只校验**结构与计数**，不判「活跃 vs 已交付」——D-1b 带「（已交付）」标记仍算一行。要分开那两类需要给 blocked-items 也加状态列，是另一件事。
+
 ### 文档（`product-roadmap.md` 表格规整化：5 处畸形行修好，`状态` 列现在真的会渲染 + 门禁要求格数匹配）
 
 - **背景**：上一笔给 4 张 item 表加了 `状态` 列，但有 **5 行表格是畸形的**，在 GFM 下那一行的状态格**不会渲染**——多格行被丢掉溢出格（正是末列的状态），少格行状态格留空，跨物理行的行整行坏。所以这不是美化，是那道列收尾。
