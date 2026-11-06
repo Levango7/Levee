@@ -1,14 +1,88 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
-	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/nexus/levee/internal/grpc"
+	"github.com/nexus/levee/internal/runstatus"
+	"github.com/nexus/levee/internal/state"
 )
+
+// rollbackCLIEnv points the CLI at a throwaway SQLite store and returns the
+// config path (the CLI's own commands take it) plus the store, so a test can
+// seed runs and read the result back.
+func rollbackCLIEnv(t *testing.T) (cfgPath string, store state.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath = filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("server:\n  data_dir: "+dir+"\n"), 0o600))
+
+	prevCfg := optConfigPath
+	optConfigPath = cfgPath
+	t.Cleanup(func() { optConfigPath = prevCfg })
+
+	store, err := openStore(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	return cfgPath, store
+}
+
+// seedRollbackRun stores a run in the given status.
+func seedRollbackRun(t *testing.T, store state.Store, id, status string) {
+	t.Helper()
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateRun(context.Background(), &state.Run{
+		ID: id, WorkflowName: "svc", Status: status, Creator: "cli-user",
+		CreatedAt: now, UpdatedAt: now,
+	}))
+}
+
+// stubRollbackEngine replaces the CLI's engine bridge with one whose rollback
+// answers from a script instead of touching a host, and records the dry_run
+// flag every call carried.
+//
+// The service is built over the store the CLI hands it, so the command and the
+// test read and write the same database connection.
+func stubRollbackEngine(t *testing.T, outcome grpc.RollbackOutcome, seen *[]bool) {
+	t.Helper()
+	adapter := &grpc.EngineAdapter{
+		Rollback: func(_ context.Context, _, _ string, _ bool, dryRun bool) (grpc.RollbackOutcome, error) {
+			if seen != nil {
+				*seen = append(*seen, dryRun)
+			}
+			return outcome, nil
+		},
+	}
+	prev := cliChangeServiceFactory
+	cliChangeServiceFactory = func(s state.Store) (*grpc.ChangeService, error) {
+		return grpc.NewChangeService(s, adapter, nil, nil), nil
+	}
+	t.Cleanup(func() { cliChangeServiceFactory = prev })
+}
+
+// rollbackAudits returns the rollback rows the command left in the audit chain.
+func rollbackAudits(t *testing.T, store state.Store, runID string) []*state.Audit {
+	t.Helper()
+	audits, err := store.ListAudits(context.Background(), state.AuditFilter{RunID: runID})
+	require.NoError(t, err)
+	var out []*state.Audit
+	for _, a := range audits {
+		if a.Action == state.AuditActionRollback {
+			out = append(out, a)
+		}
+	}
+	return out
+}
 
 func TestRollbackCmdRegistered(t *testing.T) {
 	defer resetRootFlags()
@@ -22,9 +96,16 @@ func TestRollbackCmdFlags(t *testing.T) {
 	cmd := findSub("rollback")
 	require.NotNil(t, cmd)
 
-	f := cmd.Flags().Lookup("force")
-	require.NotNil(t, f, "rollback command should have --force flag")
-	assert.Equal(t, "false", f.DefValue, "force flag should default to false")
+	f := cmd.Flags().Lookup("dry-run")
+	require.NotNil(t, f, "rollback command should have --dry-run flag")
+	assert.Equal(t, "false", f.DefValue, "dry-run flag should default to false")
+
+	// The retired --force is gone on purpose: it bypassed the CLI's own copy
+	// of the admission guard, and the only thing it could reach was a run
+	// stranded in a status no component consumed. The gate that matters is the
+	// service's, and it is not overridable.
+	assert.Nil(t, cmd.Flags().Lookup("force"),
+		"the retired --force flag must not come back: it could only strand the run")
 }
 
 func TestRollbackCmdRequiresArg(t *testing.T) {
@@ -45,96 +126,164 @@ func TestRollbackCmdTooManyArgs(t *testing.T) {
 	assert.Error(t, err, "rollback with too many args should be rejected")
 }
 
-func TestIsRollbackableStatus(t *testing.T) {
-	// The CLI admits exactly what ChangeService.RollbackChange admits. It used
-	// to allow "running" as well, which the server has never accepted: the
-	// command passed the local check, transitioned the run to rolling_back
-	// locally, and only then came back with FailedPrecondition — a local
-	// predicate that disagrees with the guard it fronts is worse than none.
-	cases := []struct {
-		status string
-		want   bool
-	}{
-		{"completed", true},
-		{"failed", true},
-		{"rolled_back_partial", true},
-		{"rollback_incomplete", true},
-		{"running", false},
-		{"pending", false},
-		{"draft", false},
-		{"approved", false},
-		{"paused", false},
-		{"cancelled", false},
-		{"rolling_back", false},
-		{"rolled_back", false},
+// TestRollbackCmdPreviewChangesNothing is the whole point of --dry-run: the
+// operator sees what the rollback WOULD do, and nothing happens. Before this
+// command reached the service at all, "preview" was not even a question the
+// CLI could ask.
+func TestRollbackCmdPreviewChangesNothing(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-preview", runstatus.StatusRolledBackPartial)
+
+	var seen []bool
+	stubRollbackEngine(t, grpc.RollbackOutcome{
+		RolledBackHosts: []string{"web-1"},
+		SkippedHosts:    []string{"web-2"},
+	}, &seen)
+
+	out, err := execKeepCfg(t, cfgPath, "rollback", "run-rb-preview", "--dry-run")
+	require.NoError(t, err, "cli output: %s", out)
+
+	// The evidence the operator asked for.
+	assert.Contains(t, out, "web-1", "the preview must name the hosts it would compensate")
+	assert.Contains(t, out, "web-2", "the preview must name the hosts it would leave alone")
+
+	// The flag reached the engine.
+	require.Len(t, seen, 1, "the engine must have been asked exactly once")
+	assert.True(t, seen[0], "the engine must have been asked for a preview")
+
+	// ...and nothing was changed.
+	run, gerr := store.GetRun(context.Background(), "run-rb-preview")
+	require.NoError(t, gerr)
+	assert.Equal(t, runstatus.StatusRolledBackPartial, run.Status,
+		"a preview must not rewrite the run status")
+	assert.Empty(t, rollbackAudits(t, store, "run-rb-preview"),
+		"a preview must not leave a rollback row in the audit chain")
+}
+
+// TestRollbackCmdPerformsTheRollback is the other half: without --dry-run the
+// command must actually roll the change back. It used to write a status and
+// stop, and the run it left behind was stranded.
+func TestRollbackCmdPerformsTheRollback(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-real", runstatus.StatusCompleted)
+
+	var seen []bool
+	stubRollbackEngine(t, grpc.RollbackOutcome{
+		RunID:           "rb-1",
+		RolledBackHosts: []string{"web-1"},
+		SkippedHosts:    []string{"web-2"},
+	}, &seen)
+
+	out, err := execKeepCfg(t, cfgPath, "rollback", "run-rb-real")
+	require.NoError(t, err, "cli output: %s", out)
+
+	require.Len(t, seen, 1)
+	assert.False(t, seen[0], "an ordinary rollback is not a preview")
+
+	run, gerr := store.GetRun(context.Background(), "run-rb-real")
+	require.NoError(t, gerr)
+	assert.Equal(t, runstatus.StatusRolledBack, run.Status,
+		"a rollback must rewrite the status — that is the whole point of it")
+
+	rows := rollbackAudits(t, store, "run-rb-real")
+	require.Len(t, rows, 1, "the rollback must leave exactly one audit row")
+	assert.Equal(t, "cli-user", rows[0].Actor, "the audit row must name the CLI actor")
+}
+
+// TestRollbackCmdRefusesAStatusTheServiceDoesNotAdmit pins the gate: the CLI
+// no longer has a copy of it, and the service's refusal must reach the
+// operator as a state conflict (exit 4) with the run untouched.
+func TestRollbackCmdRefusesAStatusTheServiceDoesNotAdmit(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-draft", runstatus.StatusDraft)
+
+	var seen []bool
+	stubRollbackEngine(t, grpc.RollbackOutcome{}, &seen)
+
+	err := runErrKeepCfg(t, cfgPath, "rollback", "run-rb-draft")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "[exit=4]", "a state refusal is exit 4")
+	assert.Empty(t, seen, "the engine must not be reached for a refused run")
+
+	run, gerr := store.GetRun(context.Background(), "run-rb-draft")
+	require.NoError(t, gerr)
+	assert.Equal(t, runstatus.StatusDraft, run.Status, "a refused rollback must not touch the run")
+}
+
+// TestRollbackCmdReleasesALegacyStrandedRun covers the run the retired CLI
+// stranded: it sits in a status that no gate admits, so the command has to
+// recognise it and put it back into a state it can be rolled back from.
+func TestRollbackCmdReleasesALegacyStrandedRun(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-legacy", runstatus.StatusRollingBackLegacy)
+
+	stubRollbackEngine(t, grpc.RollbackOutcome{RunID: "rb-legacy"}, nil)
+
+	out, err := execKeepCfg(t, cfgPath, "rollback", "run-rb-legacy")
+	require.NoError(t, err, "cli output: %s", out)
+
+	run, gerr := store.GetRun(context.Background(), "run-rb-legacy")
+	require.NoError(t, gerr)
+	assert.Equal(t, runstatus.StatusRolledBack, run.Status,
+		"a stranded run must be released and rolled back, not left in the legacy state")
+}
+
+// TestRollbackCmdPreviewDoesNotRepairTheLegacyState is the other half of the
+// pair: a preview persists nothing, so it must not even perform the repair.
+func TestRollbackCmdPreviewDoesNotRepairTheLegacyState(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-legacy-preview", runstatus.StatusRollingBackLegacy)
+
+	var seen []bool
+	stubRollbackEngine(t, grpc.RollbackOutcome{}, &seen)
+
+	err := runErrKeepCfg(t, cfgPath, "rollback", "run-rb-legacy-preview", "--dry-run")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "[exit=4]")
+	assert.Contains(t, err.Error(), runstatus.StatusRollingBackLegacy,
+		"the refusal must name the state it found")
+	assert.Empty(t, seen, "the engine must not be reached")
+
+	run, gerr := store.GetRun(context.Background(), "run-rb-legacy-preview")
+	require.NoError(t, gerr)
+	assert.Equal(t, runstatus.StatusRollingBackLegacy, run.Status,
+		"a preview must not repair anything")
+}
+
+// TestRollbackCmdJSONOutput pins the machine-readable shape: the host lists
+// are the evidence the console reads, so they have to be in the envelope.
+func TestRollbackCmdJSONOutput(t *testing.T) {
+	cfgPath, store := rollbackCLIEnv(t)
+	seedRollbackRun(t, store, "run-rb-json", runstatus.StatusRolledBackPartial)
+
+	stubRollbackEngine(t, grpc.RollbackOutcome{
+		RolledBackHosts: []string{"web-1"},
+		SkippedHosts:    []string{"web-2"},
+	}, nil)
+
+	out, err := execKeepCfg(t, cfgPath, "rollback", "run-rb-json", "--dry-run", "--json")
+	require.NoError(t, err, "cli output: %s", out)
+
+	var env struct {
+		Data struct {
+			RunID           string   `json:"run_id"`
+			DryRun          bool     `json:"dry_run"`
+			RolledBackHosts []string `json:"rolled_back_hosts"`
+			SkippedHosts    []string `json:"skipped_hosts"`
+			Message         string   `json:"message"`
+		} `json:"data"`
 	}
-
-	for _, tc := range cases {
-		got := isRollbackableStatus(tc.status)
-		assert.Equal(t, tc.want, got, "isRollbackableStatus(%q)", tc.status)
-	}
+	require.NoError(t, json.Unmarshal([]byte(out), &env))
+	assert.Equal(t, "run-rb-json", env.Data.RunID)
+	assert.True(t, env.Data.DryRun)
+	assert.Equal(t, []string{"web-1"}, env.Data.RolledBackHosts)
+	assert.Equal(t, []string{"web-2"}, env.Data.SkippedHosts)
+	assert.NotEmpty(t, env.Data.Message)
 }
 
-func TestRollbackCmdOutputEnvelope(t *testing.T) {
-	defer resetRootFlags()
-
-	data := map[string]any{
-		"run_id": "run-001",
-		"action": "rolling_back",
-		"actor":  "cli-user",
-		"force":  false,
-	}
-
-	var buf bytes.Buffer
-	require.NoError(t, PrintJSON(&buf, map[string]any{
-		"data":  data,
-		"meta":  nil,
-		"error": nil,
-	}))
-
-	var env outputEnvelope
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
-	assert.NotNil(t, env.Data)
-
-	raw, err := json.Marshal(env.Data)
-	require.NoError(t, err)
-	var result map[string]any
-	require.NoError(t, json.Unmarshal(raw, &result))
-	assert.Equal(t, "rolling_back", result["action"])
-}
-
-func TestRollbackCmdStateConflictExitCode(t *testing.T) {
-	defer resetRootFlags()
-
-	err := fmt.Errorf("run %q is in %q state, cannot rollback [exit=4]", "run-001", "pending")
-	assert.Equal(t, 4, exitCodeFor(err))
-}
-
-func TestNewRollbackAuditID(t *testing.T) {
-	id, err := newRollbackAuditID()
-	require.NoError(t, err)
-	assert.NotEmpty(t, id)
-	assert.Contains(t, id, "audit-rollback-")
-}
-
-func TestNewRollbackAuditIDUniqueness(t *testing.T) {
-	ids := make(map[string]bool)
-	for i := 0; i < 100; i++ {
-		id, err := newRollbackAuditID()
-		require.NoError(t, err)
-		assert.False(t, ids[id], "rollback audit ID should be unique: %s", id)
-		ids[id] = true
-	}
-}
-
-func TestRollbackCmdHumanOutput(t *testing.T) {
-	defer resetRootFlags()
-
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "Run %s rollback triggered by %s\n", "run-001", "cli-user")
-	fmt.Fprintf(&buf, "  Status: rolling_back\n")
-	fmt.Fprintf(&buf, "  Post-rollback verification: pending\n")
-	assert.Contains(t, buf.String(), "run-001")
-	assert.Contains(t, buf.String(), "rolling_back")
-	assert.Contains(t, buf.String(), "pending")
+// TestRollbackExitCode pins the exit-code contract of the service refusals.
+func TestRollbackExitCode(t *testing.T) {
+	assert.Equal(t, 4, rollbackExitCode(status.Error(codes.FailedPrecondition, "nope")))
+	assert.Equal(t, 3, rollbackExitCode(status.Error(codes.PermissionDenied, "nope")))
+	assert.Equal(t, 1, rollbackExitCode(status.Error(codes.Internal, "nope")))
 }

@@ -193,7 +193,16 @@ func resetAllCmdFlags() {
 	resetSystemFlags()
 	resetPushOpts()
 	resetPlanApplyFlags()
+	resetRollbackFlags()
 	resetFlagChangedMarkers()
+}
+
+// resetRollbackFlags restores the rollback option globals to their
+// registration defaults. cobra never resets the variable a BoolVar points at
+// between in-process executions, so a test that ran the command with
+// --dry-run would otherwise leave the next test previewing by accident.
+func resetRollbackFlags() {
+	rollbackOptDryRun = false
 }
 
 // resetPlanApplyFlags restores the apply/plan option globals (engine-mode

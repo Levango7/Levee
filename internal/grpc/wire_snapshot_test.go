@@ -24,6 +24,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
@@ -259,6 +261,67 @@ func seedPlannedRun(t *testing.T, store state.Store, runID string) {
 	require.NoError(t, store.UpdateRun(ctx, run))
 }
 
+// postRest drives the gateway's REST route and returns the response body.
+func postRest(t *testing.T, gw *Gateway, path, body string) []byte {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	gw.restRoute().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "POST %s: %s", path, rec.Body.String())
+	return rec.Body.Bytes()
+}
+
+// rollbackWireResponses drives the rollback endpoint twice — once as a
+// preview, once as a commit — against a gateway whose engine is a stub, and
+// returns the two bodies.
+//
+// The endpoint needs an engine: without one the service can only say "no
+// execution engine is wired", and the host lists the console reads would never
+// appear on the wire. A stub engine answers with two hosts so the shape is
+// the real one.
+//
+// The two responses differ: protojson omits unset fields, so a preview mints
+// no rollback run and carries no `rollbackRunId`, while the commit does. The
+// contract records the UNION — what the browser may read from this endpoint —
+// and the preview's own subset is pinned by the sibling wire test in
+// rollback_dryrun_test.go.
+func rollbackWireResponses(t *testing.T) (preview, commit []byte) {
+	t.Helper()
+	engine := &recordingEngine{
+		rollbackID: "rb-wire",
+		rbHosts:    []string{"10.0.1.11"},
+		rbSkipped:  []string{"10.0.1.12"},
+	}
+	store := newTestStore(t)
+	change := NewChangeService(store, engine.adapter(), nil, nil)
+	gw := NewGateway(ServeGatewayConfig{Addr: "127.0.0.1:0"})
+	gw.SetServices(change, nil, nil, nil, nil, nil, nil, nil)
+
+	created, err := change.CreateChange(context.Background(), &pb.CreateChangeRequest{Label: "wire-rollback"})
+	require.NoError(t, err)
+	setRunStatus(t, store, created.GetId(), runstatus.StatusRolledBackPartial)
+
+	preview = postRest(t, gw, "/changes/"+created.GetId()+"/rollback", `{"dryRun":true}`)
+	commit = postRest(t, gw, "/changes/"+created.GetId()+"/rollback", `{}`)
+	return preview, commit
+}
+
+// unionKeys merges key sets, sorted and de-duplicated.
+func unionKeys(sets ...[]string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range sets {
+		for _, k := range s {
+			if !seen[k] {
+				seen[k] = true
+				out = append(out, k)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func TestWireSnapshot_MatchesContract(t *testing.T) {
 	gw, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
 	gw.SetStore(store)
@@ -311,6 +374,20 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 	detail := get("/changes/run-wire")
 	detailPlanned := get("/changes/run-wire?includePlan=true")
 	takeover := get("/system/takeover-events")
+	// The rollback endpoint is a POST, and it is the one the remediation
+	// wizard depends on: the console reads the two host lists out of it. It
+	// was the one shape the contract could not see — the snapshot covered
+	// GET endpoints only — so a key the server never sent (skippedHosts was
+	// exactly that, until the dry_run fix) could not fail anything here.
+	rbPreview, rbCommit := rollbackWireResponses(t)
+	rbKeys := unionKeys(keysOf(rbPreview), keysOf(rbCommit))
+
+	// The union is only honest if the two shapes really differ this way:
+	// protojson drops the unset rollback run id from a preview.
+	require.NotContains(t, keysOf(rbPreview), "rollbackRunId",
+		"a preview mints no rollback run")
+	require.Contains(t, keysOf(rbCommit), "rollbackRunId",
+		"a commit names the rollback run it minted")
 
 	snap := map[string]dtoSnapshot{
 		"batch-status": {
@@ -373,6 +450,11 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 			Keys:   keysOf(takeover),
 			Rows:   rowsOf("events", takeover),
 			Forbid: []string{"Events", "Days", "WindowFrom"},
+		},
+		"rollback": {
+			Method: "POST", Path: "/changes/{id}/rollback",
+			Keys:   rbKeys,
+			Forbid: []string{"Change", "RollbackRunId", "Success", "RolledBackHosts", "SkippedHosts", "Message"},
 		},
 	}
 
@@ -459,6 +541,28 @@ func TestWireSnapshot_NoPascalCaseLeaks(t *testing.T) {
 	// own field spellings.
 	seedPlannedRun(t, store, "run-wire")
 
+	// A PascalCase key at any depth is a Go struct marshalled without json
+	// tags — the frontend cannot read it, and it used to mean a silent zero.
+	var walk func(where string, v any)
+	walk = func(where string, v any) {
+		switch t2 := v.(type) {
+		case map[string]any:
+			for k, child := range t2 {
+				if k == "" {
+					continue
+				}
+				first := k[0]
+				if first >= 'A' && first <= 'Z' {
+					t.Errorf("%s: PascalCase key %q leaked into the wire", where, k)
+				}
+				walk(where, child)
+			}
+		case []any:
+			for _, child := range t2 {
+				walk(where, child)
+			}
+		}
+	}
 	for _, path := range []string{
 		"/changes", "/audit/log", "/system/status", "/system/cluster-status",
 		"/system/batch-status?run_id=run-wire", "/system/change-trend",
@@ -478,31 +582,19 @@ func TestWireSnapshot_NoPascalCaseLeaks(t *testing.T) {
 		_ = resp.Body.Close()
 		require.Equal(t, http.StatusOK, resp.StatusCode, "GET %s", path)
 
-		// A PascalCase key at any depth is a Go struct marshalled without json
-		// tags — the frontend cannot read it, and it used to mean a silent zero.
-		var walk func(v any)
-		walk = func(v any) {
-			switch t2 := v.(type) {
-			case map[string]any:
-				for k, child := range t2 {
-					if k == "" {
-						continue
-					}
-					first := k[0]
-					if first >= 'A' && first <= 'Z' {
-						t.Errorf("%s: PascalCase key %q leaked into the wire", path, k)
-					}
-					walk(child)
-				}
-			case []any:
-				for _, child := range t2 {
-					walk(child)
-				}
-			}
-		}
 		var doc any
 		require.NoError(t, json.Unmarshal(body, &doc))
-		walk(doc)
+		walk(path, doc)
+	}
+
+	// The rollback POST is covered by the same walk. Its keys are the ones
+	// the remediation wizard spells, and the console reads them out of the
+	// preview — so a PascalCase twin there would blank the evidence panel.
+	rbPreview, rbCommit := rollbackWireResponses(t)
+	for name, body := range map[string][]byte{"rollback preview": rbPreview, "rollback commit": rbCommit} {
+		var doc any
+		require.NoError(t, json.Unmarshal(body, &doc))
+		walk(name, doc)
 	}
 	_ = strings.TrimSpace
 }

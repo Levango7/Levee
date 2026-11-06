@@ -6,7 +6,7 @@
 | 文档类型 | 开发任务拆分文档 |
 | 版本 | v1.0 |
 | 日期 | 2026-08-15 |
-| 交付清单核查 | 逐行按代码复核；最后复核 2026-10-05（D-08、D-20 两行据此订正，其余行仍是 2026-08-15 的原始口径） |
+| 交付清单核查 | 逐行按代码复核；最后复核 2026-10-05（D-08、D-20 两行据此订正，其余行仍是 2026-08-15 的原始口径）；T074 于 2026-11-07 再次订正 |
 | 周期 | 3 个月（12 周） |
 | 技术栈 | Go + SQLite |
 | 上游依据 | levee-design.md 第 8 章 MVP 路线图 |
@@ -288,7 +288,7 @@ MVP 拆分为 12 周开发任务，任务编号 T001-T0NN，按周次排期。�
 | T071 | pause-all / resume-all 命令 | cmd/levee | 1 | T041 | 全局暂停恢复，高权限 + 留痕 | W9 |
 | T072 | cancel 命令 | cmd/levee | 1 | T041 | `levee cancel <run-id>` 取消未开始批次，已开始按策略 | W9 |
 | T073 | retry / retry-host 命令 | cmd/levee | 2 | T025 | `levee retry <run-id>` / `levee retry-host <run-id> <host>`，重试上限 3 | W9 |
-| T074 | rollback 命令 | cmd/levee | 2 | T037 | `levee rollback <run-id>` 手动触发回滚，按批逆序 + 回滚后验证 | W9 |
+| T074 | rollback 命令 | cmd/levee | 2 | T037 | `levee rollback <run-id>` 手动触发回滚，按批逆序 + 回滚后验证 **（2026-11-07 复核订正：命令此前只把 run 状态改写成 `rolling_back`——一个没有任何组件消费、且不在状态词表里的值——不执行任何补偿，因此「手动触发回滚」从未真正成立；现改为走服务端同一套 `RollbackChange`（逆序 batch、补偿派发、终态与审计行），并新增 `--dry-run` 只读预览。「回滚后验证」仍不成立：手动回滚不经过闭包执行器，`verify_after` 是前向执行路径上的门禁）** | W9 |
 | T075 | logs 命令 | cmd/levee | 2 | T043 | `levee logs <run-id> [--target] [-f]` 实时日志跟随 + 历史日志查询 | W9 |
 | T076 | diff 命令 | cmd/levee | 1 | T004 | `levee diff <run-a> <run-b>` 对比两次 run 参数与执行计划 | W9 |
 | T077 | trace 命令 | cmd/levee | 1 | T046 | `levee trace <run-id>` 展示完整 trace + 哈希链校验结果 | W10 |

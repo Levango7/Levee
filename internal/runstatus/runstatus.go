@@ -69,6 +69,22 @@ const (
 	StatusInterrupted = "interrupted"
 )
 
+// StatusRollingBackLegacy is a status the CLI rollback command used to write
+// and nothing else ever produced: before 2026-11-06 `levee rollback <run-id>`
+// set the run's status to "rolling_back", wrote an audit row, and stopped —
+// it never dispatched a compensation. No component in the repository consumed
+// that status (it was not in the vocabulary below, no dispatcher or worker
+// looked for it, and `levee logs` waits for a terminal status, so a run left
+// there was stranded with no command able to move it out).
+//
+// It is deliberately NOT part of All: the vocabulary lists what the system
+// PRODUCES, and the web mirror is generated from it — the `pending_approval`
+// precedent is exactly this failure (the UI carried a status the backend never
+// produced, so the filter matched nothing and rendered an empty table with no
+// error anywhere). The CLI no longer writes this status; the constant exists
+// only so a run stranded by the old CLI can be recognised and re-driven.
+const StatusRollingBackLegacy = "rolling_back"
+
 // All lists every run status, in roughly lifecycle order.
 var All = []string{
 	StatusDraft,
@@ -177,6 +193,12 @@ func IsValid(s string) bool { return inSet(All, s) }
 // automatic progress. See Terminal for why this is NOT grpc's
 // terminalRunStatuses.
 func IsTerminal(s string) bool { return inSet(Terminal, s) }
+
+// IsLegacyRollingBack reports whether s is the status the retired CLI rollback
+// wrote without executing anything. It is deliberately outside All: it is an
+// INPUT the CLI has to recognise (a run stranded in it), never a status the
+// system produces.
+func IsLegacyRollingBack(s string) bool { return s == StatusRollingBackLegacy }
 
 // InRetryAdmitted reports whether RetryChange accepts a run in status s.
 func InRetryAdmitted(s string) bool { return inSet(RetryAdmitted, s) }
