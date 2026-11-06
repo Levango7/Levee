@@ -118,6 +118,20 @@ class DetectorTest(unittest.TestCase):
         self.assertEqual(2, total, "one priority row + one operations row")
         self.assertEqual(1, counts.get("closed", 0))
 
+    def test_ragged_row_is_flagged(self):
+        # A row with an extra cell: in GFM the overflow (the status column) is
+        # dropped, so the row's status would not render.
+        body = PRIORITY_TABLE.replace("| P1 | 乙 | r | d | open |", "| P1 | 乙 | r | d | extra | open |")
+        problems, _c, _t = self._check(HEAD + body + "\n" + OPS_TABLE)
+        self.assertTrue(any("cells, but the table header has" in p for p in problems), problems)
+
+    def test_escaped_pipe_stays_one_cell(self):
+        # `\|` inside a cell is content, not a column break.
+        body = PRIORITY_TABLE.replace("| 甲 |", "| a\\|b |")
+        problems, counts, total = self._check(HEAD + body + "\n" + OPS_TABLE)
+        self.assertEqual([], problems, problems)
+        self.assertEqual(3, total)
+
     def test_floor_catches_a_silently_shrunk_scan(self):
         problems, _c, _t = self._check(HEAD + PRIORITY_TABLE + "\n" + OPS_TABLE, min_rows=10)
         self.assertTrue(any("floor" in p for p in problems), problems)
