@@ -211,6 +211,12 @@ func (b *HashChainBuilder) Seal(ctx context.Context, runID string) (*SealResult,
 // This should only be used for administrative recovery after a confirmed
 // tampering incident. The caller is responsible for logging and auditing
 // the force rebuild.
+//
+// DECISION (2026-11-07, docs/blocked-items.md 原 G-1): no production caller and
+// no operator command, on purpose. The normal path is Seal (extend-only, reports
+// a break instead of relinking it); BuildForce is the deliberate override kept
+// for internal/test use and for a confirmed-tampering recovery that is carried
+// out with its own evidence. It is reached by no CLI flag.
 func (b *HashChainBuilder) BuildForce(ctx context.Context, runID string) (count int, tailHash string, err error) {
 	if runID == "" {
 		return 0, "", ErrEmptyRunID

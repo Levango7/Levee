@@ -5,6 +5,13 @@
 ## [Unreleased]
 
 
+### 决策（`blocked-items.md` 的 G-1 / G-3 定档：两项都是「不做行为变更」，只落账与注释）
+
+- **原 G-3 — `plan.Plan` 持久化无 json tag → 定档「维持现状」**：`runs.plan_json` 是 Go **内部**工件，写入是 `internal/wiring/plan.go` 的 `json.Marshal(p)`、读取方全部 `json.Unmarshal` 回同一 struct，且 `plan_hash` 走独立的 canonical 结构，所以「混合拼写」当前无损。原触发条件「有非 Go 消费方」未到；补 tag 会改变已落库字节，在滚动升级期间让新旧进程**互读不了**，换来只是一个不存在的消费方。故**不改格式**，只在写入点加注释（同一条也提醒：将来真要做，是加 tag **并**自定义 `UnmarshalJSON` 兼容旧 PascalCase，不是裸加 tag）。
+- **原 G-1 — audit `BuildForce` / `Rebuild` 无生产调用方 → 定档「不提供人工修复入口」**：链对合法写的断裂由下一次 `Seal` 自愈，对内容篡改由 `Seal` / `Verify` 报错而不静默重链；`Rebuild` / `BuildForce` 保留作内部 / 测试与确认篡改后的恢复原语，**不新增 `levee audit verify --rebuild`**（不新增动 WORM 邻域的操作面）。决定写进 `internal/audit/auditchain.go`（`Rebuild`）与 `hashchain.go`（`BuildForce`）的注释。
+- **验证**：两项都是**零行为变更**——G-3 不动序列化，G-1 不新增命令；改动为 `docs/blocked-items.md` + 三处代码注释。`go build ./internal/wiring/ ./internal/audit/` rc=0；`check_blocked_items`（19 → 17，G 表只剩 G-4）/ `check_doc_anchors` / `test_changelog_structure` / `check_roadmap_status` 全过。
+
+
 ### 修复（dispatch 的 assignment 陈旧度改按 store 时钟比较，消除库/应用时钟差对 reclaim 判定的平移）
 
 - **缺陷**：`run_assignment.updated_at` 由**后端时钟**盖章——PostgreSQL 的 `CreateAssignment` / `UpdateAssignmentState*` / `ReclaimAssignment` / `SetAssignmentResult` 写的是 `NOW()`；而 `dispatch.reclaimStale` 算 `age` 用的是**进程时钟** `time.Now().UTC()`。集群里库主机与应用主机时钟一旦有偏差，同一个 `age` 就被整体平移：一端会把还在被认领的 assignment 当陈旧抢走（`epoch` fencing 兜住迟到的 owner，不至于双执行），另一端永不复现的真孤儿则不回收。**同机测试环境永不复现**，只在异构部署显形。这是 `docs/blocked-items.md` 的 **G-2**。
