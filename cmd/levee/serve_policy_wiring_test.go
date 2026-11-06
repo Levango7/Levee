@@ -51,6 +51,7 @@ import (
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/wiring"
 )
 
 // The matrix grants the sre team everything EXCEPT admin in dev, and platform
@@ -151,7 +152,11 @@ func newWiringServices(t *testing.T, withMatrix bool) (serveServices, state.Stor
 	cfg.Server.DataDir = dataDir
 	cfg.Permission.DefaultEnv = "dev"
 
-	svcs, err := buildServeServices(context.Background(), store, cfg, nil)
+	// The run lifecycle funnel, exactly as runServe builds it before the
+	// loops (buildServeServices now receives it pre-built; the tenancy
+	// wrapper sits around it in serve).
+	runEvents := wiring.NewRunEventStore(store)
+	svcs, err := buildServeServices(context.Background(), store, runEvents, cfg, nil)
 	require.NoError(t, err, "buildServeServices must work on a zero config")
 	seedWiringData(t, store)
 	return svcs, store

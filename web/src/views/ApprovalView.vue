@@ -14,6 +14,7 @@ import { formatTimestamp, priorityLabel } from '@/utils/format'
 import { approvalSummary, type ApprovalChain } from '@/utils/approvalChain'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
+import { currentSubject } from '@/utils/identity'
 import { useKeyboardCursor } from '@/composables/useKeyboardCursor'
 
 const activeTab = ref<'pending' | 'history'>('pending')
@@ -101,7 +102,19 @@ async function loadChains(row: Change): Promise<void> {
 }
 const history = ref<TraceEntry[]>([])
 
-const approver = ref('operator')
+// The acting identity, read from the session token's `sub` claim (see
+// utils/identity). It used to be a hardcoded 'operator': the approver
+// field goes straight into the audit row, so a literal here records
+// "operator" no matter who actually clicked. No session (static token
+// deployments) keeps the historical fallback.
+const approver = ref(currentSubject())
+
+// One decision at a time. Approve/reject/delegate are irreversible writes
+// to the audit chain; a double-click (or a double keypress of a/r/d while
+// the first request is in flight) sends the decision twice. The guard
+// lives at the top of each handler so BOTH input paths are covered: the
+// prompt itself is what an impatient user re-triggers.
+const acting = ref(false)
 
 async function loadPending(): Promise<void> {
   loading.value = true
@@ -137,6 +150,7 @@ async function loadHistory(): Promise<void> {
 }
 
 async function approve(change: Change): Promise<void> {
+  if (acting.value) return
   let comment = ''
   try {
     const result = await ElMessageBox.prompt('请输入审批意见（可选）', `通过审批：${change.label}`, {
@@ -149,16 +163,20 @@ async function approve(change: Change): Promise<void> {
   } catch {
     return
   }
+  acting.value = true
   try {
     await changesApi.approve(change.id, { approver: approver.value, comment })
     ElMessage.success('审批通过')
     loadPending()
   } catch (err) {
     ElMessage.error(`审批失败：${(err as { message?: string })?.message}`)
+  } finally {
+    acting.value = false
   }
 }
 
 async function reject(change: Change): Promise<void> {
+  if (acting.value) return
   let reason = ''
   try {
     const result = await ElMessageBox.prompt('请输入驳回原因', `驳回：${change.label}`, {
@@ -172,16 +190,20 @@ async function reject(change: Change): Promise<void> {
   } catch {
     return
   }
+  acting.value = true
   try {
     await changesApi.reject(change.id, { rejecter: approver.value, reason })
     ElMessage.success('已驳回')
     loadPending()
   } catch (err) {
     ElMessage.error(`驳回失败：${(err as { message?: string })?.message}`)
+  } finally {
+    acting.value = false
   }
 }
 
 async function delegate(change: Change): Promise<void> {
+  if (acting.value) return
   let target = ''
   try {
     const result = await ElMessageBox.prompt('请输入转授权目标用户', `转授权：${change.label}`, {
@@ -196,6 +218,7 @@ async function delegate(change: Change): Promise<void> {
   }
   // The current API does not have a dedicated delegate endpoint; we record it
   // as a comment on the approval so the audit trail captures the transfer.
+  acting.value = true
   try {
     await changesApi.approve(change.id, {
       approver: target,
@@ -205,6 +228,8 @@ async function delegate(change: Change): Promise<void> {
     loadPending()
   } catch (err) {
     ElMessage.error(`转授权失败：${(err as { message?: string })?.message}`)
+  } finally {
+    acting.value = false
   }
 }
 
@@ -338,9 +363,14 @@ const pendingCount = computed(() => pending.value.length)
           </el-table-column>
           <el-table-column label="决策" width="196" fixed="right">
             <template #default="{ row }">
-              <el-button text type="success" @click="approve(row)">通过</el-button>
-              <el-button text type="danger" @click="reject(row)">驳回</el-button>
-              <el-button text type="primary" @click="delegate(row)">转授权</el-button>
+              <!-- :disabled="acting" is the visible half of the guard; the
+                   handlers' own `if (acting.value) return` is the half that
+                   also covers the keyboard path (a/r/d) and the prompt
+                   window. Both halves are needed: without the buttons a
+                   user watches a click do nothing and clicks again. -->
+              <el-button text type="success" :disabled="acting" @click="approve(row)">通过</el-button>
+              <el-button text type="danger" :disabled="acting" @click="reject(row)">驳回</el-button>
+              <el-button text type="primary" :disabled="acting" @click="delegate(row)">转授权</el-button>
             </template>
           </el-table-column>
         </el-table>

@@ -20,6 +20,7 @@ import (
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -180,7 +181,7 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 
 	claimed := 0
 	wi := 0
-	for _, runID := range candidates {
+	for _, run := range candidates {
 		// Find the next worker with spare capacity.
 		for wi < len(workers) && workers[wi].active >= l.capacity {
 			wi++
@@ -190,9 +191,9 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 		}
 		worker := workers[wi]
 
-		ok, err := l.claim(ctx, runID, worker.id)
+		ok, err := l.claim(ctx, run, worker.id)
 		if err != nil {
-			log.Warn("dispatch: claim failed", "run_id", runID, "worker", worker.id, "error", err)
+			log.Warn("dispatch: claim failed", "run_id", run.ID, "worker", worker.id, "error", err)
 			continue
 		}
 		if ok {
@@ -204,8 +205,10 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 	return claimed, nil
 }
 
-// runStatusApproved is the run status that is waiting for dispatch.
-const runStatusApproved = "approved"
+// The run status that is waiting for dispatch. Spelled through runstatus
+// like every other run-status use in the repo: a package-local alias lets
+// the CAS below drift from the vocabulary when the constant moves.
+const runStatusApproved = runstatus.StatusApproved
 
 // ReclaimOnce runs one stale-assignment reclaim sweep and is the seam tests
 // drive. It is leader-only for the same reason DispatchOnce is; the epoch+state
@@ -300,9 +303,11 @@ func (l *Loop) reclaimStale(ctx context.Context, workers []workerLoad) (int, err
 	return reclaimed, nil
 }
 
-// candidates returns the run IDs that are approved and have no active
-// assignment (state pending/executing).
-func (l *Loop) candidates(ctx context.Context) ([]string, error) {
+// candidates returns the runs that are approved and have no active
+// assignment (state pending/executing). The rows travel whole, not just
+// ids: the assignment carries the run's tenant (see claim), and the id
+// alone cannot reconstruct it.
+func (l *Loop) candidates(ctx context.Context) ([]*state.Run, error) {
 	runs, err := l.store.ListRuns(ctx, state.RunFilter{
 		Status: runStatusApproved,
 		Limit:  1000,
@@ -310,14 +315,14 @@ func (l *Loop) candidates(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []string
+	var out []*state.Run
 	for _, r := range runs {
 		active, err := l.hasActiveAssignment(ctx, r.ID)
 		if err != nil {
 			return nil, err
 		}
 		if !active {
-			out = append(out, r.ID)
+			out = append(out, r)
 		}
 	}
 	return out, nil
@@ -381,11 +386,12 @@ func sortByLoad(workers []workerLoad) {
 	}
 }
 
-// claim attempts to assign runID to worker. It succeeds only when the run has
+// claim attempts to assign run to worker. It succeeds only when the run has
 // no active assignment: an INSERT ... ON CONFLICT DO UPDATE guarded by a
 // WHERE clause that requires the existing row to be terminal. RowsAffected==0
 // means a concurrent dispatcher or the takeover loop already owns the run.
-func (l *Loop) claim(ctx context.Context, runID, worker string) (bool, error) {
+func (l *Loop) claim(ctx context.Context, run *state.Run, worker string) (bool, error) {
+	runID := run.ID
 	existing, err := l.store.GetAssignment(ctx, runID)
 	if err != nil {
 		return false, err
@@ -398,6 +404,15 @@ func (l *Loop) claim(ctx context.Context, runID, worker string) (bool, error) {
 	var ok bool
 	if existing == nil {
 		// Fresh claim: epoch starts at 1.
+		//
+		// TenantID mirrors the dispatched run's tenant (state.Assignment:
+		// "so a leader's cross-node dispatch view can be scoped per
+		// tenant"). The leader is the ONLY writer of this row, so a
+		// blank tenant here is not a partial value — it is the whole
+		// assignment being invisible to the tenant-scoped view: every
+		// CAS (Reassign/Reclaim/UpdateAssignmentState*) answers
+		// ErrCrossTenantAccess, and tenant purge never reclaims the row
+		// because it has no tenant and no FK owner.
 		err = l.store.CreateAssignment(ctx, &state.Assignment{
 			RunID:      runID,
 			OwnerNode:  worker,
@@ -405,6 +420,7 @@ func (l *Loop) claim(ctx context.Context, runID, worker string) (bool, error) {
 			State:      state.AssignStatePending,
 			AssignedAt: now,
 			UpdatedAt:  now,
+			TenantID:   run.TenantID,
 		})
 		if err == nil {
 			ok = true

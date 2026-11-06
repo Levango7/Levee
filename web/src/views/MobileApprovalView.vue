@@ -18,6 +18,7 @@ import StateBlock from '@/components/StateBlock.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
 import { decidedByText, readDeeplinkEvidence } from '@/utils/deeplinkEvidence'
+import { currentSubject } from '@/utils/identity'
 import { STATUS_LABEL, formatTimestamp } from '@/utils/format'
 
 const route = useRoute()
@@ -34,7 +35,16 @@ const history = ref<TraceEntry[]>([])
 // different answer from "the change is gone" (404) — the old single banner
 // showed the server text for both with no way to tell them apart.
 const error = ref<unknown>(null)
-const approver = ref('operator')
+// Acting identity from the session token (utils/identity): the approver
+// name lands in the audit row, so the literal 'operator' this used to
+// hardcode mis-attributed every mobile decision. Mobile has no input box
+// to change it (one-tap link flow), which makes reading it correctly the
+// ONLY correct source here.
+const approver = ref(currentSubject())
+// One decision at a time. A one-tap approval on a phone is exactly where
+// an impatient double-tap lands; the decision is an irreversible write to
+// the audit chain, so the second tap must be refused, not queued.
+const acting = ref(false)
 // Set when a one-tap link was already spent on a decided change: the server
 // answered 409 with who decided and when. It is NOT an error — it is the
 // answer to "did my click register?" — so it renders as a done notice, not
@@ -82,7 +92,7 @@ async function loadHistory(runID: string): Promise<void> {
 // --- actions ---------------------------------------------------------------
 
 async function approve(): Promise<void> {
-  if (!change.value) return
+  if (!change.value || acting.value) return
   let comment = ''
   if (!isMobile.value) {
     // On desktop / tablet we prompt for an optional comment.
@@ -98,6 +108,7 @@ async function approve(): Promise<void> {
       return
     }
   }
+  acting.value = true
   try {
     await changesApi.approve(change.value.id, { approver: approver.value, comment })
     ElMessage.success('审批通过')
@@ -105,11 +116,13 @@ async function approve(): Promise<void> {
     await loadHistory(change.value.id)
   } catch (err) {
     ElMessage.error(`审批失败：${(err as { message?: string })?.message}`)
+  } finally {
+    acting.value = false
   }
 }
 
 async function reject(): Promise<void> {
-  if (!change.value) return
+  if (!change.value || acting.value) return
   let reason = 'rejected via mobile'
   if (!isMobile.value) {
     try {
@@ -125,6 +138,7 @@ async function reject(): Promise<void> {
       return
     }
   }
+  acting.value = true
   try {
     await changesApi.reject(change.value.id, { rejecter: approver.value, reason })
     ElMessage.success('已驳回')
@@ -136,6 +150,11 @@ async function reject(): Promise<void> {
 }
 
 async function oneTap(action: 'approve' | 'reject', token: string): Promise<void> {
+  // A deep-link token is single-use by design: a second tap can only fail
+  // (the spent token answers 409 with the evidence). Refusing it client-
+  // side keeps the button's state honest while the first rounds trip.
+  if (acting.value) return
+  acting.value = true
   try {
     if (action === 'approve') {
       await changesApi.approveViaDeepLink(token)
@@ -157,6 +176,8 @@ async function oneTap(action: 'approve' | 'reject', token: string): Promise<void
       return
     }
     ElMessage.error(`一键${action === 'approve' ? '审批' : '驳回'}失败：${(err as { message?: string })?.message}`)
+  } finally {
+    acting.value = false
   }
 }
 
@@ -277,6 +298,7 @@ const decidedWhen = computed(() =>
       <el-button
         type="primary"
         size="large"
+        :disabled="acting"
         :class="{ 'mobile-approval__btn--sticky': isMobile }"
         @click="approve"
       >
@@ -286,6 +308,7 @@ const decidedWhen = computed(() =>
         type="danger"
         size="large"
         plain
+        :disabled="acting"
         :class="{ 'mobile-approval__btn--sticky': isMobile }"
         @click="reject"
       >

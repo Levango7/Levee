@@ -2937,8 +2937,10 @@ type ApprovalInfo struct {
 	ChangeId string                 `protobuf:"bytes,2,opt,name=change_id,json=changeId,proto3" json:"change_id,omitempty"`
 	// Approval tier (standard / high / emergency).
 	Level string `protobuf:"bytes,3,opt,name=level,proto3" json:"level,omitempty"`
-	// pending / approved / rejected / timeout / skipped -- the set the service
-	// writes (internal/approval.Status).
+	// pending / approved / rejected / expired -- the set the service writes
+	// (internal/approval.Status). `expired` comes from CheckExpiry; neither
+	// `timeout` nor `skipped` is a value any writer of this field produces
+	// (skipped belongs to the neighbouring approval decision vocabulary).
 	Status string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
 	// Everyone asked to decide, in the order the chain declared them.
 	Approvers []string `protobuf:"bytes,5,rep,name=approvers,proto3" json:"approvers,omitempty"`

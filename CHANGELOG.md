@@ -103,6 +103,28 @@ nge 的 dry_run——预览不再真的执行回滚)
 - **验证**：两条测试全绿；`gofmt` 干净、`go vet ./cmd/levee/` rc=0。**变异**：① present 路径改成不存在的子命令 → 红并点名；② absent 路径改成 `drift schedule`（存在）→ 红。
 - **如实边界**：本表只管**命令路径**的存在性；与 Python `CLAIMS` 里 `cmd/levee` 目录级的 absent（`"rollback-all"` / `"delegate"` 任何出现即红）互补——前者查注册、后者查字符串出现。
 
+### 修复（全仓四维自查：接口面门禁、判/读 ID 一致化、多租户 assignment、run 状态词表、前端三态与防重提交）
+
+**怎么来的**：用户问「项目做了好几个月，到现在仍然不能转化为生产力吗」并要求一套无微不至的排查。按四个维度并行只读审计（接口表面 / 前端页面 / 数据流 / 构建基线），agent 报告逐条回读源码复核后才动手——三条最重的都是「认证之后没有第二道闸」这一类。
+
+**安全（两条，均可从普通 token 触达）**：
+1. `POST /gates/verify` 是**认证后零策略的远程命令执行器**：`GateService` 结构体没有 authz 字段、整个文件 grep `authorize` 为 0，任何合法 bearer（含仅 dev view 的团队）可对任意在册主机（含 prod 标签机）以平台凭据执行任意 shell。修法照 `TargetService` 同款：`WithAuthorizer` + 拨号前按目标自身 `env` 判 `apply`；未注册主机在闸上拒绝而非拨号后才报。nil authorizer 保持全仓一致的「无策略部署」缺省。
+2. `GetLogs` / `StreamLogs` / `GetTrace` / `GetDiff` **判 change_id、读 run_id**：请求可同时指定两者，数据按胜出的 run id 读，而门禁只判了 change——把 run_id 换成另一环境的 run，一次请求即跨环境读出 step 的 stdout/stderr（命令原文与凭据回显）或审计轨迹。修法：**请求里点名的每个 id 都判**（判/读一致化）；`GetDiff` 回显的 run 过滤器同样受审，一个不能读的 id 不值得一个回显。
+
+**数据正确性（三条）**：
+3. dispatch 的 claim 写 `run_assignment` **不带 `TenantID`**——而 leader 是该行唯一写入方，于是多租户集群下该行对租户侧读写面整体不存在：全部 assignment CAS 回答 `ErrCrossTenantAccess`、purge 永不回收，表象是「控制台有数、API 无数」。`candidates` 改为回传整行（id 无法重建 tenant），claim 落库时镜像 run 的 tenant；补回归测试。
+4. 后台 loop 拿**裸 store**（`cmd_serve.go` 的注释只为租户包装说明，与 funnel 无关），把 takeover loop 整个移出了 run 事件 funnel：settleOne 的 `running → interrupted` 永不 emit，`runeventstore.go` 开头列为六大写入点之一、chatops bridge 明确处理 `interrupted by takeover`——**消费者又零生产者了**，正是 funnel 建成要终结的回归。修法：funnel 构造提到 loop 之前，loop 拿 funnel（观察）但不拿租约包装（隔离）——两个装饰器回答两个问题， seam 上都要。装配合计不可单测直达，用源码级结构守卫钉住（funnel 先于 loop 构造、两处调用点必须传 `runEvents`），变异验证过。
+5. `approvals.status` 的 schema 注释三处（`schema.sql` / `pgschema.sql` / `levee.proto`）都写着 `timeout`，常量与真实写入是 `expired`——batches `done/completed` 的同形事故：照注释写查询的人永远匹配不到行。中文注释由 `vocabulary.go` 自己记录了两条拼写并存，但没有任何守卫执行它。修法：三处改为 `expired` 并在注释里点明两种拼写的关系；`status_column_comment_guard_test.go` 扩到 approvals 表（常量从 `internal/approval/service.go` 解析，不重述），变异验证过。同批把 `runstatus` 词表的 CAS `from` 侧从字面量收敛为常量（change_service/takeover/dispatch/wiring 共 12 处）——CAS 的 `from` 是字面量时，常量改名当天它静默不再匹配任何行，而失败形态是「该成功的 CAS 全部失败」。
+
+**前端（用户可见，按严重度）**：
+6. **审批不防重复提交**：`ApprovalView` / `MobileApprovalView` 的 approve/reject/delegate 与键盘 a/r/d 全程无 busy 闸——审批是唯一真正不可逆的写操作且直接进审计链，慢网络或连点就是两条审批记录。加 `acting` 闸（按钮 `:disabled` + 处理器首行 return，键盘与弹窗窗口都在 handlers 的首行覆盖）。
+7. **审批人身份硬编码 `'operator'`**：该值原样进审计行。新增 `utils/identity.ts` 从会话令牌 `sub` claim 解（解.payload 不是信任决定，服务端每请求自验；这是归属问题）+ 6 例单测；App.vue 侧栏收起后的纯图标按钮补 `aria-label`/`title`。
+8. **SSE 静默失败**：`MonitorView` 把 quiet 刷新失败写进一个**全文件零渲染**的 ref——操作员盯着看起来实时的面板，数据停在最后成功快照。改为面板顶部一条 stream-note（含重试），仅当没有更高级错误档时出现。
+9. **两处 theme 纪律破坏与两处对比度**：`AlertsView` 用了两个**从未定义**的 token 名（`--lv-warning` / `--lv-good`，权威拼写 `--lv-warn` / `--lv-ok`）+ 亮色 fallback，深色下 3.56:1；`ChangesView` / `MonitorView` 各有一处组件内 `html.dark` 分支——新增 `--lv-neutral-fill` 语义别名（两主题各一侧， tokens.css 单一权威），组件只消费别名、无 dark 分支；`MonitorView` 时间戳列 3.47:1 → 提到与邻列相同的 5.70:1。
+10. 顺手：`ChangesView` 的 status 词表第三份逐字抄写改为从 `vocabulary.ts` + `format.ts` 两个 owner 派生；`ChangeDetailView` 两处 `1fr` → `minmax(0, 1fr)`（无它内容列溢出面板而非省略）。
+
+**验证**：`go test ./...` 68 包全绿；`vitest` 333 例全绿（39 文件，含新增 identity 6 例）；`vue-tsc` 0 错；`golangci-lint run ./...` 0 issues；`internal/web/dist` 已随 `web/src` 重建同步（新鲜度门禁口径）。**边界**：本次只修「实证成立」的项；审计报告里另有一批设计取舍类（BuildForce 不可达、PG/SQLite 时钟源分叉、plan.Plan 持久化无 tag、wire 夹具 5 端点未覆盖等）未动，逐条留在 `docs/blocked-items.md` 待产品裁决。
+
 ## [v1.25.0] - 2026-11-06
 
 > **发布状态：已切版。** 附注 tag `v1.25.0`（tag 对象 `44749a1c271a`，指向折叠提交 `334bf2c`——单父、以 `--rebase` 落地）于 2026-11-05T20:15Z 推送，且是在该折叠提交自己的 `master` push run 全绿之后才打的：run `42097852339` 26/26 job 全 success，含聚合门 `check (all jobs passed)`。`release.yml` 三段（CI gate / goreleaser / container image，run `42101719313`，20:15:40Z → 21:03:16Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `42101719312`（`head_branch=v1.25.0`，20:46:14Z success，26/26）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-05T20:50:45Z`（11-06 04:50:45 +0800），资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.25.0` 按外部事实核过——`manifests/v1.25.0` 返回 **200**（同一次探测里 `v1.24.0` → 200、不存在的 `v1.25.99` → 404，证明探针有分辨力；`Accept` 必须带多架构 index 媒体类型，否则连已存在的 tag 也会读成 404），index 内是 `linux/amd64` + `linux/arm64` 两个平台（另两条 `unknown/unknown` 是构建 attestation）。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.25.0` / 逐字 `v1.25.0`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **36** 个小节，主题分布与行为变更见 [`docs/release-notes/v1.25.0.md`](docs/release-notes/v1.25.0.md)。

@@ -66,6 +66,36 @@ func TestDispatchOnce_ClaimsApprovedRun(t *testing.T) {
 	assert.Equal(t, state.AssignStatePending, a.State)
 }
 
+// TestDispatchOnce_AssignmentCarriesRunTenant pins the tenant the leader
+// writes onto the assignment row. The leader is the ONLY writer of that
+// row: a blank tenant does not degrade the tenant-scoped view, it removes
+// the row from it entirely — every assignment CAS answers
+// ErrCrossTenantAccess and tenant purge never reclaims a row it cannot
+// see has no FK owner. Multi-tenant clusters were running every dispatch
+// into exactly that state until this assertion existed.
+func TestDispatchOnce_AssignmentCarriesRunTenant(t *testing.T) {
+	store := newDispatchStore(t)
+	mgr := localLeaderManager(t, "node-leader")
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateRun(context.Background(), &state.Run{
+		ID: "run-tenant", WorkflowName: "wf", TemplateName: "tpl", Params: "{}",
+		PlanHash: "ph", Status: "approved", ApprovalStatus: "approved",
+		Creator: "test", TenantID: "tenant-a",
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	loop := NewLoop(mgr, store, "node-leader", time.Second, 4, DefaultClaimTimeout)
+
+	claimed, err := loop.DispatchOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, claimed)
+
+	a, err := store.GetAssignment(context.Background(), "run-tenant")
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Equal(t, "tenant-a", a.TenantID,
+		"a leader-dispatched assignment must mirror the run's tenant")
+}
+
 func TestDispatchOnce_SkipsRunWithActiveAssignment(t *testing.T) {
 	store := newDispatchStore(t)
 	mgr := localLeaderManager(t, "node-leader")

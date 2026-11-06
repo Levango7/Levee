@@ -86,6 +86,11 @@
   --lv-neutral-tone: var(--lv-ink-500);
   --lv-neutral-soft: var(--lv-ink-100);
   --lv-neutral-border: var(--lv-ink-200);
+  /* Inactive-segment fill: the flat gray a distribution bar or a
+     pipeline node reads as when no semantic state applies. One alias
+     that flips with the theme, so components consume it without a
+     dark branch (the rule every token below this block obeys). */
+  --lv-neutral-fill: var(--lv-ink-300);
 
   /* ----------------------------------------------------------------- glass
    * The material for the CHROME layer only — the sticky top bar, menus,
@@ -259,6 +264,10 @@ html.dark {
   --lv-neutral-tone: #9aa5b1;
   --lv-neutral-soft: rgba(154, 165, 177, 0.12);
   --lv-neutral-border: rgba(154, 165, 177, 0.26);
+  /* Inactive-segment fill, dark side (see the light block for the rule):
+     lifted off the light value so an inactive segment neither
+     disappears into the panel nor glows on it. */
+  --lv-neutral-fill: #4b5563;
 
   --lv-scrim: rgba(2, 5, 8, 0.62);
   --lv-glass-bg: rgba(18, 24, 31, 0.72);

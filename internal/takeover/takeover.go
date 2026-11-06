@@ -38,6 +38,7 @@ import (
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/metrics"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -229,7 +230,13 @@ func (l *Loop) settleOne(ctx context.Context, runID string) (bool, error) {
 
 	// Status CAS: only a still-running run may be interrupted. Anything
 	// else (already terminal, paused) is not ours to touch.
-	ok, err := l.store.UpdateRunStatusIf(ctx, runID, "running", "interrupted", time.Now().UTC())
+	//
+	// Both sides through runstatus: a CAS `from` is only as good as its
+	// literal. A renamed status makes a hand-spelled `from` stop matching
+	// every row and the takeover silently stops claiming its runs — with
+	// no error anywhere to say so.
+	ok, err := l.store.UpdateRunStatusIf(ctx, runID,
+		runstatus.StatusRunning, runstatus.StatusInterrupted, time.Now().UTC())
 	if err != nil {
 		return false, fmt.Errorf("status CAS for %q: %w", runID, err)
 	}

@@ -20,6 +20,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi, trendApi, type TrendDTO } from '@/api'
 import type { Change, ChangeStatus } from '@/types/levee'
+import { CHANGE_STATUSES } from '@/types/vocabulary'
 import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import TrendChart from '@/components/TrendChart.vue'
@@ -27,7 +28,7 @@ import { remediateRollback } from '@/composables/useRollbackRemediation'
 import { useKeyboardCursor } from '@/composables/useKeyboardCursor'
 import PageHeader from '@/components/PageHeader.vue'
 import MetricCard from '@/components/MetricCard.vue'
-import { formatTimestamp, isRemediableStatus, isRetryableStatus } from '@/utils/format'
+import { formatTimestamp, STATUS_LABEL, isRemediableStatus, isRetryableStatus } from '@/utils/format'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import { readPrefs, toggleColumn, writePrefs } from '@/utils/tablePrefs'
 import type { LoadTier } from '@/utils/apiState'
@@ -135,30 +136,19 @@ function rowClass({ rowIndex }: { rowIndex: number }): string {
   return cursor.index.value === rowIndex ? 'lv-row-clickable lv-row-cursor' : 'lv-row-clickable'
 }
 
-// Mirrors the backend status vocabulary (change_service.go). `pending_approval`
-// was listed here as a second 待审批 option that the server never returns, so
-// picking it always yielded an empty table.
-const statusOptions: Array<{ value: ChangeStatus; label: string }> = [
-  { value: 'draft', label: '草稿' },
-  { value: 'planned', label: '已计划' },
-  { value: 'pending', label: '待审批' },
-  { value: 'approved', label: '已审批' },
-  { value: 'rejected', label: '已拒绝' },
-  { value: 'running', label: '执行中' },
-  { value: 'paused', label: '已暂停' },
-  { value: 'completed', label: '已完成' },
-  { value: 'failed', label: '失败' },
-  { value: 'cancelled', label: '已取消' },
-  { value: 'rolled_back', label: '已回滚' },
-  { value: 'rolled_back_partial', label: '部分回滚' },
-  { value: 'rollback_incomplete', label: '回滚未完成' },
-  { value: 'interrupted', label: '已中断' },
-  { value: 'archived', label: '已归档' },
-]
+// Status vocabulary for the filter dropdown and the distribution-bar legend.
+// Derived from the two owners (vocabulary.ts's CHANGE_STATUSES for the value
+// set, format.ts's STATUS_LABEL for the Chinese labels) rather than restated:
+// a third verbatim copy is a third place to forget the day a label changes —
+// the shape this repo has already paid for twice (batches done/completed,
+// approvals timeout/expired). The dropdown's `pending_approval` option that
+// the server never returns was the last symptom of exactly that drift.
+const statusOptions: Array<{ value: ChangeStatus; label: string }> = CHANGE_STATUSES.map((value) => ({
+  value,
+  label: STATUS_LABEL[value],
+}))
 
-const STATUS_LABEL_BY_VALUE = Object.fromEntries(
-  statusOptions.map((o) => [o.value, o.label]),
-) as Record<string, string>
+const STATUS_LABEL_BY_VALUE: Record<string, string> = STATUS_LABEL
 
 // ---------------------------------------------------------------------------
 // KPI groups. Each is a set of statuses the server can filter on, so the count
@@ -830,14 +820,10 @@ onMounted(() => {
 .dist__seg--planned,
 .dist__seg--cancelled,
 .dist__seg--archived {
-  background: var(--lv-ink-300);
-}
-
-html.dark .dist__seg--draft,
-html.dark .dist__seg--planned,
-html.dark .dist__seg--cancelled,
-html.dark .dist__seg--archived {
-  background: var(--lv-ink-600);
+  /* The theme-agnostic inactive-segment alias (tokens.css flips it):
+     no dark branch, so a new inactive state cannot land in one theme
+     only — the failure the old html.dark block invited. */
+  background: var(--lv-neutral-fill);
 }
 
 /* ------------------------------------------------------------------ table */

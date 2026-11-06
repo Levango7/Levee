@@ -150,11 +150,14 @@ function reloadPage(): void {
   font-size: var(--lv-text-xs);
 }
 
+/* The authority names are --lv-warn / --lv-ok (styles/tokens.css).
+   No fallback literal: a misspelled name must fail loudly rather than
+   silently render an unreadable default. */
 .stream-note--warn {
-  color: var(--lv-warning, #b45309);
+  color: var(--lv-warn);
 }
 
 .stream-note--ok {
-  color: var(--lv-good, #15803d);
+  color: var(--lv-ok);
 }
 </style>
