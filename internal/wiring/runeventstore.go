@@ -147,18 +147,46 @@ func (s *RunEventStore) UpdateRunApprovalStatusIf(ctx context.Context, id string
 
 // UpdateRun intercepts full-row writes, which carry a status change on some
 // paths (pause/resume, archive) and only metadata on others (replan persists
-// the plan hash; kickoff stamps the approval level). The previous row is read
-// so only real status changes emit — one extra read per full-row write, a
-// path that runs at operator frequency, never per-step.
+// the plan hash; kickoff stamps the approval level). Only a real status change
+// emits — this path runs at operator frequency, never per-step.
+//
+// The reported `from` must be the status this write actually superseded. When
+// the underlying store can hand that back atomically (state.RunStatusPrevReader)
+// it is used and the whole read-modify-write is serialised by the store, so two
+// concurrent full-row writers cannot make the loser emit a `from` it never
+// covered. Stores without the capability fall back to a best-effort
+// read-then-write (test doubles, non-SQL backends).
 func (s *RunEventStore) UpdateRun(ctx context.Context, run *state.Run) error {
+	if atomic, ok := s.Store.(state.RunStatusPrevReader); ok {
+		prev, err := atomic.UpdateRunReturningPrevStatus(ctx, run)
+		if err != nil {
+			return err
+		}
+		s.emitStatusChange(run, prev)
+		return nil
+	}
+
 	prev, _ := s.GetRun(ctx, run.ID)   // not overridden: the promoted method is the base's
 	err := s.Store.UpdateRun(ctx, run) // the qualifier MUST stay: UpdateRun is shadowed by this method
-	if err == nil && prev != nil && prev.Status != run.Status && run.Status != "" {
-		at := run.UpdatedAt
-		if at.IsZero() {
-			at = time.Now().UTC()
-		}
-		s.emit(run.ID, prev.Status, run.Status, at)
+	if err == nil && prev != nil {
+		s.emitStatusChange(run, prev.Status)
 	}
 	return err
+}
+
+// emitStatusChange reports one full-row write's status transition, if it
+// carried one. A metadata-only write (from == to) and an empty target status
+// are both silent — the same guard the old inline read-then-write used. An
+// empty `from` is deliberately NOT suppressed: a run created without a status
+// really did transition from "", and emit's own from==to check already covers
+// the only other degenerate case.
+func (s *RunEventStore) emitStatusChange(run *state.Run, from string) {
+	if run.Status == "" || run.Status == from {
+		return
+	}
+	at := run.UpdatedAt
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	s.emit(run.ID, from, run.Status, at)
 }

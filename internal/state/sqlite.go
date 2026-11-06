@@ -215,6 +215,64 @@ func (s *SQLiteStore) UpdateRun(ctx context.Context, run *Run) error {
 	return nil
 }
 
+// UpdateRunReturningPrevStatus is UpdateRun plus the row's pre-write status,
+// read and written in one IMMEDIATE transaction. See state.RunStatusPrevReader
+// for why the run-event funnel needs the atomic pair.
+//
+// BEGIN IMMEDIATE takes the write lock up front: a plain deferred transaction
+// would read under a shared snapshot and then fail the write with
+// SQLITE_BUSY_SNAPSHOT when another writer commits in between (a snapshot
+// error busy_timeout cannot retry away). Taking the lock at BEGIN makes the
+// concurrent writer wait instead, so the read and the write see the same row.
+func (s *SQLiteStore) UpdateRunReturningPrevStatus(ctx context.Context, run *Run) (string, error) {
+	if run == nil {
+		return "", fmt.Errorf("state: update run: nil run")
+	}
+	// The whole read-modify-write must run on ONE connection: BEGIN IMMEDIATE
+	// on the pool would not pin it.
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("state: update run %q: acquire conn: %w", run.ID, err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return "", fmt.Errorf("state: update run %q: begin: %w", run.ID, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			// Rollback must survive an expired caller ctx, hence WithoutCancel.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK")
+		}
+	}()
+
+	var prev string
+	if err := conn.QueryRowContext(ctx, `SELECT status FROM runs WHERE id=?`, run.ID).Scan(&prev); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("state: update run %q: not found", run.ID)
+		}
+		return "", fmt.Errorf("state: update run %q: read status: %w", run.ID, err)
+	}
+	if _, err := conn.ExecContext(ctx, `UPDATE runs SET
+		workflow_name=?, template_name=?, params=?, plan_hash=?, plan_json=?, status=?,
+		approval_status=?, approval_level=?, updated_at=?, creator=?, incident_id=?, tenant_id=?,
+		priority=?
+		WHERE id=?`,
+		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
+		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
+		run.TenantID,
+		run.Priority,
+		run.ID,
+	); err != nil {
+		return "", fmt.Errorf("state: update run %q: %w", run.ID, err)
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return "", fmt.Errorf("state: update run %q: commit: %w", run.ID, err)
+	}
+	committed = true
+	return prev, nil
+}
+
 // UpdateRunStatusIf atomically transitions a run's status from `from` to
 // `to`, stamping updated_at. It returns (false, nil) when the run does not
 // exist or its current status is not `from`, leaving the row untouched.

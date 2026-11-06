@@ -5,6 +5,17 @@
 ## [Unreleased]
 
 
+### 修复（`RunEventStore.UpdateRun` 的读-改-写竞态：并发全行写会把错的 `from` 播给 ChatOps/webhook）
+
+- **缺陷**：`internal/wiring/runeventstore.go` 的 `UpdateRun` 拦截全行写（pause/resume、archive 这些路径带状态变化），做法是「先 `GetRun` 读旧 status → `UpdateRun` 写 → 用读到的旧 status 当 `from` 播事件」。读与写是两条语句：两个并发的全行写交错时，后完成者的 `from` 可以是它**从未覆盖过**的状态——run 实际走了 `running → paused → resumed`，而事件里会出现一条 `running → resumed`（ChatOps 卡片与 webhook 全量镜像直接照抄这个 `from`）。测试只在单线程跑，所以一直绿。这正是 `docs/blocked-items.md` 的 **G-5**。
+- **修法（store 层原子化，不是再补一条 CAS）**：新增**可选**接口 `state.RunStatusPrevReader`，方法 `UpdateRunReturningPrevStatus(ctx, run) (prevStatus string, err error)` 在**同一步**里写全行并回报被覆盖的旧 status：
+  - **SQLite**：在 `db.Conn` 上单连接 `BEGIN IMMEDIATE` → `SELECT status` → `UPDATE` → `COMMIT`。刻意用 IMMEDIATE 而非默认 deferred：deferred 在共享快照上读完再写会被并发写者逼成 `SQLITE_BUSY_SNAPSHOT`（`busy_timeout` 也重试不掉），IMMEDIATE 让并发写者**排队**而不是报错。
+  - **PostgreSQL**：`BEGIN` → `SELECT status … FOR UPDATE`（行锁，跨集群节点也成立）→ `UPDATE` → `COMMIT`。
+  - `RunEventStore.UpdateRun` **优先**走它；store 没这个能力（测试替身、非 SQL 后端）时保留原来的读-再-写回退，所以 `state.Store` 接口不被加宽。
+- **验证**：新增 5 例——SQLite 的顺序 / 未找到 / nil + **并发链**（24 个 goroutine 对同一行做读-改-写，断言被覆盖的 status 串成一条不丢不重的链）；PostgreSQL 一例（真容器 `postgres:16-alpine` 上跑过）；wiring 两例钉住「有能力时走原子路径、无能力时回退」。既有 `RunEventStore` 用例全绿；`golangci-lint v2.13.2` 0 issues；`internal/state` 全包（含 PG）与 `internal/wiring` / `internal/pause` / `internal/takeover` 全绿。
+- **如实边界**：只保证**经该 decorator** 的全行写的 `from` 正确；未把全部全行写改造成 CAS（那要动十几个调用点，风险远大于收益）。`state.Store` 接口未变，只有 SQLite / PostgreSQL 两个实现提供原子路径。
+
+
 ### 文档（`CONTRIBUTING.md` §5.1 的 `ci.yml` check-run 计数订正：`24` → 实测 `26`）
 
 - **缺口**：§5.1 讲「stacked PR 的 base 不在 `main`/`master`/`develop` 时 `ci.yml` 一条 check 都不生成」时，引用的计数是 **24 个 check run**——那是更早的 job 集留在文本里的旧数。上一笔（`e0b3353`）自己留了话：「`ci.yml` 的 **24 个** check run 这个计数本笔没核实（顶层 job 实测 16 个），登记给下一次专门核计数的人」。

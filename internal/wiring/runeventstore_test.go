@@ -152,6 +152,77 @@ func TestRunEventStore_UnknownRunIsTransparent(t *testing.T) {
 	_, _ = base.GetRun(ctx, "chg-missing")
 }
 
+// recordingPrevStore offers the atomic run-update capability and counts the
+// calls, so a test can prove the funnel actually took that path rather than
+// only observing its side effects.
+type recordingPrevStore struct {
+	*state.SQLiteStore
+	calls int
+}
+
+func (r *recordingPrevStore) UpdateRunReturningPrevStatus(ctx context.Context, run *state.Run) (string, error) {
+	r.calls++
+	return r.SQLiteStore.UpdateRunReturningPrevStatus(ctx, run)
+}
+
+// opaqueStore exposes ONLY the state.Store interface, hiding the optional
+// RunStatusPrevReader capability — the shape of a test double or a non-SQL
+// backend. It pins the read-then-write fallback.
+type opaqueStore struct{ state.Store }
+
+// TestRunEventStore_UpdateRunPrefersAtomicPrevStatus pins G-5's fix: when the
+// store can report the superseded status in the same step as the write, the
+// full-row funnel uses it (so a concurrent writer cannot make the emitted
+// `from` name a status this write never covered).
+func TestRunEventStore_UpdateRunPrefersAtomicPrevStatus(t *testing.T) {
+	ctx := context.Background()
+	base, err := state.NewSQLiteStore(ctx, ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = base.Close() })
+
+	run := &state.Run{ID: "chg-atomic", Status: "running", Creator: "alice", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	require.NoError(t, base.CreateRun(ctx, run))
+
+	rec := &recordingPrevStore{SQLiteStore: base}
+	s := NewRunEventStore(rec)
+	events := captureSink(s)
+
+	run.Status = "paused"
+	run.UpdatedAt = time.Now().UTC()
+	require.NoError(t, s.UpdateRun(ctx, run))
+
+	assert.Equal(t, 1, rec.calls, "the decorator must take the atomic path when the store offers it")
+	recs := events()
+	require.Len(t, recs, 1)
+	assert.Equal(t, "running", recs[0].From)
+	assert.Equal(t, "paused", recs[0].To)
+}
+
+// TestRunEventStore_UpdateRunFallsBackWithoutAtomicPath keeps test doubles and
+// non-SQL stores working: with no RunStatusPrevReader, the funnel falls back to
+// the read-then-write it always had.
+func TestRunEventStore_UpdateRunFallsBackWithoutAtomicPath(t *testing.T) {
+	ctx := context.Background()
+	base, err := state.NewSQLiteStore(ctx, ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = base.Close() })
+
+	run := &state.Run{ID: "chg-fallback", Status: "running", Creator: "alice", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	require.NoError(t, base.CreateRun(ctx, run))
+
+	s := NewRunEventStore(opaqueStore{Store: base})
+	events := captureSink(s)
+
+	run.Status = "resumed"
+	run.UpdatedAt = time.Now().UTC()
+	require.NoError(t, s.UpdateRun(ctx, run))
+
+	recs := events()
+	require.Len(t, recs, 1)
+	assert.Equal(t, "running", recs[0].From)
+	assert.Equal(t, "resumed", recs[0].To)
+}
+
 // TestRunEventStore_UnwrapperSeam pins the Unwrapper participation: the
 // state.Underlying walk must reach the raw backend THROUGH this decorator.
 // The agent registry builds on that walk; a decorator the walk cannot see
