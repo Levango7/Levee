@@ -22,13 +22,17 @@ Vocabulary (single source is `STATUS_VOCAB` / `BLOCKED_PREFIX` below):
     decided           a product decision was taken and its outcome recorded
     blocked-on:<who>  waiting on a named external actor (a person, a credential)
 
-Shape notes (the tables are not tidy, and the gate must not pretend otherwise):
+Shape notes:
   * A logical row may span several physical lines (a cell with newlines); the
-    parser joins them.
-  * Cells may contain an unescaped `|` in prose or code, and some rows carry a
-    different cell count than their header.  The status is therefore read from
-    the END of the row (the last cell), and written there too — mid-row
-    raggedness is real and out of scope.
+    parser joins them, and every data row must then match its header's cell
+    count.  A ragged row is a real defect, not a style choice: in GFM a row
+    with MORE cells than its header drops the overflow (which is the status
+    column), and one with FEWER leaves it blank — either way the status does
+    not render.  The 2026-11-05 pass that added the column found five such rows
+    and fixed them (an unescaped `|` inside a code span, a title merged into
+    the priority cell, two over-long rows, and one four-line row).
+  * An unescaped `|` inside a cell (e.g. in a code span) must be written `\|`;
+    the cell splitter honours the escape.
 
 Exit codes follow the sibling checks: 0 clean, 1 problems found, 2 the check
 itself could not run (missing file, no item tables).
@@ -173,6 +177,12 @@ def check(root: Path, *, min_rows: int = MIN_ROWS) -> tuple[list[str], dict[str,
         total += 1
         if not cell_list:
             problems.append(f"L{start + 1}: empty data row")
+            continue
+        if len(cell_list) != len(current_header or []):
+            problems.append(
+                f"L{start + 1}: {len(cell_list)} cells, but the table header has {len(current_header or [])} — "
+                "a ragged row (an unescaped `|`, a missing cell, or a wrapped line) does not render its status"
+            )
             continue
         status = cell_list[-1]
         if not status_ok(status):
