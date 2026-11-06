@@ -5,6 +5,13 @@
 ## [Unreleased]
 
 
+### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
+
+- **背景**：2026-11-06 晚起，CI 的 `trivy` 腿（`check (all jobs passed)` 的必需腿）扫出 blocking finding **CVE-2026-78661**（HIGH）：`usr/local/bin/levee` 里的 `golang.org/x/net` v0.60.0（indirect）——`golang.org/x/net/html: Denial of Service via crafted HTML input`，fixed version **0.62.0**。这条腿红的这段时间，**任何** PR 与 master push 都合不进去（与具体改动无关）。
+- **改动**：`go get golang.org/x/net@v0.62.0` + `go mod tidy`，只动 `go.mod` 一行与 `go.sum` 两处。其余 `golang.org/x/*` 版本不变。
+- **验证**：`go build ./...` rc=0；`go vet ./...` rc=0；`internal/state` / `internal/auth` / `internal/notify` / `internal/chatops` 全绿；trivy 复扫以本 PR 的 CI 为准。
+
+
 ### 决策（`blocked-items.md` 的 G-1 / G-3 定档：两项都是「不做行为变更」，只落账与注释）
 
 - **原 G-3 — `plan.Plan` 持久化无 json tag → 定档「维持现状」**：`runs.plan_json` 是 Go **内部**工件，写入是 `internal/wiring/plan.go` 的 `json.Marshal(p)`、读取方全部 `json.Unmarshal` 回同一 struct，且 `plan_hash` 走独立的 canonical 结构，所以「混合拼写」当前无损。原触发条件「有非 Go 消费方」未到；补 tag 会改变已落库字节，在滚动升级期间让新旧进程**互读不了**，换来只是一个不存在的消费方。故**不改格式**，只在写入点加注释（同一条也提醒：将来真要做，是加 tag **并**自定义 `UnmarshalJSON` 兼容旧 PascalCase，不是裸加 tag）。
