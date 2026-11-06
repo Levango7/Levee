@@ -185,9 +185,13 @@ configurable triggers, approver requirements, and timeout.
 
 > **base 决定 CI 存不存在**。`.github/workflows/ci.yml` 的 `pull_request` 触发只列了
 > `main` / `master` / `develop`。把 base 设成另一条功能分支（stacked PR 为了 diff 只剩
-> 自己那一笔常这样做）时，`ci.yml` 的 24 个 check run（含 `check (all jobs passed)`
+> 自己那一笔常这样做）时，`ci.yml` 的 check run（**16 个顶层 job**，经 `test`×3 /
+> `build`×6 / `browser-check`×4 三处矩阵展开为 **26 条**；含 `check (all jobs passed)`
 > 汇总，而它正是 master 分支保护里唯一的 required context）**一个都不会跑**——挂在
-> 那种 PR 上的只有 CodeQL 两条与第三方检查。于是"这个 PR 没有红"并不等于"CI 绿了"。
+> 那种 PR 上的只有 `codeql.yml` 的两条（`CodeQL` / `analyze (go)`）与第三方检查
+> （如 Macroscope）。于是"这个 PR 没有红"并不等于"CI 绿了"。（**计数是实测的**：
+> 2026-11-06 读 `#300` 的 check-runs API 得 30 条 = `ci.yml` 26 + CodeQL 2 + 第三方 2；
+> 这里原先写的 `24` 是更早的 job 集留下的旧数——`ci.yml` 增删 job 或改矩阵时同步订正。）
 > **改 base 也不会补跑**：GitHub 把切 base 记为 `edited`，不在 `ci.yml` 声明的默认事件
 > 类型里；要拿到覆盖，必须在该 PR 上再有一次真实推送。
 >
