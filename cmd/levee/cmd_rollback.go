@@ -136,8 +136,8 @@ func runRollback(cmd *cobra.Command, args []string) error {
 		"actor":             actor,
 		"dry_run":           rollbackOptDryRun,
 		"status":            finalStatus,
-		"rolled_back_hosts": resp.GetRolledBackHosts(),
-		"skipped_hosts":     resp.GetSkippedHosts(),
+		"rolled_back_hosts": hostList(resp.GetRolledBackHosts()),
+		"skipped_hosts":     hostList(resp.GetSkippedHosts()),
 		"rollback_run_id":   resp.GetRollbackRunId(),
 		"message":           resp.GetMessage(),
 	}
@@ -208,6 +208,16 @@ func printRollbackHuman(resp *pb.RollbackResponse, actor, finalStatus string, pr
 	if msg := resp.GetMessage(); msg != "" {
 		fmt.Fprintf(os.Stdout, "  %s\n", msg)
 	}
+}
+
+// hostList normalises a host list for the JSON envelope: an empty list is
+// `[]`, not `null`. The envelope declares these as lists, and a consumer that
+// iterates one must not have to distinguish "no hosts" from "no field".
+func hostList(hosts []string) []string {
+	if hosts == nil {
+		return []string{}
+	}
+	return hosts
 }
 
 // rollbackExitCode maps a service refusal to the CLI's exit-code contract:
