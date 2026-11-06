@@ -31,8 +31,8 @@ func TestRollbackChangeReportsIncompleteAsOutcome(t *testing.T) {
 	// hands both back *alongside* the outcome. Asserting against the stub's habit
 	// would pin a shape production never produces.
 	svc, store := newTestChangeServiceWithEngine(t, &EngineAdapter{
-		Rollback: func(_ context.Context, _, _ string, _ bool) (string, []string, error) {
-			return "rb-partial", []string{"web-1"},
+		Rollback: func(_ context.Context, _, _ string, _ bool, _ bool) (RollbackOutcome, error) {
+			return RollbackOutcome{RunID: "rb-partial", RolledBackHosts: []string{"web-1"}},
 				fmt.Errorf("%w: %w", rollback.ErrIncomplete,
 					fmt.Errorf("partial rollback: some undo steps failed"))
 		},

@@ -530,12 +530,51 @@ type EngineAdapter struct {
 	// longer matches its plan hash.
 	Plan func(ctx context.Context, changeID string, targetHosts []string) (*pb.Plan, *StoredPlan, error)
 
-	// Rollback rolls back a change. Returns the rollback run ID and the
-	// list of hosts that were rolled back.
-	Rollback func(ctx context.Context, changeID, runID string, autoApprove bool) (rollbackRunID string, rolledBackHosts []string, err error)
+	// Rollback rolls back a change. With dryRun set it answers the
+	// operator's question — "what would this rollback do to my hosts?" —
+	// WITHOUT touching a target, a run record or the audit chain; the
+	// outcome then names the hosts that would be compensated and the
+	// hosts that would be skipped.
+	//
+	// The preview and the commit are the same closure with one flag, not
+	// two code paths: a preview that could disagree with the commit is
+	// worse than no preview at all. The flag exists because the console's
+	// remediation wizard asks for evidence BEFORE the operator confirms —
+	// an endpoint that answered that question by executing would turn a
+	// preview into the very action it was supposed to precede.
+	Rollback func(ctx context.Context, changeID, runID string, autoApprove, dryRun bool) (out RollbackOutcome, err error)
 
 	// Retry re-runs failed hosts for a change.
 	Retry func(ctx context.Context, changeID string, replan bool, targetHosts []string) error
+}
+
+// RollbackOutcome is what one rollback produced — or, in dry-run mode, what
+// it WOULD produce.
+//
+// The two modes share the shape on purpose: the console shows the preview's
+// lists and then commits through the same endpoint, so an operator can
+// compare "what was promised" with "what happened" field by field.
+type RollbackOutcome struct {
+	// RunID identifies the rollback run. It is empty in a preview: a
+	// preview creates no run and persists nothing.
+	RunID string
+
+	// RolledBackHosts are the hosts whose compensation ran — or, in a
+	// preview, would run.
+	RolledBackHosts []string
+
+	// SkippedHosts are the hosts the rollback deliberately left alone:
+	// their forward step never ran, or an earlier rollback already
+	// compensated them. A skipped host is not a gap — it needs nothing.
+	SkippedHosts []string
+
+	// Gaps are the hosts the rollback would NOT change even though their
+	// forward step ran: no compensation declared, a policy refusal, or an
+	// undo that cannot be ordered safely against a prior one. They are
+	// neither compensated nor skipped — they need a human — so they are
+	// reported apart from the two lists above instead of being folded
+	// into one of them.
+	Gaps []string
 }
 
 // ErrReplanNeedsApproval is what EngineAdapter.Retry returns when replan=true

@@ -93,9 +93,9 @@ func TestRollbackChangeRestoresRunBaseline(t *testing.T) {
 		Status:   "success",
 	}))
 
-	_, hosts, err := e.rollbackChange(context.Background(), "run-manual-baseline", "", true)
+	out, err := e.rollbackChange(context.Background(), "run-manual-baseline", "", true, false)
 	require.NoError(t, err, "manual rollback with a restorable baseline must succeed")
-	assert.Contains(t, hosts, "web-1")
+	assert.Contains(t, out.RolledBackHosts, "web-1")
 
 	cmds := rec.snapshotCmds()
 	assert.Contains(t, cmds, "web-1\x00undo-command", "the step must be compensated")
@@ -178,7 +178,7 @@ func TestManualRollbackWithoutSnapshotStoreDoesNotClaimARestore(t *testing.T) {
 		Status:   "success",
 	}))
 
-	_, _, err := e.rollbackChange(context.Background(), "run-manual-nosnap", "", true)
+	_, err := e.rollbackChange(context.Background(), "run-manual-nosnap", "", true, false)
 	require.NoError(t, err, "an unwired snapshot store must not fail a manual rollback")
 	cmds := rec.snapshotCmds()
 	assert.Contains(t, cmds, "web-1\x00undo-command", "the compensation still runs")

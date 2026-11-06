@@ -47,6 +47,17 @@ const detail = {
   params: { region: 'cn-east-1', batch_size: '12' },
 }
 
+// A change whose rollback did NOT finish: the one state the remediation
+// wizard exists for. The detail page offers the button only for
+// `rolled_back_partial` / `rollback_incomplete` (isRemediableStatus), so the
+// browser check needs such a change to reach the flow at all.
+const remediableDetail = {
+  id: 'run-1001', label: '未走完的回滚', status: 'rolled_back_partial', environment: 'prod', team: '平台组',
+  templateName: templates[0], priority: 'high', creator: 'liwg',
+  createdAt: now - 7200, updatedAt: now - 120, planHash: 'v2:aa11bb22',
+  params: { region: 'cn-east-1' },
+}
+
 const trace = {
   entries: [
     { id: 't1', runId: 'run-1000', action: 'plan', actor: 'liwg', target: 'host:10.0.1.11', timestamp: now - 3600, durationMs: 120, input: '{"template":"gateway-sync"}', output: '{"batches":5}', prevHash: '0000', currHash: 'a1b2' },
@@ -226,6 +237,72 @@ function readJsonBody(req) {
   })
 }
 
+// The rollback remediation flow (POST /changes/:id/rollback).
+//
+// The mock used to have NO rollback route at all, and that absence is why the
+// server could ignore `dry_run` for months: the console's "补救未完成的回滚"
+// wizard is a preview-then-commit flow, the browser check never drove it
+// because the mock could not answer it, and the only evidence the flow had was
+// a vitest against a mocked API module — which agreed with the mock, which
+// agreed with nothing on the server.
+//
+// So the mock models the pair the way the real server does after the fix:
+//   { dryRun: true }  → a PREVIEW: what WOULD be compensated, what would be
+//                       skipped, and no rollback run id (protojson omits it);
+//   { }               → a COMMIT: the rollback happens.
+//
+// Both are recorded in a call log the browser check reads back, because the
+// property under test is not "the endpoint answered" but "the preview did not
+// commit" — a mock that answered both calls identically could not tell a
+// console that previews-then-confirms from one that fires the real thing on
+// the first click.
+//
+// The response shape is the server's: protojson, lowerCamelCase, and unset
+// fields omitted. The wizard reads `rolledBackHosts` / `skippedHosts` — the
+// second of which the server never populated at all before the fix, so the
+// wizard was reading a key the wire did not carry.
+const rollbackCalls = []
+
+function changeFor(id) {
+  if (id === 'run-1001') return { ...remediableDetail, id }
+  return { ...detail, id }
+}
+
+function rollbackPreviewBody(change) {
+  return {
+    change,
+    success: true,
+    rolledBackHosts: ['10.0.1.11', '10.0.1.12'],
+    skippedHosts: ['10.0.1.13'],
+    message: 'rollback preview: 2 host(s) would be compensated, 1 would be left alone',
+  }
+}
+
+async function handleChangeRollback(req, res, id) {
+  let body = {}
+  try {
+    body = await readJsonBody(req)
+  } catch (err) {
+    return send(res, { error: String((err && err.message) || err) }, 400)
+  }
+  if (body.dryRun === true) {
+    // A preview changes NOTHING — not even the run's status. The server's
+    // preview branch returns the change as it is, and that is the property
+    // the wizard's evidence depends on.
+    rollbackCalls.push({ kind: 'preview', id, at: Date.now() })
+    return send(res, rollbackPreviewBody(changeFor(id)))
+  }
+  rollbackCalls.push({ kind: 'commit', id, at: Date.now() })
+  return send(res, {
+    change: { ...changeFor(id), status: 'rolled_back' },
+    rollbackRunId: 'rb-mock-1',
+    success: true,
+    rolledBackHosts: ['10.0.1.11', '10.0.1.12'],
+    skippedHosts: ['10.0.1.13'],
+    message: 'rollback completed',
+  })
+}
+
 // The ad-hoc single-step check (POST /gates/verify), added to the web console
 // by PR #244. It mirrors the real endpoint's honest outcomes instead of always
 // passing, because the console's dialog has to tell them apart and a mock that
@@ -317,6 +394,15 @@ const server = http.createServer((req, res) => {
     return send(res, { mode })
   }
 
+  // The rollback call log, so the browser check can assert the PREVIEW/COMMIT
+  // pairing rather than merely that an endpoint answered. `?reset=1` empties it,
+  // which is what a check does before it starts counting.
+  if (u === '/__rollback-log') {
+    const q = new URL(req.url, 'http://x').searchParams
+    if (q.get('reset') === '1') rollbackCalls.length = 0
+    return send(res, { calls: rollbackCalls.slice() })
+  }
+
   // The list endpoints honour the failure mode so the three tiers are testable.
   const scoped = (ok) => {
     if (mode === 'forbidden') {
@@ -403,9 +489,15 @@ const server = http.createServer((req, res) => {
 
   // One change's worth of detail pages.
   if (/^\/api\/v1\/changes\/run-1000$/.test(u)) return send(res, detail)
-  if (/^\/api\/v1\/changes\/run-1000\/trace/.test(u)) return send(res, trace)
-  if (/^\/api\/v1\/changes\/run-1000\/approvals/.test(u)) return send(res, { approvals })
-  if (/^\/api\/v1\/changes\/run-1000\/logs/.test(u)) return send(res, logs)
+  if (/^\/api\/v1\/changes\/run-1001$/.test(u)) return send(res, remediableDetail)
+  // The rollback pair (preview and commit). Routed before the detail pages'
+  // own patterns so a POST to .../rollback is never read as a change.
+  if (/^\/api\/v1\/changes\/[^/]+\/rollback$/.test(u) && req.method === 'POST') {
+    return handleChangeRollback(req, res, u.split('/')[4])
+  }
+  if (/^\/api\/v1\/changes\/[^/]+\/trace/.test(u)) return send(res, trace)
+  if (/^\/api\/v1\/changes\/[^/]+\/approvals/.test(u)) return send(res, { approvals })
+  if (/^\/api\/v1\/changes\/[^/]+\/logs/.test(u)) return send(res, logs)
   if (/^\/api\/v1\/changes\/run-1000\/plan$/.test(u)) return send(res, fleetPlan(5))
 
   // The fleet run used by the map's windowing assertion.
