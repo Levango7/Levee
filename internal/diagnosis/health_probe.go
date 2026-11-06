@@ -762,6 +762,13 @@ func (p *HealthProber) probeProcess(ctx context.Context, target, name string) (b
 
 // probeHTTP performs a GET /healthz request to target:port.
 func (p *HealthProber) probeHTTP(ctx context.Context, target string, port int) HTTPProbe {
+	if !validProbeTarget(target) {
+		return HTTPProbe{
+			URL:    "",
+			Status: StatusUnknown,
+			Err:    fmt.Sprintf("probe target %q is not a bare host/address (want it to not contain userinfo, path, query or whitespace)", target),
+		}
+	}
 	url := fmt.Sprintf("http://%s:%d/healthz", target, port)
 	hp := HTTPProbe{URL: url, Status: StatusUnknown}
 
@@ -1181,4 +1188,32 @@ func parseReplicationLag(stdout string) ReplicationInfo {
 		return ReplicationInfo{Err: fmt.Sprintf("parse lag: %v", err)}
 	}
 	return ReplicationInfo{LagSeconds: lag, Healthy: true}
+}
+
+// --- Target validation -----------------------------------------------------
+
+// validProbeTarget reports whether target is a bare host or IP literal that is
+// safe to interpolate into the healthz URL. The prober exists to reach ONE
+// service on ONE host; a target carrying userinfo, a path, a query or any
+// control byte would redirect the request somewhere else, which is what the
+// SSRF rule is there to stop. Hostnames, IPv4 and bare IPv6 literals pass;
+// anything else (slashes, colons beyond the IPv6 colons, spaces) fails closed.
+func validProbeTarget(target string) bool {
+	if target == "" || len(target) > 253 {
+		return false
+	}
+	i := 0
+	for i < len(target) {
+		c := target[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '.' || c == '-' || c == '_':
+		case c == ':':
+			// IPv6 literal; a lone colon run is still not a scheme (no leading letter-colon pair is possible).
+		default:
+			return false
+		}
+		i++
+	}
+	return true
 }

@@ -407,6 +407,40 @@ func TestProbeNodeWindowsPartialFail(t *testing.T) {
 
 // --- ProbeService ----------------------------------------------------------
 
+func TestValidProbeTarget(t *testing.T) {
+	valid := []string{"host1", "db.prod.internal", "10.0.0.1", "::1", "2001:db8::1", "a-b_c.d"}
+	for _, v := range valid {
+		assert.True(t, validProbeTarget(v), "%q should be a valid probe target", v)
+	}
+
+	invalid := []string{
+		"",
+		"evil@other.example.com",
+		"host/path",
+		"host?query=1",
+		"host#frag",
+		"a b",
+		"host//other",
+		"user:pass@host",
+	}
+	for _, v := range invalid {
+		assert.False(t, validProbeTarget(v), "%q must be refused", v)
+	}
+}
+
+func TestProbeServiceSSRFTargetFailsClosed(t *testing.T) {
+	exec := newMockExecutor()
+	p := NewHealthProber(HealthProberConfig{Executor: exec})
+
+	sh := p.ProbeService(context.Background(), "evil@other.example.com", []ServiceSpec{
+		{Name: "nginx", Port: 80},
+	})
+	require.Len(t, sh.Services, 1)
+	svc := sh.Services[0]
+	assert.Equal(t, StatusUnknown, svc.HTTP.Status, "an invalid target must fail closed, not silently probe somewhere else")
+	assert.Contains(t, svc.HTTP.Err, "not a bare host")
+}
+
 func TestProbeServiceEmptyTarget(t *testing.T) {
 	p := NewHealthProber(HealthProberConfig{Executor: newMockExecutor()})
 	sh := p.ProbeService(context.Background(), "", nil)

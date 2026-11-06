@@ -5,6 +5,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -225,4 +226,55 @@ func TestPG_InventoryRoundTrip(t *testing.T) {
 	goneGrp, err := store.GetInventoryGroup(ctx, "pg-grp")
 	require.NoError(t, err)
 	assert.Nil(t, goneGrp)
+}
+
+// TestTargetFilterHostileLabelKey pins that a caller-provided label filter key
+// is treated as data, not SQL. TargetFilter.Labels comes straight from the
+// REST gateway's ?labelSelector= query parameter (see grpc's parseLabelSelector),
+// so the keys are fully attacker-controlled. Before the fix the key was
+// concatenated into the SQL text as a JSON path fragment, which broke the
+// statement and allowed arbitrary predicates.
+func TestTargetFilterHostileLabelKey(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	bad := `env') OR 1=1 --`
+	fixtures := []*Target{
+		{ID: "victim", Hostname: "h-victim", Port: 22, Labels: map[string]string{bad: "evil"}, Status: StatusActive, CreatedAt: time.Now().UTC()},
+		{ID: "innocent", Hostname: "h-innocent", Port: 22, Labels: map[string]string{"env": "prod"}, Status: StatusActive, CreatedAt: time.Now().UTC()},
+	}
+	for _, tg := range fixtures {
+		require.NoError(t, store.UpsertTarget(ctx, tg))
+	}
+
+	// A matching row is found; the hostile key acts as an exact key, not an injected predicate.
+	rows, err := store.ListTargets(ctx, TargetFilter{Labels: map[string]string{bad: "evil"}})
+	require.NoError(t, err)
+	assert.Len(t, rows, 1, "the injected key must narrow to its own row, not broaden to all rows")
+	assert.Equal(t, "victim", rows[0].ID)
+
+	// A non-matching value returns nothing — no syntax error, no broadening.
+	rows, err = store.ListTargets(ctx, TargetFilter{Labels: map[string]string{bad: "nope"}})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+// TestJSONPathKeyEscapesKeys exercises the bound-parameter JSON path in
+// isolation: quotes and backslashes must survive the round trip.
+func TestJSONPathKeyEscapesKeys(t *testing.T) {
+	cases := map[string]string{
+		"env":           `$."env"`,
+		`a"b`:           `$."a\"b"`,
+		`x') OR 1=1 --`: `$."x') OR 1=1 --"`,
+		`back\slash`:    `$."back\\slash"`,
+	}
+
+	for in, want := range cases {
+		got := jsonPathKey(in)
+		assert.Equal(t, want, got, "key %q", in)
+		path := got[len("$."):]
+		var decoded string
+		require.NoError(t, json.Unmarshal([]byte(path), &decoded), "expected a JSON string literal, got %q", path)
+		assert.Equal(t, in, decoded)
+	}
 }

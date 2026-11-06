@@ -182,9 +182,11 @@ func BucketRuns(runs []*Run, days, offsetMinutes int, now time.Time) []RunTrendB
 	}
 	start := startOfWindow(now, days, offsetMinutes)
 
-	// Index the buckets by day key so lookups do not scan.
-	buckets := make([]RunTrendBucket, 0, days)
-	index := make(map[string]int, days)
+	// Index the buckets by day key so lookups do not scan. Capacity comes from
+	// the clamp, not from the caller, so `days` never has to be re-trusted at
+	// the allocation site.
+	buckets := make([]RunTrendBucket, 0, MaxRunTrendDays)
+	index := make(map[string]int, MaxRunTrendDays)
 	loc := fixedZone(offsetMinutes)
 	for i := 0; i < days; i++ {
 		day := start.AddDate(0, 0, i).In(loc).Format("2006-01-02")

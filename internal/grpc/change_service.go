@@ -2735,6 +2735,12 @@ func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequ
 	if pageSize <= 0 {
 		pageSize = defaultPageSize
 	}
+	// Clamp like every other list path in this file: the size comes from the
+	// caller and is fed straight into `make([]*pb.Change, 0, pageSize)` below,
+	// so an unbounded value there is a host-controlled memory sink.
+	if pageSize > maxPageSize {
+		pageSize = maxPageSize
+	}
 
 	offset, err := parsePageToken(req.GetPageToken())
 	if err != nil {
