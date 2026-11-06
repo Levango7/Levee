@@ -36,6 +36,7 @@ import (
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
+	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/verify"
 )
@@ -432,7 +433,7 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		return fmt.Errorf("wiring: get run for retry: %w", err)
 	}
 	old := run.Status
-	ok, err := e.store.UpdateRunStatusIf(ctx, changeID, old, "running", utcNow())
+	ok, err := e.store.UpdateRunStatusIf(ctx, changeID, old, runstatus.StatusRunning, utcNow())
 	if err != nil {
 		return fmt.Errorf("wiring: retry transition: %w", err)
 	}
@@ -445,8 +446,8 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 	// module are skipped. Other sources (failed/rolled_back) always re-run
 	// the full plan — a rollback may have undone a previously-successful
 	// step, so skipping would be unsafe.
-	execRunID, _, phase, err := e.executePlan(ctx, changeID, p, old == "interrupted")
-	final := "failed"
+	execRunID, _, phase, err := e.executePlan(ctx, changeID, p, old == runstatus.StatusInterrupted)
+	final := runstatus.StatusFailed
 	switch {
 	case phase == string(engine.PhaseRolledBack),
 		phase == string(engine.PhasePartialRollback),
@@ -456,13 +457,12 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		// clean "rolled_back" (or as a plain failure).
 		final = phase
 	case err == nil && phase == string(engine.PhaseCompleted):
-		final = "completed"
+		final = runstatus.StatusCompleted
 	}
-	// Terminal write via CAS from "running": if another actor (failover
-	// takeover, a concurrent apply) already moved the run, the retry
-	// executor must not overwrite the winner's state. The run row read
-	// below names the authoritative status either way.
-	ok, casErr := e.store.UpdateRunStatusIf(ctx, changeID, "running", final, utcNow())
+	// Terminal write via CAS from the run status vocabulary: a
+	// hand-spelled `from` stops matching every row the day the constant
+	// is renamed, and the retry silently stops settling its runs.
+	ok, casErr := e.store.UpdateRunStatusIf(ctx, changeID, runstatus.StatusRunning, final, utcNow())
 	if casErr != nil {
 		err = errors.Join(err, fmt.Errorf("wiring: retry final status write: %w", casErr))
 	} else if !ok {

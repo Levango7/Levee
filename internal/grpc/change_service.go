@@ -669,8 +669,14 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 			// applied until the new plan is approved. Terminal runs are left
 			// untouched (re-planning a completed/failed run is a retry, not a
 			// re-approval gate).
-			if run.Status == "approved" && stored.Hash != "" && stored.Hash != prevHash {
-				if ok, cerr := s.store.UpdateRunApprovalStatusIf(ctx, req.GetChangeId(), "approved", runstatus.StatusDraft, state.ApprovalStatusPending, now); cerr != nil {
+			// Both the comparison and the CAS `from` go through runstatus:
+			// this one call mixes three spellings of the same idea
+			// (literal from + constant to), and a CAS whose `from` is a
+			// hand-spelled literal stops matching every row the day the
+			// constant is renamed — the re-plan then "succeeds" while the
+			// approval reset silently never happens.
+			if run.Status == runstatus.StatusApproved && stored.Hash != "" && stored.Hash != prevHash {
+				if ok, cerr := s.store.UpdateRunApprovalStatusIf(ctx, req.GetChangeId(), runstatus.StatusApproved, runstatus.StatusDraft, state.ApprovalStatusPending, now); cerr != nil {
 					return nil, status.Errorf(codes.Internal, "reset run to draft after re-plan: %v", cerr)
 				} else if !ok {
 					log.Warn("re-plan: run status changed concurrently before approval reset", "run_id", req.GetChangeId())
@@ -678,7 +684,7 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 					// Mirror the CAS outcome onto the in-memory run so the
 					// kickoff below (whose tail does an UpdateRun when the
 					// tier changes) cannot write the stale 'approved' back.
-					run.Status = "draft"
+					run.Status = runstatus.StatusDraft
 					run.ApprovalStatus = state.ApprovalStatusPending
 				}
 			}
@@ -1020,7 +1026,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	// Drafts deliberately require autoApprove too — treating "draft" as an
 	// applyable state let unreviewed changes reach production whenever a
 	// client simply forgot to route them through the approval flow.
-	if !req.GetAutoApprove() && run.Status != "approved" {
+	if !req.GetAutoApprove() && run.Status != runstatus.StatusApproved {
 		return nil, status.Errorf(codes.FailedPrecondition, "change %q is in %q state, cannot apply", req.GetChangeId(), run.Status)
 	}
 
@@ -1113,7 +1119,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	// double-execute the run (or clobber each other's terminal state).
 	now := time.Now().UTC()
 	oldStatus := run.Status
-	ok, err := s.store.UpdateRunStatusIf(ctx, run.ID, oldStatus, "running", now)
+	ok, err := s.store.UpdateRunStatusIf(ctx, run.ID, oldStatus, runstatus.StatusRunning, now)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update run to running: %v", err)
 	}
@@ -1126,7 +1132,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		}
 		return nil, status.Errorf(codes.FailedPrecondition, "change %q cannot be applied: concurrent status change", req.GetChangeId())
 	}
-	run.Status = "running"
+	run.Status = runstatus.StatusRunning
 	run.UpdatedAt = now
 
 	// Record a trace for the apply start.
@@ -1145,7 +1151,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		ChangeId:  run.ID,
 		EventType: "status_changed",
 		OldStatus: oldStatus,
-		NewStatus: "running",
+		NewStatus: runstatus.StatusRunning,
 		Message:   "apply triggered",
 		Timestamp: now.Unix(),
 	})
@@ -1157,7 +1163,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		// means another actor (failover takeover, a concurrent pause)
 		// already moved the run; the executor must not blindly overwrite
 		// that state with "failed", and the winning actor owns the event.
-		if !s.casRunStatus(ctx, run, "failed") {
+		if !s.casRunStatus(ctx, run, runstatus.StatusFailed) {
 			return &pb.ApplyResponse{
 				Change:  runToPB(run),
 				RunId:   execRunID,
@@ -1168,8 +1174,8 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		s.publishEvent(&pb.ChangeEvent{
 			ChangeId:  run.ID,
 			EventType: "status_changed",
-			OldStatus: "running",
-			NewStatus: "failed",
+			OldStatus: runstatus.StatusRunning,
+			NewStatus: runstatus.StatusFailed,
 			Message:   err.Error(),
 			Timestamp: run.UpdatedAt.Unix(),
 		})
@@ -1222,7 +1228,7 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	s.publishEvent(&pb.ChangeEvent{
 		ChangeId:  run.ID,
 		EventType: "status_changed",
-		OldStatus: "running",
+		OldStatus: runstatus.StatusRunning,
 		NewStatus: finalStatus,
 		Message:   finalStatus,
 		Timestamp: run.UpdatedAt.Unix(),
@@ -1390,7 +1396,12 @@ func (s *ChangeService) reportOpsMeshResult(ctx context.Context, run *state.Run,
 // writing a terminal state another actor already wrote (B1).
 func (s *ChangeService) casRunStatus(ctx context.Context, run *state.Run, final string) (won bool) {
 	now := time.Now().UTC()
-	ok, err := s.store.UpdateRunStatusIf(ctx, run.ID, "running", final, now)
+	// From-side through the vocabulary: this CAS is the choke point that
+	// keeps a late executor from overwriting another actor's terminal
+	// state. A hand-spelled `from` that stops matching makes every late
+	// executor WIN the CAS it must lose — the exact overwrite this
+	// function exists to prevent.
+	ok, err := s.store.UpdateRunStatusIf(ctx, run.ID, runstatus.StatusRunning, final, now)
 	if err != nil {
 		log.Warn("terminal status CAS failed", "run_id", run.ID, "error", err)
 		return false
@@ -3023,6 +3034,14 @@ func (s *ChangeService) GetLogs(ctx context.Context, req *pb.GetLogsRequest) (*p
 	runID := req.GetChangeId()
 	if req.GetRunId() != "" {
 		runID = req.GetRunId()
+		// The request names BOTH a change and a run, and the data is read by
+		// whichever run id wins. Judging only the change would let a caller
+		// entitled to read one change pull ANOTHER environment's step output
+		// (stdout/stderr — command text and credential echoes) by swapping
+		// the run id. Every id that reaches the store is judged.
+		if err := s.authorizeReadOf(ctx, runID, "logs"); err != nil {
+			return nil, err
+		}
 	}
 
 	steps, err := s.store.ListSteps(ctx, state.StepFilter{RunID: runID})
@@ -3100,6 +3119,15 @@ func (s *ChangeService) GetDiff(ctx context.Context, req *pb.GetDiffRequest) (*p
 	if aerr := s.authorizeRead(ctx, run, "diff"); aerr != nil {
 		return nil, aerr
 	}
+	if req.GetRunId() != "" {
+		// The response echoes the requested run filter. The diff itself is
+		// change-scoped, but echoing an id the caller may not read would
+		// answer a question about another environment's run — even only
+		// that it exists.
+		if aerr := s.authorizeReadOf(ctx, req.GetRunId(), "diff"); aerr != nil {
+			return nil, aerr
+		}
+	}
 
 	format := req.GetFormat()
 	if format == "" {
@@ -3164,6 +3192,16 @@ func (s *ChangeService) GetTrace(ctx context.Context, req *pb.GetTraceRequest) (
 	}
 	if aerr := s.authorizeRead(ctx, run, "trace"); aerr != nil {
 		return nil, aerr
+	}
+	if req.GetRunId() != "" {
+		// Trace rows are read by the run id that wins over the change-wide
+		// default, so THAT id is judged too — same rule as GetLogs: judging
+		// the change and then reading another environment's run would let a
+		// caller entitled to one change walk another environment's audit
+		// trail.
+		if aerr := s.authorizeReadOf(ctx, req.GetRunId(), "trace"); aerr != nil {
+			return nil, aerr
+		}
 	}
 
 	traces, err := s.store.ListTraces(ctx, state.TraceFilter{RunID: runID})
@@ -3317,6 +3355,14 @@ func (s *ChangeService) StreamLogs(req *pb.StreamLogsRequest, stream grpcpkg.Ser
 
 	if err := s.authorizeReadOf(ctx, req.GetChangeId(), "stream logs"); err != nil {
 		return err
+	}
+	if req.GetRunId() != "" {
+		// The stream reads by the run id that wins over the change-wide
+		// default; judging only the change would replay another
+		// environment's step output to a caller entitled to one change.
+		if err := s.authorizeReadOf(ctx, req.GetRunId(), "stream logs"); err != nil {
+			return err
+		}
 	}
 
 	// Replay historical logs. Alongside the per-step ID set we track the

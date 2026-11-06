@@ -178,7 +178,11 @@ CREATE TABLE IF NOT EXISTS approvals (
     -- six-value union here — that column also carries priority words, this one never does.
     level      TEXT    NOT NULL,                     -- standard|high|emergency
     approver   TEXT    NOT NULL,
-    status     TEXT    NOT NULL,                     -- pending|approved|rejected|timeout
+    -- The values internal/approval.Status* declares (pending|approved|rejected|expired).
+    -- NOT runs.approval_status's set one table over: `expired` is produced by
+    -- CheckExpiry (the serve sweeper) and `timeout` is not a value any writer
+    -- of this column produces. A reader coded against `timeout` matches no row.
+    status     TEXT    NOT NULL,                     -- pending|approved|rejected|expired
     comment    TEXT    NOT NULL DEFAULT '',
     timeout_at DATETIME,
     acted_at   DATETIME,

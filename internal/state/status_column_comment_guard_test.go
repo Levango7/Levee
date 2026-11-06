@@ -123,3 +123,51 @@ func TestRunsApprovalStatusCommentMatchesConstants(t *testing.T) {
 		}
 	}
 }
+
+// approvalStatusConstants parses the approval-RECORD status vocabulary out
+// of internal/approval/service.go. Parsed, not restated, for the same
+// reason the store constants are: an approval constant added there must
+// not pass this guard unnoticed (and this package cannot import
+// internal/approval — it imports us — so source parsing is the only
+// non-repeating option).
+func approvalStatusConstants(t *testing.T) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile(schemaRepoFile(t, "internal/approval/service.go"))
+	require.NoError(t, err)
+	re := regexp.MustCompile(`(?m)^[ \t]*(Status\w+)[ \t]+Status[ \t]*=[ \t]*"([^"]+)"\r?$`)
+	out := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(string(raw), -1) {
+		out[m[1]] = m[2]
+	}
+	require.NotEmpty(t, out, "no approval Status constants parsed from internal/approval/service.go — the const block shape changed")
+	return out
+}
+
+// TestApprovalsStatusCommentMatchesConstants is the fourth column of this
+// family, and the one the vocabulary file (internal/approval/vocabulary.go)
+// has been documenting as wrong since it was written: schema.sql,
+// pgschema.sql and proto/levee.proto all advertised `timeout` while the
+// constants name `expired`. The prose noted the drift; nothing enforced
+// it, so the comments kept their shape for months.
+func TestApprovalsStatusCommentMatchesConstants(t *testing.T) {
+	constants := approvalStatusConstants(t)
+	declared := map[string]bool{}
+	for _, v := range constants {
+		declared[v] = true
+	}
+	require.Len(t, constants, 4, "expected the four declared approval states, got %d", len(constants))
+
+	for _, rel := range []string{"internal/state/schema.sql", "internal/state/pgschema.sql"} {
+		listed := columnCommentList(t, rel, "approvals", "status")
+		seen := map[string]bool{}
+		for _, name := range listed {
+			assert.False(t, seen[name], "%s: %q listed twice in approvals.status", rel, name)
+			seen[name] = true
+			assert.True(t, declared[name],
+				"%s: approvals.status comment lists %q, which no internal/approval.Status constant declares — the expiry sweeper writes `expired`, nothing writes `timeout`", rel, name)
+		}
+		for _, value := range constants {
+			assert.True(t, seen[value], "%s: approvals.status comment omits %q, which internal/approval does declare", rel, value)
+		}
+	}
+}

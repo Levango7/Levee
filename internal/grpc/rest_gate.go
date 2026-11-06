@@ -35,8 +35,10 @@ import (
 	"time"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/verify"
 )
@@ -51,8 +53,20 @@ type GateService struct {
 	// production wiring (serve) injects a closure over the engine's
 	// channel registry + credential resolution; a nil dialer makes cmd
 	// checks against targets fail closed with an explicit error.
-	dialer        ChannelDialer
+	dialer ChannelDialer
+	// authz judges who may run a check against which environment. Nil
+	// means no policy is configured — the deployment-wide default every
+	// other service documents, not a per-endpoint decision.
+	authz         *authz.Authorizer
 	prometheusURL string
+}
+
+// WithAuthorizer installs the policy authorizer. A cmd check executes a
+// command on a remote host with platform-stored credentials, so it is
+// judged on the target's environment exactly like the engine's own dial.
+func (s *GateService) WithAuthorizer(a *authz.Authorizer) *GateService {
+	s.authz = a
+	return s
 }
 
 // ChannelDialer opens a connected channel to the named inventory host.
@@ -144,6 +158,20 @@ func (s *GateService) Verify(ctx context.Context, req *GateVerifyRequest) (*Gate
 
 	input := verify.GateInput{Params: req.Params}
 	var cleanup func()
+	// A cmd check dials a real host and executes the caller's command
+	// with the platform's stored credentials — the highest-privilege
+	// surface this gateway exposes. It is therefore gated on the same
+	// apply permission the engine demands before dialing that target,
+	// and the gate is BEFORE the dial: dialing an unauthorized host
+	// already consumed a channel and (with a slow or hostile cmd) a
+	// connection. probe/slo are not gated here: probe destinations come
+	// from the caller's own params and fail closed when unreachable,
+	// slo only reads the gateway's own Prometheus.
+	if req.Type == "cmd" && req.Target != "" {
+		if aerr := s.authorizeTarget(ctx, req.Target); aerr != nil {
+			return nil, aerr
+		}
+	}
 	if req.Target != "" {
 		// Cmd checks execute over a channel to the target (the verify
 		// CommandGate requires one — an ad-hoc remote check, by design;
@@ -217,6 +245,41 @@ func (s *GateService) Verify(ctx context.Context, req *GateVerifyRequest) (*Gate
 		})
 	}
 	return resp, nil
+}
+
+// targetByHostname resolves the inventory row the dial path resolves —
+// the request names a HOST, and the store keys rows by ID. One resolution
+// rule shared by the gate and the dial keeps them from disagreeing about
+// which row a request means.
+func targetByHostname(ctx context.Context, store state.Store, host string) (*state.Target, error) {
+	rows, err := store.ListTargets(ctx, state.TargetFilter{})
+	if err != nil {
+		return nil, fmt.Errorf("gate verify: list targets: %w", err)
+	}
+	for i := range rows {
+		if rows[i].Hostname == host {
+			return rows[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// authorizeTarget resolves the inventory host to its environment and
+// requires apply permission on it. An unregistered host is refused
+// here rather than at dial time: the caller should learn "no such
+// target" from the gate, not from a dial failure after the fact.
+func (s *GateService) authorizeTarget(ctx context.Context, host string) error {
+	if s.store == nil {
+		return fmt.Errorf("gate verify: no store configured to resolve target %q", host)
+	}
+	target, err := targetByHostname(ctx, s.store, host)
+	if err != nil {
+		return err
+	}
+	if target == nil {
+		return fmt.Errorf("gate verify: target %q is not registered in the inventory", host)
+	}
+	return authorizeResource(ctx, s.authz, envOfTarget(target), permission.ActionApply, "GateVerify")
 }
 
 // compileGate builds the verify.Gate for the request. The constructors

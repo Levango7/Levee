@@ -216,7 +216,16 @@ watch(
       </nav>
 
       <div class="rail__foot">
-        <button class="rail__collapse" type="button" @click="collapsed = !collapsed">
+        <!-- Collapsed, the text disappears and only the icon remains: the
+             accessible name must follow the state or a screen reader hears
+             an unnamed button. -->
+        <button
+          class="rail__collapse"
+          type="button"
+          :aria-label="collapsed ? '展开导航' : '收起导航'"
+          :title="collapsed ? '展开导航' : '收起导航'"
+          @click="collapsed = !collapsed"
+        >
           <el-icon><component :is="collapsed ? 'Expand' : 'Fold'" /></el-icon>
           <span v-if="!collapsed">收起导航</span>
         </button>

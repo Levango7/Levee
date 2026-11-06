@@ -406,7 +406,7 @@ onMounted(load)
               class="batch__bar"
             />
             <span class="batch__state">{{ b.label }}</span>
-            <span class="detail__dim lv-mono">
+            <span class="batch__progress detail__dim lv-mono">
               {{ b.done }}/{{ b.total_hosts }}（成功 {{ b.succeeded }} · 失败 {{ b.failed }}）
             </span>
           </div>
@@ -492,9 +492,18 @@ onMounted(load)
 
 .batch {
   display: grid;
-  grid-template-columns: 48px 1fr 88px 200px;
+  /* minmax(0, 1fr), not 1fr: a bare 1fr refuses to shrink below its
+     content's min-width, so the 200px progress column overflowed the
+     panel instead of ellipsising when the viewport narrowed. */
+  grid-template-columns: 48px minmax(0, 1fr) 88px 200px;
   align-items: center;
   gap: var(--lv-space-2, 8px);
+}
+
+.batch__progress {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .batch__bar {
@@ -516,7 +525,7 @@ onMounted(load)
 
 .plan__row {
   display: grid;
-  grid-template-columns: 48px 1fr 140px;
+  grid-template-columns: 48px minmax(0, 1fr) 140px;
   align-items: baseline;
   gap: var(--lv-space-2, 8px);
 }

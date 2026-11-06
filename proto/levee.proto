@@ -487,8 +487,10 @@ message ApprovalInfo {
   string change_id = 2;
   // Approval tier (standard / high / emergency).
   string level = 3;
-  // pending / approved / rejected / timeout / skipped -- the set the service
-  // writes (internal/approval.Status).
+  // pending / approved / rejected / expired -- the set the service writes
+  // (internal/approval.Status). `expired` comes from CheckExpiry; neither
+  // `timeout` nor `skipped` is a value any writer of this field produces
+  // (skipped belongs to the neighbouring approval decision vocabulary).
   string status = 4;
   // Everyone asked to decide, in the order the chain declared them.
   repeated string approvers = 5;

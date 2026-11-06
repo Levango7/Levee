@@ -378,6 +378,18 @@ async function runVerify(): Promise<void> {
       </template>
     </PageHeader>
 
+    <!-- Stream staleness. A quiet refresh failure is carried (lastError)
+         rather than raised: the panels keep their last real numbers by
+         policy. But a panel that looks live and is not is the worst
+         state a monitoring view can be in — the operator's every
+         judgement rests on data that stopped moving. lastError had no
+         reader at all until this line; now the failure says so above
+         the panels it froze. -->
+    <div v-if="lastError && loadTier !== 'error' && loadTier !== 'forbidden'" class="stream-note">
+      后台刷新失败，以下数据可能已停止更新：{{ errorMessage(lastError, '未知错误') }}
+      <el-button text size="small" @click="refreshAll">重试</el-button>
+    </div>
+
     <div class="monitor">
       <!-- Left column: what is running -->
       <div class="monitor__side">
@@ -671,6 +683,17 @@ async function runVerify(): Promise<void> {
 </template>
 
 <style scoped>
+/* Stream staleness note (the quiet-refresh failure banner). Same class and
+   tokens as the alert stream's note — one shape, two streams. */
+.stream-note {
+  display: flex;
+  align-items: center;
+  gap: var(--lv-space-2);
+  margin-bottom: var(--lv-space-3);
+  font-size: var(--lv-text-xs);
+  color: var(--lv-warn);
+}
+
 /* Target map: a dense matrix, so cells are colour + title rather than words.
    A column of Chinese labels would be unreadable at 12 hosts × 4 batches. */
 
@@ -855,12 +878,11 @@ async function runVerify(): Promise<void> {
   height: 9px;
   margin-top: 5px;
   border-radius: var(--lv-radius-full);
-  background: var(--lv-ink-400);
+  /* Pending batch node: the inactive-segment alias, which the tokens
+     flip per theme — the html.dark override this replaces was the only
+     theme branch in the file. */
+  background: var(--lv-neutral-fill);
   box-shadow: 0 0 0 3px var(--lv-surface);
-}
-
-html.dark .batch__node {
-  background: var(--lv-ink-500);
 }
 
 .batch__node--completed,
@@ -994,7 +1016,10 @@ html.dark .batch__node {
   align-items: center;
   gap: var(--lv-space-2);
   padding: var(--lv-space-6) var(--lv-space-4);
-  color: #6b7c85;
+  /* 4.41:1 was under the WCAG AA floor for body text on this surface;
+     the log metadata columns use #7d8f9a (5.70:1), so the empty-state
+     line now reads at the same level as the text it stands in for. */
+  color: #7d8f9a;
 }
 
 .terminal__prompt {
@@ -1015,7 +1040,12 @@ html.dark .batch__node {
 }
 
 .log-line__ts {
-  color: #5c6b75;
+  /* The timestamp column is how an operator orders events by eye; the
+     old #5c6b75 sat at 3.47:1 on the terminal's fixed #0b1016. Raised
+     to the same value the neighbouring __source column already uses
+     (5.70:1), so both metadata columns read as one class of
+     information instead of one being visibly subordinate. */
+  color: #7d8f9a;
   font-variant-numeric: tabular-nums;
 }
 

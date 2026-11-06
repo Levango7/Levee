@@ -833,8 +833,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 	var dispatchWorkerLoop *dispatch.WorkerLoop
 	var execGuard *cluster.ExecutionGuard
 	var takeoverLoop *takeover.Loop
+
+	// Run lifecycle funnel BEFORE the background loops. The funnel is not
+	// isolation — it is observation: the one seam the chatops bridge and
+	// the webhook mirror read transitions from (runeventstore.go lists
+	// take/dispatch's write sites as the reason it exists). The loops
+	// kept the raw store under the tenancy rationale below, which quietly
+	// moved the takeover loop OUTSIDE the funnel: settleOne's
+	// running → interrupted CAS never emitted, so those consumers had
+	// zero producers again — the exact regression the funnel was built
+	// to end. The loops therefore keep the raw store for isolation and
+	// take the funnel for observation: two decorators answering two
+	// different questions, both needed at this seam.
+	runEvents := wiring.NewRunEventStore(store)
+
 	if clusterMgr != nil {
-		if err := startTakeoverAndFencing(&takeoverLoop, &execGuard, clusterMgr, store,
+		if err := startTakeoverAndFencing(&takeoverLoop, &execGuard, clusterMgr, runEvents,
 			serveOptNodeID, serveOptEngineEnabled, serveOptClusterTakeoverInterval, ctx); err != nil {
 			return err
 		}
@@ -846,16 +860,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	//    Multi-tenancy wraps the store HERE, between opening it and handing it
 	//    to the request-serving services. That position is deliberate: the
 	//    services are exactly the code that untrusted requests reach, so this
-	//    is where isolation has to be enforced. The internal background loops
-	//    above (takeover, dispatch, fencing) keep the raw store — they are
-	//    trusted in-process code operating on specific run ids, and they carry
-	//    no request context, so wrapping them would only make them fail closed
-	//    against themselves.
-	svcStore, err := wrapStoreForTenancy(store, cfg, namedTokens, oidcVerifier)
+	//    is where isolation has to be enforced. It wraps the funnel (built
+	//    above), so a tenant-scoped write still crosses the event seam. The
+	//    internal background loops (takeover, dispatch, fencing) take the
+	//    funnel but NOT the tenancy wrapper — they are trusted in-process
+	//    code operating on specific run ids, and they carry no request
+	//    context, so wrapping them would only make them fail closed against
+	//    themselves.
+	svcStore, err := wrapStoreForTenancy(runEvents, cfg, namedTokens, oidcVerifier)
 	if err != nil {
 		return err
 	}
-	svcs, err := buildServeServices(ctx, svcStore, cfg, execGuard)
+	svcs, err := buildServeServices(ctx, svcStore, runEvents, cfg, execGuard)
 	if err != nil {
 		return err
 	}
@@ -907,8 +923,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// the leader periodically assigns approved runs to idle workers and
 	// every node (including the leader) runs a worker loop that executes
 	// the runs assigned to it. Independent of the takeover loop: both run
-	// concurrently in cluster mode.
-	if err := startDispatchAndWorkerLoops(&dispatchLoop, &dispatchWorkerLoop, clusterMgr, store,
+	// concurrently in cluster mode. Funnel-wrapped like the takeover loop
+	// (observation seam in, tenancy wrapper out).
+	if err := startDispatchAndWorkerLoops(&dispatchLoop, &dispatchWorkerLoop, clusterMgr, runEvents,
 		changeSvc, serveOptNodeID, serveOptEngineEnabled, serveOptClusterDispatchInterval,
 		serveOptClusterDispatchWorkerCapacity, serveOptClusterDispatchClaimTimeout, ctx); err != nil {
 		return err
@@ -1389,14 +1406,16 @@ func loadTargetOwnershipRegistry(cfg *config.Config, store state.Store) (*invent
 	return reg, nil
 }
 
-func buildServeServices(ctx context.Context, store state.Store, cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
-	// Run lifecycle funnel first: every service below gets the decorator, so
+func buildServeServices(ctx context.Context, store state.Store, runEvents *wiring.RunEventStore,
+	cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
+	// The run lifecycle funnel arrives pre-built (runServe constructs it
+	// before the background loops so the takeover loop crosses the same
+	// seam; see the rationale there). Every service below receives the
+	// store the caller passed, which is already funnel-wrapped, so
 	// whatever writes a run status (apply, retry, takeover, pause, CLI) —
 	// the transition crosses one seam. The sink is installed later, once
 	// the ChatOps bridge exists (a nil sink drops events: the decorator is
 	// inert until then, and in deployments without chatops entirely).
-	runEvents := wiring.NewRunEventStore(store)
-	store = runEvents
 	// Credential store first: the engine (when enabled) and target probing
 	// share the encrypted store backed by LEVEE_MASTER_PASSWORD. Without it
 	// the resolver stays nil (disabled): CheckTarget probes unauthenticated
@@ -1729,7 +1748,13 @@ func buildServeServices(ctx context.Context, store state.Store, cfg *config.Conf
 	// checks against remote targets would have no honest transport.
 	var gateSvc *grpc.GateService
 	if eng != nil {
-		gateSvc = grpc.NewGateService(store, eng.Dial, serveOptEngineGatePrometheus)
+		// A cmd check executes a command on a remote host with the
+		// platform's stored credentials: it carries the apply
+		// permission on the target's environment, like the engine's
+		// own dial. Without an authorizer the endpoint keeps the
+		// deployment-wide no-policy default every other service uses.
+		gateSvc = grpc.NewGateService(store, eng.Dial, serveOptEngineGatePrometheus).
+			WithAuthorizer(authzSvc)
 	}
 	return serveServices{
 		changeSvc: changeSvc, templateSvc: templateSvc, targetSvc: targetSvc,

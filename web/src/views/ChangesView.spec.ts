@@ -39,7 +39,10 @@ const view = locate('src/views/ChangesView.vue')
 
 describe('partial-rollback remediation entry', () => {
   it('gates the 补救 button on the owned status set', () => {
-    expect(view).toContain("import { formatTimestamp, isRemediableStatus, isRetryableStatus } from '@/utils/format'")
+    // STATUS_LABEL joined this import when the status vocabulary stopped
+    // being restated in this file (utils/format owns the labels); the
+    // assertion tracks the import, not the other way round.
+    expect(view).toContain("import { formatTimestamp, STATUS_LABEL, isRemediableStatus, isRetryableStatus } from '@/utils/format'")
     // The button must exist *and* be gated by the helper — a bare "补救" that
     // renders on every row would offer an action that cannot do anything on a
     // completed change.
