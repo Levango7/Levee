@@ -405,6 +405,21 @@ func pushConfigPath() (string, error) {
 	return filepath.Join(cfg.Server.DataDir, "push.json"), nil
 }
 
+// pushDevicesPath returns the path to the device registry file. It sits next
+// to the push config in the data directory: <dataDir>/push_devices.json.
+//
+// The registry has to outlive the command that records it: `levee push
+// register` and `levee push send` are separate processes, so an in-memory
+// registry would make every registration disappear before it could be used.
+func pushDevicesPath() (string, error) {
+	cfg, err := config.Load(optConfigPath)
+	if err != nil {
+		return "", err
+	}
+	applySecurityConfig(cfg)
+	return filepath.Join(cfg.Server.DataDir, "push_devices.json"), nil
+}
+
 // loadPushConfig reads the push config from disk. A missing file yields a
 // zero-value config (no error).
 func loadPushConfig() (*pushConfigFile, error) {
@@ -468,7 +483,20 @@ func getPushManager() (*push.PushManager, error) {
 		if cfg.FCM.ServiceAccountKey != "" {
 			fcmClient = push.NewFCMClient(cfg.FCM.ProjectID, []byte(cfg.FCM.ServiceAccountKey))
 		}
-		pushManagerSingleton = push.NewPushManager(apnsClient, fcmClient)
+		// The device registry is persisted so a registration survives the
+		// command that made it — register and send are separate processes.
+		devicesPath, err := pushDevicesPath()
+		if err != nil {
+			pushManagerInitErr = fmt.Errorf("locate device registry: %w", err)
+			return
+		}
+		pm, err := push.NewPushManagerWithStore(
+			apnsClient, fcmClient, push.NewFileDeviceStore(devicesPath))
+		if err != nil {
+			pushManagerInitErr = fmt.Errorf("load device registry: %w", err)
+			return
+		}
+		pushManagerSingleton = pm
 	})
 	if pushManagerInitErr != nil {
 		return nil, pushManagerInitErr

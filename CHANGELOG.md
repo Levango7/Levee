@@ -11,6 +11,13 @@
 - **改动**：A-4 的「解锁后动作」改为现存安装面，并在单元格里写明日期与取证方式；D-1b 行移出待办表，D 节加留存说明（登记内容在已交付段与 `CHANGELOG.md` 2026-10-28 段留痕，「强制档」边界由已交付段的 E-3 承接）；文件标题的修订日期追加本笔；`docs/project-status-2026-11.md` 按追加式口径新增 §14（§5.2 / §12 原文不动）。
 - **验证**：`check_blocked_items` PASSED（**14** 项 — A=5 B=0 C=3 D=2 E=3 F=1 G=0，rc=0；下限 12 未动）；`scripts/check_blocked_items.py` 的气囊注释按实测重写（原写 16，在 master `829f4ae` 上实测已是 15，本笔后 14）；`check_doc_anchors` / `check_roadmap_status` / `check_release_versions` / `test_changelog_structure` / `python -m unittest discover -s scripts` 全过。零代码行为变更。
 - **边界**：只订正「引用的文件不存在 / 已交付行仍计为待办」这两件事；「四 profile 演练」的 profile 清单与安装面是否覆盖该演练**未核**，A–F 的解锁条件一条未变。§5.2 的「唯一未开工的代码项是 D-1c」在本笔之前已过期（D-1c 随 #308 合入），按追加式口径只在 §14 登记、不改写原文。
+### 修复（`levee push` 的设备注册表跨进程可见：持久化到 `<dataDir>/push_devices.json`）
+
+- **缺口**：设备注册表只活在 `PushManager` 的内存 map 里。`levee push register` 把设备写进去、命令退出就没了；随后的 `levee push devices` 是**另一个进程**，拿到的是空注册表，于是永远回答「No devices registered」；`levee push send` / `levee push test` 则以 `device not found` 失败。**整个 `levee push` 命令面跨进程不可用**——而 `docs/cli-reference.md` 第 23 章把它当可用特性写着。台账 `docs/blocked-items.md` 把 A-3 归在「卡在外部凭据/环境（**代码零阻碍**）」节、写「只差凭据」，与代码不符：注册表不落地与凭据无关。
+- **为什么既有测试没发现**：`cmd/levee/cmd_push_e2e_test.go` 的用例把**进程内**的 manager singleton 跨命令留着（注释明写「the push commands share the in-process device registry」），于是注册看起来是持久的——而生产里每条命令都是独立进程。
+- **修法**：新增 `push.DeviceStore` 接口与 `push.FileDeviceStore`（JSON 文件，**原子写**（同目录临时文件 + rename），权限 `0600`；损坏的文件**报错**而不是读成空——读成空会让所有已注册设备看起来凭空消失，正是本条要修的那个症状）。`PushManager` 新增 `NewPushManagerWithStore`：构造时载入已有注册表，`RegisterDevice` / `UnregisterDevice` 成功后落盘；**落盘失败则回滚内存改动**（否则会留下「内存说已注册、文件里没有」的设备——现在会推到、下次重启就没了）。`NewPushManager` 行为不变（进程内注册表）。`levee push` 的 manager 改用 `<dataDir>/push_devices.json`（与 `push.json` 同目录），**不新增操作面**。
+- **验证**：`internal/push` 新增 10 例（文件 store 往返 / 缺文件=空 / 损坏文件=报错 / 空文件=空 / 原子写且不留临时文件 / 权限 0600 / 空用户被丢 / Save 覆盖旧内容；manager 跨进程可见 / unregister 也持久 / 落盘失败回滚 / 注册表读不出来时构造报错 / nil store 保持旧行为）；`cmd/levee` 新增 1 例（**复位 manager singleton 模拟进程边界**：register → devices 仍能看到 → unregister → devices 仍看不到）。**变异验证 4 条全红**：① CLI 改回进程内注册表 → 跨进程用例红；② `persistLocked` 变成 no-op → manager 跨进程用例红；③ 损坏文件读成空 → 损坏用例红；④ 去掉落盘失败回滚 → 回滚用例红。`go build ./...` rc=0；`go test ./internal/push/ ./cmd/levee/` 全绿；`golangci-lint v2.13.2` 0 issues。
+- **如实边界**：本笔只交付**注册表持久化 + CLI 接线**。**`levee serve` 仍未接推送**——`cmd_serve.go` 的 `NewMobileApprovalService` 硬编码 `pushMgr=nil`，守护进程的审批请求仍不会产生任何通知；深链 base URL 仍硬编码占位符 `https://levee.local`。这两条是 A-3 剩下的代码侧缺口，本笔不含。
 
 
 ### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
