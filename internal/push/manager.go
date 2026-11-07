@@ -37,25 +37,64 @@ type PushMessage struct {
 }
 
 // PushManager routes PushMessages to the right upstream client (APNs or FCM)
-// based on each registered device's platform. It also owns the in-memory
-// device registry. A PushManager is safe for concurrent use.
+// based on each registered device's platform. It also owns the device
+// registry. A PushManager is safe for concurrent use.
+//
+// The registry is held in memory and, when a DeviceStore is configured,
+// mirrored to it on every change — so a registration made by one process is
+// visible to the next. Without a store the registry is process-local, which
+// is what the in-package tests use.
 type PushManager struct {
-	apns *APNSClient
-	fcm  *FCMClient
+	apns  *APNSClient
+	fcm   *FCMClient
+	store DeviceStore
 
 	mu      sync.RWMutex
 	devices map[string][]DeviceToken // key: user ID
 }
 
-// NewPushManager builds a PushManager. Either apns or fcm may be nil when the
-// deployment only uses one platform; SendToUser will skip the missing channel
-// and log a warning.
+// NewPushManager builds a PushManager with a process-local device registry.
+// Either apns or fcm may be nil when the deployment only uses one platform;
+// SendToUser will skip the missing channel and log a warning.
+//
+// Callers that need registrations to survive the process (the CLI and the
+// daemon) should use NewPushManagerWithStore instead.
 func NewPushManager(apns *APNSClient, fcm *FCMClient) *PushManager {
-	return &PushManager{
+	pm, err := NewPushManagerWithStore(apns, fcm, nil)
+	if err != nil {
+		// Unreachable: a nil store never fails to load.
+		panic("push: NewPushManagerWithStore with a nil store: " + err.Error())
+	}
+	return pm
+}
+
+// NewPushManagerWithStore builds a PushManager whose device registry is
+// persisted through store. Devices already recorded in the store are loaded
+// into the manager, so a fresh process starts with the deployment's existing
+// registrations instead of an empty set.
+//
+// A nil store yields a process-local registry (the NewPushManager
+// behaviour). A store that cannot be read is an error: starting up with an
+// empty registry would make every registered device disappear for this
+// process, which is the exact failure the store is meant to prevent.
+func NewPushManagerWithStore(apns *APNSClient, fcm *FCMClient, store DeviceStore) (*PushManager, error) {
+	pm := &PushManager{
 		apns:    apns,
 		fcm:     fcm,
 		devices: make(map[string][]DeviceToken),
+		store:   store,
 	}
+	if store == nil {
+		return pm, nil
+	}
+	devices, err := store.Load()
+	if err != nil {
+		return nil, err
+	}
+	if devices != nil {
+		pm.devices = devices
+	}
+	return pm, nil
 }
 
 // RegisterDevice associates a device token with a user. If the same (token,
@@ -88,9 +127,41 @@ func (pm *PushManager) RegisterDevice(userID, token, platform string) error {
 		UserID:       userID,
 		RegisteredAt: time.Now().UTC(),
 	})
+	if err := pm.persistLocked(); err != nil {
+		// The registration did not stick, so the in-memory view must not
+		// claim it either: a device that is "registered" in memory but
+		// absent from the store would be sent to now and lost on the next
+		// process start.
+		pm.devices[userID] = existing
+		if len(pm.devices[userID]) == 0 {
+			delete(pm.devices, userID)
+		}
+		return err
+	}
 	log.Info("push: device registered",
 		"user_id", userID, "platform", plat, "token_len", len(token))
 	return nil
+}
+
+// persistLocked mirrors the in-memory registry into the configured store.
+// The caller must hold pm.mu (write lock) so the snapshot it writes is the
+// registry as of this change.
+//
+// A nil store means "process-local registry" and is not an error.
+func (pm *PushManager) persistLocked() error {
+	if pm.store == nil {
+		return nil
+	}
+	snapshot := make(map[string][]DeviceToken, len(pm.devices))
+	for userID, list := range pm.devices {
+		if len(list) == 0 {
+			continue
+		}
+		cp := make([]DeviceToken, len(list))
+		copy(cp, list)
+		snapshot[userID] = cp
+	}
+	return pm.store.Save(snapshot)
 }
 
 // UnregisterDevice removes a device token from a user's device list. Returns
@@ -113,6 +184,13 @@ func (pm *PushManager) UnregisterDevice(userID, token string) error {
 			if len(pm.devices[userID]) == 0 {
 				delete(pm.devices, userID)
 			}
+			if err := pm.persistLocked(); err != nil {
+				// Put the device back: the store still has it, so
+				// dropping it from memory would make the two views
+				// disagree until the next process start.
+				pm.devices[userID] = existing
+				return err
+			}
 			log.Info("push: device unregistered",
 				"user_id", userID, "token_len", len(token))
 			return nil
@@ -124,8 +202,9 @@ func (pm *PushManager) UnregisterDevice(userID, token string) error {
 // Send delivers a PushMessage to every device registered for msg.UserID.
 // Each device is dispatched on the appropriate channel; per-device errors are
 // collected but do not abort the loop. Returns an aggregate error wrapping
-// ErrPushFailed when at least one device failed; returns nil when all devices
-// succeeded or when the user has no registered devices.
+// ErrPushFailed when at least one device failed, and ErrDeviceNotFound when
+// the user has no registered devices at all — a message that reached nobody
+// is a failure, not a success.
 func (pm *PushManager) Send(ctx context.Context, msg PushMessage) error {
 	if msg.UserID == "" {
 		return ErrEmptyUserID

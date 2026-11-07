@@ -2,8 +2,10 @@ package push
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -235,4 +237,96 @@ func TestToStringInterfaceMap_PreservesEntries(t *testing.T) {
 	out := toStringInterfaceMap(m)
 	assert.Equal(t, "1", out["a"])
 	assert.Equal(t, "2", out["b"])
+}
+
+// --- persisted device registry ---------------------------------------------
+//
+// The registry used to live only in the PushManager's map, so a registration
+// made by one process was gone before the next command could use it. These
+// cases pin the durability contract: a second manager over the same store
+// sees what the first one recorded.
+
+// TestPushManager_RegisterDeviceSurvivesANewManager is the cross-process
+// case: a fresh manager (a fresh CLI invocation) loads the device the
+// previous one registered.
+func TestPushManager_RegisterDeviceSurvivesANewManager(t *testing.T) {
+	store := NewFileDeviceStore(filepath.Join(t.TempDir(), "push_devices.json"))
+
+	first, err := NewPushManagerWithStore(nil, nil, store)
+	require.NoError(t, err)
+	require.NoError(t, first.RegisterDevice("alice", "tok-a", PlatformIOS))
+
+	second, err := NewPushManagerWithStore(nil, nil, store)
+	require.NoError(t, err)
+	devices := second.ListDevices("alice")
+	require.Len(t, devices, 1, "a new manager must see the registered device")
+	assert.Equal(t, "tok-a", devices[0].Token)
+	assert.Equal(t, PlatformIOS, devices[0].Platform)
+}
+
+// Unregistering must be durable too, or a removed device would keep
+// receiving pushes after every restart.
+func TestPushManager_UnregisterDeviceSurvivesANewManager(t *testing.T) {
+	store := NewFileDeviceStore(filepath.Join(t.TempDir(), "push_devices.json"))
+
+	first, err := NewPushManagerWithStore(nil, nil, store)
+	require.NoError(t, err)
+	require.NoError(t, first.RegisterDevice("alice", "tok-a", PlatformIOS))
+	require.NoError(t, first.UnregisterDevice("alice", "tok-a"))
+
+	second, err := NewPushManagerWithStore(nil, nil, store)
+	require.NoError(t, err)
+	assert.Empty(t, second.ListDevices("alice"))
+}
+
+// A store that cannot be written must not leave the in-memory view claiming
+// a registration that is not durable — the device would be pushed to now and
+// vanish on the next start.
+func TestPushManager_RegisterDeviceFailingStoreRollsBack(t *testing.T) {
+	pm, err := NewPushManagerWithStore(nil, nil, unsaveableDeviceStore{})
+	require.NoError(t, err)
+
+	err = pm.RegisterDevice("alice", "tok-a", PlatformIOS)
+	require.Error(t, err)
+	assert.Empty(t, pm.ListDevices("alice"), "a failed persist must not leave the device registered in memory")
+}
+
+// A registry that exists but cannot be read is an error at construction: a
+// manager that started with an empty registry would silently drop every
+// registered device.
+func TestPushManager_UnreadableStoreIsAnError(t *testing.T) {
+	pm, err := NewPushManagerWithStore(nil, nil, failingDeviceStore{})
+	require.Error(t, err)
+	assert.Nil(t, pm)
+}
+
+// A nil store keeps the old process-local behaviour: NewPushManager must not
+// start failing because of the persistence plumbing.
+func TestPushManager_NilStoreStaysProcessLocal(t *testing.T) {
+	pm := NewPushManager(nil, nil)
+	require.NoError(t, pm.RegisterDevice("alice", "tok-a", PlatformIOS))
+	assert.Len(t, pm.ListDevices("alice"), 1)
+}
+
+// failingDeviceStore cannot be read at all.
+type failingDeviceStore struct{}
+
+func (failingDeviceStore) Load() (map[string][]DeviceToken, error) {
+	return nil, errors.New("device registry unavailable")
+}
+
+func (failingDeviceStore) Save(map[string][]DeviceToken) error {
+	return errors.New("device registry unavailable")
+}
+
+// unsaveableDeviceStore reads fine (an empty registry) but cannot be
+// written — the case where the registration must not be claimed in memory.
+type unsaveableDeviceStore struct{}
+
+func (unsaveableDeviceStore) Load() (map[string][]DeviceToken, error) {
+	return map[string][]DeviceToken{}, nil
+}
+
+func (unsaveableDeviceStore) Save(map[string][]DeviceToken) error {
+	return errors.New("device registry unavailable")
 }

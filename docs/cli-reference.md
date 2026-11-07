@@ -2980,6 +2980,11 @@ levee drift report --host web-01 --days 30
 
 管理移动设备推送通知（APNs / FCM），支持设备注册、推送发送与配置管理。
 
+设备注册表落在数据目录下的 `push_devices.json`（与 `push.json` 同目录），
+**跨命令、跨进程可见**：`levee push register` 登记的设备会被之后的
+`levee push devices` / `levee push send` 读到。写文件采用原子替换（临时文件
+改名），文件权限 `0600`（设备 token 是该设备推送通道上的凭据）。
+
 ### 23.1 push register
 
 注册移动设备用于接收推送通知。

@@ -141,3 +141,35 @@ func TestPushE2E_ConfigValidation(t *testing.T) {
 	assert.Contains(t, out, "saved")
 	assert.FileExists(t, filepath.Join(e.dataDir, "push.json"))
 }
+
+// TestPushE2E_DeviceRegistrySurvivesProcessBoundary is the regression guard
+// for the in-memory registry: `levee push register` and `levee push devices`
+// are separate processes, so the registration has to be on disk.
+//
+// The earlier e2e case passed only because the manager singleton stayed
+// alive across the commands in one test process — exactly the thing that
+// does not happen in production. Resetting the singleton here is what makes
+// the two commands independent, the way two shell invocations are.
+func TestPushE2E_DeviceRegistrySurvivesProcessBoundary(t *testing.T) {
+	defer resetRootFlags()
+	resetPushFlags(t)
+	e := newCLIEnv(t)
+	cfg := []string{"--config", e.cfgPath}
+
+	// register in one "process".
+	pushRun(t, append([]string{"push", "register", "--user", "alice", "--token", "tok-a"}, cfg...)...)
+	resetPushManagerForTest() // a new process: the singleton is gone
+
+	// a second "process" must still see the device.
+	out := pushRun(t, append([]string{"push", "devices", "--user", "alice"}, cfg...)...)
+	assert.Contains(t, out, "tok-a", "the registration must survive the command that made it")
+
+	// and a third one, after an unregister in the second.
+	pushRun(t, append([]string{"push", "unregister", "--user", "alice", "--token", "tok-a"}, cfg...)...)
+	resetPushManagerForTest()
+
+	out = pushRun(t, append([]string{"push", "devices", "--user", "alice"}, cfg...)...)
+	assert.NotContains(t, out, "tok-a", "an unregister must survive too")
+
+	resetPushManagerForTest()
+}
