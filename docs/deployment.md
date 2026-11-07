@@ -305,7 +305,7 @@ levee serve --cluster \
 
 当前能力边界：
 
-- **节点能力申报（可选）**：`--node-capabilities shell,pkg` 把"这个节点声明自己能执行哪些模块"写进 `cluster_nodes.capabilities`（启动日志打印规范化结果）。每次 join 都会刷新该列：声明属于此刻说话的这个节点，重启时不再声明即清空（与 `agents` 表同一条契约）。可查：`GET /system/cluster-status?capability=<name>`；K8s 侧由 `cluster.nodeCapabilities` 注入，master 与 worker Deployment 都吃这一个值（同一镜像＝同一批模块），留空则两个 Deployment 的 args 与加这个值之前逐字一致。**它不参与派发**——`internal/dispatch` 按负载挑最闲的活跃 worker，声明改变的是运维能否回答"这批节点里谁装了 pkg"，不改变工作落在谁身上。
+- **节点能力申报（可选）**：`--node-capabilities shell,pkg` 把"这个节点声明自己能执行哪些模块"写进 `cluster_nodes.capabilities`（启动日志打印规范化结果）。每次 join 都会刷新该列：声明属于此刻说话的这个节点，重启时不再声明即清空（与 `agents` 表同一条契约）。可查：`GET /system/cluster-status?capability=<name>`；K8s 侧由 `cluster.nodeCapabilities` 注入，master 与 worker Deployment 都吃这一个值（同一镜像＝同一批模块），留空则两个 Deployment 的 args 与加这个值之前逐字一致。**模块名不参与派发**——`internal/dispatch` 按负载挑最闲的**合格** worker，模块名不进入"合格"的判定，声明改变的是运维能否回答"这批节点里谁装了 pkg"，不改变工作落在谁身上。**跨机房放置是唯一例外**：`--node-regions dc-north,dc-south` 声明本节点能到达哪些机房（写成保留 token `region=<名>`，同一列），再把目标机在 inventory 里打上 `region: dc-north` 标签，派发就只把该 run 交给声明覆盖了该 run 全部所需机房的节点。三条判据：全部目标都不带标签＝与引入前逐字节相同；部分带标签＝拒绝派发并报 `region_unresolved`；跨两个机房而**没有任何节点同时声明这两者**＝报 `no_single_node_spans_regions`（一次变更整条交给一个节点，不拆分）。没有合格节点时 run 留在 `approved`、`levee_dispatched_runs_total{result="unplaceable"}` 计数、`levee cluster status` 的 `Unplaceable Approved Runs` 段列出每条卡住的 run 与原因。
 - **已具备**：
   - 共享 PostgreSQL 存储带来的数据一致性；
   - 持久化成员注册：节点写入 `cluster_nodes` 表并周期心跳（默认 10s 一次，30s 未心跳被对端标记 offline），各节点本地视图从共享表收敛，leader 按确定性策略（active master 最小 ID，缺则 active worker 最小 ID）在各节点独立收敛；
