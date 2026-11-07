@@ -246,3 +246,33 @@ func TestAuditExportEmptyJSON_ArrayNotNull(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
 	assert.Equal(t, "[]", string(bytes.TrimSpace(envelope.Data)), "empty export must be [], not null; output: %s", out)
 }
+
+// TestAuditVerifyValidJSON_FailuresArrayNotNull guards the CLI JSON contract:
+// a valid chain verification must report `"failures": []`, never `null`.
+func TestAuditVerifyValidJSON_FailuresArrayNotNull(t *testing.T) {
+	defer resetRootFlags()
+	defer resetAuditFlags()
+	t.Cleanup(resetRootFlags)
+	t.Cleanup(resetAuditFlags)
+
+	out, err := captureStdout(func() error {
+		// captureStdout resets root flags; set JSON mode after reset.
+		optJSON = true
+		optQuiet = false
+		return renderAuditVerify(&audit.VerifyResult{
+			RunID:    "run-1",
+			Valid:    true,
+			Count:    3,
+			Failures: nil,
+		})
+	})
+	require.NoError(t, err, "output: %s", out)
+
+	var envelope struct {
+		Data struct {
+			Failures json.RawMessage `json:"failures"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
+	assert.Equal(t, "[]", string(bytes.TrimSpace(envelope.Data.Failures)), "valid verify failures must be [], not null; output: %s", out)
+}

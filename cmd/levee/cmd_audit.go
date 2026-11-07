@@ -196,11 +196,15 @@ func verifyAuditRemote(ctx context.Context) (*audit.VerifyResult, error) {
 // Both modes go through here so the JSON envelope, the human rows and the
 // failure exit code cannot drift apart.
 func renderAuditVerify(result *audit.VerifyResult) error {
+	failures := result.Failures
+	if failures == nil {
+		failures = []audit.ChainFailure{}
+	}
 	output := map[string]any{
 		"run_id":   result.RunID,
 		"valid":    result.Valid,
 		"count":    result.Count,
-		"failures": result.Failures,
+		"failures": failures,
 	}
 
 	if !result.Valid {
