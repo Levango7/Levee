@@ -38,8 +38,10 @@ SEPARATOR_RE = re.compile(r"^\|[\s:-]*\|")
 ID_RE = re.compile(r"^([A-Z])-(\d+[a-z]?)")
 EMPTY_NOTE = "当前无"
 
-# Airbag: the six categories currently hold 16 rows. A floor below that means a
-# parser that stops seeing them cannot pass as "nothing to report".
+# Airbag: the category tables currently hold 14 rows (2026-11-07: D-1b moved to
+# the delivered section; the previous "16" had already gone stale on the earlier
+# D-1c / G moves). A floor below the real count means a parser that stops seeing
+# rows cannot pass as "nothing to report".
 MIN_ROWS = 12
 
 
