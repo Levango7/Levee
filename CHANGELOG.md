@@ -5,6 +5,14 @@
 ## [Unreleased]
 
 
+### 文档（账本卫生：A-4 的假引用订正、D-1b 残留行移除）
+
+- **缺口**：盘点 `docs/blocked-items.md` 剩余 A–F 项、逐条对引用物时，发现两处账本与仓库不一致。① **A-4** 声称 `scripts/preflight-deploy.sh` 已就绪，但该文件**从未存在**——`git log --all -- scripts/preflight-deploy.sh` 零记录，订正前全仓 `preflight` 唯一命中就是本行自身；真正存在的安装面是 `deploy/baremetal/install.sh`（幂等安装器）、`levee doctor` 与 `docs/deployment.md` §15 交付检查单。② **D-1b** 自带「（已交付）」标记，且「已交付、不再登记」段早已登记 PR #234，却仍留在 D 待办表里被 `check_blocked_items` 计为一行——违反文件头「每完成一项就从本清单移除」的口径。
+- **改动**：A-4 的「解锁后动作」改为现存安装面，并在单元格里写明日期与取证方式；D-1b 行移出待办表，D 节加留存说明（登记内容在已交付段与 `CHANGELOG.md` 2026-10-28 段留痕，「强制档」边界由已交付段的 E-3 承接）；文件标题的修订日期追加本笔；`docs/project-status-2026-11.md` 按追加式口径新增 §14（§5.2 / §12 原文不动）。
+- **验证**：`check_blocked_items` PASSED（**14** 项 — A=5 B=0 C=3 D=2 E=3 F=1 G=0，rc=0；下限 12 未动）；`scripts/check_blocked_items.py` 的气囊注释按实测重写（原写 16，在 master `829f4ae` 上实测已是 15，本笔后 14）；`check_doc_anchors` / `check_roadmap_status` / `check_release_versions` / `test_changelog_structure` / `python -m unittest discover -s scripts` 全过。零代码行为变更。
+- **边界**：只订正「引用的文件不存在 / 已交付行仍计为待办」这两件事；「四 profile 演练」的 profile 清单与安装面是否覆盖该演练**未核**，A–F 的解锁条件一条未变。§5.2 的「唯一未开工的代码项是 D-1c」在本笔之前已过期（D-1c 随 #308 合入），按追加式口径只在 §14 登记、不改写原文。
+
+
 ### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
 
 - **背景**：2026-11-06 晚起，CI 的 `trivy` 腿（`check (all jobs passed)` 的必需腿）扫出 blocking finding **CVE-2026-78661**（HIGH）：`usr/local/bin/levee` 里的 `golang.org/x/net` v0.60.0（indirect）——`golang.org/x/net/html: Denial of Service via crafted HTML input`，fixed version **0.62.0**。这条腿红的这段时间，**任何** PR 与 master push 都合不进去（与具体改动无关）。
