@@ -34,7 +34,11 @@ import (
 func restoreClusterOpts(t *testing.T) {
 	t.Helper()
 	caps := serveOptNodeCapabilities
-	t.Cleanup(func() { serveOptNodeCapabilities = caps })
+	regions := serveOptNodeRegions
+	t.Cleanup(func() {
+		serveOptNodeCapabilities = caps
+		serveOptNodeRegions = regions
+	})
 }
 
 func TestClusterNodeForServe(t *testing.T) {
@@ -47,6 +51,7 @@ func TestClusterNodeForServe(t *testing.T) {
 
 	t.Run("nothing declared is the column's empty value", func(t *testing.T) {
 		serveOptNodeCapabilities = nil
+		serveOptNodeRegions = nil
 		node, err := clusterNodeForServe()
 		require.NoError(t, err)
 		assert.Equal(t, capability.Empty, node.Capabilities)
@@ -60,6 +65,7 @@ func TestClusterNodeForServe(t *testing.T) {
 		// Typed in one order, stored as a set: the same list re-typed differently
 		// must not look like a changed declaration on the next restart.
 		serveOptNodeCapabilities = []string{"shell", " pkg ", "shell"}
+		serveOptNodeRegions = nil
 		node, err := clusterNodeForServe()
 		require.NoError(t, err)
 		assert.Equal(t, `["pkg","shell"]`, node.Capabilities)
@@ -70,10 +76,36 @@ func TestClusterNodeForServe(t *testing.T) {
 		// it would put a capability on the card that matches no module and no
 		// filter, which is a decoration with a number next to it.
 		serveOptNodeCapabilities = []string{"shell", " "}
+		serveOptNodeRegions = nil
 		_, err := clusterNodeForServe()
 		require.Error(t, err, "an empty capability name must fail startup, not be stored")
 		assert.Contains(t, err.Error(), "--node-capabilities")
 		assert.Contains(t, err.Error(), "must not be empty")
+	})
+
+	// Regions share the capabilities column (one declaration column, one parser)
+	// but arrive through their own flag, so the operator never types the reserved
+	// prefix and a malformed region names the flag that carried it.
+	t.Run("regions are stored as reserved tokens beside module names", func(t *testing.T) {
+		serveOptNodeCapabilities = []string{"shell"}
+		serveOptNodeRegions = []string{"dc-a", " dc-b "}
+		node, err := clusterNodeForServe()
+		require.NoError(t, err)
+		assert.Equal(t, `["region=dc-a","region=dc-b","shell"]`, node.Capabilities)
+
+		regions, err := capability.Regions(node.Capabilities)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"dc-a", "dc-b"}, regions,
+			"the dispatched-on list must be exactly what the flag said")
+	})
+
+	t.Run("a malformed region refuses the start and names its own flag", func(t *testing.T) {
+		serveOptNodeCapabilities = nil
+		serveOptNodeRegions = []string{""}
+		_, err := clusterNodeForServe()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--node-regions",
+			"a region error blamed on --node-capabilities sends the operator to the wrong flag")
 	})
 }
 

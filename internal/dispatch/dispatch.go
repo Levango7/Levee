@@ -14,6 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,11 +48,14 @@ const DefaultClaimTimeout = 10 * time.Minute
 // executing rows lets the leader oversubscribe a node.
 var terminalAssignStates = []string{state.AssignmentStateDone, state.AssignmentStateInterrupted}
 
-// workerLoad is the dispatch-internal view of a worker node: its identity
-// and how many active assignments it currently holds.
+// workerLoad is the dispatch-internal view of a worker node: its identity,
+// how many active assignments it currently holds, and the raw capability
+// declaration (which carries its `region=` reachability tokens — see
+// placement.go).
 type workerLoad struct {
-	id     string
-	active int
+	id           string
+	active       int
+	capabilities string
 }
 
 // Loop is the dispatch coordinator. It is cluster-only: construction
@@ -65,6 +70,11 @@ type Loop struct {
 	// claimTimeout bounds how long a pending assignment may wait unclaimed
 	// before the leader reclaims it (see DefaultClaimTimeout).
 	claimTimeout time.Duration
+
+	// lastRefusal is the previous sweep's unplaceable-run summary. Only a
+	// changed picture is logged: a cluster that cannot place work would
+	// otherwise emit the same warnings every ten seconds forever.
+	lastRefusal string
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -163,11 +173,17 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("dispatch: list worker loads: %w", err)
 	}
 
+	// Placement: reclaim and assignment both consult the run's data-centre
+	// requirement. refusals accumulates the runs that could not be placed so
+	// the sweep logs one summary instead of one line per run.
+	resolver := newPlacementResolver(l.store)
+	refusals := map[string][]string{}
+
 	// Reclaim stale pending assignments BEFORE looking for new candidates: a
 	// run whose pending assignment was never claimed still counts as having
 	// an active assignment, so the candidate filter below cannot see it and
 	// it would otherwise rot until a human intervened.
-	if _, err := l.reclaimStale(ctx, workers); err != nil {
+	if _, err := l.reclaimStaleWith(ctx, workers, resolver, refusals); err != nil {
 		return 0, fmt.Errorf("dispatch: reclaim stale: %w", err)
 	}
 
@@ -176,32 +192,48 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("dispatch: list candidates: %w", err)
 	}
 	if len(candidates) == 0 {
+		l.reportRefusals(refusals)
 		return 0, nil
 	}
 
 	claimed := 0
-	wi := 0
 	for _, run := range candidates {
-		// Find the next worker with spare capacity.
-		for wi < len(workers) && workers[wi].active >= l.capacity {
-			wi++
+		place, err := resolver.forRun(ctx, run)
+		if err != nil {
+			return claimed, fmt.Errorf("dispatch: resolve placement for run %s: %w", run.ID, err)
 		}
-		if wi >= len(workers) {
-			break // all workers saturated
+		if !place.Placeable() {
+			recordRefusal(refusals, place.Reason, run.ID, place.Detail)
+			continue
 		}
-		worker := workers[wi]
+		idx, ok := pickWorker(workers, place.Regions, l.capacity)
+		if !ok {
+			// No eligible node had spare capacity. Distinguish the three cases
+			// with one predicate so the log, the metric and `cluster status`
+			// cannot disagree about which one this is.
+			if reason := Assignability(place.Regions, capsOf(workers)); reason != "" {
+				recordRefusal(refusals, reason, run.ID, place.String())
+			} else {
+				// Eligible nodes exist but are saturated: ordinary back-pressure,
+				// not a placement failure. The run stays approved for a later sweep.
+				metrics.Default.IncDispatch(metrics.DispatchResultSkippedBusy)
+			}
+			continue
+		}
+		worker := workers[idx]
 
-		ok, err := l.claim(ctx, run, worker.id)
+		ok, err = l.claim(ctx, run, worker.id)
 		if err != nil {
 			log.Warn("dispatch: claim failed", "run_id", run.ID, "worker", worker.id, "error", err)
 			continue
 		}
 		if ok {
-			workers[wi].active++
+			workers[idx].active++
 			claimed++
 			metrics.Default.IncDispatch(metrics.DispatchResultClaimed)
 		}
 	}
+	l.reportRefusals(refusals)
 	return claimed, nil
 }
 
@@ -221,11 +253,14 @@ func (l *Loop) ReclaimOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("dispatch: list worker loads: %w", err)
 	}
-	return l.reclaimStale(ctx, workers)
+	return l.reclaimStaleWith(ctx, workers, newPlacementResolver(l.store), map[string][]string{})
 }
 
-// reclaimStale re-points pending assignments whose owner has not claimed them
-// within claimTimeout at the least-loaded active worker, bumping the epoch.
+// reclaimStaleWith is the shared body of the reclaim sweep: DispatchOnce wants
+// the refusals folded into its own summary, ReclaimOnce only wants the count.
+//
+// It re-points pending assignments whose owner has not claimed them within
+// claimTimeout at the least-loaded eligible active worker, bumping the epoch.
 // The bump is the fencing half of the fix: the stale owner's late claim
 // (UpdateAssignmentStateIf against its old epoch) fails instead of executing
 // a run that now belongs to another node.
@@ -238,7 +273,10 @@ func (l *Loop) ReclaimOnce(ctx context.Context) (int, error) {
 //
 // workers is the caller's live-load view; the function keeps it sorted as it
 // hands out reclaimed work so the caller's capacity accounting stays honest.
-func (l *Loop) reclaimStale(ctx context.Context, workers []workerLoad) (int, error) {
+// Reclaim obeys the same data-centre rule as first assignment: a reclaim that
+// ignored placement would be a hole straight through it, and it is the path a
+// partitioned region's runs take.
+func (l *Loop) reclaimStaleWith(ctx context.Context, workers []workerLoad, resolver *placementResolver, refusals map[string][]string) (int, error) {
 	pending, err := l.store.ListAssignments(ctx, state.AssignmentFilter{
 		State: state.AssignStatePending,
 		Limit: 10000,
@@ -281,7 +319,27 @@ func (l *Loop) reclaimStale(ctx context.Context, workers []workerLoad) (int, err
 			log.Warn("dispatch: stale assignment left pending (no active worker)", "run_id", a.RunID)
 			continue
 		}
-		target := workers[0] // least loaded (workerLoads sorted; kept sorted below)
+		place, perr := resolver.forRun(ctx, run)
+		if perr != nil {
+			return reclaimed, perr
+		}
+		if !place.Placeable() {
+			recordRefusal(refusals, place.Reason, a.RunID, place.Detail)
+			continue
+		}
+		idx, eligible := pickWorker(workers, place.Regions, l.capacity)
+		if !eligible {
+			if reason := Assignability(place.Regions, capsOf(workers)); reason != "" {
+				recordRefusal(refusals, reason, a.RunID, place.String())
+			} else {
+				// Eligible nodes are saturated: leave the row pending (it is
+				// still the stale owner's commitment) and count it as load.
+				log.Info("dispatch: stale assignment left pending (eligible workers busy)",
+					"run_id", a.RunID, "placement", place.String())
+			}
+			continue
+		}
+		target := workers[idx] // least loaded eligible (workerLoads sorted; kept sorted below)
 		ok, err := l.store.ReclaimAssignment(ctx, a.RunID, a.Epoch, target.id)
 		if err != nil {
 			log.Warn("dispatch: reclaim failed", "run_id", a.RunID, "error", err)
@@ -292,7 +350,7 @@ func (l *Loop) reclaimStale(ctx context.Context, workers []workerLoad) (int, err
 			// reclaim won the row: that attempt is authoritative, stand down.
 			continue
 		}
-		workers[0].active++
+		workers[idx].active++
 		sortByLoad(workers)
 		reclaimed++
 		metrics.Default.IncDispatch(metrics.DispatchResultReclaimed)
@@ -389,21 +447,75 @@ func (l *Loop) workerLoads(ctx context.Context) ([]workerLoad, error) {
 		if n.Status != cluster.StatusActive {
 			continue
 		}
-		out = append(out, workerLoad{id: n.ID, active: counts[n.ID]})
+		out = append(out, workerLoad{id: n.ID, active: counts[n.ID], capabilities: n.Capabilities})
 	}
 	sortByLoad(out)
 	return out, nil
 }
 
 // sortByLoad orders workers ascending by live load (insertion sort; n is
-// tiny). Reclaim and the assignment loop both keep the slice ordered as they
-// hand out work, so the next pick is always the least-loaded node.
+// tiny), then by ID. Reclaim and the assignment loop both keep the slice
+// ordered as they hand out work, so the next pick is always the least-loaded
+// node.
+//
+// The ID tie-break is not cosmetic: the slice comes from registry.List(), which
+// iterates a map, so two equally loaded nodes would otherwise be picked in a
+// different order on every sweep. That makes placement irreproducible for an
+// operator reading logs and makes "the least loaded node wins" untestable — the
+// assertion would be about Go's map iteration order, not about dispatch. CI
+// caught exactly that on the first run of the region tests.
 func sortByLoad(workers []workerLoad) {
 	for i := 1; i < len(workers); i++ {
-		for j := i; j > 0 && workers[j-1].active > workers[j].active; j-- {
+		for j := i; j > 0 && lessWorker(workers[j], workers[j-1]); j-- {
 			workers[j-1], workers[j] = workers[j], workers[j-1]
 		}
 	}
+}
+
+// lessWorker orders by live load, then by node ID.
+func lessWorker(a, b workerLoad) bool {
+	if a.active != b.active {
+		return a.active < b.active
+	}
+	return a.id < b.id
+}
+
+// recordRefusal collects one refused run for the sweep-level summary and counts
+// the transition. The counter is bumped once per refusal event rather than once
+// per sweep because a counter that grows every ten seconds while nothing
+// changes tells an operator nothing about how much work is stuck; the current
+// picture comes from `levee cluster status`.
+func recordRefusal(acc map[string][]string, reason, runID, detail string) {
+	entry := runID
+	if detail != "" {
+		entry += " (" + detail + ")"
+	}
+	acc[reason] = append(acc[reason], entry)
+	metrics.Default.IncDispatch(metrics.DispatchResultUnplaceable)
+}
+
+// reportRefusals writes at most one warning line per sweep, and only when the
+// picture changed since the previous sweep.
+func (l *Loop) reportRefusals(acc map[string][]string) {
+	if len(acc) == 0 {
+		l.lastRefusal = ""
+		return
+	}
+	reasons := make([]string, 0, len(acc))
+	for r := range acc {
+		reasons = append(reasons, r)
+	}
+	sort.Strings(reasons)
+	parts := make([]string, 0, len(reasons))
+	for _, r := range reasons {
+		parts = append(parts, fmt.Sprintf("%s=%d (%s)", r, len(acc[r]), summarise(acc[r])))
+	}
+	summary := strings.Join(parts, "; ")
+	if summary == l.lastRefusal {
+		return
+	}
+	l.lastRefusal = summary
+	log.Warn("dispatch: runs cannot be placed and stay pending", "summary", summary)
 }
 
 // claim attempts to assign run to worker. It succeeds only when the run has
