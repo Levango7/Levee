@@ -119,6 +119,9 @@ func runGroupList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if groups == nil {
+		groups = []*state.InventoryGroup{}
+	}
 
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{"data": groups, "meta": nil, "error": nil})

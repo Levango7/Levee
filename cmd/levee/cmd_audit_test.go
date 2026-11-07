@@ -225,3 +225,24 @@ func TestExportTracesCSV(t *testing.T) {
 	assert.Contains(t, buf.String(), "id,run_id,event")
 	assert.Contains(t, buf.String(), "trace-001")
 }
+
+// TestAuditExportEmptyJSON_ArrayNotNull guards the CLI JSON contract:
+// exporting a run with no traces must serialize as `"data": []`, never `"data": null`.
+func TestAuditExportEmptyJSON_ArrayNotNull(t *testing.T) {
+	defer resetRootFlags()
+	defer resetAuditFlags()
+	t.Cleanup(resetRootFlags)
+	t.Cleanup(resetAuditFlags)
+
+	env := newCLIEnv(t)
+	env.seedRun(t, "run-empty-export", "completed")
+
+	out, err := executeCommand("--config", env.cfgPath, "audit", "export", "run-empty-export")
+	require.NoError(t, err, "output: %s", out)
+
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
+	assert.Equal(t, "[]", string(bytes.TrimSpace(envelope.Data)), "empty export must be [], not null; output: %s", out)
+}

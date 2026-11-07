@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -43,4 +44,21 @@ func TestNewGroupIDUniqueness(t *testing.T) {
 		require.False(t, seen[id], "duplicate group id generated: %s", id)
 		seen[id] = true
 	}
+}
+
+// TestGroupListEmptyJSON_ArrayNotNull guards the CLI JSON contract:
+// an empty group list must serialize as `"data": []`, never `"data": null`.
+func TestGroupListEmptyJSON_ArrayNotNull(t *testing.T) {
+	defer resetRootFlags()
+	t.Cleanup(resetRootFlags)
+
+	env := newCLIEnv(t)
+	out, err := executeCommand("--config", env.cfgPath, "group", "list", "--json")
+	require.NoError(t, err, "output: %s", out)
+
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
+	assert.Equal(t, "[]", strings.TrimSpace(string(envelope.Data)), "empty group list must be [], not null; output: %s", out)
 }
