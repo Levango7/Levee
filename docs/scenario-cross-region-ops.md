@@ -26,7 +26,7 @@
 | 回滚不干净却显示成功 | 执行证据账本只补偿**确实改过**的步骤；`rolled_back_partial` / `rollback_incomplete` 不冒充干净回滚；snapshot 与 run 级基线可还原文件 |
 | 内审要链路证据 | `audit` 表 WORM 触发器 + 全局哈希链（写入即封链）+ trace 按 run 封链；`levee audit report` 输出**自包含 HTML**，离线可读可归档 |
 | 执行机崩溃后变更卡死 | 集群执行租约 + epoch 围栏 + 接管循环：崩溃节点的运行中变更收敛到 `interrupted` 终态（审计留痕、**不重跑副作用**），`RetryChange` 显式重驱动 |
-| 跨区域集中执行的带宽/延迟 | 集群 worker **就近执行**：各区域一台 worker，leader 统一派发（容量/回收/claim 超时均已接线） |
+| 跨区域集中执行的带宽/延迟 | 集群 worker **就近执行**：各区域一台 worker，leader 统一派发（容量/回收/claim 超时均已接线）；**就近由声明强制**——worker 用 `--node-regions` 声明能到达的机房、目标机用 `region` 标签声明所在机房，派发只交给覆盖该 run 全部所需机房的节点（未打标签的部署行为与引入前相同） |
 | 谁在暗改配置 | `levee drift` 基线 + 巡检；审批与执行全程入审计链 |
 
 ## 3. 参考部署形态
@@ -43,6 +43,7 @@
 ```
 
 - 装法：核心机房与区域各机 `deploy/baremetal/install.sh` + systemd（主线）；有 K8s 的客户用 `deploy/helm/levee`。
+- 机房声明的三件套：① 区域 worker 起 `--node-regions <本区机房名>`；② 该区目标机在 inventory 里带 `region: <同一机房名>` 标签；③ `levee cluster status --pg-dsn ...` 的 `Nodes` 段核对每个节点声明了什么——**声明没落库和没声明在派发看来是一回事**，唯一能区分的地方就是这张表。
 - 网络面：CLI/Web → master `:8080`（gRPC `:9090` 不对外，见 [deploy/README.md](../deploy/README.md) 安全约束）；worker → master 只需可达 PostgreSQL。
 - 认证：**命名令牌或 OIDC**（单令牌模式无法在审计里证明「谁做的」）。
 
@@ -93,4 +94,5 @@ rollback: { on_failure: manual, verify_after: true }   # 不可逆：失败不�
 - **数据同步的搬运本身不是 LEVEE 的能力**：它编排与治理执行（含逐台串行与门禁），同步工具与复制拓扑仍是客户既有资产。
 - **`allow_irreversible` 白名单已接线（2026-10-04，v1.19.0）**：不可逆保护现为三层——编译期白名单门禁（V14/LE082：判定为不可逆的步骤未列名即拒绝编译，缺省拒绝）+ 模块内 `confirm=yes` 硬门（运行时拒执行）+ 计划侧高危审批路由。场景示例 `examples/workflows/dr-switch-orders-db.yaml` 已带白名单。
 - 断网区域需网络可达（跳板/VPN）；无 agent 模式意味着目标机必须开放 SSH/WinRM。
+- **一次变更整条交给一个执行节点**：跨两个机房的一条 run，必须有某个节点同时声明这两个机房；否则派发会拒绝并报 `no_single_node_spans_regions`，而不是拆分到两个节点（拆分会同时增加在途执行者与审批覆盖面，本版不做）。跨机房变更应拆成两条各自落在本区的 run，或给一个「桥」节点声明两个机房。
 - 首次生产接入前必须完成第 5 节的试点演练——本仓库的测试覆盖控制流与存储一致性，不能替代客户现场的网络与工具链现实。
