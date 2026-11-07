@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 架构（跨机房派发：`region` 放置——把「区域 worker 就近执行」从文档承诺变成派发判据）
+
+- **缺口（不是推测，是两条事实对不上）**：`docs/scenario-cross-region-ops.md` 写「集群 worker 就近执行：各区域一台 worker，leader 统一派发」，而 `internal/dispatch/dispatch.go` 的 `workerLoads`/`sortByLoad` 只按在途分配数排序、`claim` 直接取最闲的活跃节点——**目标机在哪个机房与派发给谁无关**。同一份文档的部署图又写着「区域 worker 就近执行、本区 SSH 到目标机」。于是北京机房的目标可能被交给上海机房的 worker：网络通就跨区执行（违背安全域），不通就如实失败。`internal/capability` 的包注释当时已把这个边界写明（「dispatch 按负载放置、不知道能力声明；在 run 没有声明自己需要什么之前应保持如此」）——本笔就是补上那个前提。
+- **设计（不新增列、不新增 DSL 关键字、无迁移）**：两台都已存在的事实各自归位——**目标在哪个机房**是 inventory `targets.labels["region"]`，**节点能到哪些机房**是 `cluster_nodes.capabilities` 里的保留 token `region=<名>`（新旗标 `serve --node-regions dc-north,dc-south`，操作员不必手写 token）。`internal/capability` 新增 `RegionPrefix`/`Regions`/`Reaches`，并把「region token 必须在申报时就是合法的」放进 `Normalize`：`region=` 与 `region=cn north` 会被拒绝启动，而不是存成一个读不出任何机房的字符串（那种值在派发看来与「没声明」无法区分，正是要消灭的静默降级）。`Normalize` 同时把 `region= dc-b` 规范成 `region=dc-b`——同一机房的两种写法必须落成同一串字节，否则「存储文本是集合的函数」这条既有承诺就破了。
+- **派发（`internal/dispatch/placement.go`，新文件）**：每个 sweep 一次性列出本租户 inventory（不是每条 run 一次查询），从 `runs.plan_json` 的批次目标名反查 `region` 标签，得出该 run 的机房需求；`pickWorker` 只在**有容量且覆盖全部所需机房**的节点里取最闲的。三条判据：① **全部目标不带标签＝不约束**——未使用本能力的部署，放置结果与引入前逐字节相同（有专门用例守住这条）；② **部分带标签/目标行已从 inventory 删除＝拒绝**（`region_unresolved`），不做猜测——半应用的放置正是「演示看着绿、生产跨了边界」的形状；③ **跨两个机房而没有任何节点同时声明两者＝拒绝**（`no_single_node_spans_regions`）；某个机房没人声明＝`no_eligible_node`。**reclaim 走同一判据**——回收是分区机房里的 run 必经的路径，只约束首次分配会在这里漏一个洞（该结论由一条独立变异实测：把 reclaim 改回 `workers[0]` 时**只有**回收那条用例红）。
+- **不静默**：`run` 留在 `approved` 等下一次 sweep；新增指标标签 `levee_dispatched_runs_total{result="unplaceable"}`；leader 日志**只在结论变化时**打一行（`reportRefusals` 记住上一次的摘要）——卡住的放置必须可见，但不能每 10 秒刷一次；`levee cluster status` 新增 `Nodes`（各节点声明的机房）与 `Unplaceable Approved Runs`（run / 需求 / 原因）两段，`--json` 同步加 `nodes`/`unplaceable`。`cluster status` 与派发共用同一个分类函数 `Assignability`：**两个面用不同的词解释同一条卡住的 run，是让操作员两边都不信的最快办法**。
+- **测试（17 个新用例 + 5 条变异全红在预期位）**：`internal/dispatch/placement_test.go` 10 个——region 亲和力压过负载（那个用例的判别条件是「最闲的节点恰是错的机房」，去掉判据则 leader 赢平局、断言必红）、无人声明该机房、跨机房不可拆、未打标签保持旧行为、半标签拒绝、容量饱和是背压而非放置失败、reclaim 遵守机房、逐 run 而非逐 sweep 求需求、损坏 plan 拒绝、`Assignability` 三种分类；`internal/capability` 5 个（申报期拒非法 region、规范化与排序、只取 region token、不可读声明要报错而不是当空、`Reaches` 全覆盖语义）；`cmd/levee` 2 个（节点机房渲染、原因优先级）。**变异 5 条**：① `pickWorker` 去掉机房判据 → 5 条红（含 reclaim）；② reclaim 回退 `workers[0]` → **只 1 条红**（证明回收路径有独立承重）；③ 跨机房判据恒假 → 只剩专门那条红；④ 去掉申报期校验 → capability 那条红；⑤ 损坏 plan 当空处理 → 对应那条红。每条变异前用 `sha256sum` 备份、还原后逐文件核对与注入前相同。
+- **如实边界**：① **一次变更整条交给一个执行节点**，拆分会同时增加在途执行者与审批覆盖面，故跨机房 run 必须有节点同时声明两个机房，否则拒绝——这不是 bug，已写进 `scenario-cross-region-ops.md` §7 诚实边界；② 判据只读 `runs.plan_json` 里的目标主机名，plan 为空的历史行保持旧行为（`Apply` 本来也拒绝执行无 plan 的 run）；③ 机房名的**连通性**不被验证，声明的是「我声称能到达」，网络是否真的通仍由执行期如实报错；④ 本笔不动 `docs/blocked-items.md`（opencode 正持 D-3 行）；⑤ `levee cluster status` 在 `cli-reference.md` 里**一直没有独立章节**，本笔只补了 `serve` 的旗标行与放置语义，章节缺位如实登记、不顺手扩写。
+
 
 ### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
 

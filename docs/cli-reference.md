@@ -2230,7 +2230,8 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 | `--node-id` | | 集群节点 ID（`--cluster` 时必填） |
 | `--node-addr` | | 集群节点地址（`--cluster` 时必填） |
 | `--node-role` | `worker` | 集群节点角色：`master` / `worker` |
-| `--node-capabilities` | 空（不声明） | 本节点声明能执行哪些模块（逗号分隔或重复传入，如 `shell,pkg`），写入 `cluster_nodes.capabilities`；`--cluster` 未启用时给出会拒绝启动。**派发不按它筛选**，见下方"节点能力申报" |
+| `--node-capabilities` | 空（不声明） | 本节点声明能执行哪些模块（逗号分隔或重复传入，如 `shell,pkg`），写入 `cluster_nodes.capabilities`；`--cluster` 未启用时给出会拒绝启动。**模块名派发不筛选**；跨机房放置走 `--node-regions`，见下方"节点能力申报" |
+| `--node-regions` | 空（不声明） | 本节点能到达的机房（逗号分隔，如 `dc-north,dc-south`），以保留 token `region=<名>` 写进同一列 `cluster_nodes.capabilities`。仅当 run 的目标在 inventory 里带 `region` 标签时才约束派发；`--cluster` 未启用时给出会拒绝启动 |
 | `--insecure` | false | 显式接受无鉴权风险，仅供本地开发 |
 
 **说明**
@@ -2241,7 +2242,8 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 - **/metrics 鉴权**：启用任一 token 后，`/metrics` 默认同样要求 Bearer 鉴权；无法携带凭据的采集器可用 `--metrics-public` 显式放开
 - **AI 引擎装配**：`serve` 启动时装配真实诊断引擎（日志采集/分析 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose` / `SendMessage` RPC 可直接使用；完整告警网关仍用独立的 `levee alert serve`
 - **集群模式**：集群协同覆盖共享 PostgreSQL 存储（数据一致性）、持久化成员注册（`cluster_nodes` 表心跳 + stale 检测，leader 按确定性策略收敛）、租约式分布式锁（`cluster_locks` 表，过期租约自动可被抢占，带单调 fence token）与跨节点任务调度（leader 的 dispatch 循环把 `approved` 的 run 派给负载最低的活跃 worker，需 `--engine-enabled`）；在途变更**不会由他端续跑**——执行者崩溃时 takeover 把该 run 结算为 `interrupted` 并留审计，恢复靠人重试（设计取舍）；`--cluster` 启动时会输出边界说明
-- **节点能力申报**：`--node-capabilities shell,pkg` 把本节点声明能执行哪些模块，写进 `cluster_nodes.capabilities`（启动日志会打出规范化后的结果，因为那是操作员唯一能看到"申报到底落没落库"的地方）。语义三条：① **每次 join 都刷新**——声明属于这个节点、由这个节点此刻说出，重启时不再声明即清空（与 `agents` 表自 v8 起同一条契约）；② 可用 `GET /system/cluster-status?capability=<name>` 查"哪些节点声明了它"，匹配规则只有一个 owner（`internal/capability`），控制台的筛选框把问题转给服务端而不是自己在浏览器里解析一遍；③ **派发不看能力**：`internal/dispatch` 按负载挑最闲的活跃 worker，声明什么都不改变工作落在谁身上。这一条是刻意的——在 run 还没有"我需要哪种能力"的声明之前按能力过滤领取，会让一个拼错的声明把变更永久卡在 pending，比"节点尝试执行它没有的模块并如实报错"更糟。空名与纯空白名拒绝启动；`--node-capabilities` 在没有 `--cluster` 时也拒绝启动（没有注册表可写，静默丢弃会让人以为申报成功了）
+- **节点能力申报**：`--node-capabilities shell,pkg` 把本节点声明能执行哪些模块，写进 `cluster_nodes.capabilities`（启动日志会打出规范化后的结果，因为那是操作员唯一能看到"申报到底落没落库"的地方）。语义三条：① **每次 join 都刷新**——声明属于这个节点、由这个节点此刻说出，重启时不再声明即清空（与 `agents` 表自 v8 起同一条契约）；② 可用 `GET /system/cluster-status?capability=<name>` 查"哪些节点声明了它"，匹配规则只有一个 owner（`internal/capability`），控制台的筛选框把问题转给服务端而不是自己在浏览器里解析一遍；③ **模块名派发不筛选**：`internal/dispatch` 按负载挑最闲的**合格** worker；模块名不参与"合格"的判定，声明什么都不改变工作落在谁身上。这一条是刻意的——在 run 还没有"我需要哪种能力"的声明之前按模块名过滤领取，会让一个拼错的声明把变更永久卡在 pending，比"节点尝试执行它没有的模块并如实报错"更糟。
+- **跨机房放置（`region=` 是唯一例外）**：`--node-regions dc-north,dc-south` 把机房声明为保留 token 写进同一列；目标机在 inventory 里带 `region` 标签时，派发只把该 run 交给**声明覆盖了该 run 全部所需机房**的节点。三条判据：① run 的目标里**任何一个**带 `region` 标签即启用该约束（全部不带＝与引入本能力前逐字节相同，仍按负载放置）；② 部分带、部分不带（或目标行已从 inventory 删除）＝拒绝派发并报 `region_unresolved`，不做猜测；③ run 是整条交给一个节点的，所以跨两个机房的一次变更需要**某个节点同时声明这两个机房**，否则报 `no_single_node_spans_regions`，而不是拆分或就近近似。无合格节点时报 `no_eligible_node`。三种拒绝都**不静默降级**：run 留在 `approved`、`levee_dispatched_runs_total{result="unplaceable"}` 计数、leader 日志**只在结论变化时**打一行、`levee cluster status` 列出每条卡的 run 及原因。空名与纯空白名拒绝启动；`--node-capabilities` 在没有 `--cluster` 时也拒绝启动（没有注册表可写，静默丢弃会让人以为申报成功了）
 - **单节点 PostgreSQL**：不加 `--cluster` 时，服务端连哪个库由配置决定（`database.driver: postgres` + `database.dsn`），与所有 CLI 命令同一处取库决策，因此 `levee calendar freeze` 可以写进服务端真正读的那张表；口径与三条启动期硬约束见 `docs/deployment.md` 的变更日历一节。只给 `--pg-dsn` 而不给 `--cluster` 会拒绝启动而不是退回本机文件——未启协调（无成员、无租约、无 fencing）的进程连集群共享库，比连错库更危险
 - CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
 - 限流触发时返回 HTTP 429 并附带 `Retry-After`

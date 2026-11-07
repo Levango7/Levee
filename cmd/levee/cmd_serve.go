@@ -119,8 +119,14 @@ var (
 	// serveOptNodeCapabilities is what this node declares it can execute
 	// (module names: shell, file, pkg...). It lands in cluster_nodes.capabilities
 	// and is what `?capability=` on /system/cluster-status filters on. Declaring
-	// nothing is the default, and dispatch does not read it either way.
+	// nothing is the default, and dispatch does not route module names either way.
 	serveOptNodeCapabilities []string
+	// serveOptNodeRegions names the data centres whose targets this node can
+	// reach. It is stored as reserved `region=` tokens inside the same
+	// capabilities column, and — unlike module names — dispatch DOES honour it:
+	// a run whose targets are labelled with a region is only assigned to a node
+	// that declares every region in that run. See internal/dispatch/placement.go.
+	serveOptNodeRegions []string
 	// serveOptClusterTakeoverInterval is the failover-takeover sweep
 	// period (cluster mode). <= 0 disables the LOOP only — execution
 	// fencing (leases) stays active whenever the engine is enabled.
@@ -209,7 +215,12 @@ func newServeCmd() *cobra.Command {
 	cmd.Flags().StringSliceVar(&serveOptNodeCapabilities, "node-capabilities", nil,
 		"Module names this node declares it can execute (comma-separated or repeatable, e.g. shell,pkg); "+
 			"stored in cluster_nodes.capabilities and filterable via GET /system/cluster-status?capability=<name>. "+
-			"Dispatch does not route on capabilities, so declaring none changes nothing about how work is placed")
+			"Module names do not route work; use --node-regions for placement")
+	cmd.Flags().StringSliceVar(&serveOptNodeRegions, "node-regions", nil,
+		"Data centres whose targets this node can reach (comma-separated, e.g. dc-north,dc-south); "+
+			"stored as reserved region= tokens in cluster_nodes.capabilities. A run whose targets carry a "+
+			"region label is only dispatched to a node declaring every region in that run — one run executes "+
+			"on one node, so a run spanning two data centres needs a node declaring both")
 	cmd.Flags().DurationVar(&serveOptClusterTakeoverInterval, "cluster-takeover-interval", takeover.DefaultInterval, "Failover takeover sweep period; <=0 disables the takeover loop (fencing stays active) (cluster mode)")
 	cmd.Flags().DurationVar(&serveOptClusterExecLeaseTTL, "cluster-exec-lease-ttl", cluster.DefaultExecLeaseTTL, "Execution-lease TTL: bounds post-crash takeover detection latency; renewals run at TTL/3 (cluster mode)")
 	cmd.Flags().DurationVar(&serveOptClusterDispatchInterval, "cluster-dispatch-interval", dispatch.DefaultInterval, "Cross-node dispatch sweep period; <=0 disables the dispatch loop (cluster mode)")
@@ -1892,6 +1903,11 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 				"Capabilities are declared into the cluster registry; add --cluster, or drop the flag",
 				serveOptNodeCapabilities)
 		}
+		if len(serveOptNodeRegions) > 0 {
+			return nil, nil, fmt.Errorf("--node-regions was given without --cluster: %v. "+
+				"Regions constrain cross-node dispatch, which only exists in cluster mode; add --cluster, or drop the flag",
+				serveOptNodeRegions)
+		}
 		store, err := openStoreFromConfig(ctx, cfg)
 		if err != nil {
 			return nil, nil, err
@@ -1958,7 +1974,17 @@ func openServeStore(ctx context.Context, cfg *config.Config) (state.Store, *clus
 // tests in serve_cluster_node_test.go can assert what a given set of flags
 // declares without needing a PostgreSQL to join against.
 func clusterNodeForServe() (cluster.Node, error) {
-	caps, err := capability.Normalize(serveOptNodeCapabilities)
+	// Regions are validated separately so a malformed region names the flag the
+	// operator actually typed: they share one column, but they are two flags.
+	tokens := make([]string, 0, len(serveOptNodeCapabilities)+len(serveOptNodeRegions))
+	tokens = append(tokens, serveOptNodeCapabilities...)
+	for _, r := range serveOptNodeRegions {
+		if _, err := capability.Normalize([]string{capability.RegionPrefix + r}); err != nil {
+			return cluster.Node{}, fmt.Errorf("--node-regions: %w", err)
+		}
+		tokens = append(tokens, capability.RegionPrefix+r)
+	}
+	caps, err := capability.Normalize(tokens)
 	if err != nil {
 		return cluster.Node{}, fmt.Errorf("--node-capabilities: %w", err)
 	}
