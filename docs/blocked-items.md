@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | A-1 ChatOps 真机验收 | Slack App / 钉钉机器人 / 飞书应用的 secret | 填 `notify.chatops.*` 配置即可端到端跑通审批卡片（代码全链路已备） |
 | A-2 SSO/OIDC 真实启用 | 真实 IdP（Keycloak/Zitadel/企业微信扫码等）或 GitHub OAuth App 注册 | 填 `auth.oidc` / `auth.github` 配置（默认关闭，代码已落地） |
-| A-3 移动端原生推送 | APNs 证书 / FCM 项目凭据 | 深链审批链路已通（PR #141），只差推送通道接入 |
+| A-3 移动端原生推送 | APNs 证书 / FCM 项目凭据 | **代码侧已就绪（2026-11-07）**：推送通道（APNs + FCM 客户端，含 JWT / OAuth2 鉴权）早已实现；设备注册表已落盘到 `<dataDir>/push_devices.json`（`levee push register` / `devices` / `send` 跨进程可用）；`levee serve` 已从 `<dataDir>/push.json` 构造 PushManager 并注入移动审批服务，无凭据时如实记「push disabled」而不假装送达。剩下的**确实只差凭据**：给部署配上 APNs 证书或 FCM 项目密钥（`levee push config --apns-key-file … / --fcm-key-file …`），再用 `levee push register --user <审批人>` 登记手机 |
 | A-4 L0 四环境安装演练 | 云账号（阿里云/华为云）或信创硬件 | 现存安装面：`deploy/baremetal/install.sh`（幂等安装器）+ `levee doctor` + `docs/deployment.md` §15 交付检查单；拿到环境即按检查单做四 profile 演练。（2026-11-07 订正：原登记的 `scripts/preflight-deploy.sh` **从未建过**——`git log --all` 对该路径零记录、订正前全仓 `preflight` 唯一命中就是本行自身；不再以不存在的脚本声明「已就绪」。） |
 | A-5 租约锁生产浸泡 | 一个真实多节点部署跑 4-6 周 | 浸泡数据是 C-1（Raft 决策）的输入 |
 

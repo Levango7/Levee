@@ -10,7 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/push"
 )
 
@@ -32,6 +34,8 @@ var (
 
 	pushOptFCMKeyFile   string
 	pushOptFCMProjectID string
+
+	pushOptBaseURL string
 )
 
 // pushManagerSingleton is the process-wide push manager used by the push
@@ -320,6 +324,8 @@ func newPushConfigCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&pushOptFCMKeyFile, "fcm-key-file", "", "Path to FCM service-account JSON")
 	cmd.Flags().StringVar(&pushOptFCMProjectID, "fcm-project-id", "", "FCM / GCP project ID")
+	cmd.Flags().StringVar(&pushOptBaseURL, "base-url", "",
+		"Public origin of this deployment, used for web deep links (e.g. https://levee.example.com)")
 	return cmd
 }
 
@@ -356,6 +362,10 @@ func runPushConfig(cmd *cobra.Command, args []string) error {
 		}
 		changed = true
 	}
+	if pushOptBaseURL != "" {
+		cfg.BaseURL = pushOptBaseURL
+		changed = true
+	}
 	if !changed {
 		return fmt.Errorf("no flags given; supply APNs and/or FCM configuration [exit=2]")
 	}
@@ -363,7 +373,7 @@ func runPushConfig(cmd *cobra.Command, args []string) error {
 	if err := savePushConfig(cfg); err != nil {
 		return fmt.Errorf("save push config: %w", err)
 	}
-	out := map[string]any{"status": "saved", "apns": cfg.APNs != (pushConfigAPNs{}), "fcm": cfg.FCM != (pushConfigFCM{})}
+	out := map[string]any{"status": "saved", "apns": cfg.APNs != (pushConfigAPNs{}), "fcm": cfg.FCM != (pushConfigFCM{}), "base_url": cfg.BaseURL}
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{"data": out, "meta": nil, "error": nil})
 	}
@@ -377,6 +387,16 @@ func runPushConfig(cmd *cobra.Command, args []string) error {
 type pushConfigFile struct {
 	APNs pushConfigAPNs `json:"apns,omitempty"`
 	FCM  pushConfigFCM  `json:"fcm,omitempty"`
+	// BaseURL is this deployment's public origin (e.g.
+	// https://levee.example.com). It is the origin the web ("show") deep
+	// links point at — the approve/reject links use the "levee://" scheme
+	// and do not need it.
+	//
+	// It lives in the push configuration rather than the main server config
+	// because that is where the rest of the mobile story already lives, and
+	// because the CLI that writes this file and the daemon that reads it
+	// must not disagree about it.
+	BaseURL string `json:"base_url,omitempty"`
 }
 
 // pushConfigAPNs holds APNs credentials.
@@ -394,51 +414,111 @@ type pushConfigFCM struct {
 	ProjectID         string `json:"project_id"`
 }
 
+// defaultDeepLinkBaseURL is the origin web ("show") deep links point at when
+// the deployment has not configured one. It is a placeholder, not a working
+// address: a deployment that serves web deep links must set base_url.
+const defaultDeepLinkBaseURL = "https://levee.local"
+
+// pushDataDir returns the LEVEE data directory the push files live in.
+func pushDataDir() (string, error) {
+	cfg, err := config.Load(optConfigPath)
+	if err != nil {
+		return "", err
+	}
+	applySecurityConfig(cfg)
+	return cfg.Server.DataDir, nil
+}
+
 // pushConfigPath returns the path to the push config JSON file. It lives in
 // the LEVEE data directory: <dataDir>/push.json.
 func pushConfigPath() (string, error) {
-	cfg, err := config.Load(optConfigPath)
+	dir, err := pushDataDir()
 	if err != nil {
 		return "", err
 	}
-	applySecurityConfig(cfg)
-	return filepath.Join(cfg.Server.DataDir, "push.json"), nil
+	return filepath.Join(dir, "push.json"), nil
 }
 
-// pushDevicesPath returns the path to the device registry file. It sits next
-// to the push config in the data directory: <dataDir>/push_devices.json.
+// pushRuntime is what a deployment needs in order to actually push: the
+// manager, the public base URL for web deep links, and whether any push
+// channel is configured at all.
+type pushRuntime struct {
+	manager *push.PushManager
+	baseURL string
+	// configured reports whether at least one channel (APNs / FCM) has
+	// credentials.
+	//
+	// The CLI enrolls devices regardless of this: a phone can be registered
+	// before the deployment has push credentials. The daemon is the opposite
+	// — it only pushes when a channel exists, because a manager without a
+	// channel reports a successful send while delivering nothing.
+	configured bool
+}
+
+// newPushRuntimeFromDataDir builds the push runtime from the push
+// configuration and device registry in dataDir.
 //
-// The registry has to outlive the command that records it: `levee push
-// register` and `levee push send` are separate processes, so an in-memory
-// registry would make every registration disappear before it could be used.
-func pushDevicesPath() (string, error) {
-	cfg, err := config.Load(optConfigPath)
+// The CLI and the daemon both go through here, so the credentials and the
+// device registry they use cannot disagree.
+func newPushRuntimeFromDataDir(dataDir string) (pushRuntime, error) {
+	cfg, err := loadPushConfigFromDataDir(dataDir)
 	if err != nil {
-		return "", err
+		return pushRuntime{}, err
 	}
-	applySecurityConfig(cfg)
-	return filepath.Join(cfg.Server.DataDir, "push_devices.json"), nil
+	var apnsClient *push.APNSClient
+	if cfg.APNs.PrivateKey != "" {
+		apnsClient, err = push.NewAPNSClient(
+			cfg.APNs.TeamID, cfg.APNs.KeyID, cfg.APNs.BundleID,
+			[]byte(cfg.APNs.PrivateKey), cfg.APNs.Production,
+		)
+		if err != nil {
+			return pushRuntime{}, fmt.Errorf("init apns: %w", err)
+		}
+	}
+	var fcmClient *push.FCMClient
+	if cfg.FCM.ServiceAccountKey != "" {
+		fcmClient = push.NewFCMClient(cfg.FCM.ProjectID, []byte(cfg.FCM.ServiceAccountKey))
+	}
+	pm, err := push.NewPushManagerWithStore(
+		apnsClient, fcmClient, push.NewFileDeviceStore(filepath.Join(dataDir, "push_devices.json")))
+	if err != nil {
+		return pushRuntime{}, fmt.Errorf("load device registry: %w", err)
+	}
+	return pushRuntime{
+		manager:    pm,
+		baseURL:    cfg.BaseURL,
+		configured: apnsClient != nil || fcmClient != nil,
+	}, nil
 }
 
-// loadPushConfig reads the push config from disk. A missing file yields a
-// zero-value config (no error).
-func loadPushConfig() (*pushConfigFile, error) {
-	path, err := pushConfigPath()
-	if err != nil {
-		return nil, err
-	}
+// loadPushConfigFromDataDir reads the push configuration from
+// <dataDir>/push.json. A missing file yields an empty configuration (no
+// error): a deployment without push configured is a normal state, not a
+// failure.
+func loadPushConfigFromDataDir(dataDir string) (*pushConfigFile, error) {
+	path := filepath.Join(dataDir, "push.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &pushConfigFile{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read push config %s: %w", path, err)
 	}
 	var cfg pushConfigFile
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse push config %s: %w", path, err)
 	}
 	return &cfg, nil
+}
+
+// loadPushConfig reads the push config from disk. A missing file yields a
+// zero-value config (no error).
+func loadPushConfig() (*pushConfigFile, error) {
+	dir, err := pushDataDir()
+	if err != nil {
+		return nil, err
+	}
+	return loadPushConfigFromDataDir(dir)
 }
 
 // savePushConfig writes the push config to disk as JSON.
@@ -463,40 +543,17 @@ func savePushConfig(cfg *pushConfigFile) error {
 // before push credentials are configured.
 func getPushManager() (*push.PushManager, error) {
 	pushManagerOnce.Do(func() {
-		cfg, err := loadPushConfig()
+		dir, err := pushDataDir()
 		if err != nil {
 			pushManagerInitErr = err
 			return
 		}
-		var apnsClient *push.APNSClient
-		if cfg.APNs.PrivateKey != "" {
-			apnsClient, err = push.NewAPNSClient(
-				cfg.APNs.TeamID, cfg.APNs.KeyID, cfg.APNs.BundleID,
-				[]byte(cfg.APNs.PrivateKey), cfg.APNs.Production,
-			)
-			if err != nil {
-				pushManagerInitErr = fmt.Errorf("init apns: %w", err)
-				return
-			}
-		}
-		var fcmClient *push.FCMClient
-		if cfg.FCM.ServiceAccountKey != "" {
-			fcmClient = push.NewFCMClient(cfg.FCM.ProjectID, []byte(cfg.FCM.ServiceAccountKey))
-		}
-		// The device registry is persisted so a registration survives the
-		// command that made it — register and send are separate processes.
-		devicesPath, err := pushDevicesPath()
+		rt, err := newPushRuntimeFromDataDir(dir)
 		if err != nil {
-			pushManagerInitErr = fmt.Errorf("locate device registry: %w", err)
+			pushManagerInitErr = err
 			return
 		}
-		pm, err := push.NewPushManagerWithStore(
-			apnsClient, fcmClient, push.NewFileDeviceStore(devicesPath))
-		if err != nil {
-			pushManagerInitErr = fmt.Errorf("load device registry: %w", err)
-			return
-		}
-		pushManagerSingleton = pm
+		pushManagerSingleton = rt.manager
 	})
 	if pushManagerInitErr != nil {
 		return nil, pushManagerInitErr
@@ -510,4 +567,49 @@ func resetPushManagerForTest() {
 	pushManagerSingleton = nil
 	pushManagerOnce = sync.Once{}
 	pushManagerInitErr = nil
+}
+
+// installServeMobileApproval wires the mobile approval service for the
+// daemon: the deep-link approve/reject endpoints plus, when the deployment
+// has a push channel, the push manager that actually delivers the approval
+// notification.
+//
+// The returned push manager is nil when no APNs / FCM credentials are
+// configured — and also when the configuration is unusable. That is
+// deliberate: the mobile service treats a nil manager as "push disabled" and
+// says so, whereas a manager without a channel would report a successful
+// send while delivering nothing.
+//
+// The deployment's credentials live in <dataDir>/push.json and its device
+// registry in <dataDir>/push_devices.json — the same files the `levee push`
+// CLI writes, so the daemon and the CLI cannot disagree about who is
+// enrolled or which channel to use.
+func installServeMobileApproval(approvalSvc *approval.Service, dataDir string) (*approval.MobileApprovalService, *push.PushManager) {
+	rt, err := newPushRuntimeFromDataDir(dataDir)
+	if err != nil {
+		// A broken push configuration must not take the control plane
+		// down: push delivery is best-effort (the approval is recorded
+		// either way), so a daemon that refused to start because of an
+		// unparseable notification key would turn a notification problem
+		// into an outage. Disable push and say why, loudly.
+		log.Error("serve: push disabled; push configuration is unusable",
+			"data_dir", dataDir, "err", err)
+		rt = pushRuntime{}
+	}
+	var manager *push.PushManager
+	if rt.configured {
+		manager = rt.manager
+	} else {
+		log.Info("serve: push disabled; no APNs / FCM credentials configured",
+			"data_dir", dataDir)
+	}
+	// The web ("show") deep links point at the deployment's public origin.
+	// Approve/reject links use the "levee://" scheme and do not need it.
+	base := rt.baseURL
+	if base == "" {
+		base = defaultDeepLinkBaseURL
+	}
+	service := approval.NewMobileApprovalService(
+		approvalSvc, manager, push.NewDeepLinkGenerator("levee", base))
+	return service, manager
 }

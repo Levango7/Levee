@@ -2985,6 +2985,12 @@ levee drift report --host web-01 --days 30
 `levee push devices` / `levee push send` 读到。写文件采用原子替换（临时文件
 改名），文件权限 `0600`（设备 token 是该设备推送通道上的凭据）。
 
+`levee serve` 从**同一份** `push.json` 读凭据、从**同一份** `push_devices.json`
+读设备，所以 CLI 登记的手机，守护进程发通知时看得到。**未配置凭据时守护进程不
+发推送**，并如实记「push disabled」——不会用一个没有通道的 manager 假装送达。
+推送配置损坏（解析不了、密钥读不了）也**不会**让守护进程拒绝启动：推送是尽力
+而为的旁路，审批本身照常落库。
+
 ### 23.1 push register
 
 注册移动设备用于接收推送通知。
@@ -3105,7 +3111,7 @@ levee push test --user alice
 查看或配置 APNs / FCM 推送凭证。
 
 ```text
-levee push config [--apns-key-file <path>] [--apns-team-id <id>] [--apns-key-id <id>] [--apns-bundle-id <id>] [--apns-production] [--fcm-key-file <path>] [--fcm-project-id <id>]
+levee push config [--apns-key-file <path>] [--apns-team-id <id>] [--apns-key-id <id>] [--apns-bundle-id <id>] [--apns-production] [--fcm-key-file <path>] [--fcm-project-id <id>] [--base-url <url>]
 ```
 
 **选项**
@@ -3119,6 +3125,7 @@ levee push config [--apns-key-file <path>] [--apns-team-id <id>] [--apns-key-id 
 | `--apns-production` | `false` | 使用 APNs 生产环境端点 |
 | `--fcm-key-file` | | FCM 服务账号 JSON 文件路径 |
 | `--fcm-project-id` | | FCM / GCP 项目 ID |
+| `--base-url` | | 本部署的公网 origin（如 `https://levee.example.com`），用于 **web（show）深链**；approve/reject 深链走 `levee://` scheme，不需要它 |
 
 **说明**
 

@@ -173,3 +173,36 @@ func TestPushE2E_DeviceRegistrySurvivesProcessBoundary(t *testing.T) {
 
 	resetPushManagerForTest()
 }
+
+// TestPushE2E_ConfigBaseURLPersists: the deployment's public origin is part
+// of the push configuration, so the CLI that writes it and the daemon that
+// reads it agree on where web deep links point.
+func TestPushE2E_ConfigBaseURLPersists(t *testing.T) {
+	defer resetRootFlags()
+	defer resetPushFlags(t)
+	e := newCLIEnv(t)
+	cfg := []string{"--config", e.cfgPath}
+
+	out := pushRun(t, append([]string{"push", "config", "--base-url",
+		"https://levee.example.com"}, cfg...)...)
+	assert.Contains(t, out, "saved")
+
+	// The value survives a save/load round trip through the data dir.
+	rt, err := newPushRuntimeFromDataDir(e.dataDir)
+	require.NoError(t, err)
+	assert.Equal(t, "https://levee.example.com", rt.baseURL)
+
+	// Re-saving credentials must not wipe the base URL.
+	keyFile := filepath.Join(t.TempDir(), "key.p8")
+	require.NoError(t, os.WriteFile(keyFile, []byte(testAPNsPrivateKeyPEM(t)), 0o600))
+	pushRun(t, append([]string{"push", "config", "--apns-key-file", keyFile,
+		"--apns-team-id", "T", "--apns-key-id", "K",
+		"--apns-bundle-id", "com.example.app"}, cfg...)...)
+
+	rt, err = newPushRuntimeFromDataDir(e.dataDir)
+	require.NoError(t, err)
+	assert.Equal(t, "https://levee.example.com", rt.baseURL,
+		"saving credentials must not clear the base URL")
+
+	resetPushManagerForTest()
+}
