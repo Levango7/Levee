@@ -90,8 +90,10 @@ func runTeamList(cmd *cobra.Command, args []string) error {
 
 	rows := make([]map[string]any, 0, len(teams))
 	for _, team := range teams {
-		// Collect environments and actions for this team.
-		var teamEnvs []map[string]any
+		// Collect environments and actions for this team. make, not var: a
+		// team with no concrete environments (e.g. a wildcard-only grant)
+		// must still serialize as [], never null.
+		teamEnvs := make([]map[string]any, 0, len(envs))
 		for _, env := range envs {
 			actions := matrix.ActionsFor(team, env)
 			if len(actions) > 0 {

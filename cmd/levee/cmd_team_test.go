@@ -202,3 +202,28 @@ func TestTeamListOutputEnvelope(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
 	assert.NotNil(t, env.Data)
 }
+
+// TestTeamListEmptyEnvironmentsJSON_ArrayNotNull guards the JSON contract:
+// a team row with no concrete environments must serialize
+// `"environments": []`, never `null`. A wildcard-only grant is exactly
+// that row: the team is listed while Environments() excludes "*".
+func TestTeamListEmptyEnvironmentsJSON_ArrayNotNull(t *testing.T) {
+	defer resetRootFlags()
+	t.Cleanup(resetRootFlags)
+
+	env := newCLIEnv(t)
+	permPath := filepath.Join(env.dataDir, "permissions.yaml")
+	require.NoError(t, os.WriteFile(permPath, []byte("teams:\n  - name: ops\n    environments:\n      - name: \"*\"\n        actions: [view]\n"), 0o644))
+
+	out, err := executeCommand("--config", env.cfgPath, "team", "list", "--json")
+	require.NoError(t, err, "output: %s", out)
+
+	var envelope struct {
+		Data []struct {
+			Environments json.RawMessage `json:"environments"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
+	require.Len(t, envelope.Data, 1)
+	assert.Equal(t, "[]", string(bytes.TrimSpace(envelope.Data[0].Environments)), "team environments must be [], not null; output: %s", out)
+}

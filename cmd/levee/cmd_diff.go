@@ -74,6 +74,9 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	// 4. Compute differences.
 	diffs := computeRunDiffs(runA, runB, batchesA, batchesB)
+	if diffs == nil {
+		diffs = []diffEntry{}
+	}
 
 	// 5. Output the result.
 	output := map[string]any{
