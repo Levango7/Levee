@@ -19,14 +19,22 @@
 // internal/dispatch: run_assignment.owner_node holds a cluster.Node.ID, while
 // the agent registry keys on agent ids).
 //
-// What this package deliberately does not do is route work. internal/dispatch
-// places a run on the least-loaded live worker and knows nothing about
-// capabilities, and it should stay that way until a run declares what it needs:
-// filtering at claim time would let a typo'd or missing declaration starve a run
-// in silence, which is worse than a node attempting a module it lacks and
-// reporting that. A capability is therefore a fact an operator can read and
-// filter, not a scheduling constraint — and any surface that displays one should
-// say so rather than imply the scheduler honours it.
+// What this package deliberately does not do is route work by module name.
+// internal/dispatch places a run on the least-loaded live worker and ignores
+// module capabilities; filtering on them at claim time would let a typo'd or
+// missing declaration starve a run in silence, which is worse than a node
+// attempting a module it lacks and reporting that. A module capability is
+// therefore a fact an operator can read and filter, not a scheduling
+// constraint — and any surface that displays one should say so rather than
+// imply the scheduler honours it.
+//
+// Regions are the one exception, and they are a different question: which
+// network an execution node sits in is not a capability it might typo into
+// non-existence, it is a hard reachability fact that a run's targets either
+// share or do not (see Regions). dispatch honours region tokens only for runs
+// whose targets declare a region, and when no node covers one it refuses
+// loudly instead of executing across a data centre boundary (Placement in
+// internal/dispatch). Module names remain non-constraining.
 package capability
 
 import (
@@ -63,6 +71,23 @@ func Normalize(in []string) (string, error) {
 		c := strings.TrimSpace(raw)
 		if c == "" {
 			return "", fmt.Errorf("capability names must not be empty or whitespace-only (got %q in %v)", raw, in)
+		}
+		// Region tokens are reserved: a malformed one (`region=` or
+		// `region=cn north`) would parse to no region at all, so the node
+		// would silently look like it reaches nowhere while the operator
+		// believes it declared a data centre. Refuse at declaration time —
+		// the one place where the operator is still looking.
+		if strings.HasPrefix(c, RegionPrefix) {
+			name, err := regionName(c)
+			if err != nil {
+				return "", fmt.Errorf("%w (got %q in %v)", err, raw, in)
+			}
+			// Canonicalise, do not merely validate: `region= dc-b` and
+			// `region=dc-b` name the same data centre, and this package promises
+			// the stored text is a function of the SET. Leaving two spellings
+			// would also make the sorted order — and therefore what an operator
+			// reads back — depend on how the flag was typed.
+			c = RegionPrefix + name
 		}
 		if seen[c] {
 			continue
@@ -122,4 +147,83 @@ func Has(stored, want string) bool {
 		}
 	}
 	return false
+}
+
+// RegionPrefix marks a placement token inside a stored declaration: a node
+// declares `region=<name>` for every data centre whose targets it can reach.
+// Placement shares the capabilities column on purpose — a separate column
+// would need a second migration path in two dialects and a second parser for
+// the same question ("what does this node say about where it can reach"),
+// which is exactly the drift this package exists to prevent. The prefix is
+// therefore reserved: a module may not be named `region=...`.
+const RegionPrefix = "region="
+
+// regionName extracts and validates the region part of a reserved token.
+func regionName(token string) (string, error) {
+	r := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), RegionPrefix))
+	if r == "" {
+		return "", fmt.Errorf("region token must name a region after %q", RegionPrefix)
+	}
+	// Whitespace and ',' are rejected because the declaration arrives from a
+	// comma-split CLI flag: an inner comma would silently become a second
+	// capability, and whitespace would make two spellings of one region.
+	if strings.ContainsAny(r, ", \t") {
+		return "", fmt.Errorf("region name %q must not contain whitespace or ','", r)
+	}
+	return r, nil
+}
+
+// Regions returns the data centres a stored declaration says the node can
+// reach, in the order they appear in the declaration (Normalize sorts that
+// order), without duplicates. An unreadable declaration is reported rather than
+// read as "reaches nowhere": the caller that must refuse work needs to tell a
+// misconfigured node from a node that declared no region at all.
+func Regions(stored string) ([]string, error) {
+	names, err := Names(stored)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if !strings.HasPrefix(n, RegionPrefix) {
+			continue
+		}
+		r, err := regionName(n)
+		if err != nil {
+			return nil, err
+		}
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// Reaches reports whether a stored declaration covers every region in want.
+// An empty want constrains nothing. An unreadable declaration reaches
+// nothing: a node whose declaration cannot be parsed must not be credited with
+// access to a data centre it may not be able to reach, and the caller reports
+// the parse error separately so the refusal is not mistaken for a missing
+// declaration.
+func Reaches(stored string, want []string) bool {
+	if len(want) == 0 {
+		return true
+	}
+	have, err := Regions(stored)
+	if err != nil {
+		return false
+	}
+	set := make(map[string]bool, len(have))
+	for _, r := range have {
+		set[r] = true
+	}
+	for _, r := range want {
+		if !set[r] {
+			return false
+		}
+	}
+	return true
 }
