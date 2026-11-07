@@ -12,6 +12,8 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -335,4 +337,39 @@ func TestSortByLoadTiesByID(t *testing.T) {
 	assert.Equal(t, []string{"node-b", "node-c", "node-a2"},
 		[]string{workers[0].id, workers[1].id, workers[2].id},
 		"zero-load ties must be ordered by ID, and load still dominates the ID")
+}
+
+// TestDispatchOnce_ConcurrentRefusalsAreRaceFree exists because the race
+// detector caught this on CI: DispatchOnce is documented as safe to call
+// concurrently (the store CAS is the correctness guard), but the refusal
+// summary is process-local mutable state. Two sweeps refusing at the same time
+// wrote it unsynchronised. The assertion that matters here is the absence of a
+// "DATA RACE" report under -race; the state check below just keeps the test
+// meaningful without the detector.
+func TestDispatchOnce_ConcurrentRefusalsAreRaceFree(t *testing.T) {
+	store := newDispatchStore(t)
+	mgr := regionManager(t, []cluster.Node{
+		regionNode(t, "node-a", cluster.RoleMaster, "dc-a"),
+	})
+	seedTarget(t, store, "", "h-z", "dc-z")
+	for i := 0; i < 4; i++ {
+		seedPlannedRun(t, store, fmt.Sprintf("run-z-%d", i), "", "h-z")
+	}
+	loop := NewLoop(mgr, store, "node-a", time.Second, 4, DefaultClaimTimeout)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = loop.DispatchOnce(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	assert.Contains(t, loop.lastRefusal, ReasonNoEligibleNode,
+		"after concurrent sweeps the summary must still be the dispatcher's word")
+	a, err := store.GetAssignment(context.Background(), "run-z-0")
+	require.NoError(t, err)
+	assert.Nil(t, a, "concurrency must not let an unplaceable run be claimed")
 }
