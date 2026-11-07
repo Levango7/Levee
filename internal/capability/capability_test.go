@@ -124,3 +124,77 @@ func mustNames(t *testing.T, stored string) []string {
 	require.NoError(t, err)
 	return names
 }
+
+// --- region tokens (placement) -------------------------------------------------
+
+// TestNormalizeRejectsRegionTokensNoReaderCanHonour pins the declaration gate.
+// Each of these would store cleanly as a JSON string and then parse to *no*
+// region, which reads exactly like a node that declared no data centre at all —
+// the silent-degradation shape the region rule exists to remove.
+func TestNormalizeRejectsRegionTokensNoReaderCanHonour(t *testing.T) {
+	for _, in := range [][]string{
+		{"region="},
+		{"region=   "},
+		{"region=cn north"},
+		{"region=cn,a"},
+		{"shell", "region=\t"},
+	} {
+		got, err := Normalize(in)
+		assert.Error(t, err, "Normalize(%q) accepted a region token with no usable name", in)
+		assert.Equal(t, "", got)
+	}
+}
+
+func TestNormalizeAcceptsRegionTokensAndSortsThem(t *testing.T) {
+	stored, err := Normalize([]string{"region=dc-b", "shell", "region=dc-a"})
+	require.NoError(t, err)
+	assert.Equal(t, `["region=dc-a","region=dc-b","shell"]`, stored,
+		"region tokens are ordinary members of the declared set")
+}
+
+func TestRegions(t *testing.T) {
+	stores := []struct {
+		name   string
+		stored string
+		want   []string
+	}{
+		{"empty column means nothing declared", "", nil},
+		{"canonical empty means nothing declared", Empty, nil},
+		{"module names only", `["shell","pkg"]`, nil},
+		{"regions only", `["region=dc-a"]`, []string{"dc-a"}},
+		{"mixed keeps declaration order, drops module names", `["region=dc-b","shell","region=dc-a"]`, []string{"dc-b", "dc-a"}},
+		{"duplicates collapse", `["region=dc-a","region=dc-a"]`, []string{"dc-a"}},
+	}
+	for _, tc := range stores {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Regions(tc.stored)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestRegionsReportsWhatItCannotRead: a row the code cannot parse must not be
+// reported as "reaches nothing", because the caller has to tell a broken
+// declaration from a node that simply declared no region.
+func TestRegionsReportsWhatItCannotRead(t *testing.T) {
+	for _, stored := range []string{`{}`, `"region=dc-a"`, `["region=dc-a"`} {
+		_, err := Regions(stored)
+		assert.Error(t, err, "Regions(%q) treated an unreadable declaration as empty", stored)
+	}
+}
+
+func TestReaches(t *testing.T) {
+	stored, err := Normalize([]string{"region=dc-a", "region=dc-b"})
+	require.NoError(t, err)
+
+	assert.True(t, Reaches(stored, nil), "an empty requirement constrains nothing")
+	assert.True(t, Reaches(stored, []string{}), "an empty requirement constrains nothing")
+	assert.True(t, Reaches(stored, []string{"dc-a"}))
+	assert.True(t, Reaches(stored, []string{"dc-a", "dc-b"}))
+	assert.False(t, Reaches(stored, []string{"dc-a", "dc-c"}),
+		"partial coverage is not coverage: one run executes on one node")
+	assert.False(t, Reaches(Empty, []string{"dc-a"}))
+	assert.False(t, Reaches(`{}`, []string{"dc-a"}),
+		"an unreadable declaration must not be credited with reachability")
+}
