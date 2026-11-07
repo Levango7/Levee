@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（`target history --json` 空历史返回 `[]` 而非 `null`）
+
+- **缺口**：local 路径在无历史时 `entries` 为 nil slice，`json.Marshal` 输出 `"data": null`；与 #304 确立的「空集合输出为 `[]`」契约不一致，破坏直接遍历 `data` 的消费者。remote 路径已用 `make(...,0,...)`，无需改。
+- **修法**：`runLocalTargetHistory` 在 JSON 输出前归一化为 `[]*state.Run{}`。
+- **验证**：新增回归用例（fresh store + 不存在的主机名，**修复前实测 `"data": null`**）；`go test ./cmd/levee` 定向子集通过；`go vet ./cmd/levee` rc=0。
+
 
 ### 文档（账本卫生：A-4 的假引用订正、D-1b 残留行移除）
 
