@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（`target list --json` 空库存返回 `[]` 而非 `null`）
+
+- **缺口**：local store 无行时返回 nil slice，remote 分页器以 `var targets []*state.Target` 起始，两条路径都直接作为 `data` 输出 `null`。
+- **修法**：`printTargetList` 在打印前归一化为 `[]*state.Target{}`，local 与 remote 一并覆盖。
+- **验证**：新增回归用例（fresh store，**修复前实测 `"data": null`**）；`go test ./cmd/levee` 定向子集全绿；`go vet ./cmd/levee` rc=0。
+
 ### 修复（`trace --verify` / `diff` / `team list` 的 JSON 空集合返回 `[]` 而非 `null`）
 
 - **缺口**：三处 nil slice 进入 JSON：① `trace <run-id> --verify --json` 的 `verify.failures`（链有效且 0 失败）；② `diff <run-a> <run-b> --json` 的 `diffs`（两个 run 完全一致时 `computeRunDiffs` 返回 nil）；③ `team list --json` 行内 `environments`（team 无具体环境，如 wildcard-only 授权）。
