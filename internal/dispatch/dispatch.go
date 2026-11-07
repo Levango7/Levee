@@ -454,14 +454,30 @@ func (l *Loop) workerLoads(ctx context.Context) ([]workerLoad, error) {
 }
 
 // sortByLoad orders workers ascending by live load (insertion sort; n is
-// tiny). Reclaim and the assignment loop both keep the slice ordered as they
-// hand out work, so the next pick is always the least-loaded node.
+// tiny), then by ID. Reclaim and the assignment loop both keep the slice
+// ordered as they hand out work, so the next pick is always the least-loaded
+// node.
+//
+// The ID tie-break is not cosmetic: the slice comes from registry.List(), which
+// iterates a map, so two equally loaded nodes would otherwise be picked in a
+// different order on every sweep. That makes placement irreproducible for an
+// operator reading logs and makes "the least loaded node wins" untestable — the
+// assertion would be about Go's map iteration order, not about dispatch. CI
+// caught exactly that on the first run of the region tests.
 func sortByLoad(workers []workerLoad) {
 	for i := 1; i < len(workers); i++ {
-		for j := i; j > 0 && workers[j-1].active > workers[j].active; j-- {
+		for j := i; j > 0 && lessWorker(workers[j], workers[j-1]); j-- {
 			workers[j-1], workers[j] = workers[j], workers[j-1]
 		}
 	}
+}
+
+// lessWorker orders by live load, then by node ID.
+func lessWorker(a, b workerLoad) bool {
+	if a.active != b.active {
+		return a.active < b.active
+	}
+	return a.id < b.id
 }
 
 // recordRefusal collects one refused run for the sweep-level summary and counts
