@@ -105,6 +105,11 @@ const (
 	// it within the claim timeout was re-pointed at a live worker (epoch
 	// bumped, so the stale owner's late claim is fenced out).
 	DispatchResultReclaimed = "reclaimed"
+	// DispatchResultUnplaceable: the sweep refused to assign the run because no
+	// live worker can reach every data centre its targets sit in (or because
+	// the run's region requirement could not be resolved). The run stays
+	// approved and pending; see internal/dispatch/placement.go for the reasons.
+	DispatchResultUnplaceable = "unplaceable"
 )
 
 // Takeover sweep results for levee_takeover_events_total.
@@ -305,7 +310,7 @@ func New() *Metrics {
 		backups:        newLabeledCounters(BackupResultOK, BackupResultFail),
 		alerts:         newLabeledCounters(),
 		takeovers:      newLabeledCounters(TakeoverResultSettled, TakeoverResultSkipped),
-		dispatch:       newLabeledCounters(DispatchResultClaimed, DispatchResultSkippedBusy, DispatchResultReclaimed),
+		dispatch:       newLabeledCounters(DispatchResultClaimed, DispatchResultSkippedBusy, DispatchResultReclaimed, DispatchResultUnplaceable),
 		channelAcquire: newMatrixCounters(),
 	}
 }
