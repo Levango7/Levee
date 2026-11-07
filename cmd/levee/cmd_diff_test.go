@@ -237,3 +237,25 @@ func TestDiffCmdHumanOutput(t *testing.T) {
 	assert.Contains(t, buf.String(), "run-002")
 	assert.Contains(t, buf.String(), "Differences")
 }
+
+// TestDiffIdenticalRunsEmptyJSON_ArrayNotNull guards the JSON contract:
+// diffing two identical runs must serialize `"diffs": []`, never `null`.
+func TestDiffIdenticalRunsEmptyJSON_ArrayNotNull(t *testing.T) {
+	defer resetRootFlags()
+	t.Cleanup(resetRootFlags)
+
+	env := newCLIEnv(t)
+	env.seedRun(t, "run-a", "completed")
+	env.seedRun(t, "run-b", "completed")
+
+	out, err := executeCommand("--config", env.cfgPath, "diff", "run-a", "run-b", "--json")
+	require.NoError(t, err, "output: %s", out)
+
+	var envelope struct {
+		Data struct {
+			Diffs json.RawMessage `json:"diffs"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
+	assert.Equal(t, "[]", string(bytes.TrimSpace(envelope.Data.Diffs)), "identical runs must give diffs [], not null; output: %s", out)
+}

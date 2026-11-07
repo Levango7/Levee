@@ -141,10 +141,14 @@ func buildTraceOutput(runID string, traces []*state.Trace, verifyResult *audit.V
 	}
 
 	if verifyResult != nil {
+		failures := verifyResult.Failures
+		if failures == nil {
+			failures = []audit.ChainFailure{}
+		}
 		output["verify"] = map[string]any{
 			"valid":    verifyResult.Valid,
 			"count":    verifyResult.Count,
-			"failures": verifyResult.Failures,
+			"failures": failures,
 		}
 	}
 

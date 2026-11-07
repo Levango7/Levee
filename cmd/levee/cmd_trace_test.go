@@ -181,3 +181,16 @@ func TestPrintTraceHumanWithVerify(t *testing.T) {
 	assert.Contains(t, buf.String(), "Chain verification")
 	assert.Contains(t, buf.String(), "Valid")
 }
+
+// TestBuildTraceOutputVerifyFailuresArrayNotNull guards the JSON contract:
+// `trace --verify --json` must report `"failures": []`, never `null`.
+func TestBuildTraceOutputVerifyFailuresArrayNotNull(t *testing.T) {
+	output := buildTraceOutput("run-1", nil, &audit.VerifyResult{Valid: true, Count: 3, Failures: nil})
+	raw, err := json.Marshal(output["verify"])
+	require.NoError(t, err)
+	var verify struct {
+		Failures json.RawMessage `json:"failures"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &verify))
+	assert.Equal(t, "[]", string(bytes.TrimSpace(verify.Failures)), "verify failures must be [], not null; output: %s", string(raw))
+}
