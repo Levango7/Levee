@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -172,4 +173,26 @@ func TestSimpleTarget(t *testing.T) {
 	assert.Equal(t, 0, tgt.Port())
 	assert.Equal(t, "ssh", tgt.Type())
 	assert.Equal(t, channel.CredentialRef{}, tgt.Credentials())
+}
+
+// TestTargetHistoryEmptyJSON_ArrayNotNull guards the CLI JSON contract:
+// an empty history must serialize as `"data": []`, never `"data": null`.
+// A nil slice marshals to JSON null, which breaks consumers that iterate
+// `data` without a null check (the same class fixed for rollback in #304).
+func TestTargetHistoryEmptyJSON_ArrayNotNull(t *testing.T) {
+	defer resetRootFlags()
+	defer resetTargetFlags()
+	t.Cleanup(resetRootFlags)
+	t.Cleanup(resetTargetFlags)
+
+	env := newCLIEnv(t)
+	// A fresh store with no steps for this host yields an empty history.
+	out, err := executeCommand("--config", env.cfgPath, "target", "history", "no-such-host", "--json")
+	require.NoError(t, err, "output: %s", out)
+
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
+	assert.Equal(t, "[]", strings.TrimSpace(string(envelope.Data)), "empty history must be [], not null; output: %s", out)
 }
