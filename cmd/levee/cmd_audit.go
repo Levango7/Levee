@@ -482,6 +482,9 @@ func runAuditShow(cmd *cobra.Command, args []string) error {
 
 // exportTracesJSON exports traces as a JSON document.
 func exportTracesJSON(w io.Writer, traces []*state.Trace) error {
+	if traces == nil {
+		traces = []*state.Trace{}
+	}
 	output := map[string]any{
 		"data":  traces,
 		"meta":  nil,
