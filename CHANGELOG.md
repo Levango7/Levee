@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（`group list` / `audit export` / `audit verify` 的 JSON 空集合返回 `[]` 而非 `null`）
+
+- **缺口**：三处 nil slice 直接进入 `data` / `failures`：① `group list --json` 空组（local store 可能返回 nil）；② `audit export <run-id>`（默认 json，run 无 trace；local 与 remote 共用出口）；③ `audit verify --json` 链有效且 0 失败（`VerifyResult.Failures` 为 nil）。
+- **修法**：① `runGroupList` 归一化为 `[]*state.InventoryGroup{}`；② `exportTracesJSON` 归一化为 `[]*state.Trace{}`；③ `renderAuditVerify` 归一化为 `[]audit.ChainFailure{}`。
+- **验证**：三例各补回归并做失败取证（**修复前分别实测 `"data": null`、`"data": null`、`"failures": null`**）；`go test ./cmd/levee` 定向子集全绿；`go vet ./cmd/levee` rc=0。
+
 ### 修复（`target history --json` 空历史返回 `[]` 而非 `null`）
 
 - **缺口**：local 路径在无历史时 `entries` 为 nil slice，`json.Marshal` 输出 `"data": null`；与 #304 确立的「空集合输出为 `[]`」契约不一致，破坏直接遍历 `data` 的消费者。remote 路径已用 `make(...,0,...)`，无需改。
