@@ -71,9 +71,12 @@ type Loop struct {
 	// before the leader reclaims it (see DefaultClaimTimeout).
 	claimTimeout time.Duration
 
-	// lastRefusal is the previous sweep's unplaceable-run summary. Only a
-	// changed picture is logged: a cluster that cannot place work would
-	// otherwise emit the same warnings every ten seconds forever.
+	// refusalMu guards lastRefusal. DispatchOnce is safe to call concurrently
+	// (several dispatchers may race for the same run; the store CAS is the
+	// correctness guard), so the log-dedup field cannot ride on mu, which is
+	// held only across Start/Stop. The race detector caught exactly this on the
+	// first CI run of the region work: two goroutines writing lastRefusal.
+	refusalMu   sync.Mutex
 	lastRefusal string
 
 	mu      sync.Mutex
@@ -497,24 +500,28 @@ func recordRefusal(acc map[string][]string, reason, runID, detail string) {
 // reportRefusals writes at most one warning line per sweep, and only when the
 // picture changed since the previous sweep.
 func (l *Loop) reportRefusals(acc map[string][]string) {
-	if len(acc) == 0 {
-		l.lastRefusal = ""
-		return
+	summary := ""
+	if len(acc) > 0 {
+		reasons := make([]string, 0, len(acc))
+		for r := range acc {
+			reasons = append(reasons, r)
+		}
+		sort.Strings(reasons)
+		parts := make([]string, 0, len(reasons))
+		for _, r := range reasons {
+			parts = append(parts, fmt.Sprintf("%s=%d (%s)", r, len(acc[r]), summarise(acc[r])))
+		}
+		summary = strings.Join(parts, "; ")
 	}
-	reasons := make([]string, 0, len(acc))
-	for r := range acc {
-		reasons = append(reasons, r)
-	}
-	sort.Strings(reasons)
-	parts := make([]string, 0, len(reasons))
-	for _, r := range reasons {
-		parts = append(parts, fmt.Sprintf("%s=%d (%s)", r, len(acc[r]), summarise(acc[r])))
-	}
-	summary := strings.Join(parts, "; ")
-	if summary == l.lastRefusal {
-		return
-	}
+
+	l.refusalMu.Lock()
+	previous := l.lastRefusal
 	l.lastRefusal = summary
+	l.refusalMu.Unlock()
+
+	if summary == "" || summary == previous {
+		return
+	}
 	log.Warn("dispatch: runs cannot be placed and stay pending", "summary", summary)
 }
 
