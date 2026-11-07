@@ -40,6 +40,7 @@
 - **验证**：`cmd/levee` 新增 9 例（无凭据→`configured=false` / 有 APNs 凭据→`configured=true` / `base_url` 被读到 / 损坏的 `push.json` 报错 / 无凭据→守护进程不持有 manager / 配了凭据→守护进程拿到 manager / 守护进程与 CLI 共用同一份设备注册表 / 损坏配置**不**拖垮守护进程 / 密钥读不了**不**拖垮守护进程）+ 1 例 e2e（`levee push config --base-url` 落盘且**再次保存凭据不会把它抹掉**）。**变异验证 4 条全红**：① serve 永远不接 manager → 「配了凭据拿到 manager」红；② `configured` 永远 false → 「有凭据」红；③ 损坏的 `push.json` 读成空 → 「损坏报错」红；④ `base_url` 被忽略 → 两条 base_url 用例红。`go build ./...` rc=0；`go test ./internal/push/ ./cmd/levee/` 全绿；`golangci-lint v2.13.2` 0 issues。
 - **如实边界**：本笔只交付**守护进程接线 + base_url**。推送通道的**真实投递**仍需凭据与真机（APNs 证书 / FCM 项目密钥 + 登记手机），那正是 A-3 剩下的解锁条件；本仓的证据止于「凭据齐备时守护进程确实持有并使用那个 manager」与传输层的本地 HTTP 服务器用例。
 
+
 ### 文档（账本卫生：A-4 的假引用订正、D-1b 残留行移除）
 
 - **缺口**：盘点 `docs/blocked-items.md` 剩余 A–F 项、逐条对引用物时，发现两处账本与仓库不一致。① **A-4** 声称 `scripts/preflight-deploy.sh` 已就绪，但该文件**从未存在**——`git log --all -- scripts/preflight-deploy.sh` 零记录，订正前全仓 `preflight` 唯一命中就是本行自身；真正存在的安装面是 `deploy/baremetal/install.sh`（幂等安装器）、`levee doctor` 与 `docs/deployment.md` §15 交付检查单。② **D-1b** 自带「（已交付）」标记，且「已交付、不再登记」段早已登记 PR #234，却仍留在 D 待办表里被 `check_blocked_items` 计为一行——违反文件头「每完成一项就从本清单移除」的口径。
@@ -53,6 +54,14 @@
 - **修法**：新增 `push.DeviceStore` 接口与 `push.FileDeviceStore`（JSON 文件，**原子写**（同目录临时文件 + rename），权限 `0600`；损坏的文件**报错**而不是读成空——读成空会让所有已注册设备看起来凭空消失，正是本条要修的那个症状）。`PushManager` 新增 `NewPushManagerWithStore`：构造时载入已有注册表，`RegisterDevice` / `UnregisterDevice` 成功后落盘；**落盘失败则回滚内存改动**（否则会留下「内存说已注册、文件里没有」的设备——现在会推到、下次重启就没了）。`NewPushManager` 行为不变（进程内注册表）。`levee push` 的 manager 改用 `<dataDir>/push_devices.json`（与 `push.json` 同目录），**不新增操作面**。
 - **验证**：`internal/push` 新增 10 例（文件 store 往返 / 缺文件=空 / 损坏文件=报错 / 空文件=空 / 原子写且不留临时文件 / 权限 0600 / 空用户被丢 / Save 覆盖旧内容；manager 跨进程可见 / unregister 也持久 / 落盘失败回滚 / 注册表读不出来时构造报错 / nil store 保持旧行为）；`cmd/levee` 新增 1 例（**复位 manager singleton 模拟进程边界**：register → devices 仍能看到 → unregister → devices 仍看不到）。**变异验证 4 条全红**：① CLI 改回进程内注册表 → 跨进程用例红；② `persistLocked` 变成 no-op → manager 跨进程用例红；③ 损坏文件读成空 → 损坏用例红；④ 去掉落盘失败回滚 → 回滚用例红。`go build ./...` rc=0；`go test ./internal/push/ ./cmd/levee/` 全绿；`golangci-lint v2.13.2` 0 issues。
 - **如实边界**：本笔只交付**注册表持久化 + CLI 接线**。**`levee serve` 仍未接推送**——`cmd_serve.go` 的 `NewMobileApprovalService` 硬编码 `pushMgr=nil`，守护进程的审批请求仍不会产生任何通知；深链 base URL 仍硬编码占位符 `https://levee.local`。这两条是 A-3 剩下的代码侧缺口，本笔不含。
+
+
+### 修复（`diagnose --json` 的空集合序列化为 `[]`：`DiagnosticReport` 自带 `MarshalJSON` 归一化）
+
+- **缺口**：`DiagnosticReport` 的集合字段（`health.network.tcp`、`health.node.disks`、`health.service.services`、`health.data.disks`、`findings`、`recommendations`）都没有 `omitempty`，但 nil slice 会被 `encoding/json` 编码成 `null`。默认 `levee diagnose <host> --json` 就命中：CLI 的探针配置不声明任何服务，`ProbeService` 对空列表提前返回 `ServiceHealth{Status: StatusHealthy}`，`services` 于是是 `null`；`--logs` 模式跳过健康探针时整份 `health` 都是零值，六个集合一起变 `null`。消费者遍历这些字段时要先处理 `null` 与 `[]` 的差异，而「探针跑了、没有条目」与「字段没送达」在文档里无法区分。
+- **修法**：`DiagnosticReport` 增加值接收者的 `MarshalJSON`——用别名类型复制报告、把六个空集合归一化为 `[]` 后再编码（别名阻止方法递归）。只改 JSON 编码，不改结构体本身；`json.Unmarshal` 与包内使用不变。`errors` 保持 `omitempty`（键省略是显式设计，未动）。
+- **验证**：`internal/diagnosis` 新增 1 例（零值报告 marshal 后六个集合逐一声明为 `[]`；**修复前实测六个全为 `null`**）。CLI 实跑（本机）同一命令修复前 `"tcp": null` / `"services": null`，修复后 `"tcp": []` / `"services": []`。`go test ./internal/diagnosis` 全绿；`go vet ./internal/diagnosis` rc=0；`go build ./...` rc=0。
+- **边界**：只归一化 `DiagnosticReport` 的 JSON 编码；`HealthReport` 等嵌套类型被单独 marshal 时行为不变（当前无此消费者）。与 #304/#314/#316/#317/#318 同属「空集合不能是 null」契约族。
 
 
 ### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
