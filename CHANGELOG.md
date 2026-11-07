@@ -20,10 +20,11 @@
 - **边界**：本笔**只加夹具、不改服务端行为**——五个端点的键集是**记录**下来的既有产物，不是新造的形状。`/audit/traces` 的 `input`/`output`/`detail` 由 trace 的 Detail JSON 解码而来，夹具已播种真实形状；Detail 为空的行仍会省略这些键（protojson 语义），夹具不替它伪造。`docs/blocked-items.md` 的 G-4 行在本笔中从待办表**移出**、进「已交付、不再登记」节（沿用 #307 对 G-1 / G-3 的同一写法）；G 类因此空了，按 `check_blocked_items` 的口径显式写「当前无」——空分类必须说明是空的，否则「少了表」会静默通过。
 
 
-### 决策（`blocked-items.md` 的 G-1 / G-3 定档：两项都是「不做行为变更」，只落账与注释）
+### 决策（`blocked-items.md` 的 G-1 / G-3 / D-3 定档：均为「不做行为变更」，只落账与注释）
 
 - **原 G-3 — `plan.Plan` 持久化无 json tag → 定档「维持现状」**：`runs.plan_json` 是 Go **内部**工件，写入是 `internal/wiring/plan.go` 的 `json.Marshal(p)`、读取方全部 `json.Unmarshal` 回同一 struct，且 `plan_hash` 走独立的 canonical 结构，所以「混合拼写」当前无损。原触发条件「有非 Go 消费方」未到；补 tag 会改变已落库字节，在滚动升级期间让新旧进程**互读不了**，换来只是一个不存在的消费方。故**不改格式**，只在写入点加注释（同一条也提醒：将来真要做，是加 tag **并**自定义 `UnmarshalJSON` 兼容旧 PascalCase，不是裸加 tag）。
 - **原 G-1 — audit `BuildForce` / `Rebuild` 无生产调用方 → 定档「不提供人工修复入口」**：链对合法写的断裂由下一次 `Seal` 自愈，对内容篡改由 `Seal` / `Verify` 报错而不静默重链；`Rebuild` / `BuildForce` 保留作内部 / 测试与确认篡改后的恢复原语，**不新增 `levee audit verify --rebuild`**（不新增动 WORM 邻域的操作面）。决定写进 `internal/audit/auditchain.go`（`Rebuild`）与 `hashchain.go`（`BuildForce`）的注释。
+- **D-3 — 账本时刻方言归一（SQLite=UTC / PostgreSQL=会话时区）→ 定档「O3 暂不改，触发后预定 O1」**：当前未收到真实 PostgreSQL 部署报障，且 `--remote` 等价测试仅覆盖 SQLite；无真实证据下动存储/展示口径易引入第二形态。决策：维持触发式；触发后默认实施 **O1**（store 解码层统一归一为 UTC，账本 UTC 存/读、展示层按需转换），**O2**（CLI `--tz` 展示旗标）仅作备选。触发条件与实施前证据要求（SQLite+PostgreSQL 双方言下重跑 `audit list/export/show`、`target list/history`、`group list` 的本地与 `--remote` 等价、发布说明）记入 `docs/blocked-items.md` D-3。**零行为变更**（纯账本）。
 - **验证**：两项都是**零行为变更**——G-3 不动序列化，G-1 不新增命令；改动为 `docs/blocked-items.md` + 三处代码注释。`go build ./internal/wiring/ ./internal/audit/` rc=0；`check_blocked_items`（19 → 17，G 表只剩 G-4）/ `check_doc_anchors` / `test_changelog_structure` / `check_roadmap_status` 全过。
 
 
