@@ -302,6 +302,12 @@ func stateTargetFromPB(t *pb.Target) *state.Target {
 // printTargetList renders the three output shapes (JSON / quiet / human) once,
 // so the local and remote paths cannot drift apart.
 func printTargetList(targets []*state.Target) error {
+	// An empty inventory is [] on the wire, not null: the local store hands
+	// back a nil slice when there are no rows, and the remote pager builds a
+	// nil slice the same way.
+	if targets == nil {
+		targets = []*state.Target{}
+	}
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  targets,

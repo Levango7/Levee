@@ -133,6 +133,27 @@ func TestPrintTargetListHumanEmpty(t *testing.T) {
 	assert.Contains(t, buf.String(), "No targets in the inventory")
 }
 
+// TestTargetListEmptyJSON_ArrayNotNull guards the CLI JSON contract: an empty
+// inventory must serialize as `"data": []`, never `"data": null`. The local
+// store returns a nil slice when there are no targets, and the remote pager
+// builds one with `var targets []*state.Target`, so both modes hit this.
+func TestTargetListEmptyJSON_ArrayNotNull(t *testing.T) {
+	defer resetRootFlags()
+	defer resetTargetFlags()
+	t.Cleanup(resetRootFlags)
+	t.Cleanup(resetTargetFlags)
+
+	env := newCLIEnv(t)
+	out, err := executeCommand("--config", env.cfgPath, "target", "list", "--json")
+	require.NoError(t, err, "output: %s", out)
+
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &envelope), "output: %s", out)
+	assert.Equal(t, "[]", string(bytes.TrimSpace(envelope.Data)), "empty inventory must be [], not null; output: %s", out)
+}
+
 func TestPrintTargetImportHuman(t *testing.T) {
 	defer resetRootFlags()
 
