@@ -72,7 +72,6 @@ import (
 	"github.com/nexus/levee/internal/notify/chatopsbridge"
 	"github.com/nexus/levee/internal/opsmesh"
 	"github.com/nexus/levee/internal/pause"
-	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/recommend/feedback"
 	"github.com/nexus/levee/internal/state"
@@ -1732,15 +1731,10 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 	convSvc := grpc.NewConversationService(convEngine, slog.Default()).WithAuthorizer(authzSvc)
 
 	// Mobile approval: wire the deeplink approve/reject endpoints so the
-	// REST gateway's /changes/deeplink/* routes work out of the box. Push
-	// delivery stays disabled until a push manager is configured. The
+	// REST gateway's /changes/deeplink/* routes work out of the box. The
 	// service reuses approvalSvc, so deep-link votes pass the same
 	// DecisionGuard (policy matrix) as every other vote when one is loaded.
-	mobileSvc := approval.NewMobileApprovalService(
-		approvalSvc,
-		nil,
-		push.NewDeepLinkGenerator("levee", "https://levee.local"),
-	)
+	mobileSvc, _ := installServeMobileApproval(approvalSvc, cfg.Server.DataDir)
 
 	// Ad-hoc gate verification (POST /gates/verify): only meaningful
 	// with a live engine (channel dialing + Prometheus URL). Without

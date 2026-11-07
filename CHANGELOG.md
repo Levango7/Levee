@@ -5,6 +5,17 @@
 ## [Unreleased]
 
 
+### 修复（`levee serve` 真的能发推送：APNs / FCM 凭据接入守护进程，A-3 的第二半）
+
+- **缺口**：`cmd/levee/cmd_serve.go` 里的 `NewMobileApprovalService` 把 push manager **硬编码成 `nil`**，所以守护进程的审批请求**永远**不产生任何通知——哪怕部署已经配好了 APNs / FCM 凭据。`getPushManager`（唯一会构造 PushManager 的地方）只被 `levee push` 的 5 个子命令调用，`serve` 从不读 `<dataDir>/push.json`。台账 `docs/blocked-items.md` 把 A-3 归在「卡在外部凭据/环境（**代码零阻碍**）」节、写「只差凭据」，与代码不符。
+- **修法**：
+  - 抽出 `newPushRuntimeFromDataDir(dataDir)`：**CLI 与守护进程走同一条路**，凭据与设备注册表不可能各说各话。它返回 manager、公网 base URL，以及 `configured`（是否至少配了一个通道）。
+  - `installServeMobileApproval` 是守护进程的接线点：**配了凭据才把 manager 交出去**；没配（或配置损坏）就传 nil，移动审批服务如实记「push disabled; skipping notification」——一个没有通道的 manager 会**报发送成功却什么都没送到**。
+  - **推送配置损坏不拖垮控制面**：`push.json` 解析不了、密钥读不了，都只记 ERROR 并关闭推送，守护进程照常启动（推送是尽力而为的旁路，审批本身已经落库；为一个通知密钥拒绝启动等于把通知问题变成一次停机）。
+  - `push.json` 新增 `base_url`（公网 origin），`levee push config --base-url` 写入。**web（show）深链**指向它；approve/reject 深链走 `levee://` scheme，不需要它。未配置时沿用原占位符 `https://levee.local`（零行为变更）。
+- **验证**：`cmd/levee` 新增 9 例（无凭据→`configured=false` / 有 APNs 凭据→`configured=true` / `base_url` 被读到 / 损坏的 `push.json` 报错 / 无凭据→守护进程不持有 manager / 配了凭据→守护进程拿到 manager / 守护进程与 CLI 共用同一份设备注册表 / 损坏配置**不**拖垮守护进程 / 密钥读不了**不**拖垮守护进程）+ 1 例 e2e（`levee push config --base-url` 落盘且**再次保存凭据不会把它抹掉**）。**变异验证 4 条全红**：① serve 永远不接 manager → 「配了凭据拿到 manager」红；② `configured` 永远 false → 「有凭据」红；③ 损坏的 `push.json` 读成空 → 「损坏报错」红；④ `base_url` 被忽略 → 两条 base_url 用例红。`go build ./...` rc=0；`go test ./internal/push/ ./cmd/levee/` 全绿；`golangci-lint v2.13.2` 0 issues。
+- **如实边界**：本笔只交付**守护进程接线 + base_url**。推送通道的**真实投递**仍需凭据与真机（APNs 证书 / FCM 项目密钥 + 登记手机），那正是 A-3 剩下的解锁条件；本仓的证据止于「凭据齐备时守护进程确实持有并使用那个 manager」与传输层的本地 HTTP 服务器用例。
+
 ### 文档（账本卫生：A-4 的假引用订正、D-1b 残留行移除）
 
 - **缺口**：盘点 `docs/blocked-items.md` 剩余 A–F 项、逐条对引用物时，发现两处账本与仓库不一致。① **A-4** 声称 `scripts/preflight-deploy.sh` 已就绪，但该文件**从未存在**——`git log --all -- scripts/preflight-deploy.sh` 零记录，订正前全仓 `preflight` 唯一命中就是本行自身；真正存在的安装面是 `deploy/baremetal/install.sh`（幂等安装器）、`levee doctor` 与 `docs/deployment.md` §15 交付检查单。② **D-1b** 自带「（已交付）」标记，且「已交付、不再登记」段早已登记 PR #234，却仍留在 D 待办表里被 `check_blocked_items` 计为一行——违反文件头「每完成一项就从本清单移除」的口径。
