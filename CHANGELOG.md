@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（`trace --verify` / `diff` / `team list` 的 JSON 空集合返回 `[]` 而非 `null`）
+
+- **缺口**：三处 nil slice 进入 JSON：① `trace <run-id> --verify --json` 的 `verify.failures`（链有效且 0 失败）；② `diff <run-a> <run-b> --json` 的 `diffs`（两个 run 完全一致时 `computeRunDiffs` 返回 nil）；③ `team list --json` 行内 `environments`（team 无具体环境，如 wildcard-only 授权）。
+- **修法**：① `buildTraceOutput` 归一化 `[]audit.ChainFailure{}`；② `runDiff` 归一化 `[]diffEntry{}`；③ `runTeamList` 循环内改用 `make([]map[string]any, 0, len(envs))`。
+- **验证**：三例各补回归并做失败取证（**修复前分别实测 `"failures": null`、`"diffs": null`、`"environments": null`**）；`go test ./cmd/levee -run 'TestTrace|TestDiff|TestTeam|TestBuildTraceOutput'` 全绿；`go vet ./cmd/levee` rc=0。
+
 ### 修复（`group list` / `audit export` / `audit verify` 的 JSON 空集合返回 `[]` 而非 `null`）
 
 - **缺口**：三处 nil slice 直接进入 `data` / `failures`：① `group list --json` 空组（local store 可能返回 nil）；② `audit export <run-id>`（默认 json，run 无 trace；local 与 remote 共用出口）；③ `audit verify --json` 链有效且 0 失败（`VerifyResult.Failures` 为 nil）。
