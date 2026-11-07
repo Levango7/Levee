@@ -15,6 +15,7 @@ package diagnosis
 // concurrent use by any number of goroutines once constructed.
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -171,6 +172,38 @@ type DiagnosticReport struct {
 	// was clean. Fatal errors are recorded here as well; the engine never
 	// returns a nil report.
 	Errors []string `json:"errors,omitempty"`
+}
+
+// MarshalJSON encodes the report with its empty collections as [], never null.
+// Every collection field without omitempty is one a consumer iterates, and
+// "the probe ran and found nothing" must not look like "the field never
+// arrived": a zero report (reachable via `diagnose --logs`, which skips the
+// health probe, and via probes that degrade to empty sub-reports) used to
+// marshal health.network.tcp, health.node.disks, health.service.services,
+// health.data.disks, findings and recommendations as null. The alias type
+// keeps this method off the encoding path of the nested value structs.
+func (r DiagnosticReport) MarshalJSON() ([]byte, error) {
+	type alias DiagnosticReport
+	a := alias(r)
+	if a.Health.Network.TCP == nil {
+		a.Health.Network.TCP = []TCPResult{}
+	}
+	if a.Health.Node.Disks == nil {
+		a.Health.Node.Disks = []DiskInfo{}
+	}
+	if a.Health.Service.Services == nil {
+		a.Health.Service.Services = []ServiceInfo{}
+	}
+	if a.Health.Data.Disks == nil {
+		a.Health.Data.Disks = []DiskInfo{}
+	}
+	if a.Findings == nil {
+		a.Findings = []Finding{}
+	}
+	if a.Recommendations == nil {
+		a.Recommendations = []string{}
+	}
+	return json.Marshal(a)
 }
 
 // --- Helper methods ---------------------------------------------------------
