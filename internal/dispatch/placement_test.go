@@ -320,3 +320,19 @@ func TestAssignability(t *testing.T) {
 	assert.Equal(t, ReasonNoEligibleNode, Assignability([]string{"dc-a"}, []string{`{}`}),
 		"an unreadable declaration must not be credited with reachability")
 }
+
+// TestSortByLoadTiesByID pins the determinism CI caught: registry.List()
+// iterates a map, so without the ID tie-break two equally loaded nodes are
+// ordered arbitrarily and the same cluster state places a run differently on
+// every sweep. The fixture is deliberately not alphabetical input order.
+func TestSortByLoadTiesByID(t *testing.T) {
+	workers := []workerLoad{
+		{id: "node-c"},
+		{id: "node-a2", active: 1},
+		{id: "node-b"},
+	}
+	sortByLoad(workers)
+	assert.Equal(t, []string{"node-b", "node-c", "node-a2"},
+		[]string{workers[0].id, workers[1].id, workers[2].id},
+		"zero-load ties must be ordered by ID, and load still dominates the ID")
+}
