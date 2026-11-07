@@ -525,6 +525,9 @@ func runLocalTargetHistory(ctx context.Context, host string, limit int) error {
 	}
 
 	if optJSON {
+		if entries == nil {
+			entries = []*state.Run{}
+		}
 		return PrintJSON(os.Stdout, map[string]any{"data": entries, "meta": nil, "error": nil})
 	}
 
