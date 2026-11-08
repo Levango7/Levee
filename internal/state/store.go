@@ -888,6 +888,27 @@ const (
 	// the two cannot drift onto different spellings of the same event.
 	EventTakeoverInterrupted = "interrupted_by_takeover"
 
+	// EventEvidenceDiscarded — written by the executor that lost its lease just
+	// before it would have persisted step evidence. It records ON PURPOSE that
+	// the steps it executed are not written down (a superseded executor must
+	// not write into a run the cluster has written off), so "the evidence table
+	// is empty" cannot be read as "nothing ran". internal/evidence folds this
+	// event into the run's verdict.
+	EventEvidenceDiscarded = "evidence_discarded"
+
+	// EventEvidenceIncomplete — written when step evidence persistence failed
+	// after the steps ran. The run still settles on its execution outcome, and
+	// this event is the only record that the outcome is not fully documented.
+	EventEvidenceIncomplete = "evidence_incomplete"
+
+	// EventRetryOverUnknownOutcome — written when a retry is started over a run
+	// whose execution evidence does not describe what happened (see
+	// internal/evidence). The retry itself is allowed — for an interrupted run
+	// the engine resumes from the persisted prefix and leans on each module's
+	// idempotency declaration — but the decision to re-apply a plan over an
+	// undocumented state is a fact about this run's history, not an inference.
+	EventRetryOverUnknownOutcome = "retry_over_unknown_outcome"
+
 	// Audit actions: what an audit row records happened (audit.action).
 	//
 	// Swept from the writers, not copied from the schema comment: that comment
