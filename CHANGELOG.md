@@ -193,6 +193,13 @@
 - **验证**：`go test ./internal/agentboard/`（含 `TestFormatDocMatchesTheParser`，文档键表 ↔ 解析器一致）全绿；`check_doc_anchors` / `test_doc_anchors`（24 例）/ `test_changelog_structure` 全过。
 - **如实边界**：本笔只改文档；`gh-clock` 仍**不**作为 TTL 判据（过期仍按 `updated` + `ttl-minutes`），要变判据需要 GitHub 的当前时刻，超出解析器范围。板目录里那个 `board-conventions.md` 的删除归作者（只报不改）。
 
+### 测试（账本断言机器化扩容：A-3 推送 / G-2 / G-5 / D-1c 各配机器可判的锚点）
+
+- **背景**：`scripts/check_doc_anchors.py` 的声明式 `CLAIMS` 表已把「台账说已落地 / 未做」的断言机器化（29 条，下限 25）。本仓头号缺陷类是「一个结论写两遍漏改一半」——台账里的「已就绪 / 已交付」句子会在代码搬走后继续读作现状。
+- **改动**：`CLAIMS` 增加 8 条，覆盖最近交付、也最容易被搬走的四组：**A-3**（`NotifyApprovalRequest` / `wireServeMobileApprovalPush` / `newPushRuntimeFromDataDir` / `FileDeviceStore` / `GenerateApprovalLink`）、**G-2**（`ClockReader`）、**G-5**（`RunStatusPrevReader`）、**D-1c**（`ChannelTypes`）；气囊下限 `MIN_CLAIMS` 25 → **33**（ratchet）。
+- **验证**：`python scripts/check_doc_anchors.py` ⇒ 28 anchors / **37 claims** 全 hold（rc=0）；`python scripts/test_doc_anchors.py` 24 例 OK。**变异**：把任一新关键字改成不存在的符号 → 该行判红（已验）。
+- **如实边界**：`CLAIMS` 仍是**子集**——它证明「关键词还在」，不证明台账那句话的**措辞**仍然准确（`what` 只是失败信息）；扩表是持续的活。
+
 ### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
 
 - **背景**：2026-11-06 晚起，CI 的 `trivy` 腿（`check (all jobs passed)` 的必需腿）扫出 blocking finding **CVE-2026-78661**（HIGH）：`usr/local/bin/levee` 里的 `golang.org/x/net` v0.60.0（indirect）——`golang.org/x/net/html: Denial of Service via crafted HTML input`，fixed version **0.62.0**。这条腿红的这段时间，**任何** PR 与 master push 都合不进去（与具体改动无关）。

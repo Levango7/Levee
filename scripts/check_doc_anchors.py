@@ -299,11 +299,63 @@ CLAIMS: tuple[Claim, ...] = (
         "",
         mode="gone",
     ),
+    # A-3 (mobile push) + the G-2/G-5/D-1c landings.  These are the ledgers'
+    # freshest "已就绪/已交付" sentences and exactly the kind that drifts: the
+    # code moves and the sentence keeps reading as current.  Each keyword is a
+    # symbol whose absence would mean the sentence is a lie.
+    Claim(
+        "docs/blocked-items.md",
+        "A-3：审批创建即逐个通知审批人（推送触发点）",
+        "internal/approval/mobile.go",
+        "NotifyApprovalRequest",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "A-3：serve 把推送接到审批创建那一刻",
+        "cmd/levee/cmd_serve.go",
+        "wireServeMobileApprovalPush",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "A-3：serve 从 push.json 构造 PushManager（与 CLI 同一条路）",
+        "cmd/levee/cmd_push.go",
+        "newPushRuntimeFromDataDir",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "A-3：设备注册表落盘到 <dataDir>/push_devices.json",
+        "internal/push/devices.go",
+        "FileDeviceStore",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "A-3：深链审批链路（approve/reject）已通",
+        "internal/push/deeplink.go",
+        "GenerateApprovalLink",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "G-2：assignment 陈旧度按 store 时钟比较",
+        "internal/state/store.go",
+        "ClockReader",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "G-5：RunEventStore 全行写走原子读-改-写",
+        "internal/state/store.go",
+        "RunStatusPrevReader",
+    ),
+    Claim(
+        "docs/blocked-items.md",
+        "D-1c：运行期通道插件支持 channel_types（一插件多类型）",
+        "internal/plugin/registry.go",
+        "ChannelTypes",
+    ),
 )
 
-# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (25 of
-# ~29) is a ratchet — dropping assertions is possible, but only on purpose.
-MIN_CLAIMS = 25
+# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (33 of
+# ~37) is a ratchet — dropping assertions is possible, but only on purpose.
+MIN_CLAIMS = 33
 
 
 class ScopeError(RuntimeError):
