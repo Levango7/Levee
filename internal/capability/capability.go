@@ -158,17 +158,42 @@ func Has(stored, want string) bool {
 // therefore reserved: a module may not be named `region=...`.
 const RegionPrefix = "region="
 
-// regionName extracts and validates the region part of a reserved token.
-func regionName(token string) (string, error) {
-	r := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), RegionPrefix))
+// RegionLabel is the inventory label naming the data centre a target lives in.
+// It is the other half of RegionPrefix: a node declares the regions it can
+// reach, a target declares the region it sits in, and placement compares the
+// two names by exact equality (see internal/dispatch). The key and the name
+// grammar live together so the node side and the target side cannot drift into
+// two spellings of the same fact — the failure mode of which is a run refused
+// with "no node reaches dc-b" while an operator is looking at a host labelled
+// "dc-b ".
+const RegionLabel = "region"
+
+// ValidateRegion canonicalises one region name and reports why it cannot be
+// one. Both sides of the placement comparison come through here — a node's
+// `region=` token (via Normalize) and a target's inventory `region` label (via
+// the importer) — because the two are compared by exact string equality. Two
+// validators would let a name be acceptable on one side and not the other,
+// which reads at dispatch time as "the node exists but reaches nothing".
+//
+// Surrounding whitespace is trimmed rather than refused (a YAML label or a
+// comma-split flag attracts it); inner whitespace and ',' are refused, since
+// neither survives the round trip to a single comparison.
+func ValidateRegion(name string) (string, error) {
+	r := strings.TrimSpace(name)
 	if r == "" {
-		return "", fmt.Errorf("region token must name a region after %q", RegionPrefix)
+		return "", fmt.Errorf("region name must not be empty or whitespace-only")
 	}
-	// Whitespace and ',' are rejected because the declaration arrives from a
-	// comma-split CLI flag: an inner comma would silently become a second
-	// capability, and whitespace would make two spellings of one region.
 	if strings.ContainsAny(r, ", \t") {
 		return "", fmt.Errorf("region name %q must not contain whitespace or ','", r)
+	}
+	return r, nil
+}
+
+// regionName extracts and validates the region part of a reserved token.
+func regionName(token string) (string, error) {
+	r, err := ValidateRegion(strings.TrimPrefix(strings.TrimSpace(token), RegionPrefix))
+	if err != nil {
+		return "", fmt.Errorf("%w (token %q)", err, strings.TrimSpace(token))
 	}
 	return r, nil
 }

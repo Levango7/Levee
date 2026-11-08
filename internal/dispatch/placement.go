@@ -35,8 +35,11 @@ import (
 )
 
 // TargetRegionLabel is the inventory label naming the data centre a target
-// lives in. It is read from targets.labels, so no column and no migration.
-const TargetRegionLabel = "region"
+// lives in. It is read from targets.labels, so no column and no migration. The
+// key is owned by internal/capability, which also owns the grammar of the node
+// side (`region=<name>`): placement is the comparison of those two, so the one
+// place that names both is the only place the key can be spelled.
+const TargetRegionLabel = capability.RegionLabel
 
 // Refusal reasons. These are metric label values and operator-facing text: an
 // operator must be able to tell "nobody declares that region" from "no single

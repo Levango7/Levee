@@ -155,6 +155,10 @@ func (im *Importer) LabelChanges(ctx context.Context, f *File) ([]LabelChange, e
 		if !validStatuses[status] {
 			continue // importTarget fails this row; it will not reach a write
 		}
+		labels, err := canonicalLabels(td.Labels)
+		if err != nil {
+			continue // importTarget fails this row; it reaches no write
+		}
 		existing, err := im.store.FindTargetByAddress(ctx, host, port)
 		if err != nil {
 			return nil, err
@@ -162,7 +166,7 @@ func (im *Importer) LabelChanges(ctx context.Context, f *File) ([]LabelChange, e
 		if existing == nil {
 			continue // a new row has no stored scope to take away
 		}
-		resulting := mergedLabels(td.Labels, existing.Labels, status, existing.Status)
+		resulting := mergedLabels(labels, existing.Labels, status, existing.Status)
 		if labelsEqual(existing.Labels, resulting) {
 			continue
 		}
@@ -296,6 +300,16 @@ func targetAddressFor(td TargetDef) (string, int, error) {
 	return host, port, nil
 }
 
+// ParseAddress resolves an address as typed on a command line ("host",
+// "host:port") to the (host, port) pair a target row is keyed by, with the same
+// precedence an inventory declaration has: an explicit port argument overrides
+// the one in the address, and 22 is the default. Exported so a shell edit names
+// the row the importer would have written instead of inventing a second
+// interpretation of "host".
+func ParseAddress(address string, port int) (string, int, error) {
+	return targetAddressFor(TargetDef{Address: address, Port: port})
+}
+
 // mergedLabels returns the labels an EXISTING target carries after this
 // declaration is applied. The rule lives here, in one place, because the
 // preview (LabelChanges) and the write (importTarget) must agree: a preview
@@ -338,6 +352,14 @@ func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, 
 		im.fail(sum, row, fmt.Errorf("invalid status %q", status))
 		return
 	}
+	// Before any store work: a region value that is not a region name would be
+	// stored verbatim and never match a node declaration, so the run it belongs
+	// to would be refused at dispatch with a message about the node set.
+	labels, err := canonicalLabels(td.Labels)
+	if err != nil {
+		im.fail(sum, row, err)
+		return
+	}
 
 	groupID := ""
 	groupName := td.Group
@@ -370,7 +392,7 @@ func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, 
 		Port:          port,
 		ChannelType:   channel,
 		CredentialRef: td.CredentialRef,
-		Labels:        td.Labels,
+		Labels:        labels,
 		GroupID:       groupID,
 		Status:        status,
 	}
@@ -379,7 +401,7 @@ func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, 
 		if tg.CredentialRef == "" {
 			tg.CredentialRef = existing.CredentialRef
 		}
-		tg.Labels = mergedLabels(td.Labels, existing.Labels, status, existing.Status)
+		tg.Labels = mergedLabels(labels, existing.Labels, status, existing.Status)
 		if td.Status == "" && existing.Status != "" {
 			tg.Status = existing.Status // re-import never silently un-freezes
 		}
