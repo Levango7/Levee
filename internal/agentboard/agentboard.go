@@ -91,6 +91,14 @@ var requiredKeys = []string{"agent", "branch", "state", "updated", "ttl-minutes"
 var knownKeys = map[string]bool{
 	"agent": true, "branch": true, "state": true, "updated": true,
 	"ttl-minutes": true, "worktree": true, "owns": true, "notes": true,
+	// Optional clock anchors. The local clock has been measured to jump by
+	// hours inside one session (2026-11-08: slow by ≥9.4h, then synced), so
+	// `updated` is recorded as-is and readers calibrate freshness against the
+	// GitHub server anchor instead. Both values are prose — a sha, an ISO
+	// instant, a measured delta — and this parser makes no attempt to judge
+	// them; they exist so the convention has a place to live other than
+	// `notes`, where peers had started hiding it to dodge "unknown key".
+	"gh-clock": true, "clock-source": true,
 }
 
 // Entry is one parsed claim. File is the board-relative name it came from.

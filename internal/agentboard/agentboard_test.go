@@ -65,6 +65,21 @@ func TestLoadValidClaim(t *testing.T) {
 	assert.False(t, e.Expired(boardNow))
 }
 
+// The clock anchor keys exist because the local clock was measured to jump by
+// hours inside one session (2026-11-08), so peers began recording a GitHub
+// server anchor next to `updated`. They must parse — treating a deliberate
+// anchor as a typo would drive writers back to an `updated` nobody can trust.
+func TestClockAnchorKeysAreAccepted(t *testing.T) {
+	body := validClaim("2026-11-08T13:02:05+08:00", "600") +
+		"gh-clock: 962d1e5 @ 2026-11-08T04:52:52Z（=12:52:52+08）\n" +
+		"clock-source: 本机钟对 GitHub api Date 头（±1s）\n"
+
+	dir := writeBoard(t, map[string]string{"qoder-cn-status5.md": body})
+	entries, problems := Load(dir, time.Date(2026, 11, 8, 6, 0, 0, 0, time.UTC))
+	assert.Empty(t, problems, "a claim carrying the clock anchor keys must not be reported")
+	require.Len(t, entries, 1)
+}
+
 func TestLoadRejectsAnythingThatCannotBeJudged(t *testing.T) {
 	cases := []struct {
 		name    string
