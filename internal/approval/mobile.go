@@ -82,41 +82,73 @@ func (s *MobileApprovalService) RequestApproval(ctx context.Context, runID, user
 		return fmt.Errorf("approval: mobile: create: %w", err)
 	}
 
-	// Best-effort push notification. We generate the deep link first so the
-	// notification payload can carry it. When the push manager or deeplink
-	// generator is nil we skip silently.
+	// Best-effort push. The approval already exists, so a delivery failure
+	// must not surface as a creation failure.
+	_ = s.NotifyApprovalRequest(ctx, a)
+	return nil
+}
+
+// NotifyApprovalRequest pushes a one-tap approval notification to every
+// approver on an already-created approval record. It is the notify half of
+// RequestApproval, split out because the approval chain is not always created
+// here: ChangeService.kickoffApproval creates it for every freshly planned
+// change, and that moment — not the mobile helper — is what the approvers are
+// waiting on.
+//
+// A missing push manager or deeplink generator is not an error: the
+// deployment simply has no channel and the skip is logged. Delivery failures
+// are logged per approver and returned joined; callers treat this as a side
+// channel (the local chain is the system of record), never as the approval's
+// outcome. An empty approver list is likewise a no-op.
+func (s *MobileApprovalService) NotifyApprovalRequest(ctx context.Context, a *Approval) error {
+	if a == nil {
+		return nil
+	}
+	if a.RunID == "" {
+		return ErrEmptyRunID
+	}
 	if s.pushMgr == nil || s.deeplink == nil {
 		log.InfoCtx(ctx, "approval: mobile: push disabled; skipping notification",
-			"run_id", runID, "user_id", userID)
+			"run_id", a.RunID, "approval_id", a.ID, "approvers", len(a.Approvers))
 		return nil
 	}
 
-	link, err := s.deeplink.GenerateApprovalLink(runID, userID)
-	if err != nil {
-		log.WarnCtx(ctx, "approval: mobile: generate deeplink failed",
-			"run_id", runID, "err", err)
-		return nil // approval already created; push is best-effort
+	var errs []error
+	for _, userID := range a.Approvers {
+		if userID == "" {
+			continue
+		}
+		if err := s.notifyApprover(ctx, a, userID); err != nil {
+			log.WarnCtx(ctx, "approval: mobile: push send failed",
+				"run_id", a.RunID, "user_id", userID, "approval_id", a.ID, "err", err)
+			errs = append(errs, err)
+		}
 	}
+	return errors.Join(errs...)
+}
 
+// notifyApprover generates the one-tap link for a single approver and sends
+// it through the push manager. It is the per-recipient half of
+// NotifyApprovalRequest.
+func (s *MobileApprovalService) notifyApprover(ctx context.Context, a *Approval, userID string) error {
+	link, err := s.deeplink.GenerateApprovalLink(a.RunID, userID)
+	if err != nil {
+		return fmt.Errorf("generate deeplink: %w", err)
+	}
 	msg := push.PushMessage{
 		UserID:   userID,
 		Title:    "审批请求",
-		Body:     fmt.Sprintf("变更 %s 待审批", runID),
+		Body:     fmt.Sprintf("变更 %s 待审批", a.RunID),
 		Category: "APPROVE_CATEGORY",
 		Data: map[string]string{
-			"run_id":      runID,
+			"run_id":      a.RunID,
 			"approval_id": a.ID,
 			"action":      push.ActionApprove,
 			"deeplink":    link.URL,
 			"token":       link.Token,
 		},
 	}
-	if err := s.pushMgr.Send(ctx, msg); err != nil {
-		log.WarnCtx(ctx, "approval: mobile: push send failed",
-			"run_id", runID, "user_id", userID, "err", err)
-		// Do not return the push error: the approval was created successfully.
-	}
-	return nil
+	return s.pushMgr.Send(ctx, msg)
 }
 
 // ApproveViaDeepLink consumes a one-tap approval token and records an approve
