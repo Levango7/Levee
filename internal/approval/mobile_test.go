@@ -108,6 +108,71 @@ func TestMobileRequestApproval_PushFailureDoesNotBlockApproval(t *testing.T) {
 	require.Len(t, pending, 1)
 }
 
+// --- NotifyApprovalRequest --------------------------------------------------
+//
+// NotifyApprovalRequest is the notify half of RequestApproval, split out so a
+// caller that created the chain elsewhere (ChangeService.kickoffApproval) can
+// fan the ask out at the moment it is durable. The cases below pin the
+// fan-out and the best-effort contract; the serving-side attachment is pinned
+// textually in cmd/levee/serve_mobile_push_test.go, because that hop has no
+// store-free runtime test.
+
+// With no push manager there is no channel: the observer must see a no-op,
+// not an error it would have to swallow.
+func TestMobileNotifyApprovalRequest_NilPushIsNoOp(t *testing.T) {
+	mobile, _, _ := newMobileService(t)
+	err := mobile.NotifyApprovalRequest(bgCtx(), &Approval{
+		ID: "apr-1", RunID: "run-1", Approvers: []string{"alice"},
+	})
+	require.NoError(t, err)
+}
+
+func TestMobileNotifyApprovalRequest_NilApprovalIsNoOp(t *testing.T) {
+	mobile, _, _, _, _ := newMobileServiceWithPush(t)
+	require.NoError(t, mobile.NotifyApprovalRequest(bgCtx(), nil))
+}
+
+func TestMobileNotifyApprovalRequest_EmptyRunID(t *testing.T) {
+	mobile, _, _, _, _ := newMobileServiceWithPush(t)
+	err := mobile.NotifyApprovalRequest(bgCtx(), &Approval{ID: "apr-1", Approvers: []string{"alice"}})
+	require.ErrorIs(t, err, ErrEmptyRunID)
+}
+
+func TestMobileNotifyApprovalRequest_EmptyApproversIsNoOp(t *testing.T) {
+	mobile, _, _, _, _ := newMobileServiceWithPush(t)
+	require.NoError(t, mobile.NotifyApprovalRequest(bgCtx(), &Approval{ID: "apr-1", RunID: "run-1"}))
+}
+
+// The fan-out must ATTEMPT every approver, not stop at the first. With no
+// device registered for any of them each Send fails, and the joined error
+// names all three. A first-failure-wins implementation would name only the
+// first and pass a weaker assertion.
+func TestMobileNotifyApprovalRequest_FansOutToEveryApprover(t *testing.T) {
+	mobile, _, _, _, _ := newMobileServiceWithPush(t)
+	err := mobile.NotifyApprovalRequest(bgCtx(), &Approval{
+		ID: "apr-1", RunID: "run-1", Approvers: []string{"alice", "bob", "carol"},
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, push.ErrDeviceNotFound)
+	for _, who := range []string{"alice", "bob", "carol"} {
+		assert.Contains(t, err.Error(), who, "every approver must be attempted")
+	}
+}
+
+// One device-less approver fails while the loop continues; a device-holding
+// approver is still reached and a failure elsewhere does not abort the walk.
+func TestMobileNotifyApprovalRequest_OneBadApproverDoesNotStopTheRest(t *testing.T) {
+	mobile, _, _, pm, _ := newMobileServiceWithPush(t)
+	require.NoError(t, pm.RegisterDevice("alice", "ios-token", "ios"))
+
+	err := mobile.NotifyApprovalRequest(bgCtx(), &Approval{
+		ID: "apr-1", RunID: "run-1", Approvers: []string{"alice", "bob"},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, push.ErrDeviceNotFound)
+	assert.Contains(t, err.Error(), "bob")
+}
+
 // --- ApproveViaDeepLink ----------------------------------------------------
 
 func TestMobileApproveViaDeepLink_Success(t *testing.T) {

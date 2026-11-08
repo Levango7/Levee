@@ -72,6 +72,7 @@ import (
 	"github.com/nexus/levee/internal/notify/chatopsbridge"
 	"github.com/nexus/levee/internal/opsmesh"
 	"github.com/nexus/levee/internal/pause"
+	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
 	"github.com/nexus/levee/internal/recommend/feedback"
 	"github.com/nexus/levee/internal/state"
@@ -1734,7 +1735,8 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 	// REST gateway's /changes/deeplink/* routes work out of the box. The
 	// service reuses approvalSvc, so deep-link votes pass the same
 	// DecisionGuard (policy matrix) as every other vote when one is loaded.
-	mobileSvc, _ := installServeMobileApproval(approvalSvc, cfg.Server.DataDir)
+	mobileSvc, servePushMgr := installServeMobileApproval(approvalSvc, cfg.Server.DataDir)
+	wireServeMobileApprovalPush(ctx, changeSvc, mobileSvc, servePushMgr)
 
 	// Ad-hoc gate verification (POST /gates/verify): only meaningful
 	// with a live engine (channel dialing + Prometheus URL). Without
@@ -1758,6 +1760,27 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 		gateSvc: gateSvc, authzSvc: authzSvc, chatOpsMgr: chatOpsMgr,
 		approvalSvc: approvalSvc, notifyMgr: notifyMgr,
 	}, nil
+}
+
+// wireServeMobileApprovalPush attaches the "an approval chain was just
+// created — tell the approvers" fan-out to the change service. It lives here
+// rather than inside installServeMobileApproval because the moment belongs to
+// ChangeService.kickoffApproval, not to the service that merely holds the
+// push manager: wiring the manager and never calling it was A-3's gap.
+//
+// No-op when push is not configured. The mobile service would otherwise log
+// "push disabled" on every approval instead of once at startup, and a
+// deployment without credentials has nothing to notify with.
+//
+// Extracted from buildServeServices, which sits on its gocyclo budget.
+func wireServeMobileApprovalPush(ctx context.Context, changeSvc *grpc.ChangeService, mobileSvc *approval.MobileApprovalService, pushMgr *push.PushManager) {
+	if pushMgr == nil {
+		return
+	}
+	changeSvc.WithApprovalCreateObserver(func(a *approval.Approval) {
+		_ = mobileSvc.NotifyApprovalRequest(ctx, a)
+	})
+	log.Info("serve: mobile approval push wired (approval kickoff → approvers' registered devices)")
 }
 
 // installServeDiagnosisReasoner wires the LLM reasoning engine onto the

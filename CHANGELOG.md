@@ -38,7 +38,7 @@
   - **推送配置损坏不拖垮控制面**：`push.json` 解析不了、密钥读不了，都只记 ERROR 并关闭推送，守护进程照常启动（推送是尽力而为的旁路，审批本身已经落库；为一个通知密钥拒绝启动等于把通知问题变成一次停机）。
   - `push.json` 新增 `base_url`（公网 origin），`levee push config --base-url` 写入。**web（show）深链**指向它；approve/reject 深链走 `levee://` scheme，不需要它。未配置时沿用原占位符 `https://levee.local`（零行为变更）。
 - **验证**：`cmd/levee` 新增 9 例（无凭据→`configured=false` / 有 APNs 凭据→`configured=true` / `base_url` 被读到 / 损坏的 `push.json` 报错 / 无凭据→守护进程不持有 manager / 配了凭据→守护进程拿到 manager / 守护进程与 CLI 共用同一份设备注册表 / 损坏配置**不**拖垮守护进程 / 密钥读不了**不**拖垮守护进程）+ 1 例 e2e（`levee push config --base-url` 落盘且**再次保存凭据不会把它抹掉**）。**变异验证 4 条全红**：① serve 永远不接 manager → 「配了凭据拿到 manager」红；② `configured` 永远 false → 「有凭据」红；③ 损坏的 `push.json` 读成空 → 「损坏报错」红；④ `base_url` 被忽略 → 两条 base_url 用例红。`go build ./...` rc=0；`go test ./internal/push/ ./cmd/levee/` 全绿；`golangci-lint v2.13.2` 0 issues。
-- **如实边界**：本笔只交付**守护进程接线 + base_url**。推送通道的**真实投递**仍需凭据与真机（APNs 证书 / FCM 项目密钥 + 登记手机），那正是 A-3 剩下的解锁条件；本仓的证据止于「凭据齐备时守护进程确实持有并使用那个 manager」与传输层的本地 HTTP 服务器用例。
+- **如实边界**：本笔只交付**守护进程接线 + base_url**。本仓的证据止于「凭据齐备时守护进程**持有**那个 manager」与传输层的本地 HTTP 服务器用例。**（2026-11-08 订正）**：本笔**没有**触发点——`MobileApprovalService.RequestApproval` 当时无生产调用方，审批创建不会发通知；「使用」二字是过度声明，触发接线见上方「审批创建即通知审批人」一节。
 
 
 ### 文档（账本卫生：A-4 的假引用订正、D-1b 残留行移除）
@@ -63,6 +63,15 @@
 - **验证**：`internal/diagnosis` 新增 1 例（零值报告 marshal 后六个集合逐一声明为 `[]`；**修复前实测六个全为 `null`**）。CLI 实跑（本机）同一命令修复前 `"tcp": null` / `"services": null`，修复后 `"tcp": []` / `"services": []`。`go test ./internal/diagnosis` 全绿；`go vet ./internal/diagnosis` rc=0；`go build ./...` rc=0。
 - **边界**：只归一化 `DiagnosticReport` 的 JSON 编码；`HealthReport` 等嵌套类型被单独 marshal 时行为不变（当前无此消费者）。与 #304/#314/#316/#317/#318 同属「空集合不能是 null」契约族。
 
+
+### 修复（审批创建即通知审批人：把 A-3 的推送触发点接上）
+
+- **缺口（对上一笔 #320 的订正）**：#320 让 `levee serve` 从 `push.json` 构造出 PushManager 并交进移动审批服务，但**没有任何生产代码会调用发送推送的 `MobileApprovalService.RequestApproval`**——它此前只有测试在调。真正的审批创建路径 `ChangeService.kickoffApproval`（`internal/grpc/change_service.go`）只建审批链 + 记审计；REST 网关只挂了 `/changes/deeplink/approve|reject`。所以配好凭据、登记好手机之后，**新审批依然不会推送到任何人**。#320 的如实边界写「持有并使用那个 manager」是过度声明，一并订正。
+- **修法**：
+  - `MobileApprovalService` 新增 `NotifyApprovalRequest(ctx, *Approval)`：把 `RequestApproval` 里的推送那段抽成可复用的「通知半边」，**逐个审批人**发一键审批深链（`approve`），逐个失败聚合返回，best-effort 不改变审批结果。`RequestApproval` 改为调它（行为不变：推送失败仍不影响已创建的审批）。
+  - serve 用既有的 `ChangeService.WithApprovalCreateObserver` 缝把通知接到**审批创建那一刻**（与 ChatOps / Jira 镜像同一个 observer 扇出，互不顶替）；抽成 `wireServeMobileApprovalPush`，只在**配了通道**时挂（`pushMgr == nil` 直接返回，避免无凭据部署每次审批都记一行「push disabled」）。
+- **验证**：`internal/approval` 新增 6 例（nil push / nil approval / 空 run id / 空审批人 均 no-op；三个审批人全无设备 → 聚合错误同时点名 alice/bob/carol，钉住**逐个尝试**而不是首错即停；一个审批人有设备、另一个没有 → 循环不中断）；`cmd/levee` 新增组合守卫（文本）：断言 serve 建了 mobile 服务、调了 `wireServeMobileApprovalPush`、且 helper 里 `WithApprovalCreateObserver`→`NotifyApprovalRequest`→`if pushMgr == nil` 三段都在。`go build`/`go vet` rc=0；`go test ./internal/approval/ ./cmd/levee/ ./internal/grpc/` 全绿；`golangci-lint v2.13.2` 0 issues。**变异 2 条先红后还原**：① serve 的接线调用换成 `_ = servePushMgr`（能编译、永不接线）→ 组合守卫红；② 通知只发第一个审批人 → 扇出用例红。
+- **如实边界**：本笔把**触发点**接上；能否真送达仍取决于外部凭据与真机（见 A-3）。本仓证据止于「审批创建 → 每个审批人各调用一次 Send」，不包含真实 APNs/FCM 投递。
 
 ### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
 
