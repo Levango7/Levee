@@ -854,6 +854,7 @@ targets:
 - `targets` 必填；`address` 必填，可写 `host` 或 `host:port`
 - `port` 省略时按 `channel_type` 取默认值（ssh 22 / winrm 5985）
 - `labels` 省略时保留已存在行的标签（仅当 `status` 也未变化）；否则清空
+- `labels.region` 是保留键（跨机房放置）：值必须是单个机房名——首尾空白会被去掉，中间不得有空白或逗号。存下来的值会与节点申报的 `region=<名>` **逐字节比较**，所以值不合法时该行导入直接失败并点名 `label "region"`，而不是存进去等派发时以「没有节点覆盖该机房」为由拒绝（那样会把操作员送去查节点，而错误其实在清单里）
 - 未知键会被拒绝（`KnownFields`），拼错的字段不会静默变成标签
 
 **环境归属检查**
@@ -936,6 +937,45 @@ levee target history <host> [--limit N]
 ```命令示例：查某主机近期变更
 levee target history db-01.prod --limit 5
 levee --remote --server localhost:9090 target history db-01.prod --json
+```
+
+### 6.5 target label
+
+修改**单台**已存在主机的标签，不需要重述它的其余标签。
+
+```text
+levee target label set <address> key=value [key=value ...] [--port N]
+levee target label unset <address> key [key ...] [--port N]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `<address>` | 是 | `host` 或 `host:port`；端口优先级与 `target import` 相同（`--port` 覆盖地址里的端口，缺省 22） |
+| `key=value` / `key` | 是 | `set` 收赋值（至少一个），`unset` 收键名（至少一个） |
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--port` | `0` | 覆盖地址里的端口；`0` 表示按地址与默认值解析 |
+
+**说明**
+
+- **语义是编辑，不是替换**：未点名的键保持原样。这与 `target import` 相反（导入会用文件里的标签集替换该行），因此给一台已上线的机器补一个 `region` 不再需要把它的整套标签再抄一遍
+- 幂等：把键设成它已有的值、或 `unset` 一个不存在的键，都是 no-op；人类输出会写 `unchanged`，`--json` 的 `changed` 为 `false`，不谎称写过
+- **`env` 不可经此编辑**：目标机的环境决定策略把读与远程执行授权到哪，`target-ownership.yaml` 在导入路径上管着它。直接改它等于绕开该检查，所以拒绝并指回 `levee target import`（在那边两者矛盾会被拒，除非 `--allow-env-conflict`，且覆盖写审计）
+- **`region` 的值按机房名校验**，规则与节点申报、导入一致（首尾空白去掉，中间空白/逗号拒绝）。两处拼写不同会让同一台主机永远匹配不上节点
+- **仅本地**：目前没有可改标签的 RPC，加 `--remote` 会在打开数据库之前被 `[exit=2]` 拒绝，而不是悄悄写进本地库
+- 输出打印改后整行的标签集（按标签名排序，与 `target list` 的 LABELS 列同序）；`--json` 给出 `{target, port, labels, changed}`
+- **边界（如实标注）**：标签编辑不写审计链（与 `target freeze/unfreeze/retire` 一致）；读-改-写之间不加锁，两个并发编辑同一行时以最后写入者为准
+
+**示例**
+
+```命令示例：改一台主机的标签
+levee target label set db-01.prod region=dc-b role=primary
+levee target label unset db-01.prod role
 ```
 
 ## 第7章 审计管理

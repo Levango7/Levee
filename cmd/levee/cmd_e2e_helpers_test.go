@@ -109,6 +109,7 @@ func resetTargetFlags() {
 	targetHistOptLimit = 20
 	targetListGroupFilter = ""
 	targetListStatusFilter = ""
+	targetLabelOptPort = 0
 }
 
 // resetSecretFlags restores cmd_secret.go package globals.

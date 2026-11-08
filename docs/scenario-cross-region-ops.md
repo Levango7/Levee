@@ -44,6 +44,7 @@
 
 - 装法：核心机房与区域各机 `deploy/baremetal/install.sh` + systemd（主线）；有 K8s 的客户用 `deploy/helm/levee`。
 - 机房声明的三件套：① 区域 worker 起 `--node-regions <本区机房名>`；② 该区目标机在 inventory 里带 `region: <同一机房名>` 标签；③ `levee cluster status --pg-dsn ...` 的 `Nodes` 段核对每个节点声明了什么——**声明没落库和没声明在派发看来是一回事**，唯一能区分的地方就是这张表。
+- 目标机的 `region` 标签有两个落点：inventory YAML 里写（`target import`，值按机房名校验：首尾空白去掉、中间不得有空白或逗号，值不合法时该行导入失败并点名 `label "region"`），或对已存在的行用 `levee target label set <address> region=<机房名>` 直接改（编辑而非替换，其余标签保持；`env` 不经这条命令改）。两边存下来的都是同一个规范值，因为派发是按字符串逐字节比较的。
 - 网络面：CLI/Web → master `:8080`（gRPC `:9090` 不对外，见 [deploy/README.md](../deploy/README.md) 安全约束）；worker → master 只需可达 PostgreSQL。
 - 认证：**命名令牌或 OIDC**（单令牌模式无法在审计里证明「谁做的」）。
 

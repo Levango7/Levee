@@ -19,6 +19,7 @@ import (
 
 	"github.com/nexus/levee/internal/capability"
 	"github.com/nexus/levee/internal/cluster"
+	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/state"
 
 	"github.com/stretchr/testify/assert"
@@ -372,4 +373,43 @@ func TestDispatchOnce_ConcurrentRefusalsAreRaceFree(t *testing.T) {
 	a, err := store.GetAssignment(context.Background(), "run-z-0")
 	require.NoError(t, err)
 	assert.Nil(t, a, "concurrency must not let an unplaceable run be claimed")
+}
+
+// TestDispatchObeysTheRegionLabelAnImportWrote closes the seam the rest of this
+// file assumes: placement reads targets.labels["region"], and the only writer of
+// that label in the product is the inventory importer (YAML file, or the same
+// importer behind the ImportTargets RPC). Driving YAML → importer → store →
+// DispatchOnce means either end can regress here — the importer not storing the
+// label, placement reading a different key — instead of in a deployment where
+// the symptom is "the run stays approved and the nodes look fine".
+//
+// The padding in the YAML is deliberate but not the discriminating part: both
+// this rule and the importer trim, so that case is pinned where it belongs
+// (internal/inventory's canonicalisation test). What fails here if the label is
+// dropped is the owner: the run becomes unconstrained and the leader wins.
+func TestDispatchObeysTheRegionLabelAnImportWrote(t *testing.T) {
+	store := newDispatchStore(t)
+	mgr := regionManager(t, []cluster.Node{
+		regionNode(t, "node-a", cluster.RoleMaster, "dc-a"),
+		regionNode(t, "node-b", cluster.RoleWorker, "dc-b"),
+	})
+
+	f, err := inventory.ParseYAML([]byte(
+		"targets:\n" +
+			"  - address: h-b\n" +
+			"    labels:\n" +
+			"      region: \" dc-b \"\n")) // padding on purpose: the importer canonicalises it
+	require.NoError(t, err)
+	sum, err := inventory.NewImporter(store).Import(context.Background(), f, "")
+	require.NoError(t, err)
+	require.Equal(t, 1, sum.Created, "the labelled host must import: %v", sum.Errors)
+	require.Zero(t, sum.Failed)
+
+	seedPlannedRun(t, store, "run-imported-label", "", "h-b")
+	loop := NewLoop(mgr, store, "node-a", time.Second, 4, DefaultClaimTimeout)
+	claimed, err := loop.DispatchOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, claimed,
+		"a run imported with region=dc-b must be placed, not refused (last refusal: %q)", loop.lastRefusal)
+	assert.Equal(t, "node-b", ownerOf(t, store, "run-imported-label"))
 }

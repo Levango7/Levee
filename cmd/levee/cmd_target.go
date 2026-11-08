@@ -8,8 +8,6 @@ import (
 	"io"
 	"math"
 	"os"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -56,6 +54,7 @@ func newTargetCmd() *cobra.Command {
 	cmd.AddCommand(newTargetFreezeCmd())
 	cmd.AddCommand(newTargetUnfreezeCmd())
 	cmd.AddCommand(newTargetRetireCmd())
+	cmd.AddCommand(newTargetLabelCmd())
 	cmd.AddCommand(newTargetHistoryCmd())
 	return cmd
 }
@@ -697,15 +696,10 @@ func printTargetListHuman(w io.Writer, targets []*state.Target) {
 	}
 	fmt.Fprintf(w, "%-28s %-6s %-7s %-8s %s\n", "ADDRESS", "PORT", "CHANNEL", "STATUS", "LABELS")
 	for _, t := range targets {
-		labels := make([]string, 0, len(t.Labels))
-		for k, v := range t.Labels {
-			labels = append(labels, k+"="+v)
-		}
-		// Map iteration order is random; sorting is what lets the same rows
-		// render identically in both modes (and across repeated runs).
-		sort.Strings(labels)
+		// Sorted by inventory.FormatLabels, which is also what `target label`
+		// prints: the row an operator edits is the row they just listed.
 		fmt.Fprintf(w, "%-28s %-6d %-7s %-8s %s\n",
-			t.Hostname, t.Port, t.ChannelType, t.Status, strings.Join(labels, ","))
+			t.Hostname, t.Port, t.ChannelType, t.Status, inventory.FormatLabels(t.Labels))
 	}
 }
 

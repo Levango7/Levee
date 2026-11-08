@@ -10,6 +10,7 @@ package capability
 // there was no answer to "which nodes can run pkg" anywhere in the product.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -197,4 +198,40 @@ func TestReaches(t *testing.T) {
 	assert.False(t, Reaches(Empty, []string{"dc-a"}))
 	assert.False(t, Reaches(`{}`, []string{"dc-a"}),
 		"an unreadable declaration must not be credited with reachability")
+}
+
+// TestValidateRegion: the target side of the comparison goes through the same
+// function as the node side (Normalize). A name that one side accepts and the
+// other does not is a host no node can ever match, and the refusal that follows
+// ("no node reaches dc-b") names the wrong fix.
+func TestValidateRegion(t *testing.T) {
+	ok := []struct {
+		in   string
+		want string
+	}{
+		{"dc-a", "dc-a"},
+		{"  dc-a  ", "dc-a"}, // a YAML value or a shell argument attracts spacing
+		{"cn-north-1", "cn-north-1"},
+	}
+	for _, tc := range ok {
+		got, err := ValidateRegion(tc.in)
+		require.NoError(t, err, "ValidateRegion(%q)", tc.in)
+		assert.Equal(t, tc.want, got, "the stored name is the canonical one")
+	}
+
+	for _, in := range []string{"", "   ", "cn north", "cn\tnorth", "cn,a"} {
+		_, err := ValidateRegion(in)
+		assert.Error(t, err, "ValidateRegion(%q) accepted a name no comparison can match", in)
+	}
+}
+
+// TestRegionLabelIsTheKeyBothSidesUse pins the label key. dispatch reads
+// targets.labels[capability.RegionLabel]; an inventory row written under a
+// different spelling would be invisible to placement, so the key is spelled
+// once and both sides alias it.
+func TestRegionLabelIsTheKeyBothSidesUse(t *testing.T) {
+	assert.Equal(t, "region", RegionLabel,
+		"the inventory label is part of the operator-facing contract (YAML files already use it)")
+	assert.Equal(t, RegionLabel, strings.TrimSuffix(RegionPrefix, "="),
+		"the node token and the target label must name the same fact")
 }
