@@ -116,6 +116,13 @@
 - **验证**：`internal/approval` 新增 6 例（nil push / nil approval / 空 run id / 空审批人 均 no-op；三个审批人全无设备 → 聚合错误同时点名 alice/bob/carol，钉住**逐个尝试**而不是首错即停；一个审批人有设备、另一个没有 → 循环不中断）；`cmd/levee` 新增组合守卫（文本）：断言 serve 建了 mobile 服务、调了 `wireServeMobileApprovalPush`、且 helper 里 `WithApprovalCreateObserver`→`NotifyApprovalRequest`→`if pushMgr == nil` 三段都在。`go build`/`go vet` rc=0；`go test ./internal/approval/ ./cmd/levee/ ./internal/grpc/` 全绿；`golangci-lint v2.13.2` 0 issues。**变异 2 条先红后还原**：① serve 的接线调用换成 `_ = servePushMgr`（能编译、永不接线）→ 组合守卫红；② 通知只发第一个审批人 → 扇出用例红。
 - **如实边界**：本笔把**触发点**接上；能否真送达仍取决于外部凭据与真机（见 A-3）。本仓证据止于「审批创建 → 每个审批人各调用一次 Send」，不包含真实 APNs/FCM 投递。
 
+### 文档（板约定收口：本机钟会跳变 → `gh-clock` 是唯一锚点；板目录只允许 `README.md` 作非条目）
+
+- **背景**：同伴把双钟约定写成了板目录里的 `board-conventions.md`——它不是条目，校验器把每行当 claim 解，板因此判红；而 `gh-clock` / `clock-source` 已在 #322 入词表，键的语义也已在 `docs/agent-board.md` 的键表里。
+- **改动**：把约定写进官方 `docs/agent-board.md`（唯一事实源）：①新增「时间戳：本机钟会跳变，`gh-clock` 才是锚点」；②在「一个 agent 一个文件」里写明 **`README.md` 是板目录里唯一允许的非条目文件**、约定走 `docs/agent-board.md` 而非再开共享文件；③新增「开 PR 前的自检」纪律（板能报重叠、报不了漏声明）。
+- **验证**：`go test ./internal/agentboard/`（含 `TestFormatDocMatchesTheParser`，文档键表 ↔ 解析器一致）全绿；`check_doc_anchors` / `test_doc_anchors`（24 例）/ `test_changelog_structure` 全过。
+- **如实边界**：本笔只改文档；`gh-clock` 仍**不**作为 TTL 判据（过期仍按 `updated` + `ttl-minutes`），要变判据需要 GitHub 的当前时刻，超出解析器范围。板目录里那个 `board-conventions.md` 的删除归作者（只报不改）。
+
 ### 安全（依赖：`golang.org/x/net` v0.60.0 → v0.62.0，修 CVE-2026-78661）
 
 - **背景**：2026-11-06 晚起，CI 的 `trivy` 腿（`check (all jobs passed)` 的必需腿）扫出 blocking finding **CVE-2026-78661**（HIGH）：`usr/local/bin/levee` 里的 `golang.org/x/net` v0.60.0（indirect）——`golang.org/x/net/html: Denial of Service via crafted HTML input`，fixed version **0.62.0**。这条腿红的这段时间，**任何** PR 与 master push 都合不进去（与具体改动无关）。
