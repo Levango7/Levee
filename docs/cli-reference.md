@@ -119,7 +119,24 @@ levee show <run-id>
 
 **输出**
 
-包含 run 元数据、batch 执行摘要、step 状态和审计 trace 列表。
+包含 run 元数据、batch 执行摘要、step 状态、审计 trace 列表，以及一行 **Evidence**：执行证据与实际发生的事有多吻合。
+
+**Evidence 判定**
+
+证据（batch/step 行）是在批次闭包返回后**一次性写入**的，所以有三种情况会让 run 的状态说有动作、证据表却什么也没有；这一行负责把「不知道」说出来，而不是渲染成一个空的 step 列表（那会被读成「什么都没跑」）：
+
+| 判定 | 含义 | 依据 |
+|------|------|------|
+| `not_started` | 从未派发，没有可对照的证据 | `draft` / `planned` / `pending`；或 `approved` 且没有任何派发分配行 |
+| `in_flight` | 执行者仍持有该 run，证据尚未写入是设计如此 | `running` / `paused`；或 `approved` 且已被 claim |
+| `complete` | 执行过的每一步都有证据行，且没有记录到缺口 | 存在 batch/step 行，且无缺口事件 |
+| `partial` | 一部分有据、一部分已知缺失（该次尝试的行从未写入） | `evidence_incomplete` 事件；或 `interrupted` 但存在早期尝试的证据行 |
+| `missing` | **派发过，且一行证据都没有——可能已经改过主机** | `evidence_discarded` 事件；或 `interrupted` 无证据行；或被派发过的 `cancelled` |
+| `unrecorded` | 终态 run 既无证据行、也无派发记录：可能早于逐批持久化，也可能从未执行 | 其余情况 |
+
+`--json` 在 `data.evidence` 给出同样的判定：`kind` / `reason` / `unsafe_to_retry`。判定由 `internal/evidence` 一处实现，`levee show` 与重试路径共用——「能不能安全重试」不是某个输出面的意见。
+
+`interrupted` 的 run 在证据表为空时**不是**「没跑过」：节点崩溃、或执行者在写证据前丢掉了租约（那种情况下已执行的证据是**故意丢弃**的，见 `internal/wiring` 的围栏注释），都可能是「跑过但没记下来」。`levee retry` 遇到 `partial` / `missing` / `unrecorded` 会先告警，并把这次决定写成 run trace 链上的 `retry_over_unknown_outcome`。
 
 **示例**
 

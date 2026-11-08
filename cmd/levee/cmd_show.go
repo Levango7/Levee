@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/nexus/levee/internal/evidence"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -68,6 +69,26 @@ func runShow(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list traces: %w", err)
 	}
 
+	// 5b. How much of what this run claims actually happened is written down.
+	// The derivation is internal/evidence, not a rule of this renderer: the
+	// retry path asks the same question and the two must not answer
+	// differently ("safe to retry" is not a per-surface opinion).
+	assignment, err := store.GetAssignment(ctx, showOptRunID)
+	if err != nil {
+		return fmt.Errorf("get assignment: %w", err)
+	}
+	events := make([]string, 0, len(traces))
+	for _, tr := range traces {
+		events = append(events, tr.Event)
+	}
+	verdict := evidence.Classify(evidence.Facts{
+		Status:     run.Status,
+		Events:     events,
+		Batches:    len(batches),
+		Steps:      len(steps),
+		Assignment: assignment != nil,
+	})
+
 	// 6. Build the output structure.
 	batchSummaries := make([]map[string]any, 0, len(batches))
 	for _, b := range batches {
@@ -111,6 +132,11 @@ func runShow(cmd *cobra.Command, args []string) error {
 		"batches": batchSummaries,
 		"steps":   stepSummaries,
 		"traces":  traceSummaries,
+		"evidence": map[string]any{
+			"kind":            string(verdict.Kind),
+			"reason":          verdict.Reason,
+			"unsafe_to_retry": verdict.Kind.UnsafeToBlindRetry(),
+		},
 	}
 
 	if optJSON {
@@ -126,16 +152,24 @@ func runShow(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	printShowHuman(os.Stdout, run, batchSummaries, stepSummaries, traceSummaries)
+	printShowHuman(os.Stdout, run, batchSummaries, stepSummaries, traceSummaries, verdict)
 	return nil
 }
 
 // printShowHuman renders the show output in a human-readable format.
-func printShowHuman(w io.Writer, run *state.Run, batches, steps, traces []map[string]any) {
+func printShowHuman(w io.Writer, run *state.Run, batches, steps, traces []map[string]any, verdict evidence.Verdict) {
 	fmt.Fprintf(w, "Run: %s\n", run.ID)
 	fmt.Fprintf(w, "  Workflow:    %s\n", workflowDisplay(run.WorkflowName))
 	fmt.Fprintf(w, "  Template:    %s\n", run.TemplateName)
 	fmt.Fprintf(w, "  Status:      %s\n", run.Status)
+	// Printed even when it reads "complete": an operator looking at an empty
+	// step list must not have to know that the absence of this line means
+	// "we cannot tell what happened".
+	if verdict.Kind == evidence.Complete {
+		fmt.Fprintf(w, "  Evidence:    complete\n")
+	} else {
+		fmt.Fprintf(w, "  Evidence:    %s — %s\n", verdict.Kind, verdict.Reason)
+	}
 	fmt.Fprintf(w, "  Approval:    %s\n", run.ApprovalStatus)
 	fmt.Fprintf(w, "  Creator:     %s\n", run.Creator)
 	fmt.Fprintf(w, "  Created At:  %s\n", run.CreatedAt.Format("2006-01-02 15:04:05"))

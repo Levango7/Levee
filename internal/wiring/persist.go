@@ -9,12 +9,14 @@ package wiring
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/executor"
+	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/state"
@@ -162,6 +164,44 @@ func (e *Engine) persistClosureResults(
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// recordRunFact writes a trace row that says OUT LOUD what happened to a run
+// when the row itself would otherwise have to be inferred (internal/evidence
+// folds the evidence events into the run's verdict; the retry event records a
+// decision taken over an undocumented outcome).
+//
+// Why a trace and not a new column: the run's trace chain is already the
+// append-only, hash-chained record of what happened to this run, and it already
+// carries events written by the takeover. A column would have to be preserved by
+// every full-row `runs` write on every path — one forgotten caller and the fact
+// silently disappears, which is the class of defect this feature exists to end.
+//
+// Why it must survive a cancelled context: two of the three gap routes happen
+// during shutdown (the node is losing its lease, or the request is being torn
+// down). Writing under the caller's context would drop the record exactly when
+// it matters most.
+//
+// A store failure is logged, never returned: every caller is already reporting
+// the real outcome, and turning a bookkeeping failure into a failed execution
+// would misreport work that stands.
+func (e *Engine) recordRunFact(ctx context.Context, changeID, event string, detail map[string]any) {
+	payload := ""
+	if len(detail) > 0 {
+		if b, err := json.Marshal(detail); err == nil {
+			payload = string(b)
+		}
+	}
+	if err := e.store.CreateTrace(context.WithoutCancel(ctx), &state.Trace{
+		ID:        newID("trc-"),
+		RunID:     changeID,
+		Event:     event,
+		Actor:     "engine",
+		Detail:    payload,
+		Timestamp: utcNow(),
+	}); err != nil {
+		log.Warn("wiring: record evidence gap failed", "run_id", changeID, "event", event, "error", err)
+	}
 }
 
 // persistRollbackResults writes undo-step evidence for a manual rollback

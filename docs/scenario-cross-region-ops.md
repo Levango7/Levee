@@ -25,7 +25,7 @@
 | 审批靠口头 | 审批分级（standard/high/emergency）+ 最少人数 + 排除发起人 + 按级别配额；投票**绑定认证主体**；IM/deeplink 一键审批 |
 | 回滚不干净却显示成功 | 执行证据账本只补偿**确实改过**的步骤；`rolled_back_partial` / `rollback_incomplete` 不冒充干净回滚；snapshot 与 run 级基线可还原文件 |
 | 内审要链路证据 | `audit` 表 WORM 触发器 + 全局哈希链（写入即封链）+ trace 按 run 封链；`levee audit report` 输出**自包含 HTML**，离线可读可归档 |
-| 执行机崩溃后变更卡死 | 集群执行租约 + epoch 围栏 + 接管循环：崩溃节点的运行中变更收敛到 `interrupted` 终态（审计留痕、**不重跑副作用**），`RetryChange` 显式重驱动 |
+| 执行机崩溃后变更卡死 | 集群执行租约 + epoch 围栏 + 接管循环：崩溃节点的运行中变更收敛到 `interrupted` 终态（审计留痕、**不重跑副作用**），`RetryChange` 显式重驱动。**这次尝试做过什么、有没有做过，账本回答不了**：证据在批次闭包返回后一次性写入，节点死在中途就一行都没有；执行者在写证据前丢掉租约时，已执行的证据是被**故意丢弃**的（比脏证据好，但仍是缺失）。所以 `levee show` 有一行 `Evidence`：`missing` 表示「派发过、可能已改过主机」，`partial` 表示「一部分有据」，重试时先告警并把 `retry_over_unknown_outcome` 写进 run 的 trace 链 |
 | 跨区域集中执行的带宽/延迟 | 集群 worker **就近执行**：各区域一台 worker，leader 统一派发（容量/回收/claim 超时均已接线）；**就近由声明强制**——worker 用 `--node-regions` 声明能到达的机房、目标机用 `region` 标签声明所在机房，派发只交给覆盖该 run 全部所需机房的节点（未打标签的部署行为与引入前相同） |
 | 谁在暗改配置 | `levee drift` 基线 + 巡检；审批与执行全程入审计链 |
 

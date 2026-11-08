@@ -10,6 +10,15 @@
 - **修法**：`printTargetList` 在打印前归一化为 `[]*state.Target{}`，local 与 remote 一并覆盖。
 - **验证**：新增回归用例（fresh store，**修复前实测 `"data": null`**）；`go test ./cmd/levee` 定向子集全绿；`go vet ./cmd/levee` rc=0。
 
+### 新增（执行结果不确定：把「跑过但没记下来」变成一条可读的事实，而不是空 step 列表）
+
+- **缺口（不是推测，是三条代码路径）**：执行证据（batch/step 行）在批次闭包返回后**一次性写入**（`internal/wiring/run.go` → `persistClosureResults`）。于是三种情况会让 run 的状态说有动作、证据表却什么也没有：① 执行节点死在批次中途——闭包没返回，一行都没写，接管把 run 收成 `interrupted`；② 执行者在写证据前丢掉租约——它已执行的证据被**故意丢弃**（`run.go` 的围栏注释写明「脏证据比缺失证据更糟」）；③ 证据持久化失败但步骤已跑——run 落在 `failed`，行数却不全。三种情况下「这台变更到底动没动过我的主机」的诚实答案是**不知道**，而平台把它渲染成空 step 列表——读起来和「什么都没跑」一模一样。两种读法导致相反的操作：一个是安全重试，另一个是在未知的半应用状态上重试。
+- **形态（B 案：事实独立于状态词表）**：不动 run 状态机，也不加列。把事实写成 **run 自己的 trace 事件**（append-only、按 run 封链、接管本来就用这条通道记 `interrupted_by_takeover`）：新增 `state.EventEvidenceDiscarded`（围栏丢弃，在 `run.go` 的围栏分支写）与 `state.EventEvidenceIncomplete`（持久化失败，在持久化失败分支写），外加 `state.EventRetryOverUnknownOutcome`（重试决定）。为什么用 trace 不用新列：`runs` 被多条路径整行覆写，一列要每个写方都记得保留，漏一个事实就静默消失——正是本笔要终结的那类缺陷。
+- **判定收成一处（`internal/evidence`，新包）**：`Classify` 把「状态 + trace 事件 + batch/step 行数 + 是否有派发分配行」判成 `not_started` / `in_flight` / `complete` / `partial` / `missing` / `unrecorded` 六种之一，每种对应一个**不同的操作动作**；`ForRun` 是唯一的取数实现，CLI 与执行器共用——「能不能安全重试」不是某个输出面的意见。两个判据值得点名：**`interrupted` 永远不是 `complete`**（有行也只是一次更早尝试的），**「是否派发过」只认派发分配行**（单机模式的 `cancelled` 没有分配行，把它叫「派发过且为空」会对每个取消的草稿报假警）。
+- **呈现**：`levee show` 在状态下面固定打一行 `Evidence:`（`complete` 时也打，否则「没有这行」本身就成了需要读代码才知道的含义），`--json` 给 `data.evidence = {kind, reason, unsafe_to_retry}`；`levee retry` / `retry-host` 在 `partial`/`missing`/`unrecorded` 时先往 stderr 告警，并把 `retry_over_unknown_outcome` 写进该 run 的 trace 链；引擎侧 `retryChange` 同样在 CAS 之前判定并记录（覆盖 RPC 与 Web 控制台使用的同一条路径）。**重试不被拒绝**——`interrupted` 的续跑本就依赖「跳过幂等模块已完成的批次」，`failed` 用整计划重跑；把读侧的事实变成卡死的 run，只会把操作员逼去手改状态列。文档如实写了这条取舍。
+- **验证**：`internal/evidence` 15 例（六种判定的每个入口，含「缺口事件压过状态」「丢弃压过不完整」「`interrupted` 有行仍是 partial」「`cancelled` 无派发记录不叫 missing」；另两条守卫：**判定理由不得读成安抚**——凡 `UnsafeToBlindRetry` 的理由必须说清「可能改了主机」而不是只说「没有证据」）；`internal/wiring` 5 例（**持久化失败**：用一个只在 `CreateStep` 上失败的嵌入 store 驱动真实执行，断言执行确实发生、step 行确实没有、`evidence_incomplete` 确实写下，且**按 batch 行单独判定会误报 complete**——这条把「事件为什么必须有」钉住了；**围栏丢弃**：沿用既有 fake guard 场景断言 `evidence_discarded`；**取消的 ctx 仍要记录**；引擎重试对无证据的 run 记录、对有证据的 run 不记录）；`cmd/levee` 3 例（`show` 的 `missing` 与 `complete` 两面对照、CLI 重试对无据 run 记录该事件、有据 run 不记录）。
+- **如实边界**：① **服务端/前端尚未呈现**——`levee show` 是本地只读命令，集群部署的操作员要看到这行判定需要给线上消息加字段（proto + TS 词汇生成），本笔不含；② 重试**只告警不拒绝**（上文的取舍）；③ 阈值/风控不介入——平台只回答「记没记下来」，不判断「该不该回滚」；④ 本笔不动 `docs/blocked-items.md`（opencode 持 D-3 行）。
+
 ### 新增（inventory `region` 标签闭环：导入期校验 + `target label set/unset` 逐台编辑）
 
 - **缺口（上一笔派发能力的两条未闭环处）**：`internal/dispatch` 按 `targets.labels["region"]` 决定 run 落在哪个机房，但 ① **没有任何地方校验这个值**——`region: "cn north"` / `region: "dc-b "` 会原样入库，与节点申报的 `region=<名>` 逐字节比较时永远不匹配，run 在派发时被拒、日志却在说节点（`no_eligible_node`），把操作员送去查节点而错误其实在清单里；② **唯一的写入方是 `target import`，而导入会替换该行的整套标签**——给一台已上线的机器补一个 `region`，得把它的 `env`/`role` 等全部重抄一遍，漏写一个键就是静默丢掉一个标签。

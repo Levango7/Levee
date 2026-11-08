@@ -30,6 +30,7 @@ import (
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/batch"
 	"github.com/nexus/levee/internal/engine"
+	"github.com/nexus/levee/internal/evidence"
 	"github.com/nexus/levee/internal/grpc"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/lock"
@@ -288,12 +289,30 @@ func (e *Engine) executePlan(ctx context.Context, changeID string, p *plan.Plan,
 	// evidence (the takeover trace records what happened).
 	if lease != nil {
 		if oerr := lease.Owns(context.WithoutCancel(ctx)); oerr != nil {
+			// ...but "missing evidence" is only honest if it is also RECORDED
+			// as missing. Without this trace the run's empty step list reads
+			// exactly like "nothing ran", when the truth is "steps ran and
+			// their evidence was thrown away". internal/evidence turns this
+			// event into the run's verdict.
+			e.recordRunFact(ctx, changeID, state.EventEvidenceDiscarded, map[string]any{
+				"reason": "lease_lost_before_persist",
+				"error":  oerr.Error(),
+			})
 			return res.RunID, false, string(res.Phase), fmt.Errorf(
 				"wiring: %q fenced out before evidence persistence: %w", changeID, oerr)
 		}
 	}
 
 	persistErr := e.persistClosureResults(ctx, changeID, p, res, rx.snapshotOutputs())
+	if persistErr != nil {
+		// The outcome stands; what is unknown is how much of it was written.
+		// Record that fact before the caller settles the status, so a reader
+		// never has to infer it from an error string that goes nowhere.
+		e.recordRunFact(ctx, changeID, state.EventEvidenceIncomplete, map[string]any{
+			"reason": "persist_failed",
+			"error":  persistErr.Error(),
+		})
+	}
 	if runErr != nil {
 		if persistErr != nil {
 			runErr = errors.Join(runErr, fmt.Errorf("persisting step evidence: %w", persistErr))
@@ -433,6 +452,25 @@ func (e *Engine) retryChange(ctx context.Context, changeID string, replan bool, 
 		return fmt.Errorf("wiring: get run for retry: %w", err)
 	}
 	old := run.Status
+
+	// Before re-running: does this run's evidence describe what happened? A run
+	// whose evidence was lost (fenced executor, failed persistence, dead owner)
+	// may have already changed hosts, and this retry applies the plan again on
+	// top of that. The retry is NOT refused — for `interrupted` the engine
+	// resumes from the persisted prefix and leans on idempotency declarations —
+	// but the decision is recorded on the run's own trace chain, so "we chose to
+	// re-run an undocumented state" is a fact and not a reconstruction.
+	if v, verr := evidence.ForRun(ctx, e.store, changeID, old); verr != nil {
+		log.Warn("retry: evidence verdict unavailable", "run_id", changeID, "error", verr)
+	} else if v.Kind.UnsafeToBlindRetry() {
+		log.Warn("retrying a run whose outcome is not fully documented",
+			"run_id", changeID, "verdict", string(v.Kind), "reason", v.Reason)
+		e.recordRunFact(ctx, changeID, state.EventRetryOverUnknownOutcome, map[string]any{
+			"verdict": string(v.Kind),
+			"reason":  v.Reason,
+		})
+	}
+
 	ok, err := e.store.UpdateRunStatusIf(ctx, changeID, old, runstatus.StatusRunning, utcNow())
 	if err != nil {
 		return fmt.Errorf("wiring: retry transition: %w", err)

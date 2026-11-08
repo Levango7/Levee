@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/evidence"
 	"github.com/nexus/levee/internal/retrybudget"
 	"github.com/nexus/levee/internal/state"
 )
@@ -84,6 +86,13 @@ func runRetry(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("run %q is in %q state, cannot retry [exit=1]", retryOptRunID, run.Status)
 	}
 
+	// 3b. Does the evidence describe what this run did? A run whose record was
+	// lost may already have changed hosts, and this retry applies the plan again
+	// on top of that. The retry is not refused (an interrupted run resumes from
+	// its persisted prefix and leans on idempotency declarations), but the
+	// operator is told and the decision lands on the run's trace chain.
+	verdict := warnUndocumentedOutcome(ctx, store, retryOptRunID, run.Status)
+
 	// 4. Check retry count via audit trail.
 	retryCount, err := countRetries(ctx, store, retryOptRunID)
 	if err != nil {
@@ -129,6 +138,13 @@ func runRetry(cmd *cobra.Command, args []string) error {
 		"retry_count": retryCount + 1,
 		"max_retries": maxRetryAttempts,
 		"retried_at":  now,
+	}
+	if verdict != nil {
+		output["evidence"] = map[string]any{
+			"kind":            string(verdict.Kind),
+			"reason":          verdict.Reason,
+			"unsafe_to_retry": verdict.Kind.UnsafeToBlindRetry(),
+		}
 	}
 
 	if optJSON {
@@ -177,6 +193,9 @@ func runRetryHost(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("run %q is in %q state, cannot retry [exit=1]", retryHostOptRunID, run.Status)
 	}
 
+	// 3b. Same question as `retry`: does the evidence describe what happened?
+	hostRetryVerdict := warnUndocumentedOutcome(ctx, store, retryHostOptRunID, run.Status)
+
 	// 4. Check host-level retry count.
 	hostRetryCount, err := countHostRetries(ctx, store, retryHostOptRunID, retryHostOptHost)
 	if err != nil {
@@ -215,6 +234,13 @@ func runRetryHost(cmd *cobra.Command, args []string) error {
 		"retry_count": hostRetryCount + 1,
 		"max_retries": maxRetryAttempts,
 		"retried_at":  now,
+	}
+	if hostRetryVerdict != nil {
+		output["evidence"] = map[string]any{
+			"kind":            string(hostRetryVerdict.Kind),
+			"reason":          hostRetryVerdict.Reason,
+			"unsafe_to_retry": hostRetryVerdict.Kind.UnsafeToBlindRetry(),
+		}
 	}
 
 	if optJSON {
@@ -261,4 +287,65 @@ func newRetryAuditID() (string, error) {
 		return "", fmt.Errorf("generate retry audit id: %w", err)
 	}
 	return "audit-retry-" + hex.EncodeToString(b), nil
+}
+
+// warnUndocumentedOutcome asks internal/evidence what this run's record says,
+// prints the answer when it means "we do not know what happened", and records
+// the decision on the run's own trace chain.
+//
+// The retry is NOT refused. `isRetryableStatus` already limits the CLI to
+// failed/paused runs, the engine resumes an interrupted run from its persisted
+// prefix, and a module that declares idempotency is exactly the mechanism for
+// re-applying a step whose first application cannot be proven. Refusing here
+// would turn a read-side fact into a stuck run, with the operator's only way out
+// being an out-of-band edit of the status column.
+//
+// It returns the verdict for --json, or nil when the evidence could not be read
+// at all: a failing COUNT must not silently read as "the record is fine".
+func warnUndocumentedOutcome(ctx context.Context, store state.Store, runID, status string) *evidence.Verdict {
+	verdict, err := evidence.ForRun(ctx, store, runID, status)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read execution evidence for %s: %v\n", runID, err)
+		return nil
+	}
+	if !verdict.Kind.UnsafeToBlindRetry() {
+		return &verdict
+	}
+	fmt.Fprintf(os.Stderr,
+		"warning: %s is being re-run over an undocumented outcome (%s): %s\n",
+		runID, verdict.Kind, verdict.Reason)
+	detail, jsonErr := json.Marshal(map[string]string{
+		"verdict": string(verdict.Kind),
+		"reason":  verdict.Reason,
+	})
+	if jsonErr != nil {
+		detail = []byte(`{"verdict":"` + string(verdict.Kind) + `"}`)
+	}
+	id, idErr := newRetryTraceID()
+	if idErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to record the retry decision on %s: %v\n", runID, idErr)
+		return &verdict
+	}
+	if trErr := store.CreateTrace(ctx, &state.Trace{
+		ID:        id,
+		RunID:     runID,
+		Event:     state.EventRetryOverUnknownOutcome,
+		Actor:     currentActor(),
+		Detail:    string(detail),
+		Timestamp: time.Now().UTC(),
+	}); trErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to record the retry decision on %s: %v\n", runID, trErr)
+	}
+	return &verdict
+}
+
+// newRetryTraceID mints an unpredictable trace id, like every other identity
+// this CLI writes: a crypto/rand failure is reported rather than replaced by a
+// guessable timestamp.
+func newRetryTraceID() (string, error) {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generate retry trace id: %w", err)
+	}
+	return "trc-retry-" + hex.EncodeToString(b), nil
 }
