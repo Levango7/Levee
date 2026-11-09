@@ -76,6 +76,11 @@ type Placement struct {
 	// Detail is a short human-readable addition to Reason (which targets are
 	// unresolved, for example). It is for logs and diagnostics, never matched.
 	Detail string
+	// batches is each plan batch's data-centre footprint. Diagnostic only:
+	// the placement decision consults Regions alone, while a refusal's
+	// Diagnosis names which batch mixes which data centres so the operator
+	// sees the split point instead of a bare region list.
+	batches []batchFact
 }
 
 // Placeable reports whether the run's requirement could be computed.
@@ -93,6 +98,64 @@ func (p Placement) String() string {
 		return "any"
 	}
 	return "region in [" + strings.Join(p.Regions, ",") + "]"
+}
+
+// Diagnosis renders what an operator needs when a run is refused: the
+// requirement, which batch needs which data centre, and the remedy for the
+// given reason (one of the Reason* constants, as classified by forRun or
+// Assignability). It answers "why is this not running, and what do I do" in
+// one line; the placement decision never consults it, so the text can name
+// batches freely. A placeable run (reason "") renders the plain requirement.
+func (p Placement) Diagnosis(reason string) string {
+	if reason == "" {
+		return p.String()
+	}
+	parts := []string{p.String()}
+	if s := batchLine(p.batches); s != "" {
+		parts = append(parts, s)
+	}
+	if h := remedy(reason); h != "" {
+		parts = append(parts, "fix: "+h)
+	}
+	return strings.Join(parts, "; ")
+}
+
+// batchLine renders the per-batch data-centre footprint, capped so one
+// misconfigured plan cannot write every batch into a log line or a table
+// cell (the same bound summarise puts on host lists).
+func batchLine(facts []batchFact) string {
+	if len(facts) == 0 {
+		return ""
+	}
+	const max = 5
+	parts := make([]string, 0, len(facts))
+	for _, f := range facts[:min(len(facts), max)] {
+		parts = append(parts, fmt.Sprintf("batch %d: %s", f.index, strings.Join(f.regions, ",")))
+	}
+	if len(facts) > max {
+		parts = append(parts, fmt.Sprintf("%d more batches", len(facts)-max))
+	}
+	return "batches: " + strings.Join(parts, "; ")
+}
+
+// remedy maps a refusal reason to the operator action. The spanning remedy
+// is the one docs/scenario-cross-region-ops.md already promises in its
+// honest-boundaries section: split the change into one run per region, or
+// bridge it with a node that declares both. Keeping the words here means the
+// refusal and the document cannot drift apart silently.
+func remedy(reason string) string {
+	switch reason {
+	case ReasonNoSingleSpan:
+		return "split the run into one run per region, or bridge a node with --node-regions <dc-a>,<dc-b>"
+	case ReasonNoEligibleNode:
+		return "no live node declares every required region; declare the missing one(s) with serve --node-regions"
+	case ReasonRegionUnresolved:
+		return "label every target (levee target label set <host> region=<name>) or remove the stray labels"
+	case ReasonPlanUnreadable:
+		return "re-create the run so a fresh plan is persisted"
+	default:
+		return ""
+	}
 }
 
 // placementResolver answers "which data centres does this run touch" for a
@@ -127,13 +190,15 @@ func (r *placementResolver) targetsFor(ctx context.Context, tenantID string) (ma
 
 // forRun computes one run's requirement. A run that cannot be decoded or whose
 // targets are only partially labelled is returned as not placeable with the
-// reason set; the caller refuses it and reports that reason.
+// reason set; the caller refuses it and reports that reason. The per-batch
+// footprint rides along for diagnostics: the decision below reads Regions
+// only, so a batch-shaped fact can never change where a run is allowed to run.
 func (r *placementResolver) forRun(ctx context.Context, run *state.Run) (Placement, error) {
-	hosts, err := planHosts(run.PlanJSON)
+	batches, err := planBatchHosts(run.PlanJSON)
 	if err != nil {
 		return Placement{Reason: ReasonPlanUnreadable, Detail: err.Error()}, nil
 	}
-	if len(hosts) == 0 {
+	if len(batches) == 0 {
 		return Placement{}, nil
 	}
 	known, err := r.targetsFor(ctx, run.TenantID)
@@ -145,17 +210,41 @@ func (r *placementResolver) forRun(ctx context.Context, run *state.Run) (Placeme
 		seen       = map[string]bool{}
 		unlabelled []string
 		missing    []string
+		hostSeen   = map[string]bool{}
+		facts      []batchFact
 	)
-	for _, h := range hosts {
-		reg, ok := known[h]
-		switch {
-		case !ok:
-			missing = append(missing, h)
-		case reg == "":
-			unlabelled = append(unlabelled, h)
-		case !seen[reg]:
-			seen[reg] = true
-			regions = append(regions, reg)
+	for _, b := range batches {
+		var (
+			batchRegions []string
+			batchSeen    = map[string]bool{}
+		)
+		for _, h := range b.hosts {
+			reg, ok := known[h]
+			switch {
+			case !ok:
+				if !hostSeen[h] {
+					hostSeen[h] = true
+					missing = append(missing, h)
+				}
+			case reg == "":
+				if !hostSeen[h] {
+					hostSeen[h] = true
+					unlabelled = append(unlabelled, h)
+				}
+			default:
+				if !seen[reg] {
+					seen[reg] = true
+					regions = append(regions, reg)
+				}
+				if !batchSeen[reg] {
+					batchSeen[reg] = true
+					batchRegions = append(batchRegions, reg)
+				}
+			}
+		}
+		sort.Strings(batchRegions)
+		if len(batchRegions) > 0 {
+			facts = append(facts, batchFact{index: b.index, regions: batchRegions})
 		}
 	}
 	sort.Strings(regions)
@@ -172,9 +261,9 @@ func (r *placementResolver) forRun(ctx context.Context, run *state.Run) (Placeme
 		if len(missing) > 0 {
 			parts = append(parts, "not in inventory: "+summarise(missing))
 		}
-		return Placement{Regions: regions, Reason: ReasonRegionUnresolved, Detail: strings.Join(parts, "; ")}, nil
+		return Placement{Regions: regions, Reason: ReasonRegionUnresolved, Detail: strings.Join(parts, "; "), batches: facts}, nil
 	}
-	return Placement{Regions: regions}, nil
+	return Placement{Regions: regions, batches: facts}, nil
 }
 
 // summarise caps a list so one misconfigured batch cannot write a thousand
@@ -187,11 +276,12 @@ func summarise(hosts []string) string {
 	return fmt.Sprintf("%s and %d more", strings.Join(hosts[:max], ","), len(hosts)-max)
 }
 
-// planHosts extracts the resolved target hostnames from the persisted plan.
-// An empty plan column yields no hosts (legacy rows behave as before); a
+// planBatchHosts extracts the resolved target hostnames of each batch from
+// the persisted plan, keeping the batch ordinal the plan itself carries. An
+// empty plan column yields no batches (legacy rows behave as before); a
 // non-empty column that cannot be decoded is an error, because "the plan is
 // corrupt" must not be read as "the run targets nothing".
-func planHosts(planJSON string) ([]string, error) {
+func planBatchHosts(planJSON string) ([]planBatch, error) {
 	if strings.TrimSpace(planJSON) == "" {
 		return nil, nil
 	}
@@ -199,20 +289,36 @@ func planHosts(planJSON string) ([]string, error) {
 	if err := json.Unmarshal([]byte(planJSON), &p); err != nil {
 		return nil, fmt.Errorf("persisted plan is not decodable: %w", err)
 	}
-	var (
-		out  []string
-		seen = map[string]bool{}
-	)
+	var out []planBatch
 	for _, b := range p.Batches {
+		hosts := make([]string, 0, len(b.Targets))
+		seen := map[string]bool{}
 		for _, h := range b.Targets {
 			if h == "" || seen[h] {
 				continue
 			}
 			seen[h] = true
-			out = append(out, h)
+			hosts = append(hosts, h)
 		}
+		if len(hosts) == 0 {
+			continue
+		}
+		out = append(out, planBatch{index: b.Index, hosts: hosts})
 	}
 	return out, nil
+}
+
+// planBatch is one persisted plan batch's slice of the requirement.
+type planBatch struct {
+	index int
+	hosts []string
+}
+
+// batchFact is one plan batch's data-centre footprint, carried on a
+// Placement for refusal diagnostics only (see Placement.batches).
+type batchFact struct {
+	index   int
+	regions []string
 }
 
 // pickWorker returns the index of the least-loaded worker that (a) has spare

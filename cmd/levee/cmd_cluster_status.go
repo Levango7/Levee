@@ -103,6 +103,11 @@ type unplaceableRun struct {
 	RunID     string `json:"run_id"`
 	Placement string `json:"placement"`
 	Reason    string `json:"reason"`
+	// Detail is the operator-facing diagnosis: the requirement, which batch
+	// needs which data centre, and the remedy for the reason. It is additive
+	// to Placement (the compact requirement) so existing JSON consumers keep
+	// reading the field they already parse.
+	Detail string `json:"detail"`
 }
 
 // unplaceableRuns classifies every approved run against the registered node
@@ -122,7 +127,12 @@ func unplaceableRuns(ctx context.Context, store state.Store, nodes []state.Clust
 			return nil, err
 		}
 		if reason := classifyPlacement(place, decls); reason != "" {
-			out = append(out, unplaceableRun{RunID: run.ID, Placement: place.String(), Reason: reason})
+			out = append(out, unplaceableRun{
+				RunID:     run.ID,
+				Placement: place.String(),
+				Reason:    reason,
+				Detail:    place.Diagnosis(reason),
+			})
 		}
 	}
 	return out, nil
@@ -168,9 +178,9 @@ func printClusterStatusTable(nodes map[string]bool, assignments []*state.Assignm
 	if len(stuck) == 0 {
 		fmt.Fprintln(w, "(none: every approved run has an eligible node)")
 	} else {
-		fmt.Fprintln(w, "RUN_ID\tPLACEMENT\tREASON")
+		fmt.Fprintln(w, "RUN_ID\tPLACEMENT\tREASON\tDETAIL")
 		for _, s := range stuck {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", s.RunID, s.Placement, s.Reason)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.RunID, s.Placement, s.Reason, s.Detail)
 		}
 	}
 
