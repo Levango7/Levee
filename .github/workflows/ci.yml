@@ -403,7 +403,9 @@ jobs:
       - name: install pinned protoc toolchain
         run: |
           set -e
-          curl -fsSL -o /tmp/protoc.zip \
+          # release CDN 间歇 504（2026-11-09 实测三次连红、分钟级窗口）；
+          # --retry-all-errors 才覆盖 HTTP 5xx，pin 的版本与校验内容不变。
+          curl -fsSL --retry 10 --retry-delay 30 --retry-all-errors -o /tmp/protoc.zip \
             https://github.com/protocolbuffers/protobuf/releases/download/v27.0/protoc-27.0-linux-x86_64.zip
           unzip -oq /tmp/protoc.zip -d "$HOME/protoc"
           echo "$HOME/protoc/bin" >> "$GITHUB_PATH"
