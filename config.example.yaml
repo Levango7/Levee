@@ -198,11 +198,12 @@ notify:
     url: ""                       # 例: https://hooks.example.com/levee/<your-token>
     # 请求超时（enabled=true 时必须 > 0，Go duration）。 默认: 10s
     timeout: 10s
-    # 失败重试次数（>= 0）。 默认: 3
+    # 失败重试次数（0 视为未设→默认 3；负数被拒）。 默认: 3
     retry: 3
     # 签名密钥走环境变量 LEVEE_WEBHOOK_SECRET（HMAC-SHA256，随
     # X-Levee-Signature: sha256=… 一起发出）。不设则明文投递：接收端无法
-    # 验真，启动日志会说明这一点。当前该渠道的投递源只有回滚分级。
+    # 验真，启动日志会说明这一点。当前该渠道的投递源为回滚分级 + run
+    # 生命周期全量镜像。
 
   # jira —— 出站 ITSM 审批镜像：审批启动建 issue、决策自动评论。
   # 默认关闭（零外发）；启用时 url / project_key / api_token 必填，

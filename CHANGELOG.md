@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（新落地特性文档漂移清扫：region 派发 / 运行期通道池化 / push 旗标 / webhook 镜像四处口径）
+
+- **缺口**：四批已落地特性在 docs 里的口径停在实现前——region 派发只写三种拒绝（漏 `plan_unreadable`）且把「某机房无人声明」误并入 `no_single_node_spans_regions`；运行期通道仍写「无跨 run 连接池」（D-1c 起已池化，cli-reference / README / tcp_console 示例三处同病）；`levee push` 的 `--platform` 默认 `ios`、`--body` 非必填、不带选项报错 exit=2、失败聚合 `ErrPushFailed` 无部分成功，与 cli-reference 的「必填 / 显示配置状态 / 部分成功」全相反；webhook 镜像已随 run 生命周期全量投递，而 mvp-tasks D-20 / blocked-items E-2 / config.example.yaml / CHANGELOG 旧节仍写「唯一事件源是回滚分级」「serve 尚未配置渠道」「HMAC 未做」。
+- **修法**：逐特性对照代码订正（判据与错误码以 `internal/dispatch/placement.go` 的四个 Reason 常量为准；池化口径以 `internal/plugin/pool.go` 为准；push 旗标以 `cmd/levee/cmd_push.go` 为准；镜像边界以 `internal/notify/run_lifecycle.go` 为准），共 10 个文件 21 处；只改叙述不改锚点标记。
+- **验证**：`scripts/check_doc_anchors.py` PASSED（29 anchors / 29 claims）；`python -m unittest discover -s scripts -p 'test_*.py'` 132 OK；`go run ./internal/agentboard -dir …` 仅剩两条他人 active 过期（按板纪律只报不改）；逐行复读全量 diff（23+/25-）无语义误伤。
+
 ### 修复（`target list --json` 空库存返回 `[]` 而非 `null`）
 
 - **缺口**：local store 无行时返回 nil slice，remote 分页器以 `var targets []*state.Target` 起始，两条路径都直接作为 `data` 输出 `null`。
@@ -1121,7 +1127,7 @@
 
 - **接口在、渠道在、没人投**：run 生命周期漏斗（`wiring.RunEventStore`）上一批收口后只接了一个消费者——ChatOps 房间投影，而且刻意只发 `running` 与终态（“中间跳一跳一卡是噪音”）。那条注释把 webhook 全量镜像登记为后续，并写着“serve ships no channel yet”——其实 `notify.webhook` 渠道已经接进 serve（`serve_notify.go`），只是没人给它事件。
 - **落地**：`internal/notify/run_lifecycle.go` 新增 `RunLifecycleMirror`。它按 `wiring.RunEventSink` 的形状（不 import wiring，免得回环）接收每一笔成功迁移，映射成通知消息：
-  - `paused → running` = `resumed`（先于 `run_started` 判，否则恢复会被误报成新启动）、`→ running` = `run_started`、`→ completed` = `run_completed`、其余终态（failed / 三种回滚判定 / cancelled / rejected / interrupted）= `run_failed`（LevelError，**精确状态保留在 metadata**）、`→ paused` = `paused`（LevelWarning）、其余（draft→planned / approved / archived…）= 新触发器 `run_status_changed`。
+  - `paused → running` = `resumed`（先于 `run_started` 判，否则恢复会被误报成新启动）、`→ running` = `run_started`、`→ completed` = `run_completed`、其余终态（failed / 三种回滚判定 / cancelled / rejected / interrupted / archived）= `run_failed`（LevelError，**精确状态保留在 metadata**）、`→ paused` = `paused`（LevelWarning）、其余（draft→planned / approved…）= 新触发器 `run_status_changed`。
   - 投递走 `NotificationManager.NotifyAsync`：漏斗的 sink 契约禁止在 store 写上阻塞外部 I/O，而 webhook POST 带重试正是这种 I/O。
 - **单一漏斗、两个消费者**：`wiring.CombineRunEventSinks` 把 chat 投影与 webhook 镜像扇出，各自 isolate panic（一个坏消费者不能静默另一个）。serving：`notify.webhook` 管理器从 `buildEngineServeOptions` 提到 `buildServeServices` 构造，一份 manager 同时给回滚 Grader 和镜像用；engine 关闭时镜像照常工作（PlanChange/ApproveChange/pause/resume/archive 都在写 run 状态），`warnNotifyTransportWithoutEngine` 的措辞相应订正（不再是“no notification will ever be sent”）。
 - **测试**：`internal/notify` 5 例（命名时刻+时间戳/收件人、七种终态保真、中间跳与 resume 区分、nil 守卫不投递）；`internal/wiring` 3 例（扇出顺序、全 nil 返回 nil、单 sink panic 不阻断后续）。`go test ./internal/notify/ ./internal/wiring/ ./cmd/levee/` 全绿。
@@ -1141,7 +1147,7 @@
   1. **超时声明**：`ChangeService.WithApprovalExpiryResolver`——kickoff 的 `ExpiresAt` 从硬编码 24h 改为按层解析（standard→standard_timeout、high→high_timeout、emergency→emergency_supplement，即 config 注释里一直承诺的语义）。未装 resolver 的构造保持 24h 兼容（错误但已知的值，不是静默无超时）；层超时配置为非正值 → 零值 → CheckExpiry 按文档口径跳过（“想要不自动过期”是显式配置项，不是猜出来的缺省）。
   2. **超时驱动**：`internal/approval/expiry.go` 的 `ExpirySweeper`——serve 按 `approval.expiry_sweep_interval`（新键，默认 1m，≤0 整体禁用）周期调 CheckExpiry，每批落定后：ChatOps 卡片（新事件 `approval_expired`）+ run 时间线的 `approval_expired` trace 行（控制台看得见“变更为什么停了”）。清扫是检测不是门禁：扫漏一拍只是晚一拍说真话，apply 门禁本来就不放行无有效审批的变更。
 - **run 生命周期事件漏斗（`internal/wiring/runeventstore.go`）**：run 状态写入散在四个包的六个调用点（apply 漏斗、retry、接管中断、pause/resume、CLI），这正是四个 chatops 事件类型（`run_started/completed/failed/state_change`）零 producer 的结构性原因——每条新流程都得记得播报，而没人记得。不逐点审计，漏斗下沉到 store 缝：`RunEventStore` 装饰器拦截三条状态写路径（`UpdateRunStatusIf` / `UpdateRunApprovalStatusIf` / 全行 `UpdateRun` 含状态变化时 diff 前值），每次成功迁移交给 sink。装饰器选择与 TenantStore 同缝同理；sink 的 panic 就地収容（GateObserver 同一姿态：通知路径不能成为 run 的第二种失败源），nil sink 全透传。
-- **终态播报（chatops 半边）**：`bridge.OnRunTransition` 消费漏斗——`→running` 发 run_started、`→completed` 发 run_completed、其余终态（failed / rolled_back / rolled_back_partial / rolled_back_incomplete / interrupted）发 run_failed 且**卡片携带真实状态**（部分回滚不得读作干净失败或干净完成）。**分工是产品决定**：中间跳（paused / pending_approval）不上聊天——一跳一卡是噪音，且可行动的时刻已有自己的卡片；webhook 全量镜像登记为后续（Notifier 接口在、serve 尚未配置渠道，与“无 secret 不挂入向”同一姿态：说出来而不是假装已接）。
+- **终态播报（chatops 半边）**：`bridge.OnRunTransition` 消费漏斗——`→running` 发 run_started、`→completed` 发 run_completed、其余终态（failed / rolled_back / rolled_back_partial / rolled_back_incomplete / interrupted）发 run_failed 且**卡片携带真实状态**（部分回滚不得读作干净失败或干净完成）。**分工是产品决定**：中间跳（paused / pending_approval）不上聊天——一跳一卡是噪音，且可行动的时刻已有自己的卡片。
 - **顺带登记一个真 bug（本批不修）**：`change_service` 的审批 supersession 路径直接把 state 行的 `comment` 列写成人读字符串（"superseded by re-plan"），而该列由 `staterow.go` 独占——里面是审批链的 JSON（approvers/decisions/history）。后续任何经 `ApprovalFromState` 的读取会把这笔已过期记录解码成空链：审计上“谁投过票”被抹掉。修复需要先定 comment 列的归属协议，单独立项。
 - **边界**：LEVEELang 门禁（`gate_approver`）的审批记录刻意**不带** ExpiresAt（零值 = 清扫跳过）——在途门禁阻塞的是 run 本身，过期它需要 run 级语义，另行设计；Jira 镜像暂不播报过期（登记）；`--local` 模式不装 sweeper（与 authz 的信任边界口径一致）。
 - **测试**：approval 6 例（清扫器落定+回调收全记录、空扫不触发回调、幂等、禁用区间立即返回、ctx 取消停扫、nil 接收者安全）；chatopsbridge 4 例（过期广播+卡片渲染、零过期时间不渲染零值时间、迁移映射五态、中间跳/自迁移/nil 全不播）；wiring 7 例（CAS 成功发/拒绝不发、审批结算 CAS、全行写仅真状态变化、nil sink 透传、sink panic 容纳、未知 run 透明）；chatops 卡片分发 1 例（approval_expired → Notification）；cmd 3 例（层→超时映射、零值豁免、清扫间隔默认值）。**变异咬合**：棘轮测试从“零调用方”改判“恰好一个调用方=清扫器”，第二个绕过漏斗的过期写入方会红。
