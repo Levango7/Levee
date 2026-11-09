@@ -1955,8 +1955,9 @@ levee rbac tree
 > 行读取器配到 1 MiB**（协议行帧，示例都配了），否则真传输帧会掐断它自己的
 > 连接。更大的文件要么分块、要么用内建传输。
 > **三条边界**：①插件名撞已注册类型（ssh/winrm/local…）**拒绝启动**；
-> ②单帧 512 KiB 之上的文件传输不可用（分块或内建传输）；③每 target 每 run
-> 一个会话进程，无跨 run 连接池。
+> ②单帧 512 KiB 之上的文件传输不可用（分块或内建传输）；③会话在 serve
+> 进程内池化（同一插件 + host + port + type + 凭据指纹 跨 run 复用，边界见
+> `channel-plugins.md` §8；一次性 CLI 进程无池）。
 > `plugin test`（16.7）对任意插件提供最小真执行（活的协议握手）。
 > **编译期通道插件**（写 Go 代码实现 `channel.ChannelFactory` 并注册，
 > 见 [`channel-plugins.md`](channel-plugins.md)）仍是把传输编进二进制的方式，
@@ -2300,7 +2301,7 @@ levee serve [--addr <a>] [--http-addr <a>] [--tls-cert <c>] [--tls-key <k>] [--t
 - **AI 引擎装配**：`serve` 启动时装配真实诊断引擎（日志采集/分析 + 健康探针，本地执行器）与对话引擎（内置推荐引擎），`Diagnose` / `SendMessage` RPC 可直接使用；完整告警网关仍用独立的 `levee alert serve`
 - **集群模式**：集群协同覆盖共享 PostgreSQL 存储（数据一致性）、持久化成员注册（`cluster_nodes` 表心跳 + stale 检测，leader 按确定性策略收敛）、租约式分布式锁（`cluster_locks` 表，过期租约自动可被抢占，带单调 fence token）与跨节点任务调度（leader 的 dispatch 循环把 `approved` 的 run 派给负载最低的活跃 worker，需 `--engine-enabled`）；在途变更**不会由他端续跑**——执行者崩溃时 takeover 把该 run 结算为 `interrupted` 并留审计，恢复靠人重试（设计取舍）；`--cluster` 启动时会输出边界说明
 - **节点能力申报**：`--node-capabilities shell,pkg` 把本节点声明能执行哪些模块，写进 `cluster_nodes.capabilities`（启动日志会打出规范化后的结果，因为那是操作员唯一能看到"申报到底落没落库"的地方）。语义三条：① **每次 join 都刷新**——声明属于这个节点、由这个节点此刻说出，重启时不再声明即清空（与 `agents` 表自 v8 起同一条契约）；② 可用 `GET /system/cluster-status?capability=<name>` 查"哪些节点声明了它"，匹配规则只有一个 owner（`internal/capability`），控制台的筛选框把问题转给服务端而不是自己在浏览器里解析一遍；③ **模块名派发不筛选**：`internal/dispatch` 按负载挑最闲的**合格** worker；模块名不参与"合格"的判定，声明什么都不改变工作落在谁身上。这一条是刻意的——在 run 还没有"我需要哪种能力"的声明之前按模块名过滤领取，会让一个拼错的声明把变更永久卡在 pending，比"节点尝试执行它没有的模块并如实报错"更糟。
-- **跨机房放置（`region=` 是唯一例外）**：`--node-regions dc-north,dc-south` 把机房声明为保留 token 写进同一列；目标机在 inventory 里带 `region` 标签时，派发只把该 run 交给**声明覆盖了该 run 全部所需机房**的节点。三条判据：① run 的目标里**任何一个**带 `region` 标签即启用该约束（全部不带＝与引入本能力前逐字节相同，仍按负载放置）；② 部分带、部分不带（或目标行已从 inventory 删除）＝拒绝派发并报 `region_unresolved`，不做猜测；③ run 是整条交给一个节点的，所以跨两个机房的一次变更需要**某个节点同时声明这两个机房**，否则报 `no_single_node_spans_regions`，而不是拆分或就近近似。无合格节点时报 `no_eligible_node`。三种拒绝都**不静默降级**：run 留在 `approved`、`levee_dispatched_runs_total{result="unplaceable"}` 计数、leader 日志**只在结论变化时**打一行、`levee cluster status` 列出每条卡的 run 及原因。空名与纯空白名拒绝启动；`--node-capabilities` 在没有 `--cluster` 时也拒绝启动（没有注册表可写，静默丢弃会让人以为申报成功了）
+- **跨机房放置（`region=` 是唯一例外）**：`--node-regions dc-north,dc-south` 把机房声明为保留 token 写进同一列；目标机在 inventory 里带 `region` 标签时，派发只把该 run 交给**声明覆盖了该 run 全部所需机房**的节点。三条判据：① run 的目标里**任何一个**带 `region` 标签即启用该约束（全部不带＝与引入本能力前逐字节相同，仍按负载放置）；② 部分带、部分不带（或目标行已从 inventory 删除）＝拒绝派发并报 `region_unresolved`，不做猜测；③ run 是整条交给一个节点的，所以跨两个机房的一次变更需要**某个节点同时声明这两个机房**，否则报 `no_single_node_spans_regions`，而不是拆分或就近近似。无合格节点时报 `no_eligible_node`；plan 不可解码时报 `plan_unreadable`。四种拒绝都**不静默降级**：run 留在 `approved`、`levee_dispatched_runs_total{result="unplaceable"}` 计数、leader 日志**只在结论变化时**打一行、`levee cluster status` 列出每条卡的 run 及原因。空名与纯空白名拒绝启动；`--node-capabilities` 在没有 `--cluster` 时也拒绝启动（没有注册表可写，静默丢弃会让人以为申报成功了）
 - **单节点 PostgreSQL**：不加 `--cluster` 时，服务端连哪个库由配置决定（`database.driver: postgres` + `database.dsn`），与所有 CLI 命令同一处取库决策，因此 `levee calendar freeze` 可以写进服务端真正读的那张表；口径与三条启动期硬约束见 `docs/deployment.md` 的变更日历一节。只给 `--pg-dsn` 而不给 `--cluster` 会拒绝启动而不是退回本机文件——未启协调（无成员、无租约、无 fencing）的进程连集群共享库，比连错库更危险
 - CORS 默认拒绝所有跨域请求；同源请求不受影响；需要跨域时用 `--cors-origin` 白名单
 - 限流触发时返回 HTTP 429 并附带 `Retry-After`
@@ -3055,7 +3056,7 @@ levee drift report --host web-01 --days 30
 注册移动设备用于接收推送通知。
 
 ```text
-levee push register --user <user> --token <device-token> --platform <platform>
+levee push register --user <user> --token <device-token> [--platform <platform>]
 ```
 
 **选项**
@@ -3064,7 +3065,7 @@ levee push register --user <user> --token <device-token> --platform <platform>
 |------|--------|------|
 | `--user` | | 用户名（必填） |
 | `--token` | | 设备推送 token（必填） |
-| `--platform` | | 平台：`ios` 或 `android`（必填） |
+| `--platform` | `ios` | 平台：`ios` 或 `android` |
 
 **示例**
 
@@ -3110,14 +3111,14 @@ levee push send --user <user> --title <title> --body <body> [--deep-link <url>]
 |------|--------|------|
 | `--user` | | 目标用户名（必填） |
 | `--title` | | 通知标题（必填） |
-| `--body` | | 通知正文（必填） |
+| `--body` | | 通知正文 |
 | `--deep-link` | | 深度链接 URL，点击通知后跳转（如 `levee://approval/run-123`） |
 
 **说明**
 
 - iOS 设备通过 APNs（HTTP/2 + ES256 JWT）推送
 - Android 设备通过 FCM（HTTP v1 + OAuth2）推送
-- 失败的设备会标记并返回部分成功结果
+- 任一设备失败即整体返回聚合错误（`ErrPushFailed`，含失败数与原因），无部分成功结果
 
 **示例**
 
@@ -3188,17 +3189,14 @@ levee push config [--apns-key-file <path>] [--apns-team-id <id>] [--apns-key-id 
 
 **说明**
 
-- 不带任何选项时显示当前 APNs / FCM 配置状态
-- 提供 `--apns-*` 选项（key-file/team-id/key-id/bundle-id 至少一项）配置 APNs
+- 不带任何选项时报错退出（`no flags given; supply APNs and/or FCM configuration`，exit=2）
+- 提供 `--apns-*` 选项（key-file/team-id/key-id/bundle-id 至少一项）配置 APNs；任一非空即强制读取 `--apns-key-file`（仅传 team-id/key-id/bundle-id 也会读，文件不可读即报错）
 - 提供 `--fcm-key-file` 或 `--fcm-project-id` 配置 FCM
 - 凭证持久化到 LEVEE 数据目录，后续 `levee push` 命令自动加载
 
 **示例**
 
-```命令示例：查看推送配置
-levee push config
-
-命令示例：配置 APNs
+```命令示例：配置 APNs
 levee push config --apns-key-file AuthKey.p8 --apns-team-id TEAM456 --apns-key-id ABC123 --apns-bundle-id com.example.app
 
 命令示例：配置 FCM

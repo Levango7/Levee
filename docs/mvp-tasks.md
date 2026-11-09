@@ -43,7 +43,7 @@ MVP 周期 3 个月，单二进制零依赖部署，覆盖从计划到归档的�
 | D-17 | 权限 v0（团队 × 环境） | D8 | 二维权限矩阵最小子集 |
 | D-18 | 单机零依赖部署 | D12.1 | 单二进制 + 内嵌 SQLite，空机器一键跑通 |
 | D-19 | 跑通批量变更 100 台 | 第 8 章门禁 | 端到端集成验证 |
-| D-20 | 通知（webhook） | D9 | webhook 通知渠道 —— **已装配（2026-10-05 接线）**：`notify.webhook.enabled` 由 `cmd/levee/serve_notify.go` 的 `buildServeNotifyManager` 消费，注册渠道名固定 `webhook`，管理器经 `wiring.WithNotificationManager` 装进执行引擎，回滚分级（partial / failure）由 `notify.RollbackNotifier` 真实投递；签名密钥取环境变量 `LEVEE_WEBHOOK_SECRET`（`X-Levee-Signature: sha256=…`），未设置则明文发送并在启动日志与本文件注释里言明；`enabled` 而 URL 缺失会拒绝启动，与 `notify.chatops` / `notify.jira` 同规则；`--engine-enabled=false` 且 webhook 启用时启动告警说明"永远不会有投递"。**投递范围如实限定**：当前唯一事件源是回滚分级，apply / approval 事件尚无生产者接入该 manager。**留痕**：本行 2026-08-15 原文按"已交付"记录（正向夸大）→ 2026-10-05 上午实测未装配（`NewWebhookNotifier` 非测试调用点 0）→ 同日接线后改为本口径。 |
+| D-20 | 通知（webhook） | D9 | webhook 通知渠道 —— **已装配（2026-10-05 接线）**：`notify.webhook.enabled` 由 `cmd/levee/serve_notify.go` 的 `buildServeNotifyManager` 消费，注册渠道名固定 `webhook`，管理器经 `wiring.WithNotificationManager` 装进执行引擎，回滚分级（partial / failure）由 `notify.RollbackNotifier` 真实投递；签名密钥取环境变量 `LEVEE_WEBHOOK_SECRET`（`X-Levee-Signature: sha256=…`），未设置则明文发送并在启动日志与本文件注释里言明；`enabled` 而 URL 缺失会拒绝启动，与 `notify.chatops` / `notify.jira` 同规则；`--engine-enabled=false` 且 webhook 启用时启动告警说明 run 生命周期仍镜像、仅回滚分级永不触发（`cmd/levee/serve_notify.go:78`）。**投递范围**：事件源为回滚分级 + run 生命周期全量镜像（`internal/notify/run_lifecycle.go` 的 `RunLifecycleMirror`，每一笔成功状态迁移经 `NotifyAsync` 投递）。**留痕**：本行 2026-08-15 原文按"已交付"记录（正向夸大）→ 2026-10-05 上午实测未装配（`NewWebhookNotifier` 非测试调用点 0）→ 同日接线后改为本口径。 |
 
 ### 1.2 不做清单
 
