@@ -215,7 +215,7 @@ func (l *Loop) DispatchOnce(ctx context.Context) (int, error) {
 			// with one predicate so the log, the metric and `cluster status`
 			// cannot disagree about which one this is.
 			if reason := Assignability(place.Regions, capsOf(workers)); reason != "" {
-				recordRefusal(refusals, reason, run.ID, place.String())
+				recordRefusal(refusals, reason, run.ID, place.Diagnosis(reason))
 			} else {
 				// Eligible nodes exist but are saturated: ordinary back-pressure,
 				// not a placement failure. The run stays approved for a later sweep.
@@ -333,7 +333,7 @@ func (l *Loop) reclaimStaleWith(ctx context.Context, workers []workerLoad, resol
 		idx, eligible := pickWorker(workers, place.Regions, l.capacity)
 		if !eligible {
 			if reason := Assignability(place.Regions, capsOf(workers)); reason != "" {
-				recordRefusal(refusals, reason, a.RunID, place.String())
+				recordRefusal(refusals, reason, a.RunID, place.Diagnosis(reason))
 			} else {
 				// Eligible nodes are saturated: leave the row pending (it is
 				// still the stale owner's commitment) and count it as load.

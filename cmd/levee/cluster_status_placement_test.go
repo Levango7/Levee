@@ -6,7 +6,11 @@
 package main
 
 import (
+	"context"
+	"io"
+	"os"
 	"testing"
+	"time"
 
 	"github.com/nexus/levee/internal/capability"
 	"github.com/nexus/levee/internal/dispatch"
@@ -56,4 +60,85 @@ func TestClassifyPlacement(t *testing.T) {
 		"a requirement that could not be computed must keep its own reason")
 	assert.Equal(t, dispatch.ReasonPlanUnreadable,
 		classifyPlacement(dispatch.Placement{Reason: dispatch.ReasonPlanUnreadable}, decls))
+}
+
+// seedSpanningRun puts one approved run whose two batches sit in different
+// data centres into the store, the shape the refusal diagnostics describe.
+func seedSpanningRun(t *testing.T, st state.Store) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, tc := range []struct{ id, host, region string }{
+		{"t-a", "h-a", "dc-a"},
+		{"t-b", "h-b", "dc-b"},
+	} {
+		require.NoError(t, st.UpsertTarget(ctx, &state.Target{
+			ID: tc.id, Hostname: tc.host, Port: 22, ChannelType: "ssh",
+			Labels: map[string]string{"region": tc.region}, Status: "active",
+			CreatedAt: now, TenantID: "",
+		}))
+	}
+	require.NoError(t, st.CreateRun(ctx, &state.Run{
+		ID: "run-span", WorkflowName: "wf", TemplateName: "tpl", Params: "{}",
+		PlanHash: "ph",
+		PlanJSON: `{"Batches":[{"Index":0,"Targets":["h-a"]},{"Index":1,"Targets":["h-b"]}]}`,
+		Status:   "approved", ApprovalStatus: "approved", Creator: "test",
+		TenantID: "", CreatedAt: now, UpdatedAt: now,
+	}))
+}
+
+// TestUnplaceableRunsCarryDiagnosis pins the CLI half of the refusal: the
+// stuck-run list must carry the batch-level footprint and the remedy, not
+// just the reason word, or an operator reading `levee cluster status` still
+// cannot act on the refusal.
+func TestUnplaceableRunsCarryDiagnosis(t *testing.T) {
+	st := newTestStore(t)
+	seedSpanningRun(t, st)
+
+	nodes := []state.ClusterNode{
+		{ID: "node-a", Capabilities: mustCaps(t, "region=dc-a")},
+		{ID: "node-b", Capabilities: mustCaps(t, "region=dc-b")},
+	}
+	runs, err := st.ListRuns(context.Background(), state.RunFilter{Status: "approved", Limit: 10})
+	require.NoError(t, err)
+	stuck, err := unplaceableRuns(context.Background(), st, nodes, runs)
+	require.NoError(t, err)
+	require.Len(t, stuck, 1)
+	assert.Equal(t, dispatch.ReasonNoSingleSpan, stuck[0].Reason)
+	assert.Contains(t, stuck[0].Detail, "batch 0: dc-a")
+	assert.Contains(t, stuck[0].Detail, "batch 1: dc-b")
+	assert.Contains(t, stuck[0].Detail, "fix: split the run into one run per region")
+}
+
+// TestPrintClusterStatusTableShowsDiagnosis pins the table surface: the
+// DETAIL column must actually render what unplaceableRuns collected, or the
+// operator-facing half of the upgrade is missing.
+func TestPrintClusterStatusTableShowsDiagnosis(t *testing.T) {
+	st := newTestStore(t)
+	seedSpanningRun(t, st)
+
+	nodes := []state.ClusterNode{
+		{ID: "node-a", Capabilities: mustCaps(t, "region=dc-a")},
+		{ID: "node-b", Capabilities: mustCaps(t, "region=dc-b")},
+	}
+	runs, err := st.ListRuns(context.Background(), state.RunFilter{Status: "approved", Limit: 10})
+	require.NoError(t, err)
+	stuck, err := unplaceableRuns(context.Background(), st, nodes, runs)
+	require.NoError(t, err)
+	require.Len(t, stuck, 1)
+
+	old := os.Stdout
+	r, w, perr := os.Pipe()
+	require.NoError(t, perr)
+	os.Stdout = w
+	printerr := printClusterStatusTable(map[string]bool{"node-a": true}, nil, map[string]int{}, nil, stuck)
+	require.NoError(t, w.Close())
+	os.Stdout = old
+	out, ioErr := io.ReadAll(r)
+	require.NoError(t, ioErr)
+	require.NoError(t, printerr)
+
+	assert.Contains(t, string(out), "DETAIL")
+	assert.Contains(t, string(out), "batch 0: dc-a")
+	assert.Contains(t, string(out), "fix: split the run into one run per region")
 }

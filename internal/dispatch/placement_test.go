@@ -149,6 +149,35 @@ func TestDispatchOnce_RefusesRunNoNodeCanReach(t *testing.T) {
 		"one unreachable region is not a spanning problem")
 }
 
+// seedPlannedRunBatches creates an approved run whose persisted plan carries
+// several batches, each naming its own targets — the shape a cross-data-centre
+// run has when the plan generator split it by strategy rather than by region.
+func seedPlannedRunBatches(t *testing.T, store state.Store, id, tenant string, batches ...[]string) {
+	t.Helper()
+	now := time.Now().UTC()
+	planJSON := `{"Batches":[`
+	for i, hosts := range batches {
+		if i > 0 {
+			planJSON += ","
+		}
+		planJSON += fmt.Sprintf(`{"Index":%d,"Targets":[`, i)
+		for j, h := range hosts {
+			if j > 0 {
+				planJSON += ","
+			}
+			planJSON += `"` + h + `"`
+		}
+		planJSON += `]}`
+	}
+	planJSON += `]}`
+	require.NoError(t, store.CreateRun(context.Background(), &state.Run{
+		ID: id, WorkflowName: "wf", TemplateName: "tpl", Params: "{}",
+		PlanHash: "ph-" + id, PlanJSON: planJSON,
+		Status: "approved", ApprovalStatus: "approved", Creator: "test",
+		TenantID: tenant, CreatedAt: now, UpdatedAt: now,
+	}))
+}
+
 // TestDispatchOnce_RefusesRunSpanningRegions: both regions have a worker, but a
 // run goes to one node, so no worker may take it. The reason must say so rather
 // than read like "nobody declared that region".
@@ -172,6 +201,102 @@ func TestDispatchOnce_RefusesRunSpanningRegions(t *testing.T) {
 		return a
 	}())
 	assert.Contains(t, loop.lastRefusal, ReasonNoSingleSpan)
+}
+
+// TestDispatchOnce_RefusalNamesTheOffendingBatch pins the ① decision on the
+// cross-region split: a refusal must tell the operator which batch needs which
+// data centre and what to do about it, not just that no node spans them.
+func TestDispatchOnce_RefusalNamesTheOffendingBatch(t *testing.T) {
+	store := newDispatchStore(t)
+	mgr := regionManager(t, []cluster.Node{
+		regionNode(t, "node-a", cluster.RoleMaster, "dc-a"),
+		regionNode(t, "node-b", cluster.RoleWorker, "dc-b"),
+	})
+	seedTarget(t, store, "", "h-a", "dc-a")
+	seedTarget(t, store, "", "h-b", "dc-b")
+	seedPlannedRunBatches(t, store, "run-span", "", []string{"h-a"}, []string{"h-b"})
+
+	loop := NewLoop(mgr, store, "node-a", time.Second, 4, DefaultClaimTimeout)
+	claimed, err := loop.DispatchOnce(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, claimed)
+	assert.Contains(t, loop.lastRefusal, ReasonNoSingleSpan)
+	assert.Contains(t, loop.lastRefusal, "batch 0: dc-a",
+		"the refusal must name the batch, not just the region set")
+	assert.Contains(t, loop.lastRefusal, "batch 1: dc-b")
+	assert.Contains(t, loop.lastRefusal, "fix: split the run into one run per region")
+	assert.Contains(t, loop.lastRefusal, "--node-regions")
+}
+
+// TestDispatchOnce_BatchFactsDoNotChangePlacement guards the one regression
+// the diagnostic fields could cause: a run whose batches each sit inside one
+// data centre must still place exactly as before.
+func TestDispatchOnce_BatchFactsDoNotChangePlacement(t *testing.T) {
+	store := newDispatchStore(t)
+	mgr := regionManager(t, []cluster.Node{
+		regionNode(t, "node-a", cluster.RoleMaster, "dc-a"),
+	})
+	seedTarget(t, store, "", "h-a1", "dc-a")
+	seedTarget(t, store, "", "h-a2", "dc-a")
+	seedPlannedRunBatches(t, store, "run-split", "", []string{"h-a1"}, []string{"h-a2"})
+
+	loop := NewLoop(mgr, store, "node-a", time.Second, 4, DefaultClaimTimeout)
+	claimed, err := loop.DispatchOnce(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, claimed)
+	assert.Equal(t, "node-a", ownerOf(t, store, "run-split"))
+	assert.Empty(t, loop.lastRefusal)
+}
+
+// TestPlacementDiagnosis pins the refusal-text composition: requirement,
+// batch footprint, remedy — and the cap that keeps a large plan from writing
+// every batch into one log line.
+func TestPlacementDiagnosis(t *testing.T) {
+	dcA, dcB := "dc-a", "dc-b"
+
+	assert.Equal(t, "region in [dc-a]",
+		Placement{Regions: []string{dcA}}.Diagnosis(""),
+		"a placeable run renders the plain requirement")
+
+	p := Placement{
+		Regions: []string{dcA, dcB},
+		batches: []batchFact{
+			{index: 0, regions: []string{dcA}},
+			{index: 1, regions: []string{dcB}},
+		},
+	}
+	got := p.Diagnosis(ReasonNoSingleSpan)
+	assert.Contains(t, got, "region in [dc-a,dc-b]")
+	assert.Contains(t, got, "batch 0: dc-a")
+	assert.Contains(t, got, "batch 1: dc-b")
+	assert.Contains(t, got, "fix: split the run into one run per region")
+	assert.Contains(t, got, "--node-regions")
+
+	assert.Contains(t, p.Diagnosis(ReasonNoEligibleNode),
+		"fix: no live node declares every required region")
+	assert.Contains(t, p.Diagnosis(ReasonRegionUnresolved),
+		"fix: label every target")
+
+	unreadable := Placement{Reason: ReasonPlanUnreadable, Detail: "boom"}
+	assert.Contains(t, unreadable.Diagnosis(ReasonPlanUnreadable), "plan_unreadable: boom")
+	assert.Contains(t, unreadable.Diagnosis(ReasonPlanUnreadable), "fix: re-create the run")
+
+	unresolved := Placement{Regions: []string{dcA}, Reason: ReasonRegionUnresolved, Detail: "no region label: h-x"}
+	assert.Contains(t, unresolved.Diagnosis(ReasonRegionUnresolved), "region_unresolved: no region label: h-x")
+	assert.Contains(t, unresolved.Diagnosis(ReasonRegionUnresolved), "fix: label every target")
+
+	// An unknown reason gets no invented remedy.
+	assert.NotContains(t, p.Diagnosis("not_a_reason"), "fix:")
+
+	// Cap: batches beyond the render limit collapse to a count.
+	many := Placement{}
+	for i := 0; i < 7; i++ {
+		many.batches = append(many.batches, batchFact{index: i, regions: []string{dcA}})
+	}
+	line := many.Diagnosis(ReasonNoSingleSpan)
+	assert.Contains(t, line, "2 more batches")
+	assert.NotContains(t, line, "batch 5:", "the cap must hold for large plans too")
+	assert.NotContains(t, line, "batch 6:")
 }
 
 // TestDispatchOnce_UnlabelledRunIsUnconstrained: the rule is opt-in. With

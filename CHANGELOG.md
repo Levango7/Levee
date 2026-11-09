@@ -10,6 +10,14 @@
 - **修法**：逐特性对照代码订正（判据与错误码以 `internal/dispatch/placement.go` 的四个 Reason 常量为准；池化口径以 `internal/plugin/pool.go` 为准；push 旗标以 `cmd/levee/cmd_push.go` 为准；镜像边界以 `internal/notify/run_lifecycle.go` 为准），共 10 个文件 21 处；只改叙述不改锚点标记。
 - **验证**：`scripts/check_doc_anchors.py` PASSED（29 anchors / 29 claims）；`python -m unittest discover -s scripts -p 'test_*.py'` 132 OK；`go run ./internal/agentboard -dir …` 仅剩两条他人 active 过期（按板纪律只报不改）；逐行复读全量 diff（23+/25-）无语义误伤。
 
+### 新增（跨机房拒绝诊断：点名 offending batch + 给可操作补救）
+
+- **缺口**：上一笔跨机房派发把混合机房的 run 如实拒在派发侧，但拒绝摘要只写「需要 dc-a,dc-b」——操作员知道涉及哪些机房，却不知道**哪一批**把它们混在一起，也不知道该拆 run 还是补节点申报。
+- **修法（判定不动、诊断上车）**：`forRun` 的结论仍只读聚合 `Regions`，与上一笔逐字节一致；每批的机房足迹以未导出字段 `batches []batchFact` 随行携带（诊断载荷，不进判定）。`Placement.Diagnosis(reason)` 组合三段：需求（既有 `String()`）＋批次足迹（`batches: batch 0: dc-a; batch 1: dc-b`，封顶 5 批，超出写「N more batches」）＋按原因给的补救。`recordRefusals` 两处（首次分配与 reclaim）改打 `Diagnosis`；`levee cluster status` 的 stuck runs 表新增 `DETAIL` 列、`--json` 行内新增 `detail` 字段——**纯增量**，原 `placement`/`reason` 字段不动，现有消费者不受影响。
+- **补救文案取自 `docs/scenario-cross-region-ops.md` 的诚实边界建议**（拆成每机房一条 run，或用 `--node-regions` 桥接节点），文档与 CLI 不各说各话。
+- **验证**：`internal/dispatch` 3 例（拒绝点名 batch 0/batch 1 与补救文案；同机房两批的批次事实不改变放置结论、仍落 leader——守住「诊断不进判定」；`Diagnosis` 四原因合成＋未知原因无 fix＋7 批封顶写「2 more batches」）；`cmd/levee` 2 例（stuck run 的 `Detail` 含批次事实与补救、表格渲染出 `DETAIL` 列）。**变异 2 条**：`batchLine` 恒空、`remedy` 恒空各让这 4 例红；还原后 `cmp` 逐字节核对。
+- **如实边界**：① 批次事实是诊断载荷、不是新判据——没有任何代码路径按 batch 决定放置（有专门用例守）；② reason 词表与指标标签不变，监控面板不必改；③ 拆 run 是人工操作，本笔不提供拆分工具——那正是被成本核实证伪的 A 案。
+
 ### 修复（`target list --json` 空库存返回 `[]` 而非 `null`）
 
 - **缺口**：local store 无行时返回 nil slice，remote 分页器以 `var targets []*state.Target` 起始，两条路径都直接作为 `data` 输出 `null`。
