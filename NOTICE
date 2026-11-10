@@ -1,0 +1,18 @@
+LEVEE — Third-Party Software Notices
+====================================
+
+This product includes software developed by third parties.
+
+github.com/xwb1989/sqlparser v0.0.0-20180606152119-120387863bf2
+  Distributed under the Apache License, Version 2.0 (the full license text
+  accompanies the module and is available at
+  https://github.com/xwb1989/sqlparser/blob/master/LICENSE.md).
+  Copyright 2015 Wenbin Xiao (project starter and maintainer);
+  Copyright 2017 Andrew Brampton (merged upstream fixes).
+  The backbone of this package is extracted from vitessio/vitess, itself
+  originally a fork of https://github.com/youtube/vitess (Copyright Google
+  Inc); the same Apache 2.0 license applies throughout.
+
+The SQL review rules in internal/sqlreview (rule IDs SR-01..SR-20, their
+severity calls and their messages) are authored in-house for LEVEE and are
+not derived from any third-party rule set or rule text.

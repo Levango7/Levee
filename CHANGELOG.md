@@ -389,6 +389,14 @@
 
 **验证**：`go test ./...` 68 包全绿；`vitest` 333 例全绿（39 文件，含新增 identity 6 例）；`vue-tsc` 0 错；`golangci-lint run ./...` 0 issues；`internal/web/dist` 已随 `web/src` 重建同步（新鲜度门禁口径）。**边界**：本次只修「实证成立」的项；审计报告里另有一批设计取舍类（BuildForce 不可达、PG/SQLite 时钟源分叉、plan.Plan 持久化无 tag、wire 夹具 5 端点未覆盖等）未动，逐条留在 `docs/blocked-items.md` 待产品裁决。
 
+### 新增（SQL 审核规则引擎首版：`levee sqlreview` CLI，20 条自撰规则）
+
+- **缺口**：市场扫描裁决（2026-11-10）认定 LEVEE 对外第一身份是「数据库变更发布与治理核」，楔子是数据库变更标里的 SQL 审核能力（招标词表：SQL审核 / 变更自动执行 / 分级审批 / 回滚 / 审计留痕）；仓库已有 `mysql.query`/`pt_osc` 执行模块却没有审核面，读者拿到的第一条 LEVEE 体验与招标词表对不上。
+- **修法**：`internal/sqlreview` 规则引擎 + `levee sqlreview` CLI（`--sql`/`--file` 二选一，`--json` 走标准信封，verdict 为 fail 时退出码 1 供流水线卡点）。解析器层嵌入 Apache-2.0 的 `xwb1989/sqlparser`（零依赖；goproxy.cn 不服务 vitess 现行模块路径，偏离底稿 §8.6 的 vitess 计划如实登记；语法冻结在 MySQL 5.7 时代是已知边界）；规则层 20 条全部自撰（SR-01 解析失败即拒 … SR-20 批次多语句不主张跨语句原子性），severity 只有 fail/warn 两档，聚合 fail > warn > pass。两条诚实规则即产品边界：语法看不到 ALTER 语句体（SR-08 如实说「判不了，人工审」），解析失败是 fail 不是放行（SR-01）。
+- **验证**：`internal/sqlreview` 11 例（每条规则有触发用例；规则表完整性 17 条表内 + 3 条表外 = 20；同义句式 1=1 / true / `'x'='x'` / OR 臂恒真；语法盲区 CREATE INDEX / GRANT 如实呈现；静默语句零 findings；批级规则；空输入报错；消息自足性与无 copyleft 工具词 tripwire）；`cmd/levee` 文档旗标与包可达性门禁随命令注册自动覆盖；`go test -race` 绿。
+- **许可证归属**：新增根目录 `NOTICE` 登记 xwb1989/sqlparser 的 Apache-2.0 归属（CONTRIBUTORS.md 版权行：Wenbin Xiao 2015 / Andrew Brampton 2017 / vitess 骨干 Copyright Google Inc）；规则层为自撰，NOTICE 写明。
+- **如实边界**：本批只到 CLI 演示面；接 V19 计划前检、执行器白名单 AST 升级与审核报告落审计链（审核结论 + plan_hash + 审批链）在下一批；首单合同前由律师过 NOTICE 与规则文案（本笔是工程口径，非法律意见）。
+
 ## [v1.25.0] - 2026-11-06
 
 > **发布状态：已切版。** 附注 tag `v1.25.0`（tag 对象 `44749a1c271a`，指向折叠提交 `334bf2c`——单父、以 `--rebase` 落地）于 2026-11-05T20:15Z 推送，且是在该折叠提交自己的 `master` push run 全绿之后才打的：run `42097852339` 26/26 job 全 success，含聚合门 `check (all jobs passed)`。`release.yml` 三段（CI gate / goreleaser / container image，run `42101719313`，20:15:40Z → 21:03:16Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `42101719312`（`head_branch=v1.25.0`，20:46:14Z success，26/26）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-05T20:50:45Z`（11-06 04:50:45 +0800），资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.25.0` 按外部事实核过——`manifests/v1.25.0` 返回 **200**（同一次探测里 `v1.24.0` → 200、不存在的 `v1.25.99` → 404，证明探针有分辨力；`Accept` 必须带多架构 index 媒体类型，否则连已存在的 tag 也会读成 404），index 内是 `linux/amd64` + `linux/arm64` 两个平台（另两条 `unknown/unknown` 是构建 attestation）。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.25.0` / 逐字 `v1.25.0`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **36** 个小节，主题分布与行为变更见 [`docs/release-notes/v1.25.0.md`](docs/release-notes/v1.25.0.md)。
