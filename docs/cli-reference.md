@@ -3608,3 +3608,47 @@ levee restore --input /backup/levee-2026.sql --pg-dsn "postgres://user:pass@host
 命令示例：灾难恢复到非空 PostgreSQL 库（显式破坏性恢复）
 levee restore --input /backup/levee-2026.sql --pg-dsn "postgres://user:pass@host:5432/levee" --yes --allow-destructive-restore
 ```
+
+## 第29章 sqlreview — SQL 审核
+
+### 29.1 sqlreview
+
+对一批 SQL 语句按 LEVEE 变更治理规则集逐条打分，输出 pass / warn / fail 判定。
+这是数据库变更发布楔子的演示面：规则层 20 条全部自撰，解析器为嵌入的 Apache-2.0
+组件（归属见根目录 NOTICE）。
+
+**用法**
+
+```text
+levee sqlreview --sql "UPDATE t SET a=1 WHERE id=1"
+
+levee sqlreview --file /path/to/change.sql
+```
+
+**选项**
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--sql` | | 要审核的 SQL 批（多条语句以分号分隔）；与 `--file` 二选一 |
+| `--file` | | 存放 SQL 批的文件路径；与 `--sql` 二选一 |
+
+**输出**
+
+逐条语句一行 `statement N (kind): <语句文本>`，每条发现一行 `[fail|warn] SR-xx: <说明>`；
+批级发现（SR-19 / SR-20）归在 `batch:` 标题下。末行 `verdict: pass|warn|fail (N fail, M warn)`。
+`--json` 输出标准信封（`data` 为完整结果，含 `fail_count`/`warn_count`）。verdict 为 fail 时
+退出码 1，便于流水线卡点；warn 与 pass 退出码 0。
+
+**规则集（20 条，SR-01..SR-20）**
+
+- fail 档：SR-01 语法无法解析（不猜测，放行即未审计）；SR-02/SR-03 无 WHERE 的 DELETE/UPDATE；SR-04 WHERE 恒真（含 OR 臂恒真）；SR-05 TRUNCATE；SR-06 DROP DATABASE。
+- warn 档：SR-07 DROP 对象；SR-08 ALTER/CREATE INDEX 语句体不可见（如实声明判不了，人工审）；SR-09 RENAME；SR-10 建表无主键；SR-11 建表未声明 ENGINE；SR-12 SELECT *；SR-13 INSERT 省列名；SR-14/SR-15 有 WHERE 无 LIMIT；SR-16 SET GLOBAL；SR-17 管理语句（OPTIMIZE 等）；SR-18 加锁读；SR-19 批次混 DDL 与 DML；SR-20 批次多语句不主张跨语句原子性。
+
+**示例**
+
+```命令示例：审核一条高危 DELETE
+levee sqlreview --sql "DELETE FROM t"
+
+命令示例：审核一个变更文件（机器可读）
+levee sqlreview --file change.sql --json
+```
