@@ -1,0 +1,65 @@
+# LEVEE 本地容器靶场 —— 集群故障接管演练（deploy/lab/DEMOS.md 场景 A4 的容器变体）
+#
+# 与 deploy/lab/workflows/lab-cluster-takeover.yaml 的差异（都在这里说清，
+# 不改原版一个字）：
+#   * target query 换成 container-lab 清单里真实存在的标签
+#     （原版 dc=core 只属于真 VM 实验室清单）；
+#   * hold 从 sleep 300 缩到 sleep 120：本机靶场 kill 窗口秒级足够，
+#     30 s 租约 + 10 s 接管扫描的收敛时间远小于 120 s；
+#   * approval 补声明 approvers（高标准工作流的审批人声明门）。
+# 其余语义（接管只收敛状态不重跑副作用、恢复执行要人驱动、
+# on_failure: manual 如实声明不做远端补偿）与原版一致。
+#
+# 跑法见 README §7（clusterdrive.py）。注意：本工作流在集群态下
+# 由 serve 的派发循环派给 worker 执行；CLI 侧只做 new/plan/approve
+# 元数据操作，恢复执行走 REST POST /changes/<id>/retry——
+# CLI 的 `levee retry` 只收 failed/paused（cmd_retry.go 的
+# isRetryableStatus），对 interrupted 不成立，DEMOS §A4 那句
+# `levee retry` 是 VM 剧本里没实跑过的旧口径。
+name: lab-cluster-takeover
+version: "1.0"
+description: >
+  集群故障接管演练（容器靶场变体）：一个长任务，在执行节点被 kill -9 /
+  网络分区 / PG 重启后由 leader 的接管循环收敛到 interrupted，已完成步骤
+  不被重跑，恢复执行由人通过 REST POST /changes/<id>/retry 驱动。
+
+target:
+  name: lab-one
+  type: host
+  query: "env=lab AND role=web"
+  min_count: 1
+
+window:
+  start: "00:00"
+  end: "23:59"
+  timezone: UTC
+
+batches:
+  strategy: percent
+  steps: [100]
+  max_concurrency: 1
+
+approval:
+  level: standard
+  approvers: [alice, bob]
+
+steps:
+  # 第一步：落一个可核对的标记。它很快完成，于是"已完成步骤不被重跑"
+  # 这条验收点有明确的对象——接管/恢复后看它仍是 completed、时间戳没变。
+  - name: write-marker
+    action: shell.exec
+    args:
+      cmd: "touch /tmp/levee-takeover-marker.txt"
+
+  # 第二步：长睡，给现场制造 kill / 断网 / 重启 DB 的窗口。
+  # sleep 只含字母数字与空格，符合 shell.exec 的运行期白名单。
+  - name: hold
+    action: shell.exec
+    args:
+      cmd: "sleep 120"
+    depends_on: ["write-marker"]
+
+rollback:
+  # manual：接管不做远端补偿（快照在死者本地盘，跨节点回滚不在本期设计内），
+  # 如实声明，不给客户"失败会自动还原"的错觉。
+  on_failure: manual

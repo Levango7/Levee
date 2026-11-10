@@ -122,9 +122,9 @@ func TestShippedLabWorkflowsCompile(t *testing.T) {
 		}))
 	}
 
-	// Pinned to the current inventory (6 lab workflows + 3 container-lab
+	// Pinned to the current inventory (6 lab workflows + 4 container-lab
 	// workflows), same reasoning as the examples gate above: the count is
 	// part of the promise.
-	assert.Equal(t, 9, len(checked),
+	assert.Equal(t, 10, len(checked),
 		"all lab workflows must be covered — the runbook's commands are only as real as these files")
 }

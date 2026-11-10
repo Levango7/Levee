@@ -3,6 +3,8 @@ run/config.yaml
 run/data/
 run/snapshots/
 run/known_hosts
+run/cluster/
 levee.exe
 levee
+levee-linux
 __pycache__/

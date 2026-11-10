@@ -180,6 +180,7 @@ Usage: pkill [-l|-SIGNAL] [-xfvnoe] ...
 | `lab-smoke.yaml` | 成功路径：svc / file / shell 三模块 + 步骤级门禁 + 批间 HTTP 探针门禁 + 分批 | `completed`（2 批各 1 台） |
 | `lab-smoke-fail.yaml` | 失败路径：退出码非 0 → 自动回滚 → undo-action 补偿 | `rolled_back_partial`，目标机 nginx 被停掉 |
 | `lab-smoke-snap.yaml` | 快照路径：serve --engine-snapshot-dir 下采集 + 还原 | `rolled_back_partial`，目标机文件回到改动前内容 |
+| `lab-cluster-takeover.yaml` | 集群故障接管的执行体（write-marker + hold 120s，给 kill / 分区 / DB 重启制造窗口） | 不在本表跑——由 §7 的 `clusterdrive.py` 三场景驱动，实测终态见 §7 |
 
 > **为什么失败路径是 `rolled_back_partial` 而不是 `rolled_back`**：故意失败的那一步
 > （`deliberate-failure`）**自己没声明补偿契约**，它的副作用没被撤销 ⇒ 回滚没有完全收敛。
@@ -234,7 +235,66 @@ python labdrive.py apply <run-id> --force
 它**不**证明：
 - 真 VM 上的 systemd 服务语义（靶机走的是 openrc 的 sysvinit 分支）；
 - MySQL 主从切换（没有 MySQL 集群）；
-- 集群接管（没有 PG 集群，也没有第二个节点）；
 - 真实 nginx 灰度的流量效果（探针是固定 URL，没有真实负载）。
 
 这些仍然要在 `DEMOS.md` 描述的实验室环境里做。
+
+集群接管本身由 §7 证明（容器内 PG + master/worker 两个 serve 节点）；§7
+也不证明真 PG 集群的副本提升——S3 是单 PG 进程级重启、数据在命名卷上，
+这是容器靶场对「DB 切换」的诚实近似，不是副本切换。
+
+## 7. 集群故障接管演练（clusterdrive.py）
+
+§5 的三条 smoke 路径证明引擎的执行期路径；本节证明**集群态下的故障收敛**：
+执行节点死掉 / 失联 / 数据库重启后，run 不卡 `running`，账本不出现鬼影行，
+恢复由人显式驱动。
+
+### 7.1 前置
+
+```bash
+# 宿主机二进制（CLI 侧操作）与节点二进制（容器内 serve）都从当前源码构建
+go build -o levee.exe ./cmd/levee
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o levee-linux ./cmd/levee
+```
+
+`clusterdrive.py` 默认用本目录的 `levee.exe` / `levee-linux`（`LEVEE_BIN`
+可覆盖宿主机 CLI）。镜像每次无条件重建：`Dockerfile.node` 只 COPY
+`levee-linux`，二进制一更新旧镜像就是陈旧版本（围栏那类修只落在新二进制上，
+容器不重建 = 修没生效）。
+
+### 7.2 三个场景
+
+| 场景 | 制造的事故 | 机器断言（全部通过才 PASS） |
+| --- | --- | --- |
+| `python clusterdrive.py s1` | `docker kill -s KILL` worker 容器（等价 OOM / 断电） | run 收敛 `interrupted`；接管事件可读且属本 run；在途轮次账本零行；死者无晚期写（标记文件 mtime 未变）；孤儿锁 owner 是引擎临时执行 id（≠ run_id）等 TTL 自然过期；REST retry 后 `completed`，每步恰一行 success（账本 exactly-once），标记文件 mtime 推后（物理 at-least-once） |
+| `python clusterdrive.py s2` | `docker network disconnect` worker（进程活、与 PG / 目标真分区） | 分区期间 worker 进程活着（`ps` 为证，区别于 S1 的 kill -9）；run 收敛 `interrupted`；愈合后旧 worker 的晚期落盘被围栏拦下（trace `evidence_discarded` ≥ 1、steps 仍零行）；retry 后 `completed`，每步恰一行 |
+| `python clusterdrive.py s3` | `docker stop/start` PG（命名卷上的进程级重启） | 短 outage（< 租约 TTL 30s）run 保持 `running` 无误判；长 outage（> TTL）收敛 `interrupted`；活 worker 醒来时租约已换主、晚期写被围栏拦下（`evidence_discarded` ≥ 1）；retry 后 `completed`，每步恰一行 |
+
+驱动打印 `VERDICT: PASS (n/n)` 才是一轮收口；任何一条断言不过即非零退出。
+
+### 7.3 跑法与证据
+
+```bash
+python clusterdrive.py s1     # 或 s2 / s3；每个场景跑前 ensure_infra 清卷重建 PG + 两节点
+python clusterdrive.py status # 当前集群面（nodes / stuck / load / assignments）
+python clusterdrive.py down   # 拆控制面容器（目标与卷保留）
+```
+
+证据落 `run/cluster/evidence/s{1,2,3}/`（`.gitignore` 已覆盖 `run/`）：
+每步快照（run JSON、cluster status、locks 表、trace 表、takeover-events
+REST 响应、worker / master 日志）。
+
+### 7.4 诚实契约（这套靶场不夸大）
+
+- **硬杀 / 分区丢在途证据是设计事实**：步级行只在 closure 结束一次性落盘
+  （`persistClosureResults` 单 `now` 回算），死者没机会写、也不该补写。
+- **物理 at-least-once + 账本 exactly-once**：目标机副作用可能重跑（标记
+  文件 mtime 推后），账本每步恰一行 success、无鬼影行。
+- **围栏拦鬼影写**：愈合 / DB 恢复后旧执行者的晚期落盘被租约 CAS 拒绝，落
+  `evidence_discarded` trace。
+- **恢复必须人驱动**：`POST /changes/:id/retry`（`replan=false` + 显式
+  `targetHosts`）。CLI `levee retry` 只收 failed / paused，对 interrupted
+  是错指令。
+- **恢复时延上界 = 目标机锁 TTL**（300s = exec_timeout）：硬杀后锁成孤儿
+  （owner 是引擎临时执行 id，接管不碰它），TTL 内 retry 必被 `ErrLockHeld`
+  挡——这是防物理双跑的安全网（锁过期 ⇒ 旧执行无在途步骤），不提前强抢。
