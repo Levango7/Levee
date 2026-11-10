@@ -28,12 +28,26 @@ var (
 )
 
 func init() {
-	RegisterCommand(newClusterStatusCmd())
+	RegisterCommand(newClusterCmd())
+}
+
+// newClusterCmd is the `levee cluster` parent. The status child keeps the
+// documented `levee cluster status` form working: registering the status
+// command directly with Use "cluster status" makes cobra take "cluster" as
+// the command name, so the documented invocation died with "unknown command
+// \"status\"" while every doc and DEMOS row promised it.
+func newClusterCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "cluster",
+		Short: "Cluster diagnostics",
+	}
+	cmd.AddCommand(newClusterStatusCmd())
+	return cmd
 }
 
 func newClusterStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "cluster status",
+		Use:   "status",
 		Short: "Show cluster dispatch status: nodes, assignments and worker load",
 		Long: "Read-only diagnostic view of the cluster's dispatch state. " +
 			"Connects directly to the cluster's PostgreSQL via --pg-dsn. " +
