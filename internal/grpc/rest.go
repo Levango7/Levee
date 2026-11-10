@@ -338,6 +338,25 @@ func (gw *Gateway) Start(ctx context.Context) error {
 	return nil
 }
 
+// newHTTPServer builds the data-plane server. WriteTimeout is deliberately
+// zero: the data plane runs synchronous long operations — apply / retry
+// execute the whole change plan (hold steps alone run minutes) and write
+// their response once at the end. A connection-level write deadline severs
+// exactly those responses: the server keeps working and the run settles,
+// but the client gets a reset connection and cannot tell (observed in the
+// cluster lab: retry returned "Remote end closed connection without
+// response" while the run completed server-side). Per-request bounds belong
+// to the request context, not the socket deadline. ReadHeaderTimeout and
+// IdleTimeout stay — they guard header-read slowloris and keep-alive
+// cleanup without capping handler duration.
+func (gw *Gateway) newHTTPServer(mux *http.ServeMux) *http.Server {
+	return &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 	mux := http.NewServeMux()
 	// ONE router serves both URL shapes, behind one rate limiter (separate
@@ -371,12 +390,7 @@ func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
 	// authentication (the ChatOps callback verifies the platform MAC).
 	gw.mountExtraRoutes(mux)
 
-	gw.httpServer = &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-	}
+	gw.httpServer = gw.newHTTPServer(mux)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- gw.httpServer.Serve(ln) }()
