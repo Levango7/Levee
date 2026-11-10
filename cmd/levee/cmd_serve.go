@@ -1886,7 +1886,11 @@ func (a clusterExecGuardAdapter) Begin(ctx context.Context, runID string) (wirin
 // pgStoreDB extracts the *sql.DB from the cluster-mode store. Returns
 // nil for the single-node SQLite store (fencing is cluster-only).
 func pgStoreDB(store state.Store) *sql.DB {
-	if pg, ok := store.(*state.PGStore); ok {
+	// serve 把漏斗装饰器（RunEventStore）传给 startTakeoverAndFencing，
+	// 直接断言 *state.PGStore 会落空——围栏与接管循环拿到 nil db，
+	// 每次 sweep 都报 "cluster: expired executions: nil db"。沿 Unwrapper
+	// 缝走到最内层才是真后端（与 StoreDriver/calendarFor 同一走法）。
+	if pg, ok := state.Underlying(store).(*state.PGStore); ok {
 		return pg.DB()
 	}
 	return nil
