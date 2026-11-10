@@ -102,7 +102,7 @@ levee -c C:\levee\config.yaml template create --name lab-nginx-canary --content 
 | A1 | MySQL 主从切换：不可逆动作要编译期白名单（LE082）+ 运行期 confirm + 两人审批 + 逐台切换后核复制状态 | deploy/lab/workflows/lab-replica-switch.yaml | 两台副本 + MySQL 凭据 | 计划里 `irreversible` 标记与批次=逐台；审计链里 `confirm=yes` 与两票批准 |
 | A2 | nginx 灰度：**分批 + 批间门禁**；配置正确性由 `nginx -t` 判定而不是"reload 没报错"；改前快照、失败按快照还原 | deploy/lab/workflows/lab-nginx-canary.yaml | 两台 web + nginx + 快照目录 | `plan --dry-run` 输出两批（先 1 台后 2 台）；第二批被批间探针阻断时的门禁记录 |
 | A3 | web 配置回滚：失败被门禁**观测到**（不是忽略）；回滚是**按改动前的快照还原**而不是重发旧包；回滚后再验证一次 | deploy/lab/workflows/lab-web-config-rollback.yaml | 一台 web + `lab-app` 单元 + 快照目录 | 回滚账本里这一步是「已补偿」；回滚后复核（`verify_after: true`）的通过记录 |
-| A4 | 集群接管：执行节点中途死掉，变更**收敛到 interrupted** 而不是永远卡 running；接管**不重跑副作用** | deploy/lab/workflows/lab-cluster-takeover.yaml | PostgreSQL + `--cluster` 集群形态 | `levee cluster status` 里的接管事件；run 状态 `interrupted`；第一步仍是 `completed` |
+| A4 | 集群接管：执行节点中途死掉 / 失联，变更**收敛到 interrupted** 而不是永远卡 running；账本 exactly-once（鬼影写被围栏拦、恢复后每步恰一行）；目标机副作用物理 at-least-once 如实记录 | deploy/lab/workflows/lab-cluster-takeover.yaml | PostgreSQL + `--cluster` 集群形态 | 接管事件（REST `GET /system/takeover-events`）；run 状态 `interrupted`；围栏 trace `evidence_discarded`；恢复后每步恰一行 success |
 | B1 | 分批重启 + 故意失败：回滚账本如实区分「未执行」与「已补偿」 | deploy/lab/workflows/lab-batch-restart.yaml | 两台 `role=app` + 一个被 mask 的 `lab-app` | 账本两列的差别；`on_failure: auto` 自动触发补偿 |
 | B2 | 变更窗口强制：窗外 plan 被拒、窗内放行；时钟/时区写错在编译期就被拒 | deploy/lab/workflows/lab-window-test.yaml | 无（执行体只是 `uptime`，零副作用） | 两次 plan 的相反结果 |
 
@@ -204,18 +204,39 @@ levee -c /etc/levee/config.yaml approve <run-id> --comment "lab drill"
 levee -c /etc/levee/config.yaml apply <run-id> --engine-enabled
 # —— 在 hold 步骤执行期间，kill -9 执行节点 ——
 levee -c /etc/levee/config.yaml cluster status --pg-dsn "$PG_DSN"
-levee -c /etc/levee/config.yaml retry <run-id>
+# 恢复必须人驱动；且 interrupted 不在 CLI retry 的词表里
+# （isRetryableStatus 只收 failed/paused），走 REST：
+curl -X POST -H "Authorization: Bearer $LEVEE_TOKEN" \
+  "$LEVEE_BASE/changes/<run-id>/retry" \
+  -d '{"replan": false, "targetHosts": ["192.168.56.10"]}'
 ```
 
 讲什么：
 
 - **不会永远卡 running**：leader 的接管循环把在途变更收敛到 `interrupted`
-  终态，并留一条接管事件（`docs/deployment.md` 的"执行围栏与故障接管"）。
-- **接管不重跑副作用**：已完成的步骤保持 `completed`，正在执行的记为 `unknown`。
-  `retry` 重新驱动时，第一步（落标记文件）**不会**被重跑。
+  终态，并留一条接管事件（`docs/deployment.md` 的"执行围栏与故障接管"；
+  REST `GET /system/takeover-events` 可读，`levee cluster status` 的
+  Active Assignments 是同一事实的状态面）。
+- **接管收敛状态，不伪造证据**：步级账本只在 closure 结束一次性落盘，
+  硬杀在途轮次是零行——「已完成步骤保持 completed、正在执行的记为
+  unknown」只适用于 kill 恰好落在批次边界之后的情况；本工作流（单批
+  两步）实测是被 kill 一轮账本零行。
+- **恢复是物理 at-least-once + 账本 exactly-once**：`retry` 后每步恰一行
+  success、无鬼影行；目标机副作用可能重跑（标记文件 mtime 推后），这是
+  设计事实，如实记录而不是写成"没重跑"。
+- **愈合后旧执行者的晚期落盘被围栏拦下**：租约 CAS 失败，落
+  `evidence_discarded` trace（专线中断 / DB 重启两场景实测）。
 - **恢复执行要人来驱动**：这是设计取舍——半执行的变更不该被另一台机器当作
-  可续的账（`docs/design-cluster-failover.md` §7.5 Q1）。
+  可续的账（`docs/design-cluster-failover.md` §7.5 Q1）。CLI `levee retry`
+  只收 failed / paused，对 interrupted 是错指令；集群态恢复必须走
+  `POST /changes/:id/retry`（`replan=false` + 显式 `targetHosts`）。
 - 接管**不做远端补偿**（快照在死者本地盘），所以工作流声明 `on_failure: manual`。
+- **恢复时延上界 = 目标机锁 TTL**：硬杀后目标机锁成孤儿（owner 是引擎临时
+  执行 id，接管不碰它），TTL 内 retry 必被 `ErrLockHeld` 挡——这是防物理
+  双跑的安全网（锁过期 ⇒ 旧执行无在途步骤），不提前强抢。
+
+本机容器靶场的三场景变体（S1 硬杀 / S2 专线中断 / S3 DB 重启）已实跑，
+跑法与机器断言见 `deploy/lab/container-lab/README.md` §7。
 
 ### B1 · 分批重启 + 故意失败
 
@@ -257,7 +278,7 @@ levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.10    # 到�
 | 审计链校验 | `levee audit verify <run-id>` | 哈希链完整性的结论 |
 | 可离线阅读的报告 | `levee audit report --output lab-audit.html` | 审批链、哈希链校验结论、回滚记录都在里面 |
 | 回滚账本 | `levee logs <run-id>` / 报告里的补偿段 | 「未执行」与「已补偿」的差别 |
-| 接管事件 | `levee cluster status --pg-dsn ...` | A4 专用 |
+| 接管事件 | REST `GET /system/takeover-events`（`levee cluster status --pg-dsn ...` 的 Active Assignments 是同一事实的状态面） | A4 专用 |
 
 把 `lab-audit.html` 拷给一位"内审同事"离线打开——他能自己读出审批链与回滚记录，
 这是这份材料最值钱的地方。
@@ -282,8 +303,10 @@ levee -c /etc/levee/config.yaml plan <run-id> --targets 192.168.56.10    # 到�
   测试 `internal/wiring/exec_run_test.go:351-357` 钉的就是这一条）。
   快照那条的还原步是 `success`、目标机文件确实回到 `listen 8090`，但 run 终态
   仍是 `rolled_back_partial`——**"文件回来了"不等于"回滚干净了"**，这两件事要分开说。
-  **仍未实跑**：A1（MySQL 主从切换，无 MySQL 集群）、A4（集群接管，无 PG 集群
-  与第二节点）、以及真 VM 上的 systemd 服务语义（靶机走的是 openrc 分支）。
+  **仍未实跑**：A1（MySQL 主从切换，无 MySQL 集群）、A4 的 VM 实验室形态
+  （容器靶场的三场景变体已实跑，见 `deploy/lab/container-lab/README.md` §7；
+  VM 形态仍无 PG 集群与第二节点）、以及真 VM 上的 systemd 服务语义（靶机走的是
+  openrc 分支）。
   另外，计划层的老结论仍然成立：真二进制 + 真实 SQLite 下
   `template create → new --params → plan` 全链可行，换参数后 plan_hash 变化。
   **不要把"容器靶场跑通"说成"客户现场跑通"。**

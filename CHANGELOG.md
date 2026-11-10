@@ -4,6 +4,76 @@
 
 ## [Unreleased]
 
+### 修复（`levee cluster status` 文档口径与二进制不符）
+
+- **缺口**：`cmd_cluster_status.go` 把子命令的 `Use` 写成 `"cluster status"`，
+  cobra 只认第一个词作命令名，文档与 DEMOS 里承诺的 `levee cluster status`
+  实际以 `unknown command "status"` 收场——又一个「文档写了、二进制没有」
+  的口径洞。
+- **修法**：按 target/agent 既有的父子登记法，`levee cluster` 作父命令注册、
+  `status` 作子命令，文档口径即二进制行为。
+- **验证**：灾备验收现场实跑 `levee cluster status --pg-dsn ...` 输出
+  Nodes / Unplaceable Approved Runs / Worker Load / Active Assignments 四段
+  （证据 `run/cluster/evidence/s1/cluster-status-after-kill.txt`，本地产物
+  不入库）。
+
+### 修复（serve 集群态 pgStoreDB 直接断言 `*state.PGStore` 落空，围栏 / 接管循环拿 nil db）
+
+- **缺口**：`cmd_serve.go` 的 `pgStoreDB` 直接类型断言 `*state.PGStore`；
+  集群态下传给接管 / 围栏循环的是漏斗装饰器（RunEventStore），断言落空
+  ⇒ 每一轮 sweep 都报 `cluster: expired executions: nil db`，围栏与接管
+  形同虚设。
+- **修法**：沿 `state.Underlying` Unwrapper 缝走到最内层真后端（与
+  StoreDriver / calendarFor 同一走法），单节点 SQLite 仍返回 nil（围栏是
+  集群专属，不变）。
+- **验证**：`cmd/levee/serve_pgstore_unwrap_test.go` 源码级回归门，变异
+  验证过（改回直接断言即 FAIL）；容器靶场三场景实跑中围栏 / 接管均生效
+  （见下条新增）。
+
+### 修复（REST 网关 `WriteTimeout: 30s` 砍掉同步长操作的响应）
+
+- **缺口**：`internal/grpc/rest.go` 的 `http.Server` 设了连接级
+  `WriteTimeout: 30s`，而数据面是**同步**长操作——`/changes/:id/retry`
+  （与 `apply`）执行整个变更计划（仅 hold 步就 120s+）后一次性写响应。
+  实测：灾备验收 S1 里服务端全跑完（lock preempted → released、run
+  completed、账本 exactly-once），客户端却收 `HTTP 0 / Remote end closed
+  connection without response`——run 已收敛，调用方无从知晓。
+- **修法**：`WriteTimeout` 置 0（构造提出为 `newHTTPServer(mux)` 缝）；
+  逐请求约束归 request context，连接级写截止日期与同步长操作互斥。
+  `ReadHeaderTimeout` / `IdleTimeout` 两个 slowloris / keep-alive 守卫保留。
+- **验证**：新增 `rest_server_write_timeout_test.go` 钉死
+  `WriteTimeout == 0` 且两守卫不连带撤掉；变异验证过（加回 30s 门即
+  FAIL）；S1 终态树 retry 实收 `HTTP 200 … "status":"completed"`。
+- **如实边界**：置 0 后响应侧不再有连接级兜底，慢客户端可长连——数据面
+  全量响应都是一次性小 JSON，风险可接受；真需要流式 / 大响应再评估
+  按路由分级。
+
+### 新增（裸机灾备验收：三场景容器靶场 + 机器断言 + 诚实契约）
+
+- **缺口**：灾备能力（集群接管 / 围栏 / 恢复）停在设计文档与 VM 剧本，
+  无现场证据；旧 DEMOS A4 口径与实现三处冲突（`levee retry` 对
+  interrupted 是错指令、「接管不重跑副作用」对硬杀在途轮次不成立、
+  「第一步仍是 completed」对零行账本不成立）。
+- **修法**：`deploy/lab/container-lab/` 新增 `clusterdrive.py` 驱动 +
+  `workflows/lab-cluster-takeover.yaml`（write-marker + hold 120s 的执行体）
+  + `Dockerfile.node` 节点镜像；三场景全机器断言：S1 `docker kill -s KILL`
+  worker、S2 `docker network disconnect` worker（进程活真分区）、S3
+  `docker stop/start` PG（命名卷进程级重启）。证据落
+  `run/cluster/evidence/s{1,2,3}/`（`run/` 已被 .gitignore 覆盖）。
+- **实测终态**（2026-11-10 终态树全链）：S1 `VERDICT: PASS (10/10)`、
+  S2 `VERDICT: PASS (9/9)`、S3 `VERDICT: PASS (8/8)`。共同事实：run 收敛
+  `interrupted` 不卡 running；接管事件可读且属本 run；在途轮次账本零行
+  （步级行本就在 closure 结束一次性落盘）；围栏拦住愈合 / DB 恢复后旧执行
+  者的晚期落盘（trace `evidence_discarded` ≥ 1、steps 仍零行）；REST retry
+  后 `completed` 且每步恰一行 success（账本 exactly-once）；标记文件 mtime
+  推后（物理 at-least-once，设计事实）。
+- **诚实边界**：① 硬杀 / 分区丢在途证据是设计事实，不是缺陷；② S3 是单
+  PG 进程级重启 + 命名卷，**不是**副本提升；③ 恢复时延上界 = 目标机锁
+  TTL（300s = exec_timeout），硬杀后孤儿锁等 TTL 自然过期是防物理双跑的
+  安全网，产品行为合理不改；④ 容器靶场 ≠ 真 VM 实验室，DEMOS A4 的 VM
+  形态仍未实跑（已在 DEMOS 如实登记）；⑤ #97 断网策略提案需收录「恢复
+  时延上界 = 锁 TTL」这条实测事实。
+
 ### 修复（新落地特性文档漂移清扫：region 派发 / 运行期通道池化 / push 旗标 / webhook 镜像四处口径）
 
 - **缺口**：四批已落地特性在 docs 里的口径停在实现前——region 派发只写三种拒绝（漏 `plan_unreadable`）且把「某机房无人声明」误并入 `no_single_node_spans_regions`；运行期通道仍写「无跨 run 连接池」（D-1c 起已池化，cli-reference / README / tcp_console 示例三处同病）；`levee push` 的 `--platform` 默认 `ios`、`--body` 非必填、不带选项报错 exit=2、失败聚合 `ErrPushFailed` 无部分成功，与 cli-reference 的「必填 / 显示配置状态 / 部分成功」全相反；webhook 镜像已随 run 生命周期全量投递，而 mvp-tasks D-20 / blocked-items E-2 / config.example.yaml / CHANGELOG 旧节仍写「唯一事件源是回滚分级」「serve 尚未配置渠道」「HMAC 未做」。
