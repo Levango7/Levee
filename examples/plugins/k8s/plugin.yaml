@@ -1,0 +1,12 @@
+name: k8s
+version: 1.0.0
+type: channel
+author: levee-team
+description: Channel plugin that drives a Kubernetes cluster through kubectl, so a workload change travels LEVEE's approval/snapshot/audit chain like an SSH host change
+min_host_version: "0.1.0"
+max_host_version: "2.0.0"
+entry_point: k8s
+# D-1c: this one binary also answers to "kubernetes", so a target row may
+# declare either name. The plugin's own name ("k8s") is always registered.
+channel_types:
+  - kubernetes

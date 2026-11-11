@@ -1,0 +1,35 @@
+# Read verbatim at install time (a file named config.yaml next to plugin.yaml)
+# and handed to the plugin as the `init` request's config map when a session
+# starts.
+#
+# Authentication belongs here, not on the wire: the host never sends plaintext
+# credentials to a channel plugin, only a credential reference name. For this
+# plugin the credential carrier IS the kubeconfig below.
+
+# Path to the kubeconfig file. Empty means kubectl's own default resolution
+# (KUBECONFIG env var, then ~/.kube/config).
+kubeconfig: ""
+
+# The kube contexts this plugin may be pointed at. A target row's address is
+# a context NAME, and it must appear here — an address that is not listed is
+# refused at connect time. This list is the operator's cluster boundary: the
+# workflow author can only pick among the targets the inventory offers, and
+# the inventory can only offer what this list allows.
+#
+# FAIL-CLOSED: an empty list allows NO context. Edit this before enable.
+allowed_contexts: []
+
+# The floor on which kubectl verbs this channel will run. Empty means the
+# plugin's built-in default set (get/describe/logs/explain/apply/patch/scale/
+# rollout/delete/label/annotate/wait/version/api-resources/api-versions).
+# Verbs that turn the channel into an escape hatch (exec, port-forward,
+# proxy, cp, attach, debug, run, auth, config, edit, certificate) are NOT in
+# the default set and adding them here is an operator decision this file
+# records for the audit trail.
+allowed_verbs: []
+
+# Where the kubectl binary lives. Empty means "look it up on PATH".
+kubectl_path: ""
+
+# Wall-clock budget for ONE kubectl invocation, in milliseconds.
+timeout_ms: 30000
