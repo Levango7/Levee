@@ -32,7 +32,18 @@ FROM node:${NODE_VERSION} AS node
 WORKDIR /src/web
 
 COPY web/package.json web/package-lock.json ./
-RUN npm ci --prefer-offline
+# The lockfile pins every tarball to a third-party mirror (npmmirror),
+# which a toolchain upgrade slipped in: on 2026-11-11 that mirror's DB
+# broke (ER_NO_SUCH_TABLE → HTTP 500) and EVERY image build failed,
+# reddening master and blocking five dependabot PRs. Rewrite the host
+# to a registry we choose — the mirror stays an optimization
+# (docker build --build-arg NPM_REGISTRY=https://registry.npmmirror.com),
+# not a hard dependency. The resolved package set is unchanged, so the
+# built dist is byte-identical.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+RUN npm config set replace-registry-host always \
+  && npm config set registry "$NPM_REGISTRY" \
+  && npm ci --prefer-offline
 
 COPY web/ .
 RUN npm run build

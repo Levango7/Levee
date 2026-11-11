@@ -173,6 +173,17 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: npm ci
+        # The lockfile pins every tarball to a third-party mirror (npmmirror),
+        # which a toolchain upgrade slipped in and nobody re-checked: on
+        # 2026-11-11 that mirror's DB broke (ER_NO_SUCH_TABLE → HTTP 500) and
+        # every image build and this leg died on a dependency fetch. Rewrite
+        # the host to a registry we choose — the mirror stays an
+        # optimization (set NPM_REGISTRY at repo/org level), not a hard
+        # dependency. The resolved package set is unchanged, so the built
+        # dist is byte-identical.
+        env:
+          NPM_CONFIG_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
+          NPM_CONFIG_REPLACE_REGISTRY_HOST: always
         run: npm ci
       - name: unit tests
         run: npm run test
@@ -727,13 +738,36 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: npm ci
+        # The lockfile pins every tarball to a third-party mirror (npmmirror),
+        # which a toolchain upgrade slipped in and nobody re-checked: on
+        # 2026-11-11 that mirror's DB broke (ER_NO_SUCH_TABLE → HTTP 500) and
+        # every image build and this leg died on a dependency fetch. Rewrite
+        # the host to a registry we choose — the mirror stays an
+        # optimization (set NPM_REGISTRY at repo/org level), not a hard
+        # dependency. The resolved package set is unchanged, so the built
+        # dist is byte-identical.
+        env:
+          NPM_CONFIG_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
+          NPM_CONFIG_REPLACE_REGISTRY_HOST: always
         run: npm ci
       # The driver is installed globally rather than added to package.json: it
       # is CI tooling, not something the app ships, and the repo holds the line
       # on minimal runtime dependencies. Same pattern as gosec's pinned
       # `go install`.
       - name: install puppeteer-core
-        run: npm install -g puppeteer-core@24.37.0
+        env:
+          NPM_CONFIG_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
+        run: |
+          # npm does not retry a registry that answers 404/500, and the
+          # 2026-11-08 tslib 404 redded this leg for the whole run. Three
+          # attempts with a pause: the mirror hiccup must not cost a CI run.
+          for attempt in 1 2 3; do
+            npm install -g puppeteer-core@24.37.0 && exit 0
+            echo "::warning::puppeteer-core install attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::puppeteer-core install failed after 3 attempts"
+          exit 1
       # Services, wait, and the check run in ONE shell step on purpose. GitHub
       # Actions runs each step in its own shell, and a `&`-backgrounded child
       # dies with it: on ubuntu it happened to survive long enough (Linux

@@ -56,6 +56,15 @@ make cross-build
 - 每个 `v*` tag 同时构建多架构容器镜像 `ghcr.io/levango7/levee:<版本>`（默认私有，拉取需凭据）；
 - 仓库自带交付物见 [deploy/README.md](../deploy/README.md)：裸金属一键安装脚本（`deploy/baremetal/install.sh`，幂等）、可直接安装的 systemd 单元（`deploy/systemd/levee.service`）、Helm chart（`deploy/helm/levee`，见 §14）。
 
+**前端依赖源（构建期，可配）**：
+
+- `web/package-lock.json` 里的 `resolved` 指向第三方镜像（npmmirror）——这是某次前端工具链升级时顺手带进来的，从没被当成一条依赖链审过；2026-11-11 该镜像的库损坏（`ER_NO_SUCH_TABLE` → HTTP 500），**每次镜像构建与 CI 的 frontend 腿都死在拉依赖上**，主线变红、5 个 dependabot PR 被卡住。
+- 现在**安装时改写主机名**：`npm config replace-registry-host=always` ＋ `registry=<所选源>`，锁文件里的 214 个镜像 URL 会被改写到所选源。解析出的包集合不变，因此 `internal/web/dist` 产物逐字节不变（CI 的 dist 新鲜度门不受影响）。
+- 默认源＝`https://registry.npmjs.org`（权威源，全球可用）。**镜像从此是优化项而非硬依赖**：
+  - CI：设仓库/组织级变量 `NPM_REGISTRY` 即可切到别的源（如 `https://registry.npmmirror.com`），不改 workflow；
+  - 本地镜像构建：`docker build --build-arg NPM_REGISTRY=https://registry.npmmirror.com .`；
+  - 本地 `web/` 开发：锁文件不变，默认仍走锁文件里的镜像地址（国内更快）；需要时 `npm config set replace-registry-host always` ＋ `npm config set registry <源>`。
+
 ## 4. 配置
 
 配置文件查找顺序：
