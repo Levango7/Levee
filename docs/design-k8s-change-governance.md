@@ -45,6 +45,8 @@
 
 ### S1 — k8s 工作负载**策略门禁**（纯函数，不需集群）
 
+> **状态：已实现**（`internal/k8spolicy` 策略引擎 ＋ `internal/verify` 的 `K8sPolicyGate`；11 条策略、解析失败 fail-closed、拒绝必带字段定位与补救文案；门禁的**注册与 DSL 接线**留待 S2——那一步会碰到 `internal/dsl` 与 `cmd/levee`，需与认领者协调）。
+
 - **做什么**：一组"提交前"判定：privileged / hostPath / 未声明 `resources.limits` / `image: latest` 配 `imagePullPolicy: Always` / 缺 `runAsNonRoot` 等 → 拒绝或告警，**必须给出可读的理由**（不静默拒绝）。
 - **形态**：接入既有 gate 家族（`internal/verify`，含 pre_apply / post_batch 位置），与既有"拒绝要带原因"的约定一致。
 - **验收**：纯函数单测（本地 `go test`，**不依赖集群**）；样本取自常见基线（含信创/安全基线里的高危项）。

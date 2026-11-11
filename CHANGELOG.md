@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（k8s 工作负载策略门禁：S1——纯函数策略引擎 ＋ 门禁适配器，fail-closed）
+
+- **为什么做**：定位 v1.2 把对外第一身份改成「数据库变更发布与治理核」之后，云原生侧真正空着的是「高危动作级变更的**审批·回滚·举证**」——声明式交付归 ArgoCD/Flux、观测归 Prometheus/Zabbix/ELK，没人管谁批谁回滚。`docs/design-k8s-change-governance.md`（D-4）把这件事拆成三片，**本笔是 S1**。
+- **改动**：新包 `internal/k8spolicy`（不引 K8s 依赖，把 manifest 当通用 YAML map 读；11 条策略：privileged / allowPrivilegeEscalation / hostPath / hostNamespace / runAsUser=0 / 加 ALL·SYS_ADMIN / 镜像未钉版 / 无 resources.limits / 未声明 runAsNonRoot / 自动挂载 SA token / hostPort，每条给**字段定位 + 原因 + 补救**）；`internal/verify` 新增 `K8sPolicyGate`（critical 阻断、warning 放行但仍报出、**解析失败按拒绝处理**——读不到不等于没问题）。
+- **验证**：新包 11 例（每条策略一例 ＋ 安全清单零命中 ＋ 非工作负载跳过 ＋ 多文档 ＋ CronJob 模板 ＋ 解析失败即错误）＋ 门禁 4 例（阻断 / 告警放行 / 读不到即拒 / 默认阶段）全绿；`go vet` 干净；`gofmt` 干净；内部包可达性门绿（新包经 `internal/verify` 可达）。
+- **边界**：本笔**只做策略与门禁本体**，不接执行面（改 k8s 工作负载的通道是 S2），也不改任何既有命令行为；门禁的注册与 DSL 接线待 S2 与 `internal/dsl`/`cmd/levee` 的认领者协调。
+
 ### 文档（云原生变更治理面设计提案 ＋ 平台适配矩阵；账本新增 D-4）
 
 - **缺口**：定位 v1.2 把对外第一身份改成「数据库变更发布与治理核」之后，"信创 / ARM / 云原生"三类落地条件一直**没有成文清单**——全仓对麒麟/统信/达梦/人大金仓/国密**零提及**，账本 A-4 只有"信创硬件"四个字；同时 K8s 只出现在**部署面**（Helm chart），作为**被治理的变更目标**没有任何执行面（执行通道只有 local/ssh/winrm，全仓无 k8s 客户端）。
