@@ -15,7 +15,7 @@
 
 ### 1.1 CLI 优先
 
-LEVEE 遵循 R2 红线"变更必须可回滚"与 D2 中"CLI 优先"的体验约束：所有变更生命周期操作、模板管理、目标管理、审计、漂移检测、凭据、权限、系统管理操作均可通过 CLI 完成，不强制 Web UI。Web UI（V1 门户）是 CLI 的可视化层，不引入 CLI 没有的能力，二者共用同一编排后端。
+LEVEE 遵循 R2 红线"变更必须可回滚"与 D2 中"CLI 优先"的体验约束：所有变更生命周期操作、SQL 审核（`sqlreview`）、模板管理、目标管理、审计、漂移检测、凭据、权限、系统管理操作均可通过 CLI 完成，不强制 Web UI。Web UI（V1 门户）是 CLI 的可视化层，不引入 CLI 没有的能力，二者共用同一编排后端。
 
 CLI 输出结构化：默认人类可读（表格 + 彩色状态），`--json` 切换机器可读，便于嵌入 CI / CD 与脚本。所有命令均可在批处理 / 流水线中调用，退出码语义稳定（见第11章）。
 
@@ -357,6 +357,35 @@ levee link run-20260815-001 --incident CHG-2026-0815
 | `--itsm <ticket>` | string | 否 | ITSM 工单号（ServiceNow / 自研） |
 | `--jira <issue>` | string | 否 | Jira issue key |
 | `--incident <id>` | string | 否 | 事件 id，用于变更-告警关联 |
+
+### 2.11 SQL 审核（数据库变更发布楔子）
+
+`levee sqlreview` 按 LEVEE 的变更治理规则集审一批 SQL，逐条给 pass / warn / fail 判定。
+它是**数据库变更发布楔子**的第一接触面（`product-positioning.md` §1）：解析器为嵌入的
+Apache-2.0 组件（归属见根目录 `NOTICE`），20 条规则（SR-01..SR-20）的文案全部自撰。
+
+命令示例：审一批 SQL
+
+```bash
+levee sqlreview --sql "DELETE FROM t"
+levee sqlreview --file change.sql --json
+```
+
+表：sqlreview 命令选项参数说明表
+
+| 选项 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `--sql <batch>` | string | 二选一 | 要审的 SQL 批，多条语句以分号分隔 |
+| `--file <path>` | string | 二选一 | 存放 SQL 批的文件路径 |
+
+`--sql` 与 `--file` 必须且只能给一个。verdict 为 **fail 时退出码 1**（按第11章「一般错误」），
+便于 CI / 流水线卡点；warn 与 pass 退出码 0。`--json` 走第12章的标准信封（`data` 为完整结果，
+含 `fail_count` / `warn_count`）。逐条规则清单与输出样例见 `cli-reference.md` 第29章。
+
+**在治理链中的位置**：SQL 审核是「数据库变更发布」闭环的第一段——审过的 SQL 再经模板/工作流
+进入 计划 → 审批 → 分批执行 → 验证门禁 → 自动回滚 → 审计留痕（本章第2章各节）。把审核闸门
+接进 plan 生成前预检（失败即拒、结论入 plan 与审计报告）为下一批工作，见 `product-roadmap.md`
+的 P0「数据库变更发布楔子」行；本设计文档只记录已落地的命令面。
 
 ---
 
@@ -1259,6 +1288,7 @@ airgap:
 | `levee system status` | 系统状态 | 9 |
 | `levee system doctor` | 环境检查 | 9 |
 | `levee run --shell <cmd>` | 本地直跑一条命令（调试逃生口，不经治理链） | 9 |
+| `levee sqlreview` | 按治理规则集审一批 SQL（pass/warn/fail；fail 退出码 1） | 2.11 |
 
 > `levee schedule`（cron 定时触发变更）已于 2026-10-28 **定档为不做**，故不在上表：LEVEE 定位为变更治理控制平面而非调度器（`docs/product-positioning.md` §2），触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），治理侧由 `window`（变更窗口阻断）与 `calendar`（冻结期）承担。当前定时能力仅为 `levee drift schedule` 的漂移巡检。详见 `docs/levee-design.md` §4.6.1 与 `docs/blocked-items.md` E-4。
 
@@ -1286,6 +1316,7 @@ airgap:
 | `levee trace` | 4.7.1 变更审计 trace |
 | `levee audit verify` | 4.7.1 哈希链、4.7.2 哈希链分片 |
 | `levee drift detect` | 4.3 D3 状态与漂移（简化） |
+| `levee sqlreview` | `product-positioning.md` §1/§2（数据库变更发布楔子；无 `levee-design.md` 对应章节） |
 | `levee secret` | 4.8.1 凭据代理、4.8.5 凭据轮换 |
 | 第13章 REST API | 7 组件架构 L1 接入层 |
 | 第14章 配置文件 | 4.10 D12 部署形态（单机 / 集群 / 气隙 profile） 
