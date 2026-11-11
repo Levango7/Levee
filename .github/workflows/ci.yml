@@ -420,8 +420,27 @@ jobs:
             https://github.com/protocolbuffers/protobuf/releases/download/v27.0/protoc-27.0-linux-x86_64.zip
           unzip -oq /tmp/protoc.zip -d "$HOME/protoc"
           echo "$HOME/protoc/bin" >> "$GITHUB_PATH"
-          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
-          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+          # The Go module proxy is a network dependency of this step and it
+          # has flaked this repo before (the proto regenerate check died on a
+          # proxy.golang.org stream error). Retry the install: a transport
+          # hiccup must not cost a whole CI run. These jobs are ubuntu-only,
+          # so the default shell is bash and the loop is POSIX. The loop does
+          # NOT exit on success (the step continues afterwards — a PATH line
+          # follows) and sets a flag the step checks instead.
+          installed=0
+          for attempt in 1 2 3; do
+            if go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12 \
+              && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2; then
+              installed=1
+              break
+            fi
+            echo "::warning::protoc-gen-go install attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          if [ "$installed" != "1" ]; then
+            echo "::error::protoc-gen-go install failed after 3 attempts"
+            exit 1
+          fi
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: regenerate bindings
         run: bash scripts/gen-proto.sh
@@ -541,7 +560,21 @@ jobs:
       # measured resolving from a stale source (`Resolved as '1.26.8'` even with
       # check-latest: true) while go.mod required 1.26.9.
       - name: install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+        run: |
+          # The Go module proxy is a network dependency of this step and it
+          # has flaked this repo before (the proto regenerate check died on a
+          # proxy.golang.org stream error). Retry the install: a transport
+          # hiccup must not cost a whole CI run. This job is ubuntu-only,
+          # so the default shell is bash and the loop is POSIX.
+          for attempt in 1 2 3; do
+            if go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0; then
+              exit 0
+            fi
+            echo "::warning::gosec install attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::gosec install failed after 3 attempts"
+          exit 1
       - name: run gosec
         # G104 (unhandled errors) and G307 (defer file.Close) are noisy
         # low-signal classes here; G501/G505/G601 have no hits today but
@@ -596,7 +629,21 @@ jobs:
       # place to forget to bump. Installing @latest keeps the scanner current
       # against the live vulnerability database, which is the whole point.
       - name: install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: |
+          # The Go module proxy is a network dependency of this step and it
+          # has flaked this repo before (the proto regenerate check died on a
+          # proxy.golang.org stream error). Retry the install: a transport
+          # hiccup must not cost a whole CI run. This job is ubuntu-only,
+          # so the default shell is bash and the loop is POSIX.
+          for attempt in 1 2 3; do
+            if go install golang.org/x/vuln/cmd/govulncheck@latest; then
+              exit 0
+            fi
+            echo "::warning::govulncheck install attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::govulncheck install failed after 3 attempts"
+          exit 1
       # -scan=sym gives reachability analysis: it reports only vulns reachable
       # from our symbols, so a vuln in an unused code path of a dependency does
       # not fail the build. This is what keeps the gate actionable.
