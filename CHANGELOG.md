@@ -19,6 +19,7 @@
   cli-reference / product-positioning / product-roadmap）；README 还带着过期读数（当前版本写
   v1.13.0，实际 v1.25.0；RPC 计数写 53 个 = 40+13、22 个挂 `ChangeService`、九个服务）。
 - **修法**：README 与 quickstart 补 SQL 审核楔子（指向 `cli-reference.md` 第 29 章，不复制规则清单）；
+  `docs/levee-api.md` 新增 §2.11 SQL 审核命令（附录 A/B 同步），补上设计文档对楔子的缺席；
   README 与 `product-positioning.md` 的 proto 规模数字改由 `internal/docgen` 从**已编译的 proto
   描述符**生成（两个文档嵌同一块，单一来源；CI 的 docs regenerate check 兜底），消灭手抄副本；
   订正 README 版本行。
