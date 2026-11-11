@@ -154,22 +154,47 @@ func podSpecOf(obj map[string]any, kind string) (map[string]any, bool) {
 }
 
 // checkPodSpec runs the policy set against one pod spec.
+//
+// The work is split into pod-level and per-container checks because a single
+// function covering both exceeded the repository's cyclomatic-complexity
+// floor (gocyclo 30): the split is not cosmetic, it separates "the pod
+// grants the container too much" from "the container asks for too much",
+// which are different reviews of the same manifest.
 func checkPodSpec(kind, name string, pod map[string]any) []Finding {
-	var out []Finding
-	add := func(id string, sev Severity, path, msg, fix string) {
-		out = append(out, Finding{
-			PolicyID:    id,
-			Severity:    sev,
-			Kind:        kind,
-			Name:        name,
-			Path:        path,
-			Message:     msg,
-			Remediation: fix,
-		})
-	}
+	s := &findingSink{kind: kind, name: name}
+	s.checkPodLevel(pod)
+	s.checkContainers(pod)
+	return s.out
+}
 
-	// Pod-level: sharing a host namespace breaks the isolation the workload
-	// was scheduled for.
+// findingSink accumulates the findings of one workload. It exists so the
+// per-check helpers can report without threading a closure through every
+// signature.
+type findingSink struct {
+	kind string
+	name string
+	out  []Finding
+}
+
+// add records one finding against the workload this sink belongs to.
+func (s *findingSink) add(id string, sev Severity, path, msg, fix string) {
+	s.out = append(s.out, Finding{
+		PolicyID:    id,
+		Severity:    sev,
+		Kind:        s.kind,
+		Name:        s.name,
+		Path:        path,
+		Message:     msg,
+		Remediation: fix,
+	})
+}
+
+// checkPodLevel evaluates the settings that belong to the pod itself: what
+// the pod shares with the node, what it mounts from the node, and which
+// identity it runs under.
+func (s *findingSink) checkPodLevel(pod map[string]any) {
+	// Sharing a host namespace breaks the isolation the workload was
+	// scheduled for.
 	for _, ns := range []struct {
 		field string
 		label string
@@ -179,15 +204,15 @@ func checkPodSpec(kind, name string, pod map[string]any) []Finding {
 		{"hostIPC", "the host IPC namespace"},
 	} {
 		if b, ok := digBool(pod, ns.field); ok && b {
-			add(PolicyHostNamespace, SeverityCritical,
+			s.add(PolicyHostNamespace, SeverityCritical,
 				"spec.template.spec."+ns.field,
 				"pod shares "+ns.label+" (host namespaces are shared with the node)",
 				"remove "+ns.field+" or set it to false")
 		}
 	}
 
-	// Pod-level: a mounted hostPath lets the workload write outside the
-	// container filesystem.
+	// A mounted hostPath lets the workload write outside the container
+	// filesystem.
 	if vols, ok := digSlice(pod, "volumes"); ok {
 		for i, v := range vols {
 			vm, ok := v.(map[string]any)
@@ -195,7 +220,7 @@ func checkPodSpec(kind, name string, pod map[string]any) []Finding {
 				continue
 			}
 			if _, has := digMap(vm, "hostPath"); has {
-				add(PolicyHostPath, SeverityCritical,
+				s.add(PolicyHostPath, SeverityCritical,
 					fmt.Sprintf("spec.template.spec.volumes[%d].hostPath", i),
 					"volume mounts a hostPath (the workload can read/write the node filesystem)",
 					"use emptyDir, a PVC, or a projected volume instead of hostPath")
@@ -203,113 +228,130 @@ func checkPodSpec(kind, name string, pod map[string]any) []Finding {
 		}
 	}
 
-	// Pod-level: a service account token is mounted by default in many
-	// clusters; the workload usually does not need it.
+	// A service account token is mounted by default in many clusters; the
+	// workload usually does not need it.
 	if b, ok := digBool(pod, "automountServiceAccountToken"); ok && b {
-		add(PolicyAutomountSAToken, SeverityWarning,
+		s.add(PolicyAutomountSAToken, SeverityWarning,
 			"spec.template.spec.automountServiceAccountToken",
 			"pod mounts the service account token (it grants the workload the API identity of that account)",
 			"set automountServiceAccountToken: false unless the workload calls the Kubernetes API")
 	}
 
-	// Pod-level: a root user is rarely intended.
+	// A root user is rarely intended.
 	if u, ok := digInt(pod, "securityContext", "runAsUser"); ok && u == 0 {
-		add(PolicyRunAsRoot, SeverityCritical,
+		s.add(PolicyRunAsRoot, SeverityCritical,
 			"spec.template.spec.securityContext.runAsUser",
 			"pod runs as UID 0 (root inside the container)",
 			"set runAsNonRoot: true and a non-zero runAsUser")
 	}
+}
 
-	containers := containersOf(pod)
-	for i, c := range containers {
+// checkContainers evaluates every container of the pod spec (init containers
+// first — they run with the same security context).
+func (s *findingSink) checkContainers(pod map[string]any) {
+	for i, c := range containersOf(pod) {
 		cm, ok := c.(map[string]any)
 		if !ok {
 			continue
 		}
 		base := fmt.Sprintf("spec.template.spec.containers[%d]", i)
+		s.checkContainerPrivilege(cm, base)
+		s.checkContainerHygiene(pod, cm, base)
+	}
+}
 
-		if b, ok := digBool(cm, "securityContext", "privileged"); ok && b {
-			add(PolicyPrivileged, SeverityCritical,
-				base+".securityContext.privileged",
-				"container runs privileged (it gets the host's capabilities)",
-				"drop privileged; grant only the specific capabilities it needs")
+// checkContainerPrivilege evaluates how much of the node's authority one
+// container asks for: privileged mode, privilege escalation, root and
+// dangerous capabilities.
+func (s *findingSink) checkContainerPrivilege(cm map[string]any, base string) {
+	if b, ok := digBool(cm, "securityContext", "privileged"); ok && b {
+		s.add(PolicyPrivileged, SeverityCritical,
+			base+".securityContext.privileged",
+			"container runs privileged (it gets the host's capabilities)",
+			"drop privileged; grant only the specific capabilities it needs")
+	}
+	if b, ok := digBool(cm, "securityContext", "allowPrivilegeEscalation"); ok && b {
+		s.add(PolicyAllowPrivilegeEscal, SeverityCritical,
+			base+".securityContext.allowPrivilegeEscalation",
+			"container allows privilege escalation",
+			"set allowPrivilegeEscalation: false")
+	}
+	if u, ok := digInt(cm, "securityContext", "runAsUser"); ok && u == 0 {
+		s.add(PolicyRunAsRoot, SeverityCritical,
+			base+".securityContext.runAsUser",
+			"container runs as UID 0 (root inside the container)",
+			"set runAsNonRoot: true and a non-zero runAsUser")
+	}
+	caps, ok := digSlice(cm, "securityContext", "capabilities", "add")
+	if !ok {
+		return
+	}
+	for _, c := range caps {
+		cs, _ := c.(string)
+		switch strings.ToUpper(cs) {
+		case "ALL", "SYS_ADMIN":
+			s.add(PolicyAddCapabilities, SeverityCritical,
+				base+".securityContext.capabilities.add",
+				"container adds the "+cs+" capability",
+				"drop "+cs+"; grant only the capabilities the workload needs")
 		}
-		if b, ok := digBool(cm, "securityContext", "allowPrivilegeEscalation"); ok && b {
-			add(PolicyAllowPrivilegeEscal, SeverityCritical,
-				base+".securityContext.allowPrivilegeEscalation",
-				"container allows privilege escalation",
-				"set allowPrivilegeEscalation: false")
-		}
-		if u, ok := digInt(cm, "securityContext", "runAsUser"); ok && u == 0 {
-			add(PolicyRunAsRoot, SeverityCritical,
-				base+".securityContext.runAsUser",
-				"container runs as UID 0 (root inside the container)",
-				"set runAsNonRoot: true and a non-zero runAsUser")
-		}
-		if caps, ok := digSlice(cm, "securityContext", "capabilities", "add"); ok {
-			for _, c := range caps {
-				cs, _ := c.(string)
-				switch strings.ToUpper(cs) {
-				case "ALL", "SYS_ADMIN":
-					add(PolicyAddCapabilities, SeverityCritical,
-						base+".securityContext.capabilities.add",
-						"container adds the "+cs+" capability",
-						"drop "+cs+"; grant only the capabilities the workload needs")
-				}
-			}
-		}
+	}
+}
 
-		// Image pinning: a moving tag means the workload content is not
-		// reviewable, so "what was approved" cannot be reconstructed.
-		if img := digString(cm, "image"); img != "" {
-			tag := imageTag(img)
-			if tag == "" || tag == "latest" {
-				add(PolicyUnpinnedImage, SeverityWarning,
-					base+".image",
-					"image "+img+" is not pinned to an immutable version",
-					"pin the image to a tag or a digest (registry/name@sha256:...)")
-			}
-		}
-
-		// Resource limits: an unbounded container can starve its node.
-		if _, ok := digMap(cm, "resources", "limits"); !ok {
-			add(PolicyNoResourceLimits, SeverityWarning,
-				base+".resources.limits",
-				"container declares no resource limits (it can exhaust the node)",
-				"set requests and limits for cpu and memory")
-		}
-
-		// Non-root: neither the pod nor the container says it must not be root.
-		_, podNonRoot := digBool(pod, "securityContext", "runAsNonRoot")
-		_, ctrNonRoot := digBool(cm, "securityContext", "runAsNonRoot")
-		_, ctrUser := digMap(cm, "securityContext", "runAsUser")
-		if !podNonRoot && !ctrNonRoot && !ctrUser {
-			add(PolicyNoNonRoot, SeverityWarning,
-				base+".securityContext.runAsNonRoot",
-				"container does not declare runAsNonRoot (it may run as root)",
-				"set runAsNonRoot: true at the pod or container level")
-		}
-
-		// hostPort binds a node port directly.
-		if ports, ok := digSlice(cm, "ports"); ok {
-			for pi, p := range ports {
-				pm, ok := p.(map[string]any)
-				if !ok {
-					continue
-				}
-				// hostPort is a port number, not a mapping: presence is the
-				// signal, so it is read as a value rather than as a map.
-				if _, has := dig(pm, "hostPort"); has {
-					add(PolicyHostPort, SeverityWarning,
-						fmt.Sprintf("%s.ports[%d].hostPort", base, pi),
-						"container publishes a hostPort (it binds the node directly and bypasses the Service)",
-						"drop hostPort and reach the workload through its Service")
-				}
-			}
+// checkContainerHygiene evaluates the operational properties of one
+// container: whether its content is pinned, whether it is bounded, and
+// whether it is reachable in ways that bypass the Service.
+func (s *findingSink) checkContainerHygiene(pod, cm map[string]any, base string) {
+	// Image pinning: a moving tag means the workload content is not
+	// reviewable, so "what was approved" cannot be reconstructed.
+	if img := digString(cm, "image"); img != "" {
+		tag := imageTag(img)
+		if tag == "" || tag == "latest" {
+			s.add(PolicyUnpinnedImage, SeverityWarning,
+				base+".image",
+				"image "+img+" is not pinned to an immutable version",
+				"pin the image to a tag or a digest (registry/name@sha256:...)")
 		}
 	}
 
-	return out
+	// Resource limits: an unbounded container can starve its node.
+	if _, ok := digMap(cm, "resources", "limits"); !ok {
+		s.add(PolicyNoResourceLimits, SeverityWarning,
+			base+".resources.limits",
+			"container declares no resource limits (it can exhaust the node)",
+			"set requests and limits for cpu and memory")
+	}
+
+	// Non-root: neither the pod nor the container says it must not be root.
+	_, podNonRoot := digBool(pod, "securityContext", "runAsNonRoot")
+	_, ctrNonRoot := digBool(cm, "securityContext", "runAsNonRoot")
+	_, ctrUser := digMap(cm, "securityContext", "runAsUser")
+	if !podNonRoot && !ctrNonRoot && !ctrUser {
+		s.add(PolicyNoNonRoot, SeverityWarning,
+			base+".securityContext.runAsNonRoot",
+			"container does not declare runAsNonRoot (it may run as root)",
+			"set runAsNonRoot: true at the pod or container level")
+	}
+
+	// hostPort binds a node port directly.
+	ports, ok := digSlice(cm, "ports")
+	if !ok {
+		return
+	}
+	for pi, p := range ports {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		// hostPort is a port number, not a mapping: presence is the
+		// signal, so it is read as a value rather than as a map.
+		if _, has := dig(pm, "hostPort"); has {
+			s.add(PolicyHostPort, SeverityWarning,
+				fmt.Sprintf("%s.ports[%d].hostPort", base, pi),
+				"container publishes a hostPort (it binds the node directly and bypasses the Service)",
+				"drop hostPort and reach the workload through its Service")
+		}
+	}
 }
 
 // containersOf returns the container list of a pod spec: initContainers first
