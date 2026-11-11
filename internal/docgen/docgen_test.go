@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,6 +56,65 @@ func TestLocateSpecFindsTheRealRepositoryRoot(t *testing.T) {
 	got, err := locateSpec(root)
 	require.NoError(t, err)
 	assert.True(t, strings.HasSuffix(got.path, filepath.Join("docs", "leveelang-spec.md")), got.path)
+}
+
+// TestLocateReadmeAndPositioningRefuseDecoys is the same G703 guard as
+// TestLocateSpecRefusesForeignRoots, applied to the two targets that carry the
+// proto census: a same-named file that is not the real document must be
+// rejected, not rewritten.
+func TestLocateReadmeAndPositioningRefuseDecoys(t *testing.T) {
+	readmeDecoy := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(readmeDecoy, "README.md"), []byte("# not the project\n"), 0o600))
+	_, err := locateReadme(readmeDecoy)
+	require.Error(t, err, "a decoy README.md must be rejected")
+	assert.Contains(t, err.Error(), "LEVEE README")
+
+	positioningDecoy := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(positioningDecoy, "docs"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(positioningDecoy, "docs", "product-positioning.md"),
+		[]byte("# not the positioning doc\n"), 0o600))
+	_, err = locatePositioning(positioningDecoy)
+	require.Error(t, err, "a decoy product-positioning.md must be rejected")
+	assert.Contains(t, err.Error(), "LEVEE product positioning")
+
+	// The happy path must still work, or the refusals above would pass for the
+	// wrong reason.
+	for _, locate := range []func(string) (genPath, error){locateReadme, locatePositioning} {
+		_, err := locate(repoRootForTest(t))
+		require.NoError(t, err)
+	}
+}
+
+// TestProtoScaleCensusIsNotVacuous: an empty census means the descriptors were
+// not linked in, and rendering zeros would let the docs claim the API has no
+// RPCs while every gate stayed green.
+func TestProtoScaleCensusIsNotVacuous(t *testing.T) {
+	c := protoCensusFromDescriptors()
+	assert.Greater(t, c.total(), 0)
+	assert.Greater(t, c.changeRPCs, 0)
+	assert.Greater(t, c.services, 0)
+	assert.Equal(t, c.total(), c.leveeRPCs+c.extraRPCs)
+
+	line := renderProtoScale()
+	assert.Contains(t, line, fmt.Sprintf("%d 个 gRPC RPC", c.total()))
+	assert.Contains(t, line, fmt.Sprintf("**%d 个**挂在 `ChangeService`", c.changeRPCs))
+}
+
+// TestCommittedProtoScaleBlocksMatchTheRenderer: the committed blocks must equal
+// what the generator would write right now. The CI docs-regenerate job proves
+// this too, but asserting it here names the offending file in the failure.
+func TestCommittedProtoScaleBlocksMatchTheRenderer(t *testing.T) {
+	b := block{"proto-scale", renderProtoScale}
+	for _, locate := range []func(string) (genPath, error){locateReadme, locatePositioning} {
+		p, err := locate(repoRootForTest(t))
+		require.NoError(t, err)
+		data, err := os.ReadFile(p.path)
+		require.NoError(t, err)
+		updated, err := replaceBlock(string(data), b)
+		require.NoError(t, err)
+		assert.Equal(t, string(data), updated,
+			"%s: committed proto-scale block is stale — run `go run ./internal/docgen`", p.path)
+	}
 }
 
 // TestReplaceBlockIsIdempotent is the property the whole tool rests on: running
