@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 文档（云原生变更治理面设计提案 ＋ 平台适配矩阵；账本新增 D-4）
+
+- **缺口**：定位 v1.2 把对外第一身份改成「数据库变更发布与治理核」之后，"信创 / ARM / 云原生"三类落地条件一直**没有成文清单**——全仓对麒麟/统信/达梦/人大金仓/国密**零提及**，账本 A-4 只有"信创硬件"四个字；同时 K8s 只出现在**部署面**（Helm chart），作为**被治理的变更目标**没有任何执行面（执行通道只有 local/ssh/winrm，全仓无 k8s 客户端）。
+- **改动**：`docs/design-k8s-change-governance.md`（设计提案：为什么走「治理面延伸到云原生」而不是「补通用运维面」，以及 S1 策略门禁／S2 k8s 变更通道／S3 适配矩阵三片的范围与本地验收方式）；`docs/platform-support-matrix.md`（逐格标「已验证／未验证／不支持」，只登记本仓自己跑过的结论）；`docs/blocked-items.md` 新增 **D-4** 行，并给 A-4 加矩阵指针。
+- **验证**：事实基线逐条给证据（CI 构建矩阵含 linux/macos/windows × amd64/arm64；Helm chart 模板清单；执行通道仅 local/ssh/winrm；DB 驱动仅 sqlite/postgres；无任何 k8s 客户端代码）。四道文档门全过：check_blocked_items PASSED（16 items，D=3）、check_doc_anchors PASSED（29 anchors / 37 claims）、check_roadmap_status PASSED（55 rows）、test_changelog_structure OK。
+- **边界**：本笔是**提案 ＋ 清单**，零代码；S1–S3 待 owner 拍板范围与先后后逐片实施。文档里的市场判断来自本仓定位与产品结构，**不是**来自真实标书。
+
 ### 修复（`go` 指令 1.26.10 → 1.26.11：收口新发布的标准库公告 GO-2026-6859，并升 `golang.org/x/crypto` 到修复版）
 
 - **一刀切在所有人头上的红**：2026-11-11，本仓 `govulncheck` 作业失败，报 `Vulnerability #1: GO-2026-6859 — Standard library`，`Found in: net/http@go1.26.10 / Fixed in: net/http@go1.26.11`，实例跟踪直指本仓代码（经 `net/http` 的服务端路径）。同一批扫描另报 `GO-2026-5932`（`golang.org/x/crypto@v0.58.0`，公告给出的修复版为 `v0.58.1-0.20261009181718-2f1f834330b2`）——本仓代码**不可达**该漏洞，但它仍在依赖图里。
