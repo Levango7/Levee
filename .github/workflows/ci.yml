@@ -755,6 +755,10 @@ jobs:
       # on minimal runtime dependencies. Same pattern as gosec's pinned
       # `go install`.
       - name: install puppeteer-core
+        # bash on purpose: the runner default is pwsh on windows, and this
+        # step is a POSIX loop — the same job already runs its check step
+        # under `shell: bash` (see below), so bash exists on both OSes.
+        shell: bash
         env:
           NPM_CONFIG_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
         run: |
