@@ -9,11 +9,19 @@
 计划 -> 审批 -> 分批执行 -> 验证门禁 -> 自动回滚 -> 审计留痕 的完整闭环，
 默认无代理、CLI 优先。
 
+**对外楔子（数据库变更发布）**："变更治理"作为独立品类没有采购词汇，需求长在数据库
+变更 / SQL 审核平台标里（SQL 审核、变更自动执行、分级审批、回滚、审计留痕）。
+所以 LEVEE 对外的第一身份是**数据库变更发布与治理核**——`levee sqlreview`（SQL 审核）
+是读者最先摸到的那一面，审批链、分批执行、快照回滚、哈希链审计是它身后的地基。
+完整口径见 [`docs/product-positioning.md`](docs/product-positioning.md) §1。
+
 ### LEVEE 是一套系统，不只是一个 workflow 引擎
 
-核心实体是**变更（Change）**，不是工作流：53 个 gRPC RPC（`proto/levee.proto`
-40 个 + `proto/levee_extra.proto` 13 个）里 22 个挂在 `ChangeService` 上，
-是九个已注册服务中最大的一个。工作流（LEVEELang 文档）只是变更的**声明式定义**，
+核心实体是**变更（Change）**，不是工作流：
+<!-- BEGIN GENERATED: proto-scale -->
+61 个 gRPC RPC（`proto/levee.proto` 42 个 + `proto/levee_extra.proto` 19 个），其中 **23 个**挂在 `ChangeService` 上，共 **10 个**已注册服务。
+<!-- END GENERATED: proto-scale -->
+工作流（LEVEELang 文档）只是变更的**声明式定义**，
 计划（Plan）才是被 `plan_hash` 绑定、被审批、被执行的那份制品。
 
 按 `internal/` 的实际构成，与编排直接相关的包（dsl / plan / engine / wiring /
@@ -49,6 +57,7 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 ## 核心特性
 
 - **变更流水线**：计划 -> 审批 -> 分批执行 -> 验证门禁 -> 自动回滚，全程审计哈希链留痕（WORM）；真实执行由执行引擎承担，显式 `--engine-enabled` 开启（默认关闭；计划持久化 + plan_hash 绑定，apply 执行的必是被批准的那份计划）
+- **SQL 审核楔子（数据库变更发布）**：`levee sqlreview` 把一批 SQL 按 20 条自撰治理规则（SR-01..SR-20）逐条打分，输出 pass / warn / fail；verdict 为 fail 时退出码 1，可直接卡流水线。解析器为嵌入的 Apache-2.0 组件（归属见根目录 `NOTICE`），规则文案全部自撰、不抄任何开源工具的规则文本。用法与完整规则集见 [`docs/cli-reference.md`](docs/cli-reference.md) 第 29 章
 - **危险度评分与审批分级路由**：plan 生成时自动评分（不可逆步骤/破坏性动作/影响面/回滚覆盖/批次扇出五因子，明细可解释），分数+红线推导审批下限（任一不可逆步骤 ⇒ 至少 high），**tier = max(workflow 声明, 计划下限) 只升不降**；PlanChange 自动启动审批链（补齐"声明了但没人创建 pending 记录"断链），评分与下限随 plan_json 落盘
 - **单步验证门 API**：`POST /gates/verify` 按需执行一条 cmd/probe/slo 验证（与引擎门禁同源构造器，零语义漂移）——操作员预检、流水线 pre-check、ChatOps 即席健康检查无需规划整个变更；human 检查点显式排除（归审批链）；每次执行留审计
 - **ITSM Jira 审批镜像**：`notify.jira.*` 配置启用后审批链开始建 Jira issue、决策自动评论（纯出站镜像，LEVEE store 仍是唯一事实来源；禁用时零外发零装配）
@@ -203,6 +212,7 @@ levee/
 │   ├── template/           # 模板库
 │   ├── compat/             # playbook 导入层（执行器已去莠删除，见"能力可达性"）
 │   ├── dsl/                # YAML 子集解析 (LEVEELang)
+│   ├── sqlreview/          # SQL 审核规则引擎（数据库变更发布楔子）
 │   ├── notify/             # 通知
 │   ├── config/             # 配置管理
 │   ├── permission/         # RBAC 权限
@@ -279,6 +289,6 @@ make cross-build  # 跨平台编译
 
 ## 版本
 
-当前版本 v1.13.0。MVP (3 个月) -> V1 (6 个月) -> V2 (12 个月)
+当前版本 v1.25.0。MVP (3 个月) -> V1 (6 个月) -> V2 (12 个月)
 
 详见 [docs/mvp-tasks.md](docs/mvp-tasks.md) 与 [CHANGELOG.md](CHANGELOG.md)。

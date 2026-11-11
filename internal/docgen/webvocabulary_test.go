@@ -198,17 +198,22 @@ func TestLocateWebVocabularyRefusesDecoys(t *testing.T) {
 	assert.True(t, strings.HasSuffix(got.path, filepath.Join("web", "src", "types", "vocabulary.ts")), got.path)
 }
 
-// TestTargetsCoverBothFiles pins the registry itself: adding a renderer without
-// registering its target would leave the new artefact unguarded, which is the
-// same "generator that quietly stops finding its anchor" failure in a different
-// costume.
-func TestTargetsCoverBothFiles(t *testing.T) {
+// TestTargetsCoverEveryManagedFile pins the registry itself: adding a renderer
+// without registering its target would leave the new artefact unguarded, which
+// is the same "generator that quietly stops finding its anchor" failure in a
+// different costume.
+func TestTargetsCoverEveryManagedFile(t *testing.T) {
 	names := make([]string, 0, len(targets()))
 	for _, tg := range targets() {
 		names = append(names, tg.name)
 	}
 	assert.ElementsMatch(t,
-		[]string{"docs/leveelang-spec.md", "web/src/types/vocabulary.ts"}, names)
+		[]string{
+			"docs/leveelang-spec.md",
+			"web/src/types/vocabulary.ts",
+			"README.md",
+			"docs/product-positioning.md",
+		}, names)
 
 	// Every block must render non-empty: an empty body would silently erase a
 	// managed section while -check still reported "up to date".

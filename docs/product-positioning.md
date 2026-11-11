@@ -41,8 +41,13 @@
 | 引擎（dsl / plan / engine / wiring / executor / rollback / dispatch / batch） | 子系统 | 只是在治理链里扮演"执行"那一段 |
 
 结论：**workflow 是 LEVEE 的内部实现，Change 才是它的公开主语**。
-proto 侧已为这个语义提供了依据——60 个 RPC（`levee.proto` 41 个 + `levee_extra.proto` 19 个）里
-**23 个**挂在 `ChangeService`，是十个已注册服务中最大的一个（**2026-11-01 按当前 `proto/` 实测订正**：原登记写「53 个 RPC（40 + 13）…22 个…九个已注册服务」，`AgentService` 与 `levee_extra.proto` 里的一批 RPC 是之后加的，计数未回填）。
+proto 侧已为这个语义提供了依据——
+<!-- BEGIN GENERATED: proto-scale -->
+61 个 gRPC RPC（`proto/levee.proto` 42 个 + `proto/levee_extra.proto` 19 个），其中 **23 个**挂在 `ChangeService` 上，共 **10 个**已注册服务。
+<!-- END GENERATED: proto-scale -->
+（原登记写「53 个 RPC（40 + 13）…22 个…九个已注册服务」，`AgentService` 与 `levee_extra.proto`
+里的一批 RPC 是之后加的；本块由 [`internal/docgen`](../internal/docgen/docgen.go) 从已编译的
+proto 描述符生成，计数不再手工回填。）
 
 ## 4. 角色与核心场景
 

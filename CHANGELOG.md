@@ -12,6 +12,17 @@
 - **验证**：本机按 `go.mod` 拉到 go1.26.11 后 `govulncheck ./...` = **No vulnerabilities found**（同一命令在修复前报 stdlib 1 处命中）；`go build ./...` rc=0；`gofmt -l` 干净；`go test ./...` 本机全绿；CI 侧以 master push CI 为准。
 - **边界**：本笔只升工具链与一个模块，不改任何产品代码；Go 补丁版本升级不引入语言或语义变化。`Dockerfile` 的 `ARG GO_VERSION=1.26` 刻意用 major.minor 别名（会取到 1.26.11），本笔不改。
 
+### 文档（产品对外楔子 v1.2 的第一接触面：README/quickstart 补 SQL 审核，proto 规模改由 docgen 生成）
+
+- **缺口**：定位 v1.2（2026-11-10 市场扫描裁决）把 `levee sqlreview` 定为读者最先接触的一面，
+  但 README 与 quickstart 对它零提及（`git grep sqlreview -- '*.md'` 只命中 CHANGELOG /
+  cli-reference / product-positioning / product-roadmap）；README 还带着过期读数（当前版本写
+  v1.13.0，实际 v1.25.0；RPC 计数写 53 个 = 40+13、22 个挂 `ChangeService`、九个服务）。
+- **修法**：README 与 quickstart 补 SQL 审核楔子（指向 `cli-reference.md` 第 29 章，不复制规则清单）；
+  README 与 `product-positioning.md` 的 proto 规模数字改由 `internal/docgen` 从**已编译的 proto
+  描述符**生成（两个文档嵌同一块，单一来源；CI 的 docs regenerate check 兜底），消灭手抄副本；
+  订正 README 版本行。
+- **边界**：零代码行为变更；不碰 `internal/sqlreview` 的规则实现，规则清单仍以 cli-reference 为准。
 ### 修复（`levee cluster status` 文档口径与二进制不符）
 
 - **缺口**：`cmd_cluster_status.go` 把子命令的 `Use` 写成 `"cluster status"`，

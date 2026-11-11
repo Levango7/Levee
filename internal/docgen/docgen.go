@@ -50,8 +50,12 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/dsl"
+	_ "github.com/nexus/levee/internal/grpc/pb" // registers the compiled `levee` descriptors the census reads
 	"github.com/nexus/levee/internal/runstatus"
 )
 
@@ -116,6 +120,28 @@ func targets() []target {
 			endFmt:   tsEndFmt,
 			blocks: []block{
 				{"vocabulary", renderWebVocabulary},
+			},
+		},
+		// The RPC/service census is stated in the two docs a reader meets
+		// first. They embed the SAME managed block (one renderer, one body), so
+		// the front door and the product-positioning doc cannot disagree — the
+		// class of defect this generator exists to remove.
+		{
+			name:     "README.md",
+			locate:   locateReadme,
+			beginFmt: beginFmt,
+			endFmt:   endFmt,
+			blocks: []block{
+				{"proto-scale", renderProtoScale},
+			},
+		},
+		{
+			name:     "docs/product-positioning.md",
+			locate:   locatePositioning,
+			beginFmt: beginFmt,
+			endFmt:   endFmt,
+			blocks: []block{
+				{"proto-scale", renderProtoScale},
 			},
 		},
 	}
@@ -213,6 +239,32 @@ func (g genPath) String() string { return g.path }
 // wrong -root now says "no leveelang-spec.md under X" instead of "no such
 // file or directory".
 func locateSpec(root string) (genPath, error) {
+	return locateDoc(root, "docs/leveelang-spec.md", "LEVEE spec", "BEGIN GENERATED: run-status")
+}
+
+// locateReadme resolves README.md under root and refuses a same-named decoy.
+func locateReadme(root string) (genPath, error) {
+	return locateDoc(root, "README.md", "LEVEE README", "BEGIN GENERATED: proto-scale")
+}
+
+// locatePositioning resolves docs/product-positioning.md under root and refuses
+// a same-named decoy.
+func locatePositioning(root string) (genPath, error) {
+	return locateDoc(root, "docs/product-positioning.md", "LEVEE product positioning", "BEGIN GENERATED: proto-scale")
+}
+
+// locateDoc resolves rel under root, verifies root is a directory, and refuses a
+// file that does not carry fingerprint.
+//
+// The -root flag is command-line input, so joining it blindly would let a caller
+// (or a mistyped CI variable) write outside the repository — gosec's taint
+// analysis flags exactly that as G703. Confirming the resolved path is a real,
+// marker-bearing target is both the guard and a better error message: a wrong
+// -root says "no <rel> under X" instead of "no such file or directory".
+//
+// Every locate function funnels through here, so a new target cannot reach the
+// writer without the same verification.
+func locateDoc(root, rel, kind, fingerprint string) (genPath, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return genPath{}, fmt.Errorf("resolve root %q: %w", root, err)
@@ -225,16 +277,71 @@ func locateSpec(root string) (genPath, error) {
 		return genPath{}, fmt.Errorf("root %q is not a directory", root)
 	}
 
-	path := filepath.Join(absRoot, "docs", "leveelang-spec.md")
+	path := filepath.Join(absRoot, filepath.FromSlash(rel))
 	doc, err := os.ReadFile(path)
 	if err != nil {
-		return genPath{}, fmt.Errorf("no docs/leveelang-spec.md under %q: %w", root, err)
+		return genPath{}, fmt.Errorf("no %s under %q: %w", rel, root, err)
 	}
-	// Cheap sanity check that this is the spec and not some other markdown.
-	if !bytes.Contains(doc, []byte("BEGIN GENERATED: run-status")) {
-		return genPath{}, fmt.Errorf("%s does not look like the LEVEE spec (missing generated-block markers)", path)
+	// Cheap sanity check that this is the expected document and not some other
+	// file that happens to share its name.
+	if !bytes.Contains(doc, []byte(fingerprint)) {
+		return genPath{}, fmt.Errorf("%s does not look like the %s (missing generated-block markers)", path, kind)
 	}
 	return genPath{path: path}, nil
+}
+
+// protoCensus is the RPC and service census the published prose states.
+type protoCensus struct {
+	leveeRPCs  int // RPCs declared in proto/levee.proto
+	extraRPCs  int // RPCs declared in proto/levee_extra.proto
+	changeRPCs int // RPCs on ChangeService
+	services   int // registered services across both files
+}
+
+// total is the RPC count the docs quote.
+func (c protoCensus) total() int { return c.leveeRPCs + c.extraRPCs }
+
+// protoCensusFromDescriptors walks the compiled `levee` proto descriptors — the
+// artefact that actually ships in the binary — rather than parsing the .proto
+// sources or trusting a hand count. Because the proto regenerate check keeps the
+// sources and the bindings in lockstep, this cannot drift from the served API.
+func protoCensusFromDescriptors() protoCensus {
+	var c protoCensus
+	protoregistry.GlobalFiles.RangeFilesByPackage(protoreflect.FullName("levee"), func(fd protoreflect.FileDescriptor) bool {
+		svcs := fd.Services()
+		c.services += svcs.Len()
+		for i := 0; i < svcs.Len(); i++ {
+			svc := svcs.Get(i)
+			n := svc.Methods().Len()
+			switch {
+			case strings.HasSuffix(fd.Path(), "levee_extra.proto"):
+				c.extraRPCs += n
+			case strings.HasSuffix(fd.Path(), "levee.proto"):
+				c.leveeRPCs += n
+			}
+			if svc.Name() == "ChangeService" {
+				c.changeRPCs += n
+			}
+		}
+		return true
+	})
+	if c.total() == 0 || c.changeRPCs == 0 || c.services == 0 {
+		// An empty census means the descriptors were not linked in. Rendering
+		// zeros would look like a successful regeneration and let the prose
+		// claim the API has no RPCs; fail instead of writing a false number.
+		fail("proto census is empty — are the `levee` descriptors linked in?")
+	}
+	return c
+}
+
+// renderProtoScale renders the one-line census embedded in README.md and
+// docs/product-positioning.md. Both embed this exact body, so a change to the
+// proto can never leave the two documents saying different things.
+func renderProtoScale() string {
+	c := protoCensusFromDescriptors()
+	return fmt.Sprintf(
+		"%d 个 gRPC RPC（`proto/levee.proto` %d 个 + `proto/levee_extra.proto` %d 个），其中 **%d 个**挂在 `ChangeService` 上，共 **%d 个**已注册服务。\n",
+		c.total(), c.leveeRPCs, c.extraRPCs, c.changeRPCs, c.services)
 }
 
 // writeInPlace rewrites a verified generated target while preserving its

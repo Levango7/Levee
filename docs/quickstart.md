@@ -16,11 +16,11 @@
 | Windows | arm64 | `levee_x.y.z_windows_arm64.zip` |
 
 ```命令示例：下载并解压 Linux amd64 二进制
-curl -sL https://github.com/nexus/levee/releases/download/v1.10.0/levee_1.10.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin levee
+curl -sL https://github.com/nexus/levee/releases/download/v1.25.0/levee_1.25.0_linux_amd64.tar.gz | tar xz -C /usr/local/bin levee
 ```
 
 ```命令示例：Windows 下解压并加入 PATH
-Expand-Archive levee_1.10.0_windows_amd64.zip -DestinationPath C:\Tools\levee
+Expand-Archive levee_1.25.0_windows_amd64.zip -DestinationPath C:\Tools\levee
 $env:PATH += ";C:\Tools\levee"
 ```
 
@@ -410,6 +410,23 @@ levee serve --addr :9090 --tls-cert server.crt --tls-key server.key --token s3cr
 > **安全门禁**：不传 `--token` 时服务拒绝启动；如需本地开发跳过，显式传 `--insecure`。
 > CORS 默认拒绝所有跨域请求，需要时用 `--cors-origin <origin>` 配置白名单（传 `*` 放开所有来源）。
 > 标准健康探针位于 gRPC `grpc.health.v1.Health/Check`（无需鉴权）与 HTTP `/healthz`。
+
+## SQL 审核（数据库变更发布楔子）
+
+`levee sqlreview` 把一批 SQL 按 LEVEE 的变更治理规则集逐条打分，输出 pass / warn / fail。
+这是数据库变更发布楔子的演示面：解析器为嵌入的 Apache-2.0 组件（归属见根目录 `NOTICE`），
+20 条规则（SR-01..SR-20）的文案全部自撰。
+
+```命令示例：审核一条高危 DELETE
+levee sqlreview --sql "DELETE FROM t"
+```
+
+```命令示例：审核一个变更文件，输出机器可读
+levee sqlreview --file change.sql --json
+```
+
+verdict 为 fail 时退出码 1，可直接卡流水线；完整选项、规则集与输出格式见
+[CLI 参考文档](cli-reference.md) 第 29 章。
 
 ## 下一步
 
