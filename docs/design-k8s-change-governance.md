@@ -54,6 +54,9 @@
 
 ### S2 — k8s 变更通道（执行面）
 
+> **状态：已实现**（`examples/plugins/k8s`，通道插件 `channel_types: [k8s, kubernetes]`；**核心零行改动**）。机制：核心快照器（`internal/wiring/snapshotter.go`）对通道只说两句话——`Exec("base64 <路径>")` 抓状态、`Upload(路径, 内容)` 写回；本插件把"路径"解释成**资源引用**（`base64` → `kubectl get -o json` 并剥掉服务器记账字段 resourceVersion/uid/generation/creationTimestamp/managedFields/status；`Upload` → `kubectl apply -f -`），**"回滚＝按快照还原（不是重放一条反向命令）"在零核心改动下成立**——恰好绕开本仓里`internal/wiring`、`cmd/levee`、`internal/dsl` 三处他人认领区。
+> 验证：契约单测 22 例（fake kubectl 断言**参数向量**：钉死的 kubeconfig/context 前置、动词白名单、改写目标旗标拒绝、抓取剥字段、还原逐字节透传、协议环回）＋ **kind 实测**（`TestK8sChannelDrill`，env 门控，真集群：抓取→scale→按快照还原断言）。
+> **已知边界（如实）**：① 插件通道只在 **serve 启动时装入**（`installPluginChannels`），CLI 一次性路径 `levee apply --engine-enabled` 不装——三场景的引擎半边（审批拒绝→不执行、审计链）是引擎既有行为且传输无关（`internal/grpc` 的状态守卫与审批链测试覆盖），走 serve 即得完整链路；② `levee target check` 的探针是 `echo ok`，集群答不了（只影响那条诊断命令，plan/apply 不做该探针）；③ 通道 exec 无 stdin，manifest 应用走 upload（即快照还原的通道），`kubectl apply -f -` 在 exec 形态下读到 EOF 即失败——有意为之，不给宿主侧任意文件读取留口子。
 - **做什么**：让"改 k8s 工作负载"成为一个受治理的 target：
   1. 变更前**快照**（副本数、镜像 digest、关键 annotation）；
   2. 执行（受审批与门禁约束）；

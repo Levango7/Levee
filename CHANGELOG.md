@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增（k8s 变更通道：S2——通道插件，核心零行改动）
+
+- **为什么做**：D-4（`docs/design-k8s-change-governance.md`）的第二片。S1 给了"改 k8s 工作负载之前该查什么"，本笔补**执行面**：让一个 Kubernetes 集群成为 LEVEE 可拨的 target，使工作负载变更走与 SSH 主机变更完全相同的审批·快照回滚·WORM 审计链。
+- **改动**：新插件 `examples/plugins/k8s`（`type: channel`，`channel_types: [k8s, kubernetes]`，协议与 `tcp_console` 同族）。**核心零行改动**：注册走 serve 既有的 `installPluginChannels`；快照回滚走核心快照器既有的 `Exec("base64 <路径>")`/`Upload(路径, 内容)` 惯用语——本插件把"路径"解释成资源引用，`base64` → `kubectl get -o json`（剥 resourceVersion/uid/generation/creationTimestamp/managedFields/status 后 base64），`Upload` → `kubectl apply -f -`。
+- **安全下限（传输自身的地板，审批/门禁在其上只能收紧）**：目标钉死（kubeconfig/context 来自插件 config 与 target 行，调用方命令里的 `--kubeconfig/--context/--server/--namespace/-n/--token/--as` 等改写旗标一律**拒绝**）；动词白名单（默认只放行改/读已声明工作负载的动词；`exec/port-forward/proxy/cp/attach/debug/run/auth/config/edit/certificate` 等逃生口动词**不在默认集**，放行是运维在 config 里的显式决定）；无 shell（引号感知 tokenizer 切 argv 直跑，shell 元字符拒绝）；明文凭据不过管道（kubeconfig 在插件自己的 config 里，宿主只传 `credential_ref` 名）。
+- **验证**：契约单测 22 例（fake kubectl 断言参数向量：钉死旗标前置、白名单、改写旗标拒绝、抓取剥字段、还原逐字节透传、协议环回）＋ **kind 实测**（`TestK8sChannelDrill`，env 门控 `LEVEE_K8S_DRILL_CONTEXT`，真集群：快照抓取→scale→按快照还原断言全绿）；`go vet`/`gofmt`/`golangci-lint` 干净；`go build ./...` 绿；DSL examples 门绿（插件 yaml 按 `/plugins/` 豁免，计数仍 6）；`go mod tidy` 无漂移。
+- **边界（如实）**：① 插件通道只在 **serve 启动时装入**，CLI 一次性路径 `levee apply --engine-enabled` 不装（`cmd/levee` 他人认领区）——三场景的引擎半边（审批拒绝→不执行、审计链）是引擎既有行为且传输无关，走 serve 得完整链路；② `levee target check` 的 `echo ok` 探针集群答不了（仅诊断命令）；③ exec 无 stdin，manifest 应用走 upload。不做 Operator、不做声明式同步、不做 GitOps。
+
+
 ### 新增（k8s 工作负载策略门禁：S1——纯函数策略引擎 ＋ 门禁适配器，fail-closed）
 
 - **为什么做**：定位 v1.2 把对外第一身份改成「数据库变更发布与治理核」之后，云原生侧真正空着的是「高危动作级变更的**审批·回滚·举证**」——声明式交付归 ArgoCD/Flux、观测归 Prometheus/Zabbix/ELK，没人管谁批谁回滚。`docs/design-k8s-change-governance.md`（D-4）把这件事拆成三片，**本笔是 S1**。
