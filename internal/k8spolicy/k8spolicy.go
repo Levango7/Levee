@@ -68,7 +68,7 @@ const (
 	PolicyUnpinnedImage       = "k8s/unpinned-image"
 	PolicyNoResourceLimits    = "k8s/no-resource-limits"
 	PolicyNoNonRoot           = "k8s/no-non-root"
-	PolicyAutomountSAToken    = "k8s/automount-service-account-token"
+	PolicyAutomountSAToken    = "k8s/automount-service-account-token" // #nosec G101 -- policy ID constant that surfaces in audit/evidence output; the "token" here names the K8s feature, not a credential
 	PolicyHostPort            = "k8s/host-port"
 )
 
