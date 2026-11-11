@@ -1117,6 +1117,46 @@ levee audit show trace-xyz789
 - 行**存在**但落在调用方可见环境之外时，远程给的是**拒绝**（`PermissionDenied`）而不是"查无此行"——否则这条错误本身就变成了探测哪些 trace ID 存在的探针。本地模式不判权。
 - `--json` 的 `timestamp` 两种模式都含亚秒（见 7.3 的说明），所以逐字节比较成立。
 
+### 7.5 audit report
+
+生成合规审计报告（自包含 HTML）：时间窗口内每个变更 run 的审批链、哈希链验证结论、回滚记录、trace 数，以及计划哈希与计划时的 SQL 审核结论，外加汇总块。
+
+```text
+levee audit report [--since START] [--until END] [--output FILE] [--limit N]
+```
+
+**参数**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--since` | 否 | 窗口起点（含），`2026-09-01`（UTC 零点）或 RFC3339；缺省为不限 |
+| `--until` | 否 | 窗口终点（不含），格式同 `--since`；缺省为现在 |
+| `--output` | 否 | 报告写入此文件而非 stdout |
+| `--limit` | 否 | 最多纳入的 run 数（安全上限，默认 1000） |
+
+**校验**
+
+- `--since` / `--until` 须为日期或 RFC3339，否则报 `invalid time`。
+- `--until` 必须晚于 `--since`，否则 `--until must be after --since [exit=2]`。
+
+**输出**
+
+自包含 HTML（样式内联、无外部资源），可归档或直接邮件发送。每个 run 一段，其中哈希链结论由与 `audit verify` 同一个 ChainVerifier 产出。审核结论有三种如实状态：
+
+- 计划产物里有结论 → 显示 verdict、fail/warn 条数与逐条 findings；
+- 无结论 → 注明该产物早于审核门禁或不含可审核 SQL 面（无结论≠通过）；
+- 有计划哈希但产物缺失或不可读 → 标红提示（漂移嫌疑）。
+
+**示例**
+
+```命令示例：导出 2026 年 10 月的窗口报告
+levee audit report --since 2026-10-01 --until 2026-11-01 --output report.html
+```
+
+**远程模式**
+
+- 本命令不消费 `--remote`：带上它会被 `[exit=2]` 直接拒绝（与其余不消费它的命令一致），报告始终读本地 store。
+
 ## 第8章 凭据管理
 
 ### 8.1 secret list

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/audit"
+	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
@@ -36,8 +38,9 @@ func newAuditReportCmd() *cobra.Command {
 		Short: "Generate a compliance report (HTML)",
 		Long: "Generate a self-contained HTML compliance report for a " +
 			"time window: all change runs with approval chains, hash-chain " +
-			"verification verdicts and rollback records. Output defaults to " +
-			"stdout; use --output to write a file.",
+			"verification verdicts, plan-time SQL review verdicts bound to " +
+			"the plan hash the approval signed, and rollback records. Output " +
+			"defaults to stdout; use --output to write a file.",
 		Args: cobra.NoArgs,
 		RunE: runAuditReport,
 	}
@@ -50,18 +53,29 @@ func newAuditReportCmd() *cobra.Command {
 
 // auditReportRun is the per-run section of the report.
 type auditReportRun struct {
-	ID           string
-	Workflow     string
-	Status       string
-	Creator      string
-	CreatedAt    string
-	UpdatedAt    string
-	ChainValid   bool
-	ChainCount   int
-	ChainBroken  int
-	Approvals    []*state.Approval
-	RollbackRuns []*state.Audit
-	TraceCount   int
+	ID        string
+	Workflow  string
+	Status    string
+	Creator   string
+	CreatedAt string
+	UpdatedAt string
+	// PlanHash is the artifact hash the approval chain signed; empty for
+	// runs that never reached plan generation.
+	PlanHash string
+	// PlanUnreadable marks a plan hash whose artifact is missing or will
+	// not unmarshal — drift suspicion, distinct from a plan that simply
+	// carries no review verdict.
+	PlanUnreadable bool
+	ChainValid     bool
+	ChainCount     int
+	ChainBroken    int
+	Approvals      []*state.Approval
+	RollbackRuns   []*state.Audit
+	TraceCount     int
+	// SQLReview is the plan-time review verdict from the run's plan
+	// artifact. nil means no reviewable SQL surface (or no plan at all) —
+	// absence of evidence, never a clean pass.
+	SQLReview *plan.SQLReviewSummary
 }
 
 // auditReportData is the template payload.
@@ -142,6 +156,22 @@ func collectAuditReport(ctx context.Context, store state.Store, runs []*state.Ru
 			ID: run.ID, Workflow: workflowDisplay(run.WorkflowName), Status: run.Status,
 			Creator: run.Creator, CreatedAt: run.CreatedAt.Format(time.RFC3339),
 			UpdatedAt: run.UpdatedAt.Format(time.RFC3339),
+			PlanHash:  run.PlanHash,
+		}
+		// The review verdict is read out of the plan artifact the plan_hash
+		// binds, so the report shows exactly the verdict the approval signed.
+		// An artifact that does not unmarshal leaves the section absent —
+		// absence of evidence, not a clean pass — and is flagged instead of
+		// silently swallowed.
+		if run.PlanJSON != "" {
+			var p plan.Plan
+			if err := json.Unmarshal([]byte(run.PlanJSON), &p); err == nil {
+				section.SQLReview = p.SQLReview
+			} else {
+				section.PlanUnreadable = true
+			}
+		} else if run.PlanHash != "" {
+			section.PlanUnreadable = true
 		}
 		if approvals, err := store.ListApprovals(ctx, state.ApprovalFilter{RunID: run.ID}); err == nil {
 			section.Approvals = approvals
@@ -300,6 +330,7 @@ const auditReportTemplate = `<!DOCTYPE html>
           {{else if .ChainCount}}<span class="broken">BROKEN ({{.ChainBroken}} of {{.ChainCount}} records)</span>
           {{else}}no trace records{{end}}</td>
     </tr>
+    <tr><th>Plan hash</th><td>{{if .PlanHash}}<code>{{.PlanHash}}</code>{{else}}—{{end}}</td></tr>
     <tr><th>Trace records</th><td>{{.TraceCount}}</td></tr>
   </table>
 
@@ -321,6 +352,26 @@ const auditReportTemplate = `<!DOCTYPE html>
     <tr><td>{{.Action}}</td><td>{{.Actor}}</td><td>{{.Result}}</td><td>{{.Timestamp.Format "2006-01-02T15:04:05Z"}}</td></tr>
     {{end}}
   </table>
+  {{end}}
+
+  {{if .SQLReview}}
+  <p><strong>SQL review (plan-time)</strong>
+    <span class="badge">{{.SQLReview.Verdict}}</span>
+    {{.SQLReview.FailCount}} fail / {{.SQLReview.WarnCount}} warn findings</p>
+  {{if .SQLReview.Findings}}
+  <table>
+    <tr><th>Step</th><th>Rule</th><th>Severity</th><th>Statement</th><th>Message</th></tr>
+    {{range .SQLReview.Findings}}
+    <tr><td>{{.Step}}</td><td>{{.Rule}}</td><td>{{.Severity}}</td><td>{{.Statement}}</td><td>{{.Message}}</td></tr>
+    {{end}}
+  </table>
+  {{end}}
+  {{else if .PlanHash}}
+    {{if .PlanUnreadable}}
+  <p class="broken">Plan hash present but the plan artifact is missing or unreadable.</p>
+    {{else}}
+  <p class="meta">No SQL review verdict in this plan artifact: it predates the review gate or carries no reviewable SQL surface. A nil verdict is absence of evidence, not a clean pass.</p>
+    {{end}}
   {{end}}
 </div>
 {{else}}
