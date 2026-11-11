@@ -446,7 +446,7 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 
 ## 16. 2026-11-11 追加：跨机房 run 拆分的裁决——维持形态①，A-narrow / A-full 登记为等触发（§1–§15 原文不动）
 
-**背景**：派生三件套的第 3 条「跨机房 run 拆分」——一条 run 的目标跨两个机房时，是整条交给一个执行节点（现状），还是把执行权按批拆给多个节点。owner 曾裁 A（run 内按机房分批），但批准时引用的成本（「租约/epoch per-run→per-batch ＋ takeover 复核」）经派发/租约代码核实被**证伪三处**（分批不按机房、闭包是单进程单元、per-run 单 epoch），实现已停。真实成本表见 PR #341（每条 file:line 可复算）。
+**背景**：派生三件套的第 3 条「跨机房 run 拆分」——一条 run 的目标跨两个机房时，是整条交给一个执行节点（现状），还是把执行权按批拆给多个节点。owner 曾裁 A（run 内按机房分批），但批准时引用的成本（「租约/epoch per-run→per-batch ＋ takeover 复核」）经派发/租约代码核实被**证伪三处**（分批不按机房、闭包是单进程单元、per-run 单 epoch），实现已停。真实成本表见 `docs/cross-region-run-split-cost.md`（PR #341，已合 master `79ca81c`；每条 file:line 可复算）。
 
 **本节裁决（代理 owner，2026-11-11）**：**维持形态①**——fail-closed 拒绝 ＋ 可操作诊断（PR #327 已合 master，零新增成本），与「假成功零容忍」相容：没有真实诉求时唯一相容的选项是**不假装能拆**。**A-narrow / A-full 都不做**，登记为 `docs/blocked-items.md` **E-5**，触发条件＝**真实客户诉求**（单条 run 跨机房且必须一次执行完）；届时**二选一取 A-narrow**（避开 A-full 才有的两项代价：改 plan 生成器按机房重分批 ⇒ 动 plan_hash 审批绑定承诺；派发时拆批 ⇒ 动 batches 表审计粒度与 post_batch 门禁语义；A-narrow 只省「批次同质化」这一面，其余五面与 A-full 同价）。
 
