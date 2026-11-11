@@ -63,6 +63,14 @@ RUN apk add --no-cache git ca-certificates && \
 WORKDIR /src
 
 # Cache Go module downloads.
+# The Go module source is configurable for the same reason the npm one is:
+# the container's default (proxy.golang.org) is unreachable from some
+# networks — building this image on a China-network host failed with
+# "dial tcp 142.250.196.209:443: connect: connection refused" — and an
+# air-gapped build needs to point at an internal proxy at all. The default
+# here is Go's own default, so CI behaviour is unchanged.
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=$GOPROXY
 COPY go.mod go.sum ./
 RUN go mod download
 
