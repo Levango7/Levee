@@ -29,16 +29,16 @@
 
 ### 2.1b 本机构建现状（一个会挡住所有人的坑）
 
-`origin/master` 的 `go.mod` 要求 **`go 1.26.10`**，而本机装的是 **go1.26.6**。`GOTOOLCHAIN=auto` 会去下载 `go1.26.10`，但本机 `go env` 里 **`GOSUMDB=off`**——而工具链下载**必须**经校验数据库确认，`GOSUMDB=off` 会让它直接失败：
+`origin/master` 的 `go.mod` 要求 **`go 1.26.11`**，而本机装的是 **go1.26.6**。`GOTOOLCHAIN=auto` 会去下载 `go1.26.11`，但本机 `go env` 里 **`GOSUMDB=off`**——而工具链下载**必须**经校验数据库确认，`GOSUMDB=off` 会让它直接失败：
 
 ```
-go: golang.org/toolchain@v0.0.1-go1.26.10.windows-amd64: verifying module: checksum database disabled by GOSUMDB=off
+go: golang.org/toolchain@v0.0.1-go1.26.11.windows-amd64: verifying module: checksum database disabled by GOSUMDB=off
 ```
 
 **现象是任何 `go` 命令都报这一行**，包括 `go version`（在仓库目录里）。**解法**（本轮实测可用，并已**在本机修好**）：
 
 ```powershell
-go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version 直接报 1.26.10
+go env -w GOSUMDB=sum.golang.org     # 机器级、一次；改完 go version 直接报 1.26.11
 ```
 
 `GOPROXY` 已是 `https://goproxy.cn,direct`，goproxy.cn 的 sumdb 代理可用，工具链能下下来并缓存。**`GOPRIVATE` / `GONOSUMDB` 对工具链无效**——Go 的工具链路径不接受豁免（两者都实测过，仍报同一错），只能给一个真实 sumdb。

@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（`go` 指令 1.26.10 → 1.26.11：收口新发布的标准库公告 GO-2026-6859，并升 `golang.org/x/crypto` 到修复版）
+
+- **一刀切在所有人头上的红**：2026-11-11，本仓 `govulncheck` 作业失败，报 `Vulnerability #1: GO-2026-6859 — Standard library`，`Found in: net/http@go1.26.10 / Fixed in: net/http@go1.26.11`，实例跟踪直指本仓代码（经 `net/http` 的服务端路径）。同一批扫描另报 `GO-2026-5932`（`golang.org/x/crypto@v0.58.0`，公告给出的修复版为 `v0.58.1-0.20261009181718-2f1f834330b2`）——本仓代码**不可达**该漏洞，但它仍在依赖图里。
+- **为什么只能升 `go` 指令**：本仓的 `govulncheck` 作业刻意按 `go.mod` 声明的工具链扫描（`ci.yml` 的 `go-version-file: go.mod`），标准库类公告没有别的旋钮——这与 2026-10-21 收口 GO-2026-6809（`go 1.26.9 → 1.26.10`）是同一条路径。
+- **改动面**：`go.mod` 一行 `go 1.26.10 → 1.26.11`，外加 `golang.org/x/crypto v0.58.0 → v0.58.1-0.20261009181718-2f1f834330b2`（公告指定的修复版；本仓不可达，先收口以免公告把它升级为可达）。`AGENTS.md` 与 `docs/project-status-2026-11.md` 里「`go.mod` 要求 1.26.10」的当前声称同步订正；`CHANGELOG.md` 与 `docs/release-notes/*` 里的历史记录**不改写**。
+- **验证**：本机按 `go.mod` 拉到 go1.26.11 后 `govulncheck ./...` = **No vulnerabilities found**（同一命令在修复前报 stdlib 1 处命中）；`go build ./...` rc=0；`gofmt -l` 干净；`go test ./...` 本机全绿；CI 侧以 master push CI 为准。
+- **边界**：本笔只升工具链与一个模块，不改任何产品代码；Go 补丁版本升级不引入语言或语义变化。`Dockerfile` 的 `ARG GO_VERSION=1.26` 刻意用 major.minor 别名（会取到 1.26.11），本笔不改。
+
 ### 修复（`levee cluster status` 文档口径与二进制不符）
 
 - **缺口**：`cmd_cluster_status.go` 把子命令的 `Use` 写成 `"cluster status"`，

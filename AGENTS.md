@@ -55,7 +55,7 @@ notes: 正在给 cluster-status 加能力过滤
   `MOCK_URL` 换到自己的端口。浏览器检查不会自己起服务。
 - **推送只走** `ssh://git@ssh.github.com:443/Levango7/Levee`（https 直连会失败）。
 - **Go 工具链：`go.mod` 要求 Go ≥ 本机版本时，先修 `GOSUMDB`**。本机装的是 go1.26.6，
-  而 `go.mod` 要求 1.26.10，`GOTOOLCHAIN=auto` 会去下载 `go1.26.10`——但 Go 对
+  而 `go.mod` 要求 1.26.11，`GOTOOLCHAIN=auto` 会去下载 `go1.26.11`——但 Go 对
   **工具链模块强制要求校验数据库确认**，`GOSUMDB=off` 会让它直接失败，报
   `verifying module: checksum database disabled by GOSUMDB=off`。**这个错误出现在
   任何 go 命令上**（含 `go version`），容易被误判成代码坏了。修法（机器级、一次）：
