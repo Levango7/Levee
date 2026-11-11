@@ -50,6 +50,8 @@ import (
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/executor"
+
+	"github.com/xwb1989/sqlparser"
 )
 
 // Module is the mysql module singleton. It is stateless and safe for
@@ -228,16 +230,70 @@ func (m *Module) query(ctx context.Context, input executor.ModuleInput) (*execut
 }
 
 // destructiveSQLRe matches the destructive statements that must never ride
-// the idempotent query action: DROP (TABLE/DATABASE/INDEX...), TRUNCATE,
+// the idempotent query action: DROP (TABLE/DATABASE/SCHEMA/INDEX...), TRUNCATE,
 // and unconditional DELETE FROM (no WHERE). These require the workflow
 // author to mark the step irreversible and route through pt_osc or a
 // dedicated reviewed step instead.
 var destructiveSQLRe = regexp.MustCompile(`(?i)\b(DROP\s+(TABLE|DATABASE|SCHEMA|INDEX|USER)|TRUNCATE(\s+TABLE)?\s|DELETE\s+FROM\s+[^\s]+\s*;?\s*$)`)
 
 // rejectDestructiveSQL enforces the R2 boundary for mysql.query.
+//
+// Classification is AST-primary: the embedded grammar is authoritative for
+// every statement it can read, which catches what the end-anchored regex
+// structurally cannot — an unbounded DELETE carrying a trailing comment. The
+// regex stays as the backstop for exactly the surface the grammar cannot
+// judge: statements that fail to parse (DROP USER is unknown to it),
+// admin/read statements whose semantics it hides, and alter-shaped statements
+// whose body it does not expose (the grammar flattens DROP INDEX into an
+// ALTER, so only the raw text names it).
 func rejectDestructiveSQL(sql string) error {
-	if destructiveSQLRe.MatchString(sql) {
-		return fmt.Errorf("destructive statement rejected: DROP/TRUNCATE/unbounded DELETE must not ride mysql.query; mark the step irreversible and author an explicit reviewed statement instead")
+	pieces, err := sqlparser.SplitStatementToPieces(sql)
+	if err != nil {
+		return regexRejectDestructive(sql)
+	}
+	for _, piece := range pieces {
+		text := strings.TrimSpace(piece)
+		if text == "" {
+			continue
+		}
+		stmt, perr := sqlparser.Parse(text)
+		if perr != nil {
+			if err := regexRejectDestructive(text); err != nil {
+				return err
+			}
+			continue
+		}
+		switch s := stmt.(type) {
+		case *sqlparser.DDL:
+			if s.Action == sqlparser.DropStr || s.Action == sqlparser.TruncateStr {
+				return destructiveErr(text)
+			}
+		case *sqlparser.DBDDL:
+			if s.Action == sqlparser.DropStr {
+				return destructiveErr(text)
+			}
+		case *sqlparser.Delete:
+			if s.Where == nil {
+				return destructiveErr(text)
+			}
+		}
+		// Grammar-readable but not decisively destructive: the regex keeps
+		// its raw-text say, unchanged from before the AST existed.
+		if err := regexRejectDestructive(text); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func destructiveErr(text string) error {
+	return fmt.Errorf("destructive statement rejected: %q must not ride mysql.query; mark the step irreversible and author an explicit reviewed statement instead", text)
+}
+
+// regexRejectDestructive is the raw-text backstop of rejectDestructiveSQL.
+func regexRejectDestructive(text string) error {
+	if destructiveSQLRe.MatchString(text) {
+		return destructiveErr(text)
 	}
 	return nil
 }
@@ -258,7 +314,7 @@ func rejectDestructiveSQL(sql string) error {
 var alterWhitelistRe = regexp.MustCompile(`(?i)^(ADD\s+(COLUMN\s+)?[A-Za-z0-9_]+|ADD\s+(INDEX|KEY)\s+\(?[A-Za-z0-9_]+|DROP\s+(COLUMN\s+)?[A-Za-z0-9_]+|DROP\s+(INDEX|KEY)\s+[A-Za-z0-9_]+|DROP\s+(FOREIGN\s+KEY|CONSTRAINT)\s+[A-Za-z0-9_]+|MODIFY\s+(COLUMN\s+)?[A-Za-z0-9_]+|CHANGE\s+(COLUMN\s+)?[A-Za-z0-9_]+|RENAME\s+(COLUMN\s+)?[A-Za-z0-9_]+|ALTER\s+COLUMN\s+[A-Za-z0-9_]+|CONVERT\s+TO\s+(CHARACTER\s+SET|CHARSET)\s+[A-Za-z0-9_]+|ENGINE\s*=\s*[A-Za-z0-9_]+)[A-Za-z0-9_ ,()"=.-]*$`)
 
 // validateAlter checks the pt-osc alter clause against the whitelist.
-func validateAlter(alter string) error {
+func validateAlter(db, table, alter string) error {
 	a := strings.TrimSpace(alter)
 	if a == "" {
 		return fmt.Errorf("alter clause must not be empty")
@@ -273,7 +329,47 @@ func validateAlter(alter string) error {
 			return fmt.Errorf("alter clause %q outside the pt-osc whitelist (allowed: ADD/DROP/MODIFY/CHANGE/RENAME COLUMN, ADD/DROP INDEX/KEY/CONSTRAINT, ALTER COLUMN SET/DROP DEFAULT, CONVERT TO CHARSET, ENGINE=)", clause)
 		}
 	}
+	// AST confirmation: wrap the whitelisted clause into a full ALTER and
+	// ask the grammar whether it reads as exactly one alter of the target
+	// table. The whitelist above is the substantive guard — the grammar
+	// cannot read alter bodies, the same honesty plan-time SR-08 records —
+	// so this refuses only what the grammar positively misreads (a wrap it
+	// can split into more than one statement, or reads as a different
+	// object). A body the grammar cannot read at all (it does not know
+	// RENAME COLUMN) stays on the whitelist's word.
+	if !alterShapeIsSingle(db, table, a) {
+		return fmt.Errorf("alter clause %q does not read as a single ALTER of %s.%s", a, db, table)
+	}
 	return nil
+}
+
+// alterShapeIsSingle wraps clause into ALTER TABLE <db>.<table> <clause> and
+// reports whether the embedded grammar reads that as exactly one alter of
+// that table. Grammar-blind text returns true: the whitelist owns it. A db
+// that is not an identifier is likewise deferred — identifier hygiene is
+// validateIdent's dimension, and wrapping a dirty db only makes the parser's
+// answer meaningless.
+func alterShapeIsSingle(db, table, clause string) bool {
+	if db != "" && !identRe.MatchString(db) {
+		return true
+	}
+	wrapped := fmt.Sprintf("ALTER TABLE %s.%s %s", db, table, clause)
+	pieces, err := sqlparser.SplitStatementToPieces(wrapped)
+	if err != nil {
+		return true
+	}
+	if len(pieces) > 1 {
+		return false
+	}
+	stmt, perr := sqlparser.Parse(strings.TrimSpace(pieces[0]))
+	if perr != nil {
+		return true
+	}
+	ddl, ok := stmt.(*sqlparser.DDL)
+	if !ok || ddl.Action != sqlparser.AlterStr {
+		return false
+	}
+	return sqlparser.String(ddl.Table) == fmt.Sprintf("%s.%s", db, table)
 }
 
 // ptOsc runs pt-online-schema-change on the target's local mysql.
@@ -289,7 +385,8 @@ func (m *Module) ptOsc(ctx context.Context, input executor.ModuleInput) (*execut
 	if err != nil {
 		return nil, fmt.Errorf("mysql.pt_osc: %w", err)
 	}
-	if err := validateAlter(alter); err != nil {
+	db, _ := stringOk(input.Args, "database")
+	if err := validateAlter(db, table, alter); err != nil {
 		return nil, fmt.Errorf("mysql.pt_osc: %w", err)
 	}
 

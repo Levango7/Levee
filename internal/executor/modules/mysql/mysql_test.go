@@ -315,7 +315,7 @@ func TestPtOscAlterWhitelist(t *testing.T) {
 		"ADD COLUMN a INT, ADD COLUMN b INT",
 	}
 	for _, alter := range valid {
-		require.NoError(t, validateAlter(alter), "expected valid: %s", alter)
+		require.NoError(t, validateAlter("app", "t", alter), "expected valid: %s", alter)
 	}
 
 	invalid := []string{
@@ -333,7 +333,7 @@ func TestPtOscAlterWhitelist(t *testing.T) {
 		"ADD COLUMN status VARCHAR(32) DEFAULT 'active'",
 	}
 	for _, alter := range invalid {
-		require.Error(t, validateAlter(alter), "expected invalid: %s", alter)
+		require.Error(t, validateAlter("app", "t", alter), "expected invalid: %s", alter)
 	}
 }
 
@@ -518,12 +518,64 @@ func TestRejectDestructiveSQL(t *testing.T) {
 		"INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE id=id",
 		"UPDATE t SET a=1 WHERE id=2",
 		"DELETE FROM t WHERE id=2",
+		// The executor's boundary is structural only: a WHERE-ful DELETE
+		// (even a tautologous one) is the plan-time review's call (SR-04),
+		// not this guard's.
+		"DELETE FROM t WHERE 1=1",
 		"ALTER TABLE t ADD COLUMN c INT",
 		"SHOW TABLES",
 	}
 	for _, sql := range good {
 		require.NoError(t, rejectDestructiveSQL(sql), "expected allowed: %s", sql)
 	}
+}
+
+// TestRejectDestructiveSQL_ASTPrimaryCatchesTrailingCommentDelete pins what
+// the AST layer bought: the end-anchored regex required the table name at
+// end-of-text, so an unbounded DELETE carrying a trailing comment rode
+// through. The parser strips the comment and reads the statement's real
+// shape.
+func TestRejectDestructiveSQL_ASTPrimaryCatchesTrailingCommentDelete(t *testing.T) {
+	bad := []string{
+		"DELETE FROM orders -- cleanup run",
+		"DELETE FROM orders\n-- cleanup run",
+		"DELETE FROM orders /* keep */",
+		"SELECT 1; DELETE FROM orders -- tail",
+	}
+	for _, sql := range bad {
+		require.Error(t, rejectDestructiveSQL(sql), "expected rejected: %s", sql)
+	}
+	err := rejectDestructiveSQL("DELETE FROM orders")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DELETE FROM orders",
+		"the refusal must echo the statement it refused")
+}
+
+// TestRejectDestructiveSQL_RegexBackstopForGrammarBlindText pins the
+// fallback half: verbs the 5.7-era grammar cannot read (DROP USER) and
+// alter-shaped destruction it flattens (DROP INDEX lands as an ALTER) stay
+// on the regex's word.
+func TestRejectDestructiveSQL_RegexBackstopForGrammarBlindText(t *testing.T) {
+	bad := []string{
+		"DROP USER 'x'@'%'",
+		"DROP INDEX idx ON t",
+	}
+	for _, sql := range bad {
+		require.Error(t, rejectDestructiveSQL(sql), "expected rejected: %s", sql)
+	}
+}
+
+// TestAlterShapeIsSingle pins the AST confirmation half of pt_osc: a wrap
+// the grammar can read must read as one alter of the target table, and a
+// statement separator inside the clause is a refusal. Grammar-blind bodies
+// (RENAME COLUMN is unknown to the 5.7-era grammar) stay on the whitelist's
+// word rather than being refused for a parser gap.
+func TestAlterShapeIsSingle(t *testing.T) {
+	assert.True(t, alterShapeIsSingle("app", "t", "ADD COLUMN a INT"))
+	assert.True(t, alterShapeIsSingle("app", "t", "ADD COLUMN a INT, ADD COLUMN b INT"))
+	assert.True(t, alterShapeIsSingle("app", "t", "RENAME COLUMN a TO b"),
+		"grammar-blind bodies defer to the whitelist, not the parser")
+	assert.False(t, alterShapeIsSingle("app", "t", "ADD COLUMN a INT; DROP TABLE t"))
 }
 
 func TestValidateIdent(t *testing.T) {
