@@ -43,9 +43,11 @@
 
 | 项 | 定档依据 |
 | --- | --- |
-| E-1 自然语言双语 zh/en | 定档“现在不做”：无真实多语言客户诉求，投入只有审美分母 |
-| E-2 变更记录结构化导出等按需项（`notify.webhook` HMAC 签名已随 run 生命周期镜像落地，`internal/notify/webhook.go:139`） | 2026-09-06 拍板：只在真实消费方出现时做 |
-| E-4 `levee schedule`（cron 定时触发变更） | **2026-10-28 定档：不做**。定位明言「不是调度器」（`product-positioning.md` §2）；触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），LEVEE 拥有的是**受治理的变更**；治理那一半（`window` 窗口阻断 + `calendar` 冻结）已实现。先例：`internal/scheduler` 因与已接入的 `dispatch` 职责重叠被整包退役。详见 `levee-design.md` §4.6.1。 |
+| E-1 自然语言双语 zh/en | 定档“现在不做”：无真实多语言客户诉求，投入只有审美分母。**2026-11-10 方向复核登记**：定位 v1.2（`product-positioning.md`，对外楔子＝「数据库变更发布与治理核」）落地后，市场侧常见的是**中文界面**要求——**中文界面 ≠ 中英双语**，故本条「不做」的依据**未被推翻**；仅当标书/商务材料**明确要求英文或多语言**时才复核（登记见 `docs/project-status-2026-11.md` §15） |
+| E-2 变更记录结构化导出等按需项（`notify.webhook` HMAC 签名已随 run 生命周期镜像落地，`internal/notify/webhook.go:139`） | 2026-09-06 拍板：只在真实消费方出现时做。**2026-11-10 方向复核登记**：v1.2 把 SQL 审核平台标纳入「真实消费方类别」，故该类条款一旦出现即复核本条（结构化导出/SIEM·Syslog 对接仍无消费方） |
+| E-4 `levee schedule`（cron 定时触发变更） | **2026-10-28 定档：不做**。定位明言「不是调度器」（`product-positioning.md` §2）；触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），LEVEE 拥有的是**受治理的变更**；治理那一半（`window` 窗口阻断 + `calendar` 冻结）已实现。先例：`internal/scheduler` 因与已接入的 `dispatch` 职责重叠被整包退役。详见 `levee-design.md` §4.6.1。**2026-11-10 方向复核登记**：SQL 审核平台标常见「定时/触发式**变更窗口**」要求——**变更窗口 ≠ 调度器**，本条「不做」**仍成立**；但若标书要求 LEVEE **自带**定时触发，则「触发归平台/CI」的口径需据此重述（登记见 `docs/project-status-2026-11.md` §15） |
+
+> **2026-11-10 方向复核（E 类整体）**：市场扫描裁决落地定位 v1.2 后，E 类三条的「无真实消费方」依据进入**可复核**状态，但**三条均未被推翻**（依据如各行所注）——不要把「有市场扫描」读成「定档作废」。复核材料与市场惯例对标见 agent 板 `opencode-tender-registry.md`（R 区＝真实招标要求原文；P 区＝账本锚点；M 区＝市场惯例，非标书要求；D 区＝已落地的方向裁决；T 区＝复核触发登记）。
 
 ## G. 2026-11-06 四维自查的遗留项（工程侧可做但各自是设计取舍，均在审计中实证成立）
 
