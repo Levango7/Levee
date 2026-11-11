@@ -84,3 +84,27 @@ notes: 正在给 cluster-status 加能力过滤
   `node:24-alpine`。**`LEVEE_PG_TEST_DSN` 未设时那 28 个 PG 用例是 skip 的**，
   起一个 PG 容器就能把它们真跑起来（起容器前先确认 5432 端口归属，本机有多个
   已停的 postgres 容器占过 25499 / 5432）。
+
+- **锁文件里的第三方源＝硬依赖**：2026-11-11 第三方 npm 镜像的库损坏（`ER_NO_SUCH_TABLE` → HTTP 500），
+  **每次镜像构建与 CI 的 frontend 腿都死在拉依赖**（主线变红、5 个 dependabot PR 被卡）。那 214 个
+  `resolved` 指向 npmmirror，是某次前端工具链升级顺手带进来的（此前是 220 个 registry.npmjs.org），
+  从没被当成一条依赖链审过。现在安装时改写主机名（`npm config replace-registry-host=always`
+  ＋ registry 可配），镜像降级为可选项——**别把"锁文件钉了哪个源"当细节**。
+- **容器里到 `proxy.golang.org` 会被网络策略拒绝**：本机 Docker 构建镜像时 `go mod download` 报
+  `dial tcp 142.250.196.209:443: connect: connection refused`。镜像构建要用
+  `--build-arg GOPROXY=https://goproxy.cn,direct`（CI 的 Go 作业读 `go.mod` 的工具链，不受影响）。
+- **Windows runner 的默认 shell 是 pwsh**：workflow 里写 POSIX 循环（`for … do … done`）在 windows 腿
+  会直接语法错误（38s 红，肉眼看像"装不上"）。跨 OS 的步骤要显式声明 `shell: bash`
+  （browser-check 那个 job 的检查步骤本来就如此声明）。
+- **workflow 多行 `run` 里的重试循环别在成功时 `exit 0`**：那会跳过后续行（例如把 `$GOPATH/bin`
+  追加进 PATH），把下一步的依赖悄悄断掉。用标志位在循环**之后**判失败。
+- **标准库漏洞公告只能靠升 `go` 指令收口**：本仓 `govulncheck` 作业按 `go.mod` 声明的工具链扫描，
+  公告写 "fixed in go1.26.11" 就只能把 `go 1.26.10` 升上去（2026-10-21 的 GO-2026-6809 同路径）。
+- **已核过、不用重扫的三件事**（省重复劳动，也免得按 lint 去"修坏"语义）：
+  - `go test -race ./internal/... ./cmd/...` 全量扫描：**无 DATA RACE**。
+  - 加严 lint（`nilerr` / `forcetypeassert` / `rowserrcheck` / `sqlclosecheck` / `exhaustive` 等）：
+    高信号命中**全是误报**——本仓约定"失败写在 result 里"（`nilerr` 看不见）、`sync.Map` 里的类型
+    由构造保证（`forcetypeassert`）、PG 专属路径被 PG 门控（`rowserrcheck` / `sqlclosecheck`）。
+    **别按 lint 去"修"它们。**
+  - `internal/backup` 的 PG 路径在默认套件 0% 覆盖是**门控使然**；"非空目标拒绝 / 破坏性恢复 /
+    WORM 冲突"三条安全属性已在 PG drill（`backup_pg_drill_test.go`）断言。
