@@ -443,3 +443,13 @@ PG 这一趟特意**另起一个容器**而不是复用 §9.1 那台 `localhost:
 三条的复核登记已写回 `docs/blocked-items.md` E 段各行与段末说明。**复核材料与市场惯例对标**见 agent 板 `opencode-tender-registry.md`（R 区＝真实招标要求原文；P 区＝账本锚点；M 区＝市场惯例，**非标书要求**；D 区＝已落地的方向裁决；T 区＝复核触发登记）。
 
 **本节未改动的部分**：A/C/D 各类的解锁条件一条未变；D-3（账本时刻方言归一）仍按其定档执行；`docs/product-roadmap.md` 的双语 P2 行与 `docs/levee-api.md` 的 schedule 注记**本节不改写**——前者当前被另一条活跃线认领（避免同文件冲突），后者所述「定档为不做」经复核**仍成立**。
+
+## 16. 2026-11-11 追加：跨机房 run 拆分的裁决——维持形态①，A-narrow / A-full 登记为等触发（§1–§15 原文不动）
+
+**背景**：派生三件套的第 3 条「跨机房 run 拆分」——一条 run 的目标跨两个机房时，是整条交给一个执行节点（现状），还是把执行权按批拆给多个节点。owner 曾裁 A（run 内按机房分批），但批准时引用的成本（「租约/epoch per-run→per-batch ＋ takeover 复核」）经派发/租约代码核实被**证伪三处**（分批不按机房、闭包是单进程单元、per-run 单 epoch），实现已停。真实成本表见 PR #341（每条 file:line 可复算）。
+
+**本节裁决（代理 owner，2026-11-11）**：**维持形态①**——fail-closed 拒绝 ＋ 可操作诊断（PR #327 已合 master，零新增成本），与「假成功零容忍」相容：没有真实诉求时唯一相容的选项是**不假装能拆**。**A-narrow / A-full 都不做**，登记为 `docs/blocked-items.md` **E-5**，触发条件＝**真实客户诉求**（单条 run 跨机房且必须一次执行完）；届时**二选一取 A-narrow**（避开 A-full 才有的两项代价：改 plan 生成器按机房重分批 ⇒ 动 plan_hash 审批绑定承诺；派发时拆批 ⇒ 动 batches 表审计粒度与 post_batch 门禁语义；A-narrow 只省「批次同质化」这一面，其余五面与 A-full 同价）。
+
+**复核方式**：成本表的五条核心声称在 `a148c4c` 树**独立复算**（不采信文档自述）并全部成立——分批策略为 percent/fixed/serial（无机房维度，`internal/plan/generator.go`）、`run_assignment` 以 `run_id` 单键＋per-run epoch（`internal/state/schema.sql:346`）、`currentSchemaVersion = 10`（`internal/state/migrate.go:29`）、runstatus 无「批间待派发」态（`internal/runstatus/runstatus.go`）、takeover 候选集＝过期租约执行＋孤儿 running（`internal/takeover/takeover.go:170`）。
+
+**边界**：本节**不动代码**、不改任何既有定档；§1–§15 原文未动。
