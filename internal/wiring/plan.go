@@ -59,6 +59,17 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 		return nil, nil, fmt.Errorf("%w: %v", dsl.ErrWindowClosed, werr)
 	}
 
+	// SQL review gate (same funnel argument as the window gate above): every
+	// mysql.query batch is scored by the rule engine before anything is
+	// written, so no entry point can produce an approved artifact over SQL
+	// that never went through review. A fail refuses the plan; a warn passes
+	// but rides into the artifact below, where plan_hash binds it. Rollback
+	// never comes through here, which keeps recovery unblocked.
+	review, err := reviewWorkflowSQL(wf)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	targets, err := e.validateTargets(ctx, targetHosts)
 	if err != nil {
 		return nil, nil, err
@@ -87,6 +98,11 @@ func (e *Engine) GeneratePlan(ctx context.Context, changeID string, targetHosts 
 	if err != nil {
 		return nil, nil, fmt.Errorf("wiring: generate plan: %w", err)
 	}
+
+	// The review verdict is stamped before the hash is computed so the
+	// approved artifact carries exactly the verdict the approval attests to
+	// (plan_hash binds them, like RiskScore above).
+	p.SQLReview = review
 
 	// Executable-gate gate: a workflow may declare `human` or `slo` checks that
 	// this process has no transport for (no approver wired, no Prometheus URL).

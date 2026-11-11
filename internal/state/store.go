@@ -954,6 +954,13 @@ const (
 	// allow_env_conflict. The row is the evidence that the contradiction was an
 	// explicit, per-call decision rather than a silent default.
 	AuditActionImportEnvConflict = "import_env_conflict"
+	// AuditActionSQLReview records the plan-time SQL review verdict (the
+	// sqlreview rule engine's score of every mysql.query batch in the plan).
+	// The verdict detail lives in the plan artifact (which plan_hash binds);
+	// this row is the hash-chained evidence that a review happened and how it
+	// scored. Target carries the plan hash on success; a refused plan has no
+	// hash to name, so the RunID is the whole anchor.
+	AuditActionSQLReview = "sql_review"
 
 	// AuditTargetAll is the wildcard Target for actions that cover everything
 	// rather than one row (a bulk pause summary, a denial with no run).

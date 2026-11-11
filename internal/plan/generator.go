@@ -84,6 +84,12 @@ type Plan struct {
 	// compensations, and a plan that does not carry it would lose the
 	// declaration between approval and execution.
 	RunSnapshot *dsl.RunSnapshotSpec `json:"run_snapshot,omitempty"`
+
+	// SQLReview is the plan-time SQL review verdict (sqlreview_gate.go in
+	// wiring). nil = no reviewable SQL surface, never "reviewed and clean".
+	// Inside the v2 canonical hash: the verdict is governance evidence, and
+	// an artifact whose hash did not cover it could be swapped after approval.
+	SQLReview *SQLReviewSummary `json:"sql_review,omitempty"`
 }
 
 // RiskFactor mirrors risk.Factor (rule / points / detail) as a plan
