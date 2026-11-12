@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（`levee plugin --help` 仍称 channel 插件「registry-only」，与 serve 装载的事实矛盾）
+
+- **缺口**：`cmd/levee/cmd_plugin.go` 的 `newPluginCmd` Long 文案仍写 channel 插件「registry-only (no engine consumption)」，而 serve 启动即装入已启用的通道插件（`installPluginChannels`）、CLI 一次性 apply 路径不装——文案与行为相反（上方注释同病）。
+- **修法**：改为如实口径——「Channel plugins are loaded by serve at startup for enabled registry entries; the CLI apply path does not load them; channel_types must match the target's channel_type (lowercase plugin type name). See docs/channel-plugins.md.」注释同步。
+- **验证**：`go build ./...` 绿；本机实跑 `levee plugin --help`，Long 全文即新口径（serve 启动装入 / CLI apply 不装 / channel_types 须匹配 target 的 channel_type）；gofmt 干净。
+
 ### 新增（k8spolicy 门禁 DSL 接线：YAML 今天起写得出这个门禁）
 
 - **为什么做**：S1（纯函数策略引擎＋门禁适配器）与 #349 的引擎侧预接（`gateFromCheck` 的 `case "k8spolicy"`）都已进 master，但 `internal/dsl` 的 YAML 词表没有 `k8spolicy`，`convertGateCheck` 落 default 报 LE051——YAML 写不出这个门禁，S1 是「引擎认、门禁写不出」的悬空面。opencode 交接单点名归本线（internal/dsl owns）。
