@@ -210,6 +210,46 @@ live in `internal/approval`) — and a slow approver delays its whole
 `RunPhase` return, so give phases carrying human gates a sensible overall
 deadline.
 
+### `k8spolicy` — Kubernetes workload policy gate (`k8s_policy_gate.go`)
+
+Evaluates Kubernetes workload manifests against the high-risk policy set in
+`internal/k8spolicy` **before** the change is applied. It needs nothing from
+`GateRuntime` and nothing from the cluster: the manifests travel in the
+declaration, so the gate is executable in any deployment, including one that
+has no Kubernetes access at all.
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `manifests` | string list | — (required unless `manifest` is set) | workload manifests to evaluate; each entry may hold several `---`-separated documents |
+| `manifest` | string | — (required unless `manifests` is set) | single-manifest form, for the common one-object case |
+
+| Detail key | Meaning |
+|---|---|
+| `critical` | count of critical findings — a non-zero count **blocks** the phase |
+| `warnings` | count of warning findings — reported, never blocking |
+| `findings` | the findings themselves (`policy_id`, `severity`, `kind`, `name`, `path`, `message`, `remediation`) |
+| `reason` | `manifest_unparsable` when a manifest could not be read |
+
+Behaviour: a manifest that cannot be parsed is an **error, not a pass** — the
+gate fails closed with `reason=manifest_unparsable`, because "the policy could
+not run" and "the policy found nothing" must not look the same to the caller.
+Critical findings block and name the offending field; warnings are reported
+without blocking.
+
+The policy set covers the privilege and hygiene of a workload — privileged
+mode, privilege escalation, host namespaces and `hostPath`, root, added
+capabilities, unpinned images, missing resource limits, `hostPort`, unmasked
+`/proc`, the default service account, credentials written as literal
+environment values, a writable root filesystem, capabilities that are never
+dropped, missing liveness/readiness probes, and plaintext image registries.
+Every finding carries a stable `policy_id`, the field path it was found at,
+the reason, and the remediation.
+
+> **DSL 接线**：the engine accepts `k8spolicy` as a check type today; declaring
+> it in workflow YAML needs the `internal/dsl` parser to carry the type
+> through (separate coordination item). The gate's semantics do not depend on
+> that — it is a plain function over manifests.
+
 ## Script trust level
 
 Probe scripts (and every other gate-authored command fragment such as probe

@@ -70,6 +70,20 @@ const (
 	PolicyNoNonRoot           = "k8s/no-non-root"
 	PolicyAutomountSAToken    = "k8s/automount-service-account-token" // #nosec G101 -- policy ID constant that surfaces in audit/evidence output; the "token" here names the K8s feature, not a credential
 	PolicyHostPort            = "k8s/host-port"
+
+	// The second batch (2026-11-12) closes the gaps the first one left
+	// between "the container asks for too much" and "the container is safe to
+	// run": the node's /proc, the identity the pod inherits, credentials
+	// written in clear text, and the operational properties that decide
+	// whether a wedged workload is noticed at all.
+	PolicyProcMount          = "k8s/proc-mount"
+	PolicyDefaultSA          = "k8s/default-service-account"
+	PolicySecretLiteralEnv   = "k8s/secret-literal-env"
+	PolicyReadOnlyRootFS     = "k8s/read-only-root-filesystem"
+	PolicyNoDropCapabilities = "k8s/no-drop-capabilities"
+	PolicyNoLivenessProbe    = "k8s/no-liveness-probe"
+	PolicyNoReadinessProbe   = "k8s/no-readiness-probe"
+	PolicyInsecureRegistry   = "k8s/insecure-registry"
 )
 
 // workloadKinds are the kinds whose pod template this package evaluates.
@@ -244,6 +258,26 @@ func (s *findingSink) checkPodLevel(pod map[string]any) {
 			"pod runs as UID 0 (root inside the container)",
 			"set runAsNonRoot: true and a non-zero runAsUser")
 	}
+
+	// Unmasked /proc hands the workload the node's process information.
+	if pm := digString(pod, "securityContext", "procMount"); pm != "" && strings.EqualFold(pm, "Unmasked") {
+		s.add(PolicyProcMount, SeverityCritical,
+			"spec.template.spec.securityContext.procMount",
+			"pod masks /proc as Unmasked (it exposes the node's process information to the workload)",
+			"remove procMount or set it to Default")
+	}
+
+	// A pod that names no service account runs as the namespace's default
+	// one. That is only harmless when no token is mounted at all.
+	_, named := dig(pod, "serviceAccountName")
+	_, legacy := dig(pod, "serviceAccount")
+	mount, hasMount := digBool(pod, "automountServiceAccountToken")
+	if !named && !legacy && !(hasMount && !mount) {
+		s.add(PolicyDefaultSA, SeverityWarning,
+			"spec.template.spec.serviceAccountName",
+			"pod runs as the namespace's default service account (the workload inherits an identity it did not ask for)",
+			"declare a dedicated serviceAccountName, or set automountServiceAccountToken: false")
+	}
 }
 
 // checkContainers evaluates every container of the pod spec (init containers
@@ -257,7 +291,115 @@ func (s *findingSink) checkContainers(pod map[string]any) {
 		base := fmt.Sprintf("spec.template.spec.containers[%d]", i)
 		s.checkContainerPrivilege(cm, base)
 		s.checkContainerHygiene(pod, cm, base)
+		s.checkContainerOps(cm, base)
+		s.checkContainerSecrets(cm, base)
 	}
+}
+
+// checkContainerOps evaluates the operational properties that decide whether a
+// failing workload is noticed and contained: probes, a writable root, and the
+// capability set the container keeps.
+//
+// They are warnings rather than critical findings on purpose. A workload
+// without a readiness probe is a reliability gap, not an escalation of
+// privilege; the gate reports it so the operator can decide.
+func (s *findingSink) checkContainerOps(cm map[string]any, base string) {
+	if _, ok := digMap(cm, "livenessProbe"); !ok {
+		s.add(PolicyNoLivenessProbe, SeverityWarning,
+			base+".livenessProbe",
+			"container declares no livenessProbe (a wedged container keeps serving traffic)",
+			"add a livenessProbe that fails when the workload is no longer serving")
+	}
+	if _, ok := digMap(cm, "readinessProbe"); !ok {
+		s.add(PolicyNoReadinessProbe, SeverityWarning,
+			base+".readinessProbe",
+			"container declares no readinessProbe (traffic reaches it before it is ready)",
+			"add a readinessProbe that fails until the workload is ready")
+	}
+	if ro, ok := digBool(cm, "securityContext", "readOnlyRootFilesystem"); !ok || !ro {
+		s.add(PolicyReadOnlyRootFS, SeverityWarning,
+			base+".securityContext.readOnlyRootFilesystem",
+			"container root filesystem is writable (a compromise persists on the node)",
+			"set readOnlyRootFilesystem: true and mount writable paths as emptyDir")
+	}
+	if !dropsAllCapabilities(cm) {
+		s.add(PolicyNoDropCapabilities, SeverityWarning,
+			base+".securityContext.capabilities.drop",
+			"container does not drop all capabilities (the default capability set stays available to it)",
+			"set securityContext.capabilities.drop: [\"ALL\"] and add back only what the workload needs")
+	}
+}
+
+// checkContainerSecrets evaluates how the container receives its credentials
+// and where its image comes from.
+//
+// A credential written as a literal env value is a critical finding: the value
+// lives in the manifest, and the manifest lives in git.
+func (s *findingSink) checkContainerSecrets(cm map[string]any, base string) {
+	if envs, ok := digSlice(cm, "env"); ok {
+		for i, e := range envs {
+			em, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			name := digString(em, "name")
+			if !looksLikeCredential(name) {
+				continue
+			}
+			if _, has := dig(em, "value"); !has {
+				continue
+			}
+			if _, fromSecret := dig(em, "valueFrom"); fromSecret {
+				continue
+			}
+			s.add(PolicySecretLiteralEnv, SeverityCritical,
+				fmt.Sprintf("%s.env[%d].value", base, i),
+				"environment variable "+name+" is set as a literal value (the credential is stored in the manifest in clear text)",
+				"reference a Secret with valueFrom.secretKeyRef and keep the value out of the manifest")
+		}
+	}
+	if img := digString(cm, "image"); strings.HasPrefix(strings.ToLower(img), "http://") {
+		s.add(PolicyInsecureRegistry, SeverityWarning,
+			base+".image",
+			"image is pulled over plaintext HTTP (the workload content is not verified in transit)",
+			"pull from an https:// registry or a private registry that serves TLS")
+	}
+}
+
+// dropsAllCapabilities reports whether the container drops ALL capabilities,
+// the baseline the container runtime starts from.
+func dropsAllCapabilities(cm map[string]any) bool {
+	drops, ok := digSlice(cm, "securityContext", "capabilities", "drop")
+	if !ok {
+		return false
+	}
+	for _, d := range drops {
+		if s, _ := d.(string); strings.EqualFold(s, "ALL") {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialNameParts are the name fragments that mark an environment
+// variable as carrying a credential. The check is by name on purpose: a
+// literal value under a credential-looking name is the case worth refusing,
+// and a literal LOG_LEVEL is not worth a finding.
+var credentialNameParts = []string{ // #nosec G101 -- the entries are NAMES of environment variables, not credentials; this list is what tells the policy which names to treat as credential-bearing
+	"PASSWORD", "PASSWD", "TOKEN", "SECRET", "CREDENTIAL",
+	"APIKEY", "API_KEY", "PRIVATE_KEY", "ACCESS_KEY", "ACCESSKEY",
+}
+
+// looksLikeCredential reports whether an environment variable name reads as a
+// credential.
+func looksLikeCredential(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, part := range credentialNameParts {
+		if strings.Contains(upper, part) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkContainerPrivilege evaluates how much of the node's authority one

@@ -14,16 +14,28 @@ func deployment(podSpec string) string {
 }
 
 func TestEvaluateNoFindingsOnSafeWorkload(t *testing.T) {
-	manifest := deployment(`      containers:
+	manifest := deployment(`      serviceAccountName: web-sa
+      containers:
       - name: web
         image: registry.example.com/web:1.4.2
         resources:
           limits:
             cpu: "1"
             memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
         securityContext:
           runAsNonRoot: true
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
 `)
 	findings, err := Evaluate([]string{manifest})
 	require.NoError(t, err)
@@ -103,6 +115,54 @@ func TestEvaluatePolicyMatrix(t *testing.T) {
 			manifest: deployment("      containers:\n      - name: web\n        image: web:1.2.3\n        resources:\n          limits:\n            cpu: \"1\"\n        securityContext:\n          runAsNonRoot: true\n        ports:\n        - containerPort: 80\n          hostPort: 80\n"),
 			pathHas:  "hostPort",
 		},
+		{
+			policy:   PolicyProcMount,
+			severity: SeverityCritical,
+			manifest: deployment("      securityContext:\n        procMount: Unmasked\n      containers:\n      - name: web\n        image: web:1.2.3\n"),
+			pathHas:  "procMount",
+		},
+		{
+			policy:   PolicyDefaultSA,
+			severity: SeverityWarning,
+			manifest: deployment("      containers:\n      - name: web\n        image: web:1.2.3\n"),
+			pathHas:  "serviceAccountName",
+		},
+		{
+			policy:   PolicySecretLiteralEnv,
+			severity: SeverityCritical,
+			manifest: deployment("      containers:\n      - name: web\n        image: web:1.2.3\n        env:\n        - name: DB_PASSWORD\n          value: hunter2\n"),
+			pathHas:  "env[0].value",
+		},
+		{
+			policy:   PolicyReadOnlyRootFS,
+			severity: SeverityWarning,
+			manifest: deployment("      containers:\n      - name: web\n        image: web:1.2.3\n        securityContext:\n          runAsNonRoot: true\n"),
+			pathHas:  "readOnlyRootFilesystem",
+		},
+		{
+			policy:   PolicyNoDropCapabilities,
+			severity: SeverityWarning,
+			manifest: deployment("      containers:\n      - name: web\n        image: web:1.2.3\n        securityContext:\n          runAsNonRoot: true\n"),
+			pathHas:  "capabilities.drop",
+		},
+		{
+			policy:   PolicyNoLivenessProbe,
+			severity: SeverityWarning,
+			manifest: deployment("      containers:\n      - name: web\n        image: web:1.2.3\n"),
+			pathHas:  "livenessProbe",
+		},
+		{
+			policy:   PolicyNoReadinessProbe,
+			severity: SeverityWarning,
+			manifest: deployment("      containers:\n      - name: web\n        image: web:1.2.3\n"),
+			pathHas:  "readinessProbe",
+		},
+		{
+			policy:   PolicyInsecureRegistry,
+			severity: SeverityWarning,
+			manifest: deployment("      containers:\n      - name: web\n        image: http://registry.internal/app:1.2.3\n"),
+			pathHas:  ".image",
+		},
 	}
 
 	for _, tc := range cases {
@@ -126,6 +186,16 @@ func TestEvaluatePolicyMatrix(t *testing.T) {
 			assert.NotEmpty(t, hit.Message, "a finding must carry a reason")
 			assert.NotEmpty(t, hit.Remediation, "a finding must carry a remedy")
 		})
+	}
+}
+
+func TestEvaluateOnlyFlagsCredentialLookingEnvNames(t *testing.T) {
+	manifest := deployment("      containers:\n      - name: web\n        image: web:1.2.3\n        env:\n        - name: LOG_LEVEL\n          value: info\n        - name: DB_PASSWORD\n          valueFrom:\n            secretKeyRef:\n              name: db\n              key: password\n")
+	findings, err := Evaluate([]string{manifest})
+	require.NoError(t, err)
+	for _, f := range findings {
+		assert.NotEqual(t, PolicySecretLiteralEnv, f.PolicyID,
+			"a plain value under a non-credential name, or a value taken from a Secret, is not a credential leak")
 	}
 }
 
