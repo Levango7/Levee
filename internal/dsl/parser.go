@@ -248,16 +248,23 @@ type yamlStepRaw struct {
 }
 
 type yamlGateRaw struct {
-	Position string         `yaml:"position"`
-	Cmd      *yamlCmdRaw    `yaml:"cmd"`
-	Slo      *yamlSloRaw    `yaml:"slo"`
-	Probe    *yamlProbeRaw  `yaml:"probe"`
-	Human    *yamlHumanRaw  `yaml:"human"`
-	Plugin   *yamlPluginRaw `yaml:"plugin"`
+	Position  string            `yaml:"position"`
+	Cmd       *yamlCmdRaw       `yaml:"cmd"`
+	Slo       *yamlSloRaw       `yaml:"slo"`
+	Probe     *yamlProbeRaw     `yaml:"probe"`
+	Human     *yamlHumanRaw     `yaml:"human"`
+	Plugin    *yamlPluginRaw    `yaml:"plugin"`
+	K8sPolicy *yamlK8sPolicyRaw `yaml:"k8spolicy"`
 	// Params is the free-form parameter mapping consumed by parameterised
-	// gate types (probe / slo / human / plugin). It is passed through
-	// verbatim; each gate implementation validates its own keys fail-closed.
+	// gate types (probe / slo / human / plugin / k8spolicy). It is passed
+	// through verbatim; each gate implementation validates its own keys
+	// fail-closed.
 	Params map[string]any `yaml:"params"`
+}
+
+type yamlK8sPolicyRaw struct {
+	Manifests []string `yaml:"manifests"`
+	Manifest  string   `yaml:"manifest"`
 }
 
 type yamlPluginRaw struct {
@@ -659,11 +666,31 @@ func convertGateCheck(g *yamlGateRaw) (GateCheck, error) {
 			Command: g.Human.Message,
 			Timeout: g.Human.Timeout,
 		}
+	case g.K8sPolicy != nil:
+		gc = GateCheck{Type: "k8spolicy"}
+		// The typed fields seed the engine's params.manifests /
+		// params.manifest keys. User-supplied params ride along, but a
+		// declared manifests/manifest wins on key collision so the gate
+		// always evaluates what the k8spolicy block says, not a merged
+		// impostor. An empty block leaves the gate without manifests; the
+		// engine refuses it fail-closed at materialisation.
+		gc.Params = map[string]any{}
+		for k, v := range g.Params {
+			gc.Params[k] = v
+		}
+		switch {
+		case len(g.K8sPolicy.Manifests) > 0:
+			gc.Params["manifests"] = g.K8sPolicy.Manifests
+		case g.K8sPolicy.Manifest != "":
+			gc.Params["manifest"] = g.K8sPolicy.Manifest
+		}
 	default:
 		return GateCheck{Type: "empty"}, newError("LE051", "gate",
-			"gate has no check (cmd/slo/probe/human/plugin)")
+			"gate has no check (cmd/slo/probe/human/plugin/k8spolicy)")
 	}
-	gc.Params = g.Params
+	if gc.Params == nil {
+		gc.Params = g.Params
+	}
 	return gc, nil
 }
 
