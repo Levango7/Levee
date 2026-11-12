@@ -47,6 +47,16 @@
   描述符**生成（两个文档嵌同一块，单一来源；CI 的 docs regenerate check 兜底），消灭手抄副本；
   订正 README 版本行。
 - **边界**：零代码行为变更；不碰 `internal/sqlreview` 的规则实现，规则清单仍以 cli-reference 为准。
+
+### 新增（接链三项：SQL 审核裁决进计划漏斗、执行器 AST 白名单、审计报告接审核结论）
+
+- **缺口**：SQL 审核引擎首版只到 CLI 演示面——`levee sqlreview` 的裁决没有卡进任何生产路径：计划照常生成、`mysql.query` / `pt_osc` 的破坏性语句只靠正则白名单、`levee audit report` 里看不到审核结论。
+- **修法**：
+  - ① 计划生成前预检接审核：`wiring.GeneratePlan` 在窗口门禁之后对**已解析输入**的 SQL 面跑审核，fail 即拒绝（`sqlreview.ErrReviewFailed` 哨兵错误，gRPC 侧传 `FailedPrecondition` 并写 `failed` 的 sql_review 审计行；成功路径写 `passed` 行，Target=计划哈希）；审核结论进 `plan.SQLReview` 并入 canonicalPlanV2（`omitempty` 保旧计划哈希不变）；dry-run 不落证据；回滚重载存量计划刻意不过门，单一强制点由结构测试钉住。
+  - ② 执行器白名单 regex→AST：`rejectDestructiveSQL` 先切分语句、逐条解析，DDL drop/truncate 与无 WHERE 的 DELETE 由 AST 判决（含正则漏掉的尾随注释写法）；正则白名单保留作兜底（解析失败与语法盲区如 DROP INDEX / DROP USER），且对语法可读的非破坏语句照跑——正则原来拦住的现在照样拦，行为零回退。`pt_osc` 的 alter 条款白名单不变（正则条款是实质守卫），AST 只作软确认：语法盲区恒真，只拒正面误读。
+  - ③ 审计报告＝审核结论+计划哈希+审批链：`levee audit report` 每 run 显示计划哈希与计划产物里的审核结论，三种如实状态——有结论 / 无结论（产物早于门禁或无可审 SQL 面，无结论≠通过）/ 有哈希无产物（漂移嫌疑，标红）。
+- **验证**：`internal/wiring` 新增 13 例（含 RPC 形状两例：拒答传 `FailedPrecondition` 且写 failed 审计行、通过写 passed 行且 Target=计划哈希；回滚路径不过门的结构测试）；`internal/plan` 追加 2 例（SQLReview 进 canonical v2、nil 结论保旧哈希）；`internal/executor/modules/mysql` 新增 3 例（AST 主判尾随注释 DELETE、正则兜底语法盲区、alterShapeIsSingle）；`cmd/levee` 审计报告 E2E 新增 1 例（结论+哈希+审批链聚合与三种诚实状态），并修掉 `--output` 旗标跨测试泄漏（每例复位旗标）；`go test ./...` 全量绿（internal/plugin 一次环境抖动复跑绿），四包 `go test -race` 绿，golangci-lint 全仓 0 issues（goimports 抓的 import 分组 1 条已修；首跑冷缓存超默认时限，加 `--timeout 15m` 复跑全仓绿），go mod tidy 无漂移，四道 python 门禁（roadmap 55 行 / CHANGELOG 骨架 / doc 锚点 29 锚点 37 claims）绿。
+
 ### 修复（`levee cluster status` 文档口径与二进制不符）
 
 - **缺口**：`cmd_cluster_status.go` 把子命令的 `Use` 写成 `"cluster status"`，

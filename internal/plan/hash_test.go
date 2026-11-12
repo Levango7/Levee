@@ -452,3 +452,41 @@ func TestComputeHashHexEncoding(t *testing.T) {
 	plan := buildPlan("wf", []string{"host-a"})
 	assertV2Hash(t, ComputeHash(plan))
 }
+
+// TestComputeHashSQLReviewMatters verifies that the plan-time review verdict
+// is inside the v2 hash: an approved artifact whose verdict could be rewritten
+// after approval would let a failed review ride through on a blessed hash.
+func TestComputeHashSQLReviewMatters(t *testing.T) {
+	base := func() *Plan {
+		return buildPlan("wf", []string{"host-a"},
+			PlanStep{Name: "q", Module: "mysql", Action: "query",
+				Args: map[string]any{"sql": "SELECT 1"}})
+	}
+	bare := base()
+	pass := base()
+	pass.SQLReview = &SQLReviewSummary{Verdict: "pass"}
+	warn := base()
+	warn.SQLReview = &SQLReviewSummary{Verdict: "warn", WarnCount: 1,
+		Findings: []SQLReviewFinding{{Step: "q", Rule: "SR-08", Severity: "warn", Statement: 1}}}
+
+	hb, hp, hw := ComputeHash(bare), ComputeHash(pass), ComputeHash(warn)
+	assert.NotEqual(t, hb, hp, "a reviewed plan must not reuse the bare plan's hash")
+	assert.NotEqual(t, hp, hw, "a warn verdict must not reuse a clean verdict's hash")
+}
+
+// TestComputeHashSQLReviewNilStaysCanonical pins the omitempty half of the
+// contract: a workflow with no reviewable SQL surface keeps its canonical
+// bytes exactly as they were before the review gate existed, so pre-review
+// plans verify against their persisted hashes unchanged.
+func TestComputeHashSQLReviewNilStaysCanonical(t *testing.T) {
+	p1 := buildPlan("wf", []string{"host-a"})
+	p2 := buildPlan("wf", []string{"host-a"})
+	p2.SQLReview = nil
+	assert.Equal(t, ComputeHash(p1), ComputeHash(p2),
+		"nil review must not alter the canonical form")
+
+	raw, err := json.Marshal(buildCanonicalV2(p1))
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "sql_review",
+		"the canonical form must not materialise an absent review")
+}

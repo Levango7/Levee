@@ -59,6 +59,7 @@ import (
 	"github.com/nexus/levee/internal/risk"
 	"github.com/nexus/levee/internal/rollback"
 	"github.com/nexus/levee/internal/runstatus"
+	"github.com/nexus/levee/internal/sqlreview"
 	"github.com/nexus/levee/internal/state"
 
 	grpcpkg "google.golang.org/grpc"
@@ -614,6 +615,21 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 	if s.engine != nil && s.engine.Plan != nil {
 		planMsg, stored, err := s.engine.Plan(ctx, req.GetChangeId(), req.GetTargetHosts())
 		if err != nil {
+			// A failed SQL review refuses the plan before anything is
+			// written, and the refusal itself is evidence: record which
+			// change tried to plan SQL the rule engine failed. Like every
+			// audit write it is non-fatal for the RPC that triggered it.
+			if errors.Is(err, sqlreview.ErrReviewFailed) {
+				s.recordAudit(ctx, &state.Audit{
+					ID:        newID("aud-"),
+					RunID:     req.GetChangeId(),
+					Action:    state.AuditActionSQLReview,
+					Actor:     actorFromCtx(ctx),
+					Result:    state.AuditResultFailed,
+					Timestamp: time.Now().UTC(),
+				})
+				return nil, status.Error(codes.FailedPrecondition, err.Error())
+			}
 			// A closed change window, an unexecutable declared gate and a
 			// calendar freeze are all refusals the operator can act on, not
 			// server faults: report them like the approval-quorum refusal below
@@ -649,6 +665,26 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 			run.PlanJSON = stored.JSON
 			run.PlanHash = stored.Hash
 			run.UpdatedAt = now
+			// SQL review evidence: the verdict rides inside the artifact
+			// (plan_hash binds it, and the approval chain below signs that
+			// hash), and this row is the hash-chained event that a review
+			// happened, naming the artifact it scored. A warn verdict is
+			// recorded as passed — the gate passed; the warn detail lives in
+			// the artifact and the report. Runs whose workflow has no
+			// reviewable SQL surface carry no row (absence of evidence, not
+			// a clean pass).
+			var pl plan.Plan
+			if json.Unmarshal([]byte(stored.JSON), &pl) == nil && pl.SQLReview != nil {
+				s.recordAudit(ctx, &state.Audit{
+					ID:        newID("aud-"),
+					RunID:     req.GetChangeId(),
+					Action:    state.AuditActionSQLReview,
+					Actor:     actorFromCtx(ctx),
+					Target:    stored.Hash,
+					Result:    state.AuditResultPassed,
+					Timestamp: time.Now().UTC(),
+				})
+			}
 			// Record the derived tier even when no approval chain is going to be
 			// created. kickoffApproval writes the tier as a side effect of
 			// creating the chain, but a deployment with an engine and no approval

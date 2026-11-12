@@ -137,6 +137,30 @@ type canonicalPlanV2 struct {
 	// hash does not cover this field could be replayed against a different
 	// restore surface.
 	RunSnapshot *canonicalRunSnapshot `json:"run_snapshot,omitempty"`
+	// SQLReview is the plan-time review verdict. Inside the hash because it
+	// is governance evidence the approval attests to: an artifact whose hash
+	// did not cover it could have its verdict rewritten after approval.
+	// omitempty keeps every pre-review plan's hash bytes exactly stable.
+	SQLReview *canonicalSQLReview `json:"sql_review,omitempty"`
+}
+
+// canonicalSQLReview is the hashed projection of SQLReviewSummary. Findings
+// keep their order (workflow step order, then rule-table order within a
+// statement): unlike batch targets, the sequence is semantic evidence, not
+// an implementation detail.
+type canonicalSQLReview struct {
+	Verdict   string                `json:"verdict"`
+	FailCount int                   `json:"fail_count"`
+	WarnCount int                   `json:"warn_count"`
+	Findings  []canonicalSQLFinding `json:"findings,omitempty"`
+}
+
+type canonicalSQLFinding struct {
+	Step      string `json:"step"`
+	Rule      string `json:"rule"`
+	Severity  string `json:"severity"`
+	Statement int    `json:"statement"`
+	Message   string `json:"message"`
 }
 
 // canonicalRunSnapshot is the hashed projection of dsl.RunSnapshotSpec.
@@ -302,7 +326,29 @@ func buildCanonicalV2(plan *Plan) canonicalPlanV2 {
 		Approval: canonicalApprovalV2(plan.Approval), Rollback: canonicalRollbackV2(plan.Rollback),
 		Gate:        canonicalGateV2(plan.Gate),
 		RunSnapshot: canonicalRunSnapshotV2(plan.RunSnapshot),
+		SQLReview:   canonicalSQLReviewV2(plan.SQLReview),
 	}
+}
+
+// canonicalSQLReviewV2 projects the review verdict into the hashed form, or
+// nil when the plan has no reviewable SQL surface. nil must stay nil (not an
+// empty "pass" struct): a workflow without SQL and a reviewed-clean workflow
+// are different evidence, and materialising a verdict here would also break
+// every pre-review plan's hash.
+func canonicalSQLReviewV2(in *SQLReviewSummary) *canonicalSQLReview {
+	if in == nil {
+		return nil
+	}
+	out := &canonicalSQLReview{
+		Verdict: in.Verdict, FailCount: in.FailCount, WarnCount: in.WarnCount,
+	}
+	if len(in.Findings) > 0 {
+		out.Findings = make([]canonicalSQLFinding, len(in.Findings))
+		for i, f := range in.Findings {
+			out.Findings[i] = canonicalSQLFinding(f)
+		}
+	}
+	return out
 }
 
 // canonicalRunSnapshotV2 projects the baseline into the hashed form, or nil

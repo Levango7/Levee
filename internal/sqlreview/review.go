@@ -19,11 +19,19 @@
 package sqlreview
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/xwb1989/sqlparser"
 )
+
+// ErrReviewFailed is the gate refusal carried by every plan path when a
+// reviewable SQL batch scores a fail verdict. It lives here (not in the
+// wiring or grpc package) because both the plan funnel that raises it and the
+// RPC layer that maps it to codes.FailedPrecondition must match on it, and
+// the review engine is the leaf both can import without a cycle.
+var ErrReviewFailed = errors.New("sql review failed")
 
 // Severity is the enforcement level of one finding.
 type Severity string
