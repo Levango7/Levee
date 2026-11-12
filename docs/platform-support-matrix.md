@@ -31,11 +31,11 @@
 |---|---|---|
 | SQLite | **已验证**（默认） | `internal/state/sqlite.go`；`database.driver` 默认 sqlite（`internal/state/driver.go`） |
 | PostgreSQL（原生） | **已验证** | `internal/state/pgstore.go`；CI `integration & e2e & postgres` 腿 |
-| 达梦 DM8 | **不支持** | 无驱动；全仓零提及 |
-| 人大金仓 KingBase | **不支持** | 同上 |
-| 国产 DB 的 PG 兼容模式 | **未验证** | —— |
+| 达梦 DM8 | **不支持（已实测，2026-11-12）** | 镜像 `dm8_single:dm8_20241022_rev244896_x86_rh6_64`（DM Database Server 64 V8，构建 `03134284294-20241009-244896-20119`）。`pgx` 直连在握手阶段即 `unexpected EOF`——DM8 **不实现 PostgreSQL 线协议**，`COMPATIBLE_MODE` 只是语法开关。把 `dm.ini` 的 `COMPATIBLE_MODE` 改为 `7`（该文件注释即 `7:PG`）并重启后仍不兼容：`TIMESTAMPTZ` 报 `Invalid base class name`、`TEXT` 建主键报「CLOB 不能建索引」、`ON CONFLICT` 与 `TRUNCATE … RESTART IDENTITY CASCADE` 语法错误（`JSONB`、`NOW()` 可用）。要支持需**新增 DM 驱动 + SQL 方言层**，不是改配置 |
+| 人大金仓 KingBase | **已验证（V9R1C10，PG 模式，2026-11-12）** | 镜像 `kingbase_v009r001c010b0004_single_x86:v1`，以 `DB_MODE=pg` 初始化单实例。`LEVEE_PG_TEST_DSN` 指向该实例后，`go test ./internal/state`（schema 迁移、审计链封链、WORM 触发器、租约/epoch CAS）与 `go test ./internal/cluster` 全绿；`levee serve` 日志 `driver=postgres location=postgres@…/levee_kb`；一条真实 change `run-8eecbcd833193a74` 走完 `approved → completed`（文件 v1→v2）→ `rolled_back`（v2→v1），`GET /audit/verify` 返回 `valid=true`、`entriesVerified=3`（run 维度 1）。限制见 §6 |
+| 国产 DB 的 PG 兼容模式（通用结论） | **金仓可用；达梦不可用** | 金仓 V9 的 PG 模式与 `pgx`/LEVEE 的 PG 路径兼容；达梦的 `COMPATIBLE_MODE=7` 只覆盖部分语法且**不提供 PG 线协议**。两者不能按同一类「PG 位」处理 |
 
-**为什么这一格最关键**：治理链整体压在 DB 上——审计链（WORM 触发器）、租约/epoch CAS、方言差异（`internal/state` 的 sqlite/pg 双实现）。信创栈上"PG 位"通常是达梦/金仓的**兼容模式**，**差异面比 OS 大**：能连上不等于审计触发器、WORM、并发语义都对得上。取证结论可能是"要改 SQL 方言"——那属于**先做 DB 适配**的独立工作，不是扩云原生的前置。
+**为什么这一格最关键**：治理链整体压在 DB 上——审计链（WORM 触发器）、租约/epoch CAS、方言差异（`internal/state` 的 sqlite/pg 双实现）。信创栈上"PG 位"通常是达梦/金仓的**兼容模式**，**差异面比 OS 大**：能连上不等于审计触发器、WORM、并发语义都对得上。2026-11-12 的取证结论：**金仓 V9 的 PG 模式可直接跑通**（无需改方言）；**达梦 DM8 不能当 PG 位**（无 PG 线协议，PG 语法模式也不覆盖 LEVEE schema），要支持得单独立项做 DM 驱动 + 方言层——那不是扩云原生的前置。
 
 ## 3. 部署形态
 
@@ -61,7 +61,7 @@
 | 格 | 取证方式 | 前置 |
 |---|---|---|
 | 麒麟/统信 × amd64/arm64 | 装 `levee` → `levee doctor` → 起一条 change 走完 审批→执行→回滚→审计 | **amd64 WSL2 用户态已跑通**（2026-11-12，见 §1）；裸机 amd64、arm64 真机仍缺 |
-| 达梦/金仓 PG 兼容模式 | 在兼容模式实例上跑 `internal/state` 的 PG 路径：schema 迁移 + 审计链 + 租约 CAS | 一个 DB 实例；结论可能是"要改方言" |
+| 达梦/金仓 PG 兼容模式 | 在兼容模式实例上跑 `internal/state` 的 PG 路径：schema 迁移 + 审计链 + 租约 CAS | **金仓已跑通（2026-11-12）**：`internal/state` + `internal/cluster` 全绿，另有一条 change 的全链路与 `audit/verify`；达梦实测**不适用**（无 PG 线协议；PG 语法模式仍不认 `TIMESTAMPTZ`、`TEXT` 主键、`ON CONFLICT`），要支持需 DM 驱动 + 方言层 |
 | arm64 容器镜像 | buildx 多架构构建 + 在 ARM 容器里跑关键用例（qemu 可用与否记实） | **已跑通（QEMU 模拟，2026-11-12，见 §1）**：buildx 构建 + 容器内 `version` / `system doctor` / `serve` 的 `/healthz`；ARM 真机仍缺 |
 | k8s 变更面（S2） | 本地 kind 集群三场景：改 Deployment 副本数 → 审批拒绝则不发生 → 允许则发生 → 回滚还原 → 审计链留行 | **已跑通**（#348 + #349；kind `levee-s2`，run `run-205b77d4bce89594`） |
 
@@ -71,4 +71,6 @@
 - 「未验证」格在拿到证据前，对外只能说"需评估"，不能说"支持"。
 - **WSL2 证据的边界**：2026-11-12 的麒麟 V10 证据来自 WSL2 **用户态**（Microsoft 内核），它证明「LEVEE 在麒麟 V10 用户态 / glibc 2.28 上可安装并跑通治理链」，**不能**替代裸机或整机认证。对外引用必须带这个限定；裸机 amd64 与 arm64 仍按「未验证」处理。该次实验的 OpenSSH 8.0p1 由 CentOS 8.5 vault 仓库补装（麒麟镜像未带 sshd），同属实验环境限定。
 - **QEMU 证据的边界**：arm64 容器镜像证据来自 x86_64 宿主上的 Docker Desktop QEMU 模拟（`docker buildx --platform linux/arm64`），证明 Dockerfile 能交叉构建、镜像在 aarch64 用户态可启动并 serving，**不能**替代鲲鹏/飞腾真机；对外引用必须注明「QEMU 模拟」。
+- **金仓证据的边界**：2026-11-12 的 KingBase 证据来自 Docker **单实例**（x86_64、`DB_MODE=pg`、V9R1C10），验证的是「金仓 V9 PG 兼容模式 + LEVEE 的 PG 路径」。**未**覆盖 KES 主备/共享存储集群、Oracle 模式、国密/等保配置、备份恢复与生产参数调优；对外引用必须写「金仓 V9 PG 模式（单实例）」。
+- **达梦证据的边界**：2026-11-12 实测的是「DM8 不能作为 PG 位直接替换」，不是「达梦永远不支持」。若未来做 DM 适配，需单独立项（DM 驱动 + SQL 方言层 + `TEXT`/CLOB 主键替代方案）；完成前对外只能说「需评估 / 需适配」。
 - 本表会随 CI 与实跑更新；改了结论要同步 `docs/blocked-items.md` 的对应行（同一结论写两遍就会漏改一半）。
