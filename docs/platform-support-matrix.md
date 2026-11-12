@@ -20,7 +20,7 @@
 | macOS 二进制 | amd64 / arm64 | **已验证** | CI `build (macos-latest/{amd64,arm64})` |
 | Windows 二进制 | amd64 / arm64 | **已验证** | CI `build (windows-latest/{amd64,arm64})` |
 | 容器镜像（alpine 基础） | amd64 | **已验证** | `Dockerfile`（多阶段、`CGO_ENABLED=0 GOOS=linux`）；CI `trivy` 腿 `docker build` + 扫描 |
-| 容器镜像 | arm64 | **未验证** | CI 只构建 amd64 镜像；arm64 只有**二进制**腿 |
+| 容器镜像 | arm64 | **已验证**（本地单架构构建＋运行，2026-11-12） | 本机 `docker build --platform linux/arm64` 整份 Dockerfile 39 步全过（qemu-aarch64 模拟，宿主 amd64）；产物 `docker image inspect` = `linux/arm64`、镜像内 `uname -m` = `aarch64`、`/usr/local/bin/levee` ELF machine = `0xb7`；`levee version` = `go1.26.11`，`serve --insecure` 起 `/healthz`=200 且 `/system/version` 应答。**范围如实**：本机无 docker buildx 插件，做的是**单架构 arm64 构建**，不是 release 的 `buildx --platform amd64,arm64` 多架构 manifest。 |
 | 麒麟 / 统信 UOS | amd64 | **未验证** | 无对应腿；`deploy/baremetal/install.sh`（幂等安装器）与 `deploy/systemd/levee.service` 是**有实现**，未在目标 OS 上实跑 |
 | 麒麟 / 统信 UOS | arm64（鲲鹏/飞腾） | **未验证** | 同上；ARM 腿跑在 ubuntu/macos/windows 上，不构成信创 OS 证据 |
 
@@ -50,8 +50,8 @@
 | 能力 | 现状 | 证据 |
 |---|---|---|
 | LEVEE 自己跑在 k8s 里 | **已验证**（Helm 渲染门） | `deploy/helm/levee` |
-| 把 k8s 工作负载当变更目标 | **不支持** | 执行通道只有 `internal/channel/{local,ssh,winrm}`；全仓无 kubectl / k8s 客户端代码 |
-| k8s 侧变更的审批·回滚·举证 | **不支持** | 同上（缺该执行面，不是缺治理内核） |
+| 把 k8s 工作负载当变更目标 | **已验证**（S1＋S2，master `f122a10`/`6c0f273`） | S1 策略门禁 `internal/k8spolicy`（11 条）＋ `internal/verify.K8sPolicyGate`（critical 阻断 / warning 报出 / 解析失败 fail-closed）；S2 通道插件 `examples/plugins/k8s`（`type: channel`，`channel_types: [k8s, kubernetes]`，**核心零行改动**）＋ 契约单测 22 例 ＋ kind 实测 `TestK8sChannelDrill`。**边界**：插件通道仅在 **serve 启动时装入**，CLI `apply --engine-enabled` 不装；门禁的**注册与 DSL 接线**待协调；`target check` 的 `echo ok` 探针集群答不了；exec 无 stdin，manifest 走 upload（见设计文档 S1/S2 段） |
+| k8s 侧变更的审批·回滚·举证 | **已验证**（serve 三场景验收） | 审批拒绝→不执行 / 批准→`kubectl scale` 真实执行 / rollback→按快照还原（剥 resourceVersion/uid/status）/ 审计链 `Valid: true`；机制与边界见 `docs/design-k8s-change-governance.md` S2 段，验收记录见 agent 板 `opencode-cloudnative-track.md` |
 
 设计与分片见 `docs/design-k8s-change-governance.md`。
 
@@ -61,8 +61,9 @@
 |---|---|---|
 | 麒麟/统信 × amd64/arm64 | 装 `levee` → `levee doctor` → 起一条 change 走完 审批→执行→回滚→审计 | 一台（或一台容器化）目标机 |
 | 达梦/金仓 PG 兼容模式 | 在兼容模式实例上跑 `internal/state` 的 PG 路径：schema 迁移 + 审计链 + 租约 CAS | 一个 DB 实例；结论可能是"要改方言" |
-| arm64 容器镜像 | buildx 多架构构建 + 在 ARM 容器里跑关键用例（qemu 可用与否记实） | 本机 Docker + qemu |
-| k8s 变更面（S2） | 本地 kind 集群三场景：改 Deployment 副本数 → 审批拒绝则不发生 → 允许则发生 → 回滚还原 → 审计链留行 | 本机已有 kind（`docker ps` 可见 `kindest/node v1.35.0`） |
+| S1 门禁的注册 / DSL 接线 | 把 `internal/verify.K8sPolicyGate` 注册进 gate 家族并接进 DSL 与 serve 装配 | 与 `internal/dsl`/`cmd/levee` 认领者协调 |
+
+> **2026-11-12 消除两格**：**arm64 容器镜像**（见 §1）与 **k8s 变更面 S2**（见 §4）已由「未验证/不支持」转为「已验证」，不再列本表。
 
 ## 6. 诚实边界
 

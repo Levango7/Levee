@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 文档（平台适配矩阵同步：arm64 容器镜像取证 ＋ S1/S2 落地后订正）
+
+- **缺口**：`docs/platform-support-matrix.md` 是「活文档」，但自创建（`c4aad16`）后未随 S1/S2 更新——§4 仍写「把 k8s 工作负载当变更目标 = **不支持**」，而 master 上 `examples/plugins/k8s`（S2）与 `internal/k8spolicy`（S1）已落地；§1 的「容器镜像 arm64 = 未验证」也从未取证。
+- **改动**：① §1 arm64 容器镜像行由「未验证」改为「**已验证**（本地单架构构建＋运行）」并给逐条证据；② §4 两行 k8s 结论由「不支持」改为「**已验证**」并如实标注边界（插件通道仅 serve 装入、门禁 DSL 接线待协调）；③ §5 待补证据表移除已消除的两格（arm64 镜像、S2），补 S1 接线一格。
+- **验证**：本机 amd64 宿主用 `docker build --platform linux/arm64` 构建整份 Dockerfile（39 步全过，qemu-aarch64 模拟；`GOPROXY` 用 `goproxy.cn`，容器内默认 `proxy.golang.org` 不可达＝Dockerfile 既有 `GOPROXY` 构建参数的用途）；产物 `docker image inspect` = `linux/arm64`、容器内 `uname -m` = `aarch64`、二进制 ELF machine = `0xb7`；`levee version` = `go1.26.11`；`serve --insecure` 后 `/healthz` = 200、`/system/version` 应答。
+- **边界（如实）**：本机**无 docker buildx 插件**，所做的是**单架构 arm64 构建**；release 用的 `buildx --platform amd64,arm64` 多架构 manifest 未在本机复现。§4 的 k8s「已验证」引用的契约单测 / `TestK8sChannelDrill` / serve 三场景是 S1/S2 批次（`f122a10`/`6c0f273`）既有证据，本笔只同步矩阵口径，未改任何代码。
+
 ### 新增（k8s 变更通道：S2——通道插件，核心零行改动）
 
 - **为什么做**：D-4（`docs/design-k8s-change-governance.md`）的第二片。S1 给了"改 k8s 工作负载之前该查什么"，本笔补**执行面**：让一个 Kubernetes 集群成为 LEVEE 可拨的 target，使工作负载变更走与 SSH 主机变更完全相同的审批·快照回滚·WORM 审计链。
