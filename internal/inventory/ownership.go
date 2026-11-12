@@ -294,7 +294,7 @@ func (im *Importer) EnvConflicts(ctx context.Context, reg *OwnershipRegistry, f 
 		if channel == "" {
 			channel = "ssh"
 		}
-		if !validChannels[channel] {
+		if !isValidChannelType(channel) {
 			continue
 		}
 		resulting := td.Labels

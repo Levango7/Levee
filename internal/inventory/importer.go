@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -25,8 +26,16 @@ type Store interface {
 	UpsertTarget(ctx context.Context, target *state.Target) error
 }
 
-var validChannels = map[string]bool{"ssh": true, "winrm": true}
+// channelTypeRE matches a transport type name: the two built-ins ("ssh",
+// "winrm") plus every runtime channel plugin's registered type (plugin names
+// and channel_types aliases follow the same ^[a-z][a-z0-9-]*$ form). The YAML
+// importer and the gRPC AddTarget path must agree on what is admissible:
+// AddTarget does not enumerate, and refusing a plugin type here would strand
+// an installed plugin that the engine can dial (see docs/channel-plugins.md).
+var channelTypeRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 var validStatuses = map[string]bool{state.StatusActive: true, state.StatusFrozen: true, state.StatusRetired: true}
+
+func isValidChannelType(t string) bool { return channelTypeRE.MatchString(t) }
 
 // GroupDef declares one inventory group. Parent is the NAME of the parent
 // group and may reference a group declared later in the file or already
@@ -340,8 +349,8 @@ func (im *Importer) importTarget(ctx context.Context, td TargetDef, row string, 
 	if channel == "" {
 		channel = "ssh"
 	}
-	if !validChannels[channel] {
-		im.fail(sum, row, fmt.Errorf("invalid channel_type %q (ssh|winrm)", channel))
+	if !isValidChannelType(channel) {
+		im.fail(sum, row, fmt.Errorf("invalid channel_type %q (must match [a-z][a-z0-9-]*)", channel))
 		return
 	}
 	status := td.Status

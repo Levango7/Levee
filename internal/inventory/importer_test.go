@@ -129,7 +129,7 @@ targets:
   - address: ""
   - address: 10.1.1.3:99999
   - address: 10.1.1.4
-    channel_type: telnet
+    channel_type: BadType
 `
 	st := newMemStore()
 	sum, err := NewImporter(st).Import(context.Background(), mustParse(t, bad), "")

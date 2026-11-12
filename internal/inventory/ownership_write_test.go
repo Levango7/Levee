@@ -147,7 +147,7 @@ func TestEnvConflictsSkipsRowsTheImporterWouldReject(t *testing.T) {
     labels:
       env: dev
   - address: db-1
-    channel_type: telnet
+    channel_type: BadType
     labels:
       env: dev
 `)

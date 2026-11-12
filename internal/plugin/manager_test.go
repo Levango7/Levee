@@ -368,10 +368,15 @@ func TestManagerClose(t *testing.T) {
 
 	require.NoError(t, m.Close(ctx))
 
-	// All plugins should be disabled.
+	// Close is process shutdown: runtime handles are gone but the operator's
+	// desired enablement persists in the registry (so `serve` re-installs the
+	// plugin on the next boot). Explicit disable is the only state-changing path.
 	rec, err := m.Info(ctx, "http-probe")
 	require.NoError(t, err)
-	assert.Equal(t, StateDisabled, rec.State)
+	assert.Equal(t, StateEnabled, rec.State)
+
+	_, err = m.GetPlugin("http-probe")
+	assert.ErrorIs(t, err, ErrPluginNotEnabled)
 }
 
 func TestManagerCloseIdempotent(t *testing.T) {

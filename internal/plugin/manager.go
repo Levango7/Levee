@@ -424,9 +424,16 @@ func (m *PluginManager) Info(ctx context.Context, name string) (*RegistryRecord,
 
 // --- Shutdown ---------------------------------------------------------------
 
-// Close disables all enabled plugins and stops their sandboxes. It is
+// Close stops all running plugin sandboxes and drops in-memory handles. It is
 // idempotent and safe to call from any goroutine. It does not close the
 // underlying registry; the caller is responsible for that.
+//
+// Close deliberately does NOT change registry state: the registry records the
+// operator's desired enablement ("install + enable" means the plugin should be
+// available to the next serve boot), while the sandbox is a per-process runtime
+// handle. Demoting enabled→disabled here would make `levee plugin enable`
+// non-persistent across CLI exit and prevent serve from installing the plugin
+// on the next start. Explicit disable is the only path that flips desired state.
 func (m *PluginManager) Close(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -436,11 +443,6 @@ func (m *PluginManager) Close(ctx context.Context) error {
 		if err := h.sandbox.Stop(m.cfg.StopGrace); err != nil {
 			log.Warn("sandbox stop failed during shutdown",
 				"plugin", name, "err", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-		if err := m.registry.SetState(ctx, name, StateDisabled, ""); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}

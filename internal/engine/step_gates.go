@@ -306,8 +306,75 @@ func (rt GateRuntime) gateFromCheck(name string, phase verify.GatePhase, c *dsl.
 		// same fail-closed shape as a command gate whose target dial fails.
 		return verify.NewPluginGate(name, phase, c.Plugin, c.Params, c.Timeout, rt.Plugins), nil
 
+	case "k8spolicy":
+		// S1 policy gate: evaluates Kubernetes workload manifests against the
+		// high-risk policy set (internal/k8spolicy) fail-closed. The gate has no
+		// runtime dependency — it reads the manifests the declaration carries,
+		// so it is executable in any deployment. DSL/parser wiring for this type
+		// is a separate coordination item; the engine accepts it once declared.
+		manifests, err := k8sPolicyManifests(c.Params)
+		if err != nil {
+			return nil, fmt.Errorf("gate %q: %w", name, err)
+		}
+		return verify.NewK8sPolicyGate(name, phase, manifests), nil
+
 	default:
-		return nil, fmt.Errorf("gate %q: check type %q is not executable by the engine (supported: cmd|probe|slo|human|plugin)", name, c.Type)
+		return nil, fmt.Errorf("gate %q: check type %q is not executable by the engine (supported: cmd|probe|slo|human|plugin|k8spolicy)", name, c.Type)
+	}
+}
+
+// k8sPolicyManifests extracts the manifest documents a k8spolicy gate must
+// evaluate from the declaration params. Accepted shapes (fail-closed on
+// anything else): a "manifests" key holding a list of strings, or a single
+// "manifest" string. At least one non-empty document is required — a gate that
+// checks nothing cannot honestly pass.
+func k8sPolicyManifests(params map[string]any) ([]string, error) {
+	if len(params) == 0 {
+		return nil, fmt.Errorf("k8spolicy gate requires params.manifests (list of manifest strings) or params.manifest")
+	}
+	if v, ok := params["manifests"]; ok {
+		return coerceManifestList(v)
+	}
+	if v, ok := params["manifest"]; ok {
+		s, ok := v.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			return nil, fmt.Errorf("k8spolicy gate params.manifest must be a non-empty string")
+		}
+		return []string{s}, nil
+	}
+	return nil, fmt.Errorf("k8spolicy gate requires params.manifests (list of manifest strings) or params.manifest")
+}
+
+func coerceManifestList(v any) ([]string, error) {
+	switch list := v.(type) {
+	case []string:
+		out := make([]string, 0, len(list))
+		for _, s := range list {
+			if strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("k8spolicy gate params.manifests must contain at least one non-empty manifest")
+		}
+		return out, nil
+	case []any:
+		out := make([]string, 0, len(list))
+		for i, item := range list {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("k8spolicy gate params.manifests[%d] must be a string", i)
+			}
+			if strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil, fmt.Errorf("k8spolicy gate params.manifests must contain at least one non-empty manifest")
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("k8spolicy gate params.manifests must be a list of manifest strings")
 	}
 }
 
