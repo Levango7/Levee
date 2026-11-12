@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,8 +101,20 @@ func TestCgroupApplyLimitsNoMemory(t *testing.T) {
 		t.Errorf("cpu.max = %q, want %q", got, "250000 100000\n")
 	}
 
-	if _, err := os.ReadFile(filepath.Join(dir, "memory.max")); !os.IsNotExist(err) {
-		t.Errorf("memory.max should not exist when MemoryLimit == 0 (err=%v)", err)
+	// 2026-11-12 (pi): cgroup v2 pre-creates memory.max on every new child cgroup
+	// whenever the parent's subtree_control delegates the memory controller (e.g.
+	// root on WSL2). A CPU-only apply must not *change* memory.max — it must stay
+	// absent (controller not delegated / older kernels) or remain at the kernel
+	// default "max". Originally this asserted the file did not exist, which only
+	// held on machines where the memory controller was not delegated — a false
+	// failure unrelated to the code under test.
+	memMax, memErr := os.ReadFile(filepath.Join(dir, "memory.max"))
+	if memErr == nil {
+		if got := strings.TrimSpace(string(memMax)); got != "max" {
+			t.Errorf("memory.max should be untouched (\"max\") when MemoryLimit == 0, got %q", got)
+		}
+	} else if !os.IsNotExist(memErr) {
+		t.Errorf("cannot inspect memory.max: %v", memErr)
 	}
 }
 
