@@ -17,8 +17,9 @@
 | 网络 | 无。主机清单是虚构的 `db-01.prod`，全程不联系任何机器 |
 | 环境变量 | 脚本自建 `LEVEE_SERVER_DATA_DIR` / `LEVEE_AUDIT_HMAC_KEY`（演示 key，仅供本脚本） |
 
-脚本位置：`examples/demo/sql-review-chain.sh`（该目录当前未随版本库提交，
-归属在 agent-board 登记中；复跑请向维护者取该文件）。
+脚本位置：`examples/demo/sql-review-chain.sh`（该目录当前未随本分支提交；
+脚本本体由并行线收进 `feat/sql-review-demo` 分支随 PR #356 在途，归属登
+记在 agent-board；合并前复跑请向维护者取该文件）。
 
 ## 2. 跑法
 
