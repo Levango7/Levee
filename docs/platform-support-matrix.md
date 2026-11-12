@@ -21,7 +21,8 @@
 | Windows 二进制 | amd64 / arm64 | **已验证** | CI `build (windows-latest/{amd64,arm64})` |
 | 容器镜像（alpine 基础） | amd64 | **已验证** | `Dockerfile`（多阶段、`CGO_ENABLED=0 GOOS=linux`）；CI `trivy` 腿 `docker build` + 扫描 |
 | 容器镜像 | arm64 | **未验证** | CI 只构建 amd64 镜像；arm64 只有**二进制**腿 |
-| 麒麟 / 统信 UOS | amd64 | **未验证** | 无对应腿；`deploy/baremetal/install.sh`（幂等安装器）与 `deploy/systemd/levee.service` 是**有实现**，未在目标 OS 上实跑 |
+| 麒麟 V10（Sword） | amd64 | **已验证（WSL2 用户态，非裸机）** | 2026-11-12 实跑：Kylin V10 (Sword) WSL2（内核 `6.6.87.2-microsoft-standard-WSL2`、glibc 2.28、x86_64）装 `levee` linux/amd64（`CGO_ENABLED=0`），`levee system doctor` healthy；SQLite 存储；SSH 通道到 `127.0.0.1:2222`；一条 change 走完 审批→执行（apply 前快照 `files=1`）→回滚→审计：`approved → completed → rolled_back`，目标文件 `v1 → v2 → v1`，`GET /audit/verify` 返回 `valid=true`、`entriesVerified=7`。限制见 §6 |
+| 麒麟 / 统信 UOS | amd64（裸机） | **未验证** | WSL2 证据不等同裸机：内核、systemd、安全基线、驱动与 `deploy/baremetal/install.sh` 均未在信创整机上实跑 |
 | 麒麟 / 统信 UOS | arm64（鲲鹏/飞腾） | **未验证** | 同上；ARM 腿跑在 ubuntu/macos/windows 上，不构成信创 OS 证据 |
 
 ## 2. 数据库（信创路线的真正未知）
@@ -59,7 +60,7 @@
 
 | 格 | 取证方式 | 前置 |
 |---|---|---|
-| 麒麟/统信 × amd64/arm64 | 装 `levee` → `levee doctor` → 起一条 change 走完 审批→执行→回滚→审计 | 一台（或一台容器化）目标机 |
+| 麒麟/统信 × amd64/arm64 | 装 `levee` → `levee doctor` → 起一条 change 走完 审批→执行→回滚→审计 | **amd64 WSL2 用户态已跑通**（2026-11-12，见 §1）；裸机 amd64、arm64 真机仍缺 |
 | 达梦/金仓 PG 兼容模式 | 在兼容模式实例上跑 `internal/state` 的 PG 路径：schema 迁移 + 审计链 + 租约 CAS | 一个 DB 实例；结论可能是"要改方言" |
 | arm64 容器镜像 | buildx 多架构构建 + 在 ARM 容器里跑关键用例（qemu 可用与否记实） | 本机 Docker + qemu |
 | k8s 变更面（S2） | 本地 kind 集群三场景：改 Deployment 副本数 → 审批拒绝则不发生 → 允许则发生 → 回滚还原 → 审计链留行 | 本机已有 kind（`docker ps` 可见 `kindest/node v1.35.0`） |
@@ -68,4 +69,5 @@
 
 - 本表只登记**本仓自己跑过**的结论；厂商认证报告、第三方兼容性认证不在此表内。
 - 「未验证」格在拿到证据前，对外只能说"需评估"，不能说"支持"。
+- **WSL2 证据的边界**：2026-11-12 的麒麟 V10 证据来自 WSL2 **用户态**（Microsoft 内核），它证明「LEVEE 在麒麟 V10 用户态 / glibc 2.28 上可安装并跑通治理链」，**不能**替代裸机或整机认证。对外引用必须带这个限定；裸机 amd64 与 arm64 仍按「未验证」处理。该次实验的 OpenSSH 8.0p1 由 CentOS 8.5 vault 仓库补装（麒麟镜像未带 sshd），同属实验环境限定。
 - 本表会随 CI 与实跑更新；改了结论要同步 `docs/blocked-items.md` 的对应行（同一结论写两遍就会漏改一半）。
