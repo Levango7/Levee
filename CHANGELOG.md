@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 文档（SQL 审核链演示手册：四幕离线复跑「高危拦截＋强制审批＋事后审计追溯」）
+
+- **缺口**：§8.6 第 4 步的演示面此前只有脚本（`examples/demo/sql-review-chain.sh`，未跟踪、归属登记中），没有文档化的跑法、验收口径与话术。
+- **修法**：`docs/demo-sql-review-chain.md`——前置（离线、无库、throwaway 目录）→ 跑法 → 四幕逐幕「屏幕看到 / 治理语义 / 验收证据」表 → 三句自撰话术 → 与九步链路的如实映射（覆盖前五步＋审计报告；分批执行 / 验证门禁 / 失败自动回滚需真 target，不在离线演示面）→ 边界（status-only 不冒充执行、本地 `--as` 的既有 WARN 保留、规则文案自撰有专测）。
+- **验证**：脚本以当前树二进制实跑四幕全 PASS、RC=0（act0 SR-02 fail / act1 `FailedPrecondition` 具名 / act2 双签＋未达法定人数 `apply` 退出码 4 / act3 报告含结论＋plan_hash＋审批链、空链如实报空）；文档引用断言与产物逐条对上。
+- **边界**：纯文档笔，零代码改动；脚本本体未跟踪未提交（归属未定，不擅自代提交）。
+
 ### 修复（`levee plugin --help` 仍称 channel 插件「registry-only」，与 serve 装载的事实矛盾）
 
 - **缺口**：`cmd/levee/cmd_plugin.go` 的 `newPluginCmd` Long 文案仍写 channel 插件「registry-only (no engine consumption)」，而 serve 启动即装入已启用的通道插件（`installPluginChannels`）、CLI 一次性 apply 路径不装——文案与行为相反（上方注释同病）。
