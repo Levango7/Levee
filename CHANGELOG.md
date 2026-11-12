@@ -24,6 +24,13 @@
 - **验证**：新 `internal/dsl/k8spolicy_gate_test.go`（列表形态逐字保留＋用户 params 同行 / 单文档形态 / 冲突时声明字段获胜 / 空块 Type 如实且 Params 为空交引擎 fail-closed）；dsl/engine/verify/cmd-levee 四包 go test 全绿；变异抽查（yaml tag 改名→测试当场抓红→还原回绿）；gofmt 干净；提交前全量门禁实跑——`go test ./...` RC=0、`golangci-lint` 全仓 0 issues（私有 TMPDIR+cache 绕同机锁）、`go vet` 干净。
 - **边界（如实）**：空 `k8spolicy: {}` 解析通过、无 manifests，由引擎材料化时 fail-closed 拒（不在 parser 层假装拦截）；`docs/gates.md` / `docs/leveelang-spec.md` 语法节按交接单约定归 opencode 补，本笔不动。
 
+### 新增（SQL 审核链演示脚本：离线跑通「高危拦截 → 强制审批 → 事后审计追溯」）
+
+- **为什么做**：§8.6 第 4 步要求一份可直接跑的演示，把 SQL 审核楔子串成完整链路——fail 级规则在 plan 期拒掉高危批文（审批链从未生成）、warn 级放行但结论随 plan_hash 落进计划产物、high 档强制双人会签（发起人除外）、事后审计报告一页给出规则命中·计划哈希·审批链。公开选型话术里的「阈值分档」只复刻概念，演示与规则文案全部仓库自撰（copyleft 红线：零字抄录外部材料）。
+- **改动**：新 `examples/demo/sql-review-chain.sh`（自包含：`mktemp -d` 临时数据目录、heredoc 夹具 hosts.yaml / 两份模板、`assert_exit` / `assert_contains` 助手、`set -euo pipefail` + ERR 陷阱报行号）＋ `examples/demo/README.md`（运行法、四幕证明表带代码指针、如实态说明、文案边界、踩坑记录）。
+- **验证**：本机离线实跑整脚本 6 段断言全过、退出码 0（产物 /tmp/tmp.EmQFb1ndrT）——act 0 `sqlreview` 判 SR-02 fail 退出 1；act 1 `plan` 退出 1 并点名 SR-02「DELETE without WHERE」；act 2 warn 模板 plan 落库 hash-bound、未批 apply 两次退出 4、alice 一票仍 pending、bob 第二票后 apply 退出 0 且如实标注 status-only；act 3 HTML 报告含 SR-07 行、`v2:` 计划哈希、alice/bob 审批与 `exclude_initiator`，零 trace 的 run 如实写「no trace records」、`audit verify` 退出 1 报「no traces found」（空链不说完好）。
+- **边界（如实）**：演示只走 CLI 一次性路径（new/plan/approve/apply/audit report），本构建未接执行引擎，apply 是 status-only（`cmd/levee/cmd_apply.go:39` 的 WARNING 标记）；模板 SQL 是写死的两份夹具（DELETE 全表 / DROP TABLE），无参数化入口；`LEVEE_AUDIT_HMAC_KEY` 必须从第一次审计写入就设置——中途加 key 会「hash chain exists but is broken」（2026-11-12 实测，README 记为踩坑）。
+
 ### 新增（k8s 变更通道：S2——通道插件，核心零行改动）
 
 - **为什么做**：D-4（`docs/design-k8s-change-governance.md`）的第二片。S1 给了"改 k8s 工作负载之前该查什么"，本笔补**执行面**：让一个 Kubernetes 集群成为 LEVEE 可拨的 target，使工作负载变更走与 SSH 主机变更完全相同的审批·快照回滚·WORM 审计链。
