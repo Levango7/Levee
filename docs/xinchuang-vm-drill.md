@@ -1,0 +1,125 @@
+# 信创虚机取证（麒麟 V10 SP3 × amd64）——已跑通的做法
+
+状态：**已执行**（2026-11-12/13）。产出证据登记在 `docs/platform-support-matrix.md` §1/§5/§6。
+物理裸机那一格仍缺，取证步骤见 `docs/xinchuang-baremetal-drill.md`。
+
+## 0. 为什么先走虚机，以及它的口径
+
+- 本机是 **Windows 11 家庭版**：没有 Hyper-V 角色（`Get-WindowsOptionalFeature` 需要管理员且该版本不提供 Hyper-V Manager），WSL2 只是用户态——**没有真 systemd**。
+- 虚机给的是**真内核 + 真 initrd + 真 systemd + 真包管理 + 真文件系统（XFS/LVM）**，比 WSL2 强一档，代价是口径必须写清：**机器是虚拟的**。
+- 成本 **¥0**：ISO 免费下载、QEMU 便携版免管理员安装。
+- 所以矩阵里它是**新增一格**「麒麟 V10 SP3（Halberd）× amd64（虚拟机，非物理裸机）」，而不是把「裸机」那格改成已验证。
+
+## 1. 准备（全部在本机完成，不需要管理员）
+
+### 1.1 ISO：麒麟官方镜像中心
+
+双源飞流下载中心 `sl.ygwid.cn` 的目录数据在它的 `js/main.js` 里（`kylinDownloadData`）；服务器版文件名形如
+`Kylin-Server-V10-SP3-2403-Release-20240426-X86_64.iso`，直链形如
+`https://iso.kylinos.cn/web_pungi/download/cdn/<token>/<文件名>`，同一份目录数据里带 **sha256**。
+
+下载后**必须核对 sha256**（本次 `Kylin-Server-V10-SP3-2403-Release-20240426-X86_64.iso` = 4.37GB，
+sha256 `039681842fc354789ed4471f9debdf0204a4e64607db59a9d8fecb37c4ed77a3`，核对通过）。
+
+> 统信 UOS 的 ISO 不在这个站（需官网注册账号），所以统信那格仍是「未验证」。
+
+### 1.2 QEMU for Windows：本机装不了的那条路，怎么绕过去
+
+- 官方 Windows 安装包镜像（`qemu.weilnetz.de`）实测只有 **6.7 KB/s**（197MB 要 8 小时）——不可用。
+- Windows 安装还要管理员权限装驱动——本轮不想引入 UAC 交互。
+- **可行解**：MSYS2 便携版 ＋ TUNA 镜像装 UCRT64 版 QEMU：
+  ```bash
+  # msys2-base-*.sfx.exe 是自解压包，任意目录，免管理员
+  # etc/pacman.d/mirrorlist.* 指向 TUNA（注意 mingw 系仓库要带 /mingw/）
+  Server = https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/$repo/    # ucrt64 / mingw64 / clang64 …
+  Server = https://mirrors.tuna.tsinghua.edu.cn/msys2/$repo/           # msys
+  pacman -S --needed mingw-w64-ucrt-x86_64-qemu
+  ```
+  结果：QEMU 11.1.3，`qemu-system-x86_64 -accel help` 含 **whpx**（Windows Hypervisor Platform）。
+- **宿主能力前提**：Windows 11 家庭版 + 已在跑 WSL2/VBS ⇒ WHPX 可用（本次 `-accel whpx` 生效，
+  装完 4.4GB 的麒麟 ISO 全程约 **5 分钟**，虚拟化性能不是瓶颈）。
+
+### 1.3 宿主侧 HTTP 服务（喂 kickstart 用）
+
+QEMU user 模式网络的 `10.0.2.2` 就是**宿主 loopback**，所以 guest 能直接取宿主上的服务。
+本轮用一个 30 行的 Go 静态服务绑 `127.0.0.1:8000` 伺服 `ks.cfg`（无需管理员、无需额外依赖）。
+
+## 2. 无人值守安装（anaconda kickstart）
+
+麒麟 V10 SP3 是 anaconda（RHEL 系）安装器，装法：
+
+1. 从 ISO 取引导件：Windows 侧 `Mount-DiskImage` 挂载后直接拷 `/isolinux/vmlinuz` 与 `/isolinux/initrd.img`。
+2. kickstart（`ks.cfg`）要点：
+   - `rootpw --plaintext <口令>`、`network --bootproto=dhcp --device=link --onboot=on --activate`
+   - `autopart` ＋ `clearpart --all --initlabel`（自动分区）
+   - `%packages`：`@core`、`openssh-server`、`curl`、`wget`
+   - `%post`：放开 `PermitRootLogin yes` / `PasswordAuthentication yes`（默认禁 root 口令登录，**不改这条就进不去**），
+     `systemctl enable sshd`、`systemctl enable NetworkManager`、`systemctl set-default multi-user.target`
+   - 末尾 `poweroff`（配 QEMU 的 `-no-reboot`，装完自动退出）
+   - SELinux 不在 ks 里开（镜像默认 disabled，**照登**而不是硬开）
+3. 启动参数（`console=ttyS0` 与 `inst.text` **必须有**，否则无显示设备时安装器卡在图形界面）：
+   ```bash
+   qemu-system-x86_64 -accel whpx -m 4096 -smp 4 \
+     -cdrom <ISO> -drive file=<disk>.qcow2,if=virtio,format=qcow2,cache=writeback \
+     -kernel <vmlinuz> -initrd <initrd.img> \
+     -append "inst.ks=http://10.0.2.2:8000/ks.cfg console=ttyS0 inst.text" \
+     -netdev "user,id=n0,hostfwd=tcp::22222-:22,hostfwd=tcp::18083-:18083" \
+     -device e1000,netdev=n0 -nographic -no-reboot -rtc base=utc
+   ```
+   串口输出重定向到文件即安装进度日志。装完关机后，**再不带 `-kernel/-initrd` 起一次**，从磁盘启动。
+   （`-cdrom` 与 `-kernel` 同时给时安装源仍是 cdrom，不需要 `inst.repo`。）
+
+## 3. 在 guest 里跑 LEVEE（演练本体）
+
+```bash
+# 交叉编译（静态，不依赖目标机 glibc）
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+  -ldflags "-s -w -X main.version=dev+19ab577 -X main.commitHash=19ab577 -X main.buildTime=<ts>" \
+  -o levee ./cmd/levee
+```
+把它 scp 进 guest，然后 guest 内四步（与 SQLite 版的 S3 演练同形，差别只是 OS）：
+
+1. `levee -c <cfg> system doctor` → 期望 **healthy**
+2. `levee -c <cfg> secret add --name ssh-lab --type ssh_password --value '{"username":"root","password":"…"}'`
+   （**结构化 JSON 必须带 username**——裸口令会让 `CredentialRef.Username` 为空而认证失败）
+3. `levee -c <cfg> target import --file inventory.yaml` → `template create` → `new` → `plan <run> --targets 127.0.0.1`
+4. `levee -c <cfg> serve --engine-enabled --engine-snapshot-dir <dir> --auth-token initiator=… --auth-token drill-approver=…`
+   然后 REST 走 `approve → apply → rollback`，最后 `GET /api/v1/audit/verify?changeId=<id>`。
+
+宿主侧免交互口令登录（Windows OpenSSH）：
+`SSH_ASKPASS=<脚本>` + `SSH_ASKPASS_REQUIRE=force` + `DISPLAY=dummy`，脚本内容 `@echo <口令>`。
+
+## 4. 本次结果（照登，不修饰）
+
+| 项 | 值 |
+|---|---|
+| OS | Kylin Linux Advanced Server **V10 (Halberd)**，x86_64（ISO 为 SP3 2403 构建） |
+| 内核 | `4.19.90-89.11.v2401.ky10.x86_64`（内核命令行含 `audit=0`） |
+| init | **systemd 243**（v243-67.p05.ky10）；`sshd` active |
+| glibc | 2.28 |
+| 文件系统 | XFS + LVM：`/boot` 1G、`klas-root` 35G（`/`）、`klas-swap` 4G |
+| 资源 | 4 vCPU / 约 2.9G 可用内存（QEMU 给 4G） |
+| SELinux | **disabled**（镜像默认） |
+| 系统状态 | `systemctl is-system-running` = **degraded**：`kylin-activation-check.service`（企业授权未激活）、`rngd.service`（虚机无硬件 RNG） |
+| levee | `dev+19ab577`，静态链接（`not a dynamic executable`），`system doctor` = **healthy**（config / database / permission_matrix 全 OK） |
+| 变更 | `run-c82b2dceaab5d8b7`：`approved → completed`（`/tmp/levee-vm/state.txt` v1→v2）→ `rolled_back`（v2→v1） |
+| 审计 | `GET /audit/verify` → `valid=true`、`entriesVerified=3`、`unsealed=0`；快照目录 `snap-552851cb0abaeef0` 落盘并按快照还原 |
+| 存储 | SQLite（`/root/vm/data/levee.db`）；库内 `runs` 1 行（rolled_back）、`audit` 3 行 |
+
+## 5. 踩坑清单（都实测过）
+
+- **qemu.weilnetz.de 的 Windows 包不要用**：6.7KB/s，197MB 要 8 小时。走 MSYS2 + TUNA（22MB/s）。
+- **TUNA 的 msys2 镜像路径**：mingw 系仓库要带 `/mingw/`（`msys2/mingw/ucrt64/`），写成本轮第一版的
+  `msys2/$repo/` 会 404；`msys.db` 404 与 ucrt64 包无关，可忽略。
+- **PowerShell 传参**：`Start-Process -ArgumentList` 传数组时，`-append "a b c"` 会被拆成三个参数，
+  QEMU 报 `console=ttyS0: Could not open`——要用**整串参数**。
+- **`scp` 的端口旗标是大写 `-P`**，`-p` 是保留时间；用错会把端口号当成本地文件名。
+- **Windows OpenSSH 的免交互口令**：`SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` + `DISPLAY=dummy`，口令脚本回显即可。
+- **degraded 不等于安装失败**：授权检查与硬件 RNG 两个单元失败是虚机环境的必然结果，照登即可。
+- **镜像默认 SELinux disabled**：要开得在 ks 里显式写 `selinux --enforcing`，且要确认该镜像支持，否则安装器会拒绝。
+
+## 6. 还没做的
+
+- **统信 UOS**：ISO 需官网注册账号下载（双源飞流站只有麒麟/中标麒麟）。
+- **物理裸机**：仍需租 IDC 机（步骤见 `docs/xinchuang-baremetal-drill.md`）。
+- **arm64**：owner 已判定无门路，不做。
