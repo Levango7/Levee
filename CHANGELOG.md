@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### 文档（SQL 审核链演示手册：四幕离线复跑「高危拦截＋强制审批＋事后审计追溯」）
+
+- **缺口**：§8.6 第 4 步的演示面此前只有脚本（`examples/demo/sql-review-chain.sh`，未随版本库提交，后由并行线收进 `feat/sql-review-demo` 分支、PR #356 在途），没有文档化的跑法、验收口径与话术。
+- **修法**：`docs/demo-sql-review-chain.md`——前置（离线、无库、throwaway 目录）→ 跑法 → 四幕逐幕「屏幕看到 / 治理语义 / 验收证据」表 → 三句自撰话术 → 与九步链路的如实映射（覆盖前五步＋审计报告；分批执行 / 验证门禁 / 失败自动回滚需真 target，不在离线演示面）→ 边界（status-only 不冒充执行、本地 `--as` 的既有 WARN 保留、规则文案自撰有专测）。
+- **验证**：脚本以当前树二进制实跑四幕全 PASS、RC=0（act0 SR-02 fail / act1 `FailedPrecondition` 具名 / act2 双签＋未达法定人数 `apply` 退出码 4 / act3 报告含结论＋plan_hash＋审批链、空链如实报空）；文档引用断言与产物逐条对上。
+- **边界**：纯文档笔，零代码改动；脚本本体未随本分支提交，由并行线收进 `feat/sql-review-demo`（PR #356 在途，归属登记在 agent-board，本线不擅自代提交）。
+
+### 修复（`levee plugin --help` 仍称 channel 插件「registry-only」，与 serve 装载的事实矛盾）
+
+- **缺口**：`cmd/levee/cmd_plugin.go` 的 `newPluginCmd` Long 文案仍写 channel 插件「registry-only (no engine consumption)」，而 serve 启动即装入已启用的通道插件（`installPluginChannels`）、CLI 一次性 apply 路径不装——文案与行为相反（上方注释同病）。
+- **修法**：改为如实口径——「Channel plugins are loaded by serve at startup for enabled registry entries; the CLI apply path does not load them; channel_types must match the target's channel_type (lowercase plugin type name). See docs/channel-plugins.md.」注释同步。
+- **验证**：`go build ./...` 绿；本机实跑 `levee plugin --help`，Long 全文即新口径（serve 启动装入 / CLI apply 不装 / channel_types 须匹配 target 的 channel_type）；gofmt 干净。
+
+### 新增（k8spolicy 门禁 DSL 接线：YAML 今天起写得出这个门禁）
+
+- **为什么做**：S1（纯函数策略引擎＋门禁适配器）与 #349 的引擎侧预接（`gateFromCheck` 的 `case "k8spolicy"`）都已进 master，但 `internal/dsl` 的 YAML 词表没有 `k8spolicy`，`convertGateCheck` 落 default 报 LE051——YAML 写不出这个门禁，S1 是「引擎认、门禁写不出」的悬空面。opencode 交接单点名归本线（internal/dsl owns）。
+- **改动**：`yamlGateRaw` 加 `K8sPolicy *yamlK8sPolicyRaw`（`manifests` 字符串数组 / `manifest` 单串两形态）；`convertGateCheck` 新 case 把类型字段种成 `params.manifests` / `params.manifest`（与引擎 `k8sPolicyManifests` 契约对齐；声明字段在键冲突时获胜、用户 params 同行）；函数尾 `gc.Params = g.Params` 无条件覆盖改为「gc.Params 为 nil 时才透传」，其他 check 类型语义逐字不变；`ast.go` GateCheck 词表与 LE051 文案补 k8spolicy。
+- **验证**：新 `internal/dsl/k8spolicy_gate_test.go`（列表形态逐字保留＋用户 params 同行 / 单文档形态 / 冲突时声明字段获胜 / 空块 Type 如实且 Params 为空交引擎 fail-closed）；dsl/engine/verify/cmd-levee 四包 go test 全绿；变异抽查（yaml tag 改名→测试当场抓红→还原回绿）；gofmt 干净；提交前全量门禁实跑——`go test ./...` RC=0、`golangci-lint` 全仓 0 issues（私有 TMPDIR+cache 绕同机锁）、`go vet` 干净。
+- **边界（如实）**：空 `k8spolicy: {}` 解析通过、无 manifests，由引擎材料化时 fail-closed 拒（不在 parser 层假装拦截）；`docs/gates.md` / `docs/leveelang-spec.md` 语法节按交接单约定归 opencode 补，本笔不动。
+
 ### 新增（k8s 变更通道：S2——通道插件，核心零行改动）
 
 - **为什么做**：D-4（`docs/design-k8s-change-governance.md`）的第二片。S1 给了"改 k8s 工作负载之前该查什么"，本笔补**执行面**：让一个 Kubernetes 集群成为 LEVEE 可拨的 target，使工作负载变更走与 SSH 主机变更完全相同的审批·快照回滚·WORM 审计链。

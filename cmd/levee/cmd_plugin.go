@@ -35,9 +35,9 @@ func newPluginCmd() *cobra.Command {
 		// MODULE plugins are a live execution surface (serve registers
 		// enabled "notify" plugins into its notification manager, resolves
 		// "gate" plugins at check time, and registers "module" plugins
-		// into the process-wide executor), while channel plugins remain
-		// registry-only. To extend the engine's channels today, write a
-		// compile-time channel plugin instead (docs/channel-plugins.md).
+		// into the process-wide executor), while channel plugins are
+		// loaded by serve at startup for enabled registry entries — the
+		// CLI apply path does not load them (docs/channel-plugins.md).
 		Long: "Manage the LEVEE plugin registry: list, install, enable, " +
 			"disable, remove, inspect and test plugins (registry, sandbox " +
 			"and signature verification). EXECUTION SURFACE: enabled " +
@@ -45,10 +45,11 @@ func newPluginCmd() *cobra.Command {
 			"notification manager as delivery channels; gate plugins are " +
 			"dispatched by a workflow's `plugin:` gates; module plugins " +
 			"are registered into the executor, so a step whose `module:` " +
-			"names the plugin runs it. Channel plugins are still " +
-			"registry-only (no engine consumption); to extend the " +
-			"engine's channels today, write a compile-time channel " +
-			"plugin instead (see docs/channel-plugins.md).",
+			"names the plugin runs it. Channel plugins are loaded by serve " +
+			"at startup for enabled registry entries; the CLI apply path " +
+			"does not load them; channel_types must match the target's " +
+			"channel_type (lowercase plugin type name). See " +
+			"docs/channel-plugins.md.",
 	}
 
 	cmd.AddCommand(newPluginListCmd())
