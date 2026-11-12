@@ -53,6 +53,12 @@ func pluginCheck() dsl.GateCheck {
 	return dsl.GateCheck{Type: "plugin", Plugin: "http-probe", Params: map[string]any{"url": "https://example.com"}}
 }
 
+func k8spolicyCheck() dsl.GateCheck {
+	return dsl.GateCheck{Type: "k8spolicy", Params: map[string]any{
+		"manifests": []any{"apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ok\n"},
+	}}
+}
+
 // TestExecutabilityProblemIsBidirectional pins both halves: a declaration the
 // process can honour must NOT be blocked, and one it cannot MUST be. Only the
 // refusal side was ever exercised before, so the "allowed" side had no proof
@@ -79,6 +85,10 @@ func TestExecutabilityProblemIsBidirectional(t *testing.T) {
 		// behaviour change, so their non-blocking is pinned here.
 		{name: "cmd needs no runtime", check: cmdCheck(), phase: verify.PhasePreApply, rt: GateRuntime{}, blocked: false},
 		{name: "probe needs no runtime", check: probeCheck(), phase: verify.PhasePreApply, rt: GateRuntime{}, blocked: false},
+		// k8spolicy is pure declaration evaluation (no cluster, no runtime dep);
+		// a declared policy gate must be executable in any deployment.
+		{name: "k8spolicy needs no runtime", check: k8spolicyCheck(), phase: verify.PhasePreApply, rt: GateRuntime{}, blocked: false},
+		{name: "k8spolicy needs no runtime post", check: k8spolicyCheck(), phase: verify.PhasePostApply, rt: GateRuntime{}, blocked: false},
 		// plugin gates resolve their plugin name at check time against the
 		// deployment's registry; without a resolver the plan is refused.
 		{name: "plugin without resolver", check: pluginCheck(), phase: verify.PhasePostBatch, rt: GateRuntime{}, blocked: true, want: "requires a plugin resolver"},
