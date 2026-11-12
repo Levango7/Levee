@@ -22,6 +22,7 @@
 | 容器镜像（alpine 基础） | amd64 | **已验证** | `Dockerfile`（多阶段、`CGO_ENABLED=0 GOOS=linux`）；CI `trivy` 腿 `docker build` + 扫描 |
 | 容器镜像 | arm64 | **已验证（QEMU 模拟，非 ARM 真机）** | 2026-11-12 本机 `docker buildx build --platform linux/arm64 --load .` 构建 `Dockerfile` 全链路成功（node 前端 + Go 交叉编译 + alpine 运行时）；`docker run --platform linux/arm64` 实跑 `uname -m`=aarch64、`levee version`、`levee system doctor`=healthy、`serve` 的 `/healthz` 返回 `{"status":"ok"}`。宿主为 x86_64 + Docker Desktop QEMU，不构成 ARM 真机证据，限制见 §6。另：发布腿 `.github/workflows/release.yml` 的 `image` job 已配置 buildx `platforms: linux/amd64,linux/arm64` ＋ `docker/setup-qemu-action` 并推 GHCR——**多架构出包是发布时能力，不进 PR 门**（tag 发布才跑） |
 | 麒麟 V10（Sword） | amd64 | **已验证（WSL2 用户态，非裸机）** | 2026-11-12 实跑：Kylin V10 (Sword) WSL2（内核 `6.6.87.2-microsoft-standard-WSL2`、glibc 2.28、x86_64）装 `levee` linux/amd64（`CGO_ENABLED=0`），`levee system doctor` healthy；SQLite 存储；SSH 通道到 `127.0.0.1:2222`；一条 change 走完 审批→执行（apply 前快照 `files=1`）→回滚→审计：`approved → completed → rolled_back`，目标文件 `v1 → v2 → v1`，`GET /audit/verify` 返回 `valid=true`、`entriesVerified=7`。限制见 §6 |
+| 麒麟 V10 SP3（Halberd） | amd64（**虚拟机**，QEMU/WHPX 宿主） | **已验证（虚机，非物理裸机）** | 2026-11-12/13 实跑：`Kylin-Server-V10-SP3-2403-Release-20240426-X86_64.iso`（sha256 与官方值一致）装进 QEMU 11.1.3 ＋ **WHPX 硬件加速**的 x86_64 虚机（4 vCPU / 4G，宿主 Windows 11）。guest 内核 `4.19.90-89.11.v2401.ky10.x86_64`、**真 systemd 243**、glibc 2.28、XFS+LVM（`klas-root`/`klas-swap`）；`levee`（linux/amd64 静态，`dev+19ab577`）`system doctor` = **healthy**（config / database / permission_matrix 全 OK）；一条 change `run-c82b2dceaab5d8b7` 走完 `approved → completed`（目标文件 v1→v2）→ `rolled_back`（v2→v1），`GET /audit/verify` 返回 `valid=true`、`entriesVerified=3`。**限定**：宿主是 hypervisor 而非物理机；镜像默认 **SELinux disabled**；`systemctl is-system-running` = degraded（`kylin-activation-check.service` 企业授权未激活、`rngd.service` 虚机无硬件 RNG）；统信 UOS 与 arm64 未覆盖；复现步骤见 `docs/xinchuang-vm-drill.md` |
 | 麒麟 / 统信 UOS | amd64（裸机） | **未验证** | WSL2 证据不等同裸机：内核、systemd、安全基线、驱动与 `deploy/baremetal/install.sh` 均未在信创整机上实跑 |
 | 麒麟 / 统信 UOS | arm64（鲲鹏/飞腾） | **未验证** | 同上；ARM 腿跑在 ubuntu/macos/windows 上，不构成信创 OS 证据 |
 
@@ -60,7 +61,7 @@
 
 | 格 | 取证方式 | 前置 |
 |---|---|---|
-| 麒麟/统信 × amd64/arm64 | 装 `levee` → `levee doctor` → 起一条 change 走完 审批→执行→回滚→审计 | **amd64 WSL2 用户态已跑通**（2026-11-12，见 §1）；裸机 amd64、arm64 真机仍缺 |
+| 麒麟/统信 × amd64/arm64 | 装 `levee` → `levee doctor` → 起一条 change 走完 审批→执行→回滚→审计 | **amd64 WSL2 用户态已跑通**（2026-11-12，见 §1）；**amd64 虚机（麒麟 V10 SP3）已跑通**（2026-11-12/13，见 §1）——真内核 ＋ 真 systemd ＋ 真包管理，比 WSL2 强一档，**但仍不是物理裸机**；**物理裸机、统信 UOS、arm64 仍缺**（ARM owner 已判定无门路，统信 ISO 需官网注册账号） |
 | 达梦/金仓 PG 兼容模式 | 在兼容模式实例上跑 `internal/state` 的 PG 路径：schema 迁移 + 审计链 + 租约 CAS | **金仓已跑通（2026-11-12）**：`internal/state` + `internal/cluster` 全绿，另有一条 change 的全链路与 `audit/verify`；达梦实测**不适用**（无 PG 线协议；PG 语法模式仍不认 `TIMESTAMPTZ`、`TEXT` 主键、`ON CONFLICT`），要支持需 DM 驱动 + 方言层 |
 | arm64 容器镜像 | buildx 多架构构建 + 在 ARM 容器里跑关键用例（qemu 可用与否记实） | **已跑通（QEMU 模拟，2026-11-12，见 §1）**：buildx 构建 + 容器内 `version` / `system doctor` / `serve` 的 `/healthz`；ARM 真机仍缺 |
 | k8s 变更面（S2） | 本地 kind 集群三场景：改 Deployment 副本数 → 审批拒绝则不发生 → 允许则发生 → 回滚还原 → 审计链留行 | **已跑通**（#348 + #349；kind `levee-s2`，run `run-205b77d4bce89594`） |
@@ -73,4 +74,5 @@
 - **QEMU 证据的边界**：arm64 容器镜像证据来自 x86_64 宿主上的 Docker Desktop QEMU 模拟（`docker buildx --platform linux/arm64`），证明 Dockerfile 能交叉构建、镜像在 aarch64 用户态可启动并 serving，**不能**替代鲲鹏/飞腾真机；对外引用必须注明「QEMU 模拟」。
 - **金仓证据的边界**：2026-11-12 的 KingBase 证据来自 Docker **单实例**（x86_64、`DB_MODE=pg`、V9R1C10），验证的是「金仓 V9 PG 兼容模式 + LEVEE 的 PG 路径」。**未**覆盖 KES 主备/共享存储集群、Oracle 模式、国密/等保配置、备份恢复与生产参数调优；对外引用必须写「金仓 V9 PG 模式（单实例）」。
 - **达梦证据的边界**：2026-11-12 实测的是「DM8 不能作为 PG 位直接替换」，不是「达梦永远不支持」。若未来做 DM 适配，需单独立项（DM 驱动 + SQL 方言层 + `TEXT`/CLOB 主键替代方案）；完成前对外只能说「需评估 / 需适配」。
+- **虚机证据的边界**：2026-11-12/13 的麒麟 V10 SP3 证据来自 **QEMU ＋ WHPX 虚拟机里的 guest**——OS 内核、initrd、systemd、包管理、XFS/LVM 都是真的，但**机器是虚拟的**：没有物理机的固件/驱动差异，也没有真实硬件故障域。对外引用必须写「麒麟 V10 SP3 × amd64（虚拟机，非物理裸机）」，**不能**写成「裸机已验证」。同一实验环境还有三处如实照登的事实：镜像默认 **SELinux 为 disabled**；`systemctl is-system-running` = **degraded**（`kylin-activation-check.service` 企业授权未激活、`rngd.service` 虚机无硬件 RNG）；内核命令行带 `audit=0`。
 - 本表会随 CI 与实跑更新；改了结论要同步 `docs/blocked-items.md` 的对应行（同一结论写两遍就会漏改一半）。
