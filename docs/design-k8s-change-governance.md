@@ -47,7 +47,8 @@
 
 ### S1 — k8s 工作负载**策略门禁**（纯函数，不需集群）
 
-> **状态：已实现**（`internal/k8spolicy` 策略引擎 ＋ `internal/verify` 的 `K8sPolicyGate`；11 条策略、解析失败 fail-closed、拒绝必带字段定位与补救文案；门禁的**注册与 DSL 接线**留待 S2——那一步会碰到 `internal/dsl` 与 `cmd/levee`，需与认领者协调）。
+> **状态：已实现**（`internal/k8spolicy` 策略引擎 ＋ `internal/verify` 的 `K8sPolicyGate`；**19 条策略**、解析失败 fail-closed、拒绝必带字段定位与补救文案；门禁的**注册**已在引擎侧接好（`internal/engine/step_gates.go` 的 `case "k8spolicy"`），**DSL/parser 接线**归 `internal/dsl` 认领者，待其落地后 YAML 才能声明该门禁）。
+> 策略覆盖两族：**权限与卫生**（privileged / allowPrivilegeEscalation / hostPath / hostNamespace / hostPort / runAsUser=0 / add capabilities / 未固定镜像 / 缺 resources.limits / 未声明 runAsNonRoot / 自动挂载 SA token）＋ **凭据与运行属性**（`/proc` 未遮蔽 / 默认 ServiceAccount / 凭据以字面量写进 env / 根文件系统可写 / 未 drop ALL capabilities / 缺 liveness / 缺 readiness / 明文 HTTP 镜像仓库）。后一族是 2026-11-12 补的：前一族管「容器要了太多权限」，后一族管「这个容器能不能安全地跑起来、出了事能不能被发现」。
 
 - **做什么**：一组"提交前"判定：privileged / hostPath / 未声明 `resources.limits` / `image: latest` 配 `imagePullPolicy: Always` / 缺 `runAsNonRoot` 等 → 拒绝或告警，**必须给出可读的理由**（不静默拒绝）。
 - **形态**：接入既有 gate 家族（`internal/verify`，含 pre_apply / post_batch 位置），与既有"拒绝要带原因"的约定一致。

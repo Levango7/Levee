@@ -51,6 +51,7 @@
 | 能力 | 现状 | 证据 |
 |---|---|---|
 | LEVEE 自己跑在 k8s 里 | **已验证**（Helm 渲染门） | `deploy/helm/levee` |
+| k8s 工作负载**策略门禁**（S1） | **已验证（纯函数门禁，19 条策略）** | `internal/k8spolicy`（策略引擎，不引 K8s 依赖）＋ `internal/verify.K8sPolicyGate`（critical 阻断、warning 报出、解析失败 fail-closed）；引擎侧 `internal/engine/step_gates.go` 的 `gateFromCheck` 已接受 `k8spolicy` 类型。策略覆盖权限卫生与凭据/运行属性两族（清单见 `docs/gates.md`）。**边界**：在 YAML 里声明该门禁还需 `internal/dsl` parser 接线（他人认领区，未落地前只能由引擎/API 直接构造该门禁）；单测纯本地，不依赖集群 |
 | 把 k8s 工作负载当变更目标 | **已验证（运行期通道插件，kind 实跑）** | `examples/plugins/k8s`（`type: channel`，`channel_types: [k8s, kubernetes]`，核心零行改动）；`plugin install` + `enable` 后由 `serve` 启动装载（日志 `plugin channel transports installed count=2`）；kind 集群上执行 `kubectl scale` 实测通过。边界：仅 `serve` 装载插件通道，CLI `apply` 路径不装载；`exec` 无 stdin；`target check` 的探针命令集群答不了 |
 | k8s 侧变更的审批·回滚·举证 | **已验证（运行期通道插件，kind 实跑）** | 一条 change：`approved → completed`（Deployment 副本 1→3）→ `POST /rollback` → `rolled_back`（副本 3→1，按变更前快照 `kubectl get -o json` 还原）→ `GET /audit/verify` `valid=true`；run `run-205b77d4bce89594`（2026-11-12） |
 
