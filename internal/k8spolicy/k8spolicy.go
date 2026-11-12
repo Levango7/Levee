@@ -78,7 +78,7 @@ const (
 	// whether a wedged workload is noticed at all.
 	PolicyProcMount          = "k8s/proc-mount"
 	PolicyDefaultSA          = "k8s/default-service-account"
-	PolicySecretLiteralEnv   = "k8s/secret-literal-env"
+	PolicySecretLiteralEnv   = "k8s/secret-literal-env" // #nosec G101 -- policy ID constant that surfaces in audit/evidence output; the "secret" here names the policy topic (credentials written in clear text), not a credential
 	PolicyReadOnlyRootFS     = "k8s/read-only-root-filesystem"
 	PolicyNoDropCapabilities = "k8s/no-drop-capabilities"
 	PolicyNoLivenessProbe    = "k8s/no-liveness-probe"
@@ -272,7 +272,7 @@ func (s *findingSink) checkPodLevel(pod map[string]any) {
 	_, named := dig(pod, "serviceAccountName")
 	_, legacy := dig(pod, "serviceAccount")
 	mount, hasMount := digBool(pod, "automountServiceAccountToken")
-	if !named && !legacy && !(hasMount && !mount) {
+	if !named && !legacy && (!hasMount || mount) {
 		s.add(PolicyDefaultSA, SeverityWarning,
 			"spec.template.spec.serviceAccountName",
 			"pod runs as the namespace's default service account (the workload inherits an identity it did not ask for)",
@@ -385,7 +385,7 @@ func dropsAllCapabilities(cm map[string]any) bool {
 // variable as carrying a credential. The check is by name on purpose: a
 // literal value under a credential-looking name is the case worth refusing,
 // and a literal LOG_LEVEL is not worth a finding.
-var credentialNameParts = []string{ // #nosec G101 -- the entries are NAMES of environment variables, not credentials; this list is what tells the policy which names to treat as credential-bearing
+var credentialNameParts = []string{
 	"PASSWORD", "PASSWD", "TOKEN", "SECRET", "CREDENTIAL",
 	"APIKEY", "API_KEY", "PRIVATE_KEY", "ACCESS_KEY", "ACCESSKEY",
 }
