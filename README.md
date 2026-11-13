@@ -61,7 +61,7 @@ LEVEE 治理的边界是**变更的危险度**，不是资产的位置：
 - **危险度评分与审批分级路由**：plan 生成时自动评分（不可逆步骤/破坏性动作/影响面/回滚覆盖/批次扇出五因子，明细可解释），分数+红线推导审批下限（任一不可逆步骤 ⇒ 至少 high），**tier = max(workflow 声明, 计划下限) 只升不降**；PlanChange 自动启动审批链（补齐"声明了但没人创建 pending 记录"断链），评分与下限随 plan_json 落盘
 - **单步验证门 API**：`POST /gates/verify` 按需执行一条 cmd/probe/slo 验证（与引擎门禁同源构造器，零语义漂移）——操作员预检、流水线 pre-check、ChatOps 即席健康检查无需规划整个变更；human 检查点显式排除（归审批链）；每次执行留审计
 - **ITSM Jira 审批镜像**：`notify.jira.*` 配置启用后审批链开始建 Jira issue、决策自动评论（纯出站镜像，LEVEE store 仍是唯一事实来源；禁用时零外发零装配）
-- **双协议 API**：gRPC（9 个业务服务 + 标准 `grpc.health.v1`）+ REST 网关（`/api/v1/`），共享同一服务实例
+- **双协议 API**：gRPC（10 个业务服务 + 标准 `grpc.health.v1`）+ REST 网关（`/api/v1/`），共享同一服务实例
 - **AI 辅助（部分能力仅库就绪，见下方"能力可达性"）**：`internal/diagnosis`（日志采集+分析、健康探测）已接入 `serve` 与 `levee diagnose`；`levee converse` / REST 对话闭环已接入，确认的建议会变成 draft 变更进治理链（不执行、不跳审批）。**LLM 全链路接线且默认关闭**：`ai.llm` 配置节（`enabled/provider/api_key/model/base_url`）同时驱动 ① `recommend` 引擎的 hybrid 模式与 ② 诊断的多轮 LLM 根因推理（`diagnosis/llm_diag`，**收敛必须跨两轮同假设确认**，结果的 `ConfidenceSource` 显式标注为模型自报——不当作已验证事实）；`serve` 与 `levee converse` 都读它，构造失败降级回知识库/规则路径并打 warn。**效果学习闭环已闭合**：应用结论（成功/失败/回滚）喂入 `recommend/feedback`，成功合成新知识库模式、与推荐引擎**共享同一 KB**，快照落盘（重启不失忆），`levee converse` 同样读取学习成果。RAG（伪向量 embedding）已按定位退役删除。
 - **多通道执行**：SSH / WinRM 无代理通道 + local 沙箱通道（CI/单机自测，程序白名单+参数策略+沙箱根三重门禁，fail-closed 默认）；新传输类型有**两条接入路**——编译期通道插件（实现 `channel.ChannelFactory` 随二进制构建）或**运行期插件**（`type: channel`，见下）。运行时插件（`levee plugin`，第 16 章）**四类全是活的执行面**：**notifier 接进 serve 通知管理器**（与 webhook 并列的投递渠道）；**gate 接进引擎门禁体系**（workflow 声明 `plugin: {name: xxx}`，计划期校验、执行期判 verdict，plan hash 纳入插件名）；**module 接进执行器**（step 的 `module:` 写插件名即分发，插件自持传输）；**channel 接进通道注册表**（插件名及 manifest `channel_types:` 声明的别名都成为可拨的 `channel_type`，会话子进程 connect 一次 exec 多次，明文凭据永不过管道——插件只拿引用名，密钥走自己的安装期配置）。**边界**：插件模块不在编译期「固有不可逆」词表里，破坏型插件步骤须由作者显式声明 `irreversible: true`；运行期通道单笔传输 ≤512 KiB（JSON 行帧，宿主越界拒发，`file.copy` 的小文件可用），且会话在 serve 进程内池化（跨 run 复用，见 `docs/channel-plugins.md` §8；一次性 CLI 进程无池）
 - **快照回滚**：`rollback: {strategy: snapshot, snapshot_paths: [...]}` 声明式文件级备份——apply 前经通道采集目标机文件（base64 传输），回滚时原样恢复（与 undo-action 显式互斥）；快照按 change id 键存，手动回滚路径可达；`--engine-snapshot-dir` 一旗标启用
@@ -197,7 +197,7 @@ levee/
 ├── cmd/levee/              # CLI 入口
 ├── internal/
 │   ├── engine/             # 工作流引擎
-│   ├── executor/           # 模块执行器 (file/pkg/shell/svc/user)
+│   ├── executor/           # 模块执行器 (file/pkg/shell/svc/user/mysql)
 │   ├── channel/            # 通道抽象层 (SSH/WinRM)
 │   ├── plugin/             # 插件系统 + cgroup 沙箱
 │   ├── approval/           # 审批服务

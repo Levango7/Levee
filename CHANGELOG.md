@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 修复（台账-代码一致性门禁扩面 + 陈旧声明订正）
+
+- **缺口**：2026-11-13 全仓普查复核出 9 处陈旧/矛盾声明；`check_doc_anchors.py` 的 CLAIMS 只覆盖 37 条，且 **README 不在 LIVE_DOCS 里**——而 README 正是读者（与 agent）实际进入的第一页。
+- **修法**：① CLAIMS 扩到 42 条（`MIN_CLAIMS` 33→38），新增第四轮五条，钉住「审核闸门已接进计划前检（不是『下一批』）」「执行器 AST 主判已落地」「mysql 模块已交付」「SQL 审核 verdict 面」「k8s 变更通道 S2」；② `README.md` 进 LIVE_DOCS（今日仅 1 条 `path:line` 锚点且可解析；docgen 块由 `docs regenerate check` 负责，不靠本门禁）；③ 订正四处陈旧声明：README 服务数 9→10、README 模块清单补 mysql、`levee-api.md` 审核闸门「下一批」改为已落地、k8s 设计文档「k8s 不能当变更目标」行标注「提案基线，已被 S2 推翻」。
+- **验证**：`check_doc_anchors.py` PASSED（30 anchors / 7 docs；42 claims 全 hold）；**变异实测**（把某 claim 的关键词换成不存在的符号 → 该行当场判红）；`test_doc_anchors.py` 24 例 OK；roadmap 门禁 PASSED。
+- **边界**：`docs/project-status-2026-11.md` §4.1/§5.2 的陈旧读数属**自认陈旧**（§15 已声明「以 §15 为准」），未改；CodeQL 开放告警数（release-notes 时点快照）未改。
+
 ### 修复（断网策略 Q1 落地：分区期拒绝新 apply / 新审批）
 
 - **缺口**：`docs/design-disconnect-policy.md` 的 Q1–Q4 已拍板（2026-11-10），但生产代码 0 行——分区期 serve 仍会受理新的 apply 与审批，而那时它无法证明执行权（无租约、无 epoch、无围栏），正是整套设计要避免的物理双跑面。

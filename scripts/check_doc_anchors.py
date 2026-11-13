@@ -54,6 +54,12 @@ LIVE_DOCS = (
     "docs/blocked-items.md",
     "docs/levee-api.md",
     "docs/product-positioning.md",
+    # The front door.  It carries one path:line anchor today (the docgen
+    # proto-scale block is generated, not hand-written), so admitting it costs
+    # the gate one more reference to keep alive and buys the page every reader
+    # actually starts from.  Its generated block is not an anchor — docgen
+    # regenerates it, and `docs regenerate check` owns its freshness.
+    "README.md",
     "AGENTS.md",
     "CONTRIBUTING.md",
 )
@@ -351,11 +357,47 @@ CLAIMS: tuple[Claim, ...] = (
         "internal/plugin/registry.go",
         "ChannelTypes",
     ),
+    # --- fourth round: the statements the 2026-11-13 full sweep found stale ---
+    # Each of these was a sentence that read as current while the code had
+    # moved: the audit gate said the command surface was "the next batch" after
+    # the chain had landed, the module list omitted mysql, and the k8s design
+    # baseline still described the pre-S2 world.  They are pinned here so the
+    # next drift fails CI instead of surviving until a human re-reads the page.
+    Claim(
+        "docs/levee-api.md",
+        "审核闸门已接进 plan 生成前预检（不是「下一批」）",
+        "internal/wiring/plan.go",
+        "reviewWorkflowSQL",
+    ),
+    Claim(
+        "docs/levee-api.md",
+        "执行器破坏性语句判定已落地（AST 主判）",
+        "internal/executor/modules/mysql/mysql.go",
+        "rejectDestructiveSQL",
+    ),
+    Claim(
+        "README.md",
+        "mysql 执行模块已交付（query / pt_osc / replica_switch）",
+        "internal/executor/modules/mysql/mysql.go",
+        "replica_switch",
+    ),
+    Claim(
+        "README.md",
+        "SQL 审核楔子已落地（fail 退出码 1 的 verdict 面）",
+        "internal/sqlreview/review.go",
+        "SeverityFail",
+    ),
+    Claim(
+        "README.md",
+        "k8s 变更通道已作为运行期通道插件交付（S2）",
+        "examples/plugins/k8s",
+        "channel_types",
+    ),
 )
 
-# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (33 of
-# ~37) is a ratchet — dropping assertions is possible, but only on purpose.
-MIN_CLAIMS = 33
+# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (38 of
+# ~42) is a ratchet — dropping assertions is possible, but only on purpose.
+MIN_CLAIMS = 38
 
 
 class ScopeError(RuntimeError):

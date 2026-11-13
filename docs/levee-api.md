@@ -383,9 +383,10 @@ levee sqlreview --file change.sql --json
 含 `fail_count` / `warn_count`）。逐条规则清单与输出样例见 `cli-reference.md` 第29章。
 
 **在治理链中的位置**：SQL 审核是「数据库变更发布」闭环的第一段——审过的 SQL 再经模板/工作流
-进入 计划 → 审批 → 分批执行 → 验证门禁 → 自动回滚 → 审计留痕（本章第2章各节）。把审核闸门
-接进 plan 生成前预检（失败即拒、结论入 plan 与审计报告）为下一批工作，见 `product-roadmap.md`
-的 P0「数据库变更发布楔子」行；本设计文档只记录已落地的命令面。
+进入 计划 → 审批 → 分批执行 → 验证门禁 → 自动回滚 → 审计留痕（本章第2章各节）。审核闸门
+已接进 plan 生成前预检（失败即拒、结论入 plan 与审计报告；`internal/plan/generator.go` 的
+`reviewWorkflowSQL`），执行器侧的破坏性语句判定已升到 AST 主判、审计报告接审核结论+plan_hash+
+审批链（CHANGELOG Unreleased「接链三项」）；见 `product-roadmap.md` 的 P0「数据库变更发布楔子」行。
 
 ---
 
