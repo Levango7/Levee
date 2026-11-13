@@ -120,7 +120,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 
 ## 6. 还没做的
 
-- **统信 UOS**：**服务器版已取证**（见第 8 节：UOS Server 20 1050e × amd64 虚机跑通）。桌面 V25 专业版（2500）仍无公开直链（官网下载页需登录联合统信账号；CDN 目录数据里只有 20 系的文件名）。
+- **统信 UOS**：**服务器版两格已取证**（第 8 节 20-1050e、第 9 节 V25-2510）。桌面 V25（2500）仍无公开直链（官网下载页需登录联合统信账号；CDN 目录数据里只有 20 系的文件名）。
 - **物理裸机**：仍需租 IDC 机（步骤见 `docs/xinchuang-baremetal-drill.md`）。
 - **arm64**：owner 已判定无门路，不做。
 
@@ -155,3 +155,22 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 4. `%post` 要点同麒麟：UEL20 的 sshd 默认**禁止 root 口令登录**，必须同样 sed 放开 `PermitRootLogin` / `PasswordAuthentication`，否则进不去。
 
 资源与前两台一致：4 vCPU / 4G，宿主 Windows 11，WHPX。口径不变：**这仍是虚拟机，不是裸机**；对外引用必须写「统信 UOS Server 20（1050e）× amd64（虚拟机，非物理裸机）」。SSH 端口 `22224`（V10 SP3 占 22222，V11 占 22223）。License 形态（免费使用授权 vs 正式授权）未在此验证。
+
+## 9. 2026-11-13 追加：统信 UOS Server V25（2510）同口径复跑
+
+结论先行：**统信最新服务器版 V25 也跑通了**——变更 `run-6c202ebeb2362b42`，`approved → completed`（v1→v2）→ `rolled_back`（v2→v1），`audit/verify` `valid=true`、`entriesVerified=3`、`unsealed=0`，快照 `snap-1663a5246678724b`；`system doctor` = **healthy**；`is-system-running` = **running**（0 failed units）。guest ＝ **UOS Server V25**（`VERSION_ID="25"`、`VERSION_CODENAME=qianlai`、`PLATFORM_ID=platform:uos25`），内核 `6.6.0-25.02.2510.029.uos25.x86_64`、systemd **255**、glibc **2.38**、XFS+LVM（`uos-root` 36G）、SELinux disabled、内核命令行含 `apparmor=0`、firewalld public zone 仅 ssh/mdns/dhcpv6-client、sshd 无预登录横幅。
+
+**获取镜像**
+
+- 官方服务器版下载页 `https://www.chinauos.com/resource/download-server` 列出的最新版 `uos-server-25-2510-amd64.iso`（5.53 GB），页面公布 **sha256 `825ec55f76166584b2bd923d41f9938e18ed380272e7315a57b587e2d89b17b2`**（md5 `ea3e28e9af214e7c8ea86b61edf9f589`）。该文件不在 `iso_info` API 的公开直链列表里，且宿主浏览器下载约 0.8 MB/s（5.53 GB 需约 2 小时）；
+- 做法：16 分段并发 `curl -r` 从官网 CDN 路径（`server/2510/uos-server-25-2510-amd64.iso`）直接拉完（约 7 分钟），`Get-FileHash` 与官方 sha256 **完全一致**（md5 也一致）。**它是官网文件、官网发布的值，不是第三方转存。**
+
+**安装的实测坑（与前两版对比）**
+
+1. **必须 `-cpu host`**（同麒麟 V11，与 UOS 20 相反）：V25 glibc **2.38** 要求 x86-64-v2；默认 qemu64 会在内核 init 阶段 panic。
+2. **anaconda 36.16.5**（uos25 包线）：与 V11 一样**没有 `install` 关键字**（本仓 ks 已省略）；`@core`＝minimal-environment → core；glibc 2.38 / kernel 6.6 与 UOS 20 的 UEL20（anaconda 33 / glibc 2.28）完全是两条产品线。
+3. PowerShell 5.1 的 `Out-File -Encoding utf8` 会写 **BOM**——anaconda 把 BOM 当成第 1 行的未知命令（`Unknown command`）并退出安装；ks 必须**无 BOM** 写入。
+4. `scp`：V25 上又掉了——`scp`（OpenSSH≥9 默认 SFTP）**可以传**（本次未复现 UOS 20 的静默失败），但 `scp -O` 在四个版本上都稳定可用，统一用它即可。
+5. sshd **没有预登录横幅**（UOS 20 有 `UnionTech OS Server 20 1050e` 行）。
+
+资源与前三台一致：4 vCPU / 4G，宿主 Windows 11，WHPX。口径不变：**这仍是虚拟机，不是裸机**；对外引用必须写「统信 UOS Server V25（2510）× amd64（虚拟机，非物理裸机）」。SSH 端口 `22225`（V10 SP3 `22222` / V11 `22223` / UOS 20 `22224`）。License/激活形态未在此验证。
