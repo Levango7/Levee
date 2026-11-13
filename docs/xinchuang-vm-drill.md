@@ -120,7 +120,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 
 ## 6. 还没做的
 
-- **统信 UOS**：桌面 V25 专业版（2500）没有公开直链（官网下载页需登录联合统信账号；CDN 目录数据里只有 20 系的文件名）。**服务器版 UOS Server 20（1050e）AMD64 有公开直链 + 官方 sha256**，已在后台下载；下完走同一套流程（装法待确认——UOS 不是 anaconda 系，第 7 节的「V11 教训」说明这类差异要照实记）。
+- **统信 UOS**：**服务器版已取证**（见第 8 节：UOS Server 20 1050e × amd64 虚机跑通）。桌面 V25 专业版（2500）仍无公开直链（官网下载页需登录联合统信账号；CDN 目录数据里只有 20 系的文件名）。
 - **物理裸机**：仍需租 IDC 机（步骤见 `docs/xinchuang-baremetal-drill.md`）。
 - **arm64**：owner 已判定无门路，不做。
 
@@ -135,3 +135,23 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 3. 资源与 V10 一致：4 vCPU / 4G，XFS+LVM（`klas-root` 35G / `klas-swap` 4G），宿主同一台 Windows 11。
 
 口径不变：**这仍是虚拟机（QEMU+WHPX），不是裸机**；镜像默认 SELinux disabled；对外引用必须写「麒麟 V11 × amd64（虚拟机，非物理裸机）」。实验主机：SSH `22223`（V10 SP3 虚机占 `22222`）。
+
+## 8. 2026-11-13 追加：统信 UOS Server 20（1050e）同口径复跑
+
+结论先行：**统信服务器版也跑通了**——变更 `run-11484ccfa0fc3574`，`approved → completed`（v1→v2）→ `rolled_back`（v2→v1），`audit/verify` `valid=true`、`entriesVerified=3`、`unsealed=0`，快照 `snap-8a70e85e60d24b7c`；`system doctor` = **healthy**。guest 内核 `4.19.90-2201.4.0.0135.up1.uel20.x86_64`、systemd **243**（UEL20 build）、glibc **2.28**、XFS+LVM（`uos-root` 36G）、SELinux disabled、firewalld public zone 仅 ssh/mdns/dhcpv6-client；`is-system-running` = **degraded**（仅 `rngd.service`，虚机无硬件 RNG）。
+
+**获取镜像的过程（绕开 CDN 限速，全程 hash 兜底）**
+
+- 官网下载 API（`/api/v1/download/iso_info`）公布：`uniontechos-server-20-1050e-amd64.iso`，sha256 `614ae5a7cfaf4f7750a5e5b09a6bcc7d78ac99fbffd78a3eb593229d4a88c185`，大小 5.77 GB。
+- 直链：`https://cdimage-download.chinauos.com/uniontechos-server-20-1050e-amd64.iso`。实测单流限速约 **0.7–0.9 MB/s**，下到 2.42 GB 后杀掉；华为云镜像（`mirrors.huaweicloud.com/uniontech/`）返回的只是 SPA 首页（HTTP 200 但 `Content-Type: text/html`，不是 ISO）。
+- 做法：16 个并发分段 `curl -r s-e` 补齐剩余 3.34 GB（约 4 分钟），按序 `copy /b` 拼接，`Get-FileHash` 与官网 sha256 **完全一致**才启用。
+- 桌面 V25（2500）**没有公开直链**（API 的 `desktop` 段为空数组，CDN 文件名探测全 404/SPA），需注册联合统信账号下载；本节只覆盖**服务器版**。
+
+**安装的实测坑（都实测过）**
+
+1. **`-cpu host` 会让 UEL20 内核全灭**：dracut 的 bash hooks（`dracut-dmsquash`、`dracut-livenet`、`dracut-rootfs`）全部 segfault（`error 14 in bash`，`ip=0`）。**换默认 qemu64 CPU，segfault = 0**，kickstart 一次读入、7 分钟装完。原因：4.19 UEL 内核不认识 7945HX 暴露出的全部新指令集/状态位。（这与 V11 相反——V11 必须 `-cpu host`。）
+2. **anaconda 版本是 33（UEL20 包线），不是麒麟那套**：仍是 RHEL 系（`Packages/` + `repodata`，含 `@core` 组：minimal-environment → `core` ＋ `license-cui`）。**kickstart 直接复用麒麟那份**（省略已被移除的 `install` 关键字）。引导内核/initrd 在 `isolinux/vmlinuz` 与 `isolinux/initrd.img`。
+3. **sshd 预登录横幅 + SFTP 静默失败**：sshd 打印 `UnionTech OS Server 20 1050e`；`scp`（OpenSSH≥9 默认走 SFTP）**静默失败、无错误码**，`-O`（旧 scp 协议）正常。Windows 免交互口令同样用 `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force`。
+4. `%post` 要点同麒麟：UEL20 的 sshd 默认**禁止 root 口令登录**，必须同样 sed 放开 `PermitRootLogin` / `PasswordAuthentication`，否则进不去。
+
+资源与前两台一致：4 vCPU / 4G，宿主 Windows 11，WHPX。口径不变：**这仍是虚拟机，不是裸机**；对外引用必须写「统信 UOS Server 20（1050e）× amd64（虚拟机，非物理裸机）」。SSH 端口 `22224`（V10 SP3 占 22222，V11 占 22223）。License 形态（免费使用授权 vs 正式授权）未在此验证。
