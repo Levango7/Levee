@@ -131,6 +131,23 @@ func NewSQLiteStore(ctx context.Context, dbPath string, opts ...SQLiteOption) (*
 // Callers must not close it; use Close instead.
 func (s *SQLiteStore) DB() *sql.DB { return s.db }
 
+// Ping answers a liveness probe for the partition policy (internal/partition).
+// Single-node deployments have no database to partition away from — the store
+// is a local file — so this is expected to succeed for the life of the
+// process. It exists so a caller can hold one Pinger shape for both drivers
+// instead of branching on the deployment mode; a failure here means the local
+// database itself is broken (disk, permissions, corruption), and refusing new
+// work in that state is the same fail-closed answer the cluster path gives.
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	if s.db == nil {
+		return errors.New("state: sqlite store has no database handle")
+	}
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("state: ping sqlite: %w", err)
+	}
+	return nil
+}
+
 // Close releases the underlying database connection pool.
 func (s *SQLiteStore) Close() error {
 	if s.db == nil {

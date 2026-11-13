@@ -51,6 +51,7 @@ import (
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/opsmesh"
+	"github.com/nexus/levee/internal/partition"
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/plan"
@@ -131,6 +132,21 @@ type ChangeService struct {
 	// rather than a silent no-timeout. serve always installs the resolver
 	// from config.Approval, making the three documented timeouts real.
 	approvalExpiry func(level string) time.Time
+
+	// partition optionally refuses new apply and new approval while the
+	// control-plane database is unreachable. Nil means no such policy is
+	// configured, which is the state of a deployment that never wired one
+	// (every non-cluster deployment, and every test) — those behave exactly
+	// as before rather than gaining a refusal they did not ask for.
+	//
+	// Why apply and approve and nothing else: those are the two entries that
+	// can put a change on a path to execution. Plan generation already reads
+	// the database and fails on its own when the database is gone; read paths
+	// are answered from the database too, so a partitioned serve degrades
+	// them honestly without a policy. The policy exists for the writes,
+	// because a write that proceeds without a reachable control plane is the
+	// unfenced execution the whole design refuses.
+	partition *partition.Checker
 }
 
 // NewChangeService constructs a ChangeService backed by the given
@@ -180,6 +196,55 @@ func (s *ChangeService) WithApprovalCreateObserver(fn func(a *approval.Approval)
 func (s *ChangeService) WithApprovalExpiryResolver(fn func(level string) time.Time) *ChangeService {
 	s.approvalExpiry = fn
 	return s
+}
+
+// WithPartitionChecker installs the disconnect policy (docs/design-disconnect-
+// policy.md, Q1 = A 全拒): while the checker reports the control-plane database
+// unreachable, ApplyChange and ApproveChange refuse with FailedPrecondition
+// and a reason that names the condition. Pass nil to remove the policy.
+//
+// The check is a fresh probe per guarded call, not a cached flag — see
+// internal/partition for why a stale "reachable" is the one failure this
+// policy must not have. Deployments that do not wire a checker (single-node,
+// tests, reduced-functionality servers) keep the historical behaviour.
+func (s *ChangeService) WithPartitionChecker(c *partition.Checker) *ChangeService {
+	s.partition = c
+	return s
+}
+
+// preflightGuard holds the checks that must pass before a guarded write
+// touches the store: the store is configured, and — when the disconnect
+// policy is armed — the control-plane database is reachable. Both are
+// refusals the caller can act on, and both belong ahead of the first read so
+// a partitioned serve neither spends a doomed round trip nor reports a
+// generic internal error for a condition the operator can name.
+func (s *ChangeService) preflightGuard(ctx context.Context) error {
+	if s.store == nil {
+		return status.Error(codes.Internal, "store not configured")
+	}
+	return s.partitionGuard(ctx)
+}
+
+// partitionGuard returns a FailedPrecondition error when the disconnect
+// policy is installed and the database is unreachable, and nil otherwise.
+// The message names the condition rather than reporting a generic internal
+// error: an operator at a partition site needs to learn "the platform is
+// refusing because it cannot prove execution authority", not "something
+// broke". The gRPC code is FailedPrecondition (a state of the world the
+// caller can act on) rather than Internal (a bug), and deliberately not
+// Unavailable — the server is up and answering; it is the database behind it
+// that is gone, and a 5xx-shaped answer would invite a retry storm against a
+// serve that cannot help.
+func (s *ChangeService) partitionGuard(ctx context.Context) error {
+	if s.partition == nil {
+		return nil
+	}
+	if err := s.partition.Check(ctx); err != nil {
+		return status.Errorf(codes.FailedPrecondition,
+			"control plane database unreachable (%v): refusing new work while partitioned — execution authority cannot be established, so apply and approval are fail-closed (see docs/design-disconnect-policy.md)",
+			err)
+	}
+	return nil
 }
 
 // approvalExpiryFor resolves the expiry for a tier, falling back to the
@@ -1046,8 +1111,12 @@ func verifyStoredPlanHash(run *state.Run) error {
 // warning. Callers that script both entry points must not read exit 0 as
 // "batches executed".
 func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error) {
-	if s.store == nil {
-		return nil, status.Error(codes.Internal, "store not configured")
+	// Preflight (store configured + disconnect policy), ahead of everything
+	// else: a partitioned serve must not admit work it cannot fence, and it
+	// must say so before it spends a database round trip that would fail
+	// deeper with a less actionable error. See preflightGuard.
+	if err := s.preflightGuard(ctx); err != nil {
+		return nil, err
 	}
 
 	// dry_run on this RPC is refused rather than ignored. The proto says
@@ -2551,8 +2620,12 @@ func (s *ChangeService) transitionRunForApproval(ctx context.Context, run *state
 // is configured it delegates to approval.Service.Approve; otherwise it
 // performs a direct status transition to "approved".
 func (s *ChangeService) ApproveChange(ctx context.Context, req *pb.ApproveRequest) (*pb.Change, error) {
-	if s.store == nil {
-		return nil, status.Error(codes.Internal, "store not configured")
+	// Preflight (store configured + disconnect policy). Q1 = A 全拒: a new
+	// approval is new work toward execution, so it is refused on the same
+	// terms as a new apply, and ahead of GetRun so a partitioned serve does
+	// not spend a doomed read.
+	if err := s.preflightGuard(ctx); err != nil {
+		return nil, err
 	}
 
 	run, err := s.store.GetRun(ctx, req.GetChangeId())

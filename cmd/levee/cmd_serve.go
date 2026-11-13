@@ -71,6 +71,7 @@ import (
 	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/notify/chatopsbridge"
 	"github.com/nexus/levee/internal/opsmesh"
+	"github.com/nexus/levee/internal/partition"
 	"github.com/nexus/levee/internal/pause"
 	"github.com/nexus/levee/internal/push"
 	"github.com/nexus/levee/internal/recommend"
@@ -1531,6 +1532,23 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 	}
 
 	changeSvc := grpc.NewChangeService(store, engine, approvalSvc, nil)
+	// Disconnect policy (docs/design-disconnect-policy.md, Q1 = A 全拒), wired
+	// only for the driver the policy is about: a partitioned node is a node
+	// that lost the shared database, which is the PostgreSQL cluster store.
+	// Single-node SQLite has no database to lose — its store is a local file —
+	// so it gains no checker and behaves exactly as before.
+	//
+	// Underlying() unwraps the multi-tenant decorator: the Pinger lives on the
+	// concrete store, and a tenant wrapper must not hide it (the same reason
+	// StoreDriver unwraps before naming the driver).
+	if state.StoreDriver(store) == state.DriverPostgres {
+		if p, ok := state.Underlying(store).(partition.Pinger); ok {
+			changeSvc.WithPartitionChecker(partition.NewChecker(p, partition.DefaultTimeout))
+			log.Info("disconnect policy armed: new apply/approval fail closed while the database is unreachable")
+		} else {
+			log.Warn("cluster store does not answer a liveness probe; disconnect policy NOT armed")
+		}
+	}
 	if jiraBridge != nil {
 		changeSvc.WithApprovalCreateObserver(jiraBridge.OnApprovalCreated)
 	}

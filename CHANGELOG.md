@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 修复（断网策略 Q1 落地：分区期拒绝新 apply / 新审批）
+
+- **缺口**：`docs/design-disconnect-policy.md` 的 Q1–Q4 已拍板（2026-11-10），但生产代码 0 行——分区期 serve 仍会受理新的 apply 与审批，而那时它无法证明执行权（无租约、无 epoch、无围栏），正是整套设计要避免的物理双跑面。
+- **修法**：新增 `internal/partition`（`Checker` 对控制面数据库做有界探测，默认 3s；每次受护调用现测而非缓存——缓存的「可达」恰好会在数据库掉线的窗口里变成「拒绝拒绝」）。`ChangeService` 新增 `WithPartitionChecker`，`ApplyChange` / `ApproveChange` 在首次读库前调用 `preflightGuard`，不可达时返回 `FailedPrecondition` 并在消息里点名条件与文档；读路径刻意不受护（它们本就依赖数据库，会如实降级）。serve 仅在 PostgreSQL 集群态装配（单节点 SQLite 无库可失，行为逐字不变）；`state` 的两个具体 store 各加一个 `Ping`。
+- **验证**：`internal/partition` 6 例（nil checker / nil pinger / 可达 / 不可达 / 超时上限 / 默认超时兜底）；`internal/grpc` 5 例（apply 拒绝且 **GetRun 零调用**、approve 拒绝、可达不误拒、nil checker 保持历史行为、读路径不受护）。`go test ./...` 全绿；`golangci-lint` 0 issues。
+- **边界**：本笔只落地 Q1（停新任务 A 全拒）；Q2 维持现状（无代码）；**Q3 只读白名单标记与 Q4 恢复四步对账工具未落地**，见设计文档 §3 验收门槛第 2、3 条。
+
 ### 文档（SQL 审核链演示手册：四幕离线复跑「高危拦截＋强制审批＋事后审计追溯」）
 
 - **缺口**：§8.6 第 4 步的演示面此前只有脚本（`examples/demo/sql-review-chain.sh`，未随版本库提交，后由并行线收进 `feat/sql-review-demo` 分支、PR #356 在途），没有文档化的跑法、验收口径与话术。
