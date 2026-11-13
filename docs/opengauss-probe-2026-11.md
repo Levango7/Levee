@@ -41,8 +41,9 @@ openGauss-lite 7.0.0（`openGauss-Lite-7.0.0-openEuler24.03-x86_64.tar.gz`，47 
 
 ## 4. 复现索引
 
-- guest：麒麟 V11 `127.0.0.1:22223`（openGauss-lite 装在 `/home/omm/og/`，数据目录 `/home/omm/og/data`）；
-- 配置：guest 内 `/root/vm/config-og.yaml`（DSN 指向 A 格式 `postgres` 库，MD5 口令 `LeveeOg@2026x`）；
+- guest：麒麟 V11 `127.0.0.1:22223`（openGauss-lite 装在 `/home/omm/og/`，数据目录 `/home/omm/og/data`）；**gaussdb 已停（`gs_ctl stop`），660 MB 磁盘占用，零 RAM 成本**；
+- **保留清单**：`omm` 用户、`T_C` / `T_B`（原样保留供复测）、`postgres` / `template*`；一次性探针残留（`t_c`/`t_b` 小写孤儿库、`probe_*` 表）已清理；
+- 配置：guest 内 `/root/vm/config-og.yaml`（DSN 指向 `postgres` 库，MD5 口令 `LeveeOg@2026x`）；
 - 探针脚本：guest 内 `/root/omm-*.sh`（安装、gsql、md5、compat、drill-og）；
 - 实测表：`T_C`、`T_B`（强制大写名以绕开 gsql 大小写折叠）、以及遗留的 `t_c`/`t_b`（小写，未清理）；`probe_conf`、`probe_bool`、`probe_ret`、`probe_tstz`、`credentials`；
 - 板面：见 `opencode-xinchuang-vm-os-drill.md`（本任务记录）。
