@@ -120,6 +120,18 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 
 ## 6. 还没做的
 
-- **统信 UOS**：ISO 需官网注册账号下载（双源飞流站只有麒麟/中标麒麟）。
+- **统信 UOS**：桌面 V25 专业版（2500）没有公开直链（官网下载页需登录联合统信账号；CDN 目录数据里只有 20 系的文件名）。**服务器版 UOS Server 20（1050e）AMD64 有公开直链 + 官方 sha256**，已在后台下载；下完走同一套流程（装法待确认——UOS 不是 anaconda 系，第 7 节的「V11 教训」说明这类差异要照实记）。
 - **物理裸机**：仍需租 IDC 机（步骤见 `docs/xinchuang-baremetal-drill.md`）。
 - **arm64**：owner 已判定无门路，不做。
+
+## 7. 2026-11-13 追加：麒麟 V11（2503）同口径复跑
+
+结论先行：**V11 也能跑通，而且比 V10 还干净**——`systemctl is-system-running` = **running**（0 failed units）。整条链路（doctor healthy → 审批 → apply v1→v2 → rollback v2→v1 → `audit/verify valid=true` entriesVerified=3）与 V10 SP3 一致；变更 `run-635fbe17401cddd1`，快照 `snap-ddb080e437ef63ac`，ISO 为 `Kylin-Server-V11-2503-Release-General-20250715-X86_64.iso`（sha256 `05569c9ac23ded1f6768ccedc60a344e0c24cec5075fd54670e3e7a7a4428d7e`，与官方目录数据一致），guest 内核 `6.6.0-32.7.v2505.ky11.x86_64`、systemd **255**、glibc **2.38**、内核命令行含 `audit=0 apparmor=0`。
+
+**V11 相对 V10 的实测差异（都踩过）**：
+
+1. **必须 `-cpu host`**：V11 glibc 2.38 要求 **x86-64-v2**；QEMU 默认 `qemu64` 型号只暴露基础 x86-64 → 内核 init 直接 `Fatal glibc error: CPU does not support x86-64-v2` 然后 kernel panic。V10 的 4.19 内核 + glibc 2.28 无此要求，所以 V10 那次没加。
+2. **新 anaconda 删除了 `install` 指令**：kickstart 第一行 `install` 直接报错 "The following problem occurred… `install` has been removed" 并终止安装。V11 的 ks 去掉该行即可（本仓 `ks/ks-v11.cfg`）；同时 **`@core` 不含 `wget`**（V10 无人值守靠 wget，V11 只留 `curl`）。
+3. 资源与 V10 一致：4 vCPU / 4G，XFS+LVM（`klas-root` 35G / `klas-swap` 4G），宿主同一台 Windows 11。
+
+口径不变：**这仍是虚拟机（QEMU+WHPX），不是裸机**；镜像默认 SELinux disabled；对外引用必须写「麒麟 V11 × amd64（虚拟机，非物理裸机）」。实验主机：SSH `22223`（V10 SP3 虚机占 `22222`）。
