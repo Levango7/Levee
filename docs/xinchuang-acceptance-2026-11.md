@@ -19,7 +19,7 @@
 
 ## 2. 验收口径与证据分级
 
-**环境基线**：宿主 = Windows 11 家庭版（build 26300，`HypervisorPresent=True`，无 Hyper-V 角色，AMD Ryzen 9 7945HX，31.2 GB RAM）；虚机 = QEMU 11.1.3 ＋ WHPX 硬件加速；每台 4 vCPU / 4G；ISO 原始文件保留在 `G:\levee-vm\`。
+**环境基线**：宿主 = Windows 11 家庭版（build 26300，`HypervisorPresent=True`，无 Hyper-V 角色，AMD Ryzen 9 7945HX，31.2 GB RAM）；虚机 = QEMU 11.1.3 ＋ WHPX 硬件加速；每台 4 vCPU / 4G；ISO 原始文件默认在 `G:\levee-vm\`，**例外**：`uos-server-25-2510-amd64.iso` 于 2026-11-13 移交至 `H:\Downloads\doubaobrowser\`（与已取证副本 sha256/md5 一致，该校验脚本会两个目录都找）。
 
 **分级定义**（本报告只引用 A 级）：
 

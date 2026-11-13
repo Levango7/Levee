@@ -17,7 +17,9 @@ Exit codes:
   2  argument/environment error (bad --iso-dir)
 
 The ISOs are large, so hashing takes minutes on this machine.  Pass --skip-hash
-to only probe the guests, or --skip-vm to only hash the ISOs.
+to only probe the guests, or --skip-vm to only hash the ISOs.  Each ISO is
+looked up in --iso-dir first, then in FALLBACK_DIRS (currently
+H:\\Downloads\\doubaobrowser) — the V25 ISO was moved there on 2026-11-13.
 """
 
 import argparse
@@ -37,6 +39,12 @@ ISOS = [
      "614ae5a7cfaf4f7750a5e5b09a6bcc7d78ac99fbffd78a3eb593229d4a88c185"),
     ("uos-server-25-2510-amd64.iso",
      "825ec55f76166584b2bd923d41f9938e18ed380272e7315a57b587e2d89b17b2"),
+]
+
+# Extra places to look besides --iso-dir, in order.  The V25 ISO was handed to
+# H:\Downloads\doubaobrowser on 2026-11-13 (byte-identical to the drilled copy).
+FALLBACK_DIRS = [
+    r"H:\Downloads\doubaobrowser",
 ]
 
 VMS = [
@@ -68,6 +76,14 @@ def probe(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+def find_iso(name: str, iso_dir: str) -> str | None:
+    for d in [iso_dir, *FALLBACK_DIRS]:
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -85,19 +101,19 @@ def main(argv: list[str] | None = None) -> int:
 
     hard_fail = 0
 
-    print(f"== ISO sha256 ({args.iso_dir}) ==")
+    print(f"== ISO sha256 ({args.iso_dir} + fallbacks) ==")
     if args.skip_hash:
         print("skipped (--skip-hash)")
     else:
         for name, expected in ISOS:
-            path = os.path.join(args.iso_dir, name)
-            if not os.path.isfile(path):
-                print(f"MISSING  {name}")
+            path = find_iso(name, args.iso_dir)
+            if path is None:
+                print(f"MISSING  {name}  (searched: {args.iso_dir}; " + "; ".join(FALLBACK_DIRS) + ")")
                 hard_fail += 1
                 continue
             got = sha256(path)
             ok = got.lower() == expected.lower()
-            print(f"{'OK     ' if ok else 'MISMATCH'}  {name}")
+            print(f"{'OK     ' if ok else 'MISMATCH'}  {name}  [{path}]")
             if not ok:
                 print(f"         expected {expected}\n         got      {got}")
                 hard_fail += 1
