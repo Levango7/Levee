@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/nexus/levee/internal/config"
+	"github.com/nexus/levee/internal/partition"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -246,6 +247,12 @@ func runLocalSystemStatus() error {
 	if dbErr != "" {
 		output["db_error"] = dbErr
 	}
+	// The disconnect-policy block (Q3): the control-plane state is already
+	// reported as db_status above; this pairs it with the whitelist of commands
+	// that stay safe during a partition. An operator reading this in an outage
+	// gets both halves of the answer — "is the plane up?" and "what may I still
+	// run?" — from one command instead of having to know the list by heart.
+	output["partition"] = partitionStatusBlock(dbStatus)
 
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
@@ -675,6 +682,21 @@ func setConfigValue(cfgPath, key, value string) error {
 	return nil
 }
 
+// partitionStatusBlock builds the Q3 disconnect-policy half of `system status`:
+// the control-plane state (as probed by the same store open every command
+// uses) paired with the curated whitelist of commands that remain safe during a
+// partition.
+//
+// Kept as its own function so the pairing is testable without running the whole
+// command: a caller that reports "reachable" next to a list that was silently
+// dropped would be worse than one that omits the block entirely.
+func partitionStatusBlock(dbStatus string) map[string]any {
+	return map[string]any{
+		"control_plane":     dbStatus,
+		"readonly_commands": partition.ReadonlyCommands(),
+	}
+}
+
 // --- Human-readable printers -------------------------------------------------
 
 // printSystemStatusHuman renders the system status in a human-readable format.
@@ -685,6 +707,16 @@ func printSystemStatusHuman(w io.Writer, output map[string]any) {
 		output["db_status"], output["db_driver"], output["db_location"])
 	if dbErr, ok := output["db_error"].(string); ok && dbErr != "" {
 		fmt.Fprintf(w, "  db_err:  %s\n", dbErr)
+	}
+	// The partition block mirrors the JSON. Only the count is printed in the
+	// human form: the whitelist is long, and an operator in an outage wants the
+	// answer "what may I run?" to be one line that points at --json for the
+	// list, not thirty lines of noise above the db status they came for.
+	if p, ok := output["partition"].(map[string]any); ok {
+		if cmds, ok := p["readonly_commands"].([]string); ok {
+			fmt.Fprintf(w, "  断网策略: 控制面 %s；分区期安全命令 %d 条（详见 --json）\n",
+				p["control_plane"], len(cmds))
+		}
 	}
 }
 
