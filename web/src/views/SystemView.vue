@@ -155,14 +155,15 @@ onMounted(async () => {
         </div>
         <div class="lv-panel__body">
           <template v-if="status">
-            <el-alert
-              v-if="status.controlPlaneReachable === false"
-              type="warning"
-              :closable="false"
-              class="partition-alert"
-              title="控制面数据库不可达（分区期）"
-              :description="status.partitionReason || '控制面探测失败，运行计数未知'"
-            />
+            <!-- 分区标记走本视图已有的 warns 呈现（不是 el-alert）：仓库的
+                 regionStates 守卫要求视图的错误/告警走 StateBlock 与本页
+                 自己的 warns 样式，新开一个 alert 组件会破这条约定。 -->
+            <div v-if="status.controlPlaneReachable === false" class="warns">
+              <div class="warn">
+                <el-icon class="warn__icon"><WarningFilled /></el-icon>
+                <span>控制面数据库不可达（分区期）：{{ status.partitionReason || '控制面探测失败，运行计数未知' }}</span>
+              </div>
+            </div>
             <div class="lv-kv">
               <div class="lv-kv__k">活跃执行</div>
               <div class="lv-kv__v lv-mono">{{ countsAvailable ? status.activeRuns : '未知' }}</div>
