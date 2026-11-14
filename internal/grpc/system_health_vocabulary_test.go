@@ -127,7 +127,11 @@ func TestWebSystemStatusTypeMatchesEmittedValues(t *testing.T) {
 	// No terminating semicolon in this file's interface members -- a `;` in the
 	// pattern would make the whole match vanish and the test would report a
 	// missing anchor rather than a wrong expectation.
-	m := regexp.MustCompile(`(?ms)export interface SystemStatus \{.*?^\s+status:\s*(.+)$`).FindStringSubmatch(string(raw))
+	// The capture must stay on the status member's own line. With (?s), the
+	// trailing `(.+)` otherwise continues through the rest of the file and
+	// collects every later literal union, making this guard report unrelated
+	// values as if they belonged to SystemStatus.
+	m := regexp.MustCompile(`(?ms)export interface SystemStatus \{.*?^\s+status:\s*([^\n]+)$`).FindStringSubmatch(string(raw))
 	require.Len(t, m, 2, "could not find the `status:` member of `export interface SystemStatus` in web/src/types/levee.ts")
 
 	union := map[string]bool{}

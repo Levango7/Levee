@@ -24,14 +24,16 @@
 //   internal/state.StepStatusNames()、internal/state.ApprovalStatusNames()、
 //   internal/state.AssignResultNames()、internal/approval.StatusNames()、
 //   internal/cluster.NodeRoleNames() / NodeStatusNames()、
-//   internal/conversation.SessionStateNames()
+//   internal/conversation.SessionStateNames()、
+//   internal/dbchange.PlanStateNames()、internal/dsl.ApprovalLevels()、
+//   internal/evidence.KindNames()、internal/dsl.RollbackStrategyNames()
 //
 // 这些表此前是前端手抄件，由 Go 侧解析抄件再与 owner 比对来守卫。那正是
 // #153 的失败形状：守卫核对的是自己的抄写，四处产物互相自洽、一起与服务器
 // 不一致，全程没有一处报错。现在值集合只有一份，且是机器产出的。
 //
 // 同名不同物的一族（batch / assignment / step 三张表都拼 pending、running、
-// failed；两张审批表都拼 pending、approved、rejected）刻意是一张表一个类型名，
+// failed；两张审批表都拼 pending、approved、rejected）刻意是一张表一个类名，
 // 别在这里合并——合并会让一张表能读出另一张表读不到的值，理由写在各自 owner 的
 // 清单注释里。
 
@@ -179,5 +181,48 @@ export const ALERT_SEVERITIES = [
 
 /** AlertSeverity 的成员集合，由上面那份数组派生。 */
 export type AlertSeverity = (typeof ALERT_SEVERITIES)[number]
+
+/** 计划工件状态：none（无计划）、readable（可读）、unreadable（不可读）。 */
+export const PLAN_STATES = [
+  'none',
+  'readable',
+  'unreadable',
+] as const
+
+/** PlanState 的成员集合，由上面那份数组派生。 */
+export type PlanState = (typeof PLAN_STATES)[number]
+
+/** 审批档位：standard / high / emergency。 */
+export const APPROVAL_LEVELS = [
+  'standard',
+  'high',
+  'emergency',
+] as const
+
+/** ApprovalLevel 的成员集合，由上面那份数组派生。 */
+export type ApprovalLevel = (typeof APPROVAL_LEVELS)[number]
+
+/** 执行裁决：not_started / in_flight / complete / partial / missing / unrecorded。 */
+export const EXECUTION_VERDICTS = [
+  'not_started',
+  'in_flight',
+  'complete',
+  'partial',
+  'missing',
+  'unrecorded',
+] as const
+
+/** ExecutionVerdict 的成员集合，由上面那份数组派生。 */
+export type ExecutionVerdict = (typeof EXECUTION_VERDICTS)[number]
+
+/** 回滚策略：snapshot / undo-action / config-revert。 */
+export const ROLLBACK_STRATEGIES = [
+  'snapshot',
+  'undo-action',
+  'config-revert',
+] as const
+
+/** RollbackStrategy 的成员集合，由上面那份数组派生。 */
+export type RollbackStrategy = (typeof ROLLBACK_STRATEGIES)[number]
 
 // END GENERATED: vocabulary

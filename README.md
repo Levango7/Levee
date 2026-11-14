@@ -19,7 +19,7 @@
 
 核心实体是**变更（Change）**，不是工作流：
 <!-- BEGIN GENERATED: proto-scale -->
-61 个 gRPC RPC（`proto/levee.proto` 42 个 + `proto/levee_extra.proto` 19 个），其中 **23 个**挂在 `ChangeService` 上，共 **10 个**已注册服务。
+62 个 gRPC RPC（`proto/levee.proto` 43 个 + `proto/levee_extra.proto` 19 个），其中 **24 个**挂在 `ChangeService` 上，共 **10 个**已注册服务。
 <!-- END GENERATED: proto-scale -->
 工作流（LEVEELang 文档）只是变更的**声明式定义**，
 计划（Plan）才是被 `plan_hash` 绑定、被审批、被执行的那份制品。

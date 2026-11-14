@@ -161,6 +161,19 @@ func (k Kind) UnsafeToBlindRetry() bool {
 	return true
 }
 
+// KindNames returns the evidence verdict vocabulary in lifecycle order. The
+// result is a copy and may be modified by the caller.
+func KindNames() []string {
+	return []string{
+		string(NotStarted),
+		string(InFlight),
+		string(Complete),
+		string(Partial),
+		string(Missing),
+		string(Unrecorded),
+	}
+}
+
 // ForRun loads one run's facts from the store and classifies them.
 //
 // This exists so the CLI and the executor cannot answer "is this run documented"

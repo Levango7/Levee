@@ -898,6 +898,8 @@ RESTful 风格，支持两套路径：
 | POST | `/changes/:id/archive` | `/api/v1/ChangeService/ArchiveChange` | 归档 | `levee archive` |
 | GET | `/changes/:id/logs` | `/api/v1/ChangeService/GetLogs` | 查看日志 | `levee logs` |
 | GET | `/changes/:id/trace` | `/api/v1/ChangeService/GetTrace` | 查看 trace | `levee trace` |
+| GET | `/changes/:id/approvals` | `/api/v1/ChangeService/GetApprovals` | 查看审批链 | — |
+| GET | `/changes/:id/ticket` | `/api/v1/ChangeService/GetDBChangeTicket` | 数据库变更发布单（SQL／审核／回滚／窗口／审批／执行／审计七段，只读） | `levee dbchange show` |
 | GET | `/changes/:id/events` | —（SSE；与 `WatchChange` 同源同序） | 实时事件流（`text/event-stream`，终态即收流，见 13.2b） | — |
 | GET | `/alerts/stream` | —（SSE；与 `SubscribeAlerts` 同源） | 告警实时流（环快照先回放再转实时，见 13.2b） | — |
 | POST | `/changes/deeplink/approve` | — | 一键审批（移动端，一次性 token 认证，见 13.3） | — |

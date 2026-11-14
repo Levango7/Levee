@@ -1,7 +1,7 @@
 // Shared UI helpers: status colors, formatters, etc. Kept framework-agnostic
 // so they can be unit-tested without mounting a component.
 import dayjs from 'dayjs'
-import type { ChangeStatus, Priority } from '@/types/levee'
+import type { ChangeStatus, PlanState, Priority, ApprovalStatus, ExecutionVerdict, RollbackStrategy } from '@/types/levee'
 
 // Status vocabulary mirrors the backend state machine in
 // internal/grpc/change_service.go (isValidTransition / terminalRunStatuses),
@@ -178,9 +178,11 @@ export function isResumableStatus(status: ChangeStatus): boolean {
   return status === 'paused'
 }
 
-export function formatTimestamp(ts: number): string {
+export function formatTimestamp(ts: string | number | undefined | null): string {
   if (!ts) return '-'
-  return dayjs.unix(ts).format('YYYY-MM-DD HH:mm:ss')
+  const n = typeof ts === 'string' ? parseInt(ts, 10) : ts
+  if (isNaN(n)) return '-'
+  return dayjs.unix(n).format('YYYY-MM-DD HH:mm:ss')
 }
 
 export function formatDuration(ms: number): string {
@@ -201,4 +203,53 @@ export function formatUptime(seconds: number): string {
   if (h > 0) parts.push(`${h}h`)
   parts.push(`${m}m`)
   return parts.join(' ')
+}
+
+// ============================================================
+// DB Change Ticket (全链视图) 格式化工具
+// ============================================================
+
+/** 计划三态标签 */
+export function planStateLabel(state: PlanState): string {
+  const map: Record<PlanState, string> = {
+    none: '无计划',
+    readable: '可读',
+    unreadable: '不可读',
+  }
+  return map[state] ?? state
+}
+
+/** 审批状态标签 — approval.Status vocabulary */
+export function approvalStatusLabel(status: ApprovalStatus): string {
+  const map: Record<ApprovalStatus, string> = {
+    pending: '进行中',
+    approved: '已通过',
+    rejected: '已拒绝',
+    expired: '已过期',
+  }
+  return map[status] ?? status
+}
+
+
+/** 执行裁决标签 — evidence.Kind vocabulary */
+export function executionVerdictLabel(verdict: ExecutionVerdict): string {
+  const map: Record<ExecutionVerdict, string> = {
+    not_started: '未开始',
+    in_flight: '执行中',
+    complete: '完成',
+    partial: '部分完成',
+    missing: '证据缺失',
+    unrecorded: '无记录',
+  }
+  return map[verdict] ?? verdict
+}
+
+/** 回滚策略标签 — dsl.RollbackStrategy vocabulary */
+export function rollbackStrategyLabel(strategy: RollbackStrategy): string {
+  const map: Record<RollbackStrategy, string> = {
+    snapshot: '快照',
+    'undo-action': '反向动作',
+    'config-revert': '配置还原',
+  }
+  return map[strategy] ?? strategy
 }

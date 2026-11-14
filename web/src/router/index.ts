@@ -23,6 +23,14 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '变更详情' },
   },
   {
+    // DB Change Ticket 全链视图：SQL、回滚、窗口、审批、执行、审计六大区块。
+    // 独立路由而非标签页，保持 ChangeDetailView 单一职责，避免 600+ 行文件膨胀。
+    path: '/changes/:id/ticket',
+    name: 'change-ticket',
+    component: () => import('@/views/TicketView.vue'),
+    meta: { title: '变更发布单' },
+  },
+  {
     path: '/login',
     name: 'login',
     component: () => import('@/views/LoginView.vue'),
