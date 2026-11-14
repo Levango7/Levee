@@ -135,3 +135,45 @@ func TestDBChangeShowJSONEnvelope(t *testing.T) {
 		assert.True(t, strings.Contains(string(data), `"`+section+`"`), "missing section %q", section)
 	}
 }
+
+// An unreadable plan artifact must not be rendered as "this change declares
+// no SQL". The reader has to be told the truth is unknown.
+func TestPrintDBChangeTicket_UnreadablePlanSaysUnknown(t *testing.T) {
+	tk := &dbchange.Ticket{Change: dbchange.ChangeSection{ID: "chg-x", PlanState: "unreadable"}}
+	var buf bytes.Buffer
+	printDBChangeTicket(&buf, tk)
+	out := buf.String()
+	assert.Contains(t, out, "不可读")
+	assert.Contains(t, out, "未知")
+	assert.NotContains(t, out, "无可审核的 SQL 步骤")
+	assert.NotContains(t, out, "未声明回滚")
+	assert.NotContains(t, out, "该计划没有可审核的 SQL 面")
+}
+
+// A legacy approval row binds to no plan; the ticket must say so instead of
+// printing "bound to the current plan: true".
+func TestPrintDBChangeTicket_LegacyApprovalIsVisible(t *testing.T) {
+	tk := &dbchange.Ticket{
+		Change:   dbchange.ChangeSection{ID: "chg-y", PlanState: "readable"},
+		Approval: dbchange.ApprovalSection{HasApproval: true, LegacyApproval: true},
+	}
+	var buf bytes.Buffer
+	printDBChangeTicket(&buf, tk)
+	out := buf.String()
+	assert.Contains(t, out, "绑定当前计划: false")
+	assert.Contains(t, out, "legacy")
+}
+
+// A verification that could not be performed must not be reported as "this
+// change has no trace records".
+func TestPrintDBChangeTicket_VerifierErrorIsVisible(t *testing.T) {
+	tk := &dbchange.Ticket{
+		Change: dbchange.ChangeSection{ID: "chg-z", PlanState: "readable"},
+		Audit:  dbchange.AuditSection{Unverifiable: true, VerifyError: "audit store is unreachable"},
+	}
+	var buf bytes.Buffer
+	printDBChangeTicket(&buf, tk)
+	out := buf.String()
+	assert.Contains(t, out, "校验出错")
+	assert.NotContains(t, out, "该变更还没有 trace 记录")
+}

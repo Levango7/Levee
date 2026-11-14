@@ -3,6 +3,7 @@ package dbchange
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -262,4 +263,130 @@ func TestCollect_UnparsableApprovalMetadataSkipsThatRow(t *testing.T) {
 	assert.True(t, tk.Approval.HasApproval)
 	assert.Equal(t, "high", tk.Approval.Level, "the raw row still carries the level")
 	assert.Empty(t, tk.Approval.Decisions, "the undecodable metadata is skipped, not guessed")
+}
+
+// A plan artifact that exists but cannot be parsed must be reported as
+// unreadable. Otherwise the ticket renders "no SQL / no rollback declared" —
+// a claim about the change that the store cannot support — where the truth
+// is that nobody knows.
+func TestCollect_UnreadablePlanIsMarkedUnreadable(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, store.CreateRun(ctx, &state.Run{
+		ID: "chg-9", Status: "approved", PlanHash: "v2:abc", CreatedAt: now, UpdatedAt: now,
+	}))
+	require.NoError(t, store.UpdateRunPlan(ctx, "chg-9", "{not json", "v2:abc", now))
+
+	tk, err := Collect(ctx, store, "chg-9")
+	require.NoError(t, err)
+	assert.Equal(t, "unreadable", tk.Change.PlanState)
+	assert.False(t, tk.SQL.HasSQL)
+}
+
+// A change with no plan at all is a different state from an unreadable one:
+// there is nothing to read yet, and the ticket may say so plainly.
+func TestCollect_NoPlanStateIsNone(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, store.CreateRun(ctx, &state.Run{
+		ID: "chg-10", Status: "draft", CreatedAt: now, UpdatedAt: now,
+	}))
+	tk, err := Collect(ctx, store, "chg-10")
+	require.NoError(t, err)
+	assert.Equal(t, "none", tk.Change.PlanState)
+}
+
+// A legacy approval row carries no plan hash: it blesses no particular plan.
+// state.Approval.MatchesPlan reports such a row as matching anything (a
+// compatibility rule), and the ticket must not repeat that as "bound to the
+// current plan".
+func TestCollect_LegacyApprovalIsNotReportedAsBound(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	seedPlan(t, store, "chg-11")
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, store.CreateApproval(ctx, &state.Approval{
+		ID: "appr-legacy", RunID: "chg-11", Level: "high", Approver: "alice",
+		Status: "approved", ActedAt: &now,
+	}))
+
+	tk, err := Collect(ctx, store, "chg-11")
+	require.NoError(t, err)
+	assert.True(t, tk.Approval.HasApproval)
+	assert.False(t, tk.Approval.MatchesPlan, "a legacy row binds to no plan")
+	assert.True(t, tk.Approval.LegacyApproval)
+	assert.False(t, tk.Approval.StaleApproval)
+}
+
+// A row bound to a plan this run no longer carries is stale, and must be
+// visible as such rather than silently folded into the counts.
+func TestCollect_StaleApprovalIsReportedAsStale(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	seedPlan(t, store, "chg-12")
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, store.CreateApproval(ctx, &state.Approval{
+		ID: "appr-stale", RunID: "chg-12", Level: "high", Approver: "alice",
+		Status: "approved", PlanHash: "v2:an-old-plan", ActedAt: &now,
+	}))
+
+	tk, err := Collect(ctx, store, "chg-12")
+	require.NoError(t, err)
+	assert.False(t, tk.Approval.MatchesPlan)
+	assert.True(t, tk.Approval.StaleApproval)
+	assert.False(t, tk.Approval.LegacyApproval)
+}
+
+// The ticket's headline promise is the audit chain's integrity, so a TAMPERED
+// chain must render as invalid. Without this case, `t.Audit.Valid = true`
+// passes the whole package unnoticed (measured: the mutation stayed green).
+func TestCollect_TamperedChainIsInvalid(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	seedPlan(t, store, "chg-13")
+	// A trace row whose CurrHash was never built is a broken chain: the
+	// verifier reports it as tampered rather than as a pass.
+	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
+		ID: "trace-tampered", RunID: "chg-13", Event: "step_execute", Actor: "system",
+		Timestamp: time.Now().UTC(),
+	}))
+
+	tk, err := Collect(ctx, store, "chg-13")
+	require.NoError(t, err)
+	assert.True(t, tk.Audit.Verified, "the chain was checked")
+	assert.False(t, tk.Audit.Valid, "a tampered chain must not render as valid")
+	assert.Equal(t, 1, tk.Audit.Count)
+}
+
+// A verification that could not be performed is not the same as an empty
+// chain: the reader must be told which happened.
+func TestCollect_VerifierFailureIsReportedAsAnError(t *testing.T) {
+	base := newStore(t)
+	ctx := context.Background()
+	seedPlan(t, base, "chg-14")
+
+	tk, err := Collect(ctx, &failingTraceStore{Store: base, failAt: 2}, "chg-14")
+	require.NoError(t, err)
+	assert.False(t, tk.Audit.Verified)
+	assert.True(t, tk.Audit.Unverifiable)
+	assert.NotEmpty(t, tk.Audit.VerifyError, "a broken audit store is not an empty chain")
+}
+
+// failingTraceStore fails the Nth trace listing. Collect lists traces twice
+// (once for the evidence verdict, once for the chain verifier), so failAt=2
+// breaks only the verification.
+type failingTraceStore struct {
+	state.Store
+	calls  int
+	failAt int
+}
+
+func (s *failingTraceStore) ListTraces(ctx context.Context, filter state.TraceFilter) ([]*state.Trace, error) {
+	s.calls++
+	if s.calls == s.failAt {
+		return nil, errors.New("audit store is unreachable")
+	}
+	return s.Store.ListTraces(ctx, filter)
 }
