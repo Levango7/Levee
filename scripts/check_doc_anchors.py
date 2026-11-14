@@ -351,11 +351,17 @@ CLAIMS: tuple[Claim, ...] = (
         "internal/plugin/registry.go",
         "ChannelTypes",
     ),
+    Claim(
+        "docs/product-roadmap.md",
+        "数据库变更发布单读模型已落地（dbchange）",
+        "internal/dbchange",
+        "func Collect",
+    ),
 )
 
-# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (33 of
-# ~37) is a ratchet — dropping assertions is possible, but only on purpose.
-MIN_CLAIMS = 33
+# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (34 of
+# ~38) is a ratchet — dropping assertions is possible, but only on purpose.
+MIN_CLAIMS = 34
 
 
 class ScopeError(RuntimeError):

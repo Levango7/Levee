@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（dbchange — 数据库变更发布单：读模型与 CLI）
+
+- **缺口**：v1.2 把对外第一身份定为「数据库变更发布与治理核」，但一个数据库变更的事实散在四处——`levee show`（状态/证据）、`audit report`（审计）、审批读取、控制台详情——「给我这个变更的单」要开四个面再脑内 join。
+- **修法**：新增 `internal/dbchange`（纯读模型，`Collect(ctx, store, runID)`）：Change（身份/状态，Label 用 `dsl.DisplayName` 与 API 同源）、SQL（`mysql.query` 步骤 + 计划里的审核结论）、Rollback（运行级策略 + 逐步补偿）、Window（如实声明不随 run 持久化）、Approval（级别/状态/计划绑定/决定）、Execution（复用 `evidence.Classify` 同一词表）、Audit（`audit.ChainVerifier`）。CLI 新增 `levee dbchange show <change-id>`（本地，`--json` 标准信封；空段说出自己的意思而不是消失）。
+- **验证**：`internal/dbchange` 10 例（not found / 无计划 / SQL+审核 / 审批链 / 陈旧审批不误判为匹配 / 执行证据+审计 / 无 trace 时审计不冒充通过 / 窗口诚实 / 计划不可读时降级不失败 / nil store）；`cmd/levee` 3 例（分段渲染 / 空段自述 / JSON 信封）。`go test ./...` 全绿；golangci-lint 0 issues。
+- **边界**：本笔只做**读模型 + CLI**，未加 RPC（REST/前端/wire 契约留作下一片）；窗口无法回放「这次按哪个窗口放行」是如实说明而非缺陷（run 行确实没有该列）。
+
 ### 文档（SQL 审核链演示手册：四幕离线复跑「高危拦截＋强制审批＋事后审计追溯」）
 
 - **缺口**：§8.6 第 4 步的演示面此前只有脚本（`examples/demo/sql-review-chain.sh`，未随版本库提交，后由并行线收进 `feat/sql-review-demo` 分支、PR #356 在途），没有文档化的跑法、验收口径与话术。
