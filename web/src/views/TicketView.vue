@@ -26,7 +26,6 @@ import {
 
 import { changesApi } from '@/api'
 import type { DBChangeTicket, PlanState, ApprovalStatus, ExecutionVerdict, RollbackStrategy } from '@/types/levee'
-import type { Priority } from '@/types/vocabulary'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
@@ -201,7 +200,7 @@ function ts(value: string | number | undefined | null): string {
             <ElDescriptions border :column="3" size="small">
               <ElDescriptionsItem label="变更 ID" :span="2">{{ t.change.id }}</ElDescriptionsItem>
               <ElDescriptionsItem label="环境">{{ t.change.environment || '—' }}</ElDescriptionsItem>
-              <ElDescriptionsItem label="优先级">{{ t.change.priority ? priorityLabel(t.change.priority as Priority) : '—' }}</ElDescriptionsItem>
+              <ElDescriptionsItem label="优先级">{{ t.change.priority ? priorityLabel(t.change.priority) : '—' }}</ElDescriptionsItem>
               <ElDescriptionsItem label="状态">
                 <StatusTag :status="t.change.status" />
               </ElDescriptionsItem>
