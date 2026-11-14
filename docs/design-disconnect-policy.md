@@ -6,7 +6,8 @@
 
 - **Q1 停新任务 → A 全拒：已落地（首版）**。`internal/partition.Checker` 对控制面数据库做有界探测（默认 3s，每次受护调用现测而非缓存——缓存的「可达」恰好会在数据库掉线的窗口里变成「拒绝拒绝」）；`ChangeService` 的 `ApplyChange` / `ApproveChange` 在首次读库之前调用它，不可达时返回 `FailedPrecondition` 并在消息里点名条件与本文档。仅在 PostgreSQL 集群态装配（单节点 SQLite 无库可失，行为逐字不变）。
 - **Q2 在途收敛 → 自动**：维持现状，无代码改动（B1–B5 已实施）。
-- **Q3 只读白名单标记 / Q4 恢复四步对账工具**：**未落地**（见 §3 第 2、3 条验收门槛）。
+- **Q3 只读白名单 + 控制面标记：已落地**。`internal/partition.Readonly` / `ReadonlyCommands` 是**逐条裁决过**的白名单（每条带理由；执行类命令一律不在其中——apply/plan/retry/approve/new/serve…），`levee system status` 增 `partition` 块把「控制面状态（与其余命令同一个 store 探针）」与「分区期安全命令清单」成对给出，人读只报条数并指向 `--json`。**注意两者的分工**：白名单回答「什么安全」，`db_status` 回答「现在是否可达」——一次会过期、不能回放的读取必须自己说出口（§3 第 2 条），单节点 SQLite 路径天然可读。
+- **Q4 恢复四步对账工具：已落地**。`scripts/levee_recovery_reconcile.py` 把 §2.4 的四步与逐步判据机器化：① 探库（`SELECT 1`）② 查目标机孤儿锁并按 TTL 等待（**超时不算放行**——锁还在就说明旧执行可能有在途步骤，重试即物理双跑）③ `POST retry`（`replan=false` + 显式 targetHosts；`--yes` 才发火，`--dry-run` 止于第 2 步）④ 断言五条：run 到终态 success、**每步恰一行 success**（含「计划里有却没有任何行」——缺行不是通过）、目标机标记文件 mtime 严格推后（物理 at-least-once，如实说而非冒充 exactly-once）、无**新增** `evidence_discarded`、无 `evidence_incomplete`。base-url 按不可信输入校验：协议限 http/https，私网/环回需 `--allow-private-target` 显式确认（否则一个构造参数就能把部署 token 指向云元数据服务）。断言逻辑是纯函数（18 例单测，不需要集群）。
 
 ## 0. 事实基线（全部实测，可复跑）
 

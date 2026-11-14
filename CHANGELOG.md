@@ -11,6 +11,14 @@
 - **验证**：`internal/partition` 6 例（nil checker / nil pinger / 可达 / 不可达 / 超时上限 / 默认超时兜底）；`internal/grpc` 5 例（apply 拒绝且 **GetRun 零调用**、approve 拒绝、可达不误拒、nil checker 保持历史行为、读路径不受护）。`go test ./...` 全绿；`golangci-lint` 0 issues。
 - **边界**：本笔只落地 Q1（停新任务 A 全拒）；Q2 维持现状（无代码）；**Q3 只读白名单标记与 Q4 恢复四步对账工具未落地**，见设计文档 §3 验收门槛第 2、3 条。
 
+### 修复（断网策略 Q3+Q4：只读白名单 + 控制面标记；恢复四步对账工具）
+
+- **缺口**：Q3 拍板为「只读白名单 + 每条声明依赖」但没有任何机器可读的白名单，分区现场的操作员只能背；Q4 拍板为「人驱动四步对账」，四步的判据全在文档里，真到恢复时靠人对着文档逐条核——那正是最容易被跳过一步的时刻。
+- **修法（Q3）**：`internal/partition` 增 `Readonly` / `ReadonlyCommands` / `Reason`——白名单**逐条裁决**并带理由，执行类（apply/plan/retry/approve/new/serve…）一律不在其中；`levee system status` 增 `partition` 块，把「控制面状态（与其余命令同一个 store 探针）」与「分区期安全命令清单」成对给出，人读只报条数并指向 `--json`。白名单回答「什么安全」、`db_status` 回答「现在是否可达」，两者不互相代替。
+- **修法（Q4）**：新增 `scripts/levee_recovery_reconcile.py`——① 探库（`SELECT 1`）② 查目标机孤儿锁并按 TTL 等待（**超时不算放行**：锁还在说明旧执行可能有在途步骤，重试即物理双跑）③ `POST retry`（`replan=false` + 显式 targetHosts；`--yes` 才发火、`--dry-run` 止于第 2 步）④ 五条断言：run 到终态 success、**每步恰一行 success**（含「计划里有却没有任何行」——缺行不是通过）、目标机标记文件 mtime 严格推后（物理 at-least-once 如实说）、无**新增** `evidence_discarded`、无 `evidence_incomplete`。base-url 按不可信输入校验：协议限 http/https；私网/环回需 `--allow-private-target` 显式确认。
+- **验证**：`internal/partition` 白名单 5 例（正向族 / **反向排除执行类** / 条数下限 25 / 排序且返回副本 / 每条必有理由）；`cmd/levee` 分区块 2 例；脚本 18 例（干净恢复 / 非终态 / 重复 success 行 / **计划内步骤缺行** / 计划外步骤多行 / 无计划时不猜缺行 / 标记未动 / 标记缺失 / 新增 discard / **既有 discard 不算新增** / evidence_incomplete / 失败详情点名步骤 / base-url 协议与非私网校验 / 无 --yes 拒绝）。`go test ./...` 全绿；`golangci-lint` 0 issues。
+- **边界**：白名单是**策展**而非发现（未在名单里的命令不是「安全」的证据）；Q4 脚本的 REST 路径按 `levee-api.md` 现有端点，未接 CLI `--remote`。
+
 ### 文档（SQL 审核链演示手册：四幕离线复跑「高危拦截＋强制审批＋事后审计追溯」）
 
 - **缺口**：§8.6 第 4 步的演示面此前只有脚本（`examples/demo/sql-review-chain.sh`，未随版本库提交，后由并行线收进 `feat/sql-review-demo` 分支、PR #356 在途），没有文档化的跑法、验收口径与话术。
