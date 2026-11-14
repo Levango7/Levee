@@ -38,6 +38,17 @@ const configError = ref<unknown>(null)
 const statusTier = computed<LoadTier>(() =>
   statusError.value === null ? 'ok' : classifyError(statusError.value),
 )
+
+// The run counts are only numbers when the backend could read them freshly.
+// During a partition (disconnect policy Q3) the platform cannot see its own
+// runs, and printing 0 there would be a false all-clear.
+const countsAvailable = computed<boolean>(() => {
+  const s = status.value
+  if (!s) return false
+  if (s.controlPlaneReachable === false) return false
+  if (s.runCountsAvailable === false) return false
+  return true
+})
 const statusText = computed(() => errorMessage(statusError.value, '运行状态读取失败'))
 const versionTier = computed<LoadTier>(() =>
   versionError.value === null ? 'ok' : classifyError(versionError.value),
@@ -144,11 +155,19 @@ onMounted(async () => {
         </div>
         <div class="lv-panel__body">
           <template v-if="status">
+            <el-alert
+              v-if="status.controlPlaneReachable === false"
+              type="warning"
+              :closable="false"
+              class="partition-alert"
+              title="控制面数据库不可达（分区期）"
+              :description="status.partitionReason || '控制面探测失败，运行计数未知'"
+            />
             <div class="lv-kv">
               <div class="lv-kv__k">活跃执行</div>
-              <div class="lv-kv__v lv-mono">{{ status.activeRuns }}</div>
+              <div class="lv-kv__v lv-mono">{{ countsAvailable ? status.activeRuns : '未知' }}</div>
               <div class="lv-kv__k">暂停执行</div>
-              <div class="lv-kv__v lv-mono">{{ status.pausedRuns }}</div>
+              <div class="lv-kv__v lv-mono">{{ countsAvailable ? status.pausedRuns : '未知' }}</div>
               <div class="lv-kv__k">运行时长</div>
               <div class="lv-kv__v lv-mono">{{ formatUptime(status.uptimeSeconds) }}</div>
               <div class="lv-kv__k">存储后端</div>

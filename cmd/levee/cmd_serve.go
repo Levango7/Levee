@@ -1418,6 +1418,18 @@ func loadTargetOwnershipRegistry(cfg *config.Config, store state.Store) (*invent
 	return reg, nil
 }
 
+// armSystemPartition wires the disconnect-policy probe into the status surface
+// (disconnect policy Q3). It is a function of its own so buildServeServices
+// does not grow another branch — that function already sits at the
+// cyclomatic-complexity ceiling, and the guard that keeps it there is a
+// signal, not an obstacle to route around silently.
+func armSystemPartition(systemSvc *grpc.SystemService, checker *partition.Checker) {
+	if checker == nil {
+		return
+	}
+	systemSvc.WithPartitionChecker(checker)
+}
+
 func buildServeServices(ctx context.Context, store state.Store, runEvents *wiring.RunEventStore,
 	cfg *config.Config, execGuard *cluster.ExecutionGuard) (serveServices, error) {
 	// The run lifecycle funnel arrives pre-built (runServe constructs it
@@ -1532,18 +1544,21 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 	}
 
 	changeSvc := grpc.NewChangeService(store, engine, approvalSvc, nil)
-	// Disconnect policy (docs/design-disconnect-policy.md, Q1 = A 全拒), wired
-	// only for the driver the policy is about: a partitioned node is a node
-	// that lost the shared database, which is the PostgreSQL cluster store.
-	// Single-node SQLite has no database to lose — its store is a local file —
-	// so it gains no checker and behaves exactly as before.
+	// Disconnect policy (docs/design-disconnect-policy.md): Q1 = A 全拒 for new
+	// apply/approval, Q3 = the read-only whitelist carries a partition marker.
+	// Both are wired only for the driver the policy is about: a partitioned node
+	// is a node that lost the shared database, which is the PostgreSQL cluster
+	// store. Single-node SQLite has no database to lose — its store is a local
+	// file — so it gains no checker and behaves exactly as before.
 	//
 	// Underlying() unwraps the multi-tenant decorator: the Pinger lives on the
 	// concrete store, and a tenant wrapper must not hide it (the same reason
 	// StoreDriver unwraps before naming the driver).
+	var partitionChecker *partition.Checker
 	if state.StoreDriver(store) == state.DriverPostgres {
 		if p, ok := state.Underlying(store).(partition.Pinger); ok {
-			changeSvc.WithPartitionChecker(partition.NewChecker(p, partition.DefaultTimeout))
+			partitionChecker = partition.NewChecker(p, partition.DefaultTimeout)
+			changeSvc.WithPartitionChecker(partitionChecker)
 			log.Info("disconnect policy armed: new apply/approval fail closed while the database is unreachable")
 		} else {
 			log.Warn("cluster store does not answer a liveness probe; disconnect policy NOT armed")
@@ -1707,6 +1722,10 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 		store, cfg, optConfigPath,
 		version, commitHash, buildTime, goVersion, time.Now(),
 	).WithAuthorizer(authzSvc)
+	// Q3: the status surface answers during a partition, but it must carry the
+	// marker — a health check that reports zero active runs while the platform
+	// cannot see its own runs is a false all-clear.
+	armSystemPartition(systemSvc, partitionChecker)
 	// The agent registry is the one served store that is deliberately NOT
 	// tenant-scoped: an agent record describes a process, not a customer's
 	// change, and `agents` has no tenant column. Reading it through the tenant

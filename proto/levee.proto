@@ -203,6 +203,14 @@ message SystemStatus {
   int64 uptime_seconds = 4;
   string store_type = 5;
   repeated string warnings = 6;
+  // control_plane_reachable: 控制面数据库本次探测是否可达。
+  // false 表示平台处于分区期；读面仍可回答，但不得把读不到说成「没有」。
+  bool control_plane_reachable = 7;
+  // run_counts_available: active_runs / paused_runs 是否来自一次新鲜读取。
+  // false 时这两个计数是「未知」，不是 0。
+  bool run_counts_available = 8;
+  // partition_reason: 分区原因（不可达时给出探测错误原文）。
+  string partition_reason = 9;
 }
 
 // ============================================================================

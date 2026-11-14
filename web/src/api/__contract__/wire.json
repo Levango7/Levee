@@ -326,6 +326,8 @@
     "method": "GET",
     "path": "/system/status",
     "keys": [
+      "controlPlaneReachable",
+      "runCountsAvailable",
       "status",
       "storeType"
     ],
