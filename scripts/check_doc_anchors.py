@@ -393,10 +393,17 @@ CLAIMS: tuple[Claim, ...] = (
         "examples/plugins/k8s",
         "channel_types",
     ),
+    # --- dbchange (from PR #370 fix) ---
+    Claim(
+        "docs/product-roadmap.md",
+        "数据库变更发布单读模型已落地（dbchange）",
+        "internal/dbchange",
+        "func Collect",
+    ),
 )
 
-# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (38 of
-# ~42) is a ratchet — dropping assertions is possible, but only on purpose.
+# Airbag, same idea as MIN_ANCHORS: a floor near the current row count (43 of
+# ~47) is a ratchet — dropping assertions is possible, but only on purpose.
 MIN_CLAIMS = 38
 
 
