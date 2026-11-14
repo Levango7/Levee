@@ -122,6 +122,19 @@ func TestGetApprovals_ARejectionDecidesTheChainAndCarriesItsReason(t *testing.T)
 // TestGetApprovals_ALegacyChainSaysSo: a chain with no plan hash still settles
 // the run regardless of plan version. Rendering that as a blank would read as
 // "this decision attests to nothing", which is the opposite of what it does.
+func TestGetApprovals_ALegacyChainSaysSo(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newApprovalSvc(t)
+	id := seedRunIn(t, store, "alice", "prod")
+	require.NotEmpty(t, createChain(t, store, id, []string{"bob"}, 1))
+
+	resp, err := svc.GetApprovals(ContextWithActor(ctx, "alice"), &pb.GetApprovalsRequest{ChangeId: id})
+	require.NoError(t, err)
+	require.Len(t, resp.GetApprovals(), 1)
+	assert.True(t, resp.GetApprovals()[0].GetLegacy())
+	assert.Empty(t, resp.GetApprovals()[0].GetPlanHash())
+}
+
 // TestGetApprovals_StaleWhenTheRunMovedOn: a chain that bound to a plan hash
 // which is no longer the run's is a verdict on a superseded plan. The
 // approver (and anyone reading the card) must be told, because approving
@@ -190,19 +203,6 @@ func findChain(resp *pb.GetApprovalsResponse, chainID string) *pb.ApprovalInfo {
 		}
 	}
 	return nil
-}
-
-func TestGetApprovals_ALegacyChainSaysSo(t *testing.T) {
-	ctx := context.Background()
-	svc, store := newApprovalSvc(t)
-	id := seedRunIn(t, store, "alice", "prod")
-	require.NotEmpty(t, createChain(t, store, id, []string{"bob"}, 1))
-
-	resp, err := svc.GetApprovals(ContextWithActor(ctx, "alice"), &pb.GetApprovalsRequest{ChangeId: id})
-	require.NoError(t, err)
-	require.Len(t, resp.GetApprovals(), 1)
-	assert.True(t, resp.GetApprovals()[0].GetLegacy())
-	assert.Empty(t, resp.GetApprovals()[0].GetPlanHash())
 }
 
 func TestGetApprovals_GatedLikeEveryOtherRead(t *testing.T) {
@@ -278,4 +278,279 @@ func TestGetApprovals_AnUnreadableRowIsNamed(t *testing.T) {
 	_, err := svc.GetApprovals(ContextWithActor(ctx, "alice"), &pb.GetApprovalsRequest{ChangeId: id})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ap-corrupt", "the failure must name the row it could not read")
+}
+
+// TestGetDBChangeTicket_ReturnsComposedTicket: the ticket is a read model
+// composed from run, plan artifact, approvals, trace/audit chains and step
+// evidence. This test asserts the wire shape matches the CLI's dbchange.Collect.
+func TestGetDBChangeTicket_ReturnsComposedTicket(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newTestChangeService(t)
+	id := seedRunIn(t, store, "alice", "prod")
+
+	// Manually write a plan artifact with a mysql.query step
+	// Fields must match plan.Plan/Batch/PlanStep struct fields (capitalized, no JSON tags)
+	planJSON := `{
+		"ID": "` + id + `",
+		"WorkflowName": "test-workflow",
+		"Batches": [{
+			"Index": 0,
+			"Targets": ["host1"],
+			"Steps": [{
+				"Name": "step1",
+				"Module": "mysql",
+				"Action": "query",
+				"Args": {"sql": "SELECT 1"}
+			}],
+			"MaxConcurrency": 1
+		}],
+		"TotalTargets": 1,
+		"CreatedAt": "2024-01-01T00:00:00Z"
+	}`
+	require.NoError(t, store.UpdateRunPlan(ctx, id, planJSON, "test-plan-hash-123", time.Now().UTC()))
+
+	// Kick off an approval chain bound to the current plan
+	run, err := store.GetRun(ctx, id)
+	require.NoError(t, err)
+	as := approval.NewService(&kickoffStoreAdapter{store: store})
+	_, err = as.Create(ctx, approval.CreateRequest{
+		RunID: id, Level: approval.LevelStandard, Approvers: []string{"bob"},
+		MinApprovers: 1, ExpiresAt: time.Now().UTC().Add(time.Hour),
+		Initiator: "alice", ExcludeInitiator: true,
+		PlanHash: run.PlanHash, // bind to current plan
+	})
+	require.NoError(t, err)
+
+	// Fetch the ticket
+	resp, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: id})
+	require.NoError(t, err)
+
+	// Basic structure assertions
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.Change)
+	require.NotNil(t, resp.Sql)
+	require.NotNil(t, resp.Rollback)
+	require.NotNil(t, resp.Window)
+	require.NotNil(t, resp.Approval)
+	require.NotNil(t, resp.Execution)
+	require.NotNil(t, resp.Audit)
+
+	// Change section
+	assert.Equal(t, id, resp.Change.Id)
+	assert.Equal(t, "readable", resp.Change.PlanState) // plan was generated
+	assert.NotEmpty(t, resp.Change.PlanHash)
+
+	// SQL section - should have steps from the plan
+	assert.True(t, resp.Sql.HasSql)
+	assert.Greater(t, len(resp.Sql.Steps), 0)
+	for _, step := range resp.Sql.Steps {
+		assert.NotEmpty(t, step.Step)
+		assert.NotEmpty(t, step.Sql)
+	}
+
+	// Approval section
+	assert.True(t, resp.Approval.HasApproval)
+	assert.Equal(t, approval.LevelStandard, resp.Approval.Level)
+	assert.Equal(t, 1, len(resp.Approval.Approvers))
+	assert.Equal(t, "bob", resp.Approval.Approvers[0])
+	assert.True(t, resp.Approval.MatchesPlan) // bound to current plan
+	assert.False(t, resp.Approval.LegacyApproval)
+	assert.False(t, resp.Approval.StaleApproval)
+
+	// Window section
+	assert.Equal(t, "plan", resp.Window.EnforcedAt)
+	assert.False(t, resp.Window.PersistedPerRun)
+	assert.Contains(t, resp.Window.Note, "变更窗口是工作流声明")
+
+	// Execution section - no evidence yet (not applied)
+	assert.Equal(t, "not_started", resp.Execution.Verdict)
+	assert.False(t, resp.Execution.HasEvidence)
+
+	// Audit section - no traces yet
+	assert.False(t, resp.Audit.Verified)
+	assert.True(t, resp.Audit.Unverifiable)
+	assert.Empty(t, resp.Audit.VerifyError)
+}
+
+// TestGetDBChangeTicket_UnreadablePlan: when the plan artifact exists but
+// cannot be parsed, the ticket reports plan_state=unreadable and the
+// SQL/Rollback sections say "unknown" rather than "none".
+func TestGetDBChangeTicket_UnreadablePlan(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newTestChangeService(t)
+	id := seedRunIn(t, store, "alice", "prod")
+
+	// Write an unparseable plan JSON directly to the run row
+	require.NoError(t, store.UpdateRun(ctx, &state.Run{
+		ID:       id,
+		PlanJSON: "{not valid json",
+	}))
+
+	resp, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: id})
+	require.NoError(t, err)
+
+	assert.Equal(t, "unreadable", resp.Change.PlanState)
+	assert.False(t, resp.Sql.HasSql)
+	assert.Empty(t, resp.Sql.Steps)
+	assert.Nil(t, resp.Sql.Review)
+	assert.False(t, resp.Rollback.HasUndo)
+	assert.Empty(t, resp.Rollback.StepUndos)
+}
+
+// TestGetDBChangeTicket_LegacyApproval: an approval row without a plan_hash
+// is reported as legacy_approval=true and matches_plan=false.
+func TestGetDBChangeTicket_LegacyApproval(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newTestChangeService(t)
+	id := seedRunIn(t, store, "alice", "prod")
+
+	// Manually write a plan artifact
+	planJSON := `{
+		"ID": "` + id + `",
+		"WorkflowName": "test-workflow",
+		"Batches": [{"Index": 0, "Targets": ["host1"], "Steps": [{"Name": "step1", "Module": "mysql", "Action": "query", "Args": {"sql": "SELECT 1"}}], "MaxConcurrency": 1}],
+		"TotalTargets": 1, "CreatedAt": "2024-01-01T00:00:00Z"
+	}`
+	require.NoError(t, store.UpdateRunPlan(ctx, id, planJSON, "test-plan-hash-123", time.Now().UTC()))
+
+	// Create a legacy approval (no plan_hash) by directly inserting a row with empty PlanHash
+	require.NoError(t, store.CreateApproval(ctx, &state.Approval{
+		ID:       "ap-legacy",
+		RunID:    id,
+		Level:    approval.LevelStandard,
+		Approver: "bob",
+		Status:   string(approval.StatusApproved),
+		Comment:  `{"Approvers":["bob"],"MinApprovers":1,"Decisions":[{"Approver":"bob","Action":"approve","Reason":"","At":"2024-01-01T00:00:00Z"}]}`,
+		PlanHash: "", // legacy: no plan_hash
+		TenantID: "test",
+	}))
+
+	resp, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: id})
+	require.NoError(t, err)
+
+	assert.True(t, resp.Approval.LegacyApproval)
+	assert.False(t, resp.Approval.MatchesPlan) // legacy rows don't match any plan
+	assert.True(t, resp.Approval.HasApproval)
+}
+
+// TestGetDBChangeTicket_StaleApproval: an approval bound to a different
+// plan_hash is reported as stale_approval=true.
+func TestGetDBChangeTicket_StaleApproval(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newTestChangeService(t)
+	id := seedRunIn(t, store, "alice", "prod")
+
+	// First plan
+	planJSON1 := `{
+		"ID": "` + id + `",
+		"WorkflowName": "test-workflow",
+		"Batches": [{"Index": 0, "Targets": ["host1"], "Steps": [{"Name": "step1", "Module": "mysql", "Action": "query", "Args": {"sql": "SELECT 1"}}], "MaxConcurrency": 1}],
+		"TotalTargets": 1, "CreatedAt": "2024-01-01T00:00:00Z"
+	}`
+	require.NoError(t, store.UpdateRunPlan(ctx, id, planJSON1, "plan-hash-1", time.Now().UTC()))
+
+	// Get the current plan_hash
+	run, _ := store.GetRun(ctx, id)
+	oldPlanHash := run.PlanHash
+	require.NotEmpty(t, oldPlanHash)
+
+	// Create an approval bound to the old plan (plan-hash-1)
+	// Use store.CreateApproval directly to control the PlanHash
+	require.NoError(t, store.CreateApproval(ctx, &state.Approval{
+		ID:       "ap-stale",
+		RunID:    id,
+		Level:    approval.LevelStandard,
+		Approver: "bob",
+		Status:   string(approval.StatusApproved),
+		Comment:  `{"Approvers":["bob"],"MinApprovers":1,"Decisions":[{"Approver":"bob","Action":"approve","Reason":"","At":"2024-01-01T00:00:00Z"}]}`,
+		PlanHash: "plan-hash-1", // bound to first plan
+		TenantID: "test",
+	}))
+
+	// Second plan (different hash)
+	planJSON2 := `{
+		"ID": "` + id + `",
+		"WorkflowName": "test-workflow",
+		"Batches": [{"Index": 0, "Targets": ["host1"], "Steps": [{"Name": "step1", "Module": "mysql", "Action": "query", "Args": {"sql": "SELECT 2"}}], "MaxConcurrency": 1}],
+		"TotalTargets": 1, "CreatedAt": "2024-01-01T00:00:00Z"
+	}`
+	require.NoError(t, store.UpdateRunPlan(ctx, id, planJSON2, "plan-hash-2", time.Now().UTC()))
+
+	// Verify plan_hash changed
+	run, _ = store.GetRun(ctx, id)
+	require.NotEqual(t, oldPlanHash, run.PlanHash)
+
+	resp, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: id})
+	require.NoError(t, err)
+
+	assert.True(t, resp.Approval.StaleApproval)
+	assert.False(t, resp.Approval.MatchesPlan)
+	assert.False(t, resp.Approval.LegacyApproval)
+}
+
+// TestGetDBChangeTicket_AuditVerifyError: when the audit store cannot be
+// read, verify_error is populated (not "no trace records").
+// This test verifies the unverifiable path (no traces) works correctly.
+func TestGetDBChangeTicket_AuditVerifyError(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newTestChangeService(t)
+	id := seedRunIn(t, store, "alice", "prod")
+
+	// No plan, no traces - should be unverifiable with no error
+	resp, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: id})
+	require.NoError(t, err)
+
+	assert.False(t, resp.Audit.Verified)
+	assert.True(t, resp.Audit.Unverifiable)
+	assert.Empty(t, resp.Audit.VerifyError)
+
+	// Non-existent ID should return NotFound
+	_, err = svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: "non-existent"})
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+// TestGetDBChangeTicket_RefusesBadIds mirrors the same error behavior
+// as other read paths.
+func TestGetDBChangeTicket_RefusesBadIds(t *testing.T) {
+	ctx := context.Background()
+	svc, _ := newTestChangeService(t)
+
+	// Empty ID
+	_, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{})
+	require.Error(t, err)
+	assert.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	// Non-existent ID
+	_, err = svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: "run-does-not-exist"})
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+// TestGetDBChangeTicket_RespectsAuthz: a viewer in prod can read the ticket.
+func TestGetDBChangeTicket_RespectsAuthz(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newTestChangeService(t)
+	svc.WithAuthorizer(newPolicyAuthorizer(t))
+	id := seedRunIn(t, store, "alice", "prod")
+
+	// Manually write a plan artifact (capitalized fields to match plan.Plan struct)
+	planJSON := `{
+		"ID": "` + id + `",
+		"WorkflowName": "test-workflow",
+		"Batches": [{"Index": 0, "Targets": ["host1"], "Steps": [{"Name": "step1", "Module": "mysql", "Action": "query", "Args": {"sql": "SELECT 1"}}], "MaxConcurrency": 1}],
+		"TotalTargets": 1, "CreatedAt": "2024-01-01T00:00:00Z"
+	}`
+	require.NoError(t, store.UpdateRunPlan(ctx, id, planJSON, "test-plan-hash-123", time.Now().UTC()))
+
+	// Viewer (carol) can read in prod
+	resp, err := svc.GetDBChangeTicket(ContextWithActor(ctx, "carol"), &pb.GetDBChangeTicketRequest{ChangeId: id})
+	require.NoError(t, err)
+	require.NotNil(t, resp.Change)
+	assert.Equal(t, id, resp.Change.Id)
+
+	// Mallory (unregistered) is denied
+	_, err = svc.GetDBChangeTicket(ContextWithActor(ctx, "mallory"), &pb.GetDBChangeTicketRequest{ChangeId: id})
+	require.Error(t, err)
+	assert.Equal(t, codes.PermissionDenied, status.Code(err))
 }

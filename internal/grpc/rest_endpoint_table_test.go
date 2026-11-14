@@ -78,6 +78,8 @@ var documentedRoutes = map[string]string{
 	"POST /changes/:id/archive":      "rest.go handleChangeAction case archive",
 	"GET /changes/:id/logs":          "rest.go handleChangeRead case logs",
 	"GET /changes/:id/trace":         "rest.go handleChangeRead case trace",
+	"GET /changes/:id/approvals":     "rest.go handleChangeRead case approvals",
+	"GET /changes/:id/ticket":        "rest.go handleChangeRead case ticket",
 	"GET /changes/:id/events":        "sse_route.go handleChangeEvents",
 	"POST /changes/deeplink/approve": "rest.go deeplink approve",
 	"POST /changes/deeplink/reject":  "rest.go deeplink reject",

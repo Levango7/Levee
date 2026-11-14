@@ -260,6 +260,9 @@ service ChangeService {
   rpc WatchChange(WatchChangeRequest) returns (stream ChangeEvent);
   // Real-time log stream.
   rpc StreamLogs(StreamLogsRequest) returns (stream LogEntry);
+  // `levee dbchange show` — one change's composed ticket (SQL, review, rollback,
+  // window, approvals, execution evidence, audit integrity).
+  rpc GetDBChangeTicket(GetDBChangeTicketRequest) returns (DBChangeTicket);
 }
 
 message CreateChangeRequest {
@@ -546,6 +549,126 @@ message StreamLogsRequest {
   bool follow = 4;
   // Drop logs older than this Unix timestamp.
   int64 since = 5;
+}
+
+// ============================================================================
+// DBChangeTicket - 数据库变更发布单
+// ============================================================================
+
+message GetDBChangeTicketRequest {
+  string change_id = 1;
+}
+
+// DBChangeTicket is the complete composed ticket for one change.
+// It mirrors internal/dbchange.Ticket field-for-field so the wire
+// contract is exactly the same composition the CLI renders.
+message DBChangeTicket {
+  ChangeSection change = 1;
+  SQLSection sql = 2;
+  RollbackSection rollback = 3;
+  WindowSection window = 4;
+  ApprovalSection approval = 5;
+  ExecutionSection execution = 6;
+  AuditSection audit = 7;
+}
+
+message ChangeSection {
+  string id = 1;
+  string label = 2;
+  string status = 3;
+  string priority = 4;
+  string environment = 5;
+  string creator = 6;
+  string workflow = 7;
+  string template = 8;
+  string plan_hash = 9;
+  // plan_state: "none" | "readable" | "unreadable"
+  string plan_state = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+}
+
+message SQLSection {
+  repeated SQLStep steps = 1;
+  SQLReviewSummary review = 2;
+  bool has_sql = 3;
+}
+
+message SQLStep {
+  string step = 1;
+  string sql = 2;
+}
+
+message RollbackSection {
+  string strategy = 1;
+  string on_failure = 2;
+  bool verify_after = 3;
+  repeated string snapshot_paths = 4;
+  repeated StepUndo step_undos = 5;
+  bool has_undo = 6;
+}
+
+message StepUndo {
+  string step = 1;
+  string strategy = 2;
+  int32 undo_steps = 3;
+  bool irreversible = 4;
+}
+
+message WindowSection {
+  string enforced_at = 1;
+  bool persisted_per_run = 2;
+  string note = 3;
+}
+
+message ApprovalSection {
+  string level = 1;
+  string status = 2;
+  repeated string approvers = 3;
+  repeated ApprovalDecision decisions = 4;
+  int32 pending_count = 5;
+  int32 approved_count = 6;
+  int32 rejected_count = 7;
+  bool matches_plan = 8;
+  bool legacy_approval = 9;
+  bool stale_approval = 10;
+  bool has_approval = 11;
+}
+
+message ExecutionSection {
+  // verdict: evidence.Kind vocabulary
+  string verdict = 1;
+  string reason = 2;
+  int32 batches = 3;
+  int32 steps = 4;
+  int32 total_targets = 5;
+  bool has_evidence = 6;
+}
+
+message AuditSection {
+  bool valid = 1;
+  int32 count = 2;
+  int32 legacy_count = 3;
+  bool verified = 4;
+  bool unverifiable = 5;
+  string verify_error = 6;
+}
+
+// SQLReviewSummary mirrors plan.SQLReviewSummary for the wire.
+message SQLReviewSummary {
+  // verdict: pass / fail / warn
+  string verdict = 1;
+  int32 fail_count = 2;
+  int32 warn_count = 3;
+  repeated SQLReviewFinding findings = 4;
+}
+
+message SQLReviewFinding {
+  string rule = 1;
+  string severity = 2;
+  string step = 3;
+  int32 statement = 4;
+  string message = 5;
 }
 
 // ============================================================================

@@ -16,6 +16,9 @@ import type {
   Template,
   TraceEntry,
   VersionInfo,
+  // DB Change Ticket types
+  DBChangeTicket,
+  GetDBChangeTicketResponse,
 } from '@/types/levee'
 
 // ---------------------------------------------------------------------------
@@ -190,6 +193,10 @@ export const changesApi = {
     hashChainValid: boolean
     verificationMessage: string
   }> => get(`/changes/${id}/trace`, { params }),
+
+  // DB Change Ticket (全链视图)
+  ticket: (id: string): Promise<DBChangeTicket> =>
+    get<GetDBChangeTicketResponse>(`/changes/${id}/ticket`).then((r) => r.ticket),
 }
 
 // ---------------------------------------------------------------------------

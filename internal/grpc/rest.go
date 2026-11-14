@@ -700,7 +700,7 @@ func (gw *Gateway) dispatchChangeSubPath(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		gw.handleChangeAction(w, r, id, rest)
-	case "approvals", "logs", "trace", "events":
+	case "approvals", "logs", "trace", "events", "ticket":
 		if method != http.MethodGet {
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed: use GET")
 			return
@@ -750,6 +750,8 @@ func (gw *Gateway) handleChangeRead(w http.ResponseWriter, r *http.Request, id, 
 		gw.handleChangeTrace(w, r, id)
 	case "events":
 		gw.handleChangeEvents(w, r, id)
+	case "ticket":
+		gw.handleChangeTicket(w, r, id)
 	}
 }
 
@@ -1160,6 +1162,17 @@ func (gw *Gateway) handleChangeTrace(w http.ResponseWriter, r *http.Request, id 
 		req.Verify = true
 	}
 	resp, err := svc.GetTrace(ctx, req)
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	writeProto(w, resp)
+}
+
+func (gw *Gateway) handleChangeTicket(w http.ResponseWriter, r *http.Request, id string) {
+	svc := gw.change
+	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
+	resp, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: id})
 	if err != nil {
 		writeGRPCError(w, err)
 		return

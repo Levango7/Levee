@@ -233,6 +233,12 @@ type RollbackSpec struct {
 	SnapshotPaths []string
 }
 
+// RollbackStrategyNames returns the rollback strategy vocabulary in
+// declaration order. The result is a copy and may be modified by the caller.
+func RollbackStrategyNames() []string {
+	return []string{"snapshot", "undo-action", "config-revert"}
+}
+
 // ApprovalSpec declares the approval requirement. Level is one of
 // standard / high / emergency. Approvers is an explicit list of approver
 // identifiers; MinApprovers is the minimum count.

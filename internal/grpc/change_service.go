@@ -45,6 +45,7 @@ import (
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/calendar"
+	"github.com/nexus/levee/internal/dbchange"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -1630,6 +1631,177 @@ func (s *ChangeService) GetApprovals(ctx context.Context, req *pb.GetApprovalsRe
 		out.Approvals = append(out.Approvals, info)
 	}
 	return out, nil
+}
+
+// GetDBChangeTicket returns the composed DB change ticket for one change.
+// It mirrors `levee dbchange show` — the same read model composed from
+// run, plan artifact, approvals, trace/audit chains and step evidence.
+// The ticket is a READ MODEL: nothing is written back, and no field is
+// re-derived from a live probe that the plan-time gate did not already make.
+func (s *ChangeService) GetDBChangeTicket(ctx context.Context, req *pb.GetDBChangeTicketRequest) (*pb.DBChangeTicket, error) {
+	if s.store == nil {
+		return nil, status.Error(codes.Internal, "store not configured")
+	}
+	if req.GetChangeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "change id is required")
+	}
+	run, err := s.store.GetRun(ctx, req.GetChangeId())
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get run: %v", err)
+	}
+	if run == nil {
+		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+	}
+	if err := authorizeResourceRead(ctx, s.authz, envOf(run), "GetDBChangeTicket"); err != nil {
+		return nil, err
+	}
+
+	tk, err := dbchange.Collect(ctx, s.store, req.GetChangeId())
+	if err != nil {
+		if errors.Is(err, dbchange.ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+		}
+		return nil, status.Errorf(codes.Internal, "collect dbchange ticket: %v", err)
+	}
+
+	return toPBDBChangeTicket(tk), nil
+}
+
+// toPBDBChangeTicket converts the internal dbchange.Ticket to the wire format.
+func toPBDBChangeTicket(tk *dbchange.Ticket) *pb.DBChangeTicket {
+	if tk == nil {
+		return nil
+	}
+	return &pb.DBChangeTicket{
+		Change:    toPBChangeSection(tk.Change),
+		Sql:       toPBSQLSection(tk.SQL),
+		Rollback:  toPBRollbackSection(tk.Rollback),
+		Window:    toPBWindowSection(tk.Window),
+		Approval:  toPBApprovalSection(tk.Approval),
+		Execution: toPBExecutionSection(tk.Execution),
+		Audit:     toPBAuditSection(tk.Audit),
+	}
+}
+
+func toPBChangeSection(cs dbchange.ChangeSection) *pb.ChangeSection {
+	return &pb.ChangeSection{
+		Id:          cs.ID,
+		Label:       cs.Label,
+		Status:      cs.Status,
+		Priority:    cs.Priority,
+		Environment: cs.Environment,
+		Creator:     cs.Creator,
+		Workflow:    cs.Workflow,
+		Template:    cs.Template,
+		PlanHash:    cs.PlanHash,
+		PlanState:   cs.PlanState,
+		CreatedAt:   cs.CreatedAt.Unix(),
+		UpdatedAt:   cs.UpdatedAt.Unix(),
+	}
+}
+
+func toPBSQLSection(ss dbchange.SQLSection) *pb.SQLSection {
+	steps := make([]*pb.SQLStep, len(ss.Steps))
+	for i, s := range ss.Steps {
+		steps[i] = &pb.SQLStep{Step: s.Step, Sql: s.SQL}
+	}
+	var review *pb.SQLReviewSummary
+	if ss.Review != nil {
+		review = &pb.SQLReviewSummary{
+			Verdict:   ss.Review.Verdict,
+			FailCount: int32(ss.Review.FailCount),
+			WarnCount: int32(ss.Review.WarnCount),
+		}
+		for _, f := range ss.Review.Findings {
+			review.Findings = append(review.Findings, &pb.SQLReviewFinding{
+				Rule:      f.Rule,
+				Severity:  f.Severity,
+				Step:      f.Step,
+				Statement: int32(f.Statement),
+				Message:   f.Message,
+			})
+		}
+	}
+	return &pb.SQLSection{
+		Steps:  steps,
+		Review: review,
+		HasSql: ss.HasSQL,
+	}
+}
+
+func toPBRollbackSection(rs dbchange.RollbackSection) *pb.RollbackSection {
+	undos := make([]*pb.StepUndo, len(rs.StepUndos))
+	for i, u := range rs.StepUndos {
+		undos[i] = &pb.StepUndo{
+			Step:         u.Step,
+			Strategy:     u.Strategy,
+			UndoSteps:    int32(u.UndoSteps),
+			Irreversible: u.Irreversible,
+		}
+	}
+	return &pb.RollbackSection{
+		Strategy:      rs.Strategy,
+		OnFailure:     rs.OnFailure,
+		VerifyAfter:   rs.VerifyAfter,
+		SnapshotPaths: rs.SnapshotPaths,
+		StepUndos:     undos,
+		HasUndo:       rs.HasUndo,
+	}
+}
+
+func toPBWindowSection(ws dbchange.WindowSection) *pb.WindowSection {
+	return &pb.WindowSection{
+		EnforcedAt:      ws.EnforcedAt,
+		PersistedPerRun: ws.PersistedPerRun,
+		Note:            ws.Note,
+	}
+}
+
+func toPBApprovalSection(as dbchange.ApprovalSection) *pb.ApprovalSection {
+	decisions := make([]*pb.ApprovalDecision, len(as.Decisions))
+	for i, d := range as.Decisions {
+		decisions[i] = &pb.ApprovalDecision{
+			Approver:  d.Approver,
+			Action:    d.Action,
+			Reason:    d.Reason,
+			DecidedAt: d.At.Unix(),
+		}
+	}
+	return &pb.ApprovalSection{
+		Level:          as.Level,
+		Status:         as.Status,
+		Approvers:      as.Approvers,
+		Decisions:      decisions,
+		PendingCount:   int32(as.PendingCount),
+		ApprovedCount:  int32(as.ApprovedCount),
+		RejectedCount:  int32(as.RejectedCount),
+		MatchesPlan:    as.MatchesPlan,
+		LegacyApproval: as.LegacyApproval,
+		StaleApproval:  as.StaleApproval,
+		HasApproval:    as.HasApproval,
+	}
+}
+
+func toPBExecutionSection(es dbchange.ExecutionSection) *pb.ExecutionSection {
+	return &pb.ExecutionSection{
+		Verdict:      es.Verdict,
+		Reason:       es.Reason,
+		Batches:      int32(es.Batches),
+		Steps:        int32(es.Steps),
+		TotalTargets: int32(es.TotalTargets),
+		HasEvidence:  es.HasEvidence,
+	}
+}
+
+func toPBAuditSection(as dbchange.AuditSection) *pb.AuditSection {
+	return &pb.AuditSection{
+		Valid:        as.Valid,
+		Count:        int32(as.Count),
+		LegacyCount:  int32(as.LegacyCount),
+		Verified:     as.Verified,
+		Unverifiable: as.Unverifiable,
+		VerifyError:  as.VerifyError,
+	}
 }
 
 // --- PauseChange / ResumeChange --------------------------------------------

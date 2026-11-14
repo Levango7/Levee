@@ -109,7 +109,11 @@ const logsText = computed(() => errorMessage(logsError.value, '加载日志失�
 
 // The timeline reads newest-first: an operator arriving at a failed change
 // wants the verdict and the last thing that happened, not the beginning.
-const timeline = computed(() => [...chain.value.entries].sort((a, b) => b.timestamp - a.timestamp))
+const timeline = computed(() => [...chain.value.entries].sort((a, b) => {
+  const ta = typeof a.timestamp === 'string' ? parseInt(a.timestamp, 10) : a.timestamp
+  const tb = typeof b.timestamp === 'string' ? parseInt(b.timestamp, 10) : b.timestamp
+  return tb - ta
+}))
 
 const batchRows = computed(() =>
   (batches.value?.batches || []).map((b) => ({
@@ -258,6 +262,7 @@ onMounted(load)
         <el-button :icon="'Back'" @click="router.push('/changes')">返回看板</el-button>
         <el-button :icon="'Refresh'" :loading="loading" @click="load">刷新</el-button>
         <el-button type="primary" @click="router.push(`/monitor/${changeId}`)">实时监控</el-button>
+        <el-button @click="router.push(`/changes/${changeId}/ticket`)">查看发布单</el-button>
       </template>
     </PageHeader>
 

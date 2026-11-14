@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（DB Change Ticket 全链视图：gRPC / REST / Web）
+
+- **缺口**：`internal/dbchange` 发布单读模型和 `levee dbchange show` CLI 已能拼出数据库变更的 SQL、回滚、窗口、审批、执行与审计事实，但仓内没有对外读路径，控制台仍看不到「可出示的单」。
+- **修法**：新增 `ChangeService.GetDBChangeTicket` RPC 与 `GET /api/v1/changes/<id>/ticket` REST 路径；wire 契约完整承载 Change / SQL / Rollback / Window / Approval / Execution / Audit 七段，并保持读模型的三态诚实性（计划不可读显示「未知」、legacy 审批不冒充绑定当前计划、校验错误不冒充「无记录」）。Web 新增 `/changes/:id/ticket` 只读页（SQL 与审核、回滚、窗口、审批链、执行证据、审计验证六个页签），变更详情页提供入口。跨语言词表由 Go owner 生成到 `web/src/types/vocabulary.ts`，前端不再手抄状态集合。
+- **验证**：gRPC 契约与鉴权 7 例（完整发布单 / 不可读计划 / legacy 审批 / 陈旧审批 / 审计校验错误 / 非法 id / 越权拒绝）；`internal/dbchange` 17 例；Web `npm run build` 通过；`go test ./...`、golangci-lint、Python 132 例均通过。
+- **边界**：本笔是只读发布单，不新增审批、回滚或执行写操作；REST 路径沿用现有变更读权限，不引入独立授权模型。
+
 ### 修复（dbchange — 发布单把「读不到」当成「没有」——诚实三态、审批三态、校验错误分流）
 
 - **缺口**：只读复核 PR #370（feat/dbchange 数据库变更发布单）时发现四处诚实问题：① 计划制品不可读时，发布单把「读不到」说成「没有」；② 审计链「完好」没有用例承重；③ legacy 审批行被读成「绑定当前计划: true」；④ 审计「未验证」不区分「没有 trace 记录」与「校验出错」。

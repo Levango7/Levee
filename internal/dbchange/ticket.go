@@ -56,6 +56,12 @@ const (
 	planStateUnreadable = "unreadable"
 )
 
+// PlanStateNames returns the plan artifact state vocabulary. The result is a
+// copy and may be modified by the caller.
+func PlanStateNames() []string {
+	return []string{planStateNone, planStateReadable, planStateUnreadable}
+}
+
 // Ticket is one change, composed for a reader.
 type Ticket struct {
 	Change    ChangeSection    `json:"change"`

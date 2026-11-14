@@ -11,6 +11,9 @@ import (
 	"github.com/nexus/levee/internal/approval"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/conversation"
+	"github.com/nexus/levee/internal/dbchange"
+	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/evidence"
 	"github.com/nexus/levee/internal/runstatus"
 	"github.com/nexus/levee/internal/state"
 )
@@ -110,6 +113,19 @@ func webVocabularies() []tsVocabulary {
 		{"ALERT_SEVERITIES", "AlertSeverity",
 			"告警级别（alert.Alert 的 Severity），按紧迫度升序：info → warning → critical。来源是各适配器（nagios/zabbix/prometheus）解析后的归一值，不是监控系统的原始措辞。",
 			alert.SeverityNames},
+		// DB Change Ticket vocabularies
+		{"PLAN_STATES", "PlanState",
+			"计划工件状态：none（无计划）、readable（可读）、unreadable（不可读）。",
+			dbchange.PlanStateNames},
+		{"APPROVAL_LEVELS", "ApprovalLevel",
+			"审批档位：standard / high / emergency。",
+			func() []string { return dsl.ApprovalLevels }},
+		{"EXECUTION_VERDICTS", "ExecutionVerdict",
+			"执行裁决：not_started / in_flight / complete / partial / missing / unrecorded。",
+			evidence.KindNames},
+		{"ROLLBACK_STRATEGIES", "RollbackStrategy",
+			"回滚策略：snapshot / undo-action / config-revert。",
+			dsl.RollbackStrategyNames},
 	}
 }
 
@@ -142,14 +158,16 @@ func renderWebVocabulary() string {
 	b.WriteString("//   internal/state.StepStatusNames()、internal/state.ApprovalStatusNames()、\n")
 	b.WriteString("//   internal/state.AssignResultNames()、internal/approval.StatusNames()、\n")
 	b.WriteString("//   internal/cluster.NodeRoleNames() / NodeStatusNames()、\n")
-	b.WriteString("//   internal/conversation.SessionStateNames()\n")
+	b.WriteString("//   internal/conversation.SessionStateNames()、\n")
+	b.WriteString("//   internal/dbchange.PlanStateNames()、internal/dsl.ApprovalLevels()、\n")
+	b.WriteString("//   internal/evidence.KindNames()、internal/dsl.RollbackStrategyNames()\n")
 	b.WriteString("//\n")
 	b.WriteString("// 这些表此前是前端手抄件，由 Go 侧解析抄件再与 owner 比对来守卫。那正是\n")
 	b.WriteString("// #153 的失败形状：守卫核对的是自己的抄写，四处产物互相自洽、一起与服务器\n")
 	b.WriteString("// 不一致，全程没有一处报错。现在值集合只有一份，且是机器产出的。\n")
 	b.WriteString("//\n")
 	b.WriteString("// 同名不同物的一族（batch / assignment / step 三张表都拼 pending、running、\n")
-	b.WriteString("// failed；两张审批表都拼 pending、approved、rejected）刻意是一张表一个类型名，\n")
+	b.WriteString("// failed；两张审批表都拼 pending、approved、rejected）刻意是一张表一个类名，\n")
 	b.WriteString("// 别在这里合并——合并会让一张表能读出另一张表读不到的值，理由写在各自 owner 的\n")
 	b.WriteString("// 清单注释里。\n\n")
 
