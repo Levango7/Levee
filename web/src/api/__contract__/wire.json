@@ -283,6 +283,56 @@
       ]
     }
   },
+  "dbchange-ticket": {
+    "method": "GET",
+    "path": "/changes/{id}/ticket",
+    "keys": [
+      "approval",
+      "audit",
+      "change",
+      "execution",
+      "rollback",
+      "sql",
+      "window"
+    ],
+    "objects": {
+      "approval": [],
+      "audit": [
+        "count",
+        "verified"
+      ],
+      "change": [
+        "createdAt",
+        "creator",
+        "id",
+        "label",
+        "planHash",
+        "planState",
+        "status",
+        "template",
+        "updatedAt",
+        "workflow"
+      ],
+      "execution": [
+        "batches",
+        "hasEvidence",
+        "reason",
+        "steps",
+        "totalTargets",
+        "verdict"
+      ],
+      "rollback": [],
+      "sql": [
+        "hasSql",
+        "review",
+        "steps"
+      ],
+      "window": [
+        "enforcedAt",
+        "note"
+      ]
+    }
+  },
   "groups": {
     "method": "GET",
     "path": "/groups",

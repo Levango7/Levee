@@ -344,9 +344,22 @@ func seedPlannedRun(t *testing.T, store state.Store, runID string) {
 		Batches: []plan.Batch{
 			{Index: 0, Targets: []string{"10.0.1.11"}, Steps: []plan.PlanStep{{Name: "restart", Module: "svc", Action: "restart"}}, MaxConcurrency: 1},
 			{Index: 1, Targets: []string{"10.0.1.12", "10.0.1.13"}, Steps: []plan.PlanStep{{Name: "verify", Module: "svc", Action: "verify"}}, MaxConcurrency: 2},
+			// A mysql.query step with a review verdict: the DB Change Ticket's
+			// SQL section is built from exactly these two things (the query
+			// steps + the plan's review summary). Without them the section is
+			// an empty object and the wire contract would record "this section
+			// says nothing" — a shape no console reader can be checked against.
+			{Index: 2, Targets: []string{"10.0.1.14"}, Steps: []plan.PlanStep{{Name: "migrate", Module: "mysql", Action: "query", Args: map[string]any{"sql": "UPDATE accounts SET tier='gold' WHERE id=42"}}}, MaxConcurrency: 1},
 		},
-		TotalTargets: 3,
+		TotalTargets: 4,
 		CreatedAt:    time.Now().UTC(),
+		SQLReview: &plan.SQLReviewSummary{
+			Verdict: "warn", WarnCount: 1,
+			Findings: []plan.SQLReviewFinding{{
+				Step: "migrate", Rule: "SR-08", Severity: "warn", Statement: 1,
+				Message: "UPDATE without a WHERE clause on a large table",
+			}},
+		},
 	}
 	raw, err := json.Marshal(p)
 	require.NoError(t, err)
@@ -472,6 +485,11 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 	detail := get("/changes/run-wire")
 	detailPlanned := get("/changes/run-wire?includePlan=true")
 	takeover := get("/system/takeover-events")
+	// The DB Change Ticket is the "one sheet" a database change is presented
+	// on (seven nested sections). Its shape has to be in the contract too: a
+	// section that silently stopped being sent would leave the console
+	// rendering half a ticket, and a top-level key set cannot see that.
+	ticket := get("/changes/run-wire/ticket")
 	// The rollback endpoint is a POST, and it is the one the remediation
 	// wizard depends on: the console reads the two host lists out of it. It
 	// was the one shape the contract could not see — the snapshot covered
@@ -513,6 +531,19 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 			Keys:   keysOf(changes),
 			Rows:   rowsOf("changes", changes),
 			Forbid: []string{"Changes", "NextPageToken", "TotalSize"},
+		},
+		"dbchange-ticket": {
+			Method: "GET", Path: "/changes/{id}/ticket",
+			Keys: keysOf(ticket),
+			Objects: map[string][]string{
+				"change":    objectKeys(ticket, "change"),
+				"sql":       objectKeys(ticket, "sql"),
+				"rollback":  objectKeys(ticket, "rollback"),
+				"window":    objectKeys(ticket, "window"),
+				"approval":  objectKeys(ticket, "approval"),
+				"execution": objectKeys(ticket, "execution"),
+				"audit":     objectKeys(ticket, "audit"),
+			},
 		},
 		"change": {
 			Method: "GET", Path: "/changes/{id}",

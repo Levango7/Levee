@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 修复（DB Change Ticket 前端 DTO 与 wire 漂移：页面「不报错，但每格都是空白」）
+
+- **缺口**：发布单前端 DTO 是按「想象出来的形状」写的：把 proto 的 `workflow` / `template` 写成 `workflowFile` / `templateName`，给 SQL 步骤多写了 proto 里没有的 `batchNo` / `hostCount`，审批段按 approval 记录自己那套字段写了 `minApprovers` / `initiator` / `expiresAt`，审核汇总写了 `reviewedAt` / `reviewer` / `ruleId`。TypeScript 自洽、构建通过、页面也不报错——它只是每一格都读成 `undefined`，于是显示空白。
+- **修法**：① TS DTO 逐字段对齐 proto（`ChangeSection` / `SQLSection` / `SQLReviewSummary` / `RollbackSection` / `StepUndo` / `WindowSection` / `ApprovalSection` / `ExecutionSection` / `AuditSection`）；② `TicketView.vue` 按真实 wire 重写（概览条 + 七个分段页签），SQL/回滚/审批/执行/审计各自读 wire 标志位而不是从数组长度推断；③ 发布单进入 wire 契约（`web/src/api/__contract__/wire.json` 新增 `dbchange-ticket` 条目，顶层分段名由 `wireContract.spec.ts` 双向守卫）；④ 新增 `web/src/views/TicketView.spec.ts`：分段内关键字段名双向钉住，并禁止那批「自己编的」字段名回来。
+- **验证**：`internal/grpc` wire 快照新增 `dbchange-ticket` 条目（含 change / sql / window / execution / audit 分段的真实键集）；`TicketView.spec.ts` 4 例 + `wireContract.spec.ts` 6 例通过；`vue-tsc` 干净；Web 构建通过。
+- **边界**：契约快照里 approval / rollback 两个分段在「无审批、无回滚声明」的夹具下是空对象（protojson 省略未设置字段），这两个分段内部的字段名由 `TicketView.spec.ts` 钉住，而不是靠 wire 快照。
+
 ### 新增（断网策略 Q3/Q4：只读白名单带分区标记 + 恢复四步对账工具）
 
 - **缺口**：Q1（分区期拒绝新 apply/审批）已落地，但 Q3「只读白名单带『PG 不可达』标记」与 Q4「恢复四步判据脚本化」仍是纸面策略；更具体地，`GetStatus` 在数据库挂掉时会安静地返回 `active_runs=0`——那是关于平台的**肯定陈述**，而事实是「看不到」。
