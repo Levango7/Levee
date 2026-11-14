@@ -86,11 +86,17 @@ func printDBChangeTicket(w io.Writer, tk *dbchange.Ticket) {
 	fmt.Fprintf(w, "  发起人:   %s\n", orNone(c.Creator))
 	fmt.Fprintf(w, "  工作流:   %s\n", orNone(c.Workflow))
 	fmt.Fprintf(w, "  计划哈希: %s\n", orNone(c.PlanHash))
+	fmt.Fprintf(w, "  计划状态: %s\n", planStateText(c.PlanState))
 
 	fmt.Fprintln(w, "SQL（已审核）:")
-	if !tk.SQL.HasSQL {
+	switch {
+	case tk.Change.PlanState == "unreadable":
+		// The plan artifact could not be read. "No SQL" would be a claim
+		// about the change that nobody can support; the truth is unknown.
+		fmt.Fprintln(w, "  计划制品不可读（plan_json 解析失败）：SQL 与审核结论未知")
+	case !tk.SQL.HasSQL:
 		fmt.Fprintln(w, "  无可审核的 SQL 步骤")
-	} else {
+	default:
 		for _, s := range tk.SQL.Steps {
 			fmt.Fprintf(w, "  步骤 %s:\n    %s\n", s.Step, s.SQL)
 		}
@@ -100,14 +106,19 @@ func printDBChangeTicket(w io.Writer, tk *dbchange.Ticket) {
 		for _, f := range r.Findings {
 			fmt.Fprintf(w, "    - [%s/%s] 步骤 %q 语句 %d: %s\n", f.Rule, f.Severity, f.Step, f.Statement, f.Message)
 		}
+	} else if tk.Change.PlanState == "unreadable" {
+		fmt.Fprintln(w, "  审核结论: 未知（计划制品不可读）")
 	} else {
 		fmt.Fprintln(w, "  审核结论: 无（该计划没有可审核的 SQL 面）")
 	}
 
 	fmt.Fprintln(w, "回滚计划:")
-	if !tk.Rollback.HasUndo {
+	switch {
+	case tk.Change.PlanState == "unreadable":
+		fmt.Fprintln(w, "  计划制品不可读（plan_json 解析失败）：回滚计划未知")
+	case !tk.Rollback.HasUndo:
 		fmt.Fprintln(w, "  未声明回滚")
-	} else {
+	default:
 		fmt.Fprintf(w, "  策略: %s（失败处置 %s，回滚后验证 %v）\n",
 			orNone(tk.Rollback.Strategy), orNone(tk.Rollback.OnFailure), tk.Rollback.VerifyAfter)
 		for _, p := range tk.Rollback.SnapshotPaths {
@@ -133,6 +144,12 @@ func printDBChangeTicket(w io.Writer, tk *dbchange.Ticket) {
 	} else {
 		fmt.Fprintf(w, "  级别: %s  状态: %s  绑定当前计划: %v\n",
 			orNone(tk.Approval.Level), orNone(tk.Approval.Status), tk.Approval.MatchesPlan)
+		if tk.Approval.LegacyApproval {
+			fmt.Fprintln(w, "  注意: 存在未绑定计划的审批行（legacy，未记录 plan_hash）——它不对任何计划负责")
+		}
+		if tk.Approval.StaleApproval {
+			fmt.Fprintln(w, "  注意: 存在陈旧审批行（绑定的是本变更已不携带的计划）")
+		}
 		fmt.Fprintf(w, "  审批人: %s（待决 %d / 已批 %d / 已拒 %d）\n",
 			orNone(strings.Join(tk.Approval.Approvers, ", ")),
 			tk.Approval.PendingCount, tk.Approval.ApprovedCount, tk.Approval.RejectedCount)
@@ -151,13 +168,30 @@ func printDBChangeTicket(w io.Writer, tk *dbchange.Ticket) {
 
 	fmt.Fprintln(w, "审计链:")
 	if !tk.Audit.Verified {
-		if tk.Audit.Unverifiable {
+		switch {
+		case tk.Audit.VerifyError != "":
+			fmt.Fprintf(w, "  未验证（校验出错: %s）\n", tk.Audit.VerifyError)
+		case tk.Audit.Unverifiable:
 			fmt.Fprintln(w, "  未验证: 该变更还没有 trace 记录")
-		} else {
+		default:
 			fmt.Fprintln(w, "  未验证")
 		}
 	} else {
 		fmt.Fprintf(w, "  已验证: %v（记录 %d，其中 legacy %d）\n", tk.Audit.Valid, tk.Audit.Count, tk.Audit.LegacyCount)
+	}
+}
+
+// planStateText renders the plan artifact state for a reader.
+func planStateText(state string) string {
+	switch state {
+	case "readable":
+		return "可读"
+	case "unreadable":
+		return "不可读（plan_json 解析失败）"
+	case "none":
+		return "尚无计划制品"
+	default:
+		return orNone(state)
 	}
 }
 

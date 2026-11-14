@@ -43,6 +43,19 @@ import (
 // different fixes.
 var ErrNotFound = errors.New("dbchange: change not found")
 
+// Plan artifact states. They are three facts, not two: "the change declares
+// no SQL" and "nobody could read the plan" must not render the same way, or
+// a ticket tells a reader the change has no SQL when the truth is that the
+// plan is unknown.
+const (
+	// planStateNone means no plan artifact is persisted on the run yet.
+	planStateNone = "none"
+	// planStateReadable means the persisted plan artifact parsed.
+	planStateReadable = "readable"
+	// planStateUnreadable means an artifact exists but could not be parsed.
+	planStateUnreadable = "unreadable"
+)
+
 // Ticket is one change, composed for a reader.
 type Ticket struct {
 	Change    ChangeSection    `json:"change"`
@@ -56,17 +69,25 @@ type Ticket struct {
 
 // ChangeSection is the change's identity and lifecycle state.
 type ChangeSection struct {
-	ID          string    `json:"id"`
-	Label       string    `json:"label,omitempty"`
-	Status      string    `json:"status"`
-	Priority    string    `json:"priority,omitempty"`
-	Environment string    `json:"environment,omitempty"`
-	Creator     string    `json:"creator,omitempty"`
-	Workflow    string    `json:"workflow,omitempty"`
-	Template    string    `json:"template,omitempty"`
-	PlanHash    string    `json:"plan_hash,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string `json:"id"`
+	Label       string `json:"label,omitempty"`
+	Status      string `json:"status"`
+	Priority    string `json:"priority,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	Creator     string `json:"creator,omitempty"`
+	Workflow    string `json:"workflow,omitempty"`
+	Template    string `json:"template,omitempty"`
+	PlanHash    string `json:"plan_hash,omitempty"`
+	// PlanState says what the run's plan artifact IS: "none" (no plan
+	// persisted yet), "readable" (parsed) or "unreadable" (an artifact exists
+	// but does not parse). It exists because the SQL and rollback sections
+	// can only be empty in two very different ways, and a reader must be able
+	// to tell them apart: "this change declares no SQL" is a fact about the
+	// change, "this change's plan could not be read" is a fact about the
+	// store, and the second must never be rendered as the first.
+	PlanState string    `json:"plan_state"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // SQLSection is the reviewed SQL surface: the statements the plan will run,
@@ -139,10 +160,22 @@ type ApprovalSection struct {
 	ApprovedCount int `json:"approved_count"`
 	// RejectedCount counts rows whose outcome was rejection.
 	RejectedCount int `json:"rejected_count"`
-	// MatchesPlan reports whether the settled approval row is bound to the
-	// run's current plan_hash — a stale approval is one that blessed a plan
-	// the change no longer carries.
+	// MatchesPlan reports whether an approval row is bound to the run's
+	// current plan_hash — a stale approval is one that blessed a plan the
+	// change no longer carries.
+	//
+	// It is deliberately NOT true for a legacy row (one carrying no plan hash
+	// at all). state.Approval.MatchesPlan reports legacy rows as matching any
+	// plan, because that is the compatibility rule the engine needs; but a
+	// legacy row blesses no particular plan, and reporting it as "bound to
+	// the current plan" would claim a binding it does not have.
 	MatchesPlan bool `json:"matches_plan"`
+	// LegacyApproval is true when at least one approval row carries no plan
+	// hash at all — such a row blessed no particular plan.
+	LegacyApproval bool `json:"legacy_approval"`
+	// StaleApproval is true when at least one approval row is bound to a
+	// plan hash this run no longer carries.
+	StaleApproval bool `json:"stale_approval"`
 	// HasApproval is false when the change never entered the chain.
 	HasApproval bool `json:"has_approval"`
 }
@@ -183,6 +216,12 @@ type AuditSection struct {
 	// Unverifiable set — an honest "no evidence" rather than a silent pass.
 	Verified     bool `json:"verified"`
 	Unverifiable bool `json:"unverifiable"`
+	// VerifyError carries the reason a verification could not be performed
+	// (a store failure, a broken chain reader). It is empty when there was
+	// simply nothing to verify — a change with no trace rows is a state, not
+	// an error — so a reader is never told "no trace records" when the truth
+	// is "the audit store could not be read".
+	VerifyError string `json:"verify_error,omitempty"`
 }
 
 // Collect composes the ticket for one change id.
@@ -230,10 +269,17 @@ func Collect(ctx context.Context, store state.Store, runID string) (*Ticket, err
 		},
 	}
 
+	t.Change.PlanState = planStateNone
 	if run.PlanJSON != "" {
 		var p plan.Plan
 		if err := json.Unmarshal([]byte(run.PlanJSON), &p); err == nil {
+			t.Change.PlanState = planStateReadable
 			fillFromPlan(t, &p)
+		} else {
+			// The artifact exists but cannot be read. The sections stay
+			// empty, and PlanState says why — so the reader is told "unknown",
+			// not "this change declares no SQL".
+			t.Change.PlanState = planStateUnreadable
 		}
 	}
 
@@ -318,8 +364,18 @@ func fillApproval(ctx context.Context, store state.Store, t *Ticket, run *state.
 		case string(approval.StatusRejected):
 			t.Approval.RejectedCount++
 		}
-		if matched, _ := sa.MatchesPlan(run.PlanHash); matched {
+		matched, legacy := sa.MatchesPlan(run.PlanHash)
+		switch {
+		case legacy:
+			// A row with no plan hash blesses no plan at all. It matches
+			// every plan for compatibility (state.Approval.MatchesPlan), but
+			// calling that "bound to the current plan" would be a claim the
+			// row does not support.
+			t.Approval.LegacyApproval = true
+		case matched:
 			t.Approval.MatchesPlan = true
+		default:
+			t.Approval.StaleApproval = true
 		}
 		a, err := approval.ApprovalFromState(sa)
 		if err != nil {
@@ -373,6 +429,11 @@ func fillAudit(ctx context.Context, store state.Store, t *Ticket, run *state.Run
 	res, err := verifier.Verify(ctx, run.ID)
 	if err != nil {
 		t.Audit.Unverifiable = true
+		// "no trace rows yet" is a state, not a failure; anything else is a
+		// reason the chain could not be checked, and the reader is told which.
+		if !errors.Is(err, audit.ErrNoTraces) {
+			t.Audit.VerifyError = err.Error()
+		}
 		return
 	}
 	t.Audit.Verified = true
