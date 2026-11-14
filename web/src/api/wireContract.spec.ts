@@ -193,6 +193,16 @@ const DTO_READS: Record<string, DtoReads> = {
     keys: ['change', 'rollbackRunId', 'success', 'rolledBackHosts', 'skippedHosts', 'message'],
     dto: 'RollbackResponseDTO',
   },
+  // The DB Change Ticket — the "one sheet" a database change is presented on.
+  // Seven section objects, each with its own shape. The contract records the
+  // section NAMES here; the fields inside each section are pinned by
+  // src/views/TicketView.spec.ts, because protojson omits unset scalars and
+  // an empty section (no approval / no rollback declared) would otherwise make
+  // a whole-section comparison vacuous.
+  'dbchange-ticket': {
+    keys: ['change', 'sql', 'rollback', 'window', 'approval', 'execution', 'audit'],
+    dto: 'DBChangeTicket',
+  },
   // The five endpoints the console calls that the snapshot covered later.
   // /agents and /groups have no envelope: their elements are the payload.
   agents: {
