@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（发布单导出/打印 + 与 `levee sqlreview` 双向对齐）
+
+- **缺口**：路线图在「DB Change Ticket 全链视图」里还挂着两件未做的事——**审计导出/打印**与**与 `levee sqlreview` 双向对齐**。发布单只能在终端看（`levee dbchange show`），没有可归档、可打印的文档；而发布单上的审核结论是**计划时固化**的那份（`plan_hash` 绑定、审批签下），它答不了「规则集后来变了没有」——只有一个数时，读者不知道那是当时的决定还是现在的测量。
+- **导出/打印**：`internal/dbchange.Markdown` 渲染文档版发布单（六个分段各成一节，SQL 与 findings 走表格，末尾注明由既有制品派生并给出重新生成命令）；CLI `levee dbchange show <id> --format markdown [--output file]`；REST `GET /api/v1/changes/<id>/ticket?format=markdown` 返回同一份文档（`Content-Type: text/markdown`），默认仍是 JSON。**渲染器只有一份**，CLI 与 REST 共用——两份渲染器会漂，而漂了的导出件比没有导出件更糟（印出来的那张单会不再等于屏幕上的那张）。诚实口径逐字保留：计划不可读写「未知」而不是「没有 SQL / 没有回滚」；审计校验出错写「校验出错」而不是「还没有 trace 记录」。
+- **双向对齐**：新增 `levee sqlreview --change <change-id>`——读变更的**计划制品**，把其中 `mysql.query` 步骤的 SQL 用**当前规则集**复算，与计划里**固化**的那份结论并排给出，并逐条列出差异（新增/消失的 SR finding）。复算与计划期门禁**共用同一份聚合核心**（新 `plan.ReviewSteps`，门禁随之改为调用它），所以差异只可能来自规则或 SQL 的变化，不会来自两份实现各写各的。比不了的时候如实说比不了（没有计划制品 / 计划不可读 / 没有 SQL 面各自给说法），不给看起来正常的结论。
+- **验证**：`internal/dbchange` 文档渲染 6 例（分段齐备 / 不可读说未知 / 校验错误≠无记录 / 无 trace 的说法 / 多行 SQL 不破表行 / 同票同文）；`internal/plan` 共享核心 4 例（取最坏裁决 / 无 SQL 面返回 nil / fail 照实返回 / 语法不可解析即 fail）；`cmd/levee` 5 例（新增/消失 finding 检出 / 一致 / 无结论不算一致 / 只取 mysql.query 步骤 / 实跑复算与固化结论并排）；`internal/grpc` 4 例（markdown 导出 / 与 JSON 同源 / `/api/v1` 前缀下同样可用 / 未知 format 拒绝）；本机用真二进制 + 真 SQLite 实跑四段：`dbchange show`、`--format markdown`、`--output`、`sqlreview --change` 均按预期输出（含一个「旧规则集 pass vs 现规则 warn」的漂移样例，差异被逐条报出）。
+- **边界**：文档版只渲染**既有制品**，不重算任何东西；`sqlreview --change` 是**测量**而不是第二次审批，不改任何制品；两者都不新增写操作，也不改变 Q1 的 fail-closed 策略。
+
 ### 修复（DB Change Ticket 前端 DTO 与 wire 漂移：页面「不报错，但每格都是空白」）
 
 - **缺口**：发布单前端 DTO 是按「想象出来的形状」写的：把 proto 的 `workflow` / `template` 写成 `workflowFile` / `templateName`，给 SQL 步骤多写了 proto 里没有的 `batchNo` / `hostCount`，审批段按 approval 记录自己那套字段写了 `minApprovers` / `initiator` / `expiresAt`，审核汇总写了 `reviewedAt` / `reviewer` / `ruleId`。TypeScript 自洽、构建通过、页面也不报错——它只是每一格都读成 `undefined`，于是显示空白。

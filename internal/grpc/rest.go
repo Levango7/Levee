@@ -1172,6 +1172,28 @@ func (gw *Gateway) handleChangeTrace(w http.ResponseWriter, r *http.Request, id 
 func (gw *Gateway) handleChangeTicket(w http.ResponseWriter, r *http.Request, id string) {
 	svc := gw.change
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
+
+	// ?format=markdown returns the printable document (the same facts, the
+	// same honesty rules, rendered by the same renderer the CLI uses). The
+	// JSON form stays the default because it is what the console reads.
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))) {
+	case "", "json":
+	case "markdown", "md":
+		doc, err := svc.DBChangeTicketDocument(ctx, id)
+		if err != nil {
+			writeGRPCError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(doc))
+		return
+	default:
+		writeJSONError(w, http.StatusBadRequest,
+			fmt.Sprintf("unknown format %q (want json or markdown)", r.URL.Query().Get("format")))
+		return
+	}
+
 	resp, err := svc.GetDBChangeTicket(ctx, &pb.GetDBChangeTicketRequest{ChangeId: id})
 	if err != nil {
 		writeGRPCError(w, err)

@@ -3663,14 +3663,17 @@ levee restore --input /backup/levee-2026.sql --pg-dsn "postgres://user:pass@host
 levee sqlreview --sql "UPDATE t SET a=1 WHERE id=1"
 
 levee sqlreview --file /path/to/change.sql
+
+levee sqlreview --change <change-id>
 ```
 
 **选项**
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--sql` | | 要审核的 SQL 批（多条语句以分号分隔）；与 `--file` 二选一 |
-| `--file` | | 存放 SQL 批的文件路径；与 `--sql` 二选一 |
+| `--sql` | | 要审核的 SQL 批（多条语句以分号分隔）；与 `--file`、`--change` 三选一 |
+| `--file` | | 存放 SQL 批的文件路径；与 `--sql`、`--change` 三选一 |
+| `--change` | | 复算某个变更携带的 SQL，并与计划里固化的审核结论比对；与 `--sql`、`--file` 三选一 |
 
 **输出**
 
@@ -3678,6 +3681,30 @@ levee sqlreview --file /path/to/change.sql
 批级发现（SR-19 / SR-20）归在 `batch:` 标题下。末行 `verdict: pass|warn|fail (N fail, M warn)`。
 `--json` 输出标准信封（`data` 为完整结果，含 `fail_count`/`warn_count`）。verdict 为 fail 时
 退出码 1，便于流水线卡点；warn 与 pass 退出码 0。
+
+**`--change <change-id>`：与发布单的对齐**
+
+`levee sqlreview --change` 读一个变更的**计划制品**，把其中 `mysql.query` 步骤的 SQL
+用**当前规则集**复算一遍，并与计划里**固化**的那份结论（`plan_hash` 绑定的、审批当时
+签下的那一份）并排给出：
+
+```text
+变更 run-e2e-1 的 SQL 复算
+  计划状态: readable
+  计划哈希: v2:e2e
+  计划时结论（固化，绑定 plan_hash）: warn（fail 0 / warn 1）
+  现规则复算结论: warn（fail 0 / warn 1）
+  比对: 一致（计划时结论与现规则复算相同）
+```
+
+两边不一致时会逐条列出差异（`新增 SR-xx` / `消失 SR-xx`）。这一条回答的是发布单
+**答不了**的问题：单上写的是「批准时按当时规则得出的结论」，而规则集后来可能变了。
+
+- 复算与计划期门禁**共用同一份聚合核心**（`plan.ReviewSteps`），所以差异只可能来自
+  规则或 SQL 的变化，不会来自两份实现各写各的；
+- 比不了的时候如实说比不了：没有计划制品 / 计划不可读 / 没有 SQL 面，各自给出对应说法，
+  不会给一个看起来正常的结论；
+- 本命令**不改任何制品**：它是一次测量，不是第二次审批。
 
 **规则集（20 条，SR-01..SR-20）**
 
@@ -3691,6 +3718,9 @@ levee sqlreview --sql "DELETE FROM t"
 
 命令示例：审核一个变更文件（机器可读）
 levee sqlreview --file change.sql --json
+
+命令示例：复算一个已批准变更的 SQL，并与批准时的结论比对
+levee sqlreview --change chg-20261113-001
 ```
 
 ## 第30章 dbchange — 数据库变更发布单
@@ -3713,6 +3743,25 @@ levee dbchange show <change-id>
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--json` | | 标准信封输出（`data` 为完整发布单）；另有全局 `-q` 只打印对象 ID |
+| `--format` | `text` | `text` = 终端可读版；`markdown` = 可归档/可打印的文档版 |
+| `--output` | | 把发布单写到该文件而不是标准输出 |
+
+**导出（`--format markdown`）**
+
+同一份事实、同一套诚实口径的**文档版**：六个分段各成一节（SQL 与审核 / 回滚计划 /
+变更窗口 / 审批链 / 执行证据 / 审计链验证），SQL 与 findings 走表格，末尾注明文档由
+既有制品派生、不含人工填写内容，并给出重新生成的命令。
+
+- 渲染器在 `internal/dbchange`（`dbchange.Markdown`），**CLI 与 REST 导出共用一份**——
+  两份渲染器会漂，而漂了的导出件比没有导出件更糟：印出来的那张单会不再等于屏幕上的那张；
+- 诚实口径逐字保留：计划不可读时写「未知」而不是「没有 SQL / 没有回滚」；审计校验出错
+  写「校验出错」而不是「还没有 trace 记录」；
+- REST 侧同源：`GET /api/v1/changes/<id>/ticket?format=markdown` 返回同一份文档
+  （`Content-Type: text/markdown`），浏览器拿到即可打印；默认仍是 JSON。
+
+```命令示例：导出一份可归档的发布单
+levee dbchange show chg-20261113-001 --format markdown --output ticket.md
+```
 
 **输出分段**
 

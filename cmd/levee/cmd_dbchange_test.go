@@ -177,3 +177,21 @@ func TestPrintDBChangeTicket_VerifierErrorIsVisible(t *testing.T) {
 	assert.Contains(t, out, "校验出错")
 	assert.NotContains(t, out, "该变更还没有 trace 记录")
 }
+
+// The document renderer is the export path: the same facts, laid out for a
+// sheet a human can hand over. It lives in internal/dbchange so the CLI and
+// the REST export cannot drift apart.
+func TestDBChangeMarkdownExportCarriesTheSections(t *testing.T) {
+	tk := seedDBChangeTicket(t)
+
+	doc := dbchange.Markdown(tk, dbchange.MarkdownOptions{})
+
+	assert.Contains(t, doc, "# 数据库变更发布单")
+	assert.Contains(t, doc, "chg-ticket")
+	assert.Contains(t, doc, "ALTER TABLE t ADD COLUMN c INT")
+	assert.Contains(t, doc, "SR-05")
+	assert.Contains(t, doc, "## 6. 审计链验证")
+	// The window section keeps its honest note: the run row does not persist
+	// the window, and the document must not imply that it does.
+	assert.Contains(t, doc, "随 run 持久化: false")
+}

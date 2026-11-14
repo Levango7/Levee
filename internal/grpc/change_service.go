@@ -1639,32 +1639,57 @@ func (s *ChangeService) GetApprovals(ctx context.Context, req *pb.GetApprovalsRe
 // The ticket is a READ MODEL: nothing is written back, and no field is
 // re-derived from a live probe that the plan-time gate did not already make.
 func (s *ChangeService) GetDBChangeTicket(ctx context.Context, req *pb.GetDBChangeTicketRequest) (*pb.DBChangeTicket, error) {
+	tk, err := s.collectDBChangeTicket(ctx, req.GetChangeId())
+	if err != nil {
+		return nil, err
+	}
+	return toPBDBChangeTicket(tk), nil
+}
+
+// DBChangeTicketDocument renders the same ticket as a Markdown document.
+//
+// It exists for the REST export path (`GET /changes/<id>/ticket?format=markdown`)
+// and shares the collection and the authorisation with the JSON path, so the
+// document can never show a change the caller is not allowed to read. The
+// renderer itself lives in internal/dbchange — one renderer for both outputs,
+// because a printed sheet that says something different from the screen is
+// worse than no printed sheet.
+func (s *ChangeService) DBChangeTicketDocument(ctx context.Context, changeID string) (string, error) {
+	tk, err := s.collectDBChangeTicket(ctx, changeID)
+	if err != nil {
+		return "", err
+	}
+	return dbchange.Markdown(tk, dbchange.MarkdownOptions{}), nil
+}
+
+// collectDBChangeTicket is the shared body of the JSON and document paths:
+// fetch the run, check the caller may read it, then build the ticket.
+func (s *ChangeService) collectDBChangeTicket(ctx context.Context, changeID string) (*dbchange.Ticket, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
 	}
-	if req.GetChangeId() == "" {
+	if changeID == "" {
 		return nil, status.Error(codes.InvalidArgument, "change id is required")
 	}
-	run, err := s.store.GetRun(ctx, req.GetChangeId())
+	run, err := s.store.GetRun(ctx, changeID)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "get run: %v", err)
 	}
 	if run == nil {
-		return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+		return nil, status.Errorf(codes.NotFound, "change %q not found", changeID)
 	}
 	if err := authorizeResourceRead(ctx, s.authz, envOf(run), "GetDBChangeTicket"); err != nil {
 		return nil, err
 	}
 
-	tk, err := dbchange.Collect(ctx, s.store, req.GetChangeId())
+	tk, err := dbchange.Collect(ctx, s.store, changeID)
 	if err != nil {
 		if errors.Is(err, dbchange.ErrNotFound) {
-			return nil, status.Errorf(codes.NotFound, "change %q not found", req.GetChangeId())
+			return nil, status.Errorf(codes.NotFound, "change %q not found", changeID)
 		}
 		return nil, status.Errorf(codes.Internal, "collect dbchange ticket: %v", err)
 	}
-
-	return toPBDBChangeTicket(tk), nil
+	return tk, nil
 }
 
 // toPBDBChangeTicket converts the internal dbchange.Ticket to the wire format.
