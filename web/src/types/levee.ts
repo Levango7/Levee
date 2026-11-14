@@ -180,7 +180,7 @@ export interface ChangeSection {
   id: string
   label: string
   status: ChangeStatus
-  priority: string
+  priority: Priority
   environment: string
   creator: string
   /** 工作流文件名（proto: workflow） */
