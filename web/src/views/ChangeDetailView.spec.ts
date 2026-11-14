@@ -102,9 +102,17 @@ describe('change detail page', () => {
   it('reads the timeline newest-first', () => {
     // An operator arriving at a failed change wants the verdict and the last
     // thing that happened; an ascending list buries both under the first steps.
+    //
+    // The timestamps are protojson strings on the wire (the REST gateway emits
+    // RFC3339 text), while the in-memory trace type allows numbers too. The
+    // sorter therefore normalises both shapes before descending; the guard pins
+    // the descending order AND the normalisation, so a future "simplification"
+    // back to raw subtraction cannot silently order the list wrong.
     const sorter = view.indexOf('const timeline = computed')
     expect(sorter, 'the timeline must be ordered explicitly').toBeGreaterThan(-1)
-    expect(view.slice(sorter, view.indexOf('const batchRows', sorter))).toContain('b.timestamp - a.timestamp')
+    const body = view.slice(sorter, view.indexOf('const batchRows', sorter))
+    expect(body, 'the timeline must sort newest-first').toContain('tb - ta')
+    expect(body, 'string timestamps must be normalised before sorting').toContain('parseInt(a.timestamp')
   })
 
   it('asks the read for the stored plan and never generates one to show it', () => {

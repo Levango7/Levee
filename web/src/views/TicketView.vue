@@ -20,7 +20,7 @@ import { changesApi } from '@/api'
 import type { DBChangeTicket, PlanState, ApprovalStatus, ExecutionVerdict, RollbackStrategy } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { approvalStatusLabel, executionVerdictLabel, rollbackStrategyLabel, planStateLabel } from '@/utils/format'
+import { approvalStatusLabel, executionVerdictLabel, rollbackStrategyLabel, planStateLabel, priorityLabel } from '@/utils/format'
 import { classifyError, errorMessage, type LoadTier } from '@/utils/apiState'
 
 const route = useRoute()
@@ -210,7 +210,7 @@ const fmtTraceTimestamp = (ts: string | number | undefined): string => ts ? fmtT
           <ElDescriptionsItem label="变更 ID" :span="2">{{ t.change.id }}</ElDescriptionsItem>
           <ElDescriptionsItem label="环境" :span="1">{{ t.change.environment }}</ElDescriptionsItem>
           <ElDescriptionsItem label="优先级" :span="1">
-            {{ t.change.priority }}
+            {{ priorityLabel(t.change.priority) }}
           </ElDescriptionsItem>
           <ElDescriptionsItem label="状态" :span="1">
             <StatusTag :status="t.change.status" />

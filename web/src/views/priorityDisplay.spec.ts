@@ -54,6 +54,7 @@ const PRIORITY_VIEWS: Record<string, string> = {
   'ChangeDetailView.vue': 'change.priority',
   'MonitorView.vue': 'change.priority',
   'TemplatesView.vue': 'instantiate.form.priority',
+  'TicketView.vue': 't.change.priority',
 }
 
 const IMPORTS_HELPER = /import\s*\{[^}]*\bpriorityLabel\b[^}]*\}\s*from\s*'@\/utils\/format'/
