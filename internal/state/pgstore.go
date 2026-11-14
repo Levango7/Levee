@@ -117,6 +117,23 @@ func NewPGStore(ctx context.Context, dsn string, cfg PGPoolConfig) (*PGStore, er
 // locks in internal/cluster). Callers must not close it; use Close instead.
 func (s *PGStore) DB() *sql.DB { return s.db }
 
+// Ping answers a liveness probe for the partition policy (internal/partition).
+// It is the one store operation whose failure means "this node cannot prove
+// execution authority", which is what the disconnect policy refuses new work
+// on; every other read can still be answered from a replica or a cache, so
+// they are not liveness. The pool's own connection acquisition is part of the
+// probe: a pool that cannot hand out a connection is exactly the condition
+// the policy is about, and PingContext reports it rather than masking it.
+func (s *PGStore) Ping(ctx context.Context) error {
+	if s.db == nil {
+		return errors.New("state: postgres store has no database handle")
+	}
+	if err := s.db.PingContext(ctx); err != nil {
+		return fmt.Errorf("state: ping postgres: %w", err)
+	}
+	return nil
+}
+
 // Close releases the underlying database connection pool.
 func (s *PGStore) Close() error {
 	if s.db == nil {
