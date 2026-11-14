@@ -5,11 +5,17 @@
 ## [Unreleased]
 
 ### 新增（dbchange — 数据库变更发布单：读模型与 CLI）
-
 - **缺口**：v1.2 把对外第一身份定为「数据库变更发布与治理核」，但一个数据库变更的事实散在四处——`levee show`（状态/证据）、`audit report`（审计）、审批读取、控制台详情——「给我这个变更的单」要开四个面再脑内 join。
 - **修法**：新增 `internal/dbchange`（纯读模型，`Collect(ctx, store, runID)`）：Change（身份/状态，Label 用 `dsl.DisplayName` 与 API 同源）、SQL（`mysql.query` 步骤 + 计划里的审核结论）、Rollback（运行级策略 + 逐步补偿）、Window（如实声明不随 run 持久化）、Approval（级别/状态/计划绑定/决定）、Execution（复用 `evidence.Classify` 同一词表）、Audit（`audit.ChainVerifier`）。CLI 新增 `levee dbchange show <change-id>`（本地，`--json` 标准信封；空段说出自己的意思而不是消失）。
 - **验证**：`internal/dbchange` 10 例（not found / 无计划 / SQL+审核 / 审批链 / 陈旧审批不误判为匹配 / 执行证据+审计 / 无 trace 时审计不冒充通过 / 窗口诚实 / 计划不可读时降级不失败 / nil store）；`cmd/levee` 3 例（分段渲染 / 空段自述 / JSON 信封）。`go test ./...` 全绿；golangci-lint 0 issues。
-- **边界**：本笔只做**读模型 + CLI**，未加 RPC（REST/前端/wire 契约留作下一片）；窗口无法回放「这次按哪个窗口放行」是如实说明而非缺陷（run 行确实没有该列）。
+- **边界**：第①片只做**读模型 + CLI**；窗口无法回放「这次按哪个窗口放行」是如实说明而非缺陷（run 行确实没有该列）。
+
+### 新增（dbchange 发布单第②片：API——`include_ticket` 与 REST 查询参数）
+
+- **修法**：`message Change` 增 `DBChangeTicket ticket = 14`（与 `plan = 13` 同形的 opt-in），`GetChangeRequest` 增 `bool include_ticket = 3`；网关把 `?includeTicket=true` 转成该字段（`internal/grpc/rest.go`），服务层调 `internal/dbchange.Collect` 合成后回填。REST 等价入口：`GET /changes/:id?includeTicket=true`。proto 用**钉版工具链**重生成（protoc 27.0 + protoc-gen-go 1.36.12 + grpc 1.6.2，本机插件版本与 CI 一致，重生成的既有文件逐字节无 diff）。
+- **两处诚实设计**（路上抓到的真缺陷）：protojson 会省掉未设置的 **false 布尔**——① `window.persistence` 因此改用**字符串**（`workflow-declaration`），否则「窗口不随 run 持久化」这个有意义的否定答案会在每个 JSON 响应里消失；② `audit.failures` 成为完整性信号的**主体**，否则一条被篡改的链只靠 `valid=false` 会渲染得和完好链**逐字节相同**。
+- **验证**：服务层 `change_service_getchange_ticket_test.go` 3 子例（合出 / 不泄漏 / 无计划仍合出）；REST 级 `rest_getchange_include_ticket_test.go`（旗标加宽 + camelCase 键名 + `persistence`/`approval:{}`/`unverifiable` 三处形状）；`go test ./...` 全绿；golangci-lint 0 issues。
+- **边界**：CLI `--remote` 尚未接（本地 store 路径已可用）；控制台 UI 未接（需要时用 REST 参数即可，无需新端点）。
 
 ### 文档（SQL 审核链演示手册：四幕离线复跑「高危拦截＋强制审批＋事后审计追溯」）
 

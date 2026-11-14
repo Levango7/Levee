@@ -219,7 +219,11 @@ func TestCollect_WindowIsHonestAboutNotBeingPersisted(t *testing.T) {
 	tk, err := Collect(context.Background(), store, "chg-6")
 	require.NoError(t, err)
 	assert.Equal(t, "plan", tk.Window.EnforcedAt)
-	assert.False(t, tk.Window.PersistedPerRun)
+	// The location is a string rather than a bool precisely so the honest
+	// answer survives serialisation: protojson omits a false boolean, and a
+	// reader of the JSON ticket must still be able to tell "not persisted"
+	// from "unknown".
+	assert.Equal(t, "workflow-declaration", tk.Window.Persistence)
 	assert.NotEmpty(t, tk.Window.Note)
 }
 

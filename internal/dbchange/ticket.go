@@ -115,13 +115,18 @@ type StepUndo struct {
 // The declared window is a WORKFLOW fact, re-checked when the plan is
 // generated; neither `state.Run` nor the plan artifact carries it. A ticket
 // therefore cannot replay "which window was this change admitted under" from
-// the store alone, and says so rather than inventing a value. PersistedPerRun
-// stays false until the run row grows a window column — see the note.
+// the store alone, and says so rather than inventing a value.
 type WindowSection struct {
 	// EnforcedAt names the funnel stage that checks the window.
 	EnforcedAt string `json:"enforced_at"`
-	// PersistedPerRun is false: the run row has no window column.
-	PersistedPerRun bool `json:"persisted_per_run"`
+	// Persistence names where the declared window lives:
+	// "workflow-declaration" (the current and only shape) or "run-column"
+	// (a future run row that would let a ticket replay the admission window).
+	//
+	// A string, not a bool: protojson omits a false boolean, so the honest
+	// answer "not persisted" would vanish from every JSON response and a
+	// reader would have to guess what an absent field meant.
+	Persistence string `json:"persistence"`
 	// Note states, in one line, what that means for a reader.
 	Note string `json:"note"`
 }
@@ -183,6 +188,22 @@ type AuditSection struct {
 	// Unverifiable set — an honest "no evidence" rather than a silent pass.
 	Verified     bool `json:"verified"`
 	Unverifiable bool `json:"unverifiable"`
+	// Failures carries one entry per tampered record, in chain order.
+	//
+	// It is the explicit integrity signal rather than an afterthought: protojson
+	// omits `valid` when it is false (a bool's zero value), so a broken chain
+	// would otherwise render as {"verified":true,"count":N} — byte-identical to
+	// an intact one. A non-empty list is what makes "broken" visible in JSON.
+	Failures []AuditFailure `json:"failures,omitempty"`
+}
+
+// AuditFailure is one tampered trace record.
+type AuditFailure struct {
+	EntryID  string `json:"entry_id"`
+	Index    int    `json:"index"`
+	Type     string `json:"failure_type"`
+	Expected string `json:"expected"`
+	Actual   string `json:"actual"`
 }
 
 // Collect composes the ticket for one change id.
@@ -224,9 +245,9 @@ func Collect(ctx context.Context, store state.Store, runID string) (*Ticket, err
 			UpdatedAt:   run.UpdatedAt,
 		},
 		Window: WindowSection{
-			EnforcedAt:      "plan",
-			PersistedPerRun: false,
-			Note:            "变更窗口是工作流声明、plan 生成时校验，run 行不持久化该事实——本单无法从库里回放「这次变更是按哪个窗口放行的」。",
+			EnforcedAt:  "plan",
+			Persistence: "workflow-declaration",
+			Note:        "变更窗口是工作流声明、plan 生成时校验，run 行不持久化该事实——本单无法从库里回放「这次变更是按哪个窗口放行的」。",
 		},
 	}
 
@@ -379,4 +400,13 @@ func fillAudit(ctx context.Context, store state.Store, t *Ticket, run *state.Run
 	t.Audit.Valid = res.Valid
 	t.Audit.Count = res.Count
 	t.Audit.LegacyCount = res.LegacyCount
+	for _, f := range res.Failures {
+		t.Audit.Failures = append(t.Audit.Failures, AuditFailure{
+			EntryID:  f.TraceID,
+			Index:    f.Index,
+			Type:     f.Type.String(),
+			Expected: f.Expected,
+			Actual:   f.Actual,
+		})
+	}
 }

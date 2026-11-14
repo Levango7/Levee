@@ -887,6 +887,11 @@ func (gw *Gateway) handleChangeGet(w http.ResponseWriter, r *http.Request, id st
 	if r.URL.Query().Get("includePlan") == "true" {
 		req.IncludePlan = true
 	}
+	// includeTicket is the same opt-in shape as includePlan: the DB change
+	// ticket is a composed read model, so it is only built when asked for.
+	if r.URL.Query().Get("includeTicket") == "true" {
+		req.IncludeTicket = true
+	}
 	resp, err := svc.GetChange(ctx, req)
 	if err != nil {
 		writeGRPCError(w, err)

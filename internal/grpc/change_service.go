@@ -45,6 +45,7 @@ import (
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/authz"
 	"github.com/nexus/levee/internal/calendar"
+	"github.com/nexus/levee/internal/dbchange"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/grpc/pb"
@@ -2826,6 +2827,19 @@ func (s *ChangeService) GetChange(ctx context.Context, req *pb.GetChangeRequest)
 		} else {
 			log.Warn("GetChange include_plan: stored plan unparsable; returning change without plan",
 				"run_id", run.ID, "error", err)
+		}
+	}
+	// include_ticket asks for the DB change ticket (internal/dbchange). Same
+	// degradation contract as include_plan: a ticket that cannot be composed
+	// leaves the change readable and logs why, rather than failing the read —
+	// the caller asked for an enrichment of a change that does exist.
+	if req.GetIncludeTicket() {
+		tk, terr := dbchange.Collect(ctx, s.store, run.ID)
+		if terr != nil {
+			log.Warn("GetChange include_ticket: could not compose ticket; returning change without it",
+				"run_id", run.ID, "error", terr)
+		} else {
+			out.Ticket = DBChangeTicketToPB(tk)
 		}
 	}
 	return out, nil

@@ -964,8 +964,36 @@ RESTful 风格，支持两套路径：
 > `GET /system/batch-status?run_id=`。控制台详情页已接上这一参数（`?includePlan=true` + 「执行计划」
 > 面板），且刻意只用这条只读入口——`POST /changes/:id/plan` 是**生成**计划，读页面不该造产物。
 >
-> `message Plan` 声明六个字段，网关目前只填四个：`changeId` / `targetHosts` / `batches` /
-> `impactSummary`；`message Batch` 声明四个，只填三个（`index` / `hosts` / `maxConcurrency`）。
+> **`GET /changes/:id?includeTicket=true` 返回该变更的「数据库变更发布单」。** `GetChangeRequest.include_ticket`
+> 与 `include_plan` 完全同形（默认缺席、ListChanges 永不带、单条查询显式要）：网关把 `?includeTicket=true`
+> 转成该字段（`internal/grpc/rest.go`），服务层调用 `internal/dbchange.Collect` 合成后填进 `Change.ticket`
+> （第 14 号字段）。
+>
+> 发布单是**读模型**：七段全部从既有制品派生——run 行、`plan_json`（SQL 步骤与审核结论）、审批行、
+> trace/audit 链、步骤证据——**不写回、不重算**（一张会自己重算风险或重新审 SQL 的单，会是关于已批准
+> 制品的第二意见，那正是 `plan_hash` 要防的漂移）。七段为 `change` / `sql` / `rollback` / `window` /
+> `approval` / `execution` / `audit`。
+>
+> 两处刻意的诚实设计，值得单独说：
+> - **`window.persistence` 是字符串而非布尔**（当前值 `workflow-declaration`）。protojson 会省掉
+>   未设置的 false 布尔，所以「窗口不随 run 持久化」这个**有意义的否定答案**若用布尔就会从每个 JSON
+>   响应里消失，读者只能猜「缺席」是什么意思。
+> - **`audit.failures` 是完整性信号的主体**。同理，`valid=false` 会被 protojson 省掉，一条被篡改的
+>   链若只靠这个布尔，渲染出来会和有损链**逐字节相同**；非空的 `failures`（含 entry_id / index /
+>   failure_type / expected / actual）才是「坏了」在 JSON 里的可见形态。
+>
+> 语义口径：
+> - **默认不回显**（`includeTicket` 未传或 `false` ⇒ `ticket` 缺席，既有调用方 payload 与 wire 契约
+>   快照逐字节不变）。
+> - **无计划的 change 仍会合出发布单**（`ticket` 非 nil）：身份/状态/审批/证据都是真实事实，空段以
+>   各自的「无」措辞呈现（`hasSql=false` / `hasUndo=false`），与「合不出来」（nil）是两种不同答案。
+> - **合不出时不报错、留 WARN**：变更本体仍可读，与 `include_plan` 同一降级契约。
+>
+> 现状由 `internal/grpc/rest_getchange_include_ticket_test.go` 与服务层
+> `change_service_getchange_ticket_test.go` 共同钉住；CLI 等价入口为
+> `levee dbchange show <change-id>`（本地直连 store，见 `docs/cli-reference.md` 第 30 章）。
+>
+> `message Plan` 声明六个字段，网关目前只填四个：`changeId` / `targetHosts` / `batches` / `impactSummary`；`message Batch` 声明四个，只填三个（`index` / `hosts` / `maxConcurrency`）。
 > `estimated_duration`、`potential_conflicts` 与 `wait_after` **没有任何写入方**
 > （全仓 grep 连测试都为零），protojson 因此把它们从每个响应里省掉——响应中不会出现、客户端也读不到。
 > 这一事实由 `internal/grpc/wire_snapshot_test.go` 的 `change-with-plan` 快照记录（含 `plan` 与

@@ -39,6 +39,14 @@ message Change {
   // ListChanges. Absent when the change has no persisted plan or the artifact
   // is unparsable — a nil here means "no plan to show", never "plan is empty".
   Plan plan = 13;
+  // The reader-facing DB change ticket (SQL batch + review verdict + rollback
+  // plan + window + approval chain + execution evidence + audit integrity).
+  // Same opt-in shape as `plan`: populated ONLY when
+  // GetChangeRequest.include_ticket is true, nil otherwise and never for
+  // ListChanges. It is a READ MODEL over artifacts the engine already persists
+  // (run row, plan_json, approval rows, trace/audit chains) — it writes nothing
+  // back and re-derives nothing the plan-time gates did not decide.
+  DBChangeTicket ticket = 14;
 }
 
 // Plan is the execution plan for a change.
@@ -389,6 +397,166 @@ message GetChangeRequest {
   string id = 1;
   // If true, include the latest plan and run summary in the response.
   bool include_plan = 2;
+  // If true, include the DB change ticket (see Change.ticket). Same opt-in
+  // contract as include_plan: never populated for ListChanges, and a nil
+  // ticket means "no ticket could be composed", never "empty ticket".
+  bool include_ticket = 3;
+}
+
+// DBChangeTicket is the reader-facing composition of one database change:
+// the SQL batch it will run, the review verdict stamped on the approved plan,
+// its rollback plan, the window it was admitted under, its approval chain,
+// what execution actually left behind, and whether its audit chain verifies.
+//
+// It is a read model. Every field derives from artifacts the engine already
+// persists; nothing here is written back, and no risk or verdict is recomputed
+// (a second opinion about an approved artifact is the drift plan_hash guards).
+message DBChangeTicket {
+  TicketChange change = 1;
+  TicketSQL sql = 2;
+  TicketRollback rollback = 3;
+  TicketWindow window = 4;
+  TicketApproval approval = 5;
+  TicketExecution execution = 6;
+  TicketAudit audit = 7;
+}
+
+message TicketChange {
+  string id = 1;
+  string label = 2;
+  string status = 3;
+  string priority = 4;
+  string environment = 5;
+  string creator = 6;
+  string workflow = 7;
+  string template = 8;
+  string plan_hash = 9;
+  // Unix timestamps (seconds since epoch).
+  int64 created_at = 10;
+  int64 updated_at = 11;
+}
+
+message TicketSQL {
+  repeated TicketSQLStep steps = 1;
+  // False when the change carries no `mysql.query` step — a legitimate state
+  // for a non-database change, distinct from "reviewed and clean".
+  bool has_sql = 2;
+  TicketSQLReview review = 3;
+}
+
+message TicketSQLStep {
+  string step = 1;
+  string sql = 2;
+}
+
+message TicketSQLReview {
+  string verdict = 1;
+  int32 fail_count = 2;
+  int32 warn_count = 3;
+  repeated TicketFinding findings = 4;
+}
+
+message TicketFinding {
+  string step = 1;
+  string rule = 2;
+  string severity = 3;
+  int32 statement = 4;
+  string message = 5;
+}
+
+message TicketRollback {
+  string strategy = 1;
+  string on_failure = 2;
+  bool verify_after = 3;
+  repeated string snapshot_paths = 4;
+  repeated TicketStepUndo step_undos = 5;
+  // False means nothing declared a compensation — an honest "no rollback
+  // plan", not an empty one that reads like one.
+  bool has_undo = 6;
+}
+
+message TicketStepUndo {
+  string step = 1;
+  string strategy = 2;
+  int32 undo_steps = 3;
+  bool irreversible = 4;
+}
+
+message TicketWindow {
+  // Names the funnel stage where the change window is enforced ("plan").
+  string enforced_at = 1;
+  // Where the declared window lives. "workflow-declaration" means it is a fact
+  // of the workflow source, re-checked when the plan is generated; the run row
+  // carries no window column, so a ticket cannot replay which window this
+  // change was admitted under. A future "run-column" would mean the run
+  // persists it and the ticket can replay it.
+  //
+  // A string rather than a bool on purpose: protojson omits a false bool, so
+  // "not persisted" would disappear from every JSON answer and a reader would
+  // have to guess what absent meant. This value is always present.
+  string persistence = 2;
+  string note = 3;
+}
+
+message TicketApproval {
+  string level = 1;
+  string status = 2;
+  repeated string approvers = 3;
+  repeated TicketDecision decisions = 4;
+  int32 pending_count = 5;
+  int32 approved_count = 6;
+  int32 rejected_count = 7;
+  // True when some settled approval row is bound to the run's CURRENT
+  // plan_hash; false means every approval blessed a plan the change no longer
+  // carries (a stale approval), which must not read as a match.
+  bool matches_plan = 8;
+  // False when the change never entered the approval chain.
+  bool has_approval = 9;
+}
+
+message TicketDecision {
+  string approver = 1;
+  string action = 2;
+  string reason = 3;
+  int64 at = 4;
+}
+
+message TicketExecution {
+  // The evidence Kind (not_started / in_flight / complete / partial / missing /
+  // unrecorded) — the same vocabulary the console and `levee show` render.
+  string verdict = 1;
+  string reason = 2;
+  int32 batches = 3;
+  int32 steps = 4;
+  int32 total_targets = 5;
+  // False when no batch/step rows exist yet (planned but never applied),
+  // distinct from a run that executed and left no trace.
+  bool has_evidence = 6;
+}
+
+message TicketAudit {
+  bool valid = 1;
+  int32 count = 2;
+  int32 legacy_count = 3;
+  // False with unverifiable=true means there were no trace rows to verify —
+  // "no evidence", never a silent pass.
+  bool verified = 4;
+  bool unverifiable = 5;
+  // One entry per tampered record, in chain order. This is the explicit
+  // integrity signal: protojson omits `valid` when it is false (a bool's zero
+  // value), so an invalid chain is conveyed by a non-empty list here rather
+  // than by a flag a JSON reader could read as "absent = fine".
+  repeated TicketChainFailure failures = 6;
+}
+
+message TicketChainFailure {
+  // id of the tampered trace record, its 0-based chain position, the kind of
+  // mismatch, and the expected vs stored hash that exposes it.
+  string entry_id = 1;
+  int32 index = 2;
+  string failure_type = 3;
+  string expected = 4;
+  string actual = 5;
 }
 
 message ListChangesRequest {

@@ -120,10 +120,8 @@ func printDBChangeTicket(w io.Writer, tk *dbchange.Ticket) {
 
 	fmt.Fprintln(w, "执行窗口:")
 	fmt.Fprintf(w, "  校验时机: %s\n", tk.Window.EnforcedAt)
-	if tk.Window.PersistedPerRun {
-		fmt.Fprintln(w, "  随 run 持久化: 是")
-	} else {
-		fmt.Fprintln(w, "  随 run 持久化: 否")
+	fmt.Fprintf(w, "  存放位置: %s\n", windowPersistenceLabel(tk.Window.Persistence))
+	if tk.Window.Persistence != "run-column" {
 		fmt.Fprintf(w, "  说明: %s\n", tk.Window.Note)
 	}
 
@@ -158,6 +156,21 @@ func printDBChangeTicket(w io.Writer, tk *dbchange.Ticket) {
 		}
 	} else {
 		fmt.Fprintf(w, "  已验证: %v（记录 %d，其中 legacy %d）\n", tk.Audit.Valid, tk.Audit.Count, tk.Audit.LegacyCount)
+	}
+}
+
+// windowPersistenceLabel renders the machine value of the window's storage
+// location as the sentence a reader expects. An unknown value is passed
+// through rather than replaced, so a future shape surfaces instead of being
+// silently mapped onto an old one.
+func windowPersistenceLabel(p string) string {
+	switch p {
+	case "workflow-declaration":
+		return "工作流声明（plan 期校验，不随 run 持久化）"
+	case "run-column":
+		return "run 行持久化（可回放准入窗口）"
+	default:
+		return orNone(p)
 	}
 }
 

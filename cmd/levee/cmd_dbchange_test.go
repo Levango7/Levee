@@ -85,9 +85,9 @@ func TestPrintDBChangeTicket_SectionsArePresent(t *testing.T) {
 	// The rollback section names the declared compensation.
 	assert.Contains(t, out, "步骤补偿: add-column（undo-action，1 个 undo 步骤）")
 
-	// The window says plainly that it is not persisted per run — the one
-	// section that cannot replay a stored fact must not look like it did.
-	assert.Contains(t, out, "随 run 持久化: 否")
+	// The window says plainly where the declaration lives — the one section
+	// that cannot replay a stored fact must not look like it did.
+	assert.Contains(t, out, "存放位置: 工作流声明（plan 期校验，不随 run 持久化）")
 
 	// Empty sections say what they mean instead of vanishing.
 	assert.Contains(t, out, "审批链:")

@@ -50,7 +50,15 @@ type Change struct {
 	// GetChangeRequest.include_plan is true; nil otherwise, and never for
 	// ListChanges. Absent when the change has no persisted plan or the artifact
 	// is unparsable — a nil here means "no plan to show", never "plan is empty".
-	Plan          *Plan `protobuf:"bytes,13,opt,name=plan,proto3" json:"plan,omitempty"`
+	Plan *Plan `protobuf:"bytes,13,opt,name=plan,proto3" json:"plan,omitempty"`
+	// The reader-facing DB change ticket (SQL batch + review verdict + rollback
+	// plan + window + approval chain + execution evidence + audit integrity).
+	// Same opt-in shape as `plan`: populated ONLY when
+	// GetChangeRequest.include_ticket is true, nil otherwise and never for
+	// ListChanges. It is a READ MODEL over artifacts the engine already persists
+	// (run row, plan_json, approval rows, trace/audit chains) — it writes nothing
+	// back and re-derives nothing the plan-time gates did not decide.
+	Ticket        *DBChangeTicket `protobuf:"bytes,14,opt,name=ticket,proto3" json:"ticket,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -172,6 +180,13 @@ func (x *Change) GetEnvironment() string {
 func (x *Change) GetPlan() *Plan {
 	if x != nil {
 		return x.Plan
+	}
+	return nil
+}
+
+func (x *Change) GetTicket() *DBChangeTicket {
+	if x != nil {
+		return x.Ticket
 	}
 	return nil
 }
@@ -2195,7 +2210,11 @@ type GetChangeRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// If true, include the latest plan and run summary in the response.
-	IncludePlan   bool `protobuf:"varint,2,opt,name=include_plan,json=includePlan,proto3" json:"include_plan,omitempty"`
+	IncludePlan bool `protobuf:"varint,2,opt,name=include_plan,json=includePlan,proto3" json:"include_plan,omitempty"`
+	// If true, include the DB change ticket (see Change.ticket). Same opt-in
+	// contract as include_plan: never populated for ListChanges, and a nil
+	// ticket means "no ticket could be composed", never "empty ticket".
+	IncludeTicket bool `protobuf:"varint,3,opt,name=include_ticket,json=includeTicket,proto3" json:"include_ticket,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2244,6 +2263,1156 @@ func (x *GetChangeRequest) GetIncludePlan() bool {
 	return false
 }
 
+func (x *GetChangeRequest) GetIncludeTicket() bool {
+	if x != nil {
+		return x.IncludeTicket
+	}
+	return false
+}
+
+// DBChangeTicket is the reader-facing composition of one database change:
+// the SQL batch it will run, the review verdict stamped on the approved plan,
+// its rollback plan, the window it was admitted under, its approval chain,
+// what execution actually left behind, and whether its audit chain verifies.
+//
+// It is a read model. Every field derives from artifacts the engine already
+// persists; nothing here is written back, and no risk or verdict is recomputed
+// (a second opinion about an approved artifact is the drift plan_hash guards).
+type DBChangeTicket struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Change        *TicketChange          `protobuf:"bytes,1,opt,name=change,proto3" json:"change,omitempty"`
+	Sql           *TicketSQL             `protobuf:"bytes,2,opt,name=sql,proto3" json:"sql,omitempty"`
+	Rollback      *TicketRollback        `protobuf:"bytes,3,opt,name=rollback,proto3" json:"rollback,omitempty"`
+	Window        *TicketWindow          `protobuf:"bytes,4,opt,name=window,proto3" json:"window,omitempty"`
+	Approval      *TicketApproval        `protobuf:"bytes,5,opt,name=approval,proto3" json:"approval,omitempty"`
+	Execution     *TicketExecution       `protobuf:"bytes,6,opt,name=execution,proto3" json:"execution,omitempty"`
+	Audit         *TicketAudit           `protobuf:"bytes,7,opt,name=audit,proto3" json:"audit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DBChangeTicket) Reset() {
+	*x = DBChangeTicket{}
+	mi := &file_levee_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DBChangeTicket) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DBChangeTicket) ProtoMessage() {}
+
+func (x *DBChangeTicket) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DBChangeTicket.ProtoReflect.Descriptor instead.
+func (*DBChangeTicket) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *DBChangeTicket) GetChange() *TicketChange {
+	if x != nil {
+		return x.Change
+	}
+	return nil
+}
+
+func (x *DBChangeTicket) GetSql() *TicketSQL {
+	if x != nil {
+		return x.Sql
+	}
+	return nil
+}
+
+func (x *DBChangeTicket) GetRollback() *TicketRollback {
+	if x != nil {
+		return x.Rollback
+	}
+	return nil
+}
+
+func (x *DBChangeTicket) GetWindow() *TicketWindow {
+	if x != nil {
+		return x.Window
+	}
+	return nil
+}
+
+func (x *DBChangeTicket) GetApproval() *TicketApproval {
+	if x != nil {
+		return x.Approval
+	}
+	return nil
+}
+
+func (x *DBChangeTicket) GetExecution() *TicketExecution {
+	if x != nil {
+		return x.Execution
+	}
+	return nil
+}
+
+func (x *DBChangeTicket) GetAudit() *TicketAudit {
+	if x != nil {
+		return x.Audit
+	}
+	return nil
+}
+
+type TicketChange struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Id          string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Label       string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	Status      string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Priority    string                 `protobuf:"bytes,4,opt,name=priority,proto3" json:"priority,omitempty"`
+	Environment string                 `protobuf:"bytes,5,opt,name=environment,proto3" json:"environment,omitempty"`
+	Creator     string                 `protobuf:"bytes,6,opt,name=creator,proto3" json:"creator,omitempty"`
+	Workflow    string                 `protobuf:"bytes,7,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	Template    string                 `protobuf:"bytes,8,opt,name=template,proto3" json:"template,omitempty"`
+	PlanHash    string                 `protobuf:"bytes,9,opt,name=plan_hash,json=planHash,proto3" json:"plan_hash,omitempty"`
+	// Unix timestamps (seconds since epoch).
+	CreatedAt     int64 `protobuf:"varint,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt     int64 `protobuf:"varint,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketChange) Reset() {
+	*x = TicketChange{}
+	mi := &file_levee_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketChange) ProtoMessage() {}
+
+func (x *TicketChange) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketChange.ProtoReflect.Descriptor instead.
+func (*TicketChange) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *TicketChange) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *TicketChange) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *TicketChange) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *TicketChange) GetPriority() string {
+	if x != nil {
+		return x.Priority
+	}
+	return ""
+}
+
+func (x *TicketChange) GetEnvironment() string {
+	if x != nil {
+		return x.Environment
+	}
+	return ""
+}
+
+func (x *TicketChange) GetCreator() string {
+	if x != nil {
+		return x.Creator
+	}
+	return ""
+}
+
+func (x *TicketChange) GetWorkflow() string {
+	if x != nil {
+		return x.Workflow
+	}
+	return ""
+}
+
+func (x *TicketChange) GetTemplate() string {
+	if x != nil {
+		return x.Template
+	}
+	return ""
+}
+
+func (x *TicketChange) GetPlanHash() string {
+	if x != nil {
+		return x.PlanHash
+	}
+	return ""
+}
+
+func (x *TicketChange) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *TicketChange) GetUpdatedAt() int64 {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return 0
+}
+
+type TicketSQL struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Steps []*TicketSQLStep       `protobuf:"bytes,1,rep,name=steps,proto3" json:"steps,omitempty"`
+	// False when the change carries no `mysql.query` step — a legitimate state
+	// for a non-database change, distinct from "reviewed and clean".
+	HasSql        bool             `protobuf:"varint,2,opt,name=has_sql,json=hasSql,proto3" json:"has_sql,omitempty"`
+	Review        *TicketSQLReview `protobuf:"bytes,3,opt,name=review,proto3" json:"review,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketSQL) Reset() {
+	*x = TicketSQL{}
+	mi := &file_levee_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketSQL) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketSQL) ProtoMessage() {}
+
+func (x *TicketSQL) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketSQL.ProtoReflect.Descriptor instead.
+func (*TicketSQL) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *TicketSQL) GetSteps() []*TicketSQLStep {
+	if x != nil {
+		return x.Steps
+	}
+	return nil
+}
+
+func (x *TicketSQL) GetHasSql() bool {
+	if x != nil {
+		return x.HasSql
+	}
+	return false
+}
+
+func (x *TicketSQL) GetReview() *TicketSQLReview {
+	if x != nil {
+		return x.Review
+	}
+	return nil
+}
+
+type TicketSQLStep struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Step          string                 `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`
+	Sql           string                 `protobuf:"bytes,2,opt,name=sql,proto3" json:"sql,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketSQLStep) Reset() {
+	*x = TicketSQLStep{}
+	mi := &file_levee_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketSQLStep) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketSQLStep) ProtoMessage() {}
+
+func (x *TicketSQLStep) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketSQLStep.ProtoReflect.Descriptor instead.
+func (*TicketSQLStep) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *TicketSQLStep) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *TicketSQLStep) GetSql() string {
+	if x != nil {
+		return x.Sql
+	}
+	return ""
+}
+
+type TicketSQLReview struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Verdict       string                 `protobuf:"bytes,1,opt,name=verdict,proto3" json:"verdict,omitempty"`
+	FailCount     int32                  `protobuf:"varint,2,opt,name=fail_count,json=failCount,proto3" json:"fail_count,omitempty"`
+	WarnCount     int32                  `protobuf:"varint,3,opt,name=warn_count,json=warnCount,proto3" json:"warn_count,omitempty"`
+	Findings      []*TicketFinding       `protobuf:"bytes,4,rep,name=findings,proto3" json:"findings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketSQLReview) Reset() {
+	*x = TicketSQLReview{}
+	mi := &file_levee_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketSQLReview) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketSQLReview) ProtoMessage() {}
+
+func (x *TicketSQLReview) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketSQLReview.ProtoReflect.Descriptor instead.
+func (*TicketSQLReview) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *TicketSQLReview) GetVerdict() string {
+	if x != nil {
+		return x.Verdict
+	}
+	return ""
+}
+
+func (x *TicketSQLReview) GetFailCount() int32 {
+	if x != nil {
+		return x.FailCount
+	}
+	return 0
+}
+
+func (x *TicketSQLReview) GetWarnCount() int32 {
+	if x != nil {
+		return x.WarnCount
+	}
+	return 0
+}
+
+func (x *TicketSQLReview) GetFindings() []*TicketFinding {
+	if x != nil {
+		return x.Findings
+	}
+	return nil
+}
+
+type TicketFinding struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Step          string                 `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`
+	Rule          string                 `protobuf:"bytes,2,opt,name=rule,proto3" json:"rule,omitempty"`
+	Severity      string                 `protobuf:"bytes,3,opt,name=severity,proto3" json:"severity,omitempty"`
+	Statement     int32                  `protobuf:"varint,4,opt,name=statement,proto3" json:"statement,omitempty"`
+	Message       string                 `protobuf:"bytes,5,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketFinding) Reset() {
+	*x = TicketFinding{}
+	mi := &file_levee_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketFinding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketFinding) ProtoMessage() {}
+
+func (x *TicketFinding) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketFinding.ProtoReflect.Descriptor instead.
+func (*TicketFinding) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *TicketFinding) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *TicketFinding) GetRule() string {
+	if x != nil {
+		return x.Rule
+	}
+	return ""
+}
+
+func (x *TicketFinding) GetSeverity() string {
+	if x != nil {
+		return x.Severity
+	}
+	return ""
+}
+
+func (x *TicketFinding) GetStatement() int32 {
+	if x != nil {
+		return x.Statement
+	}
+	return 0
+}
+
+func (x *TicketFinding) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type TicketRollback struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Strategy      string                 `protobuf:"bytes,1,opt,name=strategy,proto3" json:"strategy,omitempty"`
+	OnFailure     string                 `protobuf:"bytes,2,opt,name=on_failure,json=onFailure,proto3" json:"on_failure,omitempty"`
+	VerifyAfter   bool                   `protobuf:"varint,3,opt,name=verify_after,json=verifyAfter,proto3" json:"verify_after,omitempty"`
+	SnapshotPaths []string               `protobuf:"bytes,4,rep,name=snapshot_paths,json=snapshotPaths,proto3" json:"snapshot_paths,omitempty"`
+	StepUndos     []*TicketStepUndo      `protobuf:"bytes,5,rep,name=step_undos,json=stepUndos,proto3" json:"step_undos,omitempty"`
+	// False means nothing declared a compensation — an honest "no rollback
+	// plan", not an empty one that reads like one.
+	HasUndo       bool `protobuf:"varint,6,opt,name=has_undo,json=hasUndo,proto3" json:"has_undo,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketRollback) Reset() {
+	*x = TicketRollback{}
+	mi := &file_levee_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketRollback) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketRollback) ProtoMessage() {}
+
+func (x *TicketRollback) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketRollback.ProtoReflect.Descriptor instead.
+func (*TicketRollback) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *TicketRollback) GetStrategy() string {
+	if x != nil {
+		return x.Strategy
+	}
+	return ""
+}
+
+func (x *TicketRollback) GetOnFailure() string {
+	if x != nil {
+		return x.OnFailure
+	}
+	return ""
+}
+
+func (x *TicketRollback) GetVerifyAfter() bool {
+	if x != nil {
+		return x.VerifyAfter
+	}
+	return false
+}
+
+func (x *TicketRollback) GetSnapshotPaths() []string {
+	if x != nil {
+		return x.SnapshotPaths
+	}
+	return nil
+}
+
+func (x *TicketRollback) GetStepUndos() []*TicketStepUndo {
+	if x != nil {
+		return x.StepUndos
+	}
+	return nil
+}
+
+func (x *TicketRollback) GetHasUndo() bool {
+	if x != nil {
+		return x.HasUndo
+	}
+	return false
+}
+
+type TicketStepUndo struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Step          string                 `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`
+	Strategy      string                 `protobuf:"bytes,2,opt,name=strategy,proto3" json:"strategy,omitempty"`
+	UndoSteps     int32                  `protobuf:"varint,3,opt,name=undo_steps,json=undoSteps,proto3" json:"undo_steps,omitempty"`
+	Irreversible  bool                   `protobuf:"varint,4,opt,name=irreversible,proto3" json:"irreversible,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketStepUndo) Reset() {
+	*x = TicketStepUndo{}
+	mi := &file_levee_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketStepUndo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketStepUndo) ProtoMessage() {}
+
+func (x *TicketStepUndo) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketStepUndo.ProtoReflect.Descriptor instead.
+func (*TicketStepUndo) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *TicketStepUndo) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *TicketStepUndo) GetStrategy() string {
+	if x != nil {
+		return x.Strategy
+	}
+	return ""
+}
+
+func (x *TicketStepUndo) GetUndoSteps() int32 {
+	if x != nil {
+		return x.UndoSteps
+	}
+	return 0
+}
+
+func (x *TicketStepUndo) GetIrreversible() bool {
+	if x != nil {
+		return x.Irreversible
+	}
+	return false
+}
+
+type TicketWindow struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Names the funnel stage where the change window is enforced ("plan").
+	EnforcedAt string `protobuf:"bytes,1,opt,name=enforced_at,json=enforcedAt,proto3" json:"enforced_at,omitempty"`
+	// Where the declared window lives. "workflow-declaration" means it is a fact
+	// of the workflow source, re-checked when the plan is generated; the run row
+	// carries no window column, so a ticket cannot replay which window this
+	// change was admitted under. A future "run-column" would mean the run
+	// persists it and the ticket can replay it.
+	//
+	// A string rather than a bool on purpose: protojson omits a false bool, so
+	// "not persisted" would disappear from every JSON answer and a reader would
+	// have to guess what absent meant. This value is always present.
+	Persistence   string `protobuf:"bytes,2,opt,name=persistence,proto3" json:"persistence,omitempty"`
+	Note          string `protobuf:"bytes,3,opt,name=note,proto3" json:"note,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketWindow) Reset() {
+	*x = TicketWindow{}
+	mi := &file_levee_proto_msgTypes[35]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketWindow) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketWindow) ProtoMessage() {}
+
+func (x *TicketWindow) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[35]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketWindow.ProtoReflect.Descriptor instead.
+func (*TicketWindow) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{35}
+}
+
+func (x *TicketWindow) GetEnforcedAt() string {
+	if x != nil {
+		return x.EnforcedAt
+	}
+	return ""
+}
+
+func (x *TicketWindow) GetPersistence() string {
+	if x != nil {
+		return x.Persistence
+	}
+	return ""
+}
+
+func (x *TicketWindow) GetNote() string {
+	if x != nil {
+		return x.Note
+	}
+	return ""
+}
+
+type TicketApproval struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Level         string                 `protobuf:"bytes,1,opt,name=level,proto3" json:"level,omitempty"`
+	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Approvers     []string               `protobuf:"bytes,3,rep,name=approvers,proto3" json:"approvers,omitempty"`
+	Decisions     []*TicketDecision      `protobuf:"bytes,4,rep,name=decisions,proto3" json:"decisions,omitempty"`
+	PendingCount  int32                  `protobuf:"varint,5,opt,name=pending_count,json=pendingCount,proto3" json:"pending_count,omitempty"`
+	ApprovedCount int32                  `protobuf:"varint,6,opt,name=approved_count,json=approvedCount,proto3" json:"approved_count,omitempty"`
+	RejectedCount int32                  `protobuf:"varint,7,opt,name=rejected_count,json=rejectedCount,proto3" json:"rejected_count,omitempty"`
+	// True when some settled approval row is bound to the run's CURRENT
+	// plan_hash; false means every approval blessed a plan the change no longer
+	// carries (a stale approval), which must not read as a match.
+	MatchesPlan bool `protobuf:"varint,8,opt,name=matches_plan,json=matchesPlan,proto3" json:"matches_plan,omitempty"`
+	// False when the change never entered the approval chain.
+	HasApproval   bool `protobuf:"varint,9,opt,name=has_approval,json=hasApproval,proto3" json:"has_approval,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketApproval) Reset() {
+	*x = TicketApproval{}
+	mi := &file_levee_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketApproval) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketApproval) ProtoMessage() {}
+
+func (x *TicketApproval) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketApproval.ProtoReflect.Descriptor instead.
+func (*TicketApproval) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *TicketApproval) GetLevel() string {
+	if x != nil {
+		return x.Level
+	}
+	return ""
+}
+
+func (x *TicketApproval) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *TicketApproval) GetApprovers() []string {
+	if x != nil {
+		return x.Approvers
+	}
+	return nil
+}
+
+func (x *TicketApproval) GetDecisions() []*TicketDecision {
+	if x != nil {
+		return x.Decisions
+	}
+	return nil
+}
+
+func (x *TicketApproval) GetPendingCount() int32 {
+	if x != nil {
+		return x.PendingCount
+	}
+	return 0
+}
+
+func (x *TicketApproval) GetApprovedCount() int32 {
+	if x != nil {
+		return x.ApprovedCount
+	}
+	return 0
+}
+
+func (x *TicketApproval) GetRejectedCount() int32 {
+	if x != nil {
+		return x.RejectedCount
+	}
+	return 0
+}
+
+func (x *TicketApproval) GetMatchesPlan() bool {
+	if x != nil {
+		return x.MatchesPlan
+	}
+	return false
+}
+
+func (x *TicketApproval) GetHasApproval() bool {
+	if x != nil {
+		return x.HasApproval
+	}
+	return false
+}
+
+type TicketDecision struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Approver      string                 `protobuf:"bytes,1,opt,name=approver,proto3" json:"approver,omitempty"`
+	Action        string                 `protobuf:"bytes,2,opt,name=action,proto3" json:"action,omitempty"`
+	Reason        string                 `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	At            int64                  `protobuf:"varint,4,opt,name=at,proto3" json:"at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketDecision) Reset() {
+	*x = TicketDecision{}
+	mi := &file_levee_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketDecision) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketDecision) ProtoMessage() {}
+
+func (x *TicketDecision) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketDecision.ProtoReflect.Descriptor instead.
+func (*TicketDecision) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *TicketDecision) GetApprover() string {
+	if x != nil {
+		return x.Approver
+	}
+	return ""
+}
+
+func (x *TicketDecision) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *TicketDecision) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *TicketDecision) GetAt() int64 {
+	if x != nil {
+		return x.At
+	}
+	return 0
+}
+
+type TicketExecution struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The evidence Kind (not_started / in_flight / complete / partial / missing /
+	// unrecorded) — the same vocabulary the console and `levee show` render.
+	Verdict      string `protobuf:"bytes,1,opt,name=verdict,proto3" json:"verdict,omitempty"`
+	Reason       string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Batches      int32  `protobuf:"varint,3,opt,name=batches,proto3" json:"batches,omitempty"`
+	Steps        int32  `protobuf:"varint,4,opt,name=steps,proto3" json:"steps,omitempty"`
+	TotalTargets int32  `protobuf:"varint,5,opt,name=total_targets,json=totalTargets,proto3" json:"total_targets,omitempty"`
+	// False when no batch/step rows exist yet (planned but never applied),
+	// distinct from a run that executed and left no trace.
+	HasEvidence   bool `protobuf:"varint,6,opt,name=has_evidence,json=hasEvidence,proto3" json:"has_evidence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketExecution) Reset() {
+	*x = TicketExecution{}
+	mi := &file_levee_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketExecution) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketExecution) ProtoMessage() {}
+
+func (x *TicketExecution) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketExecution.ProtoReflect.Descriptor instead.
+func (*TicketExecution) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *TicketExecution) GetVerdict() string {
+	if x != nil {
+		return x.Verdict
+	}
+	return ""
+}
+
+func (x *TicketExecution) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *TicketExecution) GetBatches() int32 {
+	if x != nil {
+		return x.Batches
+	}
+	return 0
+}
+
+func (x *TicketExecution) GetSteps() int32 {
+	if x != nil {
+		return x.Steps
+	}
+	return 0
+}
+
+func (x *TicketExecution) GetTotalTargets() int32 {
+	if x != nil {
+		return x.TotalTargets
+	}
+	return 0
+}
+
+func (x *TicketExecution) GetHasEvidence() bool {
+	if x != nil {
+		return x.HasEvidence
+	}
+	return false
+}
+
+type TicketAudit struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Valid       bool                   `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	Count       int32                  `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	LegacyCount int32                  `protobuf:"varint,3,opt,name=legacy_count,json=legacyCount,proto3" json:"legacy_count,omitempty"`
+	// False with unverifiable=true means there were no trace rows to verify —
+	// "no evidence", never a silent pass.
+	Verified     bool `protobuf:"varint,4,opt,name=verified,proto3" json:"verified,omitempty"`
+	Unverifiable bool `protobuf:"varint,5,opt,name=unverifiable,proto3" json:"unverifiable,omitempty"`
+	// One entry per tampered record, in chain order. This is the explicit
+	// integrity signal: protojson omits `valid` when it is false (a bool's zero
+	// value), so an invalid chain is conveyed by a non-empty list here rather
+	// than by a flag a JSON reader could read as "absent = fine".
+	Failures      []*TicketChainFailure `protobuf:"bytes,6,rep,name=failures,proto3" json:"failures,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketAudit) Reset() {
+	*x = TicketAudit{}
+	mi := &file_levee_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketAudit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketAudit) ProtoMessage() {}
+
+func (x *TicketAudit) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketAudit.ProtoReflect.Descriptor instead.
+func (*TicketAudit) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *TicketAudit) GetValid() bool {
+	if x != nil {
+		return x.Valid
+	}
+	return false
+}
+
+func (x *TicketAudit) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *TicketAudit) GetLegacyCount() int32 {
+	if x != nil {
+		return x.LegacyCount
+	}
+	return 0
+}
+
+func (x *TicketAudit) GetVerified() bool {
+	if x != nil {
+		return x.Verified
+	}
+	return false
+}
+
+func (x *TicketAudit) GetUnverifiable() bool {
+	if x != nil {
+		return x.Unverifiable
+	}
+	return false
+}
+
+func (x *TicketAudit) GetFailures() []*TicketChainFailure {
+	if x != nil {
+		return x.Failures
+	}
+	return nil
+}
+
+type TicketChainFailure struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// id of the tampered trace record, its 0-based chain position, the kind of
+	// mismatch, and the expected vs stored hash that exposes it.
+	EntryId       string `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	Index         int32  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	FailureType   string `protobuf:"bytes,3,opt,name=failure_type,json=failureType,proto3" json:"failure_type,omitempty"`
+	Expected      string `protobuf:"bytes,4,opt,name=expected,proto3" json:"expected,omitempty"`
+	Actual        string `protobuf:"bytes,5,opt,name=actual,proto3" json:"actual,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TicketChainFailure) Reset() {
+	*x = TicketChainFailure{}
+	mi := &file_levee_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TicketChainFailure) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TicketChainFailure) ProtoMessage() {}
+
+func (x *TicketChainFailure) ProtoReflect() protoreflect.Message {
+	mi := &file_levee_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TicketChainFailure.ProtoReflect.Descriptor instead.
+func (*TicketChainFailure) Descriptor() ([]byte, []int) {
+	return file_levee_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *TicketChainFailure) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *TicketChainFailure) GetIndex() int32 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *TicketChainFailure) GetFailureType() string {
+	if x != nil {
+		return x.FailureType
+	}
+	return ""
+}
+
+func (x *TicketChainFailure) GetExpected() string {
+	if x != nil {
+		return x.Expected
+	}
+	return ""
+}
+
+func (x *TicketChainFailure) GetActual() string {
+	if x != nil {
+		return x.Actual
+	}
+	return ""
+}
+
 type ListChangesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Filter by status (exact match). Empty means any status.
@@ -2264,7 +3433,7 @@ type ListChangesRequest struct {
 
 func (x *ListChangesRequest) Reset() {
 	*x = ListChangesRequest{}
-	mi := &file_levee_proto_msgTypes[27]
+	mi := &file_levee_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2276,7 +3445,7 @@ func (x *ListChangesRequest) String() string {
 func (*ListChangesRequest) ProtoMessage() {}
 
 func (x *ListChangesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[27]
+	mi := &file_levee_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2289,7 +3458,7 @@ func (x *ListChangesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChangesRequest.ProtoReflect.Descriptor instead.
 func (*ListChangesRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{27}
+	return file_levee_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ListChangesRequest) GetStatuses() []string {
@@ -2359,7 +3528,7 @@ type ListChangesResponse struct {
 
 func (x *ListChangesResponse) Reset() {
 	*x = ListChangesResponse{}
-	mi := &file_levee_proto_msgTypes[28]
+	mi := &file_levee_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2371,7 +3540,7 @@ func (x *ListChangesResponse) String() string {
 func (*ListChangesResponse) ProtoMessage() {}
 
 func (x *ListChangesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[28]
+	mi := &file_levee_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2384,7 +3553,7 @@ func (x *ListChangesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChangesResponse.ProtoReflect.Descriptor instead.
 func (*ListChangesResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{28}
+	return file_levee_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ListChangesResponse) GetChanges() []*Change {
@@ -2419,7 +3588,7 @@ type ArchiveRequest struct {
 
 func (x *ArchiveRequest) Reset() {
 	*x = ArchiveRequest{}
-	mi := &file_levee_proto_msgTypes[29]
+	mi := &file_levee_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2431,7 +3600,7 @@ func (x *ArchiveRequest) String() string {
 func (*ArchiveRequest) ProtoMessage() {}
 
 func (x *ArchiveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[29]
+	mi := &file_levee_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2444,7 +3613,7 @@ func (x *ArchiveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArchiveRequest.ProtoReflect.Descriptor instead.
 func (*ArchiveRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{29}
+	return file_levee_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ArchiveRequest) GetChangeId() string {
@@ -2482,7 +3651,7 @@ type GetLogsRequest struct {
 
 func (x *GetLogsRequest) Reset() {
 	*x = GetLogsRequest{}
-	mi := &file_levee_proto_msgTypes[30]
+	mi := &file_levee_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2494,7 +3663,7 @@ func (x *GetLogsRequest) String() string {
 func (*GetLogsRequest) ProtoMessage() {}
 
 func (x *GetLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[30]
+	mi := &file_levee_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2507,7 +3676,7 @@ func (x *GetLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLogsRequest.ProtoReflect.Descriptor instead.
 func (*GetLogsRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{30}
+	return file_levee_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *GetLogsRequest) GetChangeId() string {
@@ -2570,7 +3739,7 @@ type GetLogsResponse struct {
 
 func (x *GetLogsResponse) Reset() {
 	*x = GetLogsResponse{}
-	mi := &file_levee_proto_msgTypes[31]
+	mi := &file_levee_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2582,7 +3751,7 @@ func (x *GetLogsResponse) String() string {
 func (*GetLogsResponse) ProtoMessage() {}
 
 func (x *GetLogsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[31]
+	mi := &file_levee_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2595,7 +3764,7 @@ func (x *GetLogsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetLogsResponse.ProtoReflect.Descriptor instead.
 func (*GetLogsResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{31}
+	return file_levee_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *GetLogsResponse) GetEntries() []*LogEntry {
@@ -2627,7 +3796,7 @@ type GetDiffRequest struct {
 
 func (x *GetDiffRequest) Reset() {
 	*x = GetDiffRequest{}
-	mi := &file_levee_proto_msgTypes[32]
+	mi := &file_levee_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2639,7 +3808,7 @@ func (x *GetDiffRequest) String() string {
 func (*GetDiffRequest) ProtoMessage() {}
 
 func (x *GetDiffRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[32]
+	mi := &file_levee_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2652,7 +3821,7 @@ func (x *GetDiffRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDiffRequest.ProtoReflect.Descriptor instead.
 func (*GetDiffRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{32}
+	return file_levee_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *GetDiffRequest) GetChangeId() string {
@@ -2696,7 +3865,7 @@ type GetDiffResponse struct {
 
 func (x *GetDiffResponse) Reset() {
 	*x = GetDiffResponse{}
-	mi := &file_levee_proto_msgTypes[33]
+	mi := &file_levee_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2708,7 +3877,7 @@ func (x *GetDiffResponse) String() string {
 func (*GetDiffResponse) ProtoMessage() {}
 
 func (x *GetDiffResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[33]
+	mi := &file_levee_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2721,7 +3890,7 @@ func (x *GetDiffResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDiffResponse.ProtoReflect.Descriptor instead.
 func (*GetDiffResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{33}
+	return file_levee_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *GetDiffResponse) GetChangeId() string {
@@ -2765,7 +3934,7 @@ type GetTraceRequest struct {
 
 func (x *GetTraceRequest) Reset() {
 	*x = GetTraceRequest{}
-	mi := &file_levee_proto_msgTypes[34]
+	mi := &file_levee_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2777,7 +3946,7 @@ func (x *GetTraceRequest) String() string {
 func (*GetTraceRequest) ProtoMessage() {}
 
 func (x *GetTraceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[34]
+	mi := &file_levee_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2790,7 +3959,7 @@ func (x *GetTraceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTraceRequest.ProtoReflect.Descriptor instead.
 func (*GetTraceRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{34}
+	return file_levee_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *GetTraceRequest) GetChangeId() string {
@@ -2827,7 +3996,7 @@ type GetTraceResponse struct {
 
 func (x *GetTraceResponse) Reset() {
 	*x = GetTraceResponse{}
-	mi := &file_levee_proto_msgTypes[35]
+	mi := &file_levee_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2839,7 +4008,7 @@ func (x *GetTraceResponse) String() string {
 func (*GetTraceResponse) ProtoMessage() {}
 
 func (x *GetTraceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[35]
+	mi := &file_levee_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2852,7 +4021,7 @@ func (x *GetTraceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTraceResponse.ProtoReflect.Descriptor instead.
 func (*GetTraceResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{35}
+	return file_levee_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *GetTraceResponse) GetRunId() string {
@@ -2892,7 +4061,7 @@ type GetApprovalsRequest struct {
 
 func (x *GetApprovalsRequest) Reset() {
 	*x = GetApprovalsRequest{}
-	mi := &file_levee_proto_msgTypes[36]
+	mi := &file_levee_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2904,7 +4073,7 @@ func (x *GetApprovalsRequest) String() string {
 func (*GetApprovalsRequest) ProtoMessage() {}
 
 func (x *GetApprovalsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[36]
+	mi := &file_levee_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2917,7 +4086,7 @@ func (x *GetApprovalsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetApprovalsRequest.ProtoReflect.Descriptor instead.
 func (*GetApprovalsRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{36}
+	return file_levee_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *GetApprovalsRequest) GetChangeId() string {
@@ -2968,7 +4137,7 @@ type ApprovalInfo struct {
 
 func (x *ApprovalInfo) Reset() {
 	*x = ApprovalInfo{}
-	mi := &file_levee_proto_msgTypes[37]
+	mi := &file_levee_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2980,7 +4149,7 @@ func (x *ApprovalInfo) String() string {
 func (*ApprovalInfo) ProtoMessage() {}
 
 func (x *ApprovalInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[37]
+	mi := &file_levee_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2993,7 +4162,7 @@ func (x *ApprovalInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalInfo.ProtoReflect.Descriptor instead.
 func (*ApprovalInfo) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{37}
+	return file_levee_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *ApprovalInfo) GetId() string {
@@ -3102,7 +4271,7 @@ type ApprovalDecision struct {
 
 func (x *ApprovalDecision) Reset() {
 	*x = ApprovalDecision{}
-	mi := &file_levee_proto_msgTypes[38]
+	mi := &file_levee_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3114,7 +4283,7 @@ func (x *ApprovalDecision) String() string {
 func (*ApprovalDecision) ProtoMessage() {}
 
 func (x *ApprovalDecision) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[38]
+	mi := &file_levee_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3127,7 +4296,7 @@ func (x *ApprovalDecision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApprovalDecision.ProtoReflect.Descriptor instead.
 func (*ApprovalDecision) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{38}
+	return file_levee_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *ApprovalDecision) GetApprover() string {
@@ -3167,7 +4336,7 @@ type GetApprovalsResponse struct {
 
 func (x *GetApprovalsResponse) Reset() {
 	*x = GetApprovalsResponse{}
-	mi := &file_levee_proto_msgTypes[39]
+	mi := &file_levee_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3179,7 +4348,7 @@ func (x *GetApprovalsResponse) String() string {
 func (*GetApprovalsResponse) ProtoMessage() {}
 
 func (x *GetApprovalsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[39]
+	mi := &file_levee_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3192,7 +4361,7 @@ func (x *GetApprovalsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetApprovalsResponse.ProtoReflect.Descriptor instead.
 func (*GetApprovalsResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{39}
+	return file_levee_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *GetApprovalsResponse) GetApprovals() []*ApprovalInfo {
@@ -3215,7 +4384,7 @@ type WatchChangeRequest struct {
 
 func (x *WatchChangeRequest) Reset() {
 	*x = WatchChangeRequest{}
-	mi := &file_levee_proto_msgTypes[40]
+	mi := &file_levee_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3227,7 +4396,7 @@ func (x *WatchChangeRequest) String() string {
 func (*WatchChangeRequest) ProtoMessage() {}
 
 func (x *WatchChangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[40]
+	mi := &file_levee_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3240,7 +4409,7 @@ func (x *WatchChangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchChangeRequest.ProtoReflect.Descriptor instead.
 func (*WatchChangeRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{40}
+	return file_levee_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *WatchChangeRequest) GetChangeId() string {
@@ -3281,7 +4450,7 @@ type StreamLogsRequest struct {
 
 func (x *StreamLogsRequest) Reset() {
 	*x = StreamLogsRequest{}
-	mi := &file_levee_proto_msgTypes[41]
+	mi := &file_levee_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3293,7 +4462,7 @@ func (x *StreamLogsRequest) String() string {
 func (*StreamLogsRequest) ProtoMessage() {}
 
 func (x *StreamLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[41]
+	mi := &file_levee_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3306,7 +4475,7 @@ func (x *StreamLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamLogsRequest.ProtoReflect.Descriptor instead.
 func (*StreamLogsRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{41}
+	return file_levee_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *StreamLogsRequest) GetChangeId() string {
@@ -3358,7 +4527,7 @@ type CreateTemplateRequest struct {
 
 func (x *CreateTemplateRequest) Reset() {
 	*x = CreateTemplateRequest{}
-	mi := &file_levee_proto_msgTypes[42]
+	mi := &file_levee_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3370,7 +4539,7 @@ func (x *CreateTemplateRequest) String() string {
 func (*CreateTemplateRequest) ProtoMessage() {}
 
 func (x *CreateTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[42]
+	mi := &file_levee_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3383,7 +4552,7 @@ func (x *CreateTemplateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateTemplateRequest.ProtoReflect.Descriptor instead.
 func (*CreateTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{42}
+	return file_levee_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *CreateTemplateRequest) GetName() string {
@@ -3430,7 +4599,7 @@ type GetTemplateRequest struct {
 
 func (x *GetTemplateRequest) Reset() {
 	*x = GetTemplateRequest{}
-	mi := &file_levee_proto_msgTypes[43]
+	mi := &file_levee_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3442,7 +4611,7 @@ func (x *GetTemplateRequest) String() string {
 func (*GetTemplateRequest) ProtoMessage() {}
 
 func (x *GetTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[43]
+	mi := &file_levee_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3455,7 +4624,7 @@ func (x *GetTemplateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTemplateRequest.ProtoReflect.Descriptor instead.
 func (*GetTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{43}
+	return file_levee_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *GetTemplateRequest) GetName() string {
@@ -3477,7 +4646,7 @@ type ListTemplatesRequest struct {
 
 func (x *ListTemplatesRequest) Reset() {
 	*x = ListTemplatesRequest{}
-	mi := &file_levee_proto_msgTypes[44]
+	mi := &file_levee_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3489,7 +4658,7 @@ func (x *ListTemplatesRequest) String() string {
 func (*ListTemplatesRequest) ProtoMessage() {}
 
 func (x *ListTemplatesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[44]
+	mi := &file_levee_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3502,7 +4671,7 @@ func (x *ListTemplatesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTemplatesRequest.ProtoReflect.Descriptor instead.
 func (*ListTemplatesRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{44}
+	return file_levee_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ListTemplatesRequest) GetNameContains() string {
@@ -3537,7 +4706,7 @@ type ListTemplatesResponse struct {
 
 func (x *ListTemplatesResponse) Reset() {
 	*x = ListTemplatesResponse{}
-	mi := &file_levee_proto_msgTypes[45]
+	mi := &file_levee_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3549,7 +4718,7 @@ func (x *ListTemplatesResponse) String() string {
 func (*ListTemplatesResponse) ProtoMessage() {}
 
 func (x *ListTemplatesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[45]
+	mi := &file_levee_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3562,7 +4731,7 @@ func (x *ListTemplatesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTemplatesResponse.ProtoReflect.Descriptor instead.
 func (*ListTemplatesResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{45}
+	return file_levee_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ListTemplatesResponse) GetTemplates() []*Template {
@@ -3597,7 +4766,7 @@ type DeleteTemplateRequest struct {
 
 func (x *DeleteTemplateRequest) Reset() {
 	*x = DeleteTemplateRequest{}
-	mi := &file_levee_proto_msgTypes[46]
+	mi := &file_levee_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3609,7 +4778,7 @@ func (x *DeleteTemplateRequest) String() string {
 func (*DeleteTemplateRequest) ProtoMessage() {}
 
 func (x *DeleteTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[46]
+	mi := &file_levee_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3622,7 +4791,7 @@ func (x *DeleteTemplateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteTemplateRequest.ProtoReflect.Descriptor instead.
 func (*DeleteTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{46}
+	return file_levee_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *DeleteTemplateRequest) GetName() string {
@@ -3655,7 +4824,7 @@ type InstantiateTemplateRequest struct {
 
 func (x *InstantiateTemplateRequest) Reset() {
 	*x = InstantiateTemplateRequest{}
-	mi := &file_levee_proto_msgTypes[47]
+	mi := &file_levee_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3667,7 +4836,7 @@ func (x *InstantiateTemplateRequest) String() string {
 func (*InstantiateTemplateRequest) ProtoMessage() {}
 
 func (x *InstantiateTemplateRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[47]
+	mi := &file_levee_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3680,7 +4849,7 @@ func (x *InstantiateTemplateRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstantiateTemplateRequest.ProtoReflect.Descriptor instead.
 func (*InstantiateTemplateRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{47}
+	return file_levee_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *InstantiateTemplateRequest) GetTemplateName() string {
@@ -3748,7 +4917,7 @@ type AddTargetRequest struct {
 
 func (x *AddTargetRequest) Reset() {
 	*x = AddTargetRequest{}
-	mi := &file_levee_proto_msgTypes[48]
+	mi := &file_levee_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3760,7 +4929,7 @@ func (x *AddTargetRequest) String() string {
 func (*AddTargetRequest) ProtoMessage() {}
 
 func (x *AddTargetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[48]
+	mi := &file_levee_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3773,7 +4942,7 @@ func (x *AddTargetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddTargetRequest.ProtoReflect.Descriptor instead.
 func (*AddTargetRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{48}
+	return file_levee_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *AddTargetRequest) GetHostname() string {
@@ -3829,7 +4998,7 @@ type RemoveTargetRequest struct {
 
 func (x *RemoveTargetRequest) Reset() {
 	*x = RemoveTargetRequest{}
-	mi := &file_levee_proto_msgTypes[49]
+	mi := &file_levee_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3841,7 +5010,7 @@ func (x *RemoveTargetRequest) String() string {
 func (*RemoveTargetRequest) ProtoMessage() {}
 
 func (x *RemoveTargetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[49]
+	mi := &file_levee_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3854,7 +5023,7 @@ func (x *RemoveTargetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveTargetRequest.ProtoReflect.Descriptor instead.
 func (*RemoveTargetRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{49}
+	return file_levee_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *RemoveTargetRequest) GetId() string {
@@ -3895,7 +5064,7 @@ type ListTargetsRequest struct {
 
 func (x *ListTargetsRequest) Reset() {
 	*x = ListTargetsRequest{}
-	mi := &file_levee_proto_msgTypes[50]
+	mi := &file_levee_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3907,7 +5076,7 @@ func (x *ListTargetsRequest) String() string {
 func (*ListTargetsRequest) ProtoMessage() {}
 
 func (x *ListTargetsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[50]
+	mi := &file_levee_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3920,7 +5089,7 @@ func (x *ListTargetsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTargetsRequest.ProtoReflect.Descriptor instead.
 func (*ListTargetsRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{50}
+	return file_levee_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *ListTargetsRequest) GetLabelSelector() map[string]string {
@@ -3983,7 +5152,7 @@ type ListTargetsResponse struct {
 
 func (x *ListTargetsResponse) Reset() {
 	*x = ListTargetsResponse{}
-	mi := &file_levee_proto_msgTypes[51]
+	mi := &file_levee_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3995,7 +5164,7 @@ func (x *ListTargetsResponse) String() string {
 func (*ListTargetsResponse) ProtoMessage() {}
 
 func (x *ListTargetsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[51]
+	mi := &file_levee_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4008,7 +5177,7 @@ func (x *ListTargetsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTargetsResponse.ProtoReflect.Descriptor instead.
 func (*ListTargetsResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{51}
+	return file_levee_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *ListTargetsResponse) GetTargets() []*Target {
@@ -4041,7 +5210,7 @@ type GetTargetRequest struct {
 
 func (x *GetTargetRequest) Reset() {
 	*x = GetTargetRequest{}
-	mi := &file_levee_proto_msgTypes[52]
+	mi := &file_levee_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4053,7 +5222,7 @@ func (x *GetTargetRequest) String() string {
 func (*GetTargetRequest) ProtoMessage() {}
 
 func (x *GetTargetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[52]
+	mi := &file_levee_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4066,7 +5235,7 @@ func (x *GetTargetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTargetRequest.ProtoReflect.Descriptor instead.
 func (*GetTargetRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{52}
+	return file_levee_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *GetTargetRequest) GetId() string {
@@ -4089,7 +5258,7 @@ type CheckTargetRequest struct {
 
 func (x *CheckTargetRequest) Reset() {
 	*x = CheckTargetRequest{}
-	mi := &file_levee_proto_msgTypes[53]
+	mi := &file_levee_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4101,7 +5270,7 @@ func (x *CheckTargetRequest) String() string {
 func (*CheckTargetRequest) ProtoMessage() {}
 
 func (x *CheckTargetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[53]
+	mi := &file_levee_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4114,7 +5283,7 @@ func (x *CheckTargetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckTargetRequest.ProtoReflect.Descriptor instead.
 func (*CheckTargetRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{53}
+	return file_levee_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *CheckTargetRequest) GetId() string {
@@ -4154,7 +5323,7 @@ type CheckTargetResponse struct {
 
 func (x *CheckTargetResponse) Reset() {
 	*x = CheckTargetResponse{}
-	mi := &file_levee_proto_msgTypes[54]
+	mi := &file_levee_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4166,7 +5335,7 @@ func (x *CheckTargetResponse) String() string {
 func (*CheckTargetResponse) ProtoMessage() {}
 
 func (x *CheckTargetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[54]
+	mi := &file_levee_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4179,7 +5348,7 @@ func (x *CheckTargetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CheckTargetResponse.ProtoReflect.Descriptor instead.
 func (*CheckTargetResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{54}
+	return file_levee_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *CheckTargetResponse) GetTarget() *Target {
@@ -4237,7 +5406,7 @@ type GetAuditLogRequest struct {
 
 func (x *GetAuditLogRequest) Reset() {
 	*x = GetAuditLogRequest{}
-	mi := &file_levee_proto_msgTypes[55]
+	mi := &file_levee_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4249,7 +5418,7 @@ func (x *GetAuditLogRequest) String() string {
 func (*GetAuditLogRequest) ProtoMessage() {}
 
 func (x *GetAuditLogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[55]
+	mi := &file_levee_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4262,7 +5431,7 @@ func (x *GetAuditLogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAuditLogRequest.ProtoReflect.Descriptor instead.
 func (*GetAuditLogRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{55}
+	return file_levee_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *GetAuditLogRequest) GetChangeId() string {
@@ -4332,7 +5501,7 @@ type GetAuditLogResponse struct {
 
 func (x *GetAuditLogResponse) Reset() {
 	*x = GetAuditLogResponse{}
-	mi := &file_levee_proto_msgTypes[56]
+	mi := &file_levee_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4344,7 +5513,7 @@ func (x *GetAuditLogResponse) String() string {
 func (*GetAuditLogResponse) ProtoMessage() {}
 
 func (x *GetAuditLogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[56]
+	mi := &file_levee_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4357,7 +5526,7 @@ func (x *GetAuditLogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAuditLogResponse.ProtoReflect.Descriptor instead.
 func (*GetAuditLogResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{56}
+	return file_levee_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *GetAuditLogResponse) GetEntries() []*TraceEntry {
@@ -4396,7 +5565,7 @@ type ListAuditTracesRequest struct {
 
 func (x *ListAuditTracesRequest) Reset() {
 	*x = ListAuditTracesRequest{}
-	mi := &file_levee_proto_msgTypes[57]
+	mi := &file_levee_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4408,7 +5577,7 @@ func (x *ListAuditTracesRequest) String() string {
 func (*ListAuditTracesRequest) ProtoMessage() {}
 
 func (x *ListAuditTracesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[57]
+	mi := &file_levee_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4421,7 +5590,7 @@ func (x *ListAuditTracesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditTracesRequest.ProtoReflect.Descriptor instead.
 func (*ListAuditTracesRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{57}
+	return file_levee_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *ListAuditTracesRequest) GetChangeId() string {
@@ -4477,7 +5646,7 @@ type ListAuditTracesResponse struct {
 
 func (x *ListAuditTracesResponse) Reset() {
 	*x = ListAuditTracesResponse{}
-	mi := &file_levee_proto_msgTypes[58]
+	mi := &file_levee_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4489,7 +5658,7 @@ func (x *ListAuditTracesResponse) String() string {
 func (*ListAuditTracesResponse) ProtoMessage() {}
 
 func (x *ListAuditTracesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[58]
+	mi := &file_levee_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4502,7 +5671,7 @@ func (x *ListAuditTracesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditTracesResponse.ProtoReflect.Descriptor instead.
 func (*ListAuditTracesResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{58}
+	return file_levee_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *ListAuditTracesResponse) GetEntries() []*TraceEntry {
@@ -4535,7 +5704,7 @@ type GetAuditTraceRequest struct {
 
 func (x *GetAuditTraceRequest) Reset() {
 	*x = GetAuditTraceRequest{}
-	mi := &file_levee_proto_msgTypes[59]
+	mi := &file_levee_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4547,7 +5716,7 @@ func (x *GetAuditTraceRequest) String() string {
 func (*GetAuditTraceRequest) ProtoMessage() {}
 
 func (x *GetAuditTraceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[59]
+	mi := &file_levee_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4560,7 +5729,7 @@ func (x *GetAuditTraceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAuditTraceRequest.ProtoReflect.Descriptor instead.
 func (*GetAuditTraceRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{59}
+	return file_levee_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *GetAuditTraceRequest) GetTraceId() string {
@@ -4582,7 +5751,7 @@ type VerifyHashChainRequest struct {
 
 func (x *VerifyHashChainRequest) Reset() {
 	*x = VerifyHashChainRequest{}
-	mi := &file_levee_proto_msgTypes[60]
+	mi := &file_levee_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4594,7 +5763,7 @@ func (x *VerifyHashChainRequest) String() string {
 func (*VerifyHashChainRequest) ProtoMessage() {}
 
 func (x *VerifyHashChainRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[60]
+	mi := &file_levee_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4607,7 +5776,7 @@ func (x *VerifyHashChainRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyHashChainRequest.ProtoReflect.Descriptor instead.
 func (*VerifyHashChainRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{60}
+	return file_levee_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *VerifyHashChainRequest) GetRunId() string {
@@ -4640,7 +5809,7 @@ type VerifyHashChainResponse struct {
 
 func (x *VerifyHashChainResponse) Reset() {
 	*x = VerifyHashChainResponse{}
-	mi := &file_levee_proto_msgTypes[61]
+	mi := &file_levee_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4652,7 +5821,7 @@ func (x *VerifyHashChainResponse) String() string {
 func (*VerifyHashChainResponse) ProtoMessage() {}
 
 func (x *VerifyHashChainResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[61]
+	mi := &file_levee_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4665,7 +5834,7 @@ func (x *VerifyHashChainResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyHashChainResponse.ProtoReflect.Descriptor instead.
 func (*VerifyHashChainResponse) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{61}
+	return file_levee_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *VerifyHashChainResponse) GetValid() bool {
@@ -4722,7 +5891,7 @@ type RunVerification struct {
 
 func (x *RunVerification) Reset() {
 	*x = RunVerification{}
-	mi := &file_levee_proto_msgTypes[62]
+	mi := &file_levee_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4734,7 +5903,7 @@ func (x *RunVerification) String() string {
 func (*RunVerification) ProtoMessage() {}
 
 func (x *RunVerification) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[62]
+	mi := &file_levee_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4747,7 +5916,7 @@ func (x *RunVerification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunVerification.ProtoReflect.Descriptor instead.
 func (*RunVerification) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{62}
+	return file_levee_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *RunVerification) GetRunId() string {
@@ -4812,7 +5981,7 @@ type AuditChainFailure struct {
 
 func (x *AuditChainFailure) Reset() {
 	*x = AuditChainFailure{}
-	mi := &file_levee_proto_msgTypes[63]
+	mi := &file_levee_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4824,7 +5993,7 @@ func (x *AuditChainFailure) String() string {
 func (*AuditChainFailure) ProtoMessage() {}
 
 func (x *AuditChainFailure) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[63]
+	mi := &file_levee_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4837,7 +6006,7 @@ func (x *AuditChainFailure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditChainFailure.ProtoReflect.Descriptor instead.
 func (*AuditChainFailure) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{63}
+	return file_levee_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *AuditChainFailure) GetTraceId() string {
@@ -4902,7 +6071,7 @@ type GetRunReportRequest struct {
 
 func (x *GetRunReportRequest) Reset() {
 	*x = GetRunReportRequest{}
-	mi := &file_levee_proto_msgTypes[64]
+	mi := &file_levee_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4914,7 +6083,7 @@ func (x *GetRunReportRequest) String() string {
 func (*GetRunReportRequest) ProtoMessage() {}
 
 func (x *GetRunReportRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[64]
+	mi := &file_levee_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4927,7 +6096,7 @@ func (x *GetRunReportRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunReportRequest.ProtoReflect.Descriptor instead.
 func (*GetRunReportRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{64}
+	return file_levee_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *GetRunReportRequest) GetChangeId() string {
@@ -4975,7 +6144,7 @@ type RunReport struct {
 
 func (x *RunReport) Reset() {
 	*x = RunReport{}
-	mi := &file_levee_proto_msgTypes[65]
+	mi := &file_levee_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4987,7 +6156,7 @@ func (x *RunReport) String() string {
 func (*RunReport) ProtoMessage() {}
 
 func (x *RunReport) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[65]
+	mi := &file_levee_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5000,7 +6169,7 @@ func (x *RunReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunReport.ProtoReflect.Descriptor instead.
 func (*RunReport) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{65}
+	return file_levee_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *RunReport) GetChangeId() string {
@@ -5102,7 +6271,7 @@ type HostResult struct {
 
 func (x *HostResult) Reset() {
 	*x = HostResult{}
-	mi := &file_levee_proto_msgTypes[66]
+	mi := &file_levee_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5114,7 +6283,7 @@ func (x *HostResult) String() string {
 func (*HostResult) ProtoMessage() {}
 
 func (x *HostResult) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[66]
+	mi := &file_levee_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5127,7 +6296,7 @@ func (x *HostResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostResult.ProtoReflect.Descriptor instead.
 func (*HostResult) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{66}
+	return file_levee_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *HostResult) GetHost() string {
@@ -5177,7 +6346,7 @@ type GetConfigRequest struct {
 
 func (x *GetConfigRequest) Reset() {
 	*x = GetConfigRequest{}
-	mi := &file_levee_proto_msgTypes[67]
+	mi := &file_levee_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5189,7 +6358,7 @@ func (x *GetConfigRequest) String() string {
 func (*GetConfigRequest) ProtoMessage() {}
 
 func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[67]
+	mi := &file_levee_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5202,7 +6371,7 @@ func (x *GetConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetConfigRequest) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{67}
+	return file_levee_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *GetConfigRequest) GetRedactSecrets() bool {
@@ -5234,7 +6403,7 @@ type Config struct {
 
 func (x *Config) Reset() {
 	*x = Config{}
-	mi := &file_levee_proto_msgTypes[68]
+	mi := &file_levee_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5246,7 +6415,7 @@ func (x *Config) String() string {
 func (*Config) ProtoMessage() {}
 
 func (x *Config) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[68]
+	mi := &file_levee_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5259,7 +6428,7 @@ func (x *Config) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Config.ProtoReflect.Descriptor instead.
 func (*Config) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{68}
+	return file_levee_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *Config) GetFormat() string {
@@ -5303,7 +6472,7 @@ type DoctorReport struct {
 
 func (x *DoctorReport) Reset() {
 	*x = DoctorReport{}
-	mi := &file_levee_proto_msgTypes[69]
+	mi := &file_levee_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5315,7 +6484,7 @@ func (x *DoctorReport) String() string {
 func (*DoctorReport) ProtoMessage() {}
 
 func (x *DoctorReport) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[69]
+	mi := &file_levee_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5328,7 +6497,7 @@ func (x *DoctorReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoctorReport.ProtoReflect.Descriptor instead.
 func (*DoctorReport) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{69}
+	return file_levee_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *DoctorReport) GetStatus() string {
@@ -5366,7 +6535,7 @@ type DoctorCheck struct {
 
 func (x *DoctorCheck) Reset() {
 	*x = DoctorCheck{}
-	mi := &file_levee_proto_msgTypes[70]
+	mi := &file_levee_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5378,7 +6547,7 @@ func (x *DoctorCheck) String() string {
 func (*DoctorCheck) ProtoMessage() {}
 
 func (x *DoctorCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_levee_proto_msgTypes[70]
+	mi := &file_levee_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5391,7 +6560,7 @@ func (x *DoctorCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoctorCheck.ProtoReflect.Descriptor instead.
 func (*DoctorCheck) Descriptor() ([]byte, []int) {
-	return file_levee_proto_rawDescGZIP(), []int{70}
+	return file_levee_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *DoctorCheck) GetName() string {
@@ -5426,7 +6595,7 @@ var File_levee_proto protoreflect.FileDescriptor
 
 const file_levee_proto_rawDesc = "" +
 	"\n" +
-	"\vlevee.proto\x12\x05levee\x1a\x1bgoogle/protobuf/empty.proto\"\xce\x03\n" +
+	"\vlevee.proto\x12\x05levee\x1a\x1bgoogle/protobuf/empty.proto\"\xfd\x03\n" +
 	"\x06Change\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x16\n" +
@@ -5444,7 +6613,8 @@ const file_levee_proto_rawDesc = "" +
 	" \x01(\tR\tcreatedBy\x12\x12\n" +
 	"\x04team\x18\v \x01(\tR\x04team\x12 \n" +
 	"\venvironment\x18\f \x01(\tR\venvironment\x12\x1f\n" +
-	"\x04plan\x18\r \x01(\v2\v.levee.PlanR\x04plan\x1a9\n" +
+	"\x04plan\x18\r \x01(\v2\v.levee.PlanR\x04plan\x12-\n" +
+	"\x06ticket\x18\x0e \x01(\v2\x15.levee.DBChangeTicketR\x06ticket\x1a9\n" +
 	"\vParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf5\x01\n" +
@@ -5634,10 +6804,109 @@ const file_levee_proto_rawDesc = "" +
 	"\rRejectRequest\x12\x1b\n" +
 	"\tchange_id\x18\x01 \x01(\tR\bchangeId\x12\x1a\n" +
 	"\brejecter\x18\x02 \x01(\tR\brejecter\x12\x16\n" +
-	"\x06reason\x18\x03 \x01(\tR\x06reason\"E\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"l\n" +
 	"\x10GetChangeRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12!\n" +
-	"\finclude_plan\x18\x02 \x01(\bR\vincludePlan\"\x85\x02\n" +
+	"\finclude_plan\x18\x02 \x01(\bR\vincludePlan\x12%\n" +
+	"\x0einclude_ticket\x18\x03 \x01(\bR\rincludeTicket\"\xd4\x02\n" +
+	"\x0eDBChangeTicket\x12+\n" +
+	"\x06change\x18\x01 \x01(\v2\x13.levee.TicketChangeR\x06change\x12\"\n" +
+	"\x03sql\x18\x02 \x01(\v2\x10.levee.TicketSQLR\x03sql\x121\n" +
+	"\brollback\x18\x03 \x01(\v2\x15.levee.TicketRollbackR\brollback\x12+\n" +
+	"\x06window\x18\x04 \x01(\v2\x13.levee.TicketWindowR\x06window\x121\n" +
+	"\bapproval\x18\x05 \x01(\v2\x15.levee.TicketApprovalR\bapproval\x124\n" +
+	"\texecution\x18\x06 \x01(\v2\x16.levee.TicketExecutionR\texecution\x12(\n" +
+	"\x05audit\x18\a \x01(\v2\x12.levee.TicketAuditR\x05audit\"\xb7\x02\n" +
+	"\fTicketChange\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x1a\n" +
+	"\bpriority\x18\x04 \x01(\tR\bpriority\x12 \n" +
+	"\venvironment\x18\x05 \x01(\tR\venvironment\x12\x18\n" +
+	"\acreator\x18\x06 \x01(\tR\acreator\x12\x1a\n" +
+	"\bworkflow\x18\a \x01(\tR\bworkflow\x12\x1a\n" +
+	"\btemplate\x18\b \x01(\tR\btemplate\x12\x1b\n" +
+	"\tplan_hash\x18\t \x01(\tR\bplanHash\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\n" +
+	" \x01(\x03R\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\v \x01(\x03R\tupdatedAt\"\x80\x01\n" +
+	"\tTicketSQL\x12*\n" +
+	"\x05steps\x18\x01 \x03(\v2\x14.levee.TicketSQLStepR\x05steps\x12\x17\n" +
+	"\ahas_sql\x18\x02 \x01(\bR\x06hasSql\x12.\n" +
+	"\x06review\x18\x03 \x01(\v2\x16.levee.TicketSQLReviewR\x06review\"5\n" +
+	"\rTicketSQLStep\x12\x12\n" +
+	"\x04step\x18\x01 \x01(\tR\x04step\x12\x10\n" +
+	"\x03sql\x18\x02 \x01(\tR\x03sql\"\x9b\x01\n" +
+	"\x0fTicketSQLReview\x12\x18\n" +
+	"\averdict\x18\x01 \x01(\tR\averdict\x12\x1d\n" +
+	"\n" +
+	"fail_count\x18\x02 \x01(\x05R\tfailCount\x12\x1d\n" +
+	"\n" +
+	"warn_count\x18\x03 \x01(\x05R\twarnCount\x120\n" +
+	"\bfindings\x18\x04 \x03(\v2\x14.levee.TicketFindingR\bfindings\"\x8b\x01\n" +
+	"\rTicketFinding\x12\x12\n" +
+	"\x04step\x18\x01 \x01(\tR\x04step\x12\x12\n" +
+	"\x04rule\x18\x02 \x01(\tR\x04rule\x12\x1a\n" +
+	"\bseverity\x18\x03 \x01(\tR\bseverity\x12\x1c\n" +
+	"\tstatement\x18\x04 \x01(\x05R\tstatement\x12\x18\n" +
+	"\amessage\x18\x05 \x01(\tR\amessage\"\xe6\x01\n" +
+	"\x0eTicketRollback\x12\x1a\n" +
+	"\bstrategy\x18\x01 \x01(\tR\bstrategy\x12\x1d\n" +
+	"\n" +
+	"on_failure\x18\x02 \x01(\tR\tonFailure\x12!\n" +
+	"\fverify_after\x18\x03 \x01(\bR\vverifyAfter\x12%\n" +
+	"\x0esnapshot_paths\x18\x04 \x03(\tR\rsnapshotPaths\x124\n" +
+	"\n" +
+	"step_undos\x18\x05 \x03(\v2\x15.levee.TicketStepUndoR\tstepUndos\x12\x19\n" +
+	"\bhas_undo\x18\x06 \x01(\bR\ahasUndo\"\x83\x01\n" +
+	"\x0eTicketStepUndo\x12\x12\n" +
+	"\x04step\x18\x01 \x01(\tR\x04step\x12\x1a\n" +
+	"\bstrategy\x18\x02 \x01(\tR\bstrategy\x12\x1d\n" +
+	"\n" +
+	"undo_steps\x18\x03 \x01(\x05R\tundoSteps\x12\"\n" +
+	"\firreversible\x18\x04 \x01(\bR\firreversible\"e\n" +
+	"\fTicketWindow\x12\x1f\n" +
+	"\venforced_at\x18\x01 \x01(\tR\n" +
+	"enforcedAt\x12 \n" +
+	"\vpersistence\x18\x02 \x01(\tR\vpersistence\x12\x12\n" +
+	"\x04note\x18\x03 \x01(\tR\x04note\"\xca\x02\n" +
+	"\x0eTicketApproval\x12\x14\n" +
+	"\x05level\x18\x01 \x01(\tR\x05level\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x1c\n" +
+	"\tapprovers\x18\x03 \x03(\tR\tapprovers\x123\n" +
+	"\tdecisions\x18\x04 \x03(\v2\x15.levee.TicketDecisionR\tdecisions\x12#\n" +
+	"\rpending_count\x18\x05 \x01(\x05R\fpendingCount\x12%\n" +
+	"\x0eapproved_count\x18\x06 \x01(\x05R\rapprovedCount\x12%\n" +
+	"\x0erejected_count\x18\a \x01(\x05R\rrejectedCount\x12!\n" +
+	"\fmatches_plan\x18\b \x01(\bR\vmatchesPlan\x12!\n" +
+	"\fhas_approval\x18\t \x01(\bR\vhasApproval\"l\n" +
+	"\x0eTicketDecision\x12\x1a\n" +
+	"\bapprover\x18\x01 \x01(\tR\bapprover\x12\x16\n" +
+	"\x06action\x18\x02 \x01(\tR\x06action\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\x12\x0e\n" +
+	"\x02at\x18\x04 \x01(\x03R\x02at\"\xbb\x01\n" +
+	"\x0fTicketExecution\x12\x18\n" +
+	"\averdict\x18\x01 \x01(\tR\averdict\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12\x18\n" +
+	"\abatches\x18\x03 \x01(\x05R\abatches\x12\x14\n" +
+	"\x05steps\x18\x04 \x01(\x05R\x05steps\x12#\n" +
+	"\rtotal_targets\x18\x05 \x01(\x05R\ftotalTargets\x12!\n" +
+	"\fhas_evidence\x18\x06 \x01(\bR\vhasEvidence\"\xd3\x01\n" +
+	"\vTicketAudit\x12\x14\n" +
+	"\x05valid\x18\x01 \x01(\bR\x05valid\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\x05R\x05count\x12!\n" +
+	"\flegacy_count\x18\x03 \x01(\x05R\vlegacyCount\x12\x1a\n" +
+	"\bverified\x18\x04 \x01(\bR\bverified\x12\"\n" +
+	"\funverifiable\x18\x05 \x01(\bR\funverifiable\x125\n" +
+	"\bfailures\x18\x06 \x03(\v2\x19.levee.TicketChainFailureR\bfailures\"\x9c\x01\n" +
+	"\x12TicketChainFailure\x12\x19\n" +
+	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x05R\x05index\x12!\n" +
+	"\ffailure_type\x18\x03 \x01(\tR\vfailureType\x12\x1a\n" +
+	"\bexpected\x18\x04 \x01(\tR\bexpected\x12\x16\n" +
+	"\x06actual\x18\x05 \x01(\tR\x06actual\"\x85\x02\n" +
 	"\x12ListChangesRequest\x12\x1a\n" +
 	"\bstatuses\x18\x01 \x03(\tR\bstatuses\x12\x14\n" +
 	"\x05teams\x18\x02 \x03(\tR\x05teams\x12\"\n" +
@@ -5970,7 +7239,7 @@ func file_levee_proto_rawDescGZIP() []byte {
 	return file_levee_proto_rawDescData
 }
 
-var file_levee_proto_msgTypes = make([]protoimpl.MessageInfo, 79)
+var file_levee_proto_msgTypes = make([]protoimpl.MessageInfo, 93)
 var file_levee_proto_goTypes = []any{
 	(*Change)(nil),                     // 0: levee.Change
 	(*Plan)(nil),                       // 1: levee.Plan
@@ -5999,179 +7268,207 @@ var file_levee_proto_goTypes = []any{
 	(*ApproveRequest)(nil),             // 24: levee.ApproveRequest
 	(*RejectRequest)(nil),              // 25: levee.RejectRequest
 	(*GetChangeRequest)(nil),           // 26: levee.GetChangeRequest
-	(*ListChangesRequest)(nil),         // 27: levee.ListChangesRequest
-	(*ListChangesResponse)(nil),        // 28: levee.ListChangesResponse
-	(*ArchiveRequest)(nil),             // 29: levee.ArchiveRequest
-	(*GetLogsRequest)(nil),             // 30: levee.GetLogsRequest
-	(*GetLogsResponse)(nil),            // 31: levee.GetLogsResponse
-	(*GetDiffRequest)(nil),             // 32: levee.GetDiffRequest
-	(*GetDiffResponse)(nil),            // 33: levee.GetDiffResponse
-	(*GetTraceRequest)(nil),            // 34: levee.GetTraceRequest
-	(*GetTraceResponse)(nil),           // 35: levee.GetTraceResponse
-	(*GetApprovalsRequest)(nil),        // 36: levee.GetApprovalsRequest
-	(*ApprovalInfo)(nil),               // 37: levee.ApprovalInfo
-	(*ApprovalDecision)(nil),           // 38: levee.ApprovalDecision
-	(*GetApprovalsResponse)(nil),       // 39: levee.GetApprovalsResponse
-	(*WatchChangeRequest)(nil),         // 40: levee.WatchChangeRequest
-	(*StreamLogsRequest)(nil),          // 41: levee.StreamLogsRequest
-	(*CreateTemplateRequest)(nil),      // 42: levee.CreateTemplateRequest
-	(*GetTemplateRequest)(nil),         // 43: levee.GetTemplateRequest
-	(*ListTemplatesRequest)(nil),       // 44: levee.ListTemplatesRequest
-	(*ListTemplatesResponse)(nil),      // 45: levee.ListTemplatesResponse
-	(*DeleteTemplateRequest)(nil),      // 46: levee.DeleteTemplateRequest
-	(*InstantiateTemplateRequest)(nil), // 47: levee.InstantiateTemplateRequest
-	(*AddTargetRequest)(nil),           // 48: levee.AddTargetRequest
-	(*RemoveTargetRequest)(nil),        // 49: levee.RemoveTargetRequest
-	(*ListTargetsRequest)(nil),         // 50: levee.ListTargetsRequest
-	(*ListTargetsResponse)(nil),        // 51: levee.ListTargetsResponse
-	(*GetTargetRequest)(nil),           // 52: levee.GetTargetRequest
-	(*CheckTargetRequest)(nil),         // 53: levee.CheckTargetRequest
-	(*CheckTargetResponse)(nil),        // 54: levee.CheckTargetResponse
-	(*GetAuditLogRequest)(nil),         // 55: levee.GetAuditLogRequest
-	(*GetAuditLogResponse)(nil),        // 56: levee.GetAuditLogResponse
-	(*ListAuditTracesRequest)(nil),     // 57: levee.ListAuditTracesRequest
-	(*ListAuditTracesResponse)(nil),    // 58: levee.ListAuditTracesResponse
-	(*GetAuditTraceRequest)(nil),       // 59: levee.GetAuditTraceRequest
-	(*VerifyHashChainRequest)(nil),     // 60: levee.VerifyHashChainRequest
-	(*VerifyHashChainResponse)(nil),    // 61: levee.VerifyHashChainResponse
-	(*RunVerification)(nil),            // 62: levee.RunVerification
-	(*AuditChainFailure)(nil),          // 63: levee.AuditChainFailure
-	(*GetRunReportRequest)(nil),        // 64: levee.GetRunReportRequest
-	(*RunReport)(nil),                  // 65: levee.RunReport
-	(*HostResult)(nil),                 // 66: levee.HostResult
-	(*GetConfigRequest)(nil),           // 67: levee.GetConfigRequest
-	(*Config)(nil),                     // 68: levee.Config
-	(*DoctorReport)(nil),               // 69: levee.DoctorReport
-	(*DoctorCheck)(nil),                // 70: levee.DoctorCheck
-	nil,                                // 71: levee.Change.ParamsEntry
-	nil,                                // 72: levee.Target.LabelsEntry
-	nil,                                // 73: levee.Template.TagsEntry
-	nil,                                // 74: levee.CreateChangeRequest.ParamsEntry
-	nil,                                // 75: levee.CloneChangeRequest.ParamsEntry
-	nil,                                // 76: levee.InstantiateTemplateRequest.ParamsEntry
-	nil,                                // 77: levee.AddTargetRequest.LabelsEntry
-	nil,                                // 78: levee.ListTargetsRequest.LabelSelectorEntry
-	(*emptypb.Empty)(nil),              // 79: google.protobuf.Empty
+	(*DBChangeTicket)(nil),             // 27: levee.DBChangeTicket
+	(*TicketChange)(nil),               // 28: levee.TicketChange
+	(*TicketSQL)(nil),                  // 29: levee.TicketSQL
+	(*TicketSQLStep)(nil),              // 30: levee.TicketSQLStep
+	(*TicketSQLReview)(nil),            // 31: levee.TicketSQLReview
+	(*TicketFinding)(nil),              // 32: levee.TicketFinding
+	(*TicketRollback)(nil),             // 33: levee.TicketRollback
+	(*TicketStepUndo)(nil),             // 34: levee.TicketStepUndo
+	(*TicketWindow)(nil),               // 35: levee.TicketWindow
+	(*TicketApproval)(nil),             // 36: levee.TicketApproval
+	(*TicketDecision)(nil),             // 37: levee.TicketDecision
+	(*TicketExecution)(nil),            // 38: levee.TicketExecution
+	(*TicketAudit)(nil),                // 39: levee.TicketAudit
+	(*TicketChainFailure)(nil),         // 40: levee.TicketChainFailure
+	(*ListChangesRequest)(nil),         // 41: levee.ListChangesRequest
+	(*ListChangesResponse)(nil),        // 42: levee.ListChangesResponse
+	(*ArchiveRequest)(nil),             // 43: levee.ArchiveRequest
+	(*GetLogsRequest)(nil),             // 44: levee.GetLogsRequest
+	(*GetLogsResponse)(nil),            // 45: levee.GetLogsResponse
+	(*GetDiffRequest)(nil),             // 46: levee.GetDiffRequest
+	(*GetDiffResponse)(nil),            // 47: levee.GetDiffResponse
+	(*GetTraceRequest)(nil),            // 48: levee.GetTraceRequest
+	(*GetTraceResponse)(nil),           // 49: levee.GetTraceResponse
+	(*GetApprovalsRequest)(nil),        // 50: levee.GetApprovalsRequest
+	(*ApprovalInfo)(nil),               // 51: levee.ApprovalInfo
+	(*ApprovalDecision)(nil),           // 52: levee.ApprovalDecision
+	(*GetApprovalsResponse)(nil),       // 53: levee.GetApprovalsResponse
+	(*WatchChangeRequest)(nil),         // 54: levee.WatchChangeRequest
+	(*StreamLogsRequest)(nil),          // 55: levee.StreamLogsRequest
+	(*CreateTemplateRequest)(nil),      // 56: levee.CreateTemplateRequest
+	(*GetTemplateRequest)(nil),         // 57: levee.GetTemplateRequest
+	(*ListTemplatesRequest)(nil),       // 58: levee.ListTemplatesRequest
+	(*ListTemplatesResponse)(nil),      // 59: levee.ListTemplatesResponse
+	(*DeleteTemplateRequest)(nil),      // 60: levee.DeleteTemplateRequest
+	(*InstantiateTemplateRequest)(nil), // 61: levee.InstantiateTemplateRequest
+	(*AddTargetRequest)(nil),           // 62: levee.AddTargetRequest
+	(*RemoveTargetRequest)(nil),        // 63: levee.RemoveTargetRequest
+	(*ListTargetsRequest)(nil),         // 64: levee.ListTargetsRequest
+	(*ListTargetsResponse)(nil),        // 65: levee.ListTargetsResponse
+	(*GetTargetRequest)(nil),           // 66: levee.GetTargetRequest
+	(*CheckTargetRequest)(nil),         // 67: levee.CheckTargetRequest
+	(*CheckTargetResponse)(nil),        // 68: levee.CheckTargetResponse
+	(*GetAuditLogRequest)(nil),         // 69: levee.GetAuditLogRequest
+	(*GetAuditLogResponse)(nil),        // 70: levee.GetAuditLogResponse
+	(*ListAuditTracesRequest)(nil),     // 71: levee.ListAuditTracesRequest
+	(*ListAuditTracesResponse)(nil),    // 72: levee.ListAuditTracesResponse
+	(*GetAuditTraceRequest)(nil),       // 73: levee.GetAuditTraceRequest
+	(*VerifyHashChainRequest)(nil),     // 74: levee.VerifyHashChainRequest
+	(*VerifyHashChainResponse)(nil),    // 75: levee.VerifyHashChainResponse
+	(*RunVerification)(nil),            // 76: levee.RunVerification
+	(*AuditChainFailure)(nil),          // 77: levee.AuditChainFailure
+	(*GetRunReportRequest)(nil),        // 78: levee.GetRunReportRequest
+	(*RunReport)(nil),                  // 79: levee.RunReport
+	(*HostResult)(nil),                 // 80: levee.HostResult
+	(*GetConfigRequest)(nil),           // 81: levee.GetConfigRequest
+	(*Config)(nil),                     // 82: levee.Config
+	(*DoctorReport)(nil),               // 83: levee.DoctorReport
+	(*DoctorCheck)(nil),                // 84: levee.DoctorCheck
+	nil,                                // 85: levee.Change.ParamsEntry
+	nil,                                // 86: levee.Target.LabelsEntry
+	nil,                                // 87: levee.Template.TagsEntry
+	nil,                                // 88: levee.CreateChangeRequest.ParamsEntry
+	nil,                                // 89: levee.CloneChangeRequest.ParamsEntry
+	nil,                                // 90: levee.InstantiateTemplateRequest.ParamsEntry
+	nil,                                // 91: levee.AddTargetRequest.LabelsEntry
+	nil,                                // 92: levee.ListTargetsRequest.LabelSelectorEntry
+	(*emptypb.Empty)(nil),              // 93: google.protobuf.Empty
 }
 var file_levee_proto_depIdxs = []int32{
-	71, // 0: levee.Change.params:type_name -> levee.Change.ParamsEntry
+	85, // 0: levee.Change.params:type_name -> levee.Change.ParamsEntry
 	1,  // 1: levee.Change.plan:type_name -> levee.Plan
-	2,  // 2: levee.Plan.batches:type_name -> levee.Batch
-	72, // 3: levee.Target.labels:type_name -> levee.Target.LabelsEntry
-	73, // 4: levee.Template.tags:type_name -> levee.Template.TagsEntry
-	5,  // 5: levee.Template.parameters:type_name -> levee.TemplateParameter
-	74, // 6: levee.CreateChangeRequest.params:type_name -> levee.CreateChangeRequest.ParamsEntry
-	75, // 7: levee.CloneChangeRequest.params:type_name -> levee.CloneChangeRequest.ParamsEntry
-	0,  // 8: levee.ApplyResponse.change:type_name -> levee.Change
-	1,  // 9: levee.ApplyResponse.plan:type_name -> levee.Plan
-	0,  // 10: levee.RollbackResponse.change:type_name -> levee.Change
-	0,  // 11: levee.ListChangesResponse.changes:type_name -> levee.Change
-	7,  // 12: levee.GetLogsResponse.entries:type_name -> levee.LogEntry
-	6,  // 13: levee.GetTraceResponse.entries:type_name -> levee.TraceEntry
-	38, // 14: levee.ApprovalInfo.decisions:type_name -> levee.ApprovalDecision
-	37, // 15: levee.GetApprovalsResponse.approvals:type_name -> levee.ApprovalInfo
-	4,  // 16: levee.ListTemplatesResponse.templates:type_name -> levee.Template
-	76, // 17: levee.InstantiateTemplateRequest.params:type_name -> levee.InstantiateTemplateRequest.ParamsEntry
-	77, // 18: levee.AddTargetRequest.labels:type_name -> levee.AddTargetRequest.LabelsEntry
-	78, // 19: levee.ListTargetsRequest.label_selector:type_name -> levee.ListTargetsRequest.LabelSelectorEntry
-	3,  // 20: levee.ListTargetsResponse.targets:type_name -> levee.Target
-	3,  // 21: levee.CheckTargetResponse.target:type_name -> levee.Target
-	6,  // 22: levee.GetAuditLogResponse.entries:type_name -> levee.TraceEntry
-	6,  // 23: levee.ListAuditTracesResponse.entries:type_name -> levee.TraceEntry
-	62, // 24: levee.VerifyHashChainResponse.runs:type_name -> levee.RunVerification
-	63, // 25: levee.RunVerification.failures:type_name -> levee.AuditChainFailure
-	66, // 26: levee.RunReport.host_results:type_name -> levee.HostResult
-	7,  // 27: levee.RunReport.logs:type_name -> levee.LogEntry
-	70, // 28: levee.DoctorReport.checks:type_name -> levee.DoctorCheck
-	11, // 29: levee.ChangeService.CreateChange:input_type -> levee.CreateChangeRequest
-	12, // 30: levee.ChangeService.CloneChange:input_type -> levee.CloneChangeRequest
-	13, // 31: levee.ChangeService.PlanChange:input_type -> levee.PlanChangeRequest
-	14, // 32: levee.ChangeService.ApplyChange:input_type -> levee.ApplyChangeRequest
-	16, // 33: levee.ChangeService.PauseChange:input_type -> levee.PauseRequest
-	16, // 34: levee.ChangeService.ResumeChange:input_type -> levee.PauseRequest
-	17, // 35: levee.ChangeService.PauseAll:input_type -> levee.PauseAllRequest
-	17, // 36: levee.ChangeService.ResumeAll:input_type -> levee.PauseAllRequest
-	19, // 37: levee.ChangeService.CancelChange:input_type -> levee.CancelRequest
-	20, // 38: levee.ChangeService.RetryChange:input_type -> levee.RetryRequest
-	21, // 39: levee.ChangeService.RetryHost:input_type -> levee.RetryHostRequest
-	22, // 40: levee.ChangeService.RollbackChange:input_type -> levee.RollbackRequest
-	24, // 41: levee.ChangeService.ApproveChange:input_type -> levee.ApproveRequest
-	25, // 42: levee.ChangeService.RejectChange:input_type -> levee.RejectRequest
-	26, // 43: levee.ChangeService.GetChange:input_type -> levee.GetChangeRequest
-	27, // 44: levee.ChangeService.ListChanges:input_type -> levee.ListChangesRequest
-	29, // 45: levee.ChangeService.ArchiveChange:input_type -> levee.ArchiveRequest
-	30, // 46: levee.ChangeService.GetLogs:input_type -> levee.GetLogsRequest
-	32, // 47: levee.ChangeService.GetDiff:input_type -> levee.GetDiffRequest
-	34, // 48: levee.ChangeService.GetTrace:input_type -> levee.GetTraceRequest
-	36, // 49: levee.ChangeService.GetApprovals:input_type -> levee.GetApprovalsRequest
-	40, // 50: levee.ChangeService.WatchChange:input_type -> levee.WatchChangeRequest
-	41, // 51: levee.ChangeService.StreamLogs:input_type -> levee.StreamLogsRequest
-	42, // 52: levee.TemplateService.CreateTemplate:input_type -> levee.CreateTemplateRequest
-	43, // 53: levee.TemplateService.GetTemplate:input_type -> levee.GetTemplateRequest
-	44, // 54: levee.TemplateService.ListTemplates:input_type -> levee.ListTemplatesRequest
-	46, // 55: levee.TemplateService.DeleteTemplate:input_type -> levee.DeleteTemplateRequest
-	47, // 56: levee.TemplateService.InstantiateTemplate:input_type -> levee.InstantiateTemplateRequest
-	48, // 57: levee.TargetService.AddTarget:input_type -> levee.AddTargetRequest
-	49, // 58: levee.TargetService.RemoveTarget:input_type -> levee.RemoveTargetRequest
-	50, // 59: levee.TargetService.ListTargets:input_type -> levee.ListTargetsRequest
-	52, // 60: levee.TargetService.GetTarget:input_type -> levee.GetTargetRequest
-	53, // 61: levee.TargetService.CheckTarget:input_type -> levee.CheckTargetRequest
-	55, // 62: levee.AuditService.GetAuditLog:input_type -> levee.GetAuditLogRequest
-	57, // 63: levee.AuditService.ListAuditTraces:input_type -> levee.ListAuditTracesRequest
-	60, // 64: levee.AuditService.VerifyHashChain:input_type -> levee.VerifyHashChainRequest
-	64, // 65: levee.AuditService.GetRunReport:input_type -> levee.GetRunReportRequest
-	59, // 66: levee.AuditService.GetAuditTrace:input_type -> levee.GetAuditTraceRequest
-	79, // 67: levee.SystemService.GetVersion:input_type -> google.protobuf.Empty
-	79, // 68: levee.SystemService.GetStatus:input_type -> google.protobuf.Empty
-	67, // 69: levee.SystemService.GetConfig:input_type -> levee.GetConfigRequest
-	79, // 70: levee.SystemService.RunDoctor:input_type -> google.protobuf.Empty
-	0,  // 71: levee.ChangeService.CreateChange:output_type -> levee.Change
-	0,  // 72: levee.ChangeService.CloneChange:output_type -> levee.Change
-	1,  // 73: levee.ChangeService.PlanChange:output_type -> levee.Plan
-	15, // 74: levee.ChangeService.ApplyChange:output_type -> levee.ApplyResponse
-	0,  // 75: levee.ChangeService.PauseChange:output_type -> levee.Change
-	0,  // 76: levee.ChangeService.ResumeChange:output_type -> levee.Change
-	18, // 77: levee.ChangeService.PauseAll:output_type -> levee.PauseAllResponse
-	18, // 78: levee.ChangeService.ResumeAll:output_type -> levee.PauseAllResponse
-	0,  // 79: levee.ChangeService.CancelChange:output_type -> levee.Change
-	0,  // 80: levee.ChangeService.RetryChange:output_type -> levee.Change
-	0,  // 81: levee.ChangeService.RetryHost:output_type -> levee.Change
-	23, // 82: levee.ChangeService.RollbackChange:output_type -> levee.RollbackResponse
-	0,  // 83: levee.ChangeService.ApproveChange:output_type -> levee.Change
-	0,  // 84: levee.ChangeService.RejectChange:output_type -> levee.Change
-	0,  // 85: levee.ChangeService.GetChange:output_type -> levee.Change
-	28, // 86: levee.ChangeService.ListChanges:output_type -> levee.ListChangesResponse
-	0,  // 87: levee.ChangeService.ArchiveChange:output_type -> levee.Change
-	31, // 88: levee.ChangeService.GetLogs:output_type -> levee.GetLogsResponse
-	33, // 89: levee.ChangeService.GetDiff:output_type -> levee.GetDiffResponse
-	35, // 90: levee.ChangeService.GetTrace:output_type -> levee.GetTraceResponse
-	39, // 91: levee.ChangeService.GetApprovals:output_type -> levee.GetApprovalsResponse
-	8,  // 92: levee.ChangeService.WatchChange:output_type -> levee.ChangeEvent
-	7,  // 93: levee.ChangeService.StreamLogs:output_type -> levee.LogEntry
-	4,  // 94: levee.TemplateService.CreateTemplate:output_type -> levee.Template
-	4,  // 95: levee.TemplateService.GetTemplate:output_type -> levee.Template
-	45, // 96: levee.TemplateService.ListTemplates:output_type -> levee.ListTemplatesResponse
-	79, // 97: levee.TemplateService.DeleteTemplate:output_type -> google.protobuf.Empty
-	0,  // 98: levee.TemplateService.InstantiateTemplate:output_type -> levee.Change
-	3,  // 99: levee.TargetService.AddTarget:output_type -> levee.Target
-	79, // 100: levee.TargetService.RemoveTarget:output_type -> google.protobuf.Empty
-	51, // 101: levee.TargetService.ListTargets:output_type -> levee.ListTargetsResponse
-	3,  // 102: levee.TargetService.GetTarget:output_type -> levee.Target
-	54, // 103: levee.TargetService.CheckTarget:output_type -> levee.CheckTargetResponse
-	56, // 104: levee.AuditService.GetAuditLog:output_type -> levee.GetAuditLogResponse
-	58, // 105: levee.AuditService.ListAuditTraces:output_type -> levee.ListAuditTracesResponse
-	61, // 106: levee.AuditService.VerifyHashChain:output_type -> levee.VerifyHashChainResponse
-	65, // 107: levee.AuditService.GetRunReport:output_type -> levee.RunReport
-	6,  // 108: levee.AuditService.GetAuditTrace:output_type -> levee.TraceEntry
-	9,  // 109: levee.SystemService.GetVersion:output_type -> levee.VersionInfo
-	10, // 110: levee.SystemService.GetStatus:output_type -> levee.SystemStatus
-	68, // 111: levee.SystemService.GetConfig:output_type -> levee.Config
-	69, // 112: levee.SystemService.RunDoctor:output_type -> levee.DoctorReport
-	71, // [71:113] is the sub-list for method output_type
-	29, // [29:71] is the sub-list for method input_type
-	29, // [29:29] is the sub-list for extension type_name
-	29, // [29:29] is the sub-list for extension extendee
-	0,  // [0:29] is the sub-list for field type_name
+	27, // 2: levee.Change.ticket:type_name -> levee.DBChangeTicket
+	2,  // 3: levee.Plan.batches:type_name -> levee.Batch
+	86, // 4: levee.Target.labels:type_name -> levee.Target.LabelsEntry
+	87, // 5: levee.Template.tags:type_name -> levee.Template.TagsEntry
+	5,  // 6: levee.Template.parameters:type_name -> levee.TemplateParameter
+	88, // 7: levee.CreateChangeRequest.params:type_name -> levee.CreateChangeRequest.ParamsEntry
+	89, // 8: levee.CloneChangeRequest.params:type_name -> levee.CloneChangeRequest.ParamsEntry
+	0,  // 9: levee.ApplyResponse.change:type_name -> levee.Change
+	1,  // 10: levee.ApplyResponse.plan:type_name -> levee.Plan
+	0,  // 11: levee.RollbackResponse.change:type_name -> levee.Change
+	28, // 12: levee.DBChangeTicket.change:type_name -> levee.TicketChange
+	29, // 13: levee.DBChangeTicket.sql:type_name -> levee.TicketSQL
+	33, // 14: levee.DBChangeTicket.rollback:type_name -> levee.TicketRollback
+	35, // 15: levee.DBChangeTicket.window:type_name -> levee.TicketWindow
+	36, // 16: levee.DBChangeTicket.approval:type_name -> levee.TicketApproval
+	38, // 17: levee.DBChangeTicket.execution:type_name -> levee.TicketExecution
+	39, // 18: levee.DBChangeTicket.audit:type_name -> levee.TicketAudit
+	30, // 19: levee.TicketSQL.steps:type_name -> levee.TicketSQLStep
+	31, // 20: levee.TicketSQL.review:type_name -> levee.TicketSQLReview
+	32, // 21: levee.TicketSQLReview.findings:type_name -> levee.TicketFinding
+	34, // 22: levee.TicketRollback.step_undos:type_name -> levee.TicketStepUndo
+	37, // 23: levee.TicketApproval.decisions:type_name -> levee.TicketDecision
+	40, // 24: levee.TicketAudit.failures:type_name -> levee.TicketChainFailure
+	0,  // 25: levee.ListChangesResponse.changes:type_name -> levee.Change
+	7,  // 26: levee.GetLogsResponse.entries:type_name -> levee.LogEntry
+	6,  // 27: levee.GetTraceResponse.entries:type_name -> levee.TraceEntry
+	52, // 28: levee.ApprovalInfo.decisions:type_name -> levee.ApprovalDecision
+	51, // 29: levee.GetApprovalsResponse.approvals:type_name -> levee.ApprovalInfo
+	4,  // 30: levee.ListTemplatesResponse.templates:type_name -> levee.Template
+	90, // 31: levee.InstantiateTemplateRequest.params:type_name -> levee.InstantiateTemplateRequest.ParamsEntry
+	91, // 32: levee.AddTargetRequest.labels:type_name -> levee.AddTargetRequest.LabelsEntry
+	92, // 33: levee.ListTargetsRequest.label_selector:type_name -> levee.ListTargetsRequest.LabelSelectorEntry
+	3,  // 34: levee.ListTargetsResponse.targets:type_name -> levee.Target
+	3,  // 35: levee.CheckTargetResponse.target:type_name -> levee.Target
+	6,  // 36: levee.GetAuditLogResponse.entries:type_name -> levee.TraceEntry
+	6,  // 37: levee.ListAuditTracesResponse.entries:type_name -> levee.TraceEntry
+	76, // 38: levee.VerifyHashChainResponse.runs:type_name -> levee.RunVerification
+	77, // 39: levee.RunVerification.failures:type_name -> levee.AuditChainFailure
+	80, // 40: levee.RunReport.host_results:type_name -> levee.HostResult
+	7,  // 41: levee.RunReport.logs:type_name -> levee.LogEntry
+	84, // 42: levee.DoctorReport.checks:type_name -> levee.DoctorCheck
+	11, // 43: levee.ChangeService.CreateChange:input_type -> levee.CreateChangeRequest
+	12, // 44: levee.ChangeService.CloneChange:input_type -> levee.CloneChangeRequest
+	13, // 45: levee.ChangeService.PlanChange:input_type -> levee.PlanChangeRequest
+	14, // 46: levee.ChangeService.ApplyChange:input_type -> levee.ApplyChangeRequest
+	16, // 47: levee.ChangeService.PauseChange:input_type -> levee.PauseRequest
+	16, // 48: levee.ChangeService.ResumeChange:input_type -> levee.PauseRequest
+	17, // 49: levee.ChangeService.PauseAll:input_type -> levee.PauseAllRequest
+	17, // 50: levee.ChangeService.ResumeAll:input_type -> levee.PauseAllRequest
+	19, // 51: levee.ChangeService.CancelChange:input_type -> levee.CancelRequest
+	20, // 52: levee.ChangeService.RetryChange:input_type -> levee.RetryRequest
+	21, // 53: levee.ChangeService.RetryHost:input_type -> levee.RetryHostRequest
+	22, // 54: levee.ChangeService.RollbackChange:input_type -> levee.RollbackRequest
+	24, // 55: levee.ChangeService.ApproveChange:input_type -> levee.ApproveRequest
+	25, // 56: levee.ChangeService.RejectChange:input_type -> levee.RejectRequest
+	26, // 57: levee.ChangeService.GetChange:input_type -> levee.GetChangeRequest
+	41, // 58: levee.ChangeService.ListChanges:input_type -> levee.ListChangesRequest
+	43, // 59: levee.ChangeService.ArchiveChange:input_type -> levee.ArchiveRequest
+	44, // 60: levee.ChangeService.GetLogs:input_type -> levee.GetLogsRequest
+	46, // 61: levee.ChangeService.GetDiff:input_type -> levee.GetDiffRequest
+	48, // 62: levee.ChangeService.GetTrace:input_type -> levee.GetTraceRequest
+	50, // 63: levee.ChangeService.GetApprovals:input_type -> levee.GetApprovalsRequest
+	54, // 64: levee.ChangeService.WatchChange:input_type -> levee.WatchChangeRequest
+	55, // 65: levee.ChangeService.StreamLogs:input_type -> levee.StreamLogsRequest
+	56, // 66: levee.TemplateService.CreateTemplate:input_type -> levee.CreateTemplateRequest
+	57, // 67: levee.TemplateService.GetTemplate:input_type -> levee.GetTemplateRequest
+	58, // 68: levee.TemplateService.ListTemplates:input_type -> levee.ListTemplatesRequest
+	60, // 69: levee.TemplateService.DeleteTemplate:input_type -> levee.DeleteTemplateRequest
+	61, // 70: levee.TemplateService.InstantiateTemplate:input_type -> levee.InstantiateTemplateRequest
+	62, // 71: levee.TargetService.AddTarget:input_type -> levee.AddTargetRequest
+	63, // 72: levee.TargetService.RemoveTarget:input_type -> levee.RemoveTargetRequest
+	64, // 73: levee.TargetService.ListTargets:input_type -> levee.ListTargetsRequest
+	66, // 74: levee.TargetService.GetTarget:input_type -> levee.GetTargetRequest
+	67, // 75: levee.TargetService.CheckTarget:input_type -> levee.CheckTargetRequest
+	69, // 76: levee.AuditService.GetAuditLog:input_type -> levee.GetAuditLogRequest
+	71, // 77: levee.AuditService.ListAuditTraces:input_type -> levee.ListAuditTracesRequest
+	74, // 78: levee.AuditService.VerifyHashChain:input_type -> levee.VerifyHashChainRequest
+	78, // 79: levee.AuditService.GetRunReport:input_type -> levee.GetRunReportRequest
+	73, // 80: levee.AuditService.GetAuditTrace:input_type -> levee.GetAuditTraceRequest
+	93, // 81: levee.SystemService.GetVersion:input_type -> google.protobuf.Empty
+	93, // 82: levee.SystemService.GetStatus:input_type -> google.protobuf.Empty
+	81, // 83: levee.SystemService.GetConfig:input_type -> levee.GetConfigRequest
+	93, // 84: levee.SystemService.RunDoctor:input_type -> google.protobuf.Empty
+	0,  // 85: levee.ChangeService.CreateChange:output_type -> levee.Change
+	0,  // 86: levee.ChangeService.CloneChange:output_type -> levee.Change
+	1,  // 87: levee.ChangeService.PlanChange:output_type -> levee.Plan
+	15, // 88: levee.ChangeService.ApplyChange:output_type -> levee.ApplyResponse
+	0,  // 89: levee.ChangeService.PauseChange:output_type -> levee.Change
+	0,  // 90: levee.ChangeService.ResumeChange:output_type -> levee.Change
+	18, // 91: levee.ChangeService.PauseAll:output_type -> levee.PauseAllResponse
+	18, // 92: levee.ChangeService.ResumeAll:output_type -> levee.PauseAllResponse
+	0,  // 93: levee.ChangeService.CancelChange:output_type -> levee.Change
+	0,  // 94: levee.ChangeService.RetryChange:output_type -> levee.Change
+	0,  // 95: levee.ChangeService.RetryHost:output_type -> levee.Change
+	23, // 96: levee.ChangeService.RollbackChange:output_type -> levee.RollbackResponse
+	0,  // 97: levee.ChangeService.ApproveChange:output_type -> levee.Change
+	0,  // 98: levee.ChangeService.RejectChange:output_type -> levee.Change
+	0,  // 99: levee.ChangeService.GetChange:output_type -> levee.Change
+	42, // 100: levee.ChangeService.ListChanges:output_type -> levee.ListChangesResponse
+	0,  // 101: levee.ChangeService.ArchiveChange:output_type -> levee.Change
+	45, // 102: levee.ChangeService.GetLogs:output_type -> levee.GetLogsResponse
+	47, // 103: levee.ChangeService.GetDiff:output_type -> levee.GetDiffResponse
+	49, // 104: levee.ChangeService.GetTrace:output_type -> levee.GetTraceResponse
+	53, // 105: levee.ChangeService.GetApprovals:output_type -> levee.GetApprovalsResponse
+	8,  // 106: levee.ChangeService.WatchChange:output_type -> levee.ChangeEvent
+	7,  // 107: levee.ChangeService.StreamLogs:output_type -> levee.LogEntry
+	4,  // 108: levee.TemplateService.CreateTemplate:output_type -> levee.Template
+	4,  // 109: levee.TemplateService.GetTemplate:output_type -> levee.Template
+	59, // 110: levee.TemplateService.ListTemplates:output_type -> levee.ListTemplatesResponse
+	93, // 111: levee.TemplateService.DeleteTemplate:output_type -> google.protobuf.Empty
+	0,  // 112: levee.TemplateService.InstantiateTemplate:output_type -> levee.Change
+	3,  // 113: levee.TargetService.AddTarget:output_type -> levee.Target
+	93, // 114: levee.TargetService.RemoveTarget:output_type -> google.protobuf.Empty
+	65, // 115: levee.TargetService.ListTargets:output_type -> levee.ListTargetsResponse
+	3,  // 116: levee.TargetService.GetTarget:output_type -> levee.Target
+	68, // 117: levee.TargetService.CheckTarget:output_type -> levee.CheckTargetResponse
+	70, // 118: levee.AuditService.GetAuditLog:output_type -> levee.GetAuditLogResponse
+	72, // 119: levee.AuditService.ListAuditTraces:output_type -> levee.ListAuditTracesResponse
+	75, // 120: levee.AuditService.VerifyHashChain:output_type -> levee.VerifyHashChainResponse
+	79, // 121: levee.AuditService.GetRunReport:output_type -> levee.RunReport
+	6,  // 122: levee.AuditService.GetAuditTrace:output_type -> levee.TraceEntry
+	9,  // 123: levee.SystemService.GetVersion:output_type -> levee.VersionInfo
+	10, // 124: levee.SystemService.GetStatus:output_type -> levee.SystemStatus
+	82, // 125: levee.SystemService.GetConfig:output_type -> levee.Config
+	83, // 126: levee.SystemService.RunDoctor:output_type -> levee.DoctorReport
+	85, // [85:127] is the sub-list for method output_type
+	43, // [43:85] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_levee_proto_init() }
@@ -6185,7 +7482,7 @@ func file_levee_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_levee_proto_rawDesc), len(file_levee_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   79,
+			NumMessages:   93,
 			NumExtensions: 0,
 			NumServices:   5,
 		},
