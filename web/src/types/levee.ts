@@ -134,6 +134,15 @@ export interface SystemStatus {
   uptimeSeconds: number
   storeType: string
   warnings: string[]
+  /**
+   * 控制面数据库本次探测是否可达。false 表示平台处于分区期（断网策略 Q3）。
+   * 读面仍然回答，但**不得**把读不到说成「没有」。
+   */
+  controlPlaneReachable?: boolean
+  /** activeRuns / pausedRuns 是否来自一次新鲜读取。false 时这两个数字是「未知」，不是 0。 */
+  runCountsAvailable?: boolean
+  /** 分区原因（不可达时给出探测错误原文）。 */
+  partitionReason?: string
 }
 
 export interface PageResult<T> {

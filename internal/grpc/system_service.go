@@ -23,6 +23,7 @@ import (
 	"github.com/nexus/levee/internal/diagnosis"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/log"
+	"github.com/nexus/levee/internal/partition"
 	"github.com/nexus/levee/internal/permission"
 	"github.com/nexus/levee/internal/state"
 )
@@ -44,6 +45,23 @@ type SystemService struct {
 	goVersion string
 
 	authz *authz.Authorizer // optional; nil means no policy configured
+
+	// partition optionally probes the control-plane database so the status
+	// surface can say "the database is unreachable" instead of reporting zero
+	// active runs as if the platform were quiet. The disconnect policy
+	// (docs/design-disconnect-policy.md, Q3) requires the read-only whitelist
+	// to carry a partition marker: a read that cannot reach the control plane
+	// must not look fresh.
+	partition *partition.Checker
+}
+
+// WithPartitionChecker installs the disconnect-policy liveness probe. A nil
+// checker keeps the historical behaviour: no probe, no marker, counts read
+// straight from the store (the single-node SQLite path, where there is no
+// shared database to lose).
+func (s *SystemService) WithPartitionChecker(c *partition.Checker) *SystemService {
+	s.partition = c
+	return s
 }
 
 // WithAuthorizer installs the policy authorizer. The split inside this service
@@ -119,6 +137,38 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 		PausedRuns:    0,
 		UptimeSeconds: int64(time.Since(s.startTime).Seconds()),
 		Warnings:      nil,
+		// With no probe installed there is no partition to report, and the
+		// counts below come straight from the store.
+		ControlPlaneReachable: true,
+		RunCountsAvailable:    false,
+	}
+
+	// The store answers for its own backend. This used to read
+	// `cfg.Database.Driver`, which is a claim about a file on disk rather than
+	// about this process: `serve --cluster --pg-dsn …` opens PostgreSQL while
+	// `database.driver` still defaults to "sqlite", so the health endpoint
+	// reported the wrong backend to everyone reading it — including the
+	// operator deciding whether the cluster is healthy. backendLabel is the
+	// same mapping the REST gateway already uses, so both surfaces agree.
+	resp.StoreType = backendLabel(s.store)
+
+	// Partition marker (disconnect policy Q3): a partitioned serve must say so
+	// rather than report zero active runs. "Zero" would be a positive claim
+	// about a platform that cannot currently see its own runs — the exact
+	// "read it as if it were fresh" the policy forbids. The counts become
+	// explicitly unknown instead, and the probe's own error text is carried
+	// through so the operator sees WHICH stage failed.
+	if s.partition != nil {
+		if err := s.partition.Check(ctx); err != nil {
+			resp.ControlPlaneReachable = false
+			resp.RunCountsAvailable = false
+			resp.PartitionReason = err.Error()
+			resp.Status = string(diagnosis.StatusDegraded)
+			resp.Warnings = append(resp.Warnings,
+				"control plane database unreachable: "+err.Error()+
+					" (run counts are unknown, not zero; see docs/design-disconnect-policy.md)")
+			return resp, nil
+		}
 	}
 
 	// Count active and paused runs if a store is configured.
@@ -148,14 +198,9 @@ func (s *SystemService) GetStatus(ctx context.Context, _ *emptypb.Empty) (*pb.Sy
 		resp.Warnings = append(resp.Warnings, "store not configured")
 	}
 
-	// The store answers for its own backend. This used to read
-	// `cfg.Database.Driver`, which is a claim about a file on disk rather than
-	// about this process: `serve --cluster --pg-dsn …` opens PostgreSQL while
-	// `database.driver` still defaults to "sqlite", so the health endpoint
-	// reported the wrong backend to everyone reading it — including the
-	// operator deciding whether the cluster is healthy. backendLabel is the
-	// same mapping the REST gateway already uses, so both surfaces agree.
-	resp.StoreType = backendLabel(s.store)
+	// The counts are "available" only when both reads succeeded. One failed
+	// read leaves the pair half-known, and half-known is not a number.
+	resp.RunCountsAvailable = len(resp.Warnings) == 0
 
 	// Derive overall status from warnings.
 	if len(resp.Warnings) > 0 {

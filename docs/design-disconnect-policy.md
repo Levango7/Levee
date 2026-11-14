@@ -1,12 +1,13 @@
 # 设计提案：断网策略（专线中断时平台怎么办）
 
-状态：**Q1–Q4 已拍板（2026-11-10，见 §6）；Q1 首版已落地（2026-11-13）**。本文档是策略层提案，机制全部为既有实现（`docs/design-cluster-failover.md` B1–B5 已实施）+ 2026-11-10 容器靶场三场景实测（#96，证据 `run/cluster/evidence/s{1,2,3}/`，本地产物不入库；PR #337）。
+状态：**Q1–Q4 已拍板（2026-11-10，见 §6）；Q1 首版已落地（2026-11-13）；Q3/Q4 已落地（2026-11-15）**。本文档是策略层提案，机制全部为既有实现（`docs/design-cluster-failover.md` B1–B5 已实施）+ 2026-11-10 容器靶场三场景实测（#96，证据 `run/cluster/evidence/s{1,2,3}/`，本地产物不入库；PR #337）。
 
-**落地进度（2026-11-13）**：
+**落地进度（2026-11-15）**：
 
 - **Q1 停新任务 → A 全拒：已落地（首版）**。`internal/partition.Checker` 对控制面数据库做有界探测（默认 3s，每次受护调用现测而非缓存——缓存的「可达」恰好会在数据库掉线的窗口里变成「拒绝拒绝」）；`ChangeService` 的 `ApplyChange` / `ApproveChange` 在首次读库之前调用它，不可达时返回 `FailedPrecondition` 并在消息里点名条件与本文档。仅在 PostgreSQL 集群态装配（单节点 SQLite 无库可失，行为逐字不变）。
 - **Q2 在途收敛 → 自动**：维持现状，无代码改动（B1–B5 已实施）。
-- **Q3 只读白名单标记 / Q4 恢复四步对账工具**：**未落地**（见 §3 第 2、3 条验收门槛）。
+- **Q3 只读白名单标记：已落地**。`SystemService.GetStatus` 接入同一个 `partition.Checker`：控制面不可达时返回 `control_plane_reachable=false`、`run_counts_available=false` 与 `partition_reason`（探测错误原文），并把状态降为 `degraded`；**运行计数在分区期是「未知」而不是 0**（老行为会在数据库挂掉时安静地返回 `active_runs=0`，那是关于平台的肯定陈述）。Web 状态面板据此显示「控制面数据库不可达（分区期）」告警，计数显示「未知」。其余只读路径本就依赖数据库，读不到时如实报错，不缓存、不假装新鲜。
+- **Q4 恢复四步对账工具：已落地**。`deploy/lab/container-lab/recover_reconcile.py` 把 §2.4 的四步写成可执行断言：① 愈合确认（psql + `/system/status`）② 孤儿锁查询（`locks.expires_at > now()` 为 0，TTL 300s 是上界）③ 人驱动重驱（`POST /changes/<id>/retry`，`replan=false` + 显式 `targetHosts`；**不带 `--apply` 只打印请求不发**，自动重驱按 Q4 明确拒绝）④ 对账断言（终态 completed / 每步恰一行 success / 标记文件 mtime 推后 / trace 无新增 `evidence_discarded`）。判据函数有单测承重（`scripts/test_recover_reconcile.py`）。
 
 ## 0. 事实基线（全部实测，可复跑）
 
@@ -66,8 +67,8 @@
 ## 3. 验收门槛（提案若实施，可机器断言的部分）
 
 1. 分区期新 apply 被拒，响应含明确 reason（非 5xx、非挂起）。
-2. 白名单只读命令在分区期可读（单节点路径），返回数据带「PG 不可达」标记（如实而非假装新鲜）。
-3. 恢复流程四步的判据脚本化（② 的 locks 查询、④ 的行数 / mtime / trace 断言），与 #96 驱动同构复用。
+2. 白名单只读命令在分区期可读（单节点路径），返回数据带「PG 不可达」标记（如实而非假装新鲜）。**已落地**：`GetStatus` 三个分区字段 + Web 告警与「未知」计数（2026-11-15）。
+3. 恢复流程四步的判据脚本化（② 的 locks 查询、④ 的行数 / mtime / trace 断言），与 #96 驱动同构复用。**已落地**：`deploy/lab/container-lab/recover_reconcile.py`（2026-11-15）。
 4. Q1=A 的前提：serve 对「PG 不可达」的检测判据必须有测试覆盖——误判会把本可放行的变更也拒掉，A 的诚实性依赖它。
 
 ## 4. 待拍板（评审问题）

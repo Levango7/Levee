@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（断网策略 Q3/Q4：只读白名单带分区标记 + 恢复四步对账工具）
+
+- **缺口**：Q1（分区期拒绝新 apply/审批）已落地，但 Q3「只读白名单带『PG 不可达』标记」与 Q4「恢复四步判据脚本化」仍是纸面策略；更具体地，`GetStatus` 在数据库挂掉时会安静地返回 `active_runs=0`——那是关于平台的**肯定陈述**，而事实是「看不到」。
+- **Q3 修法**：`SystemService` 接入同一个 `partition.Checker`；`GetStatus` 增 `control_plane_reachable` / `run_counts_available` / `partition_reason` 三字段。分区期状态降为 degraded、跳过 run 表读取、运行计数明确为「未知」；Web 状态面板显示「控制面数据库不可达（分区期）」告警并把计数显示为「未知」。其余只读路径本就依赖数据库，读不到时如实报错，不缓存、不假装新鲜。
+- **Q4 修法**：新增 `deploy/lab/container-lab/recover_reconcile.py`，把设计文档 §2.4 的四步写成机器判据：① 愈合确认（psql + `/system/status`）② 孤儿锁查询（`locks.expires_at > now()` 为 0；TTL 300s 是上界）③ 人驱动重驱（`POST /changes/<id>/retry`，`replan=false` + 显式 `targetHosts`；**不带 `--apply` 只打印请求不发**，自动重驱按 Q4 明确拒绝）④ 对账断言（终态 completed / 每步恰一行 success / 目标机标记文件 mtime 推后（物理 at-least-once 如实呈现）/ trace 无新增 `evidence_discarded`）。取数与 #96 驱动同构（复用 `clusterdrive.py` 的 psql / docker / REST 入口）。
+- **验证**：`internal/grpc` 新增 3 例（分区标记与「未知而非 0」/ 每次调用现测不缓存 / 无探针时保持历史行为）；`scripts/test_recover_reconcile.py` 14 例（锁解析、每步恰一行 success、重驱四判据、缺步骤/未知 mtime 均判红）；`go test ./...`、golangci-lint、Python 单测全绿。
+- **边界**：Q4 的对账工具面向容器靶场（#96 同构），生产部署的恢复动作仍由人按同一四步执行；工具不自动重驱，也不替人决定「这次该不该重跑」。
+
 ### 新增（DB Change Ticket 全链视图：gRPC / REST / Web）
 
 - **缺口**：`internal/dbchange` 发布单读模型和 `levee dbchange show` CLI 已能拼出数据库变更的 SQL、回滚、窗口、审批、执行与审计事实，但仓内没有对外读路径，控制台仍看不到「可出示的单」。

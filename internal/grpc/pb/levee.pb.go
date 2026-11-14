@@ -1098,8 +1098,16 @@ type SystemStatus struct {
 	UptimeSeconds int64    `protobuf:"varint,4,opt,name=uptime_seconds,json=uptimeSeconds,proto3" json:"uptime_seconds,omitempty"`
 	StoreType     string   `protobuf:"bytes,5,opt,name=store_type,json=storeType,proto3" json:"store_type,omitempty"`
 	Warnings      []string `protobuf:"bytes,6,rep,name=warnings,proto3" json:"warnings,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// control_plane_reachable: 控制面数据库本次探测是否可达。
+	// false 表示平台处于分区期；读面仍可回答，但不得把读不到说成「没有」。
+	ControlPlaneReachable bool `protobuf:"varint,7,opt,name=control_plane_reachable,json=controlPlaneReachable,proto3" json:"control_plane_reachable,omitempty"`
+	// run_counts_available: active_runs / paused_runs 是否来自一次新鲜读取。
+	// false 时这两个计数是「未知」，不是 0。
+	RunCountsAvailable bool `protobuf:"varint,8,opt,name=run_counts_available,json=runCountsAvailable,proto3" json:"run_counts_available,omitempty"`
+	// partition_reason: 分区原因（不可达时给出探测错误原文）。
+	PartitionReason string `protobuf:"bytes,9,opt,name=partition_reason,json=partitionReason,proto3" json:"partition_reason,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *SystemStatus) Reset() {
@@ -1172,6 +1180,27 @@ func (x *SystemStatus) GetWarnings() []string {
 		return x.Warnings
 	}
 	return nil
+}
+
+func (x *SystemStatus) GetControlPlaneReachable() bool {
+	if x != nil {
+		return x.ControlPlaneReachable
+	}
+	return false
+}
+
+func (x *SystemStatus) GetRunCountsAvailable() bool {
+	if x != nil {
+		return x.RunCountsAvailable
+	}
+	return false
+}
+
+func (x *SystemStatus) GetPartitionReason() string {
+	if x != nil {
+		return x.PartitionReason
+	}
+	return ""
 }
 
 type CreateChangeRequest struct {
@@ -6580,7 +6609,7 @@ const file_levee_proto_rawDesc = "" +
 	"\n" +
 	"build_date\x18\x03 \x01(\tR\tbuildDate\x12\x1d\n" +
 	"\n" +
-	"go_version\x18\x04 \x01(\tR\tgoVersion\"\xca\x01\n" +
+	"go_version\x18\x04 \x01(\tR\tgoVersion\"\xdf\x02\n" +
 	"\fSystemStatus\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x1f\n" +
 	"\vactive_runs\x18\x02 \x01(\x05R\n" +
@@ -6590,7 +6619,10 @@ const file_levee_proto_rawDesc = "" +
 	"\x0euptime_seconds\x18\x04 \x01(\x03R\ruptimeSeconds\x12\x1d\n" +
 	"\n" +
 	"store_type\x18\x05 \x01(\tR\tstoreType\x12\x1a\n" +
-	"\bwarnings\x18\x06 \x03(\tR\bwarnings\"\xdb\x02\n" +
+	"\bwarnings\x18\x06 \x03(\tR\bwarnings\x126\n" +
+	"\x17control_plane_reachable\x18\a \x01(\bR\x15controlPlaneReachable\x120\n" +
+	"\x14run_counts_available\x18\b \x01(\bR\x12runCountsAvailable\x12)\n" +
+	"\x10partition_reason\x18\t \x01(\tR\x0fpartitionReason\"\xdb\x02\n" +
 	"\x13CreateChangeRequest\x12\x14\n" +
 	"\x05label\x18\x01 \x01(\tR\x05label\x12\x1a\n" +
 	"\bpriority\x18\x02 \x01(\tR\bpriority\x12#\n" +
