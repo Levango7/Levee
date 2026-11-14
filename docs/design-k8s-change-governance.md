@@ -14,7 +14,7 @@
 |---|---|---|
 | ARM64 已在构建矩阵里 | `ci.yml` 的 `build` 矩阵：ubuntu / macos / windows × amd64 / arm64 共 6 腿 | ✅ ARM（含鲲鹏/飞腾 aarch64）**不需要新增能力**，只缺运行验证 |
 | LEVEE 可作为 K8s 工作负载部署 | `deploy/helm/levee/templates/`：deployment、cluster-worker、postgres、pvc、ingress、secret、configmap、service；CI `delivery (helm lint + render + package)` 腿 | ✅ 部署面已具备（含多节点 worker 形态） |
-| K8s 工作负载**不能**当变更目标 | 执行通道只有 `internal/channel/{local,ssh,winrm}`；全仓无 kubectl / k8s 客户端代码 | ❌ 今天改 k8s 工作负载**无法**走审批-门禁-回滚-审计链 |
+| K8s 工作负载**不能**当变更目标 | 执行通道只有 `internal/channel/{local,ssh,winrm}`；全仓无 kubectl / k8s 客户端代码 | ❌ 今天改 k8s 工作负载**无法**走审批-门禁-回滚-审计链<br>（**提案基线，已被 S2 推翻**：k8s 变更通道已作为运行期通道插件交付，见 `docs/platform-support-matrix.md` 与 CHANGELOG「feat(k8s): S2 k8s 变更通道」） |
 | 数据库只有原生 SQLite + PostgreSQL | `internal/state/{sqlite,pgstore}.go`、`driver.go` | ⚠️ 信创栈的"PG 位"通常是达梦/金仓**兼容模式**，**未验证** |
 | 通用运维面薄 | 执行模块仅 6 个（`internal/executor/modules/{file,mysql,pkg,shell,svc,user}`）；无监控服务、无日志管道；inventory 只有 target/group/label/file | ⚠️ 薄，但**本文不打算补它**（§2） |
 | 治理内核厚 | `internal/{approval,audit,rollback,evidence,calendar,dispatch,takeover,cluster,drift}` ＋ 断网策略四段（`docs/design-disconnect-policy.md`）＋ 灾备三场景实测 | ✅ 延伸的底座在 |
