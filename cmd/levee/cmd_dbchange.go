@@ -13,6 +13,12 @@ import (
 	"github.com/nexus/levee/internal/dbchange"
 )
 
+// dbchange show option variables.
+var (
+	dbChangeShowOptFormat string
+	dbChangeShowOptOutput string
+)
+
 func init() {
 	RegisterCommand(newDBChangeCmd())
 }
@@ -35,16 +41,31 @@ func newDBChangeCmd() *cobra.Command {
 }
 
 func newDBChangeShowCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "show <change-id>",
 		Short: "合成并打印一个变更的发布单",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runDBChangeShow,
+		Long: "合成并打印一个变更的发布单。\n\n" +
+			"--format text 是终端可读版（默认），--format markdown 是可归档/可打印的文档版：\n" +
+			"同一份事实、同一套诚实口径（读不到就说未知，不说没有）。--output 把结果写到文件。",
+		Args: cobra.ExactArgs(1),
+		RunE: runDBChangeShow,
 	}
+	cmd.Flags().StringVar(&dbChangeShowOptFormat, "format", "text",
+		"输出格式: text（终端可读，默认）或 markdown（可归档文档）")
+	cmd.Flags().StringVar(&dbChangeShowOptOutput, "output", "",
+		"把发布单写到该文件而不是标准输出")
+	return cmd
 }
 
 func runDBChangeShow(cmd *cobra.Command, args []string) error {
 	ctx := context.Background()
+
+	format := strings.ToLower(strings.TrimSpace(dbChangeShowOptFormat))
+	switch format {
+	case "text", "markdown":
+	default:
+		return fmt.Errorf("dbchange show: unknown --format %q (want text or markdown)", dbChangeShowOptFormat)
+	}
 
 	store, err := openStore(ctx)
 	if err != nil {
@@ -60,6 +81,9 @@ func runDBChangeShow(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// --json keeps the machine envelope (the API and the console read the
+	// same DTO); --format markdown is the document. They are not mixed: a
+	// JSON envelope with a document inside would be neither.
 	if optJSON {
 		return PrintJSON(os.Stdout, map[string]any{
 			"data":  tk,
@@ -67,7 +91,24 @@ func runDBChangeShow(cmd *cobra.Command, args []string) error {
 			"error": nil,
 		})
 	}
-	printDBChangeTicket(os.Stdout, tk)
+
+	out := os.Stdout
+	if dbChangeShowOptOutput != "" {
+		f, err := os.Create(dbChangeShowOptOutput)
+		if err != nil {
+			return fmt.Errorf("dbchange show: create %s: %w", dbChangeShowOptOutput, err)
+		}
+		defer func() { _ = f.Close() }()
+		out = f
+	}
+
+	if format == "markdown" {
+		_, err := io.WriteString(out, dbchange.Markdown(tk, dbchange.MarkdownOptions{
+			SourceCommand: fmt.Sprintf("levee dbchange show %s --format markdown", tk.Change.ID),
+		}))
+		return err
+	}
+	printDBChangeTicket(out, tk)
 	return nil
 }
 

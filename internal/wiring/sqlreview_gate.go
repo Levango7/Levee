@@ -36,7 +36,11 @@ func reviewWorkflowSQL(wf *dsl.Workflow) (*plan.SQLReviewSummary, error) {
 	if wf == nil {
 		return nil, nil
 	}
-	var summary *plan.SQLReviewSummary
+	// The scoring itself lives in plan.ReviewSteps, shared with the re-check
+	// path (`levee sqlreview --change`). Two implementations of the same
+	// review would drift, and then "the rules changed" would be
+	// indistinguishable from "the second implementation is different".
+	var steps []plan.SQLStepInput
 	for _, s := range wf.Steps {
 		if s.Module != "mysql" || s.Action != "query" {
 			continue
@@ -45,24 +49,11 @@ func reviewWorkflowSQL(wf *dsl.Workflow) (*plan.SQLReviewSummary, error) {
 		if !ok || strings.TrimSpace(sql) == "" {
 			continue
 		}
-		res, err := sqlreview.Review(sql)
-		if err != nil {
-			return nil, fmt.Errorf("%w: step %q: %v", sqlreview.ErrReviewFailed, s.Name, err)
-		}
-		if summary == nil {
-			summary = &plan.SQLReviewSummary{Verdict: string(res.Verdict)}
-		}
-		if severityRank(res.Verdict) > severityRank(sqlreview.Verdict(summary.Verdict)) {
-			summary.Verdict = string(res.Verdict)
-		}
-		summary.FailCount += res.FailCount
-		summary.WarnCount += res.WarnCount
-		for _, f := range res.Findings {
-			summary.Findings = append(summary.Findings, plan.SQLReviewFinding{
-				Step: s.Name, Rule: string(f.Rule), Severity: string(f.Severity),
-				Statement: f.Statement, Message: f.Message,
-			})
-		}
+		steps = append(steps, plan.SQLStepInput{Step: s.Name, SQL: sql})
+	}
+	summary, err := plan.ReviewSteps(steps)
+	if err != nil {
+		return nil, err
 	}
 	if summary != nil && summary.Verdict == string(sqlreview.VerdictFail) {
 		return nil, fmt.Errorf("%w: %s", sqlreview.ErrReviewFailed, describeFails(summary.Findings))
@@ -86,16 +77,4 @@ func describeFails(findings []plan.SQLReviewFinding) string {
 		return "no fail finding text captured"
 	}
 	return strings.Join(lines, "; ")
-}
-
-// severityRank orders review verdicts so aggregation can take the worst.
-func severityRank(v sqlreview.Verdict) int {
-	switch v {
-	case sqlreview.VerdictFail:
-		return 2
-	case sqlreview.VerdictWarn:
-		return 1
-	default:
-		return 0
-	}
 }
