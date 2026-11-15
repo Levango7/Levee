@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### 新增（偶发问题的自动复现探针：把「等复发观察」换成「每天自动去撞」）
+
+- **缺口**：台账里剩的两条 open 都是同一形状：**知道自己坏了，但复现不了**（`internal/calendar` 在 windows-latest 上偶发 `0xc0000005` 且 runtime 一个字都没打印；browser-check 在 windows-latest 上偶发失败，分「settle 超时」与「Chrome 没起来」两个模式）。「等复发」是消极的——复发一次，证据大概率还是不够，下次仍然只能等。
+- **修法**：新增工作流 `.github/workflows/repro-probe.yml`（每日 03:17 UTC + `workflow_dispatch` 手动触发）与两个探针脚本：
+  - `scripts/calendar-repro-probe.sh`：在 windows-latest 上反复跑 `internal/calendar` 的测试，**每轮带/不带 `-cover` 各一次**（回答「崩溃是否总与覆盖率插值有关」），`GOTRACEBACK=all` 保证崩时有 dump；每轮完整输出与 `environment.txt` 落盘；崩溃形态分 `go-panic` / `access-violation-without-panic` / `none` 三类记账。
+  - `scripts/browser-check-probe.sh`：重复跑浏览器检查（**失败不中断**——「十轮红一轮」与「十轮红九轮」是两种故障），每轮日志与截图分开存放；用 `BROWSER_CHECK_DUMPIO=1` 打开 **Chrome 进程自身的 stdout/stderr** 采集（模式 B 一直缺的就是这份证据）；汇总把 `launch_failures` / `settle_failures` / `assert_failures` / `env_failures` **四类分开**——环境缺浏览器不能读成控制台回归。
+  - `web/scripts/browser-check.mjs`：新增 `BROWSER_CHECK_DUMPIO` 开关（默认关，正常 CI 不加噪；探针打开）。
+- **纪律（三条，都写进结构守卫）**：① **不洗绿**——探针复现即以非零退出，不做自动重试（重试会把一次真崩溃洗成一次绿）；② **不进合并门禁**——主线 required checks 不含本工作流，探针是证据采集器不是门禁；③ **不改产品行为**——不摘 `-cover`、不动断言预算、不换驱动版本。`scripts/test_repro_probe.py`（10 例）读入库文本把三条钉住：重复跑、失败时 `if: always()` 上传产物、不在主线 CI 里。
+- **验证**：calendar 探针本机实跑 2 轮 × 2 形态全绿（产出 `summary.txt` + 每轮日志 + `environment.txt`）；browser 探针本机实跑确认管道正确（服务起、轮次循环、每轮日志、汇总、失败分类；本机无浏览器故分类落在 `env_failures`——这正是新增那一类的用处）；actionlint 对新工作流零告警；`scripts/test_repro_probe.py` 10 例通过；Python 门禁全绿。
+- **边界**：探针**只在 windows-latest 上有意义**（两个现象都只在那里出现过）；探针红了**不等于**根因找到——它给的是证据，根因仍要人读证据；两行台账状态**仍为 open**（探针解决的是「复发时有证据」，不是「问题已修」）。
+
 ### 新增（发布单 Web 导出：控制台一键下载与 REST 同源的文档）
 
 - **缺口**：上一笔把发布单的**文档版**做出来了（CLI `--format markdown` + REST `?format=markdown`），但控制台页面上没有入口——操作员在浏览器里看着那张单，要拿到能归档/能送审的文件，还得自己去敲 curl。

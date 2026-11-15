@@ -444,6 +444,20 @@ console.log(`browser-check: launching ${BROWSER} (${BROWSER_EXE})`)
 const LAUNCH_ARGS = BROWSER === 'firefox'
   ? [] // Firefox headless comes from the launcher itself; nothing to add.
   : ['--no-sandbox', '--headless=new', '--disable-dev-shm-usage', '--hide-scrollbars', '--force-color-profile=srgb']
+// Chrome's own stdout/stderr are evidence for the launch-failure mode.
+//
+// The台账 records what that mode looks like: Chrome never printed its WS
+// endpoint, there was no screenshot and no settle note, and the job ended 38s
+// later. What it could NOT record is WHY — because the browser process's
+// output went nowhere. With dumpio on, the browser's chatter (a profile
+// directory in use, a missing DLL, a sandbox complaint) lands in the job log
+// next to the launch error, and the next occurrence is diagnosable instead of
+// merely dated.
+//
+// It is opt-in (BROWSER_CHECK_DUMPIO=1) because in the normal path it adds
+// noise nobody reads; the repro probe turns it on.
+const DUMPIO = process.env.BROWSER_CHECK_DUMPIO === '1'
+
 let browser
 try {
   browser = await puppeteer.default.launch({
@@ -453,6 +467,7 @@ try {
     executablePath: BROWSER_EXE,
     timeout: CHROME_LAUNCH_TIMEOUT_MS,
     args: LAUNCH_ARGS,
+    ...(DUMPIO ? { dumpio: true } : {}),
   })
 } catch (err) {
   // Name which failure this is. The launcher's own message is one line that

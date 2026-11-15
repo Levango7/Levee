@@ -1,0 +1,140 @@
+name: Repro Probe
+
+# 复现探针：把「未复现、只能等复发观察」的两条偶发问题，变成「每天自动跑、
+# 复发即有证据」。
+#
+# 为什么要单独一个工作流，而不是往主线 CI 里加重试：
+#
+#   - **重试会洗绿**。账本（docs/product-roadmap.md 的两条 P1）明确写了
+#     「不给 CI 加自动重试——会把一次真崩溃洗成一次绿」。一个会洗绿的检查
+#     比没有检查更糟：它让人以为那条腿是稳的。
+#   - **频率是这类问题的关键信息**。一次 CI run 只能回答「这次红了」，而
+#     「十轮红一轮」与「十轮红九轮」是两种完全不同的故障。
+#   - **它不是门禁**。探针红了不会挡住任何人的合并（主线 required checks
+#     不含本工作流），它只负责在复发时留下证据。
+#
+# 两条被探针盯着的偶发问题：
+#
+#   1. `internal/calendar` 的测试在 windows-latest 上偶发以
+#      `exit status 0xc0000005`（访问违例）崩掉，runtime 一个字都没打印。
+#      探针每轮跑两次（带/不带 `-cover`），回答「崩溃是否总与覆盖率插值有关」。
+#   2. `browser-check` 在 windows-latest 上的偶发失败（两个模式：settle 超时
+#      与 Chrome 起不来）。探针重复跑并打开浏览器进程的 stdout/stderr 采集，
+#      后者正是模式 B 缺失的那份证据。
+#
+# 细节与产物含义见 docs/repro-probes.md。
+
+on:
+  # 每天一次。刻意不排在整点：整点是所有人的定时任务时间，runner 池会挤。
+  schedule:
+    - cron: '17 3 * * *'
+  # 手动触发（本地验证探针本身、或在怀疑复发时立刻取一轮证据）。
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: '每一项探针跑几轮'
+        required: false
+        default: '5'
+      calendar:
+        description: '是否跑 calendar 探针'
+        type: boolean
+        default: true
+      browser:
+        description: '是否跑 browser-check 探针'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# 同一时刻只跑一个探针 run：两个重叠的 run 会互相抢 runner，产出的频率
+# 数据也就没意义了（那正是这个工作流唯一想回答的问题）。
+concurrency:
+  group: repro-probe
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # calendar 探针：反复跑 internal/calendar 的测试，把「崩没崩、崩在哪一轮、
+  # 是不是总与 -cover 有关」记录下来。
+  # ---------------------------------------------------------------------------
+  calendar-windows:
+    name: calendar repro probe (windows)
+    # 10 轮 × 2 次（带/不带 -cover）× 5 个 count，Windows 上留给它的时间要
+    # 够，否则探针会因为超时被杀——那会变成「又一种红」。
+    timeout-minutes: 30
+    runs-on: windows-latest
+    if: ${{ inputs.calendar != false }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac2ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: run the probe
+        shell: bash
+        env:
+          RUNS: ${{ inputs.runs || '5' }}
+          PROBE_DIR: repro-artifacts/calendar
+        run: scripts/calendar-repro-probe.sh
+      # always(): 探针**失败**才是它最有价值的时刻——那一刻的产物正是我们
+      # 想要的证据。只在成功时上传等于永远没有证据。
+      - name: upload repro artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: calendar-repro-${{ github.run_id }}
+          path: repro-artifacts/calendar
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # browser-check 探针：在 Windows 上重复跑浏览器检查，并采集 Chrome 自己的
+  # stdout/stderr（模式 B 缺失的那份证据）。
+  # ---------------------------------------------------------------------------
+  browser-check-windows:
+    name: browser-check repro probe (windows)
+    timeout-minutes: 45
+    runs-on: windows-latest
+    if: ${{ inputs.browser != false }}
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac2ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm ci
+        env:
+          NPM_CONFIG_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
+          NPM_CONFIG_REPLACE_REGISTRY_HOST: always
+        run: npm ci
+      - name: install puppeteer-core
+        shell: bash
+        env:
+          NPM_CONFIG_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
+        run: |
+          for attempt in 1 2 3; do
+            npm install -g puppeteer-core@24.37.0 && exit 0
+            echo "::warning::puppeteer-core install attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::puppeteer-core install failed after 3 attempts"
+          exit 1
+      - name: run the probe
+        shell: bash
+        env:
+          RUNS: ${{ inputs.runs || '5' }}
+          PROBE_DIR: ../repro-artifacts/browser
+        run: ../scripts/browser-check-probe.sh
+      - name: upload repro artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: browser-repro-${{ github.run_id }}
+          path: repro-artifacts/browser
+          if-no-files-found: warn
+          retention-days: 30
