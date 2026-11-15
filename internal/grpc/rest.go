@@ -1185,8 +1185,14 @@ func (gw *Gateway) handleChangeTicket(w http.ResponseWriter, r *http.Request, id
 			return
 		}
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		// The document carries operator-controlled text (labels, approver
+		// names, SQL). It is served as Markdown, never as HTML, and
+		// nosniff keeps a browser from reinterpreting it as HTML when a
+		// renderer would. dbchange.Markdown also escapes the HTML special
+		// characters in every value it interpolates outside a code span.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(doc))
+		_, _ = w.Write([]byte(doc)) // #nosec G705 -- served as text/markdown with nosniff; values are HTML-escaped by the renderer
 		return
 	default:
 		writeJSONError(w, http.StatusBadRequest,
