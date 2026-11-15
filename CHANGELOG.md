@@ -57,6 +57,12 @@
 - **验证**：`internal/dbchange` 文档渲染 6 例（分段齐备 / 不可读说未知 / 校验错误≠无记录 / 无 trace 的说法 / 多行 SQL 不破表行 / 同票同文）；`internal/plan` 共享核心 4 例（取最坏裁决 / 无 SQL 面返回 nil / fail 照实返回 / 语法不可解析即 fail）；`cmd/levee` 5 例（新增/消失 finding 检出 / 一致 / 无结论不算一致 / 只取 mysql.query 步骤 / 实跑复算与固化结论并排）；`internal/grpc` 4 例（markdown 导出 / 与 JSON 同源 / `/api/v1` 前缀下同样可用 / 未知 format 拒绝）；本机用真二进制 + 真 SQLite 实跑四段：`dbchange show`、`--format markdown`、`--output`、`sqlreview --change` 均按预期输出（含一个「旧规则集 pass vs 现规则 warn」的漂移样例，差异被逐条报出）。
 - **安全**：gosec 的 G705（反射型内容进响应体）在 REST 导出面上被如实报出——文档里确实带着操作者可控文本（标签、审批人、SQL）。修法不是加豁免而是把风险关掉：渲染器对**代码段之外**的插值统一 HTML 转义，响应固定 `text/markdown` + `X-Content-Type-Options: nosniff`（不让浏览器把它当 HTML 重解释），代码段内的 SQL 保持原样（CommonMark 的代码段不解码实体，转义反而会把 `&lt;` 显示出来）。本地按 CI 同一命令跑 gosec：**0 issues**。
 - **边界**：文档版只渲染**既有制品**，不重算任何东西；`sqlreview --change` 是**测量**而不是第二次审批，不改任何制品；两者都不新增写操作，也不改变 Q1 的 fail-closed 策略。
+### 新增（SQL 审核规则测试床：每条规则的「近失」必须保持沉默）
+
+- **缺口**：`internal/sqlreview/review_test.go` 只证「每条规则都能触发」（正向）。缺的是反向——一条规则若放宽到整个语句种类，正向用例照样全绿（SR-08 匹配所有 ALTER、SR-17 匹配整类管理语句，两者的「触发样例」与「误报」是同一个输入）。没有干净侧，精度根本不可测量；而精度正是 DBA 接受或丢弃这套规则的原因：二十条对每次普通变更都喊狼的规则会被整体关掉，然后一条都不再保护任何东西。
+- **修法**：新增 `internal/sqlreview/testbed_test.go`，给 SR-01..SR-20 **每一条**配一个「近失」干净样例（SR-02 ↔ `DELETE ... WHERE id=1 LIMIT 10`、SR-10 ↔ 带主键的建表、SR-13 ↔ 显式列名的 INSERT、SR-14/SR-15 ↔ 带 LIMIT 的删改…），断言该规则**不得**触发；另加「严格干净」批（日常普通变更必须零发现）与覆盖守卫（新增规则不写干净样例即红）。
+- **验证**：4 例（近失沉默 / 覆盖完备 / 严格干净零发现 / 双向覆盖对齐）；**变异实测**——把 SR-14 的 `&& st.Limit == nil` 去掉，近失用例与严格干净用例同时判红，还原后复绿。`go test ./...` 全绿。
+- **边界**：只做「测试床 + 误报度量」，未新撰规则文案；SR-19/SR-20 是整批规则、不在 `stmtRules` 表里，其 id 由测试钉住并核对开关产出的集合恰好等于该集合。
 
 ### 修复（DB Change Ticket 前端 DTO 与 wire 漂移：页面「不报错，但每格都是空白」）
 
