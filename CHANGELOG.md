@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（发布单 Web 导出：控制台一键下载与 REST 同源的文档）
+
+- **缺口**：上一笔把发布单的**文档版**做出来了（CLI `--format markdown` + REST `?format=markdown`），但控制台页面上没有入口——操作员在浏览器里看着那张单，要拿到能归档/能送审的文件，还得自己去敲 curl。
+- **修法**：① `web/src/api/client.ts` 增 `getText`（关掉 axios 的 JSON 变换、`responseType: text`，文档按**服务器渲染出的原字节**到达，不被重新序列化）；② `changesApi.ticketDocument(id)` 取上面那条 REST 路径；③ 新增 `web/src/utils/download.ts`（文件名净化 + Blob URL 延迟回收：立刻 revoke 会让部分浏览器的下载变成 0 字节）；④ 发布单页面加「导出 Markdown」按钮，导出成功/失败都有提示。
+- **为什么前端不自己拼文档**：拼一份等于对发布单给出第二意见，而导出件是要拿出去出证的——屏幕上的单和导出的单必须是同一份。视图结构守卫把这一点钉住（`TicketView.spec.ts` 要求走 `changesApi.ticketDocument`，且视图里不出现 `format=markdown` 字面量，避免有人在前端重造一个渲染器）。
+- **验证**：`web/src/api/ticket.spec.ts` 2 例（请求带 `?format=markdown`、`responseType: text`、返回原文；变更 id 在路径里被转义）；`web/src/utils/download.spec.ts` 4 例（文件名净化：路径分隔符/保留字符/前导点/空名兜底；下载锚点带净化后的文件名、点击被触发、Blob URL 在下一 tick 回收）；`TicketView.spec.ts` 增 1 例（导出必须走服务端渲染）；`web/src/test/coldImport.spec.ts` 的已知重导入清单增补 `api/ticket.spec.ts`（新 spec 重新 import 模块图，按仓库约定必须用 owner 的 `COLD_IMPORT_TIMEOUT`）。前端全量 **43 个测试文件 / 349 例通过**，`vue-tsc` 干净，构建通过。
+- **边界**：导出只是把服务端渲染好的文档交给浏览器下载，不新增服务端能力、不新增写操作；鉴权仍走既有变更读权限。
+
 ### 新增（发布单导出/打印 + 与 `levee sqlreview` 双向对齐）
 
 - **缺口**：路线图在「DB Change Ticket 全链视图」里还挂着两件未做的事——**审计导出/打印**与**与 `levee sqlreview` 双向对齐**。发布单只能在终端看（`levee dbchange show`），没有可归档、可打印的文档；而发布单上的审核结论是**计划时固化**的那份（`plan_hash` 绑定、审批签下），它答不了「规则集后来变了没有」——只有一个数时，读者不知道那是当时的决定还是现在的测量。

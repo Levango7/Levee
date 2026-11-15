@@ -122,6 +122,19 @@ describe('ticket view: the fields it reads are the fields the wire sends', () =>
     }
   })
 
+  it('the export comes from the server, not from a second renderer in the browser', () => {
+    // The document is rendered by internal/dbchange.Markdown — the same
+    // renderer the CLI uses. If the page ever assembled its own Markdown, the
+    // exported sheet would be a second opinion about the ticket, and the
+    // exported sheet is what gets handed to an auditor.
+    expect(view).toContain('changesApi.ticketDocument')
+    expect(view).toContain('downloadTextFile')
+    expect(view).toContain('导出 Markdown')
+    // The request must carry the format parameter; without it the server
+    // answers protojson and the "document" is JSON with a .md name.
+    expect(view).not.toContain('format=markdown')
+  })
+
   it('the honest three states are rendered, not flattened', () => {
     // 计划不可读 / legacy 审批 / 校验出错：这三格一旦被压平成「没有」，
     // 页面就会对读者说谎。三个标记都必须出现在视图里。

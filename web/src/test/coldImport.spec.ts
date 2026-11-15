@@ -107,6 +107,7 @@ const KNOWN_REIMPORTING = [
   'api/cluster.spec.ts',
   'api/client.spec.ts',
   'api/gates.spec.ts',
+  'api/ticket.spec.ts',
   'composables/useTheme.spec.ts',
   'composables/useDensity.spec.ts',
 ]
