@@ -13,6 +13,7 @@ import (
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/executor"
+	"github.com/nexus/levee/internal/executor/sqlguard"
 )
 
 // --- mock channel & target -------------------------------------------------
@@ -509,7 +510,7 @@ func TestRejectDestructiveSQL(t *testing.T) {
 		"DELETE FROM orders",
 	}
 	for _, sql := range bad {
-		require.Error(t, rejectDestructiveSQL(sql), "expected rejected: %s", sql)
+		require.Error(t, sqlguard.RejectDestructive(sql, "mysql.query"), "expected rejected: %s", sql)
 	}
 
 	good := []string{
@@ -526,7 +527,7 @@ func TestRejectDestructiveSQL(t *testing.T) {
 		"SHOW TABLES",
 	}
 	for _, sql := range good {
-		require.NoError(t, rejectDestructiveSQL(sql), "expected allowed: %s", sql)
+		require.NoError(t, sqlguard.RejectDestructive(sql, "mysql.query"), "expected allowed: %s", sql)
 	}
 }
 
@@ -543,9 +544,9 @@ func TestRejectDestructiveSQL_ASTPrimaryCatchesTrailingCommentDelete(t *testing.
 		"SELECT 1; DELETE FROM orders -- tail",
 	}
 	for _, sql := range bad {
-		require.Error(t, rejectDestructiveSQL(sql), "expected rejected: %s", sql)
+		require.Error(t, sqlguard.RejectDestructive(sql, "mysql.query"), "expected rejected: %s", sql)
 	}
-	err := rejectDestructiveSQL("DELETE FROM orders")
+	err := sqlguard.RejectDestructive("DELETE FROM orders", "mysql.query")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "DELETE FROM orders",
 		"the refusal must echo the statement it refused")
@@ -561,7 +562,7 @@ func TestRejectDestructiveSQL_RegexBackstopForGrammarBlindText(t *testing.T) {
 		"DROP INDEX idx ON t",
 	}
 	for _, sql := range bad {
-		require.Error(t, rejectDestructiveSQL(sql), "expected rejected: %s", sql)
+		require.Error(t, sqlguard.RejectDestructive(sql, "mysql.query"), "expected rejected: %s", sql)
 	}
 }
 

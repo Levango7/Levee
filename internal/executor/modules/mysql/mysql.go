@@ -33,12 +33,18 @@
 //     irreversible (args["confirm"] == "yes") — replica topology changes
 //     are exactly the class of operation R4 exists for.
 //
-// Credential handling: the module reads args["user"] (default "root") and
-// passes it via the MYSQL_PWD environment variable read from an options
-// file on the target — passwords never appear in process argv (design doc
-// security note). The password itself is optional (auth may come from the
-// target's own ~/.my.cnf); when args["password"] is provided it is written
-// to a 0600 temp options file, used once, and removed.
+// Credential handling: the module reads args["user"] (default "root").
+// Authentication itself comes from the TARGET's own client configuration
+// (~/.my.cnf, mode 0600) — the design's security note is that credentials never
+// travel on a command line, and over a shell channel there is no way to hand a
+// password to the client without putting it in argv.
+//
+// `args["password"]` is REFUSED, not ignored. The module used to read it into a
+// struct field that no code path consumed, while this comment claimed it was
+// written to a 0600 temp options file — so an operator who supplied a password
+// got an authentication failure with no hint that their input had been
+// discarded. An accepted-but-unused credential input is worse than an absent
+// one; it is now a loud error that names the supported alternative.
 package mysql
 
 import (
@@ -50,6 +56,7 @@ import (
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/executor"
+	"github.com/nexus/levee/internal/executor/sqlguard"
 
 	"github.com/xwb1989/sqlparser"
 )
@@ -94,13 +101,16 @@ type mysqlConn struct {
 	Host     string
 	Port     string
 	User     string
-	Password string
 	Database string
 }
 
 // connFromArgs builds a mysqlConn from the action arguments. user defaults
 // to "root"; port defaults to "3306"; host defaults to the target host the
 // channel is connected to (args["host"] overrides for remote databases).
+//
+// There is no Password field on purpose: credentials must come from the
+// target's own client configuration (~/.my.cnf). `args["password"]` is refused
+// by query() rather than carried here — see the package comment.
 func connFromArgs(input executor.ModuleInput) mysqlConn {
 	c := mysqlConn{
 		User:     "root",
@@ -116,9 +126,6 @@ func connFromArgs(input executor.ModuleInput) mysqlConn {
 	}
 	if v, ok := stringOk(input.Args, "user"); ok && v != "" {
 		c.User = v
-	}
-	if v, ok := stringOk(input.Args, "password"); ok {
-		c.Password = v
 	}
 	if v, ok := stringOk(input.Args, "database"); ok {
 		c.Database = v
@@ -214,10 +221,19 @@ func (m *Module) query(ctx context.Context, input executor.ModuleInput) (*execut
 	if strings.TrimSpace(sqlText) == "" {
 		return nil, fmt.Errorf("mysql.query: empty sql")
 	}
+	// Refuse a password argument instead of ignoring it (see the package
+	// comment): silently dropping it turns into an auth failure the operator
+	// cannot explain.
+	if v, ok := stringOk(input.Args, "password"); ok && v != "" {
+		return nil, fmt.Errorf("mysql.query: args.password is not supported — LEVEE never puts credentials on a command line; " +
+			"configure ~/.my.cnf (mode 0600) on the target and drop the argument")
+	}
 	// Guard: multi-statement payloads with destructive verbs are rejected
 	// unless explicitly marked. query is the "safe" action; DROP/DROP
 	// DATABASE belongs in a workflow marked irreversible (design R2/R4).
-	if err := rejectDestructiveSQL(sqlText); err != nil {
+	// The classifier is shared with pg.query — the rule is about the SQL, not
+	// about the client binary.
+	if err := sqlguard.RejectDestructive(sqlText, "mysql.query"); err != nil {
 		return nil, fmt.Errorf("mysql.query: %w", err)
 	}
 
@@ -229,74 +245,11 @@ func (m *Module) query(ctx context.Context, input executor.ModuleInput) (*execut
 	return out, nil
 }
 
-// destructiveSQLRe matches the destructive statements that must never ride
-// the idempotent query action: DROP (TABLE/DATABASE/SCHEMA/INDEX...), TRUNCATE,
-// and unconditional DELETE FROM (no WHERE). These require the workflow
-// author to mark the step irreversible and route through pt_osc or a
-// dedicated reviewed step instead.
-var destructiveSQLRe = regexp.MustCompile(`(?i)\b(DROP\s+(TABLE|DATABASE|SCHEMA|INDEX|USER)|TRUNCATE(\s+TABLE)?\s|DELETE\s+FROM\s+[^\s]+\s*;?\s*$)`)
-
-// rejectDestructiveSQL enforces the R2 boundary for mysql.query.
-//
-// Classification is AST-primary: the embedded grammar is authoritative for
-// every statement it can read, which catches what the end-anchored regex
-// structurally cannot — an unbounded DELETE carrying a trailing comment. The
-// regex stays as the backstop for exactly the surface the grammar cannot
-// judge: statements that fail to parse (DROP USER is unknown to it),
-// admin/read statements whose semantics it hides, and alter-shaped statements
-// whose body it does not expose (the grammar flattens DROP INDEX into an
-// ALTER, so only the raw text names it).
-func rejectDestructiveSQL(sql string) error {
-	pieces, err := sqlparser.SplitStatementToPieces(sql)
-	if err != nil {
-		return regexRejectDestructive(sql)
-	}
-	for _, piece := range pieces {
-		text := strings.TrimSpace(piece)
-		if text == "" {
-			continue
-		}
-		stmt, perr := sqlparser.Parse(text)
-		if perr != nil {
-			if err := regexRejectDestructive(text); err != nil {
-				return err
-			}
-			continue
-		}
-		switch s := stmt.(type) {
-		case *sqlparser.DDL:
-			if s.Action == sqlparser.DropStr || s.Action == sqlparser.TruncateStr {
-				return destructiveErr(text)
-			}
-		case *sqlparser.DBDDL:
-			if s.Action == sqlparser.DropStr {
-				return destructiveErr(text)
-			}
-		case *sqlparser.Delete:
-			if s.Where == nil {
-				return destructiveErr(text)
-			}
-		}
-		// Grammar-readable but not decisively destructive: the regex keeps
-		// its raw-text say, unchanged from before the AST existed.
-		if err := regexRejectDestructive(text); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func destructiveErr(text string) error {
-	return fmt.Errorf("destructive statement rejected: %q must not ride mysql.query; mark the step irreversible and author an explicit reviewed statement instead", text)
-}
-
-// regexRejectDestructive is the raw-text backstop of rejectDestructiveSQL.
-func regexRejectDestructive(text string) error {
-	if destructiveSQLRe.MatchString(text) {
-		return destructiveErr(text)
-	}
-	return nil
-}
+// The R2 boundary (destructive statement classification) lives in
+// internal/executor/sqlguard: pg.query enforces the same rule, and the rule is
+// about the SQL rather than about the client binary. Keeping a private copy
+// here was how the two modules would eventually disagree about whether
+// `DROP TABLE` is destructive.
 
 // --- pt_osc -----------------------------------------------------------------
 

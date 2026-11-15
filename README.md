@@ -197,7 +197,7 @@ levee/
 ├── cmd/levee/              # CLI 入口
 ├── internal/
 │   ├── engine/             # 工作流引擎
-│   ├── executor/           # 模块执行器 (file/pkg/shell/svc/user/mysql)
+│   ├── executor/           # 模块执行器 (file/pkg/shell/svc/user/mysql/pg)
 │   ├── channel/            # 通道抽象层 (SSH/WinRM)
 │   ├── plugin/             # 插件系统 + cgroup 沙箱
 │   ├── approval/           # 审批服务
