@@ -19,6 +19,7 @@ package dbchange
 
 import (
 	"fmt"
+	"html"
 	"strings"
 	"time"
 )
@@ -70,23 +71,23 @@ func markdownHeader(b *strings.Builder, tk *Ticket, generated time.Time) {
 	fmt.Fprintf(b, "# 数据库变更发布单\n\n")
 	fmt.Fprintf(b, "- 变更 ID: `%s`\n", c.ID)
 	if c.Label != "" {
-		fmt.Fprintf(b, "- 名称: %s\n", c.Label)
+		fmt.Fprintf(b, "- 名称: %s\n", escapeHTML(c.Label))
 	}
 	fmt.Fprintf(b, "- 状态: `%s`\n", c.Status)
 	if c.Priority != "" {
-		fmt.Fprintf(b, "- 优先级: %s\n", c.Priority)
+		fmt.Fprintf(b, "- 优先级: %s\n", escapeHTML(c.Priority))
 	}
 	if c.Environment != "" {
-		fmt.Fprintf(b, "- 环境: %s\n", c.Environment)
+		fmt.Fprintf(b, "- 环境: %s\n", escapeHTML(c.Environment))
 	}
 	if c.Creator != "" {
-		fmt.Fprintf(b, "- 发起人: %s\n", c.Creator)
+		fmt.Fprintf(b, "- 发起人: %s\n", escapeHTML(c.Creator))
 	}
 	if c.Workflow != "" {
-		fmt.Fprintf(b, "- 工作流: %s\n", c.Workflow)
+		fmt.Fprintf(b, "- 工作流: %s\n", escapeHTML(c.Workflow))
 	}
 	if c.Template != "" {
-		fmt.Fprintf(b, "- 模板: %s\n", c.Template)
+		fmt.Fprintf(b, "- 模板: %s\n", escapeHTML(c.Template))
 	}
 	fmt.Fprintf(b, "- 计划哈希: `%s`\n", orBlank(c.PlanHash))
 	fmt.Fprintf(b, "- 计划状态: %s\n", planStateLabel(c.PlanState))
@@ -120,7 +121,7 @@ func markdownSQL(b *strings.Builder, tk *Ticket) {
 			b.WriteString("| 规则 | 级别 | 步骤 | 语句 | 说明 |\n| --- | --- | --- | --- | --- |\n")
 			for _, f := range r.Findings {
 				fmt.Fprintf(b, "| %s | %s | %s | %d | %s |\n",
-					f.Rule, f.Severity, f.Step, f.Statement, oneLine(f.Message))
+					escapeHTML(f.Rule), escapeHTML(f.Severity), escapeHTML(f.Step), f.Statement, oneLine(f.Message))
 			}
 			b.WriteString("\n")
 		}
@@ -140,20 +141,20 @@ func markdownRollback(b *strings.Builder, tk *Ticket) {
 	case !tk.Rollback.HasUndo:
 		b.WriteString("未声明回滚。\n\n")
 	default:
-		fmt.Fprintf(b, "- 策略: %s\n", orBlank(tk.Rollback.Strategy))
-		fmt.Fprintf(b, "- 失败处置: %s\n", orBlank(tk.Rollback.OnFailure))
+		fmt.Fprintf(b, "- 策略: %s\n", escapeHTML(orBlank(tk.Rollback.Strategy)))
+		fmt.Fprintf(b, "- 失败处置: %s\n", escapeHTML(orBlank(tk.Rollback.OnFailure)))
 		fmt.Fprintf(b, "- 回滚后校验: %v\n", tk.Rollback.VerifyAfter)
 		if len(tk.Rollback.SnapshotPaths) > 0 {
 			b.WriteString("- 快照路径:\n")
 			for _, p := range tk.Rollback.SnapshotPaths {
-				fmt.Fprintf(b, "  - `%s`\n", p)
+				fmt.Fprintf(b, "  - `%s`\n", oneLine(p))
 			}
 		}
 		b.WriteString("\n")
 		if len(tk.Rollback.StepUndos) > 0 {
 			b.WriteString("| 步骤 | 策略 | undo 步数 |\n| --- | --- | --- |\n")
 			for _, u := range tk.Rollback.StepUndos {
-				fmt.Fprintf(b, "| %s | %s | %d |\n", u.Step, orBlank(u.Strategy), u.UndoSteps)
+				fmt.Fprintf(b, "| %s | %s | %d |\n", escapeHTML(u.Step), escapeHTML(orBlank(u.Strategy)), u.UndoSteps)
 			}
 			b.WriteString("\n")
 		}
@@ -167,7 +168,7 @@ func markdownWindow(b *strings.Builder, tk *Ticket) {
 	fmt.Fprintf(b, "- 校验时机: %s\n", orBlank(tk.Window.EnforcedAt))
 	fmt.Fprintf(b, "- 随 run 持久化: %v\n", tk.Window.PersistedPerRun)
 	if tk.Window.Note != "" {
-		fmt.Fprintf(b, "- 说明: %s\n", tk.Window.Note)
+		fmt.Fprintf(b, "- 说明: %s\n", escapeHTML(tk.Window.Note))
 	}
 	b.WriteString("\n")
 }
@@ -179,8 +180,8 @@ func markdownApproval(b *strings.Builder, tk *Ticket) {
 		b.WriteString("未进入审批链。\n\n")
 		return
 	}
-	fmt.Fprintf(b, "- 档位: %s\n", orBlank(tk.Approval.Level))
-	fmt.Fprintf(b, "- 状态: %s\n", orBlank(tk.Approval.Status))
+	fmt.Fprintf(b, "- 档位: %s\n", escapeHTML(orBlank(tk.Approval.Level)))
+	fmt.Fprintf(b, "- 状态: %s\n", escapeHTML(orBlank(tk.Approval.Status)))
 	fmt.Fprintf(b, "- 绑定当前计划: %v\n", tk.Approval.MatchesPlan)
 	if tk.Approval.LegacyApproval {
 		b.WriteString("- 注意: 存在未绑定计划的审批行（legacy，未记录 plan_hash）——它不对任何计划负责\n")
@@ -188,7 +189,7 @@ func markdownApproval(b *strings.Builder, tk *Ticket) {
 	if tk.Approval.StaleApproval {
 		b.WriteString("- 注意: 存在陈旧审批行（绑定的是本变更已不携带的计划）\n")
 	}
-	fmt.Fprintf(b, "- 审批人: %s\n", orBlank(strings.Join(tk.Approval.Approvers, ", ")))
+	fmt.Fprintf(b, "- 审批人: %s\n", escapeHTML(orBlank(strings.Join(tk.Approval.Approvers, ", "))))
 	fmt.Fprintf(b, "- 待决 %d / 已批 %d / 已拒 %d\n",
 		tk.Approval.PendingCount, tk.Approval.ApprovedCount, tk.Approval.RejectedCount)
 	b.WriteString("\n")
@@ -196,7 +197,7 @@ func markdownApproval(b *strings.Builder, tk *Ticket) {
 		b.WriteString("| 审批人 | 动作 | 理由 | 决定时间 |\n| --- | --- | --- | --- |\n")
 		for _, d := range tk.Approval.Decisions {
 			fmt.Fprintf(b, "| %s | %s | %s | %s |\n",
-				d.Approver, d.Action, oneLine(d.Reason), formatTime(d.At))
+				escapeHTML(d.Approver), escapeHTML(d.Action), escapeHTML(oneLine(d.Reason)), formatTime(d.At))
 		}
 		b.WriteString("\n")
 	}
@@ -207,7 +208,7 @@ func markdownExecution(b *strings.Builder, tk *Ticket) {
 	b.WriteString("## 5. 执行证据\n\n")
 	fmt.Fprintf(b, "- 判定: `%s`\n", tk.Execution.Verdict)
 	if tk.Execution.Reason != "" {
-		fmt.Fprintf(b, "- 说明: %s\n", tk.Execution.Reason)
+		fmt.Fprintf(b, "- 说明: %s\n", escapeHTML(tk.Execution.Reason))
 	}
 	fmt.Fprintf(b, "- 批次 %d / 步骤 %d / 目标 %d\n",
 		tk.Execution.Batches, tk.Execution.Steps, tk.Execution.TotalTargets)
@@ -267,11 +268,30 @@ func orBlank(s string) string {
 
 // oneLine folds a multi-line value onto one line so it cannot break a
 // Markdown table row. The value stays the same fact; only its layout changes.
+//
+// The pipe is escaped because it is the table cell separator; the HTML
+// special characters are NOT escaped here, because this helper feeds values
+// that are rendered inside code spans (SQL, rule messages) — and a CommonMark
+// code span does not decode entities, so escaping there would print
+// "&lt;" where the reader must see "<".
 func oneLine(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "|", "\\|")
 	return strings.TrimSpace(s)
+}
+
+// escapeHTML neutralises the HTML special characters in a value that is
+// interpolated into the document OUTSIDE a code span.
+//
+// The document carries operator-controlled text (labels, approver names,
+// reasons, rule messages). A Markdown viewer that allows raw HTML would
+// otherwise execute markup embedded in those fields — the same class of
+// problem as reflecting them into an HTML page. Escaping here keeps the
+// document safe to render, and it keeps the value readable: "&amp;" in the
+// source becomes "&" on screen.
+func escapeHTML(s string) string {
+	return html.EscapeString(s)
 }
 
 // formatTime renders a timestamp for the document, or a placeholder when it
