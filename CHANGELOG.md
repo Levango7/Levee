@@ -29,6 +29,12 @@
 - **顺带修掉一个真漏洞**：接 HTML 时发现审核发现的 `message` 走了不转义的布局辅助函数（`oneLine` 为代码段设计），而它渲染在表格单元格里、不在代码段中，于是 `<b>bold</b>` 原样透出——这正是 gosec 那条 G705 的实质。已改为 `escapeHTML(oneLine(msg))`，并在 `oneLine` 的注释里把「代码段内不转义、代码段外必须转义」这条调用约定写清楚。
 - **验证**：`internal/dbchange` 新增 8 例（六段齐备 / **操作者可控文本全部转义**（含 `<script>`、`<img onerror>`、`<b>`）/ 单页只有一个静态脚本且不携带票据文本 / `<strong>` 配对 / 自包含无外链 / 打印规则存在 / 确定性 / 无 label 时回落到 id）；`internal/grpc` 新增 2 例（html 单页 + CSP + 不自动打印 / `print=1` 才自动打印）；Web 视图守卫新增 1 例（打印必须走 `ticketPrintableURL` + `window.open`，且不得 `v-html`）；前端全量 43 文件 / 350 例通过，`vue-tsc` 干净，构建通过；本机真二进制 + 真 serve 实跑：`--format html` 产出 3573 字节单页、curl 拿到 `HTTP 200` + `text/html` + `nosniff` + CSP、`print=1` 时单页内含 `window.print()`。
 - **边界**：单页只渲染既有制品，不重算；`print=1` 加的脚本是静态字面量，任何时候都不插值票据数据；不新增写操作。
+### 修复（`window.max_concurrency` 从「接受但无人读取」接成 run 级并发上限）
+
+- **缺口**：`ChangeWindow.MaxConcurrency` 自 initial commit 起就在，parser 读它、emit 回写它，**但没有任何消费方**——plan 的每批上限只来自 `batches.max_concurrency`，`ChangeWindow.Check()` 只校验 start/end/timezone/days。于是作者写 `window.max_concurrency: 5` 以为约束了并行度，平台照跑不误。**一个没人读的声明比没有声明更糟**：它让人相信自己已经收紧了爆炸半径。
+- **修法**：`internal/plan/generator.go` 构造批次时把每批的 `MaxConcurrency` 钳到 `min(批上限, 窗口上限)`。批次串行执行，所以这正是「窗口内同时在改的目标数」的上界，与字段自述一致。窗口值 **0 或负 = 不加额外限制**，因此不声明该字段的工作流产出与既往逐字相同——包括真正无限的批配置（0）不会被悄悄序列化。钳制结果随批进 `plan_hash`：被批准的那份制品必须包含「同时能改几台」这个事实。
+- **验证**：新增 5 例（钳掉更大的批上限 / 给无限批加上限 / **不抬高更严的批上限** / 0 与负都不干预 / **钳制结果改变 plan_hash**）。`go test ./...` 全绿；`golangci-lint` 0 issues。
+- **边界**：只接 plan 侧这一处消费；apply 侧读的是已批准的计划，不再二次钳制（否则批准与执行可能对同一份制品给出不同的并行度）。
 
 ### 新增（偶发问题的自动复现探针：把「等复发观察」换成「每天自动去撞」）
 
