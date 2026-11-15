@@ -135,6 +135,19 @@ describe('ticket view: the fields it reads are the fields the wire sends', () =>
     expect(view).not.toContain('format=markdown')
   })
 
+  it('printing opens the server sheet in its own window, never in this origin', () => {
+    // The printable sheet is full of operator-controlled text. The console must
+    // never fetch it and inject it into its own document — it opens the URL in a
+    // separate window and lets the browser render (and print) it there.
+    expect(view).toContain('ticketPrintableURL')
+    expect(view).toContain('window.open')
+    expect(view).toContain('打印 / 另存为 PDF')
+    // It must ask for the print dialog; otherwise the button just shows a page.
+    expect(view).toContain('ticketPrintableURL(changeId.value, true)')
+    // And it must not render the HTML itself.
+    expect(view).not.toContain('v-html')
+  })
+
   it('the honest three states are rendered, not flattened', () => {
     // 计划不可读 / legacy 审批 / 校验出错：这三格一旦被压平成「没有」，
     // 页面就会对读者说谎。三个标记都必须出现在视图里。

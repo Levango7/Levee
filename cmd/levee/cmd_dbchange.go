@@ -45,13 +45,13 @@ func newDBChangeShowCmd() *cobra.Command {
 		Use:   "show <change-id>",
 		Short: "合成并打印一个变更的发布单",
 		Long: "合成并打印一个变更的发布单。\n\n" +
-			"--format text 是终端可读版（默认），--format markdown 是可归档/可打印的文档版：\n" +
+			"--format text 是终端可读版（默认），markdown 是可归档的文档版，html 是可打印/可存 PDF 的单页：\n" +
 			"同一份事实、同一套诚实口径（读不到就说未知，不说没有）。--output 把结果写到文件。",
 		Args: cobra.ExactArgs(1),
 		RunE: runDBChangeShow,
 	}
 	cmd.Flags().StringVar(&dbChangeShowOptFormat, "format", "text",
-		"输出格式: text（终端可读，默认）或 markdown（可归档文档）")
+		"输出格式: text（终端可读，默认）/ markdown（可归档文档）/ html（可打印，浏览器打开即可存 PDF）")
 	cmd.Flags().StringVar(&dbChangeShowOptOutput, "output", "",
 		"把发布单写到该文件而不是标准输出")
 	return cmd
@@ -62,9 +62,9 @@ func runDBChangeShow(cmd *cobra.Command, args []string) error {
 
 	format := strings.ToLower(strings.TrimSpace(dbChangeShowOptFormat))
 	switch format {
-	case "text", "markdown":
+	case "text", "markdown", "html":
 	default:
-		return fmt.Errorf("dbchange show: unknown --format %q (want text or markdown)", dbChangeShowOptFormat)
+		return fmt.Errorf("dbchange show: unknown --format %q (want text, markdown or html)", dbChangeShowOptFormat)
 	}
 
 	store, err := openStore(ctx)
@@ -102,10 +102,17 @@ func runDBChangeShow(cmd *cobra.Command, args []string) error {
 		out = f
 	}
 
-	if format == "markdown" {
+	switch format {
+	case "markdown":
 		_, err := io.WriteString(out, dbchange.Markdown(tk, dbchange.MarkdownOptions{
 			SourceCommand: fmt.Sprintf("levee dbchange show %s --format markdown", tk.Change.ID),
 		}))
+		return err
+	case "html":
+		// Rendered from the same Markdown document (one renderer, one set of
+		// facts); no auto-print here — a CLI user is saving a file, not
+		// opening a print dialog.
+		_, err := io.WriteString(out, dbchange.HTML(tk, dbchange.HTMLOptions{}))
 		return err
 	}
 	printDBChangeTicket(out, tk)

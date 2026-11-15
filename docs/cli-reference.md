@@ -3743,7 +3743,7 @@ levee dbchange show <change-id>
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--json` | | 标准信封输出（`data` 为完整发布单）；另有全局 `-q` 只打印对象 ID |
-| `--format` | `text` | `text` = 终端可读版；`markdown` = 可归档/可打印的文档版 |
+| `--format` | `text` | `text` = 终端可读版；`markdown` = 可归档的文档版；`html` = 可打印/可存 PDF 的单页 |
 | `--output` | | 把发布单写到该文件而不是标准输出 |
 
 **导出（`--format markdown`）**
@@ -3762,8 +3762,28 @@ levee dbchange show <change-id>
 - 控制台同源：发布单页面的「导出 Markdown」按钮取的是上面那条 REST 路径，**前端不自己拼文档**
   ——拼一份等于对发布单给出第二意见，而导出件是要拿出去出证的。
 
+**打印 / 另存为 PDF（`--format html`）**
+
+同一份事实渲染成**自包含的可打印单页**：没有外部样式表、没有图片、没有外链，
+浏览器打开即可打印或「另存为 PDF」。打印规则内嵌（表行不跨页、小节标题不落单页）。
+
+- 与 `--format markdown` **同源**：html 是从那份 Markdown 文档渲染的，不是第二个
+  渲染器——两个渲染器会漂，而漂了的导出件比没有导出件更糟；
+- 操作者可控文本（标签、审批人、理由、SQL、规则说明）一律 HTML 转义，单页里
+  唯一的脚本是 `window.print()` 这句静态字面量；
+- REST 同源：`GET /api/v1/changes/<id>/ticket?format=html`（`?print=1` 自动弹打印
+  对话框），响应带 `X-Content-Type-Options: nosniff` 与
+  `Content-Security-Policy: default-src 'none'`——单页是惰性的，这条 CSP 让以后
+  误加的脚本标签不会静默开始执行；
+- 控制台的「打印 / 另存为 PDF」按钮走的就是这条 REST 路径，并在**独立窗口**打开
+  它：控制台从不取回这段 HTML 再注入自己的文档里（那会把操作者可控的标记放进
+  控制台自己的 origin）。
+
 ```命令示例：导出一份可归档的发布单
 levee dbchange show chg-20261113-001 --format markdown --output ticket.md
+
+命令示例：导出一份可直接打印/存 PDF 的单页
+levee dbchange show chg-20261113-001 --format html --output ticket.html
 ```
 
 **输出分段**

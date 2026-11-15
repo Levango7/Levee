@@ -121,7 +121,7 @@ func markdownSQL(b *strings.Builder, tk *Ticket) {
 			b.WriteString("| 规则 | 级别 | 步骤 | 语句 | 说明 |\n| --- | --- | --- | --- | --- |\n")
 			for _, f := range r.Findings {
 				fmt.Fprintf(b, "| %s | %s | %s | %d | %s |\n",
-					escapeHTML(f.Rule), escapeHTML(f.Severity), escapeHTML(f.Step), f.Statement, oneLine(f.Message))
+					escapeHTML(f.Rule), escapeHTML(f.Severity), escapeHTML(f.Step), f.Statement, escapeHTML(oneLine(f.Message)))
 			}
 			b.WriteString("\n")
 		}
@@ -269,11 +269,16 @@ func orBlank(s string) string {
 // oneLine folds a multi-line value onto one line so it cannot break a
 // Markdown table row. The value stays the same fact; only its layout changes.
 //
-// The pipe is escaped because it is the table cell separator; the HTML
-// special characters are NOT escaped here, because this helper feeds values
-// that are rendered inside code spans (SQL, rule messages) — and a CommonMark
-// code span does not decode entities, so escaping there would print
-// "&lt;" where the reader must see "<".
+// It is a LAYOUT helper and deliberately does NOT escape HTML: it is used both
+// for values rendered inside code spans (SQL, snapshot paths) and for values
+// rendered outside them. A CommonMark code span does not decode entities, so
+// escaping a code-span value would print "&lt;" where the reader must see "<".
+//
+// The consequence is a rule the call sites have to follow: every value that
+// lands OUTSIDE a code span must be passed through escapeHTML as well. Getting
+// that wrong is how a review finding's "<b>bold</b>" reached the sheet as real
+// markup (found while wiring the printable renderer, which escapes nothing of
+// its own because this document already is escaped).
 func oneLine(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")

@@ -1662,6 +1662,25 @@ func (s *ChangeService) DBChangeTicketDocument(ctx context.Context, changeID str
 	return dbchange.Markdown(tk, dbchange.MarkdownOptions{}), nil
 }
 
+// DBChangeTicketPrintableHTML renders the same ticket as a standalone,
+// printable HTML document (the "打印 / 另存为 PDF" surface).
+//
+// It is rendered FROM the Markdown document rather than from the ticket
+// struct: one renderer, one set of facts. A second renderer that read the
+// struct directly would be a second opinion about the same change, and the
+// printed sheet is exactly the artefact that must not disagree with the
+// screen.
+//
+// autoPrint adds the static `window.print()` call; the console's button asks
+// for it so the browser's print sheet (and its "save as PDF") is already open.
+func (s *ChangeService) DBChangeTicketPrintableHTML(ctx context.Context, changeID string, autoPrint bool) (string, error) {
+	tk, err := s.collectDBChangeTicket(ctx, changeID)
+	if err != nil {
+		return "", err
+	}
+	return dbchange.HTML(tk, dbchange.HTMLOptions{AutoPrint: autoPrint}), nil
+}
+
 // collectDBChangeTicket is the shared body of the JSON and document paths:
 // fetch the run, check the caller may read it, then build the ticket.
 func (s *ChangeService) collectDBChangeTicket(ctx context.Context, changeID string) (*dbchange.Ticket, error) {

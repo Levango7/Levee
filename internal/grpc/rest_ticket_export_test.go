@@ -119,6 +119,44 @@ func TestRESTTicketMarkdownWorksUnderTheAPIPrefix(t *testing.T) {
 	assert.Contains(t, string(body), "run-export-4")
 }
 
+func TestRESTTicketPrintableHTMLIsASelfContainedSheet(t *testing.T) {
+	_, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
+	seedTicketRun(t, store, "run-export-html")
+
+	resp := doReq(t, http.MethodGet, srv.URL+"/changes/run-export-html/ticket?format=html", "")
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+	assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
+	// The sheet is inert: the CSP says no external resources, and the only
+	// script allowed is the static print call.
+	assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "default-src 'none'")
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	doc := string(body)
+	assert.Contains(t, doc, "<!doctype html>")
+	assert.Contains(t, doc, "<h2>1. SQL 与审核</h2>")
+	assert.Contains(t, doc, "ALTER TABLE t ADD COLUMN c INT")
+	assert.Contains(t, doc, "@media print")
+	assert.NotContains(t, doc, "<link")
+	// Without ?print=1 the document must NOT open a dialog on load.
+	assert.NotContains(t, doc, "window.print()")
+}
+
+func TestRESTTicketPrintableHTMLAutoPrintsOnRequest(t *testing.T) {
+	_, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
+	seedTicketRun(t, store, "run-export-print")
+
+	resp := doReq(t, http.MethodGet, srv.URL+"/changes/run-export-print/ticket?format=html&print=1", "")
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "window.print()",
+		"the console's print button asks for the dialog to open itself")
+}
+
 func TestRESTTicketRejectsAnUnknownFormat(t *testing.T) {
 	_, srv, store := startTestGatewayFull(t, ServeGatewayConfig{})
 	seedTicketRun(t, store, "run-export-3")
