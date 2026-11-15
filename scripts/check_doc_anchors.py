@@ -371,9 +371,9 @@ CLAIMS: tuple[Claim, ...] = (
     ),
     Claim(
         "docs/levee-api.md",
-        "执行器破坏性语句判定已落地（AST 主判）",
-        "internal/executor/modules/mysql/mysql.go",
-        "rejectDestructiveSQL",
+        "执行器破坏性语句判定已落地（AST 主判，mysql/pg 共用同一分类器）",
+        "internal/executor/sqlguard",
+        "func RejectDestructive",
     ),
     Claim(
         "README.md",
