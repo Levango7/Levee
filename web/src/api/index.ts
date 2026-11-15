@@ -2,7 +2,7 @@
 // methods so views can call e.g. `changesApi.list({...})` instead of raw
 // `get('/changes')`. The wrappers are thin: they only translate between the
 // protobuf-style camelCase JSON used by grpc-gateway and our TS types.
-import { del, get, post, put } from './client'
+import { del, get, getText, post, put } from './client'
 import type {
   ApprovalStatus,
   Change,
@@ -197,6 +197,13 @@ export const changesApi = {
   // DB Change Ticket (全链视图)
   ticket: (id: string): Promise<DBChangeTicket> =>
     get<GetDBChangeTicketResponse>(`/changes/${id}/ticket`).then((r) => r.ticket),
+
+  // The printable document of the same ticket. Same endpoint, same
+  // authorisation, same facts — the server renders it (one renderer for the
+  // CLI and the browser), so the sheet a reader saves is the sheet the screen
+  // shows.
+  ticketDocument: (id: string): Promise<string> =>
+    getText(`/changes/${encodeURIComponent(id)}/ticket?format=markdown`),
 }
 
 // ---------------------------------------------------------------------------

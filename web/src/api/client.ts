@@ -140,5 +140,21 @@ export async function del<T>(url: string, config?: AxiosRequestConfig): Promise<
   return res.data
 }
 
+// getText fetches a response body as text.
+//
+// The one caller is the DB Change Ticket export: the same endpoint serves
+// protojson by default and a Markdown document with ?format=markdown. axios
+// would try to JSON.parse a text body, so the response transform is disabled
+// and responseType is pinned to text — the document must arrive as the exact
+// bytes the server rendered, not as a re-serialised object.
+export async function getText(url: string, config?: AxiosRequestConfig): Promise<string> {
+  const res = await client.get<string>(url, {
+    ...config,
+    responseType: 'text',
+    transformResponse: [(data: unknown) => data],
+  })
+  return typeof res.data === 'string' ? res.data : String(res.data)
+}
+
 // Re-export the raw instance for advanced use cases (e.g. cancel tokens).
 export { client as axiosClient }

@@ -3757,7 +3757,10 @@ levee dbchange show <change-id>
 - 诚实口径逐字保留：计划不可读时写「未知」而不是「没有 SQL / 没有回滚」；审计校验出错
   写「校验出错」而不是「还没有 trace 记录」；
 - REST 侧同源：`GET /api/v1/changes/<id>/ticket?format=markdown` 返回同一份文档
-  （`Content-Type: text/markdown`），浏览器拿到即可打印；默认仍是 JSON。
+  （`Content-Type: text/markdown` + `X-Content-Type-Options: nosniff`），浏览器拿到即可打印；
+  默认仍是 JSON。
+- 控制台同源：发布单页面的「导出 Markdown」按钮取的是上面那条 REST 路径，**前端不自己拼文档**
+  ——拼一份等于对发布单给出第二意见，而导出件是要拿出去出证的。
 
 ```命令示例：导出一份可归档的发布单
 levee dbchange show chg-20261113-001 --format markdown --output ticket.md

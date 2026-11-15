@@ -21,7 +21,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ElTabs, ElTabPane, ElDescriptions, ElDescriptionsItem, ElTag, ElCard, ElSpace,
-  ElEmpty, ElTable, ElTableColumn, ElAlert,
+  ElEmpty, ElTable, ElTableColumn, ElAlert, ElMessage,
 } from 'element-plus'
 
 import { changesApi } from '@/api'
@@ -34,6 +34,7 @@ import {
   priorityLabel, formatTimestamp,
 } from '@/utils/format'
 import { classifyError, errorMessage, type LoadTier } from '@/utils/apiState'
+import { downloadTextFile } from '@/utils/download'
 
 const route = useRoute()
 const router = useRouter()
@@ -63,6 +64,25 @@ async function load(): Promise<void> {
 }
 
 onMounted(load)
+
+// 导出：文档由服务端渲染（同一份渲染器供 CLI 与浏览器使用），前端只负责
+// 取回来并交给浏览器下载。前端**不自己拼文档**——那样屏幕上的单和导出的单
+// 会变成两个东西，而导出件是要拿出去出证的。
+const exporting = ref(false)
+
+async function exportDocument(): Promise<void> {
+  if (!changeId.value || exporting.value) return
+  exporting.value = true
+  try {
+    const doc = await changesApi.ticketDocument(changeId.value)
+    downloadTextFile(`${changeId.value}-ticket.md`, doc)
+    ElMessage.success('发布单已导出')
+  } catch (err) {
+    ElMessage.error(`导出失败：${errorMessage(err, '未知错误')}`)
+  } finally {
+    exporting.value = false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 标签与展示辅助
@@ -149,6 +169,7 @@ function ts(value: string | number | undefined | null): string {
       <template #actions>
         <el-button :icon="'Back'" @click="router.back()">返回</el-button>
         <el-button :icon="'Refresh'" :loading="loading" @click="load">刷新</el-button>
+        <el-button :loading="exporting" @click="exportDocument">导出 Markdown</el-button>
       </template>
     </PageHeader>
 
