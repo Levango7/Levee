@@ -69,6 +69,32 @@ onMounted(load)
 // 取回来并交给浏览器下载。前端**不自己拼文档**——那样屏幕上的单和导出的单
 // 会变成两个东西，而导出件是要拿出去出证的。
 const exporting = ref(false)
+const printing = ref(false)
+
+/**
+ * 打印 / 另存为 PDF。
+ *
+ * 打开服务端渲染好的**单页**（`?format=html&print=1`），让浏览器自己渲染并
+ * 弹打印对话框——「另存为 PDF」就在那个对话框里。
+ *
+ * 为什么不取回文档在前端渲染：那会把操作者可控的 HTML 放进控制台自己的
+ * origin 里，而这张单里全是人写的文本（标签、审批人、SQL）。独立窗口是
+ * 隔离它的最省事做法，也顺带让打印样式由文档自己决定，不受控制台布局影响。
+ */
+function printDocument(): void {
+  if (!changeId.value || printing.value) return
+  printing.value = true
+  const url = changesApi.ticketPrintableURL(changeId.value, true)
+  const win = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!win) {
+    ElMessage.warning('浏览器拦截了新窗口，请允许弹出窗口后重试')
+  }
+  // The window's own load time is not observable from here (cross-document),
+  // so the button is released on the next tick rather than pretending to know.
+  setTimeout(() => {
+    printing.value = false
+  }, 0)
+}
 
 async function exportDocument(): Promise<void> {
   if (!changeId.value || exporting.value) return
@@ -170,6 +196,7 @@ function ts(value: string | number | undefined | null): string {
         <el-button :icon="'Back'" @click="router.back()">返回</el-button>
         <el-button :icon="'Refresh'" :loading="loading" @click="load">刷新</el-button>
         <el-button :loading="exporting" @click="exportDocument">导出 Markdown</el-button>
+        <el-button :loading="printing" @click="printDocument">打印 / 另存为 PDF</el-button>
       </template>
     </PageHeader>
 

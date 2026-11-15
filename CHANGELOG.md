@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增（发布单打印 / 另存为 PDF：自包含单页 + 控制台一键入口）
+
+- **缺口**：文档版已能导出（markdown），但操作员拿单子去送审时还有最后一段手工活——把 .md 转成能打印 / 能存 PDF 的东西。浏览器打印是最省事的路径，缺的只是一张**能打印的页**。
+- **修法**：新增 `internal/dbchange.HTML`，把发布单渲染成**自包含可打印单页**（无外链样式表、无图片、无脚本依赖；打印规则内嵌：表行不跨页、小节标题不落单页）。CLI `--format html`；REST `?format=html`（`&print=1` 自动弹打印对话框，响应带 `nosniff` 与 `Content-Security-Policy: default-src 'none'`）；控制台加「打印 / 另存为 PDF」按钮，在**独立窗口**打开该 URL。
+- **同源而不是第二个渲染器**：HTML 是从那份 Markdown 文档渲染的（facts → Markdown → HTML），不是从 ticket 结构另起一套。两个渲染器会漂，而漂了的导出件比没有导出件更糟。控制台也因此**从不取回这段 HTML 注入自己的文档**——那会把操作者可控的标记放进控制台自己的 origin。
+- **顺带修掉一个真漏洞**：接 HTML 时发现审核发现的 `message` 走了不转义的布局辅助函数（`oneLine` 为代码段设计），而它渲染在表格单元格里、不在代码段中，于是 `<b>bold</b>` 原样透出——这正是 gosec 那条 G705 的实质。已改为 `escapeHTML(oneLine(msg))`，并在 `oneLine` 的注释里把「代码段内不转义、代码段外必须转义」这条调用约定写清楚。
+- **验证**：`internal/dbchange` 新增 8 例（六段齐备 / **操作者可控文本全部转义**（含 `<script>`、`<img onerror>`、`<b>`）/ 单页只有一个静态脚本且不携带票据文本 / `<strong>` 配对 / 自包含无外链 / 打印规则存在 / 确定性 / 无 label 时回落到 id）；`internal/grpc` 新增 2 例（html 单页 + CSP + 不自动打印 / `print=1` 才自动打印）；Web 视图守卫新增 1 例（打印必须走 `ticketPrintableURL` + `window.open`，且不得 `v-html`）；前端全量 43 文件 / 350 例通过，`vue-tsc` 干净，构建通过；本机真二进制 + 真 serve 实跑：`--format html` 产出 3573 字节单页、curl 拿到 `HTTP 200` + `text/html` + `nosniff` + CSP、`print=1` 时单页内含 `window.print()`。
+- **边界**：单页只渲染既有制品，不重算；`print=1` 加的脚本是静态字面量，任何时候都不插值票据数据；不新增写操作。
+
 ### 新增（偶发问题的自动复现探针：把「等复发观察」换成「每天自动去撞」）
 
 - **缺口**：台账里剩的两条 open 都是同一形状：**知道自己坏了，但复现不了**（`internal/calendar` 在 windows-latest 上偶发 `0xc0000005` 且 runtime 一个字都没打印；browser-check 在 windows-latest 上偶发失败，分「settle 超时」与「Chrome 没起来」两个模式）。「等复发」是消极的——复发一次，证据大概率还是不够，下次仍然只能等。

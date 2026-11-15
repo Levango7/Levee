@@ -1194,9 +1194,29 @@ func (gw *Gateway) handleChangeTicket(w http.ResponseWriter, r *http.Request, id
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(doc)) // #nosec G705 -- served as text/markdown with nosniff; values are HTML-escaped by the renderer
 		return
+	case "html":
+		// The printable sheet ("打印 / 另存为 PDF"). Every value in it is
+		// HTML-escaped by the document renderer (dbchange.Markdown escapes the
+		// values; dbchange.HTML only adds its own tags), so the body carries no
+		// operator-controlled markup. ?print=1 opens the print dialog.
+		doc, err := svc.DBChangeTicketPrintableHTML(ctx, id, r.URL.Query().Get("print") == "1")
+		if err != nil {
+			writeGRPCError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// The sheet is inert: no external resources, and the only script is the
+		// static window.print() call. The CSP states that, so a later edit that
+		// adds a script tag cannot quietly start running.
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(doc)) // #nosec G705 -- text/html with nosniff; every interpolated value is HTML-escaped by dbchange.HTML
+		return
 	default:
 		writeJSONError(w, http.StatusBadRequest,
-			fmt.Sprintf("unknown format %q (want json or markdown)", r.URL.Query().Get("format")))
+			fmt.Sprintf("unknown format %q (want json, markdown or html)", r.URL.Query().Get("format")))
 		return
 	}
 

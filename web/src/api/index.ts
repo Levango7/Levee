@@ -204,6 +204,17 @@ export const changesApi = {
   // shows.
   ticketDocument: (id: string): Promise<string> =>
     getText(`/changes/${encodeURIComponent(id)}/ticket?format=markdown`),
+
+  // The printable sheet, as a URL rather than a body.
+  //
+  // The console does not fetch and re-inject this document: it opens the URL in
+  // a new window and lets the browser render and print it. Fetching it first
+  // would mean handing operator-controlled HTML to the app's own origin, which
+  // is the one place it must never arrive — a separate window is a separate
+  // origin for the sheet's purposes (no access to the console's storage or
+  // session).
+  ticketPrintableURL: (id: string, autoPrint = false): string =>
+    `/api/v1/changes/${encodeURIComponent(id)}/ticket?format=html${autoPrint ? '&print=1' : ''}`,
 }
 
 // ---------------------------------------------------------------------------
