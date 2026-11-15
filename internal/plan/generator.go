@@ -303,13 +303,29 @@ func (g *Generator) Generate(wf *dsl.Workflow, resolvedTargets []string) (*Plan,
 	planSteps := g.convertSteps(orderedSteps)
 
 	// Build batches with consecutive 0-based indices.
+	//
+	// The change window may cap concurrency for the whole run. Batches execute
+	// sequentially, so clamping each batch's cap bounds how many targets may be
+	// changed in parallel at any moment inside the window — which is what
+	// `window.max_concurrency` declares ("caps the number of targets that may
+	// be changed in parallel within the window").
+	//
+	// The field used to be accepted by the parser and emitted into the IR
+	// without a reader: the plan's per-batch cap came only from
+	// `batches.max_concurrency`, so declaring it on the window was a no-op. A
+	// zero (or negative) window cap means "no additional cap" — it must not
+	// silently turn an unlimited batch configuration serial.
+	batchMax := wf.Batches.MaxConcurrency
+	if wf.Window.MaxConcurrency > 0 && (batchMax <= 0 || batchMax > wf.Window.MaxConcurrency) {
+		batchMax = wf.Window.MaxConcurrency
+	}
 	batches := make([]Batch, 0, len(batchTargets))
 	for i, targets := range batchTargets {
 		batches = append(batches, Batch{
 			Index:          i,
 			Targets:        targets,
 			Steps:          planSteps,
-			MaxConcurrency: wf.Batches.MaxConcurrency,
+			MaxConcurrency: batchMax,
 			Gate:           wf.Batches.Gate,
 		})
 	}
