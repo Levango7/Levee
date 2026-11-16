@@ -9,7 +9,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
-	github.com/jackc/pgx/v5 v5.12.0
+	github.com/jackc/pgx/v5 v5.13.0
 	github.com/masterzen/winrm v0.0.0-20261004123143-57b335310d59
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
