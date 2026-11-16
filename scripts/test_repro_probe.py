@@ -65,6 +65,43 @@ class ReproProbeWorkflowTest(unittest.TestCase):
                          "the repro probe must stay OUT of the main CI gate")
 
 
+class ActionPinsMatchTheMainWorkflowTest(unittest.TestCase):
+    """本工作流里的 action 必须与主线 CI 用**同一个** SHA。
+
+    Why: 2026-11-16 实跑探针时两个 job 都在「Set up job」就红了——
+    `Unable to resolve action actions/checkout@3d3c42e5aac2ba...`，
+    比对后发现手抄 SHA 时少了一个字符（`aac5ba` 抄成 `aac2ba`）。
+    actionlint 看不出来：截断后的 SHA 形状仍然是一个 SHA，它只校验格式。
+    所以这类错**只有真跑才会暴露**，而真跑一次要等一个 runner。
+
+    这条守卫把「抄错」变成构建时就红：同名的 action，本工作流用的 SHA
+    必须逐字出现在 ci.yml 里。它不判断版本新旧（那是 Dependabot / 人工
+    的事），只判断「我们到底钉的是不是同一个提交」。
+    """
+
+    def setUp(self) -> None:
+        self.probe = WORKFLOW.read_text(encoding="utf-8")
+        self.ci = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    def test_every_action_pin_names_the_same_commit_as_the_main_workflow(self) -> None:
+        used = re.findall(r"uses:\s*(\S+@[0-9a-f]{40})", self.probe)
+        self.assertGreaterEqual(len(used), 3,
+                                "the probe is expected to pin checkout / setup-go|setup-node / upload-artifact")
+        for pin in used:
+            name = pin.split("@")[0]
+            self.assertIn(pin, self.ci,
+                          f"{name} is pinned to a SHA the main CI does not use "
+                          f"(hand-copied pins drift by a character and only fail at runtime): {pin}")
+
+    def test_pins_look_like_full_commit_shas(self) -> None:
+        # A truncated or short pin resolves to nothing at runtime; the regex in
+        # the test above already demands 40 hex chars, so this one asserts the
+        # probe did not grow an unpinned `@v3` style reference either.
+        for ref in re.findall(r"uses:\s*\S+@(\S+)", self.probe):
+            self.assertRegex(ref, r"^[0-9a-f]{40}$",
+                             f"an action must be pinned to a full SHA, found {ref!r}")
+
+
 class ReproProbeScriptsTest(unittest.TestCase):
     def test_calendar_probe_loops_and_records_both_cover_modes(self) -> None:
         text = CALENDAR_PROBE.read_text(encoding="utf-8")
