@@ -36,6 +36,37 @@ type SQLStepInput struct {
 	SQL  string
 }
 
+// ReviewableSQL returns the SQL batch a step carries, and whether the step is
+// one the review engine can score at all.
+//
+// This predicate is shared on purpose. Three callers ask the same question
+// about the same workflow and must get the same answer: the plan-time gate
+// (does this change get reviewed before an artifact is minted?), the DB Change
+// Ticket (what SQL does this change carry?), and `levee sqlreview --change`
+// (what do I re-score?). Each used to carry its own copy of "module == mysql
+// && action == query" — and when the pg.query module landed, all three copies
+// were wrong at once: PostgreSQL steps were not reviewed before approval, the
+// ticket said the change carried no SQL, and the re-check found no surface to
+// compare. Three implementations of one rule is three chances to disagree.
+//
+// The rule: a step is reviewable when it carries a whole SQL batch in its
+// `sql` argument. Today that is exactly the two query actions (mysql.query,
+// pg.query). mysql.pt_osc is deliberately absent: its `alter` argument is a
+// clause fragment, not a statement, and feeding a fragment to the engine
+// would score a statement nobody wrote — synthesising "ALTER TABLE <table>
+// <fragment>" is a separate product decision, and until it is taken the
+// honest position is that pt_osc's alter clause is reviewed by a human.
+func ReviewableSQL(module, action string, args map[string]any) (string, bool) {
+	if action != "query" || (module != "mysql" && module != "pg") {
+		return "", false
+	}
+	sql, _ := args["sql"].(string)
+	if strings.TrimSpace(sql) == "" {
+		return "", false
+	}
+	return sql, true
+}
+
 // ReviewSteps scores every step's SQL and aggregates the findings into the
 // summary shape the plan artifact carries.
 //
@@ -51,6 +82,7 @@ type SQLStepInput struct {
 // is skipped above) is returned as an error: "cannot judge" is not "allowed".
 func ReviewSteps(steps []SQLStepInput) (*SQLReviewSummary, error) {
 	var summary *SQLReviewSummary
+	var impacts []*sqlreview.Impact
 	for _, s := range steps {
 		if strings.TrimSpace(s.SQL) == "" {
 			continue
@@ -59,6 +91,7 @@ func ReviewSteps(steps []SQLStepInput) (*SQLReviewSummary, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%w: step %q: %v", sqlreview.ErrReviewFailed, s.Step, err)
 		}
+		impacts = append(impacts, &res.Impact)
 		if summary == nil {
 			summary = &SQLReviewSummary{Verdict: string(res.Verdict)}
 		}
@@ -73,6 +106,13 @@ func ReviewSteps(steps []SQLStepInput) (*SQLReviewSummary, error) {
 				Statement: f.Statement, Message: f.Message,
 			})
 		}
+	}
+	if summary != nil {
+		// One surface for the change, unioned from the steps' surfaces. It is
+		// built only when there IS a surface: a workflow whose SQL face is nil
+		// must not acquire an empty impact, which would read as "reviewed, and
+		// it touches nothing".
+		summary.Impact = sqlreview.MergeImpact(impacts...)
 	}
 	return summary, nil
 }

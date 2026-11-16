@@ -22,6 +22,8 @@ import (
 	"html"
 	"strings"
 	"time"
+
+	"github.com/nexus/levee/internal/plan"
 )
 
 // MarkdownOptions tunes the document's non-factual parts.
@@ -117,6 +119,7 @@ func markdownSQL(b *strings.Builder, tk *Ticket) {
 	case r != nil:
 		fmt.Fprintf(b, "**审核结论（计划时固化，绑定 plan_hash）**: `%s`（fail %d / warn %d）\n\n",
 			r.Verdict, r.FailCount, r.WarnCount)
+		markdownTableImpact(b, r)
 		if len(r.Findings) > 0 {
 			b.WriteString("| 规则 | 级别 | 步骤 | 语句 | 说明 |\n| --- | --- | --- | --- | --- |\n")
 			for _, f := range r.Findings {
@@ -130,6 +133,41 @@ func markdownSQL(b *strings.Builder, tk *Ticket) {
 	default:
 		b.WriteString("**审核结论**: 无（该计划没有可审核的 SQL 面）。\n\n")
 	}
+}
+
+// markdownTableImpact writes the static impact surface frozen into the plan:
+// which tables the change's SQL names, what it does to them, and which of
+// those operations nothing narrows. It is the answer to "what does this
+// touch"; it answers nothing about rows or lock time, and it says so — the
+// reader must not mistake a static surface for a measured one.
+//
+// An impact read from a statement the engine only partly understood is a
+// LOWER BOUND, and the section says that too: an approver taking an
+// incomplete list at face value would clear a change whose second table was
+// never read.
+func markdownTableImpact(b *strings.Builder, r *plan.SQLReviewSummary) {
+	if r.Impact == nil {
+		return
+	}
+	if len(r.Impact.Tables) == 0 {
+		b.WriteString("**静态影响面**: 这批 SQL 未指名任何表（`SET`/`USE` 之类）。\n\n")
+	} else {
+		b.WriteString("**静态影响面（来自 SQL 文本，不是实测量）**:\n\n")
+		b.WriteString("| 表 | 操作 | 是否整表 |\n| --- | --- | --- |\n")
+		for _, t := range r.Impact.Tables {
+			whole := "否"
+			if t.WholeTable {
+				whole = "**是**（无谓词/整对象）"
+			}
+			fmt.Fprintf(b, "| %s | %s | %s |\n", escapeHTML(t.Table), escapeHTML(strings.Join(t.Operations, ", ")), whole)
+		}
+		b.WriteString("\n")
+	}
+	if r.Impact.Incomplete {
+		b.WriteString("> ⚠️ **影响面不完整**：其中至少有一条语句引擎只读到一半（见 SR-01），" +
+			"它涉及的表**不在上表内**——上表是下界，不是全集。\n\n")
+	}
+	b.WriteString("锁时长与影响行数需要活库（EXPLAIN/统计），本单不猜（见 `docs/blocked-items.md` D-7）。\n\n")
 }
 
 // markdownRollback writes the rollback policy and the per-step compensations.

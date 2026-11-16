@@ -14,6 +14,20 @@
 - **验证**：本机 Linux amd64 自指口径**完整跑通两次**：`file_v1=v1 → file_v2=v2 → file_restored=v1`，`audit/verify` `valid=true / entriesVerified=3 / unsealed=0`，apply `completed`、rollback `rolled_back`（`rolledBackHosts=[127.0.0.1]`）。`scripts/test_xinchuang_baremetal_drill.py` **13 例**把上述承重性质钉住（含 plan 在 approve 之前、探针带 token、主口令复用、auth_method 二选一、credential_ref、`src` 相对性、证据先落盘后失败）。文档同步：清单改为「先跑脚本、本文作依据」，并补上缺失的 plan 步骤与三个实跑教训。
 - **边界（重要）**：脚本自指演练证明的是**脚本与契约正确**，不是**信创裸机已验证**；矩阵里「麒麟/统信 × amd64（裸机）」那格**仍未改状态**，要等真机上跑一遍 `summary.txt` 三行都对上。沙箱为验证写入的演练钥匙已清理。
 
+### 修复（pg.query 的 SQL 从未被审核：三处「只认 mysql」的收集器）
+
+- **缺口（真的 fail-open）**：上一批把 `pg.query` 执行模块接进了执行面，而**审核面的三处收集器仍然硬编码 `module == "mysql" && action == "query"`**——计划期门禁（`internal/wiring/sqlreview_gate.go`）、发布单（`internal/dbchange/ticket.go`）、复算命令（`levee sqlreview --change`）。后果按严重度排：① **一条 PostgreSQL 的 `DELETE FROM users`（无 WHERE，引擎最直白的 fail＝SR-02）能生成计划**——没有审核结论、没有 verdict 被 plan_hash 绑定，「审不过不放行」这句话在 PG 上不成立；② 发布单对 PG 变更写「该计划没有可审核的 SQL 步骤」——在自家产品门面上说假话；③ 复算命令找不到 SQL 面，比不了。三份拷贝，一次全错。
+- **修法**：抽出 **`plan.ReviewableSQL(module, action, args)`** 作为**唯一**判定（「这一步是否携带整批 SQL」），三处改为调用它。`mysql.pt_osc` **刻意不在内**：它的 `alter` 是子句片段而非语句，喂给引擎会得到「一条没人写过的语句」的结论——把片段合成 `ALTER TABLE <表> <片段>` 再审是另一个产品决定，在那之前诚实的位置是「pt_osc 的 alter 由人审」（写在函数注释里）。
+- **验证 + 变异实测**：`internal/wiring` 新增 2 例（**PG 的 SR-02 fail 必须拒绝生成计划且不留制品**；PG 的 warn 必须把 verdict 与影响面一起钉进制品并 round-trip 回同一 hash）；`internal/plan` 新增 `ReviewableSQL` 表驱动 9 例（mysql/pg 取；空/非字符串 sql 不取；pt_osc、replica_switch、别模块不取）+ 影响面合并 3 例；`internal/dbchange` 新增 1 例（PG 步骤必须进发布单 SQL 节）；`cmd/levee` 原有「只取 mysql.query 步骤」改为「两个 query 模块都取」。**把 `ReviewableSQL` 退回 mysql-only，三处测试分别转红**（wiring：`An error is expected but got nil`——计划真的生成了）。
+
+### 新增（静态影响面：这条变更动到哪些表、什么操作、有没有整表）
+
+- **缺口**：审批人拿到的是「SQL 批 + 审核发现」，但真正要判断的是**这条变更会动到什么**：涉及哪些表、每种操作是什么、其中哪些没有任何谓词限定（全表）。这些都能从语句本身读出来，而此前没人读。另一半（影响行数、锁时长）**读不出来**——那是活库事实。
+- **修法**：新增 `internal/sqlreview/impact.go`，在**同一遍解析**里（与 findings 同源，因此不可能互相矛盾）产出影响面：每张表一条 `{表, 操作集合, 是否整表}`，每条语句一条 `{操作, 写表, 读表, 是否整表, 是否读全}`。规则全部机械、写在注释里：`whole_table` ＝ 「引擎看不到任何谓词限定」（delete/update/select 无 WHERE；insert 的行集来自 SELECT 而非值列表；alter/drop/truncate/rename 以对象为单位）；CREATE **不算**整表（没有既有行集）；`ColName.Qualifier` 在这个 fork 里**本身就是 TableName**，所以列限定名（`o.id` 的 `o`）会被通用遍历器当成表——按**出现次数**减去限定名，不能按名字减（`DELETE FROM orders WHERE orders.id = 1` 会把表本身抹掉）。
+- **不许猜的那一半**：读不到一半的语句（SR-01）**不贡献任何表**，并让整份影响面标 `incomplete`——「未读语句碰了哪些表」必须不能读成「未读语句什么也没碰」。锁时长与影响行数需要活库（EXPLAIN/统计），如实登记 `docs/blocked-items.md` **D-7**；单子上只有一句「本单不猜」。
+- **接线**：影响面进 `plan.SQLReviewSummary.Impact`（JSON 键 `table_impact`——计划顶层已有一个 `impact`（目标拓扑），两个「impact」同名会被读成同一件事），进 canonicalPlanV2（**手写投影**而非内嵌：内嵌会让 sqlreview 加字段时静默改掉所有计划的 hash），进而进发布单第 1 节、`levee sqlreview` 的 `impact:` 段与 `--json` 的 `data.impact`。`omitempty`：老计划的 hash 逐字节不变。
+- **验证**：`internal/sqlreview` 新增 12 组（13 种语句的表/写读/整表判定；批内按表合并操作集；**未读语句让面变下界且不列任何表**；`Impact.Incomplete` 与 SR-01 **必须同进同出**（同源不变量）；无表语句仍留痕；自引用只列一次；确定性；JSON 信封；`MergeImpact` 的并集与不完整传递）；`internal/plan` 2 例（影响面变则 hash 变；nil 影响面旧 hash 不变）；`internal/dbchange` 4 例（影响面渲染 + 标注「不是实测量」/ 不完整警告 / 无表说明 / 无影响面时不渲染空节）。
+
 ### 新增（发布说明的实况不得漂移：新门禁把每份 release notes 与真实发布对账）
 
 - **缺口**：v1.26.0 发布说明里写着「tag 对象 `94fed1317c8`，指向 master 提交 `172cf7a`」——但**没有任何东西核对这句话**。发布说明写错 tag 对象、或从上一版复制粘贴时忘了改，读者照着核对会撞上一个矛盾，然后得自己判断该信哪一半。已发布版本的说明因此会**随时间漂移**。

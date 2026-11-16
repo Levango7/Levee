@@ -94,16 +94,23 @@ func TestCompareSQLReviewTreatsAMissingVerdictAsNotAligned(t *testing.T) {
 	assert.Empty(t, diffs)
 }
 
-func TestPlanSQLStepsOnlyTakesMySQLQuerySteps(t *testing.T) {
+// The extraction takes the steps that carry a whole SQL batch — both query
+// modules, and nothing that carries a fragment (pt_osc's alter clause) or a
+// non-string / empty sql. This used to say "mysql only", which is how a
+// pg.query change came back as "no SQL surface to compare".
+func TestPlanSQLStepsTakesBothQueryModules(t *testing.T) {
 	p := &plan.Plan{Batches: []plan.Batch{{Steps: []plan.PlanStep{
 		{Name: "svc", Module: "svc", Action: "restart"},
 		{Name: "q", Module: "mysql", Action: "query", Args: map[string]any{"sql": "SELECT 1"}},
+		{Name: "pgq", Module: "pg", Action: "query", Args: map[string]any{"sql": "UPDATE t SET a=1 WHERE id=1"}},
+		{Name: "osc", Module: "mysql", Action: "pt_osc", Args: map[string]any{"table": "t", "alter": "ADD COLUMN c INT"}},
 		{Name: "empty", Module: "mysql", Action: "query", Args: map[string]any{"sql": "  "}},
 		{Name: "notsql", Module: "mysql", Action: "query", Args: map[string]any{"sql": 42}},
 	}}}}
 	steps := planSQLSteps(p)
-	require.Len(t, steps, 1)
+	require.Len(t, steps, 2)
 	assert.Equal(t, "q", steps[0].Step)
+	assert.Equal(t, "pgq", steps[1].Step)
 }
 
 func TestSQLReviewChangeReportsTheFrozenAndFreshVerdictsSideBySide(t *testing.T) {

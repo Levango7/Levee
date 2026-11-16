@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/sqlreview"
 )
 
 const (
@@ -153,6 +154,11 @@ type canonicalSQLReview struct {
 	FailCount int                   `json:"fail_count"`
 	WarnCount int                   `json:"warn_count"`
 	Findings  []canonicalSQLFinding `json:"findings,omitempty"`
+	// Impact is projected rather than embedded. The review engine's struct is
+	// free to grow fields; the hashed form is not — embedding it would let a
+	// new field silently change every plan's hash, which is the one thing a
+	// canonical form exists to prevent.
+	Impact *canonicalSQLImpact `json:"table_impact,omitempty"`
 }
 
 type canonicalSQLFinding struct {
@@ -161,6 +167,20 @@ type canonicalSQLFinding struct {
 	Severity  string `json:"severity"`
 	Statement int    `json:"statement"`
 	Message   string `json:"message"`
+}
+
+// canonicalSQLImpact is the hashed projection of sqlreview.Impact — the SQL
+// surface a change touches, not to be confused with canonicalImpact above,
+// which is the target-topology report.
+type canonicalSQLImpact struct {
+	Tables     []canonicalSQLTableImpact `json:"tables"`
+	Incomplete bool                      `json:"incomplete,omitempty"`
+}
+
+type canonicalSQLTableImpact struct {
+	Table      string   `json:"table"`
+	Operations []string `json:"operations"`
+	WholeTable bool     `json:"whole_table,omitempty"`
 }
 
 // canonicalRunSnapshot is the hashed projection of dsl.RunSnapshotSpec.
@@ -347,6 +367,28 @@ func canonicalSQLReviewV2(in *SQLReviewSummary) *canonicalSQLReview {
 		for i, f := range in.Findings {
 			out.Findings[i] = canonicalSQLFinding(f)
 		}
+	}
+	out.Impact = canonicalImpactOf(in.Impact)
+	return out
+}
+
+// canonicalImpactOf projects the impact surface, or nil when there is none
+// (every pre-impact plan, and every plan whose SQL face is a stored summary
+// without one) — nil stays omitted so those hashes are untouched.
+func canonicalImpactOf(in *sqlreview.Impact) *canonicalSQLImpact {
+	if in == nil {
+		return nil
+	}
+	out := &canonicalSQLImpact{
+		Tables:     make([]canonicalSQLTableImpact, 0, len(in.Tables)),
+		Incomplete: in.Incomplete,
+	}
+	for _, t := range in.Tables {
+		ops := make([]string, len(t.Operations))
+		copy(ops, t.Operations)
+		out.Tables = append(out.Tables, canonicalSQLTableImpact{
+			Table: t.Table, Operations: ops, WholeTable: t.WholeTable,
+		})
 	}
 	return out
 }

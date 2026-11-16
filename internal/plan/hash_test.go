@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nexus/levee/internal/dsl"
+	"github.com/nexus/levee/internal/sqlreview"
 )
 
 // hashPlan builds a plan with one batch, the given targets and steps,
@@ -472,6 +473,71 @@ func TestComputeHashSQLReviewMatters(t *testing.T) {
 	hb, hp, hw := ComputeHash(bare), ComputeHash(pass), ComputeHash(warn)
 	assert.NotEqual(t, hb, hp, "a reviewed plan must not reuse the bare plan's hash")
 	assert.NotEqual(t, hp, hw, "a warn verdict must not reuse a clean verdict's hash")
+}
+
+// TestComputeHashSQLImpactMatters verifies that the static impact surface is
+// inside the v2 hash: an approver attests to WHAT the change touches, so a
+// plan whose impact could be rewritten after approval would let a different
+// table set ride through on a blessed hash — with the same verdict.
+func TestComputeHashSQLImpactMatters(t *testing.T) {
+	base := func() *Plan {
+		return buildPlan("wf", []string{"host-a"},
+			PlanStep{Name: "q", Module: "mysql", Action: "query",
+				Args: map[string]any{"sql": "SELECT 1"}})
+	}
+	withoutImpact := base()
+	withoutImpact.SQLReview = &SQLReviewSummary{Verdict: "warn", WarnCount: 1}
+	orders := base()
+	orders.SQLReview = &SQLReviewSummary{Verdict: "warn", WarnCount: 1,
+		Impact: &sqlreview.Impact{Tables: []sqlreview.TableImpact{
+			{Table: "orders", Operations: []string{"delete"}, WholeTable: true}}}}
+	users := base()
+	users.SQLReview = &SQLReviewSummary{Verdict: "warn", WarnCount: 1,
+		Impact: &sqlreview.Impact{Tables: []sqlreview.TableImpact{
+			{Table: "users", Operations: []string{"delete"}, WholeTable: true}}}}
+	ops := base()
+	ops.SQLReview = &SQLReviewSummary{Verdict: "warn", WarnCount: 1,
+		Impact: &sqlreview.Impact{Tables: []sqlreview.TableImpact{
+			{Table: "orders", Operations: []string{"delete", "update"}, WholeTable: true}}}}
+	incomplete := base()
+	incomplete.SQLReview = &SQLReviewSummary{Verdict: "warn", WarnCount: 1,
+		Impact: &sqlreview.Impact{Incomplete: true}}
+
+	hashes := map[string]string{
+		"without impact":  ComputeHash(withoutImpact),
+		"orders":          ComputeHash(orders),
+		"users":           ComputeHash(users),
+		"more operations": ComputeHash(ops),
+		"incomplete":      ComputeHash(incomplete),
+	}
+	seen := map[string]string{}
+	for name, h := range hashes {
+		if prev, dup := seen[h]; dup {
+			t.Errorf("%s and %s share a hash: the impact surface is not covered", name, prev)
+		}
+		seen[h] = name
+	}
+}
+
+// TestComputeHashSQLImpactNilStaysCanonical pins the omitempty half: a stored
+// summary from before the impact surface existed (Impact nil) keeps its
+// canonical bytes, so those plans still verify against their persisted hashes.
+func TestComputeHashSQLImpactNilStaysCanonical(t *testing.T) {
+	p1 := buildPlan("wf", []string{"host-a"},
+		PlanStep{Name: "q", Module: "mysql", Action: "query", Args: map[string]any{"sql": "SELECT 1"}})
+	p1.SQLReview = &SQLReviewSummary{Verdict: "pass"}
+	p2 := buildPlan("wf", []string{"host-a"},
+		PlanStep{Name: "q", Module: "mysql", Action: "query", Args: map[string]any{"sql": "SELECT 1"}})
+	p2.SQLReview = &SQLReviewSummary{Verdict: "pass", Impact: nil}
+	assert.Equal(t, ComputeHash(p1), ComputeHash(p2),
+		"a nil impact must not alter the canonical form")
+
+	raw, err := json.Marshal(buildCanonicalV2(p1))
+	require.NoError(t, err)
+	// The plan's own "impact" (the target-topology report) is always present,
+	// so the assertion names the SQL surface's key instead.
+	assert.NotContains(t, string(raw), "table_impact",
+		"the canonical form must not materialise an absent impact surface")
 }
 
 // TestComputeHashSQLReviewNilStaysCanonical pins the omitempty half of the

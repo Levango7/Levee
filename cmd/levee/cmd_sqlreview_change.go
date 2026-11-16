@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 
 	"github.com/nexus/levee/internal/plan"
 )
@@ -130,10 +129,10 @@ func runSQLReviewChange(changeID string) error {
 
 // planSQLSteps extracts the reviewable SQL surface from a plan artifact.
 //
-// The extraction rule is the same one the plan-time gate and the DB Change
-// Ticket use: a step is reviewable when it is a mysql.query step carrying a
-// non-empty string `sql` argument. Three implementations of one rule would
-// be three chances to disagree about what "this change's SQL" is.
+// The extraction rule is plan.ReviewableSQL's — the same one the plan-time
+// gate and the DB Change Ticket use, now literally the same function. It used
+// to be three copies of "module == mysql && action == query", which is how all
+// three came to be wrong at the same time when pg.query landed.
 func planSQLSteps(p *plan.Plan) []plan.SQLStepInput {
 	var steps []plan.SQLStepInput
 	if p == nil {
@@ -141,11 +140,8 @@ func planSQLSteps(p *plan.Plan) []plan.SQLStepInput {
 	}
 	for _, b := range p.Batches {
 		for _, s := range b.Steps {
-			if s.Module != "mysql" || s.Action != "query" {
-				continue
-			}
-			sql, ok := s.Args["sql"].(string)
-			if !ok || strings.TrimSpace(sql) == "" {
+			sql, ok := plan.ReviewableSQL(s.Module, s.Action, s.Args)
+			if !ok {
 				continue
 			}
 			steps = append(steps, plan.SQLStepInput{Step: s.Name, SQL: sql})

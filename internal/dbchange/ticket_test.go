@@ -70,6 +70,25 @@ func seedPlan(t *testing.T, store state.Store, runID string) {
 	require.NoError(t, store.UpdateRunPlan(ctx, runID, string(raw), "v2:abc", now))
 }
 
+// The ticket's SQL section collects from BOTH query modules. It used to
+// filter on `module == "mysql"`, so a PostgreSQL change rendered as "该计划
+// 没有可审核的 SQL 步骤" — a false statement on the product's own face, about
+// a change that had been reviewed all along (once the gate's own filter was
+// fixed).
+func TestFillFromPlan_CarriesPostgresSQL(t *testing.T) {
+	p := &plan.Plan{Batches: []plan.Batch{{Steps: []plan.PlanStep{
+		{Name: "pg-migrate", Module: "pg", Action: "query",
+			Args: map[string]any{"sql": "UPDATE accounts SET tier='gold' WHERE id=1"}},
+	}}}}
+	tk := &Ticket{}
+	fillFromPlan(tk, p)
+
+	require.True(t, tk.SQL.HasSQL, "a PostgreSQL step IS a SQL surface")
+	require.Len(t, tk.SQL.Steps, 1)
+	assert.Equal(t, "pg-migrate", tk.SQL.Steps[0].Step)
+	assert.Contains(t, tk.SQL.Steps[0].SQL, "UPDATE accounts")
+}
+
 func TestCollect_NotFound(t *testing.T) {
 	store := newStore(t)
 	_, err := Collect(context.Background(), store, "nope")

@@ -30,18 +30,27 @@ import (
 )
 
 // sqlWorkflow renders a workflow whose single step runs the given SQL through
-// mysql.query — the only action that carries raw SQL text into the plan.
+// mysql.query — one of the two actions that carry a whole SQL batch into the
+// plan (pg.query is the other, see sqlWorkflowModule).
 func sqlWorkflow(name, sql string) string {
+	return sqlWorkflowModule(name, "mysql", sql)
+}
+
+// sqlWorkflowModule is sqlWorkflow for a chosen query module. It exists
+// because the gate's collector once hardcoded "mysql" and silently skipped
+// PostgreSQL the moment pg.query landed: a failing PG statement minted a plan
+// with no review verdict bound to it.
+func sqlWorkflowModule(name, module, sql string) string {
 	return fmt.Sprintf(`name: %s
 target:
   type: host
   hosts: ["web-1"]
 steps:
   - name: audit-data
-    action: mysql.query
+    action: %s.query
     args:
       sql: %q
-`, name, sql)
+`, name, module, sql)
 }
 
 func seedSQLRun(t *testing.T, src string) (*Engine, state.Store, string) {
@@ -70,6 +79,55 @@ func TestGeneratePlan_RefusedWhenSQLReviewFails(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, run.PlanJSON, "a refused plan leaves no artifact on the run")
 	assert.Empty(t, run.PlanHash)
+}
+
+// TestGeneratePlan_RefusesAFailingPGStatement pins that the gate covers BOTH
+// query modules. The collector used to filter on `module == "mysql"`, so a
+// PostgreSQL step was never reviewed: a `DELETE FROM users` with no WHERE —
+// the plainest fail the engine knows (SR-02) — would have minted a plan with
+// no verdict bound to it. That is the wedge's own claim ("读不了不放行", here:
+// "unreviewed does not ship") broken by a filter, not by a rule.
+func TestGeneratePlan_RefusesAFailingPGStatement(t *testing.T) {
+	eng, store, runID := seedSQLRun(t, sqlWorkflowModule("pg-del", "pg", "DELETE FROM users"))
+
+	p, stored, err := eng.GeneratePlan(context.Background(), runID, []string{"web-1"})
+	require.Error(t, err, "a PG fail verdict must block the plan exactly like a MySQL one")
+	assert.Nil(t, p)
+	assert.Nil(t, stored)
+	assert.True(t, errors.Is(err, sqlreview.ErrReviewFailed), "got: %v", err)
+	assert.Contains(t, err.Error(), "SR-02")
+
+	run, err := store.GetRun(context.Background(), runID)
+	require.NoError(t, err)
+	assert.Empty(t, run.PlanJSON, "a refused plan leaves no artifact on the run")
+}
+
+// And the other half of the same filter: a PG step that scores a warn gets its
+// verdict stamped onto the artifact, so plan_hash binds it exactly as it does
+// for MySQL.
+func TestGeneratePlan_StampsAPGReviewVerdict(t *testing.T) {
+	eng, _, runID := seedSQLRun(t, sqlWorkflowModule("pg-drop", "pg", "DROP TABLE users"))
+
+	_, stored, err := eng.GeneratePlan(context.Background(), runID, []string{"web-1"})
+	require.NoError(t, err)
+
+	var p plan.Plan
+	require.NoError(t, json.Unmarshal([]byte(stored.JSON), &p))
+	require.NotNil(t, p.SQLReview, "the PG verdict must ride into the artifact")
+	assert.Equal(t, string(sqlreview.VerdictWarn), p.SQLReview.Verdict)
+
+	require.NotNil(t, p.SQLReview.Impact, "and so must the static impact surface")
+	require.Len(t, p.SQLReview.Impact.Tables, 1)
+	assert.Equal(t, "users", p.SQLReview.Impact.Tables[0].Table)
+	assert.Equal(t, []string{"drop"}, p.SQLReview.Impact.Tables[0].Operations)
+	assert.Contains(t, stored.JSON, `"table_impact"`, "the surface is inside the persisted artifact")
+
+	// And it is inside the hash the approval signs, not decoration beside it:
+	// the artifact must round-trip to exactly the hash that was persisted.
+	var back plan.Plan
+	require.NoError(t, json.Unmarshal([]byte(stored.JSON), &back))
+	assert.Equal(t, plan.ComputeHash(&back), stored.Hash,
+		"the persisted artifact (impact included) must hash back to itself")
 }
 
 // TestGeneratePlan_SQLReviewWarnPassesAndIsStamped pins the warn half: DROP

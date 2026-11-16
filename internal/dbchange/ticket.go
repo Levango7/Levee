@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/nexus/levee/internal/approval"
@@ -306,10 +305,8 @@ func Collect(ctx context.Context, store state.Store, runID string) (*Ticket, err
 func fillFromPlan(t *Ticket, p *plan.Plan) {
 	for _, b := range p.Batches {
 		for _, s := range b.Steps {
-			if s.Module == "mysql" && s.Action == "query" {
-				if sql, ok := s.Args["sql"].(string); ok && strings.TrimSpace(sql) != "" {
-					t.SQL.Steps = append(t.SQL.Steps, SQLStep{Step: s.Name, SQL: sql})
-				}
+			if sql, ok := plan.ReviewableSQL(s.Module, s.Action, s.Args); ok {
+				t.SQL.Steps = append(t.SQL.Steps, SQLStep{Step: s.Name, SQL: sql})
 			}
 			if s.Rollback != nil {
 				u := StepUndo{
