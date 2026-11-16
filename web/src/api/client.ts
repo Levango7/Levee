@@ -61,7 +61,16 @@ let redirectingToLogin = false
 // Paths where a 401 must not trigger a redirect (the login flow itself).
 const LOGIN_PATHS = new Set(['/login', '/login/callback'])
 
-function handleUnauthorized(): void {
+/**
+ * The console's 401 policy, in one place.
+ *
+ * A 401 means the session ended: drop the token and send the operator to the
+ * login page, exactly once (a second concurrent 401 must not fight the first
+ * navigation). The REST client calls it from the axios response interceptor;
+ * the live streams call it from their own loop, because fetch() bypasses
+ * axios entirely — two callers, one policy.
+ */
+export function handleUnauthorizedResponse(): void {
   clearToken()
   const path = window.location.pathname
   if (redirectingToLogin || LOGIN_PATHS.has(path)) {
@@ -77,7 +86,7 @@ client.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response?.status === 401) {
-      handleUnauthorized()
+      handleUnauthorizedResponse()
     }
     return Promise.reject(normalizeError(error))
   },

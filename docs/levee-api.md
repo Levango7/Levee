@@ -999,8 +999,8 @@ RESTful 风格，支持两套路径：
 
 - `GET /changes/:id/events`——一个变更的事件流，与 gRPC 的 `WatchChange` **同源同序**（同一个
   `publishEvent` 扇出），并且在同一个位置收流：收到终态状态即结束（`runstatus.IsTerminal`）。
-  两条传输因此不可能对「变更结束了没有」给出不同答案。`MonitorView` 用 `EventSource` 订阅它，
-  此前的 2 秒轮询已删除。
+  两条传输因此不可能对「变更结束了没有」给出不同答案。控制台用 `fetch` + `ReadableStream` 订阅它
+  （此前用 `EventSource`，见下方「鉴权与帧形」），此前的 2 秒轮询已删除。
 - `GET /alerts/stream`——告警流，对应 `SubscribeAlerts`（该 gRPC 流在网关的 protojson 表里答
   501）。与变更流的差别：先**回放环（ring）快照**再转实时尾随——环是「已经响过什么」的唯一
   记录，不回放会让订阅者错过操作员正看着的一切；重复（回放与实时之间到达的告警）可接受，
@@ -1011,13 +1011,29 @@ RESTful 风格，支持两套路径：
 - **鉴权只判一次**（流是长生命期，逐事件重判既费又可能中途翻转）：变更流按该变更的读门禁；
   告警流按每条告警**自己登记的环境**（与 `GetAlertStatus` / `SubscribeAlerts` 同一谓词）。
   未知变更先答 404（不是权限问题），未授权主体答 401（HTTP `Unauthenticated` → 401；文档此前写成 403 是错位）。
+- **凭据走 `Authorization` 头**（不是 query、不是 cookie）：两条路由都在网关的 `authMiddleware`
+  之后，缺失或无效的 Bearer 一律 401。**这一点决定了浏览器端的传输**：`EventSource` 不能带请求头，
+  所以控制台改用 `fetch` + `ReadableStream`（`web/src/composables/useSSEStream.ts`），复用控制台
+  本来就持有的那枚令牌；401 由统一的 401 策略接手（清令牌 + 跳 `/login`），流就此终止而不是拿
+  已被拒绝的凭据反复重连。**不要**把令牌放进 query string（会进浏览器历史与代理访问日志），
+  也**不要**改成 cookie（服务端没有 cookie 会话层，凭空引入会附带一整套 CSRF 义务）。
+- **帧形（`text/event-stream`）**：
+  - 变更流写**具名帧**：`event: status_changed\ndata: {…}\n\n`。**具名事件不会触发默认的
+    `message` 类型**，只挂 `onmessage` / 只认默认类型的客户端会**一条都收不到**（这正是此前
+    监控页在真实服务端下不刷新的原因，而 mock 网关当时发的是无名帧，所以 CI 一路绿灯）。
+  - 告警流写**无名帧**：`data: {…}\n\n`（默认 `message` 类型）。
+  - 保活是**注释帧**（`: ping`），不携带数据，不是事件。
+  - 若干 `data:` 行以 `\n` 连接；CRLF 与任意分块边界都按 WHATWG `event-stream` 处理。
 - **保活**：空闲流按 `SSEKeepAliveInterval`（15s）发一条注释帧（`: ping` / `: keep-alive`），
   否则中间设备会把静默当死连接。
 - **不缓冲**：响应带 `X-Accel-Buffering: no`，否则一帧可能停在反向代理里，端点就失去了意义。
 
 守卫：`internal/grpc/sse_test.go`（帧形状、终态收流、客户端断开即停、读门禁）、
-`sse_alerts_test.go`（环回放、实时尾随、`dispatchAlerts` 路由分发）。前端「不许回退到轮询」
-由 `web/src/views/MonitorStream.spec.ts` 钉住。
+`sse_alerts_test.go`（环回放、实时尾随、`dispatchAlerts` 路由分发）。前端由
+`web/src/composables/sseParser.spec.ts`（纯帧解析器：具名帧/注释/CRLF/跨块）、
+`web/src/composables/useSSEStream.spec.ts`（Bearer 头、具名帧分派、401 终止、指数退避）与
+`web/src/views/MonitorStream.spec.ts`（结构钉：禁 `EventSource`、禁轮询、卸载即关、换变更即重开）守住；
+mock 网关现在也发具名帧（`web/scripts/mock-gateway.mjs`），免得 mock 继续替客户端的假设作证。
 
 ### 13.3 认证
 
