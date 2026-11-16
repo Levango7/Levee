@@ -176,11 +176,21 @@ const alerts = [
   },
 ]
 
-// An SSE response: default (unnamed) frames — that is what both consumers
-// listen on (useAlertStream and MonitorView use onmessage, not addEventListener)
-// — then a connection that stays open, because replay-then-tail is the
-// product's shape and closing would make EventSource reconnect forever.
-function sse(res, frames) {
+// An SSE response: the frames the SERVER writes, not the frames the client
+// wishes the server wrote.
+//
+// The server (internal/grpc/sse.go) frames a change event as
+// "event: status_changed\ndata: {...}\n\n" and keeps the connection warm
+// with a comment line (": ping"). The alert stream (internal/grpc/sse_alerts.go)
+// writes a bare "data: {...}" frame, which is the default "message" type.
+//
+// This mock used to send UNNAMED frames for both, because the console's
+// EventSource client only listened for the default type — so the mock
+// asserted the client's assumption and the browser check could never catch
+// the server's real frame shape. The event name is therefore a parameter
+// here: the alert stream stays unnamed (as the server writes it) and the
+// change stream is named.
+function sse(res, frames, opts = {}) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -189,7 +199,13 @@ function sse(res, frames) {
     // from a page origin that is not the mock's.
     'Access-Control-Allow-Origin': '*',
   })
-  for (const f of frames) res.write(`data: ${JSON.stringify(f)}\n\n`)
+  for (const f of frames) {
+    const name = opts.event ? `event: ${opts.event}\n` : ''
+    res.write(`${name}data: ${JSON.stringify(f)}\n\n`)
+  }
+  // The keep-alive the server sends every 15s: a COMMENT line, which carries
+  // no data and must not be mistaken for a frame.
+  res.write(': ping\n\n')
 }
 
 function send(res, obj, status) {
@@ -521,7 +537,15 @@ const server = http.createServer((req, res) => {
     // One framed event: MonitorView answers a message by re-reading the
     // change/summary/logs snapshots, and a single frame exercises that path
     // without inventing a live tail for a fixture run.
-    return sse(res, [{ type: 'status', run_id: 'run-1000', status: 'running' }])
+    //
+    // The frame is NAMED, like the server's (internal/grpc/sse.go writes
+    // "event: status_changed"). The mock used to send an unnamed frame,
+    // which asserted the CLIENT's assumption ("both consumers listen on
+    // onmessage") instead of the server's behaviour — so the console's
+    // monitor never fired on a real event and CI stayed green.
+    return sse(res, [{ type: 'status', run_id: 'run-1000', status: 'running' }], {
+      event: 'status_changed',
+    })
   }
 
   // The ad-hoc single-step check (see handleGateVerify above for why the mock

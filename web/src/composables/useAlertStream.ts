@@ -17,6 +17,7 @@ import { computed, readonly, ref, onBeforeUnmount, type Ref, type ComputedRef } 
 
 import type { AlertRecord } from '@/api'
 import { ALERT_SEVERITIES, type AlertSeverity } from '@/types/vocabulary'
+import { createSSEStream, type SSEStreamHandle } from './useSSEStream'
 
 const ALERTS_STREAM_URL = '/api/v1/alerts/stream'
 
@@ -26,7 +27,7 @@ const connected = ref(false)
 // the reconnection note instead of pretending the list is live).
 const streamError = ref<string | null>(null)
 
-let source: EventSource | null = null
+let stream: SSEStreamHandle | null = null
 let opened = false
 
 function severityOf(a: AlertRecord): AlertSeverity {
@@ -52,31 +53,43 @@ function upsert(a: AlertRecord): void {
 }
 
 function connect(): void {
-  if (source !== null) return
-  source = new EventSource(ALERTS_STREAM_URL)
-  source.onopen = () => {
-    connected.value = true
-    streamError.value = null
-  }
-  source.onmessage = (ev) => {
-    try {
-      upsert(JSON.parse(ev.data) as AlertRecord)
-    } catch {
-      // A malformed frame is dropped, not fatal: the next alert re-syncs the
-      // list, and killing the stream over one bad frame would blind the page.
-    }
-  }
-  source.onerror = () => {
-    // EventSource auto-reconnects; we only record the state so the page can
-    // say "重连中" instead of claiming a live list.
-    connected.value = false
-    streamError.value = '连接断开，正在重连…'
-  }
+  if (stream !== null) return
+  // The stream is read with fetch, not EventSource: the gateway requires an
+  // Authorization header (internal/grpc/rest.go's authMiddleware) and
+  // EventSource cannot send one, so the browser's own client could only ever
+  // see a 401 in a deployment with a token configured.
+  stream = createSSEStream({
+    url: ALERTS_STREAM_URL,
+    onEvent: (ev) => {
+      try {
+        upsert(JSON.parse(ev.data) as AlertRecord)
+      } catch {
+        // A malformed frame is dropped, not fatal: the next alert re-syncs the
+        // list, and killing the stream over one bad frame would blind the page.
+      }
+    },
+    onStatus: (state, detail) => {
+      if (state === 'open') {
+        connected.value = true
+        streamError.value = null
+        return
+      }
+      connected.value = false
+      if (state === 'unauthorized') {
+        // The token was refused: the console's shared 401 policy has already
+        // cleared it and sent the operator to the login page.
+        streamError.value = '鉴权失败：令牌无效或已过期，请重新登录'
+        return
+      }
+      streamError.value = detail && state === 'error' ? `连接失败：${detail}` : '连接断开，正在重连…'
+    },
+  })
+  stream.connect()
 }
 
 function disconnect(): void {
-  source?.close()
-  source = null
+  stream?.close()
+  stream = null
   connected.value = false
 }
 

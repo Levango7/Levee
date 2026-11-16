@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 修复（SSE：鉴权走 Bearer + 具名事件按名分派——此前实时面板在真实服务端下是死的）
+
+- **两个叠在一起的缺口**（都不是「看起来有点怪」，是「部署后功能不工作」）：
+  ① **鉴权**：两条 SSE 路由（`GET /changes/:id/events`、`GET /alerts/stream`）都在网关的 `authMiddleware` 之后，凭据只从 `Authorization` 头读（全仓零 cookie、零 query-token 通路），而浏览器端用的是 `EventSource`——**它不能带请求头**。于是任何配了令牌的部署里，两条流一律 401；而 `EventSource` 的失败是网络事件、**永远不会成为页面错误**，控制台只会安静地显示「连接断开，正在重连…」。
+  ② **帧形**：服务端写的是**具名帧** `event: status_changed`（`internal/grpc/sse.go`），而客户端只挂了 `onmessage`——那只接**默认 `message` 类型**，具名事件根本不会触发它。于是即使鉴权过了，**真实服务端**推的事件一条也收不到，监控页的实时刷新是死的。CI 之所以一路绿灯：**mock 网关当时发的是无名帧**（`web/scripts/mock-gateway.mjs`）——mock 断言的是客户端的假设，不是服务端的行为。
+- **修法**：① 新增 `web/src/composables/useSSEStream.ts`：`fetch` + `ReadableStream` 读流，带 `Authorization: Bearer <token>`（复用控制台本来就持有的那枚令牌），自带指数退避重连（1s 起、30s 封顶，因为 fetch 不会自己重连）、401/403 立即终止并交给统一的 401 策略（清令牌 + 跳 `/login`，`handleUnauthorizedResponse` 从 `web/src/api/client.ts` 导出给流用）、generation 守卫防止关闭后的旧循环复活；② 新增 `web/src/composables/sseParser.ts`：纯函数帧解析器，按 WHATWG `event-stream` 处理具名帧、注释保活（`: ping`）、多 `data:` 行、CRLF 与任意分块边界；③ `useAlertStream` 与 `MonitorView` 改用该客户端，事件**按名分派**（不再只听默认类型）；④ mock 网关改为发**具名帧 + 注释保活**，与服务端一致。
+- **方案取舍**：**不做 query token**（令牌会进浏览器历史与代理访问日志）、**不做 cookie**（服务端根本没有 cookie 会话层，凭空引入会附带一整套 CSRF 义务）、**不做 SSE 免鉴权**（匿名可读告警与事件）。Bearer + fetch 是唯一不引入新信任面的路子。
+- **验证**：`sseParser.spec.ts`（12 例：具名帧/注释/CRLF/跨块/尾帧）、`useSSEStream.spec.ts`（5 例：Bearer 头、具名帧分派、401 终止、指数退避、close 后不再重连）、`MonitorStream.spec.ts`（结构钉：禁 `EventSource`、禁轮询、卸载即关、换变更即重开）；`npm test` 45 文件 / 368 用例绿；`npm run build`（vue-tsc + vite build）通过；`internal/web/dist` 逐字节重打（本地用 master 原始源码复现过 committed dist，56/56 文件 SHA256 一致，确认本机构建与 CI 逐字节同源）；**真实 Chrome 跑通 `web/scripts/browser-check.mjs`（ALL PASS，exit=0）**，含「告警徽章由流喂饱」与监控页渲染两条断言。
+- **文档**：`docs/levee-api.md` §13.2b 补上「凭据走 `Authorization` 头」「两条流的帧形差异」「为什么不能用 EventSource / query / cookie」。
+
 ### 新增（信创裸机取证脚本化：一次命令拿到全部证据，三个真 bug 只有实跑才暴露）
 
 - **缺口**：`docs/xinchuang-baremetal-drill.md` 是**手敲清单**（7 步、7 段输出靠人贴）。复现一次两小时，且最容易丢的是中间那段证据；更糟的是清单本身有三处与仓库真实契约不符（凭据形状、REST 缺 plan 步骤），照它做会得到一份**空的取证**。

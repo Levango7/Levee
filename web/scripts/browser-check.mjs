@@ -231,7 +231,13 @@ function instrument(page) {
     new MutationObserver(() => {
       window.__leveeDom.last = Date.now()
     }).observe(document, { subtree: true, childList: true, characterData: true, attributes: true })
-    const counted = (u) => String(u).includes('/api')
+    const counted = (u) => String(u).includes('/api') && !isStream(String(u))
+    // The two SSE routes are NOT counted: a stream never finishes, so
+    // counting it would make every wait unbounded — the same reason the
+    // EventSource client was invisible to this counter. The stream client is
+    // fetch-based now, so the counter WOULD see it; excluding it keeps the
+    // settle signal meaning "the page's data arrived".
+    const isStream = (u) => u.includes('/alerts/stream') || /\/events(\?|$)/.test(u)
     const start = () => {
       window.__leveeReq.inflight++
       window.__leveeReq.last = Date.now()

@@ -23,6 +23,7 @@ import { formatTimestamp, priorityLabel } from '@/utils/format'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { buildTargetMap, cellSummary, STEP_LABEL, windowRange, mapRowPitch } from '@/utils/targetMap'
 import { useDensity } from '@/composables/useDensity'
+import { createSSEStream } from '@/composables/useSSEStream'
 import type { MapWindow } from '@/utils/targetMap'
 
 const route = useRoute()
@@ -182,52 +183,40 @@ async function loadLogs(quiet = false): Promise<void> {
 // The monitor used to poll /changes/<id>/logs every 2 seconds, so progress
 // arrived up to 2s late and every poll re-sent the whole tail. The server now
 // streams events at /changes/<id>/events (internal/grpc/sse.go), and the
-// browser subscribes with EventSource:
+// browser subscribes to it:
 //
 //   - a status change re-reads the change and the aggregates, because those
 //     two panels are snapshots the event does not carry;
 //   - the log tail is appended by the log request, which now fires on an
 //     event instead of on a timer, so no idle ticking and a gap after an
 //     event closes with one request;
-//   - a disconnect backs off and retries: EventSource does not retry by
-//     itself once closed, and a closed stream stays closed until re-opened.
+//   - a disconnect backs off and retries (the stream client owns the
+//     backoff, because fetch() does not retry on its own).
+//
+// The client is fetch-based, not EventSource: the gateway requires an
+// Authorization header and EventSource cannot send one (see
+// web/src/composables/useSSEStream.ts). The frames carry an event NAME
+// ("event: status_changed", internal/grpc/sse.go), so the handler reacts to
+// every frame by name rather than to the default "message" type the old
+// onmessage listener was limited to.
 
-const retryDelay = ref(1_000)
-const eventSource = ref<EventSource | null>(null)
-
-function streamUrl(): string {
-	// The same base the axios client uses, so a stream and a request cannot
-	// drift into two prefixes (one of them being whatever a proxy strips).
-	return `/api/v1/changes/${changeId.value}/events`
-}
-
-function closeStream(): void {
-  if (eventSource.value) {
-    eventSource.value.close()
-    eventSource.value = null
-  }
-}
-
-function openStream(): void {
-  if (!changeId.value || typeof EventSource === 'undefined') return
-  closeStream()
-  const es = new EventSource(streamUrl())
-  es.onopen = () => {
-    retryDelay.value = 1_000
-  }
-  es.onerror = () => {
-    closeStream()
-    setTimeout(() => {
-      retryDelay.value = Math.min(retryDelay.value * 2, 30_000)
-      openStream()
-    }, retryDelay.value)
-  }
-  es.onmessage = () => {
+const stream = createSSEStream({
+  url: () => `/api/v1/changes/${changeId.value}/events`,
+  onEvent: () => {
     void loadChange(true)
     void loadSummary(true)
     void loadLogs(true)
-  }
-  eventSource.value = es
+  },
+})
+
+function closeStream(): void {
+  stream.close()
+}
+
+function openStream(): void {
+  if (!changeId.value || typeof fetch === 'undefined') return
+  closeStream()
+  stream.connect()
 }
 
 function scrollToBottom(): void {
