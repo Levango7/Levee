@@ -681,6 +681,15 @@ func (s *ChangeService) PlanChange(ctx context.Context, req *pb.PlanChangeReques
 	if s.engine != nil && s.engine.Plan != nil {
 		planMsg, stored, err := s.engine.Plan(ctx, req.GetChangeId(), req.GetTargetHosts())
 		if err != nil {
+			// A refusal the engine already classified keeps its code: the
+			// wiring layer knows whether the request was malformed
+			// (InvalidArgument) or the state forbids the plan
+			// (FailedPrecondition). Returning it as-is preserves both the
+			// code and the error chain; the fallback below would bury an
+			// operator-actionable refusal in Internal (HTTP 500).
+			if _, ok := classifiedStatus(err); ok {
+				return nil, err
+			}
 			// A failed SQL review refuses the plan before anything is
 			// written, and the refusal itself is evidence: record which
 			// change tried to plan SQL the rule engine failed. Like every
@@ -1312,6 +1321,18 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		s.sealTraceChain(ctx, run.ID, "failed")
 		s.recordFixOutcome(run, "failed")
 		s.reportOpsMeshResult(ctx, run, "failed")
+		// A refusal the engine already classified keeps its code: a plan
+		// artifact that is missing or has drifted is a state the operator
+		// can fix by re-planning (FailedPrecondition → 412), not a server
+		// fault. Every other engine error stays Internal (500).
+		if _, ok := classifiedStatus(err); ok {
+			return &pb.ApplyResponse{
+				Change:  runToPB(run),
+				RunId:   execRunID,
+				Success: false,
+				Message: err.Error(),
+			}, err
+		}
 		return &pb.ApplyResponse{
 			Change:  runToPB(run),
 			RunId:   execRunID,

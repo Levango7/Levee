@@ -967,14 +967,18 @@ func (e *Engine) loadStoredPlan(ctx context.Context, changeID string) (*plan.Pla
 		return nil, fmt.Errorf("wiring: change %q not found", changeID)
 	}
 	if run.PlanJSON == "" {
-		return nil, fmt.Errorf("wiring: change %q has no persisted plan; plan (and re-approve) before executing", changeID)
+		// A state refusal the operator can act on: plan (and re-approve)
+		// first. Classified so the gateway answers 412, not 500.
+		return nil, failedPrecondition(fmt.Errorf("%w (change %q)", ErrNoPersistedPlan, changeID))
 	}
 	var p plan.Plan
 	if err := json.Unmarshal([]byte(run.PlanJSON), &p); err != nil {
 		return nil, fmt.Errorf("wiring: stored plan for %q is corrupt: %w", changeID, err)
 	}
 	if !plan.VerifyHash(&p, run.PlanHash) {
-		return nil, fmt.Errorf("wiring: stored plan for %q does not match its plan hash (drift or corruption); re-plan required", changeID)
+		// Drift between the artifact and the hash the run carries. The
+		// remedy is re-planning, so this is a state refusal (412).
+		return nil, failedPrecondition(fmt.Errorf("%w (change %q)", ErrPlanDrift, changeID))
 	}
 	return &p, nil
 }

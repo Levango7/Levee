@@ -39,3 +39,26 @@ func buildPageToken(end, total int) string {
 	}
 	return fmt.Sprintf("%d", end)
 }
+
+// classifiedStatus returns the gRPC status carried by err, when err carries
+// one.
+//
+// A refusal classified by a lower layer KEEPS its classification: the wiring
+// layer knows whether a plan request was malformed (InvalidArgument → 400) or
+// whether the state forbids it (FailedPrecondition → 412), and burying that
+// in Internal turns an operator-actionable refusal into a server fault — the
+// operator gets a 500 for a request that was simply wrong.
+//
+// Only a real classification passes: an ordinary error yields ok=false from
+// status.FromError, and codes.Unknown is treated as "not classified" (that is
+// what status.FromError reports for a plain error).
+func classifiedStatus(err error) (*status.Status, bool) {
+	if err == nil {
+		return nil, false
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() == codes.Unknown {
+		return nil, false
+	}
+	return st, true
+}

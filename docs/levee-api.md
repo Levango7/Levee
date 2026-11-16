@@ -951,6 +951,11 @@ RESTful 风格，支持两套路径：
 > - **`POST /changes/:id/apply`**（`ApplyChange`）：**不兑现，故明确拒绝**（`FailedPrecondition`，message 点名「要预览请用 `PlanChange`」）。proto 说这一档是「只打印计划并退出」，而打印计划是 `PlanChange` 的职责；这里若照旧执行，操作员说「预览」就会真的 apply 一条生产变更。
 > - **`POST /changes`**（`CreateChange`）：`dryRun` **空转但契约成立**——create 只建 draft 等审批，本来就不应用，所以「只计划并返回、不应用」这条语义无论如何都成立。
 >
+> **`plan` / `apply` 的拒绝分类（2026-11-17 起）**：这两条动作的失败分两类，HTTP 状态码不同，调用方按状态码分支即可，不必解析文案：
+> - **400（`InvalidArgument`）＝请求本身不成立**：`target_hosts` 为空（没给目标机）、目标机名不在 inventory 里。
+> - **412（`FailedPrecondition`）＝请求成立、当前状态不允许**：目标机已 retired、冻结窗口、SQL 审核拒绝、声明的门禁不可执行、已持久化的计划产物缺失或与 `plan_hash` 漂移（需重新 plan）。
+> - 此前这些拒绝一律落 **500（`Internal`）**，操作员看到的是「服务端故障」，而实际只要改一行请求或换一个目标机即可；CLI 侧 `levee apply` 对 `FailedPrecondition` 记退出码 **4**（拒绝）而非 1（故障），这条口径此前只对审批类拒绝生效，现在对计划产物类拒绝同样生效。
+>
 > **`GET /changes/:id?includePlan=true` 返回该 run 最新的执行计划。** `GetChangeRequest.include_plan`
 > 于 2026-10-14 落地兑现（台账 #18）：网关把 `?includePlan=true` 转成该字段（`internal/grpc/rest.go`），
 > 服务层 `ChangeService.GetChange` 从 `run.plan_json`（Planning 时持久化的 `plan.Plan` 规范 JSON）

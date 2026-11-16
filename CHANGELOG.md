@@ -14,6 +14,14 @@
 - **验证**：`sseParser.spec.ts`（12 例：具名帧/注释/CRLF/跨块/尾帧）、`useSSEStream.spec.ts`（5 例：Bearer 头、具名帧分派、401 终止、指数退避、close 后不再重连）、`MonitorStream.spec.ts`（结构钉：禁 `EventSource`、禁轮询、卸载即关、换变更即重开）；`npm test` 45 文件 / 368 用例绿；`npm run build`（vue-tsc + vite build）通过；`internal/web/dist` 逐字节重打（本地用 master 原始源码复现过 committed dist，56/56 文件 SHA256 一致，确认本机构建与 CI 逐字节同源）；**真实 Chrome 跑通 `web/scripts/browser-check.mjs`（ALL PASS，exit=0）**，含「告警徽章由流喂饱」与监控页渲染两条断言。
 - **文档**：`docs/levee-api.md` §13.2b 补上「凭据走 `Authorization` 头」「两条流的帧形差异」「为什么不能用 EventSource / query / cookie」。
 
+### 修复（plan/apply 的拒绝不再是 500：请求不成立答 400，状态不允许答 412）
+
+- **缺口**：`internal/wiring` 的拒绝全是裸 `fmt.Errorf`，而 `PlanChange` 只认四种 sentinel（SQL 审核、窗口、门禁、冻结），其余一律落 `codes.Internal` → HTTP 500。于是「没给 `target_hosts`」「目标机名不在 inventory」「目标机已 retired」「已持久化的计划产物漂移」这四种**操作员改一行请求就能解决**的拒绝，在 REST 与 CLI 上都读作「服务端故障」。CLI 侧 `levee apply` 的注释本来就写着「FailedPrecondition = a gate refusal（state/approval/plan artifact）」并按退出码 4（拒绝）处理——但服务端从来不肯给这个码，那条口径此前只对审批类拒绝生效。
+- **修法**：① `internal/wiring/errors.go` 新增拒绝词汇表（5 个 sentinel）与一个**同时携带 sentinel 与 gRPC code** 的错误类型（`Unwrap` 给 `errors.Is`，`GRPCStatus` 给 `status.FromError`）——分类必须跟着错误值往上走，因为 wiring 依赖 internal/grpc（EngineAdapter 接缝），反向依赖会成环；② `PlanChange` / `ApplyChange` 新增「已分类的拒绝保留原码」分支，未分类的引擎错误仍然落 Internal（500）。
+- **分类口径**：**400（`InvalidArgument`）＝请求本身不成立**（`target_hosts` 为空、目标机名不在 inventory）；**412（`FailedPrecondition`）＝请求成立、当前状态不允许**（目标机 retired、冻结窗口、SQL 审核拒绝、声明门禁不可执行、计划产物缺失或与 `plan_hash` 漂移）。
+- **验证**：`internal/wiring/errors_test.go`（sentinel 与码双读，3 例）、`internal/grpc/change_service_plan_error_codes_test.go`（保留分类 2 例 + 未分类仍 Internal 1 例）；`go test ./internal/wiring/ ./internal/grpc/ ./cmd/levee/` 全绿；`scripts/check_doc_anchors.py` PASSED；`docs/levee-api.md` §13.2 补了拒绝分类说明。
+- **边界**：这是**状态码**变更，不是行为变更——拒绝的原因、文案与 run 的终态（apply 侧仍按原路径落 `failed`）都没变，只是 500 改成了 400/412。副作用是既有「HTTP 500」监控会少一类误报。
+
 ### 新增（信创裸机取证脚本化：一次命令拿到全部证据，三个真 bug 只有实跑才暴露）
 
 - **缺口**：`docs/xinchuang-baremetal-drill.md` 是**手敲清单**（7 步、7 段输出靠人贴）。复现一次两小时，且最容易丢的是中间那段证据；更糟的是清单本身有三处与仓库真实契约不符（凭据形状、REST 缺 plan 步骤），照它做会得到一份**空的取证**。
