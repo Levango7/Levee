@@ -134,6 +134,10 @@ function resetSearch(): void {
 }
 
 const addSubmitting = ref(false)
+// The CSV import below is a LOOP of per-row requests: a second click starts a
+// second loop, and every row is added twice. Same guard shape as submitAdd
+// (and the reason it exists there), plus the button's :loading.
+const csvImporting = ref(false)
 async function submitAdd(): Promise<void> {
   if (addSubmitting.value) return
   addSubmitting.value = true
@@ -250,7 +254,9 @@ async function openHistory(row: Target): Promise<void> {
 }
 
 async function submitImport(): Promise<void> {
+  if (csvImporting.value) return
   // CSV format: hostname,channel_type,port,credential_ref,label1=v1,label2=v2
+  csvImporting.value = true
   const lines = importText.value.split('\n').map((l) => l.trim()).filter(Boolean)
   let success = 0
   let failed = 0
@@ -282,6 +288,7 @@ async function submitImport(): Promise<void> {
   ElMessage.success(`导入完成：成功 ${success}，失败 ${failed}`)
   importVisible.value = false
   importText.value = ''
+  csvImporting.value = false
   load()
 }
 
@@ -430,7 +437,7 @@ onMounted(() => {
       />
       <template #footer>
         <el-button @click="importVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitImport">导入</el-button>
+        <el-button type="primary" :loading="csvImporting" @click="submitImport">导入</el-button>
       </template>
     </el-dialog>
 
@@ -468,7 +475,7 @@ onMounted(() => {
     <el-dialog
       v-model="historyVisible"
       :title="historyFor ? `主机历史：${historyFor.hostname}` : '主机历史'"
-      width="760px"
+      width="min(760px, 100vw - 48px)"
     >
       <div v-loading="historyLoading" style="min-height: 120px">
         <el-table v-if="historyEntries.length > 0" :data="historyEntries" size="small">
