@@ -53,3 +53,59 @@ describe('changesApi.ticketDocument', { timeout: COLD_IMPORT_TIMEOUT }, () => {
     expect(seen.url).toBe('/changes/a%2Fb%20c/ticket?format=markdown')
   })
 })
+
+// ---------------------------------------------------------------------------
+// The white-screen regression: the client must NOT unwrap the response.
+//
+// `GET /changes/:id/ticket` answers with the DBChangeTicket FLAT at the top
+// level (`writeProto` of the pb message — `internal/grpc/rest.go`
+// handleChangeTicket). The wire contract records that shape as the
+// `dbchange-ticket` entry in api/__contract__/wire.json: its keys are
+// `change`, `sql`, `rollback`, `window`, `approval`, `execution`, `audit`.
+//
+// The console used to call `.then((r) => r.ticket)` — a shape the server never
+// sends. The request SUCCEEDED, the promise resolved to `undefined`, and the
+// page rendered nothing: a blank sheet with no error anywhere. Every existing
+// guard missed it because they were structural (they read this file's source,
+// they never drove it).
+//
+// This test drives it: mock the transport with the server's real shape, and
+// assert the caller receives a ticket whose sections are reachable. An unwrap
+// makes this fail immediately.
+describe('changesApi.ticket returns the flat contract', { timeout: COLD_IMPORT_TIMEOUT }, () => {
+  // The server's actual shape, as recorded in the committed wire snapshot.
+  const FLAT = {
+    change: { id: 'run-1', label: '账户表迁移', status: 'completed', planState: 'readable' },
+    sql: { hasSql: true, steps: [{ step: 'migrate', sql: 'UPDATE t SET a=1' }] },
+    rollback: { strategy: 'snapshot', hasUndo: true },
+    window: { enforcedAt: 'plan', persistedPerRun: false },
+    approval: { hasApproval: true, level: 'standard', status: 'approved', matchesPlan: true },
+    execution: { verdict: 'complete', hasEvidence: true },
+    audit: { valid: true, verified: true, count: 3 },
+  }
+
+  it('resolves to the ticket itself, with every section reachable', async () => {
+    vi.resetModules()
+    const mod = await import('./index')
+    const client = await import('./client')
+    const seen: { url?: string } = {}
+    client.axiosClient.defaults.adapter = async (config) => {
+      seen.url = config.url
+      return { data: FLAT, status: 200, statusText: 'OK', headers: {}, config }
+    }
+
+    const ticket = await mod.changesApi.ticket('run-1')
+
+    expect(seen.url).toBe('/changes/run-1/ticket')
+    // The regression: an unwrap makes every one of these `undefined`.
+    expect(ticket).toBeDefined()
+    expect(ticket.change?.id).toBe('run-1')
+    expect(ticket.change?.planState).toBe('readable')
+    expect(ticket.sql?.hasSql).toBe(true)
+    expect(ticket.rollback?.strategy).toBe('snapshot')
+    expect(ticket.window?.enforcedAt).toBe('plan')
+    expect(ticket.approval?.matchesPlan).toBe(true)
+    expect(ticket.execution?.verdict).toBe('complete')
+    expect(ticket.audit?.valid).toBe(true)
+  })
+})

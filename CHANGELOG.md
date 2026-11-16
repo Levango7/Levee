@@ -42,6 +42,15 @@
 - **验证**：本机 Linux amd64 自指口径**完整跑通两次**：`file_v1=v1 → file_v2=v2 → file_restored=v1`，`audit/verify` `valid=true / entriesVerified=3 / unsealed=0`，apply `completed`、rollback `rolled_back`（`rolledBackHosts=[127.0.0.1]`）。`scripts/test_xinchuang_baremetal_drill.py` **13 例**把上述承重性质钉住（含 plan 在 approve 之前、探针带 token、主口令复用、auth_method 二选一、credential_ref、`src` 相对性、证据先落盘后失败）。文档同步：清单改为「先跑脚本、本文作依据」，并补上缺失的 plan 步骤与三个实跑教训。
 - **边界（重要）**：脚本自指演练证明的是**脚本与契约正确**，不是**信创裸机已验证**；矩阵里「麒麟/统信 × amd64（裸机）」那格**仍未改状态**，要等真机上跑一遍 `summary.txt` 三行都对上。沙箱为验证写入的演练钥匙已清理。
 
+### 修复（发布单白屏的回归守卫 + 两个 #395 漏掉的对话框遗留）
+
+- **缺口（一）**：`GET /changes/:id/ticket` 的响应是**顶层平铺**的 `DBChangeTicket`（`internal/grpc/rest.go` 的 `handleChange` 走 `writeProto`），而前端 `changesApi.ticket` 曾写成 `.then((r) => r.ticket)`——解包一个服务端从不发送的信封。请求**成功**、promise resolve 成 `undefined`、页面渲染成空白：**白屏且不报错**。已由 #395 修正，但它自己声明「只做了代码层 diff 验证，TicketView 解包后的真实渲染没上过真机」——而这批前端守卫清一色是**读源码**的结构断言（没有一个真的驱动过 API 客户端），所以这个 bug 正是从这类守卫的盲区里溜过去的。
+- **修法（一）**：`web/src/api/ticket.spec.ts` 新增「flat contract」用例——把 axios adapter 换成服务端**真实形状**（与入库的 `wire.json` `dbchange-ticket` 条目一致），驱动 `changesApi.ticket(id)`，并断言七个分段的字段都能取到。**变异实测**：把 unwrap 埋回去，该例立即红（`expected undefined to be defined`），还原即绿。
+- **缺口（二）**：核对 #395 的修复面时发现两处它没覆盖到的：① `TargetsView` 的「主机历史」对话框还写着 `width="760px"`（窄屏溢出）；② **CSV 批量导入的提交按钮没有 `:loading`**，而它是一条**逐行请求的循环**——快手双击会把整个循环再跑一遍，每台主机被加两次。
+- **修法（二）**：两处都修（对话框改 `min(760px, 100vw - 48px)`；导入加 `csvImporting` 重入守卫 + 按钮 `:loading`，形状与同文件 `submitAdd` 一致），并把这两类缺陷做成**机器可查的守卫** `web/src/views/dialogs.spec.ts`：每个 `el-dialog` 的 `width` 必须是 `min(...)` 开头；每个 `@click` 指向 `submit*`/`import*`/`add*` 的同标签必须带 `:loading`。**变异实测**：两处分别埋回旧形状，两条守卫各自红并点名文件。
+- **验证**：前端 **44 个测试文件 / 353 例**全绿（新增 3 例：flat contract 1 + dialogs 2）；`vue-tsc --noEmit` 干净；`vite build` 通过且 `internal/web/dist` 已同步；Python 门禁 208 例、`go build ./...`、文档锚点与路线图门禁全绿。
+- **边界**：dialogs 守卫盯的是「写入型对话框」这两个形状，不覆盖「对话框内容是否在窄屏下可读」——那需要真浏览器复核（`browser-check` 的窄屏档仍是已登记缺口）。
+
 ### 修复（pg.query 的 SQL 从未被审核：三处「只认 mysql」的收集器）
 
 - **缺口（真的 fail-open）**：上一批把 `pg.query` 执行模块接进了执行面，而**审核面的三处收集器仍然硬编码 `module == "mysql" && action == "query"`**——计划期门禁（`internal/wiring/sqlreview_gate.go`）、发布单（`internal/dbchange/ticket.go`）、复算命令（`levee sqlreview --change`）。后果按严重度排：① **一条 PostgreSQL 的 `DELETE FROM users`（无 WHERE，引擎最直白的 fail＝SR-02）能生成计划**——没有审核结论、没有 verdict 被 plan_hash 绑定，「审不过不放行」这句话在 PG 上不成立；② 发布单对 PG 变更写「该计划没有可审核的 SQL 步骤」——在自家产品门面上说假话；③ 复算命令找不到 SQL 面，比不了。三份拷贝，一次全错。
