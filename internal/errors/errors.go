@@ -321,8 +321,15 @@ const (
 	// Structural errors (LE102)
 	LE102 = "LE102" // fixed step (batch steps) count is not positive
 
-	// Safety advisories (LE103) — CompileWarning, see dsl.Advise
+	// Safety advisories (LE103, LE108) — CompileWarning, see dsl.Advise
 	LE103 = "LE103" // undo step does not declare idempotent: true [warning]
+	// LE108: a step the author marked irreversible declares no compensation.
+	// R2 says a change must be reversible; some genuinely are not, and the
+	// author's `irreversible: true` is how they say so. What this advisory adds
+	// is that the absence of a rollback pair becomes VISIBLE at compile time
+	// instead of being discovered when the change fails halfway and there is
+	// nothing to run.
+	LE108 = "LE108" // irreversible step declares no rollback compensation [warning]
 )
 
 // CompileSeverity is the compile-time severity of an error code: either "error"
@@ -384,6 +391,7 @@ var codeCatalogue = []CodeInfo{
 	{LE101, "snapshot", "run snapshot path must be absolute", CompileError},
 	{LE102, "batch", "fixed step count is not positive", CompileError},
 	{LE103, "safety", "undo step does not declare idempotent: true", CompileWarning},
+	{LE108, "safety", "irreversible step declares no rollback compensation", CompileWarning},
 }
 
 // Lookup returns the CodeInfo for the given code, or false if the code is not

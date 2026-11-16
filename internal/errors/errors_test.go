@@ -203,6 +203,12 @@ func TestErrorCodes_Distinct(t *testing.T) {
 	// 2026-10-31 RE-ADDED LE071 (DAG cycle) and added LE104 (unknown depends_on
 	// reference): dsl.OrderStepsByDependsOn now consumes depends_on and produces
 	// both, so LE071 is no longer withdrawn.
+	// 2026-11-16 added LE108 (irreversible step without compensation, produced
+	// by dsl.Advise), and added LE105/LE106 — the catalogue has carried them
+	// since the target-caps landing while this "whole catalogue" list still
+	// stopped at LE104, so this list and AllCodes() disagreed about what the
+	// catalogue held. Both counts are now the same number, and
+	// TestErrorCodes_MatchAllCodes keeps them that way.
 	codes := []string{
 		LE001, LE002, LE003,
 		LE020, LE021,
@@ -213,13 +219,22 @@ func TestErrorCodes_Distinct(t *testing.T) {
 		LE082,
 		LE092, LE093, LE094, LE095, LE096, LE097,
 		LE098, LE099, LE100, LE101, LE102, LE103, LE104,
+		LE105, LE106, LE108,
 	}
 	seen := make(map[string]bool, len(codes))
 	for _, c := range codes {
 		assert.False(t, seen[c], "duplicate error code: %s", c)
 		seen[c] = true
 	}
-	assert.Equal(t, 27, len(codes), "expected 27 error codes")
+	assert.Equal(t, 30, len(codes), "expected 30 error codes")
+
+	// The two lists must agree in both directions; counting them separately was
+	// how they drifted to 27 vs 29 without any test going red.
+	got := map[string]bool{}
+	for _, ci := range AllCodes() {
+		got[ci.Code] = true
+	}
+	assert.Equal(t, seen, got, "the hand-written list and AllCodes() must name the same codes")
 }
 
 func TestLookup_Registered(t *testing.T) {
@@ -256,8 +271,10 @@ func TestAllCodes_CountAndImmutable(t *testing.T) {
 	// which is what TestEveryCatalogueCodeHasAProducer now pins) → 25 again
 	// (2026-10-28: LE004 withdrawn with the input-resolution feature it described
 	// as missing) → 27 (2026-10-31: LE071 re-registered and LE104 added when
-	// dsl.OrderStepsByDependsOn began consuming depends_on).
-	assert.Equal(t, 29, len(all))
+	// dsl.OrderStepsByDependsOn began consuming depends_on) → 30 (2026-11-16:
+	// LE108 added; LE105/LE106 were already in the catalogue but missing from
+	// TestErrorCodes_Distinct's copy of it, so the two now agree at 30).
+	assert.Equal(t, 30, len(all))
 
 	// Mutating the returned slice must not affect the package-level catalogue.
 	all[0] = CodeInfo{Code: "MUTATED"}
