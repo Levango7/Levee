@@ -74,6 +74,23 @@ func auditKey() []byte {
 // effective digest mode.
 func Keyed() bool { return len(auditKey()) > 0 }
 
+// ResetKeyForTest re-arms the lazy HMAC key resolution so a test can
+// exercise both digest modes inside one process.
+//
+// It is exported because the key is resolved exactly once per process (the
+// first digest decides), and the gateway's GET /audit/chain-mode endpoint has
+// to be tested in BOTH modes — that test lives in another package, so a
+// package-private hook would not reach it.
+//
+// Production code must never call it: flipping the key mid-process would make
+// digests computed before the flip inconsistent with digests computed after
+// it, and an audit chain whose hashes change meaning halfway is worse than no
+// chain at all.
+func ResetKeyForTest() {
+	keyOnce = sync.Once{}
+	hmacKey = nil
+}
+
 // digest returns the lower-case hex encoding of the keyed (or unkeyed)
 // SHA-256 digest of payload. This is the single funnel through which every
 // audit digest is computed, so keying and canonicalization stay consistent

@@ -187,4 +187,43 @@ describe('change detail page', () => {
     expect(view, 'no local decision count').not.toMatch(/\.decisions\.length/)
     expect(view, 'no local pending-set derivation').not.toMatch(/new Set\(/)
   })
+
+  it('reads the chain verdict off the message prefix, not only off the boolean', () => {
+    // The boolean alone cannot tell three states apart, and one of them is not
+    // a failure at all: the production chain is sealed when a run reaches a
+    // terminal state, so a running change's tail rows carry no hash yet. The
+    // verifier fails closed on that (valid=false), so without the message
+    // prefix the console would paint every running change red and send an
+    // operator hunting for an attacker who does not exist.
+    //
+    // The four prefixes are a CONTRACT with the server (docs/levee-api.md
+    // §13.2c), so the view has to go through the shared helper that names
+    // them — not re-derive them here.
+    expect(view, 'the verdict must come from the shared helper').toContain(
+      "import { chainModeLabel, chainVerdict as chainVerdictOf } from '@/utils/auditChain'",
+    )
+    expect(view, 'the verdict must be computed by the helper').toContain(
+      'chainVerdictOf(chain.value.message, chain.value.valid)',
+    )
+    // The tag type is driven by the verdict, not by the raw boolean: an
+    // unsealed tail is a warning, not a danger.
+    expect(view, 'the tag must be driven by the verdict').toContain(':type="chainVerdict.type"')
+    expect(view, 'the old boolean-driven tag must be gone').not.toContain(
+      ':type="chain.valid ? \'success\' : \'danger\'"',
+    )
+  })
+
+  it('tells the reader which digest the chain was built with', () => {
+    // "哈希链完整" reads as the STRONG guarantee (keyed HMAC) whether or not
+    // the deployment has a key. On an unkeyed deployment anyone who can write
+    // to the store can recompute the whole chain, so the console has to say
+    // which of the two the reader is looking at — and say it out loud when the
+    // answer is the weaker one.
+    expect(view, 'the mode must be fetched').toContain('auditApi.chainMode()')
+    expect(view, 'the mode must reach the reader').toContain('chainModeTag')
+    expect(view, 'the unkeyed caveat must reach the reader').toContain('当前部署未配置审计口令')
+    // A failed mode read must not take the page down: the mode is a property of
+    // the deployment, not of this change, and the verdict still has to render.
+    expect(view, 'the mode read is best-effort').toContain('auditApi.chainMode().catch(')
+  })
 })

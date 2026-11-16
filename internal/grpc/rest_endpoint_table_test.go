@@ -108,10 +108,11 @@ var documentedRoutes = map[string]string{
 	"GET /agents/:id":    "rest_agents.go dispatchAgents",
 	"DELETE /agents/:id": "rest_agents.go dispatchAgents",
 	// --- audit / auth (rest.go dispatchOperationalRest) ---
-	"GET /audit/log":    "rest.go dispatchOperationalRest case audit",
-	"GET /audit/traces": "rest.go dispatchOperationalRest case audit",
-	"GET /audit/verify": "rest.go dispatchOperationalRest case audit",
-	"POST /auth/github": "rest.go dispatchOperationalRest case auth",
+	"GET /audit/log":        "rest.go dispatchOperationalRest case audit",
+	"GET /audit/traces":     "rest.go dispatchOperationalRest case audit",
+	"GET /audit/verify":     "rest.go dispatchOperationalRest case audit",
+	"GET /audit/chain-mode": "rest.go dispatchOperationalRest case audit",
+	"POST /auth/github":     "rest.go dispatchOperationalRest case auth",
 	// --- system (rest.go dispatchOperationalRest) ---
 	"GET /system/version":         "rest.go dispatchOperationalRest",
 	"GET /system/status":          "rest.go dispatchOperationalRest",

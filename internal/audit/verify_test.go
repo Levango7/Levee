@@ -326,3 +326,64 @@ func TestFailureType_String(t *testing.T) {
 	assert.Equal(t, "empty_hash", FailureEmptyHash.String())
 	assert.Equal(t, "unknown", FailureType(99).String())
 }
+
+// TestVerifyTraces_MatchesChainVerifier pins the property the extraction was
+// made for: a caller that already holds the records must get the SAME verdict
+// as the caller that reads them from the store.
+//
+// The console's trace view used to carry its own, weaker idea of "valid" (it
+// compared only the PrevHash/CurrHash continuity), so a chain whose CONTENT
+// had been rewritten passed the trace view while /audit/verify reported the
+// same chain as tampered. VerifyTraces is the shared body both now use; this
+// test is what keeps them from drifting apart again.
+func TestVerifyTraces_MatchesChainVerifier(t *testing.T) {
+	v, store := newVerifier(t)
+	ctx := context.Background()
+	buildChain(t, store, "run-shared", 3)
+
+	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-shared"})
+	require.NoError(t, err)
+	require.Len(t, traces, 3)
+
+	fromStore, err := v.Verify(ctx, "run-shared")
+	require.NoError(t, err)
+	fromRecords := VerifyTraces("run-shared", traces)
+
+	assert.Equal(t, fromStore.Valid, fromRecords.Valid)
+	assert.Equal(t, fromStore.RunID, fromRecords.RunID)
+	assert.Equal(t, fromStore.Count, fromRecords.Count)
+	assert.Equal(t, fromStore.LegacyCount, fromRecords.LegacyCount)
+	assert.Equal(t, fromStore.Failures, fromRecords.Failures)
+	assert.True(t, fromRecords.Valid)
+}
+
+// TestVerifyTraces_CatchesRewrittenContent is the case the old weak check
+// missed: the record's hash was rewritten, so the chain's CONTINUITY still
+// holds, but the stored hash no longer matches the record's content.
+func TestVerifyTraces_CatchesRewrittenContent(t *testing.T) {
+	v, store := newVerifier(t)
+	ctx := context.Background()
+	buildChain(t, store, "run-rewrite", 2)
+
+	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-rewrite"})
+	require.NoError(t, err)
+	require.Len(t, traces, 2)
+
+	// Overwrite the second record's hash with a different non-empty value.
+	// Its PrevHash still points at the first record's (untouched) hash, so
+	// the chain's continuity is intact — only the content check catches it.
+	traces[1].CurrHash = "bbbb" + traces[1].CurrHash[4:]
+	tamperTraceCurrHash(t, store, traces[1].ID, traces[1].CurrHash)
+
+	rewritten, err := store.ListTraces(ctx, state.TraceFilter{RunID: "run-rewrite"})
+	require.NoError(t, err)
+	result := VerifyTraces("run-rewrite", rewritten)
+	assert.False(t, result.Valid)
+	require.Len(t, result.Failures, 1)
+	assert.Equal(t, FailureHashMismatch, result.Failures[0].Type)
+
+	// And the store-reading verifier agrees, field for field.
+	fromStore, err := v.Verify(ctx, "run-rewrite")
+	require.NoError(t, err)
+	assert.Equal(t, fromStore.Failures, result.Failures)
+}

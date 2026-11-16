@@ -608,19 +608,14 @@ func (gw *Gateway) restRoute() http.Handler {
 // route families. Keeping these exact path switches out of restRoute prevents
 // the top-level dispatcher from growing past the project's complexity gate
 // whenever a new operational endpoint is added.
+//
+// The audit family is dispatched by its own function for the same reason:
+// four audit routes with a method check each already sit at the complexity
+// ceiling, and the fifth (GET /audit/chain-mode) pushed this one over it.
 func (gw *Gateway) dispatchOperationalRest(w http.ResponseWriter, r *http.Request, family, method, path string) {
 	switch family {
 	case "audit":
-		switch {
-		case path == "/audit/log" && method == "GET":
-			gw.handleAuditLog(w, r)
-		case path == "/audit/traces" && method == "GET":
-			gw.handleAuditTraces(w, r)
-		case path == "/audit/verify" && method == "GET":
-			gw.handleAuditVerify(w, r)
-		default:
-			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
-		}
+		gw.dispatchAuditRest(w, r, method, path)
 	case "auth":
 		if path == "/auth/github" && method == "POST" {
 			gw.handleGitHubLogin(w, r)
@@ -650,6 +645,28 @@ func (gw *Gateway) dispatchOperationalRest(w http.ResponseWriter, r *http.Reques
 		default:
 			writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 		}
+	}
+}
+
+// dispatchAuditRest routes the audit family: the log, the trace list, the
+// chain verification, and the chain's digest mode.
+//
+// It is its own function because the operational dispatcher had reached the
+// complexity ceiling with four audit routes, and a fifth (the digest mode)
+// would have pushed it over. The split keeps both under the gate without
+// changing any route's behaviour.
+func (gw *Gateway) dispatchAuditRest(w http.ResponseWriter, r *http.Request, method, path string) {
+	switch {
+	case path == "/audit/log" && method == "GET":
+		gw.handleAuditLog(w, r)
+	case path == "/audit/traces" && method == "GET":
+		gw.handleAuditTraces(w, r)
+	case path == "/audit/verify" && method == "GET":
+		gw.handleAuditVerify(w, r)
+	case path == "/audit/chain-mode" && method == "GET":
+		gw.handleAuditChainMode(w, r)
+	default:
+		writeJSONError(w, http.StatusNotFound, "not found: "+r.URL.Path)
 	}
 }
 
@@ -1673,6 +1690,44 @@ func (gw *Gateway) handleAuditTraces(w http.ResponseWriter, r *http.Request) {
 // environment (protoc is unavailable) and whose fields are all run-scoped —
 // forcing a single global chain into the per-run RunVerification list would
 // misreport what it covers.
+// handleAuditChainMode reports which digest the audit chain is built with.
+//
+// Why this is an endpoint and not a sentence in the docs: the difference
+// between the two modes is a GUARANTEE, not a detail.
+//
+//   - keyed: HMAC-SHA256 over the canonical record, with the passphrase from
+//     LEVEE_AUDIT_HMAC_KEY. An attacker who can write to the store but cannot
+//     read the key cannot recompute a rewritten chain, so the chain is
+//     tamper-evident against them.
+//   - unkeyed: bare SHA-256. It still detects accidental corruption, a
+//     continuity break and a rewritten record whose hashes were left alone —
+//     but anyone who can write to the store can recompute the whole chain.
+//
+// Without this, the console's "哈希链完整" reads as the stronger guarantee
+// even on a deployment that has no key at all. The mode is deployment-wide
+// (not environment-scoped), so it is judged like the other deployment-wide
+// reads (cluster status): in permission.default_env.
+func (gw *Gateway) handleAuditChainMode(w http.ResponseWriter, r *http.Request) {
+	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
+	if err := authorizeResourceRead(ctx, gw.authz, gw.authz.ResolveEnv(""), "GetAuditChainMode"); err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	mode := "unkeyed"
+	algorithm := "SHA-256"
+	if audit.Keyed() {
+		mode = "keyed"
+		algorithm = "HMAC-SHA256"
+	}
+	writeJSON(w, map[string]any{
+		"mode":      mode,
+		"algorithm": algorithm,
+		// The key's presence, spelled out: "keyed" alone could be read as a
+		// mode name rather than a statement that a passphrase IS configured.
+		"keyed": mode == "keyed",
+	})
+}
+
 func (gw *Gateway) handleAuditVerify(w http.ResponseWriter, r *http.Request) {
 	svc := gw.audit
 	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))

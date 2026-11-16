@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
@@ -458,16 +459,25 @@ func TestAuditServiceE2E(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Seed two trace entries forming a valid hash chain.
+	// Seed two trace entries and build a REAL hash chain over them. The
+	// previous version seeded hand-written hashes ("hash-e2e-1"), which the
+	// trace endpoint's verifier now (correctly) rejects: a made-up hash
+	// matches no recomputation. Building through the production builder is
+	// what makes this an end-to-end check rather than a fixture.
 	now := time.Now().UTC()
 	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
 		ID: "trc-e2e-1", RunID: created.GetId(), Event: "start",
-		PrevHash: "", CurrHash: "hash-e2e-1", Timestamp: now,
+		Timestamp: now,
 	}))
 	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
 		ID: "trc-e2e-2", RunID: created.GetId(), Event: "end",
-		PrevHash: "hash-e2e-1", CurrHash: "hash-e2e-2", Timestamp: now.Add(time.Second),
+		Timestamp: now.Add(time.Second),
 	}))
+	builder, err := audit.NewHashChainBuilder(store)
+	require.NoError(t, err)
+	built, _, err := builder.Build(ctx, created.GetId())
+	require.NoError(t, err)
+	require.Equal(t, 2, built)
 
 	// 1. GetTrace via ChangeService, with hash-chain verification.
 	trace, err := changeClient.GetTrace(ctx, &pb.GetTraceRequest{
