@@ -124,6 +124,22 @@ func (v *ChainVerifier) Verify(ctx context.Context, runID string) (*VerifyResult
 		return nil, ErrNoTraces
 	}
 
+	return VerifyTraces(runID, traces), nil
+}
+
+// VerifyTraces checks a chain of trace records the caller has already read.
+//
+// It is the body of ChainVerifier.Verify, split out so a caller that ALREADY
+// holds the records verifies with the same code as the one that reads them
+// from the store. One implementation, one verdict: the console's trace view
+// used to carry its own, weaker idea of "valid" (it compared only the
+// PrevHash/CurrHash continuity), so a chain whose CONTENT had been rewritten
+// passed the trace view while /audit/verify reported it as tampered — the
+// same chain, two answers.
+//
+// The records must be in the chain's stored order (timestamp, id ascending);
+// that is what ListTraces returns and what the hashes were computed over.
+func VerifyTraces(runID string, traces []*state.Trace) *VerifyResult {
 	result := &VerifyResult{
 		RunID: runID,
 		Count: len(traces),
@@ -150,7 +166,7 @@ func (v *ChainVerifier) Verify(ctx context.Context, runID string) (*VerifyResult
 		prevHash = t.CurrHash
 	}
 
-	return result, nil
+	return result
 }
 
 // VerifyStrict is like Verify but returns ErrVerifyFailed when the chain is

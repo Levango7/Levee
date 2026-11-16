@@ -453,6 +453,25 @@ export const auditApi = {
       brokenReason: string
     }>
   }> => get('/audit/verify', { params }),
+
+  /**
+   * Which digest the audit chain is built with.
+   *
+   * The difference is a GUARANTEE, not a detail: `keyed` means the digest is
+   * an HMAC-SHA256 over the canonical record, so someone who can write to the
+   * store but cannot read the passphrase cannot recompute a rewritten chain.
+   * `unkeyed` means a bare SHA-256 — it still catches accidental corruption and
+   * a record whose content was rewritten without rebuilding the hashes, but
+   * anyone who can write to the store can recompute the whole chain.
+   *
+   * The console needs this to avoid reading "哈希链完整" as the stronger
+   * guarantee on a deployment that has no key at all.
+   */
+  chainMode: (): Promise<{
+    mode: 'keyed' | 'unkeyed'
+    algorithm: 'HMAC-SHA256' | 'SHA-256'
+    keyed: boolean
+  }> => get('/audit/chain-mode'),
 }
 
 // ---------------------------------------------------------------------------

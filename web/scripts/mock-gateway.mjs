@@ -64,7 +64,13 @@ const trace = {
     { id: 't2', runId: 'run-1000', action: 'approve', actor: 'zhangs', target: '', timestamp: now - 3000, durationMs: 0, input: '', output: '', prevHash: 'a1b2', currHash: 'c3d4' },
     { id: 't3', runId: 'run-1000', action: 'apply', actor: 'ops-bot', target: 'host:10.0.1.11', timestamp: now - 2400, durationMs: 8400, input: '{"batch":2}', output: '{"ok":11,"failed":1}', detail: 'host 10.0.1.14: connection refused', prevHash: 'c3d4', currHash: 'e5f6' },
   ],
-  hashChainValid: true, verificationMessage: '链完整',
+  // The verification message follows the server's PREFIX CONTRACT
+  // (docs/levee-api.md §13.2c): "hash chain valid: …" / "hash chain not sealed
+  // yet: …" / "hash chain broken: …" / "no traces to verify". The mock used to
+  // send free prose ("链完整"), which matched no prefix — so the console had to
+  // fall back to the boolean, and the mock was no longer standing in for the
+  // server on the very thing the server guarantees.
+  hashChainValid: true, verificationMessage: 'hash chain valid: 3 records verified',
 }
 
 const approvals = [{
@@ -433,6 +439,12 @@ const server = http.createServer((req, res) => {
   if (u === '/api/v1/templates') return send(res, { templates: [], nextPageToken: '', totalSize: 0 })
   if (u === '/api/v1/targets') return send(res, { targets: [], nextPageToken: '', totalSize: 0 })
   if (u === '/api/v1/audit/log') return send(res, { entries: [], nextPageToken: '', totalSize: 0 })
+  // The audit chain's digest mode. The mock answers UNKEYED on purpose: that is
+  // the weaker guarantee, and the console has to say so out loud rather than
+  // let "哈希链完整" stand for the keyed promise.
+  if (u === '/api/v1/audit/chain-mode') {
+    return send(res, { mode: 'unkeyed', algorithm: 'SHA-256', keyed: false })
+  }
   if (u === '/api/v1/system/status') {
     return send(res, {
       version: 'v1.21.0', uptime: 86400 * 12, activeRuns: 3, pausedRuns: 1,

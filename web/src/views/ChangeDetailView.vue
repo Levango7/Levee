@@ -50,7 +50,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { batchApi, changesApi, type BatchSummaryDTO } from '@/api'
+import { batchApi, auditApi, changesApi, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry, TraceEntry } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -58,6 +58,7 @@ import StateBlock from '@/components/StateBlock.vue'
 import TraceTimeline from '@/components/TraceTimeline.vue'
 import { remediateRollback } from '@/composables/useRollbackRemediation'
 import { approvalSummary } from '@/utils/approvalChain'
+import { chainModeLabel, chainVerdict as chainVerdictOf } from '@/utils/auditChain'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
@@ -83,6 +84,9 @@ const chain = ref<{ valid: boolean; entries: TraceEntry[]; message: string }>({
   entries: [],
   message: '',
 })
+// Which digest the deployment's audit chain is built with (keyed HMAC vs bare
+// SHA-256). It is a deployment-wide fact, read from GET /audit/chain-mode.
+const chainMode = ref<{ mode: 'keyed' | 'unkeyed'; algorithm: string; keyed: boolean } | null>(null)
 const batches = ref<BatchSummaryDTO | null>(null)
 const approvals = ref<Awaited<ReturnType<typeof changesApi.approvals>>>([])
 const logs = ref<LogEntry[]>([])
@@ -140,21 +144,50 @@ const approvalRows = computed(() => approvalSummary(approvals.value))
 const planRows = computed(() => change.value?.plan?.batches ?? [])
 const planTargets = computed(() => change.value?.plan?.targetHosts ?? [])
 
+// The chain verdict, read off the MESSAGE PREFIX the server guarantees
+// (docs/levee-api.md §13.2c). The prefixes are a contract, not prose:
+//
+//   "hash chain valid: …"         — every record verified
+//   "hash chain not sealed yet: …" — the run has not settled; its tail rows
+//                                    carry no hash yet (NOT tampering)
+//   "hash chain broken: …"        — a record failed verification
+//   "no traces to verify"         — nothing to check
+//
+// The boolean alone cannot tell those apart: an unsealed tail fails closed
+// (valid=false), so without the prefix a running change would read as a red
+// "哈希链未通过" and send an operator hunting for an attacker who does not
+// exist.
+//
+// The mapping lives in utils/auditChain.ts (pure, unit-tested) rather than
+// here: it is a contract with the server, so it is worth testing without
+// mounting the view.
+const chainVerdict = computed(() => chainVerdictOf(chain.value.message, chain.value.valid))
+
+// The mode tag: the label alone ("哈希链完整") does not carry the guarantee.
+// On an unkeyed deployment anyone who can write to the store can recompute the
+// whole chain, so the reader is told which of the two they are looking at.
+const chainModeTag = computed(() => (chainMode.value ? chainModeLabel(chainMode.value) : null))
+
 async function load(): Promise<void> {
   if (!changeId.value) return
   loading.value = true
   loadError.value = null
   try {
-    const [c, t, b, a] = await Promise.all([
+    const [c, t, b, a, mode] = await Promise.all([
       changesApi.get(changeId.value, { includePlan: true }),
       changesApi.trace(changeId.value, { verify: true }),
       batchApi.batchStatus(changeId.value).catch(() => null),
       changesApi.approvals(changeId.value).catch(() => []),
+      // Best-effort: the chain mode is a property of the DEPLOYMENT, not of
+      // this change. If the read fails, the page still shows the verdict —
+      // it just cannot say which digest mode it was computed under.
+      auditApi.chainMode().catch(() => null),
     ])
     change.value = c
     chain.value = { valid: t.hashChainValid, entries: t.entries || [], message: t.verificationMessage || '' }
     batches.value = b
     approvals.value = a
+    chainMode.value = mode
   } catch (err) {
     // A missing change stays the el-empty below (a real "nothing here"); a
     // forbidden or broken fetch now answers in place instead of leaving a
@@ -312,12 +345,18 @@ onMounted(load)
       <div class="lv-panel">
         <div class="lv-panel__head">
           <h3 class="detail__h">生命周期与证据链</h3>
-          <el-tag :type="chain.valid ? 'success' : 'danger'" size="small">
-            {{ chain.valid ? '哈希链完整' : '哈希链未通过' }}
+          <el-tag :type="chainVerdict.type" size="small">
+            {{ chainVerdict.label }}
+          </el-tag>
+          <el-tag v-if="chainModeTag" :type="chainModeTag.type" size="small">
+            {{ chainModeTag.label }}
           </el-tag>
         </div>
         <p class="detail__dim">
           共 {{ chain.entries.length }} 条 trace{{ chain.message ? ` · ${chain.message}` : '' }}
+        </p>
+        <p v-if="chainMode && !chainMode.keyed" class="detail__dim">
+          当前部署未配置审计口令（{{ chainMode.algorithm }}）：链能发现内容被改写且哈希未重算，但能写库的人也能重算整条链。
         </p>
         <TraceTimeline :entries="timeline" empty-text="暂无 trace：该变更还没有进入执行" />
       </div>

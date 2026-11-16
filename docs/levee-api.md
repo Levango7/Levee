@@ -931,6 +931,7 @@ RESTful 风格，支持两套路径：
 | GET | `/audit/log` | `/api/v1/AuditService/GetAuditLog` | 列出审计记录 | `levee audit list` |
 | GET | `/audit/traces` | `/api/v1/AuditService/ListAuditTraces` | 审计 trace | — |
 | GET | `/audit/verify` | `/api/v1/AuditService/VerifyHashChain` | 哈希链校验（按 run 的 trace 链 + 全局 audit 链） | `levee audit verify` |
+| GET | `/audit/chain-mode` | —（REST-only，不进 proto） | 审计链的摘要口径：`mode`（`keyed`/`unkeyed`）、`algorithm`（`HMAC-SHA256`/`SHA-256`）、`keyed`（是否配了口令） | — |
 | GET | `/system/version` | `/api/v1/SystemService/GetVersion` | 系统版本 | — |
 | GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee system status` |
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | `levee system config get` |
@@ -1039,6 +1040,72 @@ RESTful 风格，支持两套路径：
 `web/src/composables/useSSEStream.spec.ts`（Bearer 头、具名帧分派、401 终止、指数退避）与
 `web/src/views/MonitorStream.spec.ts`（结构钉：禁 `EventSource`、禁轮询、卸载即关、换变更即重开）守住；
 mock 网关现在也发具名帧（`web/scripts/mock-gateway.mjs`），免得 mock 继续替客户端的假设作证。
+
+### 13.2c 审计链校验口径（单一事实源 + keyed 位）
+
+链校验此前有**两个口径**，且控制台用的是弱的那个：
+
+- `GET /audit/verify` 走 `audit.ChainVerifier.Verify`——**全量重算**每条记录的摘要再比对；
+- `GET /changes/:id/trace?verify=true`（控制台的「生命周期与证据链」）此前只比 `PrevHash`/`CurrHash`
+  的**连续性**——**不重算摘要**。
+
+后果：一条**内容被改写、但哈希没跟着重算**的链，在控制台上读作「哈希链完整」，在 `/audit/verify`
+上读作「已篡改」。同一条链，两个答案，而乐观的那个正好在操作员眼前。
+
+现在**只有一个校验器**：`audit.VerifyTraces(runID, traces)`（`internal/audit/verify.go`）是
+`ChainVerifier.Verify` 的共同实现，trace 端点改走它。校验器是**只读**的（它不能修链——断了就是
+证据），因此两个端点对同一条链必然给出同一个答案。
+
+> 顺带钉住一个容易混淆的词：全仓一律说 **tamper-evident**（可证明篡改），**不说 tamper-proof**
+> （防篡改）。链是 tamper-evident 的：它能**证明**内容被改过，但持钥匙的人**能重算**整条链。
+
+#### 1. keyed / unkeyed：链的口令位
+
+`GET /audit/chain-mode` 报当前部署的摘要口径（REST-only，不进 proto——`levee.proto` 在本仓库
+由 CI 钉住 protoc 版本重生成，改 proto 得不偿失）：
+
+```jsonc
+{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true }
+// 未配口令时：{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false }
+```
+
+| 模式 | 触发条件 | 保证了什么 | 没保证什么 |
+| --- | --- | --- | --- |
+| `keyed` | 配了 `LEVEE_AUDIT_HMAC_KEY`（≥16 字节） | 摘要用 **HMAC-SHA256** 算：能写库但**读不到口令**的人改写内容后**无法重算**链 | 持口令的人能重算整条链 |
+| `unkeyed` | 未配口令 | 裸 **SHA-256**：能发现意外损坏、连续性断裂、以及「改了内容却没重算哈希」的改动 | **任何能写库的人都能重算整条链** |
+
+这条区分是**保证强度的区别**，不是措辞：控制台那个「哈希链完整」标签，在没有口令的部署上不能
+读成 keyed 的那种保证。所以控制台会按 `/audit/chain-mode` 的回答，把标签与算法一起显示出来。
+
+口径是**部署级**的（不按环境分），所以它按其他部署级读（cluster status）那样判权限：在
+`permission.default_env` 下以 `view` 准入。
+
+#### 2. 校验消息的前缀契约
+
+`GET /changes/:id/trace?verify=true` 的 `verificationMessage` 前四个字符串是**契约**，控制台按前缀
+映射状态（`web/src/views/ChangeDetailView.vue`），不要当散文改写：
+
+| 前缀 | 含义 | `hashChainValid` |
+| --- | --- | --- |
+| `hash chain valid: …` | 每条记录都验过了 | `true` |
+| `hash chain not sealed yet: …` | run **还没落定**，尾巴几行还没有哈希（**不是篡改**） | `false`（见下） |
+| `hash chain broken: …` | 有记录没通过校验 | `false` |
+| `no traces to verify` | 没有可校验的记录 | `true` |
+
+**未封口仍判 `valid=false`（fail closed）**：一条被清空的哈希绝不能读作「没事」。但它用
+`not sealed yet` 这个前缀与篡改分开——生产链在 run 终态时才封口，运行中的变更本来就有未封口的
+尾巴，让操作员去追一个不存在的攻击者是误报。
+
+#### 3. 两层链
+
+别把两种链混成一条：**trace 链**（每个 run 的 `trace` 记录，按 run 分链）与**全局 audit 链**
+（所有 `audit` 记录，单链）。`/audit/verify` 同时报两层：proto 字段 `runs`/`valid` 是 trace 链，
+响应里额外拼进去的 `auditChain` 成员是全局 audit 链。`/changes/:id/trace?verify=true` 只管
+**这个 run 的 trace 链**。
+
+守卫：`internal/grpc/rest_auditchain_test.go`（audit 链成员）、`internal/grpc/change_service_test.go`
+（trace 链：真链 → valid；改内容 → broken；未封口 → not sealed yet）、`internal/grpc/rest_chain_mode_test.go`
+（`/audit/chain-mode` 的两种模式）、`internal/audit/verify_test.go`（校验器本身）。
 
 ### 13.3 认证
 

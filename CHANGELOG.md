@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 修复（审计链校验只有一个口径：trace 端点改用 /audit/verify 的同一个校验器）
+
+- **缺口**：链校验此前有**两个口径**，而控制台用的是弱的那个。`GET /audit/verify` 走 `audit.ChainVerifier.Verify`——**全量重算**每条记录的摘要再比对；`GET /changes/:id/trace?verify=true`（控制台的「生命周期与证据链」）此前只比 `PrevHash`/`CurrHash` 的**连续性**——**不重算摘要**。后果：一条**内容被改写、但哈希没跟着重算**的链，在控制台上读作「哈希链完整」，在 `/audit/verify` 上读作「已篡改」。同一条链，两个答案，而乐观的那个正好在操作员眼前。
+- **修法**：① `internal/audit/verify.go` 抽出导出 `VerifyTraces(runID, traces)`，成为 `ChainVerifier.Verify` 的**共同实现**（校验器是只读的——它不能修链，断了就是证据，所以两个端点对同一条链必然给出同一个答案）；② `internal/grpc/change_service.go` 删除弱校验 `verifyHashChain`，改用 `audit.VerifyTraces`；③ 校验消息改为**四个稳定前缀的契约**：`hash chain valid: …` / `hash chain not sealed yet: …` / `hash chain broken: …` / `no traces to verify`。**未封口仍判 `valid=false`（fail closed）**——被清空的哈希绝不能读作「没事」——但它用 `not sealed yet` 与篡改分开：生产链在 run 终态时才封口，运行中的变更本来就有未封口的尾巴，让操作员去追一个不存在的攻击者是误报；④ 新增 REST-only 端点 `GET /audit/chain-mode` 报当前部署的摘要口径（`keyed`/`unkeyed`、`HMAC-SHA256`/`SHA-256`、`keyed`），**不改 proto**（CI 钉 protoc v27.0，改 proto 得不偿失）。
+- **keyed / unkeyed 是保证强度的区别**：配了 `LEVEE_AUDIT_HMAC_KEY`（≥16 字节）时摘要是 **HMAC-SHA256**——能写库但**读不到口令**的人改写内容后**无法重算**链；没配时是裸 **SHA-256**——能发现意外损坏与「改了内容却没重算哈希」的改动，但**任何能写库的人都能重算整条链**。此前控制台的「哈希链完整」在**没有口令**的部署上也读作 keyed 的那种保证；现在标签与算法一起显示，unkeyed 时额外说明这一条。
+- **措辞**：全仓一律说 **tamper-evident**（可证明篡改），**不说 tamper-proof**（防篡改）——链是 tamper-evident 的：它能**证明**内容被改过，但持钥匙的人**能重算**整条链。
+- **前端**：`web/src/utils/auditChain.ts`（新，纯函数 + 单测）按前缀映射状态；`ChangeDetailView.vue` 用它渲染标签，并按 `/audit/chain-mode` 显示 keyed/unkeyed 标签与告警；mock 网关的 `verificationMessage` 从自由散文（「链完整」）改成带前缀的契约写法，并新增 `/audit/chain-mode` 路由（mock 不再替客户端的假设作证）。
+- **验证**：`internal/audit/verify_test.go`（`VerifyTraces` 与 `ChainVerifier.Verify` 逐字段一致；改写内容必被捕获）、`internal/grpc/change_service_test.go`（真链 → valid；改写哈希 → broken；未封口 → not sealed yet）、`internal/grpc/rest_chain_mode_test.go`（三种模式：无口令 / 有口令 / 口令过短回落 unkeyed）、`internal/grpc/integration_test.go`（E2E 改用生产 builder 建真链）；`web/src/utils/auditChain.spec.ts`（8 例）、`web/src/views/ChangeDetailView.spec.ts`（结构钉）；`go test ./internal/audit/ ./internal/grpc/` 全绿；`npm test` 46 文件 / 378 例绿。
+- **文档**：`docs/levee-api.md` §13.2 端点表加 `GET /audit/chain-mode`；新增 §13.2c（单一事实源、keyed/unkeyed 对照表、四个消息前缀契约、trace 链与全局 audit 链的区别）。
+
 ### 修复（SSE：鉴权走 Bearer + 具名事件按名分派——此前实时面板在真实服务端下是死的）
 
 - **两个叠在一起的缺口**（都不是「看起来有点怪」，是「部署后功能不工作」）：

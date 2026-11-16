@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -154,29 +153,22 @@ func setHMACKey(t *testing.T, value string) {
 	t.Helper()
 	old, hadOld := os.LookupEnv(EnvHMACKey)
 	require.NoError(t, os.Setenv(EnvHMACKey, value))
-	resetKeyForTest()
+	ResetKeyForTest()
 	t.Cleanup(func() {
 		if hadOld {
 			_ = os.Setenv(EnvHMACKey, old)
 		} else {
 			_ = os.Unsetenv(EnvHMACKey)
 		}
-		resetKeyForTest()
+		ResetKeyForTest()
 	})
-}
-
-// resetKeyForTest re-arms the lazy key resolution. It exists purely for
-// tests in this package; production code must never call it.
-func resetKeyForTest() {
-	keyOnce = sync.Once{}
-	hmacKey = nil
 }
 
 func unsetHMACKey(t *testing.T) {
 	t.Helper()
 	setHMACKey(t, "")
 	_ = os.Unsetenv(EnvHMACKey)
-	resetKeyForTest()
+	ResetKeyForTest()
 }
 
 func TestHMACKeying_KeyedDigests(t *testing.T) {

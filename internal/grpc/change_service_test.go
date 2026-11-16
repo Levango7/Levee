@@ -9,9 +9,11 @@ import (
 	"context"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/state"
 
@@ -467,6 +469,22 @@ func TestGetTrace_Success(t *testing.T) {
 	assert.Equal(t, "apply_started", resp.GetEntries()[0].GetAction())
 }
 
+// TestGetTrace_VerifyHashChain pins the trace endpoint's chain verdict.
+//
+// The chain is built by the REAL builder (audit.NewHashChainBuilder → Build)
+// over the REAL store, not by hand-written "hash1"/"hash2" strings. The old
+// test seeded fake hashes and asserted "valid" — which passed under the old
+// weak check (it only compared PrevHash/CurrHash continuity) and would FAIL
+// under the real verifier, because a made-up hash matches nothing.
+//
+// Three cases, and the middle one is the regression this whole change exists
+// for:
+//
+//  1. a genuine chain → valid,
+//  2. a chain whose second record's hash was rewritten (content tampered,
+//     hashes left alone) → BROKEN. The old check called this "valid",
+//  3. a chain whose tail has not been sealed yet (the run has not settled)
+//     → "not sealed yet", named apart from tampering.
 func TestGetTrace_VerifyHashChain(t *testing.T) {
 	svc, store := newTestChangeService(t)
 	ctx := context.Background()
@@ -477,23 +495,27 @@ func TestGetTrace_VerifyHashChain(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Add a trace with a valid hash chain.
+	// Two trace rows, no hashes yet — the builder fills them in.
+	base := time.Now().UTC()
 	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
 		ID:        "trc-1",
 		RunID:     created.GetId(),
 		Event:     "start",
-		PrevHash:  "",
-		CurrHash:  "hash1",
-		Timestamp: time.Now().UTC(),
+		Timestamp: base,
 	}))
 	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
 		ID:        "trc-2",
 		RunID:     created.GetId(),
 		Event:     "end",
-		PrevHash:  "hash1",
-		CurrHash:  "hash2",
-		Timestamp: time.Now().UTC(),
+		Timestamp: base.Add(time.Second),
 	}))
+
+	// Case 1: a real chain verifies.
+	builder, err := audit.NewHashChainBuilder(store)
+	require.NoError(t, err)
+	count, _, err := builder.Build(ctx, created.GetId())
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
 
 	resp, err := svc.GetTrace(ctx, &pb.GetTraceRequest{
 		ChangeId: created.GetId(),
@@ -501,7 +523,77 @@ func TestGetTrace_VerifyHashChain(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, resp.GetHashChainValid())
-	assert.Contains(t, resp.GetVerificationMessage(), "valid")
+	assert.True(t, strings.HasPrefix(resp.GetVerificationMessage(), "hash chain valid:"),
+		"unexpected message: %q", resp.GetVerificationMessage())
+
+	// Case 2: the second record's hash is rewritten — the chain's continuity
+	// still holds (its PrevHash is untouched), so the OLD weak check called
+	// this "valid". The full verifier recomputes the digest and catches it.
+	traces, err := store.ListTraces(ctx, state.TraceFilter{RunID: created.GetId()})
+	require.NoError(t, err)
+	require.Len(t, traces, 2)
+	tampered := *traces[1]
+	tampered.CurrHash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	require.NoError(t, store.UpdateTrace(ctx, &tampered))
+
+	resp, err = svc.GetTrace(ctx, &pb.GetTraceRequest{
+		ChangeId: created.GetId(),
+		Verify:   true,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.GetHashChainValid(),
+		"a rewritten record must not read as a valid chain")
+	assert.True(t, strings.HasPrefix(resp.GetVerificationMessage(), "hash chain broken:"),
+		"unexpected message: %q", resp.GetVerificationMessage())
+}
+
+// TestGetTrace_VerifyHashChain_UnsealedTail pins the difference between
+// "the run has not settled yet" and "someone tampered with it".
+//
+// The production chain is sealed when a run reaches a terminal state, so a
+// running change's tail rows carry no hash yet. That is NOT tampering, but it
+// must still fail closed (an empty hash must never read as "fine") — the two
+// facts are told apart by the message prefix, not by the boolean.
+func TestGetTrace_VerifyHashChain_UnsealedTail(t *testing.T) {
+	svc, store := newTestChangeService(t)
+	ctx := context.Background()
+
+	created, err := svc.CreateChange(ctx, &pb.CreateChangeRequest{
+		Label:        "unsealed-test",
+		TemplateName: "deploy",
+	})
+	require.NoError(t, err)
+
+	base := time.Now().UTC()
+	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
+		ID:        "trc-1",
+		RunID:     created.GetId(),
+		Event:     "start",
+		Timestamp: base,
+	}))
+	builder, err := audit.NewHashChainBuilder(store)
+	require.NoError(t, err)
+	_, _, err = builder.Build(ctx, created.GetId())
+	require.NoError(t, err)
+
+	// A row appended after the seal — exactly what a running change's tail
+	// looks like: no hash yet.
+	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
+		ID:        "trc-2",
+		RunID:     created.GetId(),
+		Event:     "still_running",
+		Timestamp: base.Add(time.Second),
+	}))
+
+	resp, err := svc.GetTrace(ctx, &pb.GetTraceRequest{
+		ChangeId: created.GetId(),
+		Verify:   true,
+	})
+	require.NoError(t, err)
+	assert.False(t, resp.GetHashChainValid(),
+		"an unsealed tail must fail closed, not read as fine")
+	assert.True(t, strings.HasPrefix(resp.GetVerificationMessage(), "hash chain not sealed yet:"),
+		"unexpected message: %q", resp.GetVerificationMessage())
 }
 
 // =========================================================================

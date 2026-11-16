@@ -3634,7 +3634,7 @@ func (s *ChangeService) GetTrace(ctx context.Context, req *pb.GetTraceRequest) (
 	}
 
 	if req.GetVerify() {
-		valid, msg := verifyHashChain(traces)
+		valid, msg := verifyTraceChain(runID, traces)
 		resp.HashChainValid = valid
 		resp.VerificationMessage = msg
 	}
@@ -3642,26 +3642,58 @@ func (s *ChangeService) GetTrace(ctx context.Context, req *pb.GetTraceRequest) (
 	return resp, nil
 }
 
-// verifyHashChain checks that each trace's CurrHash matches the hash
-// computed from the previous trace's CurrHash and the current trace's
-// contents. This is a simplified verification that does not depend on
-// the audit package; the audit.ChainVerifier provides the full
-// implementation.
-func verifyHashChain(traces []*state.Trace) (bool, string) {
+// verifyTraceChain verifies a run's trace chain with the SAME verifier the
+// /audit/verify endpoint uses (audit.VerifyTraces — the body of
+// audit.ChainVerifier.Verify).
+//
+// Why this matters: the check that used to live here compared only the
+// CONTINUITY of the chain (each record's PrevHash against the previous
+// record's CurrHash). A chain whose CONTENT was rewritten — and whose hashes
+// were left alone — passed it, while /audit/verify, which recomputes every
+// digest, reported the same chain as tampered. One chain, two answers, and
+// the console's "哈希链完整" was the optimistic one.
+//
+// The message is a contract, not prose: the console maps its stable prefix to
+// a verdict (see web/src/views/ChangeDetailView.vue and docs/levee-api.md
+// §13.2b):
+//
+//	"hash chain valid: ..."        — every record verified
+//	"hash chain not sealed yet: ..." — the run has not settled; its tail rows
+//	                                 carry no hash yet (NOT tampering)
+//	"hash chain broken: ..."       — a record failed verification
+//	"no traces to verify"          — nothing to check
+//
+// An unsealed tail is reported as a failure by the verifier (fail closed: a
+// cleared hash must never read as "fine"), but it is named apart from
+// tampering so an operator is not sent hunting for an attacker who does not
+// exist.
+func verifyTraceChain(runID string, traces []*state.Trace) (bool, string) {
 	if len(traces) == 0 {
 		return true, "no traces to verify"
 	}
-	prevHash := ""
-	for i, t := range traces {
-		if i == 0 {
-			prevHash = t.PrevHash
+	result := audit.VerifyTraces(runID, traces)
+	if result.Valid {
+		msg := fmt.Sprintf("hash chain valid: %d records verified", result.Count)
+		if result.LegacyCount > 0 {
+			msg += fmt.Sprintf(" (%d under the legacy V1 encoding)", result.LegacyCount)
 		}
-		if t.PrevHash != prevHash {
-			return false, fmt.Sprintf("hash mismatch at trace %d: expected prev %q, got %q", i, prevHash, t.PrevHash)
-		}
-		prevHash = t.CurrHash
+		return true, msg
 	}
-	return true, "hash chain valid"
+	unsealed := 0
+	for _, f := range result.Failures {
+		if f.Type == audit.FailureEmptyHash {
+			unsealed++
+		}
+	}
+	if unsealed == len(result.Failures) {
+		return false, fmt.Sprintf(
+			"hash chain not sealed yet: %d of %d records carry no hash (the run has not settled)",
+			unsealed, result.Count)
+	}
+	first := result.Failures[0]
+	return false, fmt.Sprintf(
+		"hash chain broken: %d of %d records failed verification (first: %s at %s)",
+		len(result.Failures), result.Count, first.Type, first.TraceID)
 }
 
 // --- WatchChange (streaming) -----------------------------------------------
