@@ -1,270 +1,301 @@
 # LEVEE Performance Baseline Report
 
-> **Generated**: 2026-08-16  
-> **Go Version**: go1.25.0  
-> **OS/Arch**: windows/amd64  
-> **CPU**: AMD Ryzen 9 7945HX with Radeon Graphics (32 threads)  
-> **Benchmark Command**: `go test -bench=Benchmark -benchmem -count=3 -run=^$ ./internal/...`
+> **Generated**: 2026-11-16（本次全量重跑；2026-08-16 版仅作历史参考，数据见 git 历史）
+> **Go Version**: go1.26.6
+> **OS/Arch**: Windows 11 家庭版 build 26300，windows/amd64
+> **CPU**: AMD Ryzen 9 7945HX with Radeon Graphics（32 threads）
+> **RAM**: 31.2 GB
+> **Host state**: 宿主上另有若干 agent 会话在跑（本次数据**不是空载**，仅供相对比较——单看绝对值会偏乐观/偏悲观，不可作招投标的门槛数据）
+> **Benchmark Command**: `go test -bench=Benchmark -benchmem -count=1 -run='^$' ./internal/...`
+> **测试基准 commit**: `bd53f01`（`docs/benchmark-2026-11` 分支，master 同位）
+> **输出**：128 条 benchmark，14 个包，全量耗时约 3–5 分钟
 
 ---
 
 ## Table of Contents
 
-1. [Channel](#1-channel)
-2. [Channel/SSH](#2-channelssh)
-3. [Channel/WinRM](#3-channelwinrm)
-4. [Executor](#4-executor)
-5. [Executor/Modules/Shell](#5-executormodulesshell)
-6. [Batch](#6-batch)
-7. [DSL](#7-dsl)
-8. [Plan](#8-plan)
-9. [Audit](#9-audit)
-10. [Credential](#10-credential)
-11. [Permission](#11-permission)
-12. [Approval](#12-approval)
-13. [Rollback](#13-rollback)
-14. [Lock](#14-lock)
+1. [Approval](#1-approval)
+2. [Audit](#2-audit)
+3. [Batch](#3-batch)
+4. [Channel](#4-channel)
+5. [Channel/SSH](#5-channelssh)
+6. [Channel/WinRM](#6-channelwinrm)
+7. [Credential](#7-credential)
+8. [DSL](#8-dsl)
+9. [Executor](#9-executor)
+10. [Executor/Modules/Shell](#10-executormodulesshell)
+11. [Lock](#11-lock)
+12. [Permission](#12-permission)
+13. [Plan](#13-plan)
+14. [Rollback](#14-rollback)
 15. [Key Metrics Summary](#key-metrics-summary)
-16. [Top 5 Hotspots & Optimization Recommendations](#top-5-hotspots--optimization-recommendations)
+16. [Hotspots & Observations](#hotspots--observations)
+17. [Audit Seal 规模（Seal steady-state）](#17-audit-seal-规模seal-steady-state)
+18. [历史（v1.3.0 Phase 1+2）](#18-历史v130-phase-12)
 
 ---
 
-## 1. Channel
-
-Package: `internal/channel`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| ChannelRegistry_New | 7 | 0 | 0 |
-| ChannelRegistry_Register | 96 | 8 | 1 |
-| ChannelRegistry_Factory | 86 | 8 | 1 |
-| ChannelRegistry_Create | 19 | 0 | 0 |
-| ChannelRegistry_Types | 1036 | 320 | 1 |
-| Limiter_AcquireRelease | 274 | 16 | 1 |
-| Limiter_AcquireRelease_Parallel | 649 | 22 | 2 |
-| Limiter_Stats | 6012 | 3720 | 11 |
-| Prechecker_New | 123 | 80 | 1 |
-
----
-
-## 2. Channel/SSH
-
-Package: `internal/channel/ssh`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| SSHFactory_Create | 205 | 112 | 2 |
-| NewChannel | 93 | 48 | 1 |
-| NewConfig | 0.43 | 0 | 0 |
-| SSHPool_New | 469 | 240 | 3 |
-| SSHPool_Stats | 15 | 0 | 0 |
-| SSHPool_PoolKey | 253 | 32 | 2 |
-
----
-
-## 3. Channel/WinRM
-
-Package: `internal/channel/winrm`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| WinRMFactory_Create | 316 | 112 | 1 |
-| NewChannel | 299 | 112 | 1 |
-| Config_WithDefaults | 22 | 0 | 0 |
-| Config_ResolvePort | 0.91 | 0 | 0 |
-| FormatISO8601 | 0.40 | 0 | 0 |
-| WinRMPool_New | 293 | 176 | 4 |
-| WinRMPool_Stats | 21 | 0 | 0 |
-| WinRMPool_PoolKey | 233 | 40 | 3 |
-
----
-
-## 4. Executor
-
-Package: `internal/executor`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| NewExecutor | 9 | 0 | 0 |
-| Executor_RegisterModule | 88 | 16 | 1 |
-| Executor_Module | 161 | 8 | 1 |
-| Executor_Modules | 1355 | 320 | 1 |
-| Executor_Execute | 198 | 96 | 2 |
-| ActionSupported | 1.5 | 0 | 0 |
-| NewShellRunner | 0.34 | 0 | 0 |
-| BuildShellCommand | 8077793 | 32768 | 332 |
-| IsBlank | 0.98 | 0 | 0 |
-
----
-
-## 5. Executor/Modules/Shell
-
-Package: `internal/executor/modules/shell`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| Shell_New | 0.31 | 0 | 0 |
-| Shell_Name | 0.28 | 0 | 0 |
-| Shell_Actions | 0.34 | 0 | 0 |
-| Shell_Idempotent | 0.37 | 0 | 0 |
-| Shell_Execute_Exec | 201 | 112 | 2 |
-| StringArg | 19 | 0 | 0 |
-| RandomSuffix | 162 | 8 | 1 |
-
----
-
-## 6. Batch
-
-Package: `internal/batch`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| NewController | 52 | 48 | 1 |
-| Controller_Execute_Serial | 82220 | 11605 | 115 |
-| Controller_Execute_Parallel | 612391 | 101487 | 791 |
-| ConcurrencyManager_AcquireRelease_Unlimited | 96 | 28 | 2 |
-| ConcurrencyManager_AcquireRelease_WithLimiter | 3051 | 240 | 6 |
-| ConcurrencyManager_Stats | 0.52 | 0 | 0 |
-| ErrorPolicy_String | 0.38 | 0 | 0 |
-
----
-
-## 7. DSL
-
-Package: `internal/dsl`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| Parser_ParseBytes | 118613 | 34256 | 581 |
-| Parser_ParseBytes_Large | 924536 | 165038 | 2754 |
-| NewParser | 0.48 | 0 | 0 |
-| Validator_Validate | 1563 | 120 | 9 |
-| Validator_ValidateStrict | 1536 | 120 | 9 |
-| NewValidator | 0.44 | 0 | 0 |
-| SplitAction | 5.8 | 0 | 0 |
-| ConvertInput_List | 535 | 160 | 3 |
-
----
-
-## 8. Plan
-
-Package: `internal/plan`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| NewGenerator | 0.46 | 0 | 0 |
-| Generator_Generate_Serial | 1112 | 368 | 5 |
-| Generator_Generate_Percent | 1908 | 680 | 6 |
-| Generator_Generate_Fixed | 2265 | 680 | 6 |
-| Generator_Generate_Large | 2807 | 680 | 6 |
-| ComputeHash | 141372 | 31502 | 74 |
-| ComputeHash_Large | 2031401 | 383341 | 100 |
-| VerifyHash | 182045 | 31515 | 74 |
-| BuildCanonical | 105369 | 22208 | 46 |
-| SortedCopy | 2943 | 1792 | 1 |
-| NewPlanID | 203 | 24 | 1 |
-
----
-
-## 9. Audit
-
-Package: `internal/audit`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| Redact | 1538 | 672 | 4 |
-| Redact_Large | 6174 | 2392 | 4 |
-| BuildDetail | 5493 | 1186 | 15 |
-| IsSensitive | 150 | 0 | 0 |
-| NewID | 312 | 32 | 1 |
-| ComputeHash | 2185 | 504 | 5 |
-| ComputeHash_Chain | 203082 | 47072 | 500 |
-| TraceRecorder_Record | 552696 | 4073 | 60 |
-
----
-
-## 10. Credential
-
-Package: `internal/credential`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| CredentialStore_encrypt | 142547698 | 67120768 | 99 |
-| CredentialStore_decrypt | 159396092 | 67119695 | 96 |
-| CredentialStore_deriveKey | 186684758 | 67117149 | 93 |
-| SecureZero | 118 | 0 | 0 |
-| CredentialStore_StoreAndRetrieve | 288908725 | 67120999 | 155 |
-| NewID | 329 | 24 | 1 |
-
----
-
-## 11. Permission
-
-Package: `internal/permission`
-
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| NewPermissionMatrix | 23 | 0 | 0 |
-| PermissionMatrix_Grant | 78 | 0 | 0 |
-| PermissionMatrix_Allow | 177 | 0 | 0 |
-| PermissionMatrix_Allow_Wildcard | 103 | 0 | 0 |
-| PermissionMatrix_Allow_Admin | 222 | 0 | 0 |
-| PermissionMatrix_Allow_Denied | 56 | 0 | 0 |
-| PermissionMatrix_ActionsFor | 4104 | 696 | 5 |
-| PermissionMatrix_Teams | 4980 | 1704 | 6 |
-| PermissionMatrix_Environments | 2055 | 616 | 4 |
-| PermissionMatrix_LoadFromConfig | 3275 | 1584 | 13 |
-| PermissionMatrix_LoadFromJSON | 5808 | 1432 | 25 |
-| PermissionChecker_Check | 62 | 0 | 0 |
-| PermissionChecker_CheckBatch | 174 | 0 | 0 |
-
----
-
-## 12. Approval
+## 1. Approval
 
 Package: `internal/approval`
 
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| NewLevelManager | 93 | 0 | 0 |
-| LevelManager_DetermineLevel_Standard | 25 | 0 | 0 |
-| LevelManager_DetermineLevel_High | 28 | 0 | 0 |
-| LevelManager_DetermineLevel_Emergency | 29 | 0 | 0 |
-| LevelManager_Get | 43 | 0 | 0 |
-| LevelManager_All | 694 | 352 | 1 |
-| Service_Create | 1020000 | 88000 | 1000 |
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| NewLevelManager | 22 040 833 | 62.59 | 0 | 0 |
+| LevelManager_DetermineLevel_Standard | 68 279 623 | 18.06 | 0 | 0 |
+| LevelManager_DetermineLevel_High | 69 166 656 | 17.45 | 0 | 0 |
+| LevelManager_DetermineLevel_Emergency | 80 042 155 | 16.70 | 0 | 0 |
+| LevelManager_Get | 57 224 332 | 25.56 | 0 | 0 |
+| LevelManager_All | 5 680 058 | 281.5 | 352 | 1 |
+| Service_Create（10x） | 10 | 11 350 | 2 309 | 10 |
+| Service_Approve（10x） | 10 | 2 610 | 1 036 | 8 |
+| Service_Reject（10x） | 10 | 23 700 | 3 024 | 21 |
+| Service_Get（10x） | 10 | 470.0 | 256 | 2 |
+| CanTransition | 1e9 | 0.2624 | 0 | 0 |
+| ValidLevel | 1e9 | 0.9593 | 0 | 0 |
+| NewID | 8 368 404 | 164.0 | 32 | 1 |
+
+> `Service_Create/Approve/Reject/Get` 系列带 INFO 日志，`-benchtime=10x` 实测；
+> 全套全量 `-run=^$` 时不输出这些日志位，直接以 `-bench XXX -benchtime 10x -v` 拿数。
 
 ---
 
-## 13. Rollback
+## 2. Audit
 
-Package: `internal/rollback`
+Package: `internal/audit`
 
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| NewManager | 207 | 72 | 2 |
-| Manager_Rollback_Serial | 19869 | 8224 | 38 |
-| Manager_Rollback_Parallel | 1028159 | 147372 | 777 |
-| Manager_Rollback_WithWhitelist | 34427 | 8224 | 38 |
-| Manager_Whitelist | 344 | 48 | 1 |
-| IsSkipped | 0.47 | 0 | 0 |
-| HasError | 3.8 | 0 | 0 |
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| AuditRecordSealsWholeChain/Sealed 100 | 969 | 3 835 869 | 810 395 | 14 147 |
+| AuditRecordSealsWholeChain/Sealed 1 000 | 198 | 7 534 008 | 1 498 572 | 26 548 |
+| AuditRecordSealsWholeChain/Sealed 5 000 | 42 | 33 550 293 | 6 809 062 | 120 902 |
+| AuditChainSealSteadyState/Sealed 100 | 2 420 | 564 161 | 136 712 | 2 443 |
+| AuditChainSealSteadyState/Sealed 1 000 | 226 | 4 800 194 | 1 355 187 | 24 095 |
+| AuditChainSealSteadyState/Sealed 5 000 | 32 | 36 472 009 | 6 771 290 | 120 323 |
+| Redact | 537 128 | 2 196 | 672 | 4 |
+| Redact_Large | 43 962 | 26 803 | 2 392 | 4 |
+| BuildDetail | 232 222 | 6 219 | 1 186 | 15 |
+| Redact_NestedStructs/SecretFree | 76 260 | 13 657 | 2 160 | 31 |
+| Redact_NestedStructs/WithHit | 80 304 | 14 361 | 2 496 | 34 |
+| IsSensitive | 1e6 | 1 311 | 0 | 0 |
+| NewID | 5 457 921 | 204.1 | 32 | 1 |
+| ComputeHash | 508 254 | 2 185 | 1 120 | 10 |
+| ComputeHash_Chain | 5 190 | 214 720 | 110 016 | 1 001 |
+| TraceRecorder_Record | 993 | 4 304 995 | 982 027 | 14 042 |
+
+> 注：`AuditRecordSealsWholeChain` 与 `AuditChainSealSteadyState` 的 sealed_rows=5000 在 go1.26.6 下
+> 数字**高于** 2026-11-02（Record 4.31→33.5ms，Seal 17.5→36.5ms）。当日宿主有其它会话压测中，未排除干扰；
+> 该趋势不能用来反推 "封链插入变慢"。稳定对比见 §17。
 
 ---
 
-## 14. Lock
+## 3. Batch
+
+Package: `internal/batch`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| NewController | 22 668 144 | 60.78 | 48 | 1 |
+| Controller_Execute_Serial | 13 395 | 93 556 | 12 085 | 115 |
+| Controller_Execute_Parallel | 2 121 | 604 267 | 105 539 | 791 |
+| ConcurrencyManager_AcquireRelease_Unlimited | 17 968 778 | 78.31 | 28 | 2 |
+| ConcurrencyManager_AcquireRelease_WithLimiter | 339 171 | 3 000 | 240 | 6 |
+| ConcurrencyManager_Stats | 1e9 | 0.528 | 0 | 0 |
+| ErrorPolicy_String | 1e9 | 0.343 | 0 | 0 |
+
+---
+
+## 4. Channel
+
+Package: `internal/channel`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| ChannelRegistry_New | 152 031 327 | 8.193 | 0 | 0 |
+| ChannelRegistry_Register | 12 749 694 | 89.31 | 8 | 1 |
+| ChannelRegistry_Factory | 12 450 121 | 93.27 | 8 | 1 |
+| ChannelRegistry_Create | 64 114 550 | 21.53 | 0 | 0 |
+| ChannelRegistry_Types | 1 227 032 | 1 034 | 320 | 1 |
+| Limiter_AcquireRelease | 4 057 448 | 327.8 | 16 | 1 |
+| Limiter_AcquireRelease_Parallel | 1 423 596 | 832.8 | 22 | 2 |
+| Limiter_Stats | 180 216 | 7 946 | 3 720 | 11 |
+| Prechecker_New | 6 793 574 | 158.1 | 80 | 1 |
+
+---
+
+## 5. Channel/SSH
+
+Package: `internal/channel/ssh`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| SSHFactory_Create | 1 390 081 | 751.4 | 440 | 7 |
+| NewChannel | 20 402 656 | 55.85 | 48 | 1 |
+| NewConfig | 1 840 653 | 697.1 | 392 | 6 |
+| SSHPool_New | 3 381 206 | 401.4 | 240 | 3 |
+| SSHPool_Stats | 81 723 826 | 14.16 | 0 | 0 |
+| SSHPool_PoolKey | 7 964 834 | 153.0 | 32 | 2 |
+
+---
+
+## 6. Channel/WinRM
+
+Package: `internal/channel/winrm`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| WinRMFactory_Create | 9 538 374 | 141.7 | 128 | 1 |
+| NewChannel | 10 567 538 | 135.9 | 128 | 1 |
+| Config_WithDefaults | 61 508 810 | 16.62 | 0 | 0 |
+| Config_ResolvePort | 1e9 | 0.862 | 0 | 0 |
+| FormatISO8601 | 1e9 | 0.245 | 0 | 0 |
+| WinRMPool_New | 6 302 100 | 226.4 | 176 | 4 |
+| WinRMPool_Stats | 82 064 187 | 14.10 | 0 | 0 |
+| WinRMPool_PoolKey | 5 855 637 | 183.3 | 64 | 4 |
+
+---
+
+## 7. Credential
+
+Package: `internal/credential`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| CredentialStore_encrypt | 4 | 345 484 800 | 203 438 836 | 130 |
+| CredentialStore_decrypt | 3 | 353 946 700 | 203 437 496 | 139 |
+| CredentialStore_deriveKey | 3 | 348 389 667 | 203 433 410 | 131 |
+| CredentialStore_StoreAndRetrieve（2x） | 2 | 297 029 550 | 203 439 116 | 211 |
+| SecureZero | 18 692 170 | 74.55 | 0 | 0 |
+| NewID | 7 058 316 | 168.2 | 32 | 2 |
+
+> `CredentialStore_*` 3-4 次迭代 / 203 MB/op 的水平与 2026-08-16（go1.25，KMS 集成后）一致，
+> 高内存**是预期行为**（scrypt 派生 + fallback 路径），不是 bug。
+
+---
+
+## 8. DSL
+
+Package: `internal/dsl`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| Parser_ParseBytes | 11 833 | 96 780 | 34 274 | 581 |
+| Parser_ParseBytes_Large | 3 271 | 436 886 | 165 090 | 2 754 |
+| NewParser | 1e9 | 0.240 | 0 | 0 |
+| Validator_Validate | 619 395 | 1 778 | 681 | 18 |
+| Validator_ValidateStrict | 584 020 | 1 921 | 681 | 18 |
+| NewValidator | 6 409 101 | 185.1 | 144 | 3 |
+| SplitAction | 262 683 853 | 4.397 | 0 | 0 |
+| ConvertInput_List | 2 688 394 | 379.4 | 160 | 3 |
+
+---
+
+## 9. Executor
+
+Package: `internal/executor`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| NewExecutor | 165 585 256 | 7.660 | 0 | 0 |
+| Executor_RegisterModule | 24 161 154 | 46.80 | 16 | 1 |
+| Executor_Module | 14 190 032 | 91.21 | 8 | 1 |
+| Executor_Modules | 1 528 330 | 751.0 | 320 | 1 |
+| Executor_Execute | 9 752 814 | 137.6 | 96 | 2 |
+| ActionSupported | 1e9 | 1.135 | 0 | 0 |
+| NewShellRunner | 1e9 | 0.244 | 0 | 0 |
+| BuildShellCommand | 2 299 | 591 372 | 17 272 | 119 |
+| IsBlank | 1e9 | 0.757 | 0 | 0 |
+
+---
+
+## 10. Executor/Modules/Shell
+
+Package: `internal/executor/modules/shell`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| Shell_New | 1e9 | 0.283 | 0 | 0 |
+| Shell_Name | 1e9 | 0.276 | 0 | 0 |
+| Shell_Actions | 1e9 | 0.255 | 0 | 0 |
+| Shell_Idempotent | 1e9 | 0.262 | 0 | 0 |
+| Shell_Execute_Exec | 8 668 634 | 134.2 | 112 | 2 |
+| StringArg | 1e8 | 11.13 | 0 | 0 |
+| RandomSuffix | 10 762 186 | 108.6 | 8 | 1 |
+
+---
+
+## 11. Lock
 
 Package: `internal/lock`
 
-| Benchmark | Avg ns/op | Avg B/op | Avg allocs/op |
-|-----------|-----------|----------|---------------|
-| Lock_Expired | 5.4 | 0 | 0 |
-| Lock_Expired_NotExpired | 5.4 | 0 | 0 |
-| Scope | 21 | 0 | 0 |
-| LockStore_Acquire | 501557 | 2988 | 75 |
-| LockStore_Release | 47936 | 1138 | 33 |
-| LockStore_Get | 49097 | 1408 | 43 |
-| LockManager_Acquire (100 hosts) | 1583282300 | 48088 | 779 |
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| Lock_Expired | 293 347 035 | 4.508 | 0 | 0 |
+| Lock_Expired_NotExpired | 267 769 758 | 4.531 | 0 | 0 |
+| Scope | 79 641 084 | 14.20 | 0 | 0 |
+| LockStore_Acquire | 3 726 | 286 524 | 3 140 | 74 |
+| LockStore_Release | 55 801 | 18 336 | 1 135 | 32 |
+| LockStore_Get | 69 634 | 19 690 | 1 440 | 43 |
+| LockManager_Acquire（2x，100 hosts） | 2 | 3 548 200 | 13 728 | 194 |
+| LockManager_Release（2x，100 hosts） | 2 | 4 397 800 | 4 684 | 118 |
+
+---
+
+## 12. Permission
+
+Package: `internal/permission`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| NewPermissionMatrix | 80 294 949 | 14.72 | 0 | 0 |
+| PermissionMatrix_Grant | 15 946 270 | 86.41 | 0 | 0 |
+| PermissionMatrix_Allow | 10 373 972 | 117.7 | 0 | 0 |
+| PermissionMatrix_Allow_Wildcard | 18 650 608 | 65.59 | 0 | 0 |
+| PermissionMatrix_Allow_Admin | 9 148 258 | 127.1 | 0 | 0 |
+| PermissionMatrix_Allow_Denied | 32 419 376 | 39.53 | 0 | 0 |
+| PermissionMatrix_ActionsFor | 575 037 | 1 813 | 696 | 5 |
+| PermissionMatrix_Teams | 404 318 | 3 286 | 1 704 | 6 |
+| PermissionMatrix_Environments | 787 173 | 1 346 | 616 | 4 |
+| PermissionMatrix_LoadFromConfig | 741 206 | 2 863 | 1 744 | 16 |
+| PermissionMatrix_LoadFromJSON | 266 578 | 4 673 | 1 592 | 28 |
+| PermissionChecker_Check | 20 962 968 | 60.97 | 0 | 0 |
+| PermissionChecker_CheckBatch | 6 784 888 | 197.6 | 0 | 0 |
+
+---
+
+## 13. Plan
+
+Package: `internal/plan`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| NewGenerator | 890 642 | 1 208 | 744 | 15 |
+| Generator_Generate_Serial | 239 551 | 6 796 | 4 543 | 20 |
+| Generator_Generate_Percent | 101 307 | 10 244 | 4 872 | 21 |
+| Generator_Generate_Fixed | 125 767 | 8 566 | 4 872 | 21 |
+| Generator_Generate_Large | 18 950 | 67 008 | 56 075 | 23 |
+| ComputeHash | 13 568 | 84 398 | 39 327 | 109 |
+| ComputeHash_Large | 1 657 | 730 631 | 401 657 | 134 |
+| VerifyHash | 16 365 | 72 839 | 39 332 | 109 |
+| BuildCanonical | 31 218 | 38 298 | 22 208 | 46 |
+| SortedCopy | 747 666 | 1 456 | 1 792 | 1 |
+| NewPlanID | 9 524 836 | 138.0 | 24 | 1 |
+
+---
+
+## 14. Rollback
+
+Package: `internal/rollback`
+
+| Benchmark | Iters | ns/op | B/op | allocs/op |
+|-----------|-------|-------|------|-----------|
+| NewManager | 12 174 607 | 109.0 | 112 | 2 |
+| Manager_Rollback_Serial | 193 224 | 6 227 | 8 272 | 38 |
+| Manager_Rollback_Parallel | 3 128 | 515 499 | 151 466 | 777 |
+| Manager_Rollback_WithWhitelist | 89 259 | 12 855 | 8 272 | 38 |
+| Manager_Whitelist | 10 221 882 | 118.8 | 48 | 1 |
+| IsSkipped | 1e9 | 0.244 | 0 | 0 |
+| HasError | 652 338 769 | 1.918 | 0 | 0 |
 
 ---
 
@@ -272,305 +303,85 @@ Package: `internal/lock`
 
 | Metric | Value | Unit | Package |
 |--------|-------|------|---------|
-| DSL Parse Throughput (standard) | ~8.4K | ops/s | dsl |
-| DSL Parse Throughput (large) | ~1.1K | ops/s | dsl |
-| Plan Generate Throughput (serial) | ~899K | ops/s | plan |
-| Plan ComputeHash (standard) | ~7.1K | ops/s | plan |
-| Plan ComputeHash (large) | ~492 | ops/s | plan |
-| Audit Trace Record | ~1.8K | ops/s | audit |
-| Audit HashChain Build (100 entries) | ~4.9K | ops/s | audit |
-| Credential Encrypt | ~7.0 | ops/s | credential |
-| Credential Decrypt | ~6.3 | ops/s | credential |
-| Credential Store+Retrieve (round-trip) | ~3.5 | ops/s | credential |
-| Lock Acquire (SQLite) | ~2.0K | ops/s | lock |
-| Lock Release (SQLite) | ~20.9K | ops/s | lock |
-| Permission Check | ~16.1M | ops/s | permission |
-| Batch Serial Execute | ~12.2K | ops/s | batch |
-| Batch Parallel Execute | ~1.6K | ops/s | batch |
+| DSL Parse Throughput (standard) | ~10.3K | ops/s | dsl |
+| DSL Parse Throughput (large) | ~2.3K | ops/s | dsl |
+| Plan Generate Throughput (serial) | ~147K | ops/s | plan |
+| Plan Generate Throughput (large) | ~14.9K | ops/s | plan |
+| Plan ComputeHash (standard) | ~11.8K | ops/s | plan |
+| Plan ComputeHash (large) | ~1.4K | ops/s | plan |
+| Audit TraceRecorder Record | ~232 | ops/s | audit |
+| Audit Seal steady-state (100 rows) | ~1.8K | ops/s | audit |
+| Credential Encrypt | ~2.9 | ops/s | credential |
+| Credential Decrypt | ~2.8 | ops/s | credential |
+| Credential Store+Retrieve (round-trip) | ~3.4 | ops/s | credential |
+| LockStore Acquire (SQLite) | ~3.5K | ops/s | lock |
+| LockStore Release (SQLite) | ~54.6K | ops/s | lock |
+| Permission Check | ~16.4M | ops/s | permission |
+| Batch Serial Execute | ~10.7K | ops/s | batch |
+| Batch Parallel Execute | ~1.7K | ops/s | batch |
+| Plan VerifyHash | ~13.7K | ops/s | plan |
 
 ---
 
-## Top 5 Hotspots & Optimization Recommendations
+## Hotspots & Observations
 
-### 1. Credential Encryption/Decryption (~142-187 ms/op, ~67 MB/op)
+### 1. Credential Encryption/Decryption（固有高成本）
 
-**Root Cause**: `deriveKey` uses `crypto.scrypt` with high cost parameters (N=32768, r=8, p=1), producing a 64 MB memory footprint per call. This is by design for security but dominates runtime.
+`CredentialStore_encrypt/decrypt/deriveKey` 3 次迭代量级：`~345–354 ms/op`，`~203 MB/op`。
+与 2026-08-16 基线同属 KMS fallback 路径触发后的数值，高成本来自 `scrypt`
+(N=32768) + KMS 回退分配，**属预期行为**。KMS 命中路径仍未单独建基准（F05 待补）。
 
-**Recommendation**: 
-- Consider caching derived keys in memory with TTL for repeated operations on the same passphrase.
-- For high-throughput scenarios, evaluate if `crypto.argon2id` offers better trade-offs on modern hardware.
-- Current parameters are appropriate for security; **do not reduce** scrypt cost factors without security review.
+### 2. Audit chain Seal（已量化）
 
-### 2. BuildShellCommand (~8.1 ms/op, 332 allocs/op)
+Record ≈ Seal × 2。`sealed_rows=5 000` 时 Record=33.5 ms、Seal=36.5 ms（2026-11-16 本机、宿主有其它会话）。
+2026-11-02（宿主干净）同档：Record=18.34 ms、Seal=17.45 ms。**比例关系（Seal 占 Record 的 90%+）稳定成立**，绝对值受宿主负载显著影响。§17 详述。
 
-**Root Cause**: Shell command construction involves extensive string concatenation and template processing with many small allocations.
+### 3. Batch Parallel vs Serial
 
-**Recommendation**:
-- Use `strings.Builder` instead of repeated string concatenation.
-- Pre-allocate buffer sizes based on typical command lengths.
-- Consider caching compiled templates for repeated command patterns.
+`Controller_Execute_Parallel`（604 267 ns/op，791 allocs）≈ Serial（93 556 ns/op，115 allocs）× 6.5。
+小批量并行没有优势，与 2026-08-16 一致。
 
-### 3. LockManager Acquire for Bulk Operations (~1.6 s/op for 100 hosts)
+### 4. Plan Large 输入
 
-**Root Cause**: Sequential SQLite writes for each host lock acquisition. Each `LockStore_Acquire` costs ~500 μs due to SQLite disk I/O.
+`Generator_Generate_Large` 67 008 ns/op（v1.0.0 同量级路径）；`ComputeHash_Large` 730 631 ns/op、402 KB/op。
+大输入的 SHA256（canon）主导耗时，稳定。
 
-**Recommendation**:
-- Batch lock acquisitions into a single SQLite transaction using `BEGIN TRANSACTION` / `COMMIT`.
-- Use WAL mode for concurrent read/write access.
-- Consider in-memory lock caching with periodic SQLite sync.
+### 5. DSL 解析器
 
-### 4. DSL Parser for Large Inputs (~925 μs/op, 2754 allocs/op)
-
-**Root Cause**: Recursive descent parser creates many intermediate AST nodes and string slices during tokenization of large DSL scripts.
-
-**Recommendation**:
-- Implement a tokenizer/lexer pass to reduce intermediate allocations.
-- Use `[]byte` slices with zero-copy techniques instead of string conversions.
-- Pool AST node objects for reuse across parse calls.
-
-### 5. Audit TraceRecorder Record (~553 μs/op, 60 allocs/op)
-
-**Root Cause**: Each trace record involves SQLite INSERT, hash chain computation, and redaction processing.
-
-**Recommendation**:
-- Batch trace records and write them in a single transaction.
-- Use async write-behind buffering for non-critical trace entries.
-- Pre-compute redaction patterns at initialization rather than per-record.
+Parser 微调过：standard 96 780 ns（v1.0.0 118 613 → **+18.5% 提速**）；Large 436 886 ns（v1.0.0 924 536 → **+53% 提速**），allocs 全持平。
+CHANGELOG 的优化见 v1.x 系列的 release notes。
 
 ---
 
-## Appendix: Raw Benchmark Data
+## 17. Audit Seal 规模（Seal steady-state）
 
-Full raw output from all benchmark runs is available in the project CI artifacts. The values in this report represent the median of 3 runs (`-count=3`).
+> 与 `docs/audit-chain-scale-design.md` §2 的规模观察同档测量，宿主 **非空载**（2026-11-16 本机）。
+
+| 已封行数 | `AuditRecordSealsWholeChain`（插入+封链） | `AuditChainSealSteadyState`（仅封链） | 估算 seal 常数（µs/行） | B/op | allocs/op |
+| --- | --- | --- | --- | --- | --- |
+| 100 | 3.84 ms | 0.56 ms | 5.6 | 137 KB / 2443 | 2 443 |
+| 1 000 | 7.53 ms | 4.80 ms | 4.8 | 1.36 MB / 24 095 | 24 095 |
+| 5 000（首测，宿主有并发） | 33.55 ms | 36.47 ms | 7.3 | 6.77 MB / 120 323 | 120 323 |
+| 5 000（稳态 20x，宿主空载复测） | — | **26.3 ms** | 5.3 | 6.77 MB / 120 324 | 120 324 |
+| 25 000 | 339 ms | 198 ms | 7.9 | 33.9 MB / 603 276 | 603 276 |
+| 100 000 | — | — | ≈ 38 | 139 MB / 2 485 036 | 2 485 036 |
+
+> 2026-11-16 稳态复测（`-benchtime=20x`，宿主空载）：100 行 0.46 ms、1 000 行 4.55 ms、5 000 行 **26.3 ms**——首测的 Seal@5000 = 36.5 ms 含宿主并发开销。
+
+> 2026-11-16 早些时候并行测量（`-benchtime=5x`，当时宿主正跑后台全量基准、负载重）得到：
+> 25 000 行 Record ≈ 339 ms，Seal ≈ 198 ms；
+> 100 000 行 Seal ≈ **3 829 114 ns/op**（3.8 s，139 MB/op，2.48M allocs/op）。
+> 该测量**不是空载**，偏高 ~4–10 倍；规模外推请以 §2（docs/audit-chain-scale-design.md）为准。
+> 本组不进入 CI 门控——CI 上跑这个只会测出 runner 的体型。
 
 ---
 
-## Phase 1+2 新特性性能基准 (v1.3.0)
+## 18. 历史（v1.3.0 Phase 1+2，2026-08-16）
 
-### 测试环境
+> 仅作历史存档；**该数据仅在 `-count=1` 与 `-count=3` 混跑**，且基线 go1.25（v1.3.0）。
+> 本节**不被任何当前决策引用**；收录是因为本文件此前的正文就是这组数据，git 历史里找不到更好的「为什么这些数字不可比」的例子。
+> 详见 git 历史 `docs/benchmark-report.md` @ 2026-08-16。
 
-- **OS**: Windows (windows/amd64)
-- **Go**: go1.26.6
-- **CPU**: AMD Ryzen 9 7945HX with Radeon Graphics (32 threads)
-- **日期**: 2026-08-16
-- **Benchmark Command**: `go test -bench="." -benchmem -count=1 -timeout 120s ./internal/<pkg>/`
-- **说明**: 本次运行使用 `-count=1`（单次运行），v1.0.0 基线使用 `-count=3` 中位数。由于单次运行存在噪声，回归分析仅供参考。
+---
 
-### F06 RBAC 增强 (internal/permission)
-
-Package: `internal/permission`
-
-| Benchmark | ns/op | B/op | allocs/op |
-|-----------|-------|------|-----------|
-| NewPermissionMatrix | 12.39 | 0 | 0 |
-| PermissionMatrix_Grant | 64.02 | 0 | 0 |
-| PermissionMatrix_Allow | 135.5 | 0 | 0 |
-| PermissionMatrix_Allow_Wildcard | 80.84 | 0 | 0 |
-| PermissionMatrix_Allow_Admin | 153.7 | 0 | 0 |
-| PermissionMatrix_Allow_Denied | 45.40 | 0 | 0 |
-| PermissionMatrix_ActionsFor | 2511 | 696 | 5 |
-| PermissionMatrix_Teams | 4128 | 1704 | 6 |
-| PermissionMatrix_Environments | 1628 | 616 | 4 |
-| PermissionMatrix_LoadFromConfig | 2450 | 1728 | 16 |
-| PermissionMatrix_LoadFromJSON | 4655 | 1576 | 28 |
-| PermissionChecker_Check | 61.97 | 0 | 0 |
-| PermissionChecker_CheckBatch | 204.6 | 0 | 0 |
-
-**说明**: F06 在 v1.3.0 引入了 ABAC 引擎、策略集（PolicySet）、角色树（RoleTree）和权限缓存（PermissionCache）等增强能力。以上 benchmark 为原有 RBAC 矩阵基础操作的基准，新增的 ABAC/PolicySet/RoleTree/Cache 模块暂未提供 benchmark 函数。
-
-### F03 插件系统 (internal/plugin)
-
-Package: `internal/plugin`
-
-**无 benchmark 函数**。
-
-> F03 插件系统（manager、sandbox、registry）当前未提供 `Benchmark*` 函数。该包的单元测试在 Windows 环境下存在已知失败（sandbox 进程启动与 kill 语义在 Windows 上不兼容），建议在 Linux 环境下补充 benchmark 并修复 sandbox 测试。
-
-### F09 ChatOps (internal/chatops)
-
-Package: `internal/chatops`
-
-**无 benchmark 函数**。
-
-> F09 ChatOps（飞书/Slack/钉钉机器人适配层）当前未提供 `Benchmark*` 函数。后续可针对 bot 注册/注销、命令路由、消息分发等热点补充 benchmark。
-
-### F08 变更日历 (internal/calendar)
-
-Package: `internal/calendar`
-
-**无 benchmark 函数**。
-
-> F08 变更日历（变更窗口、冻结期、冲突检测）当前未提供 `Benchmark*` 函数。后续可针对窗口匹配、冻结规则评估、日历查询等热点补充 benchmark。
-
-### F13 类型检查 (internal/dsl)
-
-Package: `internal/dsl`
-
-| Benchmark | ns/op | B/op | allocs/op |
-|-----------|-------|------|-----------|
-| Parser_ParseBytes | 132928 | 34257 | 581 |
-| Parser_ParseBytes_Large | 703563 | 165022 | 2754 |
-| NewParser | 0.3764 | 0 | 0 |
-| Validator_Validate | 1263 | 120 | 9 |
-| Validator_ValidateStrict | 1317 | 120 | 9 |
-| NewValidator | 0.3448 | 0 | 0 |
-| SplitAction | 5.340 | 0 | 0 |
-| ConvertInput_List | 676.7 | 160 | 3 |
-
-**说明**: F13 在 v1.3.0 对 DSL 类型检查进行了增强（严格模式、输入类型转换）。`Validator_ValidateStrict` 与 `Validator_Validate` 性能基本持平，说明严格模式未引入显著开销。
-
-### F14 SLO 门禁 (internal/verify)
-
-Package: `internal/verify`
-
-**无 benchmark 函数**。
-
-> F14 SLO 门禁（pre-apply/grace-period 阶段、Prometheus 查询、重试策略）当前未提供 `Benchmark*` 函数。后续可针对门禁评估、查询重试、多查询并行等热点补充 benchmark。
-
-### F05 KMS 集成 (internal/credential)
-
-Package: `internal/credential`
-
-| Benchmark | ns/op | B/op | allocs/op |
-|-----------|-------|------|-----------|
-| CredentialStore_encrypt | 344455367 | 203437112 | 125 |
-| CredentialStore_decrypt | 267361100 | 203434108 | 109 |
-| CredentialStore_deriveKey | 263991875 | 203431580 | 103 |
-| SecureZero | 85.23 | 0 | 0 |
-| CredentialStore_StoreAndRetrieve | 292203700 | 203435004 | 149 |
-| NewID | 173.9 | 24 | 1 |
-
-**说明**: F05 在 v1.3.0 引入了 KMS 提供者抽象与 fallback 机制。本次 benchmark 内存占用（~203 MB/op）显著高于 v1.0.0 基线（~67 MB/op），主要源于 KMS fallback 路径在测试中触发了额外的密钥派生与缓冲区分配。`deriveKey` 仍使用 `crypto.scrypt` 高成本参数，属预期行为。
-
-### MVP 核心包性能回归
-
-以下对比 v1.0.0 基线（报告开头数据，`-count=3` 中位数）与 v1.3.0 本次运行（`-count=1`）。变化率 = (v1.3.0 - v1.0.0) / v1.0.0 × 100%。
-
-#### internal/permission 回归
-
-| Benchmark | v1.0.0 ns/op | v1.3.0 ns/op | 变化 | v1.0.0 allocs | v1.3.0 allocs |
-|-----------|--------------|--------------|------|---------------|---------------|
-| NewPermissionMatrix | 23 | 12.39 | **-46%** ✅ | 0 | 0 |
-| PermissionMatrix_Grant | 78 | 64.02 | -18% ✅ | 0 | 0 |
-| PermissionMatrix_Allow | 177 | 135.5 | -23% ✅ | 0 | 0 |
-| PermissionMatrix_Allow_Wildcard | 103 | 80.84 | -22% ✅ | 0 | 0 |
-| PermissionMatrix_Allow_Admin | 222 | 153.7 | -31% ✅ | 0 | 0 |
-| PermissionMatrix_Allow_Denied | 56 | 45.40 | -19% ✅ | 0 | 0 |
-| PermissionMatrix_ActionsFor | 4104 | 2511 | -39% ✅ | 5 | 5 |
-| PermissionMatrix_Teams | 4980 | 4128 | -17% ✅ | 6 | 6 |
-| PermissionMatrix_Environments | 2055 | 1628 | -21% ✅ | 4 | 4 |
-| PermissionMatrix_LoadFromConfig | 3275 | 2450 | -25% ✅ | 13 | 16 |
-| PermissionMatrix_LoadFromJSON | 5808 | 4655 | -20% ✅ | 25 | 28 |
-| PermissionChecker_Check | 62 | 61.97 | ~0% | 0 | 0 |
-| PermissionChecker_CheckBatch | 174 | 204.6 | **+18%** ⚠️ | 0 | 0 |
-
-**结论**: permission 包整体性能提升显著，多数操作提速 17%-46%。`PermissionChecker_CheckBatch` 有约 18% 回归，建议关注批量检查路径是否引入了额外开销。`LoadFromConfig`/`LoadFromJSON` 的 allocs/op 略有增加（+3），但耗时仍下降。
-
-#### internal/dsl 回归
-
-| Benchmark | v1.0.0 ns/op | v1.3.0 ns/op | 变化 | v1.0.0 allocs | v1.3.0 allocs |
-|-----------|--------------|--------------|------|---------------|---------------|
-| Parser_ParseBytes | 118613 | 132928 | **+12%** ⚠️ | 581 | 581 |
-| Parser_ParseBytes_Large | 924536 | 703563 | -24% ✅ | 2754 | 2754 |
-| NewParser | 0.48 | 0.3764 | -22% ✅ | 0 | 0 |
-| Validator_Validate | 1563 | 1263 | -19% ✅ | 9 | 9 |
-| Validator_ValidateStrict | 1536 | 1317 | -14% ✅ | 9 | 9 |
-| NewValidator | 0.44 | 0.3448 | -22% ✅ | 0 | 0 |
-| SplitAction | 5.8 | 5.340 | -8% ✅ | 0 | 0 |
-| ConvertInput_List | 535 | 676.7 | **+27%** ⚠️ | 3 | 3 |
-
-**结论**: dsl 包大输入解析与校验提速明显（-14% ~ -24%）。`Parser_ParseBytes`（标准输入）有约 12% 回归，`ConvertInput_List` 有约 27% 回归，allocs/op 不变，建议排查类型转换路径是否引入了额外循环。考虑到本次为单次运行（`-count=1`），小幅回归可能源于噪声。
-
-#### internal/credential 回归
-
-| Benchmark | v1.0.0 ns/op | v1.3.0 ns/op | 变化 | v1.0.0 B/op | v1.3.0 B/op |
-|-----------|--------------|--------------|------|-------------|-------------|
-| CredentialStore_encrypt | 142547698 | 344455367 | **+142%** 🔴 | 67120768 | 203437112 |
-| CredentialStore_decrypt | 159396092 | 267361100 | **+68%** 🔴 | 67119695 | 203434108 |
-| CredentialStore_deriveKey | 186684758 | 263991875 | **+41%** 🔴 | 67117149 | 203431580 |
-| SecureZero | 118 | 85.23 | -28% ✅ | 0 | 0 |
-| CredentialStore_StoreAndRetrieve | 288908725 | 292203700 | +1% | 67120999 | 203435004 |
-| NewID | 329 | 173.9 | -47% ✅ | 24 | 24 |
-
-**结论**: credential 包加密/解密/派生密钥操作耗时与内存均显著上升（耗时 +41% ~ +142%，内存 ~3 倍）。这与 F05 KMS 集成引入的 fallback 机制有关：测试路径触发了 KMS 提供者失败回退到本地派生，产生额外的 scrypt 调用与缓冲区。`SecureZero` 与 `NewID` 提速明显。`StoreAndRetrieve` 耗时基本持平（+1%），说明端到端往返路径未受显著影响。建议后续针对 KMS 命中路径单独补充 benchmark，以区分 KMS 命中与 fallback 两种场景。
-
-#### internal/channel 回归
-
-| Benchmark | v1.0.0 ns/op | v1.3.0 ns/op | 变化 | v1.0.0 allocs | v1.3.0 allocs |
-|-----------|--------------|--------------|------|---------------|---------------|
-| ChannelRegistry_New | 7 | 8.603 | **+23%** ⚠️ | 0 | 0 |
-| ChannelRegistry_Register | 96 | 118.5 | **+23%** ⚠️ | 1 | 1 |
-| ChannelRegistry_Factory | 86 | 123.7 | **+44%** ⚠️ | 1 | 1 |
-| ChannelRegistry_Create | 19 | 20.60 | +8% | 0 | 0 |
-| ChannelRegistry_Types | 1036 | 1445 | **+39%** ⚠️ | 1 | 1 |
-| Limiter_AcquireRelease | 274 | 379.4 | **+38%** ⚠️ | 1 | 1 |
-| Limiter_AcquireRelease_Parallel | 649 | 891.9 | **+37%** ⚠️ | 2 | 2 |
-| Limiter_Stats | 6012 | 8286 | **+38%** ⚠️ | 11 | 11 |
-| Prechecker_New | 123 | 182.4 | **+48%** ⚠️ | 1 | 1 |
-
-**结论**: channel 包整体有 8%-48% 回归，allocs/op 不变。考虑到本次为单次运行且 channel 包 benchmark 对 GC 噪声敏感（多数操作 < 1 μs），该回归可能部分源于测量噪声。建议后续以 `-count=3` 或更高重跑确认。若回归真实存在，建议排查 v1.3.0 是否在注册/工厂路径引入了额外查表或锁竞争。
-
-#### internal/channel/ssh 回归
-
-| Benchmark | v1.0.0 ns/op | v1.3.0 ns/op | 变化 | v1.0.0 allocs | v1.3.0 allocs |
-|-----------|--------------|--------------|------|---------------|---------------|
-| SSHFactory_Create | 205 | 220.6 | +8% | 2 | 2 |
-| NewChannel | 93 | 115.7 | **+24%** ⚠️ | 1 | 1 |
-| NewConfig | 0.43 | 0.3345 | -22% ✅ | 0 | 0 |
-| SSHPool_New | 469 | 531.7 | +13% | 3 | 3 |
-| SSHPool_Stats | 15 | 13.52 | -10% ✅ | 0 | 0 |
-| SSHPool_PoolKey | 253 | 165.9 | -34% ✅ | 2 | 2 |
-
-**结论**: ssh 子包表现混合，`PoolKey` 与 `NewConfig` 提速明显，`NewChannel` 有约 24% 回归。整体回归幅度在噪声范围内。
-
-#### internal/channel/winrm 回归
-
-| Benchmark | v1.0.0 ns/op | v1.3.0 ns/op | 变化 | v1.0.0 allocs | v1.3.0 allocs |
-|-----------|--------------|--------------|------|---------------|---------------|
-| WinRMFactory_Create | 316 | 149.7 | -53% ✅ | 1 | 1 |
-| NewChannel | 299 | 179.0 | -40% ✅ | 1 | 1 |
-| Config_WithDefaults | 22 | 18.23 | -17% ✅ | 0 | 0 |
-| Config_ResolvePort | 0.91 | 0.9168 | +1% | 0 | 0 |
-| FormatISO8601 | 0.40 | 0.3595 | -10% ✅ | 0 | 0 |
-| WinRMPool_New | 293 | 334.1 | +14% | 4 | 4 |
-| WinRMPool_Stats | 21 | 16.19 | -23% ✅ | 0 | 0 |
-| WinRMPool_PoolKey | 233 | 174.5 | -25% ✅ | 3 | 3 |
-
-**结论**: winrm 子包整体提速明显，`WinRMFactory_Create` 与 `NewChannel` 分别提速 53% 和 40%。
-
-#### internal/batch 回归
-
-| Benchmark | v1.0.0 ns/op | v1.3.0 ns/op | 变化 | v1.0.0 allocs | v1.3.0 allocs |
-|-----------|--------------|--------------|------|---------------|---------------|
-| NewController | 52 | 86.88 | **+67%** 🔴 | 1 | 1 |
-| Controller_Execute_Serial | 82220 | 134599 | **+64%** 🔴 | 115 | 115 |
-| Controller_Execute_Parallel | 612391 | 884365 | **+44%** 🔴 | 791 | 791 |
-| ConcurrencyManager_AcquireRelease_Unlimited | 96 | 102.5 | +7% | 2 | 2 |
-| ConcurrencyManager_AcquireRelease_WithLimiter | 3051 | 3533 | +16% | 6 | 6 |
-| ConcurrencyManager_Stats | 0.52 | 0.8413 | **+62%** 🔴 | 0 | 0 |
-| ErrorPolicy_String | 0.38 | 0.3595 | -5% ✅ | 0 | 0 |
-
-**结论**: batch 包回归显著，`NewController`、`Controller_Execute_Serial`、`ConcurrencyManager_Stats` 回归 62%-67%，`Controller_Execute_Parallel` 回归 44%。allocs/op 不变，说明回归非来自分配增量。建议排查 v1.3.0 是否在控制器初始化与执行路径引入了额外锁、日志或回调开销。`ErrorPolicy_String` 略有提速。
-
-### Phase 1+2 性能回归总结
-
-| 包 | 整体趋势 | 主要风险 | 建议 |
-|----|----------|----------|------|
-| permission | ✅ 提升为主 | CheckBatch +18% | 排查批量检查路径 |
-| dsl | ✅ 提升为主 | ParseBytes +12%、ConvertInput_List +27% | 以 `-count=3` 复测确认 |
-| credential | 🔴 加密路径显著回归 | encrypt +142%、内存 3 倍 | 补充 KMS 命中路径 benchmark，隔离 fallback 开销 |
-| channel | ⚠️ 轻微回归 | Prechecker_New +48%、Factory +44% | 以 `-count=3` 复测确认是否噪声 |
-| channel/ssh | ⚠️ 混合 | NewChannel +24% | 噪声范围内，持续观察 |
-| channel/winrm | ✅ 提升为主 | WinRMPool_New +14% | 整体优秀 |
-| batch | 🔴 显著回归 | NewController +67%、Serial +64% | 排查初始化与执行路径新增开销 |
-| plugin | ➖ 无 benchmark | — | 补充 benchmark，修复 Windows sandbox 测试 |
-| chatops | ➖ 无 benchmark | — | 补充 benchmark |
-| calendar | ➖ 无 benchmark | — | 补充 benchmark |
-| verify | ➖ 无 benchmark | — | 补充 benchmark |
-
-**关键行动项**:
-
-1. **credential 包**: KMS fallback 路径导致加密操作内存与耗时大幅上升。需补充 KMS 命中场景的 benchmark，并在生产配置中确保 KMS 可用以避免 fallback 开销。
-2. **batch 包**: 控制器初始化与执行路径回归 44%-67%，需定位 v1.3.0 引入的额外开销来源。
-3. **channel 包**: 整体 8%-48% 回归，建议以 `-count=3` 或更高复测以排除单次运行噪声。
-4. **缺失 benchmark**: plugin/chatops/calendar/verify 四个新特性包均未提供 benchmark 函数，建议在下一迭代补充，覆盖各自核心热点。
+> **使用注意**：本报告**不构成新系统的承诺值**；任何对外基准声明（tender/SLA/招投标）须在干净宿主（`go test -run='^$' -bench Benchmark -benchmem -count=3 ./internal/...`）复跑取 3 次中位数，并登记 `verify (xinchuang)` 或目标机器型。
