@@ -18,7 +18,6 @@ import type {
   VersionInfo,
   // DB Change Ticket types
   DBChangeTicket,
-  GetDBChangeTicketResponse,
 } from '@/types/levee'
 
 // ---------------------------------------------------------------------------
@@ -194,9 +193,12 @@ export const changesApi = {
     verificationMessage: string
   }> => get(`/changes/${id}/trace`, { params }),
 
-  // DB Change Ticket (全链视图)
+  // DB Change Ticket (全链视图) — 响应为顶层七分段对象本身，
+  // 不是 { ticket: {…} } 的包裹；wire 契约（api/__contract__/wire.json
+  // dbchange-ticket 的 keys）是权威。把 GetDBChangeTicketResponse 解包
+  // 时读到 undefined，页面会白屏而不是报错。
   ticket: (id: string): Promise<DBChangeTicket> =>
-    get<GetDBChangeTicketResponse>(`/changes/${id}/ticket`).then((r) => r.ticket),
+    get<DBChangeTicket>(`/changes/${encodeURIComponent(id)}/ticket`),
 
   // The printable document of the same ticket. Same endpoint, same
   // authorisation, same facts — the server renders it (one renderer for the

@@ -302,16 +302,6 @@ export interface DBChangeTicket {
   audit: AuditSection
 }
 
-/** 获取发布单请求 */
-export interface GetDBChangeTicketRequest {
-  changeId: string
-}
-
-/** 获取发布单响应 */
-export interface GetDBChangeTicketResponse {
-  ticket: DBChangeTicket
-}
-
 export interface ApiError {
   code: number
   message: string
