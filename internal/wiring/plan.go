@@ -298,7 +298,10 @@ func looksLikeWorkflowPath(src string) bool {
 // plan would be paid by every deployment to serve one comparison.
 func (e *Engine) validateTargets(ctx context.Context, hosts []string) ([]*state.Target, error) {
 	if len(hosts) == 0 {
-		return nil, fmt.Errorf("wiring: target_hosts is required to plan a change")
+		// Malformed request, not a server fault: the caller named no
+		// targets at all. Classified so the gateway answers 400 instead of
+		// burying it in Internal (see errors.go).
+		return nil, invalidArgument(ErrTargetHostsRequired)
 	}
 	all, err := e.store.ListTargets(ctx, state.TargetFilter{})
 	if err != nil {
@@ -330,10 +333,15 @@ func (e *Engine) validateTargets(ctx context.Context, hosts []string) ([]*state.
 		out = append(out, t)
 	}
 	if len(unknown) > 0 {
-		return nil, fmt.Errorf("wiring: targets not found in inventory: %s", strings.Join(unknown, ", "))
+		// The request names hosts that do not exist. Malformed input: no
+		// state change makes these names resolvable.
+		return nil, invalidArgument(fmt.Errorf("%w: %s", ErrTargetsNotFound, strings.Join(unknown, ", ")))
 	}
 	if len(retired) > 0 {
-		return nil, fmt.Errorf("wiring: targets are retired: %s", strings.Join(retired, ", "))
+		// The hosts exist but were retired — a state refusal. The same
+		// request against an active host would plan, so this is
+		// FailedPrecondition (412), not InvalidArgument (400).
+		return nil, failedPrecondition(fmt.Errorf("%w: %s", ErrTargetsRetired, strings.Join(retired, ", ")))
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("wiring: no usable targets after inventory validation")
