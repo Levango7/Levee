@@ -84,7 +84,7 @@ function reloadPage(): void {
 
 <template>
   <div class="levee-page">
-    <PageHeader title="告警" hint="实时告警流 — 回放告警环中已知告警，并持续接收新告警" />
+    <PageHeader title="告警" description="实时告警流 — 回放告警环中已知告警，并持续接收新告警" />
 
     <div class="lv-toolbar">
       <el-select v-model="severityFilter" placeholder="全部级别" clearable style="width: 140px">

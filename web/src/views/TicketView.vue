@@ -190,8 +190,8 @@ function ts(value: string | number | undefined | null): string {
 </script>
 
 <template>
-  <div class="ticket-view">
-    <PageHeader title="数据库变更发布单" :subtitle="changeId">
+  <div class="levee-page ticket-view">
+    <PageHeader title="数据库变更发布单" :description="changeId">
       <template #actions>
         <el-button :icon="'Back'" @click="router.back()">返回</el-button>
         <el-button :icon="'Refresh'" :loading="loading" @click="load">刷新</el-button>
@@ -202,9 +202,10 @@ function ts(value: string | number | undefined | null): string {
 
     <div v-loading="loading" class="ticket-view__body">
       <StateBlock
-        v-if="!t && loadTier !== 'ok'"
-        :tier="loadTier"
-        :message="loadText"
+        v-if="!t"
+        :tier="loadTier === 'ok' ? 'empty' : loadTier"
+        :message="loadTier === 'ok' ? undefined : loadText"
+        :hint="loadTier === 'ok' ? '请求成功但内容为空；可能是契约或服务端渲染问题' : ''"
         dense
       />
 
@@ -482,7 +483,7 @@ function ts(value: string | number | undefined | null): string {
 .ticket-head__sub {
   font-size: 12px;
   opacity: 0.7;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--lv-font-mono);
 }
 
 .ticket-alert {
@@ -495,7 +496,7 @@ function ts(value: string | number | undefined | null): string {
 
 .mono-block {
   display: block;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--lv-font-mono);
   font-size: 12px;
 }
 

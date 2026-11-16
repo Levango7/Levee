@@ -133,7 +133,10 @@ function resetSearch(): void {
   load()
 }
 
+const addSubmitting = ref(false)
 async function submitAdd(): Promise<void> {
+  if (addSubmitting.value) return
+  addSubmitting.value = true
   const labels: Record<string, string> = {}
   for (const pair of add.form.labels.split(',').map((s) => s.trim()).filter(Boolean)) {
     const [k, v] = pair.split('=')
@@ -152,6 +155,8 @@ async function submitAdd(): Promise<void> {
     load()
   } catch (err) {
     ElMessage.error(`添加失败：${(err as { message?: string })?.message}`)
+  } finally {
+    addSubmitting.value = false
   }
 }
 
@@ -388,7 +393,7 @@ onMounted(() => {
     </div>
 
     <!-- Add dialog -->
-    <el-dialog v-model="add.visible" title="添加目标机" width="480px">
+    <el-dialog v-model="add.visible" title="添加目标机" width="min(480px, 100vw - 48px)">
       <el-form :model="add.form" label-width="100px">
         <el-form-item label="主机名" required>
           <el-input v-model="add.form.hostname" />
@@ -411,12 +416,12 @@ onMounted(() => {
       </el-form>
       <template #footer>
         <el-button @click="add.visible = false">取消</el-button>
-        <el-button type="primary" @click="submitAdd">添加</el-button>
+        <el-button type="primary" :loading="addSubmitting" @click="submitAdd">添加</el-button>
       </template>
     </el-dialog>
 
     <!-- Import dialog -->
-    <el-dialog v-model="importVisible" title="批量导入（CSV）" width="640px">
+    <el-dialog v-model="importVisible" title="批量导入（CSV）" width="min(640px, 100vw - 48px)">
       <el-input
         v-model="importText"
         type="textarea"
@@ -436,7 +441,7 @@ onMounted(() => {
          environment. The result panel shows created/updated/failed and the
          per-row errors, because "导入完成" over a partial import is the
          lie the atomic endpoint exists to prevent. -->
-    <el-dialog v-model="yamlImportVisible" title="导入清单（YAML，原子）" width="720px">
+    <el-dialog v-model="yamlImportVisible" title="导入清单（YAML，原子）" width="min(720px, 100vw - 48px)">
       <el-input
         v-model="yamlText"
         type="textarea"

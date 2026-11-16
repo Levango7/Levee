@@ -167,7 +167,11 @@ function openEdit(row: Template): void {
   edit.visible = true
 }
 
+const submitting = ref(false)
+
 async function submitEdit(): Promise<void> {
+  if (submitting.value) return
+  submitting.value = true
   const requiredParams = edit.form.requiredParams
     .split(',')
     .map((s) => s.trim())
@@ -185,6 +189,8 @@ async function submitEdit(): Promise<void> {
     load()
   } catch (err) {
     ElMessage.error(`保存失败：${(err as { message?: string })?.message}`)
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -214,7 +220,8 @@ function openInstantiate(row: Template): void {
 }
 
 async function submitInstantiate(): Promise<void> {
-  if (!instantiate.template) return
+  if (!instantiate.template || submitting.value) return
+  submitting.value = true
   try {
     const change = await templatesApi.instantiate({
       templateName: instantiate.template.name,
@@ -231,6 +238,8 @@ async function submitInstantiate(): Promise<void> {
     load()
   } catch (err) {
     ElMessage.error(`实例化失败：${(err as { message?: string })?.message}`)
+  } finally {
+    submitting.value = false
   }
 }
 
@@ -318,7 +327,7 @@ onMounted(load)
     </div>
 
     <!-- Create / edit dialog -->
-    <el-dialog v-model="edit.visible" :title="edit.mode === 'create' ? '新建模板' : '编辑模板'" width="680px">
+    <el-dialog v-model="edit.visible" :title="edit.mode === 'create' ? '新建模板' : '编辑模板'" width="min(680px, 100vw - 48px)">
       <el-form :model="edit.form" label-width="120px">
         <el-form-item label="名称" required>
           <el-input v-model="edit.form.name" :disabled="edit.mode === 'edit'" placeholder="如 deploy-web" />
@@ -344,7 +353,7 @@ onMounted(load)
       </el-form>
       <template #footer>
         <el-button @click="edit.visible = false">取消</el-button>
-        <el-button type="primary" @click="submitEdit">保存</el-button>
+        <el-button type="primary" :loading="submitting" @click="submitEdit">保存</el-button>
       </template>
     </el-dialog>
 
@@ -356,7 +365,7 @@ onMounted(load)
     <el-dialog
       v-model="instantiate.visible"
       title="实例化模板"
-      width="640px"
+      width="min(640px, 100vw - 48px)"
       :close-on-click-modal="false"
     >
       <template v-if="instantiate.template">
@@ -469,7 +478,7 @@ onMounted(load)
         <el-button v-if="instantiate.step === 0" @click="closeInstantiate">取消</el-button>
         <el-button v-if="instantiate.step === 1" @click="prevStep">上一步</el-button>
         <el-button v-if="instantiate.step === 0" type="primary" @click="nextStep">下一步：确认</el-button>
-        <el-button v-else-if="instantiate.step === 1" type="primary" @click="submitInstantiate">
+        <el-button v-else-if="instantiate.step === 1" type="primary" :loading="submitting" @click="submitInstantiate">
           创建变更
         </el-button>
         <template v-else>

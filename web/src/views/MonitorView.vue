@@ -512,7 +512,7 @@ async function runVerify(): Promise<void> {
                Kept inside the panel that explains the endpoint, and additive
                to the empty state above (which stays put — it is the accurate
                answer for "what did the gates decide", a different question). -->
-          <el-dialog v-model="verifyOpen" title="单步验证" width="560px" append-to-body>
+          <el-dialog v-model="verifyOpen" title="单步验证" width="min(560px, 100vw - 48px)" append-to-body>
             <el-form label-width="96px" @submit.prevent>
               <el-form-item label="检查类型">
                 <el-select v-model="verifyType" style="width: 220px">

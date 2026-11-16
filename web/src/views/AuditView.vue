@@ -268,18 +268,21 @@ onMounted(async () => {
           </template>
         </el-table-column>
       </el-table>
-      <!-- Table mode's own terminal states. The chain above (v-if timeline /
-           v-else-if table ok / v-else here) keeps exactly one region visible. -->
+      <!-- Table mode's terminal states. The empty tier must NOT carry the
+           error message (errorMessage's fallback) — an empty success must
+           not read like a failure. -->
       <StateBlock
         v-else
         :tier="regionTier"
-        :message="regionMessage"
+        :message="regionTier === 'empty' ? undefined : regionMessage"
         :hint="
           regionTier === 'forbidden'
             ? '审计日志受角色管控，请联系管理员授权'
             : regionTier === 'empty' && filterActive
               ? '当前筛选条件下没有审计记录'
-              : ''
+              : regionTier === 'empty'
+                ? '还没有任何审计记录'
+                : ''
         "
         :action-label="regionTier === 'empty' && filterActive ? '清除筛选条件' : ''"
         @retry="load"
@@ -288,7 +291,7 @@ onMounted(async () => {
     </div>
 
     <!-- Verify dialog: a verdict hero, then the detail. -->
-    <el-dialog v-model="verify.visible" title="哈希链校验" width="720px">
+    <el-dialog v-model="verify.visible" title="哈希链校验" width="min(720px, 100vw - 48px)">
       <div v-loading="verify.loading" class="verify">
         <div class="verify__hero" :class="verify.valid ? 'verify__hero--ok' : 'verify__hero--bad'">
           <el-icon class="verify__hero-icon">
