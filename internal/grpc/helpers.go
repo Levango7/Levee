@@ -40,8 +40,7 @@ func buildPageToken(end, total int) string {
 	return fmt.Sprintf("%d", end)
 }
 
-// classifiedStatus returns the gRPC status carried by err, when err carries
-// one.
+// isClassified reports whether err already carries a gRPC status code.
 //
 // A refusal classified by a lower layer KEEPS its classification: the wiring
 // layer knows whether a plan request was malformed (InvalidArgument → 400) or
@@ -52,13 +51,33 @@ func buildPageToken(end, total int) string {
 // Only a real classification passes: an ordinary error yields ok=false from
 // status.FromError, and codes.Unknown is treated as "not classified" (that is
 // what status.FromError reports for a plain error).
-func classifiedStatus(err error) (*status.Status, bool) {
+func isClassified(err error) bool {
 	if err == nil {
-		return nil, false
+		return false
 	}
 	st, ok := status.FromError(err)
-	if !ok || st.Code() == codes.Unknown {
-		return nil, false
+	return ok && st.Code() != codes.Unknown
+}
+
+// planStatus converts an engine error from the plan path into the status the
+// gateway answers with.
+//
+// A classified refusal is returned AS IS: the error carries its own code (and
+// its own cause chain), so re-wrapping it would throw both away. An
+// unclassified engine error is a server fault and stays Internal.
+func planStatus(err error) error {
+	if isClassified(err) {
+		return err
 	}
-	return st, true
+	return status.Errorf(codes.Internal, "plan: %v", err)
+}
+
+// engineStatus converts an engine error from the apply path into the status
+// the gateway answers with. Same rule as planStatus: a classified refusal
+// keeps its code, everything else is a server fault.
+func engineStatus(err error) error {
+	if isClassified(err) {
+		return err
+	}
+	return status.Errorf(codes.Internal, "engine: %v", err)
 }
