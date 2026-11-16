@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -128,5 +129,28 @@ func printSQLReviewHuman(w io.Writer, res *sqlreview.ReviewResult) {
 		}
 		fmt.Fprintf(w, "batch: [%s] %s: %s\n", f.Severity, f.Rule, f.Message)
 	}
+	printSQLImpactHuman(w, res.Impact)
 	fmt.Fprintf(w, "verdict: %s (%d fail, %d warn)\n", res.Verdict, res.FailCount, res.WarnCount)
+}
+
+// printSQLImpactHuman renders the static impact surface. It is printed under
+// its own heading, after the findings, so nobody reads "touches orders" as a
+// verdict: it is what the text says the batch does, not a measurement of it.
+func printSQLImpactHuman(w io.Writer, imp sqlreview.Impact) {
+	if len(imp.Tables) == 0 && !imp.Incomplete {
+		return
+	}
+	fmt.Fprintln(w, "impact (static, from the SQL text):")
+	for _, t := range imp.Tables {
+		whole := ""
+		if t.WholeTable {
+			whole = " [whole table]"
+		}
+		fmt.Fprintf(w, "  %s: %s%s\n", t.Table, strings.Join(t.Operations, ", "), whole)
+	}
+	if imp.Incomplete {
+		fmt.Fprintln(w, "  incomplete: a statement was only read partway — tables it "+
+			"touches are NOT in this list (see SR-01)")
+	}
+	fmt.Fprintln(w, "  rows and lock time need a live database (blocked-items D-7)")
 }

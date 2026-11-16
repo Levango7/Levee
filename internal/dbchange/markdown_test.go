@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/nexus/levee/internal/plan"
+	"github.com/nexus/levee/internal/sqlreview"
 )
 
 func markdownTicket() *Ticket {
@@ -89,6 +90,58 @@ func TestMarkdownCarriesEverySection(t *testing.T) {
 	assert.Contains(t, doc, "v2:abc123")
 	assert.Contains(t, doc, "UPDATE accounts SET tier='gold'")
 	assert.Contains(t, doc, "levee dbchange show run-md-1 --format markdown")
+}
+
+// The static impact surface is rendered next to the verdict, and it is
+// labelled as what it is: read off the SQL text, not measured. An approver who
+// reads "orders: delete [whole table]" as a measurement would stop asking the
+// one question this section deliberately does not answer.
+func TestMarkdownRendersTheStaticImpactSurface(t *testing.T) {
+	tk := markdownTicket()
+	tk.SQL.Review.Impact = &sqlreview.Impact{Tables: []sqlreview.TableImpact{
+		{Table: "accounts", Operations: []string{"update"}, WholeTable: false},
+		{Table: "orders", Operations: []string{"delete"}, WholeTable: true},
+	}}
+	doc := Markdown(tk, MarkdownOptions{GeneratedAt: time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)})
+
+	assert.Contains(t, doc, "静态影响面（来自 SQL 文本，不是实测量）")
+	assert.Contains(t, doc, "| accounts | update | 否 |")
+	assert.Contains(t, doc, "| orders | delete | **是**")
+	assert.Contains(t, doc, "锁时长与影响行数需要活库")
+	assert.NotContains(t, doc, "影响面不完整")
+}
+
+// A surface read from a statement the engine only partly understood is a
+// LOWER BOUND, and the document must say so — taking an incomplete list at
+// face value is how an approver clears a change whose second table was never
+// read.
+func TestMarkdownFlagsAnIncompleteImpactSurface(t *testing.T) {
+	tk := markdownTicket()
+	tk.SQL.Review.Impact = &sqlreview.Impact{
+		Tables: []sqlreview.TableImpact{{Table: "accounts", Operations: []string{"alter"}, WholeTable: true}},
+		//
+		Incomplete: true,
+	}
+	doc := Markdown(tk, MarkdownOptions{GeneratedAt: time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)})
+	assert.Contains(t, doc, "**影响面不完整**")
+	assert.Contains(t, doc, "上表是下界，不是全集")
+}
+
+// A batch with no tables at all (SET/USE) still gets a line: "the engine
+// looked and found no table" is a fact, and silence would read as "not
+// analysed".
+func TestMarkdownSaysWhenSQLNamesNoTable(t *testing.T) {
+	tk := markdownTicket()
+	tk.SQL.Review.Impact = &sqlreview.Impact{Tables: []sqlreview.TableImpact{}}
+	doc := Markdown(tk, MarkdownOptions{GeneratedAt: time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)})
+	assert.Contains(t, doc, "未指名任何表")
+}
+
+// A stored summary from before the impact surface existed carries none, and
+// the document must not invent an empty one.
+func TestMarkdownOmitsTheImpactSectionWhenThereIsNone(t *testing.T) {
+	doc := Markdown(markdownTicket(), MarkdownOptions{GeneratedAt: time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)})
+	assert.NotContains(t, doc, "静态影响面")
 }
 
 func TestMarkdownSaysUnknownWhenThePlanIsUnreadable(t *testing.T) {

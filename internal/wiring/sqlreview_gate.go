@@ -27,11 +27,14 @@ import (
 	"github.com/nexus/levee/internal/sqlreview"
 )
 
-// reviewWorkflowSQL scores every mysql.query step's sql argument and returns
-// the aggregated verdict for the plan artifact. Steps without a string sql
-// argument are skipped: typing the argument is the executor's contract, not
-// this gate's, and refusing here would double-report a malformed step the
-// dsl validator already rejects on the compile path.
+// reviewWorkflowSQL scores every reviewable step's sql argument and returns
+// the aggregated verdict for the plan artifact. Which steps those are is
+// plan.ReviewableSQL's answer, shared with the ticket and the re-check path —
+// this gate was the copy that silently skipped PostgreSQL after pg.query
+// landed. Steps without a string sql argument are skipped: typing the argument
+// is the executor's contract, not this gate's, and refusing here would
+// double-report a malformed step the dsl validator already rejects on the
+// compile path.
 func reviewWorkflowSQL(wf *dsl.Workflow) (*plan.SQLReviewSummary, error) {
 	if wf == nil {
 		return nil, nil
@@ -42,11 +45,8 @@ func reviewWorkflowSQL(wf *dsl.Workflow) (*plan.SQLReviewSummary, error) {
 	// indistinguishable from "the second implementation is different".
 	var steps []plan.SQLStepInput
 	for _, s := range wf.Steps {
-		if s.Module != "mysql" || s.Action != "query" {
-			continue
-		}
-		sql, ok := s.Args["sql"].(string)
-		if !ok || strings.TrimSpace(sql) == "" {
+		sql, ok := plan.ReviewableSQL(s.Module, s.Action, s.Args)
+		if !ok {
 			continue
 		}
 		steps = append(steps, plan.SQLStepInput{Step: s.Name, SQL: sql})

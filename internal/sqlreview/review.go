@@ -99,10 +99,11 @@ type Finding struct {
 
 // StatementReview is the review of one statement of the batch.
 type StatementReview struct {
-	Index    int           `json:"index"`
-	Text     string        `json:"text"`
-	Kind     StatementKind `json:"kind"`
-	Findings []Finding     `json:"findings"`
+	Index    int             `json:"index"`
+	Text     string          `json:"text"`
+	Kind     StatementKind   `json:"kind"`
+	Findings []Finding       `json:"findings"`
+	Impact   StatementImpact `json:"impact"`
 }
 
 // ReviewResult is the outcome of reviewing one batch.
@@ -112,6 +113,11 @@ type ReviewResult struct {
 	Findings   []Finding         `json:"findings"`
 	FailCount  int               `json:"fail_count"`
 	WarnCount  int               `json:"warn_count"`
+	// Impact is the static impact surface of the whole batch (see impact.go).
+	// It is built from the same parse as the findings and in the same pass, so
+	// it cannot disagree with them; it is a value, not a pointer, because a
+	// fresh review always HAS an impact surface (possibly an empty one).
+	Impact Impact `json:"impact"`
 }
 
 // Review parses batch and scores every statement against the rule set.
@@ -150,6 +156,7 @@ func Review(batch string) (*ReviewResult, error) {
 		res.Findings = append(res.Findings, sr.Findings...)
 	}
 	res.Findings = append(res.Findings, batchRules(res.Statements, sawDDL, sawDML)...)
+	res.Impact = aggregateImpact(res.Statements)
 	for _, f := range res.Findings {
 		switch f.Severity {
 		case SeverityFail:
@@ -180,6 +187,7 @@ func reviewStatement(text string, index int) StatementReview {
 	if err != nil {
 		sr.Kind = KindUnknown
 		sr.Findings = append(sr.Findings, sr01Finding(text, index, err))
+		sr.Impact = unreadImpact(index)
 		return sr
 	}
 	sr.Kind = classify(stmt)
@@ -195,9 +203,11 @@ func reviewStatement(text string, index int) StatementReview {
 	if sr.Kind == KindDDL || sr.Kind == KindDBDDL {
 		if _, strictErr := sqlparser.ParseStrictDDL(text); strictErr != nil {
 			sr.Findings = append(sr.Findings, sr01PartialFinding(text, index, strictErr))
+			sr.Impact = unreadImpact(index)
 			return sr
 		}
 	}
+	sr.Impact = statementImpact(stmt, sr.Kind, index)
 	for _, r := range stmtRules {
 		if !r.kinds[sr.Kind] {
 			continue

@@ -3678,14 +3678,18 @@ levee sqlreview --change <change-id>
 **输出**
 
 逐条语句一行 `statement N (kind): <语句文本>`，每条发现一行 `[fail|warn] SR-xx: <说明>`；
-批级发现（SR-19 / SR-20）归在 `batch:` 标题下。末行 `verdict: pass|warn|fail (N fail, M warn)`。
+批级发现（SR-19 / SR-20）归在 `batch:` 标题下。随后是 `impact (static, from the SQL
+text):` 段——每张表一行「表: 操作[, 操作][, whole table]」，未指名表时不打印；有语句只被
+读到一半时多一行 `incomplete:`，说明它涉及的表**不在**该列表内（下界，不是全集）。
+末行 `verdict: pass|warn|fail (N fail, M warn)`。
 `--json` 输出标准信封（`data` 为完整结果，含 `fail_count`/`warn_count`）。发现里 `dialect`
 字段只在 SR-01 且语句带别方言标记语法时出现（值如 `postgresql`/`sqlserver`/`oracle`/`sqlite`/`hive`），
 是给读者与 UI 的提示，不改变 severity。verdict 为 fail 时退出码 1，便于流水线卡点；warn 与 pass 退出码 0。
 
 **`--change <change-id>`：与发布单的对齐**
 
-`levee sqlreview --change` 读一个变更的**计划制品**，把其中 `mysql.query` 步骤的 SQL
+`levee sqlreview --change` 读一个变更的**计划制品**，把其中可审核 SQL 步骤（`mysql.query`
+与 `pg.query`；判定口径由 `plan.ReviewableSQL` 一处给出）的 SQL
 用**当前规则集**复算一遍，并与计划里**固化**的那份结论（`plan_hash` 绑定的、审批当时
 签下的那一份）并排给出：
 
@@ -3753,6 +3757,12 @@ levee dbchange show <change-id>
 变更窗口 / 审批链 / 执行证据 / 审计链验证），SQL 与 findings 走表格，末尾注明文档由
 既有制品派生、不含人工填写内容，并给出重新生成的命令。
 
+第 1 节在审核结论下面还带**静态影响面**表（表 / 操作 / 是否整表），来自计划制品里的
+`sql_review.table_impact`（同一遍解析的产物，被 `plan_hash` 覆盖）。它是「这条变更动到
+哪些表」的回答，**不是**实测量：锁时长与影响行数需要活库，单子上只有一句「本单不猜」
+（`docs/blocked-items.md` D-7）。若其中某条语句只被读到一半（SR-01），该表**不列入**
+影响面并标注「影响面不完整」——那时上表是下界，不是全集。
+
 - 渲染器在 `internal/dbchange`（`dbchange.Markdown`），**CLI 与 REST 导出共用一份**——
   两份渲染器会漂，而漂了的导出件比没有导出件更糟：印出来的那张单会不再等于屏幕上的那张；
 - 诚实口径逐字保留：计划不可读时写「未知」而不是「没有 SQL / 没有回滚」；审计校验出错
@@ -3792,7 +3802,7 @@ levee dbchange show chg-20261113-001 --format html --output ticket.html
 | 段 | 内容 | 为空时的说法 |
 |----|------|--------------|
 | 变更 | ID / 名称 / 状态 / 优先级 / 环境 / 发起人 / 工作流 / 计划哈希 / **计划状态** | 逐字段 `(无)` |
-| SQL（已审核） | 每个 `mysql.query` 步骤的 SQL 文本 + 审核结论与逐条发现 | 计划可读且确无 SQL：`无可审核的 SQL 步骤` / `审核结论: 无`；**计划不可读**：`计划制品不可读（plan_json 解析失败）：SQL 与审核结论未知` |
+| SQL（已审核） | 每个可审核 SQL 步骤（`mysql.query` / `pg.query`）的 SQL 文本 + 审核结论与逐条发现 | 计划可读且确无 SQL：`无可审核的 SQL 步骤` / `审核结论: 无`；**计划不可读**：`计划制品不可读（plan_json 解析失败）：SQL 与审核结论未知` |
 | 回滚计划 | 运行级策略（strategy / on_failure / verify_after / 快照路径）+ 逐步补偿声明 | 计划可读且确无声明：`未声明回滚`；**计划不可读**：`计划制品不可读（plan_json 解析失败）：回滚计划未知` |
 | 执行窗口 | 校验时机，以及**是否随 run 持久化** | `随 run 持久化: 否` + 说明（窗口是工作流声明、plan 期校验，run 行不存） |
 | 审批链 | 级别 / 状态 / 是否绑定当前计划哈希 / 审批人与决定 / 待决·已批·已拒计数 | `未进入审批链`；另有两条提示行——`legacy` 审批行（无 plan_hash，不对任何计划负责）与陈旧审批行（绑定的是本变更已不携带的计划） |
