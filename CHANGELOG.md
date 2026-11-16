@@ -11,6 +11,14 @@
 - **验证**：新增 5 例（说明与真实一致 → 绿 / tag 对象错 → 红 / 指向的提交错 → 红 / 缺说明文件 → 红 / 旧说明没写 SHA → 仍绿，因为那不是漂移）。**变异实测**：把 v1.26.0 的 tag 对象改成 `deadbeefcafe` → 门禁红并点名真实 SHA；把指向的提交改成 `cafebabecafe` → 红；还原即绿。
 - **边界**：规则只核对**文件里写了什么**与**真实发布是否一致**；它不核对 Release 资产数与镜像 manifest（那两项要联网读 GitHub/registry，由发布后的人工/脚本核验承担，release notes 里如实记着当时的探测结果）。
 
+### 修复（SQL 审核：DDL 只被读到一半时前缀曾被当作整条语句打分；读不了时点明方言）
+
+- **缺口（两个，第二个是真的放行）**：① 嵌入解析库的宽松 `Parse` 对 DDL **不返回错误**——它把解析失败吞掉、回报一个「前缀」AST（库自己的文档注释写着这件事，代码里还打了一行 `ignoring error parsing DDL` 日志）。审核引擎用的正是宽松版，于是**前缀被当作整条语句打分**：`CREATE TABLE … AS SELECT` 收到「建表无主键」的药方、`CREATE TABLE … LIKE` 同样；而 PostgreSQL 的 `CREATE TABLE t (id SERIAL PRIMARY KEY)`、T-SQL 的 `IDENTITY(1,1)`、SQLite 的 `AUTOINCREMENT`、Oracle 的 `VARCHAR2(10)` 这些**语法表里根本不存在的写法拿到了 verdict=pass**——零发现、干净通过。② 读不了时的文案只说「解析失败」，读起来像「你的 SQL 写错了」，于是操作员去找一个不存在的笔误。
+- **修法**：`reviewStatement` 在宽松解析成功之后，对 DDL 再问一次**严格解析**（库自带 `ParseStrictDDL`）：它说没读全，就**抑制前缀的规则发现**、只报一条 SR-01。SR-01 因此有两个读数，severity 随之分档：**整条读不了＝fail**（未审计不许放行，原有语义不变），**DDL 只读到一半＝warn**（人工确认；MySQL 自己的 `PARTITION BY`、`FOREIGN KEY` 子句也读成这样，直接 fail 会把合法的 MySQL 变更赶出平台）。**不新增规则 ID**：两条发现说的是同一件事——这条语句没有被读完，也就没有被完整审计——只是读到的量不同；拆成两个 ID 会让审计面把「没读完」数两遍。
+- **点明方言而不是编证据**：新增 `internal/sqlreview/dialect.go`，两种读数都点名识别到的方言（`findings[].dialect`，值 `postgresql`/`sqlserver`/`oracle`/`sqlite`/`hive`），文案里列出命中的标记（如 `postgresql-only syntax (RETURNING)`）。标记表的入选条件是**机械的**：必须是嵌入语法**真的拒收**的 token，且每个标记都带着自己的样例语句，由测试同时证明「语法拒收它」与「检测命中它」（`ParseStrictDDL(sample)` 必须报错）。因此 Oracle 的 `NVL()`／`ROWNUM`／`DUAL` **不在表内**——MySQL 把它们当普通标识符，语句本来就解析通过，硬点名就是编证据；Oracle 只在语法真读不了的地方被认出（`VARCHAR2`、`CONNECT BY`）。匹配前会剥掉字符串字面量、引号标识符与注释，`'::'`、`-- RETURNING`、名为 `serial` 的列都不会触发。
+- **验证**：`internal/sqlreview` 新增 12 组断言——标记表两侧机械自证（每个标记：语法必拒 + 检测必中）／大小写不敏感／**字面量与注释不算证据**／普通标识符不触发／GRANT 不得被编成方言／两种读数各自点名／**读不了仍必须 fail**（六种方言语句全测）／**部分解析的 DDL 不许 pass**（12 条：PG、T-SQL、SQLite、Oracle、Hive 与 MySQL 自己的 `AS SELECT`／`LIKE`／`FOREIGN KEY`／`PARTITION BY`，断言「不得 pass、只报一条 SR-01、且不得出现『建表无主键』这类前缀药方」）／两种部分解析读数／**整条读不了的 DDL 是 fail 不是 warn**／读全了的 DDL 保有原发现（`ALTER TABLE … ADD COLUMN` 仍报 SR-08）／`dialect` 进 JSON 信封／混合批每条各持其读数。`go test ./...` 全绿；`golangci-lint` 0 issues。
+- **边界**：本笔**没有**让引擎学会别的方言——`pg.query` 已能执行 PostgreSQL，而审核语法仍冻结在 MySQL 5.7，两者组合就是「能跑但不能审」（PG 的 DML 会被 SR-01 全部拒掉）。真解法（按目标方言选解析器，或按方言分派多套规则表）需要产品决策与新依赖，已登记 `docs/blocked-items.md` **D-6**；在那之前不许假装能审，分诊文案与 `dialect` 字段就是当前的正解。`dialect` 是提示不是校验：不说「这是 PostgreSQL 语句」，只说「它读起来像」，并把命中的标记摊开给读者否决。
+
 ### 新增（LE108：不可逆步骤声明了「不可逆」却没声明任何补偿）
 
 - **缺口**：R2 说变更必须可逆，而 `irreversible: true` 是作者说「这条不可逆」的方式——但在本笔之前，这个声明除了把审批档位抬起（R4）之外**没有任何后果**。于是**无回头路的步骤与有回头路的步骤长得一模一样**，差别只在变更中途失败之后才显形：那时才发现没有任何东西可执行。V14/LE082 只要求把它列进 `allow_irreversible`（授权门），从没说过「你声明了不可逆，那就请说清楚失败了怎么办」。

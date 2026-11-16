@@ -363,6 +363,9 @@ levee link run-20260815-001 --incident CHG-2026-0815
 `levee sqlreview` 按 LEVEE 的变更治理规则集审一批 SQL，逐条给 pass / warn / fail 判定。
 它是**数据库变更发布楔子**的第一接触面（`product-positioning.md` §1）：解析器为嵌入的
 Apache-2.0 组件（归属见根目录 `NOTICE`），20 条规则（SR-01..SR-20）的文案全部自撰。
+两条诚实边界：整条读不了＝fail（带别方言标记语法时点名方言，说明是方言缺口而非语法错误）；
+DDL 只读到一半（`PARTITION BY`、`CREATE TABLE … AS SELECT`、`FOREIGN KEY` 等）＝warn，
+前缀的规则发现被抑制，由人工确认。
 
 命令示例：审一批 SQL
 

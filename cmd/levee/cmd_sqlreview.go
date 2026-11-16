@@ -51,8 +51,12 @@ func newSQLReviewCmd() *cobra.Command {
 			"The batch is one or more statements separated by semicolons. Every\n" +
 			"statement is parsed with the embedded Apache-2.0 parser and scored by\n" +
 			"the in-house rule set (SR-01..SR-20); a statement the grammar cannot\n" +
-			"parse fails review instead of passing silently. Exit code is 1 when the\n" +
-			"verdict is fail, so pipelines can gate on the review result.\n\n" +
+			"parse fails review instead of passing silently, and names the other SQL\n" +
+			"dialect it looks like when it carries one (the grammar is frozen at the\n" +
+			"MySQL 5.7 era). A DDL the grammar reads only partway warns instead: the\n" +
+			"rules scored a prefix, not your statement, so confirm it by hand.\n" +
+			"Exit code is 1 when the verdict is fail, so pipelines can gate on the\n" +
+			"review result.\n\n" +
 			"--change <change-id> reviews the SQL an approved change carries and\n" +
 			"compares it with the verdict frozen into its plan artifact.",
 		Args: cobra.NoArgs,
