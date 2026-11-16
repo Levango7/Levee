@@ -3679,8 +3679,9 @@ levee sqlreview --change <change-id>
 
 逐条语句一行 `statement N (kind): <语句文本>`，每条发现一行 `[fail|warn] SR-xx: <说明>`；
 批级发现（SR-19 / SR-20）归在 `batch:` 标题下。末行 `verdict: pass|warn|fail (N fail, M warn)`。
-`--json` 输出标准信封（`data` 为完整结果，含 `fail_count`/`warn_count`）。verdict 为 fail 时
-退出码 1，便于流水线卡点；warn 与 pass 退出码 0。
+`--json` 输出标准信封（`data` 为完整结果，含 `fail_count`/`warn_count`）。发现里 `dialect`
+字段只在 SR-01 且语句带别方言标记语法时出现（值如 `postgresql`/`sqlserver`/`oracle`/`sqlite`/`hive`），
+是给读者与 UI 的提示，不改变 severity。verdict 为 fail 时退出码 1，便于流水线卡点；warn 与 pass 退出码 0。
 
 **`--change <change-id>`：与发布单的对齐**
 
@@ -3708,8 +3709,8 @@ levee sqlreview --change <change-id>
 
 **规则集（20 条，SR-01..SR-20）**
 
-- fail 档：SR-01 语法无法解析（不猜测，放行即未审计）；SR-02/SR-03 无 WHERE 的 DELETE/UPDATE；SR-04 WHERE 恒真（含 OR 臂恒真）；SR-05 TRUNCATE；SR-06 DROP DATABASE。
-- warn 档：SR-07 DROP 对象；SR-08 ALTER/CREATE INDEX 语句体不可见（如实声明判不了，人工审）；SR-09 RENAME；SR-10 建表无主键；SR-11 建表未声明 ENGINE；SR-12 SELECT *；SR-13 INSERT 省列名；SR-14/SR-15 有 WHERE 无 LIMIT；SR-16 SET GLOBAL；SR-17 管理语句（OPTIMIZE 等）；SR-18 加锁读；SR-19 批次混 DDL 与 DML；SR-20 批次多语句不主张跨语句原子性。
+- fail 档：SR-01 **整条读不了**（不猜测，放行即未审计）；语句若带别的方言的标记语法（`::`、`RETURNING`、`TOP (`、`PRAGMA`、`LATERAL VIEW`…），发现里点名方言，说明这是**方言缺口**而非语法错误。SR-02/SR-03 无 WHERE 的 DELETE/UPDATE；SR-04 WHERE 恒真（含 OR 臂恒真）；SR-05 TRUNCATE；SR-06 DROP DATABASE。
+- warn 档：SR-01 **半个读数**＝DDL 只读到一半（嵌入解析库对 DDL 会吞掉解析错误、把前缀当语句返回；`PARTITION BY`、`CREATE TABLE … LIKE / AS SELECT`、`FOREIGN KEY` 子句、语法表外的列类型都读成这样）。此时**前缀的规则发现被抑制**，只报这一条并由人工确认——旧行为是拿前缀冒充整条语句，于是 `CREATE TABLE … AS SELECT` 收到「建表无主键」的药方、PostgreSQL 的建表干净通过；SR-07 DROP 对象；SR-08 ALTER/CREATE INDEX 语句体不可见（如实声明判不了，人工审）；SR-09 RENAME；SR-10 建表无主键；SR-11 建表未声明 ENGINE；SR-12 SELECT *；SR-13 INSERT 省列名；SR-14/SR-15 有 WHERE 无 LIMIT；SR-16 SET GLOBAL；SR-17 管理语句（OPTIMIZE 等）；SR-18 加锁读；SR-19 批次混 DDL 与 DML；SR-20 批次多语句不主张跨语句原子性。
 
 **示例**
 
