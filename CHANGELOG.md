@@ -13,12 +13,16 @@
 - **边界**：本笔只做**可见性**。真正的「DDL 自动回滚」（undo 生成 + 变更前 schema 快照）**未做**，已按实况登记进 `docs/blocked-items.md` **D-5**：卡点不是写 SQL，而是没有 schema 快照就没有正确逆向（`DROP COLUMN` 的逆需要列定义，语句文本里没有），所以顺序必须是先快照再生成。
 - **顺带订正**：`internal/errors/errors_test.go` 里那份自称「整个目录」的手写清单停在 LE104，而目录已有 LE105/LE106——两个数（27 vs 29）长期不一致却没有任何测试会红。现补上 LE105/LE106/LE108 并把两个数钉成 30，同时新增一条「手写清单与 `AllCodes()` 必须同集合」的断言。
 
-### 文档（v1.26.0 发布说明草稿：未切版，按 master 实况写成）
+## [v1.26.0] - 2026-11-16
+
+> **发布状态：已切版。** 附注 tag `v1.26.0`（tag 对象 `94fed1317c8`，指向 master 提交 `172cf7a`）于 2026-11-16T03:52Z 推送，且是在该提交自己的 `master` push run 全绿之后才打的：`master` push CI run **27/27** 检查全 success（含聚合门 `check (all jobs passed)`）。`release.yml` 三段（CI gate / goreleaser / container image，run `43800685888`，03:52:15Z → 05:38:15Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `43800685839`（`head_branch=v1.26.0`，completed success）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-16T05:38:10Z`，资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.26.0` 按外部事实核过——`manifests/v1.26.0` 返回 **200**（同一次探测里 `v1.25.0` → 200、不存在的 `v1.26.99` → 404，证明探针有分辨力；`Accept` 必须带多架构 index 媒体类型，否则连已存在的 tag 也会读成 404），index 内是 `linux/amd64` + `linux/arm64` 两个平台（另两条 `unknown/unknown` 是构建 attestation）。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.26.0` / 逐字 `v1.26.0`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **60** 个小节，主题分布与行为变更见 [`docs/release-notes/v1.26.0.md`](docs/release-notes/v1.26.0.md)。
+
+### 文档（v1.26.0 发布说明：按 master 实况写成，随切版发布）
 
 - **为什么**：自 v1.25.0 起累计 **85 个已合并 PR**（#294–#384）、**129 个提交**、**60 个 CHANGELOG 小节**，发布说明还没写。没有它，下一次切版就要临时从 CHANGELOG 里拼——而拼出来的东西通常会漏掉「行为变更」那一栏。
 - **写什么**：`docs/release-notes/v1.26.0.md`，结构照 `v1.22.0.md` 的既有形态：基线（`v1.25.0..master` 的提交/PR/小节计数，逐条可复算）、按主题的 10 组概览（计数与 CHANGELOG 小节逐条对应，合计 60）、**契约与行为变更**（升级前必读）、**诚实边界**（本版没做到的事）、验证清单、切版时要补的四步。
 - **特别点名两处行为修复**（调用方必须知道）：① `RollbackChange` 的 `dry_run` 此前**会真的执行回滚**，现在才是预览；② `levee rollback` 此前**从来没有回滚过**。另有 JSON 空集合统一为 `[]`（依赖 `null` 判断「无数据」的调用方需要改）、`go` 指令升到 1.26.11、`x/net` 升到 v0.62.0（CVE-2026-78661）。
-- **状态**：**未切版**——tag 未打、chart 版本未升、镜像未构建。草稿首部显式标注，切版时要补发布日期、tag 对象、CI run 与资产清单（外部事实要核到，不能凭印象写），并去掉该标注。
+- **状态**：**已切版**（2026-11-16）——tag `v1.26.0` 已推送，Release 与镜像均已按外部事实核过；实况见本小节首部的发布状态段与 [`docs/release-notes/v1.26.0.md`](docs/release-notes/v1.26.0.md)。
 - **边界**：草稿只描述**已经发生的**变更，不预告；「诚实边界」一节照实列出本版**没有**做到的事（发布单是只读视图、窗口无法回放、两条 P1 仍未复现且只有探针在盯、信创硬件与 schedule 窗口按现状记账）。
 
 ### 新增（发布单打印 / 另存为 PDF：自包含单页 + 控制台一键入口）
