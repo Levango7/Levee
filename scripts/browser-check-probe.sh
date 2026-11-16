@@ -47,6 +47,16 @@ mkdir -p "$LOG_DIR" "$SHOT_ROOT"
 export BROWSER_CHECK_DUMPIO=1
 export BROWSER_CHECK_BROWSER="$BROWSER"
 
+# 前端必须知道 mock 网关在哪。
+#
+# 这一行是 2026-11-16 实跑时补上的：漏了它，vite 会把 API 代理指向默认的
+# http://localhost:8080（没有服务在那儿），于是**每个页面都是空的**——
+# rows=0、趋势图没有段、403 档渲染成「加载失败」。那不是被探的偶发问题，
+# 是探针自己把环境接错了，而它会以「assert_failures」的样子出现，指向错误
+# 的排查方向。CI 的 browser-check 腿里就有这一行（VITE_API_TARGET），探针
+# 必须自己也有——它不共享那条腿的环境。
+export VITE_API_TARGET="http://127.0.0.1:${MOCK_PORT}"
+
 cleanup() {
   if [ -n "${MOCK_PID:-}" ]; then kill "$MOCK_PID" 2>/dev/null || true; fi
   if [ -n "${DEV_PID:-}" ]; then kill "$DEV_PID" 2>/dev/null || true; fi
@@ -128,6 +138,9 @@ summary="${PROBE_DIR}/summary.txt"
   echo "settle_failures=${settle_failures}"
   echo "assert_failures=${assert_failures}"
   echo "env_failures=${env_failures}"
+  # 一轮都没红不等于「今天稳」：也可能是这一轮根本没跑到断言（例如页面全空）。
+  # 提示读日志的人先确认环境接对了，再谈复发。
+  echo "note=if every round failed with rows=0 / 加载失败, check VITE_API_TARGET and the mock gateway first"
 } > "$summary"
 
 echo "--- browser-check probe summary ---"

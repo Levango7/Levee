@@ -137,6 +137,17 @@ class ReproProbeScriptsTest(unittest.TestCase):
         self.assertIn("settle_failures", text)
         self.assertIn("launch_failures", text)
 
+    def test_browser_probe_points_the_frontend_at_the_mock_gateway(self) -> None:
+        # 实跑教训（2026-11-16）：漏了这一行，前端会代理到一个不存在的
+        # 后端，于是**每个页面都是空的**——探针会以「assert_failures」的样子
+        # 指向一个完全错误的排查方向（它不是被探的偶发问题，是探针自己把
+        # 环境接错了）。
+        text = BROWSER_PROBE.read_text(encoding="utf-8")
+        self.assertIn("VITE_API_TARGET", text,
+                      "the probe must point the dev server at its own mock gateway")
+        self.assertRegex(text, r'export VITE_API_TARGET="http://127\.0\.0\.1:\$\{MOCK_PORT\}"',
+                         "VITE_API_TARGET must name the probe's own mock port")
+
     def test_browser_probe_fails_loudly_when_it_reproduces(self) -> None:
         text = BROWSER_PROBE.read_text(encoding="utf-8")
         self.assertIn("REPRODUCED", text)
