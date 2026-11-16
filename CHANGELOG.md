@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 新增（信创裸机取证脚本化：一次命令拿到全部证据，三个真 bug 只有实跑才暴露）
+
+- **缺口**：`docs/xinchuang-baremetal-drill.md` 是**手敲清单**（7 步、7 段输出靠人贴）。复现一次两小时，且最容易丢的是中间那段证据；更糟的是清单本身有三处与仓库真实契约不符（凭据形状、REST 缺 plan 步骤），照它做会得到一份**空的取证**。
+- **修法**：`scripts/xinchuang-baremetal-drill.sh`（一键驱动）：环境事实 → `ssh-keyscan` 备 `known_hosts` → 生成演练钥匙并授权 → 自生成整份 config → `system doctor` → `template create`/`secret add`/`target import`/`new` → `serve --engine-enabled` → REST `plan → approve → apply → rollback` → `audit/verify` → 一页纸摘要。每步原始输出落盘（`00..07` + `summary.txt`），失败即停但**证据保留**。
+- **实跑抓到三个真 bug**（都是「脚本看起来成功、实际什么都没做」）：
+  ① **漏了 plan 步骤**——approve 回 `has no persisted plan to approve`、apply 回 `is in draft state`、rollback 回 `cannot ... current status draft`，三个错误各自指向别的方向；② **就绪探针没带 token**——serve 开了 `--auth-token` 后 `/system/version` 要鉴权，不带 token 的探针把「已起来」读成「没起来」；③ **凭据库没有主口令**——`secret add` 直接报 `LEVEE_MASTER_PASSWORD environment variable is not set`。三者都修好并写进注释与守卫。
+- **契约对齐（照源码，不是照印象）**：凭据用 `secret add --type ssh_key --value '{"username":…,"key_path":…}'`（`channel.CredentialRef` 形状，key_path 是**私钥**路径）；`channel.ssh.auth_method` 只接受 `key`/`password`（`internal/config` 校验），选 `key` 时 `key_path` 必填；`strict_host_check` 默认 true 故必须 `ssh-keyscan`；workflow 取 `lab-smoke-snap.yaml` 的 `file.copy + strategy: snapshot + snapshot_paths` 形状，`src` 相对 serve 进程工作目录且不能是绝对路径；审批人取自**认证主体**（body 写 approver 反而会被拒）。
+- **验证**：本机 Linux amd64 自指口径**完整跑通两次**：`file_v1=v1 → file_v2=v2 → file_restored=v1`，`audit/verify` `valid=true / entriesVerified=3 / unsealed=0`，apply `completed`、rollback `rolled_back`（`rolledBackHosts=[127.0.0.1]`）。`scripts/test_xinchuang_baremetal_drill.py` **13 例**把上述承重性质钉住（含 plan 在 approve 之前、探针带 token、主口令复用、auth_method 二选一、credential_ref、`src` 相对性、证据先落盘后失败）。文档同步：清单改为「先跑脚本、本文作依据」，并补上缺失的 plan 步骤与三个实跑教训。
+- **边界（重要）**：脚本自指演练证明的是**脚本与契约正确**，不是**信创裸机已验证**；矩阵里「麒麟/统信 × amd64（裸机）」那格**仍未改状态**，要等真机上跑一遍 `summary.txt` 三行都对上。沙箱为验证写入的演练钥匙已清理。
+
 ### 新增（发布说明的实况不得漂移：新门禁把每份 release notes 与真实发布对账）
 
 - **缺口**：v1.26.0 发布说明里写着「tag 对象 `94fed1317c8`，指向 master 提交 `172cf7a`」——但**没有任何东西核对这句话**。发布说明写错 tag 对象、或从上一版复制粘贴时忘了改，读者照着核对会撞上一个矛盾，然后得自己判断该信哪一半。已发布版本的说明因此会**随时间漂移**。
