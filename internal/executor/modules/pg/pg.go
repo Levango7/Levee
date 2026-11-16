@@ -20,6 +20,17 @@
 //     (CREATE TABLE IF NOT EXISTS and INSERT ... ON CONFLICT are, a bare
 //     INSERT is not). Changed mirrors the exit code.
 //
+//   - schema_snapshot: capture the pre-change definition of the tables named
+//     by args["tables"] into the step's stdout — which the run persists as
+//     evidence. Put it BEFORE the step that alters those tables. PostgreSQL
+//     has no SHOW CREATE TABLE, so this is an INTROSPECTION dump (columns,
+//     constraints, indexes, read from information_schema / pg_catalog), not
+//     pg_dump output: the capture says so itself, because a reader who takes
+//     it for a restorable dump would be wrong. An unknown table is an ERROR
+//     (an existence guard runs first), never an empty capture. Read-only:
+//     Changed is always false. It does NOT generate an undo; see
+//     docs/blocked-items.md D-5.
+//
 // Credentials: the module NEVER accepts a password argument. The design's
 // security note is that credentials do not travel on a command line, and the
 // only way to honour that over a shell channel is to let the target's own
@@ -56,7 +67,7 @@ func New() *Module { return &Module{} }
 func (Module) Name() string { return "pg" }
 
 // Actions lists the verbs this module supports.
-func (Module) Actions() []string { return []string{"query"} }
+func (Module) Actions() []string { return []string{"query", "schema_snapshot"} }
 
 // Idempotent reports whether the module declares itself idempotent. It answers
 // false: `query` is idempotent-by-authorship, but the module cannot verify the
@@ -70,6 +81,8 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 	switch action {
 	case "query":
 		return m.query(ctx, input)
+	case "schema_snapshot":
+		return m.schemaSnapshot(ctx, input)
 	default:
 		return nil, fmt.Errorf("pg: unsupported action %q", action)
 	}
@@ -179,7 +192,19 @@ func validateIdent(kind, s string) error {
 //
 // -X ignores ~/.psqlrc (a target-side config file must not change what this
 // command prints); -q/-t/-A make the output machine-parseable.
+//
+// Changed mirrors the exit code because query is the caller that matters
+// here; a read-only caller uses runPsqlRead, which reports Changed=false
+// instead of telling the evidence the change already happened.
 func runPsql(ctx context.Context, ch channel.Channel, conn pgConn, sql string) (*executor.ModuleOutput, error) {
+	return runPsqlChanged(ctx, ch, conn, sql, true)
+}
+
+func runPsqlRead(ctx context.Context, ch channel.Channel, conn pgConn, sql string) (*executor.ModuleOutput, error) {
+	return runPsqlChanged(ctx, ch, conn, sql, false)
+}
+
+func runPsqlChanged(ctx context.Context, ch channel.Channel, conn pgConn, sql string, changed bool) (*executor.ModuleOutput, error) {
 	if err := validateHost(conn.Host); err != nil {
 		return nil, err
 	}
@@ -214,7 +239,7 @@ func runPsql(ctx context.Context, ch channel.Channel, conn pgConn, sql string) (
 		Stdout:   res.Stdout,
 		Stderr:   res.Stderr,
 		Duration: res.Duration,
-		Changed:  res.ExitCode == 0,
+		Changed:  changed && res.ExitCode == 0,
 	}, nil
 }
 

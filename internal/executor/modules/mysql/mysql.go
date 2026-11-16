@@ -33,6 +33,16 @@
 //     irreversible (args["confirm"] == "yes") — replica topology changes
 //     are exactly the class of operation R4 exists for.
 //
+//   - schema_snapshot: capture the pre-change definition of the tables named
+//     by args["tables"] (SHOW CREATE TABLE, the server's own canonical DDL)
+//     into the step's stdout — which the run persists as evidence. Put it
+//     BEFORE the step that alters those tables: it is the only record of what
+//     the table looked like, and a DDL that cannot be read back (the frozen
+//     grammar does not expose ALTER bodies — plan-time SR-08) cannot be
+//     inverted without it. Read-only: Changed is always false. It does NOT
+//     generate an undo; see docs/blocked-items.md D-5 for that half and why
+//     the snapshot had to come first.
+//
 // Credential handling: the module reads args["user"] (default "root").
 // Authentication itself comes from the TARGET's own client configuration
 // (~/.my.cnf, mode 0600) — the design's security note is that credentials never
@@ -72,7 +82,9 @@ func New() *Module { return &Module{} }
 func (Module) Name() string { return "mysql" }
 
 // Actions returns the supported action verbs.
-func (Module) Actions() []string { return []string{"query", "pt_osc", "replica_switch"} }
+func (Module) Actions() []string {
+	return []string{"query", "pt_osc", "replica_switch", "schema_snapshot"}
+}
 
 // Idempotent reports whether the module declares itself idempotent. Only
 // query is idempotent-by-authorship; pt_osc and replica_switch are not.
@@ -89,6 +101,8 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 		return m.ptOsc(ctx, input)
 	case "replica_switch":
 		return m.replicaSwitch(ctx, input)
+	case "schema_snapshot":
+		return m.schemaSnapshot(ctx, input)
 	default:
 		return nil, fmt.Errorf("mysql: unsupported action %q", action)
 	}
@@ -168,7 +182,21 @@ func validateHost(kind, s string) error {
 // runMysql builds the mysql client invocation for conn. SQL is passed on
 // stdin via a base64 pipe; the connection flags are identifier-validated
 // and therefore safe to interpolate.
+//
+// Changed mirrors the exit code, because every caller of this helper
+// (query, replica_switch) issues statements that change the server. A
+// read-only caller uses runMysqlRead instead: reporting Changed=true for a
+// snapshot would tell the run's evidence that the change had happened.
 func runMysql(ctx context.Context, ch channel.Channel, conn mysqlConn, sql string) (*executor.ModuleOutput, error) {
+	return runMysqlChanged(ctx, ch, conn, sql, true)
+}
+
+// runMysqlRead runs a read-only statement through the same invocation.
+func runMysqlRead(ctx context.Context, ch channel.Channel, conn mysqlConn, sql string) (*executor.ModuleOutput, error) {
+	return runMysqlChanged(ctx, ch, conn, sql, false)
+}
+
+func runMysqlChanged(ctx context.Context, ch channel.Channel, conn mysqlConn, sql string, changed bool) (*executor.ModuleOutput, error) {
 	if err := validateHost("host", conn.Host); err != nil {
 		return nil, err
 	}
@@ -190,7 +218,7 @@ func runMysql(ctx context.Context, ch channel.Channel, conn mysqlConn, sql strin
 		cmd += " " + conn.Database
 	}
 	cmd += fmt.Sprintf("\n%s\nLEVEE_EOF", encoded)
-	return runRemote(ctx, ch, cmd, true)
+	return runRemote(ctx, ch, cmd, changed)
 }
 
 // runRemote executes cmd on the target and wraps the result in a
@@ -250,6 +278,67 @@ func (m *Module) query(ctx context.Context, input executor.ModuleInput) (*execut
 // about the SQL rather than about the client binary. Keeping a private copy
 // here was how the two modules would eventually disagree about whether
 // `DROP TABLE` is destructive.
+
+// --- schema_snapshot --------------------------------------------------------
+
+// schemaSnapshot captures the definition of args["tables"] before a change
+// touches them. The output (one `table<TAB>CREATE TABLE ...` line per table,
+// thanks to -N -B) is the step's stdout, which the run persists as evidence.
+//
+// Why SHOW CREATE TABLE and not a reconstruction from information_schema: it
+// is the SERVER's own canonical DDL — character set, collation, engine, column
+// types, keys and options exactly as this server understands them, with no
+// reassembly step that could differ from what a restore would need. The
+// grammar's inability to read DDL bodies (SR-08) is precisely why the text has
+// to come from the server rather than from LEVEE.
+//
+// A missing table is NOT a soft failure: the mysql client aborts a batch on the
+// first error (that is the default; `--force` is what suppresses it and is
+// deliberately absent), so the step fails and the batch stops. Recording an
+// empty snapshot and continuing would leave evidence that reads like "this
+// table has no definition".
+func (m *Module) schemaSnapshot(ctx context.Context, input executor.ModuleInput) (*executor.ModuleOutput, error) {
+	tables, err := sqlguard.TableList(input.Args, "tables")
+	if err != nil {
+		return nil, fmt.Errorf("mysql.schema_snapshot: %w", err)
+	}
+	// Same refusal as query: an accepted-but-unused credential input turns
+	// into an authentication failure the operator cannot explain.
+	if v, ok := stringOk(input.Args, "password"); ok && v != "" {
+		return nil, fmt.Errorf("mysql.schema_snapshot: args.password is not supported — LEVEE never puts credentials on a command line; " +
+			"configure ~/.my.cnf (mode 0600) on the target and drop the argument")
+	}
+	conn := connFromArgs(input)
+	out, err := runMysqlRead(ctx, input.Channel, conn, snapshotSQL(tables))
+	if err != nil {
+		return nil, fmt.Errorf("mysql.schema_snapshot: %w", err)
+	}
+	return out, nil
+}
+
+// snapshotSQL renders one SHOW CREATE TABLE per table, in the author's order.
+//
+// The names are backtick-quoted with any embedded backtick doubled. That is
+// belt-and-braces: sqlguard.TableList has already restricted the names to a
+// character set that cannot contain a backtick, and the quoting keeps this
+// builder correct even if that validation is ever loosened.
+func snapshotSQL(tables []string) string {
+	var b strings.Builder
+	b.WriteString("-- levee.schema_snapshot\n")
+	for _, t := range tables {
+		fmt.Fprintf(&b, "SHOW CREATE TABLE %s;\n", quoteMySQLIdent(t))
+	}
+	return b.String()
+}
+
+func quoteMySQLIdent(name string) string {
+	schema, table := sqlguard.SplitQualifier(name)
+	if schema == "" {
+		return "`" + strings.ReplaceAll(table, "`", "``") + "`"
+	}
+	return "`" + strings.ReplaceAll(schema, "`", "``") + "`.`" +
+		strings.ReplaceAll(table, "`", "``") + "`"
+}
 
 // --- pt_osc -----------------------------------------------------------------
 

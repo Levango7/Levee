@@ -48,6 +48,12 @@ import (
 	"github.com/nexus/levee/internal/executor"
 	_ "github.com/nexus/levee/internal/executor/modules/file"
 	_ "github.com/nexus/levee/internal/executor/modules/mysql"
+
+	// pg must be imported too: G5's executable set is built from the modules
+	// this test binary has registered, so without it a shipped pg workflow
+	// would be reported as "not executable" — a false red about the platform
+	// rather than about the workflow.
+	_ "github.com/nexus/levee/internal/executor/modules/pg"
 	_ "github.com/nexus/levee/internal/executor/modules/pkg"
 	"github.com/nexus/levee/internal/executor/modules/shell"
 	_ "github.com/nexus/levee/internal/executor/modules/svc"
