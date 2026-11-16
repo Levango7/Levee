@@ -194,6 +194,64 @@ func (v *Validator) Advise(wf *Workflow) []ValidationError {
 		}
 	}
 
+	// LE108: an irreversible step that declares no compensation.
+	//
+	// R2 says a change must be reversible, and `irreversible: true` is how an
+	// author says "this one is not". What the advisory makes visible is that
+	// the ABSENCE of a rollback pair is a decision rather than an oversight:
+	// when the change fails after that step runs, there is nothing to restore
+	// the target, and the operator finds out at the worst possible moment.
+	//
+	// Warning, not error: some changes genuinely cannot be undone (a data
+	// deletion, a replica swap), and refusing them would push that work outside
+	// the platform — where it is not governed at all. The catalogue already
+	// routes irreversible work to the high approval tier (R4); this adds the
+	// missing half: the approver can see which steps have no way back.
+	if steps := irreversibleWithoutCompensation(wf); len(steps) > 0 {
+		for _, name := range steps {
+			out = append(out, ValidationError{
+				Code:  codeIrreversibleWithoutCompensation,
+				Field: "steps." + name,
+				Message: fmt.Sprintf("step %q is irreversible and declares no rollback "+
+					"compensation — if the change fails after it runs there is nothing to "+
+					"restore the target (declare steps[].rollback, or confirm the run is "+
+					"intentionally one-way)", name),
+			})
+		}
+	}
+
+	return out
+}
+
+// codeIrreversibleWithoutCompensation is LE108: an irreversible step that
+// declares no compensation.
+const codeIrreversibleWithoutCompensation = "LE108"
+
+// irreversibleWithoutCompensation returns the sorted names of steps that are
+// irreversible — declared by the author, or inherent to their module.action
+// (pkg.remove, file.delete, user.remove, mysql.pt_osc, mysql.replica_switch) —
+// and declare no compensation.
+//
+// A step whose rollback declares a strategy (snapshot / config-revert) but no
+// steps is NOT reported: that compensation is real, it just is not an undo
+// action. Only "nothing at all was declared" counts.
+func irreversibleWithoutCompensation(wf *Workflow) []string {
+	inherent := map[string]bool{}
+	for _, key := range DefaultIrreversibleActions() {
+		inherent[key] = true
+	}
+	var out []string
+	for i := range wf.Steps {
+		s := &wf.Steps[i]
+		if !s.Irreversible && !inherent[s.Module+"."+s.Action] {
+			continue
+		}
+		if s.Rollback != nil && (len(s.Rollback.Steps) > 0 || s.Rollback.Strategy != "") {
+			continue
+		}
+		out = append(out, s.Name)
+	}
+	sort.Strings(out)
 	return out
 }
 
