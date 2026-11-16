@@ -105,6 +105,55 @@ def tag_set() -> tuple[set[str], str]:
     return {t.strip() for t in out.splitlines() if t.strip()}, "local clone (fallback)"
 
 
+def tag_details() -> tuple[dict[str, tuple[str, str]], str]:
+    """Return {tag: (tag-object sha, peeled commit sha)} — remote preferred.
+
+    Rule 4 needs the two SHAs separately, and `git ls-remote --tags` already
+    gives both without touching the local clone: an annotated tag lists the
+    TAG OBJECT on `refs/tags/<tag>` and the COMMIT it peels to on
+    `refs/tags/<tag>^{}`. A lightweight tag has only the first line, in which
+    case object == commit.
+
+    Why remote rather than local: the local clone may not have the tag objects
+    at all (CI checks out with a shallow history), and a rule that silently
+    degrades into "cannot check" is worse than one that says so.
+    """
+    code, out, _ = run(["git", "ls-remote", "--tags", "origin"])
+    if code == 0 and out.strip():
+        details: dict[str, tuple[str, str]] = {}
+        for line in out.splitlines():
+            m = re.match(r"^([0-9a-f]{40})\s+refs/tags/(v[0-9][^\s]*?)(\^\{\})?$", line)
+            if not m:
+                continue
+            sha, tag, peeled = m.group(1), m.group(2), m.group(3)
+            if peeled:
+                obj, commit = details.get(tag, (sha, sha))
+                details[tag] = (obj, sha)
+            else:
+                obj, commit = details.get(tag, (sha, sha))
+                details[tag] = (sha, commit)
+        if details:
+            return details, "origin (git ls-remote --tags)"
+    # Fallback: the local clone. Same shape, computed with git itself.
+    details = {}
+    for tag in sorted(tag_set()[0]):
+        code, obj, _ = run(["git", "rev-parse", tag])
+        if code != 0:
+            continue
+        code, commit, _ = run(["git", "rev-list", "-n1", tag])
+        details[tag] = (obj.strip(), commit.strip() if code == 0 else obj.strip())
+    return details, "local clone (fallback)"
+
+
+# The release notes state the two SHAs a reader needs to verify the release by
+# hand: the tag OBJECT (what `git ls-remote` shows for the tag) and the COMMIT
+# it peels to. Both are matched as prefixes — the notes write them short on
+# purpose, and a prefix that no longer matches is exactly the drift we want to
+# catch.
+NOTES_TAG_OBJECT = re.compile(r"tag 对象\s+`([0-9a-f]{7,40})`")
+NOTES_TAG_COMMIT = re.compile(r"指向[^`\n]*?提交\s+`([0-9a-f]{7,40})`")
+
+
 def first_match(pattern: str, text: str, label: str, source: Path) -> str:
     m = re.search(pattern, text, re.MULTILINE)
     if not m:
@@ -161,6 +210,9 @@ def changelog_sections(text: str) -> list[tuple[str, str]]:
 def main() -> int:
     chart_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "deploy/helm/levee")
     changelog = Path(sys.argv[2] if len(sys.argv) > 2 else "CHANGELOG.md")
+    # Where the per-version release notes live. Configurable so the gate's own
+    # tests can point it at a fixture tree instead of the repository's.
+    notes_dir = Path(sys.argv[3] if len(sys.argv) > 3 else "docs/release-notes")
 
     for p in (chart_dir / "Chart.yaml", chart_dir / "values.yaml", changelog):
         if not p.is_file():
@@ -244,8 +296,48 @@ def main() -> int:
             + " — recorded rather than silently accepted"
         )
 
+    # Rule 4 — the release notes must not drift away from the release they
+    # describe. A release note that names the wrong tag object, or points at a
+    # commit the tag does not peel to, is worse than no note: a reader who
+    # checks it finds a contradiction and has to decide which half to believe.
+    #
+    # Scope: EVERY released tag, not just the newest. The drift this catches is
+    # not "the newest note is stale" (that is caught by being a released
+    # section at all) but "a note was written for a different tag than the one
+    # it claims" — which is exactly what a copy-paste between versions does.
+    details, detail_source = tag_details()
+    release_notes_dir = notes_dir
+    checked_notes = 0
+    for tag in sorted(tags, key=parse_version):
+        notes = release_notes_dir / f"{tag}.md"
+        if not notes.is_file():
+            fail(
+                f"released tag {tag} has no release notes ({notes}); every published "
+                f"version must carry the document a reader (or an auditor) asks for"
+            )
+            continue
+        text = notes.read_text(encoding="utf-8")
+        obj, commit = details.get(tag, ("", ""))
+        if not obj:
+            note(f"cannot resolve the SHAs of {tag} from {detail_source} — its release "
+                 f"notes were not cross-checked")
+            continue
+        checked_notes += 1
+        declared_obj = NOTES_TAG_OBJECT.search(text)
+        if declared_obj and not obj.startswith(declared_obj.group(1)):
+            fail(
+                f"{notes} declares tag object `{declared_obj.group(1)}` but {tag} is "
+                f"`{obj}` on {detail_source} — the note describes a different release"
+            )
+        declared_commit = NOTES_TAG_COMMIT.search(text)
+        if declared_commit and commit and not commit.startswith(declared_commit.group(1)):
+            fail(
+                f"{notes} declares the tag points at commit `{declared_commit.group(1)}` "
+                f"but {tag} peels to `{commit}` on {detail_source}"
+            )
+
     return report(f"chart={app_version} tag={image_tag} newest_tag={newest_tag} "
-                  f"tag_source={source} tags={len(tags)}")
+                  f"tag_source={source} tags={len(tags)} notes_checked={checked_notes}")
 
 
 def report(ok_summary: str = "") -> int:

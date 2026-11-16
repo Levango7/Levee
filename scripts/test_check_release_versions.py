@@ -51,8 +51,21 @@ def chart_with_app_version(version: str) -> str:
 class GateRun(unittest.TestCase):
     """Run the gate on fixture files with a scripted tag set."""
 
+    # The SHAs the fixture tag set is pretended to have. Rule 4 cross-checks the
+    # release notes against them, so the fixture has to be explicit about what
+    # "the real tag" is rather than letting the gate read the network.
+    FIXTURE_SHA = "1234567890abcdef1234567890abcdef12345678"
+
+    def release_notes_text(self, tag: str, obj: str | None = None,
+                           commit: str | None = None) -> str:
+        obj = obj or self.FIXTURE_SHA
+        commit = commit or self.FIXTURE_SHA
+        return (f"# {tag} Release Notes\n\n"
+                f"附注 tag `{tag}`（tag 对象\n`{obj}`，指向 master 提交 `{commit}`）。\n")
+
     def run_gate(self, *, chart=CHART_OK, values=VALUES_OK, log=LOG_OK,
-                 tags=RELEASED) -> tuple[int, list[str], list[str]]:
+                 tags=RELEASED, notes: dict[str, str] | None = None,
+                 omit_notes: set[str] | None = None) -> tuple[int, list[str], list[str]]:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             chart_dir = root / "chart"
@@ -61,14 +74,25 @@ class GateRun(unittest.TestCase):
             (chart_dir / "values.yaml").write_text(values, encoding="utf-8")
             changelog = root / "CHANGELOG.md"
             changelog.write_text(log, encoding="utf-8")
+            notes_dir = root / "release-notes"
+            notes_dir.mkdir()
+            omit = omit_notes or set()
+            for tag in tags:
+                if tag in omit:
+                    continue
+                body = (notes or {}).get(tag) or self.release_notes_text(tag)
+                (notes_dir / f"{tag}.md").write_text(body, encoding="utf-8")
 
-            notes: list[str] = []
+            notes_log: list[str] = []
             crv.failures.clear()
+            details = {t: (self.FIXTURE_SHA, self.FIXTURE_SHA) for t in tags}
             with mock.patch.object(crv, "tag_set", return_value=(set(tags), "fixture")), \
-                 mock.patch.object(sys, "argv", ["check_release_versions.py", str(chart_dir), str(changelog)]), \
-                 mock.patch.object(crv, "note", lambda msg: notes.append(msg)):
+                 mock.patch.object(crv, "tag_details", return_value=(details, "fixture")), \
+                 mock.patch.object(sys, "argv", ["check_release_versions.py", str(chart_dir),
+                                                str(changelog), str(notes_dir)]), \
+                 mock.patch.object(crv, "note", lambda msg: notes_log.append(msg)):
                 rc = crv.main()
-            return rc, list(crv.failures), notes
+            return rc, list(crv.failures), notes_log
 
     # --- the state that must be accepted -------------------------------------
 
@@ -179,3 +203,41 @@ class GateRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReleaseNotesCrossCheckTest(GateRun):
+    """Rule 4 — the release notes must not describe a different release.
+
+    Why: a note that names the wrong tag object, or points at a commit the tag
+    does not peel to, is worse than no note: a reader who checks it finds a
+    contradiction and has to decide which half to believe. Copy-paste between
+    versions is exactly how that happens.
+    """
+
+    def test_matching_notes_pass(self) -> None:
+        rc, failures, _ = self.run_gate()
+        self.assertEqual(rc, 0, f"unexpected failures: {failures}")
+
+    def test_wrong_tag_object_fails(self) -> None:
+        rc, failures, _ = self.run_gate(
+            notes={"v1.19.0": self.release_notes_text("v1.19.0", obj="deadbeefdead")})
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("declares tag object" in f for f in failures), failures)
+
+    def test_wrong_peeled_commit_fails(self) -> None:
+        rc, failures, _ = self.run_gate(
+            notes={"v1.19.0": self.release_notes_text("v1.19.0", commit="cafebabecafe")})
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("peels to" in f for f in failures), failures)
+
+    def test_missing_release_notes_fails(self) -> None:
+        rc, failures, _ = self.run_gate(omit_notes={"v1.19.0"})
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("has no release notes" in f for f in failures), failures)
+
+    def test_notes_without_sha_claims_still_pass(self) -> None:
+        # An old note may simply not state the SHAs; that is not drift, and
+        # demanding them retroactively would fail history for no reason.
+        rc, failures, _ = self.run_gate(
+            notes={"v1.19.0": "# v1.19.0 Release Notes\n\n没有写 SHA 的旧说明。\n"})
+        self.assertEqual(rc, 0, f"unexpected failures: {failures}")
