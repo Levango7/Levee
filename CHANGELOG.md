@@ -63,6 +63,31 @@
 - **验证**：前端 **44 个测试文件 / 353 例**全绿（新增 3 例：flat contract 1 + dialogs 2）；`vue-tsc --noEmit` 干净；`vite build` 通过且 `internal/web/dist` 已同步；Python 门禁 208 例、`go build ./...`、文档锚点与路线图门禁全绿。
 - **边界**：dialogs 守卫盯的是「写入型对话框」这两个形状，不覆盖「对话框内容是否在窄屏下可读」——那需要真浏览器复核（`browser-check` 的窄屏档仍是已登记缺口）。
 
+### 新增（变更前 schema 快照取证：`mysql.schema_snapshot` / `pg.schema_snapshot`）
+
+- **缺口**：`docs/blocked-items.md` D-5 写着「先有 schema 快照机制，再谈生成 undo」——但机制一直不存在。于是 DDL 变更**没有任何变更前的表定义留痕**：`DROP COLUMN` 的逆需要列定义，而语句文本里没有（`ALTER` 的语句体在嵌入语法里还读不到，SR-08）。审计/回滚链上，这段空白只能靠人记得。
+- **修法**：两个动作，输出就是**步骤 stdout**——现有证据管线把它写进 run 的步骤证据行（`step.Stdout = out.Stdout`，无截断；只有 stderr 会被 tail 到 400 字符）：
+  - `mysql.schema_snapshot`：逐表 `SHOW CREATE TABLE`（**服务端自己的权威 DDL**：字符集、排序规则、引擎、列类型、键与选项，不需要任何重组步骤）。`tables`（列表，必填）走 `sqlguard.TableList` 校验并按作者顺序；名字反引号引用、内嵌反引号加倍。
+  - `pg.schema_snapshot`：PostgreSQL 没有 SHOW CREATE TABLE，最近的是 pg_dump——那会给每个想要快照的目标机加一个客户端二进制与版本耦合。改为 information_schema/pg_catalog **内省**（列+类型+默认值、约束、索引），**捕获首行自己写明**「这是内省，不是 pg_dump 输出，也不是可还原 DDL」——唯一不能接受的读法就是「这是 dump，能拿来还原」。
+- **不许静默空快照**（两侧各一种机制，都指向同一件事）：MySQL 侧**不带 `--force`**——批量模式下 mysql 遇错即停是默认行为，`--force` 才会继续，所以表读不到时步骤必失败（测试钉住 `--force` 与 `-f` 都不出现）；PG 侧**先跑存在性守卫**——`to_regclass()` 对不存在的表返回 NULL 而不报错，所以守卫用 `RAISE EXCEPTION`，在 `ON_ERROR_STOP=1` 下把「表不在这里」变成失败的步骤。没有这两条，产物会是一条「exit 0 + 空内容」的证据，读起来像「这张表没有列定义」。
+- **每条后续查询都绑定同一个 oid**：列/约束/索引全部 `to_regclass(...)` 解析一次后按 oid 连接。按 (schema, name) 字符串过滤 information_schema/pg_indexes 会对 search_path 够不到的名字**静默返回零行**——正是上一条要防的东西。未限定名交给**服务端**按会话 search_path 解析（`args.schema` 是显式答案）。
+- **只读、且如实标注**：两个动作 `Changed` 恒为 false（快照没有改动任何东西，报 true 等于告诉证据「变更已经发生」）；两者都**拒绝** `args.password`（与 `query` 同一理由：一个被接受但被丢弃的凭据输入比不存在的更糟）。
+- **不生成 undo**：这一笔只交机制。D-5 的卡点（必须先有快照）现在解除了，剩下的是生成与还原语义——见更新后的 D-5。
+- **验证**：`internal/executor/modules/mysql` 3 例（SHOW CREATE TABLE 的顺序与引用 / 限定名 / `tables` 七种坏参数一律在触达目标前就被拒绝）；`pg` 4 例（守卫 + 三段查询 + 同一个 oid 出现 4 次 / 未限定名不带 schema / 显式 schema / 坏参数含注入式 schema）；`sqlguard` 4 例（顺序保持、限定名、12 种拒绝形态、SplitQualifier/SortedUnique）；`internal/dsl` 的类型签名随动（见下一条）。
+
+### 修复（DSL 动作词表：pg.query 从未被类型检查 + 两个幽灵动作）
+
+- **缺口（两个方向各一处，都是静默）**：`internal/dsl/typechecker.go` 的 `actionSignatures` 决定「哪些动作的参数在编译期被检查」。**表里没有的动作是被跳过、不是被拒绝**，于是：
+  ① `pg.query` 从来不在表里——PostgreSQL 步骤（恰恰是审核闸门要打分的那批 SQL）的参数在编译期**无人检查**：`sql: 42` 能过编译，运行期才炸。这个缺口随 pg 模块一起上线，谁都没看见；
+  ② 反过来，表里躺着 `shell.command` 与 `file.write` 两行**没有任何模块执行的动作**（shell 模块跑 exec/script，file 模块跑 copy/template）——词表承诺一个平台跑不了的动作，读者据此写的工作流会在执行期死掉。CHANGELOG 里早有一条 G5 注记提到这两个键，但它们一直没被清掉。
+- **修法**：补 `pg.query`、`mysql.schema_snapshot`、`pg.schema_snapshot` 三个签名（快照的 `tables` 声明为字符串列表）；删掉两个幽灵行；新增 `dsl.ActionSignatures()` 导出视图（返回副本——表是进程级状态，交给调用方可变引用会让后续每次编译的口径被悄悄改掉），并加 **`action_signature_ratchet_test.go`** 把两个方向都钉住：
+  - **可执行 → 词表**：每个可执行动作要么有签名、要么在 `untypedActions` 里**带理由**列名（十个历史动作，各自写明为何暂未类型化）——今后新增模块动作会逼出一个决定，而不是继承沉默；
+  - **词表 → 可执行**：表里每个键都必须真有模块能跑（这条会在有人再塞幽灵行时转红）；
+  - **数据库模块点名**：六个动作（mysql 四项 + pg 两项）必须已类型化，不许走豁免表；
+  - 抽一个「`tables` 必须是列表、字符串不算」的样例，证明判据本身有分辨力。
+- **顺带**：`shipped_assets_guard_test.go` 的 G5 可执行集来自**该测试二进制注册过的模块**，而它没有 import pg——将来一旦有 pg 工作流进仓，G5 会把平台说成「不支持 pg.query」。已补 import 并写明理由。
+- **验证**：上述五条测试；`go test ./internal/dsl/` 全绿（含 G5 与既有 350+ 断言）。
+
 ### 修复（pg.query 的 SQL 从未被审核：三处「只认 mysql」的收集器）
 
 - **缺口（真的 fail-open）**：上一批把 `pg.query` 执行模块接进了执行面，而**审核面的三处收集器仍然硬编码 `module == "mysql" && action == "query"`**——计划期门禁（`internal/wiring/sqlreview_gate.go`）、发布单（`internal/dbchange/ticket.go`）、复算命令（`levee sqlreview --change`）。后果按严重度排：① **一条 PostgreSQL 的 `DELETE FROM users`（无 WHERE，引擎最直白的 fail＝SR-02）能生成计划**——没有审核结论、没有 verdict 被 plan_hash 绑定，「审不过不放行」这句话在 PG 上不成立；② 发布单对 PG 变更写「该计划没有可审核的 SQL 步骤」——在自家产品门面上说假话；③ 复算命令找不到 SQL 面，比不了。三份拷贝，一次全错。
@@ -265,7 +290,6 @@
 - **验证**：契约单测 22 例（fake kubectl 断言参数向量：钉死旗标前置、白名单、改写旗标拒绝、抓取剥字段、还原逐字节透传、协议环回）＋ **kind 实测**（`TestK8sChannelDrill`，env 门控 `LEVEE_K8S_DRILL_CONTEXT`，真集群：快照抓取→scale→按快照还原断言全绿）；`go vet`/`gofmt`/`golangci-lint` 干净；`go build ./...` 绿；DSL examples 门绿（插件 yaml 按 `/plugins/` 豁免，计数仍 6）；`go mod tidy` 无漂移。
 - **边界（如实）**：① 插件通道只在 **serve 启动时装入**，CLI 一次性路径 `levee apply --engine-enabled` 不装（`cmd/levee` 他人认领区）——三场景的引擎半边（审批拒绝→不执行、审计链）是引擎既有行为且传输无关，走 serve 得完整链路；② `levee target check` 的 `echo ok` 探针集群答不了（仅诊断命令）；③ exec 无 stdin，manifest 应用走 upload。不做 Operator、不做声明式同步、不做 GitOps。
 
-
 ### 新增（k8s 工作负载策略门禁：S1——纯函数策略引擎 ＋ 门禁适配器，fail-closed）
 
 - **为什么做**：定位 v1.2 把对外第一身份改成「数据库变更发布与治理核」之后，云原生侧真正空着的是「高危动作级变更的**审批·回滚·举证**」——声明式交付归 ArgoCD/Flux、观测归 Prometheus/Zabbix/ELK，没人管谁批谁回滚。`docs/design-k8s-change-governance.md`（D-4）把这件事拆成三片，**本笔是 S1**。
@@ -447,7 +471,6 @@
 - **修法**：`runLocalTargetHistory` 在 JSON 输出前归一化为 `[]*state.Run{}`。
 - **验证**：新增回归用例（fresh store + 不存在的主机名，**修复前实测 `"data": null`**）；`go test ./cmd/levee` 定向子集通过；`go vet ./cmd/levee` rc=0。
 
-
 ### 修复（`levee serve` 真的能发推送：APNs / FCM 凭据接入守护进程，A-3 的第二半）
 
 - **缺口**：`cmd/levee/cmd_serve.go` 里的 `NewMobileApprovalService` 把 push manager **硬编码成 `nil`**，所以守护进程的审批请求**永远**不产生任何通知——哪怕部署已经配好了 APNs / FCM 凭据。`getPushManager`（唯一会构造 PushManager 的地方）只被 `levee push` 的 5 个子命令调用，`serve` 从不读 `<dataDir>/push.json`。台账 `docs/blocked-items.md` 把 A-3 归在「卡在外部凭据/环境（**代码零阻碍**）」节、写「只差凭据」，与代码不符。
@@ -458,7 +481,6 @@
   - `push.json` 新增 `base_url`（公网 origin），`levee push config --base-url` 写入。**web（show）深链**指向它；approve/reject 深链走 `levee://` scheme，不需要它。未配置时沿用原占位符 `https://levee.local`（零行为变更）。
 - **验证**：`cmd/levee` 新增 9 例（无凭据→`configured=false` / 有 APNs 凭据→`configured=true` / `base_url` 被读到 / 损坏的 `push.json` 报错 / 无凭据→守护进程不持有 manager / 配了凭据→守护进程拿到 manager / 守护进程与 CLI 共用同一份设备注册表 / 损坏配置**不**拖垮守护进程 / 密钥读不了**不**拖垮守护进程）+ 1 例 e2e（`levee push config --base-url` 落盘且**再次保存凭据不会把它抹掉**）。**变异验证 4 条全红**：① serve 永远不接 manager → 「配了凭据拿到 manager」红；② `configured` 永远 false → 「有凭据」红；③ 损坏的 `push.json` 读成空 → 「损坏报错」红；④ `base_url` 被忽略 → 两条 base_url 用例红。`go build ./...` rc=0；`go test ./internal/push/ ./cmd/levee/` 全绿；`golangci-lint v2.13.2` 0 issues。
 - **如实边界**：本笔只交付**守护进程接线 + base_url**。本仓的证据止于「凭据齐备时守护进程**持有**那个 manager」与传输层的本地 HTTP 服务器用例。**（2026-11-08 订正）**：本笔**没有**触发点——`MobileApprovalService.RequestApproval` 当时无生产调用方，审批创建不会发通知；「使用」二字是过度声明，触发接线见上方「审批创建即通知审批人」一节。
-
 
 ### 文档（账本卫生：A-4 的假引用订正、D-1b 残留行移除）
 
@@ -474,14 +496,12 @@
 - **验证**：`internal/push` 新增 10 例（文件 store 往返 / 缺文件=空 / 损坏文件=报错 / 空文件=空 / 原子写且不留临时文件 / 权限 0600 / 空用户被丢 / Save 覆盖旧内容；manager 跨进程可见 / unregister 也持久 / 落盘失败回滚 / 注册表读不出来时构造报错 / nil store 保持旧行为）；`cmd/levee` 新增 1 例（**复位 manager singleton 模拟进程边界**：register → devices 仍能看到 → unregister → devices 仍看不到）。**变异验证 4 条全红**：① CLI 改回进程内注册表 → 跨进程用例红；② `persistLocked` 变成 no-op → manager 跨进程用例红；③ 损坏文件读成空 → 损坏用例红；④ 去掉落盘失败回滚 → 回滚用例红。`go build ./...` rc=0；`go test ./internal/push/ ./cmd/levee/` 全绿；`golangci-lint v2.13.2` 0 issues。
 - **如实边界**：本笔只交付**注册表持久化 + CLI 接线**。**`levee serve` 仍未接推送**——`cmd_serve.go` 的 `NewMobileApprovalService` 硬编码 `pushMgr=nil`，守护进程的审批请求仍不会产生任何通知；深链 base URL 仍硬编码占位符 `https://levee.local`。这两条是 A-3 剩下的代码侧缺口，本笔不含。
 
-
 ### 修复（`diagnose --json` 的空集合序列化为 `[]`：`DiagnosticReport` 自带 `MarshalJSON` 归一化）
 
 - **缺口**：`DiagnosticReport` 的集合字段（`health.network.tcp`、`health.node.disks`、`health.service.services`、`health.data.disks`、`findings`、`recommendations`）都没有 `omitempty`，但 nil slice 会被 `encoding/json` 编码成 `null`。默认 `levee diagnose <host> --json` 就命中：CLI 的探针配置不声明任何服务，`ProbeService` 对空列表提前返回 `ServiceHealth{Status: StatusHealthy}`，`services` 于是是 `null`；`--logs` 模式跳过健康探针时整份 `health` 都是零值，六个集合一起变 `null`。消费者遍历这些字段时要先处理 `null` 与 `[]` 的差异，而「探针跑了、没有条目」与「字段没送达」在文档里无法区分。
 - **修法**：`DiagnosticReport` 增加值接收者的 `MarshalJSON`——用别名类型复制报告、把六个空集合归一化为 `[]` 后再编码（别名阻止方法递归）。只改 JSON 编码，不改结构体本身；`json.Unmarshal` 与包内使用不变。`errors` 保持 `omitempty`（键省略是显式设计，未动）。
 - **验证**：`internal/diagnosis` 新增 1 例（零值报告 marshal 后六个集合逐一声明为 `[]`；**修复前实测六个全为 `null`**）。CLI 实跑（本机）同一命令修复前 `"tcp": null` / `"services": null`，修复后 `"tcp": []` / `"services": []`。`go test ./internal/diagnosis` 全绿；`go vet ./internal/diagnosis` rc=0；`go build ./...` rc=0。
 - **边界**：只归一化 `DiagnosticReport` 的 JSON 编码；`HealthReport` 等嵌套类型被单独 marshal 时行为不变（当前无此消费者）。与 #304/#314/#316/#317/#318 同属「空集合不能是 null」契约族。
-
 
 ### 修复（审批创建即通知审批人：把 A-3 的推送触发点接上）
 
@@ -522,14 +542,12 @@
 - **依赖**：本笔 rebase 在 `golang.org/x/net` v0.62.0（CVE-2026-78661 修复）之上；不引入新依赖。
 - **如实边界**：只扩了**运行期**通道插件（D-1c 的原文范围）；编译期通道插件不受影响；类型别名只是一个“同一二进制可被多个名字解析到”的声明，不改变插件协议或沙箱，也不做类型→行为的自动分派（那由插件读 `Target.Type()` 自己决定）。
 
-
 ### 测试（wire 契约夹具补齐 5 个前端实调端点：裸数组有了 `items` 形状，DTO 对账也覆盖它们）
 
 - **缺口**：`internal/grpc/wire_snapshot_test.go` 只驱动 10 条路径，而控制台实际调用 `/agents`、`/groups`、`/audit/traces`、`/system/version`、`/conversation/sessions` 时没有任何形状记录——`web/src/api/wireContract.spec.ts` 的两向守卫对它们全盲，`HostGroup`、`AgentRecord`、`TraceEntry`、`VersionInfo`、`ConversationSessionDTO` 五个 DTO 的拼写从未被服务端产物验证过。历史上三次 PascalCase 泄漏（ClusterNode / AssignmentSummary 同型）都是从这种夹具盲区钻过来的。
 - **改动**：夹具播种补齐（一条 agent 记录、父子两个 group、两条带 Detail 的 trace、一个会话）。`/agents` 与 `/groups` 返回**裸数组**，快照新增 `items`（元素键集合），并让它和 `keys`/`rows` 一样进入逐键对账与 PascalCase 防线；`/audit/traces` 用 `pageSize=1` 对两条 trace 逼出 `nextPageToken`（protojson 会省略空 token，而控制台的 `toPageResult` 要读它）。TS 侧新增 `rootDto` 与 5 个 `DTO_READS` 条目；裸数组的读取集直接从接口声明推导，不再维护第二份手写名单。
 - **验证**：`UPDATE_WIRE_CONTRACT=1` 重生成快照后，快照断言与 PascalCase 扫描双绿，TS 6 例全绿。**红样本四条（接管后独立复现，不采信上一轮的自述）**：① 把 `conversation-sessions` 的 forbid 列表加上 `UserId`（它确实在线上）→ Go 侧 `JSONEq` 红并点名 `UserId`；② 往 `agents.items` 塞 `Id` → TS 的 items PascalCase 断言红（`agents: item key Id is PascalCase`），且同时触发「declared nowhere」；③ 把快照里的 `user_id` 改成 `userId` → TS **三个方向同时红**（客户端读了线上没有的键 / 线上有键没人声明 / 接口声明了线上没发的键）；④ 把**服务端** `sessToDTO` 的 `user_id` 改成 `userId` → Go 快照红并给出「the wire shape changed: re-run with UPDATE_WIRE_CONTRACT=1」。四条均已还原，`gofmt` 干净、快照与提交版逐字节一致。另外第一次跑 TS 时它确实红在 `agents: item key address is declared nowhere`，证明裸数组元素的逐键对账不是装饰。
 - **边界**：本笔**只加夹具、不改服务端行为**——五个端点的键集是**记录**下来的既有产物，不是新造的形状。`/audit/traces` 的 `input`/`output`/`detail` 由 trace 的 Detail JSON 解码而来，夹具已播种真实形状；Detail 为空的行仍会省略这些键（protojson 语义），夹具不替它伪造。`docs/blocked-items.md` 的 G-4 行在本笔中从待办表**移出**、进「已交付、不再登记」节（沿用 #307 对 G-1 / G-3 的同一写法）；G 类因此空了，按 `check_blocked_items` 的口径显式写「当前无」——空分类必须说明是空的，否则「少了表」会静默通过。
-
 
 ### 决策（`blocked-items.md` 的 G-1 / G-3 / D-3 定档：均为「不做行为变更」，只落账与注释）
 
@@ -538,7 +556,6 @@
 - **D-3 — 账本时刻方言归一（SQLite=UTC / PostgreSQL=会话时区）→ 定档「O3 暂不改，触发后预定 O1」**：当前未收到真实 PostgreSQL 部署报障，且 `--remote` 等价测试仅覆盖 SQLite；无真实证据下动存储/展示口径易引入第二形态。决策：维持触发式；触发后默认实施 **O1**（store 解码层统一归一为 UTC，账本 UTC 存/读、展示层按需转换），**O2**（CLI `--tz` 展示旗标）仅作备选。触发条件与实施前证据要求（SQLite+PostgreSQL 双方言下重跑 `audit list/export/show`、`target list/history`、`group list` 的本地与 `--remote` 等价、发布说明）记入 `docs/blocked-items.md` D-3。**零行为变更**（纯账本）。
 - **验证**：两项都是**零行为变更**——G-3 不动序列化，G-1 不新增命令；改动为 `docs/blocked-items.md` + 三处代码注释。`go build ./internal/wiring/ ./internal/audit/` rc=0；`check_blocked_items`（19 → 17，G 表只剩 G-4）/ `check_doc_anchors` / `test_changelog_structure` / `check_roadmap_status` 全过。
 
-
 ### 修复（dispatch 的 assignment 陈旧度改按 store 时钟比较，消除库/应用时钟差对 reclaim 判定的平移）
 
 - **缺陷**：`run_assignment.updated_at` 由**后端时钟**盖章——PostgreSQL 的 `CreateAssignment` / `UpdateAssignmentState*` / `ReclaimAssignment` / `SetAssignmentResult` 写的是 `NOW()`；而 `dispatch.reclaimStale` 算 `age` 用的是**进程时钟** `time.Now().UTC()`。集群里库主机与应用主机时钟一旦有偏差，同一个 `age` 就被整体平移：一端会把还在被认领的 assignment 当陈旧抢走（`epoch` fencing 兜住迟到的 owner，不至于双执行），另一端永不复现的真孤儿则不回收。**同机测试环境永不复现**，只在异构部署显形。这是 `docs/blocked-items.md` 的 **G-2**。
@@ -546,7 +563,6 @@
 - **历史行不回填**：不需要。PostgreSQL 的历史行本来就是库时钟落的，改用库时钟比较反而与它们一致；SQLite 的库时钟即本机时钟。所以没有一次性迁移，只把“比较用的时钟”对齐到“盖章用的时钟”。
 - **验证**：新增 3 例——`state` 的 SQLite / PostgreSQL `StoreNow`（后者在真容器 `postgres:16-alpine` 上跑过），`dispatch` 的 **时钟分离**（1 分钟旧的 assignment 在进程时钟下不陈旧、在 store 时钟`+30min` 下陈旧且被 reclaim；**变异**：把 `l.storeNow(ctx)` 改回 `time.Now().UTC()` → 该用例红，还原后绿）。既有 `internal/dispatch` 全包与 `internal/state`（含 PG）全绿；`golangci-lint v2.13.2` 0 issues。
 - **如实边界**：只改了 **staleness 比较**的时钟；fresh claim 路径传给 `CreateAssignment` 的 `AssignedAt/UpdatedAt` 未动（PostgreSQL 那边本就忽略它们、一律 `NOW()`；SQLite 那边本机时钟即库时钟）。`state.Store` 接口未加宽，只有 SQLite / PostgreSQL 两个实现提供该能力。
-
 
 ### 修复（`RunEventStore.UpdateRun` 的读-改-写竞态：并发全行写会把错的 `from` 播给 ChatOps/webhook）
 
@@ -558,7 +574,6 @@
 - **验证**：新增 5 例——SQLite 的顺序 / 未找到 / nil + **并发链**（24 个 goroutine 对同一行做读-改-写，断言被覆盖的 status 串成一条不丢不重的链）；PostgreSQL 一例（真容器 `postgres:16-alpine` 上跑过）；wiring 两例钉住「有能力时走原子路径、无能力时回退」。既有 `RunEventStore` 用例全绿；`golangci-lint v2.13.2` 0 issues；`internal/state` 全包（含 PG）与 `internal/wiring` / `internal/pause` / `internal/takeover` 全绿。
 - **如实边界**：只保证**经该 decorator** 的全行写的 `from` 正确；未把全部全行写改造成 CAS（那要动十几个调用点，风险远大于收益）。`state.Store` 接口未变，只有 SQLite / PostgreSQL 两个实现提供原子路径。
 
-
 ### 文档（`CONTRIBUTING.md` §5.1 的 `ci.yml` check-run 计数订正：`24` → 实测 `26`）
 
 - **缺口**：§5.1 讲「stacked PR 的 base 不在 `main`/`master`/`develop` 时 `ci.yml` 一条 check 都不生成」时，引用的计数是 **24 个 check run**——那是更早的 job 集留在文本里的旧数。上一笔（`e0b3353`）自己留了话：「`ci.yml` 的 **24 个** check run 这个计数本笔没核实（顶层 job 实测 16 个），登记给下一次专门核计数的人」。
@@ -566,7 +581,6 @@
 - **改动**：只订正 §5.1 那一句，把 `24` 换成 `26` 并写出 16→26 的矩阵展开与实测出处，另把「只有 CodeQL 两条与第三方检查」补成能对上的口径（`codeql.yml` 两条 + 第三方）。**不改 CHANGELOG 里已发布小节的同形旧数**（那是当时的事实快照，按本仓「发布说明不重写」的口径保留）。
 - **验证**：`python scripts/test_changelog_structure.py`、`python scripts/check_doc_anchors.py`、`python scripts/test_doc_anchors.py` 全过；纯文档改动，不动 Go/前端，故不跑构建与测试。
 - **如实边界**：这个数是**拼写说明、不是门禁**——没有脚本从 `ci.yml` 反算它（矩阵形态多样，反算器一旦漏看一处就静默少数；宁可不设这道门）。所以 `ci.yml` 增删 job 时仍要靠人同步，文本里已写清怎么重算。
-
 
 ### 测试（`blocked-items.md` 结构与分类计数门禁：每类几项从文件本身算，不再只有快照）
 
@@ -634,7 +648,6 @@
 - **锚点复核**：§12 引用的 13 处 roadmap 行号在 #293 重写整张表（122 行 diff）后**逐行回读仍成立**（状态加在行尾，行号不动）⇒ 无需为锚点另开一笔。
 - **一条边界**：#293 的门禁保证「每行有且只有一个规范状态」，**不保证状态填得对**——填错的 `closed` 依然是 `closed`；`docs/blocked-items.md` 的分类计数仍是另一套口径，未被任何门禁止住。
 - **验证**：`python scripts/test_changelog_structure.py` OK；`python scripts/check_doc_anchors.py` PASSED（27 锚点 + 29 claims）；`python scripts/check_roadmap_status.py` PASSED；零产品代码改动 ⇒ 不动测试套件。§12 已随 **v1.25.0**（折叠提交 `334bf2c`）发布，故本节按追加式口径只订正、不回改旧节。
-
 
 ### 新增（`target history` 接 `--remote`：本系列里唯一一处「远程显示更少」，缺的键由输出自己点名）
 
@@ -715,7 +728,6 @@
 - **下限**：`MIN_CLAIMS` 20 → **25**（表当前 29 条）。
 - **验证**：套件 18 → **24** 例全绿（新增目录扫描 present、目录跳 `_test.go`、空目录 ScopeError、`gone` 三态）；`check_doc_anchors` 27 锚点 + **29 claims**。**变异**：① 新建 `cmd/levee/zz_probe_mut.go` 写 `"rollback-all"` → 负断言红并点名该文件；② 复建 `internal/scheduler/` → `gone` 断言红（「exists again」）。
 - **如实边界**：目录扫描跳过 `_test.go` 是刻意的（有专测）；`gone` 的父目录守卫防的是末段笔误、不防整条路径写错（那需要更粗的锚）。仍未覆盖：像 `drift schedule` 那种「同名字符串已存在于别处」的**顶层**命令负断言——关键词区分不了层级，需要更强的作用域表达，留作后续。
-
 
 ### 测试（`CLAIMS` 表第二轮：13 → 25 条，把 roadmap/blocked-items 已在引用的符号变成机器断言；下限抬到 20）
 
@@ -1663,7 +1675,6 @@
 - **文档与头注释同步**：`docs/levee-api.md` 那段原写"前端未接（本批只做后端能力）"，已改为如实说明控制台走的是只读入口，并把"proto 声明六个、网关只填四个（`Batch` 四填三）"写进契约口径。详情页头注释同理——它原来宣称本页汇聚四类指纹却显示不了 plan/gates，如今两条都各有真来源（plan 来自存量 artifact，gate 判定来自 #154 落库的 `gate_check` trace 行，由既有时间线原样印出）。
 - **验证**：`node node_modules/vitest/vitest.mjs run` **314 例全绿（36 文件）**、`npm run build` 退出 0、`go test ./...` **68 包 ok / 0 FAIL**、`go build ./...` 0、`go vet ./...` 0、`gofmt -l internal/ cmd/` 空、`golangci-lint run ./...`（单实例、`--timeout 12m`）**0 issues**、`docgen -check` 通过、`python -m unittest discover -s scripts` 48 tests OK（含 CHANGELOG 结构守卫）。不动后端行为、不动 proto。
 
-
 ### 新增（门禁失败进聊天：EventGateResult 终于有了发送方，范围刻意只做失败）
 
 - **#38 收口**。`chatops.EventGateResult`（`bot.go:88` 定义、`card.go:229` 有渲染分支、`card_test.go:114-127` 有用例）**全仓零发送方**——卡片写得漂漂亮亮，没人把事件投进去。这正是 #154 那类"类型存在"与"调用点存在"长得很像的缺陷，所以这一批的验收口径从一开始就不是"能不能渲染"，而是"生产路径里有没有人 produce"。
@@ -1689,7 +1700,6 @@
 - **变异脚本自己贡献三条教训（都是"工具会静默骗人"的形状，都已修）**：① 第一版把"删掉门禁调用"当变异，`permission` 于是成了未用导入 ⇒ **包编译不过**，脚本按 broken 拒收——编译失败不是被抓，变异必须保持类型正确（改用"把传给门禁的 authorizer 换成 nil"这类等价削弱）。② `SubscribeConversation` 的 carol 探针原本用 `context.Background()`：门禁一旦被删，这条用例**挂死十分钟**而不是变红（harness 把它记成 broken，我第一版差点把它当成"没抓到"）。改成进门即已取消的 context（`endedStream`）：门禁在则立刻拒、门禁不在则 `require.Error` 立刻红——把挂死换成快失败，这是测试设计的缺陷而不是变异的问题。③ 第二版脚本 baseline 门里有一个**早先被我改掉名字**的用例名，`-run` 匹配不到任何东西，"want 8 / pass 7"因此在注入任何变异之前就挡住了整个脚本：先验基线不只是"证明能绿"，也是"证明这些用例真的存在"。
 - **计数**：新增用例 internal/grpc **16** 条（诊断 7、对话 9）；`cmd/levee` 接线守卫重写为 **7** 条（5 新 + 2 保留，受控集改为 proto 穷举）。变异 **17** 项全部被抓（一轮 7、二轮 9、三轮 1），三份脚本各自带 sha256 逐字节还原断言且都报 `residue: none`。
 - **验证**：`go build ./...` 0、`go vet ./...` 0、`gofmt -l internal/ cmd/` 空、`go test ./... -count=1` **68 包 ok / 0 FAIL**（rc 0）、`-race` 于 `internal/grpc`（100.6s ok）与 `cmd/levee` 的策略用例（14.0s ok）、`golangci-lint run ./...` **0 issues**、`go run ./internal/docgen -check -root .` 输出 `spec is up to date`、`python -m unittest discover -s scripts` **48 tests OK**。零前端、零 dist、零 proto、零 schema 变更（`git status --porcelain -- internal/web/dist web/` 为空）。**并发写者老毛病复发一次并如实记账**：后台那次全量套件尚未结束我又跑了前台一遍，两次写同一个输出文件 ⇒ 那份文件不可用，上面所有数字取自重跑的**单次**干净运行。
-
 
 ## [v1.22.0] - 2026-10-16
 

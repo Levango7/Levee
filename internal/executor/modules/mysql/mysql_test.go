@@ -115,7 +115,7 @@ func TestModuleName(t *testing.T) {
 }
 
 func TestModuleActions(t *testing.T) {
-	assert.Equal(t, []string{"query", "pt_osc", "replica_switch"}, New().Actions())
+	assert.Equal(t, []string{"query", "pt_osc", "replica_switch", "schema_snapshot"}, New().Actions())
 }
 
 func TestModuleNotIdempotent(t *testing.T) {
@@ -594,4 +594,82 @@ func TestUnsupportedAction(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported action")
 	assert.True(t, strings.Contains(err.Error(), "vacuum"))
+}
+
+// --- schema_snapshot ---------------------------------------------------------
+
+// decodedPayload pulls the base64 payload the command pipes into the client.
+func decodedPayload(t *testing.T, cmd string) string {
+	t.Helper()
+	lines := strings.Split(cmd, "\n")
+	require.Len(t, lines, 3, "command shape: pipe line, payload, heredoc terminator")
+	raw, err := base64.StdEncoding.DecodeString(lines[1])
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func TestSchemaSnapshotCapturesShowCreateTable(t *testing.T) {
+	ch := &mockChannel{}
+	ch.execResult = okResult("users\tCREATE TABLE `users` (\n  `id` int NOT NULL\n)")
+
+	out, err := New().Execute(context.Background(), "schema_snapshot", newInput(ch, map[string]any{
+		"tables":   []any{"users", "orders"},
+		"database": "shop",
+	}))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+
+	// Read-only: a snapshot must not tell the evidence the change happened.
+	assert.False(t, out.Changed, "schema_snapshot changes nothing; Changed must stay false")
+	assert.Equal(t, 0, out.ExitCode)
+
+	cmd := ch.execAt(0)
+	assert.Contains(t, cmd, "-h db01.prod -P 3306 -u root shop")
+	// The abort-on-error DEFAULT is the mechanism: without --force, mysql
+	// stops at the first failing statement, so a table that cannot be read
+	// fails the step instead of leaving an empty snapshot behind.
+	assert.NotContains(t, cmd, "--force")
+	assert.NotContains(t, cmd, "-f ", "the short form of --force must not appear either")
+
+	sql := decodedPayload(t, cmd)
+	assert.Contains(t, sql, "SHOW CREATE TABLE `users`;")
+	assert.Contains(t, sql, "SHOW CREATE TABLE `orders`;")
+	assert.True(t, strings.Index(sql, "`users`") < strings.Index(sql, "`orders`"),
+		"tables are captured in the author's order")
+}
+
+func TestSchemaSnapshotQualifiesAndQuotes(t *testing.T) {
+	ch := &mockChannel{}
+	ch.execResult = okResult("")
+	_, err := New().Execute(context.Background(), "schema_snapshot", newInput(ch, map[string]any{
+		"tables": []any{"shop.orders"},
+	}))
+	require.NoError(t, err)
+	assert.Contains(t, decodedPayload(t, ch.execAt(0)), "SHOW CREATE TABLE `shop`.`orders`;")
+}
+
+func TestSchemaSnapshotRejectsBadTableArguments(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"missing", map[string]any{}, `missing argument "tables"`},
+		{"empty list", map[string]any{"tables": []any{}}, "must not report success"},
+		{"not a list", map[string]any{"tables": "users"}, "must be a list"},
+		{"not a string", map[string]any{"tables": []any{42}}, "must be a string"},
+		{"duplicate", map[string]any{"tables": []any{"users", "users"}}, "listed twice"},
+		{"injection", map[string]any{"tables": []any{"t; DROP TABLE x"}}, "invalid table name"},
+		{"two dots", map[string]any{"tables": []any{"a.b.c"}}, "invalid table name"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ch := &mockChannel{}
+			_, err := New().Execute(context.Background(), "schema_snapshot", newInput(ch, c.args))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), c.want)
+			assert.Contains(t, err.Error(), "mysql.schema_snapshot")
+			assert.Empty(t, ch.execs, "a refused argument must not reach the target")
+		})
+	}
 }

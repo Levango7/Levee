@@ -354,21 +354,24 @@ func inferType(v any) Type {
 // ---------------------------------------------------------------------------
 
 // actionSignatures maps "module.action" to a map of expected argument types.
-// Only the well-known MVP actions are listed; unknown actions are skipped by
-// the checker.
+// Only the actions listed here are type-checked; anything else is skipped by
+// the checker (the runtime is the gate for argument shape).
+//
+// Two invariants hold here, and action_signature_ratchet_test.go enforces both:
+//
+//   - every key names an action some registered module actually executes.
+//     `shell.command` and `file.write` used to sit in this table with no
+//     module behind them: a vocabulary that claims to know an action the
+//     platform cannot run is worse than silence, because a reader concludes
+//     `file.write` exists and writes a workflow that dies at execution;
+//   - every action of the database modules is listed. pg.query was not — so
+//     PostgreSQL steps, the ones whose SQL the review gate scores, were the
+//     only SQL steps whose arguments went unchecked. The omission stayed
+//     invisible because an unlisted action is SKIPPED, not refused.
 var actionSignatures = map[string]map[string]Type{
-	"shell.command": {
-		"cmd":     TypeString{},
-		"timeout": TypeDuration{},
-	},
 	"shell.exec": {
 		"cmd":     TypeString{},
 		"timeout": TypeDuration{},
-	},
-	"file.write": {
-		"path":    TypeString{},
-		"content": TypeString{},
-		"mode":    TypeString{}, // octal as string, e.g. "0644"
 	},
 	"file.copy": {
 		"src":  TypeString{},
@@ -416,6 +419,58 @@ var actionSignatures = map[string]map[string]Type{
 		"user":        TypeString{},
 		"password":    TypeString{},
 	},
+	// The pre-change schema snapshot: `tables` is a list because one snapshot
+	// step may cover several tables, and the module refuses a bare string
+	// (see sqlguard.TableList). `password` is deliberately absent from both
+	// snapshot entries: they refuse it at runtime, and declaring it here would
+	// advertise a credential argument the module will not accept.
+	"mysql.schema_snapshot": {
+		"tables":   TypeList{ElementType: TypeString{}},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+	},
+	"pg.query": {
+		"sql":      TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+		"password": TypeString{},
+	},
+	"pg.schema_snapshot": {
+		"tables":   TypeList{ElementType: TypeString{}},
+		"schema":   TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+	},
+}
+
+// ActionSignatures returns the compile-time argument signature table: which
+// args the type checker validates for which action.
+//
+// It exists for the guard tests, which compare this table against the
+// executable action set in BOTH directions (action_signature_ratchet_test.go).
+// That comparison cannot run from inside package dsl: it needs the executor
+// registry, and internal/executor imports internal/dsl, so the test lives in
+// package dsl_test and needs an exported view.
+//
+// The copy is deliberate. The table is process-wide state, and a caller that
+// mutated the map it was handed would silently change what every later
+// compile accepts.
+func ActionSignatures() map[string]map[string]Type {
+	out := make(map[string]map[string]Type, len(actionSignatures))
+	for action, args := range actionSignatures {
+		copied := make(map[string]Type, len(args))
+		for name, typ := range args {
+			copied[name] = typ
+		}
+		out[action] = copied
+	}
+	return out
 }
 
 // batchStrategyEnum is the enum of allowed batch strategies. It mirrors

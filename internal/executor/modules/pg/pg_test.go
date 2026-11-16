@@ -81,7 +81,7 @@ func input(ch *mockChannel, args map[string]any) executor.ModuleInput {
 func TestModuleContract(t *testing.T) {
 	m := New()
 	assert.Equal(t, "pg", m.Name())
-	assert.Equal(t, []string{"query"}, m.Actions())
+	assert.Equal(t, []string{"query", "schema_snapshot"}, m.Actions())
 	assert.False(t, m.Idempotent(),
 		"query is idempotent by authorship only; the module cannot verify that claim")
 }
@@ -196,4 +196,99 @@ func TestExecute_UnknownAction(t *testing.T) {
 	_, err := New().Execute(context.Background(), "vacuum", input(&mockChannel{}, nil))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported action")
+}
+
+// --- schema_snapshot ---------------------------------------------------------
+
+// decodedPayload pulls the base64 payload the command pipes into psql.
+func decodedPayload(t *testing.T, cmd string) string {
+	t.Helper()
+	lines := strings.Split(cmd, "\n")
+	require.Len(t, lines, 3, "command shape: pipe line, payload, heredoc terminator")
+	raw, err := base64.StdEncoding.DecodeString(lines[1])
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func TestSchemaSnapshot_IntrospectsUnderOnErrorStop(t *testing.T) {
+	ch := &mockChannel{}
+	out, err := New().Execute(context.Background(), "schema_snapshot", input(ch, map[string]any{
+		"tables": []any{"public.orders"},
+	}))
+	require.NoError(t, err)
+	assert.False(t, out.Changed, "schema_snapshot is read-only; Changed must stay false")
+
+	cmd := ch.only(t)
+	// The guard only works if a RAISE stops the step: ON_ERROR_STOP is what
+	// turns the raised exception into a failed step instead of a warning.
+	assert.Contains(t, cmd, "-v ON_ERROR_STOP=1")
+
+	sql := decodedPayload(t, cmd)
+	// Not pg_dump output, and the capture says so itself — a reader who takes
+	// it for restorable DDL would be wrong.
+	assert.Contains(t, sql, "NOT pg_dump output and not restorable DDL")
+	// Existence guard: to_regclass returns NULL for a missing relation, so
+	// without this the capture would be empty and exit 0.
+	assert.Contains(t, sql, "to_regclass('\"public\".\"orders\"') IS NULL")
+	assert.Contains(t, sql, "RAISE EXCEPTION")
+	// The three sections, all resolved through the same oid — filtering
+	// information_schema by (schema, name) strings would silently return
+	// nothing for a name the search_path does not reach.
+	assert.Contains(t, sql, "FROM pg_attribute a")
+	assert.Contains(t, sql, "FROM pg_constraint")
+	assert.Contains(t, sql, "FROM pg_index i")
+	assert.Equal(t, 4, strings.Count(sql, "to_regclass('\"public\".\"orders\"')"),
+		"the guard plus columns, constraints and indexes all resolve the SAME relation")
+}
+
+// An unqualified table is resolved by the SERVER (the session's search_path),
+// not guessed here: the literal carries no schema, and to_regclass does the
+// lookup.
+func TestSchemaSnapshot_UnqualifiedUsesSearchPath(t *testing.T) {
+	ch := &mockChannel{}
+	_, err := New().Execute(context.Background(), "schema_snapshot", input(ch, map[string]any{
+		"tables": []any{"orders"},
+	}))
+	require.NoError(t, err)
+	sql := decodedPayload(t, ch.only(t))
+	assert.Contains(t, sql, "to_regclass('\"orders\"')")
+	assert.NotContains(t, sql, "public")
+}
+
+// args.schema is the explicit answer to "which schema did you mean" for an
+// unqualified name.
+func TestSchemaSnapshot_ExplicitSchema(t *testing.T) {
+	ch := &mockChannel{}
+	_, err := New().Execute(context.Background(), "schema_snapshot", input(ch, map[string]any{
+		"tables": []any{"orders"},
+		"schema": "billing",
+	}))
+	require.NoError(t, err)
+	assert.Contains(t, decodedPayload(t, ch.only(t)), "to_regclass('\"billing\".\"orders\"')")
+}
+
+// The module refuses rather than guesses when the arguments cannot mean what
+// they say. Each case must stop BEFORE the target is touched.
+func TestSchemaSnapshot_RefusesBadArguments(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"missing tables", map[string]any{}, `missing argument "tables"`},
+		{"empty tables", map[string]any{"tables": []any{}}, "must not report success"},
+		{"duplicate table", map[string]any{"tables": []any{"t", "t"}}, "listed twice"},
+		{"injected name", map[string]any{"tables": []any{"t'; DROP TABLE x; --"}}, "invalid table name"},
+		{"injected schema", map[string]any{"tables": []any{"t"}, "schema": "public'; DROP DATABASE x; --"},
+			"invalid schema"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ch := &mockChannel{}
+			_, err := New().Execute(context.Background(), "schema_snapshot", input(ch, c.args))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), c.want)
+			assert.Empty(t, ch.execs, "a refused argument must not reach the target")
+		})
+	}
 }
