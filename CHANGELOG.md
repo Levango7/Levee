@@ -30,6 +30,13 @@
 
 > **发布状态：已切版。** 附注 tag `v1.26.1`（tag 对象 `149017f9990`，指向 master 提交 `700af73`）于 2026-11-17T07:01Z 推送，且是在该提交自己的 `master` push run 全绿之后才打的：run **27/27** 检查全 success（含聚合门 `check (all jobs passed)`）。`release.yml` 三段（CI gate / goreleaser / container image，run `44035539770`，07:01:40Z → 07:22:53Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `44035539890`（`head_branch=v1.26.1`，completed success）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-17T07:17:02Z`，资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.26.1` 按外部事实核过——`manifests/v1.26.1` 返回 **200**（同一次探测里 `v1.26.0` → 200、不存在的 `v1.26.99` → 404，证明探针有分辨力），index 内是 `linux/amd64` + `linux/arm64`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.26.1` / 逐字 `v1.26.1`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **10** 个小节 + 5 个依赖升级，主题分布与契约变更见 [`docs/release-notes/v1.26.1.md`](docs/release-notes/v1.26.1.md)。
 
+### 修复（窄屏表格可达性：把「靠横向滚动」这个承重属性钉住，而不是盲改一版 CSS）
+
+- **背景**：外部检索报告的结论是「窄屏下部分表格页没有 `@media` 兜底，靠横向滚动」。逐条实测：成立，且范围比报告说的大——整个 `web/src` 只有 **4 个文件**带 `@media`（ConversationView / LoginCallbackView / LoginView / MonitorView）。但「靠横向滚动」本身**不是缺陷**：`.sheet`（`App.vue` 的主内容滚动容器）只有 `overflow-y: auto`，按 CSS 规则 `visible` 遇上非 `visible` 的另一轴会被计算成 `auto`，所以宽表格表现为内容区内的横向滚动条，右侧列够得到。报告没有说错，但它没指出这里**唯一真正承重的东西**。
+- **修法**：新增 `web/src/views/sheetOverflow.spec.ts`，把那个承重属性钉住——`.sheet` **不得**声明 `overflow-x: hidden` / `overflow: hidden`（否则所有宽表格的右侧列在同一时刻全部不可达，而 1280px 宽屏上一切照常、没有任何测试会红），并保留 `overflow-y: auto` 与 `min-width: 0`（后者是 flex 子项能被压缩的前提，没有它外壳会溢出而不是滚动）。**变异实测**：给 `.sheet` 埋一个 `overflow-x: hidden`，守卫立即红并引用那条声明。
+- **刻意没做的**：**没有**去给 8 个表格页补 `@media`。本机没有可用浏览器（`which chromium/chrome/firefox` 全空、`~/.cache/puppeteer` 不存在），盲改一版看不见效果的 CSS 违反本仓「先量再改、不建无法验证的东西」的纪律；`browser-check` 的窄屏档仍是已登记缺口，等有浏览器的环境再补。
+- **验证**：前端 **48 个测试文件 / 383 例**全绿（新增 2 例）；`vue-tsc --noEmit` 干净。实测结论（哪些页面有 `@media`、`.sheet` 的 overflow 语义）已写进本条，后续做窄屏适配的人不需要重新量一遍。
+
 ### 修复（`channel.ssh.auth_method` 的 `key+password` 通道侧一直实现、配置侧一直拒收）
 
 - **缺口**：`internal/channel/ssh` 的 `buildAuthMethods` 从一开始就实现 `"key+password"` / `"password+key"`（先试 key，失败再退 password——它自己的注释说这是给「目标机两种认证都收」的场合），而 `internal/config` 的校验只收 `key` / `password`。两张词表、两个 owner、没有任何东西比对。后果不是崩溃，而是**一条能力从配置路径完全不可达**：目标机两种都收时，操作员只能二选一赌一个；而因为不可达，这条分支也**从未被执行过**——看起来是特性，实际是死代码。
