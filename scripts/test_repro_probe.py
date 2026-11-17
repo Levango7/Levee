@@ -51,6 +51,39 @@ class ReproProbeWorkflowTest(unittest.TestCase):
         # 等于什么都没盯。
         self.assertGreaterEqual(self.text.count("runs-on: windows-latest"), 2)
 
+
+    def test_job_conditions_work_on_the_scheduled_event(self) -> None:
+        """The daily probe must run when the SCHEDULER fires it.
+
+        Why this exists: the original `if: ${{ inputs.calendar != false }}` looked
+        right and was right — for workflow_dispatch. The `inputs` CONTEXT is not
+        populated for other events, so on the one scheduled run this workflow has
+        ever had, BOTH JOBS WERE SKIPPED and nothing recorded that. The roadmap
+        meanwhile says "there is a daily probe watching", which was not true.
+
+        Two things are pinned so it cannot happen again:
+          1. no job-level condition may reference the bare `inputs` context;
+          2. every condition must explicitly permit `schedule`.
+        """
+        for job_block in re.findall(r"^  [a-z][a-z0-9-]+:\n(?:    .*\n)*", self.text, re.M):
+            cond = re.search(r"^    if: (.+)$", job_block, re.M)
+            if not cond:
+                continue
+            # The bare `inputs` CONTEXT, not `github.event.inputs` (the latter is
+            # an empty object rather than an unpopulated context, so it is safe).
+            bare_inputs = re.search(r"(?<![.\w])inputs\.", cond.group(1))
+            self.assertIsNone(
+                bare_inputs,
+                f"a job condition references the `inputs` context, which is empty on "
+                f"schedule events and silently skips the job: {cond.group(1)}")
+            self.assertIn(
+                "github.event_name", cond.group(1),
+                f"the condition must name the event so the scheduled path is explicit: {cond.group(1)}")
+            self.assertIn(
+                "schedule", cond.group(1),
+                f"the condition must explicitly permit the scheduled run: {cond.group(1)}")
+
+
     def test_artifacts_are_uploaded_even_when_the_probe_fails(self) -> None:
         uploads = re.findall(
             r"- name: upload repro artifacts\s*\n\s*if: always\(\)", self.text)

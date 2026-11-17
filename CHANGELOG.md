@@ -8,7 +8,15 @@
 
 > **发布状态：已切版。** 附注 tag `v1.26.1`（tag 对象 `149017f9990`，指向 master 提交 `700af73`）于 2026-11-17T07:01Z 推送，且是在该提交自己的 `master` push run 全绿之后才打的：run **27/27** 检查全 success（含聚合门 `check (all jobs passed)`）。`release.yml` 三段（CI gate / goreleaser / container image，run `44035539770`，07:01:40Z → 07:22:53Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `44035539890`（`head_branch=v1.26.1`，completed success）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-17T07:17:02Z`，资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.26.1` 按外部事实核过——`manifests/v1.26.1` 返回 **200**（同一次探测里 `v1.26.0` → 200、不存在的 `v1.26.99` → 404，证明探针有分辨力），index 内是 `linux/amd64` + `linux/arm64`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.26.1` / 逐字 `v1.26.1`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **10** 个小节 + 5 个依赖升级，主题分布与契约变更见 [`docs/release-notes/v1.26.1.md`](docs/release-notes/v1.26.1.md)。
 
-### 修复（审计链校验只有一个口径：trace 端点改用 /audit/verify 的同一个校验器）
+### 修复（每日复现探针从未定时跑过：`inputs` 上下文在 schedule 事件为空，两个 job 静默 skipped）
+
+- **缺口**：探针的 job 条件写的是 `if: ${{ inputs.calendar != false }}`——对 `workflow_dispatch` 完全正确，但 **`inputs` 上下文只对 dispatch/call 事件填充**。`schedule` 事件上它不被填充，引用它让整个表达式求值为非真，于是**两个 job 一起被 skip**：这个工作流史上唯一一次定时触发（2026-11-16 11:11Z，head `380e199`）就是两个 job 全 skipped，**每日探针一次都没跑起来过**。而台账与路线图已经写着「有一条每日探针在盯」——那句话当时不是真的。**一个不跑的探针比没有探针更糟**，因为它让「有防护」变成了书面承诺。
+- **修法**：条件改为 `github.event_name == 'schedule' || github.event.inputs.<name> != 'false'`。`github.event.inputs` 是非 dispatch 事件下的**空对象**（不是未填充上下文），属性访问得 null，比较成立；而 `github.event_name == 'schedule'` 作为**第一个操作数**不引用任何可选上下文，因此无论第二个操作数表现如何，schedule 上都为真——按构造成立，而非靠巧合。
+- **守卫**：`scripts/test_repro_probe.py` 新增一例——任何 job 级条件**不得**引用裸 `inputs` 上下文、必须显式点名事件、必须显式允许 schedule。**变异实测**：把条件埋回 `inputs.calendar != false`，该例立即红并引用出错表达式，还原即绿。
+- **验证**：`scripts/test_repro_probe.py` 14 例全绿；actionlint 对新工作流零告警；并已手动触发一次 dispatch 验证流水线仍能端到端跑通（探针脚本本身在本机与真实 Windows runner 上都实跑过）。
+- **边界**：schedule 路径无法用 dispatch 复现，所以本文钉的是**表达式形状**；下一次真实 cron 触发（GitHub 定时可延迟数小时，属已知平台行为）应作为最终确认——已列为待观察项。
+
+### 修复（审计链校验只有一个口径### 修复（审计链校验只有一个口径：trace 端点改用 /audit/verify 的同一个校验器）
 
 - **缺口**：链校验此前有**两个口径**，而控制台用的是弱的那个。`GET /audit/verify` 走 `audit.ChainVerifier.Verify`——**全量重算**每条记录的摘要再比对；`GET /changes/:id/trace?verify=true`（控制台的「生命周期与证据链」）此前只比 `PrevHash`/`CurrHash` 的**连续性**——**不重算摘要**。后果：一条**内容被改写、但哈希没跟着重算**的链，在控制台上读作「哈希链完整」，在 `/audit/verify` 上读作「已篡改」。同一条链，两个答案，而乐观的那个正好在操作员眼前。
 - **修法**：① `internal/audit/verify.go` 抽出导出 `VerifyTraces(runID, traces)`，成为 `ChainVerifier.Verify` 的**共同实现**（校验器是只读的——它不能修链，断了就是证据，所以两个端点对同一条链必然给出同一个答案）；② `internal/grpc/change_service.go` 删除弱校验 `verifyHashChain`，改用 `audit.VerifyTraces`；③ 校验消息改为**四个稳定前缀的契约**：`hash chain valid: …` / `hash chain not sealed yet: …` / `hash chain broken: …` / `no traces to verify`。**未封口仍判 `valid=false`（fail closed）**——被清空的哈希绝不能读作「没事」——但它用 `not sealed yet` 与篡改分开：生产链在 run 终态时才封口，运行中的变更本来就有未封口的尾巴，让操作员去追一个不存在的攻击者是误报；④ 新增 REST-only 端点 `GET /audit/chain-mode` 报当前部署的摘要口径（`keyed`/`unkeyed`、`HMAC-SHA256`/`SHA-256`、`keyed`），**不改 proto**（CI 钉 protoc v27.0，改 proto 得不偿失）。

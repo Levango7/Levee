@@ -64,7 +64,20 @@ jobs:
     # 够，否则探针会因为超时被杀——那会变成「又一种红」。
     timeout-minutes: 30
     runs-on: windows-latest
-    if: ${{ inputs.calendar != false }}
+    # WHY this shape and not `inputs.calendar != false`:
+    # the `inputs` CONTEXT only exists for workflow_dispatch/workflow_call. On a
+    # `schedule` event it is not populated, referencing it makes the whole
+    # expression evaluate to a non-truthy value, and BOTH JOBS GET SKIPPED —
+    # silently. That is exactly what happened: the only scheduled run this
+    # workflow ever had (2026-11-16 11:11Z, head 380e199) skipped both jobs, and
+    # the daily probe never ran once. A probe that does not run is worse than no
+    # probe, because the roadmap now claims "there is a daily probe watching".
+    #
+    # `github.event.inputs` is an empty object (not an unpopulated context) for
+    # non-dispatch events, so property access yields null and the comparison
+    # holds. `github.event_name == 'schedule'` is spelled out so the intent is
+    # greppable rather than inferred.
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.calendar != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
@@ -96,7 +109,9 @@ jobs:
     name: browser-check repro probe (windows)
     timeout-minutes: 45
     runs-on: windows-latest
-    if: ${{ inputs.browser != false }}
+    # Same shape as the calendar job above: see the comment on the `inputs`
+    # context there. A skipped probe is invisible debt.
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.browser != 'false' }}
     defaults:
       run:
         working-directory: web
