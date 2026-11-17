@@ -1,6 +1,8 @@
 # LEVEE Performance Baseline Report
 
 > **Generated**: 2026-11-16（本次全量重跑；2026-08-16 版仅作历史参考，数据见 git 历史）
+> **增补**: 2026-11-17 补 §17.2（Audit Verify 规模，`-count=3` 取中位数）；方法与 commit 见该节，
+> 与 2026-11-16 的全量重跑**不是同一次测量**，两者的绝对值不可直接混用。
 > **Go Version**: go1.26.6
 > **OS/Arch**: Windows 11 家庭版 build 26300，windows/amd64
 > **CPU**: AMD Ryzen 9 7945HX with Radeon Graphics（32 threads）
@@ -30,7 +32,7 @@
 14. [Rollback](#14-rollback)
 15. [Key Metrics Summary](#key-metrics-summary)
 16. [Hotspots & Observations](#hotspots--observations)
-17. [Audit Seal 规模（Seal steady-state）](#17-audit-seal-规模seal-steady-state)
+17. [Audit Seal / Verify 规模（steady-state）](#17-audit-seal--verify-规模steady-state)
 18. [历史（v1.3.0 Phase 1+2）](#18-历史v130-phase-12)
 
 ---
@@ -353,9 +355,13 @@ CHANGELOG 的优化见 v1.x 系列的 release notes。
 
 ---
 
-## 17. Audit Seal 规模（Seal steady-state）
+## 17. Audit Seal / Verify 规模（steady-state）
 
 > 与 `docs/audit-chain-scale-design.md` §2 的规模观察同档测量，宿主 **非空载**（2026-11-16 本机）。
+> 17.1（Seal）测于 2026-11-16，17.2（Verify）测于 2026-11-17，**两条链是同一条**（全局 audit 链），
+> 所以两栏可以直接对照。
+
+### 17.1 Seal（写入侧：插入 + 封链）
 
 | 已封行数 | `AuditRecordSealsWholeChain`（插入+封链） | `AuditChainSealSteadyState`（仅封链） | 估算 seal 常数（µs/行） | B/op | allocs/op |
 | --- | --- | --- | --- | --- | --- |
@@ -373,6 +379,40 @@ CHANGELOG 的优化见 v1.x 系列的 release notes。
 > 100 000 行 Seal ≈ **3 829 114 ns/op**（3.8 s，139 MB/op，2.48M allocs/op）。
 > 该测量**不是空载**，偏高 ~4–10 倍；规模外推请以 §2（docs/audit-chain-scale-design.md）为准。
 > 本组不进入 CI 门控——CI 上跑这个只会测出 runner 的体型。
+
+### 17.2 Verify（读取侧：只读校验，全链重算）
+
+`AuditChainBuilder.Verify` 走一遍整条链并**重算每一行的摘要**（与 Seal 的修补分支不同，它
+是纯读路径）。这是审计员会问、投标附录会引的那个数。
+
+> **测量方法**：`go test ./internal/audit/ -run '^$' -bench 'BenchmarkAuditChainVerifySteadyState'
+> -benchmem -benchtime=20x -count=3`，**取 3 次中位数**（本文件末尾「使用注意」要求的口径）。
+> 测量 commit：`2daef09`（PR #402 的分支头，合并后 master 为 `9cd4a99`，被测文件内容一致）。
+> 宿主：2026-11-17 本机，**非严格空载**（另有 agent 会话），绝对值仅供相对比较。
+
+| 已封行数 | `AuditChainVerifySteadyState`（整链重算） | 估算 verify 常数（µs/行） | B/op | allocs/op |
+| --- | --- | --- | --- | --- |
+| 100 | 0.28 ms | 2.80 | 137 KB / 2 444 | 2 444 |
+| 1 000 | 2.51 ms | 2.51 | 1.36 MB / 24 096 | 24 096 |
+| 5 000 | 15.80 ms | 3.16 | 6.77 MB / 120 324 | 120 324 |
+| 25 000 | 149.6 ms | 5.98 | 33.9 MB / 603 274 | 603 274 |
+| 100 000 | **1.90 s** | 19.03 | 139 MB / 2 485 037 | 2 485 037 |
+
+三件事值得记下来：
+
+1. **Verify 比 Seal 便宜**，且便宜得合理：Seal 要写链（`UpdateAuditChain` 逐行落盘），
+   Verify 只读不写。5 000 行上 15.8 ms vs 26.3 ms，100 000 行上 1.90 s vs ≈3.8 s（Seal 那一格
+   是非空载测得，偏保守）。**审计校验不是写路径的瓶颈**。
+2. **每行成本随规模上升**（2.5 → 19.0 µs/行，10 万行比 1 千行高 7.6 倍）。哈希本身每行 O(1)，
+   所以这 7 倍不在摘要计算上——按常理应来自存储读取路径（索引扫描随表深度与缓存命中下降）
+   与分配压力，但本文件**不把它当已证实的结论**：需要归因时另做一次带 pprof 的测量。
+   可确认的**工程结论**只有一个：**10 万行的整链校验约 1.9 s**，这个量级要进设计取舍
+   （比如大链是否分片校验），而不是当作常数。
+3. **每行一次分配**（allocs/op ≈ 行数），1.36 MB/1 000 行、139 MB/100 000 行——与 Seal 同量级，
+   说明链的内存画像由「每行一份规范化载荷」主导，与写读无关。
+
+> 同 §17.1：**本组不进入 CI 门控**（CI 上跑这个只会测出 runner 的体型），**也不构成任何
+> 招投标门槛值**。对外引用须在干净宿主上按本文件末尾的口径复跑并登记机器型号。
 
 ---
 
