@@ -8,6 +8,14 @@
 
 > **发布状态：已切版。** 附注 tag `v1.26.1`（tag 对象 `149017f9990`，指向 master 提交 `700af73`）于 2026-11-17T07:01Z 推送，且是在该提交自己的 `master` push run 全绿之后才打的：run **27/27** 检查全 success（含聚合门 `check (all jobs passed)`）。`release.yml` 三段（CI gate / goreleaser / container image，run `44035539770`，07:01:40Z → 07:22:53Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `44035539890`（`head_branch=v1.26.1`，completed success）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-17T07:17:02Z`，资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.26.1` 按外部事实核过——`manifests/v1.26.1` 返回 **200**（同一次探测里 `v1.26.0` → 200、不存在的 `v1.26.99` → 404，证明探针有分辨力），index 内是 `linux/amd64` + `linux/arm64`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.26.1` / 逐字 `v1.26.1`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **10** 个小节 + 5 个依赖升级，主题分布与契约变更见 [`docs/release-notes/v1.26.1.md`](docs/release-notes/v1.26.1.md)。
 
+### 修复（`channel.ssh.auth_method` 的 `key+password` 通道侧一直实现、配置侧一直拒收）
+
+- **缺口**：`internal/channel/ssh` 的 `buildAuthMethods` 从一开始就实现 `"key+password"` / `"password+key"`（先试 key，失败再退 password——它自己的注释说这是给「目标机两种认证都收」的场合），而 `internal/config` 的校验只收 `key` / `password`。两张词表、两个 owner、没有任何东西比对。后果不是崩溃，而是**一条能力从配置路径完全不可达**：目标机两种都收时，操作员只能二选一赌一个；而因为不可达，这条分支也**从未被执行过**——看起来是特性，实际是死代码。
+- **修法**：`internal/config` 接受集合改为 `key` / `password` / `key+password` / `password+key`；`key_path` 仅在 **纯 key** 时必填（`key+password` 下 key 是「一次尝试」而非方法本身，凭据只带密码会退化成 password，强制要 key 恰好让最需要它的部署用不了）；错误信息里的词表改由 `config.SSHAuthMethods()` 渲染，不再把候选值手抄在字符串里。
+- **守卫（防再次漂移）**：`internal/channel/ssh/config_vocabulary_test.go` 双向钉住——配置接受的必须覆盖通道实现的（否则＝不可达），配置接受的通通道必须能 dispatch（否则＝把 typo 变成连接期运行时错误）。探针在测试里生成一把一次性 ed25519 密钥：`buildAuthMethods` 对每个带 key 的方法都会**读私钥文件**，指向不存在的路径会让探针把 key 类方法判成「未实现」——那是个证明错事的守卫，比没有更糟。**变异实测**：把配置接受集合埋回旧的两种，守卫立即红并逐条点名 `key+password` / `password+key`。
+- **顺带查清一件一直含糊的事**：`key_path is required when auth_method=key` 这条校验**在 `Load()` 路径上永远不会触发**——`channel.ssh.key_path` 有默认值 `~/.ssh/id_rsa`，且加载时会被展开成绝对路径。所以「用户在配置里漏写 key_path 时会被拦住」是误读，真实行为是**静默采纳默认值、零提示**。规则本身对**手工构造的 Config**（SDK / 测试 / 其它入口）仍有效，保留；但现在有两例测试分别钉住这两条路径的真实行为，不再让后人误读它的保护范围。
+- **验证**：`internal/config` 3 例（四种 auth_method 逐个加载+校验通过 / `key+password` 不要求 key_path / 手工 Config 缺 key_path 被拒）+ `internal/channel/ssh` 2 例（双向守卫）；`go build ./...`、`go test ./internal/config/ ./internal/channel/ssh/` 全绿；golangci-lint 0 issues。文档（虚机/裸机 drill）同步为新的四种取值与默认值口径。
+
 ### 修复（每日复现探针从未定时跑过：`inputs` 上下文在 schedule 事件为空，两个 job 静默 skipped）
 
 - **缺口**：探针的 job 条件写的是 `if: ${{ inputs.calendar != false }}`——对 `workflow_dispatch` 完全正确，但 **`inputs` 上下文只对 dispatch/call 事件填充**。`schedule` 事件上它不被填充，引用它让整个表达式求值为非真，于是**两个 job 一起被 skip**：这个工作流史上唯一一次定时触发（2026-11-16 11:11Z，head `380e199`）就是两个 job 全 skipped，**每日探针一次都没跑起来过**。而台账与路线图已经写着「有一条每日探针在盯」——那句话当时不是真的。**一个不跑的探针比没有探针更糟**，因为它让「有防护」变成了书面承诺。

@@ -591,7 +591,81 @@ channel:
 	assert.Equal(t, "json", cfg.Log.Format)
 }
 
-// SA-019: state.sqlite_synchronous default, override and validation.
+func TestLoad_SSHAuthMethodKeyPlusPassword(t *testing.T) {
+	// The channel has always implemented "try the key, then fall back to the
+	// password"; the config validator refused it, so the mode was unreachable
+	// (and never exercised). internal/channel/ssh/config_vocabulary_test.go now
+	// pins the two vocabularies together; this one pins the config side.
+	for _, method := range SSHAuthMethods() {
+		p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+channel:
+  ssh:
+    auth_method: `+method+`
+`)
+		cfg, err := Load(p)
+		require.NoErrorf(t, err, "auth_method %q must load", method)
+		assert.Equalf(t, method, cfg.Channel.SSH.AuthMethod, "auth_method %q did not round-trip", method)
+		assert.Emptyf(t, Validate(cfg), "auth_method %q must validate", method)
+	}
+}
+
+func TestLoad_KeyPathNotRequiredForKeyPlusPassword(t *testing.T) {
+	// key_path is required only when the key IS the method. For key+password a
+	// credential carrying only a password degrades to password, which is the
+	// point of the mode — demanding a key would unusable it for the deployment
+	// that needs it.
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+channel:
+  ssh:
+    auth_method: key+password
+`)
+	cfg, err := Load(p)
+	require.NoError(t, err)
+	assert.Empty(t, Validate(cfg),
+		"key_path must not be required for key+password (the key is an attempt, not the method)")
+}
+
+func TestLoad_KeyPathDefaultsForBareKeySoTheRuleCannotFire(t *testing.T) {
+	// 这条测试的名字就是说清一件事：`key_path is required when auth_method=key`
+	// 这条校验**在 Load() 路径上永远不会触发**——`channel.ssh.key_path` 有默认值
+	// `~/.ssh/id_rsa`（setDefaults），所以从文件加载出来的 Config 必然非空。
+	//
+	// 这不是把它删掉的理由：Validate 是导出函数，手工构造的 Config（SDK、测试、
+	// 其它入口）仍会走到它。但把它当成「用户在配置里漏写 key_path 时会被拦住」
+	// 是误读——真实行为是**静默采纳默认值**。这里把这件事实钉住，免得后人
+	// 误以为这条规则在保护配置文件。
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+channel:
+  ssh:
+    auth_method: key
+`)
+	cfg, err := Load(p)
+	require.NoError(t, err)
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".ssh/id_rsa"), cfg.Channel.SSH.KeyPath,
+		"Load silently supplies the default AND expands the ~ — an operator who omits key_path gets no warning")
+	require.NoError(t, Validate(cfg),
+		"through Load the rule cannot fire, because the default already filled key_path")
+}
+
+func TestValidate_KeyPathRequiredForAnInMemoryConfig(t *testing.T) {
+	// The path where the rule DOES fire: a Config built in code with auth_method
+	// key and no key_path. Pinned so the guard is known to be live on that side.
+	err := Validate(&Config{
+		Server:   ServerConfig{DataDir: "/tmp/levee-test"},
+		Database: DatabaseConfig{Driver: "sqlite", Path: "/tmp/levee-test/x.db"},
+		Channel:  ChannelConfig{SSH: SSHConfig{Port: 22, AuthMethod: "key"}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key_path is required",
+		"an in-memory Config that claims key auth with no key must be refused here rather than at dial time")
+}
+
+// SA-019: state.sqlite_synchronous default, override and validation.// SA-019: state.sqlite_synchronous default, override and validation.
 
 func TestLoad_StateSQLiteSynchronousDefault(t *testing.T) {
 	p := writeYAML(t, `server:

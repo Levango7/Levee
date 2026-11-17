@@ -99,7 +99,7 @@ sha256sum levee
    ```
    > **踩过的坑**：只填裸密码会让 `CredentialRef.Username` 为空，认证直接失败——username 必须在 JSON 里。
    > 凭据库是加密的：`secret add` 与 serve 解析凭据都要 `LEVEE_MASTER_PASSWORD`，**不设置则第一步就失败**。
-   > `channel.ssh.auth_method` 只接受 `key`/`password`（`internal/config` 的校验）；选 `key` 时 `key_path` 必填。
+   > `channel.ssh.auth_method` 接受 `key` / `password` / `key+password` / `password+key`（前两者是唯一通行，后两者先试 key 再退 password——目标机两种都收时用）。选 `key` 时 `key_path` 必填；`key+password` **不**要求（凭据只带密码时会退化成 password）。配置若**完全不写** `key_path`，它会静默取默认 `~/.ssh/id_rsa` 并展开成绝对路径——不给任何提示，这一点由 `internal/config` 的测试钉住。
    > `strict_host_check` 默认 **true**，所以 `known_hosts` 要先用 `ssh-keyscan` 准备好，否则必然连不上。
 4. **起一条变更**：`template create` → `new` → `plan`（`levee plan <run> --targets <ip>`）。
 5. **带引擎起服务**（回滚靠它）：

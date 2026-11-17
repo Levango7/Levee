@@ -574,6 +574,25 @@ func Load(path string) (*Config, error) {
 // struct tags: required fields, value ranges, enum membership, etc.
 // It returns nil when the configuration is valid, or an error whose
 // message lists every violation found (joined by '; ').
+// sshAuthMethods lists the SSH auth methods this package accepts. It is the
+// single source of truth for the accepted vocabulary: the error message and
+// every test that walks the accepted set read it from here, so adding a method
+// needs one edit rather than three that can disagree.
+//
+// WHY it exists: the config used to spell the accepted set inside a switch's
+// message string ("must be key|password") while the channel implemented a
+// fourth value. Nothing compared the two, so a capability the channel had was
+// unreachable through configuration, and no test noticed because nothing
+// enumerated what the config accepts.
+//
+// Exported because the drift guard lives in internal/channel/ssh (the side that
+// IMPLEMENTS the vocabulary): internal/channel/ssh/config_vocabulary_test.go
+// reads this and fails when a method exists there that is absent here. internal/config
+// must not import the channel — the guard has to point the other way.
+func SSHAuthMethods() []string {
+	return []string{"key", "password", "key+password", "password+key"}
+}
+
 func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: validates 30+ fields with distinct rules per type
 	var problems []string
 
@@ -674,11 +693,26 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	if cfg.Channel.SSH.Port <= 0 || cfg.Channel.SSH.Port > 65535 {
 		problems = append(problems, "channel.ssh.port must be in 1..65535")
 	}
+	// The accepted set is exactly what internal/channel/ssh's buildAuthMethods
+	// implements — see sshAuthMethods() below and the guard in
+	// internal/channel/ssh that fails if these two drift apart. Before this
+	// change the config allowed key|password while the channel also implemented
+	// "key+password" / "password+key" (try the key first, fall back to the
+	// password), so a mode that EXISTS in the channel was unreachable through
+	// configuration: an operator whose hosts accept either had to pick one and
+	// hope.
 	switch cfg.Channel.SSH.AuthMethod {
-	case "key", "password":
+	case "key", "password", "key+password", "password+key":
 	default:
-		problems = append(problems, fmt.Sprintf("channel.ssh.auth_method %q must be key|password", cfg.Channel.SSH.AuthMethod))
+		problems = append(problems, fmt.Sprintf(
+			"channel.ssh.auth_method %q must be one of %s", cfg.Channel.SSH.AuthMethod,
+			strings.Join(SSHAuthMethods(), " | ")))
 	}
+	// key_path is required only when the KEY is the sole method. For
+	// key+password the key is an attempt, not the method: a credential that
+	// carries only a password degrades to password, which is the point of the
+	// mode — demanding a key path would make it unusable for exactly the
+	// deployment that needs it.
 	if cfg.Channel.SSH.AuthMethod == "key" && cfg.Channel.SSH.KeyPath == "" {
 		problems = append(problems, "channel.ssh.key_path is required when auth_method=key")
 	}
