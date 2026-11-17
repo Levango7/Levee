@@ -4,13 +4,9 @@
 
 ## [Unreleased]
 
-### 发布（v1.26.1：契约与诚实性收口——见 docs/release-notes/v1.26.1.md）
+## [v1.26.1] - 2026-11-17
 
-- **范围**：`v1.26.0..master` 27 个提交、21 个已合并 PR（#380–#404）、CHANGELOG 10 个小节，另加 5 个依赖升级。
-- **主线**：四条「对外说一套、实际另一套」的路径收口成单一事实源——审计链校验统一到 `/audit/verify` 一个校验器；`plan`/`apply` 的拒绝按 400/412 分类；SQL 审核对 DDL「半读」不再拿半个语句下结论；`pg.query` 的 SQL 从未被审核这个洞堵上。
-- **实时面**：SSE 从 `EventSource`（**无法带 Authorization 头**，控制台实时面板在开了鉴权的服务端上原本是死的）改为 `fetch` + Bearer + 按事件名分派。
-- **新增**：信创裸机取证脚本化、静态影响面、LE108 不可逆补偿点名。
-- **状态**：**未切版**——tag 未打、chart 版本未升、镜像未构建。发布说明里已按仓库既有形态写明切版时要补的四步。
+> **发布状态：已切版。** 附注 tag `v1.26.1`（tag 对象 `149017f9990`，指向 master 提交 `700af73`）于 2026-11-17T07:01Z 推送，且是在该提交自己的 `master` push run 全绿之后才打的：run **27/27** 检查全 success（含聚合门 `check (all jobs passed)`）。`release.yml` 三段（CI gate / goreleaser / container image，run `44035539770`，07:01:40Z → 07:22:53Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `44035539890`（`head_branch=v1.26.1`，completed success）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-17T07:17:02Z`，资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.26.1` 按外部事实核过——`manifests/v1.26.1` 返回 **200**（同一次探测里 `v1.26.0` → 200、不存在的 `v1.26.99` → 404，证明探针有分辨力），index 内是 `linux/amd64` + `linux/arm64`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.26.1` / 逐字 `v1.26.1`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **10** 个小节 + 5 个依赖升级，主题分布与契约变更见 [`docs/release-notes/v1.26.1.md`](docs/release-notes/v1.26.1.md)。
 
 ### 修复（审计链校验只有一个口径：trace 端点改用 /audit/verify 的同一个校验器）
 
