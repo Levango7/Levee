@@ -21,12 +21,31 @@ package audit
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/nexus/levee/internal/state"
 )
+
+// benchChainSizes returns the chain sizes the seal benchmarks walk.
+//
+// The two large sizes are opt-in (LEVEE_BENCH_EXTENDED=1) because the CI
+// benchmark smoke runs every benchmark once with a 300 s package timeout, and
+// seeding 100k audit rows costs about 25 s of runner time per benchmark. The
+// CI leg is a liveness gate, not a measurement; the large sizes are for the
+// local numbers quoted in docs/benchmark-report.md.
+//
+//	go test -run '^$' -bench 'AuditChainSeal|AuditRecordSeals' -benchmem \
+//	    -benchtime 20x -count=3 ./internal/audit/
+func benchChainSizes() []int {
+	sizes := []int{100, 1000, 5000}
+	if os.Getenv("LEVEE_BENCH_EXTENDED") == "1" {
+		sizes = append(sizes, 25000, 100000)
+	}
+	return sizes
+}
 
 // seedAuditRows inserts n audit rows with strictly increasing timestamps and
 // returns the store. Rows are inserted WITHOUT sealing, so the caller decides
@@ -77,7 +96,7 @@ func newWriteAudit(i int) *state.Audit {
 // stops being roughly linear in rows, the note that says "sealing still walks
 // every visible row" is stale and the design doc's decision needs revisiting.
 func BenchmarkAuditRecordSealsWholeChain(b *testing.B) {
-	for _, rows := range []int{100, 1000, 5000} {
+	for _, rows := range benchChainSizes() {
 		b.Run(fmt.Sprintf("sealed_rows=%d", rows), func(b *testing.B) {
 			store := seedAuditRows(b, rows)
 			ctx := context.Background()
@@ -113,7 +132,7 @@ func BenchmarkAuditRecordSealsWholeChain(b *testing.B) {
 // Seals a chain that is already sealed, which is exactly what every Record
 // after the first one on a quiet system pays.
 func BenchmarkAuditChainSealSteadyState(b *testing.B) {
-	for _, rows := range []int{100, 1000, 5000} {
+	for _, rows := range benchChainSizes() {
 		b.Run(fmt.Sprintf("sealed_rows=%d", rows), func(b *testing.B) {
 			store := seedAuditRows(b, rows)
 			ctx := context.Background()
