@@ -1771,34 +1771,7 @@ func (s *SQLiteStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Au
 // (timestamp, id), starting strictly after the cursor. See Store for why the
 // chain gets its own read instead of a ListAudits filter.
 func (s *SQLiteStore) ListAuditChainPage(ctx context.Context, after *AuditCursor, limit int, tenantID string) ([]*Audit, error) {
-	var (
-		clauses []string
-		args    []any
-	)
-	// Keyset predicate. Written as an explicit OR rather than a row-value
-	// comparison so it works on the SQLite builds this project supports, and so
-	// the two backends read the same way. The timestamp is bound twice: once
-	// for the "strictly newer" arm and once for the tie arm.
-	if after != nil {
-		clauses = append(clauses, "(timestamp > ? OR (timestamp = ? AND id > ?))")
-		args = append(args, after.Timestamp, after.Timestamp, after.ID)
-	}
-	// Tenant predicate appended last, matching the arg/clause order convention
-	// the other list queries use.
-	if tenantID != "" {
-		clauses = append(clauses, "tenant_id = ?")
-		args = append(args, tenantID)
-	}
-	if limit <= 0 {
-		limit = DefaultAuditChainPageSize
-	}
-	args = append(args, limit)
-
-	q := `SELECT id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash FROM audit`
-	if len(clauses) > 0 {
-		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
-	}
-	q += " ORDER BY timestamp ASC, id ASC LIMIT ?"
+	q, args := auditChainPageSQL(after, limit, tenantID)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -1818,4 +1791,64 @@ func (s *SQLiteStore) ListAuditChainPage(ctx context.Context, after *AuditCursor
 		return nil, fmt.Errorf("state: list audit chain page rows: %w", err)
 	}
 	return out, nil
+}
+
+// auditChainPageSQL builds the paged chain read for SQLite.
+//
+// The keyset predicate is a ROW-VALUE comparison — (timestamp, id) > (?, ?) —
+// and that spelling is load-bearing, not a style choice.
+//
+// The obvious alternative, the expanded OR form
+//
+//	(timestamp > ? OR (timestamp = ? AND id > ?))
+//
+// is semantically identical (SQLite compares row values lexicographically,
+// column by column, under the same affinity rules as the OR form) but it
+// cannot be used as an INDEX RANGE SEEK: SQLite cannot turn an OR into a
+// range, so it satisfied the predicate as a FILTER over a full index scan.
+// And because it was a full scan, EVERY page restarted at the leftmost key.
+//
+// Measured on a 100k-row chain (2026-11-17, this file's own benchmark):
+// the per-page cost grew from 2 ms on the first page to 36 ms on the last
+// one, and the whole walk took 1.94 s — 19.4 us/row, against a digest that
+// costs about 1 us/row. The chain walk was quadratic in the number of rows,
+// and the quadratic showed up as "the per-row cost grows with chain size",
+// which is exactly the symptom the benchmark report could not explain.
+//
+// With the row-value form the plan becomes
+//
+//	SEARCH audit USING INDEX idx_audit_chain ((timestamp,id)>(?,?))
+//
+// and the same 100k-row walk takes 235 ms (2.35 us/row).
+//
+// Row values need SQLite >= 3.15 (2016). This project ships one driver,
+// modernc.org/sqlite, which embeds SQLite 3.54.1.
+func auditChainPageSQL(after *AuditCursor, limit int, tenantID string) (string, []any) {
+	var (
+		clauses []string
+		args    []any
+	)
+	// Keyset predicate. The timestamp and the id are compared as ONE row, so
+	// the pair can be used as a seek key on idx_audit_chain (timestamp, id).
+	if after != nil {
+		clauses = append(clauses, "(timestamp, id) > (?, ?)")
+		args = append(args, after.Timestamp, after.ID)
+	}
+	// Tenant predicate appended last, matching the arg/clause order convention
+	// the other list queries use.
+	if tenantID != "" {
+		clauses = append(clauses, "tenant_id = ?")
+		args = append(args, tenantID)
+	}
+	if limit <= 0 {
+		limit = DefaultAuditChainPageSize
+	}
+	args = append(args, limit)
+
+	q := `SELECT id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash FROM audit`
+	if len(clauses) > 0 {
+		q += " WHERE " + strings.Join(clauses, " AND ") // #nosec G202 -- clause fragments are static; all values bind via placeholders
+	}
+	q += " ORDER BY timestamp ASC, id ASC LIMIT ?"
+	return q, args
 }

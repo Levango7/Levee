@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 修复（审计链分页的 keyset 谓词退化成 O(N²)：10 万行整链校验 1.90 s → 0.29 s）
+
+- **症状**：`AuditChainBuilder.Verify` / `Seal` 走读整条链时，**每行成本随链长爬升**（2.80 → 19.03 µs/行，10 万行比 1 千行高 7.6 倍），而摘要计算本身每行约 1 µs。`docs/benchmark-report.md` §17.2 此前如实写着「按常理应来自存储读取路径与分配压力，**但本文件不把它当已证实的结论**」。2026-11-17 做归因实测：**它不是一个「常理」，它是一个具体的 bug**。
+- **根因**：keyset 分页谓词写成了 OR 形式 `(timestamp > ? OR (timestamp = ? AND id > ?))`。**SQLite 不能把 OR 用作索引区间**（OR 的两臂各自可走索引，合起来不是一条区间），于是该谓词变成施加在**全索引扫描**上的过滤条件；而全扫描意味着**每一页都从最左端重来**——整链走读的总量是 **O(N²)**。
+- **证据链**（每一步可复现）：① 逐页耗时随页号**线性增长**（第 0 页 2 ms → 第 50 页 20 ms → 第 90 页 36 ms）；② 修复前后 `EXPLAIN QUERY PLAN` **都是** `SCAN audit USING INDEX idx_audit_chain`——带游标的那条**没有变成区间定位**；③ 显式 `runtime/pprof` 剖析（排除播种与封链，否则归因会被写路径污染）显示 `ListAuditChainPage` cum 86.53%、`_sqlite3VdbeExec` 82%、`_applyNumericAffinity` 34.41%、`_sqlite3AtoF` 24.45%、`_moveToLeftmost` 1.58 s；④ **同进程 A/B**（同一份数据、同一时刻）：OR 形式 1.937 s（19.37 µs/行）→ row-value 形式 **235 ms（2.35 µs/行）**，8.2×。
+- **修法**：谓词改为 **row-value 比较** `(timestamp, id) > (?, ?)`——SQLite 能把它用作 `idx_audit_chain (timestamp, id)` 上的区间定位，计划变成 `SEARCH audit USING INDEX idx_audit_chain ((timestamp,id)>(?,?))`；PostgreSQL 侧同形改写（它的 planner 本来就能用 OR 的两臂走索引，不是二次方，但**两个后端读链的方式一致**这件事本身值得守住）。**语义等价性**：SQLite 的行值比较按列字典序、同一套 affinity 规则，与 OR 形式逐页对账一致。**不改 proto、不改表结构、不改链的语义**（`Seal`/`Verify`/`Record`/`Rebuild` 的行为逐字未动）。
+- **修复后的形状（这才是成果，不是某一个数）**：**每行成本持平**——2.71 µs/行（100 行）→ 2.94 µs/行（100 000 行），此前是 2.80 → 19.03 µs/行；100 000 行整链校验 **1.90 s → 293.8 ms（6.5×）**（16 个样本 0.284–0.393 s，中位数 0.296 s；表内取样本最多的那一轮）；分配数 2 485 037 → 2 412 709（OR 形式把「扫过又丢掉」的行也分配了出来）。
+- **守卫**：新增 `internal/state/audit_chain_plan_test.go`，断言的是**计划形状**（必须是 `SEARCH`、不许 `SCAN audit`）而**不是结果**——两种谓词返回同一批行，只断言结果的测试**永远抓不到这个退化**；另钉 **row-value ≡ OR 的逐页对账**（语义没变）与**参数记账**（OR 形式绑两次时间戳，row-value 绑一次＋id，绑错是运行时错误且只在第二页起才暴露，单页链上看不出来）。PostgreSQL 侧同一条（`LEVEE_PG_TEST_DSN` 门控，CI 的 postgres 腿跑；测试先把表灌到 2 000 行并 `ANALYZE`，免得守卫测的是空表的计划形状）。**变异实测**：把谓词改回 OR 形式，plan 守卫与参数记账守卫**双双转红**。
+- **写路径同源**：`Record`/`Seal` 走的是同一条走读路径，因此同享修复。10 万行时**单条插入 < 1 ms**——**写路径的成本就是那次全链走读**（此前跨轮测出的「Record 是 Seal 的两倍」是宿主漂移，不是算法差异；同进程交错计时下 Seal 276 ms / Record 275 ms）。
+- **未做（已量化，不在这一笔里冒进）**：`audit.timestamp` 声明为 `DATETIME`，而 **SQLite 里 DATETIME 的 affinity 是 NUMERIC**，列里存的是 RFC3339 文本，于是每行白付一次「文本→浮点」转换尝试。改成 TEXT affinity 还有 **1.4×**（235 → 166 ms），但代价是**重建 audit 表**（连带 WORM 触发器与迁移路径）——**交换不划算，本笔不做**；方案、代价与重新立项的触发条件写在 `docs/audit-chain-scale-design.md` §8.6。
+- **验证**：`go test ./internal/state/... ./internal/audit/ -count=1` 全绿（PG 侧本机无 DSN 走 skip，CI 的 postgres 腿实跑）；`golangci-lint` 0 issues；基准复测（`-benchtime=20x -count=3` 取中位数，宿主非空载，**绝对值仅供相对比较**）见 `docs/benchmark-report.md` §17。大规格（25 000 / 100 000 行）改为 `LEVEE_BENCH_EXTENDED=1` 门控——CI 的 benchmark 腿是 `-benchtime=1x` 的**存活门**，播种 10 万行在 runner 上要 ~25 s。
+- **边界**：这是**读路径**的性能修复，**不改变链的保证强度、不改变任何安全姿态**（WORM 触发器、Seal 的逐行判定、fail-closed 语义全部未动）；本组数字**不进入 CI 门控**，**也不构成任何招投标门槛值**。
+
 ## [v1.26.1] - 2026-11-17
 
 > **发布状态：已切版。** 附注 tag `v1.26.1`（tag 对象 `149017f9990`，指向 master 提交 `700af73`）于 2026-11-17T07:01Z 推送，且是在该提交自己的 `master` push run 全绿之后才打的：run **27/27** 检查全 success（含聚合门 `check (all jobs passed)`）。`release.yml` 三段（CI gate / goreleaser / container image，run `44035539770`，07:01:40Z → 07:22:53Z）全部 success：第一段等的是 **tag push 自己触发的** `ci.yml` run `44035539890`（`head_branch=v1.26.1`，completed success）——`require_ci_release.py` 明确不接受同一提交在分支上已经绿的那个 run，只认这个 tag ref 的；GitHub Release `draft=false`、`isPrerelease=false`、`publishedAt=2026-11-17T07:17:02Z`，资产 **7** 个（6 个平台包 + `checksums.txt`）；镜像 `ghcr.io/levango7/levee:v1.26.1` 按外部事实核过——`manifests/v1.26.1` 返回 **200**（同一次探测里 `v1.26.0` → 200、不存在的 `v1.26.99` → 404，证明探针有分辨力），index 内是 `linux/amd64` + `linux/arm64`。chart 的 `appVersion` 与 `values.image.tag` 随这一笔升到 `1.26.1` / 逐字 `v1.26.1`（顺序不能反：规则②要求它逐字出现在远端 tag 集合里）。本节共 **10** 个小节 + 5 个依赖升级，主题分布与契约变更见 [`docs/release-notes/v1.26.1.md`](docs/release-notes/v1.26.1.md)。
@@ -24,7 +37,7 @@
 - **验证**：`scripts/test_repro_probe.py` 14 例全绿；actionlint 对新工作流零告警；并已手动触发一次 dispatch 验证流水线仍能端到端跑通（探针脚本本身在本机与真实 Windows runner 上都实跑过）。
 - **边界**：schedule 路径无法用 dispatch 复现，所以本文钉的是**表达式形状**；下一次真实 cron 触发（GitHub 定时可延迟数小时，属已知平台行为）应作为最终确认——已列为待观察项。
 
-### 修复（审计链校验只有一个口径### 修复（审计链校验只有一个口径：trace 端点改用 /audit/verify 的同一个校验器）
+### 修复（审计链校验只有一个口径：trace 端点改用 /audit/verify 的同一个校验器）
 
 - **缺口**：链校验此前有**两个口径**，而控制台用的是弱的那个。`GET /audit/verify` 走 `audit.ChainVerifier.Verify`——**全量重算**每条记录的摘要再比对；`GET /changes/:id/trace?verify=true`（控制台的「生命周期与证据链」）此前只比 `PrevHash`/`CurrHash` 的**连续性**——**不重算摘要**。后果：一条**内容被改写、但哈希没跟着重算**的链，在控制台上读作「哈希链完整」，在 `/audit/verify` 上读作「已篡改」。同一条链，两个答案，而乐观的那个正好在操作员眼前。
 - **修法**：① `internal/audit/verify.go` 抽出导出 `VerifyTraces(runID, traces)`，成为 `ChainVerifier.Verify` 的**共同实现**（校验器是只读的——它不能修链，断了就是证据，所以两个端点对同一条链必然给出同一个答案）；② `internal/grpc/change_service.go` 删除弱校验 `verifyHashChain`，改用 `audit.VerifyTraces`；③ 校验消息改为**四个稳定前缀的契约**：`hash chain valid: …` / `hash chain not sealed yet: …` / `hash chain broken: …` / `no traces to verify`。**未封口仍判 `valid=false`（fail closed）**——被清空的哈希绝不能读作「没事」——但它用 `not sealed yet` 与篡改分开：生产链在 run 终态时才封口，运行中的变更本来就有未封口的尾巴，让操作员去追一个不存在的攻击者是误报；④ 新增 REST-only 端点 `GET /audit/chain-mode` 报当前部署的摘要口径（`keyed`/`unkeyed`、`HMAC-SHA256`/`SHA-256`、`keyed`），**不改 proto**（CI 钉 protoc v27.0，改 proto 得不偿失）。

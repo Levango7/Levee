@@ -1693,38 +1693,7 @@ func (s *PGStore) ListAudits(ctx context.Context, filter AuditFilter) ([]*Audit,
 // (timestamp, id), starting strictly after the cursor. See Store for why the
 // chain gets its own read instead of a ListAudits filter.
 func (s *PGStore) ListAuditChainPage(ctx context.Context, after *AuditCursor, limit int, tenantID string) ([]*Audit, error) {
-	var (
-		clauses []string
-		args    []any
-	)
-	// Keyset predicate, same shape as the SQLite side. The cursor timestamp is
-	// bound once and referenced twice — PostgreSQL compares TIMESTAMPTZ values,
-	// so unlike SQLite this keeps sub-second precision and does not round.
-	if after != nil {
-		args = append(args, after.Timestamp)
-		ts := len(args)
-		args = append(args, after.ID)
-		clauses = append(clauses, fmt.Sprintf(
-			"(timestamp > $%d OR (timestamp = $%d AND id > $%d))", ts, ts, len(args)))
-	}
-	// Tenant predicate appended last, matching the arg/clause order convention
-	// the other list queries use.
-	if tenantID != "" {
-		args = append(args, tenantID)
-		clauses = append(clauses, fmt.Sprintf("tenant_id = $%d", len(args)))
-	}
-	if limit <= 0 {
-		limit = DefaultAuditChainPageSize
-	}
-	args = append(args, limit)
-
-	q := `SELECT id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash FROM audit`
-	if len(clauses) > 0 {
-		// Joined, not run through pgJoinPlaceholders: that helper renumbers one
-		// placeholder per clause, and the keyset predicate binds three.
-		q += " WHERE " + strings.Join(clauses, " AND ")
-	}
-	q += fmt.Sprintf(" ORDER BY timestamp ASC, id ASC LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
+	q, args := pgAuditChainPageSQL(after, limit, tenantID)
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -1744,4 +1713,57 @@ func (s *PGStore) ListAuditChainPage(ctx context.Context, after *AuditCursor, li
 		return nil, fmt.Errorf("state: list audit chain page rows: %w", err)
 	}
 	return out, nil
+}
+
+// pgAuditChainPageSQL builds the paged chain read for PostgreSQL.
+//
+// The keyset predicate is a ROW-VALUE comparison — (timestamp, id) > ($1, $2) —
+// which is the same shape the SQLite side uses, so both backends read the
+// chain the same way.
+//
+// PostgreSQL compares row values lexicographically, column by column, exactly
+// like the expanded OR form (timestamp > $1 OR (timestamp = $1 AND id > $2)),
+// so the two spellings answer the same question; the row-value form is the
+// one a planner can use as a single index range on idx_audit_chain.
+//
+// On SQLite this spelling was not a preference but a fix: the OR form could
+// not be used as a range seek, so every page re-scanned the index from the
+// leftmost and the chain walk was quadratic (measured 2026-11-17 on a 100k-row
+// chain: 1.94 s -> 235 ms, 19.4 us/row -> 2.35 us/row). PostgreSQL's planner
+// can already use the index for each arm of the OR, so it was not quadratic —
+// but the two backends reading the chain differently is exactly the kind of
+// drift this project's own tests exist to catch, and the plan shape is now
+// asserted on both sides.
+func pgAuditChainPageSQL(after *AuditCursor, limit int, tenantID string) (string, []any) {
+	var (
+		clauses []string
+		args    []any
+	)
+	// Keyset predicate. PostgreSQL compares TIMESTAMPTZ values, so unlike
+	// SQLite this keeps sub-second precision and does not round.
+	if after != nil {
+		args = append(args, after.Timestamp)
+		ts := len(args)
+		args = append(args, after.ID)
+		clauses = append(clauses, fmt.Sprintf("(timestamp, id) > ($%d, $%d)", ts, len(args)))
+	}
+	// Tenant predicate appended last, matching the arg/clause order convention
+	// the other list queries use.
+	if tenantID != "" {
+		args = append(args, tenantID)
+		clauses = append(clauses, fmt.Sprintf("tenant_id = $%d", len(args)))
+	}
+	if limit <= 0 {
+		limit = DefaultAuditChainPageSize
+	}
+	args = append(args, limit)
+
+	q := `SELECT id, run_id, action, actor, target, result, timestamp, tenant_id, prev_hash, curr_hash FROM audit`
+	if len(clauses) > 0 {
+		// Joined, not run through pgJoinPlaceholders: that helper renumbers one
+		// placeholder per clause, and the keyset predicate binds two.
+		q += " WHERE " + strings.Join(clauses, " AND ")
+	}
+	q += fmt.Sprintf(" ORDER BY timestamp ASC, id ASC LIMIT $%d", len(args)) // #nosec G202 -- placeholder index computed from bound args; no value inlined
+	return q, args
 }
