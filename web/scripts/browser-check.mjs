@@ -545,6 +545,35 @@ console.log('\n[1b] the alert stream feeds the header badge — SSE, not a reque
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[1c] the chain panel says WHICH chain, and WHICH digest')
+{
+  const page = await newPage(browser)
+  await open(page, '/changes/run-1000')
+  // The evidence panel is found BY ITS HEADING, not by ".lv-panel": the detail
+  // page has several panels and querySelector would have handed us the first
+  // one (the change's own fields), which says nothing about the chain.
+  const panel = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('.lv-panel')].find((p) =>
+      (p.querySelector('h3')?.textContent || '').includes('生命周期与证据链'),
+    )
+    return (el?.textContent || '').trim()
+  })
+  // The verdict comes off the message PREFIX the server guarantees
+  // (docs/levee-api.md §13.2c). The mock sends "hash chain valid: …", so the
+  // console must read "哈希链完整" — a page that fell back to its own wording
+  // would still pass the unit tests, and only this check would notice.
+  check('the chain verdict reads the server prefix', panel.includes('哈希链完整'), `panel="${panel.slice(0, 200)}"`)
+  // …and the digest mode has to be NAMED: the same label means a weaker
+  // guarantee on an unkeyed deployment (anyone who can write to the store can
+  // recompute the whole chain). The mock answers unkeyed on purpose.
+  check('the digest mode is named', panel.includes('无口令摘要'), `panel="${panel.slice(0, 200)}"`)
+  check('the algorithm is named', panel.includes('SHA-256'), `panel="${panel.slice(0, 200)}"`)
+  // …and the weaker guarantee has to be stated, not just implied by a tag.
+  check('the unkeyed caveat reaches the reader', panel.includes('未配置审计口令'), `panel="${panel.slice(0, 200)}"`)
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 {
   const page = await newPage(browser)
