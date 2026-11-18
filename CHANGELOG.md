@@ -17,6 +17,15 @@
 - **验证**：`go test ./internal/chatops/ ./internal/config/ ./cmd/levee/` 全绿；`golangci-lint` 0 issues；`scripts/test_changelog_structure.py`、`scripts/check_doc_anchors.py` 等文档守卫 PASSED。
 - **边界**：本笔**只统一词表**，不改任何适配器的行为（签名、投递、重试、卡片渲染一律未动），不改 `identity_map` 的语义（它按**规范平台**分组，现在别名与规范名落在同一张表里，行为反而更自洽）；CLI 的 `--platform` **接受范围没有变**（本来就收别名），只是把「配置也能收」这件事补齐；平台名的大小写/空格容错沿用 CLI 既有行为，配置侧与之一致（所以 `Feishu` / `" feishu "` 在配置里也认）。
 
+
+### 文档（通道配置面与传输层脱节：13 个字段里只有 4 个真的接进通道，其余只校验不生效）
+
+- **缺口（2026-11-18 普查实测）**：`channel.ssh` 与 `channel.winrm` 两节共 **13 个字段**，在配置加载时**全部被校验**——写错会在启动时得到一条指名道姓的报错，读起来像个「配了就会生效」的设置。但其中**只有 4 个真的接进通道**（`strict_host_check` / `known_hosts` / `become_method` / `become_user`，由 `cmd/levee/cmd_serve.go` 经 `sshchannel.SetDefaultConfig` 转交）。其余 **9 个只校验不生效，且零提示**：`channel.ssh.auth_method`（通道自己的 `Config.AuthMethod` 在生产路径上恒为空，`buildAuthMethods` 改为**按凭据推断**）、`key_path`（密钥路径来自解析后的凭据 `CredentialRef.KeyPath`）、`port`（端口来自 `Target.Port()`）、`connect_timeout`（通道用自带 30s 默认，配置默认写的是 10s）、`pool_size`（池自带默认），以及**整个 `channel.winrm` 节**（工厂在 `init()` 里以 `Config{}` 注册，整段惰性）。**词表还双向错位**：`channel.winrm.transport` 配置放行 `kerberos`（通道拒绝：它实现的是 `negotiate`/`ntlm`），配置又拒绝通道实现了的 `ntlm`——两头的错位今天都被惰性掩盖，一旦接线就立刻变成运行期报错。**取数方式**：对 13 个字段逐一检索**生产代码**（排除 `internal/config` 自身与测试）里的读取点，实测只有 4 处命中，全部集中在 `cmd/levee/cmd_serve.go:985-988`；`viper.Get("channel…")` 这类绕过结构体的直接读取**零命中**，`config.Config` 虽被整体传进多处服务，但那些服务只读各自的段，不读 `Channel`。
+- **为什么这是所有配置形状里最坏的一种**：一个**会校验却不生效**的旋钮，给了操作员两头的假信号——写错了报错（像它在起作用），写对了沉默（像它生效了）。「端口/超时/认证由目标与凭据决定」是一句能讲清的话；一个假旋钮不是。
+- **已做的那一半（登记 + 守卫，不改行为）**：① 新增 **`cmd/levee/channel_config_wiring_test.go`**——按反射枚举两节的**全部**字段，每个字段要么在生产代码里被引用（接进通道），要么被显式登记为「已知未接线」并写明**现在到底由什么管**；登记项过期、或新增字段未登记，都会转红（接线检查是**文本**的：找 `Channel.<节>.<字段>` 选择器，这是有意的——清单必须点名配置面，「有人 somewhere 接上了」不是这条守卫能诚实断言的事）；② `docs/blocked-items.md` 新增 **D-9**，写明缺口、词表错位、**接线本身要定的三件事**（`auth_method` 与「按凭据推断」谁说了算／`port` 是全局默认还是覆盖每目标端口／超时与池大小一接线就会改变现有部署的运行时行为）与触发条件。**未做的那一半**：接线本身——它要定产品语义并改运行时行为，不该由一笔普查顺手做掉。
+- **验证**：`go test ./cmd/levee/ -run TestChannelConfig -v` 全绿（3 例）；`python scripts/check_blocked_items.py` PASSED（**21** items，A=5 B=0 C=3 D=8 E=4 F=1 G=0）；`scripts/test_changelog_structure.py`、`check_doc_anchors.py` PASSED。
+- **边界**：本笔**不改任何运行时行为**——不删配置字段、不改默认值、不改校验口径（`channel.winrm.transport` 的 `kerberos`/`ntlm` 错位**如实登记在 D-9**，等接线那一笔按当时的口径一并处置）；它做的是把「哪些旋钮是真的」变成机器可核对的事实，并让新增旋钮默认被拦下。
+
 ### 修复（审计链分页的 keyset 谓词退化成 O(N²)：10 万行整链校验 1.90 s → 0.29 s）
 
 - **症状**：`AuditChainBuilder.Verify` / `Seal` 走读整条链时，**每行成本随链长爬升**（2.80 → 19.03 µs/行，10 万行比 1 千行高 7.6 倍），而摘要计算本身每行约 1 µs。`docs/benchmark-report.md` §17.2 此前如实写着「按常理应来自存储读取路径与分配压力，**但本文件不把它当已证实的结论**」。2026-11-17 做归因实测：**它不是一个「常理」，它是一个具体的 bug**。
@@ -66,6 +75,8 @@
 - **守卫（防再次漂移）**：`internal/channel/ssh/config_vocabulary_test.go` 双向钉住——配置接受的必须覆盖通道实现的（否则＝不可达），配置接受的通通道必须能 dispatch（否则＝把 typo 变成连接期运行时错误）。探针在测试里生成一把一次性 ed25519 密钥：`buildAuthMethods` 对每个带 key 的方法都会**读私钥文件**，指向不存在的路径会让探针把 key 类方法判成「未实现」——那是个证明错事的守卫，比没有更糟。**变异实测**：把配置接受集合埋回旧的两种，守卫立即红并逐条点名 `key+password` / `password+key`。
 - **顺带查清一件一直含糊的事**：`key_path is required when auth_method=key` 这条校验**在 `Load()` 路径上永远不会触发**——`channel.ssh.key_path` 有默认值 `~/.ssh/id_rsa`，且加载时会被展开成绝对路径。所以「用户在配置里漏写 key_path 时会被拦住」是误读，真实行为是**静默采纳默认值、零提示**。规则本身对**手工构造的 Config**（SDK / 测试 / 其它入口）仍有效，保留；但现在有两例测试分别钉住这两条路径的真实行为，不再让后人误读它的保护范围。
 - **验证**：`internal/config` 3 例（四种 auth_method 逐个加载+校验通过 / `key+password` 不要求 key_path / 手工 Config 缺 key_path 被拒）+ `internal/channel/ssh` 2 例（双向守卫）；`go build ./...`、`go test ./internal/config/ ./internal/channel/ssh/` 全绿；golangci-lint 0 issues。文档（虚机/裸机 drill）同步为新的四种取值与默认值口径。
+
+- **订正（2026-11-18，一笔独立的普查实测后）**：本节「**一条能力从配置路径完全不可达**」的表述**说轻了**。同日普查实测（见下一节）：`channel.ssh.auth_method` 这个**字段本身**就没有接进通道——通道自己的 `Config.AuthMethod` 在生产路径上恒为空，`buildAuthMethods` 实际是**按凭据推断**认证方式。本节的修复本身仍然成立且必要（配置接受集已与通道能 dispatch 的集合对齐、错误文案不再手抄），但它的收益是「**词表不再撒谎**」，**不是**「多了一个可达的模式」——那个模式仍不会因为配置而发生。原文保留在此并附订正，不静默改写。
 
 ### 修复（每日复现探针从未定时跑过：`inputs` 上下文在 schedule 事件为空，两个 job 静默 skipped）
 
