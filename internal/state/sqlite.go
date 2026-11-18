@@ -169,11 +169,12 @@ func (s *SQLiteStore) CreateRun(ctx context.Context, run *Run) error {
 		return fmt.Errorf("state: create run: nil run")
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO runs
-		(id, workflow_name, template_name, params, plan_hash, plan_json, status,
+		(id, workflow_name, template_name, label, team, params, plan_hash, plan_json, status,
 		 approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
 		 priority)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		run.ID, run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		run.ID, run.WorkflowName, run.TemplateName, run.Label, run.Team, run.Params, run.PlanHash,
+		run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.CreatedAt, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.TenantID,
 		run.Priority,
@@ -187,13 +188,14 @@ func (s *SQLiteStore) CreateRun(ctx context.Context, run *Run) error {
 // GetRun returns the run with the given id, or (nil, nil) if not found.
 func (s *SQLiteStore) GetRun(ctx context.Context, id string) (*Run, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, workflow_name, template_name, params, plan_hash, plan_json, status,
+		id, workflow_name, template_name, label, team, params, plan_hash, plan_json, status,
 		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
 		priority
 		FROM runs WHERE id = ?`, id)
 	r := &Run{}
 	err := row.Scan(
-		&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
+		&r.ID, &r.WorkflowName, &r.TemplateName, &r.Label, &r.Team, &r.Params, &r.PlanHash,
+		&r.PlanJSON, &r.Status,
 		&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 		&r.TenantID,
 		&r.Priority,
@@ -221,11 +223,12 @@ func (s *SQLiteStore) UpdateRun(ctx context.Context, run *Run) error {
 		return fmt.Errorf("state: update run: nil run")
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE runs SET
-		workflow_name=?, template_name=?, params=?, plan_hash=?, plan_json=?, status=?,
+		workflow_name=?, template_name=?, label=?, team=?, params=?, plan_hash=?, plan_json=?, status=?,
 		approval_status=?, approval_level=?, updated_at=?, creator=?, incident_id=?, tenant_id=?,
 		priority=?
 		WHERE id=?`,
-		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
+		run.WorkflowName, run.TemplateName, run.Label, run.Team, run.Params, run.PlanHash,
+		run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.TenantID,
 		run.Priority,
@@ -279,11 +282,12 @@ func (s *SQLiteStore) UpdateRunReturningPrevStatus(ctx context.Context, run *Run
 		return "", fmt.Errorf("state: update run %q: read status: %w", run.ID, err)
 	}
 	if _, err := conn.ExecContext(ctx, `UPDATE runs SET
-		workflow_name=?, template_name=?, params=?, plan_hash=?, plan_json=?, status=?,
+		workflow_name=?, template_name=?, label=?, team=?, params=?, plan_hash=?, plan_json=?, status=?,
 		approval_status=?, approval_level=?, updated_at=?, creator=?, incident_id=?, tenant_id=?,
 		priority=?
 		WHERE id=?`,
-		run.WorkflowName, run.TemplateName, run.Params, run.PlanHash, run.PlanJSON, run.Status,
+		run.WorkflowName, run.TemplateName, run.Label, run.Team, run.Params, run.PlanHash,
+		run.PlanJSON, run.Status,
 		run.ApprovalStatus, run.ApprovalLevel, run.UpdatedAt, run.Creator, run.IncidentID,
 		run.TenantID,
 		run.Priority,
@@ -404,7 +408,7 @@ func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, e
 		args = append(args, filter.TenantID)
 	}
 
-	q := `SELECT id, workflow_name, template_name, params, plan_hash, plan_json, status,
+	q := `SELECT id, workflow_name, template_name, label, team, params, plan_hash, plan_json, status,
 		approval_status, approval_level, created_at, updated_at, creator, incident_id, tenant_id,
 		priority
 		FROM runs`
@@ -431,7 +435,8 @@ func (s *SQLiteStore) ListRuns(ctx context.Context, filter RunFilter) ([]*Run, e
 	for rows.Next() {
 		r := &Run{}
 		if err := rows.Scan(
-			&r.ID, &r.WorkflowName, &r.TemplateName, &r.Params, &r.PlanHash, &r.PlanJSON, &r.Status,
+			&r.ID, &r.WorkflowName, &r.TemplateName, &r.Label, &r.Team, &r.Params, &r.PlanHash,
+			&r.PlanJSON, &r.Status,
 			&r.ApprovalStatus, &r.ApprovalLevel, &r.CreatedAt, &r.UpdatedAt, &r.Creator, &r.IncidentID,
 			&r.TenantID,
 			&r.Priority,

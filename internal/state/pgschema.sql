@@ -53,7 +53,12 @@ CREATE TABLE IF NOT EXISTS runs (
     -- is pinned by TestV9PriorityIsDeclaredLastInBothSchemas, which checks both DDL files
     -- against each other — TestMigrate_FreshAndUpgraded_SchemaShapesMatch, the comparison
     -- this line used to cite, builds SQLite stores and so covers no PostgreSQL ordering.
-    , priority      TEXT    NOT NULL DEFAULT ''    -- low|normal|high|urgent
+    , priority      TEXT    NOT NULL DEFAULT '',   -- low|normal|high|urgent
+    -- label / team (v11): the author's own words for the change, appended after
+    -- priority so the declaration order matches what the v11 step appends. Same
+    -- ordering rule as priority above.
+    , label         TEXT    NOT NULL DEFAULT '',
+    , team          TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);

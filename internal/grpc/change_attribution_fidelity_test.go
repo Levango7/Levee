@@ -210,6 +210,104 @@ func TestInstantiateTemplate_ResponseAgreesWithTheStoredRow(t *testing.T) {
 	assert.Equal(t, created.GetCreatedBy(), run.Creator, "the echoed owner is a promise about the row")
 }
 
+// TestInstantiateTemplate_PersistsLabelAndTeam is the name/team half of the
+// same fidelity rule. Both were echoed in this RPC's response and stored
+// nowhere, so the change answered with its own title once and then lost it on
+// the next read (the board derived a name from the rendered workflow and
+// reported no team at all).
+func TestInstantiateTemplate_PersistsLabelAndTeam(t *testing.T) {
+	ctx := ContextWithSubject(context.Background(), "alice")
+	tmpl, _, store := sharedStoreServices(t, &recordingEngine{})
+	_, err := tmpl.CreateTemplate(ctx, &pb.CreateTemplateRequest{
+		Name: "restart-web", WorkflowContent: "name: restart\n", Overwrite: true,
+	})
+	require.NoError(t, err)
+
+	created, err := tmpl.InstantiateTemplate(ctx, &pb.InstantiateTemplateRequest{
+		TemplateName: "restart-web", Environment: "prod",
+		Label: "E2E 最小链路", Team: "platform",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "E2E 最小链路", created.GetLabel(), "the response keeps its promise")
+	assert.Equal(t, "platform", created.GetTeam())
+
+	run, err := store.GetRun(context.Background(), created.GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "E2E 最小链路", run.Label, "a refresh must not turn the name back into the workflow name")
+	assert.Equal(t, "platform", run.Team, "a refresh must not lose the team")
+
+	got, err := tmpl.GetTemplate(ctx, &pb.GetTemplateRequest{Name: "restart-web"})
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+}
+
+// CreateChange carries label/team too; until schema v11 it echoed them and
+// stored nothing, so the CLI-created change had the same problem.
+func TestCreateChange_PersistsLabelAndTeam(t *testing.T) {
+	_, change, store := sharedStoreServices(t, &recordingEngine{})
+	created, err := change.CreateChange(ContextWithSubject(context.Background(), "alice"),
+		&pb.CreateChangeRequest{Label: "手工变更", Team: "sre", WorkflowFile: "wf.yaml"})
+	require.NoError(t, err)
+
+	run, err := store.GetRun(context.Background(), created.GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "手工变更", run.Label)
+	assert.Equal(t, "sre", run.Team)
+
+	got, err := change.GetChange(ContextWithSubject(context.Background(), "alice"),
+		&pb.GetChangeRequest{Id: created.GetId()})
+	require.NoError(t, err)
+	assert.Equal(t, "手工变更", got.GetLabel(), "the read path returns the authored name, not the derived one")
+	assert.Equal(t, "sre", got.GetTeam())
+}
+
+// A clone is a new attempt at the same change: it keeps the source's name and
+// team unless the request overrides the name. Before v11 the clone inherited
+// neither (they were never stored on the source), so the clone looked unnamed.
+func TestCloneChange_CarriesTheSourceNameAndTeamUnlessOverridden(t *testing.T) {
+	_, change, store := sharedStoreServices(t, &recordingEngine{})
+	source, err := change.CreateChange(ContextWithSubject(context.Background(), "alice"),
+		&pb.CreateChangeRequest{Label: "源变更", Team: "sre", WorkflowFile: "wf.yaml"})
+	require.NoError(t, err)
+
+	cloned, err := change.CloneChange(ContextWithSubject(context.Background(), "alice"),
+		&pb.CloneChangeRequest{SourceChangeId: source.GetId()})
+	require.NoError(t, err)
+	run, err := store.GetRun(context.Background(), cloned.GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "源变更", run.Label, "a clone keeps the name it was cloned from")
+	assert.Equal(t, "sre", run.Team)
+
+	renamed, err := change.CloneChange(ContextWithSubject(context.Background(), "alice"),
+		&pb.CloneChangeRequest{SourceChangeId: source.GetId(), Label: "改名后的克隆"})
+	require.NoError(t, err)
+	run, err = store.GetRun(context.Background(), renamed.GetId())
+	require.NoError(t, err)
+	assert.Equal(t, "改名后的克隆", run.Label, "an explicit override wins")
+	assert.Equal(t, "sre", run.Team, "but only for the field that was overridden")
+}
+
+// An empty label is NOT replaced by the derived name at WRITE time: ” means
+// "the author gave none", and the derived name is computed at read. Storing
+// the derived value would make an old row indistinguishable from an authored
+// one — the attribution ambiguity the priority split refuses to create.
+func TestEmptyLabelIsStoredAsEmpty(t *testing.T) {
+	_, change, store := sharedStoreServices(t, &recordingEngine{})
+	created, err := change.CreateChange(ContextWithSubject(context.Background(), "alice"),
+		&pb.CreateChangeRequest{WorkflowFile: "deploy/wf.yaml"})
+	require.NoError(t, err)
+
+	run, err := store.GetRun(context.Background(), created.GetId())
+	require.NoError(t, err)
+	assert.Empty(t, run.Label)
+
+	got, err := change.GetChange(ContextWithSubject(context.Background(), "alice"),
+		&pb.GetChangeRequest{Id: created.GetId()})
+	require.NoError(t, err)
+	assert.NotEmpty(t, got.GetLabel(), "a change with no authored name still needs a readable one")
+	assert.Contains(t, got.GetLabel(), "wf", "the stand-in comes from the workflow, as before v11")
+}
+
 // TestInstantiateTemplate_RecordsCreationInTheAuditTrail covers the third
 // thing CreateChange does and this path did not: a change that appears in the
 // store without an audit row is missing from the tamper-evident trail that

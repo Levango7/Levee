@@ -105,9 +105,17 @@ func TestV9BackfillMovesOnlyUnambiguousValues(t *testing.T) {
 	db := store.DB()
 
 	// Simulate a database that stopped at v8: the column does not exist yet and the
-	// ledger says 8, so Migrate applies exactly one forward step.
+	// ledger says 8, so Migrate applies exactly one forward step. Every column a
+	// LATER step appends has to go too — a v8 table predates them all, and leaving
+	// them in place would make the replay trip over its own ADD COLUMN.
 	_, err := db.ExecContext(ctx, `ALTER TABLE runs DROP COLUMN priority`)
 	require.NoError(t, err)
+	for _, col := range []string{"label", "team"} {
+		// SQLite has no DROP COLUMN IF EXISTS; the columns are guaranteed absent
+		// by the simulation above.
+		_, err = db.ExecContext(ctx, `ALTER TABLE runs DROP COLUMN `+col)
+		require.NoError(t, err, "dropping %s", col)
+	}
 	_, err = db.ExecContext(ctx, `DELETE FROM schema_version`)
 	require.NoError(t, err)
 	_, err = db.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (8)`)
@@ -199,25 +207,42 @@ func TestV9PriorityIsDeclaredLastInBothSchemas(t *testing.T) {
 	sqliteCols := runsDeclaredColumns(t, sqliteRel)
 	pgCols := runsDeclaredColumns(t, pgRel)
 
-	for _, tc := range []struct {
-		rel  string
-		cols []string
-	}{{sqliteRel, sqliteCols}, {pgRel, pgCols}} {
-		declared := 0
-		for _, c := range tc.cols {
-			if c == "priority" {
-				declared++
-			}
-		}
-		assert.Equal(t, 1, declared, "%s: runs.priority must be declared exactly once", tc.rel)
-		assert.Equal(t, "priority", tc.cols[len(tc.cols)-1],
-			`%s: runs.priority must be the LAST declared column — each ladder adds it with ALTER TABLE ADD COLUMN, which appends, so a mid-list declaration makes a fresh database differ from an upgraded one`, tc.rel)
-	}
-
 	assert.Equal(t, sqliteCols, pgCols,
 		"the runs column order differs between the two schemas; the two ladders must mean the same shape")
 
-	// The declaration only mirrors the step if the step really is an append of that column.
+	// The rule is stated the way it was always meant rather than as a list that
+	// every new column would have to update: the columns each ladder APPENDS
+	// (ALTER TABLE ADD COLUMN, in version order) are exactly the tail of the
+	// declaration, in that same order. It began as "runs.priority must be last";
+	// v11 appends label and team, and priority is no longer the newest, so a
+	// hand-written tail would have silently under-pinned the claim.
+	for _, tc := range []struct {
+		rel   string
+		cols  []string
+		steps []migrationStep
+	}{
+		{sqliteRel, sqliteCols, migrations},
+		{pgRel, pgCols, pgMigrations},
+	} {
+		want := appendedRunsColumns(t, tc.steps)
+		require.NotEmpty(t, want, "%s: no ladder step appends a runs column", tc.rel)
+		got := tc.cols[len(tc.cols)-len(want):]
+		assert.Equal(t, want, got,
+			"%s: the ladder-appended runs columns must be the last declared ones, in append order — "+
+				"ADD COLUMN appends, so any other placement makes a fresh database differ from an upgraded one", tc.rel)
+
+		declared := map[string]int{}
+		for _, c := range tc.cols {
+			declared[c]++
+		}
+		for _, name := range want {
+			assert.Equal(t, 1, declared[name], "%s: runs.%s is declared %d times", tc.rel, name, declared[name])
+		}
+	}
+
+	// The declaration only mirrors a step if that step really is an append of
+	// that column — including the original priority split this test was written
+	// for.
 	for _, tc := range []struct {
 		rel   string
 		steps []migrationStep
@@ -231,4 +256,22 @@ func TestV9PriorityIsDeclaredLastInBothSchemas(t *testing.T) {
 		require.NotEmpty(t, add, "%s: the v9 step adds no runs column", tc.rel)
 		assert.Contains(t, add, "priority", "%s: the v9 step appends something other than priority", tc.rel)
 	}
+}
+
+// appendedRunsColumns lists, in ladder order, every runs column a step adds.
+func appendedRunsColumns(t *testing.T, steps []migrationStep) []string {
+	t.Helper()
+	var out []string
+	// The PostgreSQL ladder writes `ADD COLUMN IF NOT EXISTS` (its replay test
+	// drives the ladder over a pgschema.sql fixture that already has the column),
+	// so the optional clause is part of the grammar, not noise.
+	re := regexp.MustCompile(`(?i)^ALTER TABLE runs ADD COLUMN\s+(?:IF NOT EXISTS\s+)?(\w+)`)
+	for _, step := range steps {
+		for _, stmt := range step.stmts {
+			if m := re.FindStringSubmatch(stmt); m != nil {
+				out = append(out, strings.ToLower(m[1]))
+			}
+		}
+	}
+	return out
 }

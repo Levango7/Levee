@@ -15,10 +15,11 @@
 //    15 competing headlines.
 //  * Each KPI is a filter: clicking it narrows the table to that group, which
 //    is what an operator does next after seeing the number.
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { changesApi, trendApi, type TrendDTO } from '@/api'
+import { useResponsive } from '@/composables/useResponsive'
 import type { Change, ChangeStatus } from '@/types/levee'
 import { CHANGE_STATUSES } from '@/types/vocabulary'
 import StatusTag from '@/components/StatusTag.vue'
@@ -338,6 +339,23 @@ async function load(): Promise<void> {
 // operator's night work lands on their day rather than the server's.
 const trend = ref<TrendDTO | null>(null)
 const trendLoading = ref(false)
+
+// Column budget: when the viewport is narrower than 1400px the two secondary
+// columns (范围 / 模板) are hidden, because the full set cannot fit in the
+// panel and a squeezed key column is worse than a hidden secondary one. The
+// threshold is where the full-width columns still fit at 1280 — measured, not
+// guessed. useResponsive owns the listener and its disposal.
+const { width: viewportWidth } = useResponsive()
+const denseColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1400)
+
+// The trend chart is drawn at the width of the panel that hosts it. Measured
+// rather than assumed: 640 was the SVG's default and at 1280+ the panel is
+// 900-1300px wide, so the chart sat in the left half with the right half blank
+// (measured with a real browser: svg 640 in a 918px parent). The observer
+// clamps to a sane minimum so a collapsed panel cannot produce a 1px chart.
+const trendHost = ref<HTMLElement | null>(null)
+const trendWidth = ref(640)
+let trendResize: ResizeObserver | null = null
 const trendError = ref<unknown>(null)
 
 async function loadTrend(): Promise<void> {
@@ -475,6 +493,21 @@ onMounted(() => {
   void load()
   void loadKpis()
   void loadTrend()
+
+  // Track the panel's width for the trend chart. The observer starts at the
+  // default and corrects within a frame; disconnecting on unmount keeps the
+  // observer from holding a dead node across route changes.
+  trendResize = new ResizeObserver((entries) => {
+    for (const e of entries) {
+      trendWidth.value = Math.max(320, Math.round(e.contentRect.width))
+    }
+  })
+  if (trendHost.value) trendResize.observe(trendHost.value)
+})
+
+onBeforeUnmount(() => {
+  trendResize?.disconnect()
+  trendResize = null
 })
 </script>
 
@@ -548,7 +581,14 @@ onMounted(() => {
           dense
         />
         <template v-else-if="trend">
-          <TrendChart :buckets="trend.buckets" :height="180" />
+          <!-- The chart draws at the PANEL's width, not a default 640: the SVG
+               is given the container's own measurement (ResizeObserver), so the
+               plot area reaches the panel's right edge instead of leaving the
+               right half empty — the prop's own doc says "fluid up to this", and
+               a fixed default was exactly the not-fluid reading. -->
+          <div ref="trendHost" class="trend-host">
+            <TrendChart :buckets="trend.buckets" :height="180" :width="trendWidth" />
+          </div>
           <p v-if="trend.truncated" class="trend-panel__note">
             窗口内变更过多，已按服务端上限截断——右侧最后一天的幅度是上限，不是数据。
           </p>
@@ -659,7 +699,13 @@ onMounted(() => {
             <StatusTag :status="row.status" variant="plain" />
           </template>
         </el-table-column>
-        <el-table-column v-if="applies('scope')" label="范围" width="176">
+        <!-- Secondary columns are hidden below 1400px: at 1280 the full set
+             (44+260+128+176+150+170+204 = 1132px) exceeds the panel (~950px),
+             so either the key columns get squeezed or the operator has to drag
+             sideways. Dropping the two least-load-bearing columns is the
+             honest answer; they stay on the detail page and can be re-enabled
+             by the column preferences. -->
+        <el-table-column v-if="applies('scope') && !denseColumns" label="范围" width="176">
           <template #default="{ row }">
             <div class="cell-scope">
               <span v-if="row.environment" class="cell-chip">{{ row.environment }}</span>
@@ -667,7 +713,7 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column v-if="applies('template')" label="模板" min-width="150" show-overflow-tooltip>
+        <el-table-column v-if="applies('template') && !denseColumns" label="模板" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="lv-mono cell-template">{{ row.templateName || '—' }}</span>
           </template>
@@ -719,6 +765,12 @@ onMounted(() => {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: var(--lv-space-3);
   margin-bottom: var(--lv-space-4);
+}
+
+/* The chart's measuring host: the SVG gets the panel's inner width from the
+   ResizeObserver, so it fills the panel instead of stopping at 640. */
+.trend-host {
+  width: 100%;
 }
 
 /* ------------------------------------------------------------------- dist */

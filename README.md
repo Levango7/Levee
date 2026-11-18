@@ -177,7 +177,9 @@ run 都不建**。此前它会照常建出 draft，缺陷要到 `levee plan` 才
 **提交审批需要能识别到人的凭据**：`approve` / `reject` 的投票人取自已认证主体，不接受
 请求里自报的名字——共享 `--token` 只证明"部署内部有人"，不足以支撑一条审批记录。需要
 审批请配置命名令牌（`server.auth_tokens`，每个令牌绑定一个身份）或 SSO / OIDC；
-`--insecure` 开发模式与 CLI 本地模式（进程内即权威）仍按当前操作者记录。
+`--insecure` 只放宽**传输**（允许明文端口/自签证书），**不放宽审批主体**：`approve` / `reject`
+一律取自可验证的认证主体，所以 `--insecure` 下没有命名令牌或 SSO/OIDC 身份时，投票返回
+401；CLI 本地模式是另一回事（进程内调用即权威，不经 HTTP 主体）。
 
 **治理动作会按策略准入**：配了权限矩阵（`permissions.yaml`，用 `levee team add` /
 `rbac grant` 维护）的部署，`apply` / `rollback` / `approve` / `reject` 还会再问一次

@@ -6,8 +6,12 @@ import PageHeader from '@/components/PageHeader.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
+import { currentSubject } from '@/utils/identity'
 
-const currentUserID = ref('operator')
+// Sessions are keyed by user_id on the server, so a literal 'operator' did not
+// just mislabel the page: it folded every user's sessions into one bucket. The
+// identity comes from the same token the approval fields already read.
+const currentUserID = ref(currentSubject())
 const sessions = ref<ConversationSessionDTO[]>([])
 const activeSessionID = ref('')
 const messages = ref<ConversationMessageDTO[]>([])
@@ -20,6 +24,12 @@ const error = ref<unknown>(null)
 const errorTier = computed<LoadTier>(() => (error.value === null ? 'ok' : classifyError(error.value)))
 const errorText = computed(() => errorMessage(error.value, '操作失败'))
 
+// WHICH call failed decides WHERE the answer goes. The session list failing
+// takes the whole page (nothing else on it is usable without it); a send or a
+// close failing keeps the grid and answers near the conversation. One ref, set
+// at the catch sites — a class of error alone cannot say this.
+const sessionsFailed = ref(false)
+
 function findSession(id: string): ConversationSessionDTO | undefined {
 	return sessions.value.find(s => s.id === id)
 }
@@ -27,8 +37,11 @@ function findSession(id: string): ConversationSessionDTO | undefined {
 async function refreshSessions() {
 	try {
 		sessions.value = await conversationApi.listSessions(currentUserID.value)
+		error.value = null
+		sessionsFailed.value = false
 	} catch (e) {
 		error.value = e
+		sessionsFailed.value = true
 	}
 }
 
@@ -40,6 +53,7 @@ async function newSession() {
 		await openSession(sess.id)
 	} catch (e) {
 		error.value = e
+		sessionsFailed.value = false
 	}
 }
 
@@ -59,6 +73,7 @@ async function refreshActiveSession() {
 		if (idx >= 0) sessions.value[idx] = sess
 	} catch (e) {
 		error.value = e
+		sessionsFailed.value = false
 	}
 }
 
@@ -84,6 +99,7 @@ async function send() {
 		await refreshSessions()
 	} catch (e) {
 		error.value = e
+		sessionsFailed.value = false
 	} finally {
 		loading.value = false
 	}
@@ -99,6 +115,7 @@ async function closeSession(id: string) {
 		}
 	} catch (e) {
 		error.value = e
+		sessionsFailed.value = false
 	}
 }
 
@@ -130,7 +147,19 @@ refreshSessions()
 			</template>
 		</PageHeader>
 
-		<div class="chat-layout">
+		<!-- The session list failing is the page's whole subject: render the
+		     error INSTEAD of the grid, at the top of the content area. The block
+		     used to sit AFTER the grid — measured at 1280×800 as an orphan icon
+		     below the fold, so an operator saw a broken page with no answer. -->
+		<StateBlock
+			v-if="sessionsFailed && (errorTier === 'error' || errorTier === 'forbidden')"
+			:tier="errorTier"
+			:message="errorText"
+			hint="会话列表读取失败；本页其余部分依赖它，请先重试"
+			@retry="refreshSessions"
+		/>
+
+		<div v-else class="chat-layout">
 			<!-- Session list -->
 			<aside class="lv-panel sessions">
 				<div class="lv-panel__head">
@@ -210,14 +239,14 @@ refreshSessions()
 			</section>
 		</div>
 
-		<!-- Every failure path funnels here (sessions, send, close): the
-		     conversation is one page, so one in-place answer beats a toast that
-		     names an operation the operator has already forgotten issuing. -->
+		<!-- Action failures (send / close / new) still get an in-place answer —
+		     but INSIDE the grid, above the conversation panel, so the retry is
+		     where the operator is looking rather than at the page bottom. -->
 		<StateBlock
-			v-if="errorTier === 'error' || errorTier === 'forbidden'"
+			v-if="!sessionsFailed && errorTier !== 'ok'"
 			:tier="errorTier"
 			:message="errorText"
-			:hint="errorTier === 'forbidden' ? '该账号无权访问此会话或会话列表，请联系管理员授权' : ''"
+			dense
 			@retry="refreshSessions"
 		/>
 	</div>
