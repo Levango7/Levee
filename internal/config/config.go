@@ -319,7 +319,7 @@ type SSHConfig struct {
 // WinRMConfig configures the WinRM channel.
 type WinRMConfig struct {
 	Port           int           `json:"port"            mapstructure:"port"`
-	Transport      string        `json:"transport"       mapstructure:"transport"` // negotiate | kerberos
+	Transport      string        `json:"transport"       mapstructure:"transport"` // negotiate | ntlm
 	ConnectTimeout time.Duration `json:"connect_timeout" mapstructure:"connect_timeout"`
 	PoolSize       int           `json:"pool_size"       mapstructure:"pool_size"`
 }
@@ -620,6 +620,35 @@ func ChatOpsPlatforms() []string {
 	return []string{"feishu", "lark", "dingtalk", "dingding", "dd", "slack"}
 }
 
+// WinRMTransports returns the auth transports internal/channel/winrm actually
+// implements, in canonical spelling. The config validator and the channel must
+// share this one list — the previous revision accepted "kerberos" (which the
+// channel rejects at Create time: it implements SPNEGO negotiation, not raw
+// Kerberos) while refusing "ntlm" (which the channel implements), so an
+// operator who trusted the validator could write a config that booted fine and
+// then failed on every connection. The list is generated from the same source
+// of truth the channel dispatches on; see the guard in internal/channel/winrm.
+func WinRMTransports() []string {
+	return []string{"negotiate", "ntlm"}
+}
+
+// winRMTransportAccepted reports whether s is one of the accepted transport
+// spellings. The comparison matches the channel's own dispatch exactly:
+// Create switches on strings.ToLower(cfg.Transport) with no trimming, so the
+// config side must be just as strict — accepting " negotiate " here while the
+// channel refused it would be the same class of drift this guard exists to
+// catch. The empty string is NOT accepted: it is not a spelling, and the Load
+// path never sees it anyway (SetDefault fills "negotiate").
+func winRMTransportAccepted(s string) bool {
+	t := strings.ToLower(s)
+	for _, v := range WinRMTransports() {
+		if t == v {
+			return true
+		}
+	}
+	return false
+}
+
 // chatOpsPlatformAccepted reports whether s is one of the accepted platform
 // spellings. The comparison matches chatops.ParsePlatform: case-insensitive
 // and whitespace-tolerant, so a config file written as "Feishu" or " feishu "
@@ -773,10 +802,17 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	if cfg.Channel.WinRM.Port <= 0 || cfg.Channel.WinRM.Port > 65535 {
 		problems = append(problems, "channel.winrm.port must be in 1..65535")
 	}
-	switch cfg.Channel.WinRM.Transport {
-	case "negotiate", "kerberos":
-	default:
-		problems = append(problems, fmt.Sprintf("channel.winrm.transport %q must be negotiate|kerberos", cfg.Channel.WinRM.Transport))
+	// The accepted set is exactly what internal/channel/winrm dispatches on
+	// (Config.withDefaults + Create's transport switch) — see WinRMTransports()
+	// above and the guard in internal/channel/winrm that fails if these two
+	// drift apart. Before this change the config accepted negotiate|kerberos
+	// while the channel implements negotiate|ntlm: kerberos booted fine and then
+	// failed every connection, and ntlm was refused at validation time although
+	// the channel could run it.
+	if !winRMTransportAccepted(cfg.Channel.WinRM.Transport) {
+		problems = append(problems, fmt.Sprintf(
+			"channel.winrm.transport %q must be one of %s", cfg.Channel.WinRM.Transport,
+			strings.Join(WinRMTransports(), " | ")))
 	}
 	if cfg.Channel.WinRM.ConnectTimeout <= 0 {
 		problems = append(problems, "channel.winrm.connect_timeout must be > 0")

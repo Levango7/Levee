@@ -126,7 +126,7 @@ channel:
   winrm:
     # WinRM 端口（1..65535）。 默认: 5985（HTTP）；5986 为 HTTPS
     port: 5985
-    # 传输/认证方式: negotiate | kerberos。 默认: negotiate
+    # 传输/认证方式: negotiate | ntlm。 默认: negotiate
     transport: negotiate
     # WinRM 连接超时（> 0，Go duration）。 默认: 10s
     connect_timeout: 10s

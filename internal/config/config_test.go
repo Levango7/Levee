@@ -458,10 +458,14 @@ func TestValidate_InvalidWinRMTransport(t *testing.T) {
 	cfg, err := Load(writeYAML(t, minimalValidYAML()))
 	require.NoError(t, err)
 
-	cfg.Channel.WinRM.Transport = "ntlm"
+	cfg.Channel.WinRM.Transport = "kerberos"
 	err = Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "winrm.transport")
+	// The vocabulary flipped on 2026-11-18: the channel implements
+	// negotiate|ntlm, so kerberos — which the old config accepted and the
+	// channel never implemented — is now the refused spelling, and ntlm is
+	// accepted (pinned by TestLoad_WinRMTransportVocabulary above).
 }
 
 func TestValidate_InvalidSSHBecomeMethod(t *testing.T) {
@@ -767,4 +771,48 @@ notify:
 	require.NoError(t, err)
 	assert.Empty(t, Validate(cfg),
 		"a disabled chatops section must not block the boot over a draft platform")
+}
+
+func TestLoad_WinRMTransportVocabulary(t *testing.T) {
+	// channel.winrm.transport used to carry two vocabularies: the config
+	// accepted negotiate|kerberos, while internal/channel/winrm implements
+	// negotiate|ntlm (Create's switch + the TransportNTLM constant). An
+	// operator who trusted the validator could write `transport: kerberos`,
+	// boot fine, and then fail every connection with
+	// `winrm: unsupported transport "kerberos"` — while `transport: ntlm`,
+	// which the channel runs, was refused at validation time.
+	// internal/channel/winrm/transport_vocabulary_test.go pins the channel
+	// side; this one pins the config side.
+	for _, transport := range WinRMTransports() {
+		p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+channel:
+  winrm:
+    transport: `+transport+`
+`)
+		cfg, err := Load(p)
+		require.NoErrorf(t, err, "transport %q must load", transport)
+		assert.Equalf(t, transport, cfg.Channel.WinRM.Transport,
+			"transport %q did not round-trip", transport)
+		assert.Emptyf(t, Validate(cfg), "transport %q must validate", transport)
+	}
+}
+
+func TestValidate_RejectsUnknownWinRMTransport(t *testing.T) {
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+channel:
+  winrm:
+    transport: kerberos
+`)
+	_, err := Load(p)
+	require.Error(t, err, "kerberos is not implemented by the channel; the config must refuse it")
+	assert.Contains(t, err.Error(), "channel.winrm.transport")
+	assert.Contains(t, err.Error(), "kerberos")
+	// The message must carry the accepted vocabulary, read from the same
+	// list the validation uses — never a hand-copied one.
+	for _, transport := range WinRMTransports() {
+		assert.Containsf(t, err.Error(), transport,
+			"the refusal must list the accepted spelling %q", transport)
+	}
 }

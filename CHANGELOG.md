@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+### 修复（`channel.winrm.transport` 词表双向错位：配置放行 `kerberos`、拒绝 `ntlm`，通道恰相反）
+
+- **缺口**：`internal/config` 校验 `channel.winrm.transport` 时接受 `negotiate|kerberos`（错误文案也是手写的 "must be negotiate|kerberos"），而 `internal/channel/winrm` 实现的是 `negotiate|ntlm`（`TransportNegotiate` / `TransportNTLM` 常量 + `Create` 的 switch）。两张词表、两个 owner、没有任何东西比对。后果不是崩溃，而是**一假一拒**：操作员写 `transport: kerberos` 会**通过校验、正常启动**，然后每条连接都死在 `winrm: unsupported transport "kerberos"` 上；而 `transport: ntlm`——通道明明实现了——在配置加载时就被拒。错位被「winrm 整段未接线」掩盖着（见 D-9），一旦接线就立刻变成运行期事故。
+- **修法**：`internal/config` 新增 `WinRMTransports()`（`[negotiate, ntlm]`，与通道常量同序）作为单一词表；校验改查表（大小写不敏感，与通道 `Create` 里 `strings.ToLower` 的策略一致——**也不 trim**，因为通道侧就不 trim，配置侧比通道宽容同样是漂移）；错误文案改由词表生成。`WinRMConfig.Transport` 的注释同步。
+- **守卫（同 chatops / ssh 先例的双向形状）**：新增 `internal/channel/winrm/transport_vocabulary_test.go`——实现⊆配置（通道能跑的每个拼法配置必须收）、配置⊆实现（配置收的每个拼法 `Create` 必须能 dispatch，行为级、不只比对常量）、同表同序、空值归一 negotiate；`internal/config/config_test.go` 两例（每个拼法加载+校验通过 / `kerberos` 被拒且错误文案列出词表全量）。
+- **变异实测两条逐条转红后复原**：① 配置词表退回旧的 `negotiate|kerberos` → 行为级守卫红，报 `transport "kerberos" is accepted by the config but refused by the channel`；② 通道侧 `TransportNTLM` 常量被误写为 `kerberos` → 同一守卫红，报 `transport "ntlm" is accepted by the config but refused by the channel`。
+- **既有测试同步**：`TestValidate_InvalidWinRMTransport` 原本固化旧词表（断言 `ntlm` 被拒），翻转为断言 `kerberos` 被拒并注明词表翻转日期——这是「校验口径即文档」的又一次实例。
+- **边界**：本笔**只统一词表、不接线**——`channel.winrm` 整段仍未接进通道（D-9 照旧登记）；`kerberos` 也不是「被阉割的能力」：通道从未实现它（`winrm.go` 只有两个 transport 常量），此前配置放行它是**假承诺**，现在只是不再撒谎。
+- **验证**：`go test ./internal/config/ ./internal/channel/winrm/` 全绿；`scripts/check_blocked_items.py`（21 items）、`scripts/test_changelog_structure.py`（14 例）、`scripts/check_doc_anchors.py` PASSED。
+
 ### 修复（ChatOps 的 `platform` 字段曾有两套词表：CLI 认 `lark`，serve 只认 `feishu`）
 
 - **症状**：`notify.chatops.bots[].platform` 这**一个字段**，在两条路径上语义不同：
@@ -24,7 +34,7 @@
 - **为什么这是所有配置形状里最坏的一种**：一个**会校验却不生效**的旋钮，给了操作员两头的假信号——写错了报错（像它在起作用），写对了沉默（像它生效了）。「端口/超时/认证由目标与凭据决定」是一句能讲清的话；一个假旋钮不是。
 - **已做的那一半（登记 + 守卫，不改行为）**：① 新增 **`cmd/levee/channel_config_wiring_test.go`**——按反射枚举两节的**全部**字段，每个字段要么在生产代码里被引用（接进通道），要么被显式登记为「已知未接线」并写明**现在到底由什么管**；登记项过期、或新增字段未登记，都会转红（接线检查是**文本**的：找 `Channel.<节>.<字段>` 选择器，这是有意的——清单必须点名配置面，「有人 somewhere 接上了」不是这条守卫能诚实断言的事）；② `docs/blocked-items.md` 新增 **D-9**，写明缺口、词表错位、**接线本身要定的三件事**（`auth_method` 与「按凭据推断」谁说了算／`port` 是全局默认还是覆盖每目标端口／超时与池大小一接线就会改变现有部署的运行时行为）与触发条件。**未做的那一半**：接线本身——它要定产品语义并改运行时行为，不该由一笔普查顺手做掉。
 - **验证**：`go test ./cmd/levee/ -run TestChannelConfig -v` 全绿（3 例）；`python scripts/check_blocked_items.py` PASSED（**21** items，A=5 B=0 C=3 D=8 E=4 F=1 G=0）；`scripts/test_changelog_structure.py`、`check_doc_anchors.py` PASSED。
-- **边界**：本笔**不改任何运行时行为**——不删配置字段、不改默认值、不改校验口径（`channel.winrm.transport` 的 `kerberos`/`ntlm` 错位**如实登记在 D-9**，等接线那一笔按当时的口径一并处置）；它做的是把「哪些旋钮是真的」变成机器可核对的事实，并让新增旋钮默认被拦下。
+- **边界**：本笔**不改任何运行时行为**——不删配置字段、不改默认值、不改校验口径（`channel.winrm.transport` 的 `kerberos`/`ntlm` 词表错位已由下一节那笔修复；**接线**本身仍在 D-9）；它做的是把「哪些旋钮是真的」变成机器可核对的事实，并让新增旋钮默认被拦下。
 
 ### 修复（审计链分页的 keyset 谓词退化成 O(N²)：10 万行整链校验 1.90 s → 0.29 s）
 
