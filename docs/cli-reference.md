@@ -2178,7 +2178,7 @@ levee chatops start --platform <p> [--config <c>] [--timeout <d>]
 
 | 选项 | 短选项 | 默认值 | 说明 |
 |------|--------|--------|------|
-| `--platform` | | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--platform` | | `feishu` | 平台：`feishu`（`lark`）/ `dingtalk`（`dingding`、`dd`）/ `slack` |
 | `--config` | `-c` | | 机器人配置文件路径（JSON） |
 | `--timeout` | | `0` | 运行时长；`0` 表示持续运行直到收到信号 |
 
@@ -2203,7 +2203,7 @@ levee chatops send --platform <p> [--config <c>] --channel <c> --message <m>
 
 | 选项 | 短选项 | 默认值 | 说明 |
 |------|--------|--------|------|
-| `--platform` | | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--platform` | | `feishu` | 平台：`feishu`（`lark`）/ `dingtalk`（`dingding`、`dd`）/ `slack` |
 | `--config` | `-c` | | 机器人配置文件路径（JSON） |
 | `--channel` | `-C` | | 目标 channel / 群 ID |
 | `--message` | `-m` | | 消息内容 |
@@ -2226,7 +2226,7 @@ levee chatops approve [--platform <p>] [--config <c>] --id <change-id>
 
 | 选项 | 短选项 | 默认值 | 说明 |
 |------|--------|--------|------|
-| `--platform` | `-p` | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--platform` | `-p` | `feishu` | 平台：`feishu`（`lark`）/ `dingtalk`（`dingding`、`dd`）/ `slack` |
 | `--config` | `-c` | | 机器人配置文件路径（JSON，可选） |
 | `--id` | | | 变更 ID（等价于位置参数） |
 
@@ -2248,7 +2248,7 @@ levee chatops reject [--platform <p>] [--config <c>] --id <change-id> --reason <
 
 | 选项 | 短选项 | 默认值 | 说明 |
 |------|--------|--------|------|
-| `--platform` | `-p` | `feishu` | 平台：`feishu` / `dingtalk` / `slack` |
+| `--platform` | `-p` | `feishu` | 平台：`feishu`（`lark`）/ `dingtalk`（`dingding`、`dd`）/ `slack` |
 | `--config` | `-c` | | 机器人配置文件路径（JSON，可选） |
 | `--id` | | | 变更 ID（等价于位置参数） |
 | `--reason` | `-r` | | 驳回原因（必填） |

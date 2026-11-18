@@ -593,6 +593,47 @@ func SSHAuthMethods() []string {
 	return []string{"key", "password", "key+password", "password+key"}
 }
 
+// ChatOpsPlatforms lists the platform spellings this package accepts for
+// notify.chatops.bots[].platform. It is the single source of truth for the
+// accepted vocabulary on the config side: the validation message and every
+// test that walks the accepted set read it from here, so adding a platform
+// needs one edit rather than two that can disagree.
+//
+// WHY it exists: the config side used to accept nothing at all (the field was
+// passed through unchecked) while the serve wiring accepted exactly
+// "slack" / "dingtalk" / "feishu" — and the CLI accepted those plus the
+// aliases "lark" / "dingding" / "dd", case-insensitively and whitespace-
+// tolerant. One field, two vocabularies: a bot configured as "lark" worked
+// from the CLI and refused to boot the server, and the refusal message listed
+// a hand-written set of platforms that nothing compared against the
+// adapters.
+//
+// The accepted set is exactly what internal/chatops can parse — see
+// chatops.ParsePlatform and the guard in
+// internal/chatops/config_vocabulary_test.go, which fails when these two
+// lists drift apart. The order matches chatops.PlatformSpellings() so every
+// message that lists the vocabulary reads the same way.
+//
+// Exported for the same reason SSHAuthMethods is: the drift guard lives on
+// the side that IMPLEMENTS the vocabulary, and it reads this list from here.
+func ChatOpsPlatforms() []string {
+	return []string{"feishu", "lark", "dingtalk", "dingding", "dd", "slack"}
+}
+
+// chatOpsPlatformAccepted reports whether s is one of the accepted platform
+// spellings. The comparison matches chatops.ParsePlatform: case-insensitive
+// and whitespace-tolerant, so a config file written as "Feishu" or " feishu "
+// means the same thing here as it does on the CLI.
+func chatOpsPlatformAccepted(s string) bool {
+	key := strings.ToLower(strings.TrimSpace(s))
+	for _, p := range ChatOpsPlatforms() {
+		if p == key {
+			return true
+		}
+	}
+	return false
+}
+
 func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: validates 30+ fields with distinct rules per type
 	var problems []string
 
@@ -798,6 +839,24 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	}
 	if cfg.Notify.Webhook.Retry < 0 {
 		problems = append(problems, "notify.webhook.retry must be >= 0")
+	}
+
+	// Notify.ChatOps
+	//
+	// The platform spelling is checked only when the mirror is enabled: a
+	// disabled section installs nothing, so refusing to boot over a
+	// half-written draft would be a regression rather than a safety gain. The
+	// moment it is enabled, a typo has to fail loudly and name the bot —
+	// a mirror that silently skipped a bot looks exactly like a working
+	// mirror that never delivers.
+	if cfg.Notify.ChatOps.Enabled {
+		for i, b := range cfg.Notify.ChatOps.Bots {
+			if !chatOpsPlatformAccepted(b.Platform) {
+				problems = append(problems, fmt.Sprintf(
+					"notify.chatops.bots[%d].platform %q must be one of %s", i, b.Platform,
+					strings.Join(ChatOpsPlatforms(), " | ")))
+			}
+		}
 	}
 
 	// Permission

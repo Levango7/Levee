@@ -1097,21 +1097,38 @@ func buildServeChatOpsBots(cfg config.ChatOpsConfig) (*chatops.BotManager, error
 			bot chatops.Bot
 			err error
 		)
-		switch b.Platform {
-		case "slack":
+		// One vocabulary for the platform field: the CLI's --platform and the
+		// config path both go through chatops.ParsePlatform, so "lark",
+		// "dingding", "dd", "Feishu" and " feishu " mean the same thing on
+		// both paths. Before this, the config path switched on the raw
+		// string and accepted only three exact spellings — the aliases the
+		// CLI had always accepted were unreachable from a config file, and
+		// the refusal message listed a hand-written platform list that
+		// nothing compared against the adapters.
+		platform, perr := chatops.ParsePlatform(b.Platform)
+		if perr != nil {
+			return nil, fmt.Errorf("notify.chatops bot %q: unknown platform %q (supported: %s)",
+				label, b.Platform, strings.Join(chatops.PlatformSpellings(), ", "))
+		}
+		switch platform {
+		case chatops.PlatformSlack:
 			bot, err = chatops.NewSlackBot(chatops.SlackConfig{
 				Name: b.Name, WebhookURL: b.WebhookURL, Secret: b.Secret, Timeout: b.Timeout,
 			}, mgr.Router())
-		case "dingtalk":
+		case chatops.PlatformDingtalk:
 			bot, err = chatops.NewDingtalkBot(chatops.DingtalkConfig{
 				Name: b.Name, WebhookURL: b.WebhookURL, Secret: b.Secret, Timeout: b.Timeout,
 			}, mgr.Router())
-		case "feishu":
+		case chatops.PlatformFeishu:
 			bot, err = chatops.NewFeishuBot(chatops.FeishuConfig{
 				Name: b.Name, WebhookURL: b.WebhookURL, Secret: b.Secret, Timeout: b.Timeout,
 			}, mgr.Router())
 		default:
-			return nil, fmt.Errorf("notify.chatops bot %q: unknown platform %q (supported: slack, dingtalk, feishu)", label, b.Platform)
+			// Unreachable while chatops.SupportedPlatforms() and this switch
+			// agree; the guard in cmd/levee/cmd_serve_chatops_test.go walks
+			// every supported platform through this function, so adding a
+			// platform without a branch here turns that guard red.
+			return nil, fmt.Errorf("notify.chatops bot %q: platform %q has no adapter", label, platform)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("notify.chatops bot %q: %w", label, err)

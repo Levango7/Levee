@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### 修复（ChatOps 的 `platform` 字段曾有两套词表：CLI 认 `lark`，serve 只认 `feishu`）
+
+- **症状**：`notify.chatops.bots[].platform` 这**一个字段**，在两条路径上语义不同：
+  - CLI（`levee chatops start|send|callback|... --platform`）走 `chatops.ParsePlatform`，**一直**接受 `feishu`/`lark`、`dingtalk`/`dingding`/`dd`、`slack`，且**大小写不敏感、自动 trim**；
+  - serve 配置路径（`cmd/levee/cmd_serve.go` 的 `buildServeChatOpsBots`）直接 `switch b.Platform` **原始字符串**，只认精确的 `slack`/`dingtalk`/`feishu`。
+  于是同一份配置，`platform: lark` 从 CLI 能跑、`levee serve` 直接启动失败；`platform: Feishu`、`platform: " feishu "` 同理。而 `internal/config` 侧**压根不校验**这个字段（透传），错误要等到 serve 装配阶段才炸，且那时的文案里列的是一份**手写**的平台清单。
+- **根因**：词表被抄在三处、没有一处是事实源——① `chatops.ParsePlatform` 的 switch（唯一**实现**侧，接受别名）；② serve 的 switch（**配置**侧，只抄了三个规范名，别名整段丢失）；③ 拒绝文案里手写的 `(supported: slack, dingtalk, feishu)`（**谁都不对照**：加一个适配器，这句文案立刻开始撒谎）。别名不是被拒绝的设计决定，是**抄漏**——两处 switch 各写各的，中间没有任何比对。
+- **修法**：把词表收敛成一张有序表（`internal/chatops` 的 `platformSpellings`：规范名 + 别名 → 规范平台）。`ParsePlatform` 读它、`PlatformSpellings()` 报告它、`SupportedPlatforms()` 报告**有适配器**的规范平台；**serve 路径改走同一条 `ParsePlatform`**，于是两条路径对同一字符串给出同一个适配器；拒绝文案里的 supported 列表改为 `strings.Join(chatops.PlatformSpellings(), ", ")` **代码生成**，不再手写。配置侧新增 `config.ChatOpsPlatforms()` 与 `Validate` 里的 fail-closed 校验（拼写非法 → 启动即报错，指名 `notify.chatops.bots[i].platform` 与合法拼写）；**只在 `notify.chatops.enabled=true` 时校验**——禁用段什么都不装，为半成品草稿拒绝启动是回归而不是安全收益。
+- **守卫**：新增 `internal/chatops/config_vocabulary_test.go`，放在**实现**侧（照 `internal/channel/ssh/config_vocabulary_test.go` 的先例：config 不 import 实现层，守卫反过来读 config 的列表），断言四个方向——实现 ⊆ 配置（每个平台都有配置写得出的拼写）、配置 ⊆ 实现（每个配置写得出的拼写都能解析且有适配器）、**两张表是同一张表**（连顺序一起比，所以报错文案与接受范围不会各说各话）、无孤儿平台且无野别名。`cmd/levee/cmd_serve_chatops_test.go` 另加两条把 serve 接线钉住：配置接受的**每个**拼写都要能在 serve 路径解析成**同一个**适配器（这正是原缺陷的回归测试）、`chatops.SupportedPlatforms()` 里的每个平台都要能被 serve 装配（防止「声明了平台却没有分支」）。配置侧另加三条 `internal/config/config_test.go`：每个拼写能 load 能 validate、未知拼写报错并列出合法拼写、禁用段不拦启动。
+- **变异实测**（四条，逐条转红后复原）：① 把 serve 退回「switch 原始字符串」→ `AcceptsEveryConfigSpelling` 红并点名 `"lark"`；② config 少收 `lark` → 「同一张表」守卫红；③ config 多收 `teams` → 「配置 ⊆ 实现」守卫红并点名 `teams`；④ chatops 少声明 `slack` → 「无野别名」守卫红。
+- **验证**：`go test ./internal/chatops/ ./internal/config/ ./cmd/levee/` 全绿；`golangci-lint` 0 issues；`scripts/test_changelog_structure.py`、`scripts/check_doc_anchors.py` 等文档守卫 PASSED。
+- **边界**：本笔**只统一词表**，不改任何适配器的行为（签名、投递、重试、卡片渲染一律未动），不改 `identity_map` 的语义（它按**规范平台**分组，现在别名与规范名落在同一张表里，行为反而更自洽）；CLI 的 `--platform` **接受范围没有变**（本来就收别名），只是把「配置也能收」这件事补齐；平台名的大小写/空格容错沿用 CLI 既有行为，配置侧与之一致（所以 `Feishu` / `" feishu "` 在配置里也认）。
+
 ### 修复（审计链分页的 keyset 谓词退化成 O(N²)：10 万行整链校验 1.90 s → 0.29 s）
 
 - **症状**：`AuditChainBuilder.Verify` / `Seal` 走读整条链时，**每行成本随链长爬升**（2.80 → 19.03 µs/行，10 万行比 1 千行高 7.6 倍），而摘要计算本身每行约 1 µs。`docs/benchmark-report.md` §17.2 此前如实写着「按常理应来自存储读取路径与分配压力，**但本文件不把它当已证实的结论**」。2026-11-17 做归因实测：**它不是一个「常理」，它是一个具体的 bug**。

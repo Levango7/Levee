@@ -698,3 +698,73 @@ func TestValidate_StateSQLiteSynchronousInvalid(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "state.sqlite_synchronous")
 }
+
+func TestLoad_ChatOpsPlatformVocabulary(t *testing.T) {
+	// The platform field used to carry two vocabularies: the CLI accepted
+	// "lark" / "dingding" / "dd" (case-insensitively, whitespace-tolerantly)
+	// through chatops.ParsePlatform, while the serve config path switched on
+	// the raw string and accepted exactly three spellings — so a bot
+	// configured as `platform: lark` worked from the CLI and refused to boot
+	// the server. internal/chatops/config_vocabulary_test.go pins the two
+	// lists together; this one pins the config side.
+	for _, platform := range ChatOpsPlatforms() {
+		p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+notify:
+  chatops:
+    enabled: true
+    bots:
+      - platform: `+platform+`
+        name: approvals
+        webhook_url: https://example.invalid/hook
+`)
+		cfg, err := Load(p)
+		require.NoErrorf(t, err, "platform %q must load", platform)
+		require.Len(t, cfg.Notify.ChatOps.Bots, 1)
+		assert.Equalf(t, platform, cfg.Notify.ChatOps.Bots[0].Platform,
+			"platform %q did not round-trip", platform)
+		assert.Emptyf(t, Validate(cfg), "platform %q must validate", platform)
+	}
+}
+
+func TestValidate_RejectsUnknownChatOpsPlatform(t *testing.T) {
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+notify:
+  chatops:
+    enabled: true
+    bots:
+      - platform: teams
+        name: approvals
+        webhook_url: https://example.invalid/hook
+`)
+	_, err := Load(p)
+	require.Error(t, err, "an unknown platform must fail the load, naming the bot")
+	assert.Contains(t, err.Error(), "notify.chatops.bots[0].platform")
+	assert.Contains(t, err.Error(), "teams")
+	// The message must carry the accepted vocabulary, read from the same
+	// list the validation uses.
+	for _, platform := range ChatOpsPlatforms() {
+		assert.Containsf(t, err.Error(), platform,
+			"the refusal must list the accepted spelling %q", platform)
+	}
+}
+
+func TestValidate_IgnoresChatOpsPlatformWhenDisabled(t *testing.T) {
+	// A disabled mirror installs nothing, so refusing to boot over a
+	// half-written draft would be a regression rather than a safety gain.
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+notify:
+  chatops:
+    enabled: false
+    bots:
+      - platform: teams
+        name: approvals
+        webhook_url: https://example.invalid/hook
+`)
+	cfg, err := Load(p)
+	require.NoError(t, err)
+	assert.Empty(t, Validate(cfg),
+		"a disabled chatops section must not block the boot over a draft platform")
+}

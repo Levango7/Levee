@@ -55,7 +55,68 @@ func TestBuildServeChatOpsBots_UnknownPlatformRefused(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "teams")
-	assert.Contains(t, err.Error(), "slack, dingtalk, feishu")
+	// The accepted list is read from the code, not transcribed: the refusal
+	// used to spell it out by hand ("slack, dingtalk, feishu"), so adding an
+	// adapter left the message lying about what was supported.
+	for _, spelling := range chatops.PlatformSpellings() {
+		assert.Containsf(t, err.Error(), spelling,
+			"the refusal must list the accepted spelling %q", spelling)
+	}
+}
+
+// TestBuildServeChatOpsBots_AcceptsEveryConfigSpelling is the regression
+// test for the two-vocabulary bug: the CLI has always accepted "lark" /
+// "dingding" / "dd" (case-insensitively) while the serve config path used to
+// switch on the raw string and accept exactly three spellings — so a bot
+// configured as `platform: lark` worked from the CLI and refused to boot the
+// server. Every spelling the configuration accepts must now resolve to the
+// same adapter here as it does in chatops.ParsePlatform.
+func TestBuildServeChatOpsBots_AcceptsEveryConfigSpelling(t *testing.T) {
+	require.NotEmpty(t, config.ChatOpsPlatforms(), "the probe reads an empty accepted set")
+
+	for _, spelling := range config.ChatOpsPlatforms() {
+		mgr, err := buildServeChatOpsBots(config.ChatOpsConfig{
+			Enabled: true,
+			Bots: []config.ChatOpsBotConfig{
+				{Platform: spelling, Name: "b", WebhookURL: "https://example.invalid/hook"},
+			},
+		})
+		require.NoErrorf(t, err,
+			"the configuration accepts platform %q but the serve path refuses it", spelling)
+		t.Cleanup(func() { _ = mgr.StopAll() })
+
+		want, err := chatops.ParsePlatform(spelling)
+		require.NoError(t, err)
+		bot, err := mgr.Get("b")
+		require.NoError(t, err)
+		assert.Equalf(t, want, bot.Platform(),
+			"platform %q resolved to a different adapter on the serve path", spelling)
+	}
+}
+
+// TestBuildServeChatOpsBots_DispatchesEverySupportedPlatform walks every
+// platform the adapter set declares through the serve wiring. A platform
+// that exists in internal/chatops but has no branch in buildServeChatOpsBots
+// is a capability the daemon cannot install — the guard goes red here
+// instead of at an operator's first boot.
+func TestBuildServeChatOpsBots_DispatchesEverySupportedPlatform(t *testing.T) {
+	require.NotEmpty(t, chatops.SupportedPlatforms(), "the probe reads an empty declared set")
+
+	for _, platform := range chatops.SupportedPlatforms() {
+		mgr, err := buildServeChatOpsBots(config.ChatOpsConfig{
+			Enabled: true,
+			Bots: []config.ChatOpsBotConfig{
+				{Platform: string(platform), Name: "b", WebhookURL: "https://example.invalid/hook"},
+			},
+		})
+		require.NoErrorf(t, err,
+			"platform %q is declared but the serve path cannot dispatch it", platform)
+		t.Cleanup(func() { _ = mgr.StopAll() })
+
+		bot, err := mgr.Get("b")
+		require.NoError(t, err)
+		assert.Equal(t, platform, bot.Platform())
+	}
 }
 
 func TestBuildServeChatOpsBots_HappyPathStartsEveryBot(t *testing.T) {

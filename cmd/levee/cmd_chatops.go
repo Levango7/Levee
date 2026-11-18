@@ -61,7 +61,7 @@ func newChatopsStartCmd() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: runChatopsStart,
 	}
-	_cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu（lark）/ dingtalk（dingding、dd）/ slack")
 	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON）")
 	_cmd.Flags().DurationVar(&chatopsOptTimeout, "timeout", 0, "运行时长；0 表示持续运行直到收到信号")
 	return _cmd
@@ -76,7 +76,7 @@ func newChatopsSendCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  runChatopsSend,
 	}
-	_cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVar(&chatopsOptPlatform, "platform", "feishu", "平台：feishu（lark）/ dingtalk（dingding、dd）/ slack")
 	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON）")
 	_cmd.Flags().StringVarP(&chatopsOptChannel, "channel", "C", "", "目标 channel / 群 ID")
 	_cmd.Flags().StringVarP(&chatopsOptMessage, "message", "m", "", "消息内容")
@@ -92,7 +92,7 @@ func newChatopsApproveCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runChatopsApprove,
 	}
-	_cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu（lark）/ dingtalk（dingding、dd）/ slack")
 	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON，可选）")
 	_cmd.Flags().StringVar(&chatopsOptChangeID, "id", "", "变更 ID（等价于位置参数）")
 	return _cmd
@@ -107,7 +107,7 @@ func newChatopsRejectCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runChatopsReject,
 	}
-	_cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu / dingtalk / slack")
+	_cmd.Flags().StringVarP(&chatopsOptPlatform, "platform", "p", "feishu", "平台：feishu（lark）/ dingtalk（dingding、dd）/ slack")
 	_cmd.Flags().StringVarP(&chatopsOptConfig, "config", "c", "", "机器人配置文件路径（JSON，可选）")
 	_cmd.Flags().StringVar(&chatopsOptChangeID, "id", "", "变更 ID（等价于位置参数）")
 	_cmd.Flags().StringVarP(&chatopsOptReason, "reason", "r", "", "驳回原因（必填）")

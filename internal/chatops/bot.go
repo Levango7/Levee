@@ -58,20 +58,75 @@ const (
 	PlatformSlack Platform = "slack"
 )
 
-// ParsePlatform normalises a human-friendly platform name to a Platform
-// constant. It is case-insensitive and accepts common aliases. Unknown
-// values yield ErrUnknownPlatform.
-func ParsePlatform(s string) (Platform, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "feishu", "lark":
-		return PlatformFeishu, nil
-	case "dingtalk", "dingding", "dd":
-		return PlatformDingtalk, nil
-	case "slack":
-		return PlatformSlack, nil
-	default:
-		return "", fmt.Errorf("chatops: parse platform %q: %w", s, ErrUnknownPlatform)
+// supportedPlatforms is the ordered list of canonical platforms that have an
+// adapter. It is the enumeration the drift guard walks: a platform that
+// exists in the vocabulary but cannot be dispatched (or cannot be named by
+// the configuration) is a capability nobody can reach, and
+// config_vocabulary_test.go fails on it instead of letting it rot.
+//
+// The order is the order the vocabulary is documented in, and the order the
+// accepted spellings below are grouped by — canonical name first, aliases
+// after — so every message that lists them reads the same way.
+var supportedPlatforms = []Platform{PlatformFeishu, PlatformDingtalk, PlatformSlack}
+
+// platformSpellings is every accepted spelling of a platform name and the
+// canonical platform it maps to. It is the single source of truth on the
+// implementation side: ParsePlatform reads it, PlatformSpellings reports it,
+// and the guard in config_vocabulary_test.go compares it against the set
+// internal/config accepts.
+//
+// WHY a table instead of a switch: the CLI flag and the serve config path
+// used to carry different vocabularies for the same field. The CLI went
+// through ParsePlatform (aliases, case-insensitive, trimmed) while the
+// config path switched on the raw string and accepted exactly three
+// spellings — so a bot configured as "lark" worked from the CLI and refused
+// to boot the server. One field, two meanings, and the refusal message
+// listed a hand-written set of platforms that nothing compared against the
+// adapters.
+var platformSpellings = []struct {
+	Spelling string
+	Platform Platform
+}{
+	{"feishu", PlatformFeishu},
+	{"lark", PlatformFeishu},
+	{"dingtalk", PlatformDingtalk},
+	{"dingding", PlatformDingtalk},
+	{"dd", PlatformDingtalk},
+	{"slack", PlatformSlack},
+}
+
+// SupportedPlatforms returns the canonical platform identifiers that have an
+// adapter, in vocabulary order.
+func SupportedPlatforms() []Platform {
+	out := make([]Platform, len(supportedPlatforms))
+	copy(out, supportedPlatforms)
+	return out
+}
+
+// PlatformSpellings returns every accepted spelling of a platform name, in
+// vocabulary order. Error messages and the configuration guard read it from
+// here, so a platform that is added in one place cannot be missing from the
+// other.
+func PlatformSpellings() []string {
+	out := make([]string, 0, len(platformSpellings))
+	for _, e := range platformSpellings {
+		out = append(out, e.Spelling)
 	}
+	return out
+}
+
+// ParsePlatform normalises a human-friendly platform name to a Platform
+// constant. It is case-insensitive, ignores surrounding whitespace and
+// accepts the aliases in platformSpellings. Unknown values yield
+// ErrUnknownPlatform.
+func ParsePlatform(s string) (Platform, error) {
+	key := strings.ToLower(strings.TrimSpace(s))
+	for _, e := range platformSpellings {
+		if e.Spelling == key {
+			return e.Platform, nil
+		}
+	}
+	return "", fmt.Errorf("chatops: parse platform %q: %w", s, ErrUnknownPlatform)
 }
 
 // --- Event ------------------------------------------------------------------
