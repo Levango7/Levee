@@ -18,6 +18,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { clearToken } from '@/api/client'
+import { currentSubject } from '@/utils/identity'
 import { useTheme, type ThemeChoice } from '@/composables/useTheme'
 import { useDensity, type DensityChoice } from '@/composables/useDensity'
 import { useAlertStream } from '@/composables/useAlertStream'
@@ -26,6 +27,21 @@ import CommandPalette from '@/components/CommandPalette.vue'
 const route = useRoute()
 const router = useRouter()
 const { choice: themeChoice, resolved: themeResolved, setChoice: setTheme } = useTheme()
+
+// Who the topbar greets. Read from the session token (utils/identity) rather
+// than hardcoded: the literal "operator" was shown to every user, including
+// one signed in as alice — and the approver fields already read the same
+// source, so the topbar disagreed with the audit attribution happening below
+// it. Refreshed per route: login swaps the token and lands on a route, which
+// is the only moment the identity can change without a reload.
+const subject = ref(currentSubject())
+watch(
+  () => route.fullPath,
+  () => { subject.value = currentSubject() },
+)
+// Initials for the avatar, computed from the same subject: the avatar said OP
+// to everyone, which was the same hardcoded identity in a smaller font.
+const initials = computed(() => subject.value.trim().slice(0, 2).toUpperCase() || '??')
 
 const collapsed = ref(false)
 const paletteOpen = ref(false)
@@ -123,7 +139,10 @@ function handleCommand(command: string): void {
     ElMessage.success('已退出登录')
     router.push('/login')
   } else if (command === 'docs') {
-    window.open('https://github.com/nexus/levee', '_blank')
+    // The link must name a repository that exists: this pointed at
+    // github.com/nexus/levee, a path the project has never been published
+    // under, so the topbar's 文档 button was a 404 in a menu.
+    window.open('https://github.com/Levango7/Levee', '_blank')
   } else {
     setTheme(command as ThemeChoice)
   }
@@ -304,8 +323,8 @@ watch(
 
           <el-dropdown trigger="click" @command="handleCommand">
             <button class="topbar__user" type="button">
-              <span class="topbar__avatar" aria-hidden="true">OP</span>
-              <span class="topbar__user-name">operator</span>
+              <span class="topbar__avatar" aria-hidden="true">{{ initials }}</span>
+              <span class="topbar__user-name">{{ subject }}</span>
               <el-icon class="topbar__caret"><ArrowDown /></el-icon>
             </button>
             <template #dropdown>

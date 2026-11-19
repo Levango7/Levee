@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 10
+const currentSchemaVersion = 11
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -321,6 +321,24 @@ WHEN NEW.result NOT IN ('', 'completed', 'failed', 'rolled_back')
 BEGIN
     SELECT RAISE(ABORT, 'run_assignment.result is not an assignment result');
 END`,
+		},
+	},
+	{
+		// runs.label / runs.team (v11): the change's display name and owning
+		// team, both carried by the create request and printed by the board.
+		//
+		// Both were echoed in the create RESPONSE and stored nowhere, so the
+		// first refresh turned the label back into a name derived from the
+		// workflow and made the team vanish — a board that disagrees with itself
+		// between the moment of creation and the moment you look at it again.
+		// They are new columns rather than a repurposing because neither has a
+		// historical value to migrate: nothing was ever written there, so ''
+		// ("the author gave none") is the only truthful default, and the read
+		// mapper derives a display name when it reads one.
+		version: 11,
+		stmts: []string{
+			`ALTER TABLE runs ADD COLUMN label TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE runs ADD COLUMN team TEXT NOT NULL DEFAULT ''`,
 		},
 	},
 }

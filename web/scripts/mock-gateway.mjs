@@ -407,7 +407,7 @@ async function handleGateVerify(req, res) {
   })
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const u = req.url.split('?')[0]
 
   if (u === '/__mode') {
@@ -446,10 +446,19 @@ const server = http.createServer((req, res) => {
     return send(res, { mode: 'unkeyed', algorithm: 'SHA-256', keyed: false })
   }
   if (u === '/api/v1/system/status') {
+    // Wire shape, not DTO shape: the gateway sends protojson of
+    // SystemStatusResponse, whose field is `status` (not `version`/`uptime`)
+    // and whose int64 fields are STRINGS (`uptimeSeconds`). This mock used to
+    // invent a friendlier object, which hid the page's blank "存储后端" cell
+    // behind a passing browser check — a fixture nicer than the wire tests
+    // nothing.
     return send(res, {
-      version: 'v1.21.0', uptime: 86400 * 12, activeRuns: 3, pausedRuns: 1,
-      backend: 'sqlite', warnings: ['notify.webhook 未配置'], components: [],
+      status: 'healthy', uptimeSeconds: String(86400 * 12), storeType: 'sqlite',
+      controlPlaneReachable: true, runCountsAvailable: true,
     })
+  }
+  if (u === '/api/v1/system/version') {
+    return send(res, { version: 'v1.21.0', commit: 'mock', builtAt: new Date(Date.now()).toISOString() })
   }
   if (u === '/api/v1/system/batch-status') return send(res, fleetBatchStatus(FLEET_HOSTS_PER_BATCH))
   if (u === '/api/v1/system/cluster-status') {
@@ -486,7 +495,15 @@ const server = http.createServer((req, res) => {
   }
   if (u === '/api/v1/system/auth-info') return send(res, { oidcEnabled: false, githubEnabled: false })
   if (u === '/api/v1/system/config') {
-    return send(res, { format: 'yaml', sourcePath: '/etc/levee/config.yaml', content: 'server:\n  port: 8080\n', loadedAt: now })
+    // `content` is protobuf bytes on the wire, so protojson renders it BASE64.
+    // The mock used to send plain YAML, which made the console's config panel
+    // look fine in development and unreadable in production. The view decodes;
+    // the fixture must match what the gateway actually sends.
+    const yaml = 'server:\n  port: 8080\n'
+    return send(res, {
+      format: 'yaml', sourcePath: '/etc/levee/config.yaml',
+      content: Buffer.from(yaml, 'utf8').toString('base64'), loadedAt: now,
+    })
   }
   if (u === '/api/v1/system/change-trend') {
     const days = []
@@ -564,6 +581,52 @@ const server = http.createServer((req, res) => {
   // answers with three honest outcomes instead of always passing).
   if (u === '/api/v1/gates/verify' && req.method === 'POST') {
     return handleGateVerify(req, res)
+  }
+
+  // --- conversation ----------------------------------------------------------
+  // An empty session list is an HONEST answer and a different page state from
+  // an error: without these routes the conversation page rendered a red block
+  // that sat outside the two-column grid (below the fold), so the first thing a
+  // developer saw in mock mode was a failure the real backend does not produce.
+  if (u === '/api/v1/conversation/sessions' && req.method === 'POST') {
+    let body = {}
+    try { body = await readJsonBody(req) } catch { body = {} }
+    const iso = new Date(Date.now()).toISOString()
+    return send(res, { session: {
+      id: 'sess-mock-1', user_id: body?.user_id || 'operator', alert_id: body?.alert_id || '',
+      state: 'active', messages: [], created_at: iso, updated_at: iso,
+    } })
+  }
+  if (u === '/api/v1/conversation/sessions') {
+    return send(res, { sessions: [] })
+  }
+  if (/^\/api\/v1\/conversation\/sessions\/[^/]+\/messages$/.test(u) && req.method === 'POST') {
+    let body = {}
+    try { body = await readJsonBody(req) } catch { body = {} }
+    return send(res, { reply: {
+      text: body?.text
+        ? `mock 收到：「${body.text}」。这是 mock 网关的固定回执，真实后端会给出会话化答复。`
+        : 'mock 收到空消息。',
+    } })
+  }
+  if (/^\/api\/v1\/conversation\/sessions\/[^/]+$/.test(u)) {
+    const id = u.split('/').pop()
+    return send(res, { session: {
+      id, user_id: new URL(req.url, 'http://x').searchParams.get('user_id') || 'operator',
+      state: 'closed', messages: [],
+      created_at: new Date(Date.now()).toISOString(), updated_at: new Date(Date.now()).toISOString(),
+    } })
+  }
+
+  // --- alerts: the per-alert status RPC (protojson path, snake_case fields) --
+  if (u === '/api/v1/AlertService/GetAlertStatus' && req.method === 'POST') {
+    let body = {}
+    try { body = await readJsonBody(req) } catch { body = {} }
+    return send(res, {
+      id: body?.id || 'alert-mock', status: 'firing',
+      starts_at: new Date(Date.now() - 3600000).toISOString(), ends_at: '',
+      severity: 'warning',
+    })
   }
 
   send(res, { error: 'mock: no route for ' + u }, 404)

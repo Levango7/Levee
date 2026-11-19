@@ -14,6 +14,26 @@ import type { LoadTier } from '@/utils/apiState'
 import { formatTimestamp, formatUptime } from '@/utils/format'
 import { healthLabel, verdictLabel } from '@/utils/diagnosis'
 
+// The config travels as protobuf `bytes`, and protojson renders bytes as
+// base64 — so the wire value is "c2VydmVyOg…" while the operator needs the
+// YAML. Decoding here (not by making the REST gateway redefine a proto field)
+// keeps the wire shape honest and puts the presentation decision where it
+// belongs: with the reader.
+//
+// A value that is not valid base64 is passed through unchanged rather than
+// replaced by an error: some deployments legitimately answer with plain text,
+// and showing it beats showing nothing.
+function decodeConfigContent(content: string): string {
+  if (!content || !/^[A-Za-z0-9+/=\s]+$/.test(content)) return content
+  try {
+    const binary = atob(content.replace(/\s+/g, ''))
+    if (!binary) return content
+    return new TextDecoder().decode(Uint8Array.from(binary, (ch) => ch.charCodeAt(0)))
+  } catch {
+    return content
+  }
+}
+
 const route = useRoute()
 
 const loading = ref(false)
@@ -79,7 +99,8 @@ async function loadStatus(): Promise<void> {
 
 async function loadConfig(): Promise<void> {
   try {
-    config.value = await systemApi.config({ redactSecrets: true })
+    const raw = await systemApi.config({ redactSecrets: true })
+    config.value = { ...raw, content: decodeConfigContent(raw.content) }
     configError.value = null
   } catch (err) {
     configError.value = err

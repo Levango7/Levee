@@ -136,6 +136,24 @@
 - **分类口径**：**400（`InvalidArgument`）＝请求本身不成立**（`target_hosts` 为空、目标机名不在 inventory）；**412（`FailedPrecondition`）＝请求成立、当前状态不允许**（目标机 retired、冻结窗口、SQL 审核拒绝、声明门禁不可执行、计划产物缺失或与 `plan_hash` 漂移）。
 - **验证**：`internal/wiring/errors_test.go`（sentinel 与码双读，3 例）、`internal/grpc/change_service_plan_error_codes_test.go`（保留分类 2 例 + 未分类仍 Internal 1 例）；`go test ./internal/wiring/ ./internal/grpc/ ./cmd/levee/` 全绿；`scripts/check_doc_anchors.py` PASSED；`docs/levee-api.md` §13.2 补了拒绝分类说明。
 - **边界**：这是**状态码**变更，不是行为变更——拒绝的原因、文案与 run 的终态（apply 侧仍按原路径落 `failed`）都没变，只是 500 改成了 400/412。副作用是既有「HTTP 500」监控会少一类误报。
+### 修复（2026-11-17 第三方整体审计的核实批：B-01 归属字段 + B-02/B-04/B-06 与前端收口）
+
+- **核实方法**：对报告 787 行逐项按代码与实测判据复核（不接受复述）。**真缺口**：B-01..B-06、F-03/F-04/F-06/F-07/F-08/F-14；**报告描述与实测不符**：F-01/F-02 的机理（列宽合计超容器，而非「创建时间被压到 60px」——CDP 实测该列 168px，总预算 1100/1132 vs 容器 950）；**已在 master 修掉**：审计空态、发布单贴顶、弹窗窄屏溢出/双击（d209e9c），以及 **B-03（空链语义）与 B-05（错误分级）——他线已先于我修好**，本批撤掉我先前的重复实现（`hash_chain_state` 三态字段与 `planFailureStatus` 分类器；master 用 `audit.VerifyTraces` 真重算摘要 + 「未封口≠篡改」 + `internal/wiring/errors.go` 哨兵带码）。**报告与证据里出现的 `alice-secret` 等是审计自建测试令牌，不是生产凭据，未入库。**
+- **B-01（P0）模板/手工变更的 label 与 team 曾只回显不落库**：`state.Run` 根本没有这两列；`template_service.go` 回显请求值，读映射把 label 从 workflow 名派生、team 全仓无处取——**创建响应与刷新后的单据不一致**。修法＝`runs.label` / `runs.team`（schema v11：sqlite `migrations` + `pgMigrations` 双梯；`pgCurrentSchemaVersion`/`currentSchemaVersion` 同步到 11；PG 步带 `IF NOT EXISTS` 以兼容其重放测试）。三条创建路径都写入（CreateChange / InstantiateTemplate / CloneChange，克隆保留源名/团队、改名覆盖只改被覆盖字段）；读映射收敛为 `labelOf()`：存了就用存的，没存才派生（**派生名不写回**——空标签仍是「作者没写」，不是「作者写了派生名」）。PG 侧 v9 的 `IF NOT EXISTS` 也在 ratchet 的追加列解析里被承认。
+- **B-02（P1）启动日志曾写「Plan/approve/status tracking remain fully functional」**——而默认不加 `--engine-enabled` 时 plan 是空的、approve 412。改为明说「只读/状态模式可用哪些，哪条链需要旗标」；`docs/quickstart.md` 在 serve 命令旁加注「要跑计划→审批→执行请加 `--engine-enabled`」。
+- **B-06（P2）README 曾称 `--insecure` 仍按当前操作者记录**，与「投票必须可验证主体」的实现冲突（401）。改为「只放宽传输，不放宽审批主体」。
+
+### 修复（同一批：mock 契约保真 + 前端几何与身份）
+
+- **B-04（P1）`/system/config` 的 content 是 base64（protobuf bytes），前端当 YAML 渲染**：视图在读取后解码（`decodeConfigContent`，UTF-8 安全），非 base64 原样放行；**mock 改为按真实 wire 发 base64**——此前发明文 YAML，恰好掩盖了生产缺陷。同文件 `/system/status` 由杜撰的 `{version,uptime,backend}` 改回真实形状（`status/uptimeSeconds/storeType/...`，int64 为字符串），并补 `/system/version` 路由——mock 比真后端「更完整」的代价就是门禁全绿而页面空白。
+- **mock 覆盖面**：补 `/conversation/sessions`（列表空是诚实的空态而非错误）/消息回执/详情、`/AlertService/GetAlertStatus`（RPC 路径，snake_case 字段）。此前 mock 无路由使对话页默认开发态必错、告警状态必错。
+- **F-03（P1）趋势图固定 640px**：`ChangesView` 用 ResizeObserver 把**容器宽度**传给 `TrendChart`（该 prop 自述「fluid up to this」，从未有人传过 width）；实测 svg 640 in parent 918。修复后图随面板宽走，不再右半空白。
+- **F-04（P1）对话页错误块在两栏 grid 之外、视口之外**（实测 bottom 946 > 视口 900）：拆成两类——**会话列表失败**（页面主体就是它，整块替换 grid 渲染在顶部）；**发消息/关会话失败**（保留 grid，在会话面板附近给出）。`sessionsFailed` 在 catch 点分别置位，一个 error ref 分不出这两件事。
+- **F-06（P1）顶栏/对话页硬编码 `operator`**：顶栏姓名与头像字母改读 `utils/identity.currentSubject()`（随路由刷新——登录换 token 恰好落在路由上），`currentUserID` 同样取值（会话按 user_id 隔离，写死 operator 会把不同用户的会话混进一桶）。
+- **F-07（P1）「转授权」是假按钮**：旧实现以目标人身份投票（服务端按认证主体拒绝），**必然失败**。改为解释型：悬停与点击都说明「服务端尚无 DelegateApproval 端点；此前的实现会被当作他人投票而拒绝」。**F-08**：审批人输入框改只读展示当前主体（可编辑只会自造 403）。
+- **F-14（P3）顶栏「文档」指向 `github.com/nexus/levee`**——该项目从未发布于该路径；改为 `github.com/Levango7/Levee`。
+- **F-01/F-02（P1）1280 临界宽度**：按**实测**机理修（不是调创建时间列宽）——视口 < 1400 时隐藏次要列：审批页隐藏 团队/环境，变更看板隐藏 范围/模板，使关键列保持声明宽度。列宽总和超容器这个事实已用 CDP 实测钉住。
+- **验证**：`go test ./...` 全绿；新增 state 迁移 3 例 + grpc 归属 4 例；前端 `vue-tsc` 0 错误、`vitest` 350 用例、`vite build` 通过；`internal/web/dist` 重打并入库（CI 逐字节比对）。四类 Python 门禁全过。
 
 ### 新增（信创裸机取证脚本化：一次命令拿到全部证据，三个真 bug 只有实跑才暴露）
 

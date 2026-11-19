@@ -312,6 +312,21 @@ BEGIN
 END $$`,
 		},
 	},
+	{
+		// runs.label / runs.team (v11, mirroring the SQLite step). The create
+		// request has carried both since the field was introduced; until now
+		// they were echoed in the response and stored nowhere, so the first
+		// refresh derived a name from the workflow and lost the team. No
+		// backfill: nothing was ever written, and '' is the only truthful value.
+		version: 11,
+		stmts: []string{
+			// IF NOT EXISTS for the same replay reason as v9 above: the replay
+			// test drives the whole ladder over a pgschema.sql-built fixture,
+			// which already carries the columns.
+			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS label TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS team TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and

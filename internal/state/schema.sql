@@ -57,7 +57,13 @@ CREATE TABLE IF NOT EXISTS runs (
     -- column inserted mid-list would leave fresh and upgraded databases differing.
     -- TestV9PriorityIsDeclaredLastInBothSchemas holds both DDL files to that rule,
     -- including the PostgreSQL one, where no fresh-vs-upgraded comparison exists.
-    priority        TEXT    NOT NULL DEFAULT ''    -- low|normal|high|urgent
+    priority        TEXT    NOT NULL DEFAULT '',   -- low|normal|high|urgent
+    -- label / team are the author's own words for the change; '' means they
+    -- gave none (the read mapper then derives a display name from the
+    -- workflow). Declared last, after priority, because v11 appends them — see
+    -- the ordering note above and TestV9PriorityIsDeclaredLastInBothSchemas.
+    label           TEXT    NOT NULL DEFAULT '',
+    team            TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_status       ON runs (status);

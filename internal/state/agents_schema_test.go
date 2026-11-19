@@ -234,6 +234,13 @@ func TestMigrate_V7ToV8_AgentsTable(t *testing.T) {
 	// TestMigrate_FreshAndUpgraded_SchemaShapesMatch uses for the v2/v3 columns.
 	_, err = upgraded.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN priority`)
 	require.NoError(t, err)
+	// The v11 columns for the same reason: a database frozen at v7 predates them,
+	// and replaying an ADD COLUMN onto a table that already has it is a fixture
+	// lie, not a migration bug.
+	_, err = upgraded.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN label`)
+	require.NoError(t, err)
+	_, err = upgraded.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN team`)
+	require.NoError(t, err)
 
 	_, err = upgraded.DB().ExecContext(ctx, `DELETE FROM schema_version`)
 	require.NoError(t, err)

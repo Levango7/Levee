@@ -6,6 +6,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TableInstance } from 'element-plus'
 import { changesApi, auditApi } from '@/api'
+import { useResponsive } from '@/composables/useResponsive'
 import type { Change, TraceEntry } from '@/types/levee'
 import StatusTag from '@/components/StatusTag.vue'
 import StateBlock from '@/components/StateBlock.vue'
@@ -109,6 +110,12 @@ const history = ref<TraceEntry[]>([])
 // deployments) keeps the historical fallback.
 const approver = ref(currentSubject())
 
+// Same column budget as the changes board: below 1400px the two secondary
+// columns (团队 / 环境) are dropped so 创建时间 and 决策 keep their declared
+// widths at 1280 — measured, the full set needs 1100px against a ~950px panel.
+const { width: viewportWidth } = useResponsive()
+const denseColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1400)
+
 // One decision at a time. Approve/reject/delegate are irreversible writes
 // to the audit chain; a double-click (or a double keypress of a/r/d while
 // the first request is in flight) sends the decision twice. The guard
@@ -202,35 +209,18 @@ async function reject(change: Change): Promise<void> {
   }
 }
 
-async function delegate(change: Change): Promise<void> {
-  if (acting.value) return
-  let target = ''
-  try {
-    const result = await ElMessageBox.prompt('请输入转授权目标用户', `转授权：${change.label}`, {
-      confirmButtonText: '转授权',
-      cancelButtonText: '取消',
-      inputPlaceholder: '目标用户',
-      inputValidator: (v) => !!v || '请输入目标用户',
-    })
-    target = result.value
-  } catch {
-    return
-  }
-  // The current API does not have a dedicated delegate endpoint; we record it
-  // as a comment on the approval so the audit trail captures the transfer.
-  acting.value = true
-  try {
-    await changesApi.approve(change.id, {
-      approver: target,
-      comment: `delegated from ${approver.value}`,
-    })
-    ElMessage.success(`已转授权给 ${target}`)
-    loadPending()
-  } catch (err) {
-    ElMessage.error(`转授权失败：${(err as { message?: string })?.message}`)
-  } finally {
-    acting.value = false
-  }
+// The explanation the button carries on hover and on activation.
+const delegateHint =
+  '转授权暂未提供：服务端尚无 DelegateApproval 端点；此前的实现会以目标用户身份投票，' +
+  '服务端按认证主体拒绝（401/403）。需要此能力请先立项，而不是继续伪装成他人投票。'
+
+async function delegate(_change: Change): Promise<void> {
+  // What this button used to do: approve(change.id, { approver: target }) —
+  // i.e. cast a vote as ANOTHER person. The server reads the authenticated
+  // subject and refuses, so every click ended in an error, and the operator
+  // read it as "转授权坏了". Explaining it is the honest affordance until a
+  // DelegateApproval RPC exists; silently voting as somebody else never was one.
+  ElMessage.info(delegateHint)
 }
 
 function onExpand(row: Change, expanded: unknown): void {
@@ -272,7 +262,14 @@ const pendingCount = computed(() => pending.value.length)
         <div class="head-tools">
           <span class="approver">
             <span class="approver__label">审批人</span>
-            <el-input v-model="approver" size="small" style="width: 132px" />
+            <!-- Read-only: the vote's actor is the AUTHENTICATED SUBJECT, so an
+                 editable field here was an invitation to produce a 403 for
+                 oneself. Showing who you are beats letting you rename who you
+                 are. -->
+            <span class="approver__value lv-mono"
+                  title="投票以认证主体为准，字段不可编辑；此前改成别人只会被服务端拒绝（403）">{{
+              approver
+            }}</span>
           </span>
           <!-- The keyboard path is only usable if it is SAYABLE: the keys are
                printed next to the list they drive, not hidden in a help modal. -->
@@ -354,8 +351,12 @@ const pendingCount = computed(() => pending.value.length)
               <span class="cell-prio" :class="`cell-prio--${row.priority}`">{{ priorityLabel(row.priority) }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="team" label="团队" width="110" />
-          <el-table-column prop="environment" label="环境" width="110" />
+          <!-- Below 1400px the two secondary columns are dropped: at 1280 the
+               declared widths sum to 1100px against a ~950px panel, so the
+               operator either loses 决策 off the right edge or drags sideways.
+               创建时间 and 决策 stay visible at full width. -->
+          <el-table-column v-if="!denseColumns" prop="team" label="团队" width="110" />
+          <el-table-column v-if="!denseColumns" prop="environment" label="环境" width="110" />
           <el-table-column label="创建时间" width="168">
             <template #default="{ row }">
               <span class="cell-time lv-mono">{{ formatTimestamp(row.createdAt) }}</span>
@@ -370,7 +371,17 @@ const pendingCount = computed(() => pending.value.length)
                    user watches a click do nothing and clicks again. -->
               <el-button text type="success" :disabled="acting" @click="approve(row)">通过</el-button>
               <el-button text type="danger" :disabled="acting" @click="reject(row)">驳回</el-button>
-              <el-button text type="primary" :disabled="acting" @click="delegate(row)">转授权</el-button>
+              <!-- Delegation is EXPLAINED, not faked: the old path voted as the
+                   target person, which the server rightly refuses
+                   (unauthorized approver) and which could never succeed. The
+                   button stays visible with the reason on it, so an operator
+                   learns "not offered" instead of "broken". -->
+              <el-button
+                text
+                type="primary"
+                :title="delegateHint"
+                @click="delegate(row)"
+              >转授权</el-button>
             </template>
           </el-table-column>
         </el-table>

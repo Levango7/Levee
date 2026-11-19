@@ -226,6 +226,12 @@ func TestPGMigrate_V1ToV2_CredentialsTags(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS priority`)
 	require.NoError(t, err)
+	// v11's columns, same reason: a fixture claiming to be an older database must
+	// not still carry the columns that only the newer steps add.
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS label`)
+	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `ALTER TABLE runs DROP COLUMN IF EXISTS team`)
+	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS plan_hash`)
 	require.NoError(t, err)
 	_, err = store.DB().ExecContext(ctx, `ALTER TABLE approvals DROP COLUMN IF EXISTS revision`)

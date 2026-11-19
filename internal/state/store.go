@@ -20,8 +20,20 @@ type Run struct {
 	ID           string `json:"id"`
 	WorkflowName string `json:"workflow_name"`
 	TemplateName string `json:"template_name"`
-	Params       string `json:"params"` // JSON encoded
-	PlanHash     string `json:"plan_hash"`
+	// Label is the change's display name as its author typed it: the create
+	// request carries it and the board prints it. It exists as its own column
+	// because dsl.DisplayName(WorkflowName) is a DERIVED fallback — a
+	// reasonable name when the author never gave one, but not an answer to
+	// "what did they call this" once they did. Until schema v11 the value was
+	// echoed in the create response and stored nowhere, so a refresh turned the
+	// name back into the workflow name.
+	Label string `json:"label,omitempty"`
+	// Team is the owning team, also author-supplied. Until v11 the read mapper
+	// never set it at all, so every change reported an empty team after the
+	// first refresh.
+	Team     string `json:"team,omitempty"`
+	Params   string `json:"params"` // JSON encoded
+	PlanHash string `json:"plan_hash"`
 	// PlanJSON is the canonical JSON encoding of the generated plan.Plan
 	// ('' when no plan has been persisted). Apply refuses to execute
 	// without it and re-verifies PlanHash against it to detect drift.

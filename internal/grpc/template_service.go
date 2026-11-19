@@ -380,9 +380,16 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 	// the other half.
 	creator := creatorFromCtx(ctx)
 	run := &state.Run{
-		ID:             runID,
-		WorkflowName:   tmplContent,
-		TemplateName:   req.TemplateName,
+		ID:           runID,
+		WorkflowName: tmplContent,
+		TemplateName: req.TemplateName,
+		// Label and team are persisted because the response below echoes them.
+		// Until schema v11 they were not stored, so an instantiated change
+		// answered with the label and team it was given and every later read —
+		// board, detail, audit export — showed a name derived from the rendered
+		// workflow and an empty team. Same defect class as Priority just below.
+		Label:          req.Label,
+		Team:           req.Team,
 		Params:         paramsToJSON(req.Params),
 		Status:         runStatus,
 		ApprovalStatus: state.ApprovalStatusPending,
