@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/nexus/levee/internal/config"
 )
@@ -32,6 +33,48 @@ func TestShippedSampleConfigLoads(t *testing.T) {
 			assert.Equal(t, "sqlite", cfg.Database.Driver,
 				"both examples ship the default driver; a reader must see the same value the binary defaults to")
 			assert.NotEmpty(t, cfg.Database.Path, "database.path must survive postProcess")
+		})
+	}
+}
+
+// TestShippedSampleChannelSectionUsesTheRealSchema guards the nesting of the
+// shipped examples. The loader reads `channel.ssh` / `channel.winrm`; a
+// top-level `ssh:` / `winrm:` is silently ignored by the YAML decoder, so the
+// sample would show values that never reach the transport — the exact class of
+// fake knob this section is supposed to eliminate.
+func TestShippedSampleChannelSectionUsesTheRealSchema(t *testing.T) {
+	for _, p := range shippedConfigs {
+		t.Run(filepath.Base(p), func(t *testing.T) {
+			raw, err := os.ReadFile(p)
+			require.NoError(t, err)
+
+			var doc map[string]any
+			require.NoError(t, yaml.Unmarshal(raw, &doc))
+			require.Contains(t, doc, "channel",
+				"%s must nest the channel section where the loader reads it", p)
+			assert.NotContains(t, doc, "ssh",
+				"%s has a top-level ssh section; the loader only reads channel.ssh", p)
+			assert.NotContains(t, doc, "winrm",
+				"%s has a top-level winrm section; the loader only reads channel.winrm", p)
+		})
+	}
+}
+
+// TestShippedSampleSSHDefaultsAreUnset pins the "not configured" semantics on
+// both shipped examples. A sample that writes port 22 / auth_method key /
+// connect_timeout 10s would, once copied, silently override the target port,
+// force key auth and shorten the channel's 30s timeout.
+func TestShippedSampleSSHDefaultsAreUnset(t *testing.T) {
+	for _, p := range shippedConfigs {
+		t.Run(filepath.Base(p), func(t *testing.T) {
+			cfg, err := config.Load(p)
+			require.NoError(t, err)
+			assert.Zero(t, cfg.Channel.SSH.Port,
+				"%s must leave the port unset so the target's own port wins", p)
+			assert.Empty(t, cfg.Channel.SSH.AuthMethod,
+				"%s must leave auth_method unset so credentials decide", p)
+			assert.Zero(t, cfg.Channel.SSH.ConnectTimeout,
+				"%s must leave connect_timeout unset so the channel default (30s) applies", p)
 		})
 	}
 }

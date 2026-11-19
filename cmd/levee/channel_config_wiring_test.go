@@ -7,19 +7,13 @@ package main
 // sections are validated at load time — a bad value fails the boot with a
 // named message — which reads exactly like a setting that does something.
 // It does not. Measured on 2026-11-18: of the thirteen fields, only four
-// ever reach a transport (strict_host_check, known_hosts, become_method,
-// become_user, forwarded by cmd_serve.go through
-// sshchannel.SetDefaultConfig). The other nine are validated and then
-// dropped on the floor:
+// originally reached a transport (strict_host_check, known_hosts,
+// become_method, become_user). The D-9 wiring then connected auth_method,
+// port and connect_timeout as well, bringing the wired total to seven. The
+// remaining six are validated and then dropped on the floor:
 //
-//   - channel.ssh.auth_method — the SSH channel's Config.AuthMethod is
-//     empty in production, so buildAuthMethods infers the method from the
-//     credential instead of from the operator's setting;
 //   - channel.ssh.key_path — the key path comes from the resolved
 //     credential (CredentialRef.KeyPath), not from the config file;
-//   - channel.ssh.port — the port comes from Target.Port();
-//   - channel.ssh.connect_timeout — the channel uses its own
-//     DefaultConnectTimeout (30s), while the config default says 10s;
 //   - channel.ssh.pool_size — the SSH pool carries its own defaults;
 //   - channel.winrm.* — the WinRM factory is registered with Config{}
 //     (internal/channel/winrm's init), so the whole section is inert.
@@ -64,18 +58,9 @@ import (
 // Keys are the selector the wiring check looks for, i.e.
 // `Channel.<section>.<Field>`.
 var knownUnwiredChannelConfig = map[string]string{
-	"Channel.SSH.AuthMethod": "the SSH channel's own Config.AuthMethod is empty in " +
-		"production (ssh.NewConfig never sets it), so buildAuthMethods infers the " +
-		"method from the resolved credential — the operator's auth_method does not " +
-		"decide anything. Governing behaviour: the credential's key/password shape.",
 	"Channel.SSH.KeyPath": "the private key path comes from the resolved credential " +
 		"(channel.CredentialRef.KeyPath), not from the config file; the config value " +
-		"is only a default for the credential store to consult.",
-	"Channel.SSH.Port": "the port comes from the target (Target.Port()), and the " +
-		"channel falls back to its own DefaultPort when the target has none; " +
-		"the config value never overrides a per-target port.",
-	"Channel.SSH.ConnectTimeout": "the channel uses its own DefaultConnectTimeout " +
-		"(30s); the config default (10s) is not forwarded.",
+		"is expanded and validated but not forwarded to the transport.",
 	"Channel.SSH.PoolSize": "the SSH connection pool carries its own defaults " +
 		"(internal/channel/ssh/pool.go); the config value is not forwarded.",
 	"Channel.WinRM.Port": "the WinRM factory is registered with Config{} " +
@@ -83,8 +68,8 @@ var knownUnwiredChannelConfig = map[string]string{
 		"the port comes from the target / the channel's DefaultPort.",
 	"Channel.WinRM.Transport": "same: the factory is registered with Config{}, so " +
 		"the transport is always the channel default (negotiate). The vocabulary is " +
-		"also mismatched — the config accepts negotiate|kerberos while the channel " +
-		"implements negotiate|ntlm — which stays invisible until the section is wired.",
+		"now aligned (negotiate|ntlm), but the section remains inert until its " +
+		"transport seam is wired.",
 	"Channel.WinRM.ConnectTimeout": "the WinRM channel uses its own DefaultTimeout " +
 		"(30s); the config value is not forwarded.",
 	"Channel.WinRM.PoolSize": "the WinRM pool carries its own defaults; the config " +

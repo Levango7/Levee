@@ -301,13 +301,29 @@ type ChannelConfig struct {
 
 // SSHConfig configures the SSH channel.
 type SSHConfig struct {
-	Port            int           `json:"port"              mapstructure:"port"`
-	AuthMethod      string        `json:"auth_method"       mapstructure:"auth_method"` // key | password
-	KeyPath         string        `json:"key_path"          mapstructure:"key_path"`
-	KnownHosts      string        `json:"known_hosts"       mapstructure:"known_hosts"`
-	StrictHostCheck bool          `json:"strict_host_check" mapstructure:"strict_host_check"`
-	ConnectTimeout  time.Duration `json:"connect_timeout"   mapstructure:"connect_timeout"`
-	PoolSize        int           `json:"pool_size"         mapstructure:"pool_size"`
+	// Port overrides the port carried by the target. Zero means "unset":
+	// the target's port (then the channel default) wins, so a non-zero
+	// shipped default cannot silently override per-target ports. The
+	// channel's documented precedence is config > target > default.
+	Port int `json:"port"              mapstructure:"port"`
+	// AuthMethod pins the authentication strategy. Empty means "infer from
+	// the credential" (key when a key path is present, else password) — the
+	// historical behaviour. A non-empty value is honoured verbatim and fails
+	// closed when the credential cannot serve it.
+	AuthMethod string `json:"auth_method"       mapstructure:"auth_method"` // "" | key | password | key+password | password+key
+	// KeyPath is expanded and validated here, but it is not forwarded to the
+	// SSH transport: the resolved credential's KeyPath governs authentication
+	// (see D-9 in docs/blocked-items.md).
+	KeyPath         string `json:"key_path"          mapstructure:"key_path"`
+	KnownHosts      string `json:"known_hosts"       mapstructure:"known_hosts"`
+	StrictHostCheck bool   `json:"strict_host_check" mapstructure:"strict_host_check"`
+	// ConnectTimeout bounds one connect operation: the TCP dial AND the SSH
+	// handshake. Zero means the channel default (30s); a negative value
+	// disables the timeout (no deadline on the connect at all) — the
+	// channel's own semantics, now reachable from the config instead of only
+	// from code.
+	ConnectTimeout time.Duration `json:"connect_timeout"   mapstructure:"connect_timeout"`
+	PoolSize       int           `json:"pool_size"         mapstructure:"pool_size"`
 	// BecomeMethod enables privilege escalation for Exec: "" (default,
 	// disabled) or "sudo". Any other value fails closed at Exec time.
 	BecomeMethod string `json:"become_method" mapstructure:"become_method"`
@@ -760,22 +776,23 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	}
 
 	// Channel.SSH
-	if cfg.Channel.SSH.Port <= 0 || cfg.Channel.SSH.Port > 65535 {
-		problems = append(problems, "channel.ssh.port must be in 1..65535")
+	// Port 0 is legal and means "unset": the target's own port (then the
+	// channel default) wins. The channel's precedence is config override >
+	// target > default, so shipping a non-zero default here would silently
+	// override every per-target port once wired.
+	if cfg.Channel.SSH.Port < 0 || cfg.Channel.SSH.Port > 65535 {
+		problems = append(problems, "channel.ssh.port must be 0 (unset) or in 1..65535")
 	}
-	// The accepted set is exactly what internal/channel/ssh's buildAuthMethods
-	// implements — see sshAuthMethods() below and the guard in
-	// internal/channel/ssh that fails if these two drift apart. Before this
-	// change the config allowed key|password while the channel also implemented
-	// "key+password" / "password+key" (try the key first, fall back to the
-	// password), so a mode that EXISTS in the channel was unreachable through
-	// configuration: an operator whose hosts accept either had to pick one and
-	// hope.
+	// The non-empty accepted set is exactly what internal/channel/ssh's
+	// buildAuthMethods implements — see sshAuthMethods() below and the guard
+	// in internal/channel/ssh that fails if these two drift apart. Empty is
+	// the additional inference mode: preserve the historical behaviour of
+	// choosing the method from the resolved credential's shape.
 	switch cfg.Channel.SSH.AuthMethod {
-	case "key", "password", "key+password", "password+key":
+	case "", "key", "password", "key+password", "password+key":
 	default:
 		problems = append(problems, fmt.Sprintf(
-			"channel.ssh.auth_method %q must be one of %s", cfg.Channel.SSH.AuthMethod,
+			"channel.ssh.auth_method %q must be one of %s (empty = infer from credential)", cfg.Channel.SSH.AuthMethod,
 			strings.Join(SSHAuthMethods(), " | ")))
 	}
 	// key_path is required only when the KEY is the sole method. For
@@ -786,9 +803,10 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	if cfg.Channel.SSH.AuthMethod == "key" && cfg.Channel.SSH.KeyPath == "" {
 		problems = append(problems, "channel.ssh.key_path is required when auth_method=key")
 	}
-	if cfg.Channel.SSH.ConnectTimeout <= 0 {
-		problems = append(problems, "channel.ssh.connect_timeout must be > 0")
-	}
+	// ConnectTimeout: 0 = channel default (30s), negative = disable the
+	// timeout, positive = the override. All three are the channel's own
+	// semantics, so nothing to validate here — the channel is the authority.
+
 	if cfg.Channel.SSH.PoolSize <= 0 {
 		problems = append(problems, "channel.ssh.pool_size must be > 0")
 	}
@@ -969,12 +987,17 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("executor.rate_limit.global", 100)
 
 	// Channel.SSH
-	v.SetDefault("channel.ssh.port", 22)
-	v.SetDefault("channel.ssh.auth_method", "key")
+	// port/auth_method/connect_timeout ship as "unset" (0/"") so the
+	// historical behaviour — target port, credential inference, channel
+	// 30s default — is unchanged for operators who never touched these keys;
+	// an explicit value now reaches the transport instead of being validated
+	// and dropped (D-9).
+	v.SetDefault("channel.ssh.port", 0)
+	v.SetDefault("channel.ssh.auth_method", "")
 	v.SetDefault("channel.ssh.key_path", "~/.ssh/id_rsa")
 	v.SetDefault("channel.ssh.known_hosts", "~/.ssh/known_hosts")
 	v.SetDefault("channel.ssh.strict_host_check", true)
-	v.SetDefault("channel.ssh.connect_timeout", "10s")
+	v.SetDefault("channel.ssh.connect_timeout", 0)
 	v.SetDefault("channel.ssh.pool_size", 10)
 
 	// Channel.WinRM

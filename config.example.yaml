@@ -102,19 +102,19 @@ executor:
 channel:
   # SSH 通道（对应 SSHConfig）
   ssh:
-    # SSH 端口（1..65535）。 默认: 22
-    port: 22
-    # 认证方式: key | password。 默认: key
-    auth_method: key
-    # 私钥路径（auth_method=key 时必填，支持 ~）。 默认: ~/.ssh/id_rsa
+    # SSH 端口。0 = 未设置（用目标自带端口，再回退 22）；非 0 时覆盖目标端口。 默认: 0
+    port: 0
+    # 认证方式: key | password | key+password | password+key。空 = 按凭据推断。 默认: ""（推断）
+    auth_method: ""
+    # 私钥路径（当前仅由配置面校验；SSH 认证实际使用解析后凭据的 KeyPath）。默认: ~/.ssh/id_rsa
     key_path: ~/.ssh/id_rsa
     # known_hosts 文件路径（支持 ~）。 默认: ~/.ssh/known_hosts
     known_hosts: ~/.ssh/known_hosts
     # 严格主机密钥校验；生产环境强烈建议保持 true。 默认: true
     strict_host_check: true
-    # SSH 连接超时（> 0，Go duration）。 默认: 10s
-    connect_timeout: 10s
-    # 单目标机 SSH 连接池大小（> 0）。 默认: 10
+    # SSH 连接超时（覆盖 TCP 拨号 + SSH 握手，Go duration）。0 = 通道默认 30s；负数 = 不设超时。 默认: 0（30s）
+    connect_timeout: 0s
+    # 单目标机 SSH 连接池大小（> 0；当前仅校验，通道池仍用自己的默认值）。 默认: 10
     pool_size: 10
     # 提权方式: "" (禁用，默认) | sudo。其他取值在 Exec 时 fail-closed。
     # sudo 提权要求目标机已配置免密（NOPASSWD）sudo。 默认: ""
@@ -122,7 +122,7 @@ channel:
     # 提权目标用户（become_method=sudo 时生效）；空表示 root。 默认: ""
     become_user: ""
 
-  # WinRM 通道（对应 WinRMConfig）
+  # WinRM 通道（对应 WinRMConfig；当前整段尚未接进传输层，字段只校验不生效，见 D-9）
   winrm:
     # WinRM 端口（1..65535）。 默认: 5985（HTTP）；5986 为 HTTPS
     port: 5985
@@ -549,11 +549,11 @@ state:
 #   log_format: json
 # channel:
 #   ssh:
-#     auth_method: key
-#     key_path: /etc/levee/secrets/id_ed25519
+#     auth_method: key             # 显式要求 key 认证；凭据没有私钥时启动即失败
+#     key_path: /etc/levee/secrets/id_ed25519   # 当前仅校验；实际私钥取自解析后的凭据
 #     known_hosts: /etc/levee/known_hosts
 #     strict_host_check: true      # 保持严格主机密钥校验
-#     pool_size: 5
+#     pool_size: 5                 # 当前仅校验；通道池仍用自己的默认值
 #     become_method: ""            # 默认不提权；确需提权再用 sudo + 专用账号
 # audit:
 #   hash_chain: true               # 防篡改哈希链

@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1001,32 +1002,32 @@ func TestSSHPoolMultipleTargets(t *testing.T) {
 func relaxHostChecking(tb testing.TB) {
 	tb.Helper()
 	prev := currentDefaults()
-	SetDefaultConfig(false, "", "", "")
+	SetDefaultConfig(false, "", "", "", "", 0, 0)
 	tb.Cleanup(func() {
-		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser, prev.authMethod, prev.port, prev.connectTimeout)
 	})
 }
 
 func TestSetDefaultConfigRoundTrip(t *testing.T) {
 	prev := currentDefaults()
 	t.Cleanup(func() {
-		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser, prev.authMethod, prev.port, prev.connectTimeout)
 	})
 
 	// Explicit opt-out propagates into NewConfig.
-	SetDefaultConfig(false, "/tmp/kh_known", "", "")
+	SetDefaultConfig(false, "/tmp/kh_known", "", "", "", 0, 0)
 	cfg := NewConfig()
 	assert.False(t, cfg.StrictHostCheck)
 	assert.Equal(t, "/tmp/kh_known", cfg.KnownHostsPath)
 
 	// Strict with an explicit path propagates verbatim.
-	SetDefaultConfig(true, "/tmp/kh_strict", "", "")
+	SetDefaultConfig(true, "/tmp/kh_strict", "", "", "", 0, 0)
 	cfg = NewConfig()
 	assert.True(t, cfg.StrictHostCheck)
 	assert.Equal(t, "/tmp/kh_strict", cfg.KnownHostsPath)
 
 	// Strict with an empty path auto-detects ~/.ssh/known_hosts.
-	SetDefaultConfig(true, "", "", "")
+	SetDefaultConfig(true, "", "", "", "", 0, 0)
 	cfg = NewConfig()
 	assert.True(t, cfg.StrictHostCheck)
 	assert.Equal(t, DefaultKnownHostsPath(), cfg.KnownHostsPath)
@@ -1035,18 +1036,180 @@ func TestSetDefaultConfigRoundTrip(t *testing.T) {
 	assert.Empty(t, cfg.BecomeMethod)
 	assert.Empty(t, cfg.BecomeUser)
 
-	SetDefaultConfig(true, "", "sudo", "deploy")
+	SetDefaultConfig(true, "", "sudo", "deploy", "", 0, 0)
 	cfg = NewConfig()
 	assert.Equal(t, BecomeMethodSudo, cfg.BecomeMethod)
 	assert.Equal(t, "deploy", cfg.BecomeUser)
+
+	// The D-9 knobs propagate verbatim when set…
+	SetDefaultConfig(true, "", "", "", "key+password", 2222, 15*time.Second)
+	cfg = NewConfig()
+	assert.Equal(t, "key+password", cfg.AuthMethod)
+	assert.Equal(t, 2222, cfg.Port)
+	assert.Equal(t, 15*time.Second, cfg.ConnectTimeout)
+
+	// …and the zero values keep the historical behaviour (inference, target
+	// port, channel default timeout) instead of injecting the literal zeros.
+	SetDefaultConfig(true, "", "", "", "", 0, 0)
+	cfg = NewConfig()
+	assert.Empty(t, cfg.AuthMethod)
+	assert.Zero(t, cfg.Port)
+	assert.Equal(t, DefaultConnectTimeout, cfg.ConnectTimeout)
+}
+
+// TestDefaultConfigAuthMethodIsHonouredOrFailsClosed is the behavioural half
+// of the D-9 wiring for auth_method: an explicit method must reach
+// buildAuthMethods verbatim, and a method the credential cannot serve must
+// fail closed rather than silently falling back to inference.
+func TestDefaultConfigAuthMethodIsHonouredOrFailsClosed(t *testing.T) {
+	prev := currentDefaults()
+	t.Cleanup(func() {
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser, prev.authMethod, prev.port, prev.connectTimeout)
+	})
+
+	// Explicit "password" reaches the builder verbatim and succeeds when the
+	// credential carries a password.
+	SetDefaultConfig(true, "", "", "", "password", 0, 0)
+	cfg := NewConfig()
+	assert.Equal(t, "password", cfg.AuthMethod)
+	methods, err := (&SSHChannel{cfg: cfg}).buildAuthMethods(channel.CredentialRef{Username: "u", Password: "p"})
+	require.NoError(t, err)
+	assert.NotEmpty(t, methods)
+
+	// The same explicit method with a credential that cannot serve it must
+	// fail closed — not silently degrade to key inference.
+	_, err = (&SSHChannel{cfg: cfg}).buildAuthMethods(channel.CredentialRef{Username: "u"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "password auth requested")
+
+	// Explicit "key" with a credential that carries only a password must
+	// fail closed as well: the operator pinned a method the credential
+	// cannot honour, and guessing would mask that.
+	SetDefaultConfig(true, "", "", "", "key", 0, 0)
+	cfg = NewConfig()
+	_, err = (&SSHChannel{cfg: cfg}).buildAuthMethods(channel.CredentialRef{Username: "u", Password: "p"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "password auth requested",
+		"a pinned key method must fail on its own terms, not on the password branch")
+
+	// Empty (the shipped default) keeps the historical inference: a key-only
+	// credential yields key auth, a password-only credential yields password.
+	SetDefaultConfig(true, "", "", "", "", 0, 0)
+	cfg = NewConfig()
+	assert.Empty(t, cfg.AuthMethod)
+	keyPath := throwawayKey(t)
+	methods, err = (&SSHChannel{cfg: cfg}).buildAuthMethods(channel.CredentialRef{Username: "u", KeyPath: keyPath})
+	require.NoError(t, err)
+	assert.NotEmpty(t, methods)
+	methods, err = (&SSHChannel{cfg: cfg}).buildAuthMethods(channel.CredentialRef{Username: "u", Password: "p"})
+	require.NoError(t, err)
+	assert.NotEmpty(t, methods)
+}
+
+// TestEffectiveConnectTimeoutSemantics pins the three timeout modes at the
+// wire boundary: unset → the channel default, positive → verbatim, negative
+// → "no timeout" (zero). The negative case matters: net.Dialer treats a
+// negative timeout as an already-expired deadline ("including negative, for
+// historical reasons" in net/dial.go), so it must never reach the dialer
+// as-is.
+func TestEffectiveConnectTimeoutSemantics(t *testing.T) {
+	assert.Equal(t, DefaultConnectTimeout, effectiveConnectTimeout(0))
+	assert.Equal(t, 45*time.Second, effectiveConnectTimeout(45*time.Second))
+	assert.Equal(t, time.Duration(0), effectiveConnectTimeout(-time.Second))
+}
+
+// silentListener starts a TCP listener that accepts connections but never
+// speaks SSH, so a client blocks in the handshake until its own deadline
+// fires. The caller must close the listener.
+func silentListener(t testing.TB) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				<-time.After(10 * time.Second)
+				_ = c.Close()
+			}(conn)
+		}
+	}()
+	return ln
+}
+
+// TestConnectTimeoutDisabledDoesNotFailInstantly is the behavioural half of
+// the negative case: "disable the timeout" must mean "the attempt keeps
+// going (bounded only by the caller's context)", not "every connection dies
+// instantly with i/o timeout" — which is exactly what a negative timeout
+// does to net.Dialer.
+func TestConnectTimeoutDisabledDoesNotFailInstantly(t *testing.T) {
+	ln := silentListener(t)
+	defer ln.Close()
+
+	host, port := splitHostPort(t, ln.Addr().String())
+	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
+	cfg := NewConfig()
+	cfg.StrictHostCheck = false
+	cfg.ConnectTimeout = -time.Second // disabled
+
+	ch, err := NewChannel(tgt, cfg)
+	require.NoError(t, err)
+	defer ch.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	err = ch.Connect(ctx)
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "i/o timeout",
+		"a disabled timeout must not degrade into an expired deadline")
+	assert.True(t, errors.Is(err, context.DeadlineExceeded),
+		"the attempt must end with the caller's deadline, not a dial failure: %v", err)
+	assert.GreaterOrEqual(t, elapsed, 500*time.Millisecond,
+		"the attempt must survive until the caller's context expires, not fail instantly")
+}
+
+// TestConnectTimeoutBoundsTheHandshake proves the timeout covers the whole
+// connect operation and not just the TCP dial: against a listener that
+// accepts but never speaks SSH, the attempt must end with our own timeout
+// (and say so) rather than hanging until the caller's context.
+func TestConnectTimeoutBoundsTheHandshake(t *testing.T) {
+	ln := silentListener(t)
+	defer ln.Close()
+
+	host, port := splitHostPort(t, ln.Addr().String())
+	tgt := staticTarget{host: host, port: port, typ: "ssh", cred: channel.CredentialRef{Username: "u", Password: "p"}}
+	cfg := NewConfig()
+	cfg.StrictHostCheck = false
+	cfg.ConnectTimeout = 200 * time.Millisecond
+
+	ch, err := NewChannel(tgt, cfg)
+	require.NoError(t, err)
+	defer ch.Close()
+
+	// A generous caller deadline: the connect timeout must be the one that
+	// fires. (It also keeps the test from hanging if the wiring regresses.)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = ch.Connect(ctx)
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connect timeout")
+	assert.Less(t, elapsed, 5*time.Second,
+		"the connect timeout must end the attempt well before the caller's deadline")
 }
 
 func TestNewConfig(t *testing.T) {
 	prev := currentDefaults()
 	t.Cleanup(func() {
-		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser, prev.authMethod, prev.port, prev.connectTimeout)
 	})
-	SetDefaultConfig(true, "", "", "")
+	SetDefaultConfig(true, "", "", "", "", 0, 0)
 
 	cfg := NewConfig()
 	assert.Equal(t, 0, cfg.Port, "NewConfig should leave Port zero so Target.Port() is honoured")
@@ -1241,9 +1404,9 @@ func callbackFor(t *testing.T, cfg *Config) (ssh.HostKeyCallback, error) {
 func TestBuildHostKeyCallbackSelectionOverrideWins(t *testing.T) {
 	prev := currentDefaults()
 	t.Cleanup(func() {
-		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser)
+		SetDefaultConfig(prev.strict, prev.knownHosts, prev.becomeMethod, prev.becomeUser, prev.authMethod, prev.port, prev.connectTimeout)
 	})
-	SetDefaultConfig(true, "", "", "")
+	SetDefaultConfig(true, "", "", "", "", 0, 0)
 
 	var calls int
 	override := func(string, net.Addr, ssh.PublicKey) error { calls++; return nil }

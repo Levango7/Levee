@@ -44,8 +44,9 @@ var _ channel.ChannelFactory = (*SSHFactory)(nil)
 // DefaultPort is the default TCP port used when Target.Port() returns zero.
 const DefaultPort = 22
 
-// DefaultConnectTimeout is the default ceiling on the SSH handshake when the
-// caller does not supply a per-channel timeout via Config.ConnectTimeout.
+// DefaultConnectTimeout is the default ceiling on one connect operation
+// (TCP dial + SSH handshake) when the caller does not supply a per-channel
+// timeout via Config.ConnectTimeout.
 const DefaultConnectTimeout = 30 * time.Second
 
 // BecomeMethodSudo is the only supported Config.BecomeMethod value today.
@@ -59,8 +60,9 @@ type Config struct {
 	// Target.Port() (and fall back to DefaultPort when that is also zero).
 	Port int
 
-	// ConnectTimeout bounds the TCP dial + SSH handshake. Zero means use
-	// DefaultConnectTimeout. A negative value disables the timeout.
+	// ConnectTimeout bounds one connect operation: the TCP dial AND the SSH
+	// handshake. Zero means use DefaultConnectTimeout; a negative value
+	// disables the timeout (no deadline on the connect at all).
 	ConnectTimeout time.Duration
 
 	// KnownHostsPath is the path to a known_hosts file used for host-key
@@ -76,10 +78,10 @@ type Config struct {
 	// tests / lab environments).
 	StrictHostCheck bool
 
-	// AuthMethod selects the authentication strategy. Valid values are
-	// "password" and "key". When empty, the implementation infers the
-	// strategy from the populated CredentialRef fields (key when KeyPath is
-	// set, password otherwise).
+	// AuthMethod selects the authentication strategy. Valid non-empty values
+	// are "key", "password", "key+password" and "password+key". When empty,
+	// the implementation infers the strategy from the populated
+	// CredentialRef fields (key when KeyPath is set, password otherwise).
 	AuthMethod string
 
 	// BecomeMethod selects privilege escalation for Exec. The empty string
@@ -109,8 +111,10 @@ type Config struct {
 // defaultDefaultsMu guards the process-wide defaults below. They exist so
 // that the application bootstrap can plumb the loaded configuration
 // (channel.ssh.strict_host_check / channel.ssh.known_hosts /
-// channel.ssh.become_method / channel.ssh.become_user) into this package
-// before the first connection, without the transport having to depend on the
+// channel.ssh.become_method / channel.ssh.become_user /
+// channel.ssh.auth_method / channel.ssh.port / channel.ssh.connect_timeout)
+// into this package before the first connection, without the transport
+// having to depend on the
 // config package (which would create an import cycle).
 var (
 	defaultsMu sync.RWMutex
@@ -129,6 +133,21 @@ var (
 
 	// defaultBecomeUser mirrors channel.ssh.become_user. Empty means root.
 	defaultBecomeUser string
+
+	// defaultAuthMethod mirrors channel.ssh.auth_method. Empty means infer
+	// from the credential (the historical behaviour); a non-empty value is
+	// honoured verbatim by buildAuthMethods and fails closed when the
+	// credential cannot serve it.
+	defaultAuthMethod string
+
+	// defaultPort mirrors channel.ssh.port. Zero means "unset": the target's
+	// own port (then DefaultPort) wins, so the shipped default cannot
+	// silently override per-target ports.
+	defaultPort int
+
+	// defaultConnectTimeout mirrors channel.ssh.connect_timeout. Zero means
+	// "unset": NewConfig falls back to DefaultConnectTimeout.
+	defaultConnectTimeout time.Duration
 )
 
 // SetDefaultConfig overrides the process-wide SSH defaults used by NewConfig
@@ -145,24 +164,39 @@ var (
 // escalation target ("" = root). See Config.BecomeMethod for the security
 // caveats (NOPASSWD required, -n fail-fast).
 //
+// authMethod / port / connectTimeout plumb the remaining channel.ssh knobs
+// (the D-9 wiring): authMethod "" means infer from the credential, port 0
+// means honour the target's own port, connectTimeout 0 means
+// DefaultConnectTimeout. Passing the zero values is therefore a no-op for
+// all three — which is how the shipped config defaults keep pre-existing
+// deployments on the historical behaviour while an explicit value finally
+// reaches the transport.
+//
 // This is the seam through which cfg.Channel.SSH reaches the transport: the
 // bootstrap in cmd/ should forward strict_host_check, known_hosts,
-// become_method and become_user here after config.Load.
-func SetDefaultConfig(strictHostCheck bool, knownHostsPath, becomeMethod, becomeUser string) {
+// become_method, become_user, auth_method, port and connect_timeout here
+// after config.Load.
+func SetDefaultConfig(strictHostCheck bool, knownHostsPath, becomeMethod, becomeUser, authMethod string, port int, connectTimeout time.Duration) {
 	defaultsMu.Lock()
 	defer defaultsMu.Unlock()
 	defaultStrict = strictHostCheck
 	defaultKnownHosts = knownHostsPath
 	defaultBecomeMethod = becomeMethod
 	defaultBecomeUser = becomeUser
+	defaultAuthMethod = authMethod
+	defaultPort = port
+	defaultConnectTimeout = connectTimeout
 }
 
 // sshDefaults snapshots the process-wide SSH defaults.
 type sshDefaults struct {
-	strict       bool
-	knownHosts   string
-	becomeMethod string
-	becomeUser   string
+	strict         bool
+	knownHosts     string
+	becomeMethod   string
+	becomeUser     string
+	authMethod     string
+	port           int
+	connectTimeout time.Duration
 }
 
 // currentDefaults returns the current process-wide defaults. Used by NewConfig
@@ -171,10 +205,13 @@ func currentDefaults() sshDefaults {
 	defaultsMu.RLock()
 	defer defaultsMu.RUnlock()
 	return sshDefaults{
-		strict:       defaultStrict,
-		knownHosts:   defaultKnownHosts,
-		becomeMethod: defaultBecomeMethod,
-		becomeUser:   defaultBecomeUser,
+		strict:         defaultStrict,
+		knownHosts:     defaultKnownHosts,
+		becomeMethod:   defaultBecomeMethod,
+		becomeUser:     defaultBecomeUser,
+		authMethod:     defaultAuthMethod,
+		port:           defaultPort,
+		connectTimeout: defaultConnectTimeout,
 	}
 }
 
@@ -204,12 +241,21 @@ func NewConfig() *Config {
 	if knownHosts == "" {
 		knownHosts = DefaultKnownHostsPath()
 	}
+	// 0 means "unset": keep the channel's own default so an operator who
+	// never touched connect_timeout gets the historical 30s, not a silent
+	// behaviour change.
+	connectTimeout := d.connectTimeout
+	if connectTimeout == 0 {
+		connectTimeout = DefaultConnectTimeout
+	}
 	return &Config{
-		ConnectTimeout:  DefaultConnectTimeout,
+		ConnectTimeout:  connectTimeout,
 		StrictHostCheck: d.strict,
 		KnownHostsPath:  knownHosts,
 		BecomeMethod:    d.becomeMethod,
 		BecomeUser:      d.becomeUser,
+		AuthMethod:      d.authMethod,
+		Port:            d.port,
 	}
 }
 
@@ -278,11 +324,34 @@ func (c *SSHChannel) hostPort() string {
 	return net.JoinHostPort(c.target.Host(), fmt.Sprintf("%d", c.effectivePort()))
 }
 
+// effectiveConnectTimeout maps the channel's timeout semantics onto the
+// deadline applied to one connect operation:
+//
+//	0    → DefaultConnectTimeout (the channel's 30s ceiling)
+//	> 0  → that value
+//	< 0  → no timeout at all ("disabled")
+//
+// The negative case is normalised to zero because net.Dialer treats a
+// NEGATIVE timeout as an already-expired deadline ("including negative, for
+// historical reasons" in net/dial.go): passing it through would turn
+// "disable the timeout" into "fail every connection instantly".
+func effectiveConnectTimeout(d time.Duration) time.Duration {
+	switch {
+	case d == 0:
+		return DefaultConnectTimeout
+	case d < 0:
+		return 0
+	default:
+		return d
+	}
+}
+
 // Connect establishes the SSH transport session. It is idempotent: calling
 // Connect on an already-connected channel is a no-op that returns nil.
 //
-// The dial respects ctx; when ctx is cancelled before the handshake completes
-// any partial state is released and ctx.Err() is returned.
+// The connect respects ctx and the channel's ConnectTimeout (the tighter of
+// the two wins); when either is cancelled before the handshake completes any
+// partial state is released and the corresponding error is returned.
 func (c *SSHChannel) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -305,20 +374,35 @@ func (c *SSHChannel) Connect(ctx context.Context) error {
 		return fmt.Errorf("ssh: build host key callback: %w", err)
 	}
 
+	// ConnectTimeout bounds the whole connect operation — the TCP dial AND
+	// the SSH handshake. x/crypto/ssh's ClientConfig.Timeout is ignored by
+	// ssh.NewClientConn (only ssh.Dial honours it), so the deadline is
+	// carried by the context; the same shape the WinRM pool uses for its
+	// connectCtx.
+	timeout := effectiveConnectTimeout(c.cfg.ConnectTimeout)
+	connectCtx := ctx
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		connectCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
 	config := &ssh.ClientConfig{
 		User:            cred.Username,
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCb,
-		Timeout:         c.cfg.ConnectTimeout,
-	}
-	if config.Timeout == 0 {
-		config.Timeout = DefaultConnectTimeout
+		Timeout:         timeout,
 	}
 
 	addr := c.hostPort()
-	dialer := &net.Dialer{Timeout: config.Timeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(connectCtx, "tcp", addr)
 	if err != nil {
+		if ctxErr := connectCtx.Err(); ctxErr != nil && ctx.Err() == nil {
+			// Our own connect deadline fired while the caller's context is
+			// still alive: name it instead of reporting a bare "i/o timeout".
+			return fmt.Errorf("ssh: connect timeout %s exceeded: %w", timeout, ctxErr)
+		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
@@ -331,9 +415,10 @@ func (c *SSHChannel) Connect(ctx context.Context) error {
 		}
 	}()
 
-	// Wrap the conn so that the SSH handshake also respects ctx. ssh.NewClientConn
-	// does not take a context; we race it against ctx.Done() and close the
-	// underlying TCP conn on cancellation to unblock the handshake.
+	// Wrap the conn so that the SSH handshake also respects the connect
+	// context. ssh.NewClientConn does not take a context; we race it against
+	// connectCtx.Done() and close the underlying TCP conn on cancellation to
+	// unblock the handshake.
 	type newConnResult struct {
 		client *ssh.Client
 		err    error
@@ -357,11 +442,16 @@ func (c *SSHChannel) Connect(ctx context.Context) error {
 		c.client = res.client
 		c.connected = true
 		return nil
-	case <-ctx.Done():
+	case <-connectCtx.Done():
 		// Closing the underlying TCP conn forces NewClientConn to error out;
 		// the goroutine will then deliver its result into the buffered channel
 		// and exit. We do not wait for it to avoid blocking the caller.
 		_ = conn.Close()
+		if ctx.Err() == nil {
+			// The caller's context is still alive: our connect timeout is
+			// what ended the attempt.
+			return fmt.Errorf("ssh: connect timeout %s exceeded: %w", timeout, connectCtx.Err())
+		}
 		return ctx.Err()
 	}
 }

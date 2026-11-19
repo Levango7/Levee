@@ -978,14 +978,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// TEAM inside it may touch it, and neither replaces the other.
 	pb.RegisterInventoryServiceServer(srv.GrpcServer(), svcs.inventorySvc)
 
-	// 5c. Apply the loaded SSH channel configuration (host-key policy +
-	// privilege escalation) to the channel factory defaults. Without this
-	// the config-file settings would never reach connections.
+	// 5c. Apply the loaded SSH channel configuration to the channel factory
+	// defaults. This is the D-9 wiring seam: strict_host_check / known_hosts /
+	// become_method / become_user were forwarded historically; auth_method /
+	// port / connect_timeout used to be validated and silently dropped, which
+	// made them lie. The config defaults ship as "unset" ("" / 0 / 0), so an
+	// operator who never touched these keys keeps the historical behaviour
+	// (credential inference, target port, 30s handshake ceiling) while an
+	// explicit value now reaches the transport.
 	sshchannel.SetDefaultConfig(
 		cfg.Channel.SSH.StrictHostCheck,
 		cfg.Channel.SSH.KnownHosts,
 		cfg.Channel.SSH.BecomeMethod,
 		cfg.Channel.SSH.BecomeUser,
+		cfg.Channel.SSH.AuthMethod,
+		cfg.Channel.SSH.Port,
+		cfg.Channel.SSH.ConnectTimeout,
 	) // 5d. Reachability patrol: periodically probe every active inventory
 	// target so `reachable` reflects current reality. Disabled by default;
 	// enable with inventory.patrol_interval_seconds > 0.

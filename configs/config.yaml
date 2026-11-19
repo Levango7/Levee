@@ -30,22 +30,35 @@ executor:
     per_channel: 50                 # 单通道每秒新连接上限
     global: 100                     # 全局每秒新连接上限
 
-# SSH 通道
-ssh:
-  port: 22
-  auth_method: key                  # key | password
-  key_path: ~/.ssh/id_rsa
-  known_hosts: ~/.ssh/known_hosts
-  strict_host_check: true
-  connect_timeout: 10s
-  pool_size: 10                     # 单目标机连接池大小
+# 通道配置
+channel:
+  # SSH 通道
+  ssh:
+    # SSH 端口。0 = 未设置（用目标自带端口，再回退 22）；非 0 时覆盖目标端口。 默认: 0
+    port: 0
+    # 认证方式: key | password | key+password | password+key。空 = 按凭据推断。 默认: ""（推断）
+    auth_method: ""
+    # 私钥路径（当前仅由配置面校验；SSH 认证实际使用解析后凭据的 KeyPath）。默认: ~/.ssh/id_rsa
+    key_path: ~/.ssh/id_rsa
+    # known_hosts 文件路径（支持 ~）。 默认: ~/.ssh/known_hosts
+    known_hosts: ~/.ssh/known_hosts
+    # 严格主机密钥校验；生产环境强烈建议保持 true。 默认: true
+    strict_host_check: true
+    # SSH 连接超时（覆盖 TCP 拨号 + SSH 握手，Go duration）。0 = 通道默认 30s；负数 = 不设超时。 默认: 0（30s）
+    connect_timeout: 0s
+    # 单目标机 SSH 连接池大小（当前仅校验，通道池仍用自己的默认值）。默认: 10
+    pool_size: 10
 
-# WinRM 通道
-winrm:
-  port: 5985
-  transport: negotiate              # negotiate | ntlm
-  connect_timeout: 10s
-  pool_size: 5
+  # WinRM 通道（当前整段尚未接进传输层，字段只校验不生效，见 D-9）
+  winrm:
+    # WinRM 端口（1..65535）。 默认: 5985（HTTP）；5986 为 HTTPS
+    port: 5985
+    # 传输/认证方式: negotiate | ntlm。 默认: negotiate
+    transport: negotiate
+    # WinRM 连接超时（> 0，Go duration）。 默认: 10s
+    connect_timeout: 10s
+    # 单目标机 WinRM 连接池大小（> 0）。 默认: 5
+    pool_size: 5
 
 # 审批配置
 approval:

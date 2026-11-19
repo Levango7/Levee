@@ -144,6 +144,48 @@ security:
 	assert.Empty(t, cfg2.Security.SensitiveFields)
 }
 
+// TestLoad_ChannelSSHDefaultsAreUnset pins the D-9 wiring's conservative
+// default: an operator who never touched channel.ssh must keep the historical
+// behaviour (target port, credential inference, channel 30s ceiling), so the
+// shipped defaults are the zero values — not the channel's own defaults,
+// which would silently change behaviour the moment the seam forwards them.
+func TestLoad_ChannelSSHDefaultsAreUnset(t *testing.T) {
+	cfg, err := Load(writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+`))
+	require.NoError(t, err)
+	assert.Zero(t, cfg.Channel.SSH.Port, "port must ship unset so the target's own port wins")
+	assert.Empty(t, cfg.Channel.SSH.AuthMethod, "auth_method must ship unset so the credential shape decides")
+	assert.Zero(t, cfg.Channel.SSH.ConnectTimeout, "connect_timeout must ship unset so the channel's 30s ceiling holds")
+}
+
+// TestLoad_ChannelSSHConnectTimeoutSemantics pins the three timeout modes
+// that the SSH transport already implements: zero keeps the channel default,
+// a positive value overrides it, and a negative value disables the timeout.
+func TestLoad_ChannelSSHConnectTimeoutSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "unset", value: "0s", want: 0},
+		{name: "override", value: "45s", want: 45 * time.Second},
+		{name: "disabled", value: "-1s", want: -time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+channel:
+  ssh:
+    connect_timeout: `+tc.value+`
+`))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.Channel.SSH.ConnectTimeout)
+			assert.NoError(t, Validate(cfg))
+		})
+	}
+}
+
 func TestLoad_ValidFile(t *testing.T) {
 	p := writeYAML(t, minimalValidYAML())
 	cfg, err := Load(p)
@@ -203,8 +245,9 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, 5, cfg.Executor.RateLimit.PerTarget)
 	assert.Equal(t, 50, cfg.Executor.RateLimit.PerChannel)
 	assert.Equal(t, 100, cfg.Executor.RateLimit.Global)
-	assert.Equal(t, 22, cfg.Channel.SSH.Port)
-	assert.Equal(t, "key", cfg.Channel.SSH.AuthMethod)
+	assert.Zero(t, cfg.Channel.SSH.Port)
+	assert.Empty(t, cfg.Channel.SSH.AuthMethod)
+	assert.Zero(t, cfg.Channel.SSH.ConnectTimeout)
 	assert.True(t, cfg.Channel.SSH.StrictHostCheck)
 	assert.Equal(t, 10, cfg.Channel.SSH.PoolSize)
 	assert.Empty(t, cfg.Channel.SSH.BecomeMethod, "become must be disabled by default")
@@ -545,7 +588,7 @@ func TestValidate_MultipleProblemsReported(t *testing.T) {
 
 	cfg.Server.LogLevel = "trace"
 	cfg.Database.Driver = "mysql"
-	cfg.Channel.SSH.Port = 0
+	cfg.Channel.SSH.Port = 70000
 	cfg.Permission.DefaultTeam = ""
 
 	err = Validate(cfg)
@@ -597,9 +640,10 @@ channel:
 
 func TestLoad_SSHAuthMethodKeyPlusPassword(t *testing.T) {
 	// The channel has always implemented "try the key, then fall back to the
-	// password"; the config validator refused it, so the mode was unreachable
-	// (and never exercised). internal/channel/ssh/config_vocabulary_test.go now
-	// pins the two vocabularies together; this one pins the config side.
+	// password". Before the D-9 wiring, the config validator refused these
+	// modes and the field itself was not forwarded, so they were unreachable
+	// from configuration. internal/channel/ssh/config_vocabulary_test.go pins
+	// the two vocabularies together; this one pins the config side.
 	for _, method := range SSHAuthMethods() {
 		p := writeYAML(t, `server:
   data_dir: /tmp/levee/data
@@ -617,8 +661,8 @@ channel:
 func TestLoad_KeyPathNotRequiredForKeyPlusPassword(t *testing.T) {
 	// key_path is required only when the key IS the method. For key+password a
 	// credential carrying only a password degrades to password, which is the
-	// point of the mode — demanding a key would unusable it for the deployment
-	// that needs it.
+	// point of the mode — demanding a key would make it unusable for the
+	// deployment that needs it.
 	p := writeYAML(t, `server:
   data_dir: /tmp/levee/data
 channel:
