@@ -1525,12 +1525,12 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 		engine = eng.Adapter()
 		log.Info("serve: execution engine wired (--engine-enabled); PlanChange generates persisted plans and ApplyChange executes approved changes")
 	} else {
-			// The wording matters: "Plan/approve remain fully functional"
-			// described a deployment where plan returns an EMPTY plan and
-			// approve answers 412, so the console's plan button looks broken
-			// rather than disabled. Say what works and what does not.
-			log.Info("serve: execution engine NOT wired (--engine-enabled=false): read paths (changes, details, audit log, ticket, inventory) work; " +
-				"plan has no engine to generate an execution plan and approve therefore cannot start — start with --engine-enabled for the full plan→approve→apply path")
+		// The wording matters: "Plan/approve remain fully functional"
+		// described a deployment where plan returns an EMPTY plan and
+		// approve answers 412, so the console's plan button looks broken
+		// rather than disabled. Say what works and what does not.
+		log.Info("serve: execution engine NOT wired (--engine-enabled=false): read paths (changes, details, audit log, ticket, inventory) work; " +
+			"plan has no engine to generate an execution plan and approve therefore cannot start — start with --engine-enabled for the full plan→approve→apply path")
 		warnNotifyTransportWithoutEngine(cfg)
 	}
 

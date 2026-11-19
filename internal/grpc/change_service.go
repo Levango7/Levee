@@ -347,13 +347,13 @@ func runToPB(r *state.Run) *pb.Change {
 	}
 	return &pb.Change{
 		Id: r.ID,
-		// Label is the display name, not the source. WorkflowName's contract is
-		// the workflow SOURCE — for a template-instantiated run that is the
-		// rendered document — so mapping it straight onto the label put a YAML
-		// blob where the board prints a change's name. WorkflowFile below still
-		// carries the source verbatim; the name comes from dsl.DisplayName,
-		// which is also what the CLI prints.
-		Label:  dsl.DisplayName(r.WorkflowName),
+		// Label: the author's own name when they gave one (schema v11), and
+		// otherwise the DERIVED name — WorkflowName's contract is the workflow
+		// SOURCE (for a template-instantiated run that is the rendered document),
+		// and mapping it straight onto the label put a YAML blob where the board
+		// prints a change's name. The derived half is a stand-in, not an authored
+		// value: '' means "not stated", and nothing stores it as if authored.
+		Label:  labelOf(r),
 		Status: r.Status,
 		// Priority comes from its own column since schema v9. A pre-v9 row whose
 		// value could not be attributed (the shared spelling "high") reads as no
@@ -366,8 +366,22 @@ func runToPB(r *state.Run) *pb.Change {
 		CreatedAt:    r.CreatedAt.Unix(),
 		UpdatedAt:    r.UpdatedAt.Unix(),
 		CreatedBy:    r.Creator,
+		Team:         r.Team,
 		Environment:  r.IncidentID, // reuse field as environment marker
 	}
+}
+
+// labelOf is the one place that decides what a change is CALLED.
+//
+// Stored label first, derived workflow name second: before schema v11 the
+// stored value did not exist and every read derived it, which was the right
+// behaviour then. A row written since carries the author's words, and
+// returning the derived name for it would discard them.
+func labelOf(r *state.Run) string {
+	if strings.TrimSpace(r.Label) != "" {
+		return r.Label
+	}
+	return dsl.DisplayName(r.WorkflowName)
 }
 
 // pbToRunParams serialises a pb params map to the JSON string expected
@@ -526,6 +540,8 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 		ID:             runID,
 		WorkflowName:   req.GetWorkflowFile(),
 		TemplateName:   req.GetTemplateName(),
+		Label:          req.GetLabel(),
+		Team:           req.GetTeam(),
 		Params:         pbToRunParams(req.GetParams()),
 		Status:         "draft",
 		ApprovalStatus: state.ApprovalStatusPending,
@@ -606,10 +622,22 @@ func (s *ChangeService) CloneChange(ctx context.Context, req *pb.CloneChangeRequ
 		env = src.IncidentID
 	}
 
+	// A clone carries the source's name and team unless the request overrides
+	// either. The request fields have always been in the proto; until schema v11
+	// they were not stored, so the first read of a clone showed the derived name
+	// and an empty team.
+	label := src.Label
+	if v := strings.TrimSpace(req.GetLabel()); v != "" {
+		label = v
+	}
+	team := src.Team
+
 	run := &state.Run{
 		ID:             runID,
 		WorkflowName:   src.WorkflowName,
 		TemplateName:   src.TemplateName,
+		Label:          label,
+		Team:           team,
 		Params:         pbToRunParams(params),
 		Status:         "draft",
 		ApprovalStatus: state.ApprovalStatusPending,

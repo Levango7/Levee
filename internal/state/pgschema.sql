@@ -53,11 +53,14 @@ CREATE TABLE IF NOT EXISTS runs (
     -- is pinned by TestV9PriorityIsDeclaredLastInBothSchemas, which checks both DDL files
     -- against each other — TestMigrate_FreshAndUpgraded_SchemaShapesMatch, the comparison
     -- this line used to cite, builds SQLite stores and so covers no PostgreSQL ordering.
-    , priority      TEXT    NOT NULL DEFAULT '',   -- low|normal|high|urgent
+    , priority      TEXT    NOT NULL DEFAULT ''    -- low|normal|high|urgent
     -- label / team (v11): the author's own words for the change, appended after
     -- priority so the declaration order matches what the v11 step appends. Same
-    -- ordering rule as priority above.
-    , label         TEXT    NOT NULL DEFAULT '',
+    -- ordering rule as priority above. This DDL uses LEADING commas: no line may
+    -- also carry a trailing comma, or it doubles with the next line's leading
+    -- comma into "," + "," — the 42601 "syntax error at or near ," that the
+    -- integration & e2e & postgres leg hit on this exact statement.
+    , label         TEXT    NOT NULL DEFAULT ''
     , team          TEXT    NOT NULL DEFAULT ''
 );
 
