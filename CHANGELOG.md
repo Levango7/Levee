@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（mock 网关与真实 wire 契约漂移，新增机器护栏）
+
+- **结构性缺口**：`wire_snapshot_test.go` 与 `wireContract.spec.ts` 只约束真实服务端和 TypeScript DTO，第三个消费方 `web/scripts/mock-gateway.mjs` 没有机器校验；比真实后端「更完整」的 fixture 因而能让浏览器门禁全绿，却掩盖生产页面的空白单元格。
+- **新增 `web/scripts/mock-wire-check.mjs`**：启动真实 mock 进程，逐端点检查其响应键集。禁止发送 DTO、wire 快照和带理由豁免均未声明的发明字段；不得丢失快照中实际出现且 DTO 必填的字段；禁止 PascalCase 泄漏。字段全集刻意不取 wire 快照的观测样本，因为 protojson 会省略零值，避免把 `team` / `environment` / `priority` 等真实字段误判为漂移。接入 `npm run test:mock-wire` 和 CI `frontend` job。
+- **首跑发现并修复 6 处真漂移**：`/system/version` 的 `commit` / `builtAt` 改为真实的 `gitCommit` / `buildDate` / `goVersion`；四组 change fixture 的 `creator` 改为 `createdBy` 并补 `workflowFile`（含审计 F-13 的申请人空白）；batch-status 去掉真实响应不会回显的 `run_id`。`planHash` 是 proto 真字段，按「服务端发送、页面不直接读取」登记豁免。
+- **浏览器内容断言**：`browser-check.mjs` 新增 system 页检查，要求存储后端、运行时长、git commit、Go 工具链显示真实非空值，不再只检查 h1 和几何位置。
+- **验证**：mock-wire 144/144；本地完整 browser-check ALL PASS；vitest 48 文件 / 383 用例；vue-tsc + vite build；四条文档门禁全过。ticket 等 mock 未覆盖端点在护栏输出中明确登记，未冒充闭环。
+
 ### 修复（`channel.ssh` 的 `auth_method` / `port` / `connect_timeout` 从「只校验」变真生效）
 
 - **缺口（D-9 登记项的前三格）**：`channel.ssh` 13 个字段里此前只有 4 个真的接进通道；`auth_method` / `port` / `connect_timeout` 三个字段**被校验、被默认、被文档收录，却不抵达传输层**——`SetDefaultConfig` 只转发 4 项，通道侧消费逻辑（`buildAuthMethods` 尊重 `Config.AuthMethod`、`effectivePort` 的 `cfg.Port != 0` 分支、`ConnectTimeout` 零值兜底 30s）早已存在，配置的默认值（`key` / `22` / `10s`）却与通道语义（按凭据推断 / 目标端口 / 30s）不一致，**直接转发会让未配置的存量部署行为变化**（强制 key、打掉目标自带端口、超时 30s→10s）。

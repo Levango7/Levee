@@ -574,6 +574,40 @@ console.log('\n[1c] the chain panel says WHICH chain, and WHICH digest')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[1d] the system page renders the wire values, not blank cells')
+{
+  const page = await newPage(browser)
+  await open(page, '/system')
+  // The kv pairs render only after /system/status and /system/version answer,
+  // so poll for the store backend the way [1b] polls for the badge — asserting
+  // on the pre-fetch DOM would read empty cells and call it a failure (or, on a
+  // fast day, a false pass).
+  const readKv = () => page.evaluate(() => {
+    const out = {}
+    for (const k of document.querySelectorAll('.lv-kv__k')) {
+      const v = k.nextElementSibling
+      if (v && v.classList.contains('lv-kv__v')) out[k.textContent.trim()] = v.textContent.trim()
+    }
+    return out
+  })
+  const deadline = Date.now() + SETTLE_DEADLINE_MS
+  let kv = await readKv()
+  while (!(kv['存储后端'] && kv['提交']) && Date.now() < deadline) {
+    await sleep(300)
+    kv = await readKv()
+  }
+  // These are the cells the 2026-11-17 audit found blank in production while
+  // the mock looked fine: the store backend (B-04's wire shape), the uptime
+  // (an int64 the wire sends as a STRING), and the git commit / toolchain
+  // (the mock invented commit/builtAt where the wire sends gitCommit/goVersion).
+  check('存储后端 names the store', kv['存储后端'] === 'sqlite', `存储后端="${kv['存储后端']}"`)
+  check('运行时长 is rendered, not blank', (kv['运行时长'] || '').length > 0 && kv['运行时长'] !== '未知', `运行时长="${kv['运行时长']}"`)
+  check('提交 shows the git commit', (kv['提交'] || '').length > 0, `提交="${kv['提交']}"`)
+  check('工具链 shows the go version', (kv['工具链'] || '').length > 0, `工具链="${kv['工具链']}"`)
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 {
   const page = await newPage(browser)

@@ -187,6 +187,14 @@ jobs:
         run: npm ci
       - name: unit tests
         run: npm run test
+      - name: mock ↔ wire contract
+        # The mock gateway is the third consumer of the wire contract; the
+        # snapshot and the DTO guard cover the other two. A fixture "nicer"
+        # than the wire keeps the browser check green on a page that would be
+        # blank against the real server (the 2026-11-17 audit's /system/version
+        # and createdBy drift). Boot the mock and check its key sets against
+        # api/__contract__/wire.json and the DTO interfaces.
+        run: npm run test:mock-wire
       - name: type-check + build
         run: npm run build
       # The Go binary embeds the COMMITTED internal/web/dist, so a stale copy
