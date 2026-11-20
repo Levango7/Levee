@@ -13,25 +13,20 @@ import (
 )
 
 // restoreDefaultLogger puts the process logger back on stderr after a test
-// that reconfigured it, and closes any file sink the wiring opened.
-//
-// The explicit close is load-bearing on Windows: t.TempDir removes the
-// directory at cleanup, and Windows refuses to unlink a file that is still
-// open — without it the tests fail in the CI's TempDir cleanup, not in their
-// assertions. It also resets the appliedLog memo so a leaked sink cannot
-// bleed into the next test. No test in this package runs in parallel, so the
-// window is not shared.
+// that reconfigured it, closes any file sink the wiring opened, and resets the
+// appliedLog memo. Call it with DEFER: its cleanup is then registered after
+// t.TempDir's, and cleanups run LIFO — the file sink closes BEFORE the
+// directory is removed (required on Windows). No test here runs in parallel.
 func restoreDefaultLogger(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
-		log.InitLoggerWithWriter("info", "text", os.Stderr)
 		appliedLog.mu.Lock()
-		defer appliedLog.mu.Unlock()
-		if f, ok := appliedLog.writer.(*os.File); ok && f != os.Stdout && f != os.Stderr {
-			_ = f.Close()
-		}
+		previous := appliedLog.writer
 		appliedLog.key = ""
 		appliedLog.writer = nil
+		appliedLog.mu.Unlock()
+		closeLogWriter(previous)
+		log.InitLoggerWithWriter("info", "text", os.Stderr)
 	})
 }
 
@@ -94,7 +89,7 @@ func TestResolveLogWriterRefusesAnUnusablePath(t *testing.T) {
 }
 
 func TestApplyLogConfigWritesToTheConfiguredFile(t *testing.T) {
-	restoreDefaultLogger(t)
+	defer restoreDefaultLogger(t)
 
 	path := filepath.Join(t.TempDir(), "levee.log")
 	cfg := &config.Config{}
@@ -118,7 +113,7 @@ func TestApplyLogConfigWritesToTheConfiguredFile(t *testing.T) {
 // second time — two append-mode handles on one path is a leaked descriptor
 // and two writers racing for the same file.
 func TestApplyLogConfigDoesNotReopenTheSameSink(t *testing.T) {
-	restoreDefaultLogger(t)
+	defer restoreDefaultLogger(t)
 
 	path := filepath.Join(t.TempDir(), "levee.log")
 	cfg := &config.Config{}
@@ -134,15 +129,21 @@ func TestApplyLogConfigDoesNotReopenTheSameSink(t *testing.T) {
 	assert.Same(t, first, appliedLog.writer,
 		"applying the same settings twice must reuse the sink")
 
-	// A different configuration still reconfigures the logger.
+	// A different configuration still reconfigures the logger, and closes the
+	// replaced file sink instead of leaking its descriptor (Windows cannot
+	// remove the test directory while that handle is open).
 	cfg.Log.Level = "debug"
 	require.NoError(t, applyLogConfig(cfg))
 	assert.NotSame(t, first, appliedLog.writer,
 		"a different configuration must reconfigure the logger")
+	oldFile, ok := first.(*os.File)
+	require.True(t, ok)
+	_, err := oldFile.WriteString("must-not-be-written\n")
+	require.Error(t, err, "the replaced sink must be closed")
 }
 
 func TestApplyLogConfigFailsWhenTheOutputCannotBeOpened(t *testing.T) {
-	restoreDefaultLogger(t)
+	defer restoreDefaultLogger(t)
 
 	dir := t.TempDir()
 	blocker := filepath.Join(dir, "blocker")
@@ -160,7 +161,7 @@ func TestApplyLogConfigFailsWhenTheOutputCannotBeOpened(t *testing.T) {
 // that says "debug + json + this file" must produce exactly that, through the
 // same path every command takes.
 func TestLoadConfigAppliesTheLogSettings(t *testing.T) {
-	restoreDefaultLogger(t)
+	defer restoreDefaultLogger(t)
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "levee.log")

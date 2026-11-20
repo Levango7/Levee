@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（日志重配置的旧文件 sink 泄漏与 Windows 清理顺序）
+
+- 日志级别/格式变化时，在新 sink 就绪后关闭被替换的旧文件句柄，不再随重配置累积 descriptor；stdout/stderr 仍归进程所有，不误关。
+- 测试恢复 logger 时同步关闭并重置 appliedLog，且以 defer 延后注册 cleanup，保证 LIFO 下先关文件再执行 TempDir RemoveAll。
+- 三条 master Windows 红测试本地先红后绿；新增旧 sink 关闭断言。cmd/levee 全包与 go test ./... 76 包全绿。
+
 ### 修复（1024 告警表列裁切与模板创建文案）
 
 - **F-11**：实测 1024 下表右缘 975，但环境/触发时间右缘分别 1031/1161 且不可横滚。按全列 880px、面板=视口−330 的实测预算，在 <1240 时隐藏来源/环境两个次要列；修复后触发时间右缘回到 975，1280 全列保留。browser-check 增加双宽度几何断言。

@@ -80,10 +80,28 @@ func applyLogConfig(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	// Publish the new sink before closing the old one: concurrent log writers
+	// always have a live destination, and a failed resolve above leaves the
+	// existing configuration untouched. On Windows an unclosed old file also
+	// prevents its directory from being removed; on every platform it is a
+	// descriptor leak when the level/format changes.
+	previous := appliedLog.writer
 	log.InitLoggerWithWriter(cfg.Log.Level, cfg.Log.Format, w)
 	appliedLog.key = key
 	appliedLog.writer = w
+	closeLogWriter(previous)
 	return nil
+}
+
+// closeLogWriter closes a replaced file sink. stdout/stderr belong to the
+// process, not to this configuration, and must never be closed here.
+func closeLogWriter(w io.Writer) {
+	if w == nil || w == os.Stdout || w == os.Stderr {
+		return
+	}
+	if closer, ok := w.(io.Closer); ok {
+		_ = closer.Close()
+	}
 }
 
 // resolveLogWriter maps the configured output onto the writer the logger
