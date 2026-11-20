@@ -31,7 +31,7 @@
 | **F-10** | 模板页 CTA 文案不一致 | 未实测 | 未动 | 残留 |
 | **F-11** | 1024 告警表环境列被切 | 与 F-01/F-02 同类（列预算超容器） | 未动 | 残留：告警页按同一规则补次要列隐藏即可，但**未实测前不批量改** |
 | **F-12** | 无最小宽度/断点策略，768 文字竖排 | 属产品口径（响应式范围本已声明限移动审批） | 未动 | 建议在 UI blueprint 声明「桌面控制台最低 1440×900」而非全面响应式化 |
-| **F-13** | 390 toast 覆盖标题、申请人空（mock 字段漂移） | mock 用 `creator`，页面读 `createdBy` | 未动 | 残留：mock 字段名统一一遍（属 T-01 的下一半） |
+| **F-13** | 390 toast 覆盖标题、申请人空（mock 字段漂移） | mock 用 `creator`，页面读 `createdBy` | 真缺口 | **后续批已修**：mock 全部 change fixture 改 `createdBy` 并补 `workflowFile`，由 mock-wire 护栏钉住 |
 | **F-14** | 顶栏「文档」指向 `github.com/nexus/levee` | `App.vue:126` 原文，真实远端为 Levango7/Levee | 真缺口 | 本批修：改真实仓库地址 |
 | **F-15** | 详情页暂停/取消/归档无 loading | `transition()` 无 acting 守卫 | 未动 | 残留 |
 | **P-01** | vendor chunk 1.21MB 无分割 | 构建告警属实 | 未动 | 残留：路由级 code-split |
@@ -48,6 +48,27 @@
 - **生成式 mock**：本批只把 mock 改回真实形状，**没有**做「从 proto/wire 快照生成 fixture」这一结构性解法。没有它，同类漂移还会再来。
 - **browser-check 的内容断言**：本机 Chrome + CDP 的探针是手写的（`F:/tmp/cdp-probe.mjs`，不入仓），仓内 `browser-check.mjs` 仍只断言 h1 + 几何位置。把「system 页必须出现 storeType/uptimeSeconds」「对话错误块必须在视口内」「发布单必须有七段」这类内容断言写进仓内门禁，是下一件该做的事。
 - F-09/F-10/F-11/F-12/F-13/F-15、P-01/P-02、B-07 未动（逐条原因见上表）。
+
+## 后续批次（2026-11-19）：mock↔wire 契约守卫 + 浏览器内容断言
+
+针对上面两条结构性残留，本批交付（分支 `feat/mock-wire-guard-browser-assertions`）：
+
+1. **`web/scripts/mock-wire-check.mjs`（新增）** —— mock 是 wire 契约的**第三个消费方**，此前 `wire_snapshot_test.go`（Go 生成 wire.json）与 `wireContract.spec.ts`（DTO 双向校验）都不看它，漂移由此漏网。护栏把 mock 实际发出的键集对到同一份 wire.json + DTO 接口上：
+   - **ceiling（不许发明字段）**：字段全集用 DTO 声明 ∪ wire 观测键 ∪ 带理由的 proto 豁免，**不**用 wire.json 观测样本当全集——因为 protojson 会省略零值（`team/environment/priority` 是真字段、快照里为空被丢），拿样本当全集会误伤。
+   - **floor（不许丢「必发且必填」的键）**：wire.json 里有、且 DTO 里非可选的键，mock 不得丢。protojson 省略零值的键**不**强制——护栏不能比真后端更严。
+   - **forbid（无 PascalCase 泄漏）**：用 wire.json 的 forbid 表。
+   接进 `package.json` 的 `test:mock-wire` 与 CI `frontend` job。
+2. **护栏首跑即抓住并修复 6 处真漂移**（144/144 转绿）：
+   - `/system/version`：mock 发明 `commit`/`builtAt`、漏 `gitCommit`/`buildDate`/`goVersion`（报告未列，版本面板在生产会空白）；
+   - `/changes` 行 + `/changes/run-1000` detail + `run-1001` + `run-fleet`：`creator`→`createdBy`（F-13 本尊），并补 `workflowFile`；
+   - `/system/batch-status`：去掉发明的 `run_id`（真后端不回显）。
+   `planHash` 是 proto `Change.plan_hash=9` 真字段（runToPB 会发、页面不读），列入带理由豁免而非误判。
+3. **browser-check 补 `[1d]`**：system 页「存储后端=sqlite / 运行时长非空 / 提交=gitCommit / 工具链=goVersion」内容断言，轮询等数据就位（同 [1b] 徽章等法）。本地实跑 `browser-check: ALL PASS`。
+4. **诚实登记的覆盖缺口**（护栏输出，未冒充闭环）：`dbchange-ticket`（mock 无 ticket 路由，故「发布单七段」断言尚无法落地）、`change-with-plan`（mock 未建模 `includePlan`）、`audit-traces`/`agents`/`groups`（mock 未服务）；`takeover-events`/`rollback` mock 有服务但不在本护栏键校验范围（无 DTO read-set / POST 由 browser-check 直接驱动）。
+
+验证：`mock-wire-check` 144/144；`browser-check` 本地 ALL PASS（含 [1d] 四条）；`vitest` 48 文件/383 用例（forks 池）；`vue-tsc + vite build` 通过。本批只改 `web/scripts` 与 `web/package.json`，未碰 `web/src`，`internal/web/dist` 无需重打。
+
+仍未动：F-09/F-10/F-11/F-12（需 CDP 实测或产品口径）、F-15、P-01/P-02、B-07，以及「发布单七段」内容断言（先补 ticket mock 才能落地）。
 
 ## 验证口径（本批交付的事实）
 

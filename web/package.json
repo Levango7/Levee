@@ -12,7 +12,8 @@
     "type-check": "vue-tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:browser": "node scripts/browser-check.mjs"
+    "test:browser": "node scripts/browser-check.mjs",
+    "test:mock-wire": "node scripts/mock-wire-check.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

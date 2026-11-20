@@ -35,14 +35,19 @@ const changes = labels.map((l, i) => ({
   team: '平台组',
   templateName: templates[i % templates.length],
   priority: ['high', 'normal', 'urgent', 'low'][i % 4],
-  creator: ['liwg', 'ops-bot', 'zhangs'][i % 3],
+  // Wire spelling is `createdBy`, not `creator`: the applicant column reads
+  // createdBy, so the old `creator` left it blank (audit F-13). `workflowFile`
+  // is the workflow source the server always returns on a row.
+  createdBy: ['liwg', 'ops-bot', 'zhangs'][i % 3],
+  workflowFile: `name: ${l}\nsteps: []\n`,
   createdAt: now - 3600 * (i + 1),
   updatedAt: now - 600 * i,
 }))
 
 const detail = {
   id: 'run-1000', label: labels[0], status: 'running', environment: 'prod', team: '平台组',
-  templateName: templates[0], priority: 'high', creator: 'liwg',
+  templateName: templates[0], priority: 'high', createdBy: 'liwg',
+  workflowFile: `name: ${labels[0]}\nsteps: []\n`,
   createdAt: now - 3600, updatedAt: now - 300, planHash: 'v2:9f3c1ab7de44',
   params: { region: 'cn-east-1', batch_size: '12' },
 }
@@ -53,7 +58,8 @@ const detail = {
 // browser check needs such a change to reach the flow at all.
 const remediableDetail = {
   id: 'run-1001', label: '未走完的回滚', status: 'rolled_back_partial', environment: 'prod', team: '平台组',
-  templateName: templates[0], priority: 'high', creator: 'liwg',
+  templateName: templates[0], priority: 'high', createdBy: 'liwg',
+  workflowFile: 'name: 未走完的回滚\nsteps: []\n',
   createdAt: now - 7200, updatedAt: now - 120, planHash: 'v2:aa11bb22',
   params: { region: 'cn-east-1' },
 }
@@ -160,7 +166,9 @@ function fleetBatchStatus(per) {
       total_hosts: per, succeeded: b <= 8 ? per : b === 9 ? 11 : 0, failed: b === 3 ? 2 : 0,
     })
   }
-  return { run_id: 'run-fleet', total_batches: FLEET_BATCHES, done_batches: 8, current_batch_no: 9, batches, steps: [] }
+  // No run_id: the real batch-status envelope is {batches, current_batch_no,
+  // done_batches, steps, total_batches} — it does not echo the run id back.
+  return { total_batches: FLEET_BATCHES, done_batches: 8, current_batch_no: 9, batches, steps: [] }
 }
 
 // The alert ring's snapshot, in the SSE frame's spelling: json.Marshal of
@@ -458,7 +466,14 @@ const server = http.createServer(async (req, res) => {
     })
   }
   if (u === '/api/v1/system/version') {
-    return send(res, { version: 'v1.21.0', commit: 'mock', builtAt: new Date(Date.now()).toISOString() })
+    // Wire shape: VersionInfo is {version, gitCommit, buildDate, goVersion}.
+    // The mock used to send {version, commit, builtAt} — two invented keys and
+    // three the page actually reads dropped, so the version panel rendered
+    // blank gitCommit/buildDate/goVersion against the real server.
+    return send(res, {
+      version: 'v1.21.0', gitCommit: 'mock', buildDate: new Date(Date.now()).toISOString(),
+      goVersion: 'go1.26',
+    })
   }
   if (u === '/api/v1/system/batch-status') return send(res, fleetBatchStatus(FLEET_HOSTS_PER_BATCH))
   if (u === '/api/v1/system/cluster-status') {
@@ -549,7 +564,8 @@ const server = http.createServer(async (req, res) => {
   if (u === '/api/v1/changes/run-fleet') {
     return send(res, {
       id: 'run-fleet', label: '大规模 Fleet 变更', status: 'running', environment: 'prod',
-      team: '平台组', templateName: 'fleet-rollout', priority: 'high', creator: 'liwg',
+      team: '平台组', templateName: 'fleet-rollout', priority: 'high', createdBy: 'liwg',
+      workflowFile: 'name: 大规模 Fleet 变更\nsteps: []\n',
       createdAt: now - 7200, updatedAt: now - 60, planHash: 'v2:fleet', params: { fleet: 'cn-east-1' },
     })
   }
