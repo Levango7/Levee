@@ -120,7 +120,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 
 ## 6. 还没做的
 
-- **统信 UOS**：**服务器版两格已取证**（第 8 节 20-1050e、第 9 节 V25-2510）。桌面 V25（2500）仍无公开直链（官网下载页需登录联合统信账号；CDN 目录数据里只有 20 系的文件名）。
+- **统信 UOS**：**服务器版两格已取证**（第 8 节 20-1050e、第 9 节 V25-2510）；**桌面专业版 V25（2500）已取证**（第 10 节，2026-11-20，同为虚机口径）。官方 ISO 需登录联合统信账号下载（CDN 目录数据里只有 20 系的文件名），拿到 ISO 后安装与取证流程与服务器版同。
 - **物理裸机**：仍需租 IDC 机（步骤见 `docs/xinchuang-baremetal-drill.md`）。
 - **arm64**：owner 已判定无门路，不做。
 
@@ -145,7 +145,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 - 官网下载 API（`/api/v1/download/iso_info`）公布：`uniontechos-server-20-1050e-amd64.iso`，sha256 `614ae5a7cfaf4f7750a5e5b09a6bcc7d78ac99fbffd78a3eb593229d4a88c185`，大小 5.77 GB。
 - 直链：`https://cdimage-download.chinauos.com/uniontechos-server-20-1050e-amd64.iso`。实测单流限速约 **0.7–0.9 MB/s**，下到 2.42 GB 后杀掉；华为云镜像（`mirrors.huaweicloud.com/uniontech/`）返回的只是 SPA 首页（HTTP 200 但 `Content-Type: text/html`，不是 ISO）。
 - 做法：16 个并发分段 `curl -r s-e` 补齐剩余 3.34 GB（约 4 分钟），按序 `copy /b` 拼接，`Get-FileHash` 与官网 sha256 **完全一致**才启用。
-- 桌面 V25（2500）**没有公开直链**（API 的 `desktop` 段为空数组，CDN 文件名探测全 404/SPA），需注册联合统信账号下载；本节只覆盖**服务器版**。
+- 桌面 V25（2500）**没有公开直链**（API 的 `desktop` 段为空数组，CDN 文件名探测全 404/SPA），需注册联合统信账号下载；本节只覆盖**服务器版**，桌面版取证见第 10 节。
 
 **安装的实测坑（都实测过）**
 
@@ -174,3 +174,20 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
 5. sshd **没有预登录横幅**（UOS 20 有 `UnionTech OS Server 20 1050e` 行）。
 
 资源与前三台一致：4 vCPU / 4G，宿主 Windows 11，WHPX。口径不变：**这仍是虚拟机，不是裸机**；对外引用必须写「统信 UOS Server V25（2510）× amd64（虚拟机，非物理裸机）」。SSH 端口 `22225`（V10 SP3 `22222` / V11 `22223` / UOS 20 `22224`）。License/激活形态未在此验证。
+
+## 10. 2026-11-20 追加：统信 UOS 桌面专业版 V25（2500）取证
+
+结论先行：**桌面版也跑通了**——变更 `run-2946297cc8777610`，`approved → completed`（目标文件 `v1→v2`）→ `rolled_back`（`v2→v1`），`audit/verify` `valid=true`、`entriesVerified=3`、`unsealed=0`、`failures=[]`。guest = **UOS Desktop 25 Professional**（`VERSION_ID="25"`、VERSION_CODENAME `snipe`），内核 `6.6.0-amd64-desktop #25.00.2501.031 SMP PREEMPT_DYNAMIC`；`levee`（linux/amd64 静态，`dev+19ab577`，go1.26.11）。证据留档 `G:\levee-vm\evidence\`（`drill-bundle.txt` 含 OS/版本/全流程日志、`audit.json`、`setup.log`、`life.log`、`serve.log`、`new.out`）。
+
+**镜像与安装**
+
+- ISO `uos-desktop-25-professional-2500-amd64-202608.iso`（7.53 GB），sha256 `04d217c0d01ffdf256d30fb412e41e5a54787331a7a517ae2bf5ecfd22edbe38`，与官方页一致；需登录联合统信账号从官网下载。
+- QEMU 11.1.3 ＋ WHPX，硬盘启动用 `-cpu host`、4 vCPU/4G、VNC :1、串口 44500、monitor 44555、hostfwd 22226。安装走 GUI 安装器（VNC 点选）；救援/改文件系统用 ISO 内核 + `rdinit=/bin/sh` 进 BusyBox root shell（见 `G:\levee-vm\after_reboot_checklist.md` 的固定初始化顺序）。
+
+**桌面版特有的三个坑（都实测过）**
+
+1. **主动防御拦截未签名 ELF → 伪装成段错误**：桌面 ISO 默认「仅允许签名应用」（控制中心→安全工具→应用安全）。未签名二进制（含静态 Go/levee）运行即 `段错误/139`，且通知写「没有通过系统安全验证」。排查时容易误判为 Go 运行时/内核/WHPX 缺陷——实际是 UOS 安全模块在拦截：**必须切到「允许任意应用」并过用户密码认证**后才能运行 levee。UPX 压缩、GOMAXPROCS、GODEBUG、tmpfs、内存/文件系统排查均无效，别再走弯路。取证 VM 已切换该策略，**对外须披露**。
+2. **无 root/sudo，系统 sshd 不可用**：sudo 被开发者模式锁死，`dde-control-center` 命令行启动超时。drill 改用**用户态 sshd**：`ssh-keygen` 生成 host/client key，`/usr/sbin/sshd -f ~/vm/ssh/sshd_config -D` 监听 `127.0.0.1:2222`（密钥认证、`UsePAM no`）；levee 侧 credential 用 `--type ssh_key` + `{"username":"deepin","key_path":".../client_key"}`；inventory 端口从 22 改 2222、workflow 的 `cp` 源路径从 `/root/vm` 改 `/home/deepin/vm`。
+3. **文件通道**：guest 网络 ens3=10.0.2.15 通；宿主起 `python -m http.server 18080 --directory G:\levee-vm`，guest `curl http://10.0.2.2:18080/...` 下发文件；证据回传用宿主 18081 上传服务 `curl -X POST --data-binary @file`。RFB 直发 keysym 时 `:` 等 Shift 符号需用 Shift_L+基础键输入（见 `gtype2.py`）。
+
+口径不变：**这仍是虚拟机，不是裸机**；对外引用必须写「统信 UOS 桌面专业版 V25（2500）× amd64（虚拟机，非物理裸机）」，并附加两条限定：该 VM 为跑未签名二进制已切「允许任意应用」；drill 走用户态 sshd。`LEVEE_AUDIT_HMAC_KEY` 未设，审计摘要为无口令 SHA-256（实验室口径）。License/激活形态未验证。

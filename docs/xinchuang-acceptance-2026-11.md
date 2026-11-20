@@ -41,10 +41,11 @@
 | 麒麟 V11（Swan25）| `Kylin-Server-V11-2503-Release-General-20250715-X86_64.iso`（4.26GB，`05569c9a…`）| `6.6.0-32.7.v2505.ky11` | 255 | 2.38 | healthy | `run-635fbe17401cddd1`，快照 `snap-ddb080e437…` | `valid=true`、entriesVerified=3、unsealed=0 | **必须 `-cpu host`**（glibc 2.38 要 x86-64-v2）；`running`（0 failed units）；`apparmor=0` |
 | 统信 UOS Server 20（1050e）| `uniontechos-server-20-1050e-amd64.iso`（5.77GB，`614ae5a7…`）| `4.19.90-2201.4.0.0135.up1.uel20` | 243 | 2.28 | healthy | `run-11484ccfa0fc3574`，快照 `snap-8a70e85e60d…` | `valid=true`、entriesVerified=3、unsealed=0 | **必须用默认 qemu64**（`-cpu host` 会让 UEL20 内核 dracut 全 segfault）；sshd 预登录横幅，`scp` 必须 `-O`；degraded（仅 rngd）；内核命令行无 `audit=0` |
 | 统信 UOS Server V25（2510）| `uos-server-25-2510-amd64.iso`（5.53GB，`825ec55f…`）| `6.6.0-25.02.2510.029.uos25` | 255 | 2.38 | healthy | `run-6c202ebeb2362b42`，快照 `snap-1663a524667…` | `valid=true`、entriesVerified=3、unsealed=0 | **必须 `-cpu host`**（与 UOS 20 相反）；anaconda 36（PowerShell `Out-File -Encoding utf8` 带 BOM 会被当未知命令退出）；`running`（0 failed units）；`apparmor=0`；sshd 无横幅 |
+| 统信 UOS 桌面专业版 V25（2500）| `uos-desktop-25-professional-2500-amd64-202608.iso`（7.53GB，`04d217c0…`）| `6.6.0-amd64-desktop`（`#25.00.2501.031`）| n/a（桌面版）| 2.38 系 | healthy | `run-2946297cc8777610`：approved→completed(v1→v2)→rolled_back(v2→v1) | `valid=true`、entriesVerified=3、unsealed=0、failures=[] | **签名白名单**：默认「仅允许签名应用」会把未签名 levee 拦成段错误/139，已切「允许任意应用」并过密码认证（须对外披露）；无 root/sudo，drill 走用户态 sshd 127.0.0.1:2222 密钥认证；证据 `G:\levee-vm\evidence\`；复现见 `docs/xinchuang-vm-drill.md` §10 |
 
 补充两格（同为已验证、口径较弱）：**麒麟 V10（Sword）× WSL2 用户态**（B 级边缘：doctor healthy、完整变更 + `audit/verify` valid、entriesVerified=7，但非独立 OS）；**arm64 容器**（C 级：buildx 构建 + 容器内 `version`/`doctor`/`/healthz` 通过，Docker Desktop QEMU 模拟，**非 ARM 真机**）。
 
-复跑端口：V10 SP3＝`22222`、V11＝`22223`、UOS 20＝`22224`、UOS V25＝`22225`（宿主转发）。
+复跑端口：V10 SP3＝`22222`、V11＝`22223`、UOS 20＝`22224`、UOS V25（服务器）＝`22225`、UOS 桌面 V25＝`22226`（宿主转发）；桌面版另有 guest 内用户态 sshd `127.0.0.1:2222`。
 
 ---
 
@@ -52,7 +53,7 @@
 
 1. **物理裸机 × amd64**（麒麟 + 统信）：虚机证据不含固件/驱动/真硬件故障域/等保基线差异。需要一台可委派的信创整机（或 IDC 租机，**按 5 天计 ~¥250–350**，下手前核对：x86_64 机型、目标地域有麒麟/统信镜像、公网 SSH）。步骤清单 `docs/xinchuang-baremetal-drill.md`，照抄即可。
 2. **ARM 真机**（鲲鹏/飞腾）：owner 判定「没办法」。arm64 容器证据只覆盖构建+可启动，不能替代鲲鹏/飞腾实机。
-3. **统信桌面专业版 V25（2500）**：官网 CDN 无公开直链（API `desktop` 段为空）；需联合统信账号下载后另开一台虚机取证。桌面 OS 对 LEVEE 的服务器变更治理定位加分不大，除非客户点名。
+3. ~~**统信桌面专业版 V25（2500）**~~ **已补（2026-11-20）**：官网 CDN 无公开直链（API `desktop` 段为空），需联合统信账号下载；已在另一台虚机取证（见 §3 与 `docs/xinchuang-vm-drill.md` §10）。限定：为跑未签名二进制已切「允许任意应用」、无 root/sudo 故用用户态 sshd——对外引用必须带这两条与「虚拟机，非物理裸机」。
 4. **国产 DB 全支持**：DM8 与 **openGauss 7.0（2026-11-13 新增探针）** 均为「不支持（已实测）」；金仓 V9 PG 模式是至今唯一可落地的信创 DB 位。要支持 openGauss 需方言层立项：A 格式（Oracle 语义）把 `''` 当 NULL（LEVEE 的 `tags NOT NULL DEFAULT ''` + 显式空串插入全部撞车）、B/C 格式直接拒收 `INSERT ... ON CONFLICT`（0A000）——与 DM8 同级工程量，都动 `internal/state`（qoder 线）。详见 `docs/opengauss-probe-2026-11.md`。
 5. **License/激活形态**：麒麟的 `kylin-activation-check.service`（本实验未激活，即 degraded 的一部分）、UOS 的「免费使用授权 vs 正式授权」路径——均需真实采购/试用后验证，未在此覆盖。
 6. **性能与稳定性**：本报告全是「单实例、单变更」。没有并发压测、长跑泄漏、大库（审计链到 10⁵ 条以上）基准；`docs/benchmark-report.md` 是另一条线，未覆盖信创组合。
@@ -63,7 +64,7 @@
 
 ## 5. 限定与对外口径（照引用）
 
-- 对外只能说「**麒麟 V10 SP3 / V11、统信 UOS Server 20 / V25（2510）× amd64，虚拟机口径，完整治理链已验证**」；裸机一律说「未验证」。
+- 对外只能说「**麒麟 V10 SP3 / V11、统信 UOS Server 20 / V25（2510）、UOS 桌面专业版 V25（2500）× amd64，虚拟机口径，完整治理链已验证**」；裸机一律说「未验证」。桌面 V25 另须披露「为跑未签名 levee 已切『允许任意应用』、drill 走用户态 sshd」。
 - 「已在 WSL2 上验证」只对麒麟 V10（Sword）成立，且必须带「WSL2 用户态」限定。
 - 麒麟 V11 与 UOS V25 必须 `-cpu host`；UOS 20 必须默认 qemu64；**不要混**。
 - SELinux 在四台实验机上均为 **disabled**（镜像默认）；V11/UOS V25 内核命令行 `apparmor=0`、kylin 含 `audit=0`。
@@ -81,7 +82,7 @@ python scripts/verify_xinchuang_evidence.py --iso-dir G:\levee-vm
 # 只看虚拟机：python scripts/verify_xinchuang_evidence.py --skip-hash
 ```
 
-复跑演练本体：每台 guest 里同一套三步（`drill-setup.sh` → `drill-lifecycle.sh`），详见 `docs/xinchuang-vm-drill.md` §3 与 §7–§9 的分册差异；guest 内 `levee` 静态构建见该文档；ISO 的 16 分段并发下载法见 §8。
+复跑演练本体：每台 guest 里同一套三步（`drill-setup.sh` → `drill-lifecycle.sh`），详见 `docs/xinchuang-vm-drill.md` §3 与 §7–§10 的分册差异（桌面 V25 的非 root 适配脚本见 §10）；guest 内 `levee` 静态构建见该文档；ISO 的 16 分段并发下载法见 §8。
 
 ---
 
