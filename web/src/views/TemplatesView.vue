@@ -251,7 +251,7 @@ onMounted(load)
     <PageHeader title="模板管理" description="工作流模板的版本化载体；实例化即生成一份可审批的变更">
       <template #actions>
         <el-button :icon="'Refresh'" :loading="loading" @click="load">刷新</el-button>
-        <el-button type="primary" :icon="'Plus'" @click="openCreate">新建模板</el-button>
+        <el-button type="primary" :icon="'Plus'" @click="openCreate">创建模板</el-button>
       </template>
     </PageHeader>
 
@@ -327,7 +327,7 @@ onMounted(load)
     </div>
 
     <!-- Create / edit dialog -->
-    <el-dialog v-model="edit.visible" :title="edit.mode === 'create' ? '新建模板' : '编辑模板'" width="min(680px, 100vw - 48px)">
+    <el-dialog v-model="edit.visible" :title="edit.mode === 'create' ? '创建模板' : '编辑模板'" width="min(680px, 100vw - 48px)">
       <el-form :model="edit.form" label-width="120px">
         <el-form-item label="名称" required>
           <el-input v-model="edit.form.name" :disabled="edit.mode === 'edit'" placeholder="如 deploy-web" />

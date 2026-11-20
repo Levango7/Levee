@@ -42,6 +42,13 @@ function locate(rel: string): string {
 const view = locate('src/views/TemplatesView.vue')
 
 describe('template-instantiation wizard', () => {
+  it('uses one create-template label at every entry point', () => {
+    expect(view).toContain('@click="openCreate">创建模板</el-button>')
+    expect(view).toContain("edit.mode === 'create' ? '创建模板' : '编辑模板'")
+    expect(view).toContain(":action-label=\"search.trim() !== '' ? '清除搜索' : '创建模板'\"")
+    expect(view, 'the competing 新建 wording must not drift back').not.toContain('新建模板')
+  })
+
   it('gates the step advance on validation', () => {
     const next = view.indexOf('function nextStep()')
     expect(next, 'the wizard must advance through nextStep()').toBeGreaterThan(-1)

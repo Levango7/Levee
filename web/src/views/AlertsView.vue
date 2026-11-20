@@ -10,12 +10,20 @@
 // delivering the replay is a warning note above real data, not a tier swap.
 import { computed, ref } from 'vue'
 import { useAlertStream } from '@/composables/useAlertStream'
+import { useResponsive } from '@/composables/useResponsive'
 import { ALERT_SEVERITIES, type AlertSeverity } from '@/types/vocabulary'
 import PageHeader from '@/components/PageHeader.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import type { LoadTier } from '@/utils/apiState'
 
 const { alerts, connected, streamError } = useAlertStream()
+
+// Measured in Chrome: the full columns need 880px and the panel is viewport−330
+// (694px at 1024, 950px at 1280). Below 1240 the source/environment columns are
+// secondary; hiding them keeps the firing time reachable instead of clipping it
+// outside a non-scrollable table. The wider layout keeps every column.
+const { width: viewportWidth } = useResponsive()
+const denseColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1240)
 
 const severityFilter = ref<'' | AlertSeverity>('')
 const onlyFiring = ref(true)
@@ -132,8 +140,8 @@ function reloadPage(): void {
           <el-table-column label="目标" min-width="160" show-overflow-tooltip>
             <template #default="{ row }">{{ row.target || '—' }}</template>
           </el-table-column>
-          <el-table-column prop="source" label="来源" width="140" show-overflow-tooltip />
-          <el-table-column label="环境" width="100">
+        <el-table-column v-if="!denseColumns" prop="source" label="来源" width="140" show-overflow-tooltip />
+        <el-table-column v-if="!denseColumns" label="环境" width="100">
             <template #default="{ row }">{{ row.environment || '—' }}</template>
           </el-table-column>
           <el-table-column label="触发时间" width="130">
