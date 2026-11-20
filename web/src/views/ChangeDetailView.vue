@@ -506,12 +506,12 @@ onMounted(load)
 
 .detail__h {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--lv-text-base);
   font-weight: 600;
 }
 
 .detail__dim {
-  color: var(--el-text-color-secondary);
+  color: var(--lv-text-3);
   margin: 0 0 var(--lv-space-2, 8px);
 }
 
@@ -530,7 +530,7 @@ onMounted(load)
   background: var(--el-fill-color-light);
   border-radius: 6px;
   font-family: var(--lv-font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
   white-space: pre-wrap;
 }
 
@@ -561,7 +561,7 @@ onMounted(load)
 }
 
 .batch__state {
-  font-size: 13px;
+  font-size: var(--lv-text-sm);
 }
 
 /* Same row rhythm as the batch list: the plan's batches and the executed
@@ -594,14 +594,14 @@ onMounted(load)
 }
 
 .chain__level {
-  font-size: 13px;
+  font-size: var(--lv-text-sm);
   font-weight: 600;
 }
 
 .chain__stale {
-  color: var(--el-color-danger);
+  color: var(--lv-bad);
   margin: var(--lv-space-1, 4px) 0 0;
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
 }
 
 .chain__decisions {
@@ -625,6 +625,6 @@ onMounted(load)
 }
 
 .chain__no {
-  color: var(--el-color-danger);
+  color: var(--lv-bad);
 }
 </style>

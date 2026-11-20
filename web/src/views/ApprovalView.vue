@@ -458,7 +458,7 @@ const pendingCount = computed(() => pending.value.length)
   flex-wrap: wrap;
   align-items: center;
   gap: var(--lv-space-2, 8px);
-  font-size: 13px;
+  font-size: var(--lv-text-sm);
 }
 
 .chain__level {
@@ -478,7 +478,7 @@ const pendingCount = computed(() => pending.value.length)
   display: flex;
   align-items: center;
   gap: var(--lv-space-2, 8px);
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
 }
 
 .chain__who {
@@ -490,30 +490,30 @@ const pendingCount = computed(() => pending.value.length)
 }
 
 .chain__no {
-  color: var(--el-color-danger);
+  color: var(--lv-bad);
 }
 
 .chain__reason {
-  color: var(--el-text-color-regular);
+  color: var(--lv-text-2);
   flex: 1 1 auto;
 }
 
 .chain__note {
   padding: 0 6px;
-  border: 1px solid var(--el-border-color);
+  border: 1px solid var(--lv-border);
   border-radius: 4px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
 }
 
 .chain__dim {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-xs);
 }
 
 .chain__error {
-  color: var(--el-color-danger);
-  font-size: 12px;
+  color: var(--lv-bad);
+  font-size: var(--lv-text-xs);
 }
 
 .head-tools {

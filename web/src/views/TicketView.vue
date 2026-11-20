@@ -481,7 +481,7 @@ function ts(value: string | number | undefined | null): string {
 }
 
 .ticket-head__sub {
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
   opacity: 0.7;
   font-family: var(--lv-font-mono);
 }
@@ -497,7 +497,7 @@ function ts(value: string | number | undefined | null): string {
 .mono-block {
   display: block;
   font-family: var(--lv-font-mono);
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
 }
 
 .tag-gap {

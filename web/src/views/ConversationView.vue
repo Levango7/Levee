@@ -404,7 +404,7 @@ refreshSessions()
 
 .msg__time {
 	font-size: 10px;
-	color: var(--lv-ink-400);
+	color: var(--lv-text-3);
 }
 
 .msg__bubble {

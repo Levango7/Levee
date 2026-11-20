@@ -356,8 +356,8 @@ onMounted(async () => {
 
 .evidence__k {
   flex: 0 0 42px;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-xs);
   line-height: 20px;
 }
 
@@ -367,14 +367,14 @@ onMounted(async () => {
   max-height: 220px;
   overflow: auto;
   font-family: var(--lv-font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
   white-space: pre-wrap;
   word-break: break-all;
 }
 
 .evidence__empty {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-xs);
   line-height: 20px;
 }
 
@@ -382,8 +382,8 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
+  font-size: var(--lv-text-xs);
+  color: var(--lv-text-3);
 }
 
 .evidence__arrow {
@@ -429,7 +429,7 @@ onMounted(async () => {
 .chain-cell__arrow {
   flex: none;
   font-size: 10px;
-  color: var(--lv-ink-400);
+  color: var(--lv-text-3);
 }
 
 /* ------------------------------------------------------------- verify view */

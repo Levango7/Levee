@@ -504,14 +504,14 @@ onMounted(load)
 }
 
 .wizard__dim {
-  color: var(--el-text-color-secondary);
+  color: var(--lv-text-3);
   margin-left: 6px;
 }
 
 /* A missing value is shown, not hidden: the review step exists so the operator
    sees the gap before the server refuses or the change lands nameless. */
 .wizard__missing {
-  color: var(--el-color-danger);
+  color: var(--lv-bad);
 }
 
 .wizard__code {
@@ -519,7 +519,7 @@ onMounted(load)
   max-height: 220px;
   overflow: auto;
   font-family: var(--lv-font-mono, monospace);
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
   white-space: pre-wrap;
 }
 

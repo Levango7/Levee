@@ -712,7 +712,7 @@ async function runVerify(): Promise<void> {
 .map {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
 }
 
 .map__host,
@@ -773,7 +773,7 @@ async function runVerify(): Promise<void> {
 .map__dot--success { background: var(--lv-ok); }
 .map__dot--failed { background: var(--lv-bad); }
 .map__dot--running { background: var(--lv-accent); }
-.map__dot--pending { background: var(--lv-ink-400); }
+.map__dot--pending { background: var(--lv-neutral-fill); }
 .map__dot--skipped { background: var(--lv-warn); }
 
 .map__off {
@@ -989,7 +989,7 @@ async function runVerify(): Promise<void> {
   padding: var(--lv-space-3) 0;
   background: #0b1016;
   font-family: var(--lv-font-mono);
-  font-size: 12px;
+  font-size: var(--lv-text-xs);
   line-height: 1.65;
   border-bottom-left-radius: var(--lv-radius-lg);
   border-bottom-right-radius: var(--lv-radius-lg);

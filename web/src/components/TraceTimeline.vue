@@ -69,18 +69,18 @@ defineProps<{
 }
 
 .tl__host {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-xs);
 }
 
 .tl__dim {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-xs);
 }
 
 .tl__detail {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-xs);
   margin-top: 2px;
 }
 

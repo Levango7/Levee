@@ -383,7 +383,7 @@ const decidedWhen = computed(() =>
   justify-content: center;
   gap: 8px;
   padding: 48px 0;
-  color: var(--el-text-color-secondary);
+  color: var(--lv-text-3);
 }
 
 .mobile-approval__summary {
@@ -407,7 +407,7 @@ const decidedWhen = computed(() =>
 }
 
 .mobile-approval__value {
-  font-size: 14px;
+  font-size: var(--lv-text-base);
   font-weight: 500;
 }
 
@@ -421,9 +421,9 @@ const decidedWhen = computed(() =>
 
 .mobile-approval__decided-line {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--lv-text-base);
   line-height: 1.7;
-  color: var(--el-text-color-secondary);
+  color: var(--lv-text-3);
 }
 
 .mobile-approval__actions {
@@ -470,11 +470,11 @@ const decidedWhen = computed(() =>
 }
 
 .mobile-approval__history-action {
-  color: var(--el-text-color-secondary);
+  color: var(--lv-text-3);
 }
 
 .mobile-approval__history-detail {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--lv-text-3);
+  font-size: var(--lv-text-xs);
 }
 </style>
