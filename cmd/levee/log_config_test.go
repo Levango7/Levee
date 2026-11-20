@@ -13,11 +13,26 @@ import (
 )
 
 // restoreDefaultLogger puts the process logger back on stderr after a test
-// that reconfigured it. No test in this package runs in parallel, so the
+// that reconfigured it, and closes any file sink the wiring opened.
+//
+// The explicit close is load-bearing on Windows: t.TempDir removes the
+// directory at cleanup, and Windows refuses to unlink a file that is still
+// open — without it the tests fail in the CI's TempDir cleanup, not in their
+// assertions. It also resets the appliedLog memo so a leaked sink cannot
+// bleed into the next test. No test in this package runs in parallel, so the
 // window is not shared.
 func restoreDefaultLogger(t *testing.T) {
 	t.Helper()
-	t.Cleanup(func() { log.InitLoggerWithWriter("info", "text", os.Stderr) })
+	t.Cleanup(func() {
+		log.InitLoggerWithWriter("info", "text", os.Stderr)
+		appliedLog.mu.Lock()
+		defer appliedLog.mu.Unlock()
+		if f, ok := appliedLog.writer.(*os.File); ok && f != os.Stdout && f != os.Stderr {
+			_ = f.Close()
+		}
+		appliedLog.key = ""
+		appliedLog.writer = nil
+	})
 }
 
 func TestResolveLogWriterSinks(t *testing.T) {

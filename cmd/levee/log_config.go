@@ -116,7 +116,10 @@ func resolveLogWriter(output string) (io.Writer, error) {
 			return nil, fmt.Errorf("create log output directory %q: %w", dir, err)
 		}
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o640)
+	// 0600: the log may carry request identifiers, host names and error
+	// details; group/other read access buys nothing and gosec (G302) rightly
+	// flags anything looser.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open log output %q: %w", path, err)
 	}
