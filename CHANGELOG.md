@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（768 审批人标签竖排，F-12）
+
+- 实测只有审批标签被长快捷键提示压成 12×56px，并非整站文字竖排。<1400 隐藏快捷键提示，标签 flex:none + nowrap；1600 恢复提示，UI 蓝图明确有序降级边界。
+- browser-check 新增 768/1600 几何断言，完整 ALL PASS；vitest 386 用例、vue-tsc + vite build 通过，dist 同步。
+- P-01 三组拆分实验均未减少总下载量且把首屏 preload 增至 16–20 个，保留现有路由级动态加载与 vendor 设计，不为告警拆包。
+
 ### 设计/预研（D-6 方言可读性 + D-8 审计链模式迁移）
 
 - **D-6 预研**：新增测试专用依赖 `github.com/sqlc-dev/oliphant v0.2.0`（纯 Go，测试 import 不进发布二进制）；`internal/sqlreview/pg_oliphant_spike_test.go` 实测 10/10 PG 方言样本解析成功、否定对照与 fingerprint 稳定。结论与改写面见 `docs/pg-dialect-readability-spike-2026-11.md`；**生产审核行为不变，未接入**。
