@@ -809,9 +809,38 @@ async function runVerify(): Promise<void> {
   align-items: stretch;
 }
 
+/* Wide layout: the side column spans BOTH rows; the map and the terminal
+   stack in the wide column to its right — the arrangement the markup comment
+   describes. Left to auto-placement the terminal dropped into the narrow
+   column under the side panels (measured at 1600px viewport: x=264 w=400
+   while the map sat at x=680 w=888, the log's message column crushed to
+   ~130px) and the area under the map went to waste. */
+.monitor__side {
+  grid-row: 1 / 3;
+}
+
+.monitor > .map-panel {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.monitor > .terminal-card {
+  grid-column: 2;
+  grid-row: 2;
+}
+
 @media (max-width: 1180px) {
   .monitor {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Single column: undo the explicit placement, or grid-column: 2 would
+     create an empty second track beside everything. */
+  .monitor__side,
+  .monitor > .map-panel,
+  .monitor > .terminal-card {
+    grid-row: auto;
+    grid-column: auto;
   }
 }
 
