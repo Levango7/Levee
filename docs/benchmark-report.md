@@ -511,3 +511,43 @@ SQLite **不能把 OR 当作索引区间**（OR 的两臂各自可走索引，�
 ---
 
 > **使用注意**：本报告**不构成新系统的承诺值**；任何对外基准声明（tender/SLA/招投标）须在干净宿主（`go test -run='^$' -bench Benchmark -benchmem -count=3 ./internal/...`）复跑取 3 次中位数，并登记 `verify (xinchuang)` 或目标机器型。
+
+---
+
+## 19. 2026-11-20 复测（P2-A 收口）
+
+> **口径**：`master@6d51d9f`，`go1.26.11 windows/amd64`（基线 §1 为 go1.26.6，跨工具链不可逐项比较），
+> 同一台 Ryzen 9 7945HX / 32 threads / 31.2 GB，命令同 §1（`-count=1`）。
+> **宿主状态**：复测期间另有多个 agent 会话，`govulncheck` 也在并行跑——**非空载**，
+> 实测值整体偏慢，且已知本机一小时漂移可达 2×（§17.2）。本轮**只作同轮横截面**，
+> **不与上表逐项比大小**，更不把差异解读为性能回归。
+
+`go test -bench=Benchmark -benchmem -count=1 -run='^$' ./internal/...` → **126 条 / 14 包**
+（基线记 128 条；差异为本轮未跑需要环境变量门控的扩展项），退出码 0。
+
+本轮横截面（ops/s，四舍五入；仅用于同轮内部相对量级）：
+
+| 项 | 本轮 ops/s | 包 |
+| --- | --- | --- |
+| DSL Parse（standard / large） | ~6.8K / ~1.6K | dsl |
+| Plan Generate（serial / large） | ~86.8K / ~9.2K | plan |
+| Plan ComputeHash（standard / large） | ~6.3K / ~0.6K | plan |
+| Plan VerifyHash | ~3.8K | plan |
+| Audit TraceRecorder Record | ~126 | audit |
+| Audit Seal steady-state（100 行） | ~3.5K | audit |
+| Audit Verify steady-state（100 行） | ~2.8K | audit |
+| Credential encrypt / decrypt | ~1.9 / ~1.7 | credential |
+| LockStore Acquire / Release | ~2.8K / ~39.9K | lock |
+| Permission Check | ~15.1M | permission |
+
+原始输出留档 `C:\Users\winge\AppData\Local\Temp\opencode\bench-rerun.txt`（16.7 MB）。
+
+**审计链大规格再确认（同轮、非空载）**：`Seal steady-state` 5 000 行 20.2 ms、
+`Verify` 5 000 行 20.4 ms、`Verify` 100 000 行 **0.588 s**（§17.2 基线 0.294 s， ratio≈2×，
+正落在已登记的漂移区间，且本轮有并行负载）。**结论不是「变慢了」而是「本轮不能用来对绝对值下结论」**——
+与 §17.2 的诚实负面结论一致：`Record` 与 `Seal` 同量级，写路径成本是全链走读，
+每行成本不随链长恶化（修复后的 row-value 谓词守卫仍在 `internal/state/audit_chain_plan_test.go`）。
+
+**收口判定**：本轮未发现超出既有漂移解释范围的新热点；`docs/benchmark-report.md` 继续定位为
+**研发侧相对比较**。对外仍按文末「使用注意」——干净宿主、`-count=3` 取中位数、登记机器型，
+**不作招投标门槛值/SLA**。
