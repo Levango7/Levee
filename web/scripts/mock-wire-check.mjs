@@ -115,12 +115,18 @@ const ENDPOINTS = [
     envelope: ['entries', 'totalSize', 'nextPageToken'] },
   { name: 'conversation-sessions', url: '/api/v1/conversation/sessions?user_id=dev-user',
     row: 'sessions', rowDto: 'ConversationSessionDTO', envelope: ['sessions'] },
+  { name: 'dbchange-ticket', url: '/api/v1/changes/run-1003/ticket', dto: 'DBChangeTicket',
+    objects: {
+      change: 'ChangeSection', sql: 'SQLSection', rollback: 'RollbackSection',
+      window: 'WindowSection', approval: 'ApprovalSection',
+      execution: 'ExecutionSection', audit: 'AuditSection',
+    } },
 ]
 
 // Contract entries the mock does NOT serve at all. Reported as coverage gaps,
 // not failures: an unserved endpoint is a place the browser check cannot see,
 // which is worth naming without pretending the mock covers it.
-const UNCOVERED = ['dbchange-ticket', 'change-with-plan', 'audit-traces', 'agents', 'groups']
+const UNCOVERED = ['change-with-plan', 'audit-traces', 'agents', 'groups']
 // Served by the mock but not key-checked here: takeover-events has no DTO in
 // the contract's read set, and rollback is a POST whose preview/commit pair the
 // browser check already drives directly. Named so the coverage story is honest.

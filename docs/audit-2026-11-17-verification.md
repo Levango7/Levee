@@ -68,7 +68,7 @@
 
 验证：`mock-wire-check` 144/144；`browser-check` 本地 ALL PASS（含 [1d] 四条）；`vitest` 48 文件/383 用例（forks 池）；`vue-tsc + vite build` 通过。本批只改 `web/scripts` 与 `web/package.json`，未碰 `web/src`，`internal/web/dist` 无需重打。
 
-仍未动：F-09/F-10/F-11/F-12（需 CDP 实测或产品口径）、P-01、B-07，以及「发布单七段」内容断言（先补 ticket mock 才能落地）。
+仍未动：F-09/F-10/F-11/F-12（需 CDP 实测或产品口径）、P-01、B-07。「发布单七段」断言由下一批补齐。
 
 ## 后续批次（2026-11-20）：F-15 在途守卫 + P-02 缺失耗时
 
@@ -76,6 +76,13 @@
 - **P-02**：审计表对 protojson 省略的 `durationMs` 显示「—」而非裸 ` ms` / `undefined ms`；保留 `0 ms`，不把真实零值误作缺失。
 - **钉测与变异**：新增 2 例结构钉测，定向 20/20、全量 vitest 48 文件 / 385 用例全绿。三项真实变异（恢复旧耗时插值、去掉在途守卫、去掉 finally）分别让对应判据转红；恢复后两源文件 sha256 与变异前逐字一致。
 - **构建**：vue-tsc + vite build 通过，`web/dist` 与 `internal/web/dist` 已重打并用 `diff -r` 确认一致。
+
+## 后续批次（2026-11-20）：ticket mock + 发布单七段内容断言
+
+- **完整 fixture**：为已有的 completed 变更 `run-1003` 增加平铺七段 ticket（change/sql/rollback/window/approval/execution/audit），七段均有真实内容；int64 时间戳按 protojson 用字符串，int32 计数保持数字，不再让「无 ticket 路由」成为浏览器盲区。
+- **契约校验**：`dbchange-ticket` 纳入 `mock-wire-check`，顶层与七个 section 分别按 DTO/wire 校验；总数由 144 增至 **168/168 全绿**。剩余未服务端点诚实登记为 change-with-plan、audit-traces、agents、groups。
+- **浏览器断言**：新增 `[1e]`，先断言七个 tab 的名称与顺序，再逐一点击并只读取可见 pane 的专属证据（SQL、快照路径、窗口、审批理由、执行说明、审计 verdict），防止「七个空 tab」假绿。本地完整 `browser-check: ALL PASS`。
+- 本批只改 mock 与检查脚本，未碰 `web/src`，无需重打 dist。
 
 ## 验证口径（本批交付的事实）
 
