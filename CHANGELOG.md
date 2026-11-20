@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 测试（发布单七段进入 mock-wire 与浏览器内容门禁）
+
+- 为 completed 变更 `run-1003` 补齐平铺七段 ticket fixture；int64 时间戳按真实 protojson 使用字符串，int32 计数保持数字。
+- `dbchange-ticket` 纳入 mock-wire 校验，顶层和七个 section 分别检查，合计 168/168 全绿；覆盖缺口中移除 ticket。
+- `browser-check` 新增七段名称/顺序与逐 tab 可见内容断言，覆盖 SQL、快照路径、窗口、审批理由、执行证据和审计结论，防止「只有七个空 tab」假绿；本地完整浏览器检查 ALL PASS。
+
 ### 修复（变更详情动作的在途态与审计缺失耗时）
 
 - **F-15**：暂停、恢复、取消、归档共用单一在途守卫，重复点击不会再开第二个确认框或重复提交；当前动作显示 loading，四个动作在请求期间统一 disabled，成功或失败均在 finally 解锁，并等待详情刷新后再恢复操作。

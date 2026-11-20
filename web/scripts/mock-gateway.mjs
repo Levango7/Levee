@@ -64,6 +64,59 @@ const remediableDetail = {
   params: { region: 'cn-east-1' },
 }
 
+// A COMPLETE DB change ticket for the completed run-1003. Seven sections are
+// deliberately populated: an empty section would make a browser assertion that
+// only counts tabs vacuous, and protojson's omitted-empty-fields behaviour is
+// already covered by the server snapshot. int64 timestamps are STRINGS on the
+// wire; int32 counters stay numbers. No wrapper: the endpoint returns the ticket
+// itself, exactly like writeProto(GetDBChangeTicketResponse).
+const ticket = {
+  change: {
+    id: 'run-1003', label: labels[3], status: 'completed', priority: 'urgent', environment: 'prod',
+    creator: 'zhangs', workflow: 'db-failover-drill.yaml', template: 'db-failover-drill',
+    planHash: 'v2:db03a9f17c', planState: 'readable',
+    createdAt: String(now - 7200), updatedAt: String(now - 3600),
+  },
+  sql: {
+    hasSql: true,
+    steps: [
+      { step: 'add-settlement-channel', sql: 'ALTER TABLE accounts ADD COLUMN settlement_channel VARCHAR(32)' },
+      { step: 'index-settlement-channel', sql: 'CREATE INDEX idx_accounts_settlement_channel ON accounts (settlement_channel)' },
+    ],
+    review: {
+      verdict: 'warn', failCount: 0, warnCount: 1,
+      findings: [{ rule: 'SR-06', severity: 'warn', step: 'add-settlement-channel', statement: 1, message: '新增列需关注默认回填与锁窗口' }],
+    },
+  },
+  rollback: {
+    strategy: 'snapshot', onFailure: 'pause', verifyAfter: true,
+    snapshotPaths: ['evidence/run-1003/schema/accounts.sql'],
+    stepUndos: [{ step: 'add-settlement-channel', strategy: 'undo-action', undoSteps: 1, irreversible: false }],
+    hasUndo: true,
+  },
+  window: {
+    enforcedAt: 'apply', persistedPerRun: true,
+    note: '仅允许在 02:00–03:00（操作者本地时区）执行',
+  },
+  approval: {
+    level: 'high', status: 'approved', approvers: ['liwg', 'zhangs'],
+    decisions: [
+      { approver: 'liwg', action: 'approve', reason: '快照与回退证据齐全', decidedAt: String(now - 4000) },
+      { approver: 'zhangs', action: 'approve', reason: '确认变更窗口与影响面', decidedAt: String(now - 3900) },
+    ],
+    pendingCount: 0, approvedCount: 2, rejectedCount: 0,
+    matchesPlan: true, legacyApproval: false, staleApproval: false, hasApproval: true,
+  },
+  execution: {
+    verdict: 'complete', reason: '2 个批次、4 个目标全部完成并留证',
+    batches: 2, steps: 4, totalTargets: 4, hasEvidence: true,
+  },
+  audit: {
+    valid: true, count: 6, legacyCount: 0,
+    verified: true, unverifiable: false, verifyError: '',
+  },
+}
+
 const trace = {
   entries: [
     { id: 't1', runId: 'run-1000', action: 'plan', actor: 'liwg', target: 'host:10.0.1.11', timestamp: now - 3600, durationMs: 120, input: '{"template":"gateway-sync"}', output: '{"batches":5}', prevHash: '0000', currHash: 'a1b2' },
@@ -546,6 +599,10 @@ const server = http.createServer(async (req, res) => {
       window_from: now - 7 * 86400,
     })
   }
+
+  // The seven-section ticket for the completed run-1003. This route is what
+  // makes the ticket's content (not merely its shell) testable in a browser.
+  if (u === '/api/v1/changes/run-1003/ticket') return send(res, ticket)
 
   // One change's worth of detail pages.
   if (/^\/api\/v1\/changes\/run-1000$/.test(u)) return send(res, detail)

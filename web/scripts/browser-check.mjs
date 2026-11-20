@@ -608,6 +608,59 @@ console.log('\n[1d] the system page renders the wire values, not blank cells')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[1e] the DB change ticket renders all seven sections with their content')
+{
+  const page = await newPage(browser)
+  await open(page, '/changes/run-1003/ticket')
+  const headDeadline = Date.now() + SETTLE_DEADLINE_MS
+  let head = await text(page, '.ticket-head__label')
+  while (!head && Date.now() < headDeadline) {
+    await sleep(300)
+    head = await text(page, '.ticket-head__label')
+  }
+  check('the ticket is the completed run, not an empty sheet', head === '数据库主从切换演练', `head="${head}"`)
+  const tabs = await page.evaluate(() =>
+    [...document.querySelectorAll('.ticket-view .el-tabs__item')].map((el) => el.textContent.trim()))
+  const expected = [
+    ['变更信息', 'db-failover-drill.yaml'],
+    ['SQL 与审核', 'settlement_channel'],
+    ['回滚方案', 'evidence/run-1003/schema/accounts.sql'],
+    ['变更窗口', '02:00–03:00'],
+    ['审批链', '快照与回退证据齐全'],
+    ['执行证据', '2 个批次、4 个目标全部完成并留证'],
+    ['审计验证', '校验通过'],
+  ]
+  check('all seven sections are present in order',
+    JSON.stringify(tabs) === JSON.stringify(expected.map(([label]) => label)), JSON.stringify(tabs))
+  // Counting labels alone would pass with seven blank panes. Activate each one
+  // and read only the VISIBLE pane, so a missing route, an unwrapped response,
+  // or a section-shaped-but-empty fixture all fail here.
+  for (const [label, token] of expected) {
+    const clicked = await page.evaluate((name) => {
+      const tab = [...document.querySelectorAll('.ticket-view .el-tabs__item')]
+        .find((el) => el.textContent.trim() === name)
+      if (!(tab instanceof HTMLElement)) return false
+      tab.click()
+      return true
+    }, label)
+    let active = ''
+    const tabDeadline = Date.now() + SETTLE_DEADLINE_MS
+    while (active !== label && Date.now() < tabDeadline) {
+      await sleep(100)
+      active = await text(page, '.ticket-view .el-tabs__item.is-active')
+    }
+    const pane = await page.evaluate(() => {
+      const visible = [...document.querySelectorAll('.ticket-view .el-tab-pane')]
+        .find((el) => window.getComputedStyle(el).display !== 'none')
+      return (visible?.textContent || '').replace(/\s+/g, ' ').trim()
+    })
+    check(`${label} activates and renders its own evidence`, clicked && active === label && pane.includes(token),
+      `clicked=${clicked} active="${active}" token="${token}" pane="${pane.slice(0, 180)}"`)
+  }
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 {
   const page = await newPage(browser)
