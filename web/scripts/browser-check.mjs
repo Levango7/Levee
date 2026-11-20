@@ -757,15 +757,17 @@ console.log('\n[1h] narrow approval keeps the actor readable, desktop keeps the 
   let head = await readApprovalHead()
   // Pre-fix measurement at 768: the long keyboard hint squeezed 审批人 into a
   // 12px × 56px vertical strip. The hint yields below 1400, and the label's
-  // flex/white-space rules now keep it on one line.
-  check('768 keeps 审批人 on one line', head.labelWidth >= 30 && head.labelHeight <= 24, JSON.stringify(head))
+  // flex/white-space rules now keep it on one line. Width is font-dependent:
+  // Linux renders the same label at 27×19, so the bound rejects the old 12px
+  // strip without hard-coding one platform's wider glyphs.
+  check('768 keeps 审批人 on one line', head.labelWidth >= 24 && head.labelHeight <= 24, JSON.stringify(head))
   check('768 drops the space-hungry keyboard hint', !head.hintVisible, JSON.stringify(head))
 
   await page.setViewport({ width: 1600, height: 900 })
   await open(page, '/approval')
   head = await readApprovalHead()
   check('1600 restores the keyboard hint', head.hintVisible && head.hintText.includes('移动'), JSON.stringify(head))
-  check('1600 also keeps 审批人 on one line', head.labelWidth >= 30 && head.labelHeight <= 24, JSON.stringify(head))
+  check('1600 also keeps 审批人 on one line', head.labelWidth >= 24 && head.labelHeight <= 24, JSON.stringify(head))
   await page.close()
 }
 
