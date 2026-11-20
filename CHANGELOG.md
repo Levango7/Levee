@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 设计/预研（D-6 方言可读性 + D-8 审计链模式迁移）
+
+- **D-6 预研**：新增测试专用依赖 `github.com/sqlc-dev/oliphant v0.2.0`（纯 Go，测试 import 不进发布二进制）；`internal/sqlreview/pg_oliphant_spike_test.go` 实测 10/10 PG 方言样本解析成功、否定对照与 fingerprint 稳定。结论与改写面见 `docs/pg-dialect-readability-spike-2026-11.md`；**生产审核行为不变，未接入**。
+- **D-8 设计**：`docs/audit-chain-mode-migration-design.md` 给出 v12 加 per-row `digest_mode`、双口径验链、混合链与回填三方案（推荐混合链）、WORM 触发器与 ratchet 测试同步清单；**代码未动，需产品裁决**。
+- 对外材料 `docs/tender-evidence-pack-2026-11.md` 同步上述两项与渗透测试 SOW、基准复测、国密增量的引用口径。
+
 ### 新增（国密算法级增量：SM3 / SM4，默认不变）
 
 - 新增 `internal/gmcrypto`（`github.com/emmansun/gmsm` v0.45.4，纯 Go/CGO-free）：SM3 摘要、SM4 分组密码包装 + 上游已知答案自检；明确**不含** TLCP/国密 TLS、SM2 签名、密评能力。
