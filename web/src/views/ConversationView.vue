@@ -328,7 +328,7 @@ refreshSessions()
 
 .session__meta {
 	margin-top: 2px;
-	font-size: 11px;
+	font-size: var(--lv-text-xs);
 	color: var(--lv-text-3);
 }
 
@@ -403,7 +403,7 @@ refreshSessions()
 }
 
 .msg__time {
-	font-size: 10px;
+	font-size: var(--lv-text-xs);
 	color: var(--lv-text-3);
 }
 
@@ -440,7 +440,7 @@ refreshSessions()
 	padding: 1px 6px;
 	border-radius: var(--lv-radius-sm);
 	background: rgba(0, 0, 0, 0.06);
-	font-size: 11px;
+	font-size: var(--lv-text-xs);
 }
 
 /* ---------------------------------------------------------------- composer */

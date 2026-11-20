@@ -428,7 +428,7 @@ onMounted(async () => {
 
 .chain-cell__arrow {
   flex: none;
-  font-size: 10px;
+  font-size: var(--lv-text-xs);
   color: var(--lv-text-3);
 }
 

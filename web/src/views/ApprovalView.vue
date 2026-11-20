@@ -540,7 +540,7 @@ const pendingCount = computed(() => pending.value.length)
   border-radius: var(--lv-radius-sm);
   background: var(--lv-surface);
   font-family: var(--lv-font-mono, inherit);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   color: var(--lv-text-2);
 }
 
@@ -602,7 +602,7 @@ const pendingCount = computed(() => pending.value.length)
   background: var(--lv-warn-soft);
   border: 1px solid var(--lv-warn-border);
   color: var(--lv-warn);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   font-weight: 600;
 }
 
@@ -629,7 +629,7 @@ const pendingCount = computed(() => pending.value.length)
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--lv-font-mono);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   color: var(--lv-text-3);
 }
 

@@ -70,6 +70,12 @@
 
   --lv-accent: var(--lv-teal-500);
   --lv-accent-hover: var(--lv-teal-600);
+  /* The bright end for gradients on accent fills (load bars lead with it).
+     Theme-invariant like the teal scale itself: light reads accent→bright as
+     a highlight sweep, dark (accent = teal-400) reads it as the same sweep
+     one step up — no dark override needed. Exists so components never touch
+     a raw --lv-teal-* step (the ClusterView load bar was the last offender). */
+  --lv-accent-bright: var(--lv-teal-300);
   --lv-accent-soft: var(--lv-teal-50);
   --lv-accent-border: var(--lv-teal-200);
   --lv-accent-contrast: #ffffff;
@@ -300,21 +306,31 @@ html.dark {
   --el-color-primary-light-9: #e7f2f2;
   --el-color-primary-dark-2: #0b6362;
 
-  --el-color-success: #0f9d68;
-  --el-color-success-light-3: #57ba90;
-  --el-color-success-light-5: #87ceae;
-  --el-color-success-light-7: #b7e3cd;
-  --el-color-success-light-8: #cfeade;
-  --el-color-success-light-9: #eaf7f1;
-  --el-color-success-dark-2: #0c7e53;
+  /* Base points at the semantic status green rather than repeating its hex:
+     the light ramp below was once derived from a DIFFERENT green (#0f9d68),
+     and two greens then lived in one light theme. Anchors follow the danger
+     ramp's convention: light-7 = --lv-ok-border, light-9 = --lv-ok-soft,
+     the rest white-mixed from the base. #0b8156 also measures 4.9:1 on white
+     where #0f9d68 measured 3.5:1. */
+  --el-color-success: var(--lv-ok);
+  --el-color-success-light-3: #54a789;
+  --el-color-success-light-5: #85c0ab;
+  --el-color-success-light-7: var(--lv-ok-border);
+  --el-color-success-light-8: #cee6dd;
+  --el-color-success-light-9: var(--lv-ok-soft);
+  --el-color-success-dark-2: #096745;
 
-  --el-color-warning: #b3690a;
-  --el-color-warning-light-3: #c68f43;
-  --el-color-warning-light-5: #d4ab71;
-  --el-color-warning-light-7: #e6cdaa;
-  --el-color-warning-light-8: #efdcc0;
-  --el-color-warning-light-9: #fdf3e6;
-  --el-color-warning-dark-2: #8f5408;
+  /* Same drift, same fix as success: the base now IS the semantic warn tone
+     (#b3690a sat at 4.2:1 on white — under the AA floor; #97550a is 5.8:1),
+     and the pale end anchors to the StatusTag pill tokens the console
+     already reads as "warn". */
+  --el-color-warning: var(--lv-warn);
+  --el-color-warning-light-3: #b68854;
+  --el-color-warning-light-5: #cbaa85;
+  --el-color-warning-light-7: var(--lv-warn-border);
+  --el-color-warning-light-8: #eaddce;
+  --el-color-warning-light-9: var(--lv-warn-soft);
+  --el-color-warning-dark-2: #794408;
 
   --el-color-danger: #d92d20;
   --el-color-danger-light-3: #e4675c;

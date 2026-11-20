@@ -511,7 +511,7 @@ const assignmentDistribution = computed(() => {
 	border: 1px solid var(--lv-border);
 	border-radius: var(--lv-radius-sm);
 	background: var(--lv-surface-3);
-	font-size: 11px;
+	font-size: var(--lv-text-xs);
 	color: var(--lv-text-2);
 }
 
@@ -629,7 +629,7 @@ const assignmentDistribution = computed(() => {
 }
 
 .bar-row__fill--load {
-	background: linear-gradient(90deg, var(--lv-accent), var(--lv-teal-300));
+	background: linear-gradient(90deg, var(--lv-accent), var(--lv-accent-bright));
 }
 
 .bar-row__count {

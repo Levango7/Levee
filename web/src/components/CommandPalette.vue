@@ -272,7 +272,7 @@ function onKeydown(event: KeyboardEvent): void {
   border-radius: var(--lv-radius-sm);
   background: var(--lv-surface-3);
   font-family: var(--lv-font-mono);
-  font-size: 10px;
+  font-size: var(--lv-text-xs);
   line-height: 1.6;
   color: var(--lv-text-3);
 }
@@ -287,7 +287,7 @@ function onKeydown(event: KeyboardEvent): void {
 
 .palette__group {
   padding: var(--lv-space-2) var(--lv-space-3) 4px;
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   font-weight: 600;
   letter-spacing: var(--lv-tracking-caps);
   text-transform: uppercase;

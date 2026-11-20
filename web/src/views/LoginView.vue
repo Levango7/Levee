@@ -411,7 +411,7 @@ const stages = [
 }
 
 .auth__note code {
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
 }
 
 @media (max-width: 900px) {

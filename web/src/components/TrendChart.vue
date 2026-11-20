@@ -141,6 +141,9 @@ const legend = computed(() =>
 .trend__xtick {
   fill: var(--lv-text-3);
   font-family: var(--lv-font-mono);
+  /* Deliberate exemption from the 12px floor: axis ticks are SVG internals,
+     and utils/trend.ts thins the x labels from measured glyph width — the
+     10px here is part of that geometry, not an oversight. */
   font-size: 10px;
 }
 

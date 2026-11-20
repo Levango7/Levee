@@ -912,7 +912,7 @@ onBeforeUnmount(() => {
   border-radius: var(--lv-radius-sm);
   background: var(--lv-surface);
   font-family: var(--lv-font-mono, inherit);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   color: var(--lv-text-2);
 }
 
@@ -941,7 +941,7 @@ onBeforeUnmount(() => {
 }
 
 .cell-change__id {
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   color: var(--lv-text-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -963,7 +963,7 @@ onBeforeUnmount(() => {
   background: var(--lv-accent-soft);
   border: 1px solid var(--lv-accent-border);
   color: var(--lv-accent);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   font-weight: 500;
 }
 

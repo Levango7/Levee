@@ -784,7 +784,7 @@ async function runVerify(): Promise<void> {
   padding: 0 6px;
   border-radius: 4px;
   border: 1px solid var(--lv-border);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
 }
 
 .map__chip--success { color: var(--lv-ok); border-color: var(--lv-ok-border); }
@@ -798,7 +798,7 @@ async function runVerify(): Promise<void> {
   flex-wrap: wrap;
   gap: var(--lv-space-2, 8px);
   margin-top: var(--lv-space-2, 8px);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
   color: var(--lv-text-3);
 }
 
@@ -1040,7 +1040,7 @@ async function runVerify(): Promise<void> {
 
 .log-line__level {
   font-weight: 600;
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
 }
 
 .log-line__source {

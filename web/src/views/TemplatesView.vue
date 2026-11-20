@@ -575,7 +575,7 @@ onMounted(load)
   background: var(--lv-surface-3);
   border: 1px solid var(--lv-border-soft);
   color: var(--lv-text-2);
-  font-size: 11px;
+  font-size: var(--lv-text-xs);
 }
 
 .cell-time {
