@@ -18,7 +18,6 @@ import StateBlock from '@/components/StateBlock.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import type { LoadTier } from '@/utils/apiState'
 import { decidedByText, readDeeplinkEvidence } from '@/utils/deeplinkEvidence'
-import { currentSubject } from '@/utils/identity'
 import { STATUS_LABEL, formatTimestamp } from '@/utils/format'
 
 const route = useRoute()
@@ -35,12 +34,11 @@ const history = ref<TraceEntry[]>([])
 // different answer from "the change is gone" (404) — the old single banner
 // showed the server text for both with no way to tell them apart.
 const error = ref<unknown>(null)
-// Acting identity from the session token (utils/identity): the approver
-// name lands in the audit row, so the literal 'operator' this used to
-// hardcode mis-attributed every mobile decision. Mobile has no input box
-// to change it (one-tap link flow), which makes reading it correctly the
-// ONLY correct source here.
-const approver = ref(currentSubject())
+// Decision attribution: the requests here claim NO approver name — the
+// server attributes the vote to the authenticated subject and refuses a
+// mismatched claim, and a static opaque token carries no decodable name at
+// all (see ApprovalView.approve). The audit row records whatever the server
+// resolved, which is the only name that can be trusted on a one-tap flow.
 // One decision at a time. A one-tap approval on a phone is exactly where
 // an impatient double-tap lands; the decision is an irreversible write to
 // the audit chain, so the second tap must be refused, not queued.
@@ -110,7 +108,10 @@ async function approve(): Promise<void> {
   }
   acting.value = true
   try {
-    await changesApi.approve(change.value.id, { approver: approver.value, comment })
+    // No self-reported approver: the server attributes the vote to the
+    // authenticated subject (see ApprovalView.approve) — claiming a name the
+    // client cannot know 403s on named-token deployments.
+    await changesApi.approve(change.value.id, { comment })
     ElMessage.success('审批通过')
     await loadChange(change.value.id)
     await loadHistory(change.value.id)
@@ -140,7 +141,8 @@ async function reject(): Promise<void> {
   }
   acting.value = true
   try {
-    await changesApi.reject(change.value.id, { rejecter: approver.value, reason })
+    // Same attribution rule as approve (see above).
+    await changesApi.reject(change.value.id, { reason })
     ElMessage.success('已驳回')
     await loadChange(change.value.id)
     await loadHistory(change.value.id)

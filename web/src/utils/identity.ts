@@ -21,7 +21,16 @@
 
 import { getToken } from '@/api/client'
 
-/** Best-effort current identity for display and audit attribution. */
+/**
+ * Decision requests (approve/reject) deliberately claim NO name: the server
+ * attributes the vote to the authenticated subject and rejects a claimed
+ * name it cannot match. Under a static opaque token the client cannot know
+ * that name — claiming the historical 'operator' made every UI approve 403
+ * on named-token deployments (caught by the real-backend e2e probe). This
+ * helper stays display-only.
+ *
+ * Best-effort current identity for display and audit attribution.
+ */
 export function currentSubject(fallback = 'operator'): string {
   const token = getToken()
   if (!token) return fallback

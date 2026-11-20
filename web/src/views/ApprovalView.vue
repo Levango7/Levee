@@ -172,7 +172,12 @@ async function approve(change: Change): Promise<void> {
   }
   acting.value = true
   try {
-    await changesApi.approve(change.id, { approver: approver.value, comment })
+    // No self-reported approver: the server attributes the vote to the
+    // authenticated subject and REFUSES a claimed name it cannot match —
+    // under a static opaque token the client cannot know that name, so
+    // claiming one (the old 'operator') made every approve 403. Omitted
+    // field = server-side attribution, correct in every deployment mode.
+    await changesApi.approve(change.id, { comment })
     ElMessage.success('审批通过')
     loadPending()
   } catch (err) {
@@ -199,7 +204,8 @@ async function reject(change: Change): Promise<void> {
   }
   acting.value = true
   try {
-    await changesApi.reject(change.id, { rejecter: approver.value, reason })
+    // Same attribution rule as approve (see above): the server owns the name.
+    await changesApi.reject(change.id, { reason })
     ElMessage.success('已驳回')
     loadPending()
   } catch (err) {

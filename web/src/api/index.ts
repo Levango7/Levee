@@ -145,10 +145,17 @@ export const changesApi = {
     message: string
   }> => post(`/changes/${id}/apply`, body),
 
-  approve: (id: string, body: { approver: string; comment?: string }): Promise<Change> =>
+  /* approver/rejecter are OPTIONAL and should usually be OMITTED: the server
+   * attributes the vote to the authenticated subject and rejects a claimed
+   * name that differs ("approver %q does not match the authenticated subject
+   * %q"). A static opaque token carries no decodable identity, so the client
+   * cannot know the name to claim — self-reporting 'operator' made every UI
+   * approve 403 on named-token deployments (caught by the real-backend e2e
+   * probe). Omit the field and let the server attribute. */
+  approve: (id: string, body: { approver?: string; comment?: string }): Promise<Change> =>
     post<Change>(`/changes/${id}/approve`, body),
 
-  reject: (id: string, body: { rejecter: string; reason: string }): Promise<Change> =>
+  reject: (id: string, body: { rejecter?: string; reason: string }): Promise<Change> =>
     post<Change>(`/changes/${id}/reject`, body),
 
   approveViaDeepLink: (token: string): Promise<DeeplinkDecision> =>
