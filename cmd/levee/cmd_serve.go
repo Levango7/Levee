@@ -1383,14 +1383,14 @@ func announceApprovalExpiry(ctx context.Context, store state.Store, chatOps *cha
 // outcomes, and each outcome is an operator-facing sentence rather than a
 // decision the caller acts on: nil simply means "probe unauthenticated", which
 // is the documented serve-mode limitation.
-func buildServeCredentialResolver(store state.Store) *serveCredentialResolver {
+func buildServeCredentialResolver(store state.Store, encryption string) *serveCredentialResolver {
 	mp := os.Getenv("LEVEE_MASTER_PASSWORD")
 	if mp == "" {
 		log.Info("LEVEE_MASTER_PASSWORD not set; target checks will probe without credentials " +
 			"(no resolver configured)")
 		return nil
 	}
-	credStore, err := credential.NewCredentialStore(store, mp)
+	credStore, err := credential.NewCredentialStoreWithAlgorithm(store, mp, encryption)
 	if err != nil {
 		log.Warn("credential store unavailable; target checks will probe without credentials",
 			"error", err)
@@ -1471,7 +1471,7 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 	// and engine channels dial targets without credentials. Documented
 	// limitation: serve mode has no other master-password source today —
 	// there is no --master-password flag or keyfile mechanism to wire instead.
-	credResolver := buildServeCredentialResolver(store)
+	credResolver := buildServeCredentialResolver(store, cfg.Credential.Encryption)
 
 	// Approval service over the same store: PlanChange kicks off the
 	// approval chain (R4 risk-tiered routing; see ChangeService.

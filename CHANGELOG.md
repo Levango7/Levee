@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（国密算法级增量：SM3 / SM4，默认不变）
+
+- 新增 `internal/gmcrypto`（`github.com/emmansun/gmsm` v0.45.4，纯 Go/CGO-free）：SM3 摘要、SM4 分组密码包装 + 上游已知答案自检；明确**不含** TLCP/国密 TLS、SM2 签名、密评能力。
+- 凭据存储新增可选 `credential.encryption: sm4-gcm`：写入带算法标记的 LEV2 blob（与前代 LEV1/headless 同为 39B 头），SM4 在 GCM 模式下工作；读侧按算法标记选 AES/SM4，**两种写入格式双向可读，切换不迁移存量凭据**。默认仍为 `aes256-gcm`，行为不变；未知算法名配置校验直接拒绝。
+- `serve` 从配置传入算法选择；CLI `secret` 子命令仍用默认 AES 写（读侧兼容 SM4）。文档与 `config.example.yaml` 同步口径；新增 5 个单测含跨算法互读与未知标记硬失败。
+- **边界**：这是算法级增量，不构成「已过密评 / 国密 TLS / SM2 签名」；对外口径以 `docs/tender-evidence-pack-2026-11.md` M-04 为准。
+
 ### 修复（日志重配置的旧文件 sink 泄漏与 Windows 清理顺序）
 
 - 日志级别/格式变化时，在新 sink 就绪后关闭被替换的旧文件句柄，不再随重配置累积 descriptor；stdout/stderr 仍归进程所有，不误关。

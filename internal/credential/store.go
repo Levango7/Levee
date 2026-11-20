@@ -3,7 +3,10 @@
 // subsystem.
 //
 // Security model:
-//   - AES-256-GCM provides authenticated encryption of credential plaintext.
+//   - AES-256-GCM provides authenticated encryption of credential plaintext
+//     by default; an opt-in SM4-GCM (GM/T 0002-2012) mode writes algorithm-
+//     tagged v2 blobs. Both are readable by either writer (see v2 below).
+//     SM4-GCM is a lab option, NOT a TLCP/密评 compliance claim.
 //   - argon2id derives a per-credential 32-byte key from a master password
 //     and a per-credential random salt, so compromising one ciphertext does
 //     not reveal the master password or other credentials.
@@ -37,6 +40,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
+	"github.com/nexus/levee/internal/gmcrypto"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/state"
 )
@@ -95,6 +99,28 @@ const (
 	v1OffPar     = 10
 	v1OffSalt    = 11
 	v1OffNonce   = v1OffSalt + saltLen // 27
+
+	// v2 blob: algorithm-tagged, same header length as v1 (39 bytes).
+	// "LEV2" || algo(1B) || timeCost(1B) || memKiB(4B) || par(1B) ||
+	// salt(16B) || nonce(12B) || AEAD ciphertext(+tag).
+	// It exists so an opt-in national-crypto algorithm (SM4-GCM) can be
+	// selected without breaking LEV1/headless readers.
+	v2Magic     = "LEV2"
+	v2OffAlgo   = len(v2Magic) // 4
+	v2OffTime   = 5
+	v2OffMem    = 6
+	v2OffPar    = 10
+	v2OffSalt   = 11
+	v2OffNonce  = v2OffSalt + saltLen                               // 27
+	v2HeaderLen = len(v2Magic) + 1 + 1 + 4 + 1 + saltLen + nonceLen // 39
+
+	// Algorithm tags stored in a v2 header.
+	algAES256GCM = byte(0x01) // AES-256-GCM (default, identical crypto to v1)
+	algSM4GCM    = byte(0x02) // SM4-GCM (GM/T 0002-2012 block cipher, opt-in lab mode)
+
+	// Algorithm names accepted from config.credential.encryption.
+	encryptionAES256GCM = "aes256-gcm"
+	encryptionSM4GCM    = "sm4-gcm"
 )
 
 // legacyHeadlessCandidates enumerates the KDF parameter sets of the two
@@ -159,6 +185,7 @@ type CredentialStore struct {
 	timeCost       uint32
 	memoryCost     uint32
 	parallelism    uint8
+	algorithm      string // encryption algorithm name (aes256-gcm | sm4-gcm)
 }
 
 // CredentialSpec is the input for creating or updating a credential.
@@ -230,7 +257,33 @@ func NewCredentialStore(store state.Store, masterPassword string) (*CredentialSt
 		timeCost:       defaultTimeCost,
 		memoryCost:     defaultMemoryCost,
 		parallelism:    defaultParallelism,
+		algorithm:      encryptionAES256GCM,
 	}, nil
+}
+
+// NewCredentialStoreWithAlgorithm is like NewCredentialStore but selects the
+// AEAD algorithm used for newly written blobs. Accepted values:
+//   - "aes256-gcm" (default): AES-256-GCM, v1 blob (unchanged legacy format).
+//   - "sm4-gcm": SM4 (GM/T 0002-2012) in GCM mode, written as an
+//     algorithm-tagged v2 blob. This is an opt-in lab mode; it is NOT a
+//     TLCP/密评 claim. Readers always accept both formats regardless of the
+//     writer's selection.
+//
+// An unknown algorithm is rejected rather than silently downgraded.
+func NewCredentialStoreWithAlgorithm(store state.Store, masterPassword, algorithm string) (*CredentialStore, error) {
+	cs, err := NewCredentialStore(store, masterPassword)
+	if err != nil {
+		return nil, err
+	}
+	switch algorithm {
+	case "", encryptionAES256GCM:
+		cs.algorithm = encryptionAES256GCM
+	case encryptionSM4GCM:
+		cs.algorithm = encryptionSM4GCM
+	default:
+		return nil, fmt.Errorf("credential: unsupported encryption algorithm %q (want %s|%s)", algorithm, encryptionAES256GCM, encryptionSM4GCM)
+	}
+	return cs, nil
 }
 
 // NewCredentialStoreWithParams is like NewCredentialStore but allows the
@@ -281,6 +334,7 @@ func NewCredentialStoreWithParams(store state.Store, masterPassword string, time
 		timeCost:       timeCost,
 		memoryCost:     memoryCost,
 		parallelism:    parallelism,
+		algorithm:      encryptionAES256GCM,
 	}, nil
 }
 
@@ -293,7 +347,33 @@ func (cs *CredentialStore) deriveKey(salt []byte) []byte {
 	return argon2.Key(cs.masterPassword, salt, cs.timeCost, cs.memoryCost, cs.parallelism, keyLen)
 }
 
-// encrypt encrypts plaintext using AES-256-GCM with a per-credential key
+// newAEAD builds the AEAD for an algorithm tag. SM4 uses the first 16 bytes
+// of the 32-byte argon2id output (SM4's key size is 128 bit); the remaining
+// bytes are unused, which is safe because the KDF output is a single
+// uniformly random block stream.
+func newAEAD(key []byte, algo byte) (cipher.AEAD, error) {
+	var block cipher.Block
+	var err error
+	switch algo {
+	case algAES256GCM:
+		block, err = aes.NewCipher(key)
+	case algSM4GCM:
+		block, err = gmcrypto.NewSM4Cipher(key[:gmcrypto.SM4KeySize])
+	default:
+		return nil, fmt.Errorf("credential: unknown algorithm tag 0x%02x", algo)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("credential: new cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("credential: new gcm: %w", err)
+	}
+	return gcm, nil
+}
+
+// encrypt encrypts plaintext using the configured AEAD (AES-256-GCM by
+// default, SM4-GCM when opted in) with a per-credential key
 // derived from the master password and a fresh random salt. The returned
 // blob is self-describing (format v1, see "Blob format versioning" above):
 // LEV1 header carrying the KDF parameters, salt and nonce, followed by the
@@ -310,13 +390,15 @@ func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
 	key := cs.deriveKey(salt)
 	defer SecureZero(key)
 
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("credential: new cipher: %w", err)
+	algo := algAES256GCM
+	writeV2 := false
+	if cs.algorithm == encryptionSM4GCM {
+		algo = algSM4GCM
+		writeV2 = true
 	}
-	gcm, err := cipher.NewGCM(block)
+	gcm, err := newAEAD(key, algo)
 	if err != nil {
-		return nil, fmt.Errorf("credential: new gcm: %w", err)
+		return nil, err
 	}
 
 	nonce := make([]byte, gcm.NonceSize())
@@ -328,6 +410,21 @@ func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
 	// thing. We assemble header || ciphertext explicitly so the header is
 	// built exactly once at its final offsets.
 	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+
+	if writeV2 {
+		header := make([]byte, v2HeaderLen)
+		copy(header, v2Magic)
+		header[v2OffAlgo] = algo
+		header[v2OffTime] = byte(cs.timeCost)
+		binary.BigEndian.PutUint32(header[v2OffMem:v2OffPar], cs.memoryCost)
+		header[v2OffPar] = cs.parallelism
+		copy(header[v2OffSalt:], salt)
+		copy(header[v2OffNonce:], nonce)
+		blob := make([]byte, 0, v2HeaderLen+len(ciphertext))
+		blob = append(blob, header...)
+		blob = append(blob, ciphertext...)
+		return blob, nil
+	}
 
 	header := make([]byte, v1HeaderLen)
 	copy(header, v1Magic)
@@ -356,6 +453,22 @@ func (cs *CredentialStore) encrypt(plaintext []byte) ([]byte, error) {
 //     bytes merely collide with the magic (version byte ≠ 0x01, odds
 //     2^-32·255/256) lands here too.
 func (cs *CredentialStore) decrypt(blob []byte) ([]byte, error) {
+	// v2 (algorithm-tagged) blobs are checked first; an unknown algorithm
+	// tag is a hard error rather than a silent AES fallback.
+	if len(blob) >= v2OffAlgo+1 && bytes.HasPrefix(blob, []byte(v2Magic)) {
+		if len(blob) < v2HeaderLen+v1TagLen {
+			return nil, ErrInvalidCiphertext
+		}
+		algo := blob[v2OffAlgo]
+		timeCost := uint32(blob[v2OffTime])
+		memKiB := binary.BigEndian.Uint32(blob[v2OffMem:v2OffPar])
+		par := blob[v2OffPar]
+		if par == 0 || memKiB < uint32(par)*8 {
+			return nil, ErrInvalidCiphertext
+		}
+		return cs.openWithAlgo(blob[v2OffSalt:v2OffNonce], blob[v2OffNonce:v2HeaderLen], blob[v2HeaderLen:], timeCost, memKiB, par, algo)
+	}
+
 	if len(blob) >= v1OffVersion+1 && bytes.HasPrefix(blob, []byte(v1Magic)) && blob[v1OffVersion] == v1Version {
 		if len(blob) < minV1BlobLen {
 			return nil, ErrInvalidCiphertext
@@ -422,16 +535,18 @@ func (cs *CredentialStore) decrypt(blob []byte) ([]byte, error) {
 // GCM ciphertext. It is the single decrypt funnel: v1 and legacy paths both
 // end here, differing only in where the parameters came from.
 func (cs *CredentialStore) openWith(salt, nonce, ciphertext []byte, timeCost, memKiB uint32, parallelism uint8) ([]byte, error) {
+	return cs.openWithAlgo(salt, nonce, ciphertext, timeCost, memKiB, parallelism, algAES256GCM)
+}
+
+// openWithAlgo derives a key with the given argon2id parameters and opens the
+// AEAD ciphertext using the algorithm tag (AES-256-GCM or SM4-GCM).
+func (cs *CredentialStore) openWithAlgo(salt, nonce, ciphertext []byte, timeCost, memKiB uint32, parallelism uint8, algo byte) ([]byte, error) {
 	key := argon2.Key(cs.masterPassword, salt, timeCost, memKiB, parallelism, keyLen)
 	defer SecureZero(key)
 
-	block, err := aes.NewCipher(key)
+	gcm, err := newAEAD(key, algo)
 	if err != nil {
-		return nil, fmt.Errorf("credential: new cipher: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("credential: new gcm: %w", err)
+		return nil, err
 	}
 
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)

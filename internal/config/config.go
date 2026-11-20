@@ -938,8 +938,15 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	default:
 		problems = append(problems, fmt.Sprintf("credential.storage %q must be local|vault", cfg.Credential.Storage))
 	}
-	if cfg.Credential.Encryption == "" {
+	switch cfg.Credential.Encryption {
+	case "":
 		problems = append(problems, "credential.encryption is required")
+	case "aes256-gcm", "sm4-gcm":
+		// sm4-gcm is an opt-in national-crypto (GM/T 0002-2012) mode;
+		// it writes algorithm-tagged v2 blobs and remains readable by
+		// AES-only deployments (see internal/credential).
+	default:
+		problems = append(problems, fmt.Sprintf("credential.encryption %q must be aes256-gcm|sm4-gcm", cfg.Credential.Encryption))
 	}
 	if cfg.Credential.KeyDerivation == "" {
 		problems = append(problems, "credential.key_derivation is required")

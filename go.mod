@@ -6,6 +6,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.18
 	github.com/aws/aws-sdk-go-v2/service/kms v1.62.6
 	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/emmansun/gmsm v0.45.4
 	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/vault/api v1.23.0
