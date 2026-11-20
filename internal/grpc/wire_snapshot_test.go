@@ -91,10 +91,10 @@ func seedWireFixture(t *testing.T, store state.Store) {
 		ID: "tgt-wire", Hostname: "10.0.1.11", ChannelType: "ssh", Port: 22,
 		Labels: map[string]string{"env": "prod"},
 	}))
-	// An audit row, because protojson omits zero-valued fields: an EMPTY list
-	// response marshals to {} (this is why the first run of this test saw
-	// /audit/log contribute no keys at all). Seeding one makes the envelope
-	// show its real keys instead of an empty object.
+	// An audit row makes the envelope's row shape observable. Empty top-level
+	// collections are now explicit [] (B-07), but an empty rows array cannot
+	// show the keys of its elements; the snapshot needs one real entry to record
+	// the client's per-row contract rather than just the envelope.
 	require.NoError(t, store.CreateAudit(ctx, &state.Audit{
 		ID: "au-wire", RunID: "run-wire", Action: "apply",
 		Actor: "liwg", Target: "10.0.1.11", Result: state.AuditResultSuccess,

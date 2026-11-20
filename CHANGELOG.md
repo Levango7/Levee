@@ -10,6 +10,12 @@
 - 测试恢复 logger 时同步关闭并重置 appliedLog，且以 defer 延后注册 cleanup，保证 LIFO 下先关文件再执行 TempDir RemoveAll。
 - 三条 master Windows 红测试本地先红后绿；新增旧 sink 关闭断言。cmd/levee 全包与 go test ./... 76 包全绿。
 
+### 修复（REST 空集合不再丢失为 `{}`，B-07）
+
+- proto 响应顶层缺失的 repeated 字段统一显式输出 `[]`：changes/templates/targets/audit-log/audit-traces 的空结果不再变成 `{}`；agents/groups 实测原本就是 `[]`，仅补钉测。
+- 不使用全局 EmitDefaults：嵌套 plan 与零值标量仍按原契约省略，预览和单对象响应不被顺带改写。
+- wire 快照与 mock 同步空 warnings；新增 7 端点回归及嵌套省略保持测试，mock-wire 168/168、DTO 契约和前端 386 用例全绿。
+
 ### 修复（1024 告警表列裁切与模板创建文案）
 
 - **F-11**：实测 1024 下表右缘 975，但环境/触发时间右缘分别 1031/1161 且不可横滚。按全列 880px、面板=视口−330 的实测预算，在 <1240 时隐藏来源/环境两个次要列；修复后触发时间右缘回到 975，1280 全列保留。browser-check 增加双宽度几何断言。

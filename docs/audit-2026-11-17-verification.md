@@ -18,7 +18,7 @@
 | **B-04** | `/system/config` 返回 base64，前端当 YAML 渲染 | `writeProto` → protojson 对 `bytes` 的规范编码；`SystemView.vue:272` 直接渲染；mock 却发明文 | 真缺口 | 本批修：视图解码 + **mock 按真实 wire 发 base64** |
 | **B-05** | 未注册 target 返回 500 | `wiring/plan.go:333` 原文 | **已由 master 修掉**（`internal/wiring/errors.go` 哨兵带码 + `planStatus`/`engineStatus` + 专测） | **撤掉我先前的重复实现**（`planFailureStatus`），保留 master 版本 |
 | **B-06** | README 称 `--insecure` 仍按操作者记录，与实现 401 冲突 | 文档原文 vs 实现 | 真缺口 | 本批修：README 改为「只放宽传输，不放宽审批主体」 |
-| **B-07** | 空列表返回 `{}` | 与既有「空集合统一为 []」的批次有关，需逐端点再核 | 暂不动 | 留待逐端点枚举后再定（不在本批冒进） |
+| **B-07** | 空列表返回 `{}` | 旧代码实测 changes/templates/targets/audit-log/audit-traces 均丢集合键；根因=protojson 默认省略空 repeated | **真缺口（实测确认）** | **后续批已修**：仅顶层空集合显式为 `[]`；agents/groups 实测原本就是 `[]`，未误改 |
 | **T-01** | mock 手写 fixture 比真后端更完整，掩盖真 bug | `/system/status`、`/system/config`、conversation、alerts 均实证缺路由或字段漂移 | **真缺口（结构性）** | 本批修：按真实 wire 形状改 mock + 补 conversation/alerts 路由。**生成式 fixture 仍未做**（见下方残留） |
 | **F-01/F-02** | 1280 下关键列被压到 <60px | CDP 实测：创建时间列 **168px**；真因是**列宽合计 1100/1132 > 容器 950** | **真问题，但报告机理描述不准** | 按实测修：<1400 隐藏次要列，而不是调那一列 |
 | **F-03** | 趋势图固定 640，右半空白 | `trend__svg` **640** in parent **918**（CDP 实测）；`TrendChart` 默认 width=640 且调用方从不传 width | 真缺口 | 本批修：ResizeObserver 按容器宽传参 |
@@ -90,6 +90,13 @@
 - **F-10 已修**：顶部、空态与创建对话框统一「创建模板」；源码钉测 + 浏览器点击对话框双重验证。
 - **F-11 已按数字修**：修复前 1024 表右缘 975，而环境/触发时间右缘分别 1031/1161 且不可横滚；全列最小预算 880px、面板宽=视口−330，故 <1240 隐藏来源/环境两个次要列。修复后 1024 触发时间右缘=975，1280 六列全部保留且右缘=1231。
 - **门禁**：browser-check 新增 `[1f]` 双宽度几何断言与 `[1g]` 文案/对话框断言；完整 ALL PASS。vitest 48 文件 / 386 用例、vue-tsc + vite build 全过，dist 重打同步。
+
+## 后续批次（2026-11-20）：B-07 空集合信封
+
+- **先红后绿**：真实 REST 回归证明 changes/templates/targets/audit-log/audit-traces 空结果均为 `{}`、没有集合键；修复后五者分别为 `{changes:[]}`、`{templates:[]}`、`{targets:[]}`、`{entries:[]}`。`/agents`、`/groups` 实测原本就返回裸 `[]`，只加钉测、不改实现。
+- **最小规则**：`marshalProtoWithEmptyCollections` 只补顶层缺失的 repeated 字段为 `[]`，不使用全局 EmitDefaults；嵌套 plan 的空 batches/targetHosts 与 totalSize 等零标量仍按原契约省略，预览/单对象响应不被顺带改写。
+- **契约同步**：wire 快照仅新增 `/system/status` 的 `warnings`（空数组）一项；mock 同步 `warnings:[]`，mock-wire 168/168、DTO wireContract 6/6。
+- **验证**：新增 2 例（7 个端点子路径 + 嵌套省略保持），全量 vitest 386、build 通过。全量 Go 验证另发现 master 既有 Windows 日志句柄红腿，已由独立 hotfix 处理，未混入本批。
 
 ## 验证口径（本批交付的事实）
 

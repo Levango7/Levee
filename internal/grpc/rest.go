@@ -2259,7 +2259,7 @@ func readProto(req proto.Message) func(r *http.Request) error {
 
 // writeProto marshals a proto message to JSON and writes it as the response.
 func writeProto(w http.ResponseWriter, v proto.Message) {
-	out, err := protojson.Marshal(v)
+	out, err := marshalProtoWithEmptyCollections(v)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
 		return
@@ -2267,6 +2267,39 @@ func writeProto(w http.ResponseWriter, v proto.Message) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+// marshalProtoWithEmptyCollections keeps an empty TOP-LEVEL repeated field
+// visible as [] instead of letting protojson drop it (B-07). It deliberately
+// does not use EmitDefaults: zero scalars and nested objects retain their
+// existing omission semantics, so a preview still omits an unset rollback id
+// and a stored plan does not grow empty lists it never had.
+func marshalProtoWithEmptyCollections(v proto.Message) ([]byte, error) {
+	out, err := protojson.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(out, &body); err != nil {
+		return nil, err
+	}
+	fields := v.ProtoReflect().Descriptor().Fields()
+	changed := false
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		if !field.IsList() {
+			continue
+		}
+		name := field.JSONName()
+		if _, present := body[name]; !present {
+			body[name] = json.RawMessage("[]")
+			changed = true
+		}
+	}
+	if !changed {
+		return out, nil
+	}
+	return json.Marshal(body)
 }
 
 // writeJSON writes any struct as JSON response.
