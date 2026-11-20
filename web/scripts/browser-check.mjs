@@ -661,6 +661,72 @@ console.log('\n[1e] the DB change ticket renders all seven sections with their c
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[1f] the alert table spends its measured column budget at 1024 and 1280')
+{
+  const page = await newPage(browser, { width: 1024, height: 900 })
+  await open(page, '/alerts')
+  const readLayout = () => page.evaluate(() => {
+    const labels = [...document.querySelectorAll('.el-table__header-wrapper th')].map((el) => el.textContent.trim())
+    const table = document.querySelector('.el-table')
+    const last = document.querySelector('.el-table__header-wrapper th:last-child')
+    return {
+      rows: document.querySelectorAll('.el-table__row').length,
+      labels,
+      tableRight: table ? Math.round(table.getBoundingClientRect().right) : 0,
+      lastRight: last ? Math.round(last.getBoundingClientRect().right) : 0,
+    }
+  })
+  const deadline = Date.now() + SETTLE_DEADLINE_MS
+  let layout = await readLayout()
+  while (layout.rows === 0 && Date.now() < deadline) {
+    await sleep(300)
+    layout = await readLayout()
+  }
+  // Pre-fix measurement: table right=975, environment right=1031 and firing
+  // time right=1161, with no horizontal scroll. The two secondary columns must
+  // yield; the firing time is not optional evidence.
+  check('1024 hides source/environment and keeps firing time',
+    layout.rows > 0 && !layout.labels.includes('来源') && !layout.labels.includes('环境') && layout.labels.includes('触发时间'),
+    JSON.stringify(layout))
+  check('1024 keeps the last column inside the table', layout.lastRight > 0 && layout.lastRight <= layout.tableRight + 1,
+    `lastRight=${layout.lastRight} tableRight=${layout.tableRight}`)
+
+  await page.setViewport({ width: 1280, height: 900 })
+  await open(page, '/alerts')
+  layout = await readLayout()
+  check('1280 restores every column', ['级别', '标题', '目标', '来源', '环境', '触发时间'].every((x) => layout.labels.includes(x)),
+    JSON.stringify(layout.labels))
+  check('1280 also keeps the last column inside the table', layout.lastRight > 0 && layout.lastRight <= layout.tableRight + 1,
+    `lastRight=${layout.lastRight} tableRight=${layout.tableRight}`)
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
+console.log('\n[1g] every create-template entry point uses the same words')
+{
+  const page = await newPage(browser)
+  await open(page, '/templates')
+  const labels = await page.evaluate(() =>
+    [...document.querySelectorAll('button')].map((el) => el.textContent.trim()).filter((t) => t.includes('模板')))
+  check('the header and empty state agree on 创建模板',
+    labels.filter((t) => t === '创建模板').length >= 2 && !labels.includes('新建模板'), JSON.stringify(labels))
+  const clicked = await page.evaluate(() => {
+    const button = [...document.querySelectorAll('button')].find((el) => el.textContent.trim() === '创建模板')
+    if (!(button instanceof HTMLElement)) return false
+    button.click()
+    return true
+  })
+  const titleDeadline = Date.now() + SETTLE_DEADLINE_MS
+  let title = ''
+  while (!title && Date.now() < titleDeadline) {
+    await sleep(100)
+    title = await text(page, '.el-dialog__title')
+  }
+  check('the dialog uses the same create wording', clicked && title === '创建模板', `clicked=${clicked} title="${title}"`)
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 {
   const page = await newPage(browser)
