@@ -78,6 +78,9 @@ const router = useRouter()
 
 const changeId = computed(() => String(route.params.id || ''))
 const loading = ref(false)
+// The lifecycle verb currently in flight ('' = none). One shared guard stops a
+// second click opening a second confirmation or firing the same mutation twice.
+const acting = ref('')
 const change = ref<Change | null>(null)
 const chain = ref<{ valid: boolean; entries: TraceEntry[]; message: string }>({
   valid: false,
@@ -261,7 +264,7 @@ async function transition(
   call: () => Promise<unknown>,
   note = '',
 ): Promise<void> {
-  if (!change.value) return
+  if (!change.value || acting.value) return
   try {
     await ElMessageBox.confirm(`${verb}变更「${change.value.label}」？${note}`, title, {
       confirmButtonText: verb,
@@ -271,12 +274,15 @@ async function transition(
   } catch {
     return
   }
+  acting.value = verb
   try {
     await call()
     ElMessage.success(`${verb}已提交`)
-    load()
+    await load()
   } catch (err) {
     ElMessage.error(`${verb}失败：${(err as { message?: string })?.message}`)
+  } finally {
+    acting.value = ''
   }
 }
 
@@ -329,10 +335,10 @@ onMounted(load)
             补救未完成的回滚
           </el-button>
           <el-button v-if="isRetryableStatus(change.status)" type="warning" @click="retry">重试</el-button>
-          <el-button v-if="isPausableStatus(change.status)" @click="pause">暂停</el-button>
-          <el-button v-if="isResumableStatus(change.status)" @click="resume">恢复</el-button>
-          <el-button v-if="isCancellableStatus(change.status)" @click="cancel">取消</el-button>
-          <el-button v-if="isArchivableStatus(change.status)" @click="archive">归档</el-button>
+          <el-button v-if="isPausableStatus(change.status)" :loading="acting === '暂停'" :disabled="acting !== ''" @click="pause">暂停</el-button>
+          <el-button v-if="isResumableStatus(change.status)" :loading="acting === '恢复'" :disabled="acting !== ''" @click="resume">恢复</el-button>
+          <el-button v-if="isCancellableStatus(change.status)" :loading="acting === '取消'" :disabled="acting !== ''" @click="cancel">取消</el-button>
+          <el-button v-if="isArchivableStatus(change.status)" :loading="acting === '归档'" :disabled="acting !== ''" @click="archive">归档</el-button>
           <span v-if="
             !isRemediableStatus(change.status) && !isRetryableStatus(change.status) &&
             !isPausableStatus(change.status) && !isResumableStatus(change.status) &&

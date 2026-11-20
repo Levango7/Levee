@@ -250,7 +250,7 @@ onMounted(async () => {
         </el-table-column>
         <el-table-column label="耗时" width="86" align="right">
           <template #default="{ row }">
-            <span class="cell-mono cell-dim">{{ row.durationMs }} ms</span>
+            <span class="cell-mono cell-dim">{{ row.durationMs == null ? '—' : `${row.durationMs} ms` }}</span>
           </template>
         </el-table-column>
         <el-table-column label="时间" width="168">

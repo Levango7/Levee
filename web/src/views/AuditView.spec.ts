@@ -62,6 +62,16 @@ describe('audit view: evidence, timeline, verification', () => {
     expect(timelineBranch.slice(0, timelineBranch.indexOf('</div>'))).toContain('StateBlock')
   })
 
+  it('renders an absent duration as a placeholder, not a unit with no number', () => {
+    const start = view.indexOf('label="耗时"')
+    expect(start, 'the duration column exists').toBeGreaterThan(-1)
+    const cell = view.slice(start, view.indexOf('</el-table-column>', start))
+    // protojson omits an unset durationMs. Keep 0 ms as a real measurement, but
+    // never render the old " ms" / "undefined ms" cell for a missing value.
+    expect(cell).toContain("row.durationMs == null ? '—' : `${row.durationMs} ms`")
+    expect(cell, 'the unconditional interpolation must be gone').not.toContain('{{ row.durationMs }} ms')
+  })
+
   it('keeps the chain verification entry point', () => {
     expect(view).toContain('哈希链校验')
     expect(view).toContain('auditApi.verifyHashChain')
