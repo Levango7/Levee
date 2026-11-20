@@ -16,7 +16,7 @@
 | M-01 | 鲲鹏/飞腾 CPU＋麒麟/统信 UOS；达梦/金仓等国产 DB | `docs/platform-support-matrix.md` §1/§2：麒麟 V10 SP3 / V11、统信 UOS Server 20 / V25、UOS 桌面 V25 × amd64 全链路走通（虚拟机）；金仓 V9 PG 模式可用 | **物理裸机、ARM 真机未验证**；达梦/openGauss 实测不兼容；桌面 V25 的两条限定见上 |
 | M-02 | 审计留存 ≥6 个月、防篡改、可导出 | `docs/platform-support-matrix.md` §1：审计链 WORM＋哈希链＋`audit verify/export`；各 OS 取证均 `valid=true` | 留存期声明与容量策略未核查；`LEVEE_AUDIT_HMAC_KEY` 未设时摘要为无口令 SHA-256（tamper-evident，**非 tamper-proof**） |
 | M-03 | 双因素、三权分立、最小权限 | `auth.oidc`/`auth.github`、RBAC/ABAC/tenant、发起/审批/管理角色 | MFA 双因素未核查；无真实 IdP 联调 |
-| M-04 | 国密 SM2/SM3/SM4、密评 | 通用加密/凭据体系（AES-256-GCM、argon2id） | **未见国密实现**；命中即高风险专项「密改」立项 |
+| M-04 | 国密 SM2/SM3/SM4、密评 | `internal/gmcrypto` 提供 SM3（GM/T 0004）与 SM4（GM/T 0002）纯 Go 包装 + 自检；凭据存储可选 `credential.encryption: sm4-gcm`（LEV2 算法标记 blob，AES/SM4 双向可读）；默认仍为 aes256-gcm | **仅算法级增量，不等于密评**：TLCP/国密 TLS、SM2 签名、审计链 SM3 迁移（D-8 前置）、硬件密码模块/国密 RNG、密评报告均**未做**；命中即专项立项 |
 | M-05 | 4A、操作录像回放 | 账号/审批/审计链具备 | LEVEE 是变更治理、非堡垒机；**无会话录像**（无代理设计），须讲清边界 |
 | M-06 | 对接 ITSM/CMDB/监控/工单、开放 API | gRPC/REST/ChatOps 已备，`docs/levee-api.md` | webhook HMAC 签名（E-2）与结构化导出仍按需；API 对接说明待整理 |
 | M-07 | 集群/主备、故障切换、容灾演练 | D-03：容器靶场三场景 S1/S2/S3 实跑全绿；集群故障接管已具备 | 缺多节点生产浸泡数据（A-5） |
@@ -50,7 +50,7 @@
 
 1. **标书原文/评分表** → 填 R 区，否则 M 区对照只能作预判。
 2. **带 CMA/CNAS 资质的第三方渗透测试报告** → 预算量级 ¥5–10 万/次（见 `docs/security-scan-2026-11.md` §8.3）；本轮未采购。
-3. **国密改造（M-04）** → 命中即专项立项，当前无实现。
+3. **国密改造（M-04）** → 已完成算法级增量（SM3/SM4 + `sm4-gcm` 凭据选项）；TLCP/国密 TLS、SM2 签名、审计链 SM3 迁移、硬件密码模块与**密评报告**仍是专项，需外部机构/预算。
 4. **物理裸机 / ARM 真机（M-01）** → 无门路/需租机，仍按未验证。
 5. **MFA、国产浏览器、离线包、案例素材、7×24 服务承诺** → 分别对应 A-2/D-2/M-12/M-09/M-10，需产品/商务排期。
 
