@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（变更详情动作的在途态与审计缺失耗时）
+
+- **F-15**：暂停、恢复、取消、归档共用单一在途守卫，重复点击不会再开第二个确认框或重复提交；当前动作显示 loading，四个动作在请求期间统一 disabled，成功或失败均在 finally 解锁，并等待详情刷新后再恢复操作。
+- **P-02**：审计表对 protojson 省略的 `durationMs` 显示「—」，不再出现裸 ` ms` 或 `undefined ms`；真实 `0 ms` 保留。
+- **验证**：新增 2 例钉测；三项真实变异（恢复旧插值、去掉在途守卫、去掉 finally）均使对应测试转红，恢复后源码 sha256 逐字一致。vitest 48 文件 / 385 用例、vue-tsc + vite build 全过，嵌入 dist 已同步。
+
 ### 修复（mock 网关与真实 wire 契约漂移，新增机器护栏）
 
 - **结构性缺口**：`wire_snapshot_test.go` 与 `wireContract.spec.ts` 只约束真实服务端和 TypeScript DTO，第三个消费方 `web/scripts/mock-gateway.mjs` 没有机器校验；比真实后端「更完整」的 fixture 因而能让浏览器门禁全绿，却掩盖生产页面的空白单元格。

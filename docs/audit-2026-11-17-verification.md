@@ -33,9 +33,9 @@
 | **F-12** | 无最小宽度/断点策略，768 文字竖排 | 属产品口径（响应式范围本已声明限移动审批） | 未动 | 建议在 UI blueprint 声明「桌面控制台最低 1440×900」而非全面响应式化 |
 | **F-13** | 390 toast 覆盖标题、申请人空（mock 字段漂移） | mock 用 `creator`，页面读 `createdBy` | 真缺口 | **后续批已修**：mock 全部 change fixture 改 `createdBy` 并补 `workflowFile`，由 mock-wire 护栏钉住 |
 | **F-14** | 顶栏「文档」指向 `github.com/nexus/levee` | `App.vue:126` 原文，真实远端为 Levango7/Levee | 真缺口 | 本批修：改真实仓库地址 |
-| **F-15** | 详情页暂停/取消/归档无 loading | `transition()` 无 acting 守卫 | 未动 | 残留 |
+| **F-15** | 详情页暂停/取消/归档无 loading | `transition()` 无 acting 守卫 | 真缺口 | **后续批已修**：单一在途动词 + 四按钮 loading/disabled + finally 清理 + 等待刷新 |
 | **P-01** | vendor chunk 1.21MB 无分割 | 构建告警属实 | 未动 | 残留：路由级 code-split |
-| **P-02** | 审计表耗时列对缺失值渲染 ` ms` | `AuditView.vue:251-254` | 未动 | 残留 |
+| **P-02** | 审计表耗时列对缺失值渲染 ` ms` | `AuditView.vue:251-254` 无条件插值；protojson 省略未设置的 durationMs | 真缺口 | **后续批已修**：null/undefined 显示「—」，0 ms 仍作为真实测量值展示 |
 | **T-02** | WIP 的 schema_snapshot 未提交、测试未覆盖 | 当时属实 | **已交付** | 已随 #405 合入（`mysql/pg.schema_snapshot` + `sqlguard.TableList` 全测 + DSL 词表 ratchet） |
 
 ## 我复核时另外发现的两个缺口（报告未列）
@@ -68,7 +68,14 @@
 
 验证：`mock-wire-check` 144/144；`browser-check` 本地 ALL PASS（含 [1d] 四条）；`vitest` 48 文件/383 用例（forks 池）；`vue-tsc + vite build` 通过。本批只改 `web/scripts` 与 `web/package.json`，未碰 `web/src`，`internal/web/dist` 无需重打。
 
-仍未动：F-09/F-10/F-11/F-12（需 CDP 实测或产品口径）、F-15、P-01/P-02、B-07，以及「发布单七段」内容断言（先补 ticket mock 才能落地）。
+仍未动：F-09/F-10/F-11/F-12（需 CDP 实测或产品口径）、P-01、B-07，以及「发布单七段」内容断言（先补 ticket mock 才能落地）。
+
+## 后续批次（2026-11-20）：F-15 在途守卫 + P-02 缺失耗时
+
+- **F-15**：`ChangeDetailView.transition()` 以当前生命周期动词做单 flight；第二次点击在确认框之前返回，四个互斥动作按钮统一 disabled、仅当前动作显示 loading，成功或失败均在 finally 解锁，并等待详情刷新完成再清除在途态。
+- **P-02**：审计表对 protojson 省略的 `durationMs` 显示「—」而非裸 ` ms` / `undefined ms`；保留 `0 ms`，不把真实零值误作缺失。
+- **钉测与变异**：新增 2 例结构钉测，定向 20/20、全量 vitest 48 文件 / 385 用例全绿。三项真实变异（恢复旧耗时插值、去掉在途守卫、去掉 finally）分别让对应判据转红；恢复后两源文件 sha256 与变异前逐字一致。
+- **构建**：vue-tsc + vite build 通过，`web/dist` 与 `internal/web/dist` 已重打并用 `diff -r` 确认一致。
 
 ## 验证口径（本批交付的事实）
 

@@ -87,6 +87,25 @@ describe('change detail page', () => {
     }
   })
 
+  it('serialises lifecycle transitions and exposes their in-flight state', () => {
+    const start = view.indexOf('async function transition(')
+    expect(start, 'the shared transition exists').toBeGreaterThan(-1)
+    const body = view.slice(start, view.indexOf('\nasync function remediate', start))
+    expect(body, 'a second click must return before another confirmation').toContain(
+      'if (!change.value || acting.value) return',
+    )
+    expect(body, 'the current verb drives the matching spinner').toContain('acting.value = verb')
+    expect(body, 'the action stays in flight through the refresh').toContain('await call()')
+    expect(body).toContain('await load()')
+    expect(body, 'success and failure both clear the guard').toMatch(
+      /finally\s*\{\s*acting\.value = ''\s*\}/,
+    )
+    for (const verb of ['暂停', '恢复', '取消', '归档']) {
+      expect(view, `${verb} shows its own loading state`).toContain(`:loading="acting === '${verb}'"`)
+    }
+    expect(view.match(/:disabled="acting !== ''"/g) ?? [], 'all lifecycle buttons lock together').toHaveLength(4)
+  })
+
   it('delegates remediation to the shared flow', () => {
     expect(view).toContain("import { remediateRollback } from '@/composables/useRollbackRemediation'")
     expect(view).toContain('await remediateRollback(change.value)')
