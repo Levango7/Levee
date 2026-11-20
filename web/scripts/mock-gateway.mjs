@@ -515,7 +515,7 @@ const server = http.createServer(async (req, res) => {
     // nothing.
     return send(res, {
       status: 'healthy', uptimeSeconds: String(86400 * 12), storeType: 'sqlite',
-      controlPlaneReachable: true, runCountsAvailable: true,
+      controlPlaneReachable: true, runCountsAvailable: true, warnings: [],
     })
   }
   if (u === '/api/v1/system/version') {

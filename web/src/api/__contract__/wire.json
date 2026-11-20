@@ -379,7 +379,8 @@
       "controlPlaneReachable",
       "runCountsAvailable",
       "status",
-      "storeType"
+      "storeType",
+      "warnings"
     ],
     "forbid": [
       "Version",
