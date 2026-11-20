@@ -121,12 +121,19 @@ const ENDPOINTS = [
       window: 'WindowSection', approval: 'ApprovalSection',
       execution: 'ExecutionSection', audit: 'AuditSection',
     } },
+  { name: 'change-with-plan', url: '/api/v1/changes/run-1000?includePlan=true', dto: 'Change',
+    objects: { plan: 'Plan' }, objectArrays: { 'plan.batches': 'Batch' },
+    extraProto: { planHash: 'proto Change.plan_hash; the evidence panel, not this field, is what the page reads' } },
+  { name: 'audit-traces', url: '/api/v1/audit/traces?pageSize=1', row: 'entries', rowDto: 'TraceEntry',
+    envelope: ['entries', 'nextPageToken', 'totalSize'] },
+  { name: 'agents', url: '/api/v1/agents', rootDto: 'AgentRecord' },
+  { name: 'groups', url: '/api/v1/groups', rootDto: 'HostGroup' },
 ]
 
 // Contract entries the mock does NOT serve at all. Reported as coverage gaps,
 // not failures: an unserved endpoint is a place the browser check cannot see,
 // which is worth naming without pretending the mock covers it.
-const UNCOVERED = ['change-with-plan', 'audit-traces', 'agents', 'groups']
+const UNCOVERED = []
 // Served by the mock but not key-checked here: takeover-events has no DTO in
 // the contract's read set, and rollback is a POST whose preview/commit pair the
 // browser check already drives directly. Named so the coverage story is honest.
@@ -157,6 +164,10 @@ function checkObject(endpoint, path, actual, dtoName, wireKeys, serverOnly, extr
   const leaked = actualKeys.filter((k) => forbid.includes(k))
   record(leaked.length === 0, `${endpoint}${path}: no PascalCase leak`,
     leaked.length ? JSON.stringify(leaked) : '')
+}
+
+function valueAt(body, path) {
+  return path.split('.').reduce((value, key) => value?.[key], body)
 }
 
 async function fetchJson(port, url) {
@@ -200,15 +211,25 @@ async function main() {
         record(missing.length === 0, `${ep.name}: envelope carries the server's keys`,
           missing.length ? `drops ${JSON.stringify(missing)}` : '')
       }
+      if (ep.rootDto && Array.isArray(body)) {
+        body.forEach((row, i) => checkObject(ep.name, `[${i}]`, row, ep.rootDto, w.items ?? [], [], {}))
+      }
       if (ep.row && Array.isArray(body[ep.row]) && body[ep.row].length > 0) {
         const rowWire = w.rows?.[ep.row] ?? []
         body[ep.row].forEach((r, i) =>
           checkObject(ep.name, `.${ep.row}[${i}]`, r, ep.rowDto, rowWire, [], {}))
       }
       for (const [objPath, objDto] of Object.entries(ep.objects ?? {})) {
-        const val = body[objPath]
+        const val = valueAt(body, objPath)
         if (val && typeof val === 'object' && !Array.isArray(val)) {
           checkObject(ep.name, `.${objPath}`, val, objDto, w.objects?.[objPath] ?? [], [], {})
+        }
+      }
+      for (const [arrayPath, itemDto] of Object.entries(ep.objectArrays ?? {})) {
+        const rows = valueAt(body, arrayPath)
+        if (Array.isArray(rows)) {
+          rows.forEach((row, i) =>
+            checkObject(ep.name, `.${arrayPath}[${i}]`, row, itemDto, w.objects?.[arrayPath] ?? [], [], {}))
         }
       }
     }
@@ -217,6 +238,7 @@ async function main() {
   }
 
   console.log('\ncoverage gaps (in the contract, not served by the mock — the browser check cannot see these):')
+  if (UNCOVERED.length === 0) console.log('  none')
   for (const name of UNCOVERED) console.log(`  - ${name} (${wire[name]?.method ?? '?'} ${wire[name]?.path ?? '?'})`)
   console.log('served but not key-checked here (no DTO read-set / POST driven by the browser check):')
   for (const name of SERVED_NOT_KEYED) console.log(`  - ${name}`)

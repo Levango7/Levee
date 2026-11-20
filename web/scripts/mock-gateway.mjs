@@ -56,6 +56,19 @@ const detail = {
 // wizard exists for. The detail page offers the button only for
 // `rolled_back_partial` / `rollback_incomplete` (isRemediableStatus), so the
 // browser check needs such a change to reach the flow at all.
+// The stored plan returned only when includePlan=true. It is part of the Change
+// (not the separate POST /plan generation response): changeId, targetHosts,
+// batches and impactSummary are the real Plan wire fields.
+const storedPlan = {
+  changeId: 'run-1000',
+  targetHosts: ['10.0.1.11', '10.0.1.12'],
+  batches: [
+    { index: 1, hosts: ['10.0.1.11'], maxConcurrency: 1 },
+    { index: 2, hosts: ['10.0.1.12'], maxConcurrency: 1 },
+  ],
+  impactSummary: '2 个数据库目标，含全表 UPDATE 风险',
+}
+
 const remediableDetail = {
   id: 'run-1001', label: '未走完的回滚', status: 'rolled_back_partial', environment: 'prod', team: '平台组',
   templateName: templates[0], priority: 'high', createdBy: 'liwg',
@@ -500,6 +513,21 @@ const server = http.createServer(async (req, res) => {
   if (u === '/api/v1/templates') return send(res, { templates: [], nextPageToken: '', totalSize: 0 })
   if (u === '/api/v1/targets') return send(res, { targets: [], nextPageToken: '', totalSize: 0 })
   if (u === '/api/v1/audit/log') return send(res, { entries: [], nextPageToken: '', totalSize: 0 })
+  if (u === '/api/v1/audit/traces') {
+    // The audit API spells the host targetHost (the change-trace fixture uses
+    // target for its own view), so translate rather than inventing a second
+    // field. pageSize=1 also exercises a non-empty nextPageToken.
+    const q = new URL(req.url, 'http://x').searchParams
+    const pageSize = Math.max(1, Number(q.get('pageSize') || 50))
+    const offset = Math.max(0, Number(q.get('pageToken') || 0))
+    const rows = trace.entries.map(({ target, ...entry }) => ({ ...entry, targetHost: target }))
+    const nextOffset = offset + pageSize
+    return send(res, {
+      entries: rows.slice(offset, nextOffset),
+      nextPageToken: nextOffset < rows.length ? String(nextOffset) : '',
+      totalSize: rows.length,
+    })
+  }
   // The audit chain's digest mode. The mock answers UNKEYED on purpose: that is
   // the weaker guarantee, and the console has to say so out loud rather than
   // let "哈希链完整" stand for the keyed promise.
@@ -561,6 +589,22 @@ const server = http.createServer(async (req, res) => {
     }
     return send(res, { ...body, nodes: body.nodes.filter((n) => declared(n.capabilities)) })
   }
+  if (u === '/api/v1/agents') {
+    const q = new URL(req.url, 'http://x').searchParams
+    const capability = q.get('capability')
+    const status = q.get('status')
+    const rows = [
+      { id: 'agent-1', address: '10.0.1.21:7001', capabilities: ['shell', 'pkg'], status: 'active', last_heartbeat_unix: now - 5, registered_at_unix: now - 86400, max_concurrent: 4, active_tasks: 1, completed_tasks: 18, failed_tasks: 1 },
+      { id: 'agent-2', address: '10.0.1.22:7001', capabilities: ['file'], status: 'offline', last_heartbeat_unix: now - 900, registered_at_unix: now - 172800, max_concurrent: 2, active_tasks: 0, completed_tasks: 7, failed_tasks: 0 },
+    ].filter((a) => (!capability || a.capabilities.includes(capability)) && (!status || a.status === status))
+    return send(res, rows)
+  }
+  if (u === '/api/v1/groups') {
+    return send(res, [
+      { id: 'grp-prod', name: '生产环境', parent_id: '', created_at: rfc3339(now - 86400), created_at_nanos: 0 },
+      { id: 'grp-db', name: '数据库', parent_id: 'grp-prod', created_at: rfc3339(now - 43200), created_at_nanos: 0 },
+    ])
+  }
   if (u === '/api/v1/system/auth-info') return send(res, { oidcEnabled: false, githubEnabled: false })
   if (u === '/api/v1/system/config') {
     // `content` is protobuf bytes on the wire, so protojson renders it BASE64.
@@ -604,8 +648,12 @@ const server = http.createServer(async (req, res) => {
   // makes the ticket's content (not merely its shell) testable in a browser.
   if (u === '/api/v1/changes/run-1003/ticket') return send(res, ticket)
 
-  // One change's worth of detail pages.
-  if (/^\/api\/v1\/changes\/run-1000$/.test(u)) return send(res, detail)
+  // One change's worth of detail pages. includePlan attaches the STORED plan;
+  // the default response deliberately omits it, matching protojson.
+  if (/^\/api\/v1\/changes\/run-1000$/.test(u)) {
+    const includePlan = new URL(req.url, 'http://x').searchParams.get('includePlan') === 'true'
+    return send(res, includePlan ? { ...detail, plan: storedPlan } : detail)
+  }
   if (/^\/api\/v1\/changes\/run-1001$/.test(u)) return send(res, remediableDetail)
   // The rollback pair (preview and commit). Routed before the detail pages'
   // own patterns so a POST to .../rollback is never read as a change.

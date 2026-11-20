@@ -98,6 +98,13 @@
 - **契约同步**：wire 快照仅新增 `/system/status` 的 `warnings`（空数组）一项；mock 同步 `warnings:[]`，mock-wire 168/168、DTO wireContract 6/6。
 - **验证**：新增 2 例（7 个端点子路径 + 嵌套省略保持），全量 vitest 386、build 通过。全量 Go 验证另发现 master 既有 Windows 日志句柄红腿，已由独立 hotfix 处理，未混入本批。
 
+## 后续批次（2026-11-21）：mock 覆盖缺口归零
+
+- **change-with-plan**：`/changes/run-1000?includePlan=true` 现在附带真实存量 Plan（changeId/targetHosts/batches/impactSummary），默认请求仍不带 plan；护栏新增嵌套 `plan.batches` 数组校验，浏览器断言影响面与第二批次目标确实到达详情页。
+- **audit-traces**：按真实 `targetHost` 字段与分页信封返回；`/agents`、`/groups` 按裸数组返回完整 DTO 记录，不再由 404 兜底。
+- **护栏升级**：支持 bare-array `rootDto` 与点路径 `objectArrays`，mock-wire 从 168 增至 **197/197**，四个覆盖缺口全部清零；仍如实保留 takeover-events/rollback 为「服务但不在此键校验」的既有边界。
+- **验证**：完整本地 browser-check ALL PASS（含新增 stored-plan 内容断言）；未改 `web/src`，无需重打 dist。
+
 ## 验证口径（本批交付的事实）
 
 - `go test ./...` 全绿；新增 state 迁移 3 例 + grpc 归属 4 例（label/team 的存取与只读路径）。

@@ -570,6 +570,18 @@ console.log('\n[1c] the chain panel says WHICH chain, and WHICH digest')
   check('the algorithm is named', panel.includes('SHA-256'), `panel="${panel.slice(0, 200)}"`)
   // …and the weaker guarantee has to be stated, not just implied by a tag.
   check('the unkeyed caveat reaches the reader', panel.includes('未配置审计口令'), `panel="${panel.slice(0, 200)}"`)
+  const storedPlan = await page.evaluate(() => {
+    const el = [...document.querySelectorAll('.lv-panel')].find((p) =>
+      (p.querySelector('h3')?.textContent || '').includes('执行计划'),
+    )
+    return (el?.textContent || '').replace(/\s+/g, ' ').trim()
+  })
+  // includePlan=true must attach the STORED artifact, not merely make the plan
+  // panel appear: its impact summary and a target from the second batch are
+  // both read straight off the wire.
+  check('the stored plan reaches the detail page',
+    storedPlan.includes('2 个数据库目标') && storedPlan.includes('10.0.1.12'),
+    `plan="${storedPlan.slice(0, 220)}"`)
   await page.close()
 }
 

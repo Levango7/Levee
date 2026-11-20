@@ -17,6 +17,11 @@
 - `serve` 从配置传入算法选择；CLI `secret` 子命令仍用默认 AES 写（读侧兼容 SM4）。文档与 `config.example.yaml` 同步口径；新增 5 个单测含跨算法互读与未知标记硬失败。
 - **边界**：这是算法级增量，不构成「已过密评 / 国密 TLS / SM2 签名」；对外口径以 `docs/tender-evidence-pack-2026-11.md` M-04 为准。
 
+### 测试（mock 契约覆盖缺口归零）
+
+- 补齐 change-with-plan、audit-traces、agents、groups 四个 mock 端点；存量 Plan 只在 includePlan=true 时附带，audit 使用真实 targetHost，agents/groups 使用裸数组与完整 DTO 字段。
+- mock-wire 新增 bare-array 与嵌套 objectArrays 校验，197/197 全绿；浏览器新增存量计划内容断言，完整 ALL PASS。
+
 ### 修复（日志重配置的旧文件 sink 泄漏与 Windows 清理顺序）
 
 - 日志级别/格式变化时，在新 sink 就绪后关闭被替换的旧文件句柄，不再随重配置累积 descriptor；stdout/stderr 仍归进程所有，不误关。
