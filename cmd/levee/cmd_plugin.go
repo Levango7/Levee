@@ -165,7 +165,7 @@ func newPluginTestCmd() *cobra.Command {
 // openPluginManager creates a PluginManager from the configuration. The
 // caller is responsible for closing the manager and registry when done.
 func openPluginManager(ctx context.Context) (*plugin.PluginManager, func(), error) {
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return nil, nil, fmt.Errorf("load config: %w", err)
 	}

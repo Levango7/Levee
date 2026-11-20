@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/calendar"
-	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -320,7 +319,7 @@ func runCalendarCreate(cmd *cobra.Command, args []string) error {
 // the configuration cannot be read — the notice is diagnostics, and a broken
 // config already fails the command elsewhere.
 func calendarStoreNotice() (driver, location string, ok bool) {
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return "", "", false
 	}

@@ -13,7 +13,6 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 
-	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/template"
 )
@@ -107,7 +106,7 @@ func newTemplateDeleteCmd() *cobra.Command {
 
 // openTemplateLibrary creates a TemplateLibrary from the configuration.
 func openTemplateLibrary(_ctx context.Context) (*template.TemplateLibrary, error) {
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}

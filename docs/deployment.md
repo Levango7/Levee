@@ -82,10 +82,14 @@ make cross-build
     LEVEE_LOG_LEVEL=debug                   覆盖 log.level
 ```
 
+> **日志三键的口径**：`log.level` / `log.format` / `log.output` **真的生效**——进程启动时 logger 就按
+> 这三项配置（级别 / 格式 / 输出位置）。`server.log_level` / `server.log_format` 是旧别名，仅在对应的
+> `log.*` **未显式设置**时生效；两者都设置且不一致时以 `log.*` 为准。
+
 生产建议：
 
 - `server.data_dir` 指向独立数据盘（如 `/var/lib/levee/data`），SQLite 库自动落在 `<data_dir>/levee.db`。
-- `server.log_format: json` + `log.output: /var/log/levee/levee.log`，便于日志采集。
+- `log.format: json`（或旧别名 `server.log_format: json`）+ `log.output: /var/log/levee/levee.log`，便于日志采集。日志文件按**追加**模式写入，**不做轮转**——请配 logrotate 或平台采集器。
 - `channel.ssh.strict_host_check: true` 保持开启（默认即 true），防中间人。
 - 需要提权时再用 `channel.ssh.become_method: sudo` + 专用账号，且目标机已配置免密 sudo；默认不提权。
 

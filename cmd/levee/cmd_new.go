@@ -10,7 +10,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/state"
 	"github.com/nexus/levee/internal/template"
@@ -49,7 +48,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	templateName := args[0]
 
 	// 1. Load configuration.
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

@@ -620,6 +620,24 @@ channel:
 	assert.Contains(t, cfg.Database.Path, "levee-test-data")
 }
 
+// TestLoad_LogOutputHomeExpansion pins the one piece of path handling the
+// log.output field owns: `~/…` is expanded like every other path field, so
+// the log file lands under the operator's home instead of a literal "~"
+// directory in the working directory.
+func TestLoad_LogOutputHomeExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+
+	p := writeYAML(t, `server:
+  data_dir: /tmp/levee/data
+log:
+  output: ~/levee-test-output.log
+`)
+	cfg, err := Load(p)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "levee-test-output.log"), cfg.Log.Output)
+}
+
 func TestLoad_LogMirrorsServerWhenAbsent(t *testing.T) {
 	// config.yaml has no top-level `log:` section; log.level/format
 	// should mirror server.log_level/log_format.

@@ -800,7 +800,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 0. Load configuration first: the safety gate below needs to know
 	//    whether auth.oidc provides an additional credential source.
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

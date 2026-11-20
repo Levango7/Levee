@@ -665,6 +665,67 @@ func winRMTransportAccepted(s string) bool {
 	return false
 }
 
+// LogLevels lists the log level spellings this package accepts for
+// server.log_level and log.level. It is the single source of truth on the
+// config side: the validation message and every test that walks the accepted
+// set read it from here.
+//
+// The list mirrors the implementation's explicit branches in
+// internal/log.parseLevel — including the "warning" alias. Before this change
+// the config accepted only the four lowercase spellings while the
+// implementation also honoured "warning" (and any casing or surrounding
+// whitespace): one field, two vocabularies, and the config side was the
+// narrower one.
+//
+// Exported so the two lists can be compared: the implementation exports its
+// own table (internal/log.Levels / Formats) and the drift guard compares
+// them. The guard lives in internal/config's test package (package
+// config_test) rather than in internal/log, because internal/config cannot
+// import internal/log — internal/config → internal/state → internal/log is
+// an import cycle.
+func LogLevels() []string {
+	return []string{"debug", "info", "warn", "warning", "error"}
+}
+
+// LogFormats lists the log format spellings this package accepts for
+// server.log_format and log.format. Same shape as LogLevels: the list is the
+// implementation's explicit dispatch (internal/log.newLogger switches on
+// "json" and treats everything else as text), and the drift guard fails if
+// the two drift apart.
+func LogFormats() []string {
+	return []string{"text", "json"}
+}
+
+// LogLevelAccepted reports whether s is one of the accepted level spellings.
+// The comparison matches internal/log.parseLevel exactly: case-insensitive and
+// whitespace-tolerant, so a config file written as "DEBUG" or " warn " is
+// accepted here exactly as it is honoured there.
+//
+// The empty string is NOT accepted: it means "unset", and postProcess
+// resolves it against server.log_level before validation ever sees it.
+func LogLevelAccepted(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	for _, v := range LogLevels() {
+		if t == v {
+			return true
+		}
+	}
+	return false
+}
+
+// LogFormatAccepted reports whether s is one of the accepted format
+// spellings, with the same case-insensitive, whitespace-tolerant comparison
+// internal/log.newLogger applies.
+func LogFormatAccepted(s string) bool {
+	t := strings.ToLower(strings.TrimSpace(s))
+	for _, v := range LogFormats() {
+		if t == v {
+			return true
+		}
+	}
+	return false
+}
+
 // chatOpsPlatformAccepted reports whether s is one of the accepted platform
 // spellings. The comparison matches chatops.ParsePlatform: case-insensitive
 // and whitespace-tolerant, so a config file written as "Feishu" or " feishu "
@@ -686,15 +747,11 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	if cfg.Server.DataDir == "" {
 		problems = append(problems, "server.data_dir is required")
 	}
-	switch cfg.Server.LogLevel {
-	case "debug", "info", "warn", "error":
-	default:
-		problems = append(problems, fmt.Sprintf("server.log_level %q must be one of debug|info|warn|error", cfg.Server.LogLevel))
+	if !LogLevelAccepted(cfg.Server.LogLevel) {
+		problems = append(problems, fmt.Sprintf("server.log_level %q must be one of %s", cfg.Server.LogLevel, strings.Join(LogLevels(), " | ")))
 	}
-	switch cfg.Server.LogFormat {
-	case "text", "json":
-	default:
-		problems = append(problems, fmt.Sprintf("server.log_format %q must be one of text|json", cfg.Server.LogFormat))
+	if !LogFormatAccepted(cfg.Server.LogFormat) {
+		problems = append(problems, fmt.Sprintf("server.log_format %q must be one of %s", cfg.Server.LogFormat, strings.Join(LogFormats(), " | ")))
 	}
 
 	// Database. `driver` picks the backend and each backend has exactly one
@@ -737,17 +794,21 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 		problems = append(problems, fmt.Sprintf("state.sqlite_synchronous %q must be one of normal|full", cfg.State.SQLiteSynchronous))
 	}
 
-	// Log
-	switch cfg.Log.Level {
-	case "debug", "info", "warn", "error":
-	default:
-		problems = append(problems, fmt.Sprintf("log.level %q must be one of debug|info|warn|error", cfg.Log.Level))
+	// Log. The vocabulary is the implementation's (internal/log.parseLevel /
+	// newLogger), read from LogLevels / LogFormats so the two cannot drift;
+	// the comparison is case-insensitive and whitespace-tolerant, matching
+	// what the implementation actually honours.
+	if !LogLevelAccepted(cfg.Log.Level) {
+		problems = append(problems, fmt.Sprintf("log.level %q must be one of %s", cfg.Log.Level, strings.Join(LogLevels(), " | ")))
 	}
-	switch cfg.Log.Format {
-	case "text", "json":
-	default:
-		problems = append(problems, fmt.Sprintf("log.format %q must be one of text|json", cfg.Log.Format))
+	if !LogFormatAccepted(cfg.Log.Format) {
+		problems = append(problems, fmt.Sprintf("log.format %q must be one of %s", cfg.Log.Format, strings.Join(LogFormats(), " | ")))
 	}
+	// log.output names the sink: "stdout", "stderr", or a file path. A path
+	// is opened in append mode when the logger is wired, so there is no
+	// vocabulary to check here — every non-empty value is a legal path. An
+	// empty value means "unset" and falls back to the default sink (stderr),
+	// the same way an unset log.level falls back to server.log_level.
 
 	// Executor
 	if cfg.Executor.DefaultConcurrency <= 0 {
@@ -1236,14 +1297,22 @@ func postProcess(cfg *Config) error {
 	}
 	cfg.Database.Path = expandHome(cfg.Database.Path, home)
 
-	// Mirror server.log_* into log when log section was not explicitly
+	// Mirror server.log_* into log when the log section was not explicitly
 	// overridden — keeps both views consistent for callers.
+	//
+	// This is the precedence the documentation states: `log.*` is the owner
+	// of the log settings, `server.log_*` is the legacy alias, and an unset
+	// `log.*` inherits from it. An explicitly set `log.*` always wins.
 	if cfg.Log.Level == "" {
 		cfg.Log.Level = cfg.Server.LogLevel
 	}
 	if cfg.Log.Format == "" {
 		cfg.Log.Format = cfg.Server.LogFormat
 	}
+	// log.output may name a file path, so it gets the same ~ expansion the
+	// other path fields get. The two sink names ("stdout" / "stderr") are
+	// unaffected — they never start with ~.
+	cfg.Log.Output = expandHome(cfg.Log.Output, home)
 
 	return nil
 }

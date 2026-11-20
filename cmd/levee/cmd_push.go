@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/approval"
-	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/push"
 )
@@ -421,7 +420,7 @@ const defaultDeepLinkBaseURL = "https://levee.local"
 
 // pushDataDir returns the LEVEE data directory the push files live in.
 func pushDataDir() (string, error) {
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return "", err
 	}

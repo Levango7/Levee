@@ -1429,16 +1429,16 @@ levee system config get <key>
 | 键 | 说明 |
 |----|------|
 | `server.data_dir` | 数据目录 |
-| `server.log_level` | 日志级别 |
-| `server.log_format` | 日志格式 |
+| `server.log_level` | 日志级别（旧别名；`log.level` 未设置时生效） |
+| `server.log_format` | 日志格式（旧别名；`log.format` 未设置时生效） |
 | `database.driver` | 数据库驱动（`sqlite` / `postgres`） |
 | `database.path` | 数据库文件路径（sqlite） |
 | `database.dsn` | PostgreSQL 端点，**以 `postgres@host:port/db` 的脱敏形态返回** |
 | `database.max_open_conns` | 最大打开连接数 |
 | `database.max_idle_conns` | 最大空闲连接数 |
-| `log.level` | 日志级别 |
-| `log.format` | 日志格式 |
-| `log.output` | 日志输出 |
+| `log.level` | 日志级别（生效） |
+| `log.format` | 日志格式（生效） |
+| `log.output` | 日志输出（生效） |
 | `permission.default_team` | 默认团队 |
 | `permission.default_env` | 默认环境 |
 
@@ -1471,8 +1471,8 @@ levee system config set <key> <value>
 
 | 键 | 说明 |
 |----|------|
-| `server.log_level` | 日志级别 |
-| `server.log_format` | 日志格式 |
+| `server.log_level` | 日志级别（旧别名） |
+| `server.log_format` | 日志格式（旧别名） |
 | `log.level` | 日志级别 |
 | `log.format` | 日志格式 |
 | `log.output` | 日志输出 |
@@ -1481,6 +1481,9 @@ levee system config set <key> <value>
 
 - 变更写入当前激活的配置文件
 - 未指定配置文件时写入 `~/.levee/config.yaml`
+- 这五个键**真的生效**：进程启动时 logger 按 `log.level` / `log.format` / `log.output` 配置。
+  `server.log_*` 是旧别名，仅在对应的 `log.*` 未显式设置时生效；两者都设置且不一致时以 `log.*` 为准。
+- `log.output` 可取 `stdout` / `stderr` / `<文件路径>`；文件按追加模式打开，**不做轮转**。
 
 **示例**
 

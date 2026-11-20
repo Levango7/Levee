@@ -38,7 +38,6 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/drift"
 )
 
@@ -830,7 +829,7 @@ func runDriftReport(cmd *cobra.Command, args []string) error {
 // driftDataDir returns the directory where drift baselines and jobs are
 // persisted. It is derived from the LEVEE data directory.
 func driftDataDir() (string, error) {
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return "", fmt.Errorf("load config: %w", err)
 	}

@@ -250,7 +250,7 @@ func printUserAddHuman(w io.Writer, output map[string]any) {
 // loadConfigForCmd loads the LEVEE configuration using the global config
 // path flag. It returns the config or a wrapped error.
 func loadConfigForCmd() (*config.Config, error) {
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return nil, err
 	}

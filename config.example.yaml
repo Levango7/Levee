@@ -33,9 +33,11 @@
 server:
   # 数据目录（SQLite 数据库、审计日志等落盘位置）。必填。 默认: ~/.levee/data
   data_dir: ~/.levee/data
-  # 日志级别: debug | info | warn | error。 默认: info
+  # 日志级别（**旧别名**）: debug | info | warn | warning | error（大小写与空格不敏感）。
+  # 仅在下面的 log.level 未显式设置时生效；log.level 始终优先。 默认: info
   log_level: info
-  # 日志格式: text | json。 默认: text
+  # 日志格式（**旧别名**）: text | json（大小写与空格不敏感）。
+  # 仅在下面的 log.format 未显式设置时生效；log.format 始终优先。 默认: text
   log_format: text
 
 # -----------------------------------------------------------------------------
@@ -64,14 +66,20 @@ database:
 
 # -----------------------------------------------------------------------------
 # log —— 日志参数（对应 LogConfig）
-# level/format 未显式设置时自动镜像 server.log_level / server.log_format。
+# 这三项**真的生效**：进程启动时 logger 就按这里配置（级别 / 格式 / 输出位置）。
+# level/format 留空（未显式设置）时自动镜像上面的 server.log_level / server.log_format；
+# 两者都设置且不一致时以 log.* 为准（server.* 是旧别名）。
 # -----------------------------------------------------------------------------
 log:
-  # 日志级别: debug | info | warn | error。 默认: 继承 server.log_level
-  level: info
-  # 日志格式: text | json。 默认: 继承 server.log_format
-  format: text
-  # 日志输出: stdout | stderr | <文件路径>。 默认: stderr
+  # 日志级别: debug | info | warn | warning | error（大小写与空格不敏感）。
+  # 留空 = 未设置 = 继承 server.log_level。 默认: info
+  level: ""
+  # 日志格式: text | json（大小写与空格不敏感）。
+  # 留空 = 未设置 = 继承 server.log_format。 默认: text
+  format: ""
+  # 日志输出: stdout | stderr | <文件路径>。
+  # 文件按**追加**模式打开（进程重启继续写，不做轮转——请配 logrotate 或平台采集器）；
+  # 打不开文件会直接报错而不是悄悄改写 stderr。 默认: stderr
   output: stderr
 
 # -----------------------------------------------------------------------------

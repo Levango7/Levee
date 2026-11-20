@@ -711,6 +711,8 @@ levee system config set log.level debug
 
 `system config get` 接受 `server.*` / `database.*` / `log.*` / `permission.*` 下的只读键（`database.dsn` 以脱敏形式返回）；`system config set` 只接受 5 个可写键：`server.log_level` / `server.log_format` / `log.level` / `log.format` / `log.output`。不在白名单内的键会明确报错，而不是静默写进一个没人读的字段。
 
+这五个键**真的生效**：进程启动时 logger 按 `log.level` / `log.format` / `log.output` 配置（级别 / 格式 / 输出位置，文件按追加模式打开、不做轮转）。`server.log_level` / `server.log_format` 是旧别名，仅在对应的 `log.*` 未显式设置时生效；两者都设置且不一致时以 `log.*` 为准。
+
 命令示例：系统状态
 
 ```bash

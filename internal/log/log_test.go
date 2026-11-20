@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -15,8 +16,34 @@ import (
 // resetLogger restores the package singleton to the default text/info logger
 // after each test so that tests do not leak state into each other.
 func resetLogger() {
-	logger = defaultLogger
+	logger.Store(defaultLogger)
 	slog.SetDefault(defaultLogger)
+}
+
+// TestInitLoggerWithWriterIsSafeWhileOtherGoroutinesLog pins the atomic
+// swap of the singleton.
+//
+// The logger used to be written exactly once, before any goroutine existed,
+// so a plain variable was safe. The CLI now configures the logger at
+// start-up and tests reconfigure it while background goroutines are still
+// logging — a plain variable races with every concurrent reader. This test
+// only fails under -race (which `make check` runs): without the race
+// detector both sides merely interleave.
+func TestInitLoggerWithWriterIsSafeWhileOtherGoroutinesLog(t *testing.T) {
+	t.Cleanup(resetLogger)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			Info("concurrent log line")
+		}
+	}()
+
+	for i := 0; i < 1000; i++ {
+		InitLoggerWithWriter("debug", "json", io.Discard)
+	}
+	<-done
 }
 
 // captureBuffer holds the bytes written by the logger under test.

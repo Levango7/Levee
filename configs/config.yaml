@@ -4,8 +4,8 @@
 # 服务配置
 server:
   data_dir: ~/.levee/data          # 数据目录 (SQLite/审计日志)
-  log_level: info                   # debug | info | warn | error
-  log_format: text                  # text | json
+  log_level: info                   # debug | info | warn | warning | error（旧别名，log.level 未设置时生效）
+  log_format: text                  # text | json（旧别名，log.format 未设置时生效）
 
 # 数据库：所有 CLI 命令与 serve（未启用 --cluster 时）共用这一处选择，
 # 因此「冻结期写给哪个库」由配置文件决定，而不是由先运行了哪条命令决定。
@@ -59,6 +59,13 @@ channel:
     connect_timeout: 10s
     # 单目标机 WinRM 连接池大小（> 0）。 默认: 5
     pool_size: 5
+
+# 日志参数（对应 LogConfig）：不写这一段时继承上面的 server.log_level / server.log_format。
+# 写了以后 log.* 优先于 server.*。
+# log:
+#   level: ""                        # debug | info | warn | warning | error；留空 = 继承 server.log_level
+#   format: ""                       # text | json；留空 = 继承 server.log_format
+#   output: stderr                   # stdout | stderr | <文件路径>（追加写，不做轮转）
 
 # 审批配置
 approval:

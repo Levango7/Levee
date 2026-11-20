@@ -13,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/nexus/levee/internal/backup"
-	"github.com/nexus/levee/internal/config"
 	"github.com/nexus/levee/internal/state"
 )
 
@@ -110,7 +109,7 @@ func resolveBackupManager(pgDSN string) (*backup.Manager, error) {
 	if dsn := resolvePGDSN(pgDSN); dsn != "" {
 		return backup.NewManagerPostgres(dsn), nil
 	}
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}

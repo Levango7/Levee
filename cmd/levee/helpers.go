@@ -52,7 +52,7 @@ func applySecurityConfig(cfg *config.Config) {
 // openStore loads the LEVEE configuration and opens the database it names. The
 // caller is responsible for calling Close on the returned store when done.
 func openStore(ctx context.Context) (state.Store, error) {
-	cfg, err := config.Load(optConfigPath)
+	cfg, err := loadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}

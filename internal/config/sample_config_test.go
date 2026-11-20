@@ -79,6 +79,25 @@ func TestShippedSampleSSHDefaultsAreUnset(t *testing.T) {
 	}
 }
 
+// TestShippedSampleLogSettingsMirrorTheServerAlias keeps the shipped samples
+// honest about the log precedence. The samples leave log.level / log.format
+// unset, so the legacy server.log_* alias is what actually decides the
+// logger. A sample that hard-coded log.level would silently win over the
+// alias and turn the server.* keys in the very same file into dead settings.
+func TestShippedSampleLogSettingsMirrorTheServerAlias(t *testing.T) {
+	for _, p := range shippedConfigs {
+		t.Run(filepath.Base(p), func(t *testing.T) {
+			cfg, err := config.Load(p)
+			require.NoError(t, err)
+			assert.Equal(t, cfg.Server.LogLevel, cfg.Log.Level,
+				"%s must leave log.level unset so the server.log_level alias decides", p)
+			assert.Equal(t, cfg.Server.LogFormat, cfg.Log.Format,
+				"%s must leave log.format unset so the server.log_format alias decides", p)
+			assert.NotEmpty(t, cfg.Log.Output, "%s must name a log sink", p)
+		})
+	}
+}
+
 // TestSampleDriverCommentMatchesAcceptedDrivers reads the driver list out of each
 // example's own comment and asks the validator about every entry. A comment that
 // advertises a driver the program refuses — or omits one it accepts — is the
