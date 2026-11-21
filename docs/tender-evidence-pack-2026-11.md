@@ -25,7 +25,7 @@
 | M-10 | 7×24 应急、驻场、培训、SLA、质保 | 商务侧（非代码） | 需商务口径，技术侧不承诺 |
 | M-11 | 软著/检测报告/ISO27001/CMMI/案例 | 商务侧；demo 脚本＋容器靶场可演示；渗透测试采购预备见 `docs/pentest-sow-2026-11.md`（SOW/询价草案） | 案例/品牌素材缺（D-2）；**第三方渗透测试未采购未执行**，报告不可声称 |
 | M-12 | 国产浏览器兼容（奇安信/360 等） | CI 跑 chrome/firefox 四矩阵 | **国产浏览器未测** |
-| M-13 | SQL 审核平台：规则库/分级/审批/回滚/追踪/多数据源 | v1.2 定位「数据库变更发布与治理核」；`levee sqlreview` 自撰规则；审批→执行→快照回滚→审计链闭环保真；PG 方言可读性预研见 `docs/pg-dialect-readability-spike-2026-11.md`（oliphant 10/10 样本解析成功，待产品决策） | 多方言审核**未落地**（仅预研 + 测试专用 import，生产未接入）；仅 MySQL 语法层可审；对外不得说「PG 变更能审」 |
+| M-13 | SQL 审核平台：规则库/分级/审批/回滚/追踪/多数据源 | v1.2 定位「数据库变更发布与治理核」；`levee sqlreview` 自撰规则；审批→执行→快照回滚→审计链闭环保真；**PG 方言可读性已落地（PR #425）**：`pg.query` 按 PostgreSQL 方言审核（`ReviewPostgres` + oliphant），`$1`/`RETURNING`/`ON CONFLICT`/`::`/CTE/JSONB/LATERAL/窗口/CTAS 不再误报 SR-01，规则按 PG AST 触发，影响面同源；预研见 `docs/pg-dialect-readability-spike-2026-11.md` | **仅 `pg.query` 走 PG 方言通道**，默认 MySQL `Review()` 契约不变、其他方言（Oracle/DM/openGauss）仍不支持；非法 SQL 仍 SR-01 fail-closed；Dialect 是路由元数据、不进制品/plan_hash。对外可说「PG 方言变更可按 PostgreSQL 语法审核」，不得泛化为「所有方言都能审」 |
 
 ---
 
@@ -44,7 +44,7 @@
 | 部署交付检查单 | `docs/deployment.md` §15 | 已交付 |
 | 审计导出样例 | `levee audit export` + 各 OS 取证的 `audit/verify` 输出 | 可现场导出；留存期策略待商务/运维确认 |
 | 审计链 SM3 迁移设计（D-8） | `docs/audit-chain-mode-migration-design.md` | 设计完成（v12 加 digest_mode + 双口径验链 + 混合链策略）；**代码未动、需产品裁决** |
-| PG 方言可读性预研（D-6） | `docs/pg-dialect-readability-spike-2026-11.md` + `internal/sqlreview/pg_oliphant_spike_test.go` | 预研通过（10/10 样本）；**生产未接入**，测试专用 import 不进发布二进制 |
+| PG 方言可读性（D-6，已落地 PR #425） | `docs/pg-dialect-readability-spike-2026-11.md` + `internal/sqlreview/{pg_review.go,pg_review_test.go,pg_bench_test.go}` | **已落地**：`pg.query` 按 PG 方言审核（oliphant 已是生产依赖），稳态 14.8µs/op；预研 10/10 样本保留为设计依据 |
 | 渗透测试 SOW/询价 | `docs/pentest-sow-2026-11.md` | 采购预备；**未采购未执行**，不得作为已过渗透测试的证据 |
 | 本地渗透自测报告 | `docs/pentest-self-assessment-2026-11.md` | 研发侧自测（隔离靶场 + sqlmap，3 项低/中改进点）；**不是第三方报告** |
 | 密评差距自查清单 | `docs/miping-gap-checklist-2026-11.md` | 对照 GM/T 0054 控制面的改造面自查；**不是密评报告** |
