@@ -34,6 +34,9 @@ import (
 type SQLStepInput struct {
 	Step string
 	SQL  string
+	// Dialect is routing metadata only. It is not serialised into the plan
+	// artifact or plan_hash: the SQL text is the artifact, not the parser choice.
+	Dialect sqlreview.Dialect
 }
 
 // ReviewableSQL returns the SQL batch a step carries, and whether the step is
@@ -87,7 +90,13 @@ func ReviewSteps(steps []SQLStepInput) (*SQLReviewSummary, error) {
 		if strings.TrimSpace(s.SQL) == "" {
 			continue
 		}
-		res, err := sqlreview.Review(s.SQL)
+		var res *sqlreview.ReviewResult
+		var err error
+		if s.Dialect == sqlreview.DialectPostgres {
+			res, err = sqlreview.ReviewPostgres(s.SQL)
+		} else {
+			res, err = sqlreview.Review(s.SQL)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("%w: step %q: %v", sqlreview.ErrReviewFailed, s.Step, err)
 		}

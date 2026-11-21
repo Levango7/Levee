@@ -145,3 +145,10 @@ npm audit --json --registry=https://registry.npmjs.org
 - 本轮没有第三方渗透测试，**对外不得说「已过渗透测试 / 安全认证」**（与 `Levee-第三方评估报告-复核完善版.md` §8 一致）。
 - SBOM 与扫描结果是研发侧自证基线，**不作招投标门槛值、不引用为认证**。
 - 工具版本、日期、基线 commit 必须随引用一起给出。
+
+## 9. D-6 生产依赖新增：oliphant（2026-11-22）
+
+- `github.com/sqlc-dev/oliphant v0.2.0` 已从测试专用 spike 转为 `internal/sqlreview` 的生产依赖，按 pg.query 路由链接；不是默认解析器，MySQL 路径不引入该调用面。
+- **构建与许可**：纯 Go、无 cgo/wasm；模块内含 MIT、LIBPG_QUERY(BSD-3)、PostgreSQL 三份许可文本，已逐份核对。
+- **可达漏洞复核**：`go run golang.org/x/vuln/cmd/govulncheck@latest -mode=source ./internal/sqlreview` → `No vulnerabilities found`。`go list -m` 固定版本与 h1 校验和已核。
+- 模块级 SBOM 的下次再生成必须包含该生产组件；本记录不冒充新的全量镜像 SBOM 或第三方安全认证。

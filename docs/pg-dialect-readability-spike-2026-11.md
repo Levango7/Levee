@@ -2,10 +2,10 @@
 
 | 元信息项 | 内容 |
 | --- | --- |
-| 文档类型 | 实现前可行性 spike 记录，**不是已落地的审核能力** |
+| 文档类型 | 可行性 spike + D-6 实现记录 |
 | 基线 | `master@8fc1135`；`github.com/sqlc-dev/oliphant v0.2.0`（MIT + BSD-3 + PostgreSQL 许可，纯 Go、无 cgo/wasm） |
-| 证据 | `internal/sqlreview/pg_oliphant_spike_test.go`（`go test -run Oliphant -v`） |
-| 状态 | **预研通过，待产品决策后立项**；生产行为不变，测试专用 import 不进发布二进制 |
+| 证据 | `internal/sqlreview/pg_oliphant_spike_test.go`、`pg_review.go`、`pg_review_test.go`、计划/路由测试 |
+| 状态 | **2026-11-22 已批准立项并交付**；oliphant 已按 pg.query 显式路由接入生产，MySQL 路径不变 |
 
 ---
 
@@ -54,3 +54,14 @@ D-6 已登记「PG 能跑不能审」：`internal/executor/modules/pg` 已可执
 
 - 本文件是**预研 + 设计输入**，不代表 LEVEE 已支持 PostgreSQL 方言审核；对外口径仍按 D-6 四档表，**不得说"PG 变更能审"**。
 - 依赖 oliphant 的许可证为 MIT/LIBPG_QUERY(BSD-3)/PostgreSQL，与现有 SBOM 流程兼容。
+
+## 7. D-6 实现（2026-11-22）
+
+- **路由**：`pg.query` 在 `internal/wiring/sqlreview_gate.go` 显式设置 `DialectPostgres`；`plan.ReviewSteps` 按该元数据调用 `ReviewPostgres`，`levee sqlreview --change` 的复算路径同样路由。元数据不序列化进制品，不改变 plan_hash。
+- **实现**：`internal/sqlreview/pg_review.go` 用 oliphant AST 输出既有 Finding/StatementReview/Impact。非法 SQL 仍是 SR-01 fail；`RETURNING` / `ON CONFLICT` / `$1` / `::` / CTE / JSONB / LATERAL / 窗口函数 / CTAS 均不再被当成 MySQL 方言缺口。
+- **规则边界**：SR-10（InnoDB rowid）、SR-11（ENGINE）、SR-16（SET GLOBAL）不套 PG；SR-14/15 保留警告但改成 ctid/唯一键子查询分批建议；其他常见 DML/DDL 规则按 PG AST 触发，未支持的 admin 语句走 SR-17 人工确认而不是假通过。
+- **影响面**：读/写目标由同一棵 PG AST 得出；CTAS 的源表与目标表都保留，CTE 名不算物理表。SELECT 只读不写。SR-19 使用 PG 原子性措辞，不再声称 MySQL implicit commit。
+- **执行 backstop**：`internal/executor/sqlguard` 实现未改；新增 PG 对照测试证明 ON CONFLICT/SERIAL/参数化 DELETE 不被误拒，DROP CASCADE/TRUNCATE/无界 DELETE 仍拒。
+- **验证**：PG 电池、计划路由与完整 GeneratePlan（ON CONFLICT 制品 + 影响面 + hash 回算）通过；全量 Go 77 包零失败、vet/gofmt 干净。govulncheck 对 sqlreview 调用路径报 No vulnerabilities found。
+- **稳态基准（本机 2026-11-22，500 次）**：`ReviewPostgres` **14.8µs/op**，对照 MySQL `Review` **16.9µs/op**（`UPDATE … WHERE id = 7`，不含网络与目标机执行）；spike 的冷启动 ~168µs 不用于生产口径。
+- **不覆盖**：真实影响行数、锁时长与 EXPLAIN 仍需活库（D-7）；方言不由标签猜测，其他方言仍按现有 SR-01 分诊。

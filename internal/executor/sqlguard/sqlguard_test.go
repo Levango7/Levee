@@ -66,6 +66,19 @@ func TestRejectDestructive_NamesTheAction(t *testing.T) {
 		"want the action name in %q", err.Error())
 }
 
+func TestRejectDestructive_PostgresDialectBackstop(t *testing.T) {
+	for _, sql := range []string{
+		"INSERT INTO users(id) VALUES (1) ON CONFLICT (id) DO NOTHING",
+		"CREATE TABLE t (id SERIAL PRIMARY KEY)",
+		"DELETE FROM users WHERE id = $1",
+	} {
+		assert.NoError(t, RejectDestructive(sql, "pg.query"), "valid PG syntax must not be rejected by the MySQL parser: %q", sql)
+	}
+	for _, sql := range []string{"DROP TABLE users CASCADE", "TRUNCATE TABLE users", "DELETE FROM users"} {
+		require.Error(t, RejectDestructive(sql, "pg.query"), "the raw-text backstop stays fail-closed: %q", sql)
+	}
+}
+
 func TestRejectDestructive_EmptyInputIsNotDestructive(t *testing.T) {
 	// Emptiness is the caller's problem (both modules refuse empty SQL before
 	// reaching here); the classifier must not invent a verdict for it.
