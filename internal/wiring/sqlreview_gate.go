@@ -49,7 +49,11 @@ func reviewWorkflowSQL(wf *dsl.Workflow) (*plan.SQLReviewSummary, error) {
 		if !ok {
 			continue
 		}
-		steps = append(steps, plan.SQLStepInput{Step: s.Name, SQL: sql})
+		step := plan.SQLStepInput{Step: s.Name, SQL: sql}
+		if s.Module == "pg" {
+			step.Dialect = sqlreview.DialectPostgres
+		}
+		steps = append(steps, step)
 	}
 	summary, err := plan.ReviewSteps(steps)
 	if err != nil {

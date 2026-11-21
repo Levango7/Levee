@@ -32,6 +32,7 @@ import (
 	"sort"
 
 	"github.com/nexus/levee/internal/plan"
+	"github.com/nexus/levee/internal/sqlreview"
 )
 
 // sqlReviewChangeResult is the machine-readable shape of the comparison.
@@ -144,7 +145,11 @@ func planSQLSteps(p *plan.Plan) []plan.SQLStepInput {
 			if !ok {
 				continue
 			}
-			steps = append(steps, plan.SQLStepInput{Step: s.Name, SQL: sql})
+			step := plan.SQLStepInput{Step: s.Name, SQL: sql}
+			if s.Module == "pg" {
+				step.Dialect = sqlreview.DialectPostgres
+			}
+			steps = append(steps, step)
 		}
 	}
 	return steps
