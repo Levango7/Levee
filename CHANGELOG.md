@@ -8,7 +8,7 @@
 
 - 按 pg.query 显式路由接入 `sqlc-dev/oliphant v0.2.0`（纯 Go、无 cgo/wasm），新增 `ReviewPostgres` 与 PG AST 影响面；`RETURNING` / `ON CONFLICT` / `$1` / `::` / CTE / JSONB / LATERAL / 窗口函数 / CTAS 不再被 MySQL 语法层误报为 SR-01。默认 MySQL `Review()` 与既有契约不变，非法 SQL 仍 SR-01 fail-closed。
 - 常见 DML/DDL 规则按 PG AST 触发；SR-10/11/16 不套 PG，SR-14/15 改为 ctid/唯一键子查询分批建议，SR-19 使用 PG 原子性措辞。SR-17 覆盖未支持的 admin 语句，不假装其语义已分类。
-- 影响面保留 CTAS 源表/目标表，CTE 名不算物理表，SELECT 只读不写；计划、复算、发布单共用同一路由，Dialect 元数据不进 plan_hash。执行 sqlguard 保持 AST+原文 backstop。
+- 影响面保留 CTAS 源表/目标表，CTE 名不算物理表，SELECT 只读不写；CREATE/CTAS 新对象不误标 whole_table。计划、复算、发布单共用同一路由，Dialect 元数据不进 plan_hash。执行 sqlguard 保持 AST+原文 backstop。
 - 验证：PG 电池、计划路由与完整 ON CONFLICT GeneratePlan（影响面 + hash 回算）通过；全量 Go 77 包零失败、vet/gofmt 干净；govulncheck 未发现漏洞。D-6 设计文档、SBOM 与 blocked-items 同步。
 
 ### 文档（本地渗透自测 + 密评差距自查）
