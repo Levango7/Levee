@@ -105,7 +105,7 @@ func TestRESTApprovalsChainCollectionsAreExplicitArrays(t *testing.T) {
 
 	var body struct {
 		Approvals []struct {
-			Id        string           `json:"id"`
+			ID        string           `json:"id"`
 			Approvers []string         `json:"approvers"`
 			Decisions []map[string]any `json:"decisions"`
 		} `json:"approvals"`

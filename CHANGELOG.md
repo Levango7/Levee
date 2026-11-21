@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（approvals 空集合缺字段：真实后端下审批摘要崩溃）
+
+- `handleChangeApprovals` 改用新增的 `writeProtoNested`：B-07 的“空集合必须是显式 `[]`”规则向下延伸一层，覆盖 repeated message 字段。链路刚起（pending、尚无投票）时 protojson 会把 `decisions` 整个丢掉，控制台读 `decisions.length` 即在真实后端数据上崩溃（2026-11-21 真实后端 e2e 探针发现；a404f69 的顶层那次修复按其自身边界不会进入 repeated Approval 内部）。
+- 规则严格限定在请求它的 writer 上：`writeProto` 保持顶层-only 语义，plan/ticket 的嵌套列表省略行为不变（`TestWriteProtoNestedRuleStaysScopedToItsWriter` 守住这条边界）。
+- 新增 `TestRESTApprovalsChainCollectionsAreExplicitArrays`：pending 链必须给出 `decisions: []`，已有投票不被改写。
+
 ### 修复（SSH 严格主机校验在默认端口下 100% 失败）
 
 - `internal/channel/ssh` 的 host-key 回调把 x/crypto/ssh 交出的裸主机名直接交给 `knownhosts`，而 `golang.org/x/crypto/ssh/knownhosts` 只认 `host:port`：默认端口（22）场景下，即使主机密钥已在 `~/.ssh/known_hosts` 中，也会以 `SplitHostPort: missing port in address` 判定「主机密钥不受信任」，`channel.ssh.strict_host_check` 事实上在所有默认端口上不可用（fail-closed，**未**降级为不校验）。回调现在按目标端口归一化后再委托校验；主机名为空时退回 peer 地址（与 knownhosts 自身的回退一致），不会合成 `":22"` 去查空主机而把受信任密钥判为「不受信任」。失败提示与 `ssh-keyscan` 补救指引保持原样。
