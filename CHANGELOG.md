@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增（dist 启动门禁：构建产物白屏从此可被 CI 拦住）
+
+- `.github/workflows/ci.yml` frontend job 新增两步：安装 `puppeteer-core@24.37.0`（与既有 browser-check job 同版本、同三段重试），然后以 `vite preview --host 127.0.0.1` 服务**已构建的 dist**（显式绑定字面量的理由同 browser-check 的 dev server：runner 上 `localhost` 会解析成 `::1`，此前为此出过 90s 服务起不来）并执行 `node scripts/dist-boot-check.mjs`，`BROWSER_CHECK_REQUIRE='1'` 使其成为门禁而非装饰。
+- `web/scripts/dist-boot-check.mjs`：真实浏览器中断言 ① `#app` 挂载（白屏特征是子节点 0）、② 无未捕获页面错误、③ 壳文案已绘制、④ 深链 `/cluster` 也能启动（SPA fallback）、⑤ 无资源脚本加载失败（chunk 引用漂移）。无浏览器/驱动时跳过并 exit 0，`BROWSER_CHECK_REQUIRE=1` 时改为硬失败——与既有 browser-check 同一契约。
+- 由来：此前所有前端门禁只测 dev server（vite 不打包），2026-11-21 真实后端探针才发现 rolldown 在 manualChunks 下漏发 `__exportAll` 运行时助手，导致每个生产构建启动即白屏，而 dev、vitest、dev-server 浏览器检查全绿。这一步补的正是“构建产物能否启动”这一类此前无人测的缺陷。
+
 ### 修复（approvals 空集合缺字段：真实后端下审批摘要崩溃）
 
 - `handleChangeApprovals` 改用新增的 `writeProtoNested`：B-07 的“空集合必须是显式 `[]`”规则向下延伸一层，覆盖 repeated message 字段。链路刚起（pending、尚无投票）时 protojson 会把 `decisions` 整个丢掉，控制台读 `decisions.length` 即在真实后端数据上崩溃（2026-11-21 真实后端 e2e 探针发现；a404f69 的顶层那次修复按其自身边界不会进入 repeated Approval 内部）。
