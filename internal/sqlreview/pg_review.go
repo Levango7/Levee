@@ -288,7 +288,7 @@ func pgStatementImpact(node *pg_query.Node, kind StatementKind, index int) State
 	imp.Writes = pgWriteTargets(node)
 	all := pgRangeNames(node)
 	imp.Reads = subtract(all, imp.Writes)
-	imp.WholeTable = pgWholeTable(node, kind)
+	imp.WholeTable = pgWholeTable(node)
 	return imp
 }
 
@@ -348,7 +348,7 @@ func pgWriteTargets(node *pg_query.Node) []string {
 	}
 }
 
-func pgWholeTable(node *pg_query.Node, kind StatementKind) bool {
+func pgWholeTable(node *pg_query.Node) bool {
 	switch s := node.GetNode().(type) {
 	case *pg_query.Node_UpdateStmt:
 		return s.UpdateStmt.GetWhereClause() == nil
@@ -359,10 +359,14 @@ func pgWholeTable(node *pg_query.Node, kind StatementKind) bool {
 	case *pg_query.Node_InsertStmt:
 		return !pgIsValuesInsert(s.InsertStmt)
 	case *pg_query.Node_AlterTableStmt, *pg_query.Node_IndexStmt, *pg_query.Node_DropStmt,
-		*pg_query.Node_TruncateStmt, *pg_query.Node_RenameStmt:
+		*pg_query.Node_TruncateStmt, *pg_query.Node_RenameStmt, *pg_query.Node_DropdbStmt:
 		return true
+	case *pg_query.Node_CreateStmt, *pg_query.Node_CreateTableAsStmt, *pg_query.Node_CreatedbStmt,
+		*pg_query.Node_ViewStmt, *pg_query.Node_CreateSeqStmt:
+		// A newly created object has no existing row set to be unbounded over.
+		return false
 	default:
-		return kind == KindDDL || kind == KindDBDDL
+		return false
 	}
 }
 

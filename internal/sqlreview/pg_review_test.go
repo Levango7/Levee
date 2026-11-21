@@ -96,7 +96,14 @@ func TestReviewPostgres_CTASIsReadInFull(t *testing.T) {
 	imp := res.Statements[0].Impact
 	assert.Equal(t, []string{"archive"}, imp.Writes)
 	assert.Equal(t, []string{"users"}, imp.Reads)
+	assert.False(t, imp.WholeTable, "a table-creating DDL has no existing row set to be unbounded over")
 	assert.True(t, imp.Complete)
+}
+
+func TestReviewPostgres_CreateTableIsNotWholeTable(t *testing.T) {
+	res := reviewPG(t, "CREATE TABLE t (id SERIAL PRIMARY KEY)")
+	require.Len(t, res.Statements, 1)
+	assert.False(t, res.Statements[0].Impact.WholeTable)
 }
 
 func TestReviewPostgres_ImpactUsesRealTablesNotAliases(t *testing.T) {
