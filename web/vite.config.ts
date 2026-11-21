@@ -68,22 +68,16 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
       assetsDir: 'assets',
       sourcemap: false,
-      // Produce a single chunk for the vendor code to keep the embed bundle
-      // small and stable across releases.
-      rollupOptions: {
-        output: {
-          // Vite 8 builds with rolldown, whose manualChunks only accepts a
-          // function (the rollup object form is rejected at build time).
-          // Same intent as before: the framework + UI-kit graph lands in one
-          // chunk; anything else stays with the lazily loaded views.
-          manualChunks(id) {
-            if (!id.includes('node_modules')) return
-            const vendor = ['vue', 'vue-router', '@vue/', 'element-plus', '@element-plus/', 'axios', 'dayjs']
-            const path = id.slice(id.lastIndexOf('node_modules/') + 'node_modules/'.length)
-            return vendor.some((pkg) => path === pkg || path.startsWith(pkg)) ? 'vendor' : undefined
-          },
-        },
-      },
+      // NO manualChunks here, deliberately. Forcing node_modules into one
+      // 'vendor' chunk made rolldown emit a call to its `__exportAll` ESM
+      // runtime helper WITHOUT emitting the helper (the icons re-export
+      // module needs it) — every production build then white-screened at
+      // boot: "__exportAll is not a function", vendor chunk, top-level, the
+      // app never mounted. The dev server does not chunk, so the browser
+      // check could never see it; it surfaced only when the real-backend
+      // probe loaded the committed dist through `levee web`. Default
+      // chunking (entry + per-route dynamic chunks) is correct and keeps
+      // the lazy-view split this app actually benefits from.
     },
   }
 })

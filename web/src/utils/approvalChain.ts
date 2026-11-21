@@ -21,8 +21,12 @@ export interface ApprovalSummary extends ApprovalChain {
  *  happens server-side for the quorum gate. */
 export function approvalSummary(chains: ApprovalChain[]): ApprovalSummary[] {
   return chains.map((c) => {
-    const decided = c.decisions.length
-    const done = new Set(c.decisions.map((d) => d.approver))
+    /* decisions is ABSENT on a fresh pending chain (the gateway omits the
+     * field, it does not send an empty array) — the approval centre crashed
+     * on exactly that shape when first fed real backend data. */
+    const decisions = c.decisions ?? []
+    const decided = decisions.length
+    const done = new Set(decisions.map((d) => d.approver))
     return {
       ...c,
       decided,

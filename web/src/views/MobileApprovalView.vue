@@ -417,7 +417,7 @@ const decidedWhen = computed(() =>
   padding: 16px;
   background: var(--lv-surface-3);
   border: 1px solid var(--lv-border-soft);
-  border-left: 3px solid var(--el-color-success);
+  border-left: 3px solid var(--lv-ok);
   border-radius: var(--lv-radius-lg);
 }
 

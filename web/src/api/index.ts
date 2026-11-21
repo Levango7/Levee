@@ -568,7 +568,12 @@ export interface ApprovalChain {
   approvers: string[]
   /** Votes the quorum needs before the run may settle. */
   minApprovers: number
-  decisions: ApprovalDecision[]
+  /* OPTIONAL on the wire: a fresh pending chain has no votes yet, and the
+   * gateway omits the field entirely (protojson empty-message omission —
+   * the approval chain is NOT one of the a404f69 explicit-empty-arrays
+   * endpoints). The type says optional so the compiler backs the guard the
+   * approval summary must keep. */
+  decisions?: ApprovalDecision[]
   /** Unix timestamp (seconds); 0 when not set. */
   expiresAt: number
   /** Empty planHash + legacy=true: still settles the run regardless of plan. */

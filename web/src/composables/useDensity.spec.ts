@@ -4,12 +4,14 @@
 //
 // Two things here are worth more than the average unit test:
 //
-//   1. The inline bootstrap in index.html necessarily duplicates the storage key
-//      and the class name (it runs before the module graph loads). The theme
-//      suite pins the CONSTANTS and trusts the comment; this suite also reads
-//      index.html and asserts the two spellings are actually present, so
-//      renaming one end fails here instead of silently making a stored choice
-//      unreadable.
+//   1. The anti-flash bootstrap (web/public/boot.js) necessarily duplicates the
+//      storage key and the class name (it runs before the module graph loads).
+//      The theme suite pins the CONSTANTS and trusts the comment; this suite
+//      also reads boot.js and asserts the two spellings are actually present,
+//      so renaming one end fails here instead of silently making a stored
+//      choice unreadable. (It used to be an inline script in index.html; the
+//      embedded server's CSP refuses inline scripts, so the file is now a
+//      real asset — the spec also pins that index.html still references it.)
 //   2. "Default is comfortable" has to mean the class is ABSENT, not that some
 //      other class is present — the whole no-regression claim for this feature
 //      rests on the default render being the absence of the override.
@@ -105,10 +107,13 @@ describe('useDensity', { timeout: COLD_IMPORT_TIMEOUT }, () => {
     expect(DENSITY_STORAGE_KEY).toBe('levee-density')
     expect(COMPACT_CLASS).toBe('density-compact')
 
-    // The other end of the duplication (see the file header).
+    // The other end of the duplication (see the file header): boot.js spells
+    // the key and the class, and index.html must still load it.
+    const boot = readFileSync(locatePath('public/boot.js'), 'utf8')
+    expect(boot).toContain(`localStorage.getItem('${DENSITY_STORAGE_KEY}')`)
+    expect(boot).toContain(`classList.add('${COMPACT_CLASS}')`)
     const html = readFileSync(locatePath('index.html'), 'utf8')
-    expect(html).toContain(`localStorage.getItem('${DENSITY_STORAGE_KEY}')`)
-    expect(html).toContain(`classList.add('${COMPACT_CLASS}')`)
+    expect(html).toContain('/boot.js')
   })
 
   it('defaults to comfortable and adds no class', async () => {

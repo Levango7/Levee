@@ -94,9 +94,10 @@ describe('resolveTheme', () => {
 })
 
 describe('useTheme', { timeout: COLD_IMPORT_TIMEOUT }, () => {
-  // The bootstrap in index.html necessarily duplicates these two constants
-  // (it runs before the module graph loads). Pin them so renaming either one
-  // turns this red instead of silently making the stored choice unreadable.
+  // The anti-flash bootstrap (web/public/boot.js) necessarily duplicates
+  // these two constants (it runs before the module graph loads). Pin them so
+  // renaming either one turns this red instead of silently making the stored
+  // choice unreadable.
   it('pins the storage key and media query the inline bootstrap reads', () => {
     expect(THEME_STORAGE_KEY).toBe('levee-theme')
     expect(DARK_MEDIA_QUERY).toBe('(prefers-color-scheme: dark)')
@@ -111,15 +112,15 @@ describe('useTheme', { timeout: COLD_IMPORT_TIMEOUT }, () => {
     expect(theme.choice.value).toBe('dark')
     expect(theme.resolved.value).toBe('dark')
     // Importing the module must APPLY the stored theme, not merely remember it.
-    // index.html applies it before first paint, but the app cannot depend on
-    // that inline script having run (CSP, a cached shell) — and when the two
-    // disagree, the console renders the stored theme's opposite and never
+    // boot.js applies it before first paint, but the app cannot depend on that
+    // script having run (a cached shell, an asset path refused) — and when the
+    // two disagree, the console renders the stored theme's opposite and never
     // corrects itself until the user toggles.
     expect(document.documentElement.classList.contains('dark')).toBe(true)
     expect(document.documentElement.style.colorScheme).toBe('dark')
   })
 
-  it('corrects a document that the inline bootstrap got wrong', async () => {
+  it('corrects a document that the bootstrap got wrong', async () => {
     installMatchMedia(false)
     window.localStorage.setItem(THEME_STORAGE_KEY, 'dark')
     document.documentElement.classList.remove('dark') // what a stripped bootstrap leaves

@@ -621,7 +621,7 @@ onMounted(load)
 }
 
 .chain__ok {
-  color: var(--el-color-success);
+  color: var(--lv-ok);
 }
 
 .chain__no {
