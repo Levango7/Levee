@@ -279,7 +279,7 @@ const pendingCount = computed(() => pending.value.length)
           </span>
           <!-- The keyboard path is only usable if it is SAYABLE: the keys are
                printed next to the list they drive, not hidden in a help modal. -->
-          <span class="kbd-hint" v-if="activeTab === 'pending' && pending.length > 0">
+          <span class="kbd-hint" v-if="activeTab === 'pending' && pending.length > 0 && !denseColumns">
             <kbd>j</kbd><kbd>k</kbd> 移动 · <kbd>Enter</kbd> 审批链 · <kbd>a</kbd> 通过 · <kbd>r</kbd> 驳回 ·
             <kbd>d</kbd> 转授权
           </span>
@@ -566,9 +566,12 @@ const pendingCount = computed(() => pending.value.length)
   display: inline-flex;
   align-items: center;
   gap: var(--lv-space-2);
+  flex: none;
 }
 
 .approver__label {
+  flex: none;
+  white-space: nowrap;
   font-size: var(--lv-text-xs);
   color: var(--lv-text-3);
 }
