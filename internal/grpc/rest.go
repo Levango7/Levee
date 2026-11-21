@@ -1164,7 +1164,11 @@ func (gw *Gateway) handleChangeApprovals(w http.ResponseWriter, r *http.Request,
 		writeGRPCError(w, err)
 		return
 	}
-	writeProto(w, resp)
+	// writeProtoNested, not writeProto: a fresh pending chain has no votes,
+	// and the served contract (B-07's rule, one level deeper) is that the
+	// console may read approvals[].decisions and approvals[].approvers as
+	// always-present collections.
+	writeProtoNested(w, resp)
 }
 
 func (gw *Gateway) handleChangeTrace(w http.ResponseWriter, r *http.Request, id string) {
@@ -2300,6 +2304,104 @@ func marshalProtoWithEmptyCollections(v proto.Message) ([]byte, error) {
 		return out, nil
 	}
 	return json.Marshal(body)
+}
+
+// marshalProtoWithEmptyCollectionsNested extends the B-07 rule ONE level down
+// into repeated message fields. The approvals endpoint needs it: a fresh
+// pending chain carries no votes yet, and protojson drops that empty list
+// entirely, so the console read `decisions` as a missing field and crashed on
+// real backend data (caught by the real-backend e2e probe 2026-11-21; the
+// a404f69 top-level pass never reaches inside the repeated Approval messages,
+// by that fix's own boundary). Scoped to the endpoint that asked for it —
+// plan/ticket nested lists keep their omission semantics.
+func marshalProtoWithEmptyCollectionsNested(v proto.Message) ([]byte, error) {
+	out, err := marshalProtoWithEmptyCollections(v)
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(out, &body); err != nil {
+		return nil, err
+	}
+	fields := v.ProtoReflect().Descriptor().Fields()
+	changed := false
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		// Only repeated MESSAGE fields nest a level deeper; a repeated
+		// string (approvers) was already handled by the top-level pass.
+		if !field.IsList() || field.Message() == nil {
+			continue
+		}
+		name := field.JSONName()
+		raw, present := body[name]
+		if !present {
+			continue // top-level pass made it [] — nothing nested to fill
+		}
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil || len(items) == 0 {
+			continue
+		}
+		itemFields := field.Message().Fields()
+		patched := make([]json.RawMessage, len(items))
+		itemChanged := false
+		for j, item := range items {
+			var obj map[string]json.RawMessage
+			if err := json.Unmarshal(item, &obj); err != nil {
+				patched[j] = item
+				continue
+			}
+			nestedChanged := false
+			for k := 0; k < itemFields.Len(); k++ {
+				f := itemFields.Get(k)
+				if !f.IsList() {
+					continue
+				}
+				fname := f.JSONName()
+				if _, present := obj[fname]; !present {
+					obj[fname] = json.RawMessage("[]")
+					nestedChanged = true
+				}
+			}
+			if nestedChanged {
+				merged, merr := json.Marshal(obj)
+				if merr != nil {
+					patched[j] = item
+					continue
+				}
+				patched[j] = merged
+				itemChanged = true
+			} else {
+				patched[j] = item
+			}
+		}
+		if itemChanged {
+			merged, merr := json.Marshal(patched)
+			if merr != nil {
+				continue
+			}
+			body[name] = merged
+			changed = true
+		}
+	}
+	if !changed {
+		return out, nil
+	}
+	return json.Marshal(body)
+}
+
+// writeProtoNested is writeProto with the one-level-deep empty-collection rule
+// (see marshalProtoWithEmptyCollectionsNested). Endpoints whose nested
+// repeated fields are part of the served contract use this; everything else
+// keeps writeProto's top-level-only semantics.
+func writeProtoNested(w http.ResponseWriter, v proto.Message) {
+	out, err := marshalProtoWithEmptyCollectionsNested(v)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(out)
 }
 
 // writeJSON writes any struct as JSON response.

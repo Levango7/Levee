@@ -585,7 +585,29 @@ func (c *SSHChannel) buildHostKeyCallback() (ssh.HostKeyCallback, error) {
 	// Wrap the knownhosts callback so first-connect failures carry actionable
 	// remediation instead of the bare "knownhosts: key is unknown" error.
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-		if err := cb(hostname, remote, key); err != nil {
+		lookup := hostname
+		// x/crypto/ssh/knownhosts parses the address it is handed with
+		// SplitHostPort, so this callback's hostname must be in host:port form
+		// even for the default port. The SSH handshake normally supplies it,
+		// but a bare host would otherwise fail every strict check with a
+		// misleading "missing port in address" on a perfectly trusted host.
+		//
+		// An EMPTY hostname is the opposite case: knownhosts then falls back to
+		// the peer address, so hand it the remote rather than synthesising
+		// ":port" — that would look up the empty host and report a trusted key
+		// as untrusted.
+		if lookup == "" {
+			if remote != nil {
+				lookup = remote.String()
+			}
+		} else if _, _, err := net.SplitHostPort(lookup); err != nil {
+			port := DefaultPort
+			if c.target != nil && c.target.Port() != 0 {
+				port = c.target.Port()
+			}
+			lookup = net.JoinHostPort(strings.Trim(lookup, "[]"), fmt.Sprintf("%d", port))
+		}
+		if err := cb(lookup, remote, key); err != nil {
 			host := scanTarget(hostname, remote)
 			return fmt.Errorf("ssh: host key verification failed for %s (host key not trusted by %s): if this is the expected host, add its key with: ssh-keyscan -H %s >> %s; if the key CHANGED, investigate before overriding",
 				host, path, host, path)

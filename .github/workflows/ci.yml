@@ -220,6 +220,55 @@ jobs:
             exit 1
           fi
 
+      # Boot the BUILT dist in a real browser and assert the app mounts.
+      # Every other gate here measures the dev server, where vite does not
+      # chunk — the one class of defect that class of gate cannot see is a
+      # broken built bundle, and it happened for real: rolldown under a
+      # manualChunks config emitted a call to its `__exportAll` ESM runtime
+      # helper without emitting the helper, so every production build
+      # white-screened at boot while dev, vitest and the dev-server browser
+      # checks all stayed green (2026-11-21). The check needs a browser, not
+      # the mock gateway: an API-less preview exercises the mount path (with
+      # no token the app itself redirects to /login, which is itself a
+      # rendered route).
+      - name: install puppeteer-core (dist boot check)
+        shell: bash
+        env:
+          NPM_CONFIG_REGISTRY: ${{ vars.NPM_REGISTRY || 'https://registry.npmjs.org' }}
+        run: |
+          for attempt in 1 2 3; do
+            npm install -g puppeteer-core@24.37.0 && exit 0
+            echo "::warning::puppeteer-core install attempt $attempt failed; retrying in 20s"
+            sleep 20
+          done
+          echo "::error::puppeteer-core install failed after 3 attempts"
+          exit 1
+      - name: dist boot check
+        shell: bash
+        env:
+          BROWSER_CHECK_REQUIRE: '1'
+        run: |
+          set -e
+          # --host 127.0.0.1 on purpose, same reason the dev server in the
+          # browser-check job pins it: bare `vite preview` binds `localhost`,
+          # and what that resolves to is host-dependent (observed ::1 on the
+          # GitHub runners), so curl and the browser would each resolve it
+          # their own way against a v6-bound server and the readiness probe
+          # would time out. An explicit literal removes DNS from every path.
+          npx vite preview --port 4173 --strictPort --host 127.0.0.1 &
+          PREVIEW_PID=$!
+          cleanup() { kill "$PREVIEW_PID" 2>/dev/null || true; }
+          trap cleanup EXIT
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://127.0.0.1:4173/; then break; fi
+            sleep 1
+          done
+          if ! curl -sf -o /dev/null http://127.0.0.1:4173/; then
+            echo "::error::vite preview did not come up in 30s"
+            exit 1
+          fi
+          node scripts/dist-boot-check.mjs
+
   # ---------------------------------------------------------------------------
   # test: race detector + coverage, uploads coverage to Codecov when
   # available. Runs on all three OSes to catch platform-specific bugs.

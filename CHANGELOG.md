@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### 新增（dist 启动门禁：构建产物白屏从此可被 CI 拦住）
+
+- `.github/workflows/ci.yml` frontend job 新增两步：安装 `puppeteer-core@24.37.0`（与既有 browser-check job 同版本、同三段重试），然后以 `vite preview --host 127.0.0.1` 服务**已构建的 dist**（显式绑定字面量的理由同 browser-check 的 dev server：runner 上 `localhost` 会解析成 `::1`，此前为此出过 90s 服务起不来）并执行 `node scripts/dist-boot-check.mjs`，`BROWSER_CHECK_REQUIRE='1'` 使其成为门禁而非装饰。
+- `web/scripts/dist-boot-check.mjs`：真实浏览器中断言 ① `#app` 挂载（白屏特征是子节点 0）、② 无未捕获页面错误、③ 壳文案已绘制、④ 深链 `/cluster` 也能启动（SPA fallback）、⑤ 无资源脚本加载失败（chunk 引用漂移）。无浏览器/驱动时跳过并 exit 0，`BROWSER_CHECK_REQUIRE=1` 时改为硬失败——与既有 browser-check 同一契约。
+- 由来：此前所有前端门禁只测 dev server（vite 不打包），2026-11-21 真实后端探针才发现 rolldown 在 manualChunks 下漏发 `__exportAll` 运行时助手，导致每个生产构建启动即白屏，而 dev、vitest、dev-server 浏览器检查全绿。这一步补的正是“构建产物能否启动”这一类此前无人测的缺陷。
+
+### 修复（approvals 空集合缺字段：真实后端下审批摘要崩溃）
+
+- `handleChangeApprovals` 改用新增的 `writeProtoNested`：B-07 的“空集合必须是显式 `[]`”规则向下延伸一层，覆盖 repeated message 字段。链路刚起（pending、尚无投票）时 protojson 会把 `decisions` 整个丢掉，控制台读 `decisions.length` 即在真实后端数据上崩溃（2026-11-21 真实后端 e2e 探针发现；a404f69 的顶层那次修复按其自身边界不会进入 repeated Approval 内部）。
+- 规则严格限定在请求它的 writer 上：`writeProto` 保持顶层-only 语义，plan/ticket 的嵌套列表省略行为不变（`TestWriteProtoNestedRuleStaysScopedToItsWriter` 守住这条边界）。
+- 新增 `TestRESTApprovalsChainCollectionsAreExplicitArrays`：pending 链必须给出 `decisions: []`，已有投票不被改写。
+
+### 修复（SSH 严格主机校验在默认端口下 100% 失败）
+
+- `internal/channel/ssh` 的 host-key 回调把 x/crypto/ssh 交出的裸主机名直接交给 `knownhosts`，而 `golang.org/x/crypto/ssh/knownhosts` 只认 `host:port`：默认端口（22）场景下，即使主机密钥已在 `~/.ssh/known_hosts` 中，也会以 `SplitHostPort: missing port in address` 判定「主机密钥不受信任」，`channel.ssh.strict_host_check` 事实上在所有默认端口上不可用（fail-closed，**未**降级为不校验）。回调现在按目标端口归一化后再委托校验；主机名为空时退回 peer 地址（与 knownhosts 自身的回退一致），不会合成 `":22"` 去查空主机而把受信任密钥判为「不受信任」。失败提示与 `ssh-keyscan` 补救指引保持原样。
+- 新增回归测试 `TestBuildHostKeyCallbackStrictBareHostnameDefaultPort`：known_hosts 记为裸 IP、回调收到裸主机名时必须通过。
+- 实证：默认端口 strict 模式下 SSH 握手恢复；经 WSL sshd（目标 172.17.218.229）的真实 apply e2e 跑通，step 落库 `status=success, exit_code=0, stdout=levee-apply-e2e-ok`，run 以 `completed` 收口。
+
 ### 新增（D-6：PostgreSQL 方言可读性，pg.query 能审能跑）
 
 - 按 pg.query 显式路由接入 `sqlc-dev/oliphant v0.2.0`（纯 Go、无 cgo/wasm），新增 `ReviewPostgres` 与 PG AST 影响面；`RETURNING` / `ON CONFLICT` / `$1` / `::` / CTE / JSONB / LATERAL / 窗口函数 / CTAS 不再被 MySQL 语法层误报为 SR-01。默认 MySQL `Review()` 与既有契约不变，非法 SQL 仍 SR-01 fail-closed。
