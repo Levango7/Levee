@@ -46,14 +46,16 @@
 | 审计链 SM3 迁移设计（D-8） | `docs/audit-chain-mode-migration-design.md` | 设计完成（v12 加 digest_mode + 双口径验链 + 混合链策略）；**代码未动、需产品裁决** |
 | PG 方言可读性预研（D-6） | `docs/pg-dialect-readability-spike-2026-11.md` + `internal/sqlreview/pg_oliphant_spike_test.go` | 预研通过（10/10 样本）；**生产未接入**，测试专用 import 不进发布二进制 |
 | 渗透测试 SOW/询价 | `docs/pentest-sow-2026-11.md` | 采购预备；**未采购未执行**，不得作为已过渗透测试的证据 |
+| 本地渗透自测报告 | `docs/pentest-self-assessment-2026-11.md` | 研发侧自测（隔离靶场 + sqlmap，3 项低/中改进点）；**不是第三方报告** |
+| 密评差距自查清单 | `docs/miping-gap-checklist-2026-11.md` | 对照 GM/T 0054 控制面的改造面自查；**不是密评报告** |
 
 ---
 
 ## 3. 仍需外部输入才能补齐（不要自行编造）
 
 1. **标书原文/评分表** → 填 R 区，否则 M 区对照只能作预判。
-2. **带 CMA/CNAS 资质的第三方渗透测试报告** → 预算量级 ¥5–10 万/次、SOW/询价清单见 `docs/pentest-sow-2026-11.md`；本轮未采购未执行。
-3. **国密改造（M-04）** → 已完成算法级增量（SM3/SM4 + `sm4-gcm` 凭据选项）；审计链 SM3 迁移已有设计（`docs/audit-chain-mode-migration-design.md`，未实现、需产品裁决）；TLCP/国密 TLS、SM2 签名、硬件密码模块与**密评报告**仍是专项，需外部机构/预算。
+2. **带 CMA/CNAS 资质的第三方渗透测试报告** → 预算量级 ¥5–10 万/次、SOW/询价清单见 `docs/pentest-sow-2026-11.md`；本轮未采购未执行。已有 `docs/pentest-self-assessment-2026-11.md` 是**研发侧自测**，不得替代第三方报告。
+3. **国密改造（M-04）** → 已完成算法级增量（SM3/SM4 + `sm4-gcm` 凭据选项）；审计链 SM3 迁移已有设计（`docs/audit-chain-mode-migration-design.md`，未实现、需产品裁决）；TLCP/国密 TLS、SM2 签名、硬件密码模块与**密评报告**仍是专项，需外部机构/预算。密评改造面自查见 `docs/miping-gap-checklist-2026-11.md`（自查，非报告）。
 4. **物理裸机 / ARM 真机（M-01）** → 无门路/需租机，仍按未验证。
 5. **MFA、国产浏览器、离线包、案例素材、7×24 服务承诺** → 分别对应 A-2/D-2/M-12/M-09/M-10，需产品/商务排期。
 
