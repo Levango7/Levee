@@ -81,3 +81,59 @@ func TestWriteProtoEmptyCollectionsDoNotAlterNestedOmissions(t *testing.T) {
 		require.False(t, present, "nested plan.%s stays omitted when unset", key)
 	}
 }
+
+// The approvals chain needed the B-07 rule ONE level deeper: a fresh pending
+// chain has no votes, protojson drops that empty list, and the console's
+// approval summary crashed reading decisions.length on real backend data
+// (real-backend e2e probe, 2026-11-21). The served contract is that
+// approvals[].decisions and approvals[].approvers are always-present
+// collections; the rule stays scoped to this endpoint's writer.
+func TestRESTApprovalsChainCollectionsAreExplicitArrays(t *testing.T) {
+	resp := &pb.GetApprovalsResponse{Approvals: []*pb.ApprovalInfo{
+		// A fresh pending chain: no votes yet — the exact shape that crashed.
+		{Id: "approval-1", ChangeId: "run-1", Level: "standard", Status: "pending",
+			Approvers: []string{"admin"}, MinApprovers: 1},
+		// A chain with a vote keeps its decisions AND still gets an explicit
+		// empty list where a repeated field is unset.
+		{Id: "approval-2", ChangeId: "run-1", Level: "standard", Status: "pending",
+			Approvers: []string{"admin", "bob"}, MinApprovers: 2,
+			Decisions: []*pb.ApprovalDecision{{Approver: "admin", Action: "approve"}}},
+	}}
+	rec := httptest.NewRecorder()
+	writeProtoNested(rec, resp)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body struct {
+		Approvals []struct {
+			Id        string           `json:"id"`
+			Approvers []string         `json:"approvers"`
+			Decisions []map[string]any `json:"decisions"`
+		} `json:"approvals"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Len(t, body.Approvals, 2)
+
+	first := body.Approvals[0]
+	require.NotNil(t, first.Decisions, "a fresh pending chain must still name its empty decisions collection, body=%s", rec.Body.String())
+	require.Len(t, first.Decisions, 0)
+	require.Equal(t, []string{"admin"}, first.Approvers)
+
+	second := body.Approvals[1]
+	require.Len(t, second.Decisions, 1, "existing votes survive the pass")
+	require.Equal(t, "admin", second.Decisions[0]["approver"])
+}
+
+// The nesting rule is scoped: writeProto (top-level only) must NOT grow
+// nested arrays — plan.batches keeps its B-07-era omission semantics.
+func TestWriteProtoNestedRuleStaysScopedToItsWriter(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeProto(rec, &pb.GetApprovalsResponse{Approvals: []*pb.ApprovalInfo{
+		{Id: "approval-1", Approvers: []string{"admin"}},
+	}})
+	var body map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	var rows []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(body["approvals"], &rows))
+	_, hasDecisions := rows[0]["decisions"]
+	require.False(t, hasDecisions, "writeProto keeps the top-level-only rule; the nested pass belongs to writeProtoNested only")
+}

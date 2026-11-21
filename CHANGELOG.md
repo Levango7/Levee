@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（SSH 严格主机校验在默认端口下 100% 失败）
+
+- `internal/channel/ssh` 的 host-key 回调把 x/crypto/ssh 交出的裸主机名直接交给 `knownhosts`，而 `golang.org/x/crypto/ssh/knownhosts` 只认 `host:port`：默认端口（22）场景下，即使主机密钥已在 `~/.ssh/known_hosts` 中，也会以 `SplitHostPort: missing port in address` 判定「主机密钥不受信任」，`channel.ssh.strict_host_check` 事实上在所有默认端口上不可用（fail-closed，**未**降级为不校验）。回调现在按目标端口归一化后再委托校验；主机名为空时退回 peer 地址（与 knownhosts 自身的回退一致），不会合成 `":22"` 去查空主机而把受信任密钥判为「不受信任」。失败提示与 `ssh-keyscan` 补救指引保持原样。
+- 新增回归测试 `TestBuildHostKeyCallbackStrictBareHostnameDefaultPort`：known_hosts 记为裸 IP、回调收到裸主机名时必须通过。
+- 实证：默认端口 strict 模式下 SSH 握手恢复；经 WSL sshd（目标 172.17.218.229）的真实 apply e2e 跑通，step 落库 `status=success, exit_code=0, stdout=levee-apply-e2e-ok`，run 以 `completed` 收口。
+
 ### 新增（D-6：PostgreSQL 方言可读性，pg.query 能审能跑）
 
 - 按 pg.query 显式路由接入 `sqlc-dev/oliphant v0.2.0`（纯 Go、无 cgo/wasm），新增 `ReviewPostgres` 与 PG AST 影响面；`RETURNING` / `ON CONFLICT` / `$1` / `::` / CTE / JSONB / LATERAL / 窗口函数 / CTAS 不再被 MySQL 语法层误报为 SR-01。默认 MySQL `Review()` 与既有契约不变，非法 SQL 仍 SR-01 fail-closed。

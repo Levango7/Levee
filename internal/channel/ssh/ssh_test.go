@@ -1466,6 +1466,36 @@ func mockPublicKey(t *testing.T) ssh.PublicKey {
 	return pk
 }
 
+func TestBuildHostKeyCallbackStrictBareHostnameDefaultPort(t *testing.T) {
+	trustedKey := mockPublicKey(t)
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	path := writeKnownHosts(t, []net.Addr{addr}, trustedKey)
+
+	cb, err := callbackFor(t, &Config{StrictHostCheck: true, KnownHostsPath: path})
+	require.NoError(t, err)
+
+	// x/crypto/ssh delivers a bare hostname for the default port; knownhosts
+	// itself requires host:port. The wrapper must normalise that case instead
+	// of failing a trusted host with a missing-port error.
+	require.NoError(t, cb("127.0.0.1", addr, trustedKey))
+}
+
+// The mirror case: an EMPTY hostname must not be normalised into ":22",
+// which would look up the empty host and report a trusted key as untrusted.
+// knownhosts falls back to the peer address, so the wrapper hands it the
+// remote verbatim.
+func TestBuildHostKeyCallbackStrictEmptyHostnameUsesRemote(t *testing.T) {
+	trustedKey := mockPublicKey(t)
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	path := writeKnownHosts(t, []net.Addr{addr}, trustedKey)
+
+	cb, err := callbackFor(t, &Config{StrictHostCheck: true, KnownHostsPath: path})
+	require.NoError(t, err)
+
+	require.NoError(t, cb("", addr, trustedKey),
+		"an empty hostname must be looked up through the peer address, not synthesised into :22")
+}
+
 func TestStrictHostCheckAgainstKnownHostsFile(t *testing.T) {
 	trustedKey := mockPublicKey(t)
 	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
