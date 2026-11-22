@@ -40,10 +40,7 @@ func TestPostgresPlanAndExecutionConformance(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := true
-			if res.Verdict == sqlreview.VerdictFail {
-				want = false
-			}
+			want := res.Verdict != sqlreview.VerdictFail
 			for _, statement := range res.Statements {
 				if statement.Impact.Operation == "drop" || statement.Impact.Operation == "drop database" || statement.Impact.Operation == "truncate" {
 					want = false
