@@ -1197,7 +1197,7 @@ levee secret add --name NAME --value VALUE [--type TYPE]
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `--name` | | 凭据名称（必填） |
-| `--value` | | 明文值（必填，加密存储） |
+| `--value` | | 明文值（必填，加密存储）：传输类凭据（`ssh_key` / `ssh_password` / `winrm_password`）写 JSON 对象 `{"username":…,"password":…}`；不以 `{` 或 `[` 开头的值按裸口令接受（`api_token` 的既有约定） |
 | `--type` | `ssh_password` | 凭据类型：ssh_key / ssh_password / winrm_password / api_token |
 
 **示例**
@@ -1205,6 +1205,9 @@ levee secret add --name NAME --value VALUE [--type TYPE]
 ```命令示例：添加 SSH 密码凭据
 levee secret add --name prod-ssh --value "s3cret" --type ssh_password
 ```
+
+> **形状校验**：值一旦以 `{` / `[` 开头且带 JSON 标点却解析失败，`add` / `rotate` 当场拒绝并说明原因——这是 shell 或 PowerShell 吃掉双引号的典型后果（在 PowerShell 里写 `\"username\"` 才能让双引号活到原生命令）。若放过去，它会以「空用户名」的形式在 dial 阶段才失败，那时引号证据已经没了，人会被引去找一个并不存在的口令问题。
+> JSON 对象里的键名必须是 `username` / `password` / `key_path` / `key_passphrase` 之一，否则同样当场拒绝（键名拼错会静默变成裸口令，然后在 dial 阶段以空用户名失败）。
 
 ### 8.3 secret rotate
 
