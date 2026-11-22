@@ -47,6 +47,7 @@
 | PG 方言可读性（D-6，已落地 PR #425） | `docs/pg-dialect-readability-spike-2026-11.md` + `internal/sqlreview/{pg_review.go,pg_review_test.go,pg_bench_test.go}` | **已落地**：`pg.query` 按 PG 方言审核（oliphant 已是生产依赖），稳态 14.8µs/op；预研 10/10 样本保留为设计依据 |
 | 渗透测试 SOW/询价 | `docs/pentest-sow-2026-11.md` | 采购预备；**未采购未执行**，不得作为已过渗透测试的证据 |
 | 本地渗透自测报告 | `docs/pentest-self-assessment-2026-11.md` | 研发侧自测（隔离靶场 + sqlmap，3 项低/中改进点）；**不是第三方报告** |
+| 本地渗透自测（深度轮） | `docs/pentest-deep-2026-11.md` | 写端点鉴权/CORS 白名单/多参数 sqlmap(level2)/playwright 浏览器层；未发现可利用漏洞；**不是第三方报告** |
 | 密评差距自查清单 | `docs/miping-gap-checklist-2026-11.md` | 对照 GM/T 0054 控制面的改造面自查；**不是密评报告** |
 
 ---

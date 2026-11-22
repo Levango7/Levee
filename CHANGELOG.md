@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 文档（本地渗透自测深度轮）
+
+- `docs/pentest-deep-2026-11.md`：资源评估后可执行的深度自测（隔离靶场 + 带数据 + 配置化 CORS/token）。写端点鉴权（3 个 POST 无 token 均 401）、CORS 白名单（evil/null 拒绝）、sqlmap 三参数 level=2/risk=2 无注入、playwright+chromium 浏览器层（未授权 401/授权 200/DOM 不泄露 token）。承接 F-0（默认未配 permissions.yaml/TLS）、F-1（安全头缺失），新增 F-3 观察项。**研发侧自测，非第三方报告**。
+
 ### 新增（D-8 审计链 SM3 摘要模式，默认不变）
 
 - 审计链新增可选 `audit.digest_mode: sha256|sm3`（默认 sha256，行为不变）。采用**哈希值前缀**方案（类 plan hash 的 `v2:` 范式）：无前缀=SHA-256/HMAC-SHA256（历史 + 默认），`sm3:`/`hmac-sm3:`=SM3/HMAC-SM3（GM/T 0004-2012，复用 `internal/gmcrypto`）。
