@@ -8,21 +8,19 @@
 // `DROP TABLE` is destructive — the same drift class the repo keeps paying for
 // (one conclusion written twice, half of it updated later).
 //
-// Classification is AST-primary with a raw-text backstop, and the ORDER
-// matters:
+// Classification shares the dialect reviewer's fail boundary before applying
+// the query surface's extra structural restrictions, and the ORDER matters:
 //
-//   - the embedded grammar (xwb1989/sqlparser) is authoritative for every
-//     statement it can read. It catches what an end-anchored regex
-//     structurally cannot — an unbounded DELETE carrying a trailing comment;
-//   - the regex stays for exactly the surface the grammar cannot judge:
-//     statements that fail to parse (DROP USER is unknown to it), admin/read
-//     statements whose semantics it hides, and alter-shaped statements whose
-//     body it does not expose (the grammar flattens DROP INDEX into an ALTER,
-//     so only the raw text names it).
+//   - Review (MySQL) or ReviewPostgres (PG) owns every fail-level decision.
+//     An unreadable statement is SR-01/fail, so it cannot ride through merely
+//     because the raw-text backstop does not recognise its shape;
+//   - the MySQL AST and raw-text backstop still reject DROP/TRUNCATE even when
+//     review classifies them as warnings. They also retain defence in depth
+//     for shapes such as an unbounded DELETE carrying a trailing comment.
 //
-// A statement that fails to parse is NOT treated as safe: the regex still gets
-// its say. That is fail-closed in the only direction available here — the
-// guard cannot prove innocence, so it refuses what the text names.
+// Plan and execution therefore cannot drift on unreadable SQL, unbounded
+// UPDATE/DELETE or tautological predicates; the idempotent query surface may
+// only be stricter than plan review, never more permissive.
 package sqlguard
 
 import (
@@ -56,6 +54,25 @@ func RejectDestructive(sql, action string) error {
 	if action == "pg.query" {
 		return rejectDestructivePG(sql, action)
 	}
+	if strings.TrimSpace(sql) == "" {
+		return nil
+	}
+	// Plan-time MySQL review and execution-time guard must agree on every
+	// fail-level finding (SR-01 unreadable, SR-02..SR-06 unbounded/destructive
+	// DML and DDL). Run the same review first so a statement the platform
+	// cannot vouch for is refused here even when the AST path below would
+	// otherwise let it through.
+	if res, err := sqlreview.Review(sql); err == nil {
+		for _, statement := range res.Statements {
+			for _, finding := range statement.Findings {
+				if finding.Severity == sqlreview.SeverityFail {
+					return destructiveErr(statement.Text, action)
+				}
+			}
+		}
+	} else {
+		return destructiveErr(sql, action)
+	}
 	pieces, err := sqlparser.SplitStatementToPieces(sql)
 	if err != nil {
 		return regexReject(sql, action)
@@ -87,6 +104,10 @@ func RejectDestructive(sql, action string) error {
 			if s.Where == nil {
 				return destructiveErr(text, action)
 			}
+		case *sqlparser.Update:
+			if s.Where == nil {
+				return destructiveErr(text, action)
+			}
 		}
 		// Grammar-readable but not decisively destructive: the regex keeps its
 		// raw-text say.
@@ -100,8 +121,8 @@ func RejectDestructive(sql, action string) error {
 // rejectDestructivePG applies the exact same PostgreSQL AST and fail boundary
 // as the plan gate. DROP/TRUNCATE additionally remain forbidden on the
 // idempotent query surface even where their review finding is a warning.
-// MySQL keeps the existing AST+regex path above; no second PG rule engine is
-// allowed to grow here.
+// MySQL follows the same fail-level contract before its structural DROP
+// backstop; no second dialect rule engine is allowed to grow here.
 func rejectDestructivePG(sql, action string) error {
 	if strings.TrimSpace(sql) == "" {
 		return nil

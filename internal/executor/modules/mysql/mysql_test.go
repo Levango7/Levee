@@ -233,7 +233,7 @@ func TestQuerySQLWithQuotesStaysEncoded(t *testing.T) {
 	// never raw on the command line. The payload avoids destructive verbs
 	// (those are covered by the reject tests) so this test isolates the
 	// transport encoding.
-	sql := "INSERT INTO audit VALUES ('$(cat /etc/passwd)', \"foobar\", \"x; y | z\")\" && echo pwned"
+	sql := "INSERT INTO audit VALUES ('$(cat /etc/passwd)', 'foobar', 'x; y | z\" && echo pwned')"
 	_, err := New().Execute(context.Background(), "query", newInput(ch, map[string]any{"sql": sql}))
 	require.NoError(t, err)
 
@@ -508,6 +508,9 @@ func TestRejectDestructiveSQL(t *testing.T) {
 		"TRUNCATE orders",
 		"TRUNCATE TABLE orders",
 		"DELETE FROM orders",
+		"UPDATE orders SET active = 1",
+		"DELETE FROM orders WHERE 1=1",
+		"UPDATE orders SET active = 1 WHERE 1=1",
 	}
 	for _, sql := range bad {
 		require.Error(t, sqlguard.RejectDestructive(sql, "mysql.query"), "expected rejected: %s", sql)
@@ -519,10 +522,6 @@ func TestRejectDestructiveSQL(t *testing.T) {
 		"INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE id=id",
 		"UPDATE t SET a=1 WHERE id=2",
 		"DELETE FROM t WHERE id=2",
-		// The executor's boundary is structural only: a WHERE-ful DELETE
-		// (even a tautologous one) is the plan-time review's call (SR-04),
-		// not this guard's.
-		"DELETE FROM t WHERE 1=1",
 		"ALTER TABLE t ADD COLUMN c INT",
 		"SHOW TABLES",
 	}

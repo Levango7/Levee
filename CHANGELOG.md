@@ -17,6 +17,11 @@
 - 新增 `internal/audit/sm3_migration_test.go`（混合链验真、篡改检测、前缀 fail-closed、keyed 正交、SM3 已知答案）；`go test ./...` 全绿，全部历史审计测试保持通过。
 - **边界**：算法可迁移性，不是密评合规；对外可说"审计链支持 SM3 摘要模式、历史链可验"，不得说"国密合规 / 已过密评"。设计取证见 `docs/audit-chain-mode-migration-design.md` §10。
 
+### 修复（MySQL 计划审核与执行拦截语义一致）
+
+- `mysql.query` 执行侧 sqlguard 先复用计划期 `Review` 的 fail 判据，再保留 DROP/TRUNCATE 专用 backstop；不可解析 SQL、无界 UPDATE、恒真 DELETE/UPDATE 不再被执行侧误放行。
+- 新增 MySQL 计划/执行同电池，与既有 PG 电池共同固定「review fail 两侧都拒绝，DROP/TRUNCATE 执行侧更严格」的契约；同步修正仍按旧边界断言的模块测试。
+
 ### 新增（MySQL schema 恢复：缺表时按快照重建并验证）
 
 - 新增 `mysql.schema_restore`：只接受单条完整 CREATE TABLE 且表名匹配；目标表必须不存在才执行，现存表绝不 DROP 覆盖；CREATE 后再次 SHOW CREATE，定义逐字一致才算恢复成功。失败、校验不一致、混合 DML、DBDDL 均 fail-closed。
