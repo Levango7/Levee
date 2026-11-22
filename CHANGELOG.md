@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增（MySQL schema 恢复：缺表时按快照重建并验证）
+
+- 新增 `mysql.schema_restore`：只接受单条完整 CREATE TABLE 且表名匹配；目标表必须不存在才执行，现存表绝不 DROP 覆盖；CREATE 后再次 SHOW CREATE，定义逐字一致才算恢复成功。失败、校验不一致、混合 DML、DBDDL 均 fail-closed。
+- rollback snapshotter 在 apply 前按 SQL AST 逐表捕获 canonical DDL，恢复时按 change id 调用 schema_restore，自动/手动回滚共用同一快照；文件快照路径不变。
+- 新增模块正反测试与 snapshotter 全链路「捕获→DROP→恢复→验证」；全量 Go 77 包、vet/gofmt 全绿。证据 `docs/mysql-schema-restore-2026-11.md`，D-5 同步登记。PG 内省与行数据恢复明确不在本切片。
+
 ### 修复（PG 计划审核与执行拦截语义一致）
 
 - `pg.query` 执行侧 sqlguard 直接复用 `ReviewPostgres`，不再以 MySQL AST 承担 PG 判断；无界 UPDATE、恒真 DELETE/UPDATE 与非法 SQL 不再被执行侧误放行。

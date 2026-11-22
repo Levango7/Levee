@@ -431,6 +431,14 @@ var actionSignatures = map[string]map[string]Type{
 		"port":     TypeString{},
 		"user":     TypeString{},
 	},
+	"mysql.schema_restore": {
+		"table":    TypeString{},
+		"snapshot": TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+	},
 	"pg.query": {
 		"sql":      TypeString{},
 		"database": TypeString{},

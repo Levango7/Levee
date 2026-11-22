@@ -83,7 +83,7 @@ func (Module) Name() string { return "mysql" }
 
 // Actions returns the supported action verbs.
 func (Module) Actions() []string {
-	return []string{"query", "pt_osc", "replica_switch", "schema_snapshot"}
+	return []string{"query", "pt_osc", "replica_switch", "schema_snapshot", "schema_restore"}
 }
 
 // Idempotent reports whether the module declares itself idempotent. Only
@@ -103,6 +103,8 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 		return m.replicaSwitch(ctx, input)
 	case "schema_snapshot":
 		return m.schemaSnapshot(ctx, input)
+	case "schema_restore":
+		return m.schemaRestore(ctx, input)
 	default:
 		return nil, fmt.Errorf("mysql: unsupported action %q", action)
 	}

@@ -115,7 +115,7 @@ func TestModuleName(t *testing.T) {
 }
 
 func TestModuleActions(t *testing.T) {
-	assert.Equal(t, []string{"query", "pt_osc", "replica_switch", "schema_snapshot"}, New().Actions())
+	assert.Equal(t, []string{"query", "pt_osc", "replica_switch", "schema_snapshot", "schema_restore"}, New().Actions())
 }
 
 func TestModuleNotIdempotent(t *testing.T) {

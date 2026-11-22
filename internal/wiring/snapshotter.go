@@ -32,9 +32,13 @@ import (
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/engine"
+	"github.com/nexus/levee/internal/executor"
+	"github.com/nexus/levee/internal/executor/modules/mysql"
+	"github.com/nexus/levee/internal/executor/sqlguard"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
 	"github.com/nexus/levee/internal/rollback"
+	"github.com/nexus/levee/internal/sqlreview"
 )
 
 // remoteSnapshotter implements engine.Snapshotter over a runExec's cached
@@ -83,7 +87,34 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 	if err != nil {
 		return fmt.Errorf("create snapshot record for step %q on %q: %w", step.Name, target, err)
 	}
-	if len(step.Rollback.SnapshotPaths) == 0 {
+	payloads := map[string]string{}
+	if step.Module == "mysql" && step.Action == "query" {
+		ch, target, err := s.rx.channelFor(ctx, target)
+		if err != nil {
+			return fmt.Errorf("channel for schema snapshot of %q: %w", target, err)
+		}
+		schemaPayloads, err := s.captureMySQLSchema(ctx, ch, target, step)
+		if err != nil {
+			return err
+		}
+		for key, value := range schemaPayloads {
+			payloads[key] = value
+		}
+	}
+	if len(step.Rollback.SnapshotPaths) > 0 {
+		ch, _, err := s.rx.channelFor(ctx, target)
+		if err != nil {
+			return fmt.Errorf("channel for snapshot of %q: %w", target, err)
+		}
+		filePayloads, err := s.fetchRemoteFiles(ctx, ch, step.Rollback.SnapshotPaths)
+		if err != nil {
+			return err
+		}
+		for key, value := range filePayloads {
+			payloads[key] = value
+		}
+	}
+	if len(payloads) == 0 {
 		// Audit-only record: no payload, restore will be a no-op.
 		log.Info("snapshot captured (audit-only, no paths)",
 			"run_id", runID,
@@ -93,15 +124,6 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 			"snapshot_id", snap.ID)
 		return nil
 	}
-
-	ch, _, err := s.rx.channelFor(ctx, target)
-	if err != nil {
-		return fmt.Errorf("channel for snapshot of %q: %w", target, err)
-	}
-	payloads, err := s.fetchRemoteFiles(ctx, ch, step.Rollback.SnapshotPaths)
-	if err != nil {
-		return err
-	}
 	if err := rollback.WriteSnapshotPayloads(snap.Path, payloads); err != nil {
 		return fmt.Errorf("store snapshot payload for step %q on %q: %w", step.Name, target, err)
 	}
@@ -110,7 +132,7 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 		"change_id", s.key,
 		"target", target,
 		"step", step.Name,
-		"files", len(step.Rollback.SnapshotPaths),
+		"files", len(payloads),
 		"snapshot_id", snap.ID)
 	return nil
 }
@@ -148,11 +170,26 @@ func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target st
 		return nil
 	}
 
-	ch, _, err := s.rx.channelFor(ctx, target)
+	ch, targetDesc, err := s.rx.channelFor(ctx, target)
 	if err != nil {
 		return fmt.Errorf("channel for snapshot restore on %q: %w", target, err)
 	}
 	for origPath, content := range payloads {
+		if table, ok := strings.CutPrefix(origPath, mysqlSchemaPayloadPrefix); ok {
+			args := cloneStepArgs(step.Args)
+			args["table"] = table
+			args["snapshot"] = content
+			out, err := mysql.New().Execute(ctx, "schema_restore", executor.ModuleInput{
+				Action: "schema_restore", Args: args, Target: targetDesc, Channel: ch,
+			})
+			if err != nil {
+				return fmt.Errorf("restore schema %q on %q: %w", table, target, err)
+			}
+			if out.ExitCode != 0 {
+				return fmt.Errorf("restore schema %q on %q failed: %s", table, target, strings.TrimSpace(out.Stderr))
+			}
+			continue
+		}
 		if err := ch.Upload(ctx, origPath, strings.NewReader(content)); err != nil {
 			return fmt.Errorf("restore %q on %q: %w", origPath, target, err)
 		}
@@ -165,6 +202,65 @@ func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target st
 		"files", len(payloads),
 		"snapshot_id", snap.ID)
 	return nil
+}
+
+const mysqlSchemaPayloadPrefix = "__mysql_schema__/"
+
+func cloneStepArgs(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// captureMySQLSchema records one canonical CREATE statement per affected table.
+// Only DDL-only steps are eligible: row changes are outside what a schema
+// snapshot can restore, and a partial recovery must never call itself a full
+// rollback. DML, DBDDL and unread statements therefore fail closed here.
+func (s *remoteSnapshotter) captureMySQLSchema(ctx context.Context, ch channel.Channel, target channel.Target, step plan.PlanStep) (map[string]string, error) {
+	out := map[string]string{}
+	raw, _ := step.Args["sql"].(string)
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
+	res, err := sqlreview.Review(raw)
+	if err != nil {
+		return nil, fmt.Errorf("schema snapshot review: %w", err)
+	}
+	if res.Verdict == sqlreview.VerdictFail {
+		return nil, fmt.Errorf("schema snapshot review failed for step %q", step.Name)
+	}
+	if res.Impact.Incomplete {
+		return nil, fmt.Errorf("schema snapshot review is incomplete for step %q", step.Name)
+	}
+	var tables []string
+	for _, statement := range res.Statements {
+		switch statement.Kind {
+		case sqlreview.KindInsert, sqlreview.KindUpdate, sqlreview.KindDelete:
+			return nil, fmt.Errorf("schema restore supports DDL only; step %q also changes rows and cannot be recovered by a schema snapshot", step.Name)
+		case sqlreview.KindDBDDL:
+			return nil, fmt.Errorf("schema restore does not cover database-level DDL in step %q", step.Name)
+		case sqlreview.KindDDL:
+			tables = append(tables, statement.Impact.Writes...)
+		}
+	}
+	tables = sqlguard.SortedUnique(tables)
+	for _, table := range tables {
+		args := cloneStepArgs(step.Args)
+		args["tables"] = []any{table}
+		capture, err := mysql.New().Execute(ctx, "schema_snapshot", executor.ModuleInput{
+			Action: "schema_snapshot", Args: args, Target: target, Channel: ch,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("capture schema for table %q: %w", table, err)
+		}
+		if capture.ExitCode != 0 {
+			return nil, fmt.Errorf("capture schema for table %q failed: %s", table, strings.TrimSpace(capture.Stderr))
+		}
+		out[mysqlSchemaPayloadPrefix+table] = strings.TrimSpace(capture.Stdout)
+	}
+	return out, nil
 }
 
 // fetchRemoteFiles pulls each path's contents from the target as base64
