@@ -16,6 +16,14 @@
 - 新增计划/执行同电池：合法 PG 语句两侧放行，危险 DML、DROP/TRUNCATE、不可读语句两侧拒绝；DROP/TRUNCATE 在 idempotent query 上仍按更严格边界拦截，MySQL 路径不变。
 - 全量 Go 77 包、PG/MySQL 执行模块、vet/gofmt 全绿；D-6 文档与 CHANGELOG 同步。
 
+### 修复（凭据形状校验：被 shell 吃掉引号的 JSON 不再被静默接受）
+
+- `internal/credential` 新增形状校验（`Store` 与 `Rotate` 都走）：值以 `{` / `[` 开头且带 JSON 标点却解析失败 → 当场拒绝；传输类凭据（`ssh_password` / `ssh_key` / `winrm_password`）的 JSON 对象必须至少带 `username` / `password` / `key_path` / `key_passphrase` 之一，且不接受 JSON 数组。
+- **为什么**：凭据库此前接受任何非空明文。shell 或 PowerShell 吃掉双引号后存进去的 `{username:root,password:…}` 会被解析器按「裸口令」兜底——用户名变空、整段 JSON 当口令，于是失败推迟到 dial 阶段才以「空用户名」出现，那时引号证据已不在，人会被引去找一个并不存在的口令问题。本次在两个真实 PowerShell 场景上复现过该陷阱（裸双引号被吃掉 / 反斜杠转义后存活）。
+- **不破坏既有约定**：不以 `{` / `[` 开头的值仍是裸口令（`api_token` 的既有约定，`docs/cli-reference.md` 的示例就是裸口令）；以 `{` 开头但不含 `:` 或 `"` 的值（例如 `{hunter2`）仍按裸口令接受，规则不会把合法口令挡在外面。
+- 错误信息不含明文的任何片段；`--value` 帮助文本与 `docs/cli-reference.md` 同步写明形状契约，并给出「PowerShell 下写 \"username\" 才能让双引号活到原生命令」这一实操要点。
+- 新增 `internal/credential/shape_test.go`：两种约定全绿、歧义中段全拒、错误文本不泄密、信息里点名下一步动作。
+
 ### 新增（dist 启动门禁：构建产物白屏从此可被 CI 拦住）
 
 - `.github/workflows/ci.yml` frontend job 新增两步：安装 `puppeteer-core@24.37.0`（与既有 browser-check job 同版本、同三段重试），然后以 `vite preview --host 127.0.0.1` 服务**已构建的 dist**（显式绑定字面量的理由同 browser-check 的 dev server：runner 上 `localhost` 会解析成 `::1`，此前为此出过 90s 服务起不来）并执行 `node scripts/dist-boot-check.mjs`，`BROWSER_CHECK_REQUIRE='1'` 使其成为门禁而非装饰。

@@ -600,6 +600,12 @@ func (cs *CredentialStore) Store(ctx context.Context, spec CredentialSpec) (*sta
 	if len(spec.Plaintext) == 0 {
 		return nil, ErrEmptyPlaintext
 	}
+	// Reject the shapes the resolver cannot serve BEFORE they are encrypted:
+	// a mangled JSON payload stored now fails later as an empty username at
+	// dial time, where the quoting evidence is gone. Bare secrets pass through.
+	if err := validatePlaintextShape(spec.Type, spec.Plaintext); err != nil {
+		return nil, err
+	}
 
 	blob, err := cs.encrypt(spec.Plaintext)
 	if err != nil {
@@ -742,6 +748,12 @@ func (cs *CredentialStore) Rotate(ctx context.Context, name string, newPlaintext
 	}
 	if cred == nil {
 		return nil, ErrNotFound
+	}
+	// Same shape rule as Store, judged against the credential's OWN type: a
+	// rotation is the one moment an operator would notice a mangled value, so
+	// it must fail here rather than at the next dial.
+	if err := validatePlaintextShape(cred.Type, newPlaintext); err != nil {
+		return nil, err
 	}
 
 	blob, err := cs.encrypt(newPlaintext)

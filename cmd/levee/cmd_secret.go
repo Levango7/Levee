@@ -68,7 +68,7 @@ func newSecretAddCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&secretAddOptName, "name", "", "Credential name (required)")
 	cmd.Flags().StringVar(&secretAddOptType, "type", "ssh_password", "Credential type (ssh_key, ssh_password, winrm_password, api_token)")
-	cmd.Flags().StringVar(&secretAddOptValue, "value", "", "Credential plaintext value (required)")
+	cmd.Flags().StringVar(&secretAddOptValue, "value", "", "明文值：传输类凭据（ssh_key/ssh_password/winrm_password）为 JSON 对象 {\"username\":…,\"password\":…}，也接受不含 '{'/'[' 的裸口令；形状不符（例如被 shell 吃掉引号的 JSON）在此直接拒绝，不留给 dial 阶段以空用户名失败")
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("value")
 	return cmd
