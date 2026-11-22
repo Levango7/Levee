@@ -31,6 +31,8 @@ import (
 	"strings"
 
 	"github.com/xwb1989/sqlparser"
+
+	"github.com/nexus/levee/internal/sqlreview"
 )
 
 // destructiveSQLRe matches the destructive statements that must never ride an
@@ -51,6 +53,9 @@ var destructiveSQLRe = regexp.MustCompile(`(?i)\b(DROP\s+(TABLE|DATABASE|SCHEMA|
 // action prefix, and a typed error here would force every caller to know about
 // this package's error taxonomy.
 func RejectDestructive(sql, action string) error {
+	if action == "pg.query" {
+		return rejectDestructivePG(sql, action)
+	}
 	pieces, err := sqlparser.SplitStatementToPieces(sql)
 	if err != nil {
 		return regexReject(sql, action)
@@ -87,6 +92,33 @@ func RejectDestructive(sql, action string) error {
 		// raw-text say.
 		if err := regexReject(text, action); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// rejectDestructivePG applies the exact same PostgreSQL AST and fail boundary
+// as the plan gate. DROP/TRUNCATE additionally remain forbidden on the
+// idempotent query surface even where their review finding is a warning.
+// MySQL keeps the existing AST+regex path above; no second PG rule engine is
+// allowed to grow here.
+func rejectDestructivePG(sql, action string) error {
+	if strings.TrimSpace(sql) == "" {
+		return nil
+	}
+	res, err := sqlreview.ReviewPostgres(sql)
+	if err != nil {
+		return destructiveErr(sql, action)
+	}
+	for _, statement := range res.Statements {
+		switch statement.Impact.Operation {
+		case "drop", "drop database", "truncate":
+			return destructiveErr(statement.Text, action)
+		}
+		for _, finding := range statement.Findings {
+			if finding.Severity == sqlreview.SeverityFail {
+				return destructiveErr(statement.Text, action)
+			}
 		}
 	}
 	return nil

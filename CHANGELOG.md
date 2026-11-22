@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（PG 计划审核与执行拦截语义一致）
+
+- `pg.query` 执行侧 sqlguard 直接复用 `ReviewPostgres`，不再以 MySQL AST 承担 PG 判断；无界 UPDATE、恒真 DELETE/UPDATE 与非法 SQL 不再被执行侧误放行。
+- 新增计划/执行同电池：合法 PG 语句两侧放行，危险 DML、DROP/TRUNCATE、不可读语句两侧拒绝；DROP/TRUNCATE 在 idempotent query 上仍按更严格边界拦截，MySQL 路径不变。
+- 全量 Go 77 包、PG/MySQL 执行模块、vet/gofmt 全绿；D-6 文档与 CHANGELOG 同步。
+
 ### 新增（dist 启动门禁：构建产物白屏从此可被 CI 拦住）
 
 - `.github/workflows/ci.yml` frontend job 新增两步：安装 `puppeteer-core@24.37.0`（与既有 browser-check job 同版本、同三段重试），然后以 `vite preview --host 127.0.0.1` 服务**已构建的 dist**（显式绑定字面量的理由同 browser-check 的 dev server：runner 上 `localhost` 会解析成 `::1`，此前为此出过 90s 服务起不来）并执行 `node scripts/dist-boot-check.mjs`，`BROWSER_CHECK_REQUIRE='1'` 使其成为门禁而非装饰。

@@ -61,7 +61,7 @@ D-6 已登记「PG 能跑不能审」：`internal/executor/modules/pg` 已可执
 - **实现**：`internal/sqlreview/pg_review.go` 用 oliphant AST 输出既有 Finding/StatementReview/Impact。非法 SQL 仍是 SR-01 fail；`RETURNING` / `ON CONFLICT` / `$1` / `::` / CTE / JSONB / LATERAL / 窗口函数 / CTAS 均不再被当成 MySQL 方言缺口。
 - **规则边界**：SR-10（InnoDB rowid）、SR-11（ENGINE）、SR-16（SET GLOBAL）不套 PG；SR-14/15 保留警告但改成 ctid/唯一键子查询分批建议；其他常见 DML/DDL 规则按 PG AST 触发，未支持的 admin 语句走 SR-17 人工确认而不是假通过。
 - **影响面**：读/写目标由同一棵 PG AST 得出；CTAS 的源表与目标表都保留，CTE 名不算物理表。SELECT 只读不写；CREATE/CTAS 这类新对象不算 whole_table，ALTER/DROP/TRUNCATE/RENAME 等既有对象变更才算。SR-19 使用 PG 原子性措辞，不再声称 MySQL implicit commit。
-- **执行 backstop**：`internal/executor/sqlguard` 实现未改；新增 PG 对照测试证明 ON CONFLICT/SERIAL/参数化 DELETE 不被误拒，DROP CASCADE/TRUNCATE/无界 DELETE 仍拒。
+- **执行 backstop**：`pg.query` 直接复用 `ReviewPostgres`，不再让 MySQL AST 承担 PG 执行拦截；DROP/TRUNCATE 在 idempotent query 上仍按更严格边界拒绝。`internal/executor/sqlguard/pg_conformance_test.go` 同电池核对计划与执行，覆盖合法 PG、无界 UPDATE/DELETE、恒真谓词、DROP、非法 SQL。MySQL 路径仍保留原 AST+regex 实现。
 - **验证**：PG 电池、计划路由与完整 GeneratePlan（ON CONFLICT 制品 + 影响面 + hash 回算）通过；全量 Go 77 包零失败、vet/gofmt 干净。govulncheck 对 sqlreview 调用路径报 No vulnerabilities found。
 - **稳态基准（本机 2026-11-22，500 次）**：`ReviewPostgres` **14.8µs/op**，对照 MySQL `Review` **16.9µs/op**（`UPDATE … WHERE id = 7`，不含网络与目标机执行）；spike 的冷启动 ~168µs 不用于生产口径。
 - **不覆盖**：真实影响行数、锁时长与 EXPLAIN 仍需活库（D-7）；方言不由标签猜测，其他方言仍按现有 SR-01 分诊。
