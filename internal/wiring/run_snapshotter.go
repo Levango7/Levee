@@ -120,13 +120,10 @@ func (s *runRemoteSnapshotter) restoreTarget(ctx context.Context, runID, target 
 	if err != nil {
 		return fmt.Errorf("list run baselines for %q/%q: %w", s.key, target, err)
 	}
-	var snap *rollback.Snapshot
-	for i := len(snaps) - 1; i >= 0; i-- {
-		if scope, _ := snaps[i].Metadata[runSnapshotMetadataKey].(string); scope == runSnapshotScopeValue {
-			snap = snaps[i]
-			break
-		}
-	}
+	snap := latestSnapshotMatching(snaps, func(candidate *rollback.Snapshot) bool {
+		scope, _ := candidate.Metadata[runSnapshotMetadataKey].(string)
+		return scope == runSnapshotScopeValue
+	})
 	if snap == nil {
 		return fmt.Errorf("no run-level baseline recorded for %q (change %q)", target, s.key)
 	}
