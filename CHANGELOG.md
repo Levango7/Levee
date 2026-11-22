@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（D-5 snapshot 恢复契约：PG fail-closed + 最新基准选择）
+
+- `pg.query + strategy: snapshot` 在捕获前直接拒绝，既有空快照在恢复时同样拒绝；PostgreSQL 内省证据不再能被当成可恢复基准并以 no-op 记为回滚成功。需要回滚的 PG 变更必须声明显式 rollback steps。
+- step/run 两条恢复入口共用按 `CreatedAt` 选择最新快照的逻辑，同时刻按 ID 确定性决胜；不再把随机快照 ID 的 `filepath.Walk` 顺序当成重试先后。
+- 新增 PG 新声明/历史空记录拒绝、乱序快照恢复新基准、同时刻确定性三钉测；短路变异实测分别复现「空快照成功」与「旧基准被恢复」，随后复原转绿。
+
 ### 文档（本地渗透自测深度轮）
 
 - `docs/pentest-deep-2026-11.md`：资源评估后可执行的深度自测（隔离靶场 + 带数据 + 配置化 CORS/token）。写端点鉴权（3 个 POST 无 token 均 401）、CORS 白名单（evil/null 拒绝）、sqlmap 三参数 level=2/risk=2 无注入、playwright+chromium 浏览器层（未授权 401/授权 200/DOM 不泄露 token）。承接 F-0（默认未配 permissions.yaml/TLS）、F-1（安全头缺失），新增 F-3 观察项。**研发侧自测，非第三方报告**。

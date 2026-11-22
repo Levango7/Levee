@@ -79,6 +79,9 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 	if step.Rollback == nil {
 		return nil // not a snapshot step; the engine filters these already
 	}
+	if err := validateSnapshotRecoverySupport(step); err != nil {
+		return err
+	}
 	// The manager creates the record (and its directory); the contents
 	// are then filled from the remote side via the payload API.
 	snap, err := s.mgr.CreateSnapshot(ctx, s.key, target, nil, s.kind, map[string]any{
@@ -144,19 +147,19 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 // (change, target, step) → error (operators must see an unrestorable
 // step, never a silent skip).
 func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target string, step plan.PlanStep) error {
+	if err := validateSnapshotRecoverySupport(step); err != nil {
+		return err
+	}
 	snaps, err := s.mgr.Store().List(ctx, s.key, target)
 	if err != nil {
 		return fmt.Errorf("list snapshots for %q/%q: %w", s.key, target, err)
 	}
 	// Find the snapshot recorded for this step (metadata carries the
-	// step name; the last capture wins — a re-run supersedes).
-	var snap *rollback.Snapshot
-	for i := len(snaps) - 1; i >= 0; i-- {
-		if name, _ := snaps[i].Metadata["step"].(string); name == step.Name {
-			snap = snaps[i]
-			break
-		}
-	}
+	// step name; the latest capture wins — a re-run supersedes).
+	snap := latestSnapshotMatching(snaps, func(candidate *rollback.Snapshot) bool {
+		name, _ := candidate.Metadata["step"].(string)
+		return name == step.Name
+	})
 	if snap == nil {
 		return fmt.Errorf("no snapshot recorded for step %q on %q (change %q)", step.Name, target, s.key)
 	}
@@ -202,6 +205,35 @@ func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target st
 		"files", len(payloads),
 		"snapshot_id", snap.ID)
 	return nil
+}
+
+// validateSnapshotRecoverySupport rejects declarations whose only possible
+// outcome today is an empty snapshot followed by a successful no-op restore.
+// Audit-only snapshots remain valid for non-database steps; pg.query is the
+// exception because its catalog evidence is not a restorable baseline.
+func validateSnapshotRecoverySupport(step plan.PlanStep) error {
+	if step.Module == "pg" && step.Action == "query" {
+		return fmt.Errorf("pg.query step %q cannot use snapshot rollback: PostgreSQL schema restore is not implemented; declare explicit rollback steps", step.Name)
+	}
+	return nil
+}
+
+// latestSnapshotMatching chooses the newest capture without relying on store
+// iteration order. Snapshot IDs are random, so reverse filepath.Walk order is
+// not a chronology. The ID tie-break makes equal timestamps deterministic; it
+// does not claim to recover creation order within the same clock tick.
+func latestSnapshotMatching(snaps []*rollback.Snapshot, matches func(*rollback.Snapshot) bool) *rollback.Snapshot {
+	var latest *rollback.Snapshot
+	for _, candidate := range snaps {
+		if candidate == nil || !matches(candidate) {
+			continue
+		}
+		if latest == nil || candidate.CreatedAt.After(latest.CreatedAt) ||
+			(candidate.CreatedAt.Equal(latest.CreatedAt) && candidate.ID > latest.ID) {
+			latest = candidate
+		}
+	}
+	return latest
 }
 
 const mysqlSchemaPayloadPrefix = "__mysql_schema__/"

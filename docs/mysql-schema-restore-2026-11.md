@@ -21,6 +21,7 @@
 - apply 前：`remoteSnapshotter.captureMySQLSchema` 复用 `sqlreview` 的写目标，逐表调用 `mysql.schema_snapshot` 获取服务端 canonical DDL，并按 `__mysql_schema__/<table>` 写入既有 snapshot store。
 - rollback：`RestoreForStep` 对相同快照键调用 `mysql.schema_restore`，沿用 change id 而非 execution run id，所以自动回滚和手动 RollbackChange 都找到同一份快照。
 - 文件快照与 schema 快照继续共用原有存储和 change key；文件恢复路径不变。
+- 2026-11-23 恢复契约补强：step/run 两条恢复入口按 `CreatedAt` 选择最新捕获（同时刻按 ID 确定性决胜），不再依赖随机快照 ID 的文件遍历顺序；重试后恢复的是最新基准。
 
 ## 3. 明确拒绝的情况
 
@@ -39,6 +40,6 @@
 
 ## 5. 后续边界
 
-- PostgreSQL 的 `pg.schema_snapshot` 是 information_schema/pg_catalog 内省结果，**不是可恢复 DDL**，不能直接复用本路径。PG 恢复需要先定义可还原 DDL 生成与验证规则。
+- PostgreSQL 的 `pg.schema_snapshot` 是 information_schema/pg_catalog 内省结果，**不是可恢复 DDL**，不能直接复用本路径。2026-11-23 起 `pg.query + strategy: snapshot` 在捕获前拒绝，历史空快照在恢复时也拒绝，不再以 no-op 记为成功；需要回滚的 PG 变更必须声明显式 rollback steps。PG 恢复需要先定义可还原 DDL 生成与验证规则。
 - 行数据恢复需要独立的数据备份格式、冲突处理、部分恢复与一致性验证，不在本切片。
 - 真正的 MySQL 服务器/集群演练仍需环境执行；本切片通过真实生产代码路径与可记录目标状态的传输测试证明行为，不把 mock 当成真机验收。
