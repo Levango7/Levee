@@ -13,12 +13,13 @@ import (
 // TestHMACKeying_KeySwitchInvalidatesHistoricalChain pins the operational
 // hazard behind the delivery-checklist scoping of LEVEE_AUDIT_HMAC_KEY.
 //
-// The digest mode is deployment-global (one env var, one funnel in
-// canonical.go's digest()), and the chain records carry no mode marker —
-// the trace/audit tables have prev_hash/curr_hash and nothing else. So a
-// deployment that starts keyed can no longer recompute the digests of a
-// chain that was built unkeyed: the verifier reports "hash mismatch" for
-// every historical record.
+// The HMAC key is deployment-global (one env var, one funnel in canonical.go)
+// and chain records carry NO key-epoch marker — the trace/audit tables have
+// prev_hash/curr_hash and nothing else. (The 2026-11 SM3 migration added a
+// per-row ALGORITHM marker as a hash prefix, but that is orthogonal to the key
+// epoch and does not help here.) So a deployment that starts keyed can no
+// longer recompute the digests of a chain that was built unkeyed: the verifier
+// reports "hash mismatch" for every historical record.
 //
 // Two consequences this test makes explicit:
 //
@@ -29,10 +30,10 @@ import (
 //     "someone rewrote the chain" — both surface as a broken chain. That
 //     gap is registered as docs/blocked-items.md D-8.
 //
-// This is a ratchet, not a wish: if someone later adds a per-record mode
-// marker or a dual-mode verifier, this test turns red and the change has
-// to be made deliberately — with the checklist text updated in the same
-// commit — rather than silently.
+// This is a ratchet, not a wish: if someone later adds a per-record KEY-EPOCH
+// marker (distinct from the algorithm marker already added), this test turns
+// red and the change has to be made deliberately — with the checklist text
+// updated in the same commit — rather than silently.
 func TestHMACKeying_KeySwitchInvalidatesHistoricalChain(t *testing.T) {
 	unsetHMACKey(t)
 	b, store := newChainBuilder(t)

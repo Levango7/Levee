@@ -213,6 +213,7 @@ func TestLoad_ValidFile(t *testing.T) {
 	assert.Equal(t, 2*time.Hour, cfg.Approval.StandardTimeout)
 	assert.Equal(t, 30, cfg.Audit.RetentionDays)
 	assert.Equal(t, "json", cfg.Audit.ExportFormat)
+	assert.Equal(t, "sha256", cfg.Audit.DigestMode)
 	assert.True(t, cfg.Audit.HashChain)
 	assert.False(t, cfg.Audit.WormStorage)
 	assert.Equal(t, 30*time.Minute, cfg.Lock.TTL)
@@ -260,6 +261,7 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, 24*time.Hour, cfg.Approval.EmergencySupplement)
 	assert.Equal(t, 90, cfg.Audit.RetentionDays)
 	assert.Equal(t, "json", cfg.Audit.ExportFormat)
+	assert.Equal(t, "sha256", cfg.Audit.DigestMode)
 	assert.True(t, cfg.Audit.HashChain)
 	assert.True(t, cfg.Audit.WormStorage)
 	assert.Equal(t, time.Hour, cfg.Lock.TTL)
@@ -570,6 +572,25 @@ func TestValidate_InvalidExportFormat(t *testing.T) {
 	err = Validate(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "export_format")
+}
+
+func TestValidate_InvalidAuditDigestMode(t *testing.T) {
+	cfg, err := Load(writeYAML(t, minimalValidYAML()))
+	require.NoError(t, err)
+
+	cfg.Audit.DigestMode = "md5"
+	err = Validate(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "digest_mode")
+}
+
+func TestValidate_ValidAuditDigestModes(t *testing.T) {
+	for _, mode := range []string{"", "sha256", "sm3"} {
+		cfg, err := Load(writeYAML(t, minimalValidYAML()))
+		require.NoError(t, err)
+		cfg.Audit.DigestMode = mode
+		assert.NoError(t, Validate(cfg), "mode %q must be accepted", mode)
+	}
 }
 
 func TestValidate_InvalidCredentialStorage(t *testing.T) {

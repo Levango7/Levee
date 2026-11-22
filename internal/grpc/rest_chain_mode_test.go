@@ -29,9 +29,11 @@ import (
 
 // chainModeBody is the shape the handler returns.
 type chainModeBody struct {
-	Mode      string `json:"mode"`
-	Algorithm string `json:"algorithm"`
-	Keyed     bool   `json:"keyed"`
+	Mode            string `json:"mode"`
+	Algorithm       string `json:"algorithm"`
+	Keyed           bool   `json:"keyed"`
+	DigestMode      string `json:"digest_mode"`
+	DigestAlgorithm string `json:"digest_algorithm"`
 }
 
 func getChainMode(t *testing.T, url string) chainModeBody {
@@ -56,13 +58,20 @@ func withHMACKey(t *testing.T, value string) {
 	old, hadOld := os.LookupEnv(audit.EnvHMACKey)
 	require.NoError(t, os.Setenv(audit.EnvHMACKey, value))
 	audit.ResetKeyForTest()
+	oldMode, hadMode := os.LookupEnv(audit.EnvDigestMode)
+	require.NoError(t, os.Unsetenv(audit.EnvDigestMode)) // default sha256
+	audit.ResetDigestModeForTest()
 	t.Cleanup(func() {
 		if hadOld {
 			_ = os.Setenv(audit.EnvHMACKey, old)
 		} else {
 			_ = os.Unsetenv(audit.EnvHMACKey)
 		}
+		if hadMode {
+			_ = os.Setenv(audit.EnvDigestMode, oldMode)
+		}
 		audit.ResetKeyForTest()
+		audit.ResetDigestModeForTest()
 	})
 }
 
@@ -72,11 +81,18 @@ func TestAuditChainMode_Unkeyed(t *testing.T) {
 	old, hadOld := os.LookupEnv(audit.EnvHMACKey)
 	require.NoError(t, os.Unsetenv(audit.EnvHMACKey))
 	audit.ResetKeyForTest()
+	oldMode, hadMode := os.LookupEnv(audit.EnvDigestMode)
+	require.NoError(t, os.Unsetenv(audit.EnvDigestMode))
+	audit.ResetDigestModeForTest()
 	t.Cleanup(func() {
 		if hadOld {
 			_ = os.Setenv(audit.EnvHMACKey, old)
 		}
+		if hadMode {
+			_ = os.Setenv(audit.EnvDigestMode, oldMode)
+		}
 		audit.ResetKeyForTest()
+		audit.ResetDigestModeForTest()
 	})
 
 	_, srv, _ := startTestGateway(t, ServeGatewayConfig{})
@@ -84,6 +100,8 @@ func TestAuditChainMode_Unkeyed(t *testing.T) {
 	assert.Equal(t, "unkeyed", body.Mode)
 	assert.Equal(t, "SHA-256", body.Algorithm)
 	assert.False(t, body.Keyed)
+	assert.Equal(t, "sha256", body.DigestMode)
+	assert.Equal(t, "SHA-256", body.DigestAlgorithm)
 }
 
 // TestAuditChainMode_Keyed pins the answer for a deployment that DID
@@ -115,4 +133,46 @@ func TestAuditChainMode_ShortKeyFallsBackToUnkeyed(t *testing.T) {
 	assert.Equal(t, "unkeyed", body.Mode)
 	assert.Equal(t, "SHA-256", body.Algorithm)
 	assert.False(t, body.Keyed)
+}
+
+// withDigestMode sets the audit hash family for one test.
+func withDigestMode(t *testing.T, value string) {
+	t.Helper()
+	old, hadOld := os.LookupEnv(audit.EnvDigestMode)
+	require.NoError(t, os.Setenv(audit.EnvDigestMode, value))
+	audit.ResetDigestModeForTest()
+	t.Cleanup(func() {
+		if hadOld {
+			_ = os.Setenv(audit.EnvDigestMode, old)
+		} else {
+			_ = os.Unsetenv(audit.EnvDigestMode)
+		}
+		audit.ResetDigestModeForTest()
+	})
+}
+
+func TestAuditChainMode_SM3Unkeyed(t *testing.T) {
+	withHMACKey(t, "") // ensures key cleared + digest mode reset to sha256 first
+	withDigestMode(t, "sm3")
+
+	_, srv, _ := startTestGateway(t, ServeGatewayConfig{})
+	body := getChainMode(t, srv.URL+"/audit/chain-mode")
+	assert.Equal(t, "unkeyed", body.Mode)
+	assert.Equal(t, "SHA-256", body.Algorithm) // legacy field kept stable
+	assert.False(t, body.Keyed)
+	assert.Equal(t, "sm3", body.DigestMode)
+	assert.Equal(t, "SM3", body.DigestAlgorithm)
+}
+
+func TestAuditChainMode_SM3Keyed(t *testing.T) {
+	withHMACKey(t, "0123456789abcdef0123456789abcdef")
+	withDigestMode(t, "sm3")
+
+	_, srv, _ := startTestGateway(t, ServeGatewayConfig{})
+	body := getChainMode(t, srv.URL+"/audit/chain-mode")
+	assert.Equal(t, "keyed", body.Mode)
+	assert.Equal(t, "HMAC-SHA256", body.Algorithm) // legacy field kept stable
+	assert.True(t, body.Keyed)
+	assert.Equal(t, "sm3", body.DigestMode)
+	assert.Equal(t, "HMAC-SM3", body.DigestAlgorithm)
 }

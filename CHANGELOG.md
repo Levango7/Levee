@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 新增（D-8 审计链 SM3 摘要模式，默认不变）
+
+- 审计链新增可选 `audit.digest_mode: sha256|sm3`（默认 sha256，行为不变）。采用**哈希值前缀**方案（类 plan hash 的 `v2:` 范式）：无前缀=SHA-256/HMAC-SHA256（历史 + 默认），`sm3:`/`hmac-sm3:`=SM3/HMAC-SM3（GM/T 0004-2012，复用 `internal/gmcrypto`）。
+- **历史链零回填即可验**：验算按每行存储 hash 的前缀选算法（行驱动，非进程配置驱动），混合链逐行各验各的；V1 编码回退固定 SHA-256；未知前缀 fail-closed。零 schema 迁移、零 WORM 触发器改动。
+- HMAC key 与算法模式正交（4 组合）；`hmackey_switch_test.go` ratchet（加 key 断历史链）仍成立——key epoch 仍无 per-row 标记，D-8 只解决算法维度。
+- `GET /audit/chain-mode` 扩展 `digest_mode` + `digest_algorithm` 两字段（保留原 `mode`/`algorithm`/`keyed`）；`LEVEE_AUDIT_DIGEST_MODE` 环境变量 + 配置校验。
+- 新增 `internal/audit/sm3_migration_test.go`（混合链验真、篡改检测、前缀 fail-closed、keyed 正交、SM3 已知答案）；`go test ./...` 全绿，全部历史审计测试保持通过。
+- **边界**：算法可迁移性，不是密评合规；对外可说"审计链支持 SM3 摘要模式、历史链可验"，不得说"国密合规 / 已过密评"。设计取证见 `docs/audit-chain-mode-migration-design.md` §10。
+
 ### 新增（MySQL schema 恢复：缺表时按快照重建并验证）
 
 - 新增 `mysql.schema_restore`：只接受单条完整 CREATE TABLE 且表名匹配；目标表必须不存在才执行，现存表绝不 DROP 覆盖；CREATE 后再次 SHOW CREATE，定义逐字一致才算恢复成功。失败、校验不一致、混合 DML、DBDDL 均 fail-closed。

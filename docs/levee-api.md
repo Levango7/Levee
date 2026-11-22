@@ -1067,9 +1067,17 @@ mock 网关现在也发具名帧（`web/scripts/mock-gateway.mjs`），免得 mo
 由 CI 钉住 protoc 版本重生成，改 proto 得不偿失）：
 
 ```jsonc
-{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true }
-// 未配口令时：{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false }
+// 默认 sha256 模式（保持原字段不变，前端旧消费方不受影响）：
+{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true, "digest_mode": "sha256", "digest_algorithm": "HMAC-SHA256" }
+// 未配口令时：{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false, "digest_mode": "sha256", "digest_algorithm": "SHA-256" }
+// audit.digest_mode: sm3（SM3 摘要模式，GM/T 0004-2012）：
+{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false, "digest_mode": "sm3", "digest_algorithm": "SM3" }
+// sm3 + 口令：{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true, "digest_mode": "sm3", "digest_algorithm": "HMAC-SM3" }
 ```
+
+`digest_mode` / `digest_algorithm` 是 2026-11-23 新增字段：`digest_mode` 是**部署级当前配置**
+（`audit.digest_mode: sha256|sm3`，默认 sha256），`digest_algorithm` 是对应的实际摘要算法。
+`mode`/`algorithm`/`keyed` 三个老字段语义不变（仍指 HMAC 口令口径），故旧前端只读这三字段也不受影响。
 
 | 模式 | 触发条件 | 保证了什么 | 没保证什么 |
 | --- | --- | --- | --- |

@@ -805,6 +805,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	applySecurityConfig(cfg)
+	// Digest mode must be fixed before any audit digest is produced. Config is
+	// validated to sha256|sm3; SetDigestMode resolves once, like the HMAC key.
+	audit.SetDigestMode(cfg.Audit.DigestMode)
 
 	// 0b. Credential sources and the safety gate. Extracted because runServe
 	//     sits at the cyclomatic-complexity budget: every branch added here
