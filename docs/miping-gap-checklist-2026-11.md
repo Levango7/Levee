@@ -24,7 +24,7 @@
 | 设备和计算 | SSH 通道 `golang.org/x/crypto/ssh`（RSA/ed25519）；镜像摘要 SHA-256 | 无 SM2 主机Identity/用户认证；文件完整性用 SHA-256 非 SM3；无国密可信启动/完整性度量 | 中高：设备身份与完整性面不合规 |
 | 应用和数据—身份鉴别 | 会话 JWT HS256（`internal/auth/session.go`）、OIDC/RSA（Keycloak 侧） | **无 SM2 签名/验签**；JWS alg 不支持 SM2；登录无国密双因素 | 高：身份鉴别不满足国密要求 |
 | 应用和数据—机密性 | 凭据 AES-256-GCM（默认）；已可选 `sm4-gcm`（GM/T 0002-2012 分组密码 + GCM 模式，PR #419） | SM4-GCM 非密评认可的**标准工作模式/协议**；缺国密 KMS/HSM 集成；主密码来自环境变量 | 中高：算法级有了，但模式与密钥管理不合规 |
-| 应用和数据—完整性 | 审计链 SHA-256 / HMAC-SHA256（`internal/audit/canonical.go`）；`internal/gmcrypto` 已备 SM3；SM3 迁移设计见 `docs/audit-chain-mode-migration-design.md` | **审计链未迁移 SM3**（设计完成、代码未动）；备份 sidecar `.sha256`、插件签名实为 SHA-256 摘要 | 中高：完整性算法仍以 SHA-256 为主 |
+| 应用和数据—完整性 | 审计链支持 `audit.digest_mode: sha256\|sm3`（SM3 走哈希值前缀、历史链可验，`docs/audit-chain-mode-migration-design.md` §10）；`internal/gmcrypto` 备 SM3/SM4 | 默认仍 SHA-256；备份 sidecar `.sha256`、插件签名仍是 SHA-256 摘要；SM3 为算法级选项非密评合规 | 中：审计链已可选 SM3，其余完整性面仍 SHA-256 |
 | 密钥管理 | argon2id 派生 + 每凭据随机 salt；`LEVEE_AUDIT_HMAC_KEY` 环境变量；AWS KMS / Vault 对接 | 无硬件密码模块/HSM；**无国密随机数发生器（RNG）合规证明**；无密钥全生命周期（生成/分发/轮换/归档/销毁）的审计与管理制度 | 高：密钥管理是密评的核心得分点 |
 | 安全管理 | CI 门禁、`internal/agentboard`、审计链与 WORM、交付检查单（`docs/deployment.md` §15） | 无密评专用的**管理制度、人员职责、建设运行"三同步"、应急预案**证据；无密码应用方案/自评报告 | 中：文档与流程面缺口 |
 
@@ -34,7 +34,7 @@
 
 - `internal/gmcrypto`：SM3（GM/T 0004-2012）与 SM4（GM/T 0002-2012）纯 Go 原语 + 自检（PR #419）
 - 凭据可选 `sm4-gcm`，LEV2 算法标记 blob，AES/SM4 双向可读；默认仍 AES-256-GCM
-- 审计链 SM3 迁移设计（per-row `digest_mode` + 双口径验链 + 混合链）已落文档，未实现
+- 审计链 SM3 摘要模式已实现（哈希值前缀 + 行驱动验链，历史链可验，`audit.digest_mode: sm3`）
 - 完整审计链 + WORM + `audit verify/export`；供应链自证扫描与 SBOM
 
 ---
@@ -46,7 +46,7 @@
 | P0 | 密钥管理基础设施 | 选 HSM/国密 KMS 产品 + 预算 | 决定后续算法/证书/RNG 的落地形态；无此则其余改造难以合规 |
 | P1 | TLCP / 国密 TLS 传输 | 替换 gRPC/REST/Vault 的 transport；SM2 证书体系 | 标准 `crypto/tls` 不支持，整体替换（独立专项） |
 | P1 | SM2 身份鉴别体系 | go-jose 无 SM2 alg，需新库 + 协议设计；与 IdP(Keycloak) 协同 | 会话 JWS 与 OIDC 验签均要改 |
-| P2 | 审计链 SM3 迁移 | D-8 设计已就绪，需产品裁决混合链/归档方案 | 先于"完整性"得分点 |
+| ~~P2~~ 已交付 | ~~审计链 SM3 迁移~~ | 已实现（哈希前缀方案，默认仍 sha256）；对外按"可选 SM3 摘要模式"引用 | 完整性得分点可选能力 |
 | P2 | 国密 RNG 与随机数统一抽象 | 当前 `crypto/rand` 散落数十处，无单一注入点 | 需硬件/合规熵源，专项 |
 | P3 | 管理制度与"三同步"文档 | 客户侧配合 | 密码应用方案、自评、应急、人员职责 |
 

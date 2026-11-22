@@ -368,8 +368,8 @@ func (b *HashChainBuilder) Verify(ctx context.Context, runID string) (count int,
 			return i, fmt.Errorf("audit: trace %q prev hash mismatch: stored %q want %q: %w",
 				t.ID, t.PrevHash, prevHash, ErrHashMismatch)
 		}
-		want := ComputeHash(t, prevHash)
-		if t.CurrHash != want && t.CurrHash != legacyHash(t, prevHash) {
+		match, _, want, verr := verifyTraceHash(t, prevHash)
+		if verr != nil || !match {
 			return i, fmt.Errorf("audit: trace %q curr hash mismatch: stored %q want %q: %w",
 				t.ID, t.CurrHash, want, ErrHashMismatch)
 		}

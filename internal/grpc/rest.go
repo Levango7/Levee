@@ -1723,13 +1723,22 @@ func (gw *Gateway) handleAuditChainMode(w http.ResponseWriter, r *http.Request) 
 		mode = "keyed"
 		algorithm = "HMAC-SHA256"
 	}
-	writeJSON(w, map[string]any{
-		"mode":      mode,
-		"algorithm": algorithm,
-		// The key's presence, spelled out: "keyed" alone could be read as a
-		// mode name rather than a statement that a passphrase IS configured.
-		"keyed": mode == "keyed",
-	})
+	// digest_mode is the hash family used for NEW rows. Historical rows may
+	// use a different family (their hash carries its own prefix); this field
+	// is deployment-wide current state, not a per-row property.
+	digestMode := audit.CurrentDigestMode()
+	body := map[string]any{
+		"mode":        mode,
+		"algorithm":   algorithm,
+		"keyed":       mode == "keyed",
+		"digest_mode": digestMode,
+	}
+	if digestMode == "sm3" {
+		body["digest_algorithm"] = map[bool]string{true: "HMAC-SM3", false: "SM3"}[mode == "keyed"]
+	} else {
+		body["digest_algorithm"] = algorithm
+	}
+	writeJSON(w, body)
 }
 
 func (gw *Gateway) handleAuditVerify(w http.ResponseWriter, r *http.Request) {

@@ -170,11 +170,5 @@ func computeChecksum(trace *state.Trace) string {
 // (pipe-separated) digest is tried so pre-existing chains do not suddenly
 // report tampering after an upgrade. New records must verify under V2.
 func verifyChecksum(trace *state.Trace) bool {
-	if trace == nil {
-		return false
-	}
-	if trace.CurrHash == ComputeChecksum(trace) {
-		return true
-	}
-	return trace.CurrHash == legacyChecksum(trace)
+	return verifyWORMChecksum(trace)
 }

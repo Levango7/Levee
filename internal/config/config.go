@@ -361,6 +361,10 @@ type AuditConfig struct {
 	WormStorage   bool   `json:"worm_storage"   mapstructure:"worm_storage"`
 	RetentionDays int    `json:"retention_days" mapstructure:"retention_days"`
 	ExportFormat  string `json:"export_format"  mapstructure:"export_format"`
+	// DigestMode selects the audit hash family for NEW rows: sha256 (default)
+	// or sm3 (GM/T 0004-2012). Historical rows are verified by the algorithm
+	// encoded in their own hash, so switching never breaks existing chains.
+	DigestMode string `json:"digest_mode" mapstructure:"digest_mode"`
 }
 
 // SecurityConfig groups hardening knobs that are registered into process
@@ -915,6 +919,11 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	if cfg.Audit.RetentionDays <= 0 {
 		problems = append(problems, "audit.retention_days must be > 0")
 	}
+	switch cfg.Audit.DigestMode {
+	case "", "sha256", "sm3":
+	default:
+		problems = append(problems, fmt.Sprintf("audit.digest_mode %q must be sha256|sm3", cfg.Audit.DigestMode))
+	}
 	switch cfg.Audit.ExportFormat {
 	case "json", "csv":
 	default:
@@ -1085,6 +1094,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audit.worm_storage", true)
 	v.SetDefault("audit.retention_days", 90)
 	v.SetDefault("audit.export_format", "json")
+	v.SetDefault("audit.digest_mode", "sha256")
 
 	// Security (yaml-only; see SecurityConfig.SensitiveFields for why this
 	// key is not env-bound)
@@ -1262,7 +1272,7 @@ func allKeys() []string {
 		"approval.standard_timeout", "approval.high_timeout",
 		"approval.emergency_supplement",
 		"audit.hash_chain", "audit.worm_storage",
-		"audit.retention_days", "audit.export_format",
+		"audit.retention_days", "audit.export_format", "audit.digest_mode",
 		"lock.ttl", "lock.retry_interval", "lock.max_retry",
 		"credential.storage", "credential.encryption", "credential.key_derivation",
 		"notify.webhook.enabled", "notify.webhook.url",

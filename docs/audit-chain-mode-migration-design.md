@@ -1,10 +1,10 @@
-# 审计链摘要模式迁移设计（D-8，2026-11-21，设计输入，**未实现**）
+# 审计链摘要模式迁移设计（D-8，2026-11-21 设计 / 2026-11-23 实现）
 
 | 元信息项 | 内容 |
 | --- | --- |
-| 文档类型 | 设计输入；落地需产品决策（回填/归档策略属 product call） |
-| 基线 | `master@8fc1135`；既有结论见 `docs/deployment.md` §5.6、`docs/blocked-items.md` D-8、`internal/audit/hmackey_switch_test.go` |
-| 状态 | **设计完成，代码未动** |
+| 文档类型 | 设计 + 实现记录（算法级能力，非密评） |
+| 基线 | 设计 `master@8fc1135`；实现见文末 §10 |
+| 状态 | **已实现（2026-11-23）**：采用**哈希值前缀**方案（非加列），历史行天然兼容。下文 §3–§8 的原"加列 + migration v12"设计保留为决策取证，实现改用更低风险的等价机制（零 schema 迁移、零 WORM 触发器改动、历史链不回填即可验） |
 
 ---
 
@@ -85,4 +85,54 @@ ALTER TABLE trace ADD COLUMN digest_mode TEXT NOT NULL DEFAULT 'sha256';
 
 - 本设计**不改变**默认行为；在当前落地前，`/audit/chain-mode` 仍报 SHA-256/HMAC-SHA256。
 - 摘要模式不等于"国密合规"；它只解决审计链算法可迁移性。TLCP/SM2/密评仍是独立专项（见 `docs/tender-evidence-pack-2026-11.md` M-04）。
-- 对外口径在落地前不得说"审计链已支持 SM3"。
+- 对外口径在落地前不得说"审计链已支持 SM3"（本节为落地前原文；落地后口径见 §10）。
+
+---
+
+## 10. 实现记录（2026-11-23）
+
+### 10.1 实际方案：哈希值前缀（等价机制，替换原"加列"设计）
+
+完整调用面勘察后发现原设计的加列方案牵涉 50+ 文件（两套 DB 迁移 × 4 个旧版本 fixture × 90 处写入点 × 两张 WORM 触发器），任一漏改即导致历史链整链 `ErrHashMismatch`。故改用**哈希值前缀**——与 `internal/plan/hash.go` 的 `v2:` 同范式，但把算法族编码进摘要本身：
+
+| 配置 | 输出 | 算法 |
+|---|---|---|
+| 默认 / 历史（无前缀 64 hex） | `ab12…` | SHA-256 或 HMAC-SHA256（按 LEVEE_AUDIT_HMAC_KEY） |
+| `audit.digest_mode: sm3` | `sm3:ab12…` | SM3（GM/T 0004-2012） |
+| sm3 + 有 key | `hmac-sm3:ab12…` | HMAC-SM3 |
+
+SM3 与 SHA-256 同为 32B→64 hex，无需改列宽/JSON 契约。**历史行无前缀 → 验算时走原 SHA-256 口径，零回填即可验**；新行带前缀 → 验算时按前缀选算法。混合链逐行各按各的算法验。
+
+### 10.2 正确性要点（对应勘察标出的 3 个风险）
+
+- 前缀**不进 canonical 字段集**，只是摘要值的显示前缀——历史行的摘要字节不变（风险 A 规避）。
+- `legacyHash`/`legacyChecksum`（V1 管道编码）**固定 SHA-256**，不随当前模式漂移——历史 V1 行不会被误判（风险 B 规避）。
+- **零 schema / 触发器改动**——没有 digest_mode 列，两套 DB 迁移、4 个旧版本 fixture、WORM 触发器全部不动（风险 C 规避）。
+
+### 10.3 验算分流（行驱动，非配置驱动）
+
+- `internal/audit/canonical.go`：`digest()`（历史 sha256，签名不变）+ `digestWithMode()`（按模式选 hash + 前缀）+ `recomputeCanonical()`（按存储前缀选算法，未知前缀 fail-closed）+ `verifyTraceHash`/`verifyAuditHash`/`verifyWORMChecksum`。
+- `verify.go` / `hashchain.go` / `worm.go` / `auditchain.go` 的验链路径全部改为按**每行存储 hash 的前缀**重算，而不是按进程配置模式——这是混合链可验的关键。
+- 写入路径 `ComputeChecksum`/`ComputeHashV2`/`ComputeAuditHash` 改用 `digestForCurrent()`（配置模式），新行据此带前缀。
+
+### 10.4 HMAC key 与算法模式正交
+
+4 组合（SHA-256/HMAC-SHA256/SM3/HMAC-SM3）均可产出与验算。`hmackey_switch_test.go` 的 ratchet（加 key 断历史链）**仍成立**——key epoch 仍无 per-row 标记（D-8 原本就只解决算法维度，不解决 key 轮换）。测试注释订正为"无 key epoch marker"。
+
+### 10.5 配置与可观测性
+
+- `audit.digest_mode: sha256|sm3`（默认 sha256，行为不变）；`LEVEE_AUDIT_DIGEST_MODE` 环境变量绑定；非法值启动即拒。
+- `serve` 启动时 `audit.SetDigestMode(cfg.Audit.DigestMode)` 固定进程模式（一次性，类 HMAC key）。
+- `GET /audit/chain-mode` 保留原三字段（`mode`/`algorithm`/`keyed`），新增 `digest_mode` + `digest_algorithm`（SM3/HMAC-SM3）——扩展非替换，前端旧消费方不受影响。
+
+### 10.6 验证
+
+- 新增 `internal/audit/sm3_migration_test.go`：摘要格式、keyed 正交、前缀解析 fail-closed、**混合链验真（在另一种配置模式下验）**、SM3 篡改检测、audit 链混合验真、SM3 已知答案。
+- `internal/grpc/rest_chain_mode_test.go` 扩展 digest_mode 断言（unkeyed/keyed × sha256/sm3）。
+- `go test ./...` 全绿；全部历史审计测试（含 ratchet、V1 回退、WORM）保持通过。
+
+### 10.7 边界
+
+- 这是**算法可迁移性**，不是密评合规；TLCP/国密 TLS、SM2、硬件密码模块仍是专项（见 `docs/tender-evidence-pack-2026-11.md` M-04）。
+- 对外可说"审计链支持 SM3 摘要模式、历史链可验"，不得说"国密合规 / 已过密评"。
+- 算法切换后长期存在混合链（历史 sha256 + 新 sm3），属设计预期（方案 A），验链器逐行处理。

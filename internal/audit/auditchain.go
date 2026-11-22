@@ -113,7 +113,7 @@ func auditContentFields(a *state.Audit) []string {
 // is evidence of a tampered one.
 func ComputeAuditHash(a *state.Audit, prevHash string) string {
 	fields := append([]string{prevHash}, auditContentFields(a)...)
-	return digest(canonicalV2(fields...))
+	return digestForCurrent(canonicalV2(fields...))
 }
 
 // walkChain calls fn once per audit row the store exposes, in chain order —
@@ -294,7 +294,19 @@ func (b *AuditChainBuilder) Verify(ctx context.Context) (*AuditChainResult, erro
 	prev := ""
 	i := 0
 	err := b.walkChain(ctx, func(a *state.Audit) error {
-		want := ComputeAuditHash(a, prev)
+		match, want, verr := verifyAuditHash(a, prev)
+		if verr != nil {
+			result.Valid = false
+			result.Failures = append(result.Failures, AuditChainFailure{
+				AuditID: a.ID, Index: i, Type: FailureHashMismatch,
+				Expected: "", Actual: a.CurrHash,
+				PrevExpected: prev, PrevActual: a.PrevHash,
+			})
+			prev = a.CurrHash
+			i++
+			return nil
+		}
+		currentMismatch := !match
 		switch {
 		case a.CurrHash == "":
 			result.Valid = false
@@ -314,7 +326,7 @@ func (b *AuditChainBuilder) Verify(ctx context.Context) (*AuditChainResult, erro
 				Expected: want, Actual: a.CurrHash,
 				PrevExpected: prev, PrevActual: a.PrevHash,
 			})
-		case a.CurrHash != want:
+		case currentMismatch:
 			result.Valid = false
 			result.Failures = append(result.Failures, AuditChainFailure{
 				AuditID: a.ID, Index: i, Type: FailureHashMismatch,

@@ -150,13 +150,13 @@ func VerifyTraces(runID string, traces []*state.Trace) *VerifyResult {
 	// record's expected PrevHash is the empty string.
 	prevHash := ""
 	for i, t := range traces {
-		failure := checkTrace(t, i, prevHash)
+		failure, legacy := checkTrace(t, i, prevHash)
 		if failure != nil {
 			result.Failures = append(result.Failures, *failure)
 			result.Valid = false
-		} else if t.CurrHash != ComputeHash(t, prevHash) {
-			// Intact under the legacy V1 encoding only — accepted, but
-			// counted separately for visibility.
+		} else if legacy {
+			// Intact under the legacy V1 encoding only — accepted, but counted
+			// separately for visibility. V1 is always SHA-256.
 			result.LegacyCount++
 		}
 		// Advance prevHash to the stored CurrHash so the next record's
@@ -197,8 +197,17 @@ func (v *ChainVerifier) VerifyStrict(ctx context.Context, runID string) error {
 //  3. CurrHash mismatch (content tampering). A stored hash that matches the
 //     legacy V1 (pipe-delimited) recomputation instead of V2 is accepted:
 //     pre-V2 records are legacy, not tampered.
-func checkTrace(t *state.Trace, index int, prevHash string) *ChainFailure {
-	expected := ComputeHash(t, prevHash)
+func checkTrace(t *state.Trace, index int, prevHash string) (*ChainFailure, bool) {
+	// Recompute under the algorithm family declared by the row's own stored
+	// hash, never the process-configured mode — that is what makes a mixed
+	// SHA-256/SM3 chain verify with each row under its own algorithm.
+	match, legacy, expected, verr := verifyTraceHash(t, prevHash)
+	if verr != nil {
+		return &ChainFailure{
+			TraceID: t.ID, Index: index, Expected: expected, Actual: t.CurrHash,
+			PrevExpected: prevHash, PrevActual: t.PrevHash, Type: FailureHashMismatch,
+		}, false
+	}
 
 	// 1. Empty CurrHash means the chain was never built for this record.
 	if t.CurrHash == "" {
@@ -210,7 +219,7 @@ func checkTrace(t *state.Trace, index int, prevHash string) *ChainFailure {
 			PrevExpected: prevHash,
 			PrevActual:   t.PrevHash,
 			Type:         FailureEmptyHash,
-		}
+		}, false
 	}
 
 	// 2. PrevHash must equal the previous record's CurrHash.
@@ -223,12 +232,12 @@ func checkTrace(t *state.Trace, index int, prevHash string) *ChainFailure {
 			PrevExpected: prevHash,
 			PrevActual:   t.PrevHash,
 			Type:         FailurePrevHashMismatch,
-		}
+		}, false
 	}
 
-	// 3. CurrHash must match the recomputed hash under either the current
-	// (V2) or the legacy (V1) canonical encoding.
-	if t.CurrHash != expected && t.CurrHash != legacyHash(t, prevHash) {
+	// 3. CurrHash must match the recomputed hash under the family-aware V2
+	// encoding, or the legacy V1 encoding (SHA-256).
+	if !match {
 		return &ChainFailure{
 			TraceID:      t.ID,
 			Index:        index,
@@ -237,8 +246,8 @@ func checkTrace(t *state.Trace, index int, prevHash string) *ChainFailure {
 			PrevExpected: prevHash,
 			PrevActual:   t.PrevHash,
 			Type:         FailureHashMismatch,
-		}
+		}, false
 	}
 
-	return nil
+	return nil, legacy
 }
