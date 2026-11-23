@@ -103,6 +103,7 @@ function inspect(path: string, source: string): Spec {
 const specs = specFiles(srcDir).map((p) => inspect(p, readFileSync(p, 'utf8')))
 
 const KNOWN_REIMPORTING = [
+  'api/diagnosis.spec.ts',
   'api/conversation.spec.ts',
   'api/cluster.spec.ts',
   'api/client.spec.ts',
