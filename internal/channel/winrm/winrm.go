@@ -91,6 +91,53 @@ type Config struct {
 	OperationTimeout time.Duration
 }
 
+// Process-wide transport defaults, wired from cfg.Channel.WinRM by the serve
+// command (the D-9 seam). Zero/empty values mean "not set" and keep the
+// historical per-channel defaults (resolvePort / withDefaults). The registered
+// factory reads these at Create time — the old init-time Config{} snapshot
+// could not see a setter, which is why WinRM stayed unwired while SSH did not.
+var (
+	defaultsMu       sync.RWMutex
+	defaultPort      int
+	defaultTransport string
+	defaultTimeout   time.Duration
+	defaultPoolSize  int
+)
+
+// SetDefaultConfig installs the process-wide WinRM transport defaults from
+// configuration. Zero/empty values mean "unset" (fall back to the channel's
+// historical defaults). It must be called before any channel is created — it
+// is the cfg.Channel.WinRM wiring seam used by `levee serve`.
+func SetDefaultConfig(port int, transport string, connectTimeout time.Duration, poolSize int) {
+	defaultsMu.Lock()
+	defer defaultsMu.Unlock()
+	defaultPort = port
+	defaultTransport = transport
+	defaultTimeout = connectTimeout
+	defaultPoolSize = poolSize
+}
+
+// NewConfig returns a Config populated from the process-wide defaults. It is
+// what the registered factory uses at Create time so config changes reach
+// channels built through the default registry.
+func NewConfig() Config {
+	defaultsMu.RLock()
+	defer defaultsMu.RUnlock()
+	return Config{
+		Port:      defaultPort,
+		Transport: defaultTransport,
+		Timeout:   defaultTimeout,
+	}
+}
+
+// DefaultPoolSize returns the configured pool size (0 when unset), used by the
+// pool's withDefaults so an explicit PoolConfig value still wins.
+func DefaultPoolSize() int {
+	defaultsMu.RLock()
+	defer defaultsMu.RUnlock()
+	return defaultPoolSize
+}
+
 // withDefaults returns a copy of c with zero values replaced by defaults.
 func (c Config) withDefaults() Config {
 	out := c
@@ -464,28 +511,41 @@ func (c *WinRMChannel) Target() channel.Target {
 // defaults (port, HTTPS, timeout, auth) that are applied to every channel it
 // creates; per-channel overrides come from the Target.
 type WinRMFactory struct {
-	cfg Config
+	cfg                Config
+	useProcessDefaults bool
 }
 
 // compile-time interface check.
 var _ channel.ChannelFactory = (*WinRMFactory)(nil)
 
-// NewFactory returns a WinRMFactory that applies cfg to every channel it
-// creates. The config is normalized via withDefaults on first use.
+// NewFactory returns a WinRMFactory that applies the EXPLICIT cfg to every
+// channel it creates (used by tests and direct callers). To use the
+// process-wide configured defaults instead, use newDefaultFactory.
 func NewFactory(cfg Config) *WinRMFactory {
 	return &WinRMFactory{cfg: cfg}
+}
+
+// newDefaultFactory returns a factory that reads the process-wide defaults at
+// each Create, so SetDefaultConfig changes are observed by channels built
+// through the default registry.
+func newDefaultFactory() *WinRMFactory {
+	return &WinRMFactory{useProcessDefaults: true}
 }
 
 // Create returns a new, unconnected WinRMChannel for the given target. The
 // caller is responsible for invoking Connect before use.
 func (f *WinRMFactory) Create(target channel.Target) (channel.Channel, error) {
-	return newChannel(target, f.cfg)
+	cfg := f.cfg
+	if f.useProcessDefaults {
+		cfg = NewConfig()
+	}
+	return newChannel(target, cfg)
 }
 
-// init registers the WinRMFactory with the default channel registry using the
-// "winrm" type identifier. This allows the orchestrator to create WinRM
-// channels without importing this package directly; importing for its side
-// effect is enough.
+// init registers a process-default WinRMFactory with the default channel
+// registry using the "winrm" type identifier. This allows the orchestrator to
+// create WinRM channels without importing this package directly; importing for
+// its side effect is enough. The factory reads SetDefaultConfig at Create time.
 func init() {
-	channel.DefaultRegistry().Register("winrm", NewFactory(Config{}))
+	channel.DefaultRegistry().Register("winrm", newDefaultFactory())
 }

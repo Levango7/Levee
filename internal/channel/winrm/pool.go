@@ -37,7 +37,13 @@ type PoolConfig struct {
 func (p PoolConfig) withDefaults() PoolConfig {
 	out := p
 	if out.MaxConcurrentPerTarget <= 0 {
-		out.MaxConcurrentPerTarget = 3
+		// An explicit PoolConfig value wins; otherwise the configured
+		// channel.winrm.pool_size (if any), else the historical 3.
+		if configured := DefaultPoolSize(); configured > 0 {
+			out.MaxConcurrentPerTarget = configured
+		} else {
+			out.MaxConcurrentPerTarget = 3
+		}
 	}
 	return out
 }
@@ -164,7 +170,9 @@ type WinRMPool struct {
 // each target bucket. If f is nil, a default factory is used.
 func NewPool(f *WinRMFactory, cfg PoolConfig) *WinRMPool {
 	if f == nil {
-		f = NewFactory(Config{})
+		// Use the process-default factory so pool-created channels observe
+		// SetDefaultConfig, not a stale Config{} snapshot.
+		f = newDefaultFactory()
 	}
 	cfg = cfg.withDefaults()
 	p := &WinRMPool{

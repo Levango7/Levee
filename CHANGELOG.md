@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（D-9 WinRM 整段接线：channel.winrm.* 四字段接进传输层）
+
+- `winrm.SetDefaultConfig(port, transport, connect_timeout, pool_size)` 接收 `cfg.Channel.WinRM`；**注册工厂改为 Create 时读进程默认**（旧 init 期 `Config{}` 快照看不到 setter，是 WinRM 与 SSH 的关键差异），`serve` 对称转发 4 参。
+- 配置默认值改为 `0`/空=未设置（存量仍走通道历史默认 5985/5986、negotiate、30s、pool 3），Validate 放行 0；transport 空串=未设置。
+- 接线守卫登记 6→2（仅剩 SSH.KeyPath / SSH.PoolSize）；新增 setter 生效/未设置回退/pool 默认三组测试 + sample unset 守卫。
+- **边界**：pool_size 经 `DefaultPoolSize` 对直接 `winrm.NewPool` 生效，但生产 serve 路径当前不建 WinRM 池，运行时影响仅对池调用方可见（代码注释已写明）。Windows NTLM 现在配 `transport: ntlm` 即生效。
+- `go test ./...` 全绿，golangci-lint 0 issues，release-gate 209 脚本全过。
+
 ### 修复（D-11 配置假旋钮收尾：接线 export_format，删 storage/key_derivation）
 
 - `audit.export_format` 接线：CSV 导出器本就存在，`--format` 未显式指定时取配置值（flag 优先）；新增 `pickExportFormat` 纯函数单测。

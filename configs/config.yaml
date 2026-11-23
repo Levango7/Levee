@@ -49,16 +49,16 @@ channel:
     # 单目标机 SSH 连接池大小（当前仅校验，通道池仍用自己的默认值）。默认: 10
     pool_size: 10
 
-  # WinRM 通道（当前整段尚未接进传输层，字段只校验不生效，见 D-9）
+  # WinRM 通道（D-9：已接进传输层；0/空=未设置，保持通道历史默认）
   winrm:
-    # WinRM 端口（1..65535）。 默认: 5985（HTTP）；5986 为 HTTPS
-    port: 5985
-    # 传输/认证方式: negotiate | ntlm。 默认: negotiate
-    transport: negotiate
-    # WinRM 连接超时（> 0，Go duration）。 默认: 10s
-    connect_timeout: 10s
-    # 单目标机 WinRM 连接池大小（> 0）。 默认: 5
-    pool_size: 5
+    # 端口: 0=未设置（目标机端口优先，否则按 HTTPS 用 5985/5986）；或 1..65535
+    port: 0
+    # 传输/认证: 空=未设置（通道默认 negotiate）| negotiate | ntlm
+    transport: ""
+    # 连接超时: 0=未设置（通道默认 30s）；或 > 0 的 Go duration
+    connect_timeout: 0
+    # 单目标机连接池大小: 0=未设置（默认 3）；或 > 0
+    pool_size: 0
 
 # 日志参数（对应 LogConfig）：不写这一段时继承上面的 server.log_level / server.log_format。
 # 写了以后 log.* 优先于 server.*。

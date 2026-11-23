@@ -52,6 +52,7 @@ import (
 	"github.com/nexus/levee/internal/capability"
 	"github.com/nexus/levee/internal/channel"
 	sshchannel "github.com/nexus/levee/internal/channel/ssh"
+	winrmchannel "github.com/nexus/levee/internal/channel/winrm"
 	"github.com/nexus/levee/internal/chatops"
 	"github.com/nexus/levee/internal/cluster"
 	"github.com/nexus/levee/internal/config"
@@ -997,7 +998,22 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.Channel.SSH.AuthMethod,
 		cfg.Channel.SSH.Port,
 		cfg.Channel.SSH.ConnectTimeout,
-	) // 5d. Reachability patrol: periodically probe every active inventory
+	)
+
+	// 5c-2. WinRM channel defaults (D-9): forward cfg.Channel.WinRM to the
+	// channel package. 0/"" values mean "unset" and keep the channel's
+	// historical defaults; explicit values reach every channel built through
+	// the default registry (the registered factory reads these at Create time).
+	// pool_size is included here but note the production path does not build a
+	// WinRM pool — it only affects direct winrm.NewPool callers.
+	winrmchannel.SetDefaultConfig(
+		cfg.Channel.WinRM.Port,
+		cfg.Channel.WinRM.Transport,
+		cfg.Channel.WinRM.ConnectTimeout,
+		cfg.Channel.WinRM.PoolSize,
+	)
+
+	// 5d. Reachability patrol: periodically probe every active inventory
 	// target so `reachable` reflects current reality. Disabled by default;
 	// enable with inventory.patrol_interval_seconds > 0.
 	if interval := cfg.Inventory.PatrolIntervalSeconds; interval > 0 {
