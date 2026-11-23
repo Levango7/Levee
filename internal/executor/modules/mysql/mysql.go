@@ -83,7 +83,7 @@ func (Module) Name() string { return "mysql" }
 
 // Actions returns the supported action verbs.
 func (Module) Actions() []string {
-	return []string{"query", "pt_osc", "replica_switch", "schema_snapshot", "schema_restore"}
+	return []string{"query", "pt_osc", "replica_switch", "schema_snapshot", "schema_restore", "preflight"}
 }
 
 // Idempotent reports whether the module declares itself idempotent. Only
@@ -105,6 +105,8 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 		return m.schemaSnapshot(ctx, input)
 	case "schema_restore":
 		return m.schemaRestore(ctx, input)
+	case "preflight":
+		return m.preflight(ctx, input)
 	default:
 		return nil, fmt.Errorf("mysql: unsupported action %q", action)
 	}
@@ -329,6 +331,56 @@ func snapshotSQL(tables []string) string {
 	b.WriteString("-- levee.schema_snapshot\n")
 	for _, t := range tables {
 		fmt.Fprintf(&b, "SHOW CREATE TABLE %s;\n", quoteMySQLIdent(t))
+	}
+	return b.String()
+}
+
+// preflight captures LIVE impact facts for the tables a change touches, on
+// the target machine and before anything mutates it (D-7). It is strictly
+// read-only and fail-closed: EXPLAIN estimates and information_schema row
+// counts are printed with a self-describing header, and any error (bad args,
+// channel failure, non-zero exit, empty output) becomes an error — never a
+// fabricated number. Lock DURATION is deliberately NOT reported: EXPLAIN does
+// not yield it, and inventing a second count would make an approver stop
+// asking. Changed=false so the run's evidence does not claim a mutation.
+func (m *Module) preflight(ctx context.Context, input executor.ModuleInput) (*executor.ModuleOutput, error) {
+	tables, err := sqlguard.TableList(input.Args, "tables")
+	if err != nil {
+		return nil, fmt.Errorf("mysql.preflight: %w", err)
+	}
+	if len(tables) == 0 {
+		return nil, fmt.Errorf("mysql.preflight: tables is required")
+	}
+	if v, ok := stringOk(input.Args, "password"); ok && v != "" {
+		return nil, fmt.Errorf("mysql.preflight: args.password is not supported — credentials come from ~/.my.cnf on the target")
+	}
+	conn := connFromArgs(input)
+	out, err := runMysqlRead(ctx, input.Channel, conn, preflightSQL(tables))
+	if err != nil {
+		return nil, fmt.Errorf("mysql.preflight: %w", err)
+	}
+	if out.ExitCode != 0 || strings.TrimSpace(out.Stdout) == "" {
+		return nil, fmt.Errorf("mysql.preflight: live probe failed (exit=%d, empty output=%t) — refusing to guess impact numbers",
+			out.ExitCode, strings.TrimSpace(out.Stdout) == "")
+	}
+	return out, nil
+}
+
+// preflightSQL renders the live, read-only probe. Each table gets an EXPLAIN
+// (optimizer ESTIMATE of rows/plan) and an information_schema row-count
+// ESTIMATE. The header states the nature of both so no reader mistakes them
+// for measured post-change facts. DDL has no EXPLAIN plan; that is stated too.
+func preflightSQL(tables []string) string {
+	var b strings.Builder
+	b.WriteString("-- levee.preflight: EXPLAIN rows = optimizer ESTIMATE; TABLE_ROWS = estimate; NOT measured lock time\n")
+	// information_schema gives a row estimate without touching the table;
+	// EXPLAIN shows the optimizer's plan for a no-op read. Both are estimates,
+	// never a measured lock duration (which EXPLAIN cannot yield).
+	for _, t := range tables {
+		_, base := sqlguard.SplitQualifier(t)
+		fmt.Fprintf(&b, "SELECT 'TABLE', %q, 'row_estimate', (SELECT TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA=COALESCE(DATABASE(),'') AND TABLE_NAME=%q);\n",
+			t, base)
+		fmt.Fprintf(&b, "EXPLAIN SELECT * FROM %s WHERE 1=0;\n", quoteMySQLIdent(t))
 	}
 	return b.String()
 }

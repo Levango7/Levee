@@ -115,7 +115,7 @@ func TestModuleName(t *testing.T) {
 }
 
 func TestModuleActions(t *testing.T) {
-	assert.Equal(t, []string{"query", "pt_osc", "replica_switch", "schema_snapshot", "schema_restore"}, New().Actions())
+	assert.Equal(t, []string{"query", "pt_osc", "replica_switch", "schema_snapshot", "schema_restore", "preflight"}, New().Actions())
 }
 
 func TestModuleNotIdempotent(t *testing.T) {
@@ -593,6 +593,44 @@ func TestUnsupportedAction(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported action")
 	assert.True(t, strings.Contains(err.Error(), "vacuum"))
+}
+
+// --- preflight (D-7) ----------------------------------------------------------
+
+func TestPreflightIsReadOnlyAndFailClosed(t *testing.T) {
+	ch := &mockChannel{}
+	ch.execResult = okResult("TABLE\tusers\trow_estimate\t100\nid\tselect_type\tSELECT\n")
+
+	out, err := New().Execute(context.Background(), "preflight", newInput(ch, map[string]any{
+		"tables":   []any{"users", "shop.orders"},
+		"database": "shop",
+	}))
+	require.NoError(t, err)
+	assert.False(t, out.Changed, "preflight reads only; Changed must stay false")
+	assert.Equal(t, 0, out.ExitCode)
+
+	sql := decodedPayload(t, ch.execAt(0))
+	assert.Contains(t, sql, "levee.preflight", "output must self-describe as estimates")
+	assert.Contains(t, sql, "NOT measured lock time")
+	assert.Contains(t, sql, "information_schema.TABLES", "row-count estimate")
+	assert.Contains(t, sql, "EXPLAIN SELECT", "plan estimate")
+	assert.Contains(t, sql, "EXPLAIN SELECT * FROM `shop`.`orders`", "qualified table")
+}
+
+func TestPreflightRejectsMissingTablesBeforeExec(t *testing.T) {
+	ch := &mockChannel{}
+	_, err := New().Execute(context.Background(), "preflight", newInput(ch, map[string]any{}))
+	require.Error(t, err)
+	assert.Empty(t, ch.execs, "bad args must fail before touching the target")
+}
+
+func TestPreflightFailsOnEmptyProbe(t *testing.T) {
+	ch := &mockChannel{}
+	ch.execResult = okResult("   ") // empty output → must not fabricate numbers
+	_, err := New().Execute(context.Background(), "preflight", newInput(ch, map[string]any{
+		"tables": []any{"users"},
+	}))
+	require.Error(t, err, "empty probe must fail closed, never report invented impact")
 }
 
 // --- schema_snapshot ---------------------------------------------------------
