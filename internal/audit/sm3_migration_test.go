@@ -44,11 +44,15 @@ func TestDigestWithMode(t *testing.T) {
 
 func TestDigestWithModeKeyed(t *testing.T) {
 	setHMACKey(t, "0123456789abcdef0123456789abcdef")
+	// Keyed digests now carry a short key-epoch tag (D-8 second dimension):
+	// "k<8hex>:<64hex>" for sha256, "hmac-sm3:k<8hex>:<64hex>" for sm3.
 	plain := digestWithMode("payload", digestModeSHA256)
-	assert.Len(t, plain, 64, "keyed sha256 stays bare 64-hex")
+	assert.True(t, strings.HasPrefix(plain, keyEpochTagPrefix), "keyed sha256 must carry key-epoch tag")
+	assert.Len(t, strings.TrimPrefix(plain, keyEpochTag()), 64, "hex part stays 64 chars")
 
 	sm := digestWithMode("payload", digestModeSM3)
 	assert.True(t, strings.HasPrefix(sm, prefixHMACSM3), "keyed sm3 uses hmac-sm3 prefix")
+	assert.Contains(t, sm, keyEpochTag(), "keyed sm3 carries the key-epoch tag")
 
 	unsetHMACKey(t)
 	smUnkeyed := digestWithMode("payload", digestModeSM3)

@@ -1732,6 +1732,12 @@ func (gw *Gateway) handleAuditChainMode(w http.ResponseWriter, r *http.Request) 
 		"algorithm":   algorithm,
 		"keyed":       mode == "keyed",
 		"digest_mode": digestMode,
+		// key_epoch is the short fingerprint of the active HMAC key — the
+		// epoch tag embedded in newly written keyed digests. A chain whose
+		// rows carry a different epoch was built under a different key
+		// (operator rotation), which verification reports distinctly from
+		// tampering (D-8). Empty when unkeyed.
+		"key_epoch": audit.KeyEpochID(),
 	}
 	if digestMode == "sm3" {
 		body["digest_algorithm"] = map[bool]string{true: "HMAC-SM3", false: "SM3"}[mode == "keyed"]

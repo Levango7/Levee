@@ -5860,7 +5860,8 @@ func (x *RunVerification) GetFailures() []*AuditChainFailure {
 // field-for-field — including the numeric type, because that is what
 // `levee audit verify --json` prints for the local path (ChainFailure has no
 // custom marshaller). type is audit.FailureType:
-// 0 = hash_mismatch, 1 = prev_hash_mismatch, 2 = empty_hash.
+// 0 = hash_mismatch, 1 = prev_hash_mismatch, 2 = empty_hash,
+// 3 = key_epoch_mismatch (operator rotated HMAC key, NOT tampering).
 type AuditChainFailure struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TraceId       string                 `protobuf:"bytes,1,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`

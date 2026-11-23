@@ -1068,15 +1068,16 @@ mock 网关现在也发具名帧（`web/scripts/mock-gateway.mjs`），免得 mo
 
 ```jsonc
 // 默认 sha256 模式（保持原字段不变，前端旧消费方不受影响）：
-{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true, "digest_mode": "sha256", "digest_algorithm": "HMAC-SHA256" }
-// 未配口令时：{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false, "digest_mode": "sha256", "digest_algorithm": "SHA-256" }
+{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true, "digest_mode": "sha256", "digest_algorithm": "HMAC-SHA256", "key_epoch": "a1b2c3d4" }
+// 未配口令时：{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false, "digest_mode": "sha256", "digest_algorithm": "SHA-256", "key_epoch": "" }
 // audit.digest_mode: sm3（SM3 摘要模式，GM/T 0004-2012）：
-{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false, "digest_mode": "sm3", "digest_algorithm": "SM3" }
-// sm3 + 口令：{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true, "digest_mode": "sm3", "digest_algorithm": "HMAC-SM3" }
+{ "mode": "unkeyed", "algorithm": "SHA-256", "keyed": false, "digest_mode": "sm3", "digest_algorithm": "SM3", "key_epoch": "" }
+// sm3 + 口令：{ "mode": "keyed", "algorithm": "HMAC-SHA256", "keyed": true, "digest_mode": "sm3", "digest_algorithm": "HMAC-SM3", "key_epoch": "a1b2c3d4" }
 ```
 
 `digest_mode` / `digest_algorithm` 是 2026-11-23 新增字段：`digest_mode` 是**部署级当前配置**
 （`audit.digest_mode: sha256|sm3`，默认 sha256），`digest_algorithm` 是对应的实际摘要算法。
+`key_epoch` 是当前 HMAC key 的 8-hex 指纹（新写入的 keyed 摘要会带它；unkeyed 为空）——链的某行若带不同 epoch，说明它建于不同的 key（换 key），验链器报 `key_epoch_mismatch` 而非篡改（D-8）。
 `mode`/`algorithm`/`keyed` 三个老字段语义不变（仍指 HMAC 口令口径），故旧前端只读这三字段也不受影响。
 
 | 模式 | 触发条件 | 保证了什么 | 没保证什么 |
@@ -1213,7 +1214,7 @@ Token-based 认证，三种模式：
 }
 ```
 
-- `auditChain.failures[].type` 取值：`hash_mismatch`（内容被改）、`prev_hash_mismatch`（行被插入/删除/重连）、`empty_hash`（该行从未封链）。
+- `auditChain.failures[].type` 取值：`hash_mismatch`（内容被改）、`prev_hash_mismatch`（行被插入/删除/重连）、`empty_hash`（该行从未封链）、`key_epoch_mismatch`（该 keyed 行由不同的 HMAC key 算出——运维换了 key，**不是篡改**；需按 `deployment.md` §5.6 归档重开链）。
 - 顶层 `valid` 是 `runs` 全部有效 **且** `auditChain.valid` 的合取；`brokenReason` 在来源是 audit 链时带 `audit_chain:` 前缀，便于区分是哪一条链报的。
 - `unsealed` 单独计数：从未封链的行与被篡改的行需要不同的处置，不应混为一谈。
 - gRPC 的 `/api/v1/AuditService/VerifyHashChain` **不含** `auditChain`——proto 未改动（其字段均为 run 维度，且本机无 `protoc` 无法重新生成）。需要 audit 链结果请用 REST 路径。

@@ -135,4 +135,31 @@ SM3 与 SHA-256 同为 32B→64 hex，无需改列宽/JSON 契约。**历史行�
 
 - 这是**算法可迁移性**，不是密评合规；TLCP/国密 TLS、SM2、硬件密码模块仍是专项（见 `docs/tender-evidence-pack-2026-11.md` M-04）。
 - 对外可说"审计链支持 SM3 摘要模式、历史链可验"，不得说"国密合规 / 已过密评"。
+
+---
+
+## 11. 第二维实现记录：HMAC key epoch（2026-11-23）
+
+### 11.1 问题（D-8 原本登记的缺口）
+keyed 摘要由部署级 `LEVEE_AUDIT_HMAC_KEY` 算出，链记录不带 key 标识。运维换 key 后，历史 keyed 行无法复算，验链器一律报 `ErrHashMismatch`——**分不清"换了 key"与"被篡改"**，这在审计产品里是签字前必被追问的一问。
+
+### 11.2 方案：key 指纹前缀（自描述 epoch）
+新写入的 keyed 摘要嵌入 key 的短指纹（key 字节的 SHA-256 前 8 hex）：
+- keyed SHA-256：`k<8hex>:<64hex>`
+- keyed SM3：`hmac-sm3:k<8hex>:<64hex>`（算法前缀在前，兼容 SM3 测试与历史 `hmac-sm3:<hex>`）
+- unkeyed 摘要不变（无 epoch 可标）
+
+验算按存储值自带的 epoch 前缀比对当前 key 指纹：不符 → `ErrKeyEpochMismatch` / `FailureKeyEpochMismatch`（字符串 `key_epoch_mismatch`）；相符后再验内容，不过 → `FailureHashMismatch`（真篡改）。**两者在 REST `/audit/verify` 的失败类型里明确区分**。
+
+### 11.3 边界（must state）
+- `hmackey_switch_test.go` ratchet 仍成立：它测的是"无 key 历史行 + 事后加 key"——无 epoch 标记可依，仍报 mismatch。这是**迁移前数据的固有限制**，不是回归。
+- 带 epoch 的新行由 `key_epoch_test.go` 覆盖（换 key → key_epoch_mismatch、key 移除 → key_epoch_mismatch、SM3 keyed 往返、chain 内失败类型）。
+- 对存量无标记数据，归档旧库 + 新 key 开新链仍是唯一受支持路径（`docs/deployment.md` §5.6）。
+- key epoch 与算法模式正交：`sm3:k<fp>:<hex>` 同时携带两种前缀。
+
+### 11.4 可观测性
+`GET /audit/chain-mode` 新增 `key_epoch` 字段（当前 key 的 8-hex 指纹，unkeyed 为空）——控制台可显示"新行正以哪个 key epoch 写入"；历史行的 epoch 从各自的前缀读取。
+
+### 11.5 验证
+`go test ./...` 全绿：新增 key_epoch_test.go，sm3_migration_test.go 的 keyed 断言更新为带 epoch 格式，ratchet/V1 回退/WORM 全部历史测试保持通过。proto 注释与 docs/levee-api.md 失败类型列表同步（type 3 = key_epoch_mismatch）。
 - 算法切换后长期存在混合链（历史 sha256 + 新 sm3），属设计预期（方案 A），验链器逐行处理。

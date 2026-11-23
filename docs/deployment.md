@@ -153,6 +153,7 @@ levee serve --token <secret> --metrics-public
 - **在存量部署上"第一次启用"与"更换密钥"是同一件事**（2026-11-17 实测）：摘要口径是**部署级**的（一个环境变量、一个 `digest()` 出口），而链记录里**没有摘要模式标记**（`trace`/`audit` 表只有 `prev_hash`/`curr_hash`）。于是一条 unkeyed 建出来的链，在加了口令之后**每一条存量记录都算不出原摘要**：实测 4 条 trace 的链，unkeyed 时 `Verify` 返回 `count=4 err=nil`，加口令后返回 `ErrHashMismatch`（首条即失败），只读校验器 `VerifyTraces` 同样 `valid=false`（4 条失败）。**验链器分不清「运维换了 key」与「有人重写了链」**——两者都报「链断了」。
 - **没有受支持的"就地换 key"命令**：`AuditChainBuilder.Rebuild` 有意不暴露为操作命令（`internal/audit/auditchain.go` 的 DECISION：篡改只报不静默重链）。因此存量部署要上 keyed，**唯一受支持的路就是上面那条归档重开链**——不要在上线窗口临时加口令。
 - 密钥仅参与摘要计算，不进入审计记录内容，不会出现在 trace/detail 中。
+- **2026-11-23 订正（key epoch）**：此后**新写入**的 keyed 摘要自带 8-hex key 指纹前缀（`k<8hex>:` / `hmac-sm3:k<8hex>:`）。因此"新部署配好 key 后轮换"的场景，验链器能把旧行判为 `key_epoch_mismatch`（换 key）而非 `hash_mismatch`（篡改）——两者在 `GET /audit/verify` 的失败类型里明确区分，`GET /audit/chain-mode` 还报当前 `key_epoch`。**但这不改变上面 §5.6 的结论对存量数据**：上面 2026-11-17 的实测针对的是**无 epoch 标记的旧行**（unkeyed 建链 + 事后加 key），它们仍只能报"链断了"，归档重开链仍是唯一受支持路径。要点：**新部署开局即配 key**，才能让后续轮换可区分。
 
 ### 5.7 SQLite 持久级别（`state.sqlite_synchronous`）
 

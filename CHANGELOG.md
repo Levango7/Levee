@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### 新增（D-8 第二维：HMAC key epoch，换 key 与篡改可区分）
+
+- keyed 摘要新增 8-hex key 指纹前缀（`k<8hex>:` / `hmac-sm3:k<8hex>:`）；验链器按存储值自带 epoch 比对当前 key，不符报新失败类型 `FailureKeyEpochMismatch`（`ErrKeyEpochMismatch`，字符串 `key_epoch_mismatch`），与 `hash_mismatch`（真篡改）明确区分。这是审计产品"签字前会被追问"的一问：运维换 key 不再被读成篡改。
+- `GET /audit/chain-mode` 新增 `key_epoch` 字段（当前 key 指纹，unkeyed 为空）。
+- 与 SM3 算法前缀正交（`sm3:k<fp>:<hex>` 同带两种前缀）；分片保持算法前缀在前兼容历史。
+- **边界**：`hmackey_switch_test.go` ratchet 仍成立——无 epoch 的历史行（unkeyed 建链 + 事后加 key）仍只能报 mismatch，归档重开链仍是唯一受支持路径；带 epoch 的新行由 `key_epoch_test.go` 覆盖。
+- 新增 `internal/audit/key_epoch_test.go`（epoch 唯一性、换 key/key 移除报 epoch mismatch、SM3 keyed 往返、chain 内失败类型）；`go test ./...` 全绿，全部历史测试保持通过。proto 注释与 levee-api 失败类型列表同步。
 ### 修复（D-5 snapshot 恢复契约：PG fail-closed + 最新基准选择）
 
 - `pg.query + strategy: snapshot` 在捕获前直接拒绝，既有空快照在恢复时同样拒绝；PostgreSQL 内省证据不再能被当成可恢复基准并以 no-op 记为回滚成功。需要回滚的 PG 变更必须声明显式 rollback steps。

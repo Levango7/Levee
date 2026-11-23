@@ -34,6 +34,7 @@ type chainModeBody struct {
 	Keyed           bool   `json:"keyed"`
 	DigestMode      string `json:"digest_mode"`
 	DigestAlgorithm string `json:"digest_algorithm"`
+	KeyEpoch        string `json:"key_epoch"`
 }
 
 func getChainMode(t *testing.T, url string) chainModeBody {
@@ -102,6 +103,7 @@ func TestAuditChainMode_Unkeyed(t *testing.T) {
 	assert.False(t, body.Keyed)
 	assert.Equal(t, "sha256", body.DigestMode)
 	assert.Equal(t, "SHA-256", body.DigestAlgorithm)
+	assert.Empty(t, body.KeyEpoch, "unkeyed deployment has no key epoch")
 }
 
 // TestAuditChainMode_Keyed pins the answer for a deployment that DID
@@ -117,6 +119,7 @@ func TestAuditChainMode_Keyed(t *testing.T) {
 	assert.Equal(t, "keyed", body.Mode)
 	assert.Equal(t, "HMAC-SHA256", body.Algorithm)
 	assert.True(t, body.Keyed)
+	assert.Len(t, body.KeyEpoch, 8, "keyed deployment reports an 8-hex key epoch")
 }
 
 // TestAuditChainMode_ShortKeyFallsBackToUnkeyed pins that a passphrase too

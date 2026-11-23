@@ -13,26 +13,20 @@ import (
 // TestHMACKeying_KeySwitchInvalidatesHistoricalChain pins the operational
 // hazard behind the delivery-checklist scoping of LEVEE_AUDIT_HMAC_KEY.
 //
-// The HMAC key is deployment-global (one env var, one funnel in canonical.go)
-// and chain records carry NO key-epoch marker — the trace/audit tables have
-// prev_hash/curr_hash and nothing else. (The 2026-11 SM3 migration added a
-// per-row ALGORITHM marker as a hash prefix, but that is orthogonal to the key
-// epoch and does not help here.) So a deployment that starts keyed can no
-// longer recompute the digests of a chain that was built unkeyed: the verifier
-// reports "hash mismatch" for every historical record.
+// This ratchet pins the LIMIT of what key-epoch tagging can fix. The 2026-11-23
+// D-8 work DID add a per-row key-epoch marker (a short key fingerprint embedded
+// in NEW keyed digests as "k<8hex>:"), so a keyed chain built TODAY reports
+// key_epoch_mismatch (distinct from tampering) when the key rotates — see
+// key_epoch_test.go. But this test builds its chain UNKEYED (no epoch tag can
+// exist for an unkeyed digest), then adds a key. Those un-tagged historical rows
+// cannot be epoch-checked, so they still surface as a hash mismatch. That is
+// the unavoidable boundary for pre-epoch data, and the reason the delivery
+// checklist still REQUIRES the key for new deployments and WARNs against adding
+// it to an existing unkeyed deployment (docs/deployment.md §5.6 and §15).
 //
-// Two consequences this test makes explicit:
-//
-//  1. The delivery checklist must REQUIRE the key for new deployments and
-//     must WARN against adding it to an existing unkeyed deployment at
-//     handover time (docs/deployment.md §5.6 and §15).
-//  2. The verifier cannot tell "the operator changed the key" apart from
-//     "someone rewrote the chain" — both surface as a broken chain. That
-//     gap is registered as docs/blocked-items.md D-8.
-//
-// This is a ratchet, not a wish: if someone later adds a per-record KEY-EPOCH
-// marker (distinct from the algorithm marker already added), this test turns
-// red and the change has to be made deliberately — with the checklist text
+// If someone ever makes unkeyed→keyed historical rows verifiable (which would
+// require recording an "unkeyed epoch" marker at write time), this test turns
+// red and the change must be made deliberately — with the checklist text
 // updated in the same commit — rather than silently.
 func TestHMACKeying_KeySwitchInvalidatesHistoricalChain(t *testing.T) {
 	unsetHMACKey(t)
