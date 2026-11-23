@@ -191,15 +191,13 @@ lock:
 #       注入，绝不落盘；加密后的凭据由 `levee secret` 管理。
 # -----------------------------------------------------------------------------
 credential:
-  # 凭据存储后端: local (MVP) | vault (V1)。 默认: local
-  storage: local
   # 加密算法（必填）。默认: aes256-gcm
   # sm4-gcm = 国密 SM4（GM/T 0002-2012）在 GCM 模式下的可选实验室算法，
   # 写入算法标记的 LEV2 blob；AES/SM4 两种写入格式彼此可读，切换不需要迁移存量凭据。
   # 注意：这是算法级选项，不构成国密 TLS（TLCP）、SM2 签名或密评合规。
   encryption: aes256-gcm
-  # 密钥派生算法（必填）。 默认: argon2id
-  key_derivation: argon2id
+  # 凭据固定存本地加密 state.Store（SQLite/PostgreSQL），KDF 固定 argon2id；
+  # 两者不是可配置项（D-11：移除了只校验不生效的 storage/key_derivation 旋钮）。
 
 # -----------------------------------------------------------------------------
 # notify —— 出站通知与镜像（对应 NotifyConfig）：通用 webhook、ITSM Jira 审批镜像、
@@ -576,9 +574,7 @@ state:
 #   retention_days: 365            # 延长保留满足合规要求
 #   export_format: json
 # credential:
-#   storage: local                 # 具备 Vault 基础设施时可切换 vault
 #   encryption: aes256-gcm
-#   key_derivation: argon2id
 # executor:
 #   exec_timeout: 600s
 #   rate_limit:

@@ -75,6 +75,14 @@ func TestAuditExportCmdFormatFlag(t *testing.T) {
 	assert.Equal(t, "json", f.DefValue, "format flag should default to json")
 }
 
+func TestPickExportFormat(t *testing.T) {
+	// D-11: config is honored only when the flag was not explicitly set.
+	assert.Equal(t, "csv", pickExportFormat(false, "json", "csv"), "config wins when flag not set")
+	assert.Equal(t, "json", pickExportFormat(true, "json", "csv"), "explicit flag wins over config")
+	assert.Equal(t, "json", pickExportFormat(false, "json", ""), "flag default when config empty")
+	assert.Equal(t, "csv", pickExportFormat(true, "csv", "json"), "explicit csv flag wins")
+}
+
 func TestAuditListCmdRequiresArg(t *testing.T) {
 	defer resetRootFlags()
 	cmd := findSub("audit")

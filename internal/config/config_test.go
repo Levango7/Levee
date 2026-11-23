@@ -87,9 +87,7 @@ lock:
   max_retry: 5
 
 credential:
-  storage: local
   encryption: aes256-gcm
-  key_derivation: argon2id
 
 notify:
   webhook:
@@ -217,7 +215,6 @@ func TestLoad_ValidFile(t *testing.T) {
 	assert.True(t, cfg.Audit.HashChain)
 	assert.False(t, cfg.Audit.WormStorage)
 	assert.Equal(t, 30*time.Minute, cfg.Lock.TTL)
-	assert.Equal(t, "local", cfg.Credential.Storage)
 	assert.False(t, cfg.Notify.Webhook.Enabled)
 	assert.Equal(t, "ops", cfg.Permission.DefaultTeam)
 	assert.Equal(t, "staging", cfg.Permission.DefaultEnv)
@@ -267,9 +264,7 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, time.Hour, cfg.Lock.TTL)
 	assert.Equal(t, 5*time.Second, cfg.Lock.RetryInterval)
 	assert.Equal(t, 10, cfg.Lock.MaxRetry)
-	assert.Equal(t, "local", cfg.Credential.Storage)
 	assert.Equal(t, "aes256-gcm", cfg.Credential.Encryption)
-	assert.Equal(t, "argon2id", cfg.Credential.KeyDerivation)
 	assert.False(t, cfg.Notify.Webhook.Enabled)
 	assert.Equal(t, 3, cfg.Notify.Webhook.Retry)
 	assert.Equal(t, "default", cfg.Permission.DefaultTeam)
@@ -591,16 +586,6 @@ func TestValidate_ValidAuditDigestModes(t *testing.T) {
 		cfg.Audit.DigestMode = mode
 		assert.NoError(t, Validate(cfg), "mode %q must be accepted", mode)
 	}
-}
-
-func TestValidate_InvalidCredentialStorage(t *testing.T) {
-	cfg, err := Load(writeYAML(t, minimalValidYAML()))
-	require.NoError(t, err)
-
-	cfg.Credential.Storage = "s3"
-	err = Validate(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "credential.storage")
 }
 
 func TestValidate_MultipleProblemsReported(t *testing.T) {

@@ -240,6 +240,30 @@ func renderAuditVerify(result *audit.VerifyResult) error {
 }
 
 // runAuditExport executes the `levee audit export <run-id>` command.
+// pickExportFormat implements the D-11 priority: an explicit CLI flag wins,
+// otherwise the config value is used, otherwise the flag default. Pure so it
+// can be unit-tested without file IO.
+func pickExportFormat(flagChanged bool, flagValue, configValue string) string {
+	if flagChanged {
+		return flagValue
+	}
+	if configValue != "" {
+		return configValue
+	}
+	return flagValue
+}
+
+// resolveExportFormat implements D-11: audit.export_format config is honored
+// when --format is not explicitly passed; the CLI flag (explicit operator
+// intent) always wins. Config load failure falls back to the flag default.
+func resolveExportFormat(cmd *cobra.Command) string {
+	configValue := ""
+	if cfg, err := loadConfig(); err == nil {
+		configValue = cfg.Audit.ExportFormat
+	}
+	return pickExportFormat(cmd.Flags().Changed("format"), auditExportOptFormat, configValue)
+}
+
 func runAuditExport(cmd *cobra.Command, args []string) error {
 	auditExportOptRunID = args[0]
 	ctx := context.Background()
@@ -253,7 +277,8 @@ func runAuditExport(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	switch strings.ToLower(auditExportOptFormat) {
+	format := resolveExportFormat(cmd)
+	switch strings.ToLower(format) {
 	case "csv":
 		return exportTracesCSV(os.Stdout, traces)
 	default:
