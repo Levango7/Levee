@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（诊断上 Web 控制台：TargetsView 主机一键诊断）
+
+- 前端接入已有 `DiagnosisService`（Go 侧能力完整但控制台此前完全不可见）：`web/src/api/index.ts` 新增 `DiagnosticFindingDTO`/`DiagnosticReportDTO` + `diagnosisApi`（走已有 `POST /api/v1/DiagnosisService/Diagnose` gRPC 风格路径，`alertsApi.status` 同范式）；`TargetsView.vue` 每行加"诊断"按钮 + 报告弹窗（status/rootCause/confidence/findings/recommendations，复用 `healthLabel`）。
+- 单测 `web/src/api/diagnosis.spec.ts`（URL/方法/body 契约）；`coldImport.spec.ts` 守卫清单同步。
+- **最小改动**：不改 Go REST 资源表、不动 wire.json/mock-wire 契约清单、不新建路由/View——已有 gRPC 风格路径被 Go 测试 + 路由表 + 前端 URL 守卫三方背书；`mock-wire` 197/197、vitest 388 全过。
+- dist 已按 `make web` 流程重建并提交（CI 新鲜度检查要求）。
+- **边界**：这是主机诊断（DiagnosisService），与 SystemView 的 `/system/doctor` 守护进程自检是两回事；403 表示该环境无 apply 权限。
+
 ### 修复（file.exists / file.delete：补齐 spec 与词表已承诺但运行时缺失的 action）
 
 - `internal/executor/modules/file` 新增 `exists`（只读 `test -e`，0=存在/1=不存在均正常，其他退出码报错）与 `delete`（`rm -f -- <quoted>`）。

@@ -4,8 +4,9 @@
 // unreachable hosts at a glance.
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { targetsApi, groupsApi, type HostGroup, type ImportResult, type TargetHistoryEntry } from '@/api'
+import { targetsApi, groupsApi, diagnosisApi, type HostGroup, type ImportResult, type TargetHistoryEntry, type DiagnosticReportDTO } from '@/api'
 import type { Target } from '@/types/levee'
+import { healthLabel } from '@/utils/diagnosis'
 import PageHeader from '@/components/PageHeader.vue'
 import StateBlock from '@/components/StateBlock.vue'
 import { classifyError, errorMessage } from '@/utils/apiState'
@@ -100,6 +101,13 @@ const historyVisible = ref(false)
 const historyFor = ref<Target | null>(null)
 const historyLoading = ref(false)
 const historyEntries = ref<TargetHistoryEntry[]>([])
+
+// Host diagnosis (DiagnosisService, not the daemon /system/doctor check).
+const diagnosisVisible = ref(false)
+const diagnosisFor = ref<Target | null>(null)
+const diagnosisLoading = ref(false)
+const diagnosisReport = ref<DiagnosticReportDTO | null>(null)
+const diagnosisError = ref('')
 
 async function load(): Promise<void> {
   loading.value = true
@@ -202,6 +210,21 @@ async function check(row: Target): Promise<void> {
 async function bulkCheck(): Promise<void> {
   for (const t of targets.value) {
     await check(t)
+  }
+}
+
+async function diagnose(row: Target): Promise<void> {
+  diagnosisFor.value = row
+  diagnosisReport.value = null
+  diagnosisError.value = ''
+  diagnosisVisible.value = true
+  diagnosisLoading.value = true
+  try {
+    diagnosisReport.value = await diagnosisApi.diagnose(row.hostname)
+  } catch (err) {
+    diagnosisError.value = (err as { message?: string })?.message || '诊断失败'
+  } finally {
+    diagnosisLoading.value = false
   }
 }
 
@@ -389,9 +412,10 @@ onMounted(() => {
             </template>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button text type="primary" @click="check(row)">检查</el-button>
+            <el-button text type="primary" @click="diagnose(row)">诊断</el-button>
             <el-button text type="primary" @click="openHistory(row)">历史</el-button>
             <el-button text type="danger" @click="remove(row)">删除</el-button>
           </template>
@@ -492,6 +516,52 @@ onMounted(() => {
       </div>
       <template #footer>
         <el-button @click="historyVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Host diagnosis report (DiagnosisService). -->
+    <el-dialog
+      v-model="diagnosisVisible"
+      :title="diagnosisFor ? `主机诊断：${diagnosisFor.hostname}` : '主机诊断'"
+      width="min(760px, 100vw - 48px)"
+    >
+      <div v-loading="diagnosisLoading" style="min-height: 120px">
+        <template v-if="diagnosisReport">
+          <el-descriptions :column="2" size="small" border>
+            <el-descriptions-item label="状态">
+              <el-tag size="small">{{ healthLabel(diagnosisReport.status) }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="目标">{{ diagnosisReport.target }}</el-descriptions-item>
+            <el-descriptions-item v-if="diagnosisReport.confidence !== undefined" label="置信度">
+              {{ Math.round(diagnosisReport.confidence * 100) }}%
+            </el-descriptions-item>
+            <el-descriptions-item v-if="diagnosisReport.durationMs" label="耗时">
+              {{ diagnosisReport.durationMs }} ms
+            </el-descriptions-item>
+            <el-descriptions-item v-if="diagnosisReport.summary" label="摘要" :span="2">
+              {{ diagnosisReport.summary }}
+            </el-descriptions-item>
+            <el-descriptions-item v-if="diagnosisReport.rootCause" label="根因" :span="2">
+              {{ diagnosisReport.rootCause }}
+            </el-descriptions-item>
+          </el-descriptions>
+          <h4 v-if="diagnosisReport.findings.length > 0" style="margin: 16px 0 8px">发现</h4>
+          <el-table v-if="diagnosisReport.findings.length > 0" :data="diagnosisReport.findings" size="small">
+            <el-table-column prop="severity" label="级别" width="100" />
+            <el-table-column prop="title" label="标题" min-width="160" show-overflow-tooltip />
+            <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="suggestion" label="建议" min-width="200" show-overflow-tooltip />
+          </el-table>
+          <template v-if="diagnosisReport.recommendations.length > 0">
+            <h4 style="margin: 16px 0 8px">建议</h4>
+            <ul><li v-for="(rec, i) in diagnosisReport.recommendations" :key="i">{{ rec }}</li></ul>
+          </template>
+        </template>
+        <p v-else-if="diagnosisError" class="check-error">{{ diagnosisError }}</p>
+        <p v-else-if="!diagnosisLoading" class="history-empty">暂无诊断报告</p>
+      </div>
+      <template #footer>
+        <el-button @click="diagnosisVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

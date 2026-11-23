@@ -421,6 +421,52 @@ export const alertsApi = {
 }
 
 // ---------------------------------------------------------------------------
+// DiagnosisService — host diagnosis (not /system/doctor, which is a daemon
+// self-check). gRPC-style path; protojson uses lowerCamelCase and renders
+// int64 as strings. repeated fields are always present ([]).
+// ---------------------------------------------------------------------------
+
+export interface DiagnosticFindingDTO {
+  id: string
+  category: string
+  severity: string
+  title: string
+  description?: string
+  evidence?: string
+  suggestion?: string
+}
+
+export interface DiagnosticReportDTO {
+  id: string
+  target: string
+  status: string
+  trigger?: string
+  alertId?: string
+  rootCause?: string
+  confidence?: number
+  summary?: string
+  recommendations: string[]
+  errors: string[]
+  startedAt?: string
+  durationMs?: string
+  findings: DiagnosticFindingDTO[]
+}
+
+export const diagnosisApi = {
+  diagnose: (
+    target: string,
+    opts?: { alertId?: string; timeoutSeconds?: number },
+  ): Promise<DiagnosticReportDTO> =>
+    post<DiagnosticReportDTO>('/DiagnosisService/Diagnose', {
+      target,
+      alertId: opts?.alertId,
+      timeoutSeconds: opts?.timeoutSeconds,
+    }),
+  get: (id: string): Promise<DiagnosticReportDTO> =>
+    post<DiagnosticReportDTO>('/DiagnosisService/GetDiagnosis', { id }),
+}
+
+// ---------------------------------------------------------------------------
 // AuditService
 // ---------------------------------------------------------------------------
 
