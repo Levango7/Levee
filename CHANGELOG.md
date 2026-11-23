@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 修复（file.exists / file.delete：补齐 spec 与词表已承诺但运行时缺失的 action）
+
+- `internal/executor/modules/file` 新增 `exists`（只读 `test -e`，0=存在/1=不存在均正常，其他退出码报错）与 `delete`（`rm -f -- <quoted>`）。
+- **修复确定性缺陷**：`docs/leveelang-spec.md` 与固有不可逆词表（`inherent_irreversible.go`）早已声明这两个 action，但 `file.Actions()` 只支持 copy/template，运行时报 "does not support action"；现补齐，delete 自动走既有审批升级 + 白名单。
+- **fail-closed**：path 校验拒空/根/`..` 穿越/通配符/NUL，`rm -f --` + shellQuote 防选项注入与 globbing；破坏性 `delete` 带 `Changed=true`，`exists` 只读。
+- DSL typechecker 加两 action 签名（path: string），Actions 守卫与 5 个单测（只读性、存在/不存在、删除、坏路径触达前失败、引号转义）同步。
+- **边界**：file 模块（含既有 copy/template）假定 POSIX 目标（`sha256sum`/`chmod`/`rm`/`sh`）；Windows/WinRM 目标是既有边界，不在本笔范围。
+
 ### 新增（D-7 变更前实测预检：mysql.preflight / pg.preflight）
 
 - 新增只读 executor action `mysql.preflight` / `pg.preflight`，复用 `schema_snapshot` 的"目标机上下文 + 只读 channel.Exec"范式：对影响面里的表跑 EXPLAIN + 行数估算（`information_schema.TABLES.TABLE_ROWS` / `pg_class.reltuples`），输出首行自述"EXPLAIN = 优化器估计、非实测锁时长"。
