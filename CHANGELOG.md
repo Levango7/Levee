@@ -34,6 +34,11 @@
 - `credential.storage`（local|vault）与 `credential.key_derivation`（argon2id）是从未消费的死旋钮——直接从 `CredentialConfig` 删除，两份样例、部署脚本、靶场配置的残留同步清掉；`credential.encryption` 是真接线保留。
 - 新增 `cmd/levee/d11_config_wiring_test.go` 反射守卫（防死旋钮复辟、钉 export_format/encryption 被生产代码消费）。`go test ./...` 全绿。
 
+### 修复（CreateChange(templateName) 可直接进入 plan）
+
+- `CreateChange` 在 `workflowFile` 为空且配置模板服务时，复用 `InstantiateTemplate` 的同一模板解析路径，把参数渲染后的 workflow source 写入 run；不再出现创建返回 200、随后 plan 因 `has no workflow source` 返回 500。显式 `workflowFile` 仍优先。
+- serve 组合层共享同一个 TemplateService；未配置模板服务的精简嵌入式调用保留既有 metadata-only draft 行为。新增解析/缺模板不落地、生产装配及 CreateChange→真实 GeneratePlan 全链测试，生产接线删除变异转红后复原。
+
 ### 新增（D-8 第二维：HMAC key epoch，换 key 与篡改可区分）
 
 - keyed 摘要新增 8-hex key 指纹前缀（`k<8hex>:` / `hmac-sm3:k<8hex>:`）；验链器按存储值自带 epoch 比对当前 key，不符报新失败类型 `FailureKeyEpochMismatch`（`ErrKeyEpochMismatch`，字符串 `key_epoch_mismatch`），与 `hash_mismatch`（真篡改）明确区分。这是审计产品"签字前会被追问"的一问：运维换 key 不再被读成篡改。

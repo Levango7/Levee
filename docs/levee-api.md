@@ -886,6 +886,8 @@ RESTful 风格，支持两套路径：
 
 表：REST API 端点对照表（RESTful 路径 / gRPC 兼容路径）
 
+> `POST /changes` 的 `workflowFile` 是显式 workflow source（路径或内联 YAML），优先于 `templateName`。当 `workflowFile` 为空且服务端配置了模板服务时，`templateName + params` 会经与 `/templates/instantiate` 相同的解析路径渲染并写入 run，后续 `/changes/:id/plan` 可直接使用该 source；模板不存在或必填参数缺失在创建时即报错，不再留下无法 plan 的草稿。未配置模板服务的精简嵌入式服务保留 metadata-only draft 行为。
+
 | 方法 | RESTful 路径 | gRPC 兼容路径 | 语义 | 对应 CLI |
 | --- | --- | --- | --- | --- |
 | POST | `/changes` | `/api/v1/ChangeService/CreateChange` | 创建变更 | `levee new` |

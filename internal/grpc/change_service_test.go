@@ -105,6 +105,7 @@ func TestCreateChange_AuditEntryCreated(t *testing.T) {
 	req := &pb.CreateChangeRequest{
 		Label:        "audited-change",
 		TemplateName: "deploy",
+		WorkflowFile: "workflow.levee",
 	}
 
 	resp, err := svc.CreateChange(ctx, req)

@@ -1759,6 +1759,7 @@ func buildServeServices(ctx context.Context, store state.Store, runEvents *wirin
 		return serveServices{}, fmt.Errorf("open template library: %w", err)
 	}
 	templateSvc := grpc.NewTemplateService(store, tmplLib).WithAuthorizer(authzSvc)
+	changeSvc.WithTemplateService(templateSvc)
 	targetSvc := grpc.NewTargetService(store, nil).WithAuthorizer(authzSvc)
 	if credResolver != nil {
 		// Credential-aware probing: CheckTarget probes targets with their
