@@ -378,6 +378,14 @@ var actionSignatures = map[string]map[string]Type{
 		"dest": TypeString{},
 		"mode": TypeString{},
 	},
+	// file.exists (read-only) and file.delete (inherently irreversible).
+	// Both name a single path; the runtime fail-closed-validates it.
+	"file.exists": {
+		"path": TypeString{},
+	},
+	"file.delete": {
+		"path": TypeString{},
+	},
 	"svc.restart": {
 		"name":    TypeString{},
 		"timeout": TypeDuration{},
