@@ -25,6 +25,12 @@
 - 与 SM3 算法前缀正交（`sm3:k<fp>:<hex>` 同带两种前缀）；分片保持算法前缀在前兼容历史。
 - **边界**：`hmackey_switch_test.go` ratchet 仍成立——无 epoch 的历史行（unkeyed 建链 + 事后加 key）仍只能报 mismatch，归档重开链仍是唯一受支持路径；带 epoch 的新行由 `key_epoch_test.go` 覆盖。
 - 新增 `internal/audit/key_epoch_test.go`（epoch 唯一性、换 key/key 移除报 epoch mismatch、SM3 keyed 往返、chain 内失败类型）；`go test ./...` 全绿，全部历史测试保持通过。proto 注释与 levee-api 失败类型列表同步。
+
+### 修复（ListChanges totalSize 改为调用者可见的真实总数）
+
+- 未过滤/单状态路径由 SQLite/PostgreSQL 原生 `COUNT(*)` 返回真实匹配总数；多状态、标签与授权可见性过滤使用分批扫描，并复用列表的同一组谓词，不再把当前页长度当成 totalSize。
+- 25 条分页、100 条复杂过滤、KPI `pageSize=1` 与授权可见行计数均有契约测试；恢复旧页长语义的变异实测转红后复原。
+
 ### 修复（D-5 snapshot 恢复契约：PG fail-closed + 最新基准选择）
 
 - `pg.query + strategy: snapshot` 在捕获前直接拒绝，既有空快照在恢复时同样拒绝；PostgreSQL 内省证据不再能被当成可恢复基准并以 no-op 记为回滚成功。需要回滚的 PG 变更必须声明显式 rollback steps。
