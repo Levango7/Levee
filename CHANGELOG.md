@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（D-11 配置假旋钮收尾：接线 export_format，删 storage/key_derivation）
+
+- `audit.export_format` 接线：CSV 导出器本就存在，`--format` 未显式指定时取配置值（flag 优先）；新增 `pickExportFormat` 纯函数单测。
+- `credential.storage`（local|vault）与 `credential.key_derivation`（argon2id）是从未消费的死旋钮——直接从 `CredentialConfig` 删除，两份样例、部署脚本、靶场配置的残留同步清掉；`credential.encryption` 是真接线保留。
+- 新增 `cmd/levee/d11_config_wiring_test.go` 反射守卫（防死旋钮复辟、钉 export_format/encryption 被生产代码消费）。`go test ./...` 全绿。
+
 ### 新增（D-8 第二维：HMAC key epoch，换 key 与篡改可区分）
 
 - keyed 摘要新增 8-hex key 指纹前缀（`k<8hex>:` / `hmac-sm3:k<8hex>:`）；验链器按存储值自带 epoch 比对当前 key，不符报新失败类型 `FailureKeyEpochMismatch`（`ErrKeyEpochMismatch`，字符串 `key_epoch_mismatch`），与 `hash_mismatch`（真篡改）明确区分。这是审计产品"签字前会被追问"的一问：运维换 key 不再被读成篡改。

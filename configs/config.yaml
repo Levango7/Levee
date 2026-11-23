@@ -87,11 +87,9 @@ lock:
   retry_interval: 5s                # 获取锁重试间隔
   max_retry: 10                     # 最大重试次数
 
-# 凭据
+# 凭据（存储固定本地加密 state.Store、KDF 固定 argon2id，均不可配）
 credential:
-  storage: local                    # local (MVP) | vault (V1)
-  encryption: aes256-gcm            # 加密算法
-  key_derivation: argon2id          # 密钥派生
+  encryption: aes256-gcm            # 加密算法: aes256-gcm | sm4-gcm
 
 # 通知
 notify:

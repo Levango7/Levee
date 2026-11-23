@@ -171,9 +171,7 @@ channel:
     pool_size: 4
 
 credential:
-  storage: local
   encryption: aes256-gcm
-  key_derivation: argon2id
 
 executor:
   default_concurrency: 4

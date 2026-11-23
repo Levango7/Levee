@@ -1043,7 +1043,7 @@ levee audit export <run-id> [--format FORMAT]
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `--format` | `json` | 导出格式：json 或 csv |
+| `--format` | `json` | 导出格式：json 或 csv。显式指定时覆盖配置 `audit.export_format`（D-11）；未指定时取配置值（默认 json）|
 
 **示例**
 

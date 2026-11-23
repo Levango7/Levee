@@ -90,9 +90,7 @@ channel:
     become_user: ""
 
 credential:
-  storage: local
   encryption: aes256-gcm
-  key_derivation: argon2id
 
 executor:
   default_concurrency: 10

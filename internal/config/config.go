@@ -406,11 +406,12 @@ type LockConfig struct {
 	MaxRetry      int           `json:"max_retry"      mapstructure:"max_retry"`
 }
 
-// CredentialConfig selects the credential storage backend and crypto parameters.
+// CredentialConfig selects the credential encryption algorithm. The storage
+// backend is fixed to the local encrypted state.Store (SQLite/PostgreSQL) and
+// the KDF is fixed to argon2id — neither was ever configurable (D-11: removed
+// the storage/key_derivation fields that validated but had no effect).
 type CredentialConfig struct {
-	Storage       string `json:"storage"        mapstructure:"storage"`        // local | vault
-	Encryption    string `json:"encryption"     mapstructure:"encryption"`     // aes256-gcm
-	KeyDerivation string `json:"key_derivation" mapstructure:"key_derivation"` // argon2id
+	Encryption string `json:"encryption" mapstructure:"encryption"` // aes256-gcm | sm4-gcm
 }
 
 // NotifyConfig configures outbound notifications and mirrors: the generic
@@ -942,11 +943,6 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 	}
 
 	// Credential
-	switch cfg.Credential.Storage {
-	case "local", "vault":
-	default:
-		problems = append(problems, fmt.Sprintf("credential.storage %q must be local|vault", cfg.Credential.Storage))
-	}
 	switch cfg.Credential.Encryption {
 	case "":
 		problems = append(problems, "credential.encryption is required")
@@ -956,9 +952,6 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 		// AES-only deployments (see internal/credential).
 	default:
 		problems = append(problems, fmt.Sprintf("credential.encryption %q must be aes256-gcm|sm4-gcm", cfg.Credential.Encryption))
-	}
-	if cfg.Credential.KeyDerivation == "" {
-		problems = append(problems, "credential.key_derivation is required")
 	}
 
 	// Notify.Webhook
@@ -1112,9 +1105,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("lock.max_retry", 10)
 
 	// Credential
-	v.SetDefault("credential.storage", "local")
 	v.SetDefault("credential.encryption", "aes256-gcm")
-	v.SetDefault("credential.key_derivation", "argon2id")
 
 	// Notify.Webhook
 	v.SetDefault("notify.webhook.enabled", false)
@@ -1274,7 +1265,7 @@ func allKeys() []string {
 		"audit.hash_chain", "audit.worm_storage",
 		"audit.retention_days", "audit.export_format", "audit.digest_mode",
 		"lock.ttl", "lock.retry_interval", "lock.max_retry",
-		"credential.storage", "credential.encryption", "credential.key_derivation",
+		"credential.encryption",
 		"notify.webhook.enabled", "notify.webhook.url",
 		"notify.webhook.timeout", "notify.webhook.retry",
 		"notify.jira.enabled", "notify.jira.url", "notify.jira.api_token",
