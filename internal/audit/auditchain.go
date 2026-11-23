@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -296,9 +297,13 @@ func (b *AuditChainBuilder) Verify(ctx context.Context) (*AuditChainResult, erro
 	err := b.walkChain(ctx, func(a *state.Audit) error {
 		match, want, verr := verifyAuditHash(a, prev)
 		if verr != nil {
+			ftype := FailureHashMismatch
+			if errors.Is(verr, ErrKeyEpochMismatch) {
+				ftype = FailureKeyEpochMismatch // key rotated, not tampering
+			}
 			result.Valid = false
 			result.Failures = append(result.Failures, AuditChainFailure{
-				AuditID: a.ID, Index: i, Type: FailureHashMismatch,
+				AuditID: a.ID, Index: i, Type: ftype,
 				Expected: "", Actual: a.CurrHash,
 				PrevExpected: prev, PrevActual: a.PrevHash,
 			})

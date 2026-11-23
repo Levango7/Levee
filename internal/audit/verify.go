@@ -34,6 +34,13 @@ const (
 	// hash chain has not been built for this record (Build was never run or
 	// the record was added after Build).
 	FailureEmptyHash
+	// FailureKeyEpochMismatch indicates the record's keyed digest was produced
+	// by a DIFFERENT HMAC key than the one currently configured. This is NOT
+	// tampering: it means the operator rotated/changed LEVEE_AUDIT_HMAC_KEY and
+	// the historical chain must be re-opened from an archive (see
+	// docs/deployment.md §5.6). Distinguishing it from FailureHashMismatch is
+	// the whole point of the D-8 key-epoch work.
+	FailureKeyEpochMismatch
 )
 
 // String returns a human-readable description of the failure type.
@@ -45,6 +52,8 @@ func (ft FailureType) String() string {
 		return "prev_hash_mismatch"
 	case FailureEmptyHash:
 		return "empty_hash"
+	case FailureKeyEpochMismatch:
+		return "key_epoch_mismatch"
 	default:
 		return "unknown"
 	}
@@ -203,9 +212,13 @@ func checkTrace(t *state.Trace, index int, prevHash string) (*ChainFailure, bool
 	// SHA-256/SM3 chain verify with each row under its own algorithm.
 	match, legacy, expected, verr := verifyTraceHash(t, prevHash)
 	if verr != nil {
+		ftype := FailureHashMismatch
+		if errors.Is(verr, ErrKeyEpochMismatch) {
+			ftype = FailureKeyEpochMismatch // key rotated, NOT tampering (D-8)
+		}
 		return &ChainFailure{
 			TraceID: t.ID, Index: index, Expected: expected, Actual: t.CurrHash,
-			PrevExpected: prevHash, PrevActual: t.PrevHash, Type: FailureHashMismatch,
+			PrevExpected: prevHash, PrevActual: t.PrevHash, Type: ftype,
 		}, false
 	}
 

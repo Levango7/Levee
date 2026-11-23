@@ -52,6 +52,23 @@ var (
 	hmacKey []byte
 )
 
+// keyEpochPrefixLen is the number of hex chars of the key fingerprint embedded
+// in keyed digest values ("k" + 8 hex + ":"). Short enough to keep digests
+// compact, long enough that an accidental key collision is negligible.
+const keyFingerprintHexLen = 8
+
+// keyEpochID returns the short fingerprint of the active HMAC key, or "" when
+// unkeyed. It is derived from the key bytes themselves so different keys get
+// different epochs without any operator-managed epoch number.
+func keyEpochID() string {
+	auditKey() // ensure resolution
+	if len(hmacKey) == 0 {
+		return ""
+	}
+	s := sha256.Sum256(hmacKey)
+	return hex.EncodeToString(s[:])[:keyFingerprintHexLen]
+}
+
 // auditKey lazily resolves the HMAC key from the environment exactly once.
 // A nil result means "unkeyed" (plain SHA-256). A key shorter than
 // minHMACKeyLen is warned about and ignored.
@@ -75,6 +92,11 @@ func auditKey() []byte {
 // callers (and tests via a fresh process environment) can introspect the
 // effective digest mode.
 func Keyed() bool { return len(auditKey()) > 0 }
+
+// KeyEpochID returns the short fingerprint of the active HMAC key (the epoch
+// tag embedded in keyed digests), or "" when unkeyed. Exposed so the REST
+// chain-mode endpoint can report which key epoch new rows are written under.
+func KeyEpochID() string { return keyEpochID() }
 
 // ResetKeyForTest re-arms the lazy HMAC key resolution so a test can
 // exercise both digest modes inside one process.
@@ -108,7 +130,32 @@ const (
 
 	prefixSM3     = "sm3:"
 	prefixHMACSM3 = "hmac-sm3:"
+
+	// keyEpochTag is "k" + keyFingerprintHexLen hex chars + ":". It is embedded
+	// in keyed digests to record WHICH key produced them, so verification can
+	// tell "operator changed the key" apart from "someone rewrote the chain".
+	keyEpochTagPrefix = "k"
+	keyEpochTagLen    = len(keyEpochTagPrefix) + keyFingerprintHexLen + 1 // "k" + 8 hex + ":"
 )
+
+// keyEpochTag returns the full epoch tag for the active key (e.g. "k1a2b3c4d:"),
+// or "" when unkeyed.
+func keyEpochTag() string {
+	id := keyEpochID()
+	if id == "" {
+		return ""
+	}
+	return keyEpochTagPrefix + id + ":"
+}
+
+func isLowerHex(s string) bool {
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
 
 // CurrentDigestMode is the process-wide configured digest mode. It is resolved
 // lazily from the environment (LEVEE_AUDIT_DIGEST_MODE) so it can be read by the
@@ -184,7 +231,7 @@ func digestWithMode(payload, mode string) string {
 			mac := hmac.New(gmcrypto.NewSM3, key)
 			mac.Write([]byte(payload))
 			sum = mac.Sum(nil)
-			return prefixHMACSM3 + hex.EncodeToString(sum)
+			return prefixHMACSM3 + keyEpochTag() + hex.EncodeToString(sum)
 		}
 		s := gmcrypto.SM3Sum([]byte(payload))
 		sum = s[:]
@@ -193,7 +240,7 @@ func digestWithMode(payload, mode string) string {
 		if len(key) > 0 {
 			mac := hmac.New(sha256.New, key)
 			mac.Write([]byte(payload))
-			return hex.EncodeToString(mac.Sum(nil))
+			return keyEpochTag() + hex.EncodeToString(mac.Sum(nil))
 		}
 		s := sha256.Sum256([]byte(payload))
 		return hex.EncodeToString(s[:])
@@ -270,38 +317,92 @@ func verifyWORMChecksum(trace *state.Trace) bool {
 	return trace.CurrHash == legacyChecksum(trace)
 }
 
+// keyEpochFrom returns the epoch id from a digest body beginning with a
+// "k<8hex>:" tag, or "" when there is no tag. A historical keyed body is bare
+// hex: epoch "" means "un-tagged", and the caller keeps the legacy behavior
+// (recompute with the current key — the un-tagged ratchet).
+func keyEpochFrom(body string) string {
+	if len(body) >= keyEpochTagLen && strings.HasPrefix(body, keyEpochTagPrefix) && body[keyEpochTagLen-1] == ':' {
+		id := body[len(keyEpochTagPrefix) : keyEpochTagLen-1]
+		if len(id) == keyFingerprintHexLen && isLowerHex(id) {
+			return id
+		}
+	}
+	return ""
+}
+
+// checkEpoch verifies that a stored key-epoch tag matches the active key. An
+// empty stored epoch means an un-tagged historical keyed digest — those cannot
+// be epoch-checked and keep the legacy recompute behavior.
+func checkEpoch(storedEpoch string) error {
+	if storedEpoch == "" {
+		return nil // pre-epoch historical keyed digest
+	}
+	current := keyEpochID()
+	if current == "" {
+		return fmt.Errorf("%w: stored key epoch %q but no HMAC key configured", ErrKeyEpochMismatch, storedEpoch)
+	}
+	if storedEpoch != current {
+		return fmt.Errorf("%w: stored %q current %q", ErrKeyEpochMismatch, storedEpoch, current)
+	}
+	return nil
+}
+
 // recomputeCanonical recomputes the digest of an already-canonicalized payload
-// using the family declared by the stored hash's prefix. It returns the
-// recomputed string (including the same prefix) so callers can compare it to
-// the stored value directly. Unknown prefixes fail closed.
+// using the family AND key epoch declared by the stored hash. The returned
+// string (with its prefixes) can be compared directly to the stored value.
+// ErrKeyEpochMismatch is returned when the stored epoch tag does not match the
+// active key — the verifier maps this to a distinct failure type so "key
+// rotated" is never reported as "chain tampered". Unknown prefixes fail closed.
 func recomputeCanonical(payload, stored string) (string, error) {
 	switch {
 	case strings.HasPrefix(stored, prefixHMACSM3):
-		// Keyed SM3: a key MUST be configured to verify; if it was removed,
-		// the chain cannot be recomputed (same property as keyed SHA-256).
+		body := strings.TrimPrefix(stored, prefixHMACSM3)
+		epoch := keyEpochFrom(body)
+		if err := checkEpoch(epoch); err != nil {
+			return "", err
+		}
 		key := auditKey()
 		if len(key) == 0 {
 			return "", fmt.Errorf("audit: stored hash is HMAC-SM3 but %s is not set", EnvHMACKey)
 		}
 		mac := hmac.New(gmcrypto.NewSM3, key)
 		mac.Write([]byte(payload))
-		return prefixHMACSM3 + hex.EncodeToString(mac.Sum(nil)), nil
+		tag := ""
+		if epoch != "" {
+			tag = keyEpochTagPrefix + epoch + ":"
+		}
+		return prefixHMACSM3 + tag + hex.EncodeToString(mac.Sum(nil)), nil
 	case strings.HasPrefix(stored, prefixSM3):
-		// Unkeyed SM3: must NOT silently switch to keyed just because a key is
-		// now configured — that would be the D-8 failure mode at the algorithm
-		// level. Recompute with unkeyed SM3 regardless of current key state.
+		// Unkeyed SM3: family is self-describing; a key-epoch tag on an unkeyed
+		// SM3 value would be malformed and is rejected below via the colon check.
+		if strings.Contains(strings.TrimPrefix(stored, prefixSM3), ":") {
+			return "", fmt.Errorf("audit: unexpected key epoch on unkeyed SM3 hash %q", stored)
+		}
 		s := gmcrypto.SM3Sum([]byte(payload))
 		return prefixSM3 + hex.EncodeToString(s[:]), nil
 	default:
-		// A colon means the value declares a family prefix; if it is not one
-		// we recognise, fail closed rather than guess (a corrupted/tampered
-		// hash must not be silently treated as historical SHA-256).
+		// Possibly a keyed SHA-256 WITH an epoch tag ("k<8hex>:<hex>").
+		if len(stored) >= keyEpochTagLen && strings.HasPrefix(stored, keyEpochTagPrefix) && stored[keyEpochTagLen-1] == ':' {
+			epoch := keyEpochFrom(stored)
+			if err := checkEpoch(epoch); err != nil {
+				return "", err
+			}
+			key := auditKey()
+			if len(key) == 0 {
+				return "", fmt.Errorf("audit: stored hash is keyed but %s is not set", EnvHMACKey)
+			}
+			mac := hmac.New(sha256.New, key)
+			mac.Write([]byte(payload))
+			return keyEpochTagPrefix + epoch + ":" + hex.EncodeToString(mac.Sum(nil)), nil
+		}
+		// A colon elsewhere means an unrecognised family prefix: fail closed.
 		if strings.Contains(stored, ":") {
 			return "", fmt.Errorf("audit: unknown digest prefix in %q", stored)
 		}
-		// No prefix: historical/default SHA-256 (keyed or unkeyed per current
-		// key). This preserves the existing ratchet: adding a key breaks the
-		// historical chain exactly as before (D-8 key epoch is out of scope).
+		// Bare hex: historical/default SHA-256. No epoch tag means we cannot
+		// tell "unkeyed" from "keyed by an old key"; recompute with the current
+		// key state (the documented, unavoidable ratchet for pre-epoch rows).
 		return digest(payload), nil
 	}
 }

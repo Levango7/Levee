@@ -17,6 +17,11 @@ var (
 	// ErrHashMismatch is returned by Verify when the recomputed hash of a trace
 	// record does not match the stored CurrHash, indicating tampering.
 	ErrHashMismatch = errors.New("audit: hash mismatch")
+	// ErrKeyEpochMismatch is returned by Verify when a stored keyed digest was
+	// produced by a DIFFERENT HMAC key than the one currently configured. It is
+	// distinct from ErrHashMismatch precisely so the verifier can tell
+	// "the operator rotated the key" apart from "the chain was tampered with".
+	ErrKeyEpochMismatch = errors.New("audit: HMAC key epoch mismatch")
 	// ErrInvalidBatchSize is returned when BuildBatch is called with a
 	// non-positive batch size.
 	ErrInvalidBatchSize = errors.New("audit: invalid batch size")
@@ -369,7 +374,15 @@ func (b *HashChainBuilder) Verify(ctx context.Context, runID string) (count int,
 				t.ID, t.PrevHash, prevHash, ErrHashMismatch)
 		}
 		match, _, want, verr := verifyTraceHash(t, prevHash)
-		if verr != nil || !match {
+		if verr != nil {
+			if errors.Is(verr, ErrKeyEpochMismatch) {
+				return i, fmt.Errorf("audit: trace %q key epoch mismatch (HMAC key rotated; re-open chain from archive): %w",
+					t.ID, ErrKeyEpochMismatch)
+			}
+			return i, fmt.Errorf("audit: trace %q curr hash mismatch: stored %q want %q: %w",
+				t.ID, t.CurrHash, want, ErrHashMismatch)
+		}
+		if !match {
 			return i, fmt.Errorf("audit: trace %q curr hash mismatch: stored %q want %q: %w",
 				t.ID, t.CurrHash, want, ErrHashMismatch)
 		}

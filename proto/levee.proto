@@ -903,7 +903,8 @@ message RunVerification {
 // field-for-field — including the numeric type, because that is what
 // `levee audit verify --json` prints for the local path (ChainFailure has no
 // custom marshaller). type is audit.FailureType:
-// 0 = hash_mismatch, 1 = prev_hash_mismatch, 2 = empty_hash.
+// 0 = hash_mismatch, 1 = prev_hash_mismatch, 2 = empty_hash,
+// 3 = key_epoch_mismatch (operator rotated HMAC key, NOT tampering).
 message AuditChainFailure {
   string trace_id = 1;
   int32 index = 2;
