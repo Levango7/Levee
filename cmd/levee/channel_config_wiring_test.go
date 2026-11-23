@@ -8,15 +8,16 @@ package main
 // named message — which reads exactly like a setting that does something.
 // It does not. Measured on 2026-11-18: of the thirteen fields, only four
 // originally reached a transport (strict_host_check, known_hosts,
-// become_method, become_user). The D-9 wiring then connected auth_method,
-// port and connect_timeout as well, bringing the wired total to seven. The
-// remaining six are validated and then dropped on the floor:
+// become_method, become_user). The D-9 wiring then connected SSH auth_method,
+// port, connect_timeout (total seven) and — in a later pass — all four
+// channel.winrm.* fields via winrm.SetDefaultConfig, bringing the wired total
+// to eleven. The registered WinRM factory now reads those defaults at Create
+// time instead of a stale Config{} snapshot. The remaining two are validated
+// and then dropped on the floor:
 //
 //   - channel.ssh.key_path — the key path comes from the resolved
 //     credential (CredentialRef.KeyPath), not from the config file;
-//   - channel.ssh.pool_size — the SSH pool carries its own defaults;
-//   - channel.winrm.* — the WinRM factory is registered with Config{}
-//     (internal/channel/winrm's init), so the whole section is inert.
+//   - channel.ssh.pool_size — the SSH pool carries its own defaults.
 //
 // A knob that validates but does nothing is the worst shape a setting can
 // have: the operator gets a boot-time error when they spell it wrong, and
@@ -63,17 +64,9 @@ var knownUnwiredChannelConfig = map[string]string{
 		"is expanded and validated but not forwarded to the transport.",
 	"Channel.SSH.PoolSize": "the SSH connection pool carries its own defaults " +
 		"(internal/channel/ssh/pool.go); the config value is not forwarded.",
-	"Channel.WinRM.Port": "the WinRM factory is registered with Config{} " +
-		"(internal/channel/winrm's init), so the whole winrm section is inert; " +
-		"the port comes from the target / the channel's DefaultPort.",
-	"Channel.WinRM.Transport": "same: the factory is registered with Config{}, so " +
-		"the transport is always the channel default (negotiate). The vocabulary is " +
-		"now aligned (negotiate|ntlm), but the section remains inert until its " +
-		"transport seam is wired.",
-	"Channel.WinRM.ConnectTimeout": "the WinRM channel uses its own DefaultTimeout " +
-		"(30s); the config value is not forwarded.",
-	"Channel.WinRM.PoolSize": "the WinRM pool carries its own defaults; the config " +
-		"value is not forwarded.",
+	// WinRM port/transport/connect_timeout/pool_size are all wired via
+	// winrm.SetDefaultConfig (D-9). The registered factory now reads the
+	// process defaults at Create time instead of a stale Config{} snapshot.
 }
 
 // channelConfigSelectors enumerates every field of the channel config

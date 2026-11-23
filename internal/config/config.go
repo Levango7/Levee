@@ -334,8 +334,11 @@ type SSHConfig struct {
 
 // WinRMConfig configures the WinRM channel.
 type WinRMConfig struct {
+	// All four fields use 0/"" to mean "unset" — the channel keeps its
+	// historical default (port 5985/5986, negotiate, 30s, pool 3). Only
+	// explicit values are forwarded via winrm.SetDefaultConfig (D-9).
 	Port           int           `json:"port"            mapstructure:"port"`
-	Transport      string        `json:"transport"       mapstructure:"transport"` // negotiate | ntlm
+	Transport      string        `json:"transport"       mapstructure:"transport"` // "" = unset | negotiate | ntlm
 	ConnectTimeout time.Duration `json:"connect_timeout" mapstructure:"connect_timeout"`
 	PoolSize       int           `json:"pool_size"       mapstructure:"pool_size"`
 }
@@ -658,9 +661,13 @@ func WinRMTransports() []string {
 // Create switches on strings.ToLower(cfg.Transport) with no trimming, so the
 // config side must be just as strict — accepting " negotiate " here while the
 // channel refused it would be the same class of drift this guard exists to
-// catch. The empty string is NOT accepted: it is not a spelling, and the Load
-// path never sees it anyway (SetDefault fills "negotiate").
+// catch. The empty string IS accepted as "unset" (D-9): it means the channel
+// keeps its own default (negotiate). It is not a transport spelling, so it is
+// handled separately and never added to WinRMTransports().
 func winRMTransportAccepted(s string) bool {
+	if s == "" {
+		return true // unset
+	}
 	t := strings.ToLower(s)
 	for _, v := range WinRMTransports() {
 		if t == v {
@@ -882,9 +889,11 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 		problems = append(problems, fmt.Sprintf("channel.ssh.become_method %q must be empty or sudo", cfg.Channel.SSH.BecomeMethod))
 	}
 
-	// Channel.WinRM
-	if cfg.Channel.WinRM.Port <= 0 || cfg.Channel.WinRM.Port > 65535 {
-		problems = append(problems, "channel.winrm.port must be in 1..65535")
+	// Channel.WinRM — 0/"" mean "unset" (channel keeps its historical default);
+	// negative values are invalid. D-9 wiring: these reach the channel via
+	// winrm.SetDefaultConfig, so an unset value must not be rejected.
+	if cfg.Channel.WinRM.Port < 0 || cfg.Channel.WinRM.Port > 65535 {
+		problems = append(problems, "channel.winrm.port must be 0 (unset) or in 1..65535")
 	}
 	// The accepted set is exactly what internal/channel/winrm dispatches on
 	// (Config.withDefaults + Create's transport switch) — see WinRMTransports()
@@ -898,11 +907,11 @@ func Validate(cfg *Config) error { //nolint:gocyclo // inherently complex: valid
 			"channel.winrm.transport %q must be one of %s", cfg.Channel.WinRM.Transport,
 			strings.Join(WinRMTransports(), " | ")))
 	}
-	if cfg.Channel.WinRM.ConnectTimeout <= 0 {
-		problems = append(problems, "channel.winrm.connect_timeout must be > 0")
+	if cfg.Channel.WinRM.ConnectTimeout < 0 {
+		problems = append(problems, "channel.winrm.connect_timeout must be 0 (unset) or > 0")
 	}
-	if cfg.Channel.WinRM.PoolSize <= 0 {
-		problems = append(problems, "channel.winrm.pool_size must be > 0")
+	if cfg.Channel.WinRM.PoolSize < 0 {
+		problems = append(problems, "channel.winrm.pool_size must be 0 (unset) or > 0")
 	}
 
 	// Approval
@@ -1070,11 +1079,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("channel.ssh.connect_timeout", 0)
 	v.SetDefault("channel.ssh.pool_size", 10)
 
-	// Channel.WinRM
-	v.SetDefault("channel.winrm.port", 5985)
-	v.SetDefault("channel.winrm.transport", "negotiate")
-	v.SetDefault("channel.winrm.connect_timeout", "10s")
-	v.SetDefault("channel.winrm.pool_size", 5)
+	// Channel.WinRM — "unset" (0/"") keeps the channel's historical defaults
+	// (port 5985/5986 by HTTPS, transport negotiate, TCP timeout 30s, pool 3).
+	// An explicit value is forwarded to the channel via SetDefaultConfig (D-9).
+	v.SetDefault("channel.winrm.port", 0)
+	v.SetDefault("channel.winrm.transport", "") // empty = unset; channel normalizes to negotiate
+	v.SetDefault("channel.winrm.connect_timeout", 0)
+	v.SetDefault("channel.winrm.pool_size", 0)
 
 	// Approval
 	v.SetDefault("approval.standard_timeout", "4h")
