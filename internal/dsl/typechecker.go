@@ -439,6 +439,16 @@ var actionSignatures = map[string]map[string]Type{
 		"port":     TypeString{},
 		"user":     TypeString{},
 	},
+	// D-7: live impact preflight (EXPLAIN/estimates on the target, read-only,
+	// fail-closed). No password argument — credentials come from the target's
+	// own client config, same as schema_snapshot.
+	"mysql.preflight": {
+		"tables":   TypeList{ElementType: TypeString{}},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+	},
 	"pg.query": {
 		"sql":      TypeString{},
 		"database": TypeString{},
@@ -448,6 +458,14 @@ var actionSignatures = map[string]map[string]Type{
 		"password": TypeString{},
 	},
 	"pg.schema_snapshot": {
+		"tables":   TypeList{ElementType: TypeString{}},
+		"schema":   TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+	},
+	"pg.preflight": {
 		"tables":   TypeList{ElementType: TypeString{}},
 		"schema":   TypeString{},
 		"database": TypeString{},

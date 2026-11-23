@@ -67,7 +67,7 @@ func New() *Module { return &Module{} }
 func (Module) Name() string { return "pg" }
 
 // Actions lists the verbs this module supports.
-func (Module) Actions() []string { return []string{"query", "schema_snapshot"} }
+func (Module) Actions() []string { return []string{"query", "schema_snapshot", "preflight"} }
 
 // Idempotent reports whether the module declares itself idempotent. It answers
 // false: `query` is idempotent-by-authorship, but the module cannot verify the
@@ -83,6 +83,8 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 		return m.query(ctx, input)
 	case "schema_snapshot":
 		return m.schemaSnapshot(ctx, input)
+	case "preflight":
+		return m.preflight(ctx, input)
 	default:
 		return nil, fmt.Errorf("pg: unsupported action %q", action)
 	}

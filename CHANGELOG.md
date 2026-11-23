@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（D-7 变更前实测预检：mysql.preflight / pg.preflight）
+
+- 新增只读 executor action `mysql.preflight` / `pg.preflight`，复用 `schema_snapshot` 的"目标机上下文 + 只读 channel.Exec"范式：对影响面里的表跑 EXPLAIN + 行数估算（`information_schema.TABLES.TABLE_ROWS` / `pg_class.reltuples`），输出首行自述"EXPLAIN = 优化器估计、非实测锁时长"。
+- **fail-closed**：args 错/表不存在（PG 用 `to_regclass` 存在性守卫）/非零退出/空输出一律报错，绝不编数字；`Changed=false` 不谎报变更；拒绝 `args.password`。
+- DSL 词表加两 action 签名（无 password），ratchet 测试点名；两方言各 2-3 单测（只读性、EXPLAIN 生成、坏参数触达目标前失败、空探测 fail-closed）。
+- **边界**：锁时长 EXPLAIN 测不出、明确不报；活库事实只作 run 证据（step stdout），**不进 plan 制品/plan_hash**（审批时发布单仍只有静态面 + "本单不猜"）；当前为 workflow 显式 step，自动 pre-apply hook 是后续产品决策。
+- `go test ./...` 全绿，golangci-lint 0 issues。
+
 ### 修复（D-9 WinRM 整段接线：channel.winrm.* 四字段接进传输层）
 
 - `winrm.SetDefaultConfig(port, transport, connect_timeout, pool_size)` 接收 `cfg.Channel.WinRM`；**注册工厂改为 Create 时读进程默认**（旧 init 期 `Config{}` 快照看不到 setter，是 WinRM 与 SSH 的关键差异），`serve` 对称转发 4 参。

@@ -120,8 +120,8 @@ func TestSignatureTableNamesOnlyExecutableActions(t *testing.T) {
 func TestDatabaseModuleActionsAreTyped(t *testing.T) {
 	signatures := dsl.ActionSignatures()
 	for _, key := range []string{
-		"mysql.query", "mysql.pt_osc", "mysql.replica_switch", "mysql.schema_snapshot",
-		"pg.query", "pg.schema_snapshot",
+		"mysql.query", "mysql.pt_osc", "mysql.replica_switch", "mysql.schema_snapshot", "mysql.preflight",
+		"pg.query", "pg.schema_snapshot", "pg.preflight",
 	} {
 		_, typed := signatures[key]
 		assert.True(t, typed,
