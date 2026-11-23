@@ -75,10 +75,11 @@ import (
 type ChangeService struct {
 	pb.UnimplementedChangeServiceServer
 
-	store    state.Store
-	engine   *EngineAdapter
-	approval *approval.Service
-	pause    *pause.PauseManager
+	store     state.Store
+	engine    *EngineAdapter
+	approval  *approval.Service
+	pause     *pause.PauseManager
+	templates *TemplateService
 
 	// onApprovalCreate fires after kickoffApproval durably created a
 	// pending approval record. Mirrors approval.Service's
@@ -167,6 +168,15 @@ func NewChangeService(
 		approval: appr,
 		pause:    pauseMgr,
 	}
+}
+
+// WithTemplateService enables CreateChange to resolve templateName into the
+// rendered workflow source. A reduced service without it keeps the legacy
+// metadata-only draft behaviour; the production serve composition always wires
+// the shared TemplateService, so its template-created drafts can be planned.
+func (s *ChangeService) WithTemplateService(templates *TemplateService) *ChangeService {
+	s.templates = templates
+	return s
 }
 
 // WithApprovalCreateObserver installs a post-create observer on the
@@ -536,9 +546,21 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	// every creation path has to agree on it.
 	creator := creatorFromCtx(ctx)
 
+	// A template-only create must persist the same rendered source that
+	// InstantiateTemplate uses. An explicit workflowFile keeps its historical
+	// precedence; templateName then remains descriptive metadata only.
+	workflowSource := req.GetWorkflowFile()
+	if strings.TrimSpace(workflowSource) == "" && strings.TrimSpace(req.GetTemplateName()) != "" && s.templates != nil {
+		resolved, err := s.templates.resolveWorkflow(ctx, req.GetTemplateName(), req.GetParams())
+		if err != nil {
+			return nil, err
+		}
+		workflowSource = resolved
+	}
+
 	run := &state.Run{
 		ID:             runID,
-		WorkflowName:   req.GetWorkflowFile(),
+		WorkflowName:   workflowSource,
 		TemplateName:   req.GetTemplateName(),
 		Label:          req.GetLabel(),
 		Team:           req.GetTeam(),
