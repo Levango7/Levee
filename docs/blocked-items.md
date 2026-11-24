@@ -50,6 +50,8 @@
 
 | D-11 `audit.export_format` / `credential.storage`（已交付 2026-11-23）：接线 export_format，删除 storage/key_derivation | 原缺口（2026-11-18）：两字段只校验不生效。**已按 NKT 纪律拆分收口**：① `audit.export_format` —— CSV 导出器（`exportTracesCSV`）本就存在，本笔把配置接成 `--format` 未显式指定时的默认值（flag 优先），新增 `pickExportFormat` 纯函数单测 + 接线守卫；② `credential.storage`（local\|vault）与 `credential.key_derivation`（argon2id）是**同型死旋钮**（VaultProvider 类虽在，但生产零实例化、配置无连接参数），直接**从 Config 删除**，两份样例/部署脚本/靶场配置的残留一并清掉；`credential.encryption` 是真接线（serve 走 `NewCredentialStoreWithAlgorithm`）保留。新增 D-11 反射守卫（防死旋钮复辟、钉三字段接线状态），`go test ./...` 全绿 | — | 触发条件（若将来真要接 vault）：需新增 Vault 配置节 + provider 构造 + KMS 注册/降级/生命周期，属新功能而非转发一个值（见 `internal/credential/vault_provider.go`），到时另立专项。**纪律不变**：宁可删字段也不留会校验却不生效的旋钮 |
 
+| D-12 `shell.script` 在 Windows/WinRM 目标上必失败（硬编码 POSIX `/tmp` + `sh` + `chmod`） | **缺口（2026-11-24 拓展盘点实读）**：`internal/executor/modules/shell/shell.go:110-131` 把脚本写到 `/tmp/levee-shell-<rand>.sh` 并 `chmod +x && sh … && rm -f`，Windows 目标无 `/tmp`/`sh`/`chmod`。这是**平台语义缺环**：shell 模块（exec/script）整体是 POSIX 语义，Windows 目标自带 WinRM 通道 + 专用 file/pkg/user/svc 模块；真正的 Windows 脚本支持需定"用 PowerShell 还是 cmd"的产品口径与解释器探测，不是顺手可补。当前对外口径：Windows 目标用专用模块，不用 shell.script | 中（平台探测 + 解释器选择 + 双路径测试） | 触发条件：真实客户要求 Windows 目标执行内联脚本，并裁决解释器（PowerShell vs cmd）。在那之前不伪装支持 |
+
 ## E. 卡在产品决策/需求分母（明确等触发，不焦虑不硬做）
 
 | 项 | 定档依据 |
@@ -58,6 +60,8 @@
 | E-2 变更记录结构化导出等按需项（`notify.webhook` HMAC 签名已随 run 生命周期镜像落地，`internal/notify/webhook.go:139`） | 2026-09-06 拍板：只在真实消费方出现时做。**2026-11-10 方向复核登记**：v1.2 把 SQL 审核平台标纳入「真实消费方类别」，故该类条款一旦出现即复核本条（结构化导出/SIEM·Syslog 对接仍无消费方） |
 | E-4 `levee schedule`（cron 定时触发变更） | **2026-10-28 定档：不做**。定位明言「不是调度器」（`product-positioning.md` §2）；触发归平台/CI（OpsMesh schedules / K8s CronJob / CI schedule），LEVEE 拥有的是**受治理的变更**；治理那一半（`window` 窗口阻断 + `calendar` 冻结）已实现。先例：`internal/scheduler` 因与已接入的 `dispatch` 职责重叠被整包退役。详见 `levee-design.md` §4.6.1。**2026-11-10 方向复核登记**：SQL 审核平台标常见「定时/触发式**变更窗口**」要求——**变更窗口 ≠ 调度器**，本条「不做」**仍成立**；但若标书要求 LEVEE **自带**定时触发，则「触发归平台/CI」的口径需据此重述（登记见 `docs/project-status-2026-11.md` §15） |
 | E-5 跨机房 run 拆分（一条 run 的目标跨两个机房时，按机房拆批分派执行） | **裁决（2026-11-11，代理 owner）：不做**，等**真实客户诉求**——单条 run 跨机房且必须一次执行完。成本表见 `docs/cross-region-run-split-cost.md`（PR #341，已合 master `79ca81c`；逐条 file:line 可复算，其五条核心声称已在 `a148c4c` 树独立复算成立）。理由：形态①（fail-closed 拒绝 + 可操作诊断，PR #327）成本 0 且已在 master，与「假成功零容忍」相容——没有真实诉求时，唯一相容的选项是**不假装能拆**。A-full＝六个成本面（周级）＋改 plan 生成器或派发时拆批 ⇒ 动 **plan_hash 的审批绑定承诺**与 batches 表审计粒度/post_batch 门禁语义；A-narrow 只省「批次同质化」一面，其余五面（闭包跨节点可恢复续跑、per-batch 租约/epoch、批间 run 态、takeover 识别、跨节点回滚编排）与 A-full 同价——「名义窄、成本不窄」。**若诉求出现，二选一取 A-narrow**（避开 plan_hash 语义变更与审计粒度变更） |
+
+| E-6 conversation 告警驱动自动诊断（alert → 会话 → 自动诊断 → 建议闭环） | **缺口（2026-11-24 实读）**：`NewSessionFromAlert` 的注释曾承诺"配置诊断引擎时同步跑诊断、存 report id、转 StateRecommending"，但实现只 `SetState(StateDiagnosing)` 就返回。根因不是惰性，而是**契约缺环**：alert ID 不是目标主机，仓内无 alert→target 映射，自动推断 target 等于编造诊断输入——违背诚实口径。**当前行为（已订正注释对齐）**：告警会话从 StateDiagnosing 起步，操作员须显式 `/diagnose <target>` 才触发同步诊断（`runDiagnose`，`internal/conversation/engine.go`）。**解锁条件**：告警系统提供结构化的 host/labels→target 映射契约（或客户明确接受"alert 建会话 + 人工填 target"的半自动形态）；届时再在 NewSessionFromAlert 内按真实映射触发 runDiagnose，并把 30s 同步诊断的 UX 一并定案 |
 
 > **2026-11-10 方向复核（E 类整体）**：市场扫描裁决落地定位 v1.2 后，**E-1 / E-2 / E-4 三条**的「无真实消费方」依据进入**可复核**状态，但**三条均未被推翻**（依据如各行所注）——不要把「有市场扫描」读成「定档作废」。（E-5 是另一条独立搁置项：2026-11-11 裁决「不做、等真实客户诉求」，与本次方向复核无关。）复核材料与市场惯例对标见 agent 板 `opencode-tender-registry.md`（R 区＝真实招标要求原文；P 区＝账本锚点；M 区＝市场惯例，非标书要求；D 区＝已落地的方向裁决；T 区＝复核触发登记）。
 

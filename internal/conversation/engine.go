@@ -204,11 +204,13 @@ func (e *ConversationEngine) NewSession(userID string) (*Session, error) {
 }
 
 // NewSessionFromAlert creates a new session linked to the given alert and
-// immediately transitions it to StateDiagnosing. When a diagnosis engine is
-// configured the engine runs a synchronous diagnosis, stores the resulting
-// report id on the session and transitions to StateRecommending; when no
-// diagnosis engine is configured the session stays in StateDiagnosing and
-// the operator is expected to drive the flow manually.
+// transitions it to StateDiagnosing. It does NOT auto-run a diagnosis: an
+// alert ID is not a target host, and inferring one would fabricate the very
+// input the diagnosis operates on. The operator must supply a target via
+// /diagnose <target>; until then the session stays in StateDiagnosing.
+// (The older comment promised an automatic synchronous diagnosis from the
+// alert, but no alert→target mapping exists in the current contract — see
+// docs/blocked-items.md E-6.)
 func (e *ConversationEngine) NewSessionFromAlert(userID, alertID string) (*Session, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, fmt.Errorf("conversation: new session from alert: %w", ErrEmptyMessage)
