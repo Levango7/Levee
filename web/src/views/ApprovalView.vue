@@ -115,6 +115,8 @@ const approver = ref(currentSubject())
 // widths at 1280 — measured, the full set needs 1100px against a ~950px panel.
 const { width: viewportWidth } = useResponsive()
 const denseColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1400)
+const compactColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1200)
+const narrowColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 900)
 
 // One decision at a time. Approve/reject/delegate are irreversible writes
 // to the audit chain; a double-click (or a double keypress of a/r/d while
@@ -341,7 +343,7 @@ const pendingCount = computed(() => pending.value.length)
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="变更" min-width="260">
+          <el-table-column label="变更" :min-width="narrowColumns ? 140 : 260">
             <template #default="{ row }">
               <div class="cell-change">
                 <span class="cell-change__label">{{ row.label }}</span>
@@ -349,10 +351,10 @@ const pendingCount = computed(() => pending.value.length)
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="120">
+          <el-table-column label="状态" :width="narrowColumns ? 96 : 120">
             <template #default="{ row }"><StatusTag :status="row.status" variant="plain" /></template>
           </el-table-column>
-          <el-table-column label="优先级" width="88">
+          <el-table-column v-if="!compactColumns" label="优先级" width="88">
             <template #default="{ row }">
               <span class="cell-prio" :class="`cell-prio--${row.priority}`">{{ priorityLabel(row.priority) }}</span>
             </template>
@@ -363,12 +365,12 @@ const pendingCount = computed(() => pending.value.length)
                创建时间 and 决策 stay visible at full width. -->
           <el-table-column v-if="!denseColumns" prop="team" label="团队" width="110" />
           <el-table-column v-if="!denseColumns" prop="environment" label="环境" width="110" />
-          <el-table-column label="创建时间" width="168">
+          <el-table-column v-if="!compactColumns" label="创建时间" width="168">
             <template #default="{ row }">
               <span class="cell-time lv-mono">{{ formatTimestamp(row.createdAt) }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="决策" width="196" fixed="right">
+          <el-table-column label="决策" :width="narrowColumns ? 180 : 196" :fixed="compactColumns ? false : 'right'">
             <template #default="{ row }">
               <!-- :disabled="acting" is the visible half of the guard; the
                    handlers' own `if (acting.value) return` is the half that
