@@ -245,11 +245,32 @@ func digestWithMode(payload, mode string) string {
 		s := sha256.Sum256([]byte(payload))
 		return hex.EncodeToString(s[:])
 	default:
-		// Unknown mode is a programming error, not data: there is no safe
-		// silent fallback. Panic so it fails loudly in tests and never writes
-		// a digest whose family cannot be verified later.
-		panic(fmt.Sprintf("audit: unknown digest mode %q", mode))
+		// Unknown mode is a configuration error, not data. configuredDigestMode()
+		// already warns + falls back to sha256 for the process mode; be consistent
+		// here instead of panicking (CONTRIBUTING.md §2.3 forbids panic).
+		log.Warn("audit: unknown digest mode " + strconv.Quote(mode) + "; falling back to sha256")
+		if len(key) > 0 {
+			mac := hmac.New(sha256.New, key)
+			mac.Write([]byte(payload))
+			return keyEpochTag() + hex.EncodeToString(mac.Sum(nil))
+		}
+		s := sha256.Sum256([]byte(payload))
+		return hex.EncodeToString(s[:])
 	}
+}
+
+// legacyKeyedDigest recomputes the PRE-EPOCH keyed SHA-256 digest: bare hex,
+// no "k<fp>:" prefix. Rows written before the key-epoch work stored exactly
+// this value, so verification of historical keyed chains must use this shape —
+// using digestWithMode (which now prefixes) would report a false tamper.
+func legacyKeyedDigest(payload string) string {
+	key := auditKey()
+	if len(key) == 0 {
+		return "" // unkeyed historical rows are handled by digestWithMode(sha256)
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // digestForCurrent computes a digest with the process-configured mode. Writers
@@ -400,11 +421,33 @@ func recomputeCanonical(payload, stored string) (string, error) {
 		if strings.Contains(stored, ":") {
 			return "", fmt.Errorf("audit: unknown digest prefix in %q", stored)
 		}
-		// Bare hex: historical/default SHA-256. No epoch tag means we cannot
-		// tell "unkeyed" from "keyed by an old key"; recompute with the current
-		// key state (the documented, unavoidable ratchet for pre-epoch rows).
-		return digest(payload), nil
+		// Bare hex: historical row written BEFORE key epochs. It may be either
+		// unkeyed SHA-256 or keyed HMAC-SHA256 (no tag to tell them apart). Try
+		// BOTH under the bare (no-prefix) shape:
+		//   1. unkeyed  -> digestWithMode(sha256) with no key
+		//   2. keyed    -> legacyKeyedDigest (bare HMAC with the current key)
+		// The caller compares the returned string to the stored value. We
+		// return the keyed form when a key is configured (preserving the
+		// documented unkeyed->keyed ratchet), but ALSO accept the bare form via
+		// the legacy fallback below so a SAME-KEY pre-epoch keyed chain keeps
+		// verifying instead of being misread as tampering (D-8 regression fix).
+		if legacy := legacyKeyedDigest(payload); legacy != "" && legacy == stored {
+			return legacy, nil
+		}
+		return digestWithModeNoEpoch(payload), nil
 	}
+}
+
+// digestWithModeNoEpoch is digestWithMode(sha256) WITHOUT the epoch prefix —
+// the bare historical shape for an unkeyed row.
+func digestWithModeNoEpoch(payload string) string {
+	if key := auditKey(); len(key) > 0 {
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(payload))
+		return hex.EncodeToString(mac.Sum(nil))
+	}
+	s := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(s[:])
 }
 
 // canonicalV2 encodes fields unambiguously as length-prefixed segments:

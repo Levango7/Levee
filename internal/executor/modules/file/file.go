@@ -405,6 +405,11 @@ func (m *Module) fileDelete(ctx context.Context, input executor.ModuleInput) (*e
 	if res.ExitCode != 0 {
 		return nil, fmt.Errorf("file.delete: rm exited %d: %s", res.ExitCode, res.Stderr)
 	}
+	// Changed reports that the destructive action was EXECUTED, not that a
+	// file was provably present beforehand: rm -f is idempotent (missing file
+	// also exits 0), and probing existence first would add a racy extra round
+	// trip. This differs from read-only preflight actions, whose Changed must
+	// stay false. The irreversible declaration + approval gate cover the risk.
 	return &executor.ModuleOutput{
 		ExitCode: 0,
 		Stdout:   fmt.Sprintf("deleted: %s", shellQuote(path)),
