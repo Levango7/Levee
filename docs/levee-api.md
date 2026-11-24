@@ -956,6 +956,8 @@ RESTful 风格，支持两套路径：
 > - **`POST /changes/:id/apply`**（`ApplyChange`）：**不兑现，故明确拒绝**（`FailedPrecondition`，message 点名「要预览请用 `PlanChange`」）。proto 说这一档是「只打印计划并退出」，而打印计划是 `PlanChange` 的职责；这里若照旧执行，操作员说「预览」就会真的 apply 一条生产变更。
 > - **`POST /changes`**（`CreateChange`）：`dryRun` **空转但契约成立**——create 只建 draft 等审批，本来就不应用，所以「只计划并返回、不应用」这条语义无论如何都成立。
 >
+> **执行调用的等待与断链口径**：Web 客户端的 `apply` / `retry` / `rollback` 不继承普通查询的 30 秒 axios 超时，因为服务端会同步等待引擎终态；普通读取仍为 30 秒。真正的执行提交若连接中断，客户端只能判断「执行结果未知」，会先提示刷新变更状态，不能把断链当作执行失败并引导操作员直接重复提交。`rollback(dryRun:true)` 是只读预览，只共享长等待，断链仍按普通网络异常处理。服务端状态 CAS 与重试预算仍各自生效。
+>
 > **`plan` / `apply` 的拒绝分类（2026-11-17 起）**：这两条动作的失败分两类，HTTP 状态码不同，调用方按状态码分支即可，不必解析文案：
 > - **400（`InvalidArgument`）＝请求本身不成立**：`target_hosts` 为空（没给目标机）、目标机名不在 inventory 里。
 > - **412（`FailedPrecondition`）＝请求成立、当前状态不允许**：目标机已 retired、冻结窗口、SQL 审核拒绝、声明的门禁不可执行、已持久化的计划产物缺失或与 `plan_hash` 漂移（需重新 plan）。
