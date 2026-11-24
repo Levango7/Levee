@@ -533,10 +533,10 @@ onMounted(() => {
             </el-descriptions-item>
             <el-descriptions-item label="目标">{{ diagnosisReport.target }}</el-descriptions-item>
             <el-descriptions-item v-if="diagnosisReport.confidence !== undefined" label="置信度">
-              {{ Math.round(diagnosisReport.confidence * 100) }}%
+              <span class="num">{{ Math.round(diagnosisReport.confidence * 100) }}%</span>
             </el-descriptions-item>
             <el-descriptions-item v-if="diagnosisReport.durationMs" label="耗时">
-              {{ diagnosisReport.durationMs }} ms
+              <span class="num">{{ diagnosisReport.durationMs }}&nbsp;ms</span>
             </el-descriptions-item>
             <el-descriptions-item v-if="diagnosisReport.summary" label="摘要" :span="2">
               {{ diagnosisReport.summary }}
@@ -557,7 +557,7 @@ onMounted(() => {
             <ul><li v-for="(rec, i) in diagnosisReport.recommendations" :key="i">{{ rec }}</li></ul>
           </template>
         </template>
-        <p v-else-if="diagnosisError" class="check-error">{{ diagnosisError }}</p>
+        <p v-else-if="diagnosisError" class="check-error" role="status" aria-live="polite">{{ diagnosisError }}</p>
         <p v-else-if="!diagnosisLoading" class="history-empty">暂无诊断报告</p>
       </div>
       <template #footer>
@@ -574,6 +574,11 @@ onMounted(() => {
   margin-left: 6px;
   color: var(--lv-bad);
   font-size: var(--lv-text-xs);
+}
+
+/* Diagnosis figures: tabular digits keep confidence/duration aligned. */
+.num {
+  font-variant-numeric: tabular-nums;
 }
 
 .import-result {
