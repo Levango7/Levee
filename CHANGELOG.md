@@ -23,6 +23,12 @@
 - dist 已按 `make web` 流程重建并提交（CI 新鲜度检查要求）。
 - **边界**：这是主机诊断（DiagnosisService），与 SystemView 的 `/system/doctor` 守护进程自检是两回事；403 表示该环境无 apply 权限。
 
+### 修复（1024/768 核心页面几何：审批/变更/发布单/审计/告警）
+
+- 审批与变更在 <1200 取消 fixed-right 覆盖并隐藏次要时间列，<900 收窄主列；1024 KPI 改 2×2，操作按钮允许换行。发布单页头在窄屏纵向排列且操作区换行，不再逐字竖排或裁出视口。
+- 审计计数 nowrap，窄屏提供「左右滚动查看哈希链」提示；告警按 768 实测预算收窄四列，保留级别/标题/目标/触发时间。
+- 新增 `narrow-geometry-check.mjs` 并接入 browser-check：直接钉 `el-table-fixed-column--right`、正文末列右缘、标题高度/宽度、操作区视口边界与滚动提示。修复前抓到 4 个真实失败，修复后完整浏览器 ALL PASS；386 个 vitest、197/197 mock-wire、vue-tsc 全绿。
+
 ### 修复（file.exists / file.delete：补齐 spec 与词表已承诺但运行时缺失的 action）
 
 - `internal/executor/modules/file` 新增 `exists`（只读 `test -e`，0=存在/1=不存在均正常，其他退出码报错）与 `delete`（`rm -f -- <quoted>`）。

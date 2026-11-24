@@ -347,6 +347,8 @@ const trendLoading = ref(false)
 // guessed. useResponsive owns the listener and its disposal.
 const { width: viewportWidth } = useResponsive()
 const denseColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1400)
+const compactColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1200)
+const narrowColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 900)
 
 // The trend chart is drawn at the width of the panel that hosts it. Measured
 // rather than assumed: 640 was the SVG's default and at 1280+ the panel is
@@ -686,7 +688,7 @@ onBeforeUnmount(() => {
           @row-click="viewDetail"
         >
         <el-table-column type="selection" width="44" />
-        <el-table-column label="变更" min-width="260">
+        <el-table-column label="变更" :min-width="narrowColumns ? 140 : 260">
           <template #default="{ row }">
             <div class="cell-change">
               <span class="cell-change__label">{{ row.label }}</span>
@@ -694,7 +696,7 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="128">
+        <el-table-column label="状态" :width="narrowColumns ? 96 : 128">
           <template #default="{ row }">
             <StatusTag :status="row.status" variant="plain" />
           </template>
@@ -718,12 +720,12 @@ onBeforeUnmount(() => {
             <span class="lv-mono cell-template">{{ row.templateName || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="applies('created')" label="创建时间" width="170">
+        <el-table-column v-if="applies('created') && !compactColumns" label="创建时间" width="170">
           <template #default="{ row }">
             <span class="lv-mono cell-time">{{ formatTimestamp(row.createdAt) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="204" fixed="right" class-name="cell-actions">
+        <el-table-column label="操作" :width="narrowColumns ? 156 : 204" :fixed="compactColumns ? false : 'right'" class-name="cell-actions">
           <template #default="{ row }">
             <el-button text type="primary" @click.stop="router.push(`/monitor/${row.id}`)">监控</el-button>
             <el-button text type="primary" @click.stop="viewDetail(row)">详情</el-button>
@@ -997,12 +999,19 @@ onBeforeUnmount(() => {
    The flex gap owns the spacing so the column stays inside the container. */
 :deep(.cell-actions .cell) {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
 }
 
 :deep(.cell-actions .el-button + .el-button) {
   margin-left: 0;
+}
+
+@media (min-width: 900px) and (max-width: 1200px) {
+  .kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 </style>

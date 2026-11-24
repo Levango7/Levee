@@ -37,6 +37,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
+import { runNarrowGeometryChecks } from './narrow-geometry-check.mjs'
 
 // Candidate paths, in order. The Linux ones come first because CI runs there;
 // the Windows default is this repo's own machine.
@@ -770,6 +771,10 @@ console.log('\n[1h] narrow approval keeps the actor readable, desktop keeps the 
   check('1600 also keeps 审批人 on one line', head.labelWidth >= 24 && head.labelHeight <= 24, JSON.stringify(head))
   await page.close()
 }
+
+// ---------------------------------------------------------------------------
+console.log('\n[1i] narrow core pages keep columns, titles and scroll affordances readable')
+await runNarrowGeometryChecks({ browser, newPage, open, check, sleep, SETTLE_DEADLINE_MS })
 
 // ---------------------------------------------------------------------------
 console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
