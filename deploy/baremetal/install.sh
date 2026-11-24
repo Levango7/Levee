@@ -128,13 +128,23 @@ if [ "$WITH_SYSTEMD" = 1 ]; then
             "$UNIT_SRC" > "$UNIT_DIR/levee.service"
         chmod 0644 "$UNIT_DIR/levee.service"
         say "已写入 systemd 单元：$UNIT_DIR/levee.service"
+        WEB_UNIT_SRC="$SRC_DIR/deploy/systemd/levee-web.service"
+        if [ ! -f "$WEB_UNIT_SRC" ]; then
+            say "警告：找不到 $WEB_UNIT_SRC，Web UI 不会启动"
+        else
+            sed -e "s#/usr/local/bin/levee#${PREFIX}/bin/levee#g" \
+                -e "s#/var/lib/levee#${DATA_DIR}#g" \
+                "$WEB_UNIT_SRC" > "$UNIT_DIR/levee-web.service"
+            chmod 0644 "$UNIT_DIR/levee-web.service"
+            say "已写入 Web UI 单元：$UNIT_DIR/levee-web.service"
+        fi
         if command -v systemctl >/dev/null 2>&1 && [ -z "$DESTDIR" ]; then
             systemctl daemon-reload
             if [ "$START_NOW" = 1 ]; then
-                systemctl enable --now levee
-                say "levee.service 已启动（systemctl status levee 查看）"
+                systemctl enable --now levee levee-web
+                say "levee.service 与 levee-web.service 已启动（systemctl status levee levee-web 查看）"
             else
-                say "下一步：配置 $ETC_DIR/levee.env 后 systemctl enable --now levee"
+                say "下一步：配置 $ETC_DIR/levee.env 后 systemctl enable --now levee levee-web"
             fi
         else
             say "提示：当前环境无 systemctl（或使用了 DESTDIR），未执行 daemon-reload"
@@ -146,5 +156,5 @@ say ""
 say "安装完成。建议顺序："
 say "  1) 编辑 $ETC_DIR/levee.env：配置命名令牌（或 LEVEE_TOKEN）与 LEVEE_MASTER_PASSWORD"
 say "  2) $PREFIX/bin/levee doctor   # 环境自检（配置/存储/通道/网络）"
-say "  3) systemctl enable --now levee"
+say "  3) systemctl enable --now levee levee-web"
 say "  4) 按 docs/deployment.md 的交付检查单走一遍完整演练后再接入生产目标机"
