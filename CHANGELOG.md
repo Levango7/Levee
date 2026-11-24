@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 文档（拓展盘点的两处诚实缺口登记）
+
+- `NewSessionFromAlert` 注释订正：原承诺"配置诊断引擎时自动同步诊断、转 StateRecommending"与实现不符（只转 StateDiagnosing）。根因是 alert ID 不是 target host、仓内无映射，自动推断等于编造诊断输入；注释改为对齐实际行为（操作员显式 `/diagnose <target>`）。登记为 blocked-items E-6，解锁条件＝告警系统提供 host→target 映射契约。
+- `shell.script` 在 Windows/WinRM 目标必失败（硬编码 `/tmp`+`sh`+`chmod`）登记为 blocked-items D-12——平台语义缺环，Windows 目标走 WinRM 专用模块，真正支持需裁决 PowerShell/cmd 解释器。
+
 ### 修复（code-review 双轴审查发现）
 
 - **Spec 轴严重回归**：key epoch 改动曾使"同 key 的存量 keyed 链（升级前的裸 HMAC-SHA256 hex，无 epoch 前缀）"被误判为篡改——`recomputeCanonical` 的无前缀回退用了带前缀的 `digest()`。修复：新增 `legacyKeyedDigest`（裸 HMAC 口径）用于无前缀存量值；新增回归测试 `TestSameKeyPreEpochKeyedChainStillVerifies`（同 key 仍可验、换 key 仍 ratchet）。
