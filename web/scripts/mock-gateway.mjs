@@ -626,7 +626,8 @@ const server = http.createServer(async (req, res) => {
       const total = Object.values(o).reduce((a, b) => a + b, 0)
       days.push({ day: d.toISOString().slice(0, 10), total, outcomes: o })
     }
-    return send(res, { buckets: days, series: ['success', 'active', 'rolled_back', 'failed', 'stopped'], truncated: false })
+    const environment = new URL(req.url, 'http://x').searchParams.get('env') || 'prod'
+    return send(res, { buckets: days, environment, series: ['success', 'active', 'rolled_back', 'failed', 'stopped'], truncated: false })
   }
 
   // Takeover settlements: two events, one still interrupted and one since

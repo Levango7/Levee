@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 修复（变更趋势环境口径可见且可选择）
+
+- 变更看板趋势图新增环境选择器，候选来自当前可见变更并允许手输；请求真正携带所选 `env`，替换原先两个分支恒为 `undefined` 的假接线。刷新看板同时刷新趋势，快速切换时旧响应不会覆盖新环境。
+- `GET /system/change-trend` 响应新增 `environment`，回传 `default_env` 解析后的实际过滤环境；图表标题旁显示「环境 · 共 N 个」，不再把默认环境的数据读成全局趋势。Go/TS/mock 三方 wire 契约同步，浏览器测试真实切换 `dev` 验证请求和标签。
+
 ### 修复（交付编排：Docker/Helm/systemd 同时交付 serve + web）
 
 - Docker 新增受控双进程启动器：`levee serve`（REST :8080）与 `levee web`（UI :8081）同时运行，监控两者退出并转发 TERM/INT；默认 `data_dir=/var/lib/levee/data`，启动前创建 data/templates 目录，避免无额外配置即无法启动。健康检查同时要求 UI `/` 与后端 `/healthz`，不再是 dist 拷进镜像却没有进程服务它。

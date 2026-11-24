@@ -745,6 +745,8 @@ export interface TrendBucketDTO {
 
 export interface TrendDTO {
   buckets: TrendBucketDTO[]
+  /** The environment actually filtered on, after default_env resolution. */
+  environment: string
   /** Legend order the chart must use, so it cannot drift per client. */
   series: string[]
   /** True when the window's row scan hit the server-side cap. */

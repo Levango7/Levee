@@ -940,7 +940,7 @@ RESTful 风格，支持两套路径：
 | GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee system status` |
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | `levee system config get` |
 | GET | `/system/batch-status` | —（直读 store，不经 service） | 按 run 的批次进度（按该 run 自己的环境判 `view`，见 13.5 门禁口径） | — |
-| GET | `/system/change-trend` | —（REST-only，不进 proto） | 变更趋势（按日分桶，需 `tz_offset`；受 `view` 准入） | — |
+| GET | `/system/change-trend` | —（REST-only，不进 proto） | 变更趋势（按日分桶，需 `tz_offset`；可选 `env`，受 `view` 准入；响应 `environment` 回传实际生效环境） | — |
 | GET | `/system/takeover-events` | —（REST-only） | 集群接管事件时间线 | — |
 | POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | `levee system doctor` |
 | GET | `/system/cluster-status` | —（直读 store，不经 service） | 集群注册表：`nodes` / `summary` / `backend`；`?capability=<name>` 按节点声明的能力筛 `nodes`（见下方说明） | `levee cluster status` |
