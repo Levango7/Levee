@@ -1139,6 +1139,42 @@ console.log('\n[6] the day boundary follows the operator, not the server')
   const seen = await page.evaluate(() => window.__trendUrls || [])
   const offset = /tz_offset=(-?[0-9]+)/
   check('the trend request carries tz_offset', seen.some((u) => offset.test(u)), JSON.stringify(seen))
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="trend-scope"]')?.textContent?.includes('prod'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  const defaultScope = await text(page, '[data-testid="trend-scope"]')
+  check('the trend names the resolved default environment', defaultScope.includes('prod'), defaultScope)
+
+  // Exercise the real Element Plus select. The old request contained a ternary
+  // whose two branches were both undefined; checking only the API wrapper could
+  // never catch that missing UI path.
+  await page.click('[data-testid="trend-environment"] .el-select__wrapper')
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.el-select-dropdown__item')].some((el) =>
+      el.textContent?.trim() === 'dev' && el.offsetParent !== null),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  await page.evaluate(() => {
+    const option = [...document.querySelectorAll('.el-select-dropdown__item')]
+      .find((el) => el.textContent?.trim() === 'dev' && el.offsetParent !== null)
+    option?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  await page.waitForFunction(() =>
+    (window.__trendUrls || []).some((u) => /[?&]env=dev(?:&|$)/.test(u)),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="trend-scope"]')?.textContent?.includes('dev'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  const selected = await page.evaluate(() => ({
+    urls: window.__trendUrls || [],
+    scope: document.querySelector('[data-testid="trend-scope"]')?.textContent || '',
+  }))
+  check('selecting an environment issues a scoped trend request',
+    selected.urls.some((u) => /[?&]env=dev(?:&|$)/.test(u)), JSON.stringify(selected))
+  check('and the chart names the selected environment', selected.scope.includes('dev'), selected.scope)
   await page.close()
 }
 

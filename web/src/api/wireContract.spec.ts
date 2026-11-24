@@ -145,7 +145,7 @@ const DTO_READS: Record<string, DtoReads> = {
   },
   'change-trend': {
     row: 'buckets',
-    keys: ['buckets', 'series', 'truncated'],
+    keys: ['buckets', 'environment', 'series', 'truncated'],
     rowKeys: ['day', 'total', 'outcomes'],
     dto: 'TrendDTO',
     rowDto: 'TrendBucketDTO',

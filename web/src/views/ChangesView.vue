@@ -32,6 +32,7 @@ import MetricCard from '@/components/MetricCard.vue'
 import { formatTimestamp, STATUS_LABEL, isRemediableStatus, isRetryableStatus } from '@/utils/format'
 import { classifyError, errorMessage } from '@/utils/apiState'
 import { readPrefs, toggleColumn, writePrefs } from '@/utils/tablePrefs'
+import { environmentOptions } from '@/utils/templateForm'
 import type { LoadTier } from '@/utils/apiState'
 
 const router = useRouter()
@@ -339,6 +340,17 @@ async function load(): Promise<void> {
 // operator's night work lands on their day rather than the server's.
 const trend = ref<TrendDTO | null>(null)
 const trendLoading = ref(false)
+// Empty means "use the server's default_env". The response names the resolved
+// environment, so the chart never presents a default-scoped series as global.
+const trendEnv = ref('')
+const trendEnvOptions = computed(() =>
+  environmentOptions(
+    changes.value.map((change) => change.environment),
+    [trendEnv.value, trend.value?.environment || ''],
+  ),
+)
+const trendScopeLabel = computed(() => trend.value?.environment || '全部环境')
+let trendRequestSeq = 0
 
 // Column budget: when the viewport is narrower than 1400px the two secondary
 // columns (范围 / 模板) are hidden, because the full set cannot fit in the
@@ -361,20 +373,24 @@ let trendResize: ResizeObserver | null = null
 const trendError = ref<unknown>(null)
 
 async function loadTrend(): Promise<void> {
+  const requestSeq = ++trendRequestSeq
   trendLoading.value = true
   trendError.value = null
   try {
-    trend.value = await trendApi.changeTrend({
+    const next = await trendApi.changeTrend({
       days: 14,
-      env: filter.status.length === 0 ? undefined : undefined,
+      env: trendEnv.value || undefined,
       tzOffset: new Date().getTimezoneOffset(),
     })
+    // A slow response for the previously selected environment must not replace
+    // the scope the operator most recently asked for.
+    if (requestSeq === trendRequestSeq) trend.value = next
   } catch (err) {
     // The panel's own failure must not take the table down with it: a chart
     // that cannot load is a fact about the chart.
-    trendError.value = err
+    if (requestSeq === trendRequestSeq) trendError.value = err
   } finally {
-    trendLoading.value = false
+    if (requestSeq === trendRequestSeq) trendLoading.value = false
   }
 }
 
@@ -394,6 +410,11 @@ function applyFilter(): void {
   persistPrefs()
   void load()
   void loadKpis()
+}
+
+function refreshDashboard(): void {
+  applyFilter()
+  void loadTrend()
 }
 
 function resetFilter(): void {
@@ -517,7 +538,7 @@ onBeforeUnmount(() => {
   <div class="levee-page">
     <PageHeader title="变更看板" description="全部变更的实时状态、推进与批量处置">
       <template #actions>
-        <el-button :icon="'Refresh'" :loading="loading" @click="applyFilter">刷新</el-button>
+        <el-button :icon="'Refresh'" :loading="loading" @click="refreshDashboard">刷新</el-button>
         <el-button type="primary" :icon="'Plus'" @click="createViaTemplate">新建变更</el-button>
       </template>
     </PageHeader>
@@ -564,9 +585,26 @@ onBeforeUnmount(() => {
          says so in place (the same three tiers as the table), and it never
          takes the table down with it. -->
     <div class="lv-panel trend-panel" v-loading="trendLoading">
-      <div class="lv-panel__head">
-        <span class="lv-panel__title">近 14 天变更趋势</span>
-        <span v-if="trend" class="lv-panel__hint lv-mono">共 {{ trendTotal }} 个</span>
+      <div class="lv-panel__head trend-panel__head">
+        <div class="trend-panel__heading">
+          <span class="lv-panel__title">近 14 天变更趋势</span>
+          <span v-if="trend" data-testid="trend-scope" class="lv-panel__hint lv-mono">
+            {{ trendScopeLabel }} · 共 {{ trendTotal }} 个
+          </span>
+        </div>
+        <el-select
+          v-model="trendEnv"
+          class="trend-environment"
+          data-testid="trend-environment"
+          aria-label="趋势环境"
+          filterable
+          allow-create
+          default-first-option
+          @change="loadTrend"
+        >
+          <el-option label="默认环境" value="" />
+          <el-option v-for="env in trendEnvOptions" :key="env" :label="env" :value="env" />
+        </el-select>
       </div>
       <div class="lv-panel__body">
         <StateBlock
@@ -773,6 +811,29 @@ onBeforeUnmount(() => {
    ResizeObserver, so it fills the panel instead of stopping at 640. */
 .trend-host {
   width: 100%;
+}
+
+.trend-panel__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lv-space-2) var(--lv-space-3);
+  min-width: 0;
+}
+
+.trend-environment {
+  flex: none;
+  width: 180px;
+}
+
+@media (max-width: 640px) {
+  .trend-panel__head {
+    align-items: stretch;
+  }
+
+  .trend-environment {
+    width: 100%;
+  }
 }
 
 /* ------------------------------------------------------------------- dist */

@@ -83,15 +83,19 @@ func (gw *Gateway) handleChangeTrend(w http.ResponseWriter, r *http.Request) {
 	// The legend order travels with the payload so no client can invent its own
 	// and drift from every other trend on the console.
 	writeJSON(w, changeTrendPayload{
-		Buckets:   buckets,
-		Series:    state.TrendOutcomes,
-		Truncated: truncated,
+		Buckets:     buckets,
+		Environment: env,
+		Series:      state.TrendOutcomes,
+		Truncated:   truncated,
 	})
 }
 
 // changeTrendPayload is what /system/change-trend returns.
 type changeTrendPayload struct {
-	Buckets   []state.RunTrendBucket `json:"buckets"`
-	Series    []string               `json:"series"`
-	Truncated bool                   `json:"truncated"`
+	Buckets []state.RunTrendBucket `json:"buckets"`
+	// Environment is the resolved filter, not the raw query value. In
+	// particular it turns an empty request's default_env into a visible scope.
+	Environment string   `json:"environment"`
+	Series      []string `json:"series"`
+	Truncated   bool     `json:"truncated"`
 }
