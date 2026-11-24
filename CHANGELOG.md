@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（code-review 双轴审查发现）
+
+- **Spec 轴严重回归**：key epoch 改动曾使"同 key 的存量 keyed 链（升级前的裸 HMAC-SHA256 hex，无 epoch 前缀）"被误判为篡改——`recomputeCanonical` 的无前缀回退用了带前缀的 `digest()`。修复：新增 `legacyKeyedDigest`（裸 HMAC 口径）用于无前缀存量值；新增回归测试 `TestSameKeyPreEpochKeyedChainStillVerifies`（同 key 仍可验、换 key 仍 ratchet）。
+- **Standards 轴**：`digestWithMode` 的未知模式 default 分支原用 `panic`，违反 CONTRIBUTING §2.3「禁止 panic」——改为 warn + 回落 sha256（与 `configuredDigestMode` 环境变量口径一致），测试相应更新。设计文档 §10.5「非法值启动即拒」订正为「YAML 经 Validate 拒、环境变量 warn+回落」。
+- **口径诚实**：WinRM pool_size 的 reach 如实限定（只对直接 `winrm.NewPool` 生效、serve 无池）；`file.delete` 的 `Changed=true` 语义加注释说明（表示破坏性动作已执行，与只读 preflight 的 `Changed=false` 不同）。
+
 ### 新增（诊断上 Web 控制台：TargetsView 主机一键诊断）
 
 - 前端接入已有 `DiagnosisService`（Go 侧能力完整但控制台此前完全不可见）：`web/src/api/index.ts` 新增 `DiagnosticFindingDTO`/`DiagnosticReportDTO` + `diagnosisApi`（走已有 `POST /api/v1/DiagnosisService/Diagnose` gRPC 风格路径，`alertsApi.status` 同范式）；`TargetsView.vue` 每行加"诊断"按钮 + 报告弹窗（status/rootCause/confidence/findings/recommendations，复用 `healthLabel`）。
@@ -33,7 +39,7 @@
 - `winrm.SetDefaultConfig(port, transport, connect_timeout, pool_size)` 接收 `cfg.Channel.WinRM`；**注册工厂改为 Create 时读进程默认**（旧 init 期 `Config{}` 快照看不到 setter，是 WinRM 与 SSH 的关键差异），`serve` 对称转发 4 参。
 - 配置默认值改为 `0`/空=未设置（存量仍走通道历史默认 5985/5986、negotiate、30s、pool 3），Validate 放行 0；transport 空串=未设置。
 - 接线守卫登记 6→2（仅剩 SSH.KeyPath / SSH.PoolSize）；新增 setter 生效/未设置回退/pool 默认三组测试 + sample unset 守卫。
-- **边界**：pool_size 经 `DefaultPoolSize` 对直接 `winrm.NewPool` 生效，但生产 serve 路径当前不建 WinRM 池，运行时影响仅对池调用方可见（代码注释已写明）。Windows NTLM 现在配 `transport: ntlm` 即生效。
+- **边界（code-review 澄清）**：四字段都经 `winrm.SetDefaultConfig` 转发并生效；但 pool_size 经 `DefaultPoolSize` 只对**直接** `winrm.NewPool` 调用者生效——生产 serve 路径不建 WinRM 池，故其对守护进程的运行时影响为零（代码注释与守卫说明已如实限定 reach，不宣称对 serve 生效）。Windows NTLM 现在配 `transport: ntlm` 即生效。
 - `go test ./...` 全绿，golangci-lint 0 issues，release-gate 209 脚本全过。
 
 ### 修复（D-11 配置假旋钮收尾：接线 export_format，删 storage/key_derivation）

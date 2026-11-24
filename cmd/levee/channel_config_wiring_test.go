@@ -64,9 +64,12 @@ var knownUnwiredChannelConfig = map[string]string{
 		"is expanded and validated but not forwarded to the transport.",
 	"Channel.SSH.PoolSize": "the SSH connection pool carries its own defaults " +
 		"(internal/channel/ssh/pool.go); the config value is not forwarded.",
-	// WinRM port/transport/connect_timeout/pool_size are all wired via
-	// winrm.SetDefaultConfig (D-9). The registered factory now reads the
-	// process defaults at Create time instead of a stale Config{} snapshot.
+	// WinRM port/transport/connect_timeout/pool_size are all forwarded via
+	// winrm.SetDefaultConfig (D-9); the registered factory reads process
+	// defaults at Create time. NOTE: pool_size only reaches DIRECT winrm.NewPool
+	// callers via DefaultPoolSize — the production serve path builds no WinRM
+	// pool, so its runtime effect there is nil (documented in cmd_serve.go and
+	// CHANGELOG). The wiring itself is real; the reach is honestly scoped.
 }
 
 // channelConfigSelectors enumerates every field of the channel config
