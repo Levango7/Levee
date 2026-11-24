@@ -1,0 +1,25 @@
+[Unit]
+Description=LEVEE Web UI (embedded SPA + API reverse proxy)
+Documentation=https://github.com/Levango7/Levee/blob/master/docs/deployment.md
+After=network-online.target levee.service
+Wants=network-online.target levee.service
+
+[Service]
+Type=simple
+User=levee
+Group=levee
+
+ExecStart=/usr/local/bin/levee web --addr :8081 --api http://127.0.0.1:8080
+
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/levee
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

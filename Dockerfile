@@ -119,6 +119,9 @@ RUN apk add --no-cache tzdata dumb-init && \
 COPY --from=dist /levee /usr/local/bin/levee
 COPY --from=dist /dist /var/lib/levee/dist
 COPY --from=dist /ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY deploy/docker/start.sh /usr/local/bin/levee-start
+RUN chmod 0755 /usr/local/bin/levee-start
+ENV LEVEE_SERVER_DATA_DIR=/var/lib/levee/data
 
 RUN addgroup -S levee && adduser -S levee -G levee && \
     chown -R levee:levee /var/lib/levee
@@ -126,16 +129,14 @@ RUN addgroup -S levee && adduser -S levee -G levee && \
 USER levee
 WORKDIR /home/levee
 
-EXPOSE 8080 9090
+EXPOSE 8080 8081 9090
 
-# Probe the REST gateway health endpoint (serve binds it on --http-addr,
-# default :8080). The gateway reports 503 until its services are wired, so
-# a healthy response means the daemon is genuinely serving.
+# The image is healthy only when both the REST gateway and the actual UI answer.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+    CMD wget -qO- http://127.0.0.1:8081/ >/dev/null && wget -qO- http://127.0.0.1:8080/healthz >/dev/null || exit 1
 
 ENTRYPOINT ["dumb-init", "--"]
 # Authentication is mandatory in production: pass -e LEVEE_TOKEN=<secret>
 # (or override the command with --insecure for throwaway local testing —
 # without either, serve refuses to start by design).
-CMD ["levee", "serve", "--addr", ":9090"]
+CMD ["/usr/local/bin/levee-start", "--addr", ":9090"]

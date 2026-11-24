@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（交付编排：Docker/Helm/systemd 同时交付 serve + web）
+
+- Docker 新增受控双进程启动器：`levee serve`（REST :8080）与 `levee web`（UI :8081）同时运行，监控两者退出并转发 TERM/INT；默认 `data_dir=/var/lib/levee/data`，启动前创建 data/templates 目录，避免无额外配置即无法启动。健康检查同时要求 UI `/` 与后端 `/healthz`，不再是 dist 拷进镜像却没有进程服务它。
+- Helm 同 Pod 增加 `levee web` sidecar 与 `service.webPort: 8081`，Service 暴露 UI 端口，UI 就绪/存活探针均请求 `/`；systemd 新增 `levee-web.service`，baremetal 安装器写入并 enable 两个 unit。
+- 新增 `scripts/test_delivery_web.py` 与 validate_delivery 内容断言，覆盖双进程、sidecar、Service、UI 探针和安装器；部署手册同步端口与上线检查项。
+
 ### 文档（拓展盘点的两处诚实缺口登记）
 
 - `NewSessionFromAlert` 注释订正：原承诺"配置诊断引擎时自动同步诊断、转 StateRecommending"与实现不符（只转 StateDiagnosing）。根因是 alert ID 不是 target host、仓内无映射，自动推断等于编造诊断输入；注释改为对齐实际行为（操作员显式 `/diagnose <target>`）。登记为 blocked-items E-6，解锁条件＝告警系统提供 host→target 映射契约。
