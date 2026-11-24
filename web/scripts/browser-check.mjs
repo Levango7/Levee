@@ -1150,16 +1150,17 @@ console.log('\n[6] the day boundary follows the operator, not the server')
   // whose two branches were both undefined; checking only the API wrapper could
   // never catch that missing UI path.
   await page.click('[data-testid="trend-environment"] .el-select__wrapper')
+  // Drive the filter with real key events. A synthetic MouseEvent dispatched
+  // from page.evaluate selected the option in Chrome and Firefox/Windows but
+  // not Firefox/Linux; keyboard input follows the same accessible path in all
+  // four CI legs and still exercises the actual select, not its internals.
+  await page.keyboard.type('dev', { delay: 20 })
   await page.waitForFunction(() =>
     [...document.querySelectorAll('.el-select-dropdown__item')].some((el) =>
       el.textContent?.trim() === 'dev' && el.offsetParent !== null),
     { timeout: SETTLE_DEADLINE_MS, polling: 60 },
   ).catch(() => null)
-  await page.evaluate(() => {
-    const option = [...document.querySelectorAll('.el-select-dropdown__item')]
-      .find((el) => el.textContent?.trim() === 'dev' && el.offsetParent !== null)
-    option?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
+  await page.keyboard.press('Enter')
   await page.waitForFunction(() =>
     (window.__trendUrls || []).some((u) => /[?&]env=dev(?:&|$)/.test(u)),
     { timeout: SETTLE_DEADLINE_MS, polling: 60 },
