@@ -112,7 +112,7 @@ func input(ch *mockChannel, args map[string]any) executor.ModuleInput {
 func TestModuleContract(t *testing.T) {
 	m := New()
 	assert.Equal(t, "pg", m.Name())
-	assert.Equal(t, []string{"query", "schema_snapshot", "preflight"}, m.Actions())
+	assert.Equal(t, []string{"query", "schema_snapshot", "schema_snapshot_ddl", "schema_restore", "preflight"}, m.Actions())
 	assert.False(t, m.Idempotent(),
 		"query is idempotent by authorship only; the module cannot verify that claim")
 }

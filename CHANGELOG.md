@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增（D-5 PostgreSQL 可恢复 DDL 第一切片与真实回放）
+
+- 新增 `pg.schema_snapshot_ddl` / `pg.schema_restore`：`levee.pg.schema/v1` JSON 保存 schema-qualified 表名、pg_dump DDL 与 SHA-256；oliphant AST 白名单拒绝 DML、DROP、跨表对象、未拥有序列、IDENTITY、分区和其他不安全形态。恢复仅限目标关系不存在，成功后重新 dump 逐字校验，绝不覆盖现存对象。
+- `pg.query + strategy: snapshot` 接通 snapshotter：ReviewPostgres 的 DDL-only 边界、失败捕获清理、确定性恢复顺序；历史空/内省快照仍 fail-closed，不再一律禁止 PG snapshot。
+- 新增 `scripts/replay_pg_schema.py` 与 opt-in `pgreplay` 测试：真实 SSH + PostgreSQL 16.15 完成捕获→DROP→恢复→目录 3|3→现存表/篡改拒绝；一次性容器和临时密钥自动清理。边界=自包含表 DDL，不含行数据、跨表依赖或 HA 证明。
+
 ### 修复（变更趋势环境口径可见且可选择）
 
 - 变更看板趋势图新增环境选择器，候选来自当前可见变更并允许手输；请求真正携带所选 `env`，替换原先两个分支恒为 `undefined` 的假接线。刷新看板同时刷新趋势，快速切换时旧响应不会覆盖新环境。
