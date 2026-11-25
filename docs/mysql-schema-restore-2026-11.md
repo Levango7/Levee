@@ -10,9 +10,9 @@
 
 一次恢复必须依次满足：
 
-1. 快照是**一条完整的 CREATE TABLE**，且表名与恢复目标完全一致；多语句、DROP、ALTER、不可读前缀全部拒绝。
+1. 快照是**一条完整的 CREATE TABLE**，且表名与恢复目标完全一致；多语句、DROP、ALTER、不可读前缀全部拒绝。mysql 客户端输出中的 `\n`、`\t`、反斜线等转义先按顺序解码，再做校验。
 2. 目标表在恢复时**不存在**。只要表仍存在，就拒绝继续，绝不 DROP 后重建——现存表的数据和失败后的定义必须留给操作员人工判断。
-3. 执行 CREATE 后，再次 `SHOW CREATE TABLE`，要求服务端返回的定义与快照逐字一致（忽略首尾空白）。执行失败或校验失败都不能记为恢复成功。
+3. 执行 CREATE 后，再次 `SHOW CREATE TABLE`，要求服务端返回的定义与快照逐字一致（忽略首尾空白）。执行失败或校验失败都不能记为恢复成功。标准 FOREIGN KEY 元素逐元素做受限语法校验，其余 DDL 继续走严格解析，不把约束静默删掉。
 
 这是一项 **schema 恢复**，不是行数据恢复，也不是通用 undo 生成器。`Changed=true` 只在真实创建并通过验证时产生。
 
@@ -36,10 +36,11 @@
 - `internal/executor/modules/mysql/restore_test.go`：成功重建并校验、现存表拒绝、表名不匹配、多语句、CREATE 失败、校验不一致、限定 schema。
 - `internal/wiring/snapshotter_schema_test.go`：真实 snapshotter 链路「捕获→模拟 DROP→恢复→SHOW CREATE 验证」；现存表不覆盖；混合 DML 在捕获前拒绝。
 - 既有 `internal/wiring` 全套回归通过，文件快照恢复不变。
-- 全量 `go test ./...` 77 包零失败、vet/gofmt 干净。
+- 全量 `go test ./...` 零失败、vet/gofmt 干净。
+- **真实单实例回放（2026-11-26）**：`python scripts/replay_mysql_schema.py` 启动一次性 `mysql:8.0.46` + SSH 容器，使用 strict known_hosts 与临时 root 公钥，完成 SHOW CREATE 捕获（366 字节）→ DROP → 恢复 → SHOW CREATE 定义一致；再次恢复因现存表拒绝，追加 DROP 的快照在触达服务端前拒绝。日志为 `MYSQL_SCHEMA_REPLAY PASS`，容器与密钥自动清理。真实用例同时覆盖标准 FOREIGN KEY 和 mysql 客户端 `\n` 转义。
 
 ## 5. 后续边界
 
 - PostgreSQL 的 `pg.schema_snapshot` 仍是 information_schema/pg_catalog 内省结果，不能直接复用 MySQL 的 SHOW CREATE 路径。2026-11-25 已新增独立的 `pg.schema_snapshot_ddl` / `pg.schema_restore` 与版本化 pg_dump 格式，支持自包含表、SERIAL、约束、索引和自引用外键；仍不允许覆盖现存表，跨表依赖、IDENTITY、分区与行数据不在范围内。详见 `docs/pg-schema-restore-2026-11.md`。
 - 行数据恢复需要独立的数据备份格式、冲突处理、部分恢复与一致性验证，不在本切片。
-- 真正的 MySQL 服务器/集群演练仍需环境执行；本切片通过真实生产代码路径与可记录目标状态的传输测试证明行为，不把 mock 当成真机验收。
+- MySQL 已有真实单实例回放证据，但 MySQL 主从切换、生产集群和故障域验收仍未做；`mysql.pt_osc` / `mysql.replica_switch` 不因本切片被视为已验收。

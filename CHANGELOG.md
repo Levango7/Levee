@@ -12,6 +12,12 @@
 - 新增 `docs/compatibility-matrix.json`（`levee.compatibility/v1`）及 CI 门：动作集合与 Go `Actions()` 对齐，POSIX 动作不得误标 Windows，real-single 必须有可复跑证据。
 - 真实 Alpine 回放通过：`PKG_APK_REPLAY`（tree 安装/重装/升级/删除/重复删除）与 `CAPABILITY_REPLAY`（14 supported / 14 unsupported / 1 unknown）；临时 root 公钥与容器自动清理。
 
+### 修复（MySQL 真实恢复兼容：客户端转义与 FOREIGN KEY）
+
+- `mysql.schema_restore` 现在按顺序解码 mysql 客户端的 `\n`、`\t`、反斜线等输出转义，再做严格 DDL 校验；真实 SHOW CREATE 不再因字面反斜线被误拒，捕获与恢复后定义比较使用同一规范化口径。
+- 标准 FOREIGN KEY 元素逐个做受限语法校验，其余 DDL 继续走严格解析；非法后缀、借 FK 注入第二语句和注释拖尾均拒绝，不用普通 Parse 的忽略错误路径。
+- 新增 `scripts/replay_mysql_schema.py` 与 opt-in `mysqlreplay`：真实 SSH + MySQL 8.0.46 完成捕获 366B→DROP→恢复→定义一致、现存表和篡改拒绝，最终 `MYSQL_SCHEMA_REPLAY PASS`；临时 root 公钥与容器自动清理。边界仍是 DDL-only、缺表恢复，不含行数据或主从切换。
+
 ### 新增（D-5 PostgreSQL 可恢复 DDL 第一切片与真实回放）
 
 - 新增 `pg.schema_snapshot_ddl` / `pg.schema_restore`：`levee.pg.schema/v1` JSON 保存 schema-qualified 表名、pg_dump DDL 与 SHA-256；oliphant AST 白名单拒绝 DML、DROP、跨表对象、未拥有序列、IDENTITY、分区和其他不安全形态。恢复仅限目标关系不存在，成功后重新 dump 逐字校验，绝不覆盖现存对象。
