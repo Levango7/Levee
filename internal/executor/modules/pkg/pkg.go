@@ -1,7 +1,6 @@
 // Package pkg implements the LEVEE package module (design doc section 5.2,
 // MVP task T017.2). It abstracts the system package manager behind a small
-// interface so that the same workflow runs unchanged on apt, yum/dnf and
-// (trivially) apk hosts.
+// interface so that the same workflow runs unchanged on apt, yum/dnf and apk hosts.
 //
 // Actions:
 //
@@ -19,9 +18,9 @@
 // across package managers is expensive and error-prone.
 //
 // Package manager detection runs once per Execute call by issuing `which apt`
-// / `which yum` / `which dnf` on the target. The first hit wins, in the order
-// apt -> dnf -> yum, which matches the typical modern Linux distro layout
-// (Debian family first, then Fedora/RHEL8+, then legacy RHEL7).
+// / `which dnf` / `which yum` / `which apk` on the target. The first hit wins,
+// in the order apt -> dnf -> yum -> apk, which preserves the existing distro
+// preference while adding Alpine.
 package pkg
 
 import (
@@ -298,11 +297,54 @@ func (yumPM) upgradeCmd(pkg, version string) string {
 	return fmt.Sprintf("yum update -y %s", pkg)
 }
 
-// detectPackageManager probes the target for apt / dnf / yum in that order and
-// returns the first one found. When none is found it returns a typed error so
-// callers can produce a clear message.
+// apkPM implements packageManager for Alpine systems. apk info -e exits zero
+// only when the package is installed and prints <name>-<version>, which gives
+// the same query contract as dpkg-query and rpm without a second probe.
+type apkPM struct{}
+
+func (apkPM) name() string { return "apk" }
+
+func (apkPM) query(ctx context.Context, ch channel.Channel, pkg string) (bool, string, error) {
+	res, err := ch.Exec(ctx, fmt.Sprintf("apk info -e %s 2>/dev/null", pkg))
+	if err != nil {
+		return false, "", err
+	}
+	if res.ExitCode != 0 {
+		return false, "", nil
+	}
+	version := strings.TrimSpace(res.Stdout)
+	if fields := strings.Fields(version); len(fields) > 0 {
+		version = fields[len(fields)-1]
+	}
+	return true, strings.TrimPrefix(version, pkg+"-"), nil
+}
+
+func (apkPM) installCmd(pkg, version string) string {
+	if version != "" {
+		return fmt.Sprintf("apk add %s=%s", pkg, version)
+	}
+	return fmt.Sprintf("apk add %s", pkg)
+}
+
+func (apkPM) removeCmd(pkg string) string {
+	return fmt.Sprintf("apk del %s", pkg)
+}
+
+func (apkPM) upgradeCmd(pkg, version string) string {
+	if pkg == "" {
+		return "apk upgrade"
+	}
+	if version != "" {
+		return fmt.Sprintf("apk add --upgrade %s=%s", pkg, version)
+	}
+	return fmt.Sprintf("apk add --upgrade %s", pkg)
+}
+
+// detectPackageManager probes the target for apt / dnf / yum / apk in that
+// order and returns the first one found. When none is found it returns a typed
+// error so callers can produce a clear message.
 func detectPackageManager(ctx context.Context, ch channel.Channel) (packageManager, error) {
-	candidates := []packageManager{aptPM{}, dnfPM{}, yumPM{}}
+	candidates := []packageManager{aptPM{}, dnfPM{}, yumPM{}, apkPM{}}
 	for _, c := range candidates {
 		ok, err := commandExists(ctx, ch, c.name())
 		if err != nil {
@@ -312,7 +354,17 @@ func detectPackageManager(ctx context.Context, ch channel.Channel) (packageManag
 			return c, nil
 		}
 	}
-	return nil, fmt.Errorf("no supported package manager found (apt/dnf/yum)")
+	return nil, fmt.Errorf("no supported package manager found (apt/dnf/yum/apk)")
+}
+
+// DetectPackageManagerName exposes the exact read-only detection used by the
+// executor to non-mutating diagnostics such as `levee capabilities`.
+func DetectPackageManagerName(ctx context.Context, ch channel.Channel) (string, error) {
+	pm, err := detectPackageManager(ctx, ch)
+	if err != nil {
+		return "", err
+	}
+	return pm.name(), nil
 }
 
 // commandExists runs `which <name>` and reports whether the command exited 0.
@@ -376,7 +428,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// validatePkgName checks that s is a valid package name for apt/dnf/yum:
+// validatePkgName checks that s is a valid package name for apt/dnf/yum/apk:
 // letters, digits, dot, hyphen, underscore, and plus (no whitespace or shell
 // metacharacters). Rejecting invalid names here prevents command injection via
 // the positional argument slot.

@@ -8,6 +8,7 @@ container and the key material afterwards. No shell command strings are used.
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
 import shutil
@@ -54,11 +55,15 @@ RUN apk add --no-cache openssh \
     && mkdir -p /run/sshd /var/lib/postgresql/.ssh \
     && ssh-keygen -A \
     && sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config \
-    && sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config \
+    && sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
     && passwd -u postgres
 COPY authorized_keys /var/lib/postgresql/.ssh/authorized_keys
+COPY authorized_keys /root/.ssh/authorized_keys
 COPY replay-start /usr/local/bin/replay-start
-RUN chown -R postgres:postgres /var/lib/postgresql/.ssh \
+RUN chown -R root:root /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && chmod 600 /root/.ssh/authorized_keys \
+    && chown -R postgres:postgres /var/lib/postgresql/.ssh \
     && chmod 750 /var/lib/postgresql \
     && chmod 700 /var/lib/postgresql/.ssh \
     && chmod 600 /var/lib/postgresql/.ssh/authorized_keys \
@@ -111,6 +116,9 @@ def write_known_hosts(destination: Path, port: int) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", choices=("pg-schema", "pkg-alpine", "capabilities-alpine"), default="pg-schema")
+    args = parser.parse_args()
     require_tools()
     existing = subprocess.run(["docker", "inspect", CONTAINER], shell=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if existing.returncode == 0:
@@ -145,10 +153,22 @@ def main() -> int:
                 "LEVEE_PG_REPLAY_KEY": str(key),
                 "LEVEE_PG_REPLAY_KNOWN_HOSTS": str(known_hosts),
             })
-            proof = run([
-                "go", "test", "-tags=pgreplay", "./internal/executor/modules/pg",
-                "-run", "^TestRealPostgresSchemaReplay$", "-count=1", "-v",
-            ], cwd=ROOT, env=env)
+            if args.suite == "pkg-alpine":
+                command = [
+                    "go", "test", "-tags=pkgreplay", "./internal/executor/modules/pkg",
+                    "-run", "^TestAlpinePackageManagerReplay$", "-count=1", "-v",
+                ]
+            elif args.suite == "capabilities-alpine":
+                command = [
+                    "go", "test", "-tags=capabilityreplay", "./internal/targetcap",
+                    "-run", "^TestAlpineCapabilityProbe$", "-count=1", "-v",
+                ]
+            else:
+                command = [
+                    "go", "test", "-tags=pgreplay", "./internal/executor/modules/pg",
+                    "-run", "^TestRealPostgresSchemaReplay$", "-count=1", "-v",
+                ]
+            proof = run(command, cwd=ROOT, env=env)
             sys.stdout.write(proof.stdout)
             proof_succeeded = True
         finally:
@@ -168,7 +188,7 @@ def main() -> int:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-    print("REAL_PG_REPLAY launcher: PASS (container and ephemeral keys removed)")
+    print(f"REAL_PG_REPLAY launcher: PASS suite={args.suite} (container and ephemeral keys removed)")
     return 0
 
 

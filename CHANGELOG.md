@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### 新增（目标兼容自诊断与 apk 实证）
+
+- 新增 `levee capabilities [--target] <host>`：复用真实 inventory、credential resolver 与 `Engine.Dial`，只读探测 OS、包管理器、init、数据库客户端和 29 个动作的 `supported/unsupported/unknown + reason`，输出 `levee.capabilities/v1`；unknown 不算支持，live-probe 不冒充生产验收。
+- `target check` 从固定 nil-channel 占位改为真实通道 `echo ok` 预检，拨号失败明确显示 unreachable 和原因。
+- `pkg` 新增 apk 管理器：`apk info -e` 判存在/解析版本，`apk add/del/upgrade` 三动作沿用幂等语义，探测顺序 apt→dnf→yum→apk。
+- 新增 `docs/compatibility-matrix.json`（`levee.compatibility/v1`）及 CI 门：动作集合与 Go `Actions()` 对齐，POSIX 动作不得误标 Windows，real-single 必须有可复跑证据。
+- 真实 Alpine 回放通过：`PKG_APK_REPLAY`（tree 安装/重装/升级/删除/重复删除）与 `CAPABILITY_REPLAY`（14 supported / 14 unsupported / 1 unknown）；临时 root 公钥与容器自动清理。
+
 ### 新增（D-5 PostgreSQL 可恢复 DDL 第一切片与真实回放）
 
 - 新增 `pg.schema_snapshot_ddl` / `pg.schema_restore`：`levee.pg.schema/v1` JSON 保存 schema-qualified 表名、pg_dump DDL 与 SHA-256；oliphant AST 白名单拒绝 DML、DROP、跨表对象、未拥有序列、IDENTITY、分区和其他不安全形态。恢复仅限目标关系不存在，成功后重新 dump 逐字校验，绝不覆盖现存对象。
