@@ -473,6 +473,22 @@ var actionSignatures = map[string]map[string]Type{
 		"port":     TypeString{},
 		"user":     TypeString{},
 	},
+	"pg.schema_snapshot_ddl": {
+		"tables":   TypeList{ElementType: TypeString{}},
+		"schema":   TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+	},
+	"pg.schema_restore": {
+		"table":    TypeString{},
+		"snapshot": TypeString{},
+		"database": TypeString{},
+		"host":     TypeString{},
+		"port":     TypeString{},
+		"user":     TypeString{},
+	},
 	"pg.preflight": {
 		"tables":   TypeList{ElementType: TypeString{}},
 		"schema":   TypeString{},

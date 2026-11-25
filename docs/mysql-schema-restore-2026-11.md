@@ -40,6 +40,6 @@
 
 ## 5. 后续边界
 
-- PostgreSQL 的 `pg.schema_snapshot` 是 information_schema/pg_catalog 内省结果，**不是可恢复 DDL**，不能直接复用本路径。2026-11-23 起 `pg.query + strategy: snapshot` 在捕获前拒绝，历史空快照在恢复时也拒绝，不再以 no-op 记为成功；需要回滚的 PG 变更必须声明显式 rollback steps。PG 恢复需要先定义可还原 DDL 生成与验证规则。
+- PostgreSQL 的 `pg.schema_snapshot` 仍是 information_schema/pg_catalog 内省结果，不能直接复用 MySQL 的 SHOW CREATE 路径。2026-11-25 已新增独立的 `pg.schema_snapshot_ddl` / `pg.schema_restore` 与版本化 pg_dump 格式，支持自包含表、SERIAL、约束、索引和自引用外键；仍不允许覆盖现存表，跨表依赖、IDENTITY、分区与行数据不在范围内。详见 `docs/pg-schema-restore-2026-11.md`。
 - 行数据恢复需要独立的数据备份格式、冲突处理、部分恢复与一致性验证，不在本切片。
 - 真正的 MySQL 服务器/集群演练仍需环境执行；本切片通过真实生产代码路径与可记录目标状态的传输测试证明行为，不把 mock 当成真机验收。
