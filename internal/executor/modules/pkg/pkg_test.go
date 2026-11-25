@@ -99,11 +99,21 @@ func yumDetect() []execResponse {
 	}
 }
 
+func apkDetect() []execResponse {
+	return []execResponse{
+		{result: &channel.ExecResult{ExitCode: 1}},                      // which apt
+		{result: &channel.ExecResult{ExitCode: 1}},                      // which dnf
+		{result: &channel.ExecResult{ExitCode: 1}},                      // which yum
+		{result: &channel.ExecResult{ExitCode: 0, Stdout: "/sbin/apk"}}, // which apk
+	}
+}
+
 func noneDetect() []execResponse {
 	return []execResponse{
 		{result: &channel.ExecResult{ExitCode: 1}}, // which apt
 		{result: &channel.ExecResult{ExitCode: 1}}, // which dnf
 		{result: &channel.ExecResult{ExitCode: 1}}, // which yum
+		{result: &channel.ExecResult{ExitCode: 1}}, // which apk
 	}
 }
 
@@ -144,11 +154,40 @@ func TestDetectYum(t *testing.T) {
 	assert.Equal(t, "yum", pm.name())
 }
 
+func TestDetectApk(t *testing.T) {
+	ch := &mockChannel{connected: true, execResponses: apkDetect()}
+	pm, err := detectPackageManager(context.Background(), ch)
+	require.NoError(t, err)
+	assert.Equal(t, "apk", pm.name())
+}
+
 func TestDetectNone(t *testing.T) {
 	ch := &mockChannel{connected: true, execResponses: noneDetect()}
 	_, err := detectPackageManager(context.Background(), ch)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no supported package manager")
+}
+
+func TestApkQueryAndCommands(t *testing.T) {
+	pm := apkPM{}
+	ch := &mockChannel{connected: true, execResponses: []execResponse{
+		{result: &channel.ExecResult{ExitCode: 0, Stdout: "busybox-1.37.0-r0\n"}},
+		{result: &channel.ExecResult{ExitCode: 1}},
+	}}
+	installed, version, err := pm.query(context.Background(), ch, "busybox")
+	require.NoError(t, err)
+	assert.True(t, installed)
+	assert.Equal(t, "1.37.0-r0", version)
+	installed, _, err = pm.query(context.Background(), ch, "missing")
+	require.NoError(t, err)
+	assert.False(t, installed)
+
+	assert.Equal(t, "apk add busybox=1.37.0-r0", pm.installCmd("busybox", "1.37.0-r0"))
+	assert.Equal(t, "apk add busybox", pm.installCmd("busybox", ""))
+	assert.Equal(t, "apk del busybox", pm.removeCmd("busybox"))
+	assert.Equal(t, "apk upgrade", pm.upgradeCmd("", ""))
+	assert.Equal(t, "apk add --upgrade busybox=1.37.0-r0", pm.upgradeCmd("busybox", "1.37.0-r0"))
+	assert.Equal(t, "apk add --upgrade busybox", pm.upgradeCmd("busybox", ""))
 }
 
 // --- install --------------------------------------------------------------
