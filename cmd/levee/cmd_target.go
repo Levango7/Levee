@@ -19,6 +19,7 @@ import (
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/state"
+	"github.com/nexus/levee/internal/wiring"
 )
 
 // Target command option variables.
@@ -635,46 +636,52 @@ func printTargetHistoryHuman(w io.Writer, host string, rows []*targetHistoryRow)
 // runTargetCheck executes the `levee target check <host>` command.
 func runTargetCheck(cmd *cobra.Command, args []string) error {
 	targetCheckOptTarget = args[0]
-	ctx := context.Background()
+	mode, err := resolveServiceMode()
+	if err != nil {
+		return err
+	}
+	if mode != modeLocal {
+		return fmt.Errorf("target check probes run against the local inventory and channels; remote mode is not supported")
+	}
+	store, err := openStore(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+	engine := wiring.NewEngine(store, wiring.WithCredentialResolver(cliCredentialResolver(store)))
+	return runTargetCheckWithEngine(cmd.Context(), engine, targetCheckOptTarget, os.Stdout)
+}
 
-	// Build a simple target for precheck.
-	tgt := &simpleTarget{host: targetCheckOptTarget}
-
-	// Create a prechecker. We use no channel and no limiter since we
-	// don't have a real transport in CLI mode; instead we report the
-	// target as needing manual verification.
-	prechecker := channel.NewPrechecker(nil, nil)
-
-	// Run the precheck. Without a channel, the prechecker reports the
-	// target as unreachable (no channel available).
-	report := prechecker.Check(ctx, []channel.Target{tgt})
-
-	result := channel.PrecheckResult{}
-	if len(report.Results) > 0 {
-		result = report.Results[0]
+func runTargetCheckWithEngine(ctx context.Context, engine capabilityDialer, host string, writer io.Writer) error {
+	result := channel.PrecheckResult{TargetID: host}
+	ch, err := engine.Dial(ctx, host)
+	if err != nil {
+		result.Reachable = false
+		result.Error = err.Error()
+	} else {
+		defer func() { _ = ch.Close() }()
+		prechecker := channel.NewPrechecker(ch, nil)
+		tgt := &simpleTarget{host: host}
+		report := prechecker.Check(ctx, []channel.Target{tgt})
+		if len(report.Results) > 0 {
+			result = report.Results[0]
+		}
 	}
 
 	output := map[string]any{
-		"target":    targetCheckOptTarget,
+		"target":    host,
 		"reachable": result.Reachable,
 		"latency":   result.Latency.String(),
 		"error":     result.Error,
 	}
-
 	if optJSON {
-		return PrintJSON(os.Stdout, map[string]any{
-			"data":  output,
-			"meta":  nil,
-			"error": nil,
-		})
+		return PrintJSON(writer, map[string]any{"data": output, "meta": nil, "error": nil})
 	}
-
 	if optQuiet {
-		fmt.Fprintln(os.Stdout, targetCheckOptTarget)
+		fmt.Fprintln(writer, host)
 		return nil
 	}
-
-	printTargetCheckHuman(os.Stdout, output)
+	printTargetCheckHuman(writer, output)
 	return nil
 }
 

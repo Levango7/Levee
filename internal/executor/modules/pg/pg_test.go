@@ -55,6 +55,37 @@ func (m *mockChannel) Exec(_ context.Context, cmd string) (*channel.ExecResult, 
 	return &channel.ExecResult{ExitCode: 0}, nil
 }
 
+func TestPreflightPGReadOnlyAndFailClosed(t *testing.T) {
+	ch := &mockChannel{result: &channel.ExecResult{ExitCode: 0, Stdout: "TABLE\tusers\trow_estimate\t100\n"}}
+	out, err := New().Execute(context.Background(), "preflight", input(ch, map[string]any{
+		"tables": []any{"users", "public.orders"},
+		"schema": "public",
+	}))
+	require.NoError(t, err)
+	assert.False(t, out.Changed, "preflight reads only")
+	assert.Equal(t, 0, out.ExitCode)
+	cmd := ch.only(t)
+	assert.Contains(t, cmd, "base64 -d", "psql SQL goes via base64 pipe")
+	// Decode and assert the self-describing, estimate-only probe.
+	lines := strings.Split(cmd, "\n")
+	require.GreaterOrEqual(t, len(lines), 2)
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(lines[1]))
+	require.NoError(t, err)
+	sql := string(raw)
+	assert.Contains(t, sql, "levee.preflight")
+	assert.Contains(t, sql, "NOT measured lock time")
+	assert.Contains(t, sql, "EXPLAIN SELECT")
+	assert.Contains(t, sql, "pg_class", "row estimate from pg_class.reltuples")
+	assert.Contains(t, sql, "to_regclass", "existence guard")
+}
+
+func TestPreflightPGRejectsMissingTables(t *testing.T) {
+	ch := &mockChannel{}
+	_, err := New().Execute(context.Background(), "preflight", input(ch, map[string]any{}))
+	require.Error(t, err)
+	assert.Empty(t, ch.execs, "no target touch on bad args")
+}
+
 func (m *mockChannel) only(t *testing.T) string {
 	t.Helper()
 	m.mu.Lock()
@@ -81,7 +112,7 @@ func input(ch *mockChannel, args map[string]any) executor.ModuleInput {
 func TestModuleContract(t *testing.T) {
 	m := New()
 	assert.Equal(t, "pg", m.Name())
-	assert.Equal(t, []string{"query", "schema_snapshot"}, m.Actions())
+	assert.Equal(t, []string{"query", "schema_snapshot", "schema_snapshot_ddl", "schema_restore", "preflight"}, m.Actions())
 	assert.False(t, m.Idempotent(),
 		"query is idempotent by authorship only; the module cannot verify that claim")
 }

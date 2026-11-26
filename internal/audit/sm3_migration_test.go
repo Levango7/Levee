@@ -39,7 +39,8 @@ func TestDigestWithMode(t *testing.T) {
 	assert.Len(t, strings.TrimPrefix(sm, prefixSM3), 64)
 
 	assert.NotEqual(t, plain, strings.TrimPrefix(sm, prefixSM3))
-	assert.Panics(t, func() { digestWithMode("x", "md5") })
+	// Unknown mode falls back to sha256 (CONTRIBUTING §2.3: no panic).
+	assert.Equal(t, digestWithMode("x", digestModeSHA256), digestWithMode("x", "md5"))
 }
 
 func TestDigestWithModeKeyed(t *testing.T) {

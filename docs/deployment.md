@@ -11,7 +11,7 @@ LEVEE 是单二进制程序，按角色拆分为三类常驻进程，可按需�
 | 进程 | 命令 | 职责 | 默认端口 |
 |------|------|------|----------|
 | API 服务 | `levee serve` | gRPC 服务 + REST 网关（`/api/v1/`）+ `/healthz` + `/metrics` | gRPC `:9090`、HTTP `:8080` |
-| Web UI | `levee web` | 服务内嵌 Vue 3 SPA，并可把 `/api/*` 代理到 API 服务 | `:8080` |
+| Web UI | `levee web` | 服务内嵌 Vue 3 SPA，并可把 `/api/*` 代理到 API 服务 | `:8081` |
 | 告警网关 | `levee alert serve` | 接收 Prometheus / 自定义 webhook 告警，去重/聚合/静默 | `:9095` |
 
 - **单机部署**：一个 `levee serve`（SQLite 存储）+ 一个 `levee web` 即可满足大多数场景；需要告警接入时再加 `levee alert serve`。
@@ -203,11 +203,11 @@ Web UI 单独成服务（`levee-web.service`），`ExecStart=/usr/local/bin/leve
 
 ```bash
 systemctl daemon-reload
-systemctl enable --now levee
-systemctl status levee
+systemctl enable --now levee levee-web
+systemctl status levee levee-web
 ```
 
-**仓库自带可直接使用的版本**：`deploy/systemd/levee.service`（含最小权限加固：`ProtectSystem=strict`、`ReadWritePaths` 限定数据目录、`$LEVEE_SERVE_EXTRA` 展开集群参数）与 `deploy/baremetal/install.sh`——幂等安装（建用户/装二进制/渲染单元/生成 0600 凭据模板），容器实测可直接重复执行。用法：
+**仓库自带可直接使用的版本**：`deploy/systemd/levee.service` + `deploy/systemd/levee-web.service`（含最小权限加固：`ProtectSystem=strict`、`ReadWritePaths` 限定数据目录、`$LEVEE_SERVE_EXTRA` 展开集群参数）与 `deploy/baremetal/install.sh`——幂等安装（建用户/装二进制/渲染单元/生成 0600 凭据模板），容器实测可直接重复执行。用法：
 
 ```bash
 sudo ./deploy/baremetal/install.sh --binary ./levee --start
@@ -363,7 +363,7 @@ helm test levee                                               # 校验 /healthz
 ```
 
 - 两种形态：`mode=single`（SQLite + PVC）与 `mode=cluster`（master 1 副本 + worker N 副本，共享 PG；`--node-id/--node-addr/--node-role` 由 Downward API 注入）。
-- 认证、主密码、PG DSN 全部走 Secret（`auth.existingSecret` 可完全接管）；探针用网关 `/healthz`（就绪）与 TCP（存活）。
+- 认证、主密码、PG DSN 全部走 Secret（`auth.existingSecret` 可完全接管）；API 探针用网关 `/healthz`（就绪）与 TCP（存活）。同 Pod 另有 `levee web` sidecar（`service.webPort: 8081`），Service 暴露该端口，UI 的就绪/存活探针都请求 `/`，不再只验证 API。
 - 边界如实写在模板注释里：**Service 只指向 master 副本**——`WatchChange` 事件总线是进程内的，多副本前置会让订阅者漏事件；内嵌 PG 仅供演示（单副本无 HA），生产用客户既有 PG/RDS；集群 worker 的快照目录默认 emptyDir，需要跨 Pod 重建保留就配 `cluster.snapshotClaimName` 指向共享 RWX 卷。
 - 镜像：`ghcr.io/levango7/levee:<版本>`（多架构；默认私有，配 `imagePullSecrets` 或同步到客户镜像库）。
 
@@ -379,7 +379,8 @@ helm test levee                                               # 校验 /healthz
 | 6 | 备份/恢复演练跑过一次 | `levee backup` → 空库恢复（PG 主路径；破坏性恢复需显式 opt-in）——见 §10 |
 | 7 | 升级路径确认 | §11 的滚动升级步骤在测试环境走过一遍；回滚到上一版本已验证 |
 | 8 | 审计链校验通过 | `levee audit verify` 全绿（audit 全局链 + 每 run 的 trace 链） |
-| 9 | 审计链摘要口令 | **新部署：必须配 `LEVEE_AUDIT_HMAC_KEY`（≥16 字节，secret 注入）**——unkeyed 链只防意外损坏，不防有意改写（任何能写库的人都能重算整条链，见 §5.6）；**存量部署（此前 unkeyed）：不得临时加**——启用即断历史链（存量记录算不出原摘要，验链器还会把它读成"被篡改"），须先按 §5.6 走归档重开链流程 |
+| 9 | Web UI 可达 | `curl -fsS http://127.0.0.1:8081/` 返回控制台 HTML；`curl -fsS http://127.0.0.1:8080/healthz` 返回 200，不能只验证后端进程存在 |
+| 10 | 审计链摘要口令 | **新部署：必须配 `LEVEE_AUDIT_HMAC_KEY`（≥16 字节，secret 注入）**——unkeyed 链只防意外损坏，不防有意改写（任何能写库的人都能重算整条链，见 §5.6）；**存量部署（此前 unkeyed）：不得临时加**——启用即断历史链（存量记录算不出原摘要，验链器还会把它读成"被篡改"），须先按 §5.6 走归档重开链流程 |
 
 ## 附录：本地覆盖率联合口径（state sqlite+PG）
 

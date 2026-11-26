@@ -912,6 +912,38 @@ levee target check <host>
 levee target check web01.prod
 ```
 
+### 6.3.1 capabilities
+
+对目标执行只读能力探测，输出当前环境实际支持哪些执行动作及原因。
+
+```text
+levee capabilities [host] [--target <host>] [--json] [--quiet]
+```
+
+**参数与选项**
+
+| 参数/选项 | 必填 | 说明 |
+|------|------|------|
+| `<host>` 或 `--target` | 是 | inventory 中的目标主机名，二选一 |
+| `--json` | 否 | 输出 `levee.capabilities/v1` 结构化报告 |
+| `--quiet` | 否 | 只输出 supported/unknown 计数 |
+
+**说明**
+
+- 复用执行链的 inventory、credential resolver 与 `Engine.Dial`，不是另建一条旁路。
+- 探测 OS、apt/dnf/yum/apk、systemd/sysvinit、psql/pg_dump/mysql/pt-online-schema-change，以及 29 个动作的支持状态。
+- 只执行 `which`、`--version`、`--help`、`uname`、`cat /etc/os-release`、`test` 等只读命令，不安装包、不启动服务、不修改数据库。
+- 输出分 `supported` / `unsupported` / `unknown`；unknown 不计为支持。`mysql.replica_switch` 缺真实拓扑时即属此列。
+- 这是 **live-probe（当前观测）**，不是生产验收结论；完整证据等级见 `docs/compatibility-matrix.md`。
+- 当前只支持本地 inventory 模式，`--remote` 会明确拒绝。
+
+**示例**
+
+```bash
+levee capabilities --target db01.prod
+levee capabilities db01.prod --json
+```
+
 ### 6.4 target history
 
 列出某台主机近期发生过的变更：按该主机的 step 记录找到所属 run，再按 run 去重。

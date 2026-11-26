@@ -121,7 +121,7 @@ SM3 与 SHA-256 同为 32B→64 hex，无需改列宽/JSON 契约。**历史行�
 
 ### 10.5 配置与可观测性
 
-- `audit.digest_mode: sha256|sm3`（默认 sha256，行为不变）；`LEVEE_AUDIT_DIGEST_MODE` 环境变量绑定；非法值启动即拒。
+- `audit.digest_mode: sha256|sm3`（默认 sha256，行为不变）；`LEVEE_AUDIT_DIGEST_MODE` 环境变量绑定。非法值：YAML 配置经 `config.Validate` 启动即拒；环境变量则 warn 并回落 sha256（与 `LEVEE_AUDIT_HMAC_KEY` 弱口令回落同口径）。
 - `serve` 启动时 `audit.SetDigestMode(cfg.Audit.DigestMode)` 固定进程模式（一次性，类 HMAC key）。
 - `GET /audit/chain-mode` 保留原三字段（`mode`/`algorithm`/`keyed`），新增 `digest_mode` + `digest_algorithm`（SM3/HMAC-SM3）——扩展非替换，前端旧消费方不受影响。
 

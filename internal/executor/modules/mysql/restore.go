@@ -14,6 +14,7 @@ package mysql
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/xwb1989/sqlparser"
@@ -97,13 +98,47 @@ func (m *Module) schemaRestore(ctx context.Context, input executor.ModuleInput) 
 // normalization is used for the captured and the verification payload.
 func normalizeSnapshotDDL(snapshot string) string {
 	snapshot = strings.TrimSpace(snapshot)
-	if strings.HasPrefix(strings.ToUpper(snapshot), "CREATE") {
-		return snapshot
+	if !strings.HasPrefix(strings.ToUpper(snapshot), "CREATE") {
+		if tab := strings.IndexByte(snapshot, '\t'); tab >= 0 {
+			snapshot = strings.TrimSpace(snapshot[tab+1:])
+		}
 	}
-	if tab := strings.IndexByte(snapshot, '\t'); tab >= 0 {
-		return strings.TrimSpace(snapshot[tab+1:])
+	return decodeMySQLOutputEscapes(snapshot)
+}
+
+// decodeMySQLOutputEscapes reverses the escape alphabet used by mysql's
+// tab-separated output. A sequential scan is required: replacing \n globally
+// would corrupt literals whose backslash was itself escaped by the server.
+func decodeMySQLOutputEscapes(snapshot string) string {
+	var out strings.Builder
+	out.Grow(len(snapshot))
+	for i := 0; i < len(snapshot); i++ {
+		if snapshot[i] != '\\' || i+1 >= len(snapshot) {
+			out.WriteByte(snapshot[i])
+			continue
+		}
+		i++
+		switch snapshot[i] {
+		case '0':
+			out.WriteByte(0)
+		case 'n':
+			out.WriteByte('\n')
+		case 'r':
+			out.WriteByte('\r')
+		case 't':
+			out.WriteByte('\t')
+		case 'Z':
+			out.WriteByte(0x1a)
+		case '\\', '\'', '"':
+			out.WriteByte(snapshot[i])
+		default:
+			// Unknown escapes are preserved verbatim and left for strict
+			// validation rather than being silently discarded.
+			out.WriteByte('\\')
+			out.WriteByte(snapshot[i])
+		}
 	}
-	return snapshot
+	return out.String()
 }
 
 // schemaRestoreSchemaExpr resolves the database half of a possibly qualified
@@ -127,7 +162,11 @@ func quoteSQLString(s string) string {
 // definition, and a second statement could smuggle a destructive action into
 // the recovery path.
 func validateCreateSnapshot(snapshot, table string) error {
-	pieces, err := sqlparser.SplitStatementToPieces(snapshot)
+	parseText, err := stripAndValidateForeignKeys(snapshot)
+	if err != nil {
+		return err
+	}
+	pieces, err := sqlparser.SplitStatementToPieces(parseText)
 	if err != nil {
 		return fmt.Errorf("split snapshot: %w", err)
 	}
@@ -148,6 +187,130 @@ func validateCreateSnapshot(snapshot, table string) error {
 		return fmt.Errorf("snapshot table %q does not match requested table %q", got, want)
 	}
 	return nil
+}
+
+// foreignKeyElementRe accepts the complete, canonical FOREIGN KEY element
+// emitted by SHOW CREATE TABLE. Anything beyond this grammar stays in the
+// strict parser's path or is rejected; a regex never gets to erase a suffix.
+var foreignKeyElementRe = regexp.MustCompile(`(?is)^(?:CONSTRAINT\s+(?:` + "`" + `[A-Za-z0-9_$]+` + "`" + `\s+)?)?FOREIGN\s+KEY\s*\(\s*` + "`" + `[A-Za-z0-9_$]+` + "`" + `(?:\s*,\s*` + "`" + `[A-Za-z0-9_$]+` + "`" + `)*\s*\)\s+REFERENCES\s+(?:` + "`" + `[A-Za-z0-9_$]+` + "`" + `\.)?` + "`" + `[A-Za-z0-9_$]+` + "`" + `\s*\(\s*` + "`" + `[A-Za-z0-9_$]+` + "`" + `(?:\s*,\s*` + "`" + `[A-Za-z0-9_$]+` + "`" + `)*\s*\)(?:\s+ON\s+(?:DELETE|UPDATE)\s+(?:RESTRICT|CASCADE|SET NULL|NO ACTION|SET DEFAULT))*$`)
+
+// stripAndValidateForeignKeys handles the one standard CREATE TABLE element
+// the vendored strict parser cannot read. Each FK is validated independently;
+// all other elements must still pass ParseStrictDDL unchanged.
+func stripAndValidateForeignKeys(sqlText string) (string, error) {
+	start, end := createTableBodyBounds(sqlText)
+	if start < 0 {
+		return sqlText, nil
+	}
+	parts, err := splitTopLevelElements(sqlText[start+1 : end])
+	if err != nil {
+		return "", err
+	}
+	kept := make([]string, 0, len(parts))
+	removed := false
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		upper := strings.ToUpper(trimmed)
+		if strings.HasPrefix(upper, "CONSTRAINT") || strings.HasPrefix(upper, "FOREIGN KEY") {
+			if !foreignKeyElementRe.MatchString(trimmed) {
+				return "", fmt.Errorf("foreign key element is not in the supported canonical form: %q", trimmed)
+			}
+			removed = true
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	if !removed {
+		return sqlText, nil
+	}
+	return sqlText[:start+1] + strings.Join(kept, ", ") + sqlText[end:], nil
+}
+
+// createTableBodyBounds returns the opening and closing parentheses of the
+// column/constraint list, respecting quoted identifiers, strings and nesting.
+func createTableBodyBounds(sqlText string) (int, int) {
+	start := strings.IndexByte(sqlText, '(')
+	if start < 0 {
+		return -1, -1
+	}
+	depth := 0
+	var quote byte
+	for i := start; i < len(sqlText); i++ {
+		c := sqlText[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == quote {
+				if i+1 < len(sqlText) && sqlText[i+1] == quote {
+					i++
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		switch c {
+		case '`', '\'', '"':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return start, i
+			}
+			if depth < 0 {
+				return -1, -1
+			}
+		}
+	}
+	return -1, -1
+}
+
+func splitTopLevelElements(body string) ([]string, error) {
+	var out []string
+	start, depth := 0, 1
+	var quote byte
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if quote != 0 {
+			if c == '\\' {
+				i++
+				continue
+			}
+			if c == quote {
+				if i+1 < len(body) && body[i+1] == quote {
+					i++
+				} else {
+					quote = 0
+				}
+			}
+			continue
+		}
+		switch c {
+		case '`', '\'', '"':
+			quote = c
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 1 {
+				return nil, fmt.Errorf("unbalanced CREATE TABLE element list")
+			}
+		case ',':
+			if depth == 1 {
+				out = append(out, body[start:i])
+				start = i + 1
+			}
+		}
+	}
+	if quote != 0 || depth != 1 {
+		return nil, fmt.Errorf("unterminated CREATE TABLE element list")
+	}
+	out = append(out, body[start:])
+	return out, nil
 }
 
 // tableNameFromCreateSQL reads the table token after CREATE TABLE [IF NOT

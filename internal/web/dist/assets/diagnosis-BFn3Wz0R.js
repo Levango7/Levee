@@ -1,0 +1,1 @@
+var e={healthy:`健康`,degraded:`降级`,unhealthy:`不健康`,unknown:`未知`},t={pass:`通过`,warn:`告警`,fail:`未通过`,skip:`已跳过`};function n(t){return e[t]??t}function r(e){return t[e]??e}export{r as n,n as t};

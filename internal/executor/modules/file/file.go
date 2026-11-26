@@ -51,7 +51,7 @@ func New() *Module { return &Module{} }
 func (Module) Name() string { return "file" }
 
 // Actions returns the supported action verbs.
-func (Module) Actions() []string { return []string{"copy", "template"} }
+func (Module) Actions() []string { return []string{"copy", "template", "exists", "delete"} }
 
 // Idempotent reports whether the module declares itself idempotent. The file
 // module is idempotent: copy / template only modify the target when the
@@ -65,6 +65,10 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 		return m.copyFile(ctx, input)
 	case "template":
 		return m.templateFile(ctx, input)
+	case "exists":
+		return m.fileExists(ctx, input)
+	case "delete":
+		return m.fileDelete(ctx, input)
 	default:
 		return nil, fmt.Errorf("file: unsupported action %q", action)
 	}
@@ -326,6 +330,92 @@ func (m *Module) remoteSha256(ctx context.Context, ch channel.Channel, path stri
 		return "", fmt.Errorf("remote sha256sum returned empty output")
 	}
 	return fields[0], nil
+}
+
+// validateRemotePath is the fail-closed check for actions that name a path on
+// the target. It refuses empty paths, the filesystem root, ".." traversal,
+// glob metacharacters and NUL — anything that could turn a single-file action
+// into a broad or ambiguous one. The path is still shell-quoted at use sites.
+func validateRemotePath(path string) error {
+	if path == "" {
+		return fmt.Errorf("path must not be empty")
+	}
+	if strings.ContainsRune(path, 0) {
+		return fmt.Errorf("path contains NUL")
+	}
+	if path == "/" || path == ".." || strings.HasPrefix(path, "../") ||
+		strings.HasPrefix(path, "/..") || strings.Contains(path, "/../") || strings.HasSuffix(path, "/..") {
+		return fmt.Errorf("path must not traverse or be the filesystem root")
+	}
+	if strings.ContainsAny(path, "*?[]{}~") {
+		return fmt.Errorf("path must not contain glob metacharacters")
+	}
+	return nil
+}
+
+// fileExists is a read-only check: exit 0 means present, exit 1 means absent.
+// Both are valid outcomes (not errors) so a workflow can branch on the result;
+// a channel error or a nonzero exit other than 1 is a real failure.
+func (m *Module) fileExists(ctx context.Context, input executor.ModuleInput) (*executor.ModuleOutput, error) {
+	path, err := stringArg(input.Args, "path")
+	if err != nil {
+		return nil, fmt.Errorf("file.exists: %w", err)
+	}
+	if err := validateRemotePath(path); err != nil {
+		return nil, fmt.Errorf("file.exists: %w", err)
+	}
+	cmd := fmt.Sprintf("test -e %s", shellQuote(path))
+	res, err := input.Channel.Exec(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("file.exists: channel exec: %w", err)
+	}
+	if res.ExitCode != 0 && res.ExitCode != 1 {
+		return nil, fmt.Errorf("file.exists: unexpected exit %d: %s", res.ExitCode, res.Stderr)
+	}
+	present := res.ExitCode == 0
+	msg := fmt.Sprintf("absent: %s", shellQuote(path))
+	if present {
+		msg = fmt.Sprintf("present: %s", shellQuote(path))
+	}
+	return &executor.ModuleOutput{
+		ExitCode: 0,
+		Stdout:   msg,
+		Changed:  false,
+	}, nil
+}
+
+// fileDelete removes a single file on the target. It is inherently
+// irreversible (declared in internal/dsl/inherent_irreversible.go) and goes
+// through the same approval/allowlist path as other destructive actions. The
+// path is fail-closed validated before any command is sent, and rm -f -- with
+// a shell-quoted word prevents option injection and globbing.
+func (m *Module) fileDelete(ctx context.Context, input executor.ModuleInput) (*executor.ModuleOutput, error) {
+	path, err := stringArg(input.Args, "path")
+	if err != nil {
+		return nil, fmt.Errorf("file.delete: %w", err)
+	}
+	if err := validateRemotePath(path); err != nil {
+		return nil, fmt.Errorf("file.delete: %w", err)
+	}
+	cmd := fmt.Sprintf("rm -f -- %s", shellQuote(path))
+	res, err := input.Channel.Exec(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("file.delete: channel exec: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("file.delete: rm exited %d: %s", res.ExitCode, res.Stderr)
+	}
+	// Changed reports that the destructive action was EXECUTED, not that a
+	// file was provably present beforehand: rm -f is idempotent (missing file
+	// also exits 0), and probing existence first would add a racy extra round
+	// trip. This differs from read-only preflight actions, whose Changed must
+	// stay false. The irreversible declaration + approval gate cover the risk.
+	return &executor.ModuleOutput{
+		ExitCode: 0,
+		Stdout:   fmt.Sprintf("deleted: %s", shellQuote(path)),
+		Stderr:   res.Stderr,
+		Changed:  true,
+	}, nil
 }
 
 // sha256sum returns the hex-encoded sha256 of data.
