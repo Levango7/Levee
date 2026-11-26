@@ -366,8 +366,8 @@ func (v *PostRollbackVerifier) computeGrade(rollbackResult *RollbackResult, veri
 // VerifyAndGrade is a convenience method that runs Verify and, when a
 // Grader is attached, immediately dispatches the corresponding
 // GradeAction's Notify / Escalate / Audit callbacks (when non-nil). It
-// returns the verify result and the first error encountered while
-// dispatching actions.
+// returns the verify result and a joined error containing every action
+// failure.
 //
 // When no Grader is attached, the method is equivalent to Verify and
 // returns a nil dispatch error.
@@ -384,31 +384,17 @@ func (v *PostRollbackVerifier) VerifyAndGrade(ctx context.Context, rollbackResul
 	// Re-grade using the combined outcome so that the action dispatch
 	// matches the grade stored in the result.
 	grade := result.Grade
-	action := v.grader.GetAction(grade)
 
 	// Dispatch on a detached, bounded context too, for the same reason the
 	// gates do: the common case for reaching here is a rollback triggered
-	// BY cancellation, so dispatching notify/escalate on the caller's
-	// already-cancelled context would fail exactly when the notification
-	// matters most. Notify and escalate are best-effort by design, so a
-	// failure here is reported, not fatal.
+	// BY cancellation, so dispatching actions on the caller's already-cancelled
+	// context would fail exactly when the notification matters most. Actions
+	// are best-effort by design, so failures are reported, not fatal.
 	dispatchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), v.VerifyTimeout())
 	defer cancel()
 
-	if action.Notify != nil {
-		if err := action.Notify(dispatchCtx, grade, rollbackResult); err != nil {
-			return result, fmt.Errorf("post-verify grade notify: %w", err)
-		}
-	}
-	if action.Escalate != nil {
-		if err := action.Escalate(dispatchCtx, grade, rollbackResult); err != nil {
-			return result, fmt.Errorf("post-verify grade escalate: %w", err)
-		}
-	}
-	if action.Audit != nil {
-		if err := action.Audit(dispatchCtx, grade, rollbackResult); err != nil {
-			return result, fmt.Errorf("post-verify grade audit: %w", err)
-		}
+	if err := v.grader.dispatch(dispatchCtx, grade, rollbackResult, "post-verify grade"); err != nil {
+		return result, err
 	}
 	return result, nil
 }

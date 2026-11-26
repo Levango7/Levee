@@ -1,42 +1,13 @@
-// rollback_grade.go builds the Grader that post-rollback verification uses
-// to classify a rollback and dispatch its consequences.
-//
-// Why this file exists: T038 shipped a Grader, T037 shipped a
-// PostRollbackVerifier with a WithGrader option, and neither was ever
-// attached to anything — PostVerifyResult.Grade was structurally always
-// empty and no notify / escalate / audit could ever fire. The engine now
-// calls VerifyAndGrade (see closure.go), so a nil Grader would mean the
-// grade is computed and thrown away. This file is the missing half.
-//
-// The grading logic itself is NOT here. rollback.Grader is deliberately
-// transport-free: it classifies, and this file decides what "notify" and
-// "escalate" concretely mean for a deployment.
-//
-// Transport status, stated plainly:
-//
-//   - Audit: written to the structured log. The audit package has a
-//     hash-chained TraceRecorder, but the engine path records no traces
-//     today and nothing in state carries the identity a rollback trace
-//     would need, so claiming an audit record here would be a fiction. The
-//     callback is the seam; hooking it to TraceRecorder is a separate
-//     change with its own ownership question.
-//   - Notify: routed through rollbackNotifySink. No sink is constructed
-//     yet, and the reason is a missing fact rather than missing code —
-//     state records no initiator for a change, and notify.RollbackNotifier
-//     (which is implemented, and also had zero callers) refuses to send
-//     without one. Inventing a recipient would be worse than not sending.
-//     notifyRollbackSink below is the ready-made adapter for whoever wires
-//     a NotificationManager once initiators are recorded.
-//   - Escalate: logged at error level. A failed rollback that left targets
-//     in an unknown state is the one event that must not pass silently;
-//     until a paging transport is chosen, a loud structured log is the
-//     honest floor, and the message says what an operator should do.
-
+// rollback_grade.go wires rollback grading to notification, escalation, and
+// hash-chained audit transports.
 package wiring
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/notify"
 	"github.com/nexus/levee/internal/rollback"
@@ -54,8 +25,7 @@ type rollbackNotifySink interface {
 }
 
 // notifyRollbackSink adapts a *notify.RollbackNotifier to the sink
-// interface. It is currently unused by the Engine (see the file comment),
-// and exists so that wiring one is a single line rather than a rewrite.
+// interface.
 type notifyRollbackSink struct {
 	notifier  *notify.RollbackNotifier
 	initiator string
@@ -87,14 +57,72 @@ func (s *notifyRollbackSink) NotifyGrade(ctx context.Context, grade rollback.Rol
 // run, who approved it) rather than deployment settings — resolving them
 // once per run is also what lets the notify path work at all today, since
 // notify.RollbackNotifier refuses to send without an initiator.
-func newRollbackGrader(sink rollbackNotifySink) *rollback.Grader {
-	return rollback.NewGrader(
+func newRollbackGrader(sink rollbackNotifySink, opts ...rollback.GraderOption) *rollback.Grader {
+	defaults := []rollback.GraderOption{
 		rollback.WithPartialNotify(gradeNotifier(sink)),
 		rollback.WithPartialAudit(gradeAuditor),
 		rollback.WithFailureNotify(gradeNotifier(sink)),
 		rollback.WithFailureEscalate(gradeEscalator),
 		rollback.WithFailureAudit(gradeAuditor),
-	)
+	}
+	return rollback.NewGrader(append(defaults, opts...)...)
+}
+
+func (e *Engine) newRunRollbackGrader(sink rollbackNotifySink, changeID string) *rollback.Grader {
+	auditor := rollback.AuditFunc(gradeAuditor)
+	if e != nil && e.store != nil && changeID != "" {
+		recorder, err := audit.NewTraceRecorder(e.store)
+		if err != nil {
+			log.Error("rollback grade recorder unavailable; grades will be logged only", "error", err)
+		} else {
+			auditor = changeBoundGradeAuditor(recorder, changeID)
+		}
+	}
+	return newRollbackGrader(sink,
+		rollback.WithPartialAudit(auditor),
+		rollback.WithFailureAudit(auditor))
+}
+
+func changeBoundGradeAuditor(recorder *audit.TraceRecorder, changeID string) rollback.AuditFunc {
+	return func(ctx context.Context, grade rollback.RollbackGrade, result *rollback.RollbackResult) error {
+		output := map[string]any{
+			"grade":                   string(grade),
+			"summary":                 rollback.GradeSummary(grade, result),
+			"success":                 result != nil && result.Success,
+			"partial":                 result != nil && result.PartialRollback,
+			"required_compensations":  compensationsOf(result, true),
+			"completed_compensations": compensationsOf(result, false),
+			"unknown_side_effects":    unknownOf(result),
+		}
+		var duration time.Duration
+		var rollbackErr error
+		if result != nil {
+			duration = result.Duration
+			rollbackErr = result.Error
+			if result.RunID != "" {
+				output["exec_run_id"] = result.RunID
+			}
+		}
+		_, err := recorder.Record(ctx, audit.TraceRecord{
+			RunID:    changeID,
+			Event:    audit.EventRollbackGrade,
+			Actor:    "system",
+			Target:   "*",
+			Output:   output,
+			Duration: duration,
+			Error:    rollbackErr,
+			Metadata: map[string]string{"grade": string(grade)},
+		})
+		if err != nil {
+			log.Error("rollback grade audit record failed",
+				"change_id", changeID,
+				"exec_run_id", runIDOf(result),
+				"grade", string(grade),
+				"error", err)
+			return fmt.Errorf("audit rollback grade for change %q: %w", changeID, err)
+		}
+		return nil
+	}
 }
 
 // newRunNotifySink builds the per-run notify transport, or nil when there is
@@ -197,8 +225,7 @@ func gradeEscalator(_ context.Context, grade rollback.RollbackGrade, result *rol
 	return nil
 }
 
-// gradeAuditor records the grade and the rollback verdict in the structured
-// log. See the file comment for why this is not the audit package yet.
+// gradeAuditor is the log-only fallback when no durable recorder is available.
 func gradeAuditor(_ context.Context, grade rollback.RollbackGrade, result *rollback.RollbackResult) error {
 	log.Info("rollback graded",
 		"grade", string(grade),

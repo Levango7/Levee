@@ -143,7 +143,7 @@ func (e *Engine) newRunRunner(ctx context.Context, rx *runExec, changeID string)
 	// declaresEmergency. An unreadable workflow grants nothing.
 	calendarEmergency := e.declaresEmergencyFor(ctx, changeID)
 	postVerifier, err := rollback.NewPostRollbackVerifier(gateMgr,
-		rollback.WithGrader(newRollbackGrader(e.newRunNotifySink(actors))),
+		rollback.WithGrader(e.newRunRollbackGrader(e.newRunNotifySink(actors), changeID)),
 		rollback.WithVerifyTimeout(e.postVerifyTimeout))
 	if err != nil {
 		// Reachable only with a nil gate manager, which gateMgr never is
