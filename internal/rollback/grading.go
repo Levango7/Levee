@@ -21,6 +21,7 @@ package rollback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -224,36 +225,40 @@ func (g *Grader) GetAction(grade RollbackGrade) GradeAction {
 
 // GradeAndAct is a convenience method that grades the result and immediately
 // dispatches the corresponding action's Notify / Escalate / Audit callbacks
-// (when non-nil). It returns the grade and the first error encountered while
-// dispatching actions; nil means all actions (if any) succeeded.
+// (when non-nil). It returns the grade and a joined error containing every
+// action failure; nil means all actions (if any) succeeded.
 //
-// Dispatch order is Notify → Escalate → Audit. The first non-nil error
-// short-circuits and is returned wrapped with the action that failed; later
-// actions are not dispatched. This keeps the failure cause unambiguous.
+// Dispatch order is Notify → Escalate → Audit. An action failure does not
+// prevent later actions from running.
 //
 // This is the one-stop entry point for callers that want grading + action
 // dispatch in a single call. Callers that need to inspect the GradeAction
 // before dispatching should use Grade + GetAction instead.
 func (g *Grader) GradeAndAct(ctx context.Context, result *RollbackResult) (RollbackGrade, error) {
 	grade := g.Grade(result)
+	return grade, g.dispatch(ctx, grade, result, "rollback grade")
+}
+
+func (g *Grader) dispatch(ctx context.Context, grade RollbackGrade, result *RollbackResult, errorPrefix string) error {
 	action := g.GetAction(grade)
+	var errs []error
 
 	if action.Notify != nil {
 		if err := action.Notify(ctx, grade, result); err != nil {
-			return grade, fmt.Errorf("rollback grade notify: %w", err)
+			errs = append(errs, fmt.Errorf("%s notify: %w", errorPrefix, err))
 		}
 	}
 	if action.Escalate != nil {
 		if err := action.Escalate(ctx, grade, result); err != nil {
-			return grade, fmt.Errorf("rollback grade escalate: %w", err)
+			errs = append(errs, fmt.Errorf("%s escalate: %w", errorPrefix, err))
 		}
 	}
 	if action.Audit != nil {
 		if err := action.Audit(ctx, grade, result); err != nil {
-			return grade, fmt.Errorf("rollback grade audit: %w", err)
+			errs = append(errs, fmt.Errorf("%s audit: %w", errorPrefix, err))
 		}
 	}
-	return grade, nil
+	return errors.Join(errs...)
 }
 
 // --- helpers ---------------------------------------------------------------

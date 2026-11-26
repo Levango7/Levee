@@ -110,7 +110,5 @@ func TestRunChange_UngatedRunCarriesNoGateRows(t *testing.T) {
 	assert.Empty(t, gateTraceRows(t, store, "run-no-gate"),
 		"no declared gates means no verdict rows, not rows asserting a pass")
 	// This empty result is only evidence because the gated run above proves rows
-	// CAN land: an ungated run legitimately writes no trace rows at all today
-	// (the engine path records nothing else — see rollback_grade.go), so the
-	// assertion would also pass in a build where tracing is dead entirely.
+	// CAN land; ungated runs without rollback grading legitimately write no rows.
 }

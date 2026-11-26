@@ -212,18 +212,22 @@ func TestGradeAndActNilResult(t *testing.T) {
 	assert.Equal(t, GradeFailure, grade)
 }
 
-func TestGradeAndActNotifyErrorShortCircuits(t *testing.T) {
+func TestGradeAndActNotifyErrorStillEscalatesAndAudits(t *testing.T) {
 	wantErr := errors.New("notify channel broken")
-	escalateCalls := atomic.Int64{}
+	var calls []string
 	g := NewGrader(
 		WithFailureNotify(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "notify")
 			return wantErr
 		}),
 		WithFailureEscalate(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
-			escalateCalls.Add(1)
+			calls = append(calls, "escalate")
 			return nil
 		}),
-		WithFailureAudit(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error { return nil }),
+		WithFailureAudit(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "audit")
+			return nil
+		}),
 	)
 	res := &RollbackResult{Success: false, Error: errors.New("fail")}
 	grade, err := g.GradeAndAct(context.Background(), res)
@@ -231,10 +235,10 @@ func TestGradeAndActNotifyErrorShortCircuits(t *testing.T) {
 	assert.Equal(t, GradeFailure, grade)
 	assert.Contains(t, err.Error(), "rollback grade notify")
 	assert.ErrorIs(t, err, wantErr)
-	assert.Equal(t, int64(0), escalateCalls.Load(), "escalate should not run after notify error")
+	assert.Equal(t, []string{"notify", "escalate", "audit"}, calls)
 }
 
-func TestGradeAndActEscalateErrorShortCircuits(t *testing.T) {
+func TestGradeAndActEscalateErrorStillAudits(t *testing.T) {
 	wantErr := errors.New("escalate failed")
 	auditCalls := atomic.Int64{}
 	g := NewGrader(
@@ -253,7 +257,39 @@ func TestGradeAndActEscalateErrorShortCircuits(t *testing.T) {
 	assert.Equal(t, GradeFailure, grade)
 	assert.Contains(t, err.Error(), "rollback grade escalate")
 	assert.ErrorIs(t, err, wantErr)
-	assert.Equal(t, int64(0), auditCalls.Load(), "audit should not run after escalate error")
+	assert.Equal(t, int64(1), auditCalls.Load(), "audit must still run after escalate error")
+}
+
+func TestGradeAndActJoinsActionErrors(t *testing.T) {
+	notifyErr := errors.New("notify failed")
+	escalateErr := errors.New("escalate failed")
+	auditErr := errors.New("audit failed")
+	var calls []string
+	g := NewGrader(
+		WithFailureNotify(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "notify")
+			return notifyErr
+		}),
+		WithFailureEscalate(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "escalate")
+			return escalateErr
+		}),
+		WithFailureAudit(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "audit")
+			return auditErr
+		}),
+	)
+
+	grade, err := g.GradeAndAct(context.Background(), &RollbackResult{})
+	require.Error(t, err)
+	assert.Equal(t, GradeFailure, grade)
+	assert.ErrorIs(t, err, notifyErr)
+	assert.ErrorIs(t, err, escalateErr)
+	assert.ErrorIs(t, err, auditErr)
+	assert.Contains(t, err.Error(), "rollback grade notify")
+	assert.Contains(t, err.Error(), "rollback grade escalate")
+	assert.Contains(t, err.Error(), "rollback grade audit")
+	assert.Equal(t, []string{"notify", "escalate", "audit"}, calls)
 }
 
 func TestGradeAndActAuditError(t *testing.T) {

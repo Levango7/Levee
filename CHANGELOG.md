@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（target history 的工作流名只带声明名）
+
+- `runs.workflow_name` 存的是渲染后的整份工作流文档，`InventoryService.TargetHistory` 此前把它原样放上 wire：每个 `target history --remote` 调用方都收到整份 YAML，与 `pb.Change.plan` 对 ListChanges 的边界是同一条理由。线上 `workflow_name` 现归一为 `dsl.DisplayName` 的声明名；单行路径/纯名原样通过。
+- 本地 `target history --json` 的 `workflow_name` 同步归一，保持远程子集契约「同键同值」成立，键集合仍是 `state.Run` 的 15 键全量；人类表格两种模式本就走 `workflowDisplay`，显示不变。
+- 两个公开边界红绿：gRPC `TargetHistory` 对真实 SQLite store 断言 wire 只带声明名且不含 YAML 原文；CLI 两侧 `--json` 断言 `workflow_name` 为声明名且不含 `action: shell.exec`。把声明名改回原文的定向变异均被抓住。
+
 ### 新增（目标兼容自诊断与 apk 实证）
 
 - 新增 `levee capabilities [--target] <host>`：复用真实 inventory、credential resolver 与 `Engine.Dial`，只读探测 OS、包管理器、init、数据库客户端和 29 个动作的 `supported/unsupported/unknown + reason`，输出 `levee.capabilities/v1`；unknown 不算支持，live-probe 不冒充生产验收。
@@ -17,6 +23,16 @@
 - `mysql.schema_restore` 现在按顺序解码 mysql 客户端的 `\n`、`\t`、反斜线等输出转义，再做严格 DDL 校验；真实 SHOW CREATE 不再因字面反斜线被误拒，捕获与恢复后定义比较使用同一规范化口径。
 - 标准 FOREIGN KEY 元素逐个做受限语法校验，其余 DDL 继续走严格解析；非法后缀、借 FK 注入第二语句和注释拖尾均拒绝，不用普通 Parse 的忽略错误路径。
 - 新增 `scripts/replay_mysql_schema.py` 与 opt-in `mysqlreplay`：真实 SSH + MySQL 8.0.46 完成捕获 366B→DROP→恢复→定义一致、现存表和篡改拒绝，最终 `MYSQL_SCHEMA_REPLAY PASS`；临时 root 公钥与容器自动清理。边界仍是 DDL-only、缺表恢复，不含行数据或主从切换。
+
+### 修复（回滚分级进入持久化审计哈希链）
+
+- `partial` / `failure` 回滚分级现通过生产闭包写入 `rollback_grade` 审计记录，复用既有敏感字段脱敏、持久化与追加式哈希封链；记录归属持久化变更 ID，临时闭包执行 ID 只保留在 `exec_run_id` 证据字段中，避免审计外键指向不存在的临时 run。
+- `success` 保持不写分级审计。审计插入失败会向分级派发方返回错误，但闭包只记录失败，不改写已得出的回滚结局；真实 SQLite 闭包测试覆盖 partial/failure 落链、成功不落链、审计写入失败与哈希校验。
+
+### 修复（回滚分级动作失败不再截断后续动作）
+
+- `Grader.GradeAndAct` 与 `PostRollbackVerifier.VerifyAndGrade` 共用派发实现，按 `Notify → Escalate → Audit` 执行所有已配置动作；通知或升级失败不再跳过后续审计，多个动作错误用 `errors.Join` 汇总并保留各自前缀与 `errors.Is` 可识别性。成功分级仍不派发任何动作。
+- 两个公开边界的红绿测试均覆盖动作顺序、前序失败后继续执行、多错误汇总与验证结果不变；恢复通知后短路、只返回首个错误的定向变异均被测试抓住。
 
 ### 新增（D-5 PostgreSQL 可恢复 DDL 第一切片与真实回放）
 
