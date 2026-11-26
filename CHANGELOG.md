@@ -18,6 +18,16 @@
 - 标准 FOREIGN KEY 元素逐个做受限语法校验，其余 DDL 继续走严格解析；非法后缀、借 FK 注入第二语句和注释拖尾均拒绝，不用普通 Parse 的忽略错误路径。
 - 新增 `scripts/replay_mysql_schema.py` 与 opt-in `mysqlreplay`：真实 SSH + MySQL 8.0.46 完成捕获 366B→DROP→恢复→定义一致、现存表和篡改拒绝，最终 `MYSQL_SCHEMA_REPLAY PASS`；临时 root 公钥与容器自动清理。边界仍是 DDL-only、缺表恢复，不含行数据或主从切换。
 
+### 修复（回滚分级进入持久化审计哈希链）
+
+- `partial` / `failure` 回滚分级现通过生产闭包写入 `rollback_grade` 审计记录，复用既有敏感字段脱敏、持久化与追加式哈希封链；记录归属持久化变更 ID，临时闭包执行 ID 只保留在 `exec_run_id` 证据字段中，避免审计外键指向不存在的临时 run。
+- `success` 保持不写分级审计。审计插入失败会向分级派发方返回错误，但闭包只记录失败，不改写已得出的回滚结局；真实 SQLite 闭包测试覆盖 partial/failure 落链、成功不落链、审计写入失败与哈希校验。
+
+### 修复（回滚分级动作失败不再截断后续动作）
+
+- `Grader.GradeAndAct` 与 `PostRollbackVerifier.VerifyAndGrade` 共用派发实现，按 `Notify → Escalate → Audit` 执行所有已配置动作；通知或升级失败不再跳过后续审计，多个动作错误用 `errors.Join` 汇总并保留各自前缀与 `errors.Is` 可识别性。成功分级仍不派发任何动作。
+- 两个公开边界的红绿测试均覆盖动作顺序、前序失败后继续执行、多错误汇总与验证结果不变；恢复通知后短路、只返回首个错误的定向变异均被测试抓住。
+
 ### 新增（D-5 PostgreSQL 可恢复 DDL 第一切片与真实回放）
 
 - 新增 `pg.schema_snapshot_ddl` / `pg.schema_restore`：`levee.pg.schema/v1` JSON 保存 schema-qualified 表名、pg_dump DDL 与 SHA-256；oliphant AST 白名单拒绝 DML、DROP、跨表对象、未拥有序列、IDENTITY、分区和其他不安全形态。恢复仅限目标关系不存在，成功后重新 dump 逐字校验，绝不覆盖现存对象。
