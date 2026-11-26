@@ -69,6 +69,8 @@ service:
   type: ClusterIP
   grpcPort: 9090
   httpPort: 8080
+  # Web UI（同 Pod 的 levee web sidecar，反向代理到本 Pod 的 httpPort）
+  webPort: 8081
   # 集群模式下 Service 只指向 master 副本：WatchChange 的事件总线是进程内的，
   # 任何节点都会正确服务命令型 API，但事件流只在本节点可见——前置负载均衡到
   # 多副本会让订阅者漏事件。多副本只读/命令型访问可按需另建 Service。

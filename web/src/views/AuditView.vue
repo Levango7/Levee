@@ -196,6 +196,9 @@ onMounted(async () => {
         <TraceTimeline v-else :entries="entries" empty-text="当前筛选下没有记录" />
       </div>
 
+      <div v-if="viewMode === 'table' && entries.length > 0" class="table-scroll-hint">
+        表格可左右滚动查看更多，哈希链在右侧
+      </div>
       <el-table v-else-if="regionTier === 'ok'" v-loading="loading" :data="entries">
         <!-- 证据片段卡: the entry's own payload. The table proves WHERE a row
              sits in the chain; whether the change did what the plan said is in
@@ -339,6 +342,20 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.table-scroll-hint {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .table-scroll-hint {
+    display: block;
+    padding: var(--lv-space-2) var(--lv-space-4);
+    border-bottom: 1px solid var(--lv-border-soft);
+    color: var(--lv-text-3);
+    font-size: var(--lv-text-xs);
+  }
+}
+
 .evidence {
   display: flex;
   flex-direction: column;

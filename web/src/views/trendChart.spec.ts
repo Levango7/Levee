@@ -92,6 +92,18 @@ describe('trend chart: hand-rolled, on the design tokens, geometry tested', () =
     expect(locate('src/api/index.ts'), 'and the api layer forwards it').toContain('tz_offset')
   })
 
+  it('makes the environment selectable and names the resolved scope', () => {
+    // This replaces the old `filter.status.length === 0 ? undefined : undefined`
+    // placeholder: both branches were empty, so the documented selector did not
+    // exist and the chart silently used the server's default environment.
+    expect(view).toContain('v-model="trendEnv"')
+    expect(view).toContain('env: trendEnv.value || undefined')
+    expect(view).not.toContain('filter.status.length === 0 ? undefined : undefined')
+    expect(view).toContain('@change="loadTrend"')
+    expect(view).toContain('trend.value?.environment')
+    expect(view).toContain('{{ trendScopeLabel }} · 共 {{ trendTotal }} 个')
+  })
+
   it('tells the operator when the window was capped', () => {
     // A truncated trend's right edge is the cap, not the data — a chart that
     // draws it silently is a chart that lies about volume.

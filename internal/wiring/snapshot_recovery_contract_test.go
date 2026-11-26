@@ -11,7 +11,7 @@ import (
 	"github.com/nexus/levee/internal/rollback"
 )
 
-func TestPostgresQuerySnapshotRollbackFailsClosed(t *testing.T) {
+func TestPostgresLegacyEmptySnapshotRollbackFailsClosed(t *testing.T) {
 	vfs := newSnapVFS(nil)
 	dir := t.TempDir()
 	rx, _ := newSnapEngine(t, vfs, "web1", "chg-pg", dir)
@@ -26,15 +26,8 @@ func TestPostgresQuerySnapshotRollbackFailsClosed(t *testing.T) {
 	step.Action = "query"
 	step.Args = map[string]any{"sql": "ALTER TABLE users ADD COLUMN note text"}
 
-	err = s.CaptureForStep(context.Background(), "run-apply", "web1", step)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "PostgreSQL schema restore is not implemented")
-	snaps, listErr := store.List(context.Background(), "chg-pg", "web1")
-	require.NoError(t, listErr)
-	assert.Empty(t, snaps, "an unsupported declaration must not leave an audit-only success record")
-	assert.Empty(t, vfs.commands(), "the refusal happens before touching the target")
-
-	// A legacy empty record must not turn restore into a successful no-op either.
+	// New captures carry a versioned pg_dump payload. A pre-D-5 audit-only or
+	// introspection-only record still cannot become a successful no-op restore.
 	legacy := &rollback.Snapshot{
 		ID: "snap-legacy", RunID: "chg-pg", Target: "web1", Type: rollback.SnapshotTypeFile,
 		CreatedAt: time.Now().UTC(), Metadata: map[string]any{"step": step.Name},
@@ -44,7 +37,8 @@ func TestPostgresQuerySnapshotRollbackFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	err = s.RestoreForStep(context.Background(), "run-rollback", "web1", step)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "PostgreSQL schema restore is not implemented")
+	assert.Contains(t, err.Error(), "contains no restorable PostgreSQL DDL payload")
+	assert.Empty(t, vfs.commands(), "the refusal happens before touching the target")
 }
 
 func TestSnapshotterRestoreSelectsNewestCaptureRegardlessOfIDOrder(t *testing.T) {

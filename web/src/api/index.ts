@@ -5,6 +5,7 @@
 import { del, get, getText, post, put } from './client'
 import type {
   ApprovalStatus,
+  ApiError,
   Change,
   ChangeStatus,
   LogEntry,
@@ -117,6 +118,26 @@ export interface RollbackResponseDTO {
   message: string
 }
 
+// Apply, Retry and Rollback return only after the engine reaches a verdict;
+// they must not inherit the 30-second deadline intended for ordinary reads.
+// timeout: 0 leaves the wait to the server's request context instead of
+// inventing a second, shorter execution budget in the browser.
+function postExecution<T>(url: string, body?: unknown): Promise<T> {
+  return post<T>(url, body, { timeout: 0 }).catch((error: unknown) => {
+    const apiError = error as ApiError | undefined
+    if (apiError?.code === 0) {
+      // Losing the response is not evidence that execution failed. Make the
+      // unknown outcome explicit so the next click is an informed re-drive,
+      // not a reflex duplicate submission.
+      throw {
+        ...apiError,
+        message: '连接中断，执行结果未知：请先刷新变更状态，确认后再操作，勿直接重复提交',
+      }
+    }
+    throw error
+  })
+}
+
 export const changesApi = {
   list: (params: ListChangesParams): Promise<PageResult<Change>> =>
     get<RawListEnvelope>('/changes', { params: changesListQuery(params) }).then((raw) =>
@@ -143,7 +164,7 @@ export const changesApi = {
     runId: string
     success: boolean
     message: string
-  }> => post(`/changes/${id}/apply`, body),
+  }> => postExecution(`/changes/${id}/apply`, body),
 
   /* approver/rejecter are OPTIONAL and should usually be OMITTED: the server
    * attributes the vote to the authenticated subject and rejects a claimed
@@ -174,10 +195,14 @@ export const changesApi = {
     post<Change>(`/changes/${id}/cancel`, body),
 
   retry: (id: string, body: { replan?: boolean; targetHosts?: string[] }): Promise<Change> =>
-    post<Change>(`/changes/${id}/retry`, body),
+    postExecution<Change>(`/changes/${id}/retry`, body),
 
   rollback: (id: string, body: { runId?: string; dryRun?: boolean; autoApprove?: boolean }): Promise<RollbackResponseDTO> =>
-    post<RollbackResponseDTO>(`/changes/${id}/rollback`, body),
+    body.dryRun === true
+      // A preview may also take longer than 30s, but it mutates nothing, so a
+      // dropped response must not be described as an unknown execution outcome.
+      ? post<RollbackResponseDTO>(`/changes/${id}/rollback`, body, { timeout: 0 })
+      : postExecution<RollbackResponseDTO>(`/changes/${id}/rollback`, body),
 
   archive: (id: string, purgeArtifacts?: boolean): Promise<Change> =>
     post<Change>(`/changes/${id}/archive`, { purgeArtifacts }),
@@ -418,6 +443,52 @@ export interface AlertStatusReply {
 export const alertsApi = {
   status: (id: string): Promise<AlertStatusReply> =>
     post<AlertStatusReply>('/AlertService/GetAlertStatus', { id }),
+}
+
+// ---------------------------------------------------------------------------
+// DiagnosisService — host diagnosis (not /system/doctor, which is a daemon
+// self-check). gRPC-style path; protojson uses lowerCamelCase and renders
+// int64 as strings. repeated fields are always present ([]).
+// ---------------------------------------------------------------------------
+
+export interface DiagnosticFindingDTO {
+  id: string
+  category: string
+  severity: string
+  title: string
+  description?: string
+  evidence?: string
+  suggestion?: string
+}
+
+export interface DiagnosticReportDTO {
+  id: string
+  target: string
+  status: string
+  trigger?: string
+  alertId?: string
+  rootCause?: string
+  confidence?: number
+  summary?: string
+  recommendations: string[]
+  errors: string[]
+  startedAt?: string
+  durationMs?: string
+  findings: DiagnosticFindingDTO[]
+}
+
+export const diagnosisApi = {
+  diagnose: (
+    target: string,
+    opts?: { alertId?: string; timeoutSeconds?: number },
+  ): Promise<DiagnosticReportDTO> =>
+    post<DiagnosticReportDTO>('/DiagnosisService/Diagnose', {
+      target,
+      alertId: opts?.alertId,
+      timeoutSeconds: opts?.timeoutSeconds,
+    }),
+  get: (id: string): Promise<DiagnosticReportDTO> =>
+    post<DiagnosticReportDTO>('/DiagnosisService/GetDiagnosis', { id }),
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +770,8 @@ export interface TrendBucketDTO {
 
 export interface TrendDTO {
   buckets: TrendBucketDTO[]
+  /** The environment actually filtered on, after default_env resolution. */
+  environment: string
   /** Legend order the chart must use, so it cannot drift per client. */
   series: string[]
   /** True when the window's row scan hit the server-side cap. */

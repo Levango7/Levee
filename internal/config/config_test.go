@@ -250,9 +250,12 @@ func TestLoad_DefaultsOnly(t *testing.T) {
 	assert.Equal(t, 10, cfg.Channel.SSH.PoolSize)
 	assert.Empty(t, cfg.Channel.SSH.BecomeMethod, "become must be disabled by default")
 	assert.Empty(t, cfg.Channel.SSH.BecomeUser)
-	assert.Equal(t, 5985, cfg.Channel.WinRM.Port)
-	assert.Equal(t, "negotiate", cfg.Channel.WinRM.Transport)
-	assert.Equal(t, 5, cfg.Channel.WinRM.PoolSize)
+	// D-9: WinRM defaults are "unset" so the channel keeps its historical
+	// values (port 5985/5986 by HTTPS, negotiate, 30s, pool 3).
+	assert.Zero(t, cfg.Channel.WinRM.Port)
+	assert.Empty(t, cfg.Channel.WinRM.Transport)
+	assert.Zero(t, cfg.Channel.WinRM.ConnectTimeout)
+	assert.Zero(t, cfg.Channel.WinRM.PoolSize)
 	assert.Equal(t, 4*time.Hour, cfg.Approval.StandardTimeout)
 	assert.Equal(t, 8*time.Hour, cfg.Approval.HighTimeout)
 	assert.Equal(t, 24*time.Hour, cfg.Approval.EmergencySupplement)

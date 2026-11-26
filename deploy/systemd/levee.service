@@ -1,5 +1,5 @@
 [Unit]
-Description=LEVEE change governance engine (serve: gRPC + REST + Web UI)
+Description=LEVEE change governance engine (gRPC + REST API; Web UI is levee-web.service)
 Documentation=https://github.com/Levango7/Levee/blob/master/docs/deployment.md
 After=network-online.target
 Wants=network-online.target

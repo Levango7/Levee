@@ -75,6 +75,23 @@ func TestChangeTrend_FiltersByTheEnvironmentTheGateJudged(t *testing.T) {
 	if len(payload.Series) != len(state.TrendOutcomes) {
 		t.Fatalf("payload must carry the legend order, got %v", payload.Series)
 	}
+	if payload.Environment != "prod" {
+		t.Fatalf("payload must name the resolved default environment, got %q", payload.Environment)
+	}
+
+	// An explicit readable environment is both the filter and the scope echoed
+	// to the console; the UI never has to guess what an empty request meant.
+	rec = trendRequest(t, gw, "liwg", "?env=dev")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200 for a readable environment, got %d: %s", rec.Code, rec.Body.String())
+	}
+	payload = changeTrendPayload{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode explicit env: %v", err)
+	}
+	if payload.Environment != "dev" {
+		t.Fatalf("payload must echo the explicit environment, got %q", payload.Environment)
+	}
 
 	// An environment the matrix never granted is refused, not silently
 	// emptied: a 403 here is the difference between "you may not look" and an

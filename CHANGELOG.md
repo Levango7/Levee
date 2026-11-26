@@ -4,11 +4,102 @@
 
 ## [Unreleased]
 
+### 新增（目标兼容自诊断与 apk 实证）
+
+- 新增 `levee capabilities [--target] <host>`：复用真实 inventory、credential resolver 与 `Engine.Dial`，只读探测 OS、包管理器、init、数据库客户端和 29 个动作的 `supported/unsupported/unknown + reason`，输出 `levee.capabilities/v1`；unknown 不算支持，live-probe 不冒充生产验收。
+- `target check` 从固定 nil-channel 占位改为真实通道 `echo ok` 预检，拨号失败明确显示 unreachable 和原因。
+- `pkg` 新增 apk 管理器：`apk info -e` 判存在/解析版本，`apk add/del/upgrade` 三动作沿用幂等语义，探测顺序 apt→dnf→yum→apk。
+- 新增 `docs/compatibility-matrix.json`（`levee.compatibility/v1`）及 CI 门：动作集合与 Go `Actions()` 对齐，POSIX 动作不得误标 Windows，real-single 必须有可复跑证据。
+- 真实 Alpine 回放通过：`PKG_APK_REPLAY`（tree 安装/重装/升级/删除/重复删除）与 `CAPABILITY_REPLAY`（14 supported / 14 unsupported / 1 unknown）；临时 root 公钥与容器自动清理。
+
+### 修复（MySQL 真实恢复兼容：客户端转义与 FOREIGN KEY）
+
+- `mysql.schema_restore` 现在按顺序解码 mysql 客户端的 `\n`、`\t`、反斜线等输出转义，再做严格 DDL 校验；真实 SHOW CREATE 不再因字面反斜线被误拒，捕获与恢复后定义比较使用同一规范化口径。
+- 标准 FOREIGN KEY 元素逐个做受限语法校验，其余 DDL 继续走严格解析；非法后缀、借 FK 注入第二语句和注释拖尾均拒绝，不用普通 Parse 的忽略错误路径。
+- 新增 `scripts/replay_mysql_schema.py` 与 opt-in `mysqlreplay`：真实 SSH + MySQL 8.0.46 完成捕获 366B→DROP→恢复→定义一致、现存表和篡改拒绝，最终 `MYSQL_SCHEMA_REPLAY PASS`；临时 root 公钥与容器自动清理。边界仍是 DDL-only、缺表恢复，不含行数据或主从切换。
+
+### 新增（D-5 PostgreSQL 可恢复 DDL 第一切片与真实回放）
+
+- 新增 `pg.schema_snapshot_ddl` / `pg.schema_restore`：`levee.pg.schema/v1` JSON 保存 schema-qualified 表名、pg_dump DDL 与 SHA-256；oliphant AST 白名单拒绝 DML、DROP、跨表对象、未拥有序列、IDENTITY、分区和其他不安全形态。恢复仅限目标关系不存在，成功后重新 dump 逐字校验，绝不覆盖现存对象。
+- `pg.query + strategy: snapshot` 接通 snapshotter：ReviewPostgres 的 DDL-only 边界、失败捕获清理、确定性恢复顺序；历史空/内省快照仍 fail-closed，不再一律禁止 PG snapshot。
+- 新增 `scripts/replay_pg_schema.py` 与 opt-in `pgreplay` 测试：真实 SSH + PostgreSQL 16.15 完成捕获→DROP→恢复→目录 3|3→现存表/篡改拒绝；一次性容器和临时密钥自动清理。边界=自包含表 DDL，不含行数据、跨表依赖或 HA 证明。
+
+### 修复（变更趋势环境口径可见且可选择）
+
+- 变更看板趋势图新增环境选择器，候选来自当前可见变更并允许手输；请求真正携带所选 `env`，替换原先两个分支恒为 `undefined` 的假接线。刷新看板同时刷新趋势，快速切换时旧响应不会覆盖新环境。
+- `GET /system/change-trend` 响应新增 `environment`，回传 `default_env` 解析后的实际过滤环境；图表标题旁显示「环境 · 共 N 个」，不再把默认环境的数据读成全局趋势。Go/TS/mock 三方 wire 契约同步，浏览器测试真实切换 `dev` 验证请求和标签。
+
+### 修复（长执行不再被前端 30 秒短超时截断）
+
+- Web 客户端的 `apply` / `retry` / `rollback` 改为独立 `timeout: 0`，匹配服务端同步等待引擎终态的契约；普通读取仍保留 30 秒超时。看板实际使用的重试与补救链路同步受益。
+- 执行提交无响应时统一提示「连接中断，执行结果未知，先刷新状态、勿直接重复提交」，不再把断链伪装成确定的执行失败；HTTP 412 等服务端判定原样保留。只读 `rollback(dryRun:true)` 虽共享长等待，但断链仍按普通网络异常处理，不谎称存在未知执行结果。
+- 新增 axios adapter 层契约测试，直接验证三个执行请求的最终 `timeout=0`、普通查询 `30000`、断链文案与服务端错误透传。
+
+### 修复（交付编排：Docker/Helm/systemd 同时交付 serve + web）
+
+- Docker 新增受控双进程启动器：`levee serve`（REST :8080）与 `levee web`（UI :8081）同时运行，监控两者退出并转发 TERM/INT；默认 `data_dir=/var/lib/levee/data`，启动前创建 data/templates 目录，避免无额外配置即无法启动。健康检查同时要求 UI `/` 与后端 `/healthz`，不再是 dist 拷进镜像却没有进程服务它。
+- Helm 同 Pod 增加 `levee web` sidecar 与 `service.webPort: 8081`，Service 暴露 UI 端口，UI 就绪/存活探针均请求 `/`；systemd 新增 `levee-web.service`，baremetal 安装器写入并 enable 两个 unit。
+- 新增 `scripts/test_delivery_web.py` 与 validate_delivery 内容断言，覆盖双进程、sidecar、Service、UI 探针和安装器；部署手册同步端口与上线检查项。
+
+### 文档（拓展盘点的两处诚实缺口登记）
+
+- `NewSessionFromAlert` 注释订正：原承诺"配置诊断引擎时自动同步诊断、转 StateRecommending"与实现不符（只转 StateDiagnosing）。根因是 alert ID 不是 target host、仓内无映射，自动推断等于编造诊断输入；注释改为对齐实际行为（操作员显式 `/diagnose <target>`）。登记为 blocked-items E-6，解锁条件＝告警系统提供 host→target 映射契约。
+- `shell.script` 在 Windows/WinRM 目标必失败（硬编码 `/tmp`+`sh`+`chmod`）登记为 blocked-items D-12——平台语义缺环，Windows 目标走 WinRM 专用模块，真正支持需裁决 PowerShell/cmd 解释器。
+
+### 修复（code-review 双轴审查发现）
+
+- **Spec 轴严重回归**：key epoch 改动曾使"同 key 的存量 keyed 链（升级前的裸 HMAC-SHA256 hex，无 epoch 前缀）"被误判为篡改——`recomputeCanonical` 的无前缀回退用了带前缀的 `digest()`。修复：新增 `legacyKeyedDigest`（裸 HMAC 口径）用于无前缀存量值；新增回归测试 `TestSameKeyPreEpochKeyedChainStillVerifies`（同 key 仍可验、换 key 仍 ratchet）。
+- **Standards 轴**：`digestWithMode` 的未知模式 default 分支原用 `panic`，违反 CONTRIBUTING §2.3「禁止 panic」——改为 warn + 回落 sha256（与 `configuredDigestMode` 环境变量口径一致），测试相应更新。设计文档 §10.5「非法值启动即拒」订正为「YAML 经 Validate 拒、环境变量 warn+回落」。
+- **口径诚实**：WinRM pool_size 的 reach 如实限定（只对直接 `winrm.NewPool` 生效、serve 无池）；`file.delete` 的 `Changed=true` 语义加注释说明（表示破坏性动作已执行，与只读 preflight 的 `Changed=false` 不同）。
+
+### 新增（诊断上 Web 控制台：TargetsView 主机一键诊断）
+
+- 前端接入已有 `DiagnosisService`（Go 侧能力完整但控制台此前完全不可见）：`web/src/api/index.ts` 新增 `DiagnosticFindingDTO`/`DiagnosticReportDTO` + `diagnosisApi`（走已有 `POST /api/v1/DiagnosisService/Diagnose` gRPC 风格路径，`alertsApi.status` 同范式）；`TargetsView.vue` 每行加"诊断"按钮 + 报告弹窗（status/rootCause/confidence/findings/recommendations，复用 `healthLabel`）。
+- 单测 `web/src/api/diagnosis.spec.ts`（URL/方法/body 契约）；`coldImport.spec.ts` 守卫清单同步。
+- **最小改动**：不改 Go REST 资源表、不动 wire.json/mock-wire 契约清单、不新建路由/View——已有 gRPC 风格路径被 Go 测试 + 路由表 + 前端 URL 守卫三方背书；`mock-wire` 197/197、vitest 388 全过。
+- dist 已按 `make web` 流程重建并提交（CI 新鲜度检查要求）。
+- **边界**：这是主机诊断（DiagnosisService），与 SystemView 的 `/system/doctor` 守护进程自检是两回事；403 表示该环境无 apply 权限。
+
+### 修复（1024/768 核心页面几何：审批/变更/发布单/审计/告警）
+
+- 审批与变更在 <1200 取消 fixed-right 覆盖并隐藏次要时间列，<900 收窄主列；1024 KPI 改 2×2，操作按钮允许换行。发布单页头在窄屏纵向排列且操作区换行，不再逐字竖排或裁出视口。
+- 审计计数 nowrap，窄屏提供「左右滚动查看哈希链」提示；告警按 768 实测预算收窄四列，保留级别/标题/目标/触发时间。
+- 新增 `narrow-geometry-check.mjs` 并接入 browser-check：直接钉 `el-table-fixed-column--right`、正文末列右缘、标题高度/宽度、操作区视口边界与滚动提示。修复前抓到 4 个真实失败，修复后完整浏览器 ALL PASS；386 个 vitest、197/197 mock-wire、vue-tsc 全绿。
+
+### 修复（file.exists / file.delete：补齐 spec 与词表已承诺但运行时缺失的 action）
+
+- `internal/executor/modules/file` 新增 `exists`（只读 `test -e`，0=存在/1=不存在均正常，其他退出码报错）与 `delete`（`rm -f -- <quoted>`）。
+- **修复确定性缺陷**：`docs/leveelang-spec.md` 与固有不可逆词表（`inherent_irreversible.go`）早已声明这两个 action，但 `file.Actions()` 只支持 copy/template，运行时报 "does not support action"；现补齐，delete 自动走既有审批升级 + 白名单。
+- **fail-closed**：path 校验拒空/根/`..` 穿越/通配符/NUL，`rm -f --` + shellQuote 防选项注入与 globbing；破坏性 `delete` 带 `Changed=true`，`exists` 只读。
+- DSL typechecker 加两 action 签名（path: string），Actions 守卫与 5 个单测（只读性、存在/不存在、删除、坏路径触达前失败、引号转义）同步。
+- **边界**：file 模块（含既有 copy/template）假定 POSIX 目标（`sha256sum`/`chmod`/`rm`/`sh`）；Windows/WinRM 目标是既有边界，不在本笔范围。
+
+### 新增（D-7 变更前实测预检：mysql.preflight / pg.preflight）
+
+- 新增只读 executor action `mysql.preflight` / `pg.preflight`，复用 `schema_snapshot` 的"目标机上下文 + 只读 channel.Exec"范式：对影响面里的表跑 EXPLAIN + 行数估算（`information_schema.TABLES.TABLE_ROWS` / `pg_class.reltuples`），输出首行自述"EXPLAIN = 优化器估计、非实测锁时长"。
+- **fail-closed**：args 错/表不存在（PG 用 `to_regclass` 存在性守卫）/非零退出/空输出一律报错，绝不编数字；`Changed=false` 不谎报变更；拒绝 `args.password`。
+- DSL 词表加两 action 签名（无 password），ratchet 测试点名；两方言各 2-3 单测（只读性、EXPLAIN 生成、坏参数触达目标前失败、空探测 fail-closed）。
+- **边界**：锁时长 EXPLAIN 测不出、明确不报；活库事实只作 run 证据（step stdout），**不进 plan 制品/plan_hash**（审批时发布单仍只有静态面 + "本单不猜"）；当前为 workflow 显式 step，自动 pre-apply hook 是后续产品决策。
+- `go test ./...` 全绿，golangci-lint 0 issues。
+
+### 修复（D-9 WinRM 整段接线：channel.winrm.* 四字段接进传输层）
+
+- `winrm.SetDefaultConfig(port, transport, connect_timeout, pool_size)` 接收 `cfg.Channel.WinRM`；**注册工厂改为 Create 时读进程默认**（旧 init 期 `Config{}` 快照看不到 setter，是 WinRM 与 SSH 的关键差异），`serve` 对称转发 4 参。
+- 配置默认值改为 `0`/空=未设置（存量仍走通道历史默认 5985/5986、negotiate、30s、pool 3），Validate 放行 0；transport 空串=未设置。
+- 接线守卫登记 6→2（仅剩 SSH.KeyPath / SSH.PoolSize）；新增 setter 生效/未设置回退/pool 默认三组测试 + sample unset 守卫。
+- **边界（code-review 澄清）**：四字段都经 `winrm.SetDefaultConfig` 转发并生效；但 pool_size 经 `DefaultPoolSize` 只对**直接** `winrm.NewPool` 调用者生效——生产 serve 路径不建 WinRM 池，故其对守护进程的运行时影响为零（代码注释与守卫说明已如实限定 reach，不宣称对 serve 生效）。Windows NTLM 现在配 `transport: ntlm` 即生效。
+- `go test ./...` 全绿，golangci-lint 0 issues，release-gate 209 脚本全过。
+
 ### 修复（D-11 配置假旋钮收尾：接线 export_format，删 storage/key_derivation）
 
 - `audit.export_format` 接线：CSV 导出器本就存在，`--format` 未显式指定时取配置值（flag 优先）；新增 `pickExportFormat` 纯函数单测。
 - `credential.storage`（local|vault）与 `credential.key_derivation`（argon2id）是从未消费的死旋钮——直接从 `CredentialConfig` 删除，两份样例、部署脚本、靶场配置的残留同步清掉；`credential.encryption` 是真接线保留。
 - 新增 `cmd/levee/d11_config_wiring_test.go` 反射守卫（防死旋钮复辟、钉 export_format/encryption 被生产代码消费）。`go test ./...` 全绿。
+
+### 修复（CreateChange(templateName) 可直接进入 plan）
+
+- `CreateChange` 在 `workflowFile` 为空且配置模板服务时，复用 `InstantiateTemplate` 的同一模板解析路径，把参数渲染后的 workflow source 写入 run；不再出现创建返回 200、随后 plan 因 `has no workflow source` 返回 500。显式 `workflowFile` 仍优先。
+- serve 组合层共享同一个 TemplateService；未配置模板服务的精简嵌入式调用保留既有 metadata-only draft 行为。新增解析/缺模板不落地、生产装配及 CreateChange→真实 GeneratePlan 全链测试，生产接线删除变异转红后复原。
 
 ### 新增（D-8 第二维：HMAC key epoch，换 key 与篡改可区分）
 
@@ -17,6 +108,12 @@
 - 与 SM3 算法前缀正交（`sm3:k<fp>:<hex>` 同带两种前缀）；分片保持算法前缀在前兼容历史。
 - **边界**：`hmackey_switch_test.go` ratchet 仍成立——无 epoch 的历史行（unkeyed 建链 + 事后加 key）仍只能报 mismatch，归档重开链仍是唯一受支持路径；带 epoch 的新行由 `key_epoch_test.go` 覆盖。
 - 新增 `internal/audit/key_epoch_test.go`（epoch 唯一性、换 key/key 移除报 epoch mismatch、SM3 keyed 往返、chain 内失败类型）；`go test ./...` 全绿，全部历史测试保持通过。proto 注释与 levee-api 失败类型列表同步。
+
+### 修复（ListChanges totalSize 改为调用者可见的真实总数）
+
+- 未过滤/单状态路径由 SQLite/PostgreSQL 原生 `COUNT(*)` 返回真实匹配总数；多状态、标签与授权可见性过滤使用分批扫描，并复用列表的同一组谓词，不再把当前页长度当成 totalSize。
+- 25 条分页、100 条复杂过滤、KPI `pageSize=1` 与授权可见行计数均有契约测试；恢复旧页长语义的变异实测转红后复原。
+
 ### 修复（D-5 snapshot 恢复契约：PG fail-closed + 最新基准选择）
 
 - `pg.query + strategy: snapshot` 在捕获前直接拒绝，既有空快照在恢复时同样拒绝；PostgreSQL 内省证据不再能被当成可恢复基准并以 no-op 记为回滚成功。需要回滚的 PG 变更必须声明显式 rollback steps。

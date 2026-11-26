@@ -204,8 +204,25 @@ html.dark ::-webkit-scrollbar-thumb:hover {
 }
 
 .lv-panel__hint {
+  flex: none;
   font-size: var(--lv-text-xs);
   color: var(--lv-text-3);
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .lv-page-head {
+    flex-direction: column;
+  }
+
+  .lv-page-head__actions,
+  .lv-panel__head {
+    flex-wrap: wrap;
+  }
+
+  .lv-page-head__actions {
+    max-width: 100%;
+  }
 }
 
 .lv-panel__body {
