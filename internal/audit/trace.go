@@ -29,6 +29,7 @@ const (
 	EventGateCheck        = "gate_check"
 	EventApprovalDecision = "approval_decision"
 	EventRollbackStep     = "rollback_step"
+	EventRollbackGrade    = "rollback_grade"
 	EventLockAcquire      = "lock_acquire"
 	EventLockRelease      = "lock_release"
 	EventPauseRun         = "pause_run"
