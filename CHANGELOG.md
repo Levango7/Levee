@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 修复（target history 的工作流名只带声明名）
+
+- `runs.workflow_name` 存的是渲染后的整份工作流文档，`InventoryService.TargetHistory` 此前把它原样放上 wire：每个 `target history --remote` 调用方都收到整份 YAML，与 `pb.Change.plan` 对 ListChanges 的边界是同一条理由。线上 `workflow_name` 现归一为 `dsl.DisplayName` 的声明名；单行路径/纯名原样通过。
+- 本地 `target history --json` 的 `workflow_name` 同步归一，保持远程子集契约「同键同值」成立，键集合仍是 `state.Run` 的 15 键全量；人类表格两种模式本就走 `workflowDisplay`，显示不变。
+- 两个公开边界红绿：gRPC `TargetHistory` 对真实 SQLite store 断言 wire 只带声明名且不含 YAML 原文；CLI 两侧 `--json` 断言 `workflow_name` 为声明名且不含 `action: shell.exec`。把声明名改回原文的定向变异均被抓住。
+
 ### 新增（目标兼容自诊断与 apk 实证）
 
 - 新增 `levee capabilities [--target] <host>`：复用真实 inventory、credential resolver 与 `Engine.Dial`，只读探测 OS、包管理器、init、数据库客户端和 29 个动作的 `supported/unsupported/unknown + reason`，输出 `levee.capabilities/v1`；unknown 不算支持，live-probe 不冒充生产验收。

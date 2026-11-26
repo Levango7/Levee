@@ -15,6 +15,7 @@ import (
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/authz"
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/log"
@@ -307,8 +308,14 @@ func (s *InventoryService) TargetHistory(ctx context.Context, req *pb.TargetHist
 			continue
 		}
 		out = append(out, &pb.TargetHistoryEntry{
-			RunId:        run.ID,
-			WorkflowName: run.WorkflowName,
+			RunId: run.ID,
+			// The wire carries the DECLARED name only. runs.workflow_name
+			// stores the rendered document, so shipping it verbatim puts
+			// the whole YAML on the wire for every history caller — the
+			// same boundary pb.Change.plan states for ListChanges. The
+			// human table already renders dsl.DisplayName on both sides,
+			// so this only aligns the payload with what the operator sees.
+			WorkflowName: dsl.DisplayName(run.WorkflowName),
 			Status:       run.Status,
 			Creator:      run.Creator,
 			CreatedAt:    run.CreatedAt.Unix(),
