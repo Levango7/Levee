@@ -95,6 +95,7 @@ function fieldsOf(name) {
 // top-level object; `row`/`rowDto` check the elements of an envelope's array;
 // `objects` checks nested objects one level down. `extraProto` names real proto
 // fields the client does not read, each with the reason the mock may send them.
+// `method`/`body` drive POST variants; `variant` only distinguishes their labels.
 // ---------------------------------------------------------------------------
 const ENDPOINTS = [
   { name: 'system-status', url: '/api/v1/system/status', dto: 'SystemStatus' },
@@ -107,6 +108,15 @@ const ENDPOINTS = [
     extraProto: { planHash: 'proto Change.plan_hash; the evidence panel, not this field, is what the page reads' } },
   { name: 'cluster-status', url: '/api/v1/system/cluster-status', dto: 'ClusterStatus',
     row: 'nodes', rowDto: 'ClusterNodeDTO', objects: { summary: 'AssignmentSummaryDTO' } },
+  { name: 'takeover-events', url: '/api/v1/system/takeover-events', row: 'events', rowDto: 'TakeoverEventDTO',
+    // This REST projection has no omitempty: every DTO field is always present.
+    rowRequireAllDto: true, rowRequireNonempty: true, envelope: ['events', 'days', 'window_from'] },
+  { name: 'rollback', variant: 'preview', url: '/api/v1/changes/run-1001/rollback', method: 'POST',
+    body: { dryRun: true }, dto: 'RollbackResponseDTO', objects: { change: 'Change' },
+    // The wire snapshot is the preview/commit union. A preview must omit the id.
+    omitFromFloor: ['rollbackRunId'], forbiddenKeys: ['rollbackRunId'] },
+  { name: 'rollback', variant: 'commit', url: '/api/v1/changes/run-1001/rollback', method: 'POST',
+    body: {}, dto: 'RollbackResponseDTO', objects: { change: 'Change' } },
   { name: 'change-trend', url: '/api/v1/system/change-trend', dto: 'TrendDTO',
     row: 'buckets', rowDto: 'TrendBucketDTO' },
   { name: 'batch-status', url: '/api/v1/system/batch-status?run_id=run-fleet', dto: 'BatchSummaryDTO',
@@ -134,10 +144,6 @@ const ENDPOINTS = [
 // not failures: an unserved endpoint is a place the browser check cannot see,
 // which is worth naming without pretending the mock covers it.
 const UNCOVERED = []
-// Served by the mock but not key-checked here: takeover-events has no DTO in
-// the contract's read set, and rollback is a POST whose preview/commit pair the
-// browser check already drives directly. Named so the coverage story is honest.
-const SERVED_NOT_KEYED = ['takeover-events', 'rollback']
 
 const results = []
 function record(ok, label, detail) {
@@ -145,24 +151,35 @@ function record(ok, label, detail) {
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? ' — ' + detail : ''}`)
 }
 
-// Check one object's keys against its contract level.
-function checkObject(endpoint, path, actual, dtoName, wireKeys, serverOnly, extraProto) {
+// Check one object's keys against its contract level. Variant options express
+// the two places where the generic protojson floor is insufficient: a REST DTO
+// whose fields never omit, and a POST response whose shape depends on its body.
+function checkObject(endpoint, path, actual, dtoName, wireKeys, serverOnly, extraProto, options = {}) {
   const dto = dtoName ? fieldsOf(dtoName) : new Map()
   const universe = new Set([...dto.keys(), ...wireKeys, ...serverOnly, ...Object.keys(extraProto)])
   const actualKeys = Object.keys(actual)
   const invented = actualKeys.filter((k) => !universe.has(k))
   record(invented.length === 0, `${endpoint}${path}: no invented keys`,
     invented.length ? `mock sends ${JSON.stringify(invented)} which no DTO/wire/proto field declares` : `${actualKeys.length} keys all declared`)
-  // floor: keys the server sent in the snapshot AND the DTO requires.
+  // Default floor: keys the server sent in the snapshot AND the DTO requires.
+  // Non-omitting REST DTOs and known envelopes can state their floor directly.
   const required = new Set([...dto.entries()].filter(([, opt]) => !opt).map(([k]) => k))
-  const floor = wireKeys.filter((k) => required.has(k))
+  const floor = (options.requiredKeys ?? (options.requireAllDto
+    ? [...dto.keys()]
+    : wireKeys.filter((k) => required.has(k))))
+    .filter((k) => !options.omitFromFloor?.includes(k))
   const missing = floor.filter((k) => !(k in actual))
+  const floorReason = options.requireAllDto
+    ? `required by ${dtoName}`
+    : options.requiredKeys
+      ? 'required envelope keys from the server snapshot'
+      : `on the wire AND required by ${dtoName}`
   record(missing.length === 0, `${endpoint}${path}: always-present keys present`,
-    missing.length ? `mock drops ${JSON.stringify(missing)} (on the wire AND required by ${dtoName})` : `floor=${JSON.stringify(floor)}`)
-  // PascalCase leaks.
-  const forbid = wire[endpoint]?.forbid ?? []
+    missing.length ? `mock drops ${JSON.stringify(missing)} (${floorReason})` : `floor=${JSON.stringify(floor)}`)
+  // PascalCase leaks, plus keys a particular response variant must omit.
+  const forbid = [...(wire[endpoint]?.forbid ?? []), ...(options.forbiddenKeys ?? [])]
   const leaked = actualKeys.filter((k) => forbid.includes(k))
-  record(leaked.length === 0, `${endpoint}${path}: no PascalCase leak`,
+  record(leaked.length === 0, `${endpoint}${path}: no forbidden key`,
     leaked.length ? JSON.stringify(leaked) : '')
 }
 
@@ -170,8 +187,13 @@ function valueAt(body, path) {
   return path.split('.').reduce((value, key) => value?.[key], body)
 }
 
-async function fetchJson(port, url) {
-  const res = await fetch(`http://127.0.0.1:${port}${url}`)
+async function fetchJson(port, ep) {
+  const init = { method: ep.method ?? 'GET' }
+  if (ep.body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(ep.body)
+  }
+  const res = await fetch(`http://127.0.0.1:${port}${ep.url}`, init)
   if (res.status !== 200) return { __status: res.status, body: await res.text() }
   return { __status: 200, body: await res.json() }
 }
@@ -193,36 +215,50 @@ async function main() {
     for (const ep of ENDPOINTS) {
       const w = wire[ep.name]
       if (!w) { record(false, ep.name, 'no wire.json entry — cannot check'); continue }
-      const { __status, body } = await fetchJson(port, ep.url)
+      const { __status, body } = await fetchJson(port, ep)
       if (__status !== 200) { record(false, ep.name, `mock answered HTTP ${__status}: ${JSON.stringify(body).slice(0, 80)}`); continue }
       const serverOnly = []
       const extra = ep.extraProto ?? {}
+      const wireKeys = w.keys ?? []
+      const variantPath = ep.variant ? ` (${ep.variant})` : ''
+      const options = {
+        omitFromFloor: ep.omitFromFloor,
+        forbiddenKeys: ep.forbiddenKeys,
+      }
       if (ep.dto) {
-        checkObject(ep.name, '', body, ep.dto, w.keys ?? [], serverOnly, extra)
+        checkObject(ep.name, variantPath, body, ep.dto, wireKeys, serverOnly, extra, options)
       } else if (ep.envelope) {
-        // Envelope: only the ceiling applies (the envelope has no DTO); the
-        // server's own envelope keys plus the pagination fields are the universe.
-        const keys = Object.keys(body)
-        const universe = new Set([...(w.keys ?? []), ...ep.envelope])
-        const invented = keys.filter((k) => !universe.has(k))
-        record(invented.length === 0, `${ep.name}: envelope keys`,
-          invented.length ? `invented ${JSON.stringify(invented)}` : JSON.stringify(keys))
-        const missing = (w.keys ?? []).filter((k) => !(k in body))
-        record(missing.length === 0, `${ep.name}: envelope carries the server's keys`,
-          missing.length ? `drops ${JSON.stringify(missing)}` : '')
+        // Envelope: the server's own keys are the floor; pagination fields the
+        // snapshot omitted are allowed by the ceiling but not required.
+        checkObject(ep.name, variantPath, body, null, wireKeys, ep.envelope, extra,
+          { ...options, requiredKeys: wireKeys })
       }
       if (ep.rootDto && Array.isArray(body)) {
         body.forEach((row, i) => checkObject(ep.name, `[${i}]`, row, ep.rootDto, w.items ?? [], [], {}))
       }
-      if (ep.row && Array.isArray(body[ep.row]) && body[ep.row].length > 0) {
-        const rowWire = w.rows?.[ep.row] ?? []
-        body[ep.row].forEach((r, i) =>
-          checkObject(ep.name, `.${ep.row}[${i}]`, r, ep.rowDto, rowWire, [], {}))
+      if (ep.row) {
+        const rows = body[ep.row]
+        if (!Array.isArray(rows)) {
+          record(false, `${ep.name}.${ep.row}: rows array present`,
+            `expected an array, got ${rows === null ? 'null' : typeof rows}`)
+        } else {
+          if (ep.rowRequireNonempty && rows.length === 0) {
+            record(false, `${ep.name}.${ep.row}: sample rows present`,
+              'an empty fixture would skip every row-level contract check')
+          }
+          const rowWire = w.rows?.[ep.row] ?? []
+          rows.forEach((r, i) =>
+            checkObject(ep.name, `.${ep.row}[${i}]`, r, ep.rowDto, rowWire, [], {},
+              { requireAllDto: ep.rowRequireAllDto }))
+        }
       }
       for (const [objPath, objDto] of Object.entries(ep.objects ?? {})) {
         const val = valueAt(body, objPath)
         if (val && typeof val === 'object' && !Array.isArray(val)) {
           checkObject(ep.name, `.${objPath}`, val, objDto, w.objects?.[objPath] ?? [], [], {})
+        } else {
+          record(false, `${ep.name}.${objPath}: nested object present`,
+            `expected an object, got ${val === null ? 'null' : typeof val}`)
         }
       }
       for (const [arrayPath, itemDto] of Object.entries(ep.objectArrays ?? {})) {
@@ -237,11 +273,9 @@ async function main() {
     child.kill()
   }
 
-  console.log('\ncoverage gaps (in the contract, not served by the mock — the browser check cannot see these):')
+  console.log('coverage gaps (in the contract, not served by the mock — the browser check cannot see these):')
   if (UNCOVERED.length === 0) console.log('  none')
   for (const name of UNCOVERED) console.log(`  - ${name} (${wire[name]?.method ?? '?'} ${wire[name]?.path ?? '?'})`)
-  console.log('served but not key-checked here (no DTO read-set / POST driven by the browser check):')
-  for (const name of SERVED_NOT_KEYED) console.log(`  - ${name}`)
 
   const failed = results.filter((r) => !r.ok)
   console.log(`\n${results.length - failed.length}/${results.length} mock-wire checks passed`)

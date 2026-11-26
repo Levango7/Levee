@@ -545,6 +545,14 @@ LEVEE 的三个安全模块在密码学选型（AES-256-GCM + argon2id）和基�
 | SSH become_user 注入（v1.13.0） | `buildExecCommand` 对 `become_user` 做 POSIX shell 引用，阻断来自配置值的 `sudo -u` 注入 |
 | /metrics 默认鉴权（v1.13.0） | 网关运维端点在配置任一 token 时默认要求 Bearer；`--metrics-public` 显式放开（供无法携带凭据的采集器） |
 
+**追记（2026-11-25，REST 安全响应头）**：`internal/grpc/rest.go`
+在生产 HTTP server 最外层统一注入 `X-Content-Type-Options: nosniff`、
+`X-Frame-Options: DENY` 与最小 `Content-Security-Policy`
+（`default-src 'none'; frame-ancestors 'none'`）。回归覆盖未就绪/就绪
+`/healthz`、API 成功/未认证/不存在、CORS 预检与运维路由；HTML 发布单
+保留更严 CSP 并补上 `frame-ancestors 'none'`。HSTS 仍由 TLS 终结点负责，
+不在应用网关重复设置。
+
 ### 已知限制
 
 - **多租户隔离：已接线，默认关闭**：请求级租户传播已落地——租户取自**已验签的凭据**（命名令牌 `--auth-token name=secret,tenant`、OIDC `auth.oidc.tenant_claim`），经认证拦截器注入上下文，`internal/tenant.TenantStore` 对 10 张租户表施加 SQL 级谓词，76 个 Store 方法全部覆盖（`var _ state.Store` 编译期断言；方法数可用 `awk '/^type Store interface/,/^}/' internal/state/store.go | grep -cE '^\s+[A-Z][A-Za-z0-9]*\('` 复核）。`config.example.yaml` 的 `tenant.enabled` **默认为 false**，关闭时行为与引入该功能前逐字节一致。

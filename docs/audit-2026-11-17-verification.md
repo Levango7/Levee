@@ -117,3 +117,42 @@
 - 前端 `vue-tsc` 0 错误；`vitest` 43 文件 / 350 用例全绿（本机 threads 池起不来属环境问题，`--pool=forks` 全过）；`vite build` 通过；`internal/web/dist` 重打并入库（CI 逐字节比对）。
 - 四类 Python 门禁（doc-anchors / roadmap-status / changelog-structure / blocked-items）全过。
 - **CDP 实测数字**（1280 视口）：审批表列宽合计 **1100**、变更表 **1132**，容器 **950**；趋势图 **640/918**；对话错误块 **bottom 946 > 视口 900**。探针自证：若无数字即不成立。
+
+## 后续批次（2026-11-25）：takeover-events 与 rollback 预览/提交契约闭环
+
+本节 supersede 2026-11-21 小节中
+「takeover-events/rollback 已服务但不在键校验范围」的旧边界；
+两条现已纳入同一份 wire 快照、DTO read-set 与真实 mock 进程校验。
+
+- **服务端证据非空**：takeover handler 按 wall-clock 过滤最近 90 天，
+  固定在 2026-10-12 的旧夹具到 2026-11-25 已过期。wire 夹具改用
+  `time.Now().UTC()` 写入 trace，并对 `rows.events` 与 rollback
+  `objects.change` 增加非空断言，避免快照空转让 TS 与 mock 两侧共同假绿。
+- **DTO 绑定**：`takeover-events` 显式绑定 `TakeoverEventDTO` 的
+  `id/run_id/actor/timestamp/status` read-set；rollback 的嵌套 `change`
+  由 Go 快照钉住观测键，mock 侧再按 `Change` DTO 校验，
+  不把 protojson 省略的零值误判成必发。
+- **真实 mock 契约**：takeover 信封校验 `events/days/window_from`，
+  两行记录要求全部 DTO 字段存在（REST projection 不省略）；rollback
+  分别用 `{dryRun:true}` 与 `{}` 驱动 preview/commit，preview 禁止
+  `rollbackRunId`，commit 必须包含它；嵌套 `change` 必须是 object，
+  `null`、缺失或数组都会直接失败。
+- **投影修正**：rollback mock 删除 `planHash`。该字段属于顶层 `Change`
+  投影，但真实 `runToPB` 没有映射 `PlanHash`，
+  不能把顶层能力泄漏进嵌套响应。
+- **变异取证**：`actor→actors` 让 mock 218/222 且 TS 契约 3 条转红；
+  删除/发明 rollback 嵌套 `change.id` 让 mock 220/222；
+  preview/commit 同时置 `change: null` 让 mock 216/218 并命中新增存在性判据。
+  另证空 `events: []` 会先让旧门禁缩成 216/216 假绿，
+  加入非空样本断言后同一变异以 216/217 转红。
+  样本全部恢复后 mock 222/222、wireContract 6/6。
+- **验证**：全量 Vitest 49 文件 / 388 用例、`npm run build`、
+  Go `vet/tidy -diff/gofmt`、docgen 4 目标、Python 212 条门禁、
+  Windows `go build`、全量 Go race/coverage（含 `internal/grpc` 81.3%）
+  均通过；`web/dist` 与 `internal/web/dist` 各 62 文件且逐字节一致。
+  govulncheck v1.9.0 无已知漏洞；gosec v2.28.0 按 CI 同款排除规则执行，
+  387 文件 / 136328 行 / 0 finding；
+  golangci-lint v2.13.0 按 CI 钉版执行，0 issues。
+- **浏览器与文档卫生**：Vite 显式代理到真实 mock 后，
+  `BROWSER_CHECK_REQUIRED=1 npm run test:browser` 全量通过；
+  四份审计文档相对 HEAD 的 markdownlint 增量均为 0。
