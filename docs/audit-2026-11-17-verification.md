@@ -156,3 +156,43 @@
 - **浏览器与文档卫生**：Vite 显式代理到真实 mock 后，
   `BROWSER_CHECK_REQUIRED=1 npm run test:browser` 全量通过；
   四份审计文档相对 HEAD 的 markdownlint 增量均为 0。
+
+## 交付复核（2026-11-27）：REST 安全头与 mock wire 契约重基
+
+- **基线与范围**：重基到 `origin/master`
+  `1ca9f2a97ac5386ba8711a05dc3ed92938174973`，代码提交
+  `4df7ad410afa1ccb9e93ad937d440de0f60378b2` 的父提交与基线一致，
+  无冲突；代码面为 11 个文件，未改动其他工程批次。
+- **公开边界**：生产 HTTP server 最外层统一注入
+  `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY` 与最小 CSP，
+  覆盖健康检查、API 成功/拒绝/错误、CORS 预检和运维路由；HTML 发布单
+  保留更严文档 CSP，HSTS 仍由 TLS 终结点负责。真实 mock 的
+  takeover-events 与 rollback preview/commit 使用同一份键快照、DTO
+  read-set 和非空样本门禁。
+- **Go 与仓库门禁**：代理-free `go test -p=4 ./...` 的 79 个测试包
+  全部通过；`go vet ./...`、`go build ./...`、`go mod tidy -diff`、
+  gofmt、docgen 4 目标与 Python 217 条门禁均通过。
+- **静态检查**：golangci-lint v2.13.0 按 CI 钉版执行，12 个
+  linter 全部启用；首次 15 分钟超时虽已输出 0 issues 仍不计作通过，
+  预热隔离缓存并延长到 30 分钟后完整通过，终判 0 issues。
+- **前端与真实 mock**：Vitest 50 文件 / 392 用例、mock wire 222/222、
+  `npm run build`（1753 modules）均通过；`web/dist` 与
+  `internal/web/dist` 各 63 个文件且逐字节一致。
+- **真实浏览器**：Vite 显式代理到独立真实 mock 端口后，
+  `BROWSER_CHECK_REQUIRE=1 npm run test:browser` 的 112 条断言
+  ALL PASS，覆盖路由数据、SSE、审计链、发布单七节、响应式表格、
+  空/失败/禁止三态、接管时间线、门禁结果与 rollback 预览/提交。
+- **安全扫描**：govulncheck 扫描 83 个根包、93 个模块与 Go 1.26.11
+  标准库，无已知漏洞；gosec v2.28.0 低并发全仓复扫覆盖 391 文件 /
+  137557 行，0 finding 且 0 包加载错误。
+- **Race 与覆盖边界**：全仓 Windows `-race/-cover` 未形成完整绿判。
+  `cmd/levee` 在高负载下于既有 `internal/plugin/protocol.go:158-176`
+  触发 `cmd.Process` 数据竞争并伴随握手失败；该实现与基线逐字相同，
+  本分支与基线 `1ca9f2a9` 的同一定向 race 各跑 5 次均通过，呈负载敏感，
+  未发现与本次 11 文件差异相关的回归证据。`internal/grpc` 单包以
+  81.3% 覆盖通过；全仓任务随后达到 30 分钟执行上限，覆盖 profile
+  不作完整覆盖率结论。
+- **环境归因**：Windows gRPC 测试 server 绑定 `:0` 后返回
+  `[::]:port`，被本机 HTTP 代理误拦截；本地测试清除代理变量后通过，
+  未为环境问题改产品代码。首次 gosec 虽报 0 finding，但两个包加载失败，
+  该结果未计作通过；以完整低并发复扫为最终判据。
