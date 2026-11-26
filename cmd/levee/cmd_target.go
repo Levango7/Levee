@@ -16,6 +16,7 @@ import (
 
 	"github.com/nexus/levee/internal/audit"
 	"github.com/nexus/levee/internal/channel"
+	"github.com/nexus/levee/internal/dsl"
 	"github.com/nexus/levee/internal/grpc/pb"
 	"github.com/nexus/levee/internal/inventory"
 	"github.com/nexus/levee/internal/state"
@@ -534,7 +535,18 @@ func runLocalTargetHistory(ctx context.Context, host string, limit int) error {
 		if entries == nil {
 			entries = []*state.Run{}
 		}
-		return PrintJSON(os.Stdout, map[string]any{"data": entries, "meta": nil, "error": nil})
+		// workflow_name is a derived display value, never the rendered
+		// workflow document. The wire and the human table already apply
+		// dsl.DisplayName; --json gets the same normalization so both
+		// modes hand automation one name per row instead of a multi-line
+		// source document. The key set stays the full state.Run shape.
+		rows := make([]*state.Run, len(entries))
+		for i, r := range entries {
+			rr := *r
+			rr.WorkflowName = dsl.DisplayName(rr.WorkflowName)
+			rows[i] = &rr
+		}
+		return PrintJSON(os.Stdout, map[string]any{"data": rows, "meta": nil, "error": nil})
 	}
 
 	rows := make([]*targetHistoryRow, 0, len(entries))
