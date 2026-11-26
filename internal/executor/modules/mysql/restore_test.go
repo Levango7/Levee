@@ -86,6 +86,35 @@ func TestSchemaRestoreVerificationMismatchIsNotRecovery(t *testing.T) {
 	assert.Contains(t, err.Error(), "verification mismatch")
 }
 
+func TestNormalizeSnapshotDDLDecodesMySQLOutputEscapes(t *testing.T) {
+	raw := "users\tCREATE TABLE `users` (\\n  `id` int NOT NULL,\\n  `note` varchar(64) DEFAULT 'backslash\\\\n')\\n"
+	got := normalizeSnapshotDDL(raw)
+	assert.Equal(t, "CREATE TABLE `users` (\n  `id` int NOT NULL,\n  `note` varchar(64) DEFAULT 'backslash\\n')\n", got)
+}
+
+func TestValidateCreateSnapshotAcceptsCanonicalForeignKeys(t *testing.T) {
+	snapshot := "-- levee.schema_snapshot\nusers\tCREATE TABLE `users` (\n" +
+		"  `id` int NOT NULL AUTO_INCREMENT,\n" +
+		"  `email` varchar(255) NOT NULL,\n" +
+		"  `parent_id` int DEFAULT NULL,\n" +
+		"  PRIMARY KEY (`id`),\n" +
+		"  UNIQUE KEY `email` (`email`),\n" +
+		"  KEY `users_parent_fk` (`parent_id`),\n" +
+		"  CONSTRAINT `users_parent_fk` FOREIGN KEY (`parent_id`) REFERENCES `users` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION\n" +
+		") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci"
+	require.NoError(t, validateCreateSnapshot(normalizeSnapshotDDL(snapshot), "users"))
+}
+
+func TestValidateCreateSnapshotRejectsUnsafeForeignKeys(t *testing.T) {
+	for _, snapshot := range []string{
+		"CREATE TABLE `users` (`id` int, CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `users` (`id`); DROP TABLE `users`)",
+		"CREATE TABLE `users` (`id` int, CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `users` (`id`) ON DELETE ENGINE=InnoDB)",
+		"CREATE TABLE `users` (`id` int, CONSTRAINT `fk` FOREIGN KEY (`id`) REFERENCES `users` (`id`) /* trailing */)",
+	} {
+		require.Error(t, validateCreateSnapshot(snapshot, "users"), snapshot)
+	}
+}
+
 func TestSchemaRestoreQualifiedTableUsesItsSchema(t *testing.T) {
 	snapshot := "CREATE TABLE `shop`.`users` (id int)"
 	ch := &mockChannel{execResponses: []execResponse{

@@ -25,3 +25,6 @@ spec:
     - name: http
       port: {{ .Values.service.httpPort }}
       targetPort: http
+    - name: web
+      port: {{ .Values.service.webPort }}
+      targetPort: web

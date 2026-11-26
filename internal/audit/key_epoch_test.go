@@ -118,3 +118,44 @@ func TestFailureTypeString_KeyEpoch(t *testing.T) {
 	assert.Equal(t, "prev_hash_mismatch", FailurePrevHashMismatch.String())
 	assert.Equal(t, "empty_hash", FailureEmptyHash.String())
 }
+
+// Regression (code-review Spec axis): a chain written with a key BEFORE key
+// epochs existed stored BARE HMAC-SHA256 hex (no "k<fp>:" tag). With the SAME
+// key still configured, it must remain verifiable — not misreported as
+// tampering. Only a DIFFERENT key should break it (and even then as a bare-hash
+// mismatch, since there is no epoch tag to tell key-rotation from tampering for
+// pre-epoch rows).
+func TestSameKeyPreEpochKeyedChainStillVerifies(t *testing.T) {
+	unsetHMACKey(t)
+	setHMACKey(t, keyA)
+	b, store := newChainBuilder(t)
+	ctx := context.Background()
+	const runID = "run-preepoch-keyed"
+	createRun(t, store, runID)
+	recordTraces(t, store, runID, 3)
+
+	// Simulate pre-epoch storage: compute each CurrHash with the OLD bare HMAC
+	// formula (no epoch tag) and persist it directly, bypassing ComputeHash.
+	fresh, err := store.ListTraces(ctx, state.TraceFilter{RunID: runID})
+	require.NoError(t, err)
+	prev := ""
+	for i := range fresh {
+		payload := traceCanonical(fresh[i], prev)
+		fresh[i].PrevHash = prev
+		fresh[i].CurrHash = legacyKeyedDigest(payload) // bare HMAC, no tag
+		require.NotEmpty(t, fresh[i].CurrHash)
+		require.NoError(t, store.UpdateTraceChain(ctx, fresh[i].ID, prev, fresh[i].CurrHash))
+		prev = fresh[i].CurrHash
+	}
+
+	// Verify with the SAME key: must pass (regression guard).
+	readBack, err := store.ListTraces(ctx, state.TraceFilter{RunID: runID})
+	require.NoError(t, err)
+	result := VerifyTraces(runID, readBack)
+	assert.True(t, result.Valid, "same-key pre-epoch keyed chain must still verify: %+v", result.Failures)
+
+	// Builder path uses the same verifier.
+	count, err := b.Verify(ctx, runID)
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+}

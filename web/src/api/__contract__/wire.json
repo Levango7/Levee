@@ -148,6 +148,7 @@
     "path": "/system/change-trend",
     "keys": [
       "buckets",
+      "environment",
       "series",
       "truncated"
     ],

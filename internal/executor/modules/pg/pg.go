@@ -31,6 +31,12 @@
 //     Changed is always false. It does NOT generate an undo; see
 //     docs/blocked-items.md D-5.
 //
+//   - schema_snapshot_ddl / schema_restore: the separate recovery path. The
+//     first captures a versioned pg_dump payload for one resolved table; the
+//     second accepts only that validated format and only when the relation is
+//     absent, then verifies a fresh dump. It never restores rows or overwrites
+//     an existing relation.
+//
 // Credentials: the module NEVER accepts a password argument. The design's
 // security note is that credentials do not travel on a command line, and the
 // only way to honour that over a shell channel is to let the target's own
@@ -67,7 +73,9 @@ func New() *Module { return &Module{} }
 func (Module) Name() string { return "pg" }
 
 // Actions lists the verbs this module supports.
-func (Module) Actions() []string { return []string{"query", "schema_snapshot"} }
+func (Module) Actions() []string {
+	return []string{"query", "schema_snapshot", "schema_snapshot_ddl", "schema_restore", "preflight"}
+}
 
 // Idempotent reports whether the module declares itself idempotent. It answers
 // false: `query` is idempotent-by-authorship, but the module cannot verify the
@@ -83,6 +91,12 @@ func (m *Module) Execute(ctx context.Context, action string, input executor.Modu
 		return m.query(ctx, input)
 	case "schema_snapshot":
 		return m.schemaSnapshot(ctx, input)
+	case "schema_snapshot_ddl":
+		return m.schemaSnapshotDDL(ctx, input)
+	case "schema_restore":
+		return m.schemaRestore(ctx, input)
+	case "preflight":
+		return m.preflight(ctx, input)
 	default:
 		return nil, fmt.Errorf("pg: unsupported action %q", action)
 	}
@@ -204,20 +218,27 @@ func runPsqlRead(ctx context.Context, ch channel.Channel, conn pgConn, sql strin
 	return runPsqlChanged(ctx, ch, conn, sql, false)
 }
 
-func runPsqlChanged(ctx context.Context, ch channel.Channel, conn pgConn, sql string, changed bool) (*executor.ModuleOutput, error) {
+func validateConnection(conn pgConn) error {
 	if err := validateHost(conn.Host); err != nil {
-		return nil, err
+		return err
 	}
 	if err := validateIdent("user", conn.User); err != nil {
-		return nil, err
+		return err
 	}
 	if conn.Database != "" {
 		if err := validateIdent("database", conn.Database); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if p := strings.TrimSpace(conn.Port); p != "" && !identRe.MatchString(p) {
-		return nil, fmt.Errorf("invalid port %q: only digits are allowed", conn.Port)
+		return fmt.Errorf("invalid port %q: only digits are allowed", conn.Port)
+	}
+	return nil
+}
+
+func runPsqlChanged(ctx context.Context, ch channel.Channel, conn pgConn, sql string, changed bool) (*executor.ModuleOutput, error) {
+	if err := validateConnection(conn); err != nil {
+		return nil, err
 	}
 
 	// base64(UTF-8 SQL) contains only [A-Za-z0-9+/=] — it cannot break out of

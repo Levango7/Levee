@@ -24,6 +24,7 @@ const { alerts, connected, streamError } = useAlertStream()
 // outside a non-scrollable table. The wider layout keeps every column.
 const { width: viewportWidth } = useResponsive()
 const denseColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 1240)
+const narrowColumns = computed(() => viewportWidth.value > 0 && viewportWidth.value < 900)
 
 const severityFilter = ref<'' | AlertSeverity>('')
 const onlyFiring = ref(true)
@@ -122,14 +123,14 @@ function reloadPage(): void {
       </div>
       <div class="lv-panel__body">
         <el-table :data="visible" stripe>
-          <el-table-column label="级别" width="110">
+          <el-table-column label="级别" :width="narrowColumns ? 88 : 110">
             <template #default="{ row }">
               <el-tag :type="severityTagType(severityOf(row))" size="small">
                 {{ severityLabel(severityOf(row)) }}
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="标题" min-width="240" show-overflow-tooltip>
+          <el-table-column label="标题" :min-width="narrowColumns ? 128 : 240" show-overflow-tooltip>
             <template #default="{ row }">
               {{ row.title }}
               <el-tag v-if="!isFiring(row.status)" size="small" type="info" style="margin-left: 6px">
@@ -137,14 +138,14 @@ function reloadPage(): void {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="目标" min-width="160" show-overflow-tooltip>
+          <el-table-column label="目标" :min-width="narrowColumns ? 112 : 160" show-overflow-tooltip>
             <template #default="{ row }">{{ row.target || '—' }}</template>
           </el-table-column>
         <el-table-column v-if="!denseColumns" prop="source" label="来源" width="140" show-overflow-tooltip />
         <el-table-column v-if="!denseColumns" label="环境" width="100">
             <template #default="{ row }">{{ row.environment || '—' }}</template>
           </el-table-column>
-          <el-table-column label="触发时间" width="130">
+          <el-table-column label="触发时间" :width="narrowColumns ? 96 : 130">
             <template #default="{ row }">{{ ago(row.starts_at) }}</template>
           </el-table-column>
         </el-table>

@@ -245,6 +245,16 @@ if grep -q -- '--node-capabilities' "$WORKDIR/cluster.yaml"; then
 	fail "--node-capabilities appeared in the default cluster render; the block must be gated"
 fi
 
+echo "== Web UI sidecar, Service and probes"
+# A built SPA is not a delivered UI. The default render must run levee web,
+# expose it through the Service and prove both HTTP surfaces with probes.
+require_count defaults "- name: web" 2 "the Deployment sidecar and Service must both expose the Web UI"
+require_in defaults "- --api" "the Web UI must reverse proxy to the loopback API"
+require_in defaults "http://127.0.0.1:8080" "the proxy must target the same Pod's REST gateway"
+require_count defaults "path: /" 2 "readiness and liveness must exercise the actual UI, not only /healthz"
+require_in defaults "port: 8081" "the Service must publish the Web UI port"
+require_in defaults "targetPort: web" "the Service must select the sidecar port by name"
+
 echo "== helm package"
 # Packaging is how the chart reaches users (deploy/README.md tells them to
 # install an .tgz), and it is the only step that validates Chart.yaml's
