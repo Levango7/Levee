@@ -43,16 +43,28 @@ func TestDigestWithMode(t *testing.T) {
 }
 
 func TestDigestWithModeKeyed(t *testing.T) {
+	useMode(t, digestModeSHA256)
 	setHMACKey(t, "0123456789abcdef0123456789abcdef")
+
+	// Both families declare their keying era symmetrically. SHA-256 used to
+	// stay bare 64-hex while SM3 was prefixed, which is exactly what made a
+	// keyed row indistinguishable from a historical unkeyed one (D-8).
 	plain := digestWithMode("payload", digestModeSHA256)
-	assert.Len(t, plain, 64, "keyed sha256 stays bare 64-hex")
+	assert.True(t, strings.HasPrefix(plain, prefixHMACSHA256),
+		"keyed sha256 must carry the hmac-sha256 prefix")
+	assert.Len(t, strings.TrimPrefix(plain, prefixHMACSHA256), 64)
 
 	sm := digestWithMode("payload", digestModeSM3)
 	assert.True(t, strings.HasPrefix(sm, prefixHMACSM3), "keyed sm3 uses hmac-sm3 prefix")
 
+	// Unkeyed rows of either family carry no keying prefix.
 	unsetHMACKey(t)
+	shaUnkeyed := digestWithMode("payload", digestModeSHA256)
+	assert.Len(t, shaUnkeyed, 64, "unkeyed sha256 stays bare — that is the historical shape")
 	smUnkeyed := digestWithMode("payload", digestModeSM3)
 	assert.True(t, strings.HasPrefix(smUnkeyed, prefixSM3))
+
+	assert.NotEqual(t, plain, shaUnkeyed, "keyed and unkeyed SHA-256 must differ")
 	assert.NotEqual(t, sm, smUnkeyed, "keyed and unkeyed SM3 must differ")
 }
 

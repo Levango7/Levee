@@ -73,12 +73,21 @@ type ChainFailure struct {
 // accepted as intact (they are not tampering), and are counted separately in
 // LegacyCount so operators retain visibility into how much of a chain still
 // uses the legacy encoding. New/rebuilt chains always use V2.
+//
+// UnkeyedEraCount counts records whose stored hash carries no keying prefix,
+// i.e. rows written before LEVEE_AUDIT_HMAC_KEY was configured (or on a
+// deployment that never set one). Such rows are verified as unkeyed SHA-256
+// and are NOT tampering, but they do not carry the key's integrity guarantee,
+// so the count is surfaced instead of being silently absorbed. On a keyed
+// deployment a non-zero value means "the first N rows of this run predate
+// keying" — the operator-facing half of the key-epoch marker.
 type VerifyResult struct {
-	RunID       string         // run id that was verified
-	Valid       bool           // true when the chain is intact
-	Count       int            // number of trace records checked
-	LegacyCount int            // records verified only under the legacy V1 encoding
-	Failures    []ChainFailure // tamper details (empty when Valid)
+	RunID           string         // run id that was verified
+	Valid           bool           // true when the chain is intact
+	Count           int            // number of trace records checked
+	LegacyCount     int            // records verified only under the legacy V1 encoding
+	UnkeyedEraCount int            // records verified as unkeyed (pre-keying era)
+	Failures        []ChainFailure // tamper details (empty when Valid)
 }
 
 // ChainVerifier verifies the hash-chain integrity of a run's trace records.
@@ -158,6 +167,10 @@ func VerifyTraces(runID string, traces []*state.Trace) *VerifyResult {
 			// Intact under the legacy V1 encoding only — accepted, but counted
 			// separately for visibility. V1 is always SHA-256.
 			result.LegacyCount++
+		} else if keyEra(t.CurrHash) == eraUnkeyed {
+			// Intact, and written before keying. Not tampering, but it does not
+			// carry the key's guarantee — counted so the split is visible.
+			result.UnkeyedEraCount++
 		}
 		// Advance prevHash to the stored CurrHash so the next record's
 		// PrevHash is compared against this record's stored value (not the

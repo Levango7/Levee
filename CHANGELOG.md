@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 修复（审计链 keyed 迁移：keying 不再断开历史链，D-8 关闭）
+
+- **摘要值自带世代前缀**：keyed SHA-256 摘要写作 `hmac-sha256:<64hex>`，无密钥摘要保持裸 64-hex，与 SM3 族的 `sm3:`/`hmac-sm3:` 完全对称。验链按**每条记录自己的前缀**选算法（`recomputeCanonical`）：无前缀行按**无密钥** SHA-256 复算，带 `hmac-sha256:` 前缀行必须配置密钥才能复算。**历史数据零回填**，一条链可跨世代并存。
+- **修掉同族的另一半**：`legacyHash` / `legacyChecksum`（V1 编码，按定义是无密钥期的）此前用 `digest()`、会跟随当前 key，使 V1 行在 keyed 配置下永远对不上；改为显式 `unkeyedSHA256()`。V1 行是历史事实的复算，不能因为现在配了 key 就换口径。`digest()` 随之重定义为恒无密钥。
+- **运维可见性**：`VerifyResult.UnkeyedEraCount` 报出早于密钥配置的行数（先例：`LegacyCount`），不再把这段历史静默吞掉。keyed 部署上该值非零即表示"本 run 的前 N 行建于无密钥期"。
+- **docs/deployment.md §5.6/§15 按实测订正**，并明确区分两条路：**第一次启用**（unkeyed → keyed）已安全；**轮换**（keyed → 另一把 key）仍会断链，仍须归档重开链——前缀标记的是"这行带密钥保证"，不携带"用的是哪把密钥"。
+- **边界（不宣称解决）**：① key epoch 的编号维度未实现，轮换仍需归档重开链；② 世代前缀提供的是**可读性**不是更强的不变性——能写库的一方仍可剥掉前缀让某行按无密钥口径验过，这正是 `unkeyed_era_count` 被报出来的原因；③ `AuditChainBuilder.Rebuild` 仍不暴露为操作命令（篡改只报不静默重链）。
+- **测试**：新增 `internal/audit/hmackey_epoch_test.go`；`hmackey_switch_test.go` 的 ratchet 改写为 `TestHMACKeying_KeySwitchKeepsHistoryVerifiable`——原 ratchet 注释本就写明"若后来加上 per-record KEY-EPOCH marker，这条测试会红，且必须连同交付清单文字在同一提交里改"，本次即该情形，`docs/blocked-items.md` D-8 同步移出并登记。`go test ./...` 77 包全绿，`golangci-lint ./internal/audit/...` 0 issues。
+
 ### 文档（本地渗透自测深度轮）
 
 - `docs/pentest-deep-2026-11.md`：资源评估后可执行的深度自测（隔离靶场 + 带数据 + 配置化 CORS/token）。写端点鉴权（3 个 POST 无 token 均 401）、CORS 白名单（evil/null 拒绝）、sqlmap 三参数 level=2/risk=2 无注入、playwright+chromium 浏览器层（未授权 401/授权 200/DOM 不泄露 token）。承接 F-0（默认未配 permissions.yaml/TLS）、F-1（安全头缺失），新增 F-3 观察项。**研发侧自测，非第三方报告**。

@@ -97,18 +97,56 @@ func ResetKeyForTest() {
 // never as a hashed canonical field, so historical (unprefixed) rows keep their
 // original SHA-256 meaning and remain verifiable without any migration.
 //
-//	unprefixed 64-hex  -> SHA-256 / HMAC-SHA256 (historical + default)
-//	"sm3:" + 64-hex    -> SM3 / HMAC-SM3 (opt-in; GM/T 0004-2012)
+//	unprefixed 64-hex       -> unkeyed SHA-256 (historical; written before a key)
+//	"hmac-sha256:" + 64-hex -> HMAC-SHA256 under LEVEE_AUDIT_HMAC_KEY
+//	"sm3:" + 64-hex         -> unkeyed SM3 (opt-in; GM/T 0004-2012)
+//	"hmac-sm3:" + 64-hex    -> HMAC-SM3 under LEVEE_AUDIT_HMAC_KEY
 //
-// The prefix identifies the HASH FAMILY only. The V1/V2 canonical-encoding
-// fallback is an orthogonal dimension handled by legacyHash/legacyChecksum.
+// The prefix identifies BOTH the hash family and the keying era, which is what
+// lets verification answer "was this row written before or after keying?
+// without any migration or backfill. The V1/V2 canonical-encoding fallback is
+// an orthogonal dimension handled by legacyHash/legacyChecksum.
 const (
 	digestModeSHA256 = "sha256"
 	digestModeSM3    = "sm3"
 
-	prefixSM3     = "sm3:"
-	prefixHMACSM3 = "hmac-sm3:"
+	prefixHMACSHA256 = "hmac-sha256:"
+	prefixSM3        = "sm3:"
+	prefixHMACSM3    = "hmac-sm3:"
 )
+
+// keyEra classifies a stored digest by whether it carries the key's guarantee.
+// It reads the prefix only: the value is self-describing, so classification
+// never depends on the current configuration. A row with no prefix was written
+// before keying.
+type keyEraValue string
+
+const (
+	eraKeyed   keyEraValue = "keyed"
+	eraUnkeyed keyEraValue = "unkeyed"
+	eraUnknown keyEraValue = "unknown"
+)
+
+// keyEra reports the keying era declared by a stored digest value. An empty
+// hash (a chain that was never built) reports eraUnknown so callers do not
+// count it as either era. An unrecognised prefix also reports eraUnknown:
+// recomputeCanonical fails closed on it, and counting it as unkeyed would
+// understate the risk.
+func keyEra(stored string) keyEraValue {
+	switch {
+	case stored == "":
+		return eraUnknown
+	case strings.HasPrefix(stored, prefixHMACSHA256),
+		strings.HasPrefix(stored, prefixHMACSM3):
+		return eraKeyed
+	case strings.HasPrefix(stored, prefixSM3):
+		return eraUnkeyed
+	case strings.Contains(stored, ":"):
+		return eraUnknown
+	default:
+		return eraUnkeyed
+	}
+}
 
 // CurrentDigestMode is the process-wide configured digest mode. It is resolved
 // lazily from the environment (LEVEE_AUDIT_DIGEST_MODE) so it can be read by the
@@ -164,12 +202,25 @@ func ResetDigestModeForTest() {
 	currentMode = ""
 }
 
-// digest returns the lower-case hex encoding of the keyed (or unkeyed) SHA-256
-// digest of payload. This is the single funnel through which every audit digest
-// is computed, so keying and canonicalization stay consistent across the WORM
-// checksum and the hash chain. It always uses the SHA-256 family (no prefix),
-// so historical V1/V2 fallbacks and every existing caller keep their behavior.
-func digest(payload string) string { return digestWithMode(payload, digestModeSHA256) }
+// digest returns the lower-case hex encoding of the UNKEYED SHA-256 digest of
+// payload. This is the single funnel through which every audit digest is
+// computed, so keying and canonicalization stay consistent across the WORM
+// checksum and the hash chain.
+//
+// It always uses the SHA-256 family and always runs UNKEYED, so historical
+// V1/V2 fallbacks keep their original meaning regardless of whether a key is
+// configured now. Callers that must follow the current configuration use
+// digestForCurrent instead; callers that need the keyed form use
+// digestWithMode directly.
+func digest(payload string) string { return unkeyedSHA256(payload) }
+
+// unkeyedSHA256 is the unkeyed SHA-256 of payload as bare lower-case hex. It is
+// the definition of the historical (pre-keying) era, so it must never consult
+// the configured key.
+func unkeyedSHA256(payload string) string {
+	sum := sha256.Sum256([]byte(payload))
+	return hex.EncodeToString(sum[:])
+}
 
 // digestWithMode computes a digest with an explicit hash family. For sha256 it
 // returns the bare 64-hex string (identical to digest, no prefix). For sm3 it
@@ -191,12 +242,15 @@ func digestWithMode(payload, mode string) string {
 		return prefixSM3 + hex.EncodeToString(sum)
 	case digestModeSHA256, "":
 		if len(key) > 0 {
+			// Keyed SHA-256 carries its era as a prefix. Without it a keyed row
+			// and a historical unkeyed row are both bare 64-hex, and the verifier
+			// cannot tell "predates the key" from "was rewritten" — which made
+			// adding a key to a deployment with history fail every historical row.
 			mac := hmac.New(sha256.New, key)
 			mac.Write([]byte(payload))
-			return hex.EncodeToString(mac.Sum(nil))
+			return prefixHMACSHA256 + hex.EncodeToString(mac.Sum(nil))
 		}
-		s := sha256.Sum256([]byte(payload))
-		return hex.EncodeToString(s[:])
+		return unkeyedSHA256(payload)
 	default:
 		// Unknown mode is a programming error, not data: there is no safe
 		// silent fallback. Panic so it fails loudly in tests and never writes
@@ -276,6 +330,18 @@ func verifyWORMChecksum(trace *state.Trace) bool {
 // the stored value directly. Unknown prefixes fail closed.
 func recomputeCanonical(payload, stored string) (string, error) {
 	switch {
+	case strings.HasPrefix(stored, prefixHMACSHA256):
+		// Keyed SHA-256: a key MUST be configured to verify; if it was removed,
+		// the chain cannot be recomputed and must not silently fall back to the
+		// unkeyed algorithm (that would make every keyed row verifiable by
+		// anyone who can strip the prefix).
+		key := auditKey()
+		if len(key) == 0 {
+			return "", fmt.Errorf("audit: stored hash is HMAC-SHA256 but %s is not set", EnvHMACKey)
+		}
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(payload))
+		return prefixHMACSHA256 + hex.EncodeToString(mac.Sum(nil)), nil
 	case strings.HasPrefix(stored, prefixHMACSM3):
 		// Keyed SM3: a key MUST be configured to verify; if it was removed,
 		// the chain cannot be recomputed (same property as keyed SHA-256).
@@ -299,10 +365,17 @@ func recomputeCanonical(payload, stored string) (string, error) {
 		if strings.Contains(stored, ":") {
 			return "", fmt.Errorf("audit: unknown digest prefix in %q", stored)
 		}
-		// No prefix: historical/default SHA-256 (keyed or unkeyed per current
-		// key). This preserves the existing ratchet: adding a key breaks the
-		// historical chain exactly as before (D-8 key epoch is out of scope).
-		return digest(payload), nil
+		// No prefix: a row written before keying. Recompute it as UNKEYED
+		// SHA-256 regardless of the current key, because that is what it was
+		// hashed with — following the current key here is exactly the D-8
+		// failure mode (adding a key would fail every historical row).
+		//
+		// The consequence is deliberate and must stay documented: an attacker
+		// who can write rows AND knows the payload could forge an unprefixed
+		// row. That is precisely the situation the key exists to prevent, which
+		// is why the unkeyed era is REPORTED by VerifyTraces rather than
+		// silently absorbed — see VerifyResult.UnkeyedEraCount.
+		return unkeyedSHA256(payload), nil
 	}
 }
 
