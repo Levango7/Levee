@@ -37,10 +37,11 @@ levee capabilities db01.prod --json
 ## 3. 当前实证入口
 
 - PG schema：`python scripts/replay_pg_schema.py`（PostgreSQL 16.15，REAL_PG_REPLAY）。
+- MySQL schema：`python scripts/replay_mysql_schema.py`（MySQL 8.0.46，捕获→DROP→恢复→定义一致，MYSQL_SCHEMA_REPLAY）。
 - apk：`python scripts/replay_pg_schema.py --suite pkg-alpine`（tree 安装、重装、升级、删除、重复删除，PKG_APK_REPLAY）。
 - 自诊断：`python scripts/replay_pg_schema.py --suite capabilities-alpine`（CAPABILITY_REPLAY）。
 
-三个入口共用一次性 SSH 容器、临时密钥和 strict known_hosts，结束后自动清理。它们证明真实单实例，不证明生产集群。
+这些入口共用一次性 SSH 容器、临时密钥和 strict known_hosts，结束后自动清理。它们证明真实单实例，不证明生产集群。
 
 ## 4. 当前必须拒绝的误读
 
