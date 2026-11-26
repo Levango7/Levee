@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### 修复（通道配置惰性旋钮开始自报家门，D-9 运维侧闭环）
+
+- `channel.ssh.*` / `channel.winrm.*` 两节里有 6 个字段**只被校验、不接进通道**（`key_path`、`pool_size`，以及整个 `winrm` 节的 `port`/`transport`/`connect_timeout`/`pool_size`）。此前运维配了它们只会得到「启动通过 + 静默无效」——或把 `pool_size: 0` 写成启动失败，去修一个根本没有作用的旋钮。两种都在暗示「这一节是权威的」，正是 D-9 登记的伤害。
+- 新增 `internal/config.InertChannelWarnings`：对**显式改过**（值≠出货默认）的惰性字段各发一条 WARN，点名字段并说明实际由谁管辖（key 路径来自凭据、池有自己的默认、winrm 工厂以空 Config 注册故整段惰性）。接在 `cmd/levee/log_config.go` 的 `loadConfig()` 上——所有命令的唯一漏斗——并以 `sync.Once` 保证一个进程只报一次。
+- **最重要的契约：从未提及这些键的部署保持静默**。`InertChannelWarnings({})` 对出货默认返回空数组；已用真实二进制双向实证（默认配置 0 条 / 改过的配置各一条）。
+- **过程中修掉一个自己引入的 bug，如实记下**：`key_path` 出货默认是 `~/.ssh/id_rsa`，`postProcess` 的 `expandHome` 会把它变成 `<home>/.ssh/id_rsa`。第一版拿字面量比较，于是**每个未改动过的部署都报了一条**。单测没抓到（手工构造 Config 绕过了展开），是拿 `levee --config ... group list` 跑真实二进制才暴露的。修法是对常量走同一个展开，并加防回归测试。**教训："不许骚扰存量部署"这条契约只能由集成证据证明，单测会系统性地放过它。**
+- 未随本笔解决：那 6 个字段照旧不生效。本笔给的是**可见性**，不是能力。`winrm` 整段要生效需要 transport seam；`pool_size` / `key_path` 是新功能决策而非接线。
+- 新增 `internal/config/channel_inert_test.go` 之外见 `channel_inert_warnings_test.go`（默认静默 / 一字段一告警 / 必须说明由什么管辖 / 展开后的默认不算改动 / 零值也算改动 / 库存与 `cmd/levee` 守卫对齐）；`go test ./...` 77 包全绿，`golangci-lint ./internal/config/... ./cmd/levee/...` 0 issues。
+
 ### 修复（审计链 keyed 迁移：keying 不再断开历史链，D-8 关闭）
 
 - **摘要值自带世代前缀**：keyed SHA-256 摘要写作 `hmac-sha256:<64hex>`，无密钥摘要保持裸 64-hex，与 SM3 族的 `sm3:`/`hmac-sm3:` 完全对称。验链按**每条记录自己的前缀**选算法（`recomputeCanonical`）：无前缀行按**无密钥** SHA-256 复算，带 `hmac-sha256:` 前缀行必须配置密钥才能复算。**历史数据零回填**，一条链可跨世代并存。

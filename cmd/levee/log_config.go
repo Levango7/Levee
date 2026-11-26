@@ -34,7 +34,38 @@ func loadConfig() (*config.Config, error) {
 	if err := applyLogConfig(cfg); err != nil {
 		return nil, err
 	}
+	warnInertChannelConfig(cfg)
 	return cfg, nil
+}
+
+// inertChannelWarnOnce keeps the notes to one per process.
+//
+// A command can load the configuration more than once (levee new loads it,
+// then opens the store, which loads it again). Repeating the same warning
+// teaches the operator to ignore the channel, which is the opposite of what
+// D-9 is for.
+var inertChannelWarnOnce sync.Once
+
+// warnInertChannelConfig tells the operator about channel settings that
+// validate but do nothing (D-9, operator-facing half).
+//
+// The code side of D-9 is closed and machine-checked by
+// channel_config_wiring_test.go; what is left is the person writing the file.
+// A knob that validates and then does nothing is the worst shape a setting
+// can have: the operator gets a boot-time error when they spell it wrong and
+// silence when they spell it right and expect it to work. Both of those say
+// "this section is authoritative".
+//
+// A deployment that never mentioned these keys is never nagged — the helper
+// only reports fields whose value differs from the shipped default. It runs
+// after applyLogConfig so the notes reach whatever sink the operator
+// configured rather than stderr by accident.
+func warnInertChannelConfig(cfg *config.Config) {
+	inertChannelWarnOnce.Do(func() {
+		for _, note := range config.InertChannelWarnings(cfg) {
+			log.Warn(note)
+		}
+	})
 }
 
 // appliedLog remembers what the logger was last configured with.
