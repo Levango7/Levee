@@ -219,6 +219,43 @@ func TestTargetHistoryRemoteJSONIsDeclaredSubsetOfLocal(t *testing.T) {
 	}
 }
 
+// TestTargetHistoryJSONWorkflowNameCarriesDeclaredName: workflow_name is a
+// DERIVED display value in both --json modes, never the rendered workflow
+// document. Before this, the wire shipped the whole YAML per row (and the
+// local path marshalled it too), so an automation that reads
+// workflow_name received a multi-line document instead of a name.
+func TestTargetHistoryJSONWorkflowNameCarriesDeclaredName(t *testing.T) {
+	defer resetRootFlags()
+	e, addr := seedHistoryEnv(t, "db-01")
+
+	localOut, _, err := runSplit(t,
+		historyArgs([]string{"--json"}, []string{"--config", e.cfgPath})...)
+	require.NoError(t, err)
+	remoteOut, _, err := runSplit(t,
+		historyArgs([]string{"--json"},
+			[]string{"--config", e.cfgPath, "--remote", "--server", addr})...)
+	require.NoError(t, err)
+
+	for name, out := range map[string]string{"local": localOut, "remote": remoteOut} {
+		rows := historyRows(t, out)
+		require.Len(t, rows, 2, "%s --json must really list both runs", name)
+		byID := map[string]map[string]json.RawMessage{}
+		for _, r := range rows {
+			var id string
+			require.NoError(t, json.Unmarshal(r["id"], &id))
+			byID[id] = r
+		}
+		doc, ok := byID["run-b"]
+		require.True(t, ok, "%s must list run-b", name)
+		var wf string
+		require.NoError(t, json.Unmarshal(doc["workflow_name"], &wf))
+		assert.Equal(t, "rolling-patch", wf,
+			"%s --json workflow_name must be the declared name", name)
+		assert.NotContains(t, out, "action: shell.exec",
+			"%s --json must not ship the workflow source", name)
+	}
+}
+
 // TestTargetHistoryRemoteNamesItsLocalOnlyKeysInMeta: meta.local_only is how an
 // automation told "these ten keys are absent" learns they are absent by design
 // rather than by a broken mapping.

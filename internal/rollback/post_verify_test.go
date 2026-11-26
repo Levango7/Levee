@@ -351,9 +351,14 @@ func TestVerifyAndGradeNotifyErrorPropagates(t *testing.T) {
 	gm := verify.NewGateManager()
 	gm.Register(verify.NewNoopGate("health", verify.PhasePostApply, false))
 	wantErr := errors.New("notify broken")
+	auditCalls := atomic.Int64{}
 	grader := NewGrader(
 		WithFailureNotify(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
 			return wantErr
+		}),
+		WithFailureAudit(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			auditCalls.Add(1)
+			return nil
 		}),
 	)
 	v, err := NewPostRollbackVerifier(gm, WithGrader(grader))
@@ -365,6 +370,45 @@ func TestVerifyAndGradeNotifyErrorPropagates(t *testing.T) {
 	assert.Contains(t, dispatchErr.Error(), "post-verify grade notify")
 	assert.ErrorIs(t, dispatchErr, wantErr)
 	assert.False(t, res.Success)
+	assert.Equal(t, int64(1), auditCalls.Load(), "audit must still run after notify error")
+}
+
+func TestVerifyAndGradeJoinsActionErrors(t *testing.T) {
+	gm := verify.NewGateManager()
+	gm.Register(verify.NewNoopGate("health", verify.PhasePostApply, false))
+	notifyErr := errors.New("notify failed")
+	escalateErr := errors.New("escalate failed")
+	auditErr := errors.New("audit failed")
+	var calls []string
+	grader := NewGrader(
+		WithFailureNotify(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "notify")
+			return notifyErr
+		}),
+		WithFailureEscalate(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "escalate")
+			return escalateErr
+		}),
+		WithFailureAudit(func(_ context.Context, _ RollbackGrade, _ *RollbackResult) error {
+			calls = append(calls, "audit")
+			return auditErr
+		}),
+	)
+	v, err := NewPostRollbackVerifier(gm, WithGrader(grader))
+	require.NoError(t, err)
+
+	res, dispatchErr := v.VerifyAndGrade(context.Background(),
+		&RollbackResult{Success: true}, nil, mkInput())
+	require.Error(t, dispatchErr)
+	assert.False(t, res.Success)
+	assert.Equal(t, GradeFailure, res.Grade)
+	assert.ErrorIs(t, dispatchErr, notifyErr)
+	assert.ErrorIs(t, dispatchErr, escalateErr)
+	assert.ErrorIs(t, dispatchErr, auditErr)
+	assert.Contains(t, dispatchErr.Error(), "post-verify grade notify")
+	assert.Contains(t, dispatchErr.Error(), "post-verify grade escalate")
+	assert.Contains(t, dispatchErr.Error(), "post-verify grade audit")
+	assert.Equal(t, []string{"notify", "escalate", "audit"}, calls)
 }
 
 // --- context cancellation --------------------------------------------------
