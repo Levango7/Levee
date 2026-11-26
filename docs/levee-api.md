@@ -886,6 +886,8 @@ RESTful 风格，支持两套路径：
 
 表：REST API 端点对照表（RESTful 路径 / gRPC 兼容路径）
 
+> `POST /changes` 的 `workflowFile` 是显式 workflow source（路径或内联 YAML），优先于 `templateName`。当 `workflowFile` 为空且服务端配置了模板服务时，`templateName + params` 会经与 `/templates/instantiate` 相同的解析路径渲染并写入 run，后续 `/changes/:id/plan` 可直接使用该 source；模板不存在或必填参数缺失在创建时即报错，不再留下无法 plan 的草稿。未配置模板服务的精简嵌入式服务保留 metadata-only draft 行为。
+
 | 方法 | RESTful 路径 | gRPC 兼容路径 | 语义 | 对应 CLI |
 | --- | --- | --- | --- | --- |
 | POST | `/changes` | `/api/v1/ChangeService/CreateChange` | 创建变更 | `levee new` |
@@ -938,7 +940,7 @@ RESTful 风格，支持两套路径：
 | GET | `/system/status` | `/api/v1/SystemService/GetStatus` | 系统状态 | `levee system status` |
 | GET | `/system/config` | `/api/v1/SystemService/GetConfig` | 系统配置 | `levee system config get` |
 | GET | `/system/batch-status` | —（直读 store，不经 service） | 按 run 的批次进度（按该 run 自己的环境判 `view`，见 13.5 门禁口径） | — |
-| GET | `/system/change-trend` | —（REST-only，不进 proto） | 变更趋势（按日分桶，需 `tz_offset`；受 `view` 准入） | — |
+| GET | `/system/change-trend` | —（REST-only，不进 proto） | 变更趋势（按日分桶，需 `tz_offset`；可选 `env`，受 `view` 准入；响应 `environment` 回传实际生效环境） | — |
 | GET | `/system/takeover-events` | —（REST-only） | 集群接管事件时间线 | — |
 | POST | `/system/doctor` | `/api/v1/SystemService/RunDoctor` | 系统诊断 | `levee system doctor` |
 | GET | `/system/cluster-status` | —（直读 store，不经 service） | 集群注册表：`nodes` / `summary` / `backend`；`?capability=<name>` 按节点声明的能力筛 `nodes`（见下方说明） | `levee cluster status` |
@@ -953,6 +955,8 @@ RESTful 风格，支持两套路径：
 > - **`POST /changes/:id/rollback`**（`RollbackChange`）：兑现（2026-11-06 起）。`dryRun:true` 是**只读预览**：不改 run 状态、不写审计链、不发事件、不铸 rollback run id，也不派发任何补偿、不恢复任何快照；响应回报 `rolledBackHosts`（**会**补偿的主机）、`skippedHosts`（前向没跑或已被补偿、**不需要**的主机）与一条 message（message 另会点名**缺口**主机：前向跑了却无可用补偿动作，需要人工）。预览与真正的提交走**同一段实现**，所以两者可以逐字段对照。
 > - **`POST /changes/:id/apply`**（`ApplyChange`）：**不兑现，故明确拒绝**（`FailedPrecondition`，message 点名「要预览请用 `PlanChange`」）。proto 说这一档是「只打印计划并退出」，而打印计划是 `PlanChange` 的职责；这里若照旧执行，操作员说「预览」就会真的 apply 一条生产变更。
 > - **`POST /changes`**（`CreateChange`）：`dryRun` **空转但契约成立**——create 只建 draft 等审批，本来就不应用，所以「只计划并返回、不应用」这条语义无论如何都成立。
+>
+> **执行调用的等待与断链口径**：Web 客户端的 `apply` / `retry` / `rollback` 不继承普通查询的 30 秒 axios 超时，因为服务端会同步等待引擎终态；普通读取仍为 30 秒。真正的执行提交若连接中断，客户端只能判断「执行结果未知」，会先提示刷新变更状态，不能把断链当作执行失败并引导操作员直接重复提交。`rollback(dryRun:true)` 是只读预览，只共享长等待，断链仍按普通网络异常处理。服务端状态 CAS 与重试预算仍各自生效。
 >
 > **`plan` / `apply` 的拒绝分类（2026-11-17 起）**：这两条动作的失败分两类，HTTP 状态码不同，调用方按状态码分支即可，不必解析文案：
 > - **400（`InvalidArgument`）＝请求本身不成立**：`target_hosts` 为空（没给目标机）、目标机名不在 inventory 里。

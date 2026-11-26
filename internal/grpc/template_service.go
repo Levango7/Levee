@@ -283,6 +283,54 @@ func (s *TemplateService) DeleteTemplate(ctx context.Context, req *pb.DeleteTemp
 	return &emptypb.Empty{}, nil
 }
 
+// resolveWorkflow renders a template without creating a run. InstantiateTemplate
+// and ChangeService.CreateChange share this method so their parameter checks,
+// not-found errors and rendered workflow bytes cannot drift apart. Authorisation
+// stays with each caller because the two RPCs create different run shapes.
+func (s *TemplateService) resolveWorkflow(ctx context.Context, name string, params map[string]string) (string, error) {
+	if s.lib != nil {
+		tmpl, err := s.lib.Get(ctx, name)
+		if err != nil {
+			if errors.Is(err, template.ErrTemplateNotFound) {
+				return "", status.Errorf(codes.NotFound, "template %q not found", name)
+			}
+			return "", status.Errorf(codes.Internal, "get template: %v", err)
+		}
+		// Use the instantiator for proper parameter resolution; it enforces
+		// required parameters and reports ErrRequiredParamMissing.
+		inst := template.NewInstantiator()
+		result, err := inst.Instantiate(tmpl, params)
+		if err != nil {
+			if errors.Is(err, template.ErrRequiredParamMissing) {
+				return "", status.Errorf(codes.InvalidArgument, "missing required parameters: %v", err)
+			}
+			return "", status.Errorf(codes.InvalidArgument, "instantiate: %v", err)
+		}
+		return result.Content, nil
+	}
+
+	s.mu.RLock()
+	tmpl, ok := s.templates[name]
+	s.mu.RUnlock()
+	if !ok {
+		return "", status.Errorf(codes.NotFound, "template %q not found", name)
+	}
+	content := tmpl.WorkflowContent
+	var missing []string
+	for _, p := range tmpl.RequiredParams {
+		if _, ok := params[p]; !ok {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) > 0 {
+		return "", status.Errorf(codes.InvalidArgument, "missing required parameters: %s", strings.Join(missing, ", "))
+	}
+	for k, v := range params {
+		content = strings.ReplaceAll(content, "{{."+k+"}}", v)
+	}
+	return content, nil
+}
+
 // InstantiateTemplate resolves a template's parameters and creates a new
 // change (state.Run) from the resulting workflow content. When DryRun is true
 // the Run is created in "planned" status without executing it.
@@ -300,52 +348,10 @@ func (s *TemplateService) InstantiateTemplate(ctx context.Context, req *pb.Insta
 		return nil, err
 	}
 
-	// 1. Load template.
-	var tmplContent string
-	var requiredParams []string
-	if s.lib != nil {
-		tmpl, err := s.lib.Get(ctx, req.TemplateName)
-		if err != nil {
-			if errors.Is(err, template.ErrTemplateNotFound) {
-				return nil, status.Errorf(codes.NotFound, "template %q not found", req.TemplateName)
-			}
-			return nil, status.Errorf(codes.Internal, "get template: %v", err)
-		}
-		// Use the instantiator for proper parameter resolution; it enforces
-		// required parameters and reports ErrRequiredParamMissing.
-		inst := template.NewInstantiator()
-		result, err := inst.Instantiate(tmpl, req.Params)
-		if err != nil {
-			if errors.Is(err, template.ErrRequiredParamMissing) {
-				return nil, status.Errorf(codes.InvalidArgument, "missing required parameters: %v", err)
-			}
-			return nil, status.Errorf(codes.InvalidArgument, "instantiate: %v", err)
-		}
-		tmplContent = result.Content
-	} else {
-		s.mu.RLock()
-		tmpl, ok := s.templates[req.TemplateName]
-		s.mu.RUnlock()
-		if !ok {
-			return nil, status.Errorf(codes.NotFound, "template %q not found", req.TemplateName)
-		}
-		tmplContent = tmpl.WorkflowContent
-		requiredParams = tmpl.RequiredParams
-
-		// Validate required parameters.
-		var missing []string
-		for _, p := range requiredParams {
-			if _, ok := req.Params[p]; !ok {
-				missing = append(missing, p)
-			}
-		}
-		if len(missing) > 0 {
-			return nil, status.Errorf(codes.InvalidArgument, "missing required parameters: %s", strings.Join(missing, ", "))
-		}
-		// Substitute placeholders.
-		for k, v := range req.Params {
-			tmplContent = strings.ReplaceAll(tmplContent, "{{."+k+"}}", v)
-		}
+	// 1. Resolve the template through the same path used by CreateChange.
+	tmplContent, err := s.resolveWorkflow(ctx, req.TemplateName, req.Params)
+	if err != nil {
+		return nil, err
 	}
 
 	// 2. Create the Run.

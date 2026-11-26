@@ -27,13 +27,16 @@ package wiring
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/nexus/levee/internal/channel"
 	"github.com/nexus/levee/internal/engine"
 	"github.com/nexus/levee/internal/executor"
 	"github.com/nexus/levee/internal/executor/modules/mysql"
+	"github.com/nexus/levee/internal/executor/modules/pg"
 	"github.com/nexus/levee/internal/executor/sqlguard"
 	"github.com/nexus/levee/internal/log"
 	"github.com/nexus/levee/internal/plan"
@@ -79,9 +82,6 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 	if step.Rollback == nil {
 		return nil // not a snapshot step; the engine filters these already
 	}
-	if err := validateSnapshotRecoverySupport(step); err != nil {
-		return err
-	}
 	// The manager creates the record (and its directory); the contents
 	// are then filled from the remote side via the payload API.
 	snap, err := s.mgr.CreateSnapshot(ctx, s.key, target, nil, s.kind, map[string]any{
@@ -90,6 +90,14 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 	if err != nil {
 		return fmt.Errorf("create snapshot record for step %q on %q: %w", step.Name, target, err)
 	}
+	captureOK := false
+	defer func() {
+		if !captureOK {
+			// A failed schema capture must not remain as an audit-only record that
+			// a later restore could mistake for a usable baseline.
+			_ = s.mgr.Store().Delete(context.WithoutCancel(ctx), snap.ID)
+		}
+	}()
 	payloads := map[string]string{}
 	if step.Module == "mysql" && step.Action == "query" {
 		ch, target, err := s.rx.channelFor(ctx, target)
@@ -97,6 +105,19 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 			return fmt.Errorf("channel for schema snapshot of %q: %w", target, err)
 		}
 		schemaPayloads, err := s.captureMySQLSchema(ctx, ch, target, step)
+		if err != nil {
+			return err
+		}
+		for key, value := range schemaPayloads {
+			payloads[key] = value
+		}
+	}
+	if step.Module == "pg" && step.Action == "query" {
+		ch, target, err := s.rx.channelFor(ctx, target)
+		if err != nil {
+			return fmt.Errorf("channel for PostgreSQL schema snapshot of %q: %w", target, err)
+		}
+		schemaPayloads, err := capturePGSchema(ctx, ch, target, step)
 		if err != nil {
 			return err
 		}
@@ -118,6 +139,7 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 		}
 	}
 	if len(payloads) == 0 {
+		captureOK = true
 		// Audit-only record: no payload, restore will be a no-op.
 		log.Info("snapshot captured (audit-only, no paths)",
 			"run_id", runID,
@@ -130,6 +152,7 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 	if err := rollback.WriteSnapshotPayloads(snap.Path, payloads); err != nil {
 		return fmt.Errorf("store snapshot payload for step %q on %q: %w", step.Name, target, err)
 	}
+	captureOK = true
 	log.Info("snapshot captured",
 		"run_id", runID,
 		"change_id", s.key,
@@ -147,9 +170,6 @@ func (s *remoteSnapshotter) CaptureForStep(ctx context.Context, runID, target st
 // (change, target, step) → error (operators must see an unrestorable
 // step, never a silent skip).
 func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target string, step plan.PlanStep) error {
-	if err := validateSnapshotRecoverySupport(step); err != nil {
-		return err
-	}
 	snaps, err := s.mgr.Store().List(ctx, s.key, target)
 	if err != nil {
 		return fmt.Errorf("list snapshots for %q/%q: %w", s.key, target, err)
@@ -168,6 +188,9 @@ func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target st
 	if err != nil {
 		return fmt.Errorf("read snapshot %q: %w", snap.ID, err)
 	}
+	if isPGSchemaStep(step) && !hasPGSchemaPayload(payloads) {
+		return fmt.Errorf("snapshot %q for pg.query step %q contains no restorable PostgreSQL DDL payload (legacy or audit-only record)", snap.ID, step.Name)
+	}
 	if len(payloads) == 0 {
 		// Audit-only snapshot (no declared paths): nothing to restore.
 		return nil
@@ -177,7 +200,28 @@ func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target st
 	if err != nil {
 		return fmt.Errorf("channel for snapshot restore on %q: %w", target, err)
 	}
-	for origPath, content := range payloads {
+	keys := make([]string, 0, len(payloads))
+	for key := range payloads {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, origPath := range keys {
+		content := payloads[origPath]
+		if table, ok := strings.CutPrefix(origPath, pgSchemaPayloadPrefix); ok {
+			args := cloneStepArgs(step.Args)
+			args["table"] = table
+			args["snapshot"] = content
+			out, err := pg.New().Execute(ctx, "schema_restore", executor.ModuleInput{
+				Action: "schema_restore", Args: args, Target: targetDesc, Channel: ch,
+			})
+			if err != nil {
+				return fmt.Errorf("restore PostgreSQL schema %q on %q: %w", table, target, err)
+			}
+			if out.ExitCode != 0 {
+				return fmt.Errorf("restore PostgreSQL schema %q on %q failed: %s", table, target, strings.TrimSpace(out.Stderr))
+			}
+			continue
+		}
 		if table, ok := strings.CutPrefix(origPath, mysqlSchemaPayloadPrefix); ok {
 			args := cloneStepArgs(step.Args)
 			args["table"] = table
@@ -207,17 +251,6 @@ func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target st
 	return nil
 }
 
-// validateSnapshotRecoverySupport rejects declarations whose only possible
-// outcome today is an empty snapshot followed by a successful no-op restore.
-// Audit-only snapshots remain valid for non-database steps; pg.query is the
-// exception because its catalog evidence is not a restorable baseline.
-func validateSnapshotRecoverySupport(step plan.PlanStep) error {
-	if step.Module == "pg" && step.Action == "query" {
-		return fmt.Errorf("pg.query step %q cannot use snapshot rollback: PostgreSQL schema restore is not implemented; declare explicit rollback steps", step.Name)
-	}
-	return nil
-}
-
 // latestSnapshotMatching chooses the newest capture without relying on store
 // iteration order. Snapshot IDs are random, so reverse filepath.Walk order is
 // not a chronology. The ID tie-break makes equal timestamps deterministic; it
@@ -236,7 +269,23 @@ func latestSnapshotMatching(snaps []*rollback.Snapshot, matches func(*rollback.S
 	return latest
 }
 
-const mysqlSchemaPayloadPrefix = "__mysql_schema__/"
+const (
+	mysqlSchemaPayloadPrefix = "__mysql_schema__/"
+	pgSchemaPayloadPrefix    = "__pg_schema__/"
+)
+
+func isPGSchemaStep(step plan.PlanStep) bool {
+	return step.Module == "pg" && step.Action == "query"
+}
+
+func hasPGSchemaPayload(payloads map[string]string) bool {
+	for key := range payloads {
+		if strings.HasPrefix(key, pgSchemaPayloadPrefix) {
+			return true
+		}
+	}
+	return false
+}
 
 func cloneStepArgs(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in)+1)
@@ -291,6 +340,63 @@ func (s *remoteSnapshotter) captureMySQLSchema(ctx context.Context, ch channel.C
 			return nil, fmt.Errorf("capture schema for table %q failed: %s", table, strings.TrimSpace(capture.Stderr))
 		}
 		out[mysqlSchemaPayloadPrefix+table] = strings.TrimSpace(capture.Stdout)
+	}
+	return out, nil
+}
+
+// capturePGSchema records a versioned pg_dump payload per affected table. It
+// shares MySQL's DDL-only boundary: DML, DBDDL and unread statements cannot be
+// called complete schema recoveries and fail before the apply starts.
+func capturePGSchema(ctx context.Context, ch channel.Channel, target channel.Target, step plan.PlanStep) (map[string]string, error) {
+	out := map[string]string{}
+	raw, _ := step.Args["sql"].(string)
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("PostgreSQL schema snapshot requires non-empty SQL in step %q", step.Name)
+	}
+	res, err := sqlreview.ReviewPostgres(raw)
+	if err != nil {
+		return nil, fmt.Errorf("PostgreSQL schema snapshot review: %w", err)
+	}
+	if res.Verdict == sqlreview.VerdictFail {
+		return nil, fmt.Errorf("PostgreSQL schema snapshot review failed for step %q", step.Name)
+	}
+	if res.Impact.Incomplete {
+		return nil, fmt.Errorf("PostgreSQL schema snapshot review is incomplete for step %q", step.Name)
+	}
+	var tables []string
+	for _, statement := range res.Statements {
+		switch statement.Kind {
+		case sqlreview.KindInsert, sqlreview.KindUpdate, sqlreview.KindDelete:
+			return nil, fmt.Errorf("PostgreSQL schema restore supports DDL only; step %q also changes rows and cannot be recovered by a schema snapshot", step.Name)
+		case sqlreview.KindDBDDL:
+			return nil, fmt.Errorf("PostgreSQL schema restore does not cover database-level DDL in step %q", step.Name)
+		case sqlreview.KindDDL:
+			tables = append(tables, statement.Impact.Writes...)
+		}
+	}
+	tables = sqlguard.SortedUnique(tables)
+	if len(tables) == 0 {
+		return nil, fmt.Errorf("PostgreSQL schema snapshot found no affected table in step %q; an audit-only record is not a restorable baseline", step.Name)
+	}
+	for _, table := range tables {
+		args := cloneStepArgs(step.Args)
+		args["tables"] = []any{table}
+		capture, err := pg.New().Execute(ctx, "schema_snapshot_ddl", executor.ModuleInput{
+			Action: "schema_snapshot_ddl", Args: args, Target: target, Channel: ch,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("capture PostgreSQL schema for table %q: %w", table, err)
+		}
+		if capture.ExitCode != 0 {
+			return nil, fmt.Errorf("capture PostgreSQL schema for table %q failed: %s", table, strings.TrimSpace(capture.Stderr))
+		}
+		var header struct {
+			Table string `json:"table"`
+		}
+		if err := json.Unmarshal([]byte(capture.Stdout), &header); err != nil || header.Table == "" {
+			return nil, fmt.Errorf("capture PostgreSQL schema for table %q returned an invalid versioned payload", table)
+		}
+		out[pgSchemaPayloadPrefix+header.Table] = capture.Stdout
 	}
 	return out, nil
 }

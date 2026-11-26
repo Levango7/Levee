@@ -79,6 +79,22 @@ func TestShippedSampleSSHDefaultsAreUnset(t *testing.T) {
 	}
 }
 
+// TestShippedSampleWinRMDefaultsAreUnset pins D-9's "not configured" semantics
+// on both shipped examples: writing concrete winrm values would, once copied,
+// shorten the 30s timeout, force a port/transport over the target's own hint.
+func TestShippedSampleWinRMDefaultsAreUnset(t *testing.T) {
+	for _, p := range shippedConfigs {
+		t.Run(filepath.Base(p), func(t *testing.T) {
+			cfg, err := config.Load(p)
+			require.NoError(t, err)
+			assert.Zero(t, cfg.Channel.WinRM.Port, "%s must leave winrm port unset", p)
+			assert.Empty(t, cfg.Channel.WinRM.Transport, "%s must leave winrm transport unset", p)
+			assert.Zero(t, cfg.Channel.WinRM.ConnectTimeout, "%s must leave winrm connect_timeout unset", p)
+			assert.Zero(t, cfg.Channel.WinRM.PoolSize, "%s must leave winrm pool_size unset", p)
+		})
+	}
+}
+
 // TestShippedSampleLogSettingsMirrorTheServerAlias keeps the shipped samples
 // honest about the log precedence. The samples leave log.level / log.format
 // unset, so the legacy server.log_* alias is what actually decides the

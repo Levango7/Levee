@@ -37,6 +37,7 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
+import { runNarrowGeometryChecks } from './narrow-geometry-check.mjs'
 
 // Candidate paths, in order. The Linux ones come first because CI runs there;
 // the Windows default is this repo's own machine.
@@ -772,6 +773,10 @@ console.log('\n[1h] narrow approval keeps the actor readable, desktop keeps the 
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[1i] narrow core pages keep columns, titles and scroll affordances readable')
+await runNarrowGeometryChecks({ browser, newPage, open, check, sleep, SETTLE_DEADLINE_MS })
+
+// ---------------------------------------------------------------------------
 console.log('\n[2] the three tiers: empty / failed / forbidden are distinct')
 {
   const page = await newPage(browser)
@@ -1134,6 +1139,43 @@ console.log('\n[6] the day boundary follows the operator, not the server')
   const seen = await page.evaluate(() => window.__trendUrls || [])
   const offset = /tz_offset=(-?[0-9]+)/
   check('the trend request carries tz_offset', seen.some((u) => offset.test(u)), JSON.stringify(seen))
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="trend-scope"]')?.textContent?.includes('prod'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  const defaultScope = await text(page, '[data-testid="trend-scope"]')
+  check('the trend names the resolved default environment', defaultScope.includes('prod'), defaultScope)
+
+  // Exercise the real Element Plus select. The old request contained a ternary
+  // whose two branches were both undefined; checking only the API wrapper could
+  // never catch that missing UI path.
+  await page.click('[data-testid="trend-environment"] .el-select__wrapper')
+  // Drive the filter with real key events. A synthetic MouseEvent dispatched
+  // from page.evaluate selected the option in Chrome and Firefox/Windows but
+  // not Firefox/Linux; keyboard input follows the same accessible path in all
+  // four CI legs and still exercises the actual select, not its internals.
+  await page.keyboard.type('dev', { delay: 20 })
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('.el-select-dropdown__item')].some((el) =>
+      el.textContent?.trim() === 'dev' && el.offsetParent !== null),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() =>
+    (window.__trendUrls || []).some((u) => /[?&]env=dev(?:&|$)/.test(u)),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="trend-scope"]')?.textContent?.includes('dev'),
+    { timeout: SETTLE_DEADLINE_MS, polling: 60 },
+  ).catch(() => null)
+  const selected = await page.evaluate(() => ({
+    urls: window.__trendUrls || [],
+    scope: document.querySelector('[data-testid="trend-scope"]')?.textContent || '',
+  }))
+  check('selecting an environment issues a scoped trend request',
+    selected.urls.some((u) => /[?&]env=dev(?:&|$)/.test(u)), JSON.stringify(selected))
+  check('and the chart names the selected environment', selected.scope.includes('dev'), selected.scope)
   await page.close()
 }
 

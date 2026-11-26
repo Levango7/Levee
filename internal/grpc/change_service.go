@@ -75,10 +75,11 @@ import (
 type ChangeService struct {
 	pb.UnimplementedChangeServiceServer
 
-	store    state.Store
-	engine   *EngineAdapter
-	approval *approval.Service
-	pause    *pause.PauseManager
+	store     state.Store
+	engine    *EngineAdapter
+	approval  *approval.Service
+	pause     *pause.PauseManager
+	templates *TemplateService
 
 	// onApprovalCreate fires after kickoffApproval durably created a
 	// pending approval record. Mirrors approval.Service's
@@ -167,6 +168,15 @@ func NewChangeService(
 		approval: appr,
 		pause:    pauseMgr,
 	}
+}
+
+// WithTemplateService enables CreateChange to resolve templateName into the
+// rendered workflow source. A reduced service without it keeps the legacy
+// metadata-only draft behaviour; the production serve composition always wires
+// the shared TemplateService, so its template-created drafts can be planned.
+func (s *ChangeService) WithTemplateService(templates *TemplateService) *ChangeService {
+	s.templates = templates
+	return s
 }
 
 // WithApprovalCreateObserver installs a post-create observer on the
@@ -536,9 +546,21 @@ func (s *ChangeService) CreateChange(ctx context.Context, req *pb.CreateChangeRe
 	// every creation path has to agree on it.
 	creator := creatorFromCtx(ctx)
 
+	// A template-only create must persist the same rendered source that
+	// InstantiateTemplate uses. An explicit workflowFile keeps its historical
+	// precedence; templateName then remains descriptive metadata only.
+	workflowSource := req.GetWorkflowFile()
+	if strings.TrimSpace(workflowSource) == "" && strings.TrimSpace(req.GetTemplateName()) != "" && s.templates != nil {
+		resolved, err := s.templates.resolveWorkflow(ctx, req.GetTemplateName(), req.GetParams())
+		if err != nil {
+			return nil, err
+		}
+		workflowSource = resolved
+	}
+
 	run := &state.Run{
 		ID:             runID,
-		WorkflowName:   req.GetWorkflowFile(),
+		WorkflowName:   workflowSource,
 		TemplateName:   req.GetTemplateName(),
 		Label:          req.GetLabel(),
 		Team:           req.GetTeam(),
@@ -3175,8 +3197,10 @@ const listChangesScanCap = 10000
 // multiple statuses or a label substring, filtering has to happen here,
 // so we page through the store with increasing offsets until enough
 // matching changes are collected or the source is exhausted — capped at
-// listChangesScanCap rows so a pathological filter cannot scan the whole
-// table on every request.
+// listChangesScanCap rows for page collection. Counting is a separate concern:
+// simple filters use native COUNT; complex filters count in batches with the
+// same visibility predicates, because returning a plausible-looking page length
+// as the total is worse than paying for an accurate count.
 func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequest) (*pb.ListChangesResponse, error) {
 	if s.store == nil {
 		return nil, status.Error(codes.Internal, "store not configured")
@@ -3223,10 +3247,17 @@ func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequ
 		clientFiltered = true
 	}
 
+	// TotalSize is the number of matching rows in the caller's visible result
+	// set, never the length of the current page. Native COUNT covers the simple
+	// path; complex filters use the same predicates in a batched count scan.
+	totalSize, err := s.countChanges(ctx, statuses, labelContains, storeStatus, clientFiltered, maySee)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "count runs: %v", err)
+	}
+
 	var (
 		changes   []*pb.Change
 		nextToken string
-		totalSize int32
 	)
 
 	if !clientFiltered {
@@ -3242,9 +3273,6 @@ func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequ
 		for _, run := range runs {
 			changes = append(changes, runToPB(run))
 		}
-		// Unfiltered results: len(changes) IS the total for this page
-		// request (matching the historical behaviour).
-		totalSize = int32(len(changes))
 		if len(changes) == pageSize {
 			nextToken = fmt.Sprintf("%d", offset+pageSize)
 		}
@@ -3260,10 +3288,9 @@ func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequ
 	// the STORE-level offset (which is what the page token encodes);
 	// scanned counts rows examined against the safety cap.
 	var (
-		matchedTotal int // all matches seen while scanning (authoritative once exhausted)
-		scanned      int
-		fetchOffset  = offset
-		exhausted    bool
+		scanned     int
+		fetchOffset = offset
+		exhausted   bool
 	)
 	changes = make([]*pb.Change, 0, pageSize)
 	for len(changes) < pageSize && !exhausted && scanned < listChangesScanCap {
@@ -3298,32 +3325,66 @@ func (s *ChangeService) ListChanges(ctx context.Context, req *pb.ListChangesRequ
 				// whole request would hide the rows it MAY show.
 				continue
 			}
-			matchedTotal++
 			if len(changes) < pageSize {
 				changes = append(changes, c)
 			}
 		}
 	}
 
-	// TotalSize semantics: when the scan ran to exhaustion we know every
-	// match; mid-scan stops (page filled or cap hit) leave the total
-	// unknown, so report just the page length.
-	if exhausted {
-		totalSize = int32(matchedTotal)
-	} else {
-		totalSize = int32(len(changes))
-	}
 	// A full page that did not exhaust the source may have more; the next
 	// request resumes at the store offset this scan consumed.
 	if len(changes) == pageSize && !exhausted {
 		nextToken = fmt.Sprintf("%d", fetchOffset)
 	}
-
 	return &pb.ListChangesResponse{
 		Changes:       changes,
 		NextPageToken: nextToken,
 		TotalSize:     totalSize,
 	}, nil
+}
+
+// countChanges counts the whole visible result set. Simple filters use the
+// store's native COUNT when available. Complex filters cannot be reduced to a
+// safe SQL count without duplicating label and visibility semantics, so they
+// use bounded batches and exactly the same predicates as the listing path.
+func (s *ChangeService) countChanges(ctx context.Context, statuses []string, labelContains, storeStatus string, clientFiltered bool, maySee func(*state.Run) bool) (int32, error) {
+	if !clientFiltered {
+		if counter, ok := s.store.(state.RunCounter); ok {
+			count, err := counter.CountRuns(ctx, state.RunFilter{Status: storeStatus})
+			if err != nil {
+				return 0, err
+			}
+			return int32(count), nil
+		}
+	}
+
+	const batchSize = 1000
+	total := 0
+	for offset := 0; ; {
+		runs, err := s.store.ListRuns(ctx, state.RunFilter{
+			Status: storeStatus,
+			Limit:  batchSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return 0, err
+		}
+		for _, run := range runs {
+			candidate := runToPB(run)
+			if !matchLabelContains(candidate, labelContains) || !matchStatuses(candidate, statuses) {
+				continue
+			}
+			if maySee != nil && !maySee(run) {
+				continue
+			}
+			total++
+		}
+		if len(runs) < batchSize {
+			break
+		}
+		offset += len(runs)
+	}
+	return int32(total), nil
 }
 
 // matchLabelContains reports whether the change's label contains the

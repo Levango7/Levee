@@ -206,6 +206,36 @@ spec:
             - name: snapshots
               mountPath: {{ .Values.engine.snapshotDir }}
             {{- end }}
+        # The API alone is not the console: the same image runs levee web beside
+        # it, serving the embedded SPA and proxying /api to the loopback gateway.
+        - name: web
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - web
+            - --addr
+            - ":{{ .Values.service.webPort }}"
+            - --api
+            - http://127.0.0.1:{{ .Values.service.httpPort }}
+          ports:
+            - name: web
+              containerPort: {{ .Values.service.webPort }}
+          readinessProbe:
+            httpGet:
+              path: /
+              port: web
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: web
+            initialDelaySeconds: {{ .Values.probes.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.periodSeconds }}
+            failureThreshold: {{ .Values.probes.failureThreshold }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - name: config
           configMap:

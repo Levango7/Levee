@@ -97,6 +97,55 @@ func snapshotSQL(tables []string, schema string) string {
 	return b.String()
 }
 
+// preflight captures LIVE impact facts on the target machine before a change
+// mutates it (D-7). Read-only and fail-closed: EXPLAIN is the optimizer's
+// ESTIMATE (never a measured lock duration), pg_class.reltuples is an estimate.
+// Any error — bad args, unresolved table, non-zero exit, empty output — becomes
+// an error, never a fabricated number. Changed=false so evidence does not
+// claim a mutation. See mysql.preflight for the shared discipline.
+func (m *Module) preflight(ctx context.Context, input executor.ModuleInput) (*executor.ModuleOutput, error) {
+	tables, err := sqlguard.TableList(input.Args, "tables")
+	if err != nil {
+		return nil, fmt.Errorf("pg.preflight: %w", err)
+	}
+	if len(tables) == 0 {
+		return nil, fmt.Errorf("pg.preflight: tables is required")
+	}
+	schema, err := optionalSchemaArg(input.Args)
+	if err != nil {
+		return nil, fmt.Errorf("pg.preflight: %w", err)
+	}
+	if v, ok := stringOk(input.Args, "password"); ok && v != "" {
+		return nil, fmt.Errorf("pg.preflight: args.password is not supported — credentials come from ~/.pgpass on the target")
+	}
+	out, err := runPsqlRead(ctx, input.Channel, connFromArgs(input), pgPreflightSQL(tables, schema))
+	if err != nil {
+		return nil, fmt.Errorf("pg.preflight: %w", err)
+	}
+	if out.ExitCode != 0 || strings.TrimSpace(out.Stdout) == "" {
+		return nil, fmt.Errorf("pg.preflight: live probe failed (exit=%d, empty output=%t) — refusing to guess impact numbers",
+			out.ExitCode, strings.TrimSpace(out.Stdout) == "")
+	}
+	return out, nil
+}
+
+// pgPreflightSQL renders a read-only probe. EXPLAIN of a no-op read shows the
+// plan; reltuples is the row estimate. The header states both are estimates,
+// not measured lock time. Unresolved tables raise via existenceGuard (to_regclass
+// returns NULL rather than an error, so an explicit guard is required).
+func pgPreflightSQL(tables []string, schema string) string {
+	var b strings.Builder
+	b.WriteString("-- levee.preflight: EXPLAIN rows = optimizer ESTIMATE; reltuples = estimate; NOT measured lock time\n")
+	for _, t := range tables {
+		ref := regclassLiteral(t, schema)
+		b.WriteString(existenceGuard(ref))
+		fmt.Fprintf(&b, "SELECT 'TABLE', %s::text, 'row_estimate', (SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass(%s));\n",
+			quoteLiteral(t), quoteLiteral(ref))
+		fmt.Fprintf(&b, "EXPLAIN SELECT * FROM %s WHERE false;\n", ref)
+	}
+	return b.String()
+}
+
 // regclassLiteral renders the name to_regclass resolves: a quoted identifier
 // pair for the qualified form, a plain one otherwise. An unqualified name is
 // resolved by the session's search_path, which is the honest reading of "the

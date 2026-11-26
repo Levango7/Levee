@@ -150,7 +150,7 @@ func TestModuleName(t *testing.T) {
 }
 
 func TestModuleActions(t *testing.T) {
-	assert.Equal(t, []string{"copy", "template"}, New().Actions())
+	assert.Equal(t, []string{"copy", "template", "exists", "delete"}, New().Actions())
 }
 
 func TestModuleIdempotent(t *testing.T) {
@@ -499,3 +499,63 @@ func TestStringOk(t *testing.T) {
 
 // keep strings import honest if future refactors drop direct uses.
 var _ = strings.TrimSpace
+
+// --- exists / delete (D-7-adjacent: spec/ledger promised, runtime was missing) ---
+
+func TestFileExistsReadonly(t *testing.T) {
+	ch := &mockChannel{execResult: &channel.ExecResult{ExitCode: 0}}
+	out, err := New().Execute(context.Background(), "exists", executor.ModuleInput{
+		Args: map[string]any{"path": "/etc/hosts"}, Channel: ch,
+	})
+	require.NoError(t, err)
+	assert.False(t, out.Changed, "exists is read-only")
+	assert.Equal(t, "test -e '/etc/hosts'", ch.lastExec())
+
+	// absent is a valid outcome, not an error.
+	ch2 := &mockChannel{execResult: &channel.ExecResult{ExitCode: 1}}
+	out2, err := New().Execute(context.Background(), "exists", executor.ModuleInput{
+		Args: map[string]any{"path": "/no/such"}, Channel: ch2,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 0, out2.ExitCode, "absence reported as a normal result")
+	assert.Contains(t, out2.Stdout, "absent")
+}
+
+func TestFileExistsUnexpectedExitFails(t *testing.T) {
+	ch := &mockChannel{execResult: &channel.ExecResult{ExitCode: 2, Stderr: "boom"}}
+	_, err := New().Execute(context.Background(), "exists", executor.ModuleInput{
+		Args: map[string]any{"path": "/etc/hosts"}, Channel: ch,
+	})
+	require.Error(t, err, "a non-0/1 exit is a real failure")
+}
+
+func TestFileDelete(t *testing.T) {
+	ch := &mockChannel{execResult: &channel.ExecResult{ExitCode: 0}}
+	out, err := New().Execute(context.Background(), "delete", executor.ModuleInput{
+		Args: map[string]any{"path": "/tmp/levee-old.conf"}, Channel: ch,
+	})
+	require.NoError(t, err)
+	assert.True(t, out.Changed, "delete changes the target")
+	assert.Equal(t, "rm -f -- '/tmp/levee-old.conf'", ch.lastExec(), "must quote + use -- to stop option injection")
+}
+
+func TestFileDeleteFailClosedPaths(t *testing.T) {
+	for _, bad := range []string{"", "/", "/etc/../../passwd", "/tmp/*", "../escape", "/a/../b"} {
+		ch := &mockChannel{}
+		_, err := New().Execute(context.Background(), "delete", executor.ModuleInput{
+			Args: map[string]any{"path": bad}, Channel: ch,
+		})
+		require.Error(t, err, "path %q must be refused", bad)
+		assert.Empty(t, ch.execs, "bad path must fail before touching target")
+	}
+}
+
+func TestFileExistsAndDeleteRejectQuotingBreakout(t *testing.T) {
+	// A path with an embedded single quote is safely quoted, not a shell break.
+	ch := &mockChannel{execResult: &channel.ExecResult{ExitCode: 0}}
+	_, err := New().Execute(context.Background(), "exists", executor.ModuleInput{
+		Args: map[string]any{"path": "/tmp/it's"}, Channel: ch,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, ch.lastExec(), `'\''`, "single quote escaped via shellQuote idiom")
+}
