@@ -10,6 +10,13 @@
 - 本地 `target history --json` 的 `workflow_name` 同步归一，保持远程子集契约「同键同值」成立，键集合仍是 `state.Run` 的 15 键全量；人类表格两种模式本就走 `workflowDisplay`，显示不变。
 - 两个公开边界红绿：gRPC `TargetHistory` 对真实 SQLite store 断言 wire 只带声明名且不含 YAML 原文；CLI 两侧 `--json` 断言 `workflow_name` 为声明名且不含 `action: shell.exec`。把声明名改回原文的定向变异均被抓住。
 
+### 新增（StartChange 持久化幂等异步执行）
+
+- 新增 `StartChange` RPC、`POST /changes/:id/start` 与 `/api/v1/ChangeService/StartChange`：复用 Apply 的审批、计划哈希、风险与 running CAS 治理，接受后立即返回；同步 `ApplyChange` 契约保持不变。新执行 REST 返回 202，同键重放返回 200 + `duplicate=true`，同键不同执行参数返回 409。
+- schema v12 新增 `change_idempotency`，SQLite/PostgreSQL 在同一事务内完成幂等键写入与 running CAS；键持久化保存执行参数指纹，同键并发只执行一次，CAS 失败回滚新键，进程重启后仍可识别重放。键随 run 删除级联清理，多租户装饰器保留归属隔离与后台上下文。`execution_id` 即 change id，接受不是终态，客户端用 `GetChange` / `WatchChange` 重连。
+- 新增远程 CLI `levee --remote start <run-id> --idempotency-key <key>`；本地 CLI 明确拒绝假异步并指引 `apply --engine-enabled`，避免进程退出时关闭 store、杀掉后台执行。客户端断线不会取消已被 server 接受的执行。
+- 覆盖立即接受、成功/失败后台落终态、12 路同键并发、参数冲突、断线、SQLite 重建、非法键、存储失败回滚、REST、真实远程 CLI、多租户后台执行与真实 loopback 引擎断线集成；同步 Apply 回归与专项 race 均通过。生产多机 HA 恢复、跨表/行数据恢复不在本切片内。
+
 ### 新增（目标兼容自诊断与 apk 实证）
 
 - 新增 `levee capabilities [--target] <host>`：复用真实 inventory、credential resolver 与 `Engine.Dial`，只读探测 OS、包管理器、init、数据库客户端和 29 个动作的 `supported/unsupported/unknown + reason`，输出 `levee.capabilities/v1`；unknown 不算支持，live-probe 不冒充生产验收。

@@ -335,6 +335,60 @@ func TestEngineServe_CompletesWithEvidenceAndChain(t *testing.T) {
 	assert.True(t, verifyResp.GetValid(), "audit hash chain must verify after real execution")
 }
 
+// TestEngineServe_StartChangeCompletesAfterDisconnect drives the asynchronous
+// RPC through the same real engine and loopback transport as synchronous Apply.
+// The first response is an acceptance while the step is still blocked; replay
+// adds no execution, client cancellation does not cancel accepted work, and the
+// terminal evidence is available through the existing read APIs.
+func TestEngineServe_StartChangeCompletesAfterDisconnect(t *testing.T) {
+	rec := &loopRecorder{release: make(chan struct{}), entered: make(chan string, 1)}
+	client, store := serveEngine(t, rec, "web-1")
+	changeID := createChange(t, client, "serve-start-e2e", serveExecWorkflowYAML)
+	planApproveChange(t, client, store, changeID, []string{"web-1"})
+	req := &pb.StartChangeRequest{
+		ChangeId: changeID, AutoApprove: false, MaxConcurrency: 1, IdempotencyKey: "integration-start-1",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	accepted, err := client.StartChange(ctx, req)
+	require.NoError(t, err)
+	assert.False(t, accepted.GetDuplicate())
+	assert.Equal(t, changeID, accepted.GetExecutionId())
+	assert.Equal(t, "running", accepted.GetStatus())
+	select {
+	case <-rec.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the accepted execution did not reach the real loopback channel")
+	}
+
+	replay, err := client.StartChange(context.Background(), req)
+	require.NoError(t, err)
+	assert.True(t, replay.GetDuplicate())
+	assert.Equal(t, "running", replay.GetStatus())
+	assert.Empty(t, rec.snapshotCmds(), "the blocked step has not executed, and replay must not add another")
+	cancel()
+	close(rec.release)
+	require.Eventually(t, func() bool {
+		change, err := client.GetChange(context.Background(), &pb.GetChangeRequest{Id: changeID})
+		return err == nil && change.GetStatus() == "completed"
+	}, 5*time.Second, 20*time.Millisecond, "accepted work must survive client disconnect and settle in the background")
+
+	steps, err := store.ListSteps(context.Background(), state.StepFilter{RunID: changeID, Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	assert.Equal(t, "success", steps[0].Status)
+	assert.Equal(t, []string{"web-1\x00noop-command"}, rec.snapshotCmds())
+	auditSvc := leveegrpc.NewAuditService(store)
+	verifyResp, err := auditSvc.VerifyHashChain(context.Background(), &pb.VerifyHashChainRequest{ChangeId: changeID})
+	require.NoError(t, err)
+	assert.True(t, verifyResp.GetValid())
+
+	terminalReplay, err := client.StartChange(context.Background(), req)
+	require.NoError(t, err)
+	assert.True(t, terminalReplay.GetDuplicate())
+	assert.Equal(t, "completed", terminalReplay.GetStatus())
+	assert.Len(t, rec.snapshotCmds(), 1, "terminal replay must not execute a second time")
+}
+
 // TestEngineServe_AutoRollbackReportsPartial pins §4 rollback through serve:
 // a forced step failure auto-rolls-back inside the closure. The dispatched
 // failed step has no rollback declaration, so D-2 v2 correctly surfaces the

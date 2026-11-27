@@ -158,6 +158,12 @@ func TestPurgeTenantDataOnPostgreSQL(t *testing.T) {
 			Result: "completed", TenantID: tid,
 		}))
 	}
+	for _, id := range ids {
+		_, err := store.PutChangeIdempotency(ctx, &ChangeIdempotency{
+			ChangeID: id, IdempotencyKey: "purge-request", RequestFingerprint: "fingerprint",
+		})
+		require.NoError(t, err)
+	}
 	require.NoError(t, store.CreateTrace(ctx, &Trace{
 		ID: ids[1] + "-t1", RunID: ids[1], Event: "apply", Actor: "op", Timestamp: now, TenantID: tid,
 	}))
@@ -183,8 +189,11 @@ func TestPurgeTenantDataOnPostgreSQL(t *testing.T) {
 	for i, id := range ids {
 		run, err := store.GetRun(ctx, id)
 		require.NoError(t, err)
+		key, err := store.GetChangeIdempotency(ctx, id, "purge-request")
+		require.NoError(t, err)
 		if i == 0 {
 			assert.Nil(t, run, "the trace-free terminal run is gone")
+			assert.Nil(t, key, "the run's idempotency keys must cascade with it")
 			// No cascade edge reaches run_assignment, so its disappearance is
 			// evidence the explicit delete ran — on this dialect too.
 			a, err := store.GetAssignment(ctx, id)
@@ -193,6 +202,7 @@ func TestPurgeTenantDataOnPostgreSQL(t *testing.T) {
 			continue
 		}
 		assert.NotNil(t, run, "%s must be held", id)
+		assert.NotNil(t, key, "a held run must keep its replay protection")
 	}
 }
 
@@ -253,6 +263,24 @@ func TestPurgeTenantDataRemovesOnlyWhatTheChainPermits(t *testing.T) {
 	// And the assignment table lost only that run's row.
 	assert.Equal(t, 0, scalar(t, store, `SELECT COUNT(*) FROM run_assignment WHERE run_id = ?`, ids[0]))
 	assert.Equal(t, 2, scalar(t, store, `SELECT COUNT(*) FROM run_assignment`))
+}
+
+func TestPurgeTenantDataCascadesChangeIdempotency(t *testing.T) {
+	store := newTestStore(t)
+	ids := seedTenantRows(t, store, "acme")
+	for _, id := range ids {
+		_, err := store.PutChangeIdempotency(context.Background(), &ChangeIdempotency{
+			ChangeID: id, IdempotencyKey: "purge-request", RequestFingerprint: "fingerprint",
+		})
+		require.NoError(t, err)
+	}
+
+	_, err := PurgeTenantData(context.Background(), store, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, 0, scalar(t, store, `SELECT COUNT(*) FROM change_idempotency WHERE change_id = ?`, ids[0]),
+		"a deleted run must not leave a replay key pointing at nothing")
+	assert.Equal(t, 1, scalar(t, store, `SELECT COUNT(*) FROM change_idempotency WHERE change_id = ?`, ids[1]))
+	assert.Equal(t, 1, scalar(t, store, `SELECT COUNT(*) FROM change_idempotency WHERE change_id = ?`, ids[2]))
 }
 
 func TestPurgeTenantDataRefusesTheEmptyTenantID(t *testing.T) {

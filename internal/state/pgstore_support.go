@@ -327,6 +327,19 @@ END $$`,
 			`ALTER TABLE runs ADD COLUMN IF NOT EXISTS team TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		// StartChange: the PostgreSQL twin of the durable idempotency table.
+		version: 12,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS change_idempotency (` +
+				`change_id TEXT NOT NULL, ` +
+				`idempotency_key TEXT NOT NULL, ` +
+				`request_fingerprint TEXT NOT NULL, ` +
+				`created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
+				`PRIMARY KEY (change_id, idempotency_key), ` +
+				`FOREIGN KEY (change_id) REFERENCES runs(id) ON DELETE CASCADE)`,
+		},
+	},
 }
 
 // MigratePostgres applies the embedded PostgreSQL schema (pgschema.sql) and

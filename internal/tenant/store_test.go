@@ -80,6 +80,42 @@ func TestTenantStore_RunsAreInvisibleAcrossTenants(t *testing.T) {
 	require.NotNil(t, own)
 }
 
+func TestTenantStore_ChangeIdempotencyKeepsCapabilityAndIsolation(t *testing.T) {
+	ctx := context.Background()
+	s, base := newTenantStore(t, true)
+	var _ state.ChangeIdempotencyStore = s
+	seedRun(t, s, asACME(ctx), "r-acme", "wf-a")
+	seedRun(t, s, asGlobex(ctx), "r-globex", "wf-g")
+
+	record := &state.ChangeIdempotency{ChangeID: "r-acme", IdempotencyKey: "request-1", RequestFingerprint: "fp-1"}
+	already, transitioned, err := s.ClaimChangeExecution(asACME(ctx), record, "draft", "running", time.Now().UTC())
+	require.NoError(t, err)
+	assert.False(t, already)
+	assert.True(t, transitioned)
+	got, err := s.GetChangeIdempotency(asACME(ctx), "r-acme", "request-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "fp-1", got.RequestFingerprint)
+
+	foreign, err := s.GetChangeIdempotency(asACME(ctx), "r-globex", "request-1")
+	require.NoError(t, err, "a foreign key lookup must look absent, not become an enumeration oracle")
+	assert.Nil(t, foreign)
+	_, _, err = s.ClaimChangeExecution(asACME(ctx), &state.ChangeIdempotency{
+		ChangeID: "r-globex", IdempotencyKey: "request-1", RequestFingerprint: "fp-2",
+	}, "draft", "running", time.Now().UTC())
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrCrossTenantAccess))
+	unchanged, err := base.GetRun(ctx, "r-globex")
+	require.NoError(t, err)
+	assert.Equal(t, "draft", unchanged.Status)
+	foreignKey, err := base.(state.ChangeIdempotencyStore).GetChangeIdempotency(ctx, "r-globex", "request-1")
+	require.NoError(t, err)
+	assert.Nil(t, foreignKey, "a refused cross-tenant claim must not persist a key")
+
+	_, err = s.GetChangeIdempotency(ctx, "r-acme", "request-1")
+	require.Error(t, err, "enabled tenancy must keep failing closed without a tenant context")
+}
+
 func TestTenantStore_CrossTenantWriteIsRefusedAndRowUnchanged(t *testing.T) {
 	ctx := context.Background()
 	s, base := newTenantStore(t, true)
