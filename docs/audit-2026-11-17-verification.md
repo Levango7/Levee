@@ -160,9 +160,10 @@
 ## 交付复核（2026-11-27）：REST 安全头与 mock wire 契约重基
 
 - **基线与范围**：重基到 `origin/master`
-  `1ca9f2a97ac5386ba8711a05dc3ed92938174973`，代码提交
-  `4df7ad410afa1ccb9e93ad937d440de0f60378b2` 的父提交与基线一致，
-  无冲突；代码面为 11 个文件，未改动其他工程批次。
+  `fc9d6e1083ff854ea27cfb328bb93edf32df7394`；远端基线前进仅涉及
+  KMS SDK 的 `go.mod/go.sum`，再次重基无冲突。代码提交
+  `6e028c60c96f9caabc1bb5f8b47db2d1dc3c2793` 的父提交与基线一致，
+  代码面为 11 个文件，未改动其他工程批次。
 - **公开边界**：生产 HTTP server 最外层统一注入
   `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY` 与最小 CSP，
   覆盖健康检查、API 成功/拒绝/错误、CORS 预检和运维路由；HTML 发布单
