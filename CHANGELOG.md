@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增（Web 详情页 StartChange 与断线同键重试）
+
+- 已批准且存在存量计划的变更详情页新增「开始执行」，调用 `StartChange` 且固定 `autoApprove=false`，不为草稿或待审批提供绕过入口。接受后刷新为 running 并引导实时监控，不把 202 当成执行成功。
+- 浏览器按 change 持久化操作幂等键：同一 approved `updatedAt` 的断线/重载复用，running 保留，终态或离开可启动状态清理，approved 时间或计划内容变化（含同秒重计划）换键；localStorage 不可用或 Web Crypto 不可用时在发请求前 fail-closed。
+- 新增真实 Chrome 场景：首次 `/start` 断连后同键重试、两次均 `autoApprove=false`、接受后 running、刷新不能重复提交。补齐代理 502/504 的未知结果语义，不再把上游断连误写成确定失败。
+
 ### 修复（target history 的工作流名只带声明名）
 
 - `runs.workflow_name` 存的是渲染后的整份工作流文档，`InventoryService.TargetHistory` 此前把它原样放上 wire：每个 `target history --remote` 调用方都收到整份 YAML，与 `pb.Change.plan` 对 ListChanges 的边界是同一条理由。线上 `workflow_name` 现归一为 `dsl.DisplayName` 的声明名；单行路径/纯名原样通过。

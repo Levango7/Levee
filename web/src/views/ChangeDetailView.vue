@@ -50,7 +50,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { batchApi, auditApi, changesApi, type BatchSummaryDTO } from '@/api'
+import { batchApi, auditApi, changesApi, isExecutionOutcomeUnknown, type BatchSummaryDTO } from '@/api'
 import type { Change, LogEntry, TraceEntry } from '@/types/levee'
 import PageHeader from '@/components/PageHeader.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -58,6 +58,7 @@ import StateBlock from '@/components/StateBlock.vue'
 import TraceTimeline from '@/components/TraceTimeline.vue'
 import { remediateRollback } from '@/composables/useRollbackRemediation'
 import { approvalSummary } from '@/utils/approvalChain'
+import { reconcileStartKey, startKeyFor } from '@/utils/startExecution'
 import { chainModeLabel, chainVerdict as chainVerdictOf } from '@/utils/auditChain'
 import { batchBarStatus, batchLabel, batchProgress } from '@/utils/batch'
 import { classifyError, errorMessage } from '@/utils/apiState'
@@ -70,6 +71,7 @@ import {
   isRemediableStatus,
   isResumableStatus,
   isRetryableStatus,
+  isStartableStatus,
   priorityLabel,
 } from '@/utils/format'
 
@@ -106,6 +108,12 @@ const loadTier = computed<LoadTier>(() =>
   loadError.value === null ? 'ok' : classifyError(loadError.value),
 )
 const loadText = computed(() => errorMessage(loadError.value, '加载变更失败'))
+
+// No force/auto-approve shortcut: only an approved run with the exact stored
+// plan artifact can be started from this page.
+const canStart = computed(() =>
+  !!change.value && isStartableStatus(change.value.status) && !!change.value.plan,
+)
 
 const logsTier = computed<LoadTier>(() => {
   if (logsError.value !== null) return classifyError(logsError.value)
@@ -187,6 +195,7 @@ async function load(): Promise<void> {
       auditApi.chainMode().catch(() => null),
     ])
     change.value = c
+    reconcileStartKey(c)
     chain.value = { valid: t.hashChainValid, entries: t.entries || [], message: t.verificationMessage || '' }
     batches.value = b
     approvals.value = a
@@ -216,6 +225,54 @@ async function loadLogs(): Promise<void> {
 }
 
 // --- actions: each one is offered only where the server would accept it -----
+
+async function startExecution(): Promise<void> {
+  if (!change.value || acting.value || !canStart.value) return
+  acting.value = '开始执行'
+  try {
+    try {
+      await ElMessageBox.confirm(
+        `确认开始执行变更「${change.value.label}」？将按已批准计划后台执行。`,
+        '开始执行',
+        { confirmButtonText: '开始执行', cancelButtonText: '取消', type: 'warning' },
+      )
+    } catch {
+      return
+    }
+    const current = change.value
+    if (!current || !canStart.value) return
+    let idempotencyKey = ''
+    try {
+      idempotencyKey = startKeyFor(current)
+    } catch (err) {
+      ElMessage.error(`无法安全开始执行：${(err as { message?: string })?.message}`)
+      return
+    }
+    try {
+      const res = await changesApi.start(current.id, {
+        autoApprove: false,
+        idempotencyKey,
+      })
+      if (res.duplicate) {
+        ElMessage.success('重复请求已去重，已重连到当前执行状态')
+      } else {
+        ElMessage.success('执行已接受，正在后台执行；终态请查看实时监控')
+      }
+    } catch (err) {
+      const apiError = err as { code?: number; message?: string }
+      if (isExecutionOutcomeUnknown(apiError)) {
+        ElMessage.warning(`开始执行结果未知：${apiError.message}`)
+      } else {
+        ElMessage.error(`开始执行未完成：${apiError.message}`)
+      }
+    }
+    // Reconnect through the ordinary read path whether the response was an
+    // acceptance, a duplicate, or lost on the network. Never declare a verdict.
+    await load()
+  } finally {
+    acting.value = ''
+  }
+}
 
 async function retry(): Promise<void> {
   if (!change.value) return
@@ -331,6 +388,13 @@ onMounted(load)
       <div class="lv-panel">
         <div class="lv-panel__head"><h3 class="detail__h">操作</h3></div>
         <div class="detail__actions">
+          <el-button
+            v-if="canStart"
+            type="primary"
+            :loading="acting === '开始执行'"
+            :disabled="acting !== ''"
+            @click="startExecution"
+          >开始执行</el-button>
           <el-button v-if="isRemediableStatus(change.status)" type="danger" @click="remediate">
             补救未完成的回滚
           </el-button>
@@ -340,7 +404,7 @@ onMounted(load)
           <el-button v-if="isCancellableStatus(change.status)" :loading="acting === '取消'" :disabled="acting !== ''" @click="cancel">取消</el-button>
           <el-button v-if="isArchivableStatus(change.status)" :loading="acting === '归档'" :disabled="acting !== ''" @click="archive">归档</el-button>
           <span v-if="
-            !isRemediableStatus(change.status) && !isRetryableStatus(change.status) &&
+            !canStart && !isRemediableStatus(change.status) && !isRetryableStatus(change.status) &&
             !isPausableStatus(change.status) && !isResumableStatus(change.status) &&
             !isCancellableStatus(change.status) && !isArchivableStatus(change.status)
           " class="detail__dim">当前状态没有可执行的动作</span>

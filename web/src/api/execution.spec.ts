@@ -39,6 +39,32 @@ describe('long-running change execution requests', { timeout: COLD_IMPORT_TIMEOU
     ])
   })
 
+  it('posts StartChange with its durable key, preserves duplicate and keeps the acceptance deadline bounded', async () => {
+    const { api, client } = await freshApi()
+    let request: { url?: string; timeout?: number; data?: unknown } = {}
+    client.axiosClient.defaults.adapter = async (config) => {
+      request = { url: config.url, timeout: config.timeout, data: config.data }
+      return {
+        data: { executionId: 'run-1', status: 'running', duplicate: true, message: 'replayed' },
+        status: 200, statusText: 'OK', headers: {}, config,
+      }
+    }
+
+    const response = await api.changesApi.start('run-1', {
+      autoApprove: false,
+      maxConcurrency: 2,
+      idempotencyKey: 'request-1',
+    })
+    expect(request.url).toBe('/changes/run-1/start')
+    expect(request.timeout).toBe(30_000)
+    expect(JSON.parse(String(request.data))).toEqual({
+      autoApprove: false,
+      maxConcurrency: 2,
+      idempotencyKey: 'request-1',
+    })
+    expect(response).toMatchObject({ executionId: 'run-1', status: 'running', duplicate: true })
+  })
+
   it('calls a response-less execution outcome unknown, not a confirmed failure', async () => {
     const { api, client } = await freshApi()
     client.axiosClient.defaults.adapter = async (config) => {
@@ -46,6 +72,7 @@ describe('long-running change execution requests', { timeout: COLD_IMPORT_TIMEOU
     }
 
     for (const invoke of [
+      () => api.changesApi.start('run-1', { idempotencyKey: 'request-1' }),
       () => api.changesApi.apply('run-1', {}),
       () => api.changesApi.retry('run-1', {}),
       () => api.changesApi.rollback('run-1', {}),
@@ -62,6 +89,20 @@ describe('long-running change execution requests', { timeout: COLD_IMPORT_TIMEOU
       code: 0,
       message: '网络异常：服务器未响应',
     })
+  })
+
+  it('treats a proxy 502/504 without an acceptance response as an unknown execution outcome', async () => {
+    const { api, client } = await freshApi()
+    for (const httpStatus of [502, 504]) {
+      client.axiosClient.defaults.adapter = async (config) => {
+        const response = { data: {}, status: httpStatus, statusText: '', headers: {}, config }
+        throw new AxiosError('proxy disconnected', 'ERR_BAD_RESPONSE', config, {}, response)
+      }
+      await expect(api.changesApi.start('run-1', { idempotencyKey: 'request-1' })).rejects.toMatchObject({
+        code: httpStatus,
+        message: '连接中断，执行结果未知：请先刷新变更状态，确认后再操作，勿直接重复提交',
+      })
+    }
   })
 
   it('preserves the server verdict when an execution request is refused', async () => {

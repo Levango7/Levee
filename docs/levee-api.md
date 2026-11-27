@@ -1026,6 +1026,8 @@ RESTful 风格，支持两套路径：
 
 远程 CLI 对应 `levee --remote start <run-id> --idempotency-key <key>`。本地 CLI 进程会在返回时关闭 store 并退出，因此只提供同步 `apply --engine-enabled`，不把进程内 goroutine 冒充可独立存活的异步任务。
 
+Web 变更详情页对 **approved 且已有存量计划** 的 run 提供同一入口，固定 `autoApprove=false`。浏览器把操作键保存在 `levee.start.v1.<change-id>`：同一 approved `updatedAt` 的断线/重载复用，running 保留，终态或离开可启动状态清理；approved 时间或计划内容变化（包括同一 Unix 秒内的重计划）必须换键。存储或 Web Crypto 不可用时在发送前拒绝，不退化成刷新后无法去重的请求。代理把上游断连转成 502/504 时同样属于「结果未知」，客户端先重连读取状态，不把它当成确定的执行失败。
+
 ### 13.2b SSE 实时事件流（`/changes/:id/events` 与 `/alerts/stream`）
 
 控制台的实时面板不轮询，走两条 `text/event-stream` 路由（浏览器唯一的原生推流传输）：
