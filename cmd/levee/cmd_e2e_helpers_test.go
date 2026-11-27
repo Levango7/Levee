@@ -212,6 +212,9 @@ func resetPlanApplyFlags() {
 	applyOptForce = false
 	applyOptEngineEnabled = false
 	applyOptMaxConcurrency = 0
+	startOptForce = false
+	startOptMaxConcurrency = 0
+	startOptIdempotencyKey = ""
 	planOptTargets = nil
 	planOptDryRun = false
 }

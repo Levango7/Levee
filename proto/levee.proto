@@ -226,6 +226,8 @@ service ChangeService {
   rpc PlanChange(PlanChangeRequest) returns (Plan);
   // `levee apply`
   rpc ApplyChange(ApplyChangeRequest) returns (ApplyResponse);
+  // `levee start`: accept execution and return immediately; replay is durable.
+  rpc StartChange(StartChangeRequest) returns (StartChangeResponse);
   // `levee pause`
   rpc PauseChange(PauseRequest) returns (Change);
   // `levee resume`
@@ -318,6 +320,27 @@ message ApplyResponse {
   string run_id = 3;
   // Whether the apply completed successfully.
   bool success = 4;
+  string message = 5;
+}
+
+// StartChangeRequest starts an asynchronous execution. idempotency_key is
+// required so retries after disconnects or process restarts cannot double-apply.
+message StartChangeRequest {
+  string change_id = 1;
+  bool auto_approve = 2;
+  int32 max_concurrency = 3;
+  bool dry_run = 4;
+  string idempotency_key = 5;
+}
+
+// StartChangeResponse is an acceptance, not a terminal verdict. execution_id is
+// the change id; use GetChange or WatchChange for the actual terminal status.
+message StartChangeResponse {
+  Change change = 1;
+  string execution_id = 2;
+  string status = 3;
+  // duplicate=true means an existing key was replayed and no new execution ran.
+  bool duplicate = 4;
   string message = 5;
 }
 

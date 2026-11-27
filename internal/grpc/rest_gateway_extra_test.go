@@ -466,6 +466,7 @@ func TestAPIv1MethodMatrix(t *testing.T) {
 		{service: "ChangeService", method: "CloneChange", body: `{"sourceChangeId":"nope"}`, want: http.StatusNotFound},
 		{service: "ChangeService", method: "PlanChange", body: `{"changeId":"nope"}`, want: http.StatusNotFound},
 		{service: "ChangeService", method: "ApplyChange", body: `{"changeId":"nope"}`, want: http.StatusNotFound},
+		{service: "ChangeService", method: "StartChange", body: `{"changeId":"nope","idempotencyKey":"api-start"}`, want: http.StatusNotFound},
 		{service: "ChangeService", method: "PauseChange", body: `{"changeId":"nope"}`, want: http.StatusNotFound},
 		{service: "ChangeService", method: "ResumeChange", body: `{"changeId":"nope"}`, want: http.StatusNotFound},
 		{service: "ChangeService", method: "CancelChange", body: `{"changeId":"nope"}`, want: http.StatusNotFound},

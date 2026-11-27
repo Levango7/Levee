@@ -68,6 +68,7 @@ var documentedRoutes = map[string]string{
 	"GET /changes/:id":               "rest.go handleChangeGet",
 	"POST /changes/:id/plan":         "rest.go handleChangeAction case plan",
 	"POST /changes/:id/apply":        "rest.go handleChangeAction case apply",
+	"POST /changes/:id/start":        "rest.go handleChangeAction case start",
 	"POST /changes/:id/approve":      "rest.go handleChangeAction case approve",
 	"POST /changes/:id/reject":       "rest.go handleChangeAction case reject",
 	"POST /changes/:id/pause":        "rest.go handleChangeAction case pause",

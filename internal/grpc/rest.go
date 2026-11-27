@@ -707,7 +707,7 @@ func (gw *Gateway) dispatchChangeSubPath(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		gw.handleChangeGet(w, r, id)
-	case "plan", "apply", "approve", "reject", "pause", "resume", "cancel", "retry", "rollback", "archive":
+	case "plan", "apply", "start", "approve", "reject", "pause", "resume", "cancel", "retry", "rollback", "archive":
 		// State-changing actions must use POST. Rejecting other verbs
 		// prevents crawlers, link prefetchers and cached GETs from
 		// mutating change state (e.g. GET /changes/<id>/pause pausing a
@@ -735,6 +735,8 @@ func (gw *Gateway) handleChangeAction(w http.ResponseWriter, r *http.Request, id
 		gw.handleChangePlan(w, r, id)
 	case "apply":
 		gw.handleChangeApply(w, r, id)
+	case "start":
+		gw.handleChangeStart(w, r, id)
 	case "approve":
 		gw.handleChangeApprove(w, r, id)
 	case "reject":
@@ -953,6 +955,34 @@ func (gw *Gateway) handleChangeApply(w http.ResponseWriter, r *http.Request, id 
 		return
 	}
 	writeProto(w, resp)
+}
+
+func (gw *Gateway) handleChangeStart(w http.ResponseWriter, r *http.Request, id string) {
+	svc := gw.change
+	ctx := metadata.NewOutgoingContext(r.Context(), extractAuth(r))
+	body := struct {
+		AutoApprove    bool   `json:"autoApprove"`
+		MaxConcurrency int32  `json:"maxConcurrency"`
+		DryRun         bool   `json:"dryRun"`
+		IdempotencyKey string `json:"idempotencyKey"`
+	}{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	resp, err := svc.StartChange(ctx, &pb.StartChangeRequest{
+		ChangeId: id, AutoApprove: body.AutoApprove, MaxConcurrency: body.MaxConcurrency,
+		DryRun: body.DryRun, IdempotencyKey: body.IdempotencyKey,
+	})
+	if err != nil {
+		writeGRPCError(w, err)
+		return
+	}
+	if resp.GetDuplicate() {
+		writeProto(w, resp)
+		return
+	}
+	writeProtoStatus(w, resp, http.StatusAccepted)
 }
 
 func (gw *Gateway) handleChangeApprove(w http.ResponseWriter, r *http.Request, id string) {
@@ -2278,13 +2308,17 @@ func readProto(req proto.Message) func(r *http.Request) error {
 
 // writeProto marshals a proto message to JSON and writes it as the response.
 func writeProto(w http.ResponseWriter, v proto.Message) {
+	writeProtoStatus(w, v, http.StatusOK)
+}
+
+func writeProtoStatus(w http.ResponseWriter, v proto.Message, statusCode int) {
 	out, err := marshalProtoWithEmptyCollections(v)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "marshal error: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(statusCode)
 	_, _ = w.Write(out)
 }
 
@@ -2488,6 +2522,22 @@ func (gw *Gateway) handleChange(w http.ResponseWriter, r *http.Request, method s
 			return
 		}
 		writeProto(w, resp)
+	case "StartChange":
+		req := &pb.StartChangeRequest{}
+		if err := readProto(req)(r); err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		resp, err := svc.StartChange(ctx, req)
+		if err != nil {
+			writeGRPCError(w, err)
+			return
+		}
+		if resp.GetDuplicate() {
+			writeProto(w, resp)
+			return
+		}
+		writeProtoStatus(w, resp, http.StatusAccepted)
 	case "PauseChange":
 		req := &pb.PauseRequest{}
 		if err := readProto(req)(r); err != nil {

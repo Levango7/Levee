@@ -387,6 +387,18 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- StartChange (v12): durable asynchronous-execution idempotency keys.
+-- Replaying a key after a restart returns the existing run, never a second apply.
+CREATE TABLE IF NOT EXISTS change_idempotency (
+    change_id       TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (change_id, idempotency_key),
+    FOREIGN KEY (change_id) REFERENCES runs(id) ON DELETE CASCADE
+);
+
+-- ---------------------------------------------------------------------------
 -- Agent registry (v8): the LEVEE agents that have registered with the master.
 --
 -- Persisted because the registry was a map inside whichever process built it

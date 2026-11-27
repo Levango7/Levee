@@ -46,6 +46,7 @@ type TenantStore struct {
 }
 
 var _ state.Store = (*TenantStore)(nil)
+var _ state.ChangeIdempotencyStore = (*TenantStore)(nil)
 
 // NewTenantStore wraps base with tenant enforcement. A nil resolver is treated
 // as disabled (single-tenant), which keeps a partially constructed server from
@@ -287,6 +288,49 @@ func (s *TenantStore) RunTrend(ctx context.Context, filter state.RunTrendFilter)
 	}
 	filter.TenantID = tid
 	return s.base.RunTrend(ctx, filter)
+}
+
+// GetChangeIdempotency preserves the optional durable StartChange capability
+// through the decorator. Like GetRun, a foreign run is an absent result rather
+// than an enumeration oracle.
+func (s *TenantStore) GetChangeIdempotency(ctx context.Context, changeID, key string) (*state.ChangeIdempotency, error) {
+	ctx, tid, err := s.scope(ctx)
+	if err != nil {
+		return nil, err
+	}
+	run, err := s.base.GetRun(ctx, changeID)
+	if err != nil {
+		return nil, err
+	}
+	if run == nil || run.TenantID != tid {
+		return nil, nil
+	}
+	idem, ok := s.base.(state.ChangeIdempotencyStore)
+	if !ok {
+		return nil, fmt.Errorf("tenant: base store does not support durable StartChange idempotency")
+	}
+	return idem.GetChangeIdempotency(ctx, changeID, key)
+}
+
+// ClaimChangeExecution checks run ownership before delegating the atomic key +
+// status claim. The underlying CAS remains the final guard against a delete or
+// status race after this ownership check.
+func (s *TenantStore) ClaimChangeExecution(ctx context.Context, record *state.ChangeIdempotency, fromStatus, toStatus string, updatedAt time.Time) (bool, bool, error) {
+	if record == nil {
+		return false, false, fmt.Errorf("tenant: nil change idempotency record")
+	}
+	ctx, tid, err := s.scope(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	if err := s.ownRunByIDRequires(ctx, tid, record.ChangeID); err != nil {
+		return false, false, err
+	}
+	idem, ok := s.base.(state.ChangeIdempotencyStore)
+	if !ok {
+		return false, false, fmt.Errorf("tenant: base store does not support durable StartChange idempotency")
+	}
+	return idem.ClaimChangeExecution(ctx, record, fromStatus, toStatus, updatedAt)
 }
 
 func (s *TenantStore) DeleteRun(ctx context.Context, id string) error {

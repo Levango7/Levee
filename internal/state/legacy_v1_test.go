@@ -216,4 +216,4 @@ var tenantOwnedTables = []string{
 // by a step that CREATEs rather than ALTERs since run_assignment (v4), so
 // listing it is what puts the fresh-vs-upgraded shape comparison on the v8
 // CREATE TABLE text — the step and schema.sql must agree column-for-column.
-var nonTenantOwnedTables = []string{"locks", "schema_version", "agents"}
+var nonTenantOwnedTables = []string{"locks", "schema_version", "agents", "change_idempotency"}

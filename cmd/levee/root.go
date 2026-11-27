@@ -313,8 +313,9 @@ func remoteFlagUsage() string {
 //
 // Today: the three registry readers in cmd_agent_remote.go (which dial the
 // gRPC client directly) plus `version` / `system version` / `system status` /
-// `template list` / `template show` / `target list` / `target history` /
-// `group list` / `audit verify` / `audit list` / `audit export` / `audit show`
+// `start` (remote-only so the server outlives the CLI), `template list` /
+// `template show` / `target list` / `target history` / `group list` /
+// `audit verify` / `audit list` / `audit export` / `audit show`
 // (which go through service_factory). Keep this in step with both;
 // TestRemoteCapabilityListResolves fails if an entry stops naming a real
 // command, and TestRemoteCapabilityListIsExactlyThese pins the membership so a
@@ -332,6 +333,7 @@ var remoteCapableCommands = []string{
 	"levee version",
 	"levee system version",
 	"levee system status",
+	"levee start",
 	"levee template list",
 	"levee template show",
 	"levee target list",
@@ -372,6 +374,6 @@ func validateServiceMode(cmd *cobra.Command) error {
 		}
 	}
 	return fmt.Errorf(
-		"--remote is not wired for `%s`: only %s read the remote server, every other command runs against the local store; run it without --remote [exit=2]",
+		"--remote is not wired for `%s`: only %s use the remote server, every other command runs against the local store; run it without --remote [exit=2]",
 		path, strings.Join(remoteCapableCommands, ", "))
 }

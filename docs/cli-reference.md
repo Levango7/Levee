@@ -16,7 +16,7 @@
 | `--api` | | | 后端 API 地址，用于 CLI 直连集群形态 server |
 | `--token` | | | API token，CLI 认证用 |
 | `--local` | | `false` | 本地模式，直连本地 store。与 `--remote` 二选一；**两者都不给时即为本地**（默认形态） |
-| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`target history`（读服务端近期变更；`--json` 少 10 个键并由 `meta.local_only` 点名）、`group list`（读服务端分组）、`audit verify`（在服务端 store 上验链）、`audit list / export / show`（读服务端 trace 行；show 按 id 取单条）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
+| `--remote` | | `false` | 远程模式：通过 gRPC 连到 `--server`。**当前由 `agent list / show / remove`（读 daemon 注册表）、`version` / `system version`（报服务端构建）、`system status`（报服务端运行健康；config/db 字段仍是本地事实）、`start`（服务端异步接受执行；本地 CLI 不提供）、`template list` / `template show`（读服务端模板库）、`target list`（读服务端库存）、`target history`（读服务端近期变更；`--json` 少 10 个键并由 `meta.local_only` 点名）、`group list`（读服务端分组）、`audit verify`（在服务端 store 上验链）、`audit list / export / show`（读服务端 trace 行；show 按 id 取单条）消费**；其余命令带 `--remote` 会以 `[exit=2]` 直接拒绝，而不是悄悄按本地语义执行——后者会让操作者以为在跟 server 说话，实际把数据写进 server 永远不读的本地库 |
 | `--server` | | `localhost:9090` | gRPC server 地址，仅 `--remote` 时生效 |
 
 ## 退出码
@@ -344,6 +344,21 @@ levee plan run-abc123 --targets web-01,web-02
 levee approve run-abc123
 levee apply run-abc123 --engine-enabled
 ```
+
+### 3.2a start（远程异步执行）
+
+通过运行中的 server 接受执行，不等待引擎终态。
+
+```text
+levee --remote --server <host:9090> start <run-id> --idempotency-key <key> [--force] [--max-concurrency N]
+```
+
+**说明**
+
+- `--idempotency-key` 必填、最长 128 字节；断线或重试时必须复用原键。相同键与相同执行参数返回 `duplicate=true`，不会再次执行；相同键配不同参数会被拒绝。
+- 返回的 `execution_id` 就是 change id；`status=running` 只是已接受，不是成功终态。使用 `GetChange` 或 `WatchChange` 重连读取实际终态。
+- 本命令只支持 `--remote`。本地 CLI 返回后会关闭 store 并退出，无法承载仍在运行的后台引擎；本地同步真实执行使用 `levee apply <run-id> --engine-enabled`。
+- `--force` 与 `--max-concurrency` 的治理语义与引擎模式 `apply` 相同；高危/紧急变更不能借 `--force` 绕过审批。
 
 ### 3.3 pause
 

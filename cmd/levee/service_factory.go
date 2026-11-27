@@ -11,11 +11,10 @@
 //
 //   - LIVE callers: `agent list / show / remove` do NOT go through here (they
 //     call newGRPCClient directly; see cmd_agent_remote.go), and neither do
-//     plan/apply. The commands wired through this factory are `version` and
-//     `system version`, in both modes: local answers from the build variables,
-//     remote asks the server. That is the first case where "one place decides
-//     which side answers" is actually exercised in production, and it is what
-//     keeps the two modes from growing separate renderers.
+//     plan/apply. `start` uses the remote ChangeService adapter; it deliberately
+//     refuses local CLI mode because a short-lived process cannot own background
+//     execution after closing its store. Version/system and the read-only
+//     families below use the same mode-selection factory.
 //   - The remaining read-only families were each settled by a per-command
 //     decision rather than by plumbing: where local output exceeded the wire,
 //     the proto grew (`template list` needed the file library on the serve side
@@ -263,6 +262,7 @@ type changeServiceAdapter interface {
 	CloneChange(ctx context.Context, req *pb.CloneChangeRequest) (*pb.Change, error)
 	PlanChange(ctx context.Context, req *pb.PlanChangeRequest) (*pb.Plan, error)
 	ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error)
+	StartChange(ctx context.Context, req *pb.StartChangeRequest) (*pb.StartChangeResponse, error)
 	PauseChange(ctx context.Context, req *pb.PauseRequest) (*pb.Change, error)
 	ResumeChange(ctx context.Context, req *pb.PauseRequest) (*pb.Change, error)
 	PauseAll(ctx context.Context, req *pb.PauseAllRequest) (*pb.PauseAllResponse, error)
@@ -320,6 +320,9 @@ func (a *localChangeAdapter) PlanChange(ctx context.Context, req *pb.PlanChangeR
 }
 func (a *localChangeAdapter) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error) {
 	return a.svc.ApplyChange(ctx, req)
+}
+func (a *localChangeAdapter) StartChange(ctx context.Context, req *pb.StartChangeRequest) (*pb.StartChangeResponse, error) {
+	return a.svc.StartChange(ctx, req)
 }
 func (a *localChangeAdapter) PauseChange(ctx context.Context, req *pb.PauseRequest) (*pb.Change, error) {
 	return a.svc.PauseChange(ctx, req)
@@ -381,6 +384,9 @@ func (a *remoteChangeAdapter) PlanChange(ctx context.Context, req *pb.PlanChange
 }
 func (a *remoteChangeAdapter) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error) {
 	return a.client.ApplyChange(ctx, req)
+}
+func (a *remoteChangeAdapter) StartChange(ctx context.Context, req *pb.StartChangeRequest) (*pb.StartChangeResponse, error) {
+	return a.client.StartChange(ctx, req)
 }
 func (a *remoteChangeAdapter) PauseChange(ctx context.Context, req *pb.PauseRequest) (*pb.Change, error) {
 	return a.client.PauseChange(ctx, req)

@@ -383,6 +383,18 @@ CREATE INDEX IF NOT EXISTS idx_assignment_state ON run_assignment (state);
 CREATE INDEX IF NOT EXISTS idx_assignment_tenant ON run_assignment (tenant_id);
 
 -- ---------------------------------------------------------------------------
+-- StartChange (v12): durable asynchronous-execution idempotency keys.
+-- Replaying a key after a restart returns the existing run, never a second apply.
+CREATE TABLE IF NOT EXISTS change_idempotency (
+    change_id       TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (change_id, idempotency_key),
+    FOREIGN KEY (change_id) REFERENCES runs(id) ON DELETE CASCADE
+);
+
+-- ---------------------------------------------------------------------------
 -- Agent registry (v8): the LEVEE agents that have registered with the master.
 -- Mirrors the identical block in schema.sql; only the types differ
 -- (TIMESTAMPTZ for timestamps). See that file for why the table is not

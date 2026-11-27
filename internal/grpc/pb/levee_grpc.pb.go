@@ -24,6 +24,7 @@ const (
 	ChangeService_CloneChange_FullMethodName       = "/levee.ChangeService/CloneChange"
 	ChangeService_PlanChange_FullMethodName        = "/levee.ChangeService/PlanChange"
 	ChangeService_ApplyChange_FullMethodName       = "/levee.ChangeService/ApplyChange"
+	ChangeService_StartChange_FullMethodName       = "/levee.ChangeService/StartChange"
 	ChangeService_PauseChange_FullMethodName       = "/levee.ChangeService/PauseChange"
 	ChangeService_ResumeChange_FullMethodName      = "/levee.ChangeService/ResumeChange"
 	ChangeService_PauseAll_FullMethodName          = "/levee.ChangeService/PauseAll"
@@ -58,6 +59,8 @@ type ChangeServiceClient interface {
 	PlanChange(ctx context.Context, in *PlanChangeRequest, opts ...grpc.CallOption) (*Plan, error)
 	// `levee apply`
 	ApplyChange(ctx context.Context, in *ApplyChangeRequest, opts ...grpc.CallOption) (*ApplyResponse, error)
+	// `levee start`: accept execution and return immediately; replay is durable.
+	StartChange(ctx context.Context, in *StartChangeRequest, opts ...grpc.CallOption) (*StartChangeResponse, error)
 	// `levee pause`
 	PauseChange(ctx context.Context, in *PauseRequest, opts ...grpc.CallOption) (*Change, error)
 	// `levee resume`
@@ -147,6 +150,16 @@ func (c *changeServiceClient) ApplyChange(ctx context.Context, in *ApplyChangeRe
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ApplyResponse)
 	err := c.cc.Invoke(ctx, ChangeService_ApplyChange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *changeServiceClient) StartChange(ctx context.Context, in *StartChangeRequest, opts ...grpc.CallOption) (*StartChangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StartChangeResponse)
+	err := c.cc.Invoke(ctx, ChangeService_StartChange_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -383,6 +396,8 @@ type ChangeServiceServer interface {
 	PlanChange(context.Context, *PlanChangeRequest) (*Plan, error)
 	// `levee apply`
 	ApplyChange(context.Context, *ApplyChangeRequest) (*ApplyResponse, error)
+	// `levee start`: accept execution and return immediately; replay is durable.
+	StartChange(context.Context, *StartChangeRequest) (*StartChangeResponse, error)
 	// `levee pause`
 	PauseChange(context.Context, *PauseRequest) (*Change, error)
 	// `levee resume`
@@ -449,6 +464,9 @@ func (UnimplementedChangeServiceServer) PlanChange(context.Context, *PlanChangeR
 }
 func (UnimplementedChangeServiceServer) ApplyChange(context.Context, *ApplyChangeRequest) (*ApplyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ApplyChange not implemented")
+}
+func (UnimplementedChangeServiceServer) StartChange(context.Context, *StartChangeRequest) (*StartChangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method StartChange not implemented")
 }
 func (UnimplementedChangeServiceServer) PauseChange(context.Context, *PauseRequest) (*Change, error) {
 	return nil, status.Error(codes.Unimplemented, "method PauseChange not implemented")
@@ -599,6 +617,24 @@ func _ChangeService_ApplyChange_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(ChangeServiceServer).ApplyChange(ctx, req.(*ApplyChangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ChangeService_StartChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(StartChangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ChangeServiceServer).StartChange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ChangeService_StartChange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ChangeServiceServer).StartChange(ctx, req.(*StartChangeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -971,6 +1007,10 @@ var ChangeService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApplyChange",
 			Handler:    _ChangeService_ApplyChange_Handler,
+		},
+		{
+			MethodName: "StartChange",
+			Handler:    _ChangeService_StartChange_Handler,
 		},
 		{
 			MethodName: "PauseChange",

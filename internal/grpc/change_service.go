@@ -1168,6 +1168,30 @@ func verifyStoredPlanHash(run *state.Run) error {
 // warning. Callers that script both entry points must not read exit 0 as
 // "batches executed".
 func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequest) (*pb.ApplyResponse, error) {
+	prepared, err := s.prepareApply(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return s.executeApply(ctx, prepared)
+}
+
+// preparedApply is the already-authorised, already-CASed execution. StartChange
+// runs the same prepare path before returning, while ApplyChange waits inline.
+type preparedApply struct {
+	run       *state.Run
+	request   *pb.ApplyChangeRequest
+	oldStatus string
+}
+
+var errApplyAlreadyClaimed = errors.New("apply execution already claimed")
+
+type applyStatusTransition func(ctx context.Context, id, from, to string, updatedAt time.Time) (bool, error)
+
+func (s *ChangeService) prepareApply(ctx context.Context, req *pb.ApplyChangeRequest) (*preparedApply, error) {
+	return s.prepareApplyWithTransition(ctx, req, nil)
+}
+
+func (s *ChangeService) prepareApplyWithTransition(ctx context.Context, req *pb.ApplyChangeRequest, transition applyStatusTransition) (*preparedApply, error) {
 	// Preflight (store configured + disconnect policy), ahead of everything
 	// else: a partitioned serve must not admit work it cannot fence, and it
 	// must say so before it spends a database round trip that would fail
@@ -1300,7 +1324,13 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 	// double-execute the run (or clobber each other's terminal state).
 	now := time.Now().UTC()
 	oldStatus := run.Status
-	ok, err := s.store.UpdateRunStatusIf(ctx, run.ID, oldStatus, runstatus.StatusRunning, now)
+	if transition == nil {
+		transition = s.store.UpdateRunStatusIf
+	}
+	ok, err := transition(ctx, run.ID, oldStatus, runstatus.StatusRunning, now)
+	if errors.Is(err, errApplyAlreadyClaimed) {
+		return nil, err
+	}
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "update run to running: %v", err)
 	}
@@ -1337,6 +1367,11 @@ func (s *ChangeService) ApplyChange(ctx context.Context, req *pb.ApplyChangeRequ
 		Timestamp: now.Unix(),
 	})
 
+	return &preparedApply{run: run, request: req, oldStatus: oldStatus}, nil
+}
+
+func (s *ChangeService) executeApply(ctx context.Context, prepared *preparedApply) (*pb.ApplyResponse, error) {
+	run, req := prepared.run, prepared.request
 	// Delegate to the engine when available.
 	execRunID, success, phase, err := s.engine.Run(ctx, req.GetChangeId(), req.GetAutoApprove(), req.GetMaxConcurrency())
 	if err != nil {

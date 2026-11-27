@@ -26,7 +26,7 @@ const baseSchemaVersion = 1
 // to migrations. It must always equal the version of the highest step (or
 // baseSchemaVersion when the list is empty), and schema.sql must be kept in
 // sync so that a fresh database built from it lands on this version.
-const currentSchemaVersion = 11
+const currentSchemaVersion = 12
 
 // migrationStep is one forward schema upgrade, identified by the version it
 // brings the database TO. stmts are plain single DDL/DML statements executed
@@ -339,6 +339,21 @@ END`,
 		stmts: []string{
 			`ALTER TABLE runs ADD COLUMN label TEXT NOT NULL DEFAULT ''`,
 			`ALTER TABLE runs ADD COLUMN team TEXT NOT NULL DEFAULT ''`,
+		},
+	},
+	{
+		// StartChange: durable idempotency keys for asynchronous execution.
+		// Keys survive process restarts and are unique per change, so replaying
+		// the same request returns the current run instead of re-executing it.
+		version: 12,
+		stmts: []string{
+			`CREATE TABLE IF NOT EXISTS change_idempotency (` +
+				`change_id TEXT NOT NULL, ` +
+				`idempotency_key TEXT NOT NULL, ` +
+				`request_fingerprint TEXT NOT NULL, ` +
+				`created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ` +
+				`PRIMARY KEY (change_id, idempotency_key), ` +
+				`FOREIGN KEY (change_id) REFERENCES runs(id) ON DELETE CASCADE)`,
 		},
 	},
 }

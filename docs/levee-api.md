@@ -880,7 +880,7 @@ RESTful 风格，支持两套路径：
 
 资源命名用复数名词，子资源用路径嵌套（`/changes/:id/approve`）。HTTP 方法语义：GET 查询、POST 创建 / 动作、DELETE 删除。
 
-成功响应体为 proto 消息直接序列化的 JSON（不带 12.2 的 `data`/`meta`/`error` 外层包装，字段约定见 13.6）；错误响应体为 `{"error": "<message>"}`。HTTP 状态码与 gRPC 状态码对齐：200 成功、400 验证失败（InvalidArgument）、401 认证失败（Unauthenticated）、403 权限不足（PermissionDenied）、404 不存在（NotFound）、409 冲突（AlreadyExists，如目标机互斥锁占用）、412 前置条件不满足（FailedPrecondition）、429 限流（ResourceExhausted）、501 未实现（Unimplemented）、503 连接失败 / 服务不可用（Unavailable）、504 超时（DeadlineExceeded）、500 一般错误（其余）。
+成功响应体为 proto 消息直接序列化的 JSON（不带 12.2 的 `data`/`meta`/`error` 外层包装，字段约定见 13.6）；错误响应体为 `{"error": "<message>"}`。HTTP 状态码与 gRPC 状态码对齐：200 成功、202 异步执行已接受（不是终态）、400 验证失败（InvalidArgument）、401 认证失败（Unauthenticated）、403 权限不足（PermissionDenied）、404 不存在（NotFound）、409 冲突（AlreadyExists，如目标机互斥锁占用）、412 前置条件不满足（FailedPrecondition）、429 限流（ResourceExhausted）、501 未实现（Unimplemented）、503 连接失败 / 服务不可用（Unavailable）、504 超时（DeadlineExceeded）、500 一般错误（其余）。
 
 ### 13.2 端点清单
 
@@ -894,7 +894,8 @@ RESTful 风格，支持两套路径：
 | GET | `/changes` | `/api/v1/ChangeService/ListChanges` | 列出变更 | `levee list` |
 | GET | `/changes/:id` | `/api/v1/ChangeService/GetChange` | 查看变更详情 | `levee show` |
 | POST | `/changes/:id/plan` | `/api/v1/ChangeService/PlanChange` | 生成执行计划 | —（apply 内部调用） |
-| POST | `/changes/:id/apply` | `/api/v1/ChangeService/ApplyChange` | 执行变更 | `levee apply` |
+| POST | `/changes/:id/apply` | `/api/v1/ChangeService/ApplyChange` | 同步执行变更并等待终态 | `levee apply` |
+| POST | `/changes/:id/start` | `/api/v1/ChangeService/StartChange` | 持久化幂等异步执行；202 接受、200 重放 | `levee --remote start` |
 | POST | `/changes/:id/approve` | `/api/v1/ChangeService/ApproveChange` | 通过审批 | `levee approve` |
 | POST | `/changes/:id/reject` | `/api/v1/ChangeService/RejectChange` | 驳回审批 | `levee reject` |
 | POST | `/changes/:id/pause` | `/api/v1/ChangeService/PauseChange` | 暂停 | `levee pause` |
@@ -1004,6 +1005,26 @@ RESTful 风格，支持两套路径：
 > 而 `high` 同时是优先级和档位的合法值，无法判定来源，故留在 `approval_level` 里、`priority`
 > 读作空。宁可显示"未知优先级"，也不替引擎宣布它没有宣布过的东西。档位（`standard` /
 > `high` / `emergency`）仍只出现在 `approval_level` 与审批链相关响应里。
+
+### 13.2a StartChange：异步接受与幂等重连
+
+`POST /changes/:id/start` 与 `ApplyChange` 共用审批、计划哈希、风险、权限与 running CAS 治理，但接受后不等待引擎终态：
+
+```json
+{
+  "autoApprove": true,
+  "maxConcurrency": 2,
+  "idempotencyKey": "deploy-2026-11-27-request-1"
+}
+```
+
+- `idempotencyKey` 必填、去首尾空白后最长 128 字节，作用域为单个 change。新请求返回 **202**，`status=running`；`executionId` 就是 change id，不是另一个执行对象。
+- 相同 change、相同键、相同 `autoApprove/maxConcurrency/dryRun` 参数的重试返回 **200 + `duplicate=true`**，不会再次调用引擎；响应中的 `status` 是重连时读到的当前状态，可能已是终态。相同键配不同执行参数返回 **409 AlreadyExists**。`dryRun=true` 与 Apply 一样被拒绝，应使用 PlanChange 预览。
+- 接受响应不是成功 verdict。客户端使用 `GetChange` 或 `WatchChange` 重连；客户端断线不会取消 server 已接受的执行。
+- SQLite/PostgreSQL 在**同一事务**内写幂等键并完成 running CAS：同键并发只有一个接受者，不同键竞争失败会回滚新键。schema v11 升级到 v12 自动建表；不支持该持久化能力的精简 store 会 fail-closed，不伪装成可重启幂等。
+- **边界**：重启后识别重放不等于崩溃引擎自动续跑。进程崩溃后的接管仍服从既有 cluster/takeover 机制；生产多机 HA 证明不在本 API 切片内。同步 `ApplyChange` 的外部行为不变。
+
+远程 CLI 对应 `levee --remote start <run-id> --idempotency-key <key>`。本地 CLI 进程会在返回时关闭 store 并退出，因此只提供同步 `apply --engine-enabled`，不把进程内 goroutine 冒充可独立存活的异步任务。
 
 ### 13.2b SSE 实时事件流（`/changes/:id/events` 与 `/alerts/stream`）
 

@@ -54,6 +54,7 @@ func TestRemoteCapabilityListIsExactlyThese(t *testing.T) {
 			"levee version",
 			"levee system version",
 			"levee system status",
+			"levee start",
 			"levee template list",
 			"levee template show",
 			"levee target list",
