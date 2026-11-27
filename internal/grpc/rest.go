@@ -351,10 +351,22 @@ func (gw *Gateway) Start(ctx context.Context) error {
 // cleanup without capping handler duration.
 func (gw *Gateway) newHTTPServer(mux *http.ServeMux) *http.Server {
 	return &http.Server{
-		Handler:           mux,
+		Handler:           securityHeadersMiddleware(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+}
+
+// securityHeadersMiddleware covers operational routes as well as the API;
+// handlers may replace the baseline CSP for a more restrictive document.
+func securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (gw *Gateway) serveOn(ln net.Listener, ctx context.Context) error {
@@ -1231,7 +1243,7 @@ func (gw *Gateway) handleChangeTicket(w http.ResponseWriter, r *http.Request, id
 		// static window.print() call. The CSP states that, so a later edit that
 		// adds a script tag cannot quietly start running.
 		w.Header().Set("Content-Security-Policy",
-			"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+			"default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(doc)) // #nosec G705 -- text/html with nosniff; every interpolated value is HTML-escaped by dbchange.HTML
 		return

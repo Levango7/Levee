@@ -117,3 +117,83 @@
 - 前端 `vue-tsc` 0 错误；`vitest` 43 文件 / 350 用例全绿（本机 threads 池起不来属环境问题，`--pool=forks` 全过）；`vite build` 通过；`internal/web/dist` 重打并入库（CI 逐字节比对）。
 - 四类 Python 门禁（doc-anchors / roadmap-status / changelog-structure / blocked-items）全过。
 - **CDP 实测数字**（1280 视口）：审批表列宽合计 **1100**、变更表 **1132**，容器 **950**；趋势图 **640/918**；对话错误块 **bottom 946 > 视口 900**。探针自证：若无数字即不成立。
+
+## 后续批次（2026-11-25）：takeover-events 与 rollback 预览/提交契约闭环
+
+本节 supersede 2026-11-21 小节中
+「takeover-events/rollback 已服务但不在键校验范围」的旧边界；
+两条现已纳入同一份 wire 快照、DTO read-set 与真实 mock 进程校验。
+
+- **服务端证据非空**：takeover handler 按 wall-clock 过滤最近 90 天，
+  固定在 2026-10-12 的旧夹具到 2026-11-25 已过期。wire 夹具改用
+  `time.Now().UTC()` 写入 trace，并对 `rows.events` 与 rollback
+  `objects.change` 增加非空断言，避免快照空转让 TS 与 mock 两侧共同假绿。
+- **DTO 绑定**：`takeover-events` 显式绑定 `TakeoverEventDTO` 的
+  `id/run_id/actor/timestamp/status` read-set；rollback 的嵌套 `change`
+  由 Go 快照钉住观测键，mock 侧再按 `Change` DTO 校验，
+  不把 protojson 省略的零值误判成必发。
+- **真实 mock 契约**：takeover 信封校验 `events/days/window_from`，
+  两行记录要求全部 DTO 字段存在（REST projection 不省略）；rollback
+  分别用 `{dryRun:true}` 与 `{}` 驱动 preview/commit，preview 禁止
+  `rollbackRunId`，commit 必须包含它；嵌套 `change` 必须是 object，
+  `null`、缺失或数组都会直接失败。
+- **投影修正**：rollback mock 删除 `planHash`。该字段属于顶层 `Change`
+  投影，但真实 `runToPB` 没有映射 `PlanHash`，
+  不能把顶层能力泄漏进嵌套响应。
+- **变异取证**：`actor→actors` 让 mock 218/222 且 TS 契约 3 条转红；
+  删除/发明 rollback 嵌套 `change.id` 让 mock 220/222；
+  preview/commit 同时置 `change: null` 让 mock 216/218 并命中新增存在性判据。
+  另证空 `events: []` 会先让旧门禁缩成 216/216 假绿，
+  加入非空样本断言后同一变异以 216/217 转红。
+  样本全部恢复后 mock 222/222、wireContract 6/6。
+- **验证**：全量 Vitest 49 文件 / 388 用例、`npm run build`、
+  Go `vet/tidy -diff/gofmt`、docgen 4 目标、Python 212 条门禁、
+  Windows `go build`、全量 Go race/coverage（含 `internal/grpc` 81.3%）
+  均通过；`web/dist` 与 `internal/web/dist` 各 62 文件且逐字节一致。
+  govulncheck v1.9.0 无已知漏洞；gosec v2.28.0 按 CI 同款排除规则执行，
+  387 文件 / 136328 行 / 0 finding；
+  golangci-lint v2.13.0 按 CI 钉版执行，0 issues。
+- **浏览器与文档卫生**：Vite 显式代理到真实 mock 后，
+  `BROWSER_CHECK_REQUIRED=1 npm run test:browser` 全量通过；
+  四份审计文档相对 HEAD 的 markdownlint 增量均为 0。
+
+## 交付复核（2026-11-27）：REST 安全头与 mock wire 契约重基
+
+- **基线与范围**：重基到 `origin/master`
+  `fc9d6e1083ff854ea27cfb328bb93edf32df7394`；远端基线前进仅涉及
+  KMS SDK 的 `go.mod/go.sum`，再次重基无冲突。代码提交
+  `6e028c60c96f9caabc1bb5f8b47db2d1dc3c2793` 的父提交与基线一致，
+  代码面为 11 个文件，未改动其他工程批次。
+- **公开边界**：生产 HTTP server 最外层统一注入
+  `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY` 与最小 CSP，
+  覆盖健康检查、API 成功/拒绝/错误、CORS 预检和运维路由；HTML 发布单
+  保留更严文档 CSP，HSTS 仍由 TLS 终结点负责。真实 mock 的
+  takeover-events 与 rollback preview/commit 使用同一份键快照、DTO
+  read-set 和非空样本门禁。
+- **Go 与仓库门禁**：代理-free `go test -p=4 ./...` 的 79 个测试包
+  全部通过；`go vet ./...`、`go build ./...`、`go mod tidy -diff`、
+  gofmt、docgen 4 目标与 Python 217 条门禁均通过。
+- **静态检查**：golangci-lint v2.13.0 按 CI 钉版执行，12 个
+  linter 全部启用；首次 15 分钟超时虽已输出 0 issues 仍不计作通过，
+  预热隔离缓存并延长到 30 分钟后完整通过，终判 0 issues。
+- **前端与真实 mock**：Vitest 50 文件 / 392 用例、mock wire 222/222、
+  `npm run build`（1753 modules）均通过；`web/dist` 与
+  `internal/web/dist` 各 63 个文件且逐字节一致。
+- **真实浏览器**：Vite 显式代理到独立真实 mock 端口后，
+  `BROWSER_CHECK_REQUIRE=1 npm run test:browser` 的 112 条断言
+  ALL PASS，覆盖路由数据、SSE、审计链、发布单七节、响应式表格、
+  空/失败/禁止三态、接管时间线、门禁结果与 rollback 预览/提交。
+- **安全扫描**：govulncheck 扫描 83 个根包、93 个模块与 Go 1.26.11
+  标准库，无已知漏洞；gosec v2.28.0 低并发全仓复扫覆盖 391 文件 /
+  137557 行，0 finding 且 0 包加载错误。
+- **Race 与覆盖边界**：全仓 Windows `-race/-cover` 未形成完整绿判。
+  `cmd/levee` 在高负载下于既有 `internal/plugin/protocol.go:158-176`
+  触发 `cmd.Process` 数据竞争并伴随握手失败；该实现与基线逐字相同，
+  本分支与基线 `1ca9f2a9` 的同一定向 race 各跑 5 次均通过，呈负载敏感，
+  未发现与本次 11 文件差异相关的回归证据。`internal/grpc` 单包以
+  81.3% 覆盖通过；全仓任务随后达到 30 分钟执行上限，覆盖 profile
+  不作完整覆盖率结论。
+- **环境归因**：Windows gRPC 测试 server 绑定 `:0` 后返回
+  `[::]:port`，被本机 HTTP 代理误拦截；本地测试清除代理变量后通过，
+  未为环境问题改产品代码。首次 gosec 虽报 0 finding，但两个包加载失败，
+  该结果未计作通过；以完整低并发复扫为最终判据。

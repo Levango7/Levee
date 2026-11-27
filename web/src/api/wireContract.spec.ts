@@ -193,6 +193,12 @@ const DTO_READS: Record<string, DtoReads> = {
     keys: ['change', 'rollbackRunId', 'success', 'rolledBackHosts', 'skippedHosts', 'message'],
     dto: 'RollbackResponseDTO',
   },
+  'takeover-events': {
+    row: 'events',
+    keys: ['events', 'days', 'window_from'],
+    rowKeys: ['id', 'run_id', 'actor', 'timestamp', 'status'],
+    rowDto: 'TakeoverEventDTO',
+  },
   // The DB Change Ticket — the "one sheet" a database change is presented on.
   // Seven section objects, each with its own shape. The contract records the
   // section NAMES here; the fields inside each section are pinned by
@@ -247,6 +253,7 @@ const SERVER_ONLY: Record<string, string[]> = {
   'cluster-status': [],
   // Every key of the rollback response is read by the remediation wizard.
   rollback: [],
+  'takeover-events': [],
   // The registry reports its own load counters; the console reads status and
   // the heartbeat only, so these are sent but not consumed (yet).
   agents: ['active_tasks', 'completed_tasks', 'failed_tasks', 'max_concurrent', 'registered_at_unix'],
@@ -379,10 +386,10 @@ describe('DTO contract: what the client reads is what the server sends', () => {
   it('records nested object shapes, not just the top level', () => {
     // Without `objects` in the snapshot the check above is blind one level down,
     // which is exactly where the cluster DTO drifted.
-    const cluster = wire['cluster-status']!
-    expect(Object.keys(cluster.objects ?? {}), 'cluster-status must record a nested object').toContain('summary')
-    for (const [field, keys] of Object.entries(cluster.objects ?? {})) {
-      expect(keys.length, `${field} contributed no keys`).toBeGreaterThan(0)
+    for (const [name, field] of [['cluster-status', 'summary'], ['rollback', 'change']] as const) {
+      const snapshot = wire[name]!
+      expect(Object.keys(snapshot.objects ?? {}), `${name} must record ${field}`).toContain(field)
+      expect(snapshot.objects?.[field]?.length, `${name}.${field} contributed no keys`).toBeGreaterThan(0)
     }
   })
 })

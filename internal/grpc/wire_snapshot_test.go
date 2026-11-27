@@ -175,6 +175,13 @@ CREATE TABLE IF NOT EXISTS cluster_nodes (
 		Detail: traceDetail, PrevHash: "prev-wire-2", CurrHash: "curr-wire-2",
 		Timestamp: now.Add(time.Second),
 	}))
+	// Takeover events are filtered against wall-clock time, not the fixture's
+	// historical clock. A recent timestamp keeps their row shape observable.
+	require.NoError(t, store.CreateTrace(ctx, &state.Trace{
+		ID: "tr-wire-takeover", RunID: "run-wire", Event: state.EventTakeoverInterrupted,
+		Actor: "cluster-takeover", PrevHash: "prev-wire-takeover",
+		CurrHash: "curr-wire-takeover", Timestamp: time.Now().UTC(),
+	}))
 }
 
 // wireTestServices registers the three services the newly covered endpoints
@@ -590,7 +597,10 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 		},
 		"rollback": {
 			Method: "POST", Path: "/changes/{id}/rollback",
-			Keys:   rbKeys,
+			Keys: rbKeys,
+			Objects: map[string][]string{
+				"change": unionKeys(objectKeys(rbPreview, "change"), objectKeys(rbCommit, "change")),
+			},
 			Forbid: []string{"Change", "RollbackRunId", "Success", "RolledBackHosts", "SkippedHosts", "Message"},
 		},
 		// The five endpoints the console calls that had no recorded shape.
@@ -672,6 +682,10 @@ func TestWireSnapshot_MatchesContract(t *testing.T) {
 	require.NotEmpty(t, objectKeys(detailPlanned, "plan"), "the plan object contributed no keys")
 	require.NotEmpty(t, nestedArrayKeys(detailPlanned, "plan", "batches"),
 		"plan.batches[] contributed no keys — the item shape would be contract-blind")
+	require.NotEmpty(t, arrayKeys(takeover, "events"),
+		"takeover events[] contributed no keys — the timeline row shape would be contract-blind")
+	require.NotEmpty(t, objectKeys(rbCommit, "change"),
+		"rollback change contributed no keys — the nested response would be contract-blind")
 
 	live, err := json.MarshalIndent(snap, "", "  ")
 	require.NoError(t, err)

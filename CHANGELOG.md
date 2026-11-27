@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 修复（REST 网关全局安全头与 mock wire 契约）
+
+- 生产 HTTP server 最外层统一注入 `X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY` 与最小 CSP，覆盖健康检查、API 成功/拒绝/错误、CORS 预检和运维路由；HTML 发布单保留更严文档 CSP。HSTS 仍由 TLS 终结点负责。
+- `takeover-events` 与 rollback preview/commit 纳入真实 mock 键契约，并固定 takeover 行、嵌套 `change` 与非空样本，修复时间敏感夹具过期、空数组假绿、嵌套 `null` 静默跳过和 `planHash` 投影漂移。
+
 ### 修复（target history 的工作流名只带声明名）
 
 - `runs.workflow_name` 存的是渲染后的整份工作流文档，`InventoryService.TargetHistory` 此前把它原样放上 wire：每个 `target history --remote` 调用方都收到整份 YAML，与 `pb.Change.plan` 对 ListChanges 的边界是同一条理由。线上 `workflow_name` 现归一为 `dsl.DisplayName` 的声明名；单行路径/纯名原样通过。

@@ -364,6 +364,13 @@ function changeFor(id) {
   return { ...detail, id }
 }
 
+function rollbackChangeFor(id) {
+  const change = changeFor(id)
+  // Rollback embeds the runToPB projection, which does not carry plan_hash.
+  delete change.planHash
+  return change
+}
+
 function rollbackPreviewBody(change) {
   return {
     change,
@@ -386,11 +393,11 @@ async function handleChangeRollback(req, res, id) {
     // preview branch returns the change as it is, and that is the property
     // the wizard's evidence depends on.
     rollbackCalls.push({ kind: 'preview', id, at: Date.now() })
-    return send(res, rollbackPreviewBody(changeFor(id)))
+    return send(res, rollbackPreviewBody(rollbackChangeFor(id)))
   }
   rollbackCalls.push({ kind: 'commit', id, at: Date.now() })
   return send(res, {
-    change: { ...changeFor(id), status: 'rolled_back' },
+    change: { ...rollbackChangeFor(id), status: 'rolled_back' },
     rollbackRunId: 'rb-mock-1',
     success: true,
     rolledBackHosts: ['10.0.1.11', '10.0.1.12'],

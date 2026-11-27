@@ -371,7 +371,18 @@
       "RolledBackHosts",
       "SkippedHosts",
       "Message"
-    ]
+    ],
+    "objects": {
+      "change": [
+        "createdAt",
+        "createdBy",
+        "id",
+        "label",
+        "priority",
+        "status",
+        "updatedAt"
+      ]
+    }
   },
   "system-status": {
     "method": "GET",
@@ -417,6 +428,15 @@
       "Events",
       "Days",
       "WindowFrom"
-    ]
+    ],
+    "rows": {
+      "events": [
+        "actor",
+        "id",
+        "run_id",
+        "status",
+        "timestamp"
+      ]
+    }
   }
 }
