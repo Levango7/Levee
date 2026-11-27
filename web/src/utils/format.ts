@@ -82,6 +82,13 @@ export function priorityLabel(priority: string): string {
   return PRIORITY_LABEL[priority as Priority] ?? priority
 }
 
+// StartChange without auto-approve is admitted only for an approved run. The
+// detail page additionally requires the stored plan artifact before offering
+// the action; this status helper deliberately does not provide a force/bypass.
+export function isStartableStatus(status: ChangeStatus): boolean {
+  return status === 'approved'
+}
+
 // Retryable statuses mirror the backend RetryChange admission set
 // (change_service.go): failed, rolled_back, interrupted — plus the two D-2 v2
 // rollback verdicts, which are failure-family terminals whose re-drive entry

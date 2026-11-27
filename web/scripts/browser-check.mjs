@@ -1268,6 +1268,85 @@ console.log('\n[7] the cluster page explains the deployment it is on')
 }
 
 // ---------------------------------------------------------------------------
+console.log('\n[7z] StartChange retries a lost acceptance with the same durable key')
+{
+  const page = await newPage(browser)
+  await page.evaluateOnNewDocument(() => {
+    window.__startCalls = JSON.parse(sessionStorage.getItem('browserStartCalls') || '[]')
+    const nativeOpen = XMLHttpRequest.prototype.open
+    const nativeSend = XMLHttpRequest.prototype.send
+    XMLHttpRequest.prototype.open = function () {
+      this.__startURL = String(arguments[1] || '')
+      return nativeOpen.apply(this, arguments)
+    }
+    XMLHttpRequest.prototype.send = function () {
+      if (this.__startURL.endsWith('/start')) {
+        window.__startCalls.push(String(arguments[0] || '{}'))
+        sessionStorage.setItem('browserStartCalls', JSON.stringify(window.__startCalls))
+      }
+      return nativeSend.apply(this, arguments)
+    }
+  })
+  const clickButton = async (label) => page.evaluate((t) => {
+    const btn = [...document.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === t)
+    if (!btn) throw new Error('the ' + t + ' button is not on the page')
+    btn.click()
+  }, label)
+  const confirmStart = async () => {
+    await page.waitForFunction(() => !!document.querySelector('.el-message-box'),
+      { timeout: SETTLE_DEADLINE_MS, polling: 60 })
+    await page.evaluate(() => {
+      const box = document.querySelector('.el-message-box')
+      const btn = [...box.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === '开始执行')
+      if (!btn) throw new Error('the StartChange confirmation is missing')
+      btn.click()
+    })
+  }
+  const calls = async () => page.evaluate(() => window.__startCalls.map((raw) => JSON.parse(raw)))
+  const hasStartButton = async () => page.evaluate(() =>
+    [...document.querySelectorAll('.detail__actions button')].some((b) =>
+      (b.textContent || '').trim() === '开始执行' && b.getClientRects().length > 0))
+  const actionState = async () => page.evaluate(() => ({
+    startVisible: [...document.querySelectorAll('.detail__actions button')].some((b) =>
+      (b.textContent || '').trim() === '开始执行' && b.getClientRects().length > 0),
+    text: (document.querySelector('.detail__actions')?.textContent || '').replace(/\s+/g, ' ').trim(),
+    detailText: (document.querySelector('.detail')?.textContent || '').replace(/\s+/g, ' ').trim(),
+  }))
+
+  await open(page, '/changes/run-1004')
+  check('an approved run with a stored plan offers StartChange', await hasStartButton(), 'no 开始执行 button')
+  await clickButton('开始执行')
+  await confirmStart()
+  await waitForSettled(page, 'StartChange lost first response')
+  const afterLoss = await calls()
+  check('the lost acceptance was attempted once', afterLoss.length === 1, JSON.stringify(afterLoss))
+  check('a lost acceptance remains retryable, not a fabricated failure', await hasStartButton(), 'start button disappeared')
+  const warning = await text(page, 'body')
+  check('the lost response is reported as unknown', warning.includes('开始执行结果未知'), warning.slice(-300))
+
+  await clickButton('开始执行')
+  await confirmStart()
+  await waitForSettled(page, 'StartChange same-key retry')
+  const afterRetry = await calls()
+  check('the retry uses exactly one more request', afterRetry.length === 2, JSON.stringify(afterRetry))
+  check('both attempts carry the same idempotency key',
+    afterRetry.length === 2 && afterRetry[0].idempotencyKey === afterRetry[1].idempotencyKey,
+    JSON.stringify(afterRetry))
+  check('both attempts preserve the approval gate',
+    afterRetry.every((call) => call.autoApprove === false), JSON.stringify(afterRetry))
+  const acceptedState = await actionState()
+  check('acceptance moves the detail to running, not a terminal verdict',
+    !acceptedState.startVisible && acceptedState.detailText.includes('执行中'), JSON.stringify(acceptedState))
+
+  await open(page, '/changes/run-1004')
+  check('a running reload cannot submit another execution',
+    !(await hasStartButton()) && (await calls()).length === 2, JSON.stringify(await calls()))
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('levee.start.v1.run-1004') || '{}'))
+  check('the running reconnect keeps its durable key', stored.key === afterRetry[0].idempotencyKey, JSON.stringify(stored))
+  await page.close()
+}
+
+// ---------------------------------------------------------------------------
 console.log('\n[8] the remediation wizard previews first and commits only on confirmation')
 {
   const page = await newPage(browser)

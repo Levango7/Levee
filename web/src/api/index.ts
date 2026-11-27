@@ -118,24 +118,43 @@ export interface RollbackResponseDTO {
   message: string
 }
 
+export interface StartChangeResponseDTO {
+  change?: Change
+  executionId: string
+  status: string
+  /** protojson omits false; true is the explicit durable-replay marker. */
+  duplicate?: boolean
+  message: string
+}
+
+export function isExecutionOutcomeUnknown(error: unknown): boolean {
+  const code = (error as ApiError | undefined)?.code
+  // A dev/reverse proxy converts an upstream disconnect into 502/504 instead
+  // of a browser network error. Neither response proves the server refused the
+  // execution before accepting it, so both belong to the unknown-outcome path.
+  return code === 0 || code === 502 || code === 504
+}
+
+function executionOutcomeUnknown(error: unknown): never {
+  const apiError = error as ApiError | undefined
+  if (isExecutionOutcomeUnknown(apiError)) {
+    // Losing the response is not evidence that execution failed. Make the
+    // unknown outcome explicit so the next click is an informed re-drive,
+    // not a reflex duplicate submission.
+    throw {
+      ...apiError,
+      message: '连接中断，执行结果未知：请先刷新变更状态，确认后再操作，勿直接重复提交',
+    }
+  }
+  throw error
+}
+
 // Apply, Retry and Rollback return only after the engine reaches a verdict;
 // they must not inherit the 30-second deadline intended for ordinary reads.
 // timeout: 0 leaves the wait to the server's request context instead of
 // inventing a second, shorter execution budget in the browser.
 function postExecution<T>(url: string, body?: unknown): Promise<T> {
-  return post<T>(url, body, { timeout: 0 }).catch((error: unknown) => {
-    const apiError = error as ApiError | undefined
-    if (apiError?.code === 0) {
-      // Losing the response is not evidence that execution failed. Make the
-      // unknown outcome explicit so the next click is an informed re-drive,
-      // not a reflex duplicate submission.
-      throw {
-        ...apiError,
-        message: '连接中断，执行结果未知：请先刷新变更状态，确认后再操作，勿直接重复提交',
-      }
-    }
-    throw error
-  })
+  return post<T>(url, body, { timeout: 0 }).catch(executionOutcomeUnknown)
 }
 
 export const changesApi = {
@@ -165,6 +184,16 @@ export const changesApi = {
     success: boolean
     message: string
   }> => postExecution(`/changes/${id}/apply`, body),
+
+  // StartChange waits only for acceptance, not for the engine verdict, so the
+  // ordinary 30-second request budget stays in force. Its durable key makes a
+  // timeout/reload a replay instead of a second execution.
+  start: (id: string, body: {
+    autoApprove?: boolean
+    maxConcurrency?: number
+    idempotencyKey: string
+  }): Promise<StartChangeResponseDTO> =>
+    post<StartChangeResponseDTO>(`/changes/${id}/start`, body).catch(executionOutcomeUnknown),
 
   /* approver/rejecter are OPTIONAL and should usually be OMITTED: the server
    * attributes the vote to the authenticated subject and rejects a claimed

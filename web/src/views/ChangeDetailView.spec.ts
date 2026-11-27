@@ -87,6 +87,22 @@ describe('change detail page', () => {
     }
   })
 
+  it('starts only an approved planned change through durable StartChange', () => {
+    expect(view).toContain('const canStart = computed')
+    expect(view).toContain('isStartableStatus(change.value.status)')
+    expect(view, 'approval alone is insufficient without a stored plan').toContain('change.value.plan')
+    expect(view).toContain('v-if="canStart"')
+    expect(view).toContain('startKeyFor(current)')
+    expect(view).toContain('changesApi.start(current.id')
+    expect(view).toContain('autoApprove: false')
+    expect(view).toContain('idempotencyKey')
+    expect(view).toContain('reconcileStartKey(c)')
+    expect(view, 'duplicate responses are replays, not fresh executions').toContain('res.duplicate')
+    expect(view, 'proxy disconnects use the shared unknown-outcome verdict').toContain('isExecutionOutcomeUnknown(apiError)')
+    expect(view, 'acceptance is not rendered as a terminal success').toContain('后台执行')
+    expect(view).toContain(':loading="acting === \'开始执行\'"')
+  })
+
   it('serialises lifecycle transitions and exposes their in-flight state', () => {
     const start = view.indexOf('async function transition(')
     expect(start, 'the shared transition exists').toBeGreaterThan(-1)
@@ -103,7 +119,7 @@ describe('change detail page', () => {
     for (const verb of ['暂停', '恢复', '取消', '归档']) {
       expect(view, `${verb} shows its own loading state`).toContain(`:loading="acting === '${verb}'"`)
     }
-    expect(view.match(/:disabled="acting !== ''"/g) ?? [], 'all lifecycle buttons lock together').toHaveLength(4)
+    expect(view.match(/:disabled="acting !== ''"/g) ?? [], 'all lifecycle buttons lock together').toHaveLength(5)
   })
 
   it('delegates remediation to the shared flow', () => {

@@ -69,6 +69,16 @@ const storedPlan = {
   impactSummary: '2 个数据库目标，含全表 UPDATE 风险',
 }
 
+const startDetail = {
+  id: 'run-1004', label: '已批准的异步变更', status: 'approved', environment: 'prod', team: '平台组',
+  templateName: templates[0], priority: 'normal', createdBy: 'liwg',
+  workflowFile: 'name: 已批准的异步变更\nsteps: []\n',
+  createdAt: now - 7200, updatedAt: now - 120, params: {},
+}
+const startPlan = { ...storedPlan, changeId: 'run-1004' }
+let startAttempts = 0
+let firstStartKey = ''
+
 const remediableDetail = {
   id: 'run-1001', label: '未走完的回滚', status: 'rolled_back_partial', environment: 'prod', team: '平台组',
   templateName: templates[0], priority: 'high', createdBy: 'liwg',
@@ -648,6 +658,32 @@ const server = http.createServer(async (req, res) => {
   // The seven-section ticket for the completed run-1003. This route is what
   // makes the ticket's content (not merely its shell) testable in a browser.
   if (u === '/api/v1/changes/run-1003/ticket') return send(res, ticket)
+
+  // StartChange: the first response is lost BEFORE acceptance, so the approved
+  // row is unchanged and the UI must retry with the same durable key. The second
+  // attempt accepts and returns 202; later reads prove running, not success.
+  if (u === '/api/v1/changes/run-1004/start' && req.method === 'POST') {
+    const body = await readJsonBody(req)
+    startAttempts++
+    if (startAttempts === 1) {
+      firstStartKey = body.idempotencyKey || ''
+      req.socket.destroy()
+      return
+    }
+    if (!body.idempotencyKey || body.idempotencyKey !== firstStartKey) {
+      return send(res, { error: 'idempotency key was already used with different execution parameters' }, 409)
+    }
+    startDetail.status = 'running'
+    startDetail.updatedAt = now - 60
+    return send(res, {
+      change: { ...startDetail, plan: startPlan }, executionId: 'run-1004', status: 'running',
+      duplicate: false, message: 'execution accepted; reconnect for the terminal verdict',
+    }, 202)
+  }
+  if (u === '/api/v1/changes/run-1004') {
+    const includePlan = new URL(req.url, 'http://x').searchParams.get('includePlan') === 'true'
+    return send(res, includePlan ? { ...startDetail, plan: startPlan } : startDetail)
+  }
 
   // One change's worth of detail pages. includePlan attaches the STORED plan;
   // the default response deliberately omits it, matching protojson.

@@ -21,6 +21,7 @@ import {
   isRemediableStatus,
   isResumableStatus,
   isRetryableStatus,
+  isStartableStatus,
   priorityLabel,
 } from './format'
 
@@ -220,6 +221,7 @@ describe('action gates mirror the server switches', () => {
     },
     { name: 'isPausableStatus', fn: isPausableStatus, admits: ['running', 'pending'] },
     { name: 'isResumableStatus', fn: isResumableStatus, admits: ['paused'] },
+    { name: 'isStartableStatus', fn: isStartableStatus, admits: ['approved'] },
   ]
   it.each(cases)('$name admits exactly its set', ({ fn, admits }) => {
     expect(admits.length).toBeGreaterThan(0)
