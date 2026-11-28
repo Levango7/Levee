@@ -162,6 +162,16 @@ func (m *Module) upgrade(ctx context.Context, input executor.ModuleInput, pm pac
 // packageManager is the abstraction over apt / yum / dnf. Each implementation
 // knows how to query whether a package is installed, what version it is at,
 // and how to build the install / remove / upgrade command lines.
+//
+// The *Cmd methods build command strings by plain interpolation and do NOT
+// shell-quote their arguments, deliberately. The inputs reach them only after
+// validatePkgName / validatePkgVersion (see install/remove/upgrade) have
+// rejected everything outside [A-Za-z0-9._+-] and [A-Za-z0-9:_.~+-], so there
+// is no whitespace or metacharacter left to escape. The quoting lives in
+// shellQuote, which is used at DISPLAY sites only; a future reader who sees it
+// and assumes the command side is quoted too is drawing the wrong conclusion,
+// which is why this paragraph exists. Adding a new input to these signatures
+// means extending that allowlist — not reaching for shellQuote here.
 type packageManager interface {
 	name() string
 	query(ctx context.Context, ch channel.Channel, pkg string) (installed bool, version string, err error)
