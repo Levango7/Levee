@@ -14,6 +14,9 @@ import (
 )
 
 func (m *Module) schemaRestore(ctx context.Context, input executor.ModuleInput) (*executor.ModuleOutput, error) {
+	if rawSet, ok := stringOk(input.Args, "snapshots"); ok && strings.TrimSpace(rawSet) != "" {
+		return m.schemaRestoreSet(ctx, input, rawSet)
+	}
 	tableArg, err := stringArg(input.Args, "table")
 	if err != nil {
 		return nil, fmt.Errorf("pg.schema_restore: %w", err)

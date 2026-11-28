@@ -205,9 +205,41 @@ func (s *remoteSnapshotter) RestoreForStep(ctx context.Context, runID, target st
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	pgRestoredAsSet := false
+	pgKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if strings.HasPrefix(key, pgSchemaPayloadPrefix) {
+			pgKeys = append(pgKeys, key)
+		}
+	}
+	if isPGSchemaStep(step) && len(pgKeys) > 1 {
+		manifests := make([]string, 0, len(pgKeys))
+		for _, key := range pgKeys {
+			manifests = append(manifests, payloads[key])
+		}
+		rawSet, err := json.Marshal(manifests)
+		if err != nil {
+			return fmt.Errorf("encode PostgreSQL snapshot set for %q: %w", step.Name, err)
+		}
+		args := cloneStepArgs(step.Args)
+		args["snapshots"] = string(rawSet)
+		out, err := pg.New().Execute(ctx, "schema_restore", executor.ModuleInput{
+			Action: "schema_restore", Args: args, Target: targetDesc, Channel: ch,
+		})
+		if err != nil {
+			return fmt.Errorf("restore PostgreSQL snapshot set on %q: %w", target, err)
+		}
+		if out.ExitCode != 0 {
+			return fmt.Errorf("restore PostgreSQL snapshot set on %q failed: %s", target, strings.TrimSpace(out.Stderr))
+		}
+		pgRestoredAsSet = true
+	}
 	for _, origPath := range keys {
 		content := payloads[origPath]
 		if table, ok := strings.CutPrefix(origPath, pgSchemaPayloadPrefix); ok {
+			if pgRestoredAsSet {
+				continue
+			}
 			args := cloneStepArgs(step.Args)
 			args["table"] = table
 			args["snapshot"] = content

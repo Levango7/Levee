@@ -134,4 +134,86 @@ func TestRealPostgresSchemaReplay(t *testing.T) {
 	require.Contains(t, err.Error(), "outside the pg_dump restrict pair")
 	require.Equal(t, before, ch.execs, "tampered input must not reach the server")
 	t.Log("REAL_PG_REPLAY PASS: capture, drop, restore, catalog checks, existing-table refusal, tamper refusal")
+
+	// IDENTITY + a cyclic cross-table FK: grouped recovery must create both base
+	// tables before adding either constraint, inside one transaction.
+	seedSet, err := runPsql(ctx, ch, conn, `CREATE TABLE public.parent (
+		id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		child_id integer
+	);
+	CREATE TABLE public.child (
+		id integer PRIMARY KEY,
+		parent_id integer
+	);
+	ALTER TABLE public.parent ADD CONSTRAINT parent_child_fk FOREIGN KEY (child_id) REFERENCES public.child(id);
+	ALTER TABLE public.child ADD CONSTRAINT child_parent_fk FOREIGN KEY (parent_id) REFERENCES public.parent(id);`)
+	require.NoError(t, err)
+	require.Zero(t, seedSet.ExitCode, seedSet.Stderr)
+	parentCapture, err := New().Execute(ctx, "schema_snapshot_ddl", input(map[string]any{"tables": []any{"parent"}}))
+	require.NoError(t, err)
+	childCapture, err := New().Execute(ctx, "schema_snapshot_ddl", input(map[string]any{"tables": []any{"child"}}))
+	require.NoError(t, err)
+	rawSet, err := json.Marshal([]string{childCapture.Stdout, parentCapture.Stdout})
+	require.NoError(t, err)
+	_, err = runPsql(ctx, ch, conn, "DROP TABLE public.parent, public.child")
+	require.NoError(t, err)
+	restoredSet, err := New().Execute(ctx, "schema_restore", input(map[string]any{"snapshots": string(rawSet)}))
+	require.NoError(t, err)
+	assert.True(t, restoredSet.Changed)
+	setCheck, err := runPsqlRead(ctx, ch, conn, `SELECT
+		(SELECT count(*) FROM pg_constraint WHERE conrelid IN ('public.parent'::regclass, 'public.child'::regclass) AND contype IN ('p', 'f')),
+		(SELECT attidentity FROM pg_attribute WHERE attrelid = 'public.parent'::regclass AND attname = 'id')`)
+	require.NoError(t, err)
+	assert.Equal(t, "4|a", strings.TrimSpace(setCheck.Stdout), "two PKs + two FKs; parent ID is ALWAYS IDENTITY")
+	_, err = New().Execute(ctx, "schema_restore", input(map[string]any{"snapshots": string(rawSet)}))
+	require.ErrorContains(t, err, "already exists")
+
+	var childTampered map[string]any
+	require.NoError(t, json.Unmarshal([]byte(childCapture.Stdout), &childTampered))
+	originalChildDDL := childTampered["ddl"].(string)
+	mutatedChildDDL := strings.ReplaceAll(originalChildDDL, `"public"."parent"("id")`, `"public"."other"("id")`)
+	mutatedChildDDL = strings.ReplaceAll(mutatedChildDDL, `"public"."parent"(id)`, `"public"."other"(id)`)
+	mutatedChildDDL = strings.ReplaceAll(mutatedChildDDL, "public.parent(id)", "public.other(id)")
+	require.NotEqual(t, originalChildDDL, mutatedChildDDL, "the tamper test must change real pg_dump bytes")
+	childTampered["ddl"] = mutatedChildDDL
+	tamperedSum := sha256.Sum256([]byte(childTampered["ddl"].(string)))
+	childTampered["sha256"] = hex.EncodeToString(tamperedSum[:])
+	rawTamperedChild, err := json.Marshal(childTampered)
+	require.NoError(t, err)
+	rawTamperedSet, err := json.Marshal([]string{string(rawTamperedChild), parentCapture.Stdout})
+	require.NoError(t, err)
+	beforeSet := ch.execs
+	_, err = New().Execute(ctx, "schema_restore", input(map[string]any{"snapshots": string(rawTamperedSet)}))
+	require.ErrorContains(t, err, "outside the snapshot set")
+	assert.Equal(t, beforeSet, ch.execs, "an out-of-set FK must be rejected before any server command")
+
+	// The deferred constraint fails only after every base table was created.
+	// ON_ERROR_STOP must roll the entire transaction back rather than leaving a
+	// half-restored parent/child pair behind.
+	seedRollback, err := runPsql(ctx, ch, conn, `CREATE TABLE public.parent_fail (id integer PRIMARY KEY);
+	CREATE TABLE public.child_fail (id integer PRIMARY KEY, parent_id text);`)
+	require.NoError(t, err)
+	require.Zero(t, seedRollback.ExitCode, seedRollback.Stderr)
+	parentFail, err := New().Execute(ctx, "schema_snapshot_ddl", input(map[string]any{"tables": []any{"parent_fail"}}))
+	require.NoError(t, err)
+	childFail, err := New().Execute(ctx, "schema_snapshot_ddl", input(map[string]any{"tables": []any{"child_fail"}}))
+	require.NoError(t, err)
+	_, err = runPsql(ctx, ch, conn, "DROP TABLE public.parent_fail, public.child_fail")
+	require.NoError(t, err)
+	var failFields map[string]any
+	require.NoError(t, json.Unmarshal([]byte(childFail.Stdout), &failFields))
+	failFields["ddl"] = failFields["ddl"].(string) + "\nALTER TABLE ONLY public.child_fail ADD CONSTRAINT bad_fk FOREIGN KEY (parent_id) REFERENCES public.parent_fail(id);\n"
+	failSum := sha256.Sum256([]byte(failFields["ddl"].(string)))
+	failFields["sha256"] = hex.EncodeToString(failSum[:])
+	rawFailChild, err := json.Marshal(failFields)
+	require.NoError(t, err)
+	rawFailSet, err := json.Marshal([]string{string(rawFailChild), parentFail.Stdout})
+	require.NoError(t, err)
+	_, err = New().Execute(ctx, "schema_restore", input(map[string]any{"snapshots": string(rawFailSet)}))
+	require.Error(t, err, "an incompatible FK must fail the transaction")
+	rollbackCheck, err := runPsqlRead(ctx, ch, conn, `SELECT
+		COALESCE(to_regclass('public.parent_fail')::text, '') || '|' || COALESCE(to_regclass('public.child_fail')::text, '')`)
+	require.NoError(t, err)
+	assert.Equal(t, "|", strings.TrimSpace(rollbackCheck.Stdout), "a deferred FK failure must roll back both base tables")
+	t.Log("REAL_PG_SET_REPLAY PASS: plain IDENTITY, cyclic FKs, one transaction, existing-set and out-of-set tamper refusal, deferred-failure rollback")
 }

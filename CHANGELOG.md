@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 新增（PG 表组恢复：IDENTITY 与循环跨表依赖）
+
+- `pg.schema_snapshot_ddl` 现可捕获 plain `GENERATED ALWAYS/BY DEFAULT AS IDENTITY`（含 pg_dump 的 ADD/SET GENERATED 语句）；自定义 IDENTITY 序列选项仍 fail-closed，SERIAL 兼容不变。
+- `pg.schema_restore` 新增可选 `snapshots` 表组输入：组内所有关系先检查不存在，基础表创建后统一补跨表 FOREIGN KEY，单个 `BEGIN/COMMIT + ON_ERROR_STOP` 事务处理循环依赖；内联跨表 FK、组外引用、重复表和复合 ALTER 继续拒绝，单表输入路径不变。
+- snapshotter 在多份 PG 负载时改用表组恢复，单表不变；`COALESCE(to_regclass(...),'')` 修复 NULL 拼接导致的全缺失误判。真实 PostgreSQL 16.15 通过 IDENTITY + 循环 FK 的捕获→同时 DROP→单事务恢复→目录/身份核验，现存关系和有效组外篡改拒绝；延迟 FK 类型不兼容时两张基础表均回滚为零。仍不含行数据、分区或生产 HA 证明。
+
 ### 新增（Web 详情页 StartChange 与断线同键重试）
 
 - 已批准且存在存量计划的变更详情页新增「开始执行」，调用 `StartChange` 且固定 `autoApprove=false`，不为草稿或待审批提供绕过入口。接受后刷新为 running 并引导实时监控，不把 202 当成执行成功。
