@@ -120,7 +120,7 @@ func captureSchemaDDL(ctx context.Context, ch channel.Channel, conn pgConn, tabl
 		return out, "", fmt.Errorf("pg_dump returned no schema output for %q: %s", table, strings.TrimSpace(res.Stderr))
 	}
 	ddl := strings.TrimSpace(string(raw)) + "\n"
-	if err := validateSchemaRestoreScript(ddl, table); err != nil {
+	if err := validateSchemaRestoreScriptCapture(ddl, table); err != nil {
 		return out, "", fmt.Errorf("pg_dump output for %q is not a supported restore script: %w (stderr: %s)", table, err, strings.TrimSpace(res.Stderr))
 	}
 	return out, ddl, nil
@@ -130,7 +130,7 @@ func encodeSchemaSnapshot(table, ddl string) (string, error) {
 	ddl = strings.TrimSpace(ddl) + "\n"
 	sum := sha256.Sum256([]byte(ddl))
 	manifest := schemaSnapshot{Format: schemaSnapshotFormat, Table: table, DDL: ddl, SHA256: hex.EncodeToString(sum[:])}
-	if err := validateSchemaRestoreScript(ddl, table); err != nil {
+	if err := validateSchemaRestoreScriptCapture(ddl, table); err != nil {
 		return "", err
 	}
 	data, err := json.Marshal(manifest)
@@ -141,6 +141,17 @@ func encodeSchemaSnapshot(table, ddl string) (string, error) {
 }
 
 func decodeSchemaSnapshot(raw, requestedTable string) (*schemaSnapshot, error) {
+	manifest, err := decodeSchemaSnapshotManifest(raw, requestedTable)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSchemaRestoreScript(manifest.DDL, manifest.Table); err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
+func decodeSchemaSnapshotManifest(raw, requestedTable string) (*schemaSnapshot, error) {
 	if len(raw) == 0 || len(raw) > maxSchemaSnapshotLen {
 		return nil, fmt.Errorf("snapshot must be non-empty and no larger than %d bytes", maxSchemaSnapshotLen)
 	}
@@ -169,9 +180,6 @@ func decodeSchemaSnapshot(raw, requestedTable string) (*schemaSnapshot, error) {
 	want := sha256.Sum256([]byte(manifest.DDL))
 	if subtle.ConstantTimeCompare(got, want[:]) != 1 {
 		return nil, fmt.Errorf("snapshot SHA-256 mismatch: payload changed after capture")
-	}
-	if err := validateSchemaRestoreScript(manifest.DDL, manifest.Table); err != nil {
-		return nil, err
 	}
 	return &manifest, nil
 }
@@ -244,7 +252,7 @@ func normalizePgDumpMeta(batch string) (string, error) {
 // validateSchemaRestoreScript is the security boundary for both freshly dumped
 // and persisted scripts. Only a self-contained table, its owned SERIAL
 // sequences, constraints and indexes are accepted. Everything else is refused.
-func validateSchemaRestoreScript(batch, table string) error {
+func validateSelfContainedSchemaRestoreScript(batch, table string) error {
 	if strings.TrimSpace(batch) == "" {
 		return fmt.Errorf("snapshot DDL is empty")
 	}
@@ -362,6 +370,8 @@ func validateAlterTable(stmt *pg_query.AlterTableStmt, table string) error {
 			}
 		case "AT_ColumnDefault", "AT_AlterColumnDefault":
 			// pg_dump uses this for SERIAL defaults.
+		case "AT_AddIdentity", "AT_SetIdentity":
+			// pg_dump also emits ADD/SET GENERATED for IDENTITY columns.
 		default:
 			return fmt.Errorf("snapshot contains unsupported ALTER TABLE command %s", cmd.GetSubtype().String())
 		}
@@ -375,7 +385,13 @@ func validateTableConstraint(constraint *pg_query.Constraint, table string) erro
 	}
 	kind := constraint.GetContype().String()
 	if kind == "CONSTR_IDENTITY" {
-		return fmt.Errorf("IDENTITY columns are outside this recovery format; SERIAL is supported")
+		if generated := constraint.GetGeneratedWhen(); generated != "a" && generated != "d" {
+			return fmt.Errorf("unsupported IDENTITY generation mode %q", generated)
+		}
+		if len(constraint.GetOptions()) != 0 {
+			return fmt.Errorf("IDENTITY sequence options are outside this recovery format; use a plain IDENTITY column or SERIAL")
+		}
+		return nil
 	}
 	if kind == "CONSTR_FOREIGN" && relationName(constraint.GetPktable()) != table {
 		return fmt.Errorf("cross-table foreign keys are outside this recovery format")

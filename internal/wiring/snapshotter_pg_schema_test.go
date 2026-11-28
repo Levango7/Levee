@@ -32,6 +32,12 @@ type pgSchemaFake struct {
 	exists bool
 	ddl    string
 	execs  []string
+	tables map[string]*pgSchemaTable
+}
+
+type pgSchemaTable struct {
+	ddl    string
+	exists bool
 }
 
 type pgSchemaChannel struct{ fake *pgSchemaFake }
@@ -47,6 +53,9 @@ func (c *pgSchemaChannel) Download(context.Context, string) (io.Reader, error) {
 func (c *pgSchemaChannel) Exec(_ context.Context, cmd string) (*channel.ExecResult, error) {
 	c.fake.mu.Lock()
 	defer c.fake.mu.Unlock()
+	if c.fake.tables != nil {
+		return c.fake.execSet(cmd)
+	}
 	if strings.Contains(cmd, "pg_dump ") {
 		c.fake.execs = append(c.fake.execs, "PG_DUMP")
 		if !c.fake.exists {
@@ -81,6 +90,69 @@ func (c *pgSchemaChannel) Exec(_ context.Context, cmd string) (*channel.ExecResu
 	default:
 		return &channel.ExecResult{ExitCode: 127, Stderr: "unexpected SQL: " + sql}, nil
 	}
+}
+
+func (f *pgSchemaFake) execSet(cmd string) (*channel.ExecResult, error) {
+	if strings.Contains(cmd, "pg_dump ") {
+		table := relationFromCommand(cmd)
+		row := f.tables[table]
+		f.execs = append(f.execs, "PG_DUMP:"+table)
+		if row == nil || !row.exists {
+			return &channel.ExecResult{ExitCode: 1, Stderr: "relation does not exist"}, nil
+		}
+		return &channel.ExecResult{ExitCode: 0, Stdout: base64.StdEncoding.EncodeToString([]byte(row.ddl))}, nil
+	}
+	lines := strings.Split(cmd, "\n")
+	if len(lines) != 3 {
+		return &channel.ExecResult{ExitCode: 127, Stderr: "unexpected command"}, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(lines[1])
+	if err != nil {
+		return nil, err
+	}
+	sql := string(raw)
+	f.execs = append(f.execs, sql)
+	switch {
+	case strings.Contains(sql, "n.nspname || '.' || c.relname"):
+		table := relationFromCommand(sql)
+		if row := f.tables[table]; row != nil && row.exists {
+			return &channel.ExecResult{ExitCode: 0, Stdout: table + "\n"}, nil
+		}
+		return &channel.ExecResult{ExitCode: 0, Stdout: "\n"}, nil
+	case strings.HasPrefix(sql, "SELECT COALESCE(to_regclass"):
+		wantPipes := strings.Count(sql, "to_regclass(") - 1
+		for _, row := range f.tables {
+			if row.exists {
+				return &channel.ExecResult{ExitCode: 0, Stdout: "existing\n"}, nil
+			}
+		}
+		return &channel.ExecResult{ExitCode: 0, Stdout: strings.Repeat("|", wantPipes) + "\n"}, nil
+	case strings.HasPrefix(sql, "BEGIN;"):
+		for _, row := range f.tables {
+			row.exists = true
+		}
+		return &channel.ExecResult{ExitCode: 0}, nil
+	default:
+		return &channel.ExecResult{ExitCode: 127, Stderr: "unexpected SQL: " + sql}, nil
+	}
+}
+
+func relationFromCommand(cmd string) string {
+	const marker = `"public"."`
+	if start := strings.Index(cmd, marker); start >= 0 {
+		rest := cmd[start+len(marker):]
+		if end := strings.Index(rest, `"`); end >= 0 {
+			return "public." + rest[:end]
+		}
+	}
+	const plain = "to_regclass('"
+	if start := strings.Index(cmd, plain); start >= 0 {
+		rest := cmd[start+len(plain):]
+		if end := strings.Index(rest, "'"); end >= 0 {
+			return "public." + strings.Trim(rest[:end], `"`)
+		}
+	}
+	return ""
 }
 
 type pgSchemaFactory struct{ fake *pgSchemaFake }
@@ -158,4 +230,35 @@ func TestPGSnapshotterCaptureRejectsMixedDMLAndLeavesNoRecord(t *testing.T) {
 	require.NoError(t, listErr)
 	assert.Empty(t, snaps, "a failed capture must be deleted, not left as an audit-only baseline")
 	assert.Empty(t, fake.execs, "the SQL review refuses before touching the target")
+}
+
+func TestPGSnapshotterRestoresCrossTableSetInOneTransaction(t *testing.T) {
+	parentDDL := "CREATE TABLE public.parent (id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY, child_id integer);\n" +
+		"ALTER TABLE ONLY public.parent ADD CONSTRAINT parent_child_fk FOREIGN KEY (child_id) REFERENCES public.child(id);\n"
+	childDDL := "CREATE TABLE public.child (id integer PRIMARY KEY, parent_id integer);\n" +
+		"ALTER TABLE ONLY public.child ADD CONSTRAINT child_parent_fk FOREIGN KEY (parent_id) REFERENCES public.parent(id);\n"
+	fake := &pgSchemaFake{tables: map[string]*pgSchemaTable{
+		"public.parent": {ddl: parentDDL, exists: true},
+		"public.child":  {ddl: childDDL, exists: true},
+	}}
+	s := newPGSchemaSnapshotter(t, fake)
+	step := pgSchemaStep("DROP TABLE parent; DROP TABLE child")
+	require.NoError(t, s.CaptureForStep(context.Background(), "run-apply", "web1", step))
+	for _, row := range fake.tables {
+		row.exists = false
+	}
+	require.NoError(t, s.RestoreForStep(context.Background(), "run-rollback", "web1", step))
+	for name, row := range fake.tables {
+		assert.True(t, row.exists, "%s must be restored", name)
+	}
+	var script string
+	for _, sql := range fake.execs {
+		if strings.HasPrefix(sql, "BEGIN;") {
+			script = sql
+			break
+		}
+	}
+	require.NotEmpty(t, script, "multiple PG payloads must use one transaction")
+	assert.Less(t, strings.LastIndex(script, "CREATE TABLE"), strings.Index(script, "ADD CONSTRAINT"))
+	assert.Contains(t, script, "COMMIT;")
 }

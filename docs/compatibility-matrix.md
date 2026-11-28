@@ -36,7 +36,7 @@ levee capabilities db01.prod --json
 
 ## 3. 当前实证入口
 
-- PG schema：`python scripts/replay_pg_schema.py`（PostgreSQL 16.15，REAL_PG_REPLAY）。
+- PG schema：`python scripts/replay_pg_schema.py`（PostgreSQL 16.15，REAL_PG_REPLAY + REAL_PG_SET_REPLAY，含 plain IDENTITY 与循环跨表 FK）。
 - MySQL schema：`python scripts/replay_mysql_schema.py`（MySQL 8.0.46，捕获→DROP→恢复→定义一致，MYSQL_SCHEMA_REPLAY）。
 - apk：`python scripts/replay_pg_schema.py --suite pkg-alpine`（tree 安装、重装、升级、删除、重复删除，PKG_APK_REPLAY）。
 - 自诊断：`python scripts/replay_pg_schema.py --suite capabilities-alpine`（CAPABILITY_REPLAY）。
@@ -47,5 +47,5 @@ levee capabilities db01.prod --json
 
 - WinRM 通道存在，不代表 `file/pkg/svc/user/shell` 自动支持 Windows；JSON 中这些动作的 Windows 栏均为 `unsupported`。
 - apk 已有真实实现，不再只是注释；探测顺序仍为 apt→dnf→yum→apk。
-- PG DDL 恢复有真实单实例证据，但行数据、跨表依赖、IDENTITY、分区仍不在范围。
+- PG DDL 恢复已有真实单实例证据；plain IDENTITY 与表组跨表 FK 已覆盖，行数据、自定义 IDENTITY 序列选项、分区和生产 HA 仍不在范围。
 - MySQL `replica_switch` 需要真实主从拓扑，不能用客户端存在性判 supported。
